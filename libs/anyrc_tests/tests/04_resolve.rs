@@ -39,14 +39,15 @@ fn resolve_file_crate(src: &str, src_dir: &str, cfg_flags: &[&str]) -> (anyrc::r
         &cfg_flags.iter().map(|flag| flag.to_string()).collect::<Vec<_>>(),
     );
     let loader = anyrc::loader::OsFileLoader;
-    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
-    expand_macros(&mut krate, &mut interner);
-    anyrc::loader::resolve_includes(&mut krate, src_dir, &mut interner, &loader);
-    anyrc::loader::resolve_modules(&mut krate, src_dir, &mut interner, &loader);
-    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
-    expand_macros(&mut krate, &mut interner);
-    anyrc::loader::resolve_includes(&mut krate, src_dir, &mut interner, &loader);
-    anyrc::loader::resolve_modules(&mut krate, src_dir, &mut interner, &loader);
+    for _ in 0..16 {
+        anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+        expand_macros(&mut krate, &mut interner);
+        let included = anyrc::loader::resolve_includes(&mut krate, src_dir, &mut interner, &loader);
+        let loaded = anyrc::loader::resolve_modules(&mut krate, src_dir, &mut interner, &loader);
+        if included.is_empty() && loaded.is_empty() {
+            break;
+        }
+    }
     anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
 
     let mut ctx = LoweringContext::new(&mut interner);
@@ -811,6 +812,71 @@ fn resolve_macro_generated_file_module_trait_import_in_submodule() {
     let (result, _) = resolve_file_crate(src, tmp.to_str().unwrap(), &[
         "target_os=\"anyos\"",
         "feature=\"std\"",
+    ]);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn resolve_loaded_macro_generates_module_with_more_macro_calls() {
+    let tmp = std::env::temp_dir().join(format!(
+        "anyrc-loaded-macro-module-chain-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("de")).unwrap();
+
+    let mut crate_root = std::fs::File::create(tmp.join("crate_root.rs")).unwrap();
+    write!(crate_root, r#"
+        macro_rules! crate_root {{
+            () => {{
+                pub mod de;
+            }}
+        }}
+    "#).unwrap();
+
+    let mut de_mod = std::fs::File::create(tmp.join("de.rs")).unwrap();
+    write!(de_mod, r#"
+        mod impls;
+
+        macro_rules! declare_error_trait {{
+            () => {{
+                pub trait Error {{
+                    fn custom() -> Self;
+
+                    fn invalid_value() -> Self {{
+                        Error::custom()
+                    }}
+                }}
+            }}
+        }}
+
+        declare_error_trait!();
+    "#).unwrap();
+
+    let mut impls = std::fs::File::create(tmp.join("de").join("impls.rs")).unwrap();
+    write!(impls, r#"
+        use crate::de::Error;
+
+        fn visit<E>() -> E
+        where
+            E: Error,
+        {{
+            Error::invalid_value()
+        }}
+    "#).unwrap();
+
+    let src = r#"
+        #[macro_use]
+        mod crate_root;
+
+        crate_root!();
+    "#;
+
+    let (result, _) = resolve_file_crate(src, tmp.to_str().unwrap(), &[
+        "target_os=\"anyos\"",
     ]);
     let _ = std::fs::remove_dir_all(&tmp);
 

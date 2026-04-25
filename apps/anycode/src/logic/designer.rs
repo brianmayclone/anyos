@@ -31,6 +31,64 @@ impl DesignerControlKind {
             _ => Self::Button,
         }
     }
+
+    pub fn property_names(&self) -> &'static [&'static str] {
+        match self {
+            Self::Button => &[
+                "Text", "X", "Y", "Width", "Height", "Enabled", "Visible", "Tooltip", "Accent",
+                "Default",
+            ],
+            Self::Label => &[
+                "Text",
+                "X",
+                "Y",
+                "Width",
+                "Height",
+                "Enabled",
+                "Visible",
+                "Tooltip",
+                "TextAlign",
+                "FontSize",
+                "FontWeight",
+                "TextColor",
+            ],
+            Self::TextField => &[
+                "Text",
+                "X",
+                "Y",
+                "Width",
+                "Height",
+                "Enabled",
+                "Visible",
+                "Tooltip",
+                "Placeholder",
+                "ReadOnly",
+                "Password",
+                "MaxLength",
+            ],
+            Self::CheckBox => &[
+                "Text", "X", "Y", "Width", "Height", "Enabled", "Visible", "Tooltip", "Checked",
+            ],
+            Self::Panel => &[
+                "X",
+                "Y",
+                "Width",
+                "Height",
+                "Enabled",
+                "Visible",
+                "Dock",
+                "Padding",
+                "BackgroundColor",
+                "BorderColor",
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DesignerProperty {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Clone, Debug)]
@@ -42,11 +100,75 @@ pub struct DesignerControl {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    pub properties: Vec<DesignerProperty>,
 }
 
 impl DesignerControl {
     pub fn event_name(&self) -> String {
         format!("{}_click", self.name)
+    }
+
+    pub fn property_items(&self) -> String {
+        let mut out = String::new();
+        for name in self.kind.property_names() {
+            if !out.is_empty() {
+                out.push('|');
+            }
+            out.push_str(name);
+        }
+        for property in &self.properties {
+            if !has_property_name(self.kind.property_names(), &property.name) {
+                if !out.is_empty() {
+                    out.push('|');
+                }
+                out.push_str(&property.name);
+            }
+        }
+        out
+    }
+
+    pub fn property_name_at(&self, index: u32) -> String {
+        let names = self.kind.property_names();
+        let idx = index as usize;
+        if idx < names.len() {
+            return String::from(names[idx]);
+        }
+        let custom_idx = idx.saturating_sub(names.len());
+        self.properties
+            .get(custom_idx)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| String::from("Text"))
+    }
+
+    pub fn property_value(&self, property_name: &str) -> String {
+        match normalized_property(property_name) {
+            "text" => self.text.clone(),
+            "x" => format!("{}", self.x),
+            "y" => format!("{}", self.y),
+            "width" => format!("{}", self.width),
+            "height" => format!("{}", self.height),
+            _ => self
+                .properties
+                .iter()
+                .find(|property| same_property(&property.name, property_name))
+                .map(|property| property.value.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn set_custom_property(&mut self, property_name: &str, value: &str) {
+        if let Some(property) = self
+            .properties
+            .iter_mut()
+            .find(|property| same_property(&property.name, property_name))
+        {
+            property.value = String::from(value);
+            return;
+        }
+        self.properties.push(DesignerProperty {
+            name: String::from(property_name),
+            value: String::from(value),
+        });
     }
 }
 
@@ -70,6 +192,7 @@ impl DesignerDocument {
             y: 24,
             width: 220,
             height: 24,
+            properties: Vec::new(),
         });
         controls.push(DesignerControl {
             name: String::from("button_ok"),
@@ -79,6 +202,7 @@ impl DesignerDocument {
             y: 64,
             width: 96,
             height: 30,
+            properties: Vec::new(),
         });
         Self {
             form_name: String::from(form_name),
@@ -113,7 +237,19 @@ impl DesignerDocument {
                     y: attr_i32(trimmed, "y", 0),
                     width: attr_u32(trimmed, "width", 100),
                     height: attr_u32(trimmed, "height", 28),
+                    properties: Vec::new(),
                 });
+            } else if trimmed.starts_with("property ") {
+                let control_name = attr(trimmed, "control").unwrap_or_default();
+                let property_name = attr(trimmed, "name").unwrap_or_default();
+                let value = attr(trimmed, "value").unwrap_or_default();
+                if let Some(control) = doc
+                    .controls
+                    .iter_mut()
+                    .find(|control| control.name == control_name)
+                {
+                    control.set_custom_property(&property_name, &value);
+                }
             }
         }
         doc
@@ -139,6 +275,14 @@ impl DesignerDocument {
                 control.width,
                 control.height
             ));
+            for property in &control.properties {
+                out.push_str(&format!(
+                    "property control=\"{}\" name=\"{}\" value=\"{}\"\n",
+                    escape(&control.name),
+                    escape(&property.name),
+                    escape(&property.value)
+                ));
+            }
         }
         out
     }
@@ -242,15 +386,31 @@ impl DesignerDocument {
         else {
             return Err("Designer control not found");
         };
-        match property_name {
+        match normalized_property(property_name) {
             "text" => control.text = String::from(value),
             "x" => control.x = parse_i32(value).ok_or("X must be a number")?,
             "y" => control.y = parse_i32(value).ok_or("Y must be a number")?,
             "width" => control.width = parse_u32(value).ok_or("Width must be a number")?,
             "height" => control.height = parse_u32(value).ok_or("Height must be a number")?,
-            _ => return Err("Unsupported designer property"),
+            _ => control.set_custom_property(property_name, value),
         }
         Ok(())
+    }
+
+    pub fn control_property_name_at(&self, control_name: &str, index: u32) -> String {
+        self.controls
+            .iter()
+            .find(|control| control.name == control_name)
+            .map(|control| control.property_name_at(index))
+            .unwrap_or_else(|| String::from("Text"))
+    }
+
+    pub fn control_property_value(&self, control_name: &str, property_name: &str) -> String {
+        self.controls
+            .iter()
+            .find(|control| control.name == control_name)
+            .map(|control| control.property_value(property_name))
+            .unwrap_or_default()
     }
 }
 
@@ -422,6 +582,49 @@ fn control_constructor(control: &DesignerControl) -> String {
             rust_control_type(&control.kind),
             escape(&control.text)
         ),
+    }
+}
+
+fn has_property_name(names: &[&str], name: &str) -> bool {
+    names.iter().any(|candidate| same_property(candidate, name))
+}
+
+fn same_property(a: &str, b: &str) -> bool {
+    let na = normalized_property(a);
+    let nb = normalized_property(b);
+    if na == "custom" || nb == "custom" {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        na == nb
+    }
+}
+
+fn normalized_property(value: &str) -> &'static str {
+    match value {
+        "Text" | "text" => "text",
+        "X" | "x" => "x",
+        "Y" | "y" => "y",
+        "Width" | "width" => "width",
+        "Height" | "height" => "height",
+        "Enabled" | "enabled" => "enabled",
+        "Visible" | "visible" => "visible",
+        "Tooltip" | "tooltip" => "tooltip",
+        "Accent" | "accent" => "accent",
+        "Default" | "default" => "default",
+        "TextAlign" | "text_align" | "textalign" => "text_align",
+        "FontSize" | "font_size" | "fontsize" => "font_size",
+        "FontWeight" | "font_weight" | "fontweight" => "font_weight",
+        "TextColor" | "text_color" | "textcolor" => "text_color",
+        "Placeholder" | "placeholder" => "placeholder",
+        "ReadOnly" | "read_only" | "readonly" => "read_only",
+        "Password" | "password" => "password",
+        "MaxLength" | "max_length" | "maxlength" => "max_length",
+        "Checked" | "checked" => "checked",
+        "Dock" | "dock" => "dock",
+        "Padding" | "padding" => "padding",
+        "BackgroundColor" | "background_color" | "backgroundcolor" => "background_color",
+        "BorderColor" | "border_color" | "bordercolor" => "border_color",
+        _ => "custom",
     }
 }
 

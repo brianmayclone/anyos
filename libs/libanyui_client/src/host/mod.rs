@@ -15,7 +15,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 // ── ID generation ────────────────────────────────────────────────────────────
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
-fn next_id() -> u32 { NEXT_ID.fetch_add(1, Ordering::Relaxed) }
+fn next_id() -> u32 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 // ── Callback type ────────────────────────────────────────────────────────────
 
@@ -100,7 +102,11 @@ fn get_control_text_mut(id: u32) -> &'static mut ControlText {
         if let Some(pos) = CONTROL_TEXTS.iter().position(|c| c.id == id) {
             return &mut CONTROL_TEXTS[pos];
         }
-        CONTROL_TEXTS.push(ControlText { id, text: Vec::new(), state: 0 });
+        CONTROL_TEXTS.push(ControlText {
+            id,
+            text: Vec::new(),
+            state: 0,
+        });
         let last = CONTROL_TEXTS.len() - 1;
         &mut CONTROL_TEXTS[last]
     }
@@ -113,11 +119,15 @@ pub struct Control {
 }
 
 impl Widget for Control {
-    fn id(&self) -> u32 { self.id }
+    fn id(&self) -> u32 {
+        self.id
+    }
 }
 
 impl Control {
-    pub fn from_id(id: u32) -> Self { Control { id } }
+    pub fn from_id(id: u32) -> Self {
+        Control { id }
+    }
     pub fn set_position(&self, x: i32, y: i32) {
         // Store position for canvases (needed for tile compositing)
         if let Some(c) = find_canvas(self.id) {
@@ -126,8 +136,12 @@ impl Control {
         }
     }
     pub fn set_size(&self, _w: u32, _h: u32) {}
-    pub fn get_size(&self) -> (u32, u32) { (0, 0) }
-    pub fn get_position(&self) -> (i32, i32) { (0, 0) }
+    pub fn get_size(&self) -> (u32, u32) {
+        (0, 0)
+    }
+    pub fn get_position(&self) -> (i32, i32) {
+        (0, 0)
+    }
     pub fn set_visible(&self, _visible: bool) {}
     pub fn set_color(&self, _color: u32) {}
     pub fn set_style(&self, _key: u32, _value: u32) {}
@@ -160,7 +174,9 @@ impl Control {
     pub fn set_min_size(&self, _w: u32, _h: u32) {}
     pub fn set_max_size(&self, _w: u32, _h: u32) {}
     pub fn set_font_size(&self, _size: u32) {}
-    pub fn get_font_size(&self) -> u32 { 14 }
+    pub fn get_font_size(&self) -> u32 {
+        14
+    }
     pub fn set_font(&self, _font_id: u32) {}
     pub fn set_text_color(&self, _color: u32) {}
     pub fn set_tooltip(&self, _text: &str) {}
@@ -187,11 +203,15 @@ pub struct Container {
 
 impl core::ops::Deref for Container {
     type Target = Control;
-    fn deref(&self) -> &Control { &self.ctrl }
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
 }
 
 impl Widget for Container {
-    fn id(&self) -> u32 { self.ctrl.id }
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
 }
 
 impl Container {
@@ -208,16 +228,24 @@ pub struct View {
 
 impl core::ops::Deref for View {
     type Target = Container;
-    fn deref(&self) -> &Container { &self.container }
+    fn deref(&self) -> &Container {
+        &self.container
+    }
 }
 
 impl Widget for View {
-    fn id(&self) -> u32 { self.container.ctrl.id }
+    fn id(&self) -> u32 {
+        self.container.ctrl.id
+    }
 }
 
 impl View {
     pub fn new() -> Self {
-        View { container: Container { ctrl: Control { id: next_id() } } }
+        View {
+            container: Container {
+                ctrl: Control { id: next_id() },
+            },
+        }
     }
 }
 
@@ -229,16 +257,24 @@ pub struct ScrollView {
 
 impl core::ops::Deref for ScrollView {
     type Target = Container;
-    fn deref(&self) -> &Container { &self.container }
+    fn deref(&self) -> &Container {
+        &self.container
+    }
 }
 
 impl Widget for ScrollView {
-    fn id(&self) -> u32 { self.container.ctrl.id }
+    fn id(&self) -> u32 {
+        self.container.ctrl.id
+    }
 }
 
 impl ScrollView {
     pub fn new() -> Self {
-        ScrollView { container: Container { ctrl: Control { id: next_id() } } }
+        ScrollView {
+            container: Container {
+                ctrl: Control { id: next_id() },
+            },
+        }
     }
     pub fn on_scroll(&self, _f: impl FnMut(&ScrollChangedEvent) + 'static) {}
 }
@@ -250,7 +286,9 @@ pub struct Canvas {
 }
 
 impl Widget for Canvas {
-    fn id(&self) -> u32 { self.id }
+    fn id(&self) -> u32 {
+        self.id
+    }
 }
 
 impl core::ops::Deref for Canvas {
@@ -266,7 +304,14 @@ impl Canvas {
         let id = next_id();
         let pixels = vec![0u32; (w * h) as usize];
         unsafe {
-            CANVASES.push(CanvasData { id, width: w, height: h, pos_x: 0, pos_y: 0, pixels });
+            CANVASES.push(CanvasData {
+                id,
+                width: w,
+                height: h,
+                pos_x: 0,
+                pos_y: 0,
+                pixels,
+            });
         }
         Canvas { id }
     }
@@ -280,11 +325,19 @@ impl Canvas {
     }
 
     pub fn get_stride(&self) -> u32 {
-        if let Some(c) = find_canvas(self.id) { c.width } else { 0 }
+        if let Some(c) = find_canvas(self.id) {
+            c.width
+        } else {
+            0
+        }
     }
 
     pub fn get_height(&self) -> u32 {
-        if let Some(c) = find_canvas(self.id) { c.height } else { 0 }
+        if let Some(c) = find_canvas(self.id) {
+            c.height
+        } else {
+            0
+        }
     }
 
     pub fn clear(&self, color: u32) {
@@ -328,8 +381,11 @@ impl Canvas {
     }
 
     pub fn fill_rect(&self, _x: i32, _y: i32, _w: u32, _h: u32, _color: u32) {}
-    pub fn draw_text(&self, _x: i32, _y: i32, _color: u32, _font_id: u32, _size: u16, _text: &str) {}
-    pub fn get_mouse(&self) -> (i32, i32, u32) { (0, 0, 0) }
+    pub fn draw_text(&self, _x: i32, _y: i32, _color: u32, _font_id: u32, _size: u16, _text: &str) {
+    }
+    pub fn get_mouse(&self) -> (i32, i32, u32) {
+        (0, 0, 0)
+    }
     pub fn set_interactive(&self, _enabled: bool) {}
     pub fn on_click(&self, _f: impl FnMut(&ClickEvent) + 'static) {}
     pub fn on_mouse_down(&self, _f: impl FnMut(i32, i32, u32) + 'static) {}
@@ -351,19 +407,31 @@ pub struct Window {
 
 impl core::ops::Deref for Window {
     type Target = Container;
-    fn deref(&self) -> &Container { &self.container }
+    fn deref(&self) -> &Container {
+        &self.container
+    }
 }
 
 impl Widget for Window {
-    fn id(&self) -> u32 { self.container.ctrl.id }
+    fn id(&self) -> u32 {
+        self.container.ctrl.id
+    }
 }
 
 impl Window {
     pub fn new(_title: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> Self {
-        Window { container: Container { ctrl: Control { id: next_id() } } }
+        Window {
+            container: Container {
+                ctrl: Control { id: next_id() },
+            },
+        }
     }
     pub fn new_with_flags(_title: &str, _x: i32, _y: i32, _w: u32, _h: u32, _flags: u32) -> Self {
-        Window { container: Container { ctrl: Control { id: next_id() } } }
+        Window {
+            container: Container {
+                ctrl: Control { id: next_id() },
+            },
+        }
     }
     pub fn set_title(&self, _title: &str) {}
     pub fn destroy(&self) {}
@@ -386,15 +454,23 @@ pub struct TextField {
 
 impl core::ops::Deref for TextField {
     type Target = Control;
-    fn deref(&self) -> &Control { &self.ctrl }
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
 }
 
 impl Widget for TextField {
-    fn id(&self) -> u32 { self.ctrl.id }
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
 }
 
 impl TextField {
-    pub fn new() -> Self { TextField { ctrl: Control { id: next_id() } } }
+    pub fn new() -> Self {
+        TextField {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn set_placeholder(&self, _text: &str) {}
     pub fn select_all(&self) {}
     pub fn set_password_mode(&self, _enabled: bool) {}
@@ -410,15 +486,23 @@ pub struct SearchField {
 
 impl core::ops::Deref for SearchField {
     type Target = Control;
-    fn deref(&self) -> &Control { &self.ctrl }
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
 }
 
 impl Widget for SearchField {
-    fn id(&self) -> u32 { self.ctrl.id }
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
 }
 
 impl SearchField {
-    pub fn new() -> Self { SearchField { ctrl: Control { id: next_id() } } }
+    pub fn new() -> Self {
+        SearchField {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn set_placeholder(&self, _text: &str) {}
     pub fn on_text_changed(&self, _f: impl FnMut(&TextChangedEvent) + 'static) {}
     pub fn on_submit(&self, _f: impl FnMut(&SubmitEvent) + 'static) {}
@@ -432,15 +516,23 @@ pub struct Checkbox {
 
 impl core::ops::Deref for Checkbox {
     type Target = Control;
-    fn deref(&self) -> &Control { &self.ctrl }
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
 }
 
 impl Widget for Checkbox {
-    fn id(&self) -> u32 { self.ctrl.id }
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
 }
 
 impl Checkbox {
-    pub fn new(_label: &str) -> Self { Checkbox { ctrl: Control { id: next_id() } } }
+    pub fn new(_label: &str) -> Self {
+        Checkbox {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn on_checked_changed(&self, _f: impl FnMut(&CheckedChangedEvent) + 'static) {}
 }
 
@@ -452,15 +544,23 @@ pub struct RadioButton {
 
 impl core::ops::Deref for RadioButton {
     type Target = Control;
-    fn deref(&self) -> &Control { &self.ctrl }
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
 }
 
 impl Widget for RadioButton {
-    fn id(&self) -> u32 { self.ctrl.id }
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
 }
 
 impl RadioButton {
-    pub fn new(_label: &str) -> Self { RadioButton { ctrl: Control { id: next_id() } } }
+    pub fn new(_label: &str) -> Self {
+        RadioButton {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn on_checked_changed(&self, _f: impl FnMut(&CheckedChangedEvent) + 'static) {}
 }
 
@@ -472,128 +572,305 @@ pub struct TextArea {
 
 impl core::ops::Deref for TextArea {
     type Target = Control;
-    fn deref(&self) -> &Control { &self.ctrl }
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
 }
 
 impl Widget for TextArea {
-    fn id(&self) -> u32 { self.ctrl.id }
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
 }
 
 impl TextArea {
-    pub fn new() -> Self { TextArea { ctrl: Control { id: next_id() } } }
+    pub fn new() -> Self {
+        TextArea {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn on_text_changed(&self, _f: impl FnMut(&TextChangedEvent) + 'static) {}
 }
 
 // ── Additional controls (stubs for anything else) ────────────────────────────
 
-pub struct Label { ctrl: Control }
-impl core::ops::Deref for Label { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for Label { fn id(&self) -> u32 { self.ctrl.id } }
-impl Label { pub fn new(_text: &str) -> Self { Label { ctrl: Control { id: next_id() } } } }
+pub struct Label {
+    ctrl: Control,
+}
+impl core::ops::Deref for Label {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for Label {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
+impl Label {
+    pub fn new(_text: &str) -> Self {
+        Label {
+            ctrl: Control { id: next_id() },
+        }
+    }
+}
 
-pub struct LinkLabel { ctrl: Control }
-impl core::ops::Deref for LinkLabel { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for LinkLabel { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct LinkLabel {
+    ctrl: Control,
+}
+impl core::ops::Deref for LinkLabel {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for LinkLabel {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl LinkLabel {
-    pub fn new(_text: &str) -> Self { LinkLabel { ctrl: Control { id: next_id() } } }
+    pub fn new(_text: &str) -> Self {
+        LinkLabel {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn on_click(&self, _f: impl FnMut(&ClickEvent) + 'static) {}
 }
 
-pub struct Button { ctrl: Control }
-impl core::ops::Deref for Button { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for Button { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct Button {
+    ctrl: Control,
+}
+impl core::ops::Deref for Button {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for Button {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl Button {
-    pub fn new(_text: &str) -> Self { Button { ctrl: Control { id: next_id() } } }
+    pub fn new(_text: &str) -> Self {
+        Button {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn on_click(&self, _f: impl FnMut(&ClickEvent) + 'static) {}
 }
 
-pub struct ProgressBar { ctrl: Control }
-impl core::ops::Deref for ProgressBar { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for ProgressBar { fn id(&self) -> u32 { self.ctrl.id } }
-impl ProgressBar { pub fn new(_val: u32) -> Self { ProgressBar { ctrl: Control { id: next_id() } } } }
+pub struct ProgressBar {
+    ctrl: Control,
+}
+impl core::ops::Deref for ProgressBar {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for ProgressBar {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
+impl ProgressBar {
+    pub fn new(_val: u32) -> Self {
+        ProgressBar {
+            ctrl: Control { id: next_id() },
+        }
+    }
+}
 
 // ── DropDown ────────────────────────────────────────────────────────────────
 
-pub struct DropDown { ctrl: Control }
-impl core::ops::Deref for DropDown { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for DropDown { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct DropDown {
+    ctrl: Control,
+}
+impl core::ops::Deref for DropDown {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for DropDown {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl DropDown {
     pub fn new(items: &str) -> Self {
-        let dd = DropDown { ctrl: Control { id: next_id() } };
+        let dd = DropDown {
+            ctrl: Control { id: next_id() },
+        };
         // Store items as text so get_text can retrieve them.
         let entry = get_control_text_mut(dd.ctrl.id);
         entry.text.extend_from_slice(items.as_bytes());
         dd
     }
-    pub fn set_items(&self, items: &str) { self.ctrl.set_text(items); }
-    pub fn selected_index(&self) -> u32 { self.ctrl.get_state() }
-    pub fn set_selected_index(&self, idx: u32) { self.ctrl.set_state(idx); }
+    pub fn set_items(&self, items: &str) {
+        self.ctrl.set_text(items);
+    }
+    pub fn selected_index(&self) -> u32 {
+        self.ctrl.get_state()
+    }
+    pub fn set_selected_index(&self, idx: u32) {
+        self.ctrl.set_state(idx);
+    }
     pub fn on_selection_changed(&self, _f: impl FnMut(&SelectionChangedEvent) + 'static) {}
 }
 
 // ── Slider ──────────────────────────────────────────────────────────────────
 
-pub struct Slider { ctrl: Control }
-impl core::ops::Deref for Slider { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for Slider { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct Slider {
+    ctrl: Control,
+}
+impl core::ops::Deref for Slider {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for Slider {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl Slider {
     pub fn new(value: u32) -> Self {
-        let s = Slider { ctrl: Control { id: next_id() } };
+        let s = Slider {
+            ctrl: Control { id: next_id() },
+        };
         get_control_text_mut(s.ctrl.id).state = value;
         s
     }
     pub fn on_value_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
 }
 
-pub struct Spinner { ctrl: Control }
-impl core::ops::Deref for Spinner { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for Spinner { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct Spinner {
+    ctrl: Control,
+}
+impl core::ops::Deref for Spinner {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for Spinner {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl Spinner {
-    pub fn new() -> Self { Spinner { ctrl: Control { id: next_id() } } }
-    pub fn start(&self) -> u32 { 0 }
+    pub fn new() -> Self {
+        Spinner {
+            ctrl: Control { id: next_id() },
+        }
+    }
+    pub fn start(&self) -> u32 {
+        0
+    }
     pub fn stop(_timer_id: u32) {}
     pub fn set_spinner_color(&self, _color: u32) {}
 }
 
 // ── ListBox ─────────────────────────────────────────────────────────────
 
-pub struct ListBox { ctrl: Control }
-impl core::ops::Deref for ListBox { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for ListBox { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct ListBox {
+    ctrl: Control,
+}
+impl core::ops::Deref for ListBox {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for ListBox {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl ListBox {
     pub fn new(items: &str) -> Self {
-        let lb = ListBox { ctrl: Control { id: next_id() } };
+        let lb = ListBox {
+            ctrl: Control { id: next_id() },
+        };
         let entry = get_control_text_mut(lb.ctrl.id);
         entry.text.extend_from_slice(items.as_bytes());
         lb
     }
-    pub fn set_items(&self, items: &str) { self.ctrl.set_text(items); }
-    pub fn selected_index(&self) -> u32 { self.ctrl.get_state() }
-    pub fn set_selected_index(&self, idx: u32) { self.ctrl.set_state(idx); }
+    pub fn set_items(&self, items: &str) {
+        self.ctrl.set_text(items);
+    }
+    pub fn selected_index(&self) -> u32 {
+        self.ctrl.get_state()
+    }
+    pub fn set_selected_index(&self, idx: u32) {
+        self.ctrl.set_state(idx);
+    }
     pub fn on_selection_changed(&self, _f: impl FnMut(&SelectionChangedEvent) + 'static) {}
 }
 
 // ── ColorWell ───────────────────────────────────────────────────────────
 
-pub struct ColorWell { ctrl: Control }
-impl core::ops::Deref for ColorWell { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for ColorWell { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct ColorWell {
+    ctrl: Control,
+}
+impl core::ops::Deref for ColorWell {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for ColorWell {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl ColorWell {
-    pub fn new() -> Self { ColorWell { ctrl: Control { id: next_id() } } }
-    pub fn set_selected_color(&self, color: u32) { self.ctrl.set_state(color); }
-    pub fn get_selected_color(&self) -> u32 { self.ctrl.get_state() }
+    pub fn new() -> Self {
+        ColorWell {
+            ctrl: Control { id: next_id() },
+        }
+    }
+    pub fn set_selected_color(&self, color: u32) {
+        self.ctrl.set_state(color);
+    }
+    pub fn get_selected_color(&self) -> u32 {
+        self.ctrl.get_state()
+    }
     pub fn on_color_selected(&self, _f: impl FnMut(&ColorSelectedEvent) + 'static) {}
 }
 
-pub struct ColorSelectedEvent { pub id: u32, pub color: u32 }
+pub struct ColorSelectedEvent {
+    pub id: u32,
+    pub color: u32,
+}
 
 // ── AutoCompleteTextField ────────────────────────────────────────────────
 
-pub struct AutoCompleteTextField { ctrl: Control }
-impl core::ops::Deref for AutoCompleteTextField { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for AutoCompleteTextField { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct AutoCompleteTextField {
+    ctrl: Control,
+}
+impl core::ops::Deref for AutoCompleteTextField {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for AutoCompleteTextField {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl AutoCompleteTextField {
-    pub fn new() -> Self { AutoCompleteTextField { ctrl: Control { id: next_id() } } }
+    pub fn new() -> Self {
+        AutoCompleteTextField {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn set_placeholder(&self, _text: &str) {}
     pub fn set_suggestions(&self, _items: &str) {}
     pub fn set_password_mode(&self, _enabled: bool) {}
@@ -603,53 +880,138 @@ impl AutoCompleteTextField {
 
 // ── DateTimePicker / DatePicker / TimePicker ────────────────────────────
 
-pub struct DateTimePicker { ctrl: Control }
-impl core::ops::Deref for DateTimePicker { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for DateTimePicker { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct DateTimePicker {
+    ctrl: Control,
+}
+impl core::ops::Deref for DateTimePicker {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for DateTimePicker {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl DateTimePicker {
-    pub fn new() -> Self { DateTimePicker { ctrl: Control { id: next_id() } } }
+    pub fn new() -> Self {
+        DateTimePicker {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn set_datetime(&self, day: u32, month: u32, year: u32, hour: u32, minute: u32) {
         get_control_text_mut(self.ctrl.id).state = datetime_pack(year, month, day, hour, minute);
     }
-    pub fn get_value(&self) -> u32 { get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0) }
-    pub fn day(&self) -> u32 { let (_, _, d, _, _) = datetime_unpack(self.get_value()); d }
-    pub fn month(&self) -> u32 { let (_, m, _, _, _) = datetime_unpack(self.get_value()); m }
-    pub fn year(&self) -> u32 { let (y, _, _, _, _) = datetime_unpack(self.get_value()); y }
-    pub fn hour(&self) -> u32 { let (_, _, _, h, _) = datetime_unpack(self.get_value()); h }
-    pub fn minute(&self) -> u32 { let (_, _, _, _, m) = datetime_unpack(self.get_value()); m }
+    pub fn get_value(&self) -> u32 {
+        get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0)
+    }
+    pub fn day(&self) -> u32 {
+        let (_, _, d, _, _) = datetime_unpack(self.get_value());
+        d
+    }
+    pub fn month(&self) -> u32 {
+        let (_, m, _, _, _) = datetime_unpack(self.get_value());
+        m
+    }
+    pub fn year(&self) -> u32 {
+        let (y, _, _, _, _) = datetime_unpack(self.get_value());
+        y
+    }
+    pub fn hour(&self) -> u32 {
+        let (_, _, _, h, _) = datetime_unpack(self.get_value());
+        h
+    }
+    pub fn minute(&self) -> u32 {
+        let (_, _, _, _, m) = datetime_unpack(self.get_value());
+        m
+    }
     pub fn on_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
 }
 
-pub struct DatePicker { ctrl: Control }
-impl core::ops::Deref for DatePicker { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for DatePicker { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct DatePicker {
+    ctrl: Control,
+}
+impl core::ops::Deref for DatePicker {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for DatePicker {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl DatePicker {
-    pub fn new() -> Self { DatePicker { ctrl: Control { id: next_id() } } }
+    pub fn new() -> Self {
+        DatePicker {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn set_date(&self, day: u32, month: u32, year: u32) {
         get_control_text_mut(self.ctrl.id).state = datetime_pack(year, month, day, 0, 0);
     }
-    pub fn day(&self) -> u32 { let (_, _, d, _, _) = datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0)); d }
-    pub fn month(&self) -> u32 { let (_, m, _, _, _) = datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0)); m }
-    pub fn year(&self) -> u32 { let (y, _, _, _, _) = datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0)); y }
+    pub fn day(&self) -> u32 {
+        let (_, _, d, _, _) =
+            datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0));
+        d
+    }
+    pub fn month(&self) -> u32 {
+        let (_, m, _, _, _) =
+            datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0));
+        m
+    }
+    pub fn year(&self) -> u32 {
+        let (y, _, _, _, _) =
+            datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0));
+        y
+    }
     pub fn on_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
 }
 
-pub struct TimePicker { ctrl: Control }
-impl core::ops::Deref for TimePicker { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for TimePicker { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct TimePicker {
+    ctrl: Control,
+}
+impl core::ops::Deref for TimePicker {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for TimePicker {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl TimePicker {
-    pub fn new() -> Self { TimePicker { ctrl: Control { id: next_id() } } }
+    pub fn new() -> Self {
+        TimePicker {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn set_time(&self, hour: u32, minute: u32) {
         get_control_text_mut(self.ctrl.id).state = datetime_pack(0, 0, 0, hour, minute);
     }
-    pub fn hour(&self) -> u32 { let (_, _, _, h, _) = datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0)); h }
-    pub fn minute(&self) -> u32 { let (_, _, _, _, m) = datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0)); m }
+    pub fn hour(&self) -> u32 {
+        let (_, _, _, h, _) =
+            datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0));
+        h
+    }
+    pub fn minute(&self) -> u32 {
+        let (_, _, _, _, m) =
+            datetime_unpack(get_control_text(self.ctrl.id).map(|c| c.state).unwrap_or(0));
+        m
+    }
     pub fn on_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
 }
 
 pub fn datetime_pack(year: u32, month: u32, day: u32, hour: u32, minute: u32) -> u32 {
-    (minute & 0x3F) | ((hour & 0x1F) << 6) | ((day & 0x1F) << 11)
-        | ((month & 0x0F) << 16) | ((year & 0xFFF) << 20)
+    (minute & 0x3F)
+        | ((hour & 0x1F) << 6)
+        | ((day & 0x1F) << 11)
+        | ((month & 0x0F) << 16)
+        | ((year & 0xFFF) << 20)
 }
 
 pub fn datetime_unpack(v: u32) -> (u32, u32, u32, u32, u32) {
@@ -661,49 +1023,126 @@ pub fn datetime_unpack(v: u32) -> (u32, u32, u32, u32, u32) {
     (year, month, day, hour, minute)
 }
 
-pub struct TabBar { container: Container }
-impl core::ops::Deref for TabBar { type Target = Container; fn deref(&self) -> &Container { &self.container } }
-impl Widget for TabBar { fn id(&self) -> u32 { self.container.ctrl.id } }
+pub struct TabBar {
+    container: Container,
+}
+impl core::ops::Deref for TabBar {
+    type Target = Container;
+    fn deref(&self) -> &Container {
+        &self.container
+    }
+}
+impl Widget for TabBar {
+    fn id(&self) -> u32 {
+        self.container.ctrl.id
+    }
+}
 impl TabBar {
-    pub fn new() -> Self { TabBar { container: Container { ctrl: Control { id: next_id() } } } }
-    pub fn add_tab(&self, _title: &str) -> u32 { next_id() }
+    pub fn new() -> Self {
+        TabBar {
+            container: Container {
+                ctrl: Control { id: next_id() },
+            },
+        }
+    }
+    pub fn add_tab(&self, _title: &str) -> u32 {
+        next_id()
+    }
     pub fn remove_tab(&self, _index: u32) {}
     pub fn set_tab_title(&self, _index: u32, _title: &str) {}
     pub fn on_tab_changed(&self, _f: impl FnMut(u32) + 'static) {}
     pub fn on_tab_close(&self, _f: impl FnMut(u32) + 'static) {}
     pub fn set_closable(&self, _closable: bool) {}
-    pub fn selected_index(&self) -> u32 { 0 }
+    pub fn selected_index(&self) -> u32 {
+        0
+    }
     pub fn select_tab(&self, _index: u32) {}
 }
 
-pub struct Toolbar { container: Container }
-impl core::ops::Deref for Toolbar { type Target = Container; fn deref(&self) -> &Container { &self.container } }
-impl Widget for Toolbar { fn id(&self) -> u32 { self.container.ctrl.id } }
-impl Toolbar { pub fn new() -> Self { Toolbar { container: Container { ctrl: Control { id: next_id() } } } } }
+pub struct Toolbar {
+    container: Container,
+}
+impl core::ops::Deref for Toolbar {
+    type Target = Container;
+    fn deref(&self) -> &Container {
+        &self.container
+    }
+}
+impl Widget for Toolbar {
+    fn id(&self) -> u32 {
+        self.container.ctrl.id
+    }
+}
+impl Toolbar {
+    pub fn new() -> Self {
+        Toolbar {
+            container: Container {
+                ctrl: Control { id: next_id() },
+            },
+        }
+    }
+}
 
-pub struct IconButton { ctrl: Control }
-impl core::ops::Deref for IconButton { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
-impl Widget for IconButton { fn id(&self) -> u32 { self.ctrl.id } }
+pub struct IconButton {
+    ctrl: Control,
+}
+impl core::ops::Deref for IconButton {
+    type Target = Control;
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
+}
+impl Widget for IconButton {
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
+}
 impl IconButton {
-    pub fn new(_text: &str) -> Self { IconButton { ctrl: Control { id: next_id() } } }
+    pub fn new(_text: &str) -> Self {
+        IconButton {
+            ctrl: Control { id: next_id() },
+        }
+    }
     pub fn on_click(&self, _f: impl FnMut(&ClickEvent) + 'static) {}
 }
 
 // ── Event types ──────────────────────────────────────────────────────────────
 
-pub struct EventArgs { pub id: u32 }
-pub struct ClickEvent { pub id: u32 }
-pub struct CheckedChangedEvent { pub id: u32, pub checked: bool }
-pub struct ScrollChangedEvent { pub id: u32, pub offset: u32 }
-
-pub struct TextChangedEvent { pub id: u32 }
-impl TextChangedEvent {
-    pub fn text(&self) -> alloc::string::String { alloc::string::String::new() }
+pub struct EventArgs {
+    pub id: u32,
+}
+pub struct ClickEvent {
+    pub id: u32,
+}
+pub struct CheckedChangedEvent {
+    pub id: u32,
+    pub checked: bool,
+}
+pub struct ScrollChangedEvent {
+    pub id: u32,
+    pub offset: u32,
 }
 
-pub struct SubmitEvent { pub id: u32 }
-pub struct ValueChangedEvent { pub id: u32, pub value: u32 }
-pub struct SelectionChangedEvent { pub id: u32, pub index: u32 }
+pub struct TextChangedEvent {
+    pub id: u32,
+}
+impl TextChangedEvent {
+    pub fn text(&self) -> alloc::string::String {
+        alloc::string::String::new()
+    }
+}
+
+pub struct SubmitEvent {
+    pub id: u32,
+}
+pub struct ValueChangedEvent {
+    pub id: u32,
+    pub value: u32,
+}
+pub struct SelectionChangedEvent {
+    pub id: u32,
+    pub index: u32,
+}
 
 pub struct KeyEvent {
     pub keycode: u32,
@@ -711,17 +1150,27 @@ pub struct KeyEvent {
     pub modifiers: u32,
 }
 impl KeyEvent {
-    pub fn shift(&self) -> bool { self.modifiers & MOD_SHIFT != 0 }
-    pub fn ctrl(&self) -> bool { self.modifiers & MOD_CTRL != 0 }
-    pub fn alt(&self) -> bool { self.modifiers & MOD_ALT != 0 }
+    pub fn shift(&self) -> bool {
+        self.modifiers & MOD_SHIFT != 0
+    }
+    pub fn ctrl(&self) -> bool {
+        self.modifiers & MOD_CTRL != 0
+    }
+    pub fn alt(&self) -> bool {
+        self.modifiers & MOD_ALT != 0
+    }
 }
 
 // ── Global functions ─────────────────────────────────────────────────────────
 
-pub fn init() -> bool { true }
+pub fn init() -> bool {
+    true
+}
 pub fn shutdown() {}
 pub fn run() {}
-pub fn run_once() -> bool { false }
+pub fn run_once() -> bool {
+    false
+}
 pub fn quit() {}
 
 /// Measure text dimensions using libfont_client.
@@ -729,13 +1178,21 @@ pub fn measure_text(text: &str, font_id: u16, font_size: u16) -> (u32, u32) {
     libfont_client::measure(font_id as u32, font_size, text)
 }
 
-pub fn clipboard_get(_buf: &mut [u8]) -> u32 { 0 }
+pub fn clipboard_get(_buf: &mut [u8]) -> u32 {
+    0
+}
 pub fn clipboard_set(_text: &str) {}
 
 pub fn get_key_info() -> KeyEvent {
-    KeyEvent { keycode: 0, char_code: 0, modifiers: 0 }
+    KeyEvent {
+        keycode: 0,
+        char_code: 0,
+        modifiers: 0,
+    }
 }
-pub fn get_modifiers() -> u32 { 0 }
+pub fn get_modifiers() -> u32 {
+    0
+}
 
 pub fn marshal_set_text(_id: u32, _text: &str) {}
 pub fn marshal_set_color(_id: u32, _color: u32) {}
@@ -746,6 +1203,10 @@ pub fn marshal_set_visible(_id: u32, _visible: bool) {}
 
 pub struct FileDialog;
 impl FileDialog {
-    pub fn open_file() -> Option<alloc::string::String> { None }
-    pub fn save_file(_default: &str) -> Option<alloc::string::String> { None }
+    pub fn open_file() -> Option<alloc::string::String> {
+        None
+    }
+    pub fn save_file(_default: &str) -> Option<alloc::string::String> {
+        None
+    }
 }

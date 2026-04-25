@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 
 use crate::app;
 use crate::logic::{
-    ai, build, debug_session, designer, diagnostics, file_manager, git, intellisense, language,
-    language_service, live_analysis, project, search, symbols, tasks,
+    ai, build, crates, debug_session, designer, diagnostics, file_manager, git, intellisense,
+    language, language_service, live_analysis, project, search, symbols, tasks,
 };
 use crate::ui::problems_panel::ProblemFilter;
 use crate::util::path;
@@ -767,7 +767,6 @@ pub fn apply_designer_property() {
     }
     let file_path = s.selected_designer_file.clone();
     let control_name = s.selected_designer_control.clone();
-    let property_name = s.inspector_panel.selected_property_name();
     let value = s.inspector_panel.property_value_text();
     let mut doc = match designer::load_designer(&file_path) {
         Some(doc) => doc,
@@ -776,7 +775,9 @@ pub fn apply_designer_property() {
             return;
         }
     };
-    if let Err(err) = doc.update_control_property(&control_name, property_name, &value) {
+    let property_name =
+        doc.control_property_name_at(&control_name, s.inspector_panel.selected_property_index());
+    if let Err(err) = doc.update_control_property(&control_name, &property_name, &value) {
         s.status.set_analysis_status(err);
         return;
     }
@@ -811,6 +812,79 @@ pub fn show_new_ui_form_dialog() {
     };
     let default_name = designer::next_form_name(&root, "MainForm");
     crate::ui::new_form_dialog::show(&default_name);
+}
+
+pub fn manage_crates() {
+    let s = app();
+    if s.current_project.is_none() {
+        s.status.set_analysis_status("Open a Rust project first");
+        return;
+    }
+    crate::ui::crate_manager_dialog::show();
+}
+
+pub fn check_crate_updates_on_open() {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        return;
+    };
+    let deps = crates::dependencies_for_project(project);
+    if deps.is_empty() {
+        return;
+    }
+    s.output.append_line(&format!(
+        "[Crates] {}",
+        crates::update_check_message(deps.len())
+    ));
+}
+
+pub fn add_crate_dependency(name: String, version: String, kind_index: u32) {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        s.status.set_analysis_status("Open a Rust project first");
+        return;
+    };
+    let kind = crates::DependencyKind::from_index(kind_index);
+    match crates::add_dependency(project, &name, &version, kind) {
+        Ok(()) => {
+            refresh_project_metadata();
+            app()
+                .status
+                .set_analysis_status(&format!("Added crate dependency {}", name.trim()));
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
+pub fn update_crate_dependency(name: String, version: String, kind_index: u32) {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        s.status.set_analysis_status("Open a Rust project first");
+        return;
+    };
+    let kind = crates::DependencyKind::from_index(kind_index);
+    match crates::update_dependency(project, &name, &version, kind) {
+        Ok(()) => {
+            refresh_project_metadata();
+            app()
+                .status
+                .set_analysis_status(&format!("Updated crate dependency {}", name.trim()));
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
+fn refresh_project_metadata() {
+    let s = app();
+    if let Some(ref mut project) = s.current_project {
+        project.refresh();
+        s.task_mgr.detect_from_project(project, &s.config);
+        s.run_panel.update(&s.task_mgr);
+        s.run_panel.update_debug_session(&s.debug_session);
+        s.sidebar.populate_project(project, &s.task_mgr);
+        s.status.set_project_type(&project.display_context());
+        refresh_run_config_selector();
+    }
 }
 
 pub fn create_ui_form_named(form_name: String) {
@@ -1912,6 +1986,7 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     s.output.start_shell(&workspace_root);
 
     s.current_project = Some(proj);
+    check_crate_updates_on_open();
     s.symbol_index.rebuild(&workspace_root);
     let indexed_symbols = s.symbol_index.count();
     s.status

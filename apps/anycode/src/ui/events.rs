@@ -220,6 +220,7 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
         34 => commands::stop(),
         35 => commands::clean(),
         36 => commands::configure_run_profiles(),
+        37 => commands::manage_crates(),
         40 => commands::about(),
         41 => app().command_palette.show_commands(),
         50 => commands::switch_sidebar_view(5),
@@ -255,7 +256,9 @@ pub fn wire_sidebar() {
     app().sidebar.tree.on_selection_changed(|e| {
         let s = app();
         let idx = e.index;
-        if idx != u32::MAX && s.sidebar.is_file_node(idx) {
+        if idx != u32::MAX && s.sidebar.is_manage_crates_node(idx) {
+            commands::manage_crates();
+        } else if idx != u32::MAX && s.sidebar.is_file_node(idx) {
             if let Some(p) = s.sidebar.path_for_node(idx) {
                 let owned = String::from(p);
                 commands::open_file(&owned);
@@ -807,6 +810,7 @@ fn execute_palette_command(cmd_id: u32) {
         113 => commands::check(),
         114 => commands::clean(),
         115 => commands::stop(),
+        150 => commands::manage_crates(),
         141 => commands::set_build_configuration(crate::logic::project::BuildConfiguration::Debug),
         142 => {
             commands::set_build_configuration(crate::logic::project::BuildConfiguration::Release)

@@ -1,7 +1,7 @@
 //! Shared event types used by multiple controls.
 
-mod click;
 mod checked;
+mod click;
 mod common;
 mod scroll;
 mod selection;
@@ -9,8 +9,8 @@ mod submit;
 mod text;
 mod value;
 
-pub use click::ClickEvent;
 pub use checked::CheckedChangedEvent;
+pub use click::ClickEvent;
 pub use common::EventArgs;
 pub use scroll::ScrollChangedEvent;
 pub use selection::SelectionChangedEvent;

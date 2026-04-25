@@ -390,6 +390,7 @@ fn build_and_run(
         .item(35, t("Clean"), 0)
         .separator()
         .item(36, t("Run Configurations..."), 0)
+        .item(37, t("Manage Crates..."), 0)
         .end_menu()
         .menu(t("AI"))
         .item(50, t("AI Assistant"), 0)
@@ -446,6 +447,10 @@ fn build_and_run(
         if s.current_project.is_some() {
             s.run_panel.update(&s.task_mgr);
             logic::commands::refresh_run_config_selector();
+            if let Some(ref proj) = s.current_project {
+                s.sidebar.populate_project(proj, &s.task_mgr);
+            }
+            logic::commands::check_crate_updates_on_open();
         } else {
             s.run_panel.show_no_project();
             logic::commands::refresh_run_config_selector();

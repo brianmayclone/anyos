@@ -77,7 +77,7 @@ pub use iconbutton::{
     ICON_PLAY, ICON_REFRESH, ICON_SAVE, ICON_SAVE_ALL, ICON_SEARCH, ICON_SETTINGS, ICON_STOP,
 };
 pub use imagebutton::ImageButton;
-pub use imageview::ImageView;
+pub use imageview::{ImageView, SCALE_FILL, SCALE_FIT, SCALE_NONE, SCALE_STRETCH};
 pub use label::{Label, TEXT_ALIGN_CENTER, TEXT_ALIGN_LEFT, TEXT_ALIGN_RIGHT};
 pub use linklabel::LinkLabel;
 pub use plainbutton::PlainButton;

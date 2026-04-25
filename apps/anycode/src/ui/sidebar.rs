@@ -150,6 +150,7 @@ impl Sidebar {
 
         self.add_config_nodes(project_node, project);
         self.add_target_nodes(project_node, project);
+        self.add_crate_nodes(project_node, project);
         self.add_task_nodes(project_node, task_mgr);
 
         let files_node = self.tree.add_child(project_node, "Files");
@@ -167,6 +168,38 @@ impl Sidebar {
         self.set_folder_icon(root_node);
         self.add_dir_entries(root_node, &project.root, 0);
         self.tree.set_expanded(root_node, true);
+    }
+
+    fn add_crate_nodes(&mut self, parent: u32, project: &Project) {
+        let deps = crate::logic::crates::dependencies_for_project(project);
+        let tc = ui::theme::colors();
+        let crates_node = self
+            .tree
+            .add_child(parent, &format!("Crates ({})", deps.len()));
+        self.remember_virtual(crates_node);
+        self.tree.set_node_style(crates_node, STYLE_BOLD);
+        self.tree.set_node_text_color(crates_node, tc.accent);
+        self.set_folder_icon(crates_node);
+        let manage_node = self.tree.add_child(crates_node, "Manage Crates...");
+        self.remember_path(manage_node, "anycode://manage-crates", true);
+
+        for kind in [
+            crate::logic::crates::DependencyKind::Normal,
+            crate::logic::crates::DependencyKind::Dev,
+            crate::logic::crates::DependencyKind::Build,
+        ] {
+            let section = self.tree.add_child(crates_node, kind.display_name());
+            self.remember_virtual(section);
+            for dep in deps.iter().filter(|dep| dep.kind == kind) {
+                let node = self.tree.add_child(
+                    section,
+                    &format!("{} {} ({})", dep.name, dep.version, dep.package_name),
+                );
+                self.remember_virtual(node);
+            }
+            self.tree.set_expanded(section, true);
+        }
+        self.tree.set_expanded(crates_node, true);
     }
 
     /// Populate the tree from a root directory.
@@ -211,6 +244,12 @@ impl Sidebar {
                 .path_for_node(index)
                 .map(|p| !p.is_empty() && !path::is_directory(p))
                 .unwrap_or(false)
+    }
+
+    pub fn is_manage_crates_node(&self, index: u32) -> bool {
+        self.path_for_node(index)
+            .map(|path| path == "anycode://manage-crates")
+            .unwrap_or(false)
     }
 
     /// Check if the given node index is a directory.

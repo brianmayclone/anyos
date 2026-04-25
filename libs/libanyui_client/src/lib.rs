@@ -28,7 +28,7 @@ pub use icon::{Icon, IconType};
 pub mod theme;
 
 #[cfg(not(feature = "host"))]
-use dynlink::{DlHandle, dl_open, dl_sym};
+use dynlink::{dl_open, dl_sym, DlHandle};
 
 // The remaining ~1200 lines of anyOS implementation (constants, DLL binding,
 // Control/Container structs, all widget types, etc.) are in anyos_rest.rs.

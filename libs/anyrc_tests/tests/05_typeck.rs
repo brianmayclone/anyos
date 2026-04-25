@@ -224,6 +224,118 @@ fn nested_use_of_root_reexport_chases_alias_target() {
 }
 
 #[test]
+fn nested_crate_use_imports_trait_for_associated_function_call() {
+    assert_type_ok(r#"
+        mod de {
+            pub enum Result<T, E> {
+                Ok(T),
+                Err(E),
+            }
+
+            pub enum Unexpected {
+                Str,
+            }
+
+            pub trait Expected {}
+
+            pub trait Error {
+                fn custom() -> Self;
+
+                fn invalid_value(_unexp: Unexpected, _exp: &dyn Expected) -> Self {
+                    Error::custom()
+                }
+            }
+
+            mod impls {
+                use crate::de::{Error, Expected, Result, Unexpected};
+
+                struct CharVisitor {}
+
+                impl Expected for CharVisitor {}
+
+                fn visit_str<E>(visitor: &CharVisitor) -> Result<char, E>
+                where
+                    E: Error,
+                {
+                    Result::Err(Error::invalid_value(Unexpected::Str, visitor))
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn macro_generated_trait_methods_are_available_to_nested_imports() {
+    assert_type_ok(r#"
+        mod lib {
+            mod core {
+                pub use core::*;
+            }
+
+            pub use self::core::fmt::{self, Debug, Display};
+            pub use self::core::result;
+        }
+
+        mod de {
+            use crate::lib::*;
+
+            pub trait Debug {}
+            pub trait Display {}
+
+            pub enum Result<T, E> {
+                Ok(T),
+                Err(E),
+            }
+
+            pub enum Unexpected {
+                Str,
+            }
+
+            pub trait Expected {}
+
+            macro_rules! declare_error_trait {
+                (Error: Sized $(+ $($supertrait:ident)::+)*) => {
+                    #[cfg_attr(
+                        not(no_diagnostic_namespace),
+                        diagnostic::on_unimplemented(
+                            message = "the trait bound `{Self}: serde::de::Error` is not satisfied",
+                        )
+                    )]
+                    pub trait Error: Sized $(+ $($supertrait)::+)* {
+                        fn custom<T>(_msg: T) -> Self;
+
+                        fn invalid_value(_unexp: Unexpected, _exp: &dyn Expected) -> Self {
+                            Error::custom(())
+                        }
+                    }
+                }
+            }
+
+            #[cfg(feature = "std")]
+            declare_error_trait!(Error: Sized + StdError);
+
+            #[cfg(not(feature = "std"))]
+            declare_error_trait!(Error: Sized + Debug + Display);
+
+            mod impls {
+                use crate::de::{Error, Expected, Result, Unexpected};
+
+                struct CharVisitor {}
+
+                impl Expected for CharVisitor {}
+
+                fn visit_str<E>(visitor: &CharVisitor) -> Result<char, E>
+                where
+                    E: Error,
+                {
+                    Result::Err(Error::invalid_value(Unexpected::Str, visitor))
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
 fn trait_self_associated_type_projection_in_method_signature_is_typed() {
     assert_type_ok(r#"
         struct NonNull<T> {}

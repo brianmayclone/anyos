@@ -9,9 +9,9 @@
 //! let sys_icon = Icon::system("heart", IconType::Filled, 0xFF007AFF, 32).unwrap();
 //! ```
 
+use crate::controls::ImageView;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::controls::ImageView;
 
 /// Icon style variant.
 #[derive(Copy, Clone, PartialEq)]
@@ -94,7 +94,11 @@ impl Icon {
 
         // Check rendered pixel cache first
         if let Some((pixels, sz)) = render_cache_lookup(rkey) {
-            return Some(Self { pixels, width: sz, height: sz });
+            return Some(Self {
+                pixels,
+                width: sz,
+                height: sz,
+            });
         }
 
         // Call DLL — uses internal pak cache (lazy-loaded on first call)
@@ -102,7 +106,11 @@ impl Icon {
         let mut pixels = vec![0u32; pixel_count];
         libimage_client::iconpack_render_cached(name, filled, size, color, &mut pixels).ok()?;
         render_cache_insert(rkey, pixels.clone(), size);
-        Some(Self { pixels, width: size, height: size })
+        Some(Self {
+            pixels,
+            width: size,
+            height: size,
+        })
     }
 
     /// Load an icon for a file extension (e.g., "txt", "png", "rs").
@@ -136,7 +144,8 @@ impl Icon {
         }
         path_buf[..prefix.len()].copy_from_slice(prefix);
         path_buf[prefix.len()..prefix.len() + name_bytes.len()].copy_from_slice(name_bytes);
-        path_buf[prefix.len() + name_bytes.len()..prefix.len() + name_bytes.len() + suffix.len()].copy_from_slice(suffix);
+        path_buf[prefix.len() + name_bytes.len()..prefix.len() + name_bytes.len() + suffix.len()]
+            .copy_from_slice(suffix);
         let path_len = prefix.len() + name_bytes.len() + suffix.len();
         let path = core::str::from_utf8(&path_buf[..path_len]).ok()?;
 
@@ -158,7 +167,9 @@ impl Icon {
         let prefix = DIR.as_bytes();
         let name_b = name.as_bytes();
         let base_len = prefix.len() + name_b.len();
-        if base_len + 4 >= path.len() { return None; }
+        if base_len + 4 >= path.len() {
+            return None;
+        }
         path[..prefix.len()].copy_from_slice(prefix);
         path[prefix.len()..base_len].copy_from_slice(name_b);
 
@@ -174,11 +185,19 @@ impl Icon {
         if size > 0 && (icon.width != size || icon.height != size) {
             let mut scaled = vec![0u32; (size * size) as usize];
             if libimage_client::scale_image(
-                &icon.pixels, icon.width, icon.height,
-                &mut scaled, size, size,
+                &icon.pixels,
+                icon.width,
+                icon.height,
+                &mut scaled,
+                size,
+                size,
                 libimage_client::MODE_CONTAIN,
             ) {
-                Some(Self { pixels: scaled, width: size, height: size })
+                Some(Self {
+                    pixels: scaled,
+                    width: size,
+                    height: size,
+                })
             } else {
                 Some(icon)
             }
@@ -190,7 +209,9 @@ impl Icon {
     /// Load an ICO file with pre-sized allocation and ICO-specific decoder.
     fn load_ico_sized(path: &str, preferred_size: u32) -> Option<Self> {
         let fd = anyos_std::fs::open(path, 0);
-        if fd == u32::MAX { return None; }
+        if fd == u32::MAX {
+            return None;
+        }
 
         let mut stat = [0u32; 4];
         if anyos_std::fs::fstat(fd, &mut stat) != 0 {
@@ -207,11 +228,15 @@ impl Icon {
         let mut read = 0usize;
         while read < file_size {
             let n = anyos_std::fs::read(fd, &mut data[read..]);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             read += n as usize;
         }
         anyos_std::fs::close(fd);
-        if read == 0 { return None; }
+        if read == 0 {
+            return None;
+        }
 
         Self::from_ico_bytes(&data[..read], preferred_size)
     }
@@ -220,7 +245,9 @@ impl Icon {
     /// Caps at 256 KB file size.
     fn load_file_sized(path: &str) -> Option<Self> {
         let fd = anyos_std::fs::open(path, 0);
-        if fd == u32::MAX { return None; }
+        if fd == u32::MAX {
+            return None;
+        }
 
         let mut stat = [0u32; 4];
         if anyos_std::fs::fstat(fd, &mut stat) != 0 {
@@ -237,11 +264,15 @@ impl Icon {
         let mut read = 0usize;
         while read < file_size {
             let n = anyos_std::fs::read(fd, &mut data[read..]);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             read += n as usize;
         }
         anyos_std::fs::close(fd);
-        if read == 0 { return None; }
+        if read == 0 {
+            return None;
+        }
 
         let info = libimage_client::probe(&data[..read])?;
         let pixel_count = (info.width as usize) * (info.height as usize);
@@ -249,7 +280,11 @@ impl Icon {
         let mut scratch = vec![0u8; info.scratch_needed as usize];
         libimage_client::decode(&data[..read], &mut pixels, &mut scratch).ok()?;
 
-        Some(Self { pixels, width: info.width, height: info.height })
+        Some(Self {
+            pixels,
+            width: info.width,
+            height: info.height,
+        })
     }
 
     /// Load an icon from an ICO file at a preferred size.

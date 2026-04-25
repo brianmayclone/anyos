@@ -9,12 +9,12 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-pub mod shared;
 mod color;
+pub mod shared;
 
 // Re-export all event types at the events:: level
-pub use shared::*;
 pub use color::ColorSelectedEvent;
+pub use shared::*;
 
 // ══════════════════════════════════════════════════════════════════════
 //  Closure Registry

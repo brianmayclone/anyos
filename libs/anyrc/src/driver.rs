@@ -138,19 +138,19 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     };
     let loader = crate::loader::OsFileLoader;
 
-    // 1c. Strip items that don't match cfg predicates
-    crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
-
-    // 2. Expand macros (pass env_vars and cfg_ctx for built-in macros)
-    expand_macros(&mut krate, &mut interner);
-    let _included_sources = crate::loader::resolve_includes(&mut krate, &src_dir, &mut interner, &loader);
-
-    // 2b. Resolve multi-file modules (mod foo;)
-    let _loaded_modules = crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
-    crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
-    expand_macros(&mut krate, &mut interner);
-    let _included_sources = crate::loader::resolve_includes(&mut krate, &src_dir, &mut interner, &loader);
-    let _loaded_modules = crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
+    // 2. Expand macros and load files to a fixed point. Real crates often have
+    // macro-generated `mod foo;` items whose loaded files contain more macros.
+    for _ in 0..16 {
+        crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+        expand_macros(&mut krate, &mut interner);
+        let included_sources =
+            crate::loader::resolve_includes(&mut krate, &src_dir, &mut interner, &loader);
+        let loaded_modules =
+            crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
+        if included_sources.is_empty() && loaded_modules.is_empty() {
+            break;
+        }
+    }
     crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
     let (public_interface_source, public_interface) = {
         let mut interface_lower_ctx = LoweringContext::new(&mut interner);

@@ -182,8 +182,10 @@ impl InspectorPanel {
         self.subtitle
             .set_text(&format!("{} / {}", doc.form_name, control.name));
         self.property_editor.set_visible(true);
+        self.property_dropdown.set_items(&control.property_items());
         self.property_dropdown.set_state(0);
-        self.property_value.set_text(&control.text);
+        self.property_value
+            .set_text(&control.property_value("Text"));
         self.tree.clear();
 
         let root = self.tree.add_root(&control.name);
@@ -201,6 +203,10 @@ impl InspectorPanel {
             .add_child(root, &format!("Width: {}", control.width));
         self.tree
             .add_child(root, &format!("Height: {}", control.height));
+        for property in &control.properties {
+            self.tree
+                .add_child(root, &format!("{}: {}", property.name, property.value));
+        }
         self.tree.set_expanded(root, true);
 
         let events = self.tree.add_root("Events");
@@ -217,27 +223,14 @@ impl InspectorPanel {
     }
 
     pub fn update_property_value_from_selection(&self, doc: &DesignerDocument, control_name: &str) {
-        let Some(control) = doc.controls.iter().find(|c| c.name == control_name) else {
-            return;
-        };
-        let value = match self.property_dropdown.get_state() {
-            1 => format!("{}", control.x),
-            2 => format!("{}", control.y),
-            3 => format!("{}", control.width),
-            4 => format!("{}", control.height),
-            _ => control.text.clone(),
-        };
+        let property_name =
+            doc.control_property_name_at(control_name, self.property_dropdown.get_state());
+        let value = doc.control_property_value(control_name, &property_name);
         self.property_value.set_text(&value);
     }
 
-    pub fn selected_property_name(&self) -> &'static str {
-        match self.property_dropdown.get_state() {
-            1 => "x",
-            2 => "y",
-            3 => "width",
-            4 => "height",
-            _ => "text",
-        }
+    pub fn selected_property_index(&self) -> u32 {
+        self.property_dropdown.get_state()
     }
 
     pub fn property_value_text(&self) -> alloc::string::String {
