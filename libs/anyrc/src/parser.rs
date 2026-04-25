@@ -558,7 +558,7 @@ impl<'a> Parser<'a> {
 
         // Block expression
         if self.at_exact(&TokenKind::LBrace) {
-            return Expr::Block(self.parse_block());
+            return Expr::Block(self.with_struct_literals_allowed(|this| this.parse_block()));
         }
 
         // Paren / Tuple
@@ -568,13 +568,13 @@ impl<'a> Parser<'a> {
                 self.bump();
                 return Expr::Tuple(vec![], self.span_from(start));
             }
-            let first = self.parse_expr();
+            let first = self.with_struct_literals_allowed(|this| this.parse_expr());
             if self.at_exact(&TokenKind::Comma) {
                 // tuple
                 self.bump();
                 let mut elems = vec![first];
                 while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
-                    elems.push(self.parse_expr());
+                    elems.push(self.with_struct_literals_allowed(|this| this.parse_expr()));
                     if !self.eat_exact(&TokenKind::Comma) {
                         break;
                     }
@@ -593,11 +593,11 @@ impl<'a> Parser<'a> {
                 self.bump();
                 return Expr::Array(vec![], self.span_from(start));
             }
-            let first = self.parse_expr();
+            let first = self.with_struct_literals_allowed(|this| this.parse_expr());
             // [val; count]
             if self.at_exact(&TokenKind::Semi) {
                 self.bump();
-                let count = self.parse_expr();
+                let count = self.with_struct_literals_allowed(|this| this.parse_expr());
                 self.expect_exact(&TokenKind::RBracket);
                 return Expr::ArrayRepeat(Box::new(first), Box::new(count), self.span_from(start));
             }
@@ -607,7 +607,7 @@ impl<'a> Parser<'a> {
                 if self.at_exact(&TokenKind::RBracket) {
                     break;
                 }
-                elems.push(self.parse_expr());
+                elems.push(self.with_struct_literals_allowed(|this| this.parse_expr()));
             }
             self.expect_exact(&TokenKind::RBracket);
             return Expr::Array(elems, self.span_from(start));
@@ -676,7 +676,47 @@ impl<'a> Parser<'a> {
             self.bump(); // let
             let pat = self.parse_pattern();
             self.expect_exact(&TokenKind::Eq);
-            let scrutinee = self.parse_expr_no_struct();
+            let scrutinee = self.parse_expr_no_struct_bp(9);
+            if self.eat_exact(&TokenKind::AndAnd) {
+                let guard = self.parse_expr_no_struct();
+                let then_block = self.parse_block();
+                let else_branch = if self.at_kw(Keyword::Else) {
+                    self.bump();
+                    if self.at_kw(Keyword::If) {
+                        let s = self.current().span;
+                        Some(Box::new(self.parse_if_expr(s)))
+                    } else {
+                        Some(Box::new(Expr::Block(self.parse_block())))
+                    }
+                } else {
+                    None
+                };
+                let span = self.span_from(start);
+                let then_expr = Expr::Block(then_block);
+                let else_expr = else_branch
+                    .map(|expr| *expr)
+                    .unwrap_or_else(|| Expr::Tuple(vec![], span));
+                return Expr::Match(
+                    Box::new(scrutinee),
+                    vec![
+                        MatchArm {
+                            attrs: Vec::new(),
+                            pat,
+                            guard: Some(Box::new(guard)),
+                            body: Box::new(then_expr),
+                            span,
+                        },
+                        MatchArm {
+                            attrs: Vec::new(),
+                            pat: Pattern::Wildcard(span),
+                            guard: None,
+                            body: Box::new(else_expr),
+                            span,
+                        },
+                    ],
+                    span,
+                );
+            }
             let then_block = self.parse_block();
             let else_branch = if self.at_kw(Keyword::Else) {
                 self.bump();
@@ -768,7 +808,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let body = Box::new(self.parse_expr());
+        let body = Box::new(self.with_struct_literals_allowed(|this| this.parse_expr()));
         Expr::Closure(params, ret_ty, body, is_move, self.span_from(start))
     }
 
@@ -808,9 +848,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr_no_struct(&mut self) -> Expr {
+        self.parse_expr_no_struct_bp(0)
+    }
+
+    fn parse_expr_no_struct_bp(&mut self, min_bp: u8) -> Expr {
         let old = self.no_struct_literal;
         self.no_struct_literal = true;
-        let expr = self.parse_expr();
+        let expr = self.parse_expr_bp(min_bp);
         self.no_struct_literal = old;
         expr
     }
@@ -1020,7 +1064,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::LBracket => {
                 self.bump();
-                let index = self.parse_expr();
+                let index = self.with_struct_literals_allowed(|this| this.parse_expr());
                 self.expect_exact(&TokenKind::RBracket);
                 Expr::Index(Box::new(lhs), Box::new(index), self.span_from(start))
             }
@@ -1540,7 +1584,7 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let tts = self.parse_macro_args();
                     self.eat_exact(&TokenKind::Semi);
-                    Some(Item::MacroCall(path, tts, self.span_from(start)))
+                    Some(Item::MacroCall(path, tts, attrs, self.span_from(start)))
                 } else {
                     self.pos = saved;
                     None
@@ -1871,6 +1915,8 @@ impl<'a> Parser<'a> {
         self.expect_exact(&TokenKind::Kw(Keyword::Enum));
         let name = self.expect_ident();
         let generics = self.parse_generics();
+        let where_clause = self.parse_where_clause();
+        let _ = where_clause;
         self.expect_exact(&TokenKind::LBrace);
         let mut variants = Vec::new();
         while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
@@ -2351,6 +2397,7 @@ impl<'a> Parser<'a> {
         while self.at_exact(&TokenKind::Hash) {
             let start = self.current().span;
             self.bump(); // #
+            let _inner = self.eat_exact(&TokenKind::Not);
             self.expect_exact(&TokenKind::LBracket);
             let path = self.parse_path_ty();
             let args = if self.at_exact(&TokenKind::LParen) {
@@ -2780,6 +2827,7 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         while !self.at_exact(&TokenKind::Gt) && !self.at_exact(&TokenKind::Eof) {
             let p_start = self.current().span;
+            let _attrs = self.parse_attrs();
             if matches!(self.current().kind, TokenKind::Lifetime(_)) {
                 if let TokenKind::Lifetime(sym) = self.bump().kind {
                     let mut bounds = Vec::new();

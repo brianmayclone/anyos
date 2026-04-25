@@ -675,6 +675,34 @@ impl<'a> CodeEmitter<'a> {
                 }
                 true
             }
+            "u8::max" | "u16::max" | "u32::max" | "u64::max" | "u128::max" | "usize::max" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.emit_raw(&[0x48, 0x39, 0xF0]);       // cmp rax, rsi
+                self.asm.emit_raw(&[0x48, 0x0F, 0x42, 0xC6]); // cmovb rax, rsi
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "u8::min" | "u16::min" | "u32::min" | "u64::min" | "u128::min" | "usize::min" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.emit_raw(&[0x48, 0x39, 0xF0]);       // cmp rax, rsi
+                self.asm.emit_raw(&[0x48, 0x0F, 0x47, 0xC6]); // cmova rax, rsi
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "i8::max" | "i16::max" | "i32::max" | "i64::max" | "i128::max" | "isize::max" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.emit_raw(&[0x48, 0x39, 0xF0]);       // cmp rax, rsi
+                self.asm.emit_raw(&[0x48, 0x0F, 0x4C, 0xC6]); // cmovl rax, rsi
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "i8::min" | "i16::min" | "i32::min" | "i64::min" | "i128::min" | "isize::min" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.emit_raw(&[0x48, 0x39, 0xF0]);       // cmp rax, rsi
+                self.asm.emit_raw(&[0x48, 0x0F, 0x4F, 0xC6]); // cmovg rax, rsi
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             // core::ptr
             "null_mut" | "null" => {
                 // Return null pointer (0)

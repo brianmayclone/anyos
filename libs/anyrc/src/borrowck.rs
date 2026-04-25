@@ -37,6 +37,7 @@ pub fn check_borrows(
     body: &MirBody,
     interner: &Interner,
     struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+    enum_variants: &HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
     copy_types: &HashSet<DefId>,
 ) -> BorrowckResult {
     let mut errors = Vec::new();
@@ -160,7 +161,7 @@ pub fn check_borrows(
                         .map(|local| local.name.is_some())
                         .unwrap_or(false);
                     if assigns_to_named_local {
-                        record_moves(rvalue, &mut moved, &body.locals, struct_defs, copy_types);
+                        record_moves(rvalue, &mut moved, &body.locals, struct_defs, enum_variants, copy_types);
                     }
                 }
                 StatementKind::StorageDead(local) => {
@@ -179,9 +180,9 @@ pub fn check_borrows(
                 for arg in args {
                     check_operand_not_moved(arg, &moved, &body.locals, &mut errors, body.span);
                 }
-                record_operand_move(func, &mut moved, &body.locals, struct_defs, copy_types);
+                record_operand_move(func, &mut moved, &body.locals, struct_defs, enum_variants, copy_types);
                 for arg in args {
-                    record_operand_move(arg, &mut moved, &body.locals, struct_defs, copy_types);
+                    record_operand_move(arg, &mut moved, &body.locals, struct_defs, enum_variants, copy_types);
                 }
                 // Temporary borrows for call args end when the call returns
                 borrows.clear();
@@ -291,10 +292,11 @@ fn record_moves(
     moved: &mut HashSet<usize>,
     locals: &[LocalDecl],
     struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+    enum_variants: &HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
     copy_types: &HashSet<DefId>,
 ) {
     let mut check_op = |op: &Operand| {
-        record_operand_move(op, moved, locals, struct_defs, copy_types);
+        record_operand_move(op, moved, locals, struct_defs, enum_variants, copy_types);
     };
     match rvalue {
         Rvalue::Use(op) => check_op(op),
@@ -318,6 +320,7 @@ fn record_operand_move(
     moved: &mut HashSet<usize>,
     locals: &[LocalDecl],
     struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+    enum_variants: &HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
     copy_types: &HashSet<DefId>,
 ) {
     if let Operand::Move(place) = op {
@@ -328,7 +331,7 @@ fn record_operand_move(
         if matches!(ty, TyKind::Ref(_, _) | TyKind::RawPtr(_, _)) {
             return;
         }
-        if !is_copy_type(ty, struct_defs, copy_types) {
+        if !is_copy_type(ty, struct_defs, enum_variants, copy_types) {
             moved.insert(place.local.0);
         }
     }
@@ -337,6 +340,7 @@ fn record_operand_move(
 fn is_copy_type(
     ty: &TyKind,
     struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+    enum_variants: &HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
     copy_types: &HashSet<DefId>,
 ) -> bool {
     match ty {
@@ -354,15 +358,25 @@ fn is_copy_type(
             }
             // A struct is Copy if all its fields are Copy
             if let Some(fields) = struct_defs.get(def_id) {
-                fields.iter().all(|(_, fty)| is_copy_type(fty, struct_defs, copy_types))
+                fields
+                    .iter()
+                    .all(|(_, fty)| is_copy_type(fty, struct_defs, enum_variants, copy_types))
+            } else if let Some(variants) = enum_variants.get(def_id) {
+                variants.iter().all(|(_, fields)| {
+                    fields
+                        .iter()
+                        .all(|fty| is_copy_type(fty, struct_defs, enum_variants, copy_types))
+                })
             } else {
                 // External/intrinsic ADTs do not carry trait metadata yet, so
                 // move checking has to defer instead of rejecting generic code.
                 def_id.0 >= 10000
             }
         }
-        TyKind::Tuple(elems) => elems.iter().all(|e| is_copy_type(e, struct_defs, copy_types)),
-        TyKind::Array(inner, _) => is_copy_type(inner, struct_defs, copy_types),
+        TyKind::Tuple(elems) => elems
+            .iter()
+            .all(|e| is_copy_type(e, struct_defs, enum_variants, copy_types)),
+        TyKind::Array(inner, _) => is_copy_type(inner, struct_defs, enum_variants, copy_types),
         _ => false,
     }
 }

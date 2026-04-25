@@ -71,6 +71,23 @@ fn parse_match_expr() {
 }
 
 #[test]
+fn parse_inner_attr_on_match_arm() {
+    let expr = parse_expr(
+        r#"
+        match ty {
+            #![cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
+            syn::Type::Slice(ty) => collect_lifetimes(&ty.elem, out),
+            _ => (),
+        }
+        "#,
+    );
+    match expr {
+        Expr::Match(_, arms, _) => assert_eq!(arms.len(), 2),
+        _ => panic!("expected match"),
+    }
+}
+
+#[test]
 fn parse_closure() {
     let expr = parse_expr("|x, y| x + y");
     assert!(matches!(expr, Expr::Closure(_, _, _, false, _)));
@@ -139,6 +156,37 @@ fn parse_if_struct_literal_initializer_after_question_statement() {
         "#,
     );
     assert!(matches!(expr, Expr::If(_, _, Some(_), _)));
+}
+
+#[test]
+fn parse_struct_literal_inside_closure_used_as_if_condition() {
+    let expr = parse_expr(
+        r#"
+        if attrs.iter().any(|meta| {
+            if meta.path == BORROW {
+                let borrow_attribute = if meta.input.peek(Token![=]) {
+                    let lifetimes = parse_lit_into_lifetimes(cx, &meta)?;
+                    BorrowAttribute {
+                        path: meta.path.clone(),
+                        lifetimes: Some(lifetimes),
+                    }
+                } else {
+                    BorrowAttribute {
+                        path: meta.path.clone(),
+                        lifetimes: None,
+                    }
+                };
+                borrow.set(&meta.path, borrow_attribute);
+            } else {
+                other();
+            }
+            true
+        }) {
+            done();
+        }
+        "#,
+    );
+    assert!(matches!(expr, Expr::If(_, _, None, _)));
 }
 
 #[test]

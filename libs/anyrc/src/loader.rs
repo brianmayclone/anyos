@@ -106,7 +106,7 @@ fn resolve_includes_in_items(
     let mut i = 0;
     while i < items.len() {
         let include_path = match &items[i] {
-            Item::MacroCall(path, args, _) if path.segments.len() == 1
+            Item::MacroCall(path, args, _, _) if path.segments.len() == 1
                 && interner.resolve(path.segments[0].ident) == "include" =>
             {
                 include_arg_path(args)

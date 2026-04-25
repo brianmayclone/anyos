@@ -62,8 +62,21 @@ pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
         }
         let active_features = active_features_for(&mf, &requested_features, use_default_features);
 
-        // Skip if already processed
-        if name_to_idx.contains_key(&mf.name) {
+        // Merge features if this crate was already discovered through another
+        // dependency path. Cargo builds each package with the union of all
+        // requested features.
+        if let Some(&existing_idx) = name_to_idx.get(&mf.name) {
+            let mut changed = false;
+            for feature in active_features {
+                if !nodes[existing_idx].active_features.contains(&feature) {
+                    nodes[existing_idx].active_features.push(feature);
+                    changed = true;
+                }
+            }
+            if changed {
+                let merged = nodes[existing_idx].active_features.clone();
+                queue_manifest_dependencies(&mut queue, &mf, &dir, &merged, lockfile.as_ref());
+            }
             continue;
         }
 
@@ -71,48 +84,9 @@ pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
         let idx = nodes.len();
         name_to_idx.insert(mf.name.clone(), idx);
 
-        // Queue dependencies
-        for dep in &mf.dependencies {
-            if !dependency_is_active(dep, &active_features) {
-                continue;
-            }
-            if name_to_idx.contains_key(&dep.name) {
-                continue;
-            }
-            let dep_requested_features = dep.features.clone();
-            let dep_default_features = dep.default_features;
-
-            if let Some(ref dep_path) = dep.path {
-                // Path-based dependency — resolve relative to manifest dir
-                let resolved_dir = fs::resolve_path(&dir, dep_path);
-                queue.push((resolved_dir, false, dep_requested_features, dep_default_features));
-            } else if let Some(ref version_req) = dep.version {
-                // Registry dependency — fetch from crates.io
-                let actual_name = dep.name.clone();
-
-                // Check lockfile for pinned version first
-                let resolved = if let Some(ref lf) = lockfile {
-                    if let Some(locked) = lf.find(&actual_name) {
-                        // Use pinned version
-                        let pinned_req = format!("={}", locked.version);
-                        registry::get_crate(&actual_name, &pinned_req)
-                    } else {
-                        registry::get_crate(&actual_name, version_req)
-                    }
-                } else {
-                    registry::get_crate(&actual_name, version_req)
-                };
-
-                match resolved {
-                    Some((src_dir, _entry)) => {
-                        queue.push((src_dir, true, dep_requested_features, dep_default_features));
-                    }
-                    None => {
-                        println!("ccargo: error: failed to resolve `{}` {}", actual_name, version_req);
-                    }
-                }
-            }
-        }
+        // Queue dependencies. Existing packages are still queued so their
+        // feature set can be unified if this edge asks for more.
+        queue_manifest_dependencies(&mut queue, &mf, &dir, &active_features, lockfile.as_ref());
 
         nodes.push(BuildNode {
             name: mf.name.clone(),
@@ -187,6 +161,68 @@ fn active_features_for(manifest: &Manifest, requested: &[String], use_default_fe
         requested_with_default.push(String::from("__no_default__"));
     }
     crate::workspace::resolve_features(manifest, &requested_with_default)
+}
+
+fn queue_manifest_dependencies(
+    queue: &mut Vec<(String, bool, Vec<String>, bool)>,
+    manifest: &Manifest,
+    manifest_dir: &str,
+    active_features: &[String],
+    lockfile: Option<&Lockfile>,
+) {
+    for dep in &manifest.dependencies {
+        if !dependency_is_active(dep, active_features) {
+            continue;
+        }
+        let dep_requested_features = dependency_requested_features(dep, active_features);
+        let dep_default_features = dep.default_features;
+
+        if let Some(ref dep_path) = dep.path {
+            let resolved_dir = fs::resolve_path(manifest_dir, dep_path);
+            queue.push((resolved_dir, false, dep_requested_features, dep_default_features));
+        } else if let Some(ref version_req) = dep.version {
+            let actual_name = dep.name.clone();
+            let resolved = if let Some(lf) = lockfile {
+                if let Some(locked) = lf.find(&actual_name) {
+                    let pinned_req = format!("={}", locked.version);
+                    registry::get_crate(&actual_name, &pinned_req)
+                } else {
+                    registry::get_crate(&actual_name, version_req)
+                }
+            } else {
+                registry::get_crate(&actual_name, version_req)
+            };
+
+            match resolved {
+                Some((src_dir, _entry)) => {
+                    queue.push((src_dir, true, dep_requested_features, dep_default_features));
+                }
+                None => {
+                    println!("ccargo: error: failed to resolve `{}` {}", actual_name, version_req);
+                }
+            }
+        }
+    }
+}
+
+fn dependency_requested_features(
+    dep: &manifest::Dependency,
+    active_features: &[String],
+) -> Vec<String> {
+    let mut requested = dep.features.clone();
+    let prefix = format!("{}/", dep.name);
+    for feature in active_features {
+        if let Some(dep_feature) = feature.strip_prefix(&prefix) {
+            push_feature(&mut requested, dep_feature);
+        }
+    }
+    requested
+}
+
+fn push_feature(features: &mut Vec<String>, feature: &str) {
+    if !features.iter().any(|existing| existing == feature) {
+        features.push(feature.to_string());
+    }
 }
 
 fn dependency_is_active(dep: &manifest::Dependency, active_features: &[String]) -> bool {

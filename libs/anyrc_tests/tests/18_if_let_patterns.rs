@@ -86,6 +86,20 @@ fn parse_if_let() {
 }
 
 #[test]
+fn parse_if_let_chain_as_match_guard() {
+    let (expr, _) = parse_expr_src("if let Some(x) = opt && x > 0 { x } else { 0 }");
+    match expr {
+        Expr::Match(_scrutinee, arms, _) => {
+            assert_eq!(arms.len(), 2);
+            assert!(matches!(arms[0].pat, Pattern::TupleStruct(_, _, _)));
+            assert!(arms[0].guard.is_some());
+            assert!(matches!(arms[1].pat, Pattern::Wildcard(_)));
+        }
+        _ => panic!("expected Match"),
+    }
+}
+
+#[test]
 fn parse_while_let() {
     let (expr, _) = parse_expr_src("while let Some(x) = opt { }");
     match expr {

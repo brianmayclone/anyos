@@ -34,6 +34,30 @@ fn parse_generic_fn() {
 }
 
 #[test]
+fn parse_generic_param_outer_attribute() {
+    let krate = parse("unsafe impl<#[may_dangle] T, A: Allocator> Drop for RawTable<T, A> {}");
+    match &krate.items[0] {
+        Item::Impl(impl_block) => {
+            assert!(impl_block.is_unsafe);
+            assert_eq!(impl_block.generics.params.len(), 2);
+        }
+        _ => panic!("expected impl"),
+    }
+}
+
+#[test]
+fn parse_enum_where_clause_after_generics() {
+    let krate = parse("pub enum Entry<'a, T, A = Global> where A: Allocator { Occupied(T), Vacant }");
+    match &krate.items[0] {
+        Item::Enum(enum_def) => {
+            assert_eq!(enum_def.generics.params.len(), 3);
+            assert_eq!(enum_def.variants.len(), 2);
+        }
+        _ => panic!("expected enum"),
+    }
+}
+
+#[test]
 fn parse_higher_ranked_where_predicate() {
     let krate = parse("fn f<T>() where T: Copy, for<'a> &'a T: Clone {}");
     match &krate.items[0] {

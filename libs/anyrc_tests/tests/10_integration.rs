@@ -126,6 +126,80 @@ fn extern_interface_preserves_private_scope_imports() {
 }
 
 #[test]
+fn resolver_handles_macro_generated_float_type_alias_in_module() {
+    let source = r#"
+        pub struct PhantomData<T>;
+        pub trait ByteOrder {}
+        pub enum BigEndian {}
+
+        macro_rules! define_type {
+            (
+                $name:ident,
+                $native:ident,
+                $bytes:expr,
+                $from:path,
+                $to:path,
+                [$($larger:ty),*]
+            ) => {
+                pub struct $name<O>([u8; $bytes], PhantomData<O>);
+
+                impl<O: ByteOrder> $name<O> {
+                    pub fn new(n: $native) -> $name<O> {
+                        $name($to(n), PhantomData)
+                    }
+
+                    pub fn get(self) -> $native {
+                        $from(self.0)
+                    }
+                }
+
+                $(
+                    impl<O: ByteOrder> From<$name<O>> for $larger {
+                        fn from(x: $name<O>) -> $larger {
+                            x.get().into()
+                        }
+                    }
+                )*
+            };
+        }
+
+        macro_rules! module {
+            ($name:ident, $trait:ident) => {
+                pub mod $name {
+                    use super::$trait;
+                    pub type F32 = crate::F32<$trait>;
+                }
+            };
+        }
+
+        mod f32_ext {
+            pub fn from_be_bytes(_: [u8; 4]) -> f32 { 0.0 }
+            pub fn to_be_bytes(_: f32) -> [u8; 4] { [0, 0, 0, 0] }
+        }
+
+        define_type!(F32, f32, 4, f32_ext::from_be_bytes, f32_ext::to_be_bytes, [f64]);
+        module!(big_endian, BigEndian);
+
+        pub fn touch(_: big_endian::F32) {}
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test.o".to_string(),
+        emit: EmitKind::Obj,
+        opt_level: 0,
+        crate_type: CrateType::Lib,
+        crate_name: Some("test".to_string()),
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(
+        result.is_ok(),
+        "resolver failed on macro-generated F32 alias: {:?}",
+        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+    );
+}
+
+#[test]
 fn extern_interface_preserves_private_consts_used_in_public_array_lengths() {
     let lib_source = r#"
         pub mod args {
@@ -176,6 +250,68 @@ fn extern_interface_preserves_private_consts_used_in_public_array_lengths() {
     assert!(
         result.is_ok(),
         "extern interface lost private array-length consts: {:?}",
+        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+    );
+}
+
+#[test]
+fn extern_interface_preserves_transitive_private_type_dependencies() {
+    let lib_source = r#"
+        pub mod layout {
+            pub struct DstLayout {
+                size_info: SizeInfo,
+            }
+
+            pub(crate) enum SizeInfo<E = usize> {
+                Sized { size: usize },
+                SliceDst(TrailingSliceLayout<E>),
+            }
+
+            pub(crate) struct TrailingSliceLayout<E = usize> {
+                offset: usize,
+                elem_size: E,
+            }
+        }
+    "#;
+    let lib_options = CompileOptions {
+        input: "provider.rs".to_string(),
+        output: "libprovider.rlib".to_string(),
+        emit: EmitKind::Rlib,
+        crate_type: CrateType::Lib,
+        crate_name: Some("provider".to_string()),
+        ..CompileOptions::default()
+    };
+    let rlib = compile(lib_source, "provider.rs", &lib_options)
+        .expect("provider compilation failed");
+
+    static COUNTER: AtomicU64 = AtomicU64::new(2250);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("anyrc_iface_type_test_{}_{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rlib_path = dir.join("libprovider.rlib");
+    {
+        let mut f = std::fs::File::create(&rlib_path).unwrap();
+        f.write_all(&rlib).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    let use_options = CompileOptions {
+        input: "consumer.rs".to_string(),
+        output: "consumer.o".to_string(),
+        emit: EmitKind::Obj,
+        crate_type: CrateType::Lib,
+        crate_name: Some("consumer".to_string()),
+        extern_crates: vec![ExternCrateSpec {
+            name: "provider".to_string(),
+            rlib_path: rlib_path.to_string_lossy().into_owned(),
+        }],
+        ..CompileOptions::default()
+    };
+    let result = compile("fn touch() {}", "consumer.rs", &use_options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_ok(),
+        "extern interface lost transitive private types: {:?}",
         result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
     );
 }
@@ -430,6 +566,66 @@ fn cfg_false_strips_const_and_macro_items() {
     };
     let result = compile(source, "test.rs", &options);
     assert!(result.is_ok(), "cfg-disabled const/macro item was typechecked: {:?}", result.err());
+}
+
+#[test]
+fn cfg_false_strips_statements_inside_const_initializer() {
+    let source = r#"
+        trait Marker {}
+
+        macro_rules! unsafe_impl {
+            ($ty:ty) => {
+                impl Marker for $ty {}
+            };
+        }
+
+        const _: () = unsafe {
+            #[cfg(feature = "float-nightly")]
+            unsafe_impl!(f16);
+        };
+
+        fn main() -> i32 { 0 }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(result.is_ok(), "cfg-disabled const initializer statement was typechecked: {:?}", result.err());
+}
+
+#[test]
+fn cfg_false_strips_item_macro_call() {
+    let source = r#"
+        macro_rules! impl_marker {
+            ($ty:ty) => {
+                impl Marker for $ty {}
+            };
+        }
+
+        trait Marker {}
+
+        #[cfg(feature = "float-nightly")]
+        impl_marker!(f16);
+
+        fn main() -> i32 { 0 }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(result.is_ok(), "cfg-disabled item macro call was expanded/typechecked: {:?}", result.err());
 }
 
 #[test]

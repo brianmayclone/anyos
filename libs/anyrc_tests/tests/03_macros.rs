@@ -11,6 +11,14 @@ fn parse_and_expand(src: &str) -> Crate {
     krate
 }
 
+fn parse_and_expand_with_interner(src: &str) -> (Crate, Interner) {
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(src, &mut interner);
+    let mut krate = parser.parse_crate();
+    expand_macros(&mut krate, &mut interner);
+    (krate, interner)
+}
+
 #[test]
 fn expand_simple_macro() {
     let krate = parse_and_expand(r#"
@@ -47,6 +55,67 @@ fn expand_macro_with_expr_arg() {
             match &body.stmts[0] {
                 Stmt::Expr(Expr::Binary(BinOp::Add, _, _, _)) => {}
                 _ => panic!("expected binary add"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
+fn expand_format_macro_preserves_escaped_quotes_in_string_args() {
+    let krate = parse_and_expand(r#"
+        fn main(attr_name: i32, meta_item_name: i32) {
+            format!(
+                "expected serde {} attribute to be a string: `{} = \"...\"`",
+                attr_name,
+                meta_item_name,
+            );
+        }
+    "#);
+
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().unwrap();
+            let Stmt::Semi(Expr::Call(_, args, _), _) = &body.stmts[0] else {
+                panic!("expected expanded format call");
+            };
+            match &args[0] {
+                Expr::Lit(Literal::String(s), _) => {
+                    assert_eq!(s, "expected serde {} attribute to be a string: `{} = \"...\"`");
+                }
+                _ => panic!("expected first format arg to remain a string literal"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
+fn expand_quote_macros_to_proc_macro2_token_stream_constructor() {
+    let krate = parse_and_expand(r#"
+        fn main(span: i32) {
+            quote! { struct Demo; };
+            quote_spanned!(span=> impl Demo {});
+        }
+    "#);
+
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().unwrap();
+            for stmt in &body.stmts {
+                let Stmt::Semi(Expr::Call(callee, args, _), _) = stmt else {
+                    panic!("expected quote macro to expand to constructor call");
+                };
+                assert!(args.is_empty());
+                let Expr::Path(path) = callee.as_ref() else {
+                    panic!("expected path callee");
+                };
+                let segments = path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident)
+                    .collect::<Vec<_>>();
+                assert_eq!(segments.len(), 3);
             }
         }
         _ => panic!("expected fn"),
@@ -167,6 +236,394 @@ fn expand_cfg_if_items() {
             _ => panic!("expected cfg_if expansion item"),
         }
     }
+}
+
+#[test]
+fn expand_cfg_if_statements() {
+    let krate = parse_and_expand(r#"
+        fn main() {
+            cfg_if! {
+                if #[cfg(target_arch = "x86_64")] {
+                    let tokens = ();
+                } else {
+                    let tokens = ();
+                }
+            }
+
+            tokens;
+        }
+    "#);
+    let Item::Fn(f) = &krate.items[0] else {
+        panic!("expected fn");
+    };
+    let body = f.body.as_ref().unwrap();
+    assert!(matches!(body.stmts[0], Stmt::Attributed(_, _, _)));
+    assert!(matches!(body.stmts[1], Stmt::Attributed(_, _, _)));
+    assert!(matches!(body.stmts[2], Stmt::Semi(Expr::Path(_), _)));
+}
+
+#[test]
+fn expand_attributed_statement_macro_to_item() {
+    let krate = parse_and_expand(r#"
+        macro_rules! make_mod {
+            () => {
+                #[cfg_attr(doc_cfg, doc(cfg(rust = "1.89.0")))]
+                mod generated {}
+            }
+        }
+
+        fn main() {
+            #[cfg(not(disabled))]
+            make_mod!();
+        }
+    "#);
+    let Item::Fn(f) = &krate.items[1] else {
+        panic!("expected fn");
+    };
+    let body = f.body.as_ref().unwrap();
+    let Stmt::Item(Item::Mod(m)) = &body.stmts[0] else {
+        panic!("expected generated module item");
+    };
+    assert_eq!(m.attrs.len(), 2);
+}
+
+#[test]
+fn expand_nested_macro_calls_inside_generated_module() {
+    let krate = parse_and_expand(r#"
+        macro_rules! module {
+            ($name:ident) => {
+                pub mod $name {
+                    module!(@ty U16);
+                }
+            };
+            (@ty $ty:ident) => {
+                pub type $ty = u16;
+            };
+        }
+
+        module!(big_endian);
+    "#);
+    let Item::Mod(m) = &krate.items[1] else {
+        panic!("expected generated module");
+    };
+    let items = m.items.as_ref().unwrap();
+    assert!(matches!(items[0], Item::TypeAlias(_)));
+}
+
+#[test]
+fn expand_macro_path_fragments() {
+    let krate = parse_and_expand(r#"
+        macro_rules! make_fn {
+            ($name:ident, $ctor:path) => {
+                pub fn $name() -> u16 {
+                    $ctor(1)
+                }
+            };
+        }
+
+        make_fn!(from_be, u16::from_be);
+    "#);
+    assert!(matches!(krate.items[1], Item::Fn(_)));
+}
+
+#[test]
+fn expand_macro_path_fragments_with_float_primitive_idents() {
+    let krate = parse_and_expand(r#"
+        macro_rules! define_type {
+            (
+                $name:ident,
+                $native:ident,
+                $from:path,
+                $to:path
+            ) => {
+                pub struct $name([u8; 4]);
+
+                impl $name {
+                    pub fn get(self) -> $native {
+                        $from(self.0)
+                    }
+                    pub fn new(value: $native) -> Self {
+                        Self($to(value))
+                    }
+                }
+            };
+        }
+
+        mod f32_ext {
+            pub fn from_be_bytes(_: [u8; 4]) -> f32 { 0.0 }
+            pub fn to_be_bytes(_: f32) -> [u8; 4] { [0, 0, 0, 0] }
+        }
+
+        define_type!(F32, f32, f32_ext::from_be_bytes, f32_ext::to_be_bytes);
+
+        pub mod big_endian {
+            pub type F32 = crate::F32;
+        }
+    "#);
+    assert!(krate.items.iter().any(|item| matches!(item, Item::Struct(_))));
+    assert!(krate.items.iter().any(|item| {
+        matches!(
+            item,
+            Item::Mod(m)
+                if m.items.as_ref().is_some_and(|items| {
+                    items.iter().any(|item| matches!(item, Item::TypeAlias(_)))
+                })
+        )
+    }));
+}
+
+#[test]
+fn expand_doc_comment_wrapped_float_type_macro_and_module_alias() {
+    let krate = parse_and_expand(r#"
+        struct PhantomData<T>;
+        trait ByteOrder {}
+        enum BigEndian {}
+
+        macro_rules! doc_comment {
+            ($doc:expr, $($tt:tt)*) => {
+                #[doc = $doc]
+                $($tt)*
+            };
+        }
+
+        macro_rules! define_type {
+            (
+                $article:ident,
+                $description:expr,
+                $name:ident,
+                $native:ident,
+                $bits:expr,
+                $bytes:expr,
+                $from_be_fn:path,
+                $to_be_fn:path,
+                $number_kind:tt,
+                [$($larger_native:ty),*],
+                [$($larger_byteorder:ident),*]
+            ) => {
+                doc_comment! {
+                    concat!($description, " stored in a given byte order."),
+                    #[derive(Copy, Clone, Eq, PartialEq, Hash)]
+                    #[cfg_attr(any(feature = "derive", test), derive(KnownLayout, Immutable))]
+                    #[repr(transparent)]
+                    pub struct $name<O>([u8; $bytes], PhantomData<O>);
+                }
+
+                impl<O: ByteOrder> $name<O> {
+                    pub fn new(n: $native) -> $name<O> {
+                        $name($to_be_fn(n), PhantomData)
+                    }
+
+                    pub fn get(self) -> $native {
+                        $from_be_fn(self.0)
+                    }
+                }
+
+                $(
+                    impl<O: ByteOrder> From<$name<O>> for $larger_native {
+                        fn from(x: $name<O>) -> $larger_native {
+                            x.get().into()
+                        }
+                    }
+                )*
+
+                $(
+                    impl<O: ByteOrder, P: ByteOrder> From<$name<O>> for $larger_byteorder<P> {
+                        fn from(x: $name<O>) -> $larger_byteorder<P> {
+                            $larger_byteorder::new(x.get().into())
+                        }
+                    }
+                )*
+            };
+        }
+
+        macro_rules! module {
+            ($name:ident, $trait:ident) => {
+                pub mod $name {
+                    use super::$trait;
+                    module!(@ty F32, $trait);
+                }
+            };
+            (@ty $ty:ident, $trait:ident) => {
+                pub type $ty = crate::$ty<$trait>;
+            };
+        }
+
+        mod f32_ext {
+            pub fn from_be_bytes(_: [u8; 4]) -> f32 { 0.0 }
+            pub fn to_be_bytes(_: f32) -> [u8; 4] { [0, 0, 0, 0] }
+        }
+
+        define_type!(
+            An,
+            "A 32-bit floating point number",
+            F32,
+            f32,
+            32,
+            4,
+            f32_ext::from_be_bytes,
+            f32_ext::to_be_bytes,
+            "floating point number",
+            [f64],
+            []
+        );
+
+        module!(big_endian, BigEndian);
+    "#);
+    assert!(krate.items.iter().any(|item| matches!(item, Item::Struct(_))));
+    assert!(krate.items.iter().any(|item| {
+        matches!(
+            item,
+            Item::Mod(m)
+                if m.items.as_ref().is_some_and(|items| {
+                    items.iter().any(|item| matches!(item, Item::TypeAlias(_)))
+                })
+        )
+    }));
+}
+
+#[test]
+fn expand_define_type_with_zerocopy_style_float_arguments() {
+    let (krate, interner) = parse_and_expand_with_interner(r#"
+        struct PhantomData<T>;
+        trait ByteOrder {}
+        enum BigEndian {}
+
+        macro_rules! define_type {
+            (
+                $article:ident,
+                $description:expr,
+                $name:ident,
+                $native:ident,
+                $bits:expr,
+                $bytes:expr,
+                $from_be_fn:path,
+                $to_be_fn:path,
+                $from_le_fn:path,
+                $to_le_fn:path,
+                $number_kind:tt,
+                [$($larger_native:ty),*],
+                [$($larger_native_try:ty),*],
+                [$($larger_byteorder:ident),*],
+                [$($larger_byteorder_try:ident),*]
+            ) => {
+                pub struct $name<O>([u8; $bytes], PhantomData<O>);
+
+                impl<O: ByteOrder> $name<O> {
+                    pub fn new(n: $native) -> $name<O> {
+                        $name($to_be_fn(n), PhantomData)
+                    }
+
+                    pub fn get(self) -> $native {
+                        $from_be_fn(self.0)
+                    }
+                }
+
+                $(
+                    impl<O: ByteOrder> From<$name<O>> for $larger_native {
+                        fn from(x: $name<O>) -> $larger_native {
+                            x.get().into()
+                        }
+                    }
+                )*
+
+                $(
+                    impl<O: ByteOrder> From<$larger_native_try> for $name<O> {
+                        fn from(x: $larger_native_try) -> $name<O> {
+                            $name::new(x as $native)
+                        }
+                    }
+                )*
+
+                $(
+                    impl<O: ByteOrder, P: ByteOrder> From<$name<O>> for $larger_byteorder<P> {
+                        fn from(x: $name<O>) -> $larger_byteorder<P> {
+                            $larger_byteorder::new(x.get().into())
+                        }
+                    }
+                )*
+
+                $(
+                    impl<O: ByteOrder, P: ByteOrder> From<$larger_byteorder_try<P>> for $name<O> {
+                        fn from(x: $larger_byteorder_try<P>) -> $name<O> {
+                            $name::new(x.get() as $native)
+                        }
+                    }
+                )*
+            };
+        }
+
+        macro_rules! module {
+            ($name:ident, $trait:ident) => {
+                pub mod $name {
+                    use super::$trait;
+                    module!(@ty F32, $trait);
+                }
+            };
+            (@ty $ty:ident, $trait:ident) => {
+                pub type $ty = crate::$ty<$trait>;
+            };
+        }
+
+        mod f32_ext {
+            pub fn from_be_bytes(_: [u8; 4]) -> f32 { 0.0 }
+            pub fn to_be_bytes(_: f32) -> [u8; 4] { [0, 0, 0, 0] }
+            pub fn from_le_bytes(_: [u8; 4]) -> f32 { 0.0 }
+            pub fn to_le_bytes(_: f32) -> [u8; 4] { [0, 0, 0, 0] }
+        }
+
+        define_type!(
+            An,
+            "A 32-bit floating point number",
+            F32,
+            f32,
+            32,
+            4,
+            f32_ext::from_be_bytes,
+            f32_ext::to_be_bytes,
+            f32_ext::from_le_bytes,
+            f32_ext::to_le_bytes,
+            "floating point number",
+            [f64],
+            [],
+            [F64],
+            []
+        );
+
+        define_type!(
+            An,
+            "A 64-bit floating point number",
+            F64,
+            f64,
+            64,
+            8,
+            f32_ext::from_be_bytes,
+            f32_ext::to_be_bytes,
+            f32_ext::from_le_bytes,
+            f32_ext::to_le_bytes,
+            "floating point number",
+            [],
+            [],
+            [],
+            []
+        );
+
+        module!(big_endian, BigEndian);
+    "#);
+    assert!(krate.items.iter().any(|item| {
+        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "F32")
+    }));
+    assert!(krate.items.iter().any(|item| {
+        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "F64")
+    }));
+    assert!(krate.items.iter().any(|item| {
+        matches!(
+            item,
+            Item::Mod(m)
+                if m.items.as_ref().is_some_and(|items| {
+                    items.iter().any(|item| matches!(item, Item::TypeAlias(_)))
+                })
+        )
+    }));
 }
 
 #[test]

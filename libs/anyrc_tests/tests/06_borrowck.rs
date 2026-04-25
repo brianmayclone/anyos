@@ -29,6 +29,7 @@ fn build_and_check(src: &str) -> Vec<(String, BorrowckResult)> {
                     body,
                     &interner,
                     &typeck_result.struct_defs,
+                    &typeck_result.enum_variants,
                     &typeck_result.copy_types,
                 ),
             )
@@ -150,6 +151,91 @@ fn borrowck_move_in_if_branch_does_not_poison_else_branch() {
                 take(token);
             } else {
                 take(token);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn borrowck_move_in_match_arm_does_not_poison_sibling_arms() {
+    assert_borrowck_ok(r#"
+        struct Token {}
+
+        enum Context {
+            A { token: Token },
+            B { token: Token },
+            C,
+        }
+
+        fn take(token: Token) {}
+
+        fn foo(context: Context) {
+            match context {
+                Context::A { token } => take(token),
+                Context::B { token } => take(token),
+                Context::C => {}
+            }
+        }
+    "#);
+}
+
+#[test]
+fn borrowck_method_chain_consumes_each_receiver_once() {
+    assert_borrowck_ok(r#"
+        struct Iter {}
+        struct Filtered {}
+        struct Mapped {}
+        struct Acc {}
+
+        impl Iter {
+            fn filter(self) -> Filtered { Filtered {} }
+        }
+
+        impl Filtered {
+            fn map(self) -> Mapped { Mapped {} }
+        }
+
+        impl Mapped {
+            fn fold(self, acc: Acc) -> Acc { acc }
+        }
+
+        fn foo(iter: Iter, acc: Acc) {
+            let _result = iter.filter().map().fold(acc);
+        }
+    "#);
+}
+
+#[test]
+fn borrowck_enum_with_only_copy_fields_can_be_reused() {
+    assert_borrowck_ok(r#"
+        struct Name {}
+
+        enum StructVariant<'a> {
+            ExternallyTagged {
+                variant_index: u32,
+                variant_name: &'a Name,
+            },
+            InternallyTagged {
+                tag: &'a str,
+                variant_name: &'a Name,
+            },
+            Untagged,
+        }
+
+        fn consume(context: StructVariant) {}
+
+        fn foo(context: StructVariant) {
+            consume(context);
+            match context {
+                StructVariant::ExternallyTagged { variant_index, variant_name } => {
+                    let _idx = variant_index;
+                    let _name = variant_name;
+                }
+                StructVariant::InternallyTagged { tag, variant_name } => {
+                    let _tag = tag;
+                    let _name = variant_name;
+                }
+                StructVariant::Untagged => {}
             }
         }
     "#);

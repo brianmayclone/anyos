@@ -181,7 +181,7 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
             config.release,
         );
 
-        if fingerprint::is_fresh(&fp_dir, &norm_name, &node.src_file, &output_path, &src_dir) {
+        if fingerprint::is_fresh(&fp_dir, &norm_name, &node.src_file, &output_path, &src_dir, opt_hash) {
             if config.verbose {
                 println!("       Fresh {} v{}", node.name, node.manifest.version);
             }

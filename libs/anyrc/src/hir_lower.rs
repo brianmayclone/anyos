@@ -48,7 +48,7 @@ impl<'a> LoweringContext<'a> {
             ast::Item::ExternBlock(eb) => (HirItemKind::ExternBlock(self.lower_extern_block(eb)), eb.span),
             ast::Item::ExternCrate(_) => return None,
             ast::Item::MacroDef(_) => return None, // macro defs are consumed by expansion
-            ast::Item::MacroCall(_, _, _span) => return None, // unexpanded macros are dropped
+            ast::Item::MacroCall(_, _, _, _span) => return None, // unexpanded macros are dropped
         };
         Some(HirItem { id: self.alloc_hir_id(), kind, span })
     }
@@ -355,8 +355,10 @@ impl<'a> LoweringContext<'a> {
                 *span,
             ),
             ast::Expr::MacroCall(_, _, span) => {
-                // Unexpanded macro call - shouldn't happen after macro expansion
-                (HirExprKind::Lit(ast::Literal::Int(0)), *span)
+                // Unexpanded expression macros are type-deferred. Treating them
+                // as an integer literal poisons branch inference in macro-heavy
+                // crates such as serde_derive.
+                (HirExprKind::Range(None, None, false), *span)
             }
             ast::Expr::Unsafe(b, span) => (HirExprKind::Unsafe(self.lower_block(b)), *span),
             ast::Expr::Paren(e, span) => (HirExprKind::Paren(Box::new(self.lower_expr(e))), *span),

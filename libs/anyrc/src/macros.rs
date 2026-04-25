@@ -65,6 +65,30 @@ fn make_intrinsic_path(interner: &mut Interner, name: &str) -> Path {
     }
 }
 
+fn make_path(interner: &mut Interner, segments: &[&str]) -> Path {
+    Path {
+        segments: segments
+            .iter()
+            .map(|segment| PathSegment {
+                ident: interner.intern(segment),
+                args: None,
+            })
+            .collect(),
+        span: Span::dummy(),
+    }
+}
+
+fn make_token_stream_new_expr(interner: &mut Interner, span: Span) -> Expr {
+    Expr::Call(
+        Box::new(Expr::Path(make_path(
+            interner,
+            &["proc_macro2", "TokenStream", "new"],
+        ))),
+        vec![],
+        span,
+    )
+}
+
 fn parse_vec_macro_expr(tokens: &[TokenTree], interner: &mut Interner) -> Option<Expr> {
     let src = token_trees_to_string(tokens, interner);
     let wrapped = format!("[{}]", src);
@@ -113,7 +137,8 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
         // Try to expand macro calls at item position
         let should_expand = matches!(&items[i], Item::MacroCall(..));
         if should_expand {
-            if let Item::MacroCall(path, args, span) = &items[i] {
+            let item = items.remove(i);
+            if let Item::MacroCall(path, args, attrs, span) = item {
                 // Check for built-in item macros
                 let macro_name = if !path.segments.is_empty() {
                     interner.resolve(path.segments.last().unwrap().ident).to_string()
@@ -137,51 +162,58 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                         "}\n",
                     );
                     let mut parser = Parser::new(entry_src, interner);
-                    let krate = parser.parse_crate();
-                    items.splice(i..=i, krate.items);
+                    let mut krate = parser.parse_crate();
+                    prepend_attrs_to_first_item(&mut krate.items, attrs);
+                    items.splice(i..i, krate.items);
                     *changed = true;
                     continue;
                 }
 
                 if macro_name == "dll_exports" {
-                    if let Some(expanded) = expand_builtin_dll_exports(args, interner) {
-                        items.splice(i..=i, expanded);
+                    if let Some(mut expanded) = expand_builtin_dll_exports(&args, interner) {
+                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        items.splice(i..i, expanded);
                         *changed = true;
                         continue;
                     }
                 }
 
                 if macro_name == "define_cast" {
-                    if let Some(expanded) = expand_builtin_define_cast(args, interner) {
-                        items.splice(i..=i, expanded);
+                    if let Some(mut expanded) = expand_builtin_define_cast(&args, interner) {
+                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        items.splice(i..i, expanded);
                         *changed = true;
                         continue;
                     }
                 }
 
                 if macro_name == "cfg_if" {
-                    if let Some(expanded) = expand_builtin_cfg_if(args, interner) {
-                        items.splice(i..=i, expanded);
+                    if let Some(mut expanded) = expand_builtin_cfg_if(&args, interner) {
+                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        items.splice(i..i, expanded);
                         *changed = true;
                         continue;
                     }
                 }
 
-                if macro_name == "new" && is_path_named(path, interner, "cpufeatures::new") {
-                    if let Some(expanded) = expand_builtin_cpufeatures_new(args, interner) {
-                        items.splice(i..=i, expanded);
+                if macro_name == "new" && is_path_named(&path, interner, "cpufeatures::new") {
+                    if let Some(mut expanded) = expand_builtin_cpufeatures_new(&args, interner) {
+                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        items.splice(i..i, expanded);
                         *changed = true;
                         continue;
                     }
                 }
 
-                if let Some(def) = find_macro(defs, path) {
-                    if let Some(expanded) = try_expand_to_items(def, args, interner) {
-                        items.splice(i..=i, expanded);
+                if let Some(def) = find_macro(defs, &path) {
+                    if let Some(mut expanded) = try_expand_to_items(def, &args, interner) {
+                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        items.splice(i..i, expanded);
                         *changed = true;
                         continue;
                     }
                 }
+                items.insert(i, Item::MacroCall(path, args, attrs, span));
             }
             i += 1;
             continue;
@@ -272,12 +304,70 @@ fn take_and_modify(item: &mut Item, f: impl FnOnce(&mut Item)) {
 fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, changed: &mut bool) {
     let mut i = 0;
     while i < block.stmts.len() {
-        if let Stmt::Semi(Expr::MacroCall(path, args, _), _) = &block.stmts[i] {
+        if matches!(block.stmts[i], Stmt::Attributed(_, _, _)) {
+            let placeholder = Stmt::Expr(Expr::Tuple(Vec::new(), Span::dummy()));
+            let stmt = core::mem::replace(&mut block.stmts[i], placeholder);
+            if let Stmt::Attributed(attrs, inner, attr_span) = stmt {
+                let macro_stmt = match inner.as_ref() {
+                    Stmt::Semi(Expr::MacroCall(path, args, span), _)
+                    | Stmt::Expr(Expr::MacroCall(path, args, span)) => Some((path, args, *span)),
+                    _ => None,
+                };
+                if let Some((path, args, _span)) = macro_stmt {
+                    let macro_name = if !path.segments.is_empty() {
+                        interner.resolve(path.segments.last().unwrap().ident).to_string()
+                    } else {
+                        String::new()
+                    };
+                    if macro_name == "cfg_if" {
+                        if let Some(mut stmts) = expand_builtin_cfg_if_stmts(args, interner) {
+                            prepend_attrs_to_first_stmt(&mut stmts, attrs, attr_span);
+                            block.stmts.splice(i..=i, stmts);
+                            *changed = true;
+                            continue;
+                        }
+                    }
+                    if macro_name == "define_cast" {
+                        if let Some(mut items) = expand_builtin_define_cast(args, interner) {
+                            prepend_attrs_to_first_item(&mut items, attrs);
+                            block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
+                            *changed = true;
+                            continue;
+                        }
+                    }
+                    if let Some(def) = find_macro(defs, path) {
+                        if let Some(mut items) = try_expand_to_items(def, args, interner) {
+                            prepend_attrs_to_first_item(&mut items, attrs);
+                            block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
+                            *changed = true;
+                            continue;
+                        }
+                    }
+                }
+                block.stmts[i] = Stmt::Attributed(attrs, inner, attr_span);
+            } else {
+                block.stmts[i] = stmt;
+            }
+        }
+
+        let macro_stmt = match &block.stmts[i] {
+            Stmt::Semi(Expr::MacroCall(path, args, span), _)
+            | Stmt::Expr(Expr::MacroCall(path, args, span)) => Some((path, args, *span)),
+            _ => None,
+        };
+        if let Some((path, args, _span)) = macro_stmt {
             let macro_name = if !path.segments.is_empty() {
                 interner.resolve(path.segments.last().unwrap().ident).to_string()
             } else {
                 String::new()
             };
+            if macro_name == "cfg_if" {
+                if let Some(stmts) = expand_builtin_cfg_if_stmts(args, interner) {
+                    block.stmts.splice(i..=i, stmts);
+                    *changed = true;
+                    continue;
+                }
+            }
             if macro_name == "define_cast" {
                 if let Some(items) = expand_builtin_define_cast(args, interner) {
                     block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
@@ -349,6 +439,11 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                         call_args,
                         *span,
                     );
+                    *changed = true;
+                    return;
+                }
+                "quote" | "quote_spanned" => {
+                    *expr = make_token_stream_new_expr(interner, *span);
                     *changed = true;
                     return;
                 }
@@ -664,6 +759,36 @@ fn expand_builtin_cfg_if(args: &[TokenTree], interner: &mut Interner) -> Option<
     Some(expanded)
 }
 
+fn expand_builtin_cfg_if_stmts(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Stmt>> {
+    let branches = parse_cfg_if_branches(args, interner)?;
+    let mut expanded = Vec::new();
+    let mut prev_conds: Vec<Vec<TokenTree>> = Vec::new();
+
+    for branch in branches {
+        let branch_cfg = cfg_if_branch_predicate(branch.cond.clone(), &prev_conds, interner);
+        let src = format!("{{ {} }}", token_trees_to_string(&branch.body, interner));
+        let mut parser = Parser::new(&src, interner);
+        let block = parser.parse_block();
+        for stmt in block.stmts {
+            let stmt = if let Some(pred) = &branch_cfg {
+                Stmt::Attributed(
+                    vec![cfg_attr(pred.clone(), interner)],
+                    Box::new(stmt),
+                    Span::dummy(),
+                )
+            } else {
+                stmt
+            };
+            expanded.push(stmt);
+        }
+        if let Some(cond) = branch.cond {
+            prev_conds.push(cond);
+        }
+    }
+
+    Some(expanded)
+}
+
 #[derive(Clone)]
 struct CfgIfBranch {
     cond: Option<Vec<TokenTree>>,
@@ -834,8 +959,49 @@ fn prepend_cfg_attr(item: &mut Item, attr: Attribute) {
         Item::Mod(m) => m.attrs.insert(0, attr),
         Item::MacroDef(m) => m.attrs.insert(0, attr),
         Item::ExternBlock(e) => e.attrs.insert(0, attr),
-        Item::ExternCrate(_) | Item::MacroCall(_, _, _) => {}
+        Item::ExternCrate(_) | Item::MacroCall(_, _, _, _) => {}
     }
+}
+
+fn prepend_attrs_to_first_item(items: &mut [Item], attrs: Vec<Attribute>) {
+    if attrs.is_empty() {
+        return;
+    }
+    let Some(first) = items.first_mut() else {
+        return;
+    };
+    match first {
+        Item::Fn(f) => prepend_attrs(&mut f.attrs, attrs),
+        Item::Struct(s) => prepend_attrs(&mut s.attrs, attrs),
+        Item::Enum(e) => prepend_attrs(&mut e.attrs, attrs),
+        Item::Impl(i) => prepend_attrs(&mut i.attrs, attrs),
+        Item::Trait(t) => prepend_attrs(&mut t.attrs, attrs),
+        Item::TypeAlias(t) => prepend_attrs(&mut t.attrs, attrs),
+        Item::Const(c) => prepend_attrs(&mut c.attrs, attrs),
+        Item::Static(s) => prepend_attrs(&mut s.attrs, attrs),
+        Item::Use(u) => prepend_attrs(&mut u.attrs, attrs),
+        Item::Mod(m) => prepend_attrs(&mut m.attrs, attrs),
+        Item::MacroDef(m) => prepend_attrs(&mut m.attrs, attrs),
+        Item::ExternBlock(e) => prepend_attrs(&mut e.attrs, attrs),
+        Item::ExternCrate(_) | Item::MacroCall(_, _, _, _) => {}
+    }
+}
+
+fn prepend_attrs(existing: &mut Vec<Attribute>, mut attrs: Vec<Attribute>) {
+    attrs.append(existing);
+    *existing = attrs;
+}
+
+fn prepend_attrs_to_first_stmt(stmts: &mut [Stmt], attrs: Vec<Attribute>, span: Span) {
+    if attrs.is_empty() {
+        return;
+    }
+    let Some(first) = stmts.first_mut() else {
+        return;
+    };
+    let placeholder = Stmt::Expr(Expr::Tuple(Vec::new(), span));
+    let stmt = core::mem::replace(first, placeholder);
+    *first = Stmt::Attributed(attrs, Box::new(stmt), span);
 }
 
 fn expand_builtin_define_cast(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
@@ -1493,7 +1659,7 @@ impl<'a> PatternMatcher<'a> {
                                 if let TokenTree::Token(frag_tok) = &pattern[pi + 3] {
                                     if let TokenKind::Ident(frag_sym) = frag_tok.kind {
                                         let frag = self.interner.resolve(frag_sym);
-                                        if matches!(frag, "expr" | "ident" | "meta" | "ty" | "pat" | "tt" | "literal" | "stmt" | "block" | "vis") {
+                                        if matches!(frag, "expr" | "ident" | "meta" | "ty" | "path" | "pat" | "tt" | "literal" | "stmt" | "block" | "vis") {
                                             pi += 4;
                                             // Capture based on fragment type
                                             let captured = self.capture_fragment(frag, &input[ii..]);
@@ -1605,7 +1771,7 @@ impl<'a> PatternMatcher<'a> {
                 }
                 self.capture_greedy_fragment(input)
             }
-            "expr" | "meta" | "pat" | "stmt" => {
+            "expr" | "meta" | "path" | "pat" | "stmt" => {
                 // Greedy: capture as many tokens as possible that form a valid unit.
                 // Simple heuristic: take tokens until we hit a comma, semicolon,
                 // or closing delimiter that isn't matched.
@@ -1796,21 +1962,11 @@ fn substitute_rep(body: &[TokenTree], captures: &HashMap<String, Capture>, inter
 }
 
 fn find_rep_count(rep_body: &[TokenTree], captures: &HashMap<String, Capture>, interner: &Interner) -> usize {
-    // Look for $name references in the rep body and find their repetition count
-    for i in 0..rep_body.len() {
-        if is_dollar(&rep_body[i]) && i + 1 < rep_body.len() {
-            if let TokenTree::Token(Token { kind, .. }) = &rep_body[i + 1] {
-                if let Some(name) = macro_var_name(kind, interner) {
-                if let Some(Capture::Repeated(reps)) = captures.get(&name) {
-                    return reps.len();
-                }
-                }
-            }
-        }
-        if let TokenTree::Delimited(_, inner) = &rep_body[i] {
-            let n = find_rep_count(inner, captures, interner);
-            if n > 0 { return n; }
-        }
+    if let Some(count) = repeated_capture_count(rep_body, captures, interner) {
+        return count;
+    }
+    if has_macro_capture_ref(rep_body, interner) {
+        return 0;
     }
     // If no repeated capture found, maybe all captures are single - just return 0
     // But for patterns like `$(+ 1)*` where there's no capture ref, use the first
@@ -1821,6 +1977,48 @@ fn find_rep_count(rep_body: &[TokenTree], captures: &HashMap<String, Capture>, i
         }
     }
     0
+}
+
+fn repeated_capture_count(
+    rep_body: &[TokenTree],
+    captures: &HashMap<String, Capture>,
+    interner: &Interner,
+) -> Option<usize> {
+    for i in 0..rep_body.len() {
+        if is_dollar(&rep_body[i]) && i + 1 < rep_body.len() {
+            if let TokenTree::Token(Token { kind, .. }) = &rep_body[i + 1] {
+                if let Some(name) = macro_var_name(kind, interner) {
+                    if let Some(Capture::Repeated(reps)) = captures.get(&name) {
+                        return Some(reps.len());
+                    }
+                }
+            }
+        }
+        if let TokenTree::Delimited(_, inner) = &rep_body[i] {
+            if let Some(count) = repeated_capture_count(inner, captures, interner) {
+                return Some(count);
+            }
+        }
+    }
+    None
+}
+
+fn has_macro_capture_ref(rep_body: &[TokenTree], interner: &Interner) -> bool {
+    for i in 0..rep_body.len() {
+        if is_dollar(&rep_body[i]) && i + 1 < rep_body.len() {
+            if let TokenTree::Token(Token { kind, .. }) = &rep_body[i + 1] {
+                if macro_var_name(kind, interner).is_some() {
+                    return true;
+                }
+            }
+        }
+        if let TokenTree::Delimited(_, inner) = &rep_body[i] {
+            if has_macro_capture_ref(inner, interner) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // ── Expansion entry points ──
@@ -1959,8 +2157,8 @@ fn token_to_string(kind: &TokenKind, interner: &Interner, out: &mut String) {
             }
         }
         TokenKind::FloatLit(f) => out.push_str(&f.to_string()),
-        TokenKind::StringLit(s) => { out.push('"'); out.push_str(s); out.push('"'); }
-        TokenKind::CharLit(c) => { out.push('\''); out.push(*c); out.push('\''); }
+        TokenKind::StringLit(s) => push_escaped_string_literal(out, s),
+        TokenKind::CharLit(c) => push_escaped_char_literal(out, *c),
         TokenKind::ByteStringLit(_) => out.push_str("b\"...\""),
         TokenKind::Lifetime(sym) => { out.push('\''); out.push_str(interner.resolve(*sym)); }
         TokenKind::Kw(kw) => out.push_str(match kw {
@@ -2005,6 +2203,36 @@ fn token_to_string(kind: &TokenKind, interner: &Interner, out: &mut String) {
         TokenKind::Question => out.push('?'), TokenKind::Dollar => out.push('$'),
         TokenKind::Eof => {}
     }
+}
+
+fn push_escaped_string_literal(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+}
+
+fn push_escaped_char_literal(out: &mut String, value: char) {
+    out.push('\'');
+    match value {
+        '\\' => out.push_str("\\\\"),
+        '\'' => out.push_str("\\'"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\0' => out.push_str("\\0"),
+        _ => out.push(value),
+    }
+    out.push('\'');
 }
 
 /// Look up a compile-time environment variable.

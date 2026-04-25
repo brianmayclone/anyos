@@ -192,6 +192,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
             body,
             &interner,
             &typeck_result.struct_defs,
+            &typeck_result.enum_variants,
             &typeck_result.copy_types,
         );
         if !result.errors.is_empty() {
@@ -687,9 +688,11 @@ fn render_items(
 ) {
     let local_names = local_item_names(items);
     let needed_private_consts = needed_private_const_names(items, &local_names, interner, in_trait);
+    let needed_private_types = needed_private_type_names(items, &local_names, interner, in_trait);
     for item in items {
         if !item_is_exported(item, in_trait, &local_names, interner)
             && !private_const_is_needed(item, &needed_private_consts)
+            && !private_type_is_needed(item, &needed_private_types)
         {
             continue;
         }
@@ -1104,6 +1107,227 @@ fn private_const_is_needed(
             !is_public_vis(c.vis) && needed.contains(&c.name)
         }
         _ => false,
+    }
+}
+
+fn private_type_is_needed(
+    item: &crate::hir::HirItem,
+    needed: &HashSet<crate::intern::Symbol>,
+) -> bool {
+    match &item.kind {
+        crate::hir::HirItemKind::Struct(s) => {
+            !is_public_vis(s.vis) && needed.contains(&s.name)
+        }
+        crate::hir::HirItemKind::Enum(e) => {
+            !is_public_vis(e.vis) && needed.contains(&e.name)
+        }
+        crate::hir::HirItemKind::Trait(t) => {
+            !is_public_vis(t.vis) && needed.contains(&t.name)
+        }
+        crate::hir::HirItemKind::TypeAlias(t) => {
+            !is_public_vis(t.vis) && needed.contains(&t.name)
+        }
+        _ => false,
+    }
+}
+
+fn needed_private_type_names(
+    items: &[crate::hir::HirItem],
+    local_names: &[crate::intern::Symbol],
+    interner: &Interner,
+    in_trait: bool,
+) -> HashSet<crate::intern::Symbol> {
+    let mut needed = HashSet::new();
+    for item in items {
+        if item_is_exported(item, in_trait, local_names, interner) {
+            collect_signature_type_refs(item, &mut needed);
+        }
+    }
+
+    needed = filter_local_type_refs(&needed, local_names);
+
+    loop {
+        let before = needed.len();
+        for item in items {
+            if !private_type_is_needed(item, &needed) {
+                continue;
+            }
+            collect_signature_type_refs(item, &mut needed);
+        }
+        needed = filter_local_type_refs(&needed, local_names);
+        if needed.len() == before {
+            break;
+        }
+    }
+
+    needed
+}
+
+fn filter_local_type_refs(
+    names: &HashSet<crate::intern::Symbol>,
+    local_names: &[crate::intern::Symbol],
+) -> HashSet<crate::intern::Symbol> {
+    let mut filtered = HashSet::new();
+    for name in names.iter() {
+        if local_names.contains(name) {
+            filtered.insert(*name);
+        }
+    }
+    filtered
+}
+
+fn collect_signature_type_refs(
+    item: &crate::hir::HirItem,
+    out: &mut HashSet<crate::intern::Symbol>,
+) {
+    use crate::hir::{HirItemKind, HirVariantFields};
+
+    match &item.kind {
+        HirItemKind::Fn(f) => {
+            collect_type_refs_in_generics(&f.generics, out);
+            for param in &f.params {
+                collect_type_refs_in_ty(&param.ty, out);
+            }
+            if let Some(ret) = &f.ret_ty {
+                collect_type_refs_in_ty(ret, out);
+            }
+        }
+        HirItemKind::Struct(s) => {
+            collect_type_refs_in_generics(&s.generics, out);
+            for field in &s.fields {
+                collect_type_refs_in_ty(&field.ty, out);
+            }
+        }
+        HirItemKind::Enum(e) => {
+            collect_type_refs_in_generics(&e.generics, out);
+            for variant in &e.variants {
+                match &variant.fields {
+                    HirVariantFields::Tuple(tys) => {
+                        for ty in tys {
+                            collect_type_refs_in_ty(ty, out);
+                        }
+                    }
+                    HirVariantFields::Struct(fields) => {
+                        for field in fields {
+                            collect_type_refs_in_ty(&field.ty, out);
+                        }
+                    }
+                    HirVariantFields::Unit => {}
+                }
+            }
+        }
+        HirItemKind::Trait(t) => {
+            collect_type_refs_in_generics(&t.generics, out);
+            for bound in &t.supertraits {
+                collect_type_refs_in_path(&bound.path, out);
+            }
+            for sub in &t.items {
+                collect_signature_type_refs(sub, out);
+            }
+        }
+        HirItemKind::TypeAlias(ta) => {
+            collect_type_refs_in_generics(&ta.generics, out);
+            if let Some(ty) = &ta.ty {
+                collect_type_refs_in_ty(ty, out);
+            }
+        }
+        HirItemKind::Const(c) => collect_type_refs_in_ty(&c.ty, out),
+        HirItemKind::Static(s) => collect_type_refs_in_ty(&s.ty, out),
+        HirItemKind::Impl(ib) => {
+            collect_type_refs_in_generics(&ib.generics, out);
+            if let Some(trait_ref) = &ib.trait_ref {
+                collect_type_refs_in_path(trait_ref, out);
+            }
+            collect_type_refs_in_ty(&ib.self_ty, out);
+            for sub in &ib.items {
+                collect_signature_type_refs(sub, out);
+            }
+        }
+        HirItemKind::Mod(_) | HirItemKind::Use(_) | HirItemKind::ExternBlock(_) => {}
+    }
+}
+
+fn collect_type_refs_in_generics(
+    generics: &crate::hir::HirGenerics,
+    out: &mut HashSet<crate::intern::Symbol>,
+) {
+    for param in &generics.params {
+        match param {
+            crate::hir::HirGenericParam::Type(_, bounds, default, _) => {
+                for bound in bounds {
+                    collect_type_refs_in_path(&bound.path, out);
+                }
+                if let Some(default) = default {
+                    collect_type_refs_in_ty(default, out);
+                }
+            }
+            crate::hir::HirGenericParam::Const(_, ty, _) => collect_type_refs_in_ty(ty, out),
+            crate::hir::HirGenericParam::Lifetime(_, _, _) => {}
+        }
+    }
+}
+
+fn collect_type_refs_in_ty(
+    ty: &crate::hir::HirTy,
+    out: &mut HashSet<crate::intern::Symbol>,
+) {
+    match ty {
+        crate::hir::HirTy::Path(path) => collect_type_refs_in_path(path, out),
+        crate::hir::HirTy::QualifiedPath(qpath) => {
+            collect_type_refs_in_ty(&qpath.self_ty, out);
+            if let Some(trait_path) = &qpath.trait_path {
+                collect_type_refs_in_path(trait_path, out);
+            }
+            collect_type_refs_in_path(&qpath.path, out);
+        }
+        crate::hir::HirTy::Reference(_, inner, _, _)
+        | crate::hir::HirTy::RawPtr(inner, _, _)
+        | crate::hir::HirTy::Slice(inner, _) => collect_type_refs_in_ty(inner, out),
+        crate::hir::HirTy::Tuple(tys, _) => {
+            for ty in tys {
+                collect_type_refs_in_ty(ty, out);
+            }
+        }
+        crate::hir::HirTy::Array(inner, _, _) => collect_type_refs_in_ty(inner, out),
+        crate::hir::HirTy::FnPtr(params, ret, _) => {
+            for param in params {
+                collect_type_refs_in_ty(param, out);
+            }
+            if let Some(ret) = ret {
+                collect_type_refs_in_ty(ret, out);
+            }
+        }
+        crate::hir::HirTy::DynTrait(bounds, _) => {
+            for bound in bounds {
+                collect_type_refs_in_path(&bound.path, out);
+            }
+        }
+        crate::hir::HirTy::MacroCall(_, _)
+        | crate::hir::HirTy::Infer(_)
+        | crate::hir::HirTy::Never(_) => {}
+    }
+}
+
+fn collect_type_refs_in_path(
+    path: &crate::hir::HirPath,
+    out: &mut HashSet<crate::intern::Symbol>,
+) {
+    if path.segments.len() == 1 {
+        out.insert(path.segments[0].ident);
+    }
+    for segment in &path.segments {
+        if let Some(args) = &segment.args {
+            for arg in &args.args {
+                match arg {
+                    crate::hir::HirGenericArg::Type(ty)
+                    | crate::hir::HirGenericArg::AssocTypeBinding(_, ty) => {
+                        collect_type_refs_in_ty(ty, out);
+                    }
+                    crate::hir::HirGenericArg::Const(_)
+                    | crate::hir::HirGenericArg::Lifetime(_) => {}
+                }
+            }
+        }
     }
 }
 

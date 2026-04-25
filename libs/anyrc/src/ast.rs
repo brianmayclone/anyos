@@ -21,7 +21,7 @@ pub enum Item {
     Mod(ModDef),
     ExternCrate(ExternCrateDef),
     MacroDef(MacroRulesDef),
-    MacroCall(Path, Vec<TokenTree>, Span),
+    MacroCall(Path, Vec<TokenTree>, Vec<Attribute>, Span),
     ExternBlock(ExternBlockDef),
 }
 

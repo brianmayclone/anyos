@@ -230,6 +230,7 @@ fn item_attrs(item: &Item) -> &[Attribute] {
         Item::Static(s) => &s.attrs,
         Item::Use(u) => &u.attrs,
         Item::MacroDef(m) => &m.attrs,
+        Item::MacroCall(_, _, attrs, _) => attrs,
         Item::ExternBlock(e) => &e.attrs,
         _ => &[],
     }
@@ -271,6 +272,16 @@ fn strip_items(items: &mut Vec<Item>, ctx: &CfgContext, interner: &Interner) {
             Item::Fn(f) => {
                 if let Some(ref mut body) = f.body {
                     strip_block(body, ctx, interner);
+                }
+            }
+            Item::Const(c) => {
+                if let Some(ref mut value) = c.value {
+                    strip_expr(value, ctx, interner);
+                }
+            }
+            Item::Static(s) => {
+                if let Some(ref mut value) = s.value {
+                    strip_expr(value, ctx, interner);
                 }
             }
             _ => {}
@@ -341,6 +352,16 @@ fn strip_stmt(stmt: &mut Stmt, ctx: &CfgContext, interner: &Interner) {
             Item::Fn(f) => {
                 if let Some(ref mut body) = f.body {
                     strip_block(body, ctx, interner);
+                }
+            }
+            Item::Const(c) => {
+                if let Some(ref mut value) = c.value {
+                    strip_expr(value, ctx, interner);
+                }
+            }
+            Item::Static(s) => {
+                if let Some(ref mut value) = s.value {
+                    strip_expr(value, ctx, interner);
                 }
             }
             _ => {}

@@ -66,6 +66,8 @@ pub struct Resolver<'a> {
     extern_path_aliases: HashMap<(usize, Symbol), String>,
     /// Current impl self type symbol for resolving `Self::assoc` within impls.
     current_impl_self_ty: Option<Symbol>,
+    /// Current impl self type DefId for resolving `Self::Variant` on module-qualified types.
+    current_impl_self_def_id: Option<DefId>,
     /// Module path and item used to make diagnostics useful for loaded modules.
     current_module_path: Vec<Symbol>,
     current_item_name: Option<Symbol>,
@@ -91,6 +93,7 @@ impl<'a> Resolver<'a> {
             intrinsic_fns: HashMap::new(),
             extern_path_aliases: HashMap::new(),
             current_impl_self_ty: None,
+            current_impl_self_def_id: None,
             current_module_path: Vec::new(),
             current_item_name: None,
         };
@@ -232,7 +235,8 @@ impl<'a> Resolver<'a> {
             );
             let is_assoc_fn = matches!(
                 assoc_str,
-                "from" | "try_from" | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix"
+                "from" | "try_from" | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes"
+                    | "from_str_radix" | "min" | "max"
             )
                 || (type_name_str == "char" && assoc_str == "from_u32");
             if is_assoc_const || is_assoc_fn {
@@ -244,6 +248,36 @@ impl<'a> Resolver<'a> {
                 }
                 return true;
             }
+        }
+
+        false
+    }
+
+    fn resolve_assoc_item_on_type_def(
+        &mut self,
+        type_def_id: DefId,
+        assoc_name: Symbol,
+        hir_id: HirId,
+    ) -> bool {
+        if let Some(enum_info) = self.enum_variants.get(&type_def_id) {
+            if let Some(&variant_def_id) = enum_info.variants.get(&assoc_name) {
+                if hir_id != HirId(u32::MAX) {
+                    self.resolutions.insert(hir_id, variant_def_id);
+                }
+                return true;
+            }
+        }
+
+        if self.intrinsic_fns.contains_key(&type_def_id) {
+            let type_path = self.intrinsic_fns.get(&type_def_id).cloned().unwrap_or_default();
+            let assoc_str = self.interner.resolve(assoc_name);
+            let full_path = format!("{}::{}", type_path, assoc_str);
+            let def_id = self.alloc_synthetic_def_id();
+            self.intrinsic_fns.insert(def_id, full_path);
+            if hir_id != HirId(u32::MAX) {
+                self.resolutions.insert(hir_id, def_id);
+            }
+            return true;
         }
 
         false
@@ -378,8 +412,7 @@ impl<'a> Resolver<'a> {
                     }
                 });
                 // Handle `use core::...` imports as intrinsics
-                if self.is_extern_crate_path(&full_path) {
-                    let full_path = self.path_to_string(&full_path);
+                if let Some(full_path) = self.extern_crate_path_string(&full_path) {
                     let def_id = self.alloc_synthetic_def_id();
                     self.intrinsic_fns.insert(def_id, full_path.clone());
                     self.define(local_name, Namespace::Value, def_id);
@@ -421,6 +454,10 @@ impl<'a> Resolver<'a> {
                 }
             }
             HirUseTreeKind::Glob => {
+                if self.is_extern_crate_path(&use_tree.path) {
+                    self.import_extern_glob(&use_tree.path);
+                    return;
+                }
                 // use foo::*; - import all public items from module
                 // Resolve the path to find a module
                 if let Some(mod_def_id) = self.resolve_use_path_to_module(&use_tree.path, use_tree.span) {
@@ -433,8 +470,73 @@ impl<'a> Resolver<'a> {
                             self.define(name, ns, def_id);
                         }
                     }
+                } else if let Some((type_def_id, _)) = self.resolve_use_path_ns(&use_tree.path, Namespace::Type) {
+                    if let Some(enum_info) = self.enum_variants.get(&type_def_id) {
+                        let variants: Vec<_> = enum_info
+                            .variants
+                            .iter()
+                            .map(|(&name, &def_id)| (name, def_id))
+                            .collect();
+                        for (name, def_id) in variants {
+                            self.define(name, Namespace::Value, def_id);
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    fn import_extern_glob(&mut self, path: &[Symbol]) {
+        let path_str = self.path_to_string(path);
+        for name in Self::extern_glob_names(&path_str) {
+            let sym = self.interner.intern(name);
+            let def_id = self.alloc_synthetic_def_id();
+            self.intrinsic_fns
+                .insert(def_id, format!("{}::{}", path_str, name));
+            self.define(sym, Namespace::Value, def_id);
+            self.define(sym, Namespace::Type, def_id);
+        }
+    }
+
+    fn extern_glob_names(path: &str) -> &'static [&'static str] {
+        match path {
+            "alloc::collections" | "std::collections" => &[
+                "BinaryHeap",
+                "BTreeMap",
+                "BTreeSet",
+                "LinkedList",
+                "VecDeque",
+            ],
+            "serde::de" => &[
+                "Deserialize",
+                "DeserializeOwned",
+                "DeserializeSeed",
+                "Deserializer",
+                "EnumAccess",
+                "Error",
+                "Expected",
+                "IgnoredAny",
+                "IntoDeserializer",
+                "MapAccess",
+                "SeqAccess",
+                "Unexpected",
+                "VariantAccess",
+                "Visitor",
+            ],
+            "serde::ser" => &[
+                "Error",
+                "Impossible",
+                "Serialize",
+                "SerializeMap",
+                "SerializeSeq",
+                "SerializeStruct",
+                "SerializeStructVariant",
+                "SerializeTuple",
+                "SerializeTupleStruct",
+                "SerializeTupleVariant",
+                "Serializer",
+            ],
+            _ => &[],
         }
     }
 
@@ -451,9 +553,50 @@ impl<'a> Resolver<'a> {
 
     /// Check if a path represents an external known module.
     fn is_extern_crate_path(&self, path: &[Symbol]) -> bool {
-        if path.is_empty() { return false; }
-        let first = self.interner.resolve(path[0]);
-        matches!(first, "core" | "alloc" | "std" | "anyos_std" | "proc_macro")
+        self.extern_crate_path_string(path).is_some()
+    }
+
+    fn is_compiler_known_external_crate(name: &str) -> bool {
+        matches!(
+            name,
+            "core"
+                | "alloc"
+                | "std"
+                | "anyos_std"
+                | "proc_macro"
+                | "proc_macro2"
+                | "quote"
+                | "syn"
+                | "serde"
+        )
+    }
+
+    fn extern_crate_path_string(&self, path: &[Symbol]) -> Option<String> {
+        let (&first, rest) = path.split_first()?;
+        let first_str = self.interner.resolve(first);
+        if Self::is_compiler_known_external_crate(first_str) {
+            return Some(self.path_to_string(path));
+        }
+
+        if first_str == "crate" {
+            let (&extern_name, extern_rest) = rest.split_first()?;
+            let extern_str = self.interner.resolve(extern_name);
+            if Self::is_compiler_known_external_crate(extern_str)
+                && self.scopes[self.root_scope]
+                    .bindings
+                    .get(&(extern_name, Namespace::Type))
+                    .is_none()
+            {
+                let mut parts = Vec::new();
+                parts.push(extern_str.to_string());
+                for sym in extern_rest {
+                    parts.push(self.interner.resolve(*sym).to_string());
+                }
+                return Some(parts.join("::"));
+            }
+        }
+
+        None
     }
 
     /// Build a full path string like "core::ptr::null_mut" from symbols
@@ -668,9 +811,10 @@ impl<'a> Resolver<'a> {
     }
 
     fn register_impl_methods(&mut self, impl_block: &HirImplBlock) {
-        // Get the self type name from the first segment of the type path
+        // Get the named self type from the path. Module-qualified impls such as
+        // `impl crate::m::T` still register items against `T`.
         let self_ty_name = match &impl_block.self_ty {
-            HirTy::Path(p) if !p.segments.is_empty() => p.segments[0].ident,
+            HirTy::Path(p) if !p.segments.is_empty() => p.segments.last().unwrap().ident,
             _ => return,
         };
 
@@ -824,14 +968,22 @@ impl<'a> Resolver<'a> {
         self.register_assoc_items_in_current_scope(&ib.items);
 
         let saved_impl_self_ty = self.current_impl_self_ty;
+        let saved_impl_self_def_id = self.current_impl_self_def_id;
 
         // Define Self in type namespace when we can tie it back to a named type.
         if let HirTy::Path(p) = &ib.self_ty {
             if !p.segments.is_empty() {
-                let first = p.segments[0].ident;
-                self.current_impl_self_ty = Some(first);
-                if let Some(def_id) = self.lookup(first, Namespace::Type) {
+                let self_name = p.segments.last().unwrap().ident;
+                self.current_impl_self_ty = Some(self_name);
+                let path = p.segments.iter().map(|seg| seg.ident).collect::<Vec<_>>();
+                if let Some((def_id, _)) = self.resolve_use_path_ns_direct(&path, Namespace::Type) {
+                    self.current_impl_self_def_id = Some(def_id);
                     // Register Self if we can find the symbol
+                    if let Some(self_sym) = self.find_symbol("Self") {
+                        self.define(self_sym, Namespace::Type, def_id);
+                    }
+                } else if let Some(def_id) = self.lookup(self_name, Namespace::Type) {
+                    self.current_impl_self_def_id = Some(def_id);
                     if let Some(self_sym) = self.find_symbol("Self") {
                         self.define(self_sym, Namespace::Type, def_id);
                     }
@@ -852,6 +1004,7 @@ impl<'a> Resolver<'a> {
             self.resolve_item(item);
         }
         self.current_impl_self_ty = saved_impl_self_ty;
+        self.current_impl_self_def_id = saved_impl_self_def_id;
         self.pop_scope();
     }
 
@@ -1234,6 +1387,18 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        if path.segments.len() >= 2 {
+            let symbols = path.segments.iter().map(|seg| seg.ident).collect::<Vec<_>>();
+            if let Some(full_path) = self.extern_crate_path_string(&symbols) {
+                let def_id = self.alloc_synthetic_def_id();
+                self.intrinsic_fns.insert(def_id, full_path);
+                if hir_id != HirId(u32::MAX) {
+                    self.resolutions.insert(hir_id, def_id);
+                }
+                return;
+            }
+        }
+
         // Handle crate::, super::, self:: prefixes for multi-segment paths
         if path.segments.len() >= 2 {
             if name_str == "crate" || name_str == "super" || name_str == "self" {
@@ -1244,7 +1409,7 @@ impl<'a> Resolver<'a> {
 
         // Handle sysroot and anyOS runtime crate paths as compiler-known intrinsics.
         if path.segments.len() >= 2
-            && matches!(name_str.as_str(), "core" | "alloc" | "std" | "anyos_std" | "proc_macro")
+            && Self::is_compiler_known_external_crate(name_str.as_str())
         {
             let full_path = path.segments.iter()
                 .map(|s| self.interner.resolve(s.ident).to_string())
@@ -1290,6 +1455,11 @@ impl<'a> Resolver<'a> {
                 // Two-segment path: Enum::Variant or Type::method
                 let second_name = path.segments[1].ident;
                 let type_name = if name_str == "Self" {
+                    if let Some(def_id) = self.current_impl_self_def_id {
+                        if self.resolve_assoc_item_on_type_def(def_id, second_name, hir_id) {
+                            return;
+                        }
+                    }
                     self.current_impl_self_ty.unwrap_or(name)
                 } else {
                     name
@@ -1444,7 +1614,11 @@ impl<'a> Resolver<'a> {
                     return;
                 }
                 let seg_str = self.interner.resolve(seg.ident);
-                self.error(path.span, &format!("`{}` not found in module", seg_str));
+                self.error(path.span, &format!(
+                    "`{}` not found in module{}",
+                    seg_str,
+                    self.debug_type_bindings_suffix(scope),
+                ));
             } else {
                 // Intermediate segment: must be a module
                 if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg.ident, Namespace::Type)) {
@@ -1468,10 +1642,35 @@ impl<'a> Resolver<'a> {
                     }
                 } else {
                     let seg_str = self.interner.resolve(seg.ident);
-                    self.error(path.span, &format!("`{}` not found in module", seg_str));
+                    self.error(path.span, &format!(
+                        "`{}` not found in module{}",
+                        seg_str,
+                        self.debug_type_bindings_suffix(scope),
+                    ));
                     return;
                 }
             }
+        }
+    }
+
+    fn debug_type_bindings_suffix(&self, scope: usize) -> String {
+        let mut names = self.scopes[scope]
+            .bindings
+            .keys()
+            .filter_map(|(name, ns)| {
+                if *ns == Namespace::Type {
+                    Some(self.interner.resolve(*name).to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        if names.is_empty() {
+            String::new()
+        } else {
+            format!("; available types: {}", names.join(", "))
         }
     }
 

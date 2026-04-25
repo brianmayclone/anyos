@@ -173,6 +173,98 @@ fn resolve_core_arch_intrinsics_as_compiler_known_names() {
 }
 
 #[test]
+fn resolve_known_external_crate_group_imports_and_assoc_variants() {
+    assert_resolves(r#"
+        use proc_macro2::{Ident, Span};
+        use quote::{ToTokens, TokenStreamExt as _};
+        use syn::{Path, PathArguments, Type};
+        use syn::meta::ParseNestedMeta;
+        use syn::parse::ParseStream;
+
+        fn main(path: Path, ty: Type, meta: ParseNestedMeta, input: ParseStream) {
+            let span = Span::call_site();
+            let ident = Ident::new("x", span);
+            let args = PathArguments::AngleBracketed;
+            let path_ty = Type::Path;
+        }
+    "#);
+}
+
+#[test]
+fn resolve_enum_glob_imports_variants() {
+    assert_resolves(r#"
+        enum RenameRule {
+            LowerCase,
+            SnakeCase,
+        }
+
+        mod case {
+            use super::RenameRule::*;
+
+            fn main() {
+                let a = LowerCase;
+                let b = SnakeCase;
+            }
+        }
+    "#);
+}
+
+#[test]
+fn resolve_known_external_glob_imports() {
+    assert_resolves(r#"
+        use alloc::collections::*;
+        use serde::de::*;
+        use serde::ser::*;
+
+        fn needs_alloc(
+            heap: BinaryHeap<u32>,
+            map: BTreeMap<u32, u32>,
+            set: BTreeSet<u32>,
+            queue: VecDeque<u32>,
+        ) {
+        }
+
+        trait DecodeWithSerde<'de>: Deserialize<'de> + DeserializeSeed<'de> {}
+        trait EncodeWithSerde: Serialize {}
+
+        fn needs_de<'de, D, S, M, E, V>()
+        where
+            D: Deserializer<'de>,
+            S: SeqAccess<'de>,
+            M: MapAccess<'de>,
+            E: EnumAccess<'de>,
+            V: VariantAccess<'de>,
+        {
+        }
+
+        fn needs_ser<S, A, T, TS, TV, M, ST, SV>()
+        where
+            S: Serializer,
+            A: SerializeSeq,
+            T: SerializeTuple,
+            TS: SerializeTupleStruct,
+            TV: SerializeTupleVariant,
+            M: SerializeMap,
+            ST: SerializeStruct,
+            SV: SerializeStructVariant,
+        {
+        }
+    "#);
+}
+
+#[test]
+fn resolve_crate_prefixed_extern_crate_imports() {
+    assert_resolves(r#"
+        extern crate alloc;
+        use crate::alloc::alloc::{handle_alloc_error, Layout};
+
+        fn needs_layout(layout: Layout) {
+            handle_alloc_error(layout);
+        }
+    "#);
+}
+
+#[test]
 fn resolve_trait_def() {
     assert_resolves("trait Foo { fn foo(&self) -> i32; }");
 }

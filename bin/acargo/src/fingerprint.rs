@@ -27,6 +27,7 @@ pub fn is_fresh(
     src_file: &str,
     output_path: &str,
     src_dir: &str,
+    options_hash: u64,
 ) -> bool {
     // Check if output exists
     if !fs::file_exists(output_path) {
@@ -54,6 +55,13 @@ pub fn is_fresh(
     let fp_path = format!("{}/{}.fp", fingerprint_dir, crate_name);
     if !fs::file_exists(&fp_path) {
         return false; // first build
+    }
+    let Some(fp) = fs::read_file(&fp_path) else {
+        return false;
+    };
+    let expected = format!("hash={}", options_hash);
+    if !fp.lines().any(|line| line == expected) {
+        return false;
     }
 
     true

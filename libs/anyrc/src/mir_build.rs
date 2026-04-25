@@ -2288,7 +2288,7 @@ impl<'a> MirBuilder<'a> {
             && matches!(
                 assoc,
                 "from" | "try_from" | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes"
-                    | "from_str_radix" | "from_u32"
+                    | "from_str_radix" | "from_u32" | "min" | "max"
             )
     }
 

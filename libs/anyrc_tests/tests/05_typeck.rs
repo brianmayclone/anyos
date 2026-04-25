@@ -178,6 +178,177 @@ fn question_operator_unwraps_option_for_tuple_patterns() {
 }
 
 #[test]
+fn primitive_integer_min_max_associated_functions_return_receiver_type() {
+    assert_type_ok(r#"
+        fn pick_usize(a: usize, b: usize) -> usize {
+            usize::max(a, b)
+        }
+
+        fn pick_i32(a: i32, b: i32) -> i32 {
+            i32::min(a, b)
+        }
+    "#);
+}
+
+#[test]
+fn if_let_chain_binds_pattern_in_guard_and_body() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Policy {
+            max_files: Option<usize>,
+        }
+
+        fn check(policy: Policy, projected_files: usize) -> usize {
+            if let Some(limit) = policy.max_files
+                && projected_files > limit
+            {
+                limit
+            } else {
+                0
+            }
+        }
+    "#);
+}
+
+#[test]
+fn field_access_autoderefs_through_deref_target() {
+    assert_type_ok(r#"
+        trait Deref {
+            type Target;
+        }
+
+        struct RawTable {
+            table: usize,
+        }
+
+        struct ScopeGuard<T, F> {
+            value: T,
+            f: F,
+        }
+
+        impl<T, F> Deref for ScopeGuard<T, F> {
+            type Target = T;
+        }
+
+        fn read_table<F>(guard: ScopeGuard<&mut RawTable, F>) -> usize {
+            guard.table
+        }
+    "#);
+}
+
+#[test]
+fn unary_deref_uses_deref_target_impl() {
+    assert_type_ok(r#"
+        trait Deref {
+            type Target;
+        }
+
+        struct ScopeGuard<T, F> {
+            value: T,
+            f: F,
+        }
+
+        impl<T, F> Deref for ScopeGuard<T, F> {
+            type Target = T;
+        }
+
+        fn consume<T>(value: T) {}
+
+        fn use_guard<T, F>(guard: ScopeGuard<T, F>) {
+            consume(*guard);
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_uses_concrete_into_iterator_item_type() {
+    assert_type_ok(r#"
+        trait IntoIterator {
+            type Item;
+        }
+
+        struct FullBucketsIndices {}
+
+        impl IntoIterator for FullBucketsIndices {
+            type Item = usize;
+        }
+
+        fn full_buckets_indices() -> FullBucketsIndices {
+            FullBucketsIndices {}
+        }
+
+        fn takes_index(index: usize) {}
+
+        fn resize_inner() {
+            for full_byte_index in full_buckets_indices() {
+                takes_index(full_byte_index);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_uses_iterator_item_type_through_blanket_into_iterator() {
+    assert_type_ok(r#"
+        trait Iterator {
+            type Item;
+        }
+
+        struct FullBucketsIndices {}
+
+        impl Iterator for FullBucketsIndices {
+            type Item = usize;
+        }
+
+        fn full_buckets_indices() -> FullBucketsIndices {
+            FullBucketsIndices {}
+        }
+
+        fn takes_index(index: usize) {}
+
+        fn resize_inner() {
+            for full_byte_index in full_buckets_indices() {
+                takes_index(full_byte_index);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_can_infer_iterator_item_from_next_method() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct FullBucketsIndices {}
+
+        impl FullBucketsIndices {
+            fn next(&mut self) -> Option<usize> {
+                None
+            }
+        }
+
+        fn full_buckets_indices() -> FullBucketsIndices {
+            FullBucketsIndices {}
+        }
+
+        fn takes_index(index: usize) {}
+
+        fn resize_inner() {
+            for full_byte_index in full_buckets_indices() {
+                takes_index(full_byte_index);
+            }
+        }
+    "#);
+}
+
+#[test]
 fn syn_lit_style_option_parser_uses_question_on_string_get() {
     assert_type_ok(r#"
         enum Option<T> {
@@ -342,6 +513,99 @@ fn for_loop_over_token_stream_binds_token_tree_items() {
 }
 
 #[test]
+fn proc_macro2_intrinsic_enum_variants_have_parent_type() {
+    assert_type_ok(r#"
+        use proc_macro2::{Delimiter, Spacing};
+
+        fn takes_spacing(_: Spacing) {}
+        fn takes_delimiter(_: Delimiter) {}
+
+        fn main() {
+            takes_spacing(Spacing::Joint);
+            takes_spacing(Spacing::Alone);
+            takes_delimiter(Delimiter::Brace);
+            takes_delimiter(Delimiter::None);
+        }
+    "#);
+}
+
+#[test]
+fn quote_macros_typecheck_as_proc_macro2_token_stream() {
+    assert_type_ok(r#"
+        mod proc_macro2 {
+            pub struct TokenStream {}
+            impl TokenStream {
+                pub fn new() -> TokenStream {
+                    TokenStream {}
+                }
+            }
+        }
+
+        mod fragment {
+            use crate::proc_macro2::TokenStream;
+
+            pub enum Fragment {
+                Block(TokenStream),
+            }
+        }
+
+        macro_rules! quote_block {
+            ($($tt:tt)*) => {
+                crate::fragment::Fragment::Block(quote!($($tt)*))
+            }
+        }
+
+        fn make(flag: bool) -> fragment::Fragment {
+            if flag {
+                quote_block! { struct Demo; }
+            } else {
+                quote_block! { impl Demo {} }
+            }
+        }
+
+        fn make_spanned(span: i32) -> proc_macro2::TokenStream {
+            quote_spanned!(span=> struct Demo;)
+        }
+    "#);
+}
+
+#[test]
+fn unexpanded_expr_macro_does_not_force_integer_inference() {
+    assert_type_ok(r#"
+        mod proc_macro2 {
+            pub struct TokenStream {}
+            impl TokenStream {
+                pub fn new() -> TokenStream {
+                    TokenStream {}
+                }
+            }
+        }
+
+        mod fragment {
+            use crate::proc_macro2::TokenStream;
+
+            pub enum Fragment {
+                Block(TokenStream),
+            }
+        }
+
+        macro_rules! quote_block {
+            ($($tt:tt)*) => {
+                crate::fragment::Fragment::Block(quote!($($tt)*))
+            }
+        }
+
+        fn make(flag: bool) -> fragment::Fragment {
+            if flag {
+                not_yet_supported_macro!()
+            } else {
+                quote_block! { impl Demo {} }
+            }
+        }
+    "#);
+}
+
+#[test]
 fn impl_method_body_resolves_self_enum_variants_against_impl_type() {
     assert_type_ok(r#"
         enum First {
@@ -390,6 +654,25 @@ fn self_enum_variant_resolution_wins_over_global_type_names() {
                     1 => Self::Numeric,
                     _ => Self::String,
                 }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn module_qualified_impl_self_resolves_enum_variants() {
+    assert_type_ok(r#"
+        mod error {
+            pub enum DecodeError {
+                OtherString(String),
+            }
+        }
+
+        struct String {}
+
+        impl crate::error::DecodeError {
+            fn custom(msg: String) -> Self {
+                Self::OtherString(msg)
             }
         }
     "#);
@@ -587,6 +870,88 @@ fn binary_operator_uses_trait_output_type() {
 }
 
 #[test]
+fn comparison_operator_uses_partial_eq_impl() {
+    assert_type_ok(r#"
+        trait PartialEq<Rhs> {
+            fn eq(&self, rhs: &Rhs) -> bool;
+        }
+
+        struct Wrapped<T> {
+            value: usize,
+            marker: T,
+        }
+
+        struct Big;
+
+        impl<T> PartialEq<usize> for Wrapped<T> {
+            fn eq(&self, rhs: &usize) -> bool {
+                self.value == *rhs
+            }
+        }
+
+        fn is_zero(value: Wrapped<Big>) -> bool {
+            value == 0
+        }
+    "#);
+}
+
+#[test]
+fn generic_tuple_struct_constructor_infers_adt_args_from_fields() {
+    assert_type_ok(r#"
+        struct PhantomData<T>;
+        struct SendSyncPhantomData<T>(PhantomData<T>);
+        struct Wrapper<T> {
+            bytes: [u8; 2],
+            marker: SendSyncPhantomData<T>,
+        }
+
+        impl<T> SendSyncPhantomData<T> {
+            fn default() -> SendSyncPhantomData<T> {
+                SendSyncPhantomData(PhantomData)
+            }
+        }
+
+        fn make<T>() -> Wrapper<T> {
+            Wrapper {
+                bytes: [0u8; 2],
+                marker: SendSyncPhantomData::default(),
+            }
+        }
+    "#);
+}
+
+#[test]
+fn generic_self_struct_literal_uses_impl_self_substs() {
+    assert_type_ok(r#"
+        struct PhantomData<T>;
+        struct SendSyncPhantomData<T>(PhantomData<T>);
+        struct AlignmentError<Src, Dst> {
+            src: Src,
+            dst: SendSyncPhantomData<Dst>,
+        }
+
+        impl<T> SendSyncPhantomData<T> {
+            fn default() -> SendSyncPhantomData<T> {
+                SendSyncPhantomData(PhantomData)
+            }
+        }
+
+        impl<Src, Dst> AlignmentError<Src, Dst> {
+            fn new(src: Src) -> Self {
+                Self {
+                    src,
+                    dst: SendSyncPhantomData::default(),
+                }
+            }
+        }
+
+        fn make<U>() -> AlignmentError<(), U> {
+            AlignmentError::new(())
+        }
+    "#);
+}
+
+#[test]
 fn binary_operator_uses_reference_self_trait_output_type() {
     assert_type_ok(r#"
         mod core {
@@ -611,6 +976,173 @@ fn binary_operator_uses_reference_self_trait_output_type() {
 
         fn multiply(lhs: &Aligned4x130, rhs: PrecomputedMultiplier) -> Unreduced4x130 {
             lhs * rhs
+        }
+    "#);
+}
+
+#[test]
+fn operator_impl_does_not_bind_unanchored_infer_lhs() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod ops {
+                pub trait Sub<Rhs> {
+                    type Output;
+                    fn sub(self, rhs: Rhs) -> Self::Output;
+                }
+            }
+        }
+
+        struct U16<O> {}
+        struct NonZeroUsize {}
+
+        impl<O> core::ops::Sub<usize> for U16<O> {
+            type Output = U16<O>;
+            fn sub(self, rhs: usize) -> Self::Output {
+                self
+            }
+        }
+
+        fn padding(align: NonZeroUsize) -> usize {
+            let mask = align.get() - 1;
+            mask
+        }
+    "#);
+}
+
+#[test]
+fn result_branches_with_unit_and_generic_error_align() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod mem {
+                pub fn align_of<T>() -> usize { 1 }
+            }
+        }
+
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        trait AsAddress {
+            fn addr(self) -> usize;
+        }
+
+        struct PhantomData<T>;
+        struct SendSyncPhantomData<T>(PhantomData<T>);
+        struct AlignmentError<Src, Dst> {
+            src: Src,
+            marker: SendSyncPhantomData<Dst>,
+        }
+
+        impl<T> SendSyncPhantomData<T> {
+            fn default() -> SendSyncPhantomData<T> {
+                SendSyncPhantomData(PhantomData)
+            }
+        }
+
+        impl<Src, Dst> AlignmentError<Src, Dst> {
+            fn new_unchecked(src: Src) -> Self {
+                Self { src, marker: SendSyncPhantomData::default() }
+            }
+        }
+
+        fn validate<T: AsAddress, U>(t: T) -> Result<(), AlignmentError<(), U>> {
+            let remainder = t.addr() % core::mem::align_of::<U>();
+            if remainder == 0 {
+                Ok(())
+            } else {
+                Err(AlignmentError::new_unchecked(()))
+            }
+        }
+    "#);
+}
+
+#[test]
+fn imported_nonzero_usize_get_stays_primitive_with_byteorder_usize_nearby() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod num {
+                pub struct NonZeroUsize {}
+            }
+            pub mod ops {
+                pub trait Sub<Rhs> {
+                    type Output;
+                    fn sub(self, rhs: Rhs) -> Self::Output;
+                }
+            }
+        }
+
+        use core::num::NonZeroUsize;
+
+        struct Usize<O> {}
+        impl<O> core::ops::Sub<Usize<O>> for usize {
+            type Output = Usize<O>;
+            fn sub(self, rhs: Usize<O>) -> Self::Output {
+                rhs
+            }
+        }
+        impl<O> core::ops::Sub<usize> for Usize<O> {
+            type Output = Usize<O>;
+            fn sub(self, rhs: usize) -> Self::Output {
+                self
+            }
+        }
+
+        fn padding(align: NonZeroUsize) -> usize {
+            let mask = align.get() - 1;
+            mask
+        }
+    "#);
+}
+
+#[test]
+fn external_nonzero_usize_get_stays_primitive_with_byteorder_usize_nearby() {
+    assert_type_ok(r#"
+        use core::num::NonZeroUsize;
+
+        mod byteorder {
+            pub struct Usize<O> {}
+            impl<O> core::ops::Sub<Usize<O>> for usize {
+                type Output = Usize<O>;
+                fn sub(self, rhs: Usize<O>) -> Self::Output {
+                    rhs
+                }
+            }
+            impl<O> core::ops::Sub<usize> for Usize<O> {
+                type Output = Usize<O>;
+                fn sub(self, rhs: usize) -> Self::Output {
+                    self
+                }
+            }
+        }
+
+        mod util {
+            use super::*;
+
+            fn padding(align: NonZeroUsize) -> usize {
+                let mask = align.get() - 1;
+                mask
+            }
+        }
+    "#);
+}
+
+#[test]
+fn primitive_integer_methods_keep_receiver_type() {
+    assert_type_ok(r#"
+        fn padding_needed_for(len: usize, align: usize) -> usize {
+            let mask = align - 1;
+            !(len.wrapping_sub(1)) & mask
+        }
+
+        fn round_down(n: usize, align: usize) -> usize {
+            let _ok: bool = align.is_power_of_two();
+            let mask = !(align - 1);
+            n & mask
+        }
+
+        fn checked(n: usize, align: usize) -> Option<usize> {
+            n.checked_add(align)
         }
     "#);
 }
