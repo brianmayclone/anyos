@@ -1650,6 +1650,15 @@ fn module_alias_assoc_fn_resolves_same_named_type_in_target_module() {
         }
 
         mod syn {
+            pub mod punctuated {
+                pub struct Punctuated<T, P> {
+                    value: T,
+                    punct: P,
+                }
+            }
+
+            pub struct Comma {}
+
             pub mod data {
                 pub struct Field {
                     pub ty: u8,
@@ -1663,11 +1672,26 @@ fn module_alias_assoc_fn_resolves_same_named_type_in_target_module() {
             pub mod derive {
                 pub struct DeriveInput {
                     pub attrs: u8,
+                    pub data: Data,
                 }
+
+                pub enum Data {
+                    Enum(DataEnum),
+                    Struct(DataStruct),
+                }
+
+                pub struct DataEnum {
+                    pub variants: crate::syn::punctuated::Punctuated<
+                        crate::syn::data::Variant,
+                        crate::syn::Comma,
+                    >,
+                }
+
+                pub struct DataStruct {}
             }
 
             pub use crate::syn::data::{Field, Variant};
-            pub use crate::syn::derive::DeriveInput;
+            pub use crate::syn::derive::{Data, DeriveInput};
         }
 
         mod bound {
@@ -1679,10 +1703,21 @@ fn module_alias_assoc_fn_resolves_same_named_type_in_target_module() {
         }
 
         mod deprecated {
-            use crate::syn::DeriveInput;
+            use crate::syn::{Data, DeriveInput};
 
             fn should_allow_deprecated(input: &DeriveInput) -> u8 {
                 input.attrs
+            }
+
+            fn enum_variants(input: &DeriveInput) -> u8 {
+                if let Data::Enum(data) = &input.data {
+                    for variant in &data.variants {
+                        return variant.fields;
+                    }
+                    0
+                } else {
+                    0
+                }
             }
         }
 

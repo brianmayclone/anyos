@@ -631,6 +631,9 @@ impl<'a> TypeChecker<'a> {
                     TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
                         return TyKind::Ref(Box::new(substs[0].clone()), mutability);
                     }
+                    TyKind::Adt(def_id, substs) if self.is_punctuated_def(def_id) && !substs.is_empty() => {
+                        return TyKind::Ref(Box::new(substs[0].clone()), mutability);
+                    }
                     other => other,
                 }
             }
@@ -641,6 +644,9 @@ impl<'a> TypeChecker<'a> {
             TyKind::Array(elem, _) | TyKind::Slice(elem) => *elem,
             TyKind::Str => TyKind::Uint(UintTy::U8),
             TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
+                substs[0].clone()
+            }
+            TyKind::Adt(def_id, substs) if self.is_punctuated_def(def_id) && !substs.is_empty() => {
                 substs[0].clone()
             }
             TyKind::Adt(def_id, _) if self.is_token_stream_def(def_id) => {
@@ -2389,7 +2395,10 @@ impl<'a> TypeChecker<'a> {
                             }
                             if self.struct_defs.contains_key(&def_id) {
                                 let field = self.interner.resolve(*field_name).to_string();
-                                self.error(expr.span, &format!("no such field `{}`", field));
+                                self.error(
+                                    expr.span,
+                                    &format!("no such field `{}` on {:?}", field, resolved),
+                                );
                             }
                             return TyKind::Error;
                         }
@@ -4586,6 +4595,17 @@ impl<'a> TypeChecker<'a> {
             == Some(def_id)
             || self.local_type_name_is(def_id, "Vec")
             || self.is_known_type_path(def_id, "Vec")
+    }
+
+    fn is_punctuated_def(&self, def_id: DefId) -> bool {
+        self.local_type_name_is(def_id, "Punctuated")
+            || self.is_known_type_path(def_id, "Punctuated")
+            || self.qualified_type_names.iter().any(|(path, candidate)| {
+                *candidate == def_id
+                    && (path == "Punctuated"
+                        || path == "crate::Punctuated"
+                        || path.ends_with("::Punctuated"))
+            })
     }
 
     fn is_string_def(&self, def_id: DefId) -> bool {

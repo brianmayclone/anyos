@@ -9,9 +9,18 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[cfg(feature = "host")]
-use std::io::Write;
+use std::fs::{remove_file, File};
+#[cfg(feature = "host")]
+use std::io::{Read, Write};
+#[cfg(feature = "host")]
+use std::path::PathBuf;
 #[cfg(feature = "host")]
 use std::process::{Command, Stdio};
+#[cfg(feature = "host")]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "host")]
+static HOST_SPOOL_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A streaming reader over an HTTPS connection with chunked encoding support.
 pub struct HttpStream {
@@ -27,6 +36,10 @@ pub struct HttpStream {
     eof: bool,
     /// Total bytes delivered to caller.
     pub total_read: usize,
+    #[cfg(feature = "host")]
+    host_file: Option<File>,
+    #[cfg(feature = "host")]
+    host_path: Option<PathBuf>,
 }
 
 impl HttpStream {
@@ -159,6 +172,10 @@ impl HttpStream {
                 chunk_remaining: 0,
                 eof: false,
                 total_read: 0,
+                #[cfg(feature = "host")]
+                host_file: None,
+                #[cfg(feature = "host")]
+                host_path: None,
             };
 
             // If chunked, read the first chunk header
@@ -179,6 +196,7 @@ impl HttpStream {
         extra_headers: &str,
     ) -> Result<Self, String> {
         let url = format!("https://{}{}", host, path);
+        let spool_path = host_spool_path();
         let mut cmd = Command::new("curl");
         cmd.arg("-fsSL")
             .arg("--proto")
@@ -198,11 +216,13 @@ impl HttpStream {
         }
 
         let mut child = cmd
+            .arg("-o")
+            .arg(&spool_path)
             .arg("--data-binary")
             .arg("@-")
             .arg(url)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("curl spawn failed: {}", e))?;
@@ -221,19 +241,25 @@ impl HttpStream {
             .wait_with_output()
             .map_err(|e| format!("curl wait failed: {}", e))?;
         if !output.status.success() {
+            let _ = remove_file(&spool_path);
             let stderr = core::str::from_utf8(&output.stderr).unwrap_or("curl failed");
             return Err(format!("curl POST failed: {}", stderr.trim()));
         }
 
+        let file = File::open(&spool_path)
+            .map_err(|e| format!("curl output open failed {}: {}", spool_path.display(), e))?;
+
         Ok(HttpStream {
             tls_handle: u32::MAX,
             tcp_socket: u32::MAX,
-            buf: output.stdout,
+            buf: Vec::new(),
             buf_pos: 0,
             chunked: false,
             chunk_remaining: 0,
             eof: false,
             total_read: 0,
+            host_file: Some(file),
+            host_path: Some(spool_path),
         })
     }
 
@@ -289,8 +315,25 @@ impl HttpStream {
         // Buffer exhausted — read more from TLS
         #[cfg(feature = "host")]
         {
-            self.eof = true;
-            return 0;
+            if let Some(file) = self.host_file.as_mut() {
+                match file.read(out) {
+                    Ok(0) => {
+                        self.eof = true;
+                        0
+                    }
+                    Ok(n) => {
+                        self.total_read += n;
+                        n
+                    }
+                    Err(_) => {
+                        self.eof = true;
+                        0
+                    }
+                }
+            } else {
+                self.eof = true;
+                0
+            }
         }
 
         #[cfg(not(feature = "host"))]
@@ -383,12 +426,28 @@ impl HttpStream {
 
 impl Drop for HttpStream {
     fn drop(&mut self) {
+        #[cfg(feature = "host")]
+        {
+            self.host_file.take();
+            if let Some(path) = self.host_path.take() {
+                let _ = remove_file(path);
+            }
+        }
+
         #[cfg(not(feature = "host"))]
         {
             libtls::close(self.tls_handle);
             anyos_std::net::tcp_close(self.tcp_socket);
         }
     }
+}
+
+#[cfg(feature = "host")]
+fn host_spool_path() -> PathBuf {
+    let seq = HOST_SPOOL_ID.fetch_add(1, Ordering::Relaxed);
+    let mut path = std::env::temp_dir();
+    path.push(format!("agit-upload-pack-{}-{}.bin", std::process::id(), seq));
+    path
 }
 
 // ── TLS helpers ─────────────────────────────────────────────────────────────

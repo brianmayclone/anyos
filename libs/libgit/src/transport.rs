@@ -359,10 +359,11 @@ fn stream_parse_objects(
     use crate::object::{Object, ObjectType};
 
     let mut resolved: Vec<(Oid, Vec<u8>, u8)> = Vec::new();
+    let mut resolved_bytes = 0usize;
     let mut count = 0u32;
 
     for i in 0..num_objects {
-        let (obj_type_raw, _size) =
+        let (obj_type_raw, size) =
             crate::pack::read_entry_header_stream(stream).map_err(|e| Error::Other(e))?;
 
         if i % 200 == 0 || i == num_objects - 1 {
@@ -377,7 +378,7 @@ fn stream_parse_objects(
         match obj_type_raw {
             OBJ_COMMIT | OBJ_TREE | OBJ_BLOB | OBJ_TAG => {
                 let inflated =
-                    crate::pack::inflate_from_stream(stream).map_err(|e| Error::Other(e))?;
+                    crate::pack::inflate_from_stream(stream, size).map_err(|e| Error::Other(e))?;
 
                 let obj_type = match obj_type_raw {
                     OBJ_COMMIT => ObjectType::Commit,
@@ -392,7 +393,7 @@ fn stream_parse_objects(
                     data: inflated.clone(),
                 };
                 let _ = repo.write_object(&obj);
-                resolved.push((oid, inflated, obj_type_raw));
+                push_delta_cache(&mut resolved, &mut resolved_bytes, oid, inflated, obj_type_raw);
                 count += 1;
             }
             OBJ_REF_DELTA => {
@@ -403,7 +404,7 @@ fn stream_parse_objects(
                 let base_oid = Oid::from_bytes(base_sha);
 
                 let delta_data =
-                    crate::pack::inflate_from_stream(stream).map_err(|e| Error::Other(e))?;
+                    crate::pack::inflate_from_stream(stream, size).map_err(|e| Error::Other(e))?;
 
                 let base = resolved
                     .iter()
@@ -430,7 +431,7 @@ fn stream_parse_objects(
                         data: result.clone(),
                     };
                     let _ = repo.write_object(&obj);
-                    resolved.push((oid, result, base_type));
+                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, base_type);
                     count += 1;
                 }
             }
@@ -438,7 +439,7 @@ fn stream_parse_objects(
                 let _offset =
                     crate::pack::read_ofs_offset_stream(stream).map_err(|e| Error::Other(e))?;
                 let delta_data =
-                    crate::pack::inflate_from_stream(stream).map_err(|e| Error::Other(e))?;
+                    crate::pack::inflate_from_stream(stream, size).map_err(|e| Error::Other(e))?;
 
                 if let Some((_, base_data, base_type)) = resolved.last() {
                     let result = crate::pack::apply_delta(base_data, &delta_data);
@@ -449,16 +450,11 @@ fn stream_parse_objects(
                         data: result.clone(),
                     };
                     let _ = repo.write_object(&obj);
-                    resolved.push((oid, result, *base_type));
+                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, *base_type);
                     count += 1;
                 }
             }
             _ => {}
-        }
-
-        // Cap delta cache
-        if resolved.len() > 8192 {
-            resolved.drain(..resolved.len() - 4096);
         }
     }
 
@@ -468,6 +464,33 @@ fn stream_parse_objects(
         num_objects
     );
     Ok(count)
+}
+
+const DELTA_CACHE_MAX_OBJECTS: usize = 128;
+const DELTA_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+fn push_delta_cache(
+    cache: &mut Vec<(Oid, Vec<u8>, u8)>,
+    cache_bytes: &mut usize,
+    oid: Oid,
+    data: Vec<u8>,
+    obj_type: u8,
+) {
+    if data.len() > DELTA_CACHE_MAX_BYTES / 2 {
+        return;
+    }
+
+    *cache_bytes += data.len();
+    cache.push((oid, data, obj_type));
+
+    while cache.len() > DELTA_CACHE_MAX_OBJECTS || *cache_bytes > DELTA_CACHE_MAX_BYTES {
+        if cache.is_empty() {
+            *cache_bytes = 0;
+            break;
+        }
+        let (_, data, _) = cache.remove(0);
+        *cache_bytes = cache_bytes.saturating_sub(data.len());
+    }
 }
 
 /// Perform git-receive-pack (push objects to remote).

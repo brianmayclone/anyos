@@ -19,6 +19,9 @@ Environment:
   AGIT_TEST_REPO=<url>  repository URL to clone
   AGIT_BIN=<path>       use an existing agit/cgit binary instead of building one
   AGIT_KEEP_TMP=1       keep the temporary directory for debugging
+  AGIT_TIMEOUT=60s      maximum runtime for each agit command
+  AGIT_MAX_VMEM_KB=2097152
+                         virtual memory ceiling for each agit command
 
 Examples:
   scripts/test-agit.sh
@@ -32,8 +35,13 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 repo_url="${1:-${AGIT_TEST_REPO:-https://github.com/brianmayclone/serodesk}}"
+agit_timeout="${AGIT_TIMEOUT:-60s}"
+agit_max_vmem_kb="${AGIT_MAX_VMEM_KB:-2097152}"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/agit-github-test.XXXXXX")"
-clone_dir="$tmp_root/anyos"
+repo_name="${repo_url%/}"
+repo_name="${repo_name%.git}"
+repo_name="${repo_name##*/}"
+clone_dir="$tmp_root/${repo_name:-repo}"
 
 cleanup() {
   if [[ "${AGIT_KEEP_TMP:-0}" == "1" ]]; then
@@ -71,7 +79,7 @@ run_agit() {
 
   local out_file="$tmp_root/${label//[^A-Za-z0-9_.-]/_}.out"
   printf '==> agit %s\n' "$label"
-  if ! (cd "$cwd" && "$agit_bin" "$@" >"$out_file" 2>&1); then
+  if ! run_limited "$cwd" "$out_file" "$@"; then
     cat "$out_file"
     fail "command failed: agit $label"
   fi
@@ -90,7 +98,7 @@ capture_agit() {
   shift 2
 
   local out_file="$tmp_root/${label//[^A-Za-z0-9_.-]/_}.out"
-  if ! (cd "$cwd" && "$agit_bin" "$@" >"$out_file" 2>&1); then
+  if ! run_limited "$cwd" "$out_file" "$@"; then
     cat "$out_file"
     fail "command failed: agit $label"
   fi
@@ -103,9 +111,30 @@ capture_agit() {
   cat "$out_file"
 }
 
+run_limited() {
+  local cwd="$1"
+  local out_file="$2"
+  shift 2
+
+  if command -v timeout >/dev/null 2>&1; then
+    (
+      cd "$cwd"
+      ulimit -v "$agit_max_vmem_kb"
+      timeout --kill-after=5s "$agit_timeout" "$agit_bin" "$@"
+    ) >"$out_file" 2>&1
+  else
+    (
+      cd "$cwd"
+      ulimit -v "$agit_max_vmem_kb"
+      "$agit_bin" "$@"
+    ) >"$out_file" 2>&1
+  fi
+}
+
 printf 'Repository: %s\n' "$repo_url"
 printf 'Workspace:  %s\n' "$tmp_root"
 printf 'Binary:     %s\n' "$agit_bin"
+printf 'Limits:     timeout=%s vmem=%s KB\n' "$agit_timeout" "$agit_max_vmem_kb"
 
 run_agit "$tmp_root" "clone $repo_url" clone "$repo_url" "$clone_dir"
 

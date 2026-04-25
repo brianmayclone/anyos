@@ -77,11 +77,12 @@ pub fn parse_pack_streamed(
 
     // Delta resolution table: (oid, data, type_num) for REF_DELTA lookups
     let mut resolved: Vec<(Oid, Vec<u8>, u8)> = Vec::new();
+    let mut resolved_bytes = 0usize;
     let mut count = 0u32;
 
     for i in 0..num_objects {
         // Read variable-length entry header from stream
-        let (obj_type_raw, _uncompressed_size) = read_entry_header_stream(stream)?;
+        let (obj_type_raw, uncompressed_size) = read_entry_header_stream(stream)?;
 
         // Progress
         if i % 100 == 0 || i == num_objects - 1 {
@@ -95,7 +96,7 @@ pub fn parse_pack_streamed(
 
         match obj_type_raw {
             OBJ_COMMIT | OBJ_TREE | OBJ_BLOB | OBJ_TAG => {
-                let inflated = inflate_from_stream(stream)?;
+                let inflated = inflate_from_stream(stream, uncompressed_size)?;
 
                 let obj_type = match obj_type_raw {
                     OBJ_COMMIT => ObjectType::Commit,
@@ -112,7 +113,7 @@ pub fn parse_pack_streamed(
                 repo.write_object(&obj)
                     .map_err(|e| alloc::format!("write: {}", e))?;
 
-                resolved.push((oid, inflated, obj_type_raw));
+                push_delta_cache(&mut resolved, &mut resolved_bytes, oid, inflated, obj_type_raw);
                 count += 1;
             }
             OBJ_REF_DELTA => {
@@ -123,7 +124,7 @@ pub fn parse_pack_streamed(
                 }
                 let base_oid = Oid::from_bytes(base_sha);
 
-                let delta_data = inflate_from_stream(stream)?;
+                let delta_data = inflate_from_stream(stream, uncompressed_size)?;
 
                 // Find base object
                 if let Some((_, base_data, base_type)) =
@@ -138,7 +139,7 @@ pub fn parse_pack_streamed(
                     };
                     repo.write_object(&obj)
                         .map_err(|e| alloc::format!("write: {}", e))?;
-                    resolved.push((oid, result, *base_type));
+                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, *base_type);
                     count += 1;
                 } else {
                     // Base not found — try reading from repo (thin pack)
@@ -158,7 +159,7 @@ pub fn parse_pack_streamed(
                         };
                         repo.write_object(&obj)
                             .map_err(|e| alloc::format!("write: {}", e))?;
-                        resolved.push((oid, result, base_type));
+                        push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, base_type);
                         count += 1;
                     } else if verbose() {
                         anyos_std::println!(
@@ -171,7 +172,7 @@ pub fn parse_pack_streamed(
             OBJ_OFS_DELTA => {
                 // Read negative offset (variable-length)
                 let _offset = read_ofs_offset_stream(stream)?;
-                let delta_data = inflate_from_stream(stream)?;
+                let delta_data = inflate_from_stream(stream, uncompressed_size)?;
 
                 // OFS_DELTA: base is at a byte offset in the pack.
                 // In streaming mode we can't seek back, so use last resolved object as heuristic.
@@ -185,7 +186,7 @@ pub fn parse_pack_streamed(
                     };
                     repo.write_object(&obj)
                         .map_err(|e| alloc::format!("write: {}", e))?;
-                    resolved.push((oid, result, *base_type));
+                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, *base_type);
                     count += 1;
                 }
             }
@@ -194,12 +195,6 @@ pub fn parse_pack_streamed(
                     anyos_std::println!("\n[pack-stream] unknown type {}", obj_type_raw);
                 }
             }
-        }
-
-        // Limit resolved cache to prevent memory explosion for huge repos.
-        // Keep last 8192 objects for delta resolution.
-        if resolved.len() > 8192 {
-            resolved.drain(..resolved.len() - 4096);
         }
     }
 
@@ -210,6 +205,33 @@ pub fn parse_pack_streamed(
     );
 
     Ok(count)
+}
+
+const DELTA_CACHE_MAX_OBJECTS: usize = 128;
+const DELTA_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+fn push_delta_cache(
+    cache: &mut Vec<(Oid, Vec<u8>, u8)>,
+    cache_bytes: &mut usize,
+    oid: Oid,
+    data: Vec<u8>,
+    obj_type: u8,
+) {
+    if data.len() > DELTA_CACHE_MAX_BYTES / 2 {
+        return;
+    }
+
+    *cache_bytes += data.len();
+    cache.push((oid, data, obj_type));
+
+    while cache.len() > DELTA_CACHE_MAX_OBJECTS || *cache_bytes > DELTA_CACHE_MAX_BYTES {
+        if cache.is_empty() {
+            *cache_bytes = 0;
+            break;
+        }
+        let (_, data, _) = cache.remove(0);
+        *cache_bytes = cache_bytes.saturating_sub(data.len());
+    }
 }
 
 /// Read a pack entry header from a stream (variable-length encoding).
@@ -264,7 +286,16 @@ pub(crate) fn read_ofs_offset_stream(
 /// Reads the zlib header (if present), then feeds chunks to the DEFLATE inflater.
 pub(crate) fn inflate_from_stream(
     stream: &mut crate::stream::HttpStream,
+    expected_size: usize,
 ) -> Result<Vec<u8>, alloc::string::String> {
+    const MAX_PACK_OBJECT_OUTPUT: usize = 128 * 1024 * 1024;
+    if expected_size > MAX_PACK_OBJECT_OUTPUT {
+        return Err(alloc::format!(
+            "pack object too large: {} bytes",
+            expected_size
+        ));
+    }
+
     // Read enough data to inflate. We don't know the compressed size upfront,
     // so read in chunks and try to inflate. When inflate succeeds (BFINAL block
     // found), we know how many bytes were consumed and can "push back" the rest.
@@ -287,8 +318,15 @@ pub(crate) fn inflate_from_stream(
 
     // Try inflating, read more data if needed
     loop {
-        match inflate::inflate_counted(&compressed[zlib_skip..]) {
+        match inflate::inflate_counted_limited(&compressed[zlib_skip..], expected_size) {
             Some((data, consumed)) => {
+                if data.len() != expected_size {
+                    return Err(alloc::format!(
+                        "inflate size mismatch: expected {}, got {}",
+                        expected_size,
+                        data.len()
+                    ));
+                }
                 // Put unconsumed bytes back into the stream buffer
                 let mut total_consumed = zlib_skip + consumed;
                 if zlib_skip != 0 {
