@@ -277,7 +277,8 @@ pub fn ai_action(action: ai::CodeAction) {
         return;
     }
 
-    let filename = path::basename(&s.file_mgr.active_file().unwrap().path);
+    let active_path = s.file_mgr.active_file().unwrap().path.clone();
+    let filename = path::basename(&active_path);
     let lang = language::language_for_filename(filename);
 
     let mut buf = vec![0u8; 64 * 1024];
@@ -299,10 +300,23 @@ pub fn ai_action(action: ai::CodeAction) {
     switch_sidebar_view(5);
     s.ai_panel.set_status(&format!("{}...", action.label()));
 
-    match s
-        .ai_client
-        .code_action(action, code, lang.id.display_name())
-    {
+    let diagnostics = ai_diagnostics_context(&active_path);
+    let symbols = ai_symbols_context(&active_path);
+    let project = s
+        .current_project
+        .as_ref()
+        .map(|p| p.display_context())
+        .unwrap_or_default();
+
+    match s.ai_client.code_action_with_context(ai::AiCodeContext {
+        action,
+        code,
+        language: lang.id.display_name(),
+        file_path: &active_path,
+        diagnostics: &diagnostics,
+        symbols: &symbols,
+        project: &project,
+    }) {
         Ok(response) => {
             s.ai_panel
                 .append_user_message(&format!("[{}] {}", action.label(), filename));
@@ -314,6 +328,50 @@ pub fn ai_action(action: ai::CodeAction) {
             s.ai_panel.set_status("Error");
         }
     }
+}
+
+fn ai_diagnostics_context(file_path: &str) -> String {
+    let s = app();
+    let mut out = String::new();
+    for diag in s.diagnostics.for_file(file_path).into_iter().take(20) {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        let code = diag.code.as_deref().unwrap_or("");
+        out.push_str(&format!(
+            "{}:{}:{} [{} {}] {}",
+            path::basename(&diag.file_path),
+            diag.line,
+            diag.column,
+            diag.source,
+            code,
+            diag.message
+        ));
+    }
+    out
+}
+
+fn ai_symbols_context(file_path: &str) -> String {
+    let s = app();
+    let mut out = String::new();
+    for symbol in s
+        .symbol_index
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.file_path == file_path)
+        .take(40)
+    {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "{} {} at line {}",
+            symbol.kind.label(),
+            symbol.name,
+            symbol.line + 1
+        ));
+    }
+    out
 }
 
 /// Open the AI settings dialog.

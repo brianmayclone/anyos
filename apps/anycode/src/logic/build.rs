@@ -20,7 +20,8 @@ impl BuildProcess {
         if pipe_id == 0 {
             return None;
         }
-        let tid = anyos_std::process::spawn_piped(cmd, args, pipe_id);
+        let full_args = full_argv_string(cmd, args);
+        let tid = anyos_std::process::spawn_piped(cmd, &full_args, pipe_id);
         if tid == u32::MAX {
             anyos_std::ipc::pipe_close(pipe_id);
             return None;
@@ -74,6 +75,15 @@ impl BuildProcess {
             self.finished = true;
             anyos_std::ipc::pipe_close(self.pipe_id);
         }
+    }
+}
+
+fn full_argv_string(cmd: &str, args: &str) -> String {
+    let argv0 = path::basename(cmd);
+    if args.trim().is_empty() {
+        String::from(argv0)
+    } else {
+        format!("{} {}", argv0, args)
     }
 }
 

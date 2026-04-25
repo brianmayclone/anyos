@@ -115,6 +115,7 @@ name = "anycode"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "anyrc",
  "dynlink",
  "libanyui_client",
  "libconf_schema",

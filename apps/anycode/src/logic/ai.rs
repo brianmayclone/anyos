@@ -179,6 +179,16 @@ pub struct AiConfig {
     pub custom_endpoint: String,
 }
 
+pub struct AiCodeContext<'a> {
+    pub action: CodeAction,
+    pub code: &'a str,
+    pub language: &'a str,
+    pub file_path: &'a str,
+    pub diagnostics: &'a str,
+    pub symbols: &'a str,
+    pub project: &'a str,
+}
+
 impl AiConfig {
     pub fn load() -> Self {
         let _ = ai_schema().register();
@@ -344,13 +354,28 @@ impl AiClient {
         code: &str,
         language: &str,
     ) -> Result<String, String> {
+        self.code_action_with_context(AiCodeContext {
+            action,
+            code,
+            language,
+            file_path: "",
+            diagnostics: "",
+            symbols: "",
+            project: "",
+        })
+    }
+
+    pub fn code_action_with_context(
+        &mut self,
+        context: AiCodeContext<'_>,
+    ) -> Result<String, String> {
         if !self.config.is_configured() {
             return Err(String::from("API key not configured."));
         }
 
-        let user_msg = format!("Language: {}\n\n```{}\n{}\n```", language, language, code);
+        let user_msg = build_code_action_prompt(&context, self.config.privacy_mode);
 
-        let system = action.system_prompt();
+        let system = context.action.system_prompt();
 
         // Temporary history for this action
         let saved_history = core::mem::take(&mut self.history);
@@ -569,6 +594,32 @@ impl AiClient {
 
         body.to_json_string()
     }
+}
+
+fn build_code_action_prompt(context: &AiCodeContext<'_>, privacy_mode: bool) -> String {
+    let mut prompt = format!(
+        "Language: {}\nFile: {}\nProject: {}\nPrivacy mode: {}\nPatch policy: propose changes only; do not claim changes were applied.\n",
+        context.language,
+        if context.file_path.is_empty() { "(unsaved)" } else { context.file_path },
+        if context.project.is_empty() { "(unknown)" } else { context.project },
+        if privacy_mode { "on" } else { "off" }
+    );
+    if !context.diagnostics.is_empty() {
+        prompt.push_str("\nDiagnostics:\n");
+        prompt.push_str(context.diagnostics);
+        prompt.push('\n');
+    }
+    if !context.symbols.is_empty() {
+        prompt.push_str("\nRelevant symbols:\n");
+        prompt.push_str(context.symbols);
+        prompt.push('\n');
+    }
+    prompt.push_str("\nCode:\n```");
+    prompt.push_str(context.language);
+    prompt.push('\n');
+    prompt.push_str(context.code);
+    prompt.push_str("\n```");
+    prompt
 }
 
 fn truncate(s: &str, max: usize) -> &str {

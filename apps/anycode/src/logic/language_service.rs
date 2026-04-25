@@ -2,7 +2,6 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::logic::config::Config;
 use crate::logic::config::{self, Config};
 use crate::logic::diagnostics::Diagnostic;
 use crate::logic::diagnostics::Severity;
@@ -24,7 +23,11 @@ pub fn analyze_document(file_path: &str, text: &str) -> Vec<Diagnostic> {
     live_analysis::analyze_buffer(file_path, text, lang.id)
 }
 
-pub fn analyze_document_with_config(file_path: &str, text: &str, config: &Config) -> Vec<Diagnostic> {
+pub fn analyze_document_with_config(
+    file_path: &str,
+    text: &str,
+    config: &Config,
+) -> Vec<Diagnostic> {
     let filename = path::basename(file_path);
     let lang = language::language_for_filename(filename);
     let mut diagnostics = live_analysis::analyze_buffer(file_path, text, lang.id);
@@ -44,7 +47,8 @@ fn analyze_rust_with_anyrc(file_path: &str, text: &str) -> Vec<Diagnostic> {
     match anyrc::driver::compile(text, file_path, &opts) {
         Ok(_) => Vec::new(),
         Err(errors) => {
-            let sm = anyrc::diagnostics::SourceMap::new(String::from(file_path), String::from(text));
+            let sm =
+                anyrc::diagnostics::SourceMap::new(String::from(file_path), String::from(text));
             let mut out = Vec::new();
             for err in errors {
                 let (line, col) = sm.line_col(err.span);

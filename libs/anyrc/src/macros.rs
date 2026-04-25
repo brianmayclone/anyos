@@ -413,6 +413,46 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
             }
         }
 
+        let item_macro = match &block.stmts[i] {
+            Stmt::Item(Item::MacroCall(path, args, attrs, span)) => {
+                Some((path.clone(), args.clone(), attrs.clone(), *span))
+            }
+            _ => None,
+        };
+        if let Some((path, args, attrs, span)) = item_macro {
+            let macro_name = if !path.segments.is_empty() {
+                interner.resolve(path.segments.last().unwrap().ident).to_string()
+            } else {
+                String::new()
+            };
+            if macro_name == "cfg_if" {
+                if let Some(mut stmts) = expand_builtin_cfg_if_stmts(&args, interner) {
+                    if !attrs.is_empty() {
+                        prepend_attrs_to_first_stmt(&mut stmts, attrs, span);
+                    }
+                    block.stmts.splice(i..=i, stmts);
+                    *changed = true;
+                    continue;
+                }
+            }
+            if macro_name == "define_cast" {
+                if let Some(mut items) = expand_builtin_define_cast(&args, interner) {
+                    prepend_attrs_to_first_item(&mut items, attrs);
+                    block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
+                    *changed = true;
+                    continue;
+                }
+            }
+            if let Some(def) = find_macro(defs, &path) {
+                if let Some(mut items) = try_expand_to_items(def, &args, interner) {
+                    prepend_attrs_to_first_item(&mut items, attrs);
+                    block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
+                    *changed = true;
+                    continue;
+                }
+            }
+        }
+
         expand_stmt(&mut block.stmts[i], defs, interner, changed);
         i += 1;
     }

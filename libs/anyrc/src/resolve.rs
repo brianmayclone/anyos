@@ -653,7 +653,9 @@ impl<'a> Resolver<'a> {
         let first_str = self.interner.resolve(first);
         if Self::is_compiler_known_external_crate(first_str) {
             if self
-                .lookup(first, Namespace::Type)
+                .scopes[self.root_scope]
+                .bindings
+                .get(&(first, Namespace::Type))
                 .is_some_and(|def_id| self.module_scopes.contains_key(&def_id))
             {
                 return None;
@@ -1574,7 +1576,9 @@ impl<'a> Resolver<'a> {
         if path.segments.len() >= 2
             && Self::is_compiler_known_external_crate(name_str.as_str())
             && !self
-                .lookup(name, Namespace::Type)
+                .scopes[self.root_scope]
+                .bindings
+                .get(&(name, Namespace::Type))
                 .is_some_and(|def_id| self.module_scopes.contains_key(&def_id))
         {
             let full_path = path.segments.iter()

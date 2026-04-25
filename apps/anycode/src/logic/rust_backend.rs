@@ -173,7 +173,10 @@ fn scan_tests_dir(dir: &str, depth: u32, tests: &mut Vec<TestCase>) {
         }
         let full = path::join(dir, &entry.name);
         if entry.is_dir() {
-            if matches!(entry.name.as_str(), "target" | ".git" | "build" | "node_modules") {
+            if matches!(
+                entry.name.as_str(),
+                "target" | ".git" | "build" | "node_modules"
+            ) {
                 continue;
             }
             scan_tests_dir(&full, depth + 1, tests);

@@ -584,6 +584,59 @@ fn resolve_macro_use_file_module_facade_into_file_modules() {
 }
 
 #[test]
+fn resolve_bare_core_extern_glob_inside_local_core_facade_module() {
+    assert_resolves(r#"
+        mod lib {
+            mod core {
+                pub use core::*;
+            }
+
+            pub use self::core::fmt::{self, Display};
+            pub use self::core::marker::PhantomData;
+        }
+
+        mod value {
+            use crate::lib::*;
+
+            struct UnitDeserializer<E> {
+                marker: PhantomData<E>,
+            }
+
+            fn fmt_value(f: &mut fmt::Formatter) -> fmt::Result {
+                fmt::Result
+            }
+
+            trait UsesDisplay: Display {}
+        }
+    "#);
+}
+
+#[test]
+fn resolve_item_macro_generated_by_block_macro_expansion() {
+    assert_resolves(r#"
+        macro_rules! define_kind {
+            () => {
+                enum Kind {
+                    A,
+                    B,
+                }
+            };
+        }
+
+        macro_rules! use_kind {
+            () => {
+                define_kind!();
+                let k = Kind::A;
+            };
+        }
+
+        fn main() {
+            use_kind!();
+        }
+    "#);
+}
+
+#[test]
 fn resolve_crate_prefixed_extern_crate_imports() {
     assert_resolves(r#"
         extern crate alloc;
