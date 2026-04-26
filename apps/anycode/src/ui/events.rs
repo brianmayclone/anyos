@@ -229,6 +229,7 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
         35 => commands::clean(),
         36 => commands::configure_run_profiles(),
         37 => commands::manage_crates(),
+        38 => commands::show_project_properties(),
         40 => commands::about(),
         41 => app().command_palette.show_commands(),
         50 => commands::switch_sidebar_view(5),

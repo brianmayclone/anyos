@@ -1017,13 +1017,23 @@ fn mir_to_string(bodies: &[MirBody], interner: &Interner) -> String {
     let mut out = String::new();
     for body in bodies {
         out.push_str(&format!("fn {}() {{\n", interner.resolve(body.name)));
+        for (idx, local) in body.locals.iter().enumerate() {
+            out.push_str(&format!(
+                "  let _{}: {};\n",
+                idx,
+                format_mir_ty(&local.ty, interner)
+            ));
+        }
         for (i, bb) in body.basic_blocks.iter().enumerate() {
             out.push_str(&format!("  bb{}: {{\n", i));
-            out.push_str(&format!("    // {} statements\n", bb.statements.len()));
-            out.push_str(&format!(
-                "    // terminator: {:?}\n",
-                terminator_kind(&bb.terminator)
-            ));
+            for stmt in &bb.statements {
+                out.push_str("    ");
+                out.push_str(&format_mir_statement(stmt, interner));
+                out.push('\n');
+            }
+            out.push_str("    ");
+            out.push_str(&format_mir_terminator(&bb.terminator, interner));
+            out.push('\n');
             out.push_str("  }\n");
         }
         out.push_str("}\n\n");
@@ -1031,14 +1041,134 @@ fn mir_to_string(bodies: &[MirBody], interner: &Interner) -> String {
     out
 }
 
-fn terminator_kind(t: &crate::mir::Terminator) -> &'static str {
-    match t {
-        crate::mir::Terminator::Goto(_) => "goto",
-        crate::mir::Terminator::SwitchInt { .. } => "switchInt",
-        crate::mir::Terminator::Call { .. } => "call",
-        crate::mir::Terminator::Return => "return",
-        crate::mir::Terminator::Unreachable => "unreachable",
+fn format_mir_statement(stmt: &crate::mir::Statement, interner: &Interner) -> String {
+    match &stmt.kind {
+        crate::mir::StatementKind::Assign(place, rvalue) => {
+            format!(
+                "{} = {};",
+                format_mir_place(place),
+                format_mir_rvalue(rvalue, interner)
+            )
+        }
+        crate::mir::StatementKind::StorageLive(local) => format!("StorageLive(_{});", local.0),
+        crate::mir::StatementKind::StorageDead(local) => format!("StorageDead(_{});", local.0),
+        crate::mir::StatementKind::Nop => String::from("nop;"),
+        crate::mir::StatementKind::InlineAsm { template, .. } => {
+            format!("asm!({:?});", template)
+        }
     }
+}
+
+fn format_mir_terminator(t: &crate::mir::Terminator, interner: &Interner) -> String {
+    match t {
+        crate::mir::Terminator::Goto(target) => format!("goto -> bb{};", target.0),
+        crate::mir::Terminator::SwitchInt {
+            operand,
+            targets,
+            default,
+        } => format!(
+            "switchInt({}) -> {:?}, otherwise bb{};",
+            format_mir_operand(operand, interner),
+            targets
+                .iter()
+                .map(|(value, target)| (*value, target.0))
+                .collect::<Vec<_>>(),
+            default.0
+        ),
+        crate::mir::Terminator::Call {
+            func,
+            args,
+            dest,
+            target,
+        } => format!(
+            "{} = call {}({}) -> bb{};",
+            format_mir_place(dest),
+            format_mir_operand(func, interner),
+            args.iter()
+                .map(|arg| format_mir_operand(arg, interner))
+                .collect::<Vec<_>>()
+                .join(", "),
+            target.0
+        ),
+        crate::mir::Terminator::Return => String::from("return;"),
+        crate::mir::Terminator::Unreachable => String::from("unreachable;"),
+    }
+}
+
+fn format_mir_rvalue(rvalue: &crate::mir::Rvalue, interner: &Interner) -> String {
+    match rvalue {
+        crate::mir::Rvalue::Use(op) => format_mir_operand(op, interner),
+        crate::mir::Rvalue::Ref(kind, place) => format!("&{:?} {}", kind, format_mir_place(place)),
+        crate::mir::Rvalue::BinaryOp(op, lhs, rhs) => format!(
+            "{:?}({}, {})",
+            op,
+            format_mir_operand(lhs, interner),
+            format_mir_operand(rhs, interner)
+        ),
+        crate::mir::Rvalue::UnaryOp(op, value) => {
+            format!("{:?}({})", op, format_mir_operand(value, interner))
+        }
+        crate::mir::Rvalue::Cast(value, ty) => {
+            format!(
+                "cast {} as {}",
+                format_mir_operand(value, interner),
+                format_mir_ty(ty, interner)
+            )
+        }
+        crate::mir::Rvalue::Aggregate(_, values) => format!(
+            "aggregate({})",
+            values
+                .iter()
+                .map(|value| format_mir_operand(value, interner))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        crate::mir::Rvalue::Discriminant(place) => {
+            format!("discriminant({})", format_mir_place(place))
+        }
+        crate::mir::Rvalue::Len(place) => format!("len({})", format_mir_place(place)),
+        crate::mir::Rvalue::MakeVtable(symbols) => format!(
+            "vtable({})",
+            symbols
+                .iter()
+                .map(|sym| interner.resolve(*sym).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn format_mir_operand(op: &crate::mir::Operand, interner: &Interner) -> String {
+    match op {
+        crate::mir::Operand::Copy(place) => format!("copy {}", format_mir_place(place)),
+        crate::mir::Operand::Move(place) => format!("move {}", format_mir_place(place)),
+        crate::mir::Operand::Ref(place, mutbl) => {
+            format!("ref {:?} {}", mutbl, format_mir_place(place))
+        }
+        crate::mir::Operand::Constant(c) => match &c.value {
+            crate::mir::ConstValue::FnItem(sym) => format!("fn {}", interner.resolve(*sym)),
+            crate::mir::ConstValue::MethodRef(sym) => format!("method {}", interner.resolve(*sym)),
+            crate::mir::ConstValue::StaticRef(sym) => format!("static {}", interner.resolve(*sym)),
+            other => format!("{:?}", other),
+        },
+    }
+}
+
+fn format_mir_place(place: &crate::mir::Place) -> String {
+    let mut out = format!("_{}", place.local.0);
+    for proj in &place.projections {
+        match proj {
+            crate::mir::Projection::Field(idx) => out.push_str(&format!(".{}", idx)),
+            crate::mir::Projection::Index(local) => out.push_str(&format!("[_{}]", local.0)),
+            crate::mir::Projection::Deref => out.push_str(".*"),
+        }
+    }
+    out
+}
+
+fn format_mir_ty(ty: &crate::typeck::TyKind, interner: &Interner) -> String {
+    let _ = interner;
+    format!("{:?}", ty)
 }
 
 /// Build an ELF object file containing the runtime support stubs.

@@ -5,6 +5,7 @@ use ui::IconType;
 
 use crate::logic::debug_session::{DebugSession, DebugSessionStatus};
 use crate::logic::tasks::{TaskCategory, TaskManager};
+use crate::logic::test_explorer::{TestExplorerState, TestStatus};
 use crate::util::path;
 
 const STYLE_BOLD: u32 = 1;
@@ -31,6 +32,8 @@ pub struct RunPanel {
     pub debug_status_label: ui::Label,
     pub breakpoint_label: ui::Label,
     pub debug_tree: ui::TreeView,
+    pub test_status_label: ui::Label,
+    pub test_tree: ui::TreeView,
     task_indices: Vec<Option<usize>>, // maps tree node → task index
 }
 
@@ -163,7 +166,7 @@ impl RunPanel {
         let content_split = ui::SplitView::new();
         content_split.set_dock(ui::DOCK_FILL);
         content_split.set_orientation(ui::ORIENTATION_VERTICAL);
-        content_split.set_split_ratio(64);
+        content_split.set_split_ratio(48);
         content_split.set_min_split(35);
         content_split.set_max_split(82);
         panel.add(&content_split);
@@ -181,9 +184,37 @@ impl RunPanel {
         debug_tree.set_row_height(18);
         debug_section.add(&debug_tree);
 
+        let lower_split = ui::SplitView::new();
+        lower_split.set_orientation(ui::ORIENTATION_VERTICAL);
+        lower_split.set_split_ratio(50);
+        lower_split.set_min_split(25);
+        lower_split.set_max_split(75);
+        content_split.add(&lower_split);
+
+        let test_section = ui::View::new();
+        test_section.set_color(tc.sidebar_bg);
+        lower_split.add(&test_section);
+
+        let test_heading = section_label(t("TEST EXPLORER"));
+        test_section.add(&test_heading);
+
+        let test_status_label = ui::Label::new(t("No tests discovered"));
+        test_status_label.set_dock(ui::DOCK_TOP);
+        test_status_label.set_size(200, 20);
+        test_status_label.set_font_size(11);
+        test_status_label.set_text_color(tc.text_secondary);
+        test_status_label.set_margin(10, 0, 8, 2);
+        test_section.add(&test_status_label);
+
+        let test_tree = ui::TreeView::new(200, 220);
+        test_tree.set_dock(ui::DOCK_FILL);
+        test_tree.set_indent_width(16);
+        test_tree.set_row_height(19);
+        test_section.add(&test_tree);
+
         let task_section = ui::View::new();
         task_section.set_color(tc.sidebar_bg);
-        content_split.add(&task_section);
+        lower_split.add(&task_section);
 
         let task_heading = section_label(t("TASKS"));
         task_section.add(&task_heading);
@@ -213,6 +244,8 @@ impl RunPanel {
             debug_status_label,
             breakpoint_label,
             debug_tree,
+            test_status_label,
+            test_tree,
             task_indices: Vec::new(),
         }
     }
@@ -481,6 +514,71 @@ impl RunPanel {
         }
     }
 
+    pub fn update_tests(&self, tests: &TestExplorerState) {
+        let tc = ui::theme::colors();
+        self.test_tree.clear();
+
+        let total = tests.total_tests();
+        let failed = tests.failed_count();
+        let status_color = match tests.last_status {
+            TestStatus::Passed => tc.success,
+            TestStatus::Failed => tc.destructive,
+            TestStatus::NotRun => tc.text_secondary,
+        };
+        self.test_status_label.set_text(&format!(
+            "{} tests | {} | {} failed",
+            total,
+            tests.last_status.label(),
+            failed
+        ));
+        self.test_status_label.set_text_color(status_color);
+
+        if tests.projects.is_empty() {
+            let node = self.test_tree.add_root("Open a Rust project to discover tests");
+            self.test_tree.set_node_text_color(node, tc.text_secondary);
+            return;
+        }
+
+        for project in &tests.projects {
+            let root = self
+                .test_tree
+                .add_root(&format!("{} ({})", project.name, project.cases.len()));
+            self.test_tree.set_node_style(root, STYLE_BOLD);
+            set_node_icon(&self.test_tree, root, "folder-code", tc.text_secondary);
+            self.test_tree.set_expanded(root, true);
+
+            if project.cases.is_empty() {
+                let node = self.test_tree.add_child(root, "No tests discovered");
+                self.test_tree.set_node_text_color(node, tc.text_secondary);
+                continue;
+            }
+
+            for case in &project.cases {
+                let node = self.test_tree.add_child(root, &case.display_name);
+                set_node_icon(&self.test_tree, node, "flask-2", tc.warning);
+                self.test_tree.set_node_text_color(node, tc.text_secondary);
+            }
+        }
+
+        if let Some(last) = tests.history.last() {
+            let history = self.test_tree.add_root(&format!(
+                "Last Run: exit {} | {} passed | {} failed",
+                last.exit_code, last.passed, last.failed
+            ));
+            self.test_tree.set_node_style(history, STYLE_BOLD);
+            set_node_icon(&self.test_tree, history, "history", status_color);
+            for line in last.output_excerpt.split('\n') {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let node = self.test_tree.add_child(history, trimmed);
+                self.test_tree.set_node_text_color(node, tc.text_secondary);
+            }
+            self.test_tree.set_expanded(history, failed > 0);
+        }
+    }
+
     /// Show a "no project" message.
     pub fn show_no_project(&mut self) {
         let tc = ui::theme::colors();
@@ -498,6 +596,8 @@ impl RunPanel {
         self.debug_status_label.set_text("Debugger: Idle");
         self.breakpoint_label.set_text("0 breakpoints");
         self.debug_tree.clear();
+        self.test_status_label.set_text(t("No tests discovered"));
+        self.test_tree.clear();
     }
 }
 

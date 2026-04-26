@@ -218,8 +218,10 @@ fn build_and_run(
     let build_rules = build::BuildRules::load(&config::bundle_path("build.conf"));
 
     let mut task_mgr = tasks::TaskManager::new();
+    let mut test_explorer = logic::test_explorer::TestExplorerState::new();
     if let Some(ref proj) = current_project {
         task_mgr.detect_from_project(proj, &config);
+        test_explorer.refresh_from_project(proj);
     }
 
     // ── Init global state ──
@@ -229,6 +231,7 @@ fn build_and_run(
             config,
             current_project,
             task_mgr,
+            test_explorer,
             diagnostics: diagnostics::DiagnosticSet::new(),
             symbol_index: symbol_index::SymbolIndex::new(),
             active_completions: alloc::vec::Vec::new(),
@@ -238,6 +241,7 @@ fn build_and_run(
             plugin_mgr,
             ai_client: ai::AiClient::new(),
             build_process: None,
+            active_task_category: None,
             build_rules,
             build_timer_id: 0,
             debug_timer_id: 0,
@@ -356,6 +360,7 @@ fn build_and_run(
         .separator()
         .item(36, t("Run Configurations..."), 0)
         .item(37, t("Manage Crates..."), 0)
+        .item(38, t("Project Properties..."), 0)
         .end_menu()
         .menu(t("AI"))
         .item(50, t("AI Assistant"), 0)
@@ -413,6 +418,7 @@ fn build_and_run(
 
         if s.current_project.is_some() {
             s.run_panel.update(&s.task_mgr);
+            s.run_panel.update_tests(&s.test_explorer);
             logic::commands::refresh_run_config_selector();
             if let Some(ref proj) = s.current_project {
                 s.sidebar.populate_project(proj, &s.task_mgr);
@@ -478,6 +484,15 @@ fn poll_build_output() {
             let msg = format!("\n[Process exited with code {}]\n", exit_code);
             s.output.append(&msg);
 
+            if s.active_task_category == Some(tasks::TaskCategory::Test) {
+                s.test_explorer
+                    .record_run(exit_code, &s.build_output_buffer);
+                s.run_panel.update_tests(&s.test_explorer);
+                if s.test_explorer.failed_count() > 0 {
+                    s.status.set_analysis_status("Test failures detected");
+                }
+            }
+
             // Parse diagnostics
             s.diagnostics.parse_output(&s.build_output_buffer);
             s.problems_panel.update(&s.diagnostics);
@@ -500,6 +515,7 @@ fn poll_build_output() {
             }
 
             s.build_process = None;
+            s.active_task_category = None;
             stop_build_timer();
         }
     } else {

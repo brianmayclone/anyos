@@ -57,6 +57,13 @@ pub struct ConnectedService {
     pub output_dir: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ServicePreview {
+    pub summary: String,
+    pub files: Vec<String>,
+    pub operations: Vec<ServiceOperation>,
+}
+
 pub fn services_for_project(project: &Project) -> Vec<ConnectedService> {
     let manifest = manifest_path(project);
     let Ok(text) = anyos_std::fs::read_to_string(&manifest) else {
@@ -107,6 +114,71 @@ pub fn generated_mod_path(project: &Project) -> String {
     format!("{}/src/generated/mod.rs", project.root)
 }
 
+pub fn preview_service(project: &Project, service: &ConnectedService) -> ServicePreview {
+    let operations = discover_operations(project, service);
+    let files = generated_file_paths(service);
+    ServicePreview {
+        summary: format!(
+            "{}: {} files, {} discovered operations",
+            service.name,
+            files.len(),
+            operations.len()
+        ),
+        files,
+        operations,
+    }
+}
+
+pub fn regenerate_service(
+    project: &Project,
+    module_name: &str,
+) -> Result<ConnectedService, &'static str> {
+    let services = services_for_project(project);
+    let Some(service) = services
+        .into_iter()
+        .find(|service| service.module_name == module_name)
+    else {
+        return Err("Connected service not found");
+    };
+    ensure_dir(&service.output_dir)?;
+    generate_service_files(project, &service)?;
+    refresh_generated_roots(project)?;
+    Ok(service)
+}
+
+pub fn regenerate_all(project: &Project) -> Result<usize, &'static str> {
+    let services = services_for_project(project);
+    for service in &services {
+        ensure_dir(&service.output_dir)?;
+        generate_service_files(project, service)?;
+    }
+    refresh_generated_roots(project)?;
+    Ok(services.len())
+}
+
+pub fn remove_service(project: &Project, module_name: &str) -> Result<(), &'static str> {
+    let mut services = services_for_project(project);
+    let before = services.len();
+    services.retain(|service| service.module_name != module_name);
+    if services.len() == before {
+        return Err("Connected service not found");
+    }
+    write_manifest_services(project, &services)?;
+    refresh_generated_roots(project)
+}
+
+pub fn first_service_module(project: &Project) -> Option<String> {
+    services_for_project(project)
+        .first()
+        .map(|service| service.module_name.clone())
+}
+
+pub fn discover_service_contracts(project: &Project) -> Vec<ConnectedService> {
+    let mut out = Vec::new();
+    discover_service_contracts_in_dir(project, &project.root, 0, &mut out);
+    out
+}
+
 fn generate_service_files(
     project: &Project,
     service: &ConnectedService,
@@ -136,13 +208,19 @@ fn generate_service_files(
 }
 
 fn write_manifest(project: &Project, service: &ConnectedService) -> Result<(), &'static str> {
-    let manifest = manifest_path(project);
     let mut services = services_for_project(project);
     services.retain(|existing| existing.module_name != service.module_name);
     services.push(service.clone());
+    write_manifest_services(project, &services)
+}
 
+fn write_manifest_services(
+    project: &Project,
+    services: &[ConnectedService],
+) -> Result<(), &'static str> {
+    let manifest = manifest_path(project);
     let mut out = String::from("anycode-connected-services-v1\n");
-    for service in &services {
+    for service in services {
         out.push_str(&format!(
             "service name=\"{}\" kind=\"{}\" endpoint=\"{}\" module=\"{}\" output=\"{}\"\n",
             escape(&service.name),
@@ -154,6 +232,69 @@ fn write_manifest(project: &Project, service: &ConnectedService) -> Result<(), &
     }
     anyos_std::fs::write_bytes(&manifest, out.as_bytes())
         .map_err(|_| "Could not write connected services manifest")
+}
+
+fn generated_file_paths(service: &ConnectedService) -> Vec<String> {
+    let mut files = Vec::new();
+    files.push(format!("{}/mod.rs", service.output_dir));
+    files.push(format!("{}/client.rs", service.output_dir));
+    files.push(format!("{}/models.rs", service.output_dir));
+    files.push(format!("{}/README.md", service.output_dir));
+    files
+}
+
+fn discover_service_contracts_in_dir(
+    project: &Project,
+    dir: &str,
+    depth: u32,
+    out: &mut Vec<ConnectedService>,
+) {
+    if depth > 5 || out.len() > 64 {
+        return;
+    }
+    let Ok(entries) = anyos_std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        if entry.name == "." || entry.name == ".." {
+            continue;
+        }
+        let full = format!("{}/{}", dir, entry.name);
+        if entry.is_dir() {
+            if entry.name == "target" || entry.name == ".git" {
+                continue;
+            }
+            discover_service_contracts_in_dir(project, &full, depth.saturating_add(1), out);
+            continue;
+        }
+        let lower = ascii_lower(&entry.name);
+        let kind = if lower.ends_with(".wsdl") {
+            Some(ConnectedServiceKind::WsdlSoap)
+        } else if lower.ends_with(".proto") {
+            Some(ConnectedServiceKind::Grpc)
+        } else if lower.ends_with(".json") {
+            let text = anyos_std::fs::read_to_string(&full).unwrap_or_default();
+            if text.contains("\"openapi\"") || text.contains("\"swagger\"") {
+                Some(ConnectedServiceKind::OpenApiRest)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let Some(kind) = kind else {
+            continue;
+        };
+        let rel = strip_project_root(project, &full);
+        let module_name = sanitize_module_name(&entry.name.replace('.', "_"));
+        out.push(ConnectedService {
+            name: service_name_from_file(&entry.name),
+            kind,
+            endpoint: rel,
+            module_name: module_name.clone(),
+            output_dir: format!("{}/src/generated/services/{}", project.root, module_name),
+        });
+    }
 }
 
 fn refresh_generated_roots(project: &Project) -> Result<(), &'static str> {
@@ -251,11 +392,15 @@ fn discover_operations(project: &Project, service: &ConnectedService) -> Vec<Ser
         ConnectedServiceKind::OpenApiRest => discover_openapi_operations(project, service),
         ConnectedServiceKind::WsdlSoap => discover_wsdl_operations(project, service),
         ConnectedServiceKind::Grpc => discover_grpc_operations(project, service),
-        ConnectedServiceKind::RestEndpoint => vec![ServiceOperation {
-            name: String::from("request"),
-            method: String::from("GET"),
-            path: service.endpoint.clone(),
-        }],
+        ConnectedServiceKind::RestEndpoint => {
+            let mut operations = Vec::new();
+            operations.push(ServiceOperation {
+                name: String::from("request"),
+                method: String::from("GET"),
+                path: service.endpoint.clone(),
+            });
+            operations
+        }
     }
 }
 
@@ -424,6 +569,45 @@ fn ascii_upper(value: &str) -> String {
         out.push(ch.to_ascii_uppercase());
     }
     out
+}
+
+fn ascii_lower(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        out.push(ch.to_ascii_lowercase());
+    }
+    out
+}
+
+fn strip_project_root(project: &Project, path: &str) -> String {
+    let prefix = format!("{}/", project.root);
+    path.strip_prefix(&prefix)
+        .map(String::from)
+        .unwrap_or_else(|| String::from(path))
+}
+
+fn service_name_from_file(name: &str) -> String {
+    let mut out = String::new();
+    for part in name.split(|ch| ch == '.' || ch == '_' || ch == '-') {
+        if part.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            out.push(first.to_ascii_uppercase());
+            for ch in chars {
+                out.push(ch);
+            }
+        }
+    }
+    if out.is_empty() {
+        String::from("Service")
+    } else {
+        out
+    }
 }
 
 fn path_to_operation_name(path: &str) -> String {

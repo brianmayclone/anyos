@@ -1555,6 +1555,69 @@ impl<'a> MirBuilder<'a> {
                     });
                     self.current_block = next_block;
                     Operand::Copy(Place::local(dest))
+                } else if let Some((fn_name, method_wants_mut)) =
+                    self.known_alloc_method_call(&inner_ty, *method_name)
+                {
+                    let recv_op = match &recv_ty {
+                        TyKind::Ref(_, _) => {
+                            let place = self.lower_place(recv);
+                            let local = match &place {
+                                Place { local, projections } if projections.is_empty() => *local,
+                                _ => {
+                                    let tmp = self.alloc_temp(recv_ty.clone(), expr.span);
+                                    self.emit_assign(
+                                        Place::local(tmp),
+                                        Rvalue::Use(Operand::Copy(place)),
+                                        expr.span,
+                                    );
+                                    tmp
+                                }
+                            };
+                            Operand::Copy(Place::local(local))
+                        }
+                        _ => {
+                            let place = self.lower_place(recv);
+                            let mutbl = if method_wants_mut {
+                                Mutability::Mut
+                            } else {
+                                Mutability::Immutable
+                            };
+                            let borrow = if method_wants_mut {
+                                BorrowKind::Mutable
+                            } else {
+                                BorrowKind::Shared
+                            };
+                            let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), mutbl);
+                            let tmp = self.alloc_temp(ref_ty, expr.span);
+                            self.emit_assign(
+                                Place::local(tmp),
+                                Rvalue::Ref(borrow, place),
+                                expr.span,
+                            );
+                            Operand::Copy(Place::local(tmp))
+                        }
+                    };
+
+                    let mut all_args = vec![recv_op];
+                    for a in args {
+                        all_args.push(self.lower_expr(a));
+                    }
+
+                    let ty = self.get_expr_ty(expr);
+                    let dest = self.alloc_temp(ty, expr.span);
+                    let next_block = self.push_block();
+                    let fn_sym = self.interner.intern(&fn_name);
+                    self.terminate(Terminator::Call {
+                        func: Operand::Constant(Constant {
+                            ty: TyKind::FnDef(DefId(0), vec![]),
+                            value: ConstValue::FnItem(fn_sym),
+                        }),
+                        args: all_args,
+                        dest: Place::local(dest),
+                        target: next_block,
+                    });
+                    self.current_block = next_block;
+                    Operand::Copy(Place::local(dest))
                 } else if let TyKind::Adt(def_id, _) = &inner_ty {
                     // Check if receiver is an intrinsic type (AtomicBool, etc.)
                     if self.resolve.intrinsic_fns.contains_key(def_id) {
@@ -2622,6 +2685,54 @@ impl<'a> MirBuilder<'a> {
             }
         }
         0
+    }
+
+    fn known_alloc_method_call(
+        &self,
+        receiver_ty: &TyKind,
+        method_name: Symbol,
+    ) -> Option<(String, bool)> {
+        let TyKind::Adt(def_id, _) = receiver_ty else {
+            return None;
+        };
+        let type_sym = self
+            .typeck
+            .type_def_to_name
+            .get(def_id)
+            .copied()
+            .or_else(|| {
+                self.typeck
+                    .struct_defs
+                    .get(def_id)
+                    .and_then(|fields| fields.first().map(|(name, _)| *name))
+            })?;
+        let type_name = self.interner.resolve(type_sym);
+        let method = self.interner.resolve(method_name);
+        let full_name = match type_name {
+            "String" => match method {
+                "len" | "is_empty" | "as_str" | "as_bytes" | "clear" | "push_str" | "push" => {
+                    format!("String::{}", method)
+                }
+                _ => return None,
+            },
+            "Vec" => match method {
+                "new" | "with_capacity" | "len" | "capacity" | "is_empty" | "as_ptr"
+                | "as_slice" | "as_ref" | "push" | "pop" | "clear" => {
+                    format!("Vec::{}", method)
+                }
+                _ => return None,
+            },
+            "VecDeque" => match method {
+                "push_back" => String::from("VecDeque::push_back"),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let wants_mut = matches!(
+            method,
+            "clear" | "push_str" | "push" | "pop" | "push_back" | "truncate"
+        );
+        Some((full_name, wants_mut))
     }
 
     fn estimate_ty_size(&self, ty: &TyKind) -> usize {

@@ -4,14 +4,14 @@
 //! Path-based dependencies take priority; registry dependencies are fetched
 //! and cached automatically.
 
-use crate::prelude::*;
-use anyos_std::println;
-use anyos_std::collections::HashMap;
-use crate::manifest::{self, Manifest, CrateKind};
-use crate::toml;
-use crate::registry;
-use crate::lockfile::{self, Lockfile, LockedPackage};
 use crate::fs;
+use crate::lockfile::{self, LockedPackage, Lockfile};
+use crate::manifest::{self, CrateKind, Manifest};
+use crate::prelude::*;
+use crate::registry;
+use crate::toml;
+use anyos_std::collections::HashMap;
+use anyos_std::println;
 
 /// A node in the dependency graph.
 #[derive(Debug, Clone)]
@@ -57,9 +57,7 @@ pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
         let mut mf = manifest::parse(&toml_table);
         apply_workspace_dependencies(&mut mf, &dir);
         manifest::infer_crate_layout(&mut mf, &dir);
-        if dir == root_dir {
-            inject_implicit_anyos_stdlibs(&mut mf, &dir);
-        }
+        inject_implicit_anyos_crates(&mut mf, &dir, dir == root_dir);
         let active_features = active_features_for(&mf, &requested_features, use_default_features);
 
         // Merge features if this crate was already discovered through another
@@ -122,8 +120,43 @@ pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
     nodes
 }
 
-fn inject_implicit_anyos_stdlibs(manifest: &mut Manifest, manifest_dir: &str) {
-    if manifest.name != "anyos_std" && !has_dep(manifest, "anyos_std") {
+fn inject_implicit_anyos_crates(
+    manifest: &mut Manifest,
+    manifest_dir: &str,
+    is_root_manifest: bool,
+) {
+    // `core` and `alloc` are real anyOS source crates for ccargo/anyrc. They
+    // are implicit like Rust's own core/alloc, but they are not provided by the
+    // runtime linker and must be built before anyos_std or user crates.
+    if manifest.name != "core" && !has_dep(manifest, "core") {
+        if let Some(core_dir) = find_repo_library_dir(manifest_dir, "core") {
+            manifest.dependencies.push(manifest::Dependency {
+                name: String::from("core"),
+                path: Some(core_dir),
+                version: None,
+                optional: false,
+                features: Vec::new(),
+                default_features: true,
+                workspace: false,
+            });
+        }
+    }
+
+    if manifest.name != "core" && manifest.name != "alloc" && !has_dep(manifest, "alloc") {
+        if let Some(alloc_dir) = find_repo_library_dir(manifest_dir, "alloc") {
+            manifest.dependencies.push(manifest::Dependency {
+                name: String::from("alloc"),
+                path: Some(alloc_dir),
+                version: None,
+                optional: false,
+                features: Vec::new(),
+                default_features: true,
+                workspace: false,
+            });
+        }
+    }
+
+    if is_root_manifest && manifest.name != "anyos_std" && !has_dep(manifest, "anyos_std") {
         if let Some(stdlib_dir) = find_repo_library_dir(manifest_dir, "stdlib") {
             manifest.dependencies.push(manifest::Dependency {
                 name: String::from("anyos_std"),
@@ -137,7 +170,8 @@ fn inject_implicit_anyos_stdlibs(manifest: &mut Manifest, manifest_dir: &str) {
         }
     }
 
-    if manifest.name != "libstd"
+    if is_root_manifest
+        && manifest.name != "libstd"
         && manifest.name != "anyos_std"
         && !has_dep(manifest, "libstd")
     {
@@ -155,7 +189,11 @@ fn inject_implicit_anyos_stdlibs(manifest: &mut Manifest, manifest_dir: &str) {
     }
 }
 
-fn active_features_for(manifest: &Manifest, requested: &[String], use_default_features: bool) -> Vec<String> {
+fn active_features_for(
+    manifest: &Manifest,
+    requested: &[String],
+    use_default_features: bool,
+) -> Vec<String> {
     let mut requested_with_default = requested.to_vec();
     if !use_default_features && !requested_with_default.iter().any(|f| f == "__no_default__") {
         requested_with_default.push(String::from("__no_default__"));
@@ -179,7 +217,12 @@ fn queue_manifest_dependencies(
 
         if let Some(ref dep_path) = dep.path {
             let resolved_dir = fs::resolve_path(manifest_dir, dep_path);
-            queue.push((resolved_dir, false, dep_requested_features, dep_default_features));
+            queue.push((
+                resolved_dir,
+                false,
+                dep_requested_features,
+                dep_default_features,
+            ));
         } else if let Some(ref version_req) = dep.version {
             let actual_name = dep.name.clone();
             let resolved = if let Some(lf) = lockfile {
@@ -198,7 +241,10 @@ fn queue_manifest_dependencies(
                     queue.push((src_dir, true, dep_requested_features, dep_default_features));
                 }
                 None => {
-                    println!("ccargo: error: failed to resolve `{}` {}", actual_name, version_req);
+                    println!(
+                        "ccargo: error: failed to resolve `{}` {}",
+                        actual_name, version_req
+                    );
                 }
             }
         }
@@ -229,9 +275,9 @@ fn dependency_is_active(dep: &manifest::Dependency, active_features: &[String]) 
     if !dep.optional {
         return true;
     }
-    active_features.iter().any(|feature| {
-        feature == &dep.name || feature == &format!("dep:{}", dep.name)
-    })
+    active_features
+        .iter()
+        .any(|feature| feature == &dep.name || feature == &format!("dep:{}", dep.name))
 }
 
 fn apply_workspace_dependencies(manifest: &mut Manifest, manifest_dir: &str) {
@@ -243,7 +289,10 @@ fn apply_workspace_dependencies(manifest: &mut Manifest, manifest_dir: &str) {
         if !dep.workspace {
             continue;
         }
-        let Some(inherited) = workspace_deps.iter().find(|candidate| candidate.name == dep.name) else {
+        let Some(inherited) = workspace_deps
+            .iter()
+            .find(|candidate| candidate.name == dep.name)
+        else {
             continue;
         };
         if dep.path.is_none() {
@@ -323,7 +372,9 @@ fn update_lockfile(root_dir: &str, nodes: &[BuildNode]) {
             None
         };
 
-        let dep_names: Vec<String> = node.deps.iter()
+        let dep_names: Vec<String> = node
+            .deps
+            .iter()
             .filter_map(|&idx| {
                 if idx < nodes.len() {
                     Some(nodes[idx].name.clone())
@@ -383,7 +434,11 @@ pub fn topological_sort(nodes: &[BuildNode]) -> Vec<usize> {
     }
 
     if order.len() != n {
-        println!("ccargo: error: circular dependency detected ({} of {} resolved)", order.len(), n);
+        println!(
+            "ccargo: error: circular dependency detected ({} of {} resolved)",
+            order.len(),
+            n
+        );
     }
 
     order

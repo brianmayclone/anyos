@@ -108,6 +108,11 @@ fn build_installed_page(page: &ui::View) {
         .as_ref()
         .map(connected_services::services_for_project)
         .unwrap_or_default();
+    let discovered = app()
+        .current_project
+        .as_ref()
+        .map(connected_services::discover_service_contracts)
+        .unwrap_or_default();
     let root = tree.add_root(&format!("Connected Services ({})", services.len()));
     tree.set_node_style(root, 1);
     tree.set_expanded(root, true);
@@ -124,6 +129,20 @@ fn build_installed_page(page: &ui::View) {
         tree.add_child(node, &format!("Output: {}", service.output_dir));
         tree.set_expanded(node, false);
     }
+    let discovered_root = tree.add_root(&format!("Discovered Contracts ({})", discovered.len()));
+    tree.set_node_style(discovered_root, 1);
+    for service in &discovered {
+        tree.add_child(
+            discovered_root,
+            &format!(
+                "{}: {} -> {}",
+                service.kind.display_name(),
+                service.endpoint,
+                service.module_name
+            ),
+        );
+    }
+    tree.set_expanded(discovered_root, false);
 
     let hint = ui::Label::new("Generated clients live under src/generated/services/<module>.");
     hint.set_position(22, 386);
@@ -131,6 +150,25 @@ fn build_installed_page(page: &ui::View) {
     hint.set_font_size(11);
     hint.set_text_color(tc.text_secondary);
     page.add(&hint);
+
+    let btn_regenerate = ui::Button::new("Regenerate All");
+    btn_regenerate.set_position(22, 414);
+    btn_regenerate.set_size(132, 30);
+    btn_regenerate.set_color(tc.accent);
+    page.add(&btn_regenerate);
+
+    let btn_remove = ui::Button::new("Remove First");
+    btn_remove.set_position(166, 414);
+    btn_remove.set_size(112, 30);
+    btn_remove.set_color(0xff7f1d1d);
+    page.add(&btn_remove);
+
+    btn_regenerate.on_click(move |_| {
+        let _ = crate::logic::commands::regenerate_connected_services();
+    });
+    btn_remove.on_click(move |_| {
+        let _ = crate::logic::commands::remove_first_connected_service();
+    });
 }
 
 fn build_add_page(page: &ui::View, win_id: u32) {

@@ -105,6 +105,7 @@ pub fn build() {
         s.output.show_output();
         anyos_std::fs::chdir(&proj.root);
         s.build_process = build::BuildProcess::spawn(&cmd, &args);
+        s.active_task_category = Some(tasks::TaskCategory::Build);
         if s.build_process.is_some() {
             crate::start_build_timer();
         }
@@ -158,6 +159,7 @@ pub fn run() {
         s.output.show_output();
         anyos_std::fs::chdir(&proj.root);
         s.build_process = build::BuildProcess::spawn(&cmd, &args);
+        s.active_task_category = Some(tasks::TaskCategory::Run);
         if s.build_process.is_some() {
             crate::start_build_timer();
         }
@@ -1165,6 +1167,64 @@ pub fn add_connected_service(
     }
 }
 
+pub fn regenerate_connected_services() -> Result<String, String> {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        return Err(String::from("Open a Rust project first"));
+    };
+    match crate::logic::connected_services::regenerate_all(project) {
+        Ok(count) => {
+            if let Some(ref proj) = s.current_project {
+                s.sidebar.populate_project(proj, &s.task_mgr);
+            }
+            let msg = format!("Regenerated {} connected services", count);
+            s.status.set_analysis_status(&msg);
+            s.output
+                .append_line(&format!("[Connected Services] {}", msg));
+            Ok(msg)
+        }
+        Err(err) => {
+            s.status.set_analysis_status(err);
+            Err(String::from(err))
+        }
+    }
+}
+
+pub fn remove_first_connected_service() -> Result<String, String> {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        return Err(String::from("Open a Rust project first"));
+    };
+    let Some(module_name) = crate::logic::connected_services::first_service_module(project) else {
+        return Err(String::from("No connected service to remove"));
+    };
+    match crate::logic::connected_services::remove_service(project, &module_name) {
+        Ok(()) => {
+            if let Some(ref proj) = s.current_project {
+                s.sidebar.populate_project(proj, &s.task_mgr);
+            }
+            let msg = format!("Removed connected service {}", module_name);
+            s.status.set_analysis_status(&msg);
+            s.output
+                .append_line(&format!("[Connected Services] {}", msg));
+            Ok(msg)
+        }
+        Err(err) => {
+            s.status.set_analysis_status(err);
+            Err(String::from(err))
+        }
+    }
+}
+
+pub fn show_project_properties() {
+    let s = app();
+    if s.current_project.is_none() {
+        s.status.set_analysis_status("Open a Rust project first");
+        return;
+    }
+    crate::ui::project_properties_dialog::show();
+}
+
 pub fn check_crate_updates_on_open() {
     let s = app();
     let Some(ref project) = s.current_project else {
@@ -1498,6 +1558,7 @@ pub fn start_debugging() {
     }
 
     s.build_process = build::BuildProcess::spawn(&task.command, &task.args);
+    s.active_task_category = Some(tasks::TaskCategory::Run);
     if let Some(ref proc) = s.build_process {
         let tid = proc.tid;
         s.output
@@ -2200,6 +2261,7 @@ fn execute_task_direct(task: &tasks::Task) {
     }
 
     s.build_process = build::BuildProcess::spawn(&task.command, &task.args);
+    s.active_task_category = Some(task.category);
     if s.build_process.is_some() {
         crate::start_build_timer();
     }

@@ -23,3 +23,4 @@ pub mod search;
 pub mod symbol_index;
 pub mod symbols;
 pub mod tasks;
+pub mod test_explorer;
