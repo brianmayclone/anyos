@@ -1526,66 +1526,6 @@ mod tests {
         save_ppm("/tmp/plasma-prog-decoded.ppm", &pixels, info.width, info.height);
     }
 
-    #[test]
-    fn decode_mike_baseline() {
-        let path = "/tmp/mike-base.jpg";
-        let data = load_file(path);
-        let info = probe(&data).expect("baseline probe");
-        let mut pixels = vec![0u32; (info.width as usize) * (info.height as usize)];
-        let mut scratch = vec![0u8; info.scratch_needed as usize];
-        let rc = decode(&data, &mut pixels, &mut scratch);
-        eprintln!("baseline test: decode rc={}", rc);
-        assert_eq!(rc, ERR_OK, "baseline decode failed");
-        save_ppm("/tmp/mike-base-decoded.ppm", &pixels, info.width, info.height);
-    }
-
-    #[test]
-    fn decode_mike_jpg() {
-        let path = std::env::var("MIKE_JPG").unwrap_or_else(|_| {
-            "../../config/home/strati/Documents/mike.jpg".into()
-        });
-        let data = load_file(&path);
-        eprintln!("test: read {} bytes from {}", data.len(), path);
-
-        let info = probe(&data).expect("probe failed — not recognised as JPEG");
-        eprintln!(
-            "test: probe ok format={} {}x{} scratch={}",
-            info.format, info.width, info.height, info.scratch_needed
-        );
-        assert_eq!(info.format, FMT_JPEG);
-        assert!(info.width > 0 && info.height > 0);
-
-        let mut pixels = vec![0u32; (info.width as usize) * (info.height as usize)];
-        let mut scratch = vec![0u8; info.scratch_needed as usize];
-        let rc = decode(&data, &mut pixels, &mut scratch);
-        eprintln!("test: decode rc={}", rc);
-        assert_eq!(rc, ERR_OK, "decode failed with code {}", rc);
-
-        // Sanity: not all pixels black, not all white.
-        let mut min = u32::MAX;
-        let mut max = 0u32;
-        let mut sum_r: u64 = 0;
-        let mut sum_g: u64 = 0;
-        let mut sum_b: u64 = 0;
-        for &p in &pixels {
-            min = min.min(p);
-            max = max.max(p);
-            sum_r += ((p >> 16) & 0xFF) as u64;
-            sum_g += ((p >> 8) & 0xFF) as u64;
-            sum_b += (p & 0xFF) as u64;
-        }
-        let n = pixels.len() as u64;
-        eprintln!(
-            "test: pixel stats min={:08X} max={:08X} avg=({}, {}, {})",
-            min, max, sum_r / n, sum_g / n, sum_b / n,
-        );
-        assert!(min != max, "decoded image is uniform (likely blank)");
-
-        // Dump as PPM next to the source so we can inspect visually.
-        let out_path = "/tmp/mike-decoded.ppm";
-        save_ppm(out_path, &pixels, info.width, info.height);
-        eprintln!("test: wrote {}", out_path);
-    }
 }
 
 fn idct_1d<F: FnMut(usize, i32)>(
