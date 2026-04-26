@@ -228,8 +228,6 @@ extern "C" {
     fn irq44(); fn irq45(); fn irq46(); fn irq47();
     fn irq48(); fn irq49(); fn irq50(); fn irq51();
     fn irq52(); fn irq53(); fn irq54(); fn irq55();
-
-    fn syscall_entry();
 }
 
 /// Populate the IDT with exception, IRQ, and syscall gates, then load via `lidt`.
@@ -329,8 +327,8 @@ pub fn init() {
     set_gate(86, irq54, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(87, irq55, KERNEL_CODE_SEG, GATE_INTERRUPT);
 
-    // Syscall: int 0x80 - DPL=3 trap gate so Ring 3 code can invoke it
-    set_gate(0x80, syscall_entry, KERNEL_CODE_SEG, GATE_TRAP_DPL3);
+    // INT 0x80 vector is intentionally left unset — 64-bit user space uses
+    // the SYSCALL fast path (kernel/asm/x86/syscall_fast.asm).
 
     // Load IDT
     unsafe {

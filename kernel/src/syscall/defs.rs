@@ -328,7 +328,7 @@ pub const SYS_AVM_IOCTL: u32 = 630;
 pub const SYS_MMAP64: u32 = 631;
 pub const SYS_MUNMAP64: u32 = 632;
 
-/// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
+/// Register frame pushed by `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
 /// CPU-pushed interrupt frame (RIP, CS, RFLAGS, RSP, SS - always pushed in long mode).

@@ -803,11 +803,10 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
         scheduler::set_thread_stdin_pipe(child_tid, snap.stdin_pipe);
     }
 
-    // FPU state, mmap_next, user_pages, arch_mode
+    // FPU state, mmap_next, user_pages
     scheduler::set_thread_fpu_state(child_tid, &snap.fpu_data);
     scheduler::set_thread_mmap_next(child_tid, snap.mmap_next);
     scheduler::set_thread_user_pages(child_tid, snap.user_pages);
-    scheduler::set_thread_arch_mode(child_tid, snap.arch_mode);
 
     // FD table: clone parent's table and incref all global resources
     {
@@ -945,7 +944,6 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
     scheduler::set_thread_fpu_state(child_tid, &snap.fpu_data);
     scheduler::set_thread_mmap_next(child_tid, snap.mmap_next);
     scheduler::set_thread_user_pages(child_tid, snap.user_pages);
-    scheduler::set_thread_arch_mode(child_tid, snap.arch_mode);
 
     {
         use crate::fs::fd_table::FdKind;

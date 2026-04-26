@@ -69,7 +69,8 @@ syscall_fast_entry:
     push 0x2B                       ; CS  (user code64 selector, RPL=3)
     push rcx                        ; RIP (saved by SYSCALL in RCX)
 
-    ; General-purpose registers (same order as syscall_entry.asm)
+    ; General-purpose registers (matches the SyscallRegs layout in
+    ; kernel/src/syscall/defs.rs).
     push rax                        ; syscall number
     push rbx                        ; arg1
     push r10                        ; → rcx slot (arg2, moved to R10 by user)

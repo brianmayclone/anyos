@@ -91,7 +91,6 @@ pub fn create_thread_in_current_process(
 ) -> u32 {
     let (
         pd,
-        arch_mode,
         brk,
         parent_pri,
         parent_cwd,
@@ -123,7 +122,6 @@ pub fn create_thread_in_current_process(
         };
         (
             pd,
-            thread.arch_mode,
             thread.brk,
             thread.priority,
             thread.cwd,
@@ -162,7 +160,6 @@ pub fn create_thread_in_current_process(
             thread.context.checksum = thread.context.compute_checksum();
             thread.is_user = true;
             thread.brk = brk;
-            thread.arch_mode = arch_mode;
             thread.pd_shared = true;
             thread.cwd = parent_cwd;
             thread.capabilities = parent_caps;

@@ -26,7 +26,6 @@ find_program(PYTHON_EXECUTABLE NAMES python3 python)
 
 option(ANYOS_DEBUG_VERBOSE "Enable verbose debug output" OFF)
 option(ANYOS_DEBUG_SURF "Enable Surf browser debug logging" OFF)
-option(ANYOS_NO_CROSS "Disable cross-compilation (skip libc, TCC, games, curl)" OFF)
 option(ANYOS_RESET "Force fresh disk image rebuild (destroy runtime data)" OFF)
 set(ANYOS_ARCH "x86_64" CACHE STRING "Target architecture (x86_64 or arm64)")
 
@@ -71,20 +70,11 @@ if(NOT ANYOS_VERSION)
 endif()
 message(STATUS "anyOS version: ${ANYOS_VERSION}")
 
-# Auto-detect i686-elf cross-compiler (needed for libc, TCC)
-if(ANYOS_NO_CROSS)
-  set(HAS_CROSS_COMPILER FALSE)
-  message(STATUS "Cross-compilation disabled (ANYOS_NO_CROSS=ON) — skipping C library, TCC, and games")
-else()
-  find_program(I686_ELF_GCC NAMES i686-elf-gcc i386-elf-gcc)
-  if(I686_ELF_GCC)
-    set(HAS_CROSS_COMPILER TRUE)
-    message(STATUS "Found cross-compiler: ${I686_ELF_GCC}")
-  else()
-    set(HAS_CROSS_COMPILER FALSE)
-    message(STATUS "i686-elf-gcc not found — skipping C library, TCC, and games (Rust-only build)")
-  endif()
-endif()
+# 32-bit cross-compiler (i686-elf-gcc) is no longer used. The 32-bit
+# C world (libc, TCC, NASM, make, dash, ssh suite, curl, libgit2,
+# ClassiCube) was removed; all user-space programs are now 64-bit
+# (Rust workspace + libc64/clang for the small remaining C/C++ bits).
+set(HAS_CROSS_COMPILER FALSE)
 
 set(DISK_IMAGE "${CMAKE_BINARY_DIR}/anyos.img")
 if(ANYOS_ARCH STREQUAL "arm64")

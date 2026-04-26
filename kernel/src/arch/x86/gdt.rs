@@ -1,14 +1,16 @@
 //! Global Descriptor Table (GDT) for x86-64 long mode.
 //!
-//! Defines eight base entries: null, kernel code64 (Ring 0), kernel data (Ring 0),
-//! user code32 compat (Ring 3), user data (Ring 3), user code64 (Ring 3),
-//! plus per-CPU 16-byte TSS descriptors (2 GDT slots each).
+//! Defines six base entries plus per-CPU 16-byte TSS descriptors. The
+//! "user code32" slot at 0x18 is *not* entered by any user code (32-bit
+//! user space was removed) but is kept because SYSRET derives the user
+//! code-64 selector from it: STAR[63:48] = 0x18 → SYSRET CS = 0x18+0x10
+//! = 0x28 (USER_CODE64_SEL).
 //!
 //! GDT layout (designed for SYSCALL/SYSRET):
 //!   0x00: Null
 //!   0x08: Kernel Code 64 (L=1, D=0, DPL=0)
 //!   0x10: Kernel Data (DPL=0)
-//!   0x18: User Code 32 compat (L=0, D=1, DPL=3) — SYSRET base
+//!   0x18: User Code 32 (DPL=3) — vestigial, only a STAR-MSR layout slot
 //!   0x20: User Data (DPL=3)
 //!   0x28: User Code 64 (L=1, D=0, DPL=3)
 //!   0x30+N*0x10: TSS for CPU N (16 bytes, 2 entries per CPU)
@@ -20,6 +22,9 @@ use crate::arch::x86::smp::MAX_CPUS;
 /// GDT segment selectors (without RPL bits).
 pub const KERNEL_CODE64_SEL: u16 = 0x08;
 pub const KERNEL_DATA_SEL: u16 = 0x10;
+/// Vestigial: kept only as the STAR-MSR layout base. SYSRET adds 0x10 to
+/// derive the actual 64-bit user CS (0x28). No code ever runs in this
+/// segment after the 32-bit user-space removal.
 pub const USER_CODE32_SEL: u16 = 0x18;
 pub const USER_DATA_SEL: u16 = 0x20;
 pub const USER_CODE64_SEL: u16 = 0x28;
@@ -27,7 +32,9 @@ pub const TSS_SEL: u16 = 0x30; // CPU 0 TSS selector (backward compat)
 
 /// STAR MSR value for SYSCALL/SYSRET.
 /// Bits 47:32 = SYSCALL kernel CS base (0x08 → CS=0x08, SS=0x10)
-/// Bits 63:48 = SYSRET user CS base (0x18 → compat CS=0x1B, SS=0x23, 64-bit CS=0x2B)
+/// Bits 63:48 = SYSRET user CS base (0x18 → 64-bit CS=0x2B, SS=0x23).
+/// The 32-bit-compat SYSRET path that would land at CS=0x1B is unused
+/// because user space is 64-bit only.
 pub const STAR_MSR_VALUE: u64 = ((USER_CODE32_SEL as u64) << 48) | ((KERNEL_CODE64_SEL as u64) << 32);
 
 /// Get the TSS selector for a given CPU index.

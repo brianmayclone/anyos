@@ -1,0 +1,1 @@
+536870912 /daten1/development/brian/anyos/.claude/worktrees/drop-32bit/build/anyos.img

@@ -28,11 +28,6 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/users/perm")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Users")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/system/tests")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/sys")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/netinet")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/include/arpa")
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc/lib")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc64/include")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc64/include/sys")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libc64/include/netinet")
@@ -1328,7 +1323,9 @@ add_custom_target(bootloader_sysroot DEPENDS
 )
 
 if(ANYOS_ARCH STREQUAL "arm64")
-  file(REMOVE "${SYSROOT_DIR}/System/etc/svc/sshd")
+  # sshd was already removed from the svc schema source tree (32-bit C
+  # daemon, gone in the 32-bit cleanup); only httpd assets need stripping
+  # for ARM64 here.
   file(REMOVE "${SYSROOT_DIR}/System/etc/httpd/httpd.conf")
   file(REMOVE "${SYSROOT_DIR}/System/etc/httpd/sites/default")
 endif()

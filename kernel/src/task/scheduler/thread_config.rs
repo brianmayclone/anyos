@@ -35,17 +35,6 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
     }
 }
 
-/// Set the architecture mode for a thread.
-pub fn set_thread_arch_mode(tid: u32, mode: crate::task::thread::ArchMode) {
-    let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() {
-        Some(s) => s,
-        None => return,
-    };
-    if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-        thread.arch_mode = mode;
-    }
-}
 
 /// Get the current thread's page directory.
 pub fn current_thread_page_directory() -> Option<PhysAddr> {

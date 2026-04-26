@@ -39,7 +39,6 @@ set(KERNEL_ASM_SOURCES
   ${CMAKE_SOURCE_DIR}/kernel/asm/x86/boot.asm
   ${CMAKE_SOURCE_DIR}/kernel/asm/x86/interrupts.asm
   ${CMAKE_SOURCE_DIR}/kernel/asm/x86/context_switch.asm
-  ${CMAKE_SOURCE_DIR}/kernel/asm/x86/syscall_entry.asm
   ${CMAKE_SOURCE_DIR}/kernel/asm/x86/syscall_fast.asm
 )
 
