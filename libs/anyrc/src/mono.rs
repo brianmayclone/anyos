@@ -94,13 +94,13 @@ pub fn monomorphize(
         }
     }
 
-    // Remove generic (un-monomorphized) function bodies from the output
-    let generic_def_ids: HashSet<DefId> = typeck.generic_fn_defs.keys().copied().collect();
-    mir_bodies.retain(|body| {
-        // Check if this body's name corresponds to a generic fn
-        // We need to find the DefId by name. Build a reverse map.
-        !is_generic_fn_body(body, &generic_def_ids, typeck, interner)
-    });
+    // Keep the original generic bodies as baseline symbols as well.
+    //
+    // Cross-crate users currently import an rlib object plus an interface, but
+    // not enough HIR/MIR to instantiate a dependency's generic body in the
+    // downstream crate. Until that full cross-crate monomorphization exists, a
+    // generic function must remain linkable under its base symbol name. Local
+    // concrete instances are still emitted below with mangled names.
 
     // For each unique instantiation, build a specialized MIR body
     for ((def_id, substs), mangled_name) in &instances {

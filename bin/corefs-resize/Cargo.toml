@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 libcorefs-tools = { path = "../../libs/libcorefs-tools" }
-corefs-core = { path = "../../../corefs/corefs-core", default-features = false, features = ["crypto"] }
+corefs-core = { path = "../../../corefs/corefs-core", default-features = false }
 
 [profile.dev]
 panic = "abort"

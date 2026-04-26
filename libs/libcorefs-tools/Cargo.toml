@@ -13,7 +13,7 @@ default = []
 host = []
 
 [dependencies]
-corefs-core = { path = "../../../corefs/corefs-core", default-features = false, features = ["crypto"] }
+corefs-core = { path = "../../../corefs/corefs-core", default-features = false }
 
 # anyOS-side runtime helpers. Only needed when building for the
 # AnyOS user target; the `host` feature omits this dependency.

@@ -1246,6 +1246,15 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            s if s.ends_with("::fetch_sub") && s.contains("Atomic") => {
+                // arg0 = &self, arg1 = val, arg2 = ordering (ignored)
+                // fetch_sub(x) == fetch_add(-x)
+                self.asm.emit_raw(&[0x48, 0xF7, 0xDE]); // neg rsi
+                self.asm.emit_raw(&[0xF0, 0x48, 0x0F, 0xC1, 0x37]); // lock xadd [rdi], rsi
+                self.asm.mov_rr(Reg::RAX, Reg::RSI); // return old value
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             // AtomicXxx::compare_exchange(&self, current, new, success_ord, fail_ord)
             s if s.ends_with("::compare_exchange") && s.contains("Atomic") => {
                 // arg0=&self, arg1=current, arg2=new, arg3=succ_ord, arg4=fail_ord
@@ -1315,11 +1324,41 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "Option::unwrap_or_else" => {
+                // arg0 = &Option in RDI, arg1 = fallback fn ptr in RSI.
+                // Some(v) returns v; None calls fallback().
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // disc
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
+                self.asm.emit_raw(&[0x75, 0x06]);           // jne .fallback
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);     // Some value
+                self.asm.emit_raw(&[0xEB, 0x03]);           // jmp .done
+                self.asm.call_reg(Reg::RSI);                // .fallback
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             "Option::is_some" => {
                 // arg0 = &Option in RDI → disc == 0 means Some
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
                 self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
                 self.asm.emit_raw(&[0x0F, 0x94, 0xC0]);     // sete al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Result::is_ok" => {
+                // arg0 = &Result in RDI → disc == 0 means Ok
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]);     // sete al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Result::is_err" => {
+                // arg0 = &Result in RDI → disc != 0 means Err
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
+                self.asm.emit_raw(&[0x0F, 0x95, 0xC0]);     // setne al
                 self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
                 self.store_place(dest, Reg::RAX);
                 true
@@ -1349,6 +1388,110 @@ impl<'a> CodeEmitter<'a> {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);     // disc
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX); // value
+                true
+            }
+            "Option::and_then" => {
+                // arg0 = &Option in RDI, arg1 = closure fn ptr in RSI.
+                // Some(v) returns closure(v); None returns None.
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // disc
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test rax, rax
+                self.asm.emit_raw(&[0x75, 0x09]);           // jne .none
+                self.asm.mov_rm(Reg::RDI, Reg::RDI, 8);     // value as closure arg
+                self.asm.call_reg(Reg::RSI);                // closure returns option in rax/rdx
+                self.asm.emit_raw(&[0xEB, 0x0A]);           // jmp .done
+                self.asm.emit_raw(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // .none: None disc
+                self.asm.xor_rr(Reg::RDX, Reg::RDX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                true
+            }
+            "Option::or_else" => {
+                // Some(v) returns the original option; None calls fallback() -> Option.
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // disc
+                self.asm.mov_rm(Reg::RDX, Reg::RDI, 8);     // value
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test disc
+                self.asm.emit_raw(&[0x74, 0x03]);           // je .store
+                self.asm.call_reg(Reg::RSI);                // fallback result in rax/rdx
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                true
+            }
+            "Option::ok_or_else" => {
+                // Some(v) -> Ok(v), None -> Err(fallback()).
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // disc
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test disc
+                self.asm.emit_raw(&[0x75, 0x09]);           // jne .err
+                self.asm.mov_rm(Reg::RDX, Reg::RDI, 8);     // Ok value
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);        // Ok disc
+                self.asm.emit_raw(&[0xEB, 0x0D]);           // jmp .store
+                self.asm.call_reg(Reg::RSI);                // .err: error value
+                self.asm.mov_rr(Reg::RDX, Reg::RAX);
+                self.asm.emit_raw(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // Err disc
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                true
+            }
+            "Option::ok_or" => {
+                // Some(v) -> Ok(v), None -> Err(err).
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // disc
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test disc
+                self.asm.emit_raw(&[0x75, 0x09]);           // jne .err
+                self.asm.mov_rm(Reg::RDX, Reg::RDI, 8);     // Ok value
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);        // Ok disc
+                self.asm.emit_raw(&[0xEB, 0x0A]);           // jmp .store
+                self.asm.mov_rr(Reg::RDX, Reg::RSI);        // Err value
+                self.asm.emit_raw(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // Err disc
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                true
+            }
+            "Option::is_some_and" => {
+                // Some(v) calls predicate(v); None returns false.
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test disc
+                self.asm.emit_raw(&[0x75, 0x09]);           // jne .false
+                self.asm.mov_rm(Reg::RDI, Reg::RDI, 8);     // value
+                self.asm.call_reg(Reg::RSI);
+                self.asm.emit_raw(&[0xEB, 0x03]);           // jmp .done
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);        // false
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Option::map_or" => {
+                // arg0 = &Option, arg1 = default, arg2 = mapper fn ptr.
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test disc
+                self.asm.emit_raw(&[0x75, 0x09]);           // jne .default
+                self.asm.mov_rm(Reg::RDI, Reg::RDI, 8);     // value
+                self.asm.call_reg(Reg::RDX);
+                self.asm.emit_raw(&[0xEB, 0x03]);           // jmp .done
+                self.asm.mov_rr(Reg::RAX, Reg::RSI);        // default
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Option::get_or_insert_with" => {
+                // arg0 = &mut Option in RDI, arg1 = initializer fn ptr in RSI.
+                // Ensure Some(value), then return &mut value.
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);     // disc
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);     // test disc
+                self.asm.emit_raw(&[0x74, 0x0D]);           // je .done_init
+                self.asm.call_reg(Reg::RSI);                // initializer value
+                self.asm.mov_mr(Reg::RDI, 8, Reg::RAX);     // store value
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RAX);     // disc = Some
+                self.asm.lea(Reg::RAX, Reg::RDI, 8);        // .done_init: &value
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "ptr_eq" => {
+                self.asm.emit_raw(&[0x48, 0x39, 0xF7]);     // cmp rdi, rsi
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]);     // sete al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
                 true
             }
 
