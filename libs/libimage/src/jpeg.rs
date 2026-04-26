@@ -1645,6 +1645,101 @@ mod tests {
         }
     }
 
+    /// Path to the codec-corpus root. Tests that need corpus files are
+    /// skipped (with a warning) if it doesn't exist on disk, so the test
+    /// suite still passes on systems where the corpus hasn't been cloned.
+    const CORPUS: &str = "../../third_party/codec-corpus";
+
+    fn try_corpus(rel: &str) -> Option<Vec<u8>> {
+        let p = format!("{}/{}", CORPUS, rel);
+        std::fs::read(&p).ok()
+    }
+
+    fn decode_or_panic(data: &[u8]) -> (u32, u32, Vec<u32>) {
+        let info = probe(data).expect("probe");
+        let mut px = vec![0u32; info.width as usize * info.height as usize];
+        let mut sc = vec![0u8; info.scratch_needed as usize];
+        let rc = decode(data, &mut px, &mut sc);
+        assert_eq!(rc, ERR_OK, "decode failed rc={}", rc);
+        (info.width, info.height, px)
+    }
+
+    #[test]
+    fn corpus_baseline_3comp() {
+        let Some(d) = try_corpus("image-rs/test-images/jpg/portrait_2.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        let (w, h, px) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+        // First pixel should be opaque ARGB.
+        assert_eq!(px[0] >> 24, 0xFF);
+    }
+
+    #[test]
+    fn corpus_progressive_3comp() {
+        let Some(d) = try_corpus("image-rs/test-images/jpg/progressive/cat.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        let (w, h, _) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+    }
+
+    #[test]
+    fn corpus_grayscale() {
+        // Try a grayscale baseline file. Several exist in image-rs/test-images.
+        let candidates = [
+            "image-rs/test-images/jpg/dnt_disable.jpg",
+            "image-rs/test-images/jpg/grayscale.jpg",
+        ];
+        for c in candidates {
+            if let Some(d) = try_corpus(c) {
+                if probe(&d).is_some() {
+                    let (w, h, px) = decode_or_panic(&d);
+                    assert!(w > 0 && h > 0);
+                    // Grayscale -> R=G=B
+                    let p = px[0];
+                    assert_eq!((p >> 16) & 0xFF, (p >> 8) & 0xFF);
+                    assert_eq!((p >> 8) & 0xFF, p & 0xFF);
+                    return;
+                }
+            }
+        }
+        eprintln!("corpus grayscale candidates not present - skipping");
+    }
+
+    #[test]
+    fn corpus_cmyk_app14() {
+        let Some(d) = try_corpus("jpeg-conformance/valid/ycck.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        // Should now decode (4-component + Adobe APP14 transform=2, YCCK).
+        let (w, h, _) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+    }
+
+    #[test]
+    fn corpus_12bit() {
+        let Some(d) = try_corpus("mozjpeg/testorig12.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        let (w, h, _) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+    }
+
+    #[test]
+    fn corpus_mjpeg_no_dht() {
+        let Some(d) = try_corpus("jpeg-conformance/valid/mjpeg.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        let (w, h, _) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+    }
+
     #[test]
     fn decode_p150_progressive() {
         let data = load_file("/tmp/p150-prog.jpg");
