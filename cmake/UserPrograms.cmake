@@ -1323,7 +1323,9 @@ add_custom_target(bootloader_sysroot DEPENDS
 )
 
 if(ANYOS_ARCH STREQUAL "arm64")
-  file(REMOVE "${SYSROOT_DIR}/System/etc/svc/sshd")
+  # sshd was already removed from the svc schema source tree (32-bit C
+  # daemon, gone in the 32-bit cleanup); only httpd assets need stripping
+  # for ARM64 here.
   file(REMOVE "${SYSROOT_DIR}/System/etc/httpd/httpd.conf")
   file(REMOVE "${SYSROOT_DIR}/System/etc/httpd/sites/default")
 endif()
