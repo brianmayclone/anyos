@@ -2,7 +2,7 @@ use libanyui_client as ui;
 use ui::Widget;
 
 const DLG_W: u32 = 420;
-const DLG_H: u32 = 210;
+const DLG_H: u32 = 238;
 
 pub fn show() {
     let t = anyos_std::i18n::t;
@@ -48,10 +48,16 @@ pub fn show() {
     btn_form.set_color(tc.accent);
     content.add(&btn_form);
 
+    let btn_service = ui::Button::new(t("Connected Service"));
+    btn_service.set_position(24, 76);
+    btn_service.set_size(356, 38);
+    btn_service.set_color(tc.control_bg);
+    content.add(&btn_service);
+
     let hint = ui::Label::new(t(
-        "UI Forms create .Designer metadata plus Rust codebehind files.",
+        "UI Forms create .Designer metadata; Connected Services generate Rust client stubs.",
     ));
-    hint.set_position(24, 82);
+    hint.set_position(24, 128);
     hint.set_size(360, 18);
     hint.set_font_size(10);
     hint.set_text_color(tc.text_secondary);
@@ -76,6 +82,11 @@ pub fn show() {
 
     btn_form.on_click(move |_| {
         crate::logic::commands::show_new_ui_form_dialog();
+        ui::Control::from_id(win_id).set_visible(false);
+    });
+
+    btn_service.on_click(move |_| {
+        crate::logic::commands::manage_connected_services();
         ui::Control::from_id(win_id).set_visible(false);
     });
 

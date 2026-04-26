@@ -7,15 +7,15 @@
 //! On anyOS, heap allocation uses SYS_SBRK (syscall 9) for small allocations
 //! and SYS_MMAP (syscall 14) for large ones.
 
+use crate::linker::link::TargetAbi;
 use crate::prelude::*;
 
 /// Generate the runtime support object code (x86-64 machine code).
 /// Returns a list of (symbol_name, code_bytes) pairs to be linked in.
-pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
+pub fn runtime_stubs(target_abi: TargetAbi) -> Vec<(String, Vec<u8>)> {
     let mut stubs = Vec::new();
 
     // __anyrc_alloc(size: usize) -> *mut u8
-    // Simple sbrk-based allocator: just bump the break pointer.
     // args: RDI = size
     // returns: RAX = pointer (or 0 on failure)
     stubs.push(("__anyrc_alloc".to_string(), {
@@ -24,13 +24,29 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         code.extend_from_slice(&[0x48, 0x83, 0xC7, 0x07]); // add rdi, 7
         code.extend_from_slice(&[0x48, 0x83, 0xE7, 0xF8]); // and rdi, -8
 
-        // anyOS native syscall ABI: RAX=syscall, RBX=arg1, R10=arg2, ...
-        // SYS_SBRK takes an increment and returns the old break.
-        code.extend_from_slice(&[0x53]); // push rbx
-        code.extend_from_slice(&[0x48, 0x89, 0xFB]); // mov rbx, rdi (increment)
-        code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x09, 0x00, 0x00, 0x00]); // mov rax, 9 (SYS_SBRK)
-        code.extend_from_slice(&[0x0F, 0x05]); // syscall
-        code.extend_from_slice(&[0x5B]); // pop rbx
+        match target_abi {
+            TargetAbi::AnyOs => {
+                // anyOS native syscall ABI: RAX=syscall, RBX=arg1, R10=arg2, ...
+                // SYS_SBRK takes an increment and returns the old break.
+                code.extend_from_slice(&[0x53]); // push rbx
+                code.extend_from_slice(&[0x48, 0x89, 0xFB]); // mov rbx, rdi (increment)
+                code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x09, 0x00, 0x00, 0x00]); // mov rax, 9
+                code.extend_from_slice(&[0x0F, 0x05]); // syscall
+                code.extend_from_slice(&[0x5B]); // pop rbx
+            }
+            TargetAbi::Linux => {
+                // Linux x86-64 mmap(NULL, size, PROT_READ|PROT_WRITE,
+                // MAP_PRIVATE|MAP_ANONYMOUS, -1, 0).
+                code.extend_from_slice(&[0x48, 0x89, 0xFE]); // mov rsi, rdi (len)
+                code.extend_from_slice(&[0x48, 0x31, 0xFF]); // xor rdi, rdi (addr)
+                code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x03, 0x00, 0x00, 0x00]); // prot=3
+                code.extend_from_slice(&[0x49, 0xC7, 0xC2, 0x22, 0x00, 0x00, 0x00]); // flags=0x22
+                code.extend_from_slice(&[0x49, 0xC7, 0xC0, 0xFF, 0xFF, 0xFF, 0xFF]); // fd=-1
+                code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9 (offset)
+                code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x09, 0x00, 0x00, 0x00]); // SYS_mmap
+                code.extend_from_slice(&[0x0F, 0x05]); // syscall
+            }
+        }
         code.extend_from_slice(&[0xC3]); // ret
         code
     }));
@@ -144,8 +160,42 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
     // String layout = Vec<u8> layout
     stubs.push(("__anyrc_string_push_str".to_string(), {
         let mut code = Vec::new();
-        // TODO: implement properly with realloc + memcpy
-        // For now, just a stub that returns
+        // Args: RDI=&mut String, RSI=src ptr, RDX=src len.
+        // String layout: [ptr: *mut u8, len: usize, cap: usize].
+        code.extend_from_slice(&[0x53]); // push rbx
+        code.extend_from_slice(&[0x41, 0x54]); // push r12
+        code.extend_from_slice(&[0x41, 0x55]); // push r13
+        code.extend_from_slice(&[0x41, 0x56]); // push r14
+        code.extend_from_slice(&[0x41, 0x57]); // push r15
+        code.extend_from_slice(&[0x48, 0x89, 0xFB]); // mov rbx, rdi (string)
+        code.extend_from_slice(&[0x49, 0x89, 0xF4]); // mov r12, rsi (src)
+        code.extend_from_slice(&[0x49, 0x89, 0xD5]); // mov r13, rdx (append len)
+        code.extend_from_slice(&[0x4C, 0x8B, 0x73, 0x08]); // mov r14, [rbx+8] (old len)
+        code.extend_from_slice(&[0x4D, 0x89, 0xF7]); // mov r15, r14
+        code.extend_from_slice(&[0x4D, 0x01, 0xEF]); // add r15, r13 (new len)
+        code.extend_from_slice(&[0x48, 0x8B, 0x4B, 0x10]); // mov rcx, [rbx+16] (cap)
+        code.extend_from_slice(&[0x49, 0x39, 0xCF]); // cmp r15, rcx
+        let jbe_offset_pos = code.len() + 1;
+        code.extend_from_slice(&[0x76, 0x00]); // jbe .has_capacity
+        code.extend_from_slice(&[0x48, 0x8B, 0x3B]); // mov rdi, [rbx] (old ptr)
+        code.extend_from_slice(&[0x48, 0x89, 0xCE]); // mov rsi, rcx (old cap bytes)
+        code.extend_from_slice(&[0x4C, 0x89, 0xFA]); // mov rdx, r15 (new cap bytes)
+        code.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00]); // call __anyrc_realloc
+        code.extend_from_slice(&[0x48, 0x89, 0x03]); // mov [rbx], rax
+        code.extend_from_slice(&[0x4C, 0x89, 0x7B, 0x10]); // mov [rbx+16], r15
+        let has_capacity = code.len();
+        code[jbe_offset_pos] = (has_capacity - (jbe_offset_pos + 1)) as u8;
+        code.extend_from_slice(&[0x48, 0x8B, 0x3B]); // mov rdi, [rbx] (dst base)
+        code.extend_from_slice(&[0x4C, 0x01, 0xF7]); // add rdi, r14 (dst += old len)
+        code.extend_from_slice(&[0x4C, 0x89, 0xE6]); // mov rsi, r12 (src)
+        code.extend_from_slice(&[0x4C, 0x89, 0xE9]); // mov rcx, r13 (count)
+        code.extend_from_slice(&[0xF3, 0xA4]); // rep movsb
+        code.extend_from_slice(&[0x4C, 0x89, 0x7B, 0x08]); // mov [rbx+8], r15
+        code.extend_from_slice(&[0x41, 0x5F]); // pop r15
+        code.extend_from_slice(&[0x41, 0x5E]); // pop r14
+        code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+        code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+        code.extend_from_slice(&[0x5B]); // pop rbx
         code.push(0xC3);
         code
     }));
@@ -153,7 +203,15 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
     // __anyrc_string_push_char(&mut String, char)
     stubs.push(("__anyrc_string_push_char".to_string(), {
         let mut code = Vec::new();
-        code.push(0xC3); // stub
+        // Append the low byte of the char. Full UTF-8 encoding belongs in the
+        // library layer; this helper is only the bootstrap ASCII fast path used
+        // by current anyrc codegen.
+        code.extend_from_slice(&[0x56]); // push rsi (byte source at rsp)
+        code.extend_from_slice(&[0x48, 0x89, 0xE6]); // mov rsi, rsp
+        code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00]); // mov rdx, 1
+        code.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00]); // call __anyrc_string_push_str
+        code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // add rsp, 8
+        code.push(0xC3);
         code
     }));
 
@@ -383,247 +441,16 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         code
     }));
 
-    let ret_zero = || vec![0x48, 0x31, 0xC0, 0xC3]; // xor rax, rax; ret
+    // Do not add ordinary Rust/stdlib methods here.
+    //
+    // This runtime object is only for compiler ABI helpers and low-level memory
+    // intrinsics. Methods such as String::drain, Vec::retain, Option::map,
+    // Iterator::next, HashMap::insert, and formatting builders must be produced
+    // by normal Rust codegen from the standard libraries, or implemented as real
+    // compiler intrinsics when they are truly ABI primitives. Silently emitting
+    // xor-rax/ret or mov-rax-rdi placeholders makes binaries link while their
+    // behavior is wrong, which is worse than a compile failure.
     let ret_rdi = || vec![0x48, 0x89, 0xF8, 0xC3]; // mov rax, rdi; ret
-
-    for name in [
-        "__unknown",
-        "write_fmt",
-        "Vec::reserve",
-        "Vec::retain",
-        "Vec::extend_from_slice",
-        "Vec::extend",
-        "Vec::drain",
-        "Vec::append",
-        "Vec::copy_from_slice",
-        "Vec::contains",
-        "Vec::dedup",
-        "Vec::dedup_by",
-        "Vec::resize_with",
-        "Vec::sort_unstable",
-        "Vec::reverse",
-        "Vec::swap_remove",
-        "Vec::sort",
-        "Vec::sort_by",
-        "Vec::sort_by_key",
-        "Vec::binary_search_by_key",
-        "Vec::swap",
-        "Vec::ends_with",
-        "Vec::first",
-        "Vec::last",
-        "Vec::last_mut",
-        "String::contains",
-        "String::ends_with",
-        "String::find",
-        "String::rfind",
-        "String::eq_ignore_ascii_case",
-        "String::pop",
-        "String::trim",
-        "String::trim_start",
-        "String::trim_end",
-        "String::strip_prefix",
-        "String::split",
-        "String::splitn",
-        "String::rsplitn",
-        "str::splitn",
-        "str::rsplitn",
-        "String::split_inclusive",
-        "String::split_whitespace",
-        "String::split_ascii_whitespace",
-        "String::lines",
-        "String::trim_end_matches",
-        "String::insert_str",
-        "String::repeat",
-        "String::replace",
-        "String::replacen",
-        "String::to_ascii_uppercase",
-        "String::to_ascii_lowercase",
-        "String::cmp",
-        "String::char_indices",
-        "String::chars",
-        "AtomicU32::fetch_update",
-        "u8::from_str_radix",
-        "u16::from_str_radix",
-        "u32::from_str_radix",
-        "u64::from_str_radix",
-        "usize::from_str_radix",
-        "usize::try_from",
-        "from_bits",
-        "from_fn",
-        "from_utf8",
-        "from_utf8_lossy",
-        "hash_key",
-        "char::from_u32",
-        "from_utf8_unchecked",
-        "transmute_copy",
-        "zeroed",
-        "print_report",
-        "PhantomData",
-        "get_type_id",
-        "foo",
-        "Formatter::debug_struct",
-        "DebugStruct::field",
-        "Formatter::debug_tuple",
-        "Formatter::pad",
-        "ident_ok",
-        "starts_with_fn",
-        "is_available",
-        "encode_to_vec",
-        "backslash_x_char",
-        "backslash_u",
-        "backslash_x_byte",
-        "backslash_x_nonzero",
-        "backslash_x",
-        "likely",
-        "unlikely",
-        "guard",
-        "handle_alloc_error",
-        "from_size_align_unchecked",
-        "invalid_mut",
-        "offset_from",
-        "swap_nonoverlapping",
-        "slice_from_raw_parts_mut",
-        "meta",
-        "validate_aligned_to",
-        "try_with_unchecked",
-        "as_byte_slice",
-        "as_byte_slice_mut",
-        "transmute_unchecked",
-        "as_ref_unchecked",
-        "force_mut",
-        "as_const_ptr",
-        "reserve_rehash",
-        "make_hash",
-        "decode_from_slice",
-        "resolve_height_calc",
-        "downgrade",
-        "respan_token_stream",
-        "Box::any",
-        "panicking",
-        "Error",
-        "Unbounded",
-        "Excluded",
-        "drop_in_place",
-        "compiler_fence",
-        "fence",
-        "_assert_same_size_and_validity",
-        "put",
-        "build_desired",
-        "Vec::splice",
-        "Vec::binary_search",
-        "Vec::sort_unstable_by",
-        "create_dir_all",
-        "copy",
-        "remove_dir_all",
-        "remove_dir",
-        "remove_file",
-        "set_permissions",
-        "read_dir",
-        "current_dir",
-        "set_var",
-        "remove_var",
-        "vars",
-        "yield_now",
-        "connect_timeout",
-        "Path::exists",
-        "Relaxed",
-        "V4",
-        "from_u32",
-        "from_millis",
-        "from_micros",
-        "var",
-        "id",
-        "populate_site_grid",
-        "populate_site_grid_inner",
-        "fmt_mem",
-        "on_line",
-        "read_u16",
-        "collect_struct_counts",
-    ] {
-        stubs.push((name.to_string(), ret_zero()));
-    }
-
-    for name in [
-        "__anyrc_format_args",
-        "Result::?",
-        "Option::?",
-        "Result::ok",
-        "Result::unwrap_or",
-        "Result::unwrap_or_default",
-        "Option::as_ref",
-        "Option::as_mut",
-        "Option::and_then",
-        "Option::or",
-        "Option::or_else",
-        "Option::unwrap_or_else",
-        "Option::unwrap_unchecked",
-        "Option::filter",
-        "Option::as_deref",
-        "Option::as_deref_mut",
-        "Option::ok_or_else",
-        "Option::take",
-        "Option::replace",
-        "Option::get_or_insert_with",
-        "Option::clone",
-        "Option::unwrap_or_default",
-        "Result::err",
-        "Result::unwrap_or_else",
-        "Result::map_err",
-        "String::clone",
-        "String::trim_matches",
-        "str::trim_matches",
-        "String::into_bytes",
-        "String::into_boxed_str",
-        "into_boxed_str",
-        "into_boxed_c_str",
-        "String::as_bytes_mut",
-        "Vec::clone",
-        "Vec::clone_from",
-        "Vec::to_vec",
-        "Vec::split_off",
-        "Vec::split_at_mut",
-        "Vec::into_boxed_slice",
-        "into_boxed_slice",
-        "Vec::as_mut_ptr",
-        "Vec::chunks_exact",
-        "Box::as_ref",
-        "Box::clone",
-        "Box::clone_box",
-        "as_ptr",
-        "from_ref",
-        "into_raw",
-        "into_allocation",
-        "new_in",
-        "new_uninitialized",
-        "with_capacity_in",
-        "with_capacity_and_hasher",
-        "with_hasher_in",
-        "get_or_init",
-        "Chars::by_ref",
-        "Result::unwrap_err",
-        "Reverse",
-        "Wrapping",
-        "Ipv4Addr::octets",
-        "Included",
-        "NonZeroU8::ok_or",
-        "NonZeroU16::ok_or",
-        "NonZeroU32::ok_or",
-        "NonZeroU64::ok_or",
-        "NonZeroU128::ok_or",
-        "NonZeroUsize::ok_or",
-        "NonZeroI8::ok_or",
-        "NonZeroI16::ok_or",
-        "NonZeroI32::ok_or",
-        "NonZeroI64::ok_or",
-        "NonZeroI128::ok_or",
-        "NonZeroIsize::ok_or",
-        "i128::from_ne_bytes",
-        "i64::from_le_bytes",
-        "map_split",
-        "MaybeUninit::assume_init_ref",
-    ] {
-        stubs.push((name.to_string(), ret_rdi()));
-    }
 
     for name in [
         "u16::from_le_bytes",

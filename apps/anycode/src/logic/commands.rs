@@ -794,9 +794,29 @@ pub fn designer_drop_tool_at(file_path: &str, x: i32, y: i32, payload: &str) {
         None => return,
     };
     let (form_x, form_y) = crate::ui::designer_surface::canvas_to_form(x, y);
-    let form_x = snap_i32(form_x.max(0), DESIGNER_SNAP);
-    let form_y = snap_i32(form_y.max(0), DESIGNER_SNAP);
-    let control_name = match doc.add_control(control_kind, form_x, form_y) {
+    let parent_name = crate::ui::designer_surface::hit_test_container(&doc, x, y);
+    let page_index = parent_name
+        .as_ref()
+        .and_then(|parent| doc.control_parent_page_index_at_form(parent, form_x, form_y))
+        .or_else(|| crate::ui::designer_surface::hit_test_page_index(&doc, x, y));
+    let (local_x, local_y) = if let Some(ref parent_name) = parent_name {
+        if let Some((parent_x, parent_y)) = doc.control_parent_client_origin(parent_name) {
+            (form_x - parent_x, form_y - parent_y)
+        } else {
+            (form_x, form_y)
+        }
+    } else {
+        (form_x, form_y)
+    };
+    let local_x = snap_i32(local_x.max(0), DESIGNER_SNAP);
+    let local_y = snap_i32(local_y.max(0), DESIGNER_SNAP);
+    let control_name = match doc.add_control(
+        control_kind,
+        local_x,
+        local_y,
+        parent_name.as_deref(),
+        page_index,
+    ) {
         Ok(name) => name,
         Err(err) => {
             s.status.set_analysis_status(err);
@@ -1097,6 +1117,52 @@ pub fn manage_crates() {
         return;
     }
     crate::ui::crate_manager_dialog::show();
+}
+
+pub fn manage_connected_services() {
+    let s = app();
+    if s.current_project.is_none() {
+        s.status.set_analysis_status("Open a Rust project first");
+        return;
+    }
+    crate::ui::connected_services_dialog::show();
+}
+
+pub fn add_connected_service(
+    name: String,
+    endpoint: String,
+    module_name: String,
+    kind_index: u32,
+) -> Result<String, String> {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        return Err(String::from("Open a Rust project first"));
+    };
+    let kind = crate::logic::connected_services::ConnectedServiceKind::from_index(kind_index);
+    match crate::logic::connected_services::add_service(
+        project,
+        &name,
+        &endpoint,
+        &module_name,
+        kind,
+    ) {
+        Ok(service) => {
+            if let Some(ref proj) = s.current_project {
+                s.sidebar.populate_project(proj, &s.task_mgr);
+            }
+            s.status
+                .set_analysis_status(&format!("Generated connected service {}", service.name));
+            s.output.append_line(&format!(
+                "[Connected Services] Generated {} in {}",
+                service.name, service.output_dir
+            ));
+            Ok(format!("Generated {}", service.name))
+        }
+        Err(err) => {
+            s.status.set_analysis_status(err);
+            Err(String::from(err))
+        }
+    }
 }
 
 pub fn check_crate_updates_on_open() {

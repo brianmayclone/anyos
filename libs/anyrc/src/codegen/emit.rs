@@ -1243,9 +1243,19 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RCX); // cap
                 true
             }
-            "Vec::len" | "String::len" => {
-                // arg0 = &Vec in RDI → read len field at offset 8
-                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+            "Vec::len" | "String::len" | "len" => {
+                // With a proper &self receiver, arg0 is a pointer in RDI.
+                // Some current MIR paths still pass the 3-word Vec/String
+                // aggregate directly in RDI/RSI/RDX; in that ABI shape RSI is
+                // the len field.
+                if args
+                    .first()
+                    .is_some_and(|arg| self.operand_slot_count(arg) > 1)
+                {
+                    self.asm.mov_rr(Reg::RAX, Reg::RSI);
+                } else {
+                    self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+                }
                 self.store_place(dest, Reg::RAX);
                 true
             }
@@ -1353,12 +1363,91 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.call_extern("__anyrc_string_push_char");
                 true
             }
-            "String::from" => {
-                // String::from(&str) — clone a string slice into a new heap String
-                // arg0 = &str fat ptr (ptr in RDI, len in RSI)
-                self.asm.call_extern("__anyrc_string_from_str");
-                // Returns 3-word struct in memory via hidden first arg or RAX for simple case
-                self.store_place(dest, Reg::RAX);
+            s @ ("String::from" | "from")
+                if args.len() == 1
+                    && (s == "String::from"
+                        || matches!(
+                            args.first(),
+                            Some(Operand::Constant(Constant {
+                                value: ConstValue::Str(_),
+                                ..
+                            }))
+                        )) =>
+            {
+                // String::from(&str) clones the slice into String's Vec<u8>
+                // layout: [ptr, len, cap].
+                let slot = self.alloc.stack_slots[dest.local.0];
+                if let Operand::Constant(Constant {
+                    value: ConstValue::Str(value),
+                    ..
+                }) = &args[0]
+                {
+                    let bytes = value.as_bytes();
+                    self.asm.mov_ri(Reg::RDI, bytes.len() as i64);
+                    self.asm.call_extern("__anyrc_alloc");
+                    for (offset, chunk) in bytes.chunks(8).enumerate() {
+                        let mut word = 0u64;
+                        for (idx, byte) in chunk.iter().enumerate() {
+                            word |= (*byte as u64) << (idx * 8);
+                        }
+                        self.asm.mov_ri(Reg::RDX, word as i64);
+                        self.asm.mov_mr_sized(
+                            Reg::RAX,
+                            (offset * 8) as i32,
+                            Reg::RDX,
+                            chunk.len() as i32,
+                        );
+                    }
+                    self.asm.mov_ri(Reg::RCX, bytes.len() as i64);
+                    if self.alloc.local_sizes[dest.local.0] <= 8 {
+                        self.asm.push(Reg::RAX); // string data ptr
+                        self.asm.push(Reg::RCX); // len
+                        self.asm.mov_ri(Reg::RDI, 24);
+                        self.asm.call_extern("__anyrc_alloc");
+                        self.asm.pop(Reg::RCX); // len
+                        self.asm.pop(Reg::RDX); // string data ptr
+                        self.asm.mov_mr(Reg::RAX, 0, Reg::RDX);
+                        self.asm.mov_mr(Reg::RAX, 8, Reg::RCX);
+                        self.asm.mov_mr(Reg::RAX, 16, Reg::RCX);
+                        self.store_place(dest, Reg::RAX);
+                    } else {
+                        self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                        self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+                        self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RCX);
+                    }
+                    return true;
+                }
+
+                // Non-literal &str fat pointer arrives as RDI=src_ptr, RSI=len.
+                self.asm.push(Reg::RDI); // src ptr
+                self.asm.push(Reg::RSI); // len
+                self.asm.mov_rr(Reg::RDI, Reg::RSI); // allocation size
+                self.asm.call_extern("__anyrc_alloc");
+                self.asm.pop(Reg::RCX); // len
+                self.asm.pop(Reg::RSI); // src ptr
+                self.asm.push(Reg::RAX); // dst ptr
+                self.asm.push(Reg::RCX); // len
+                self.asm.mov_rr(Reg::RDI, Reg::RAX); // memcpy dst
+                self.asm.mov_rr(Reg::RDX, Reg::RCX); // memcpy len
+                self.asm.call_extern("memcpy");
+                self.asm.pop(Reg::RCX); // len
+                self.asm.pop(Reg::RAX); // dst ptr
+                if self.alloc.local_sizes[dest.local.0] <= 8 {
+                    self.asm.push(Reg::RAX); // string data ptr
+                    self.asm.push(Reg::RCX); // len
+                    self.asm.mov_ri(Reg::RDI, 24);
+                    self.asm.call_extern("__anyrc_alloc");
+                    self.asm.pop(Reg::RCX); // len
+                    self.asm.pop(Reg::RDX); // string data ptr
+                    self.asm.mov_mr(Reg::RAX, 0, Reg::RDX);
+                    self.asm.mov_mr(Reg::RAX, 8, Reg::RCX);
+                    self.asm.mov_mr(Reg::RAX, 16, Reg::RCX);
+                    self.store_place(dest, Reg::RAX);
+                } else {
+                    self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                    self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+                    self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RCX);
+                }
                 true
             }
             "String::to_uppercase" | "str::to_uppercase" | "to_uppercase" => {

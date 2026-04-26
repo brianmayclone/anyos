@@ -435,6 +435,33 @@ impl<'a> TypeChecker<'a> {
         if !fields.is_empty() {
             self.struct_defs.insert(SYNTH_PARSED_ARGS_DEF_ID, fields);
         }
+
+        // Bootstrap layout for compiler-known alloc types until anyrc can
+        // consume the real alloc crate metadata for them. These are layout
+        // facts, not method implementations: methods still have to come from
+        // normal codegen or real intrinsics.
+        for type_name in ["String", "Vec"] {
+            let Some(type_sym) = self.interner.lookup(type_name) else {
+                continue;
+            };
+            let Some(def_id) = self.type_name_to_def.get(&type_sym).copied() else {
+                continue;
+            };
+            if self.struct_defs.contains_key(&def_id) {
+                continue;
+            }
+            self.struct_defs.insert(
+                def_id,
+                vec![
+                    (
+                        type_sym,
+                        TyKind::RawPtr(Box::new(TyKind::Uint(UintTy::U8)), Mutability::Mut),
+                    ),
+                    (type_sym, TyKind::Uint(UintTy::Usize)),
+                    (type_sym, TyKind::Uint(UintTy::Usize)),
+                ],
+            );
+        }
     }
 
     fn parsed_args_ty(&self) -> TyKind {

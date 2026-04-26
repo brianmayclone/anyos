@@ -2,6 +2,7 @@ pub mod ai;
 pub mod build;
 pub mod commands;
 pub mod config;
+pub mod connected_services;
 pub mod crates;
 pub mod debug_backend;
 pub mod debug_session;

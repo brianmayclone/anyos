@@ -380,8 +380,9 @@ pub fn compile(
             // Collect all object files: our code + extern crate .rlib objects + runtime stubs
             let mut all_objects = vec![obj_bytes];
             all_objects.extend(global_asm_objects.iter().cloned());
+            let target_abi = target_abi_from_cfg(&options.cfg_flags);
             // Add runtime support stubs (__anyrc_alloc, __anyrc_vec_push, etc.)
-            let rt_obj = build_runtime_object();
+            let rt_obj = build_runtime_object(target_abi);
             all_objects.push(elf::write_object(&rt_obj));
             for ext in &options.extern_crates {
                 if let Some(rlib_data) = crate::loader::OsFileLoader::read_bytes(&ext.rlib_path) {
@@ -392,7 +393,6 @@ pub fn compile(
             }
             let no_main_flag = no_main || options.crate_type == CrateType::StaticLib;
             // Use extended linker if linker script or link args are provided
-            let target_abi = target_abi_from_cfg(&options.cfg_flags);
             if options.linker_script.is_some() || !options.link_args.is_empty() {
                 let mut extra_objects = Vec::new();
                 for arg in &options.link_args {
@@ -1042,8 +1042,8 @@ fn terminator_kind(t: &crate::mir::Terminator) -> &'static str {
 }
 
 /// Build an ELF object file containing the runtime support stubs.
-fn build_runtime_object() -> elf::ObjectFile {
-    let stubs = crate::runtime::runtime_stubs();
+fn build_runtime_object(target_abi: link::TargetAbi) -> elf::ObjectFile {
+    let stubs = crate::runtime::runtime_stubs(target_abi);
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
     let mut relocations = Vec::new();
@@ -1068,6 +1068,8 @@ fn build_runtime_object() -> elf::ObjectFile {
         let target = match name.as_str() {
             "__anyrc_realloc" => Some("__anyrc_alloc"),
             "__anyrc_vec_push" => Some("__anyrc_realloc"),
+            "__anyrc_string_push_str" => Some("__anyrc_realloc"),
+            "__anyrc_string_push_char" => Some("__anyrc_string_push_str"),
             _ => None,
         };
         let Some(target) = target else {

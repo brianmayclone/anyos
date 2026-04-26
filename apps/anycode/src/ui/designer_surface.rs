@@ -183,7 +183,7 @@ impl DesignerSurface {
         );
 
         for control in &self.doc.controls {
-            draw_control(&self.canvas, control, selected_control, tc);
+            draw_control(&self.canvas, &self.doc, control, selected_control, tc);
         }
 
         self.canvas.draw_text(
@@ -208,10 +208,13 @@ impl DesignerSurface {
 
 pub fn hit_test_doc(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {
     for control in doc.controls.iter().rev() {
-        let left = FORM_X + control.x;
-        let top = FORM_CONTENT_Y + control.y;
-        let right = left + control.width as i32;
-        let bottom = top + control.height as i32;
+        let Some((abs_x, abs_y, width, height)) = doc.control_absolute_bounds(&control.name) else {
+            continue;
+        };
+        let left = FORM_X + abs_x;
+        let top = FORM_CONTENT_Y + abs_y;
+        let right = left + width as i32;
+        let bottom = top + height as i32;
         if x >= left && x <= right && y >= top && y <= bottom {
             return Some(control.name.clone());
         }
@@ -221,10 +224,13 @@ pub fn hit_test_doc(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {
 
 pub fn hit_test_resize_handle(doc: &DesignerDocument, x: i32, y: i32) -> Option<(String, u32)> {
     for control in doc.controls.iter().rev() {
-        let left = FORM_X + control.x;
-        let top = FORM_CONTENT_Y + control.y;
-        let right = left + control.width as i32;
-        let bottom = top + control.height as i32;
+        let Some((abs_x, abs_y, width, height)) = doc.control_absolute_bounds(&control.name) else {
+            continue;
+        };
+        let left = FORM_X + abs_x;
+        let top = FORM_CONTENT_Y + abs_y;
+        let right = left + width as i32;
+        let bottom = top + height as i32;
         let handle = if near_handle(x, y, left, top) {
             DESIGNER_DRAG_RESIZE_NW
         } else if near_handle(x, y, right, top) {
@@ -238,6 +244,50 @@ pub fn hit_test_resize_handle(doc: &DesignerDocument, x: i32, y: i32) -> Option<
         };
         if handle != DESIGNER_DRAG_NONE {
             return Some((control.name.clone(), handle));
+        }
+    }
+    None
+}
+
+pub fn hit_test_container(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {
+    for control in doc.controls.iter().rev() {
+        if !is_container_kind(control.kind.as_str()) {
+            continue;
+        }
+        let Some((abs_x, abs_y, width, height)) = doc.control_absolute_bounds(&control.name) else {
+            continue;
+        };
+        let left = FORM_X + abs_x;
+        let top = FORM_CONTENT_Y + abs_y;
+        let right = left + width as i32;
+        let bottom = if is_paged_kind(control.kind.as_str()) {
+            top + height as i32 + paged_content_gap(control) + paged_content_height(control) as i32
+        } else {
+            top + height as i32
+        };
+        if x >= left && x <= right && y >= top && y <= bottom {
+            return Some(control.name.clone());
+        }
+    }
+    None
+}
+
+pub fn hit_test_page_index(doc: &DesignerDocument, x: i32, y: i32) -> Option<u32> {
+    for control in doc.controls.iter().rev() {
+        if !is_paged_kind(control.kind.as_str()) {
+            continue;
+        }
+        let Some((abs_x, abs_y, width, height)) = doc.control_absolute_bounds(&control.name) else {
+            continue;
+        };
+        let left = FORM_X + abs_x;
+        let top = FORM_CONTENT_Y + abs_y;
+        let right = left + width as i32;
+        let bottom = top + height as i32;
+        if x >= left && x <= right && y >= top && y <= bottom {
+            let page_count = page_count(control).max(1);
+            let tab_width = (width as i32 / page_count as i32).max(1);
+            return Some(((x - left).max(0) / tab_width) as u32);
         }
     }
     None
@@ -286,12 +336,19 @@ fn blend_rgb(a: u32, b: u32, percent_a: u32) -> u32 {
 
 fn draw_control(
     canvas: &ui::Canvas,
+    doc: &DesignerDocument,
     control: &DesignerControl,
     selected_control: Option<&str>,
     tc: &'static ui::theme::ThemeColors,
 ) {
-    let x = FORM_X + control.x;
-    let y = FORM_CONTENT_Y + control.y;
+    let (abs_x, abs_y, _, _) = doc.control_absolute_bounds(&control.name).unwrap_or((
+        control.x,
+        control.y,
+        control.width,
+        control.height,
+    ));
+    let x = FORM_X + abs_x;
+    let y = FORM_CONTENT_Y + abs_y;
     let selected = selected_control == Some(control.name.as_str());
     let fill = match control.kind.as_str() {
         "Label" => tc.sidebar_bg,
@@ -320,9 +377,77 @@ fn draw_control(
             control.kind.as_str(),
         );
     }
+    if is_paged_kind(control.kind.as_str()) {
+        let page_y = y + control.height as i32 + paged_content_gap(control);
+        let page_h = paged_content_height(control);
+        canvas.fill_rect(x, page_y, control.width, page_h, tc.editor_bg);
+        canvas.draw_rect(
+            x,
+            page_y,
+            control.width,
+            page_h,
+            if selected { tc.accent } else { tc.separator },
+            1,
+        );
+        canvas.draw_text(x + 8, page_y + 7, tc.text_secondary, 0, 11, "Page content");
+    }
     if selected {
         draw_handles(canvas, x, y, control.width, control.height, tc.accent);
     }
+}
+
+fn is_container_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Card"
+            | "Expander"
+            | "FlowPanel"
+            | "GroupBox"
+            | "Panel"
+            | "ScrollView"
+            | "SegmentedControl"
+            | "SplitView"
+            | "StackPanel"
+            | "TabBar"
+            | "TableLayout"
+    )
+}
+
+fn is_paged_kind(kind: &str) -> bool {
+    matches!(kind, "SegmentedControl" | "TabBar")
+}
+
+fn page_count(control: &DesignerControl) -> u32 {
+    let source = control.property_value("Items");
+    let items = if source.is_empty() {
+        control.text.as_str()
+    } else {
+        source.as_str()
+    };
+    let mut count = 0u32;
+    for item in items.split('|') {
+        if !item.trim().is_empty() {
+            count = count.saturating_add(1);
+        }
+    }
+    count.max(2)
+}
+
+fn paged_content_gap(control: &DesignerControl) -> i32 {
+    if control.height == 0 {
+        0
+    } else {
+        8
+    }
+}
+
+fn paged_content_height(control: &DesignerControl) -> u32 {
+    control
+        .property_value("PageHeight")
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or(220)
 }
 
 fn draw_handles(canvas: &ui::Canvas, x: i32, y: i32, w: u32, h: u32, color: u32) {

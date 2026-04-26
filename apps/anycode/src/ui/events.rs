@@ -266,6 +266,8 @@ pub fn wire_sidebar() {
         let idx = e.index;
         if idx != u32::MAX && s.sidebar.is_manage_crates_node(idx) {
             commands::manage_crates();
+        } else if idx != u32::MAX && s.sidebar.is_connected_services_node(idx) {
+            commands::manage_connected_services();
         } else if idx != u32::MAX && s.sidebar.is_file_node(idx) {
             if let Some(p) = s.sidebar.path_for_node(idx) {
                 let owned = String::from(p);

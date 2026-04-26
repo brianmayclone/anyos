@@ -76,6 +76,32 @@ fn run_global_asm_extern_function() {
 }
 
 #[test]
+fn run_string_from_and_push_str_len() {
+    let source = r#"
+        fn main() -> i32 {
+            let mut s = String::from("ab");
+            s.push_str("cd");
+            s.len() as i32
+        }
+    "#;
+
+    assert_eq!(compile_and_run(source), 4);
+}
+
+#[test]
+fn run_string_push_ascii_char_len() {
+    let source = r#"
+        fn main() -> i32 {
+            let mut s = String::from("xy");
+            s.push('z');
+            s.len() as i32
+        }
+    "#;
+
+    assert_eq!(compile_and_run(source), 3);
+}
+
+#[test]
 fn compile_with_error_returns_err() {
     let source = "fn main() { let x: i32 = true; }";
     let options = CompileOptions {

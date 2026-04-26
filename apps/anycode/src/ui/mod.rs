@@ -2,6 +2,7 @@ pub mod activity_bar;
 pub mod ai_panel;
 pub mod ai_settings_dialog;
 pub mod command_palette;
+pub mod connected_services_dialog;
 pub mod crate_manager_dialog;
 pub mod designer_surface;
 pub mod designer_toolbox;

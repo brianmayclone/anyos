@@ -112,6 +112,22 @@ const CHOICE_PROPERTIES: &[&str] = &[
     "Visible",
     "Tooltip",
 ];
+const PAGED_PROPERTIES: &[&str] = &[
+    "Text",
+    "Items",
+    "SelectedIndex",
+    "ActivePage",
+    "PageHeight",
+    "X",
+    "Y",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Tooltip",
+    "Dock",
+    "Margin",
+];
 const VALUE_PROPERTIES: &[&str] = &[
     "Value", "Min", "Max", "Step", "X", "Y", "Width", "Height", "Enabled", "Visible", "Tooltip",
 ];
@@ -305,9 +321,8 @@ impl DesignerControlKind {
             | Self::DropDown
             | Self::ListBox
             | Self::RadioGroup
-            | Self::SegmentedControl
-            | Self::TabBar
             | Self::TimePicker => CHOICE_PROPERTIES,
+            Self::SegmentedControl | Self::TabBar => PAGED_PROPERTIES,
             Self::DataGrid | Self::TableView | Self::TreeView => DATA_PROPERTIES,
             Self::ColorWell | Self::ProgressBar | Self::Slider | Self::Stepper => VALUE_PROPERTIES,
             Self::Canvas | Self::ImageButton | Self::ImageView => MEDIA_PROPERTIES,
@@ -389,12 +404,13 @@ impl DesignerControl {
             "y" => format!("{}", self.y),
             "width" => format!("{}", self.width),
             "height" => format!("{}", self.height),
+            "items" => choice_items(self),
             _ => self
                 .properties
                 .iter()
                 .find(|property| same_property(&property.name, property_name))
                 .map(|property| property.value.clone())
-                .unwrap_or_default(),
+                .unwrap_or_else(|| default_property_value(&self.kind, property_name)),
         }
     }
 
@@ -411,6 +427,34 @@ impl DesignerControl {
             name: String::from(property_name),
             value: String::from(value),
         });
+    }
+
+    pub fn parent_name(&self) -> Option<&str> {
+        self.properties
+            .iter()
+            .find(|property| same_property(&property.name, "Parent"))
+            .map(|property| property.value.as_str())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn page_index(&self) -> u32 {
+        self.properties
+            .iter()
+            .find(|property| same_property(&property.name, "PageIndex"))
+            .and_then(|property| parse_u32(&property.value))
+            .unwrap_or(0)
+    }
+
+    fn set_parent_name(&mut self, parent_name: Option<&str>) {
+        if let Some(parent_name) = parent_name {
+            self.set_custom_property("Parent", parent_name);
+        }
+    }
+
+    fn set_page_index(&mut self, page_index: Option<u32>) {
+        if let Some(page_index) = page_index {
+            self.set_custom_property("PageIndex", &format!("{}", page_index));
+        }
     }
 }
 
@@ -573,7 +617,59 @@ impl DesignerDocument {
                 "        {}.set_size({}, {});\n",
                 control.name, control.width, control.height
             ));
-            out.push_str(&format!("        root.add(&{});\n", control.name));
+            out.push_str(&control_layout_code(control));
+        }
+        for control in &self.controls {
+            if control.parent_name().is_some_and(|parent_name| {
+                self.controls
+                    .iter()
+                    .find(|candidate| candidate.name == parent_name)
+                    .map(|candidate| is_paged_kind(&candidate.kind))
+                    .unwrap_or(false)
+            }) {
+                continue;
+            }
+            if let Some(parent_name) = control.parent_name().filter(|parent_name| {
+                self.controls
+                    .iter()
+                    .find(|candidate| candidate.name == *parent_name)
+                    .map(|candidate| is_addable_container_kind(&candidate.kind))
+                    .unwrap_or(false)
+            }) {
+                out.push_str(&format!(
+                    "        {}.add(&{});\n",
+                    parent_name, control.name
+                ));
+            } else {
+                out.push_str(&format!("        root.add(&{});\n", control.name));
+            }
+            if is_paged_kind(&control.kind) && self.has_paged_children(&control.name) {
+                out.push_str(&self.paged_panels_code(control));
+            }
+        }
+        for control in &self.controls {
+            let Some(parent_name) = control.parent_name() else {
+                continue;
+            };
+            let Some(parent) = self
+                .controls
+                .iter()
+                .find(|candidate| candidate.name == parent_name)
+            else {
+                continue;
+            };
+            if is_paged_kind(&parent.kind) {
+                out.push_str(&format!(
+                    "        {}.add(&{});\n",
+                    paged_panel_name(parent_name, control.page_index()),
+                    control.name
+                ));
+            }
+        }
+        for control in &self.controls {
+            if is_paged_kind(&control.kind) && self.has_paged_children(&control.name) {
+                out.push_str(&self.paged_connect_code(control));
+            }
         }
         out.push_str("        Self {\n            root,\n");
         for control in &self.controls {
@@ -633,6 +729,72 @@ impl DesignerDocument {
         format!("mod view;\n\npub use view::{};\n", self.form_name)
     }
 
+    fn has_paged_children(&self, parent_name: &str) -> bool {
+        self.controls
+            .iter()
+            .any(|control| control.parent_name() == Some(parent_name))
+    }
+
+    fn paged_panels_code(&self, control: &DesignerControl) -> String {
+        let page_count = self.page_count_for_paged_control(control);
+        let mut out = String::new();
+        for page_index in 0..page_count {
+            let panel_name = paged_panel_name(&control.name, page_index);
+            out.push_str(&format!("        let {} = ui::View::new();\n", panel_name));
+            out.push_str(&format!(
+                "        {}.set_position({}, {});\n",
+                panel_name,
+                control.x,
+                control.y + paged_content_offset_y(control)
+            ));
+            out.push_str(&format!(
+                "        {}.set_size({}, {});\n",
+                panel_name,
+                control.width,
+                paged_content_height(control)
+            ));
+            out.push_str(&format!(
+                "        {}.set_color(tc.editor_bg);\n",
+                panel_name
+            ));
+            if let Some(parent_name) = control.parent_name().filter(|parent_name| {
+                self.controls
+                    .iter()
+                    .find(|candidate| candidate.name == *parent_name)
+                    .map(|candidate| is_addable_container_kind(&candidate.kind))
+                    .unwrap_or(false)
+            }) {
+                out.push_str(&format!("        {}.add(&{});\n", parent_name, panel_name));
+            } else {
+                out.push_str(&format!("        root.add(&{});\n", panel_name));
+            }
+        }
+        out
+    }
+
+    fn paged_connect_code(&self, control: &DesignerControl) -> String {
+        let page_count = self.page_count_for_paged_control(control);
+        let mut refs = String::new();
+        for page_index in 0..page_count {
+            if page_index > 0 {
+                refs.push_str(", ");
+            }
+            refs.push_str("&");
+            refs.push_str(&paged_panel_name(&control.name, page_index));
+        }
+        format!("        {}.connect_panels(&[{}]);\n", control.name, refs)
+    }
+
+    fn page_count_for_paged_control(&self, control: &DesignerControl) -> u32 {
+        let mut count = page_count_for_control(control);
+        for child in &self.controls {
+            if child.parent_name() == Some(control.name.as_str()) {
+                count = count.max(child.page_index().saturating_add(1));
+            }
+        }
+        count
+    }
+
     pub fn update_control_property(
         &mut self,
         control_name: &str,
@@ -681,23 +843,33 @@ impl DesignerDocument {
         Ok(())
     }
 
-    pub fn add_control(&mut self, kind_name: &str, x: i32, y: i32) -> Result<String, &'static str> {
+    pub fn add_control(
+        &mut self,
+        kind_name: &str,
+        x: i32,
+        y: i32,
+        parent_name: Option<&str>,
+        page_index: Option<u32>,
+    ) -> Result<String, &'static str> {
         let kind = DesignerControlKind::from_str(kind_name);
         let base_name = default_control_base_name(kind.as_str());
         let name = self.next_control_name(base_name);
         let (width, height) = default_control_size(&kind);
         let text = default_control_text(&kind, &name);
-        let (x, y, width, height) = self.fit_bounds_to_form(x, y, width, height);
-        self.controls.push(DesignerControl {
+        let (x, y, width, height) = self.fit_bounds_to_container(parent_name, x, y, width, height);
+        let mut control = DesignerControl {
             name: name.clone(),
             kind,
             text,
-            x: x.max(0),
-            y: y.max(0),
+            x,
+            y,
             width,
             height,
             properties: Vec::new(),
-        });
+        };
+        control.set_parent_name(parent_name);
+        control.set_page_index(page_index);
+        self.controls.push(control);
         self.normalize_layout();
         Ok(name)
     }
@@ -710,7 +882,14 @@ impl DesignerDocument {
         width: u32,
         height: u32,
     ) -> Result<(), &'static str> {
-        let (x, y, width, height) = self.fit_bounds_to_form(x, y, width, height);
+        let parent_name = self
+            .controls
+            .iter()
+            .find(|control| control.name == control_name)
+            .and_then(|control| control.parent_name())
+            .map(String::from);
+        let (x, y, width, height) =
+            self.fit_bounds_to_container(parent_name.as_deref(), x, y, width, height);
         let Some(control) = self
             .controls
             .iter_mut()
@@ -753,6 +932,91 @@ impl DesignerDocument {
             .unwrap_or_default()
     }
 
+    pub fn control_absolute_bounds(&self, control_name: &str) -> Option<(i32, i32, u32, u32)> {
+        self.control_absolute_bounds_inner(control_name, 0)
+    }
+
+    pub fn control_parent_page_index_at_form(
+        &self,
+        parent_name: &str,
+        form_x: i32,
+        form_y: i32,
+    ) -> Option<u32> {
+        let parent = self
+            .controls
+            .iter()
+            .find(|control| control.name == parent_name)?;
+        if !is_paged_kind(&parent.kind) {
+            return None;
+        }
+        let (x, y, w, h) = self.control_absolute_bounds(parent_name)?;
+        let local_x = form_x - x;
+        let local_y = form_y - y;
+        if local_x < 0 || local_y < 0 || local_x > w as i32 || local_y > h as i32 {
+            return None;
+        }
+        Some(page_index_for_control(parent, local_x))
+    }
+
+    pub fn control_parent_client_origin(&self, parent_name: &str) -> Option<(i32, i32)> {
+        let parent = self
+            .controls
+            .iter()
+            .find(|control| control.name == parent_name)?;
+        let (x, y, _, _) = self.control_absolute_bounds(parent_name)?;
+        if is_paged_kind(&parent.kind) {
+            Some((x, y.saturating_add(paged_content_offset_y(parent))))
+        } else {
+            Some((x, y))
+        }
+    }
+
+    pub fn control_parent_client_size(&self, parent_name: &str) -> Option<(u32, u32)> {
+        let parent = self
+            .controls
+            .iter()
+            .find(|control| control.name == parent_name)?;
+        if is_paged_kind(&parent.kind) {
+            Some((parent.width, paged_content_height(parent)))
+        } else {
+            Some((parent.width, parent.height))
+        }
+    }
+
+    fn control_absolute_bounds_inner(
+        &self,
+        control_name: &str,
+        depth: u32,
+    ) -> Option<(i32, i32, u32, u32)> {
+        if depth > 16 {
+            return None;
+        }
+        let control = self
+            .controls
+            .iter()
+            .find(|control| control.name == control_name)?;
+        let mut x = control.x;
+        let mut y = control.y;
+        if let Some(parent_name) = control.parent_name() {
+            if let Some(parent) = self
+                .controls
+                .iter()
+                .find(|candidate| candidate.name == parent_name)
+            {
+                if let Some((px, py, _, _)) =
+                    self.control_absolute_bounds_inner(parent_name, depth.saturating_add(1))
+                {
+                    x = x.saturating_add(px);
+                    y = y.saturating_add(py);
+                    if is_paged_kind(&parent.kind) {
+                        y = y.saturating_add(paged_content_offset_y(parent));
+                    }
+                }
+            }
+        }
+        Some((x, y, control.width, control.height))
+    }
+
     fn next_control_name(&self, base_name: &str) -> String {
         let mut index = 1u32;
         loop {
@@ -768,11 +1032,21 @@ impl DesignerDocument {
         }
     }
 
-    fn fit_bounds_to_form(&self, x: i32, y: i32, width: u32, height: u32) -> (i32, i32, u32, u32) {
-        let width = clamp_u32(width, MIN_CONTROL_SIZE, self.width.max(MIN_CONTROL_SIZE));
-        let height = clamp_u32(height, MIN_CONTROL_SIZE, self.height.max(MIN_CONTROL_SIZE));
-        let max_x = self.width.saturating_sub(width) as i32;
-        let max_y = self.height.saturating_sub(height) as i32;
+    fn fit_bounds_to_container(
+        &self,
+        parent_name: Option<&str>,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> (i32, i32, u32, u32) {
+        let (container_w, container_h) = parent_name
+            .and_then(|name| self.control_parent_client_size(name))
+            .unwrap_or((self.width, self.height));
+        let width = clamp_u32(width, MIN_CONTROL_SIZE, container_w.max(MIN_CONTROL_SIZE));
+        let height = clamp_u32(height, MIN_CONTROL_SIZE, container_h.max(MIN_CONTROL_SIZE));
+        let max_x = container_w.saturating_sub(width) as i32;
+        let max_y = container_h.saturating_sub(height) as i32;
         let x = clamp_i32(x, 0, max_x.max(0));
         let y = clamp_i32(y, 0, max_y.max(0));
         (x, y, width, height)
@@ -1428,10 +1702,11 @@ fn control_constructor(control: &DesignerControl) -> String {
         | DesignerControlKind::ListBox
         | DesignerControlKind::SegmentedControl
         | DesignerControlKind::TabBar => {
-            let items = if control.text.is_empty() {
+            let items = choice_items(control);
+            let items = if items.is_empty() {
                 String::from("Item 1|Item 2")
             } else {
-                escape(&control.text)
+                escape(&items)
             };
             format!(
                 "        let {} = ui::{}::new(\"{}\");\n",
@@ -1446,6 +1721,198 @@ fn control_constructor(control: &DesignerControl) -> String {
             rust_control_type(&control.kind),
             escape(&control.text)
         ),
+    }
+}
+
+fn control_layout_code(control: &DesignerControl) -> String {
+    let mut out = String::new();
+    for property in &control.properties {
+        match normalized_property(&property.name) {
+            "dock" => {
+                out.push_str(&format!(
+                    "        {}.set_dock({});\n",
+                    control.name,
+                    dock_code(&property.value)
+                ));
+            }
+            "margin" => {
+                let (l, t, r, b) = parse_box_edges(&property.value);
+                out.push_str(&format!(
+                    "        {}.set_margin({}, {}, {}, {});\n",
+                    control.name, l, t, r, b
+                ));
+            }
+            "padding" => {
+                let (l, t, r, b) = parse_box_edges(&property.value);
+                out.push_str(&format!(
+                    "        {}.set_padding({}, {}, {}, {});\n",
+                    control.name, l, t, r, b
+                ));
+            }
+            "orientation" if supports_orientation(&control.kind) => {
+                out.push_str(&format!(
+                    "        {}.set_orientation({});\n",
+                    control.name,
+                    orientation_code(&property.value)
+                ));
+            }
+            "selected_index" | "active_page" => {
+                let state = parse_u32(&property.value).unwrap_or(0);
+                out.push_str(&format!("        {}.set_state({});\n", control.name, state));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn supports_orientation(kind: &DesignerControlKind) -> bool {
+    matches!(
+        kind,
+        DesignerControlKind::SplitView | DesignerControlKind::StackPanel
+    )
+}
+
+fn is_paged_kind(kind: &DesignerControlKind) -> bool {
+    matches!(
+        kind,
+        DesignerControlKind::SegmentedControl | DesignerControlKind::TabBar
+    )
+}
+
+fn is_addable_container_kind(kind: &DesignerControlKind) -> bool {
+    matches!(
+        kind,
+        DesignerControlKind::Card
+            | DesignerControlKind::Expander
+            | DesignerControlKind::FlowPanel
+            | DesignerControlKind::GroupBox
+            | DesignerControlKind::Panel
+            | DesignerControlKind::ScrollView
+            | DesignerControlKind::SplitView
+            | DesignerControlKind::StackPanel
+            | DesignerControlKind::TableLayout
+    )
+}
+
+fn page_index_for_control(control: &DesignerControl, local_x: i32) -> u32 {
+    let count = page_count_for_control(control).max(1);
+    let tab_width = (control.width as i32 / count as i32).max(1);
+    ((local_x.max(0) / tab_width) as u32).min(count.saturating_sub(1))
+}
+
+fn page_count_for_control(control: &DesignerControl) -> u32 {
+    let items = choice_items(control);
+    let mut count = 0u32;
+    for item in items.split('|') {
+        if !item.trim().is_empty() {
+            count = count.saturating_add(1);
+        }
+    }
+    count.max(2)
+}
+
+fn choice_items(control: &DesignerControl) -> String {
+    control
+        .properties
+        .iter()
+        .find(|property| same_property(&property.name, "Items"))
+        .map(|property| property.value.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| control.text.clone())
+}
+
+fn default_property_value(kind: &DesignerControlKind, property_name: &str) -> String {
+    match normalized_property(property_name) {
+        "enabled" | "visible" => String::from("true"),
+        "dock" => String::from("None"),
+        "padding" | "margin" => String::from("0"),
+        "orientation" if supports_orientation(kind) => String::from("Vertical"),
+        "selected_index" | "active_page" => String::from("0"),
+        "page_height" if is_paged_kind(kind) => String::from("220"),
+        "items"
+            if matches!(
+                kind,
+                DesignerControlKind::DropDown
+                    | DesignerControlKind::ListBox
+                    | DesignerControlKind::RadioGroup
+                    | DesignerControlKind::SegmentedControl
+                    | DesignerControlKind::TabBar
+            ) =>
+        {
+            String::from("Item 1|Item 2")
+        }
+        _ => String::new(),
+    }
+}
+
+fn paged_content_offset_y(control: &DesignerControl) -> i32 {
+    control.height as i32 + 8
+}
+
+fn paged_content_height(control: &DesignerControl) -> u32 {
+    control
+        .property_value("PageHeight")
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or(220)
+}
+
+fn paged_panel_name(parent_name: &str, page_index: u32) -> String {
+    format!("{}_page_{}", parent_name, page_index)
+}
+
+fn dock_code(value: &str) -> &'static str {
+    match normalized_layout_value(value) {
+        "top" => "ui::DOCK_TOP",
+        "bottom" => "ui::DOCK_BOTTOM",
+        "left" => "ui::DOCK_LEFT",
+        "right" => "ui::DOCK_RIGHT",
+        "fill" => "ui::DOCK_FILL",
+        _ => "ui::DOCK_NONE",
+    }
+}
+
+fn orientation_code(value: &str) -> &'static str {
+    match normalized_layout_value(value) {
+        "horizontal" => "ui::ORIENTATION_HORIZONTAL",
+        _ => "ui::ORIENTATION_VERTICAL",
+    }
+}
+
+fn parse_box_edges(value: &str) -> (i32, i32, i32, i32) {
+    let mut parts = value
+        .split(',')
+        .map(|part| parse_i32(part.trim()).unwrap_or(0));
+    let first = parts.next().unwrap_or(0);
+    let second = parts.next();
+    let third = parts.next();
+    let fourth = parts.next();
+    match (second, third, fourth) {
+        (Some(v), None, None) => (first, v, first, v),
+        (Some(t), Some(r), None) => (first, t, r, t),
+        (Some(t), Some(r), Some(b)) => (first, t, r, b),
+        _ => (first, first, first, first),
+    }
+}
+
+fn normalized_layout_value(value: &str) -> &'static str {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("top") || value == "1" {
+        "top"
+    } else if value.eq_ignore_ascii_case("bottom") || value == "2" {
+        "bottom"
+    } else if value.eq_ignore_ascii_case("left") || value == "3" {
+        "left"
+    } else if value.eq_ignore_ascii_case("right") || value == "4" {
+        "right"
+    } else if value.eq_ignore_ascii_case("fill") || value == "5" {
+        "fill"
+    } else if value.eq_ignore_ascii_case("horizontal") {
+        "horizontal"
+    } else {
+        "none"
     }
 }
 
@@ -1484,8 +1951,17 @@ fn normalized_property(value: &str) -> &'static str {
         "Password" | "password" => "password",
         "MaxLength" | "max_length" | "maxlength" => "max_length",
         "Checked" | "checked" => "checked",
+        "Items" | "items" => "items",
+        "SelectedIndex" | "selected_index" | "selectedindex" => "selected_index",
         "Dock" | "dock" => "dock",
         "Padding" | "padding" => "padding",
+        "Margin" | "margin" => "margin",
+        "Orientation" | "orientation" => "orientation",
+        "Spacing" | "spacing" => "spacing",
+        "Parent" | "parent" => "parent",
+        "PageIndex" | "page_index" | "pageindex" => "page_index",
+        "ActivePage" | "active_page" | "activepage" => "active_page",
+        "PageHeight" | "page_height" | "pageheight" => "page_height",
         "BackgroundColor" | "background_color" | "backgroundcolor" => "background_color",
         "BorderColor" | "border_color" | "bordercolor" => "border_color",
         _ => "custom",

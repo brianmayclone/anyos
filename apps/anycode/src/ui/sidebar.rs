@@ -157,6 +157,7 @@ impl Sidebar {
         self.add_config_nodes(project_node, project);
         self.add_target_nodes(project_node, project);
         self.add_crate_nodes(project_node, project);
+        self.add_connected_service_nodes(project_node, project);
         self.add_task_nodes(project_node, task_mgr);
 
         let files_node = self.tree.add_child(project_node, "Files");
@@ -211,6 +212,41 @@ impl Sidebar {
         self.tree.set_expanded(crates_node, false);
     }
 
+    fn add_connected_service_nodes(&mut self, parent: u32, project: &Project) {
+        let services = crate::logic::connected_services::services_for_project(project);
+        let tc = ui::theme::colors();
+        let root = self
+            .tree
+            .add_child(parent, &format!("Connected Services ({})", services.len()));
+        self.remember_path(root, "anycode://connected-services", true);
+        self.tree.set_node_style(root, STYLE_BOLD);
+        self.tree.set_node_text_color(root, tc.text);
+        self.set_system_icon(root, "cloud", tc.text_secondary);
+
+        let add_node = self.tree.add_child(root, "Add Connected Service...");
+        self.remember_path(add_node, "anycode://connected-services", true);
+        self.set_system_icon(add_node, "plug", tc.accent);
+        self.tree.set_node_text_color(add_node, tc.accent);
+
+        for service in &services {
+            let node = self.tree.add_child(
+                root,
+                &format!("{} ({})", service.name, service.kind.display_name()),
+            );
+            self.remember_virtual(node);
+            self.set_system_icon(node, "cloud-cog", tc.text_secondary);
+            self.tree.set_node_text_color(node, tc.text_secondary);
+            let module = self
+                .tree
+                .add_child(node, &format!("module {}", service.module_name));
+            self.remember_virtual(module);
+            let endpoint = self.tree.add_child(node, &service.endpoint);
+            self.remember_virtual(endpoint);
+            self.tree.set_expanded(node, false);
+        }
+        self.tree.set_expanded(root, false);
+    }
+
     /// Populate the tree from a root directory.
     pub fn populate(&mut self, root: &str) {
         self.tree.clear();
@@ -258,6 +294,12 @@ impl Sidebar {
     pub fn is_manage_crates_node(&self, index: u32) -> bool {
         self.path_for_node(index)
             .map(|path| path == "anycode://manage-crates")
+            .unwrap_or(false)
+    }
+
+    pub fn is_connected_services_node(&self, index: u32) -> bool {
+        self.path_for_node(index)
+            .map(|path| path == "anycode://connected-services")
             .unwrap_or(false)
     }
 
