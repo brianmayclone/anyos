@@ -117,6 +117,73 @@ fn resolve_fn_call() {
 }
 
 #[test]
+fn resolve_assoc_fn_on_imported_type_alias_is_left_for_typeck() {
+    assert_resolves(r#"
+        mod cipher {
+            pub trait KeyInit {
+                fn new_from_slice(bytes: &[u8]) -> Result<Self, ()>;
+            }
+
+            pub struct CipherCore<T> {
+                marker: T,
+            }
+
+            pub struct Algo;
+            pub type Cipher = CipherCore<Algo>;
+        }
+
+        mod user {
+            use crate::cipher::Cipher;
+
+            fn wrap(key: &[u8]) {
+                let _cipher = Cipher::new_from_slice(key);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn resolve_assoc_fn_on_type_alias_imported_from_reexporting_module() {
+    assert_resolves(r#"
+        mod aead {
+            pub trait Aead {}
+            pub trait KeyInit {
+                fn new_from_slice(bytes: &[u8]) -> Result<Self, ()>;
+            }
+        }
+
+        mod chacha20poly1305 {
+            pub use aead::{self, Aead, KeyInit};
+
+            pub struct ChaChaPoly1305<C, N> {
+                c: C,
+                n: N,
+            }
+
+            pub struct ChaCha20;
+            pub struct U12;
+            pub type Nonce = [u8; 12];
+            pub type ChaCha20Poly1305 = ChaChaPoly1305<ChaCha20, U12>;
+        }
+
+        mod security {
+            mod keystore {
+                use crate::chacha20poly1305::{
+                    ChaCha20Poly1305, Nonce,
+                    aead::{Aead, KeyInit},
+                };
+
+                fn wrap(master_key: &[u8; 32], nonce: [u8; 12]) {
+                    let cipher = ChaCha20Poly1305::new_from_slice(master_key);
+                    let nonce_obj = Nonce::from_slice(&nonce);
+                    let _ = (cipher, nonce_obj);
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
 fn error_undefined_variable() {
     assert_resolve_error("fn main() { let x = y; }", "not found");
 }

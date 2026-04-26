@@ -89,14 +89,14 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
             all_cfg_flags.push(String::from("target_endian=\"little\""));
         }
         if target.contains("anyos") {
-            all_cfg_flags.push(String::from("target_os=\"anyos\""));
+            all_cfg_flags.push(String::from("target_os=\"none\""));
         }
     } else {
         // Default to x86_64 on anyOS
         all_cfg_flags.push(String::from("target_arch=\"x86_64\""));
         all_cfg_flags.push(String::from("target_pointer_width=\"64\""));
         all_cfg_flags.push(String::from("target_endian=\"little\""));
-        all_cfg_flags.push(String::from("target_os=\"anyos\""));
+        all_cfg_flags.push(String::from("target_os=\"none\""));
     }
 
     // Track built crates: normalized name -> rlib path

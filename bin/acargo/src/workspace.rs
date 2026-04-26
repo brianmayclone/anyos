@@ -128,11 +128,8 @@ pub fn resolve_features(
     if use_defaults {
         for (feat_name, deps) in &manifest.features {
             if feat_name == "default" {
-                // Expand default feature dependencies
                 for dep in deps {
-                    if !active.contains(dep) {
-                        active.push(dep.clone());
-                    }
+                    activate_feature(manifest, &mut active, dep);
                 }
             }
         }
@@ -141,31 +138,39 @@ pub fn resolve_features(
     if all_features {
         // Enable all features
         for (feat_name, _) in &manifest.features {
-            if feat_name != "default" && !active.contains(feat_name) {
-                active.push(feat_name.clone());
+            if feat_name != "default" {
+                activate_feature(manifest, &mut active, feat_name);
             }
         }
     } else {
         // Add explicitly requested features
         for feat in requested {
             if feat.starts_with("__") { continue; } // skip internal markers
-            if !active.contains(feat) {
-                active.push(feat.clone());
-            }
-            // Expand transitive feature dependencies
-            for (fname, fdeps) in &manifest.features {
-                if fname == feat {
-                    for dep in fdeps {
-                        if !active.contains(dep) {
-                            active.push(dep.clone());
-                        }
-                    }
-                }
-            }
+            activate_feature(manifest, &mut active, feat);
         }
     }
 
     active
+}
+
+fn activate_feature(manifest: &manifest::Manifest, active: &mut Vec<String>, feature: &str) {
+    if active.iter().any(|existing| existing == feature) {
+        return;
+    }
+    active.push(feature.to_string());
+
+    if feature.starts_with("dep:") || feature.contains('/') {
+        return;
+    }
+
+    let deps = manifest
+        .features
+        .iter()
+        .find_map(|(name, deps)| (name == feature).then(|| deps.clone()))
+        .unwrap_or_default();
+    for dep in deps {
+        activate_feature(manifest, active, &dep);
+    }
 }
 
 #[cfg(test)]
@@ -225,5 +230,34 @@ mod tests {
         assert!(active.contains(&String::from("serde")));
         assert!(!active.contains(&String::from("host")));
         assert!(!active.contains(&String::from("anyos_std/host")));
+    }
+
+    #[test]
+    fn default_features_expand_nested_optional_dependency_features() {
+        let manifest = manifest_with_features(vec![
+            ("default", vec!["crypto"]),
+            ("crypto", vec!["dep:chacha20poly1305"]),
+        ]);
+
+        let active = resolve_features(&manifest, &[]);
+
+        assert!(active.contains(&String::from("crypto")));
+        assert!(active.contains(&String::from("dep:chacha20poly1305")));
+    }
+
+    #[test]
+    fn explicit_features_expand_nested_dependencies() {
+        let manifest = manifest_with_features(vec![
+            ("default", Vec::new()),
+            ("std", vec!["crypto", "chacha20poly1305/getrandom"]),
+            ("crypto", vec!["dep:chacha20poly1305"]),
+        ]);
+
+        let active = resolve_features(&manifest, &[String::from("std")]);
+
+        assert!(active.contains(&String::from("std")));
+        assert!(active.contains(&String::from("crypto")));
+        assert!(active.contains(&String::from("dep:chacha20poly1305")));
+        assert!(active.contains(&String::from("chacha20poly1305/getrandom")));
     }
 }

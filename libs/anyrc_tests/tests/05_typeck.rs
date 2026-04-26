@@ -118,6 +118,281 @@ fn primitive_trait_assoc_fn_call_is_typed() {
 }
 
 #[test]
+fn option_some_struct_field_uses_variant_argument_type() {
+    assert_type_ok(r#"
+        enum Option<T> { Some(T), None }
+        struct Diag { value: u32 }
+        struct Warning { diagnostic: Option<Diag> }
+
+        fn main() {
+            let diag = Diag { value: 7 };
+            let warning = Warning { diagnostic: Some(diag) };
+        }
+    "#);
+}
+
+#[test]
+fn macro_option_some_struct_field_uses_expr_argument_type() {
+    assert_type_ok(r#"
+        enum Option<T> { Some(T), None }
+        struct Diag { value: u32 }
+        struct Warning { diagnostic: Option<Diag> }
+
+        macro_rules! push_warning {
+            ($diag:expr) => {{
+                Warning { diagnostic: Some($diag) }
+            }};
+        }
+
+        fn main() {
+            let diag = Diag { value: 7 };
+            let warning = push_warning!(diag);
+        }
+    "#);
+}
+
+#[test]
+fn macro_pushes_warning_with_optional_diagnostic() {
+    assert_type_ok(r#"
+        enum Option<T> { Some(T), None }
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn new() -> Vec<T> { Vec {} }
+            fn push(&mut self, value: T) {}
+        }
+        struct Diag { value: u32 }
+        struct Warning {
+            slot: u64,
+            diagnostic: Option<Diag>,
+        }
+
+        macro_rules! slot_bail {
+            ($warnings:expr, $slot:expr, $diag:expr) => {{
+                $warnings.push(Warning {
+                    slot: $slot,
+                    diagnostic: Some($diag),
+                });
+            }};
+        }
+
+        fn main() {
+            let mut warnings: Vec<Warning> = Vec::new();
+            let diag = Diag { value: 7 };
+            slot_bail!(warnings, 10, diag);
+        }
+    "#);
+}
+
+#[test]
+fn vec_len_result_participates_in_integer_inference() {
+    assert_type_ok(r#"
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn len(&self) -> usize { 0 }
+        }
+
+        fn min<T>(a: T, b: T) -> T { a }
+
+        fn main() {
+            let attr_buf: Vec<u8> = Vec {};
+            let take = min(64, attr_buf.len());
+        }
+    "#);
+}
+
+#[test]
+fn core_cmp_min_result_participates_in_integer_inference() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod cmp {}
+        }
+
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn len(&self) -> usize { 0 }
+        }
+
+        fn main() {
+            let attr_buf: Vec<u8> = Vec {};
+            let take = core::cmp::min(64, attr_buf.len());
+        }
+    "#);
+}
+
+#[test]
+fn macro_introduced_let_does_not_capture_caller_local() {
+    assert_type_ok(r#"
+        struct Error {}
+
+        macro_rules! wrap_error {
+            ($err:expr) => {{
+                let e: Error = $err;
+            }};
+        }
+
+        fn main() {
+            let e = 7;
+            let err = Error {};
+            wrap_error!(err);
+            let n: i32 = e;
+        }
+    "#);
+}
+
+#[test]
+fn macro_error_wrapper_inside_result_match_uses_outer_err_binding() {
+    assert_type_ok(r#"
+        enum Result<T, E> { Ok(T), Err(E) }
+        struct Error {}
+        struct OtherError {}
+
+        macro_rules! wrap_error {
+            ($err:expr) => {{
+                let e: Error = $err;
+            }};
+        }
+
+        fn get() -> Result<u32, Error> { Result::Err(Error {}) }
+
+        fn main() {
+            let r = match get() {
+                Result::Ok(v) => v,
+                Result::Err(e) => {
+                    wrap_error!(e);
+                    0
+                }
+            };
+        }
+    "#);
+}
+
+#[test]
+fn macro_slot_bail_style_result_match_with_continue_typechecks() {
+    assert_type_ok(r#"
+        enum Result<T, E> { Ok(T), Err(E) }
+        enum Option<T> { Some(T), None }
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn new() -> Vec<T> { Vec {} }
+            fn push(&mut self, value: T) {}
+        }
+        struct Error {}
+        struct Warning {
+            slot: u64,
+            diagnostic: Option<u32>,
+        }
+
+        macro_rules! slot_bail {
+            ($slot:expr, $err:expr) => {{
+                let e: Error = $err;
+                if lossy {
+                    warnings.push(Warning {
+                        slot: $slot,
+                        diagnostic: None,
+                    });
+                    continue;
+                } else {
+                    return Result::Err(e);
+                }
+            }};
+        }
+
+        fn get() -> Result<u32, Error> { Result::Err(Error {}) }
+
+        fn main() -> Result<(), Error> {
+            let lossy = true;
+            let mut warnings: Vec<Warning> = Vec::new();
+            loop {
+                let slot: u64 = 10;
+                let value = match get() {
+                    Result::Ok(v) => v,
+                    Result::Err(e) => slot_bail!(slot, e),
+                };
+            }
+        }
+    "#);
+}
+
+#[test]
+fn macro_multiline_slot_bail_keeps_first_expr_capture() {
+    assert_type_ok(r#"
+        enum Result<T, E> { Ok(T), Err(E) }
+        enum Option<T> { Some(T), None }
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn new() -> Vec<T> { Vec {} }
+            fn push(&mut self, value: T) {}
+        }
+        struct Error {}
+        struct Warning {
+            slot: u64,
+            diagnostic: Option<u32>,
+        }
+
+        macro_rules! slot_bail {
+            ($slot:expr, $err:expr) => {{
+                let e: Error = $err;
+                warnings.push(Warning {
+                    slot: $slot,
+                    diagnostic: None,
+                });
+                return Result::Err(e);
+            }};
+        }
+
+        fn main() -> Result<(), Error> {
+            let mut warnings: Vec<Warning> = Vec::new();
+            let slot: u64 = 10;
+            slot_bail!(
+                slot,
+                Error {}
+            );
+        }
+    "#);
+}
+
+#[test]
+fn macro_slot_capture_from_u64_range_remains_integer() {
+    assert_type_ok(r#"
+        enum Result<T, E> { Ok(T), Err(E) }
+        enum Option<T> { Some(T), None }
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn new() -> Vec<T> { Vec {} }
+            fn push(&mut self, value: T) {}
+        }
+        struct Error {}
+        struct Warning {
+            slot: u64,
+            diagnostic: Option<u32>,
+        }
+
+        macro_rules! slot_bail {
+            ($slot:expr, $err:expr) => {{
+                let e: Error = $err;
+                warnings.push(Warning {
+                    slot: $slot,
+                    diagnostic: None,
+                });
+                return Result::Err(e);
+            }};
+        }
+
+        fn main() -> Result<(), Error> {
+            let mut warnings: Vec<Warning> = Vec::new();
+            let count: u64 = 20;
+            for slot in 10..count {
+                slot_bail!(
+                    slot,
+                    Error {}
+                );
+            }
+            Result::Ok(())
+        }
+    "#);
+}
+
+#[test]
 fn primitive_generic_trait_assoc_fn_call_result_is_typed() {
     assert_type_ok(r#"
         enum Result<T, E> {
@@ -3964,6 +4239,18 @@ fn generic_array_style_index_uses_deref_slice_target() {
 }
 
 #[test]
+fn boxed_slice_index_uses_inner_slice_target() {
+    assert_type_ok(r#"
+        struct Box<T> {}
+
+        fn read(buf: Box<[u8]>) {
+            let byte: u8 = buf[0];
+            let tail: &[u8] = &buf[1..];
+        }
+    "#);
+}
+
+#[test]
 fn raw_pointer_add_result_can_initialize_local() {
     assert_type_ok(r#"
         struct Header {
@@ -4565,6 +4852,86 @@ fn partial_eq_impl_on_owned_type_accepts_referenced_lhs() {
 
         fn eq_ident(ident: &Ident) -> bool {
             ident == "serde"
+        }
+    "#);
+}
+
+#[test]
+fn trait_assoc_constructor_on_type_alias_typechecks() {
+    assert_type_ok(r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        trait KeyInit {
+            fn new_from_slice(bytes: &[u8]) -> Result<Self, ()>;
+        }
+
+        struct CipherCore<T> {
+            marker: usize,
+        }
+
+        struct Algo;
+        type Cipher = CipherCore<Algo>;
+
+        impl<T> KeyInit for CipherCore<T> {
+            fn new_from_slice(bytes: &[u8]) -> Result<Self, ()> {
+                let _ = bytes;
+                Result::Ok(CipherCore { marker: 0 })
+            }
+        }
+
+        fn wrap(key: &[u8]) {
+            let _cipher = Cipher::new_from_slice(key);
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_over_ref_map_uses_referenced_into_iterator_item() {
+    assert_type_ok(r#"
+        struct Map<K, V> {
+            len: usize,
+        }
+
+        struct DefId {
+            raw: u32,
+        }
+
+        trait IntoIterator {
+            type Item;
+        }
+
+        impl<K, V> IntoIterator for &Map<K, V> {
+            type Item = (&K, &V);
+        }
+
+        fn visit(map: &Map<DefId, usize>) {
+            for (def_id, _value) in map {
+                let copied = *def_id;
+                let _ = copied.raw;
+            }
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_over_ref_hash_map_uses_referenced_entries() {
+    assert_type_ok(r#"
+        struct HashMap<K, V> {
+            len: usize,
+        }
+
+        struct DefId {
+            raw: u32,
+        }
+
+        fn visit(map: &HashMap<DefId, usize>) {
+            for (def_id, _value) in map {
+                let copied = *def_id;
+                let _ = copied.raw;
+            }
         }
     "#);
 }

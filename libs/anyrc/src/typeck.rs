@@ -668,6 +668,15 @@ impl<'a> TypeChecker<'a> {
                     TyKind::Array(elem, _) | TyKind::Slice(elem) => {
                         return TyKind::Ref(elem, mutability);
                     }
+                    TyKind::Adt(def_id, substs) if self.is_hash_map_def(def_id) && substs.len() == 2 => {
+                        return TyKind::Tuple(vec![
+                            TyKind::Ref(Box::new(substs[0].clone()), mutability),
+                            TyKind::Ref(Box::new(substs[1].clone()), mutability),
+                        ]);
+                    }
+                    TyKind::Adt(def_id, substs) if self.is_hash_set_def(def_id) && substs.len() == 1 => {
+                        return TyKind::Ref(Box::new(substs[0].clone()), mutability);
+                    }
                     TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
                         return TyKind::Ref(Box::new(substs[0].clone()), mutability);
                     }
@@ -677,7 +686,13 @@ impl<'a> TypeChecker<'a> {
                     TyKind::Adt(def_id, substs) if self.is_punctuated_def(def_id) && !substs.is_empty() => {
                         return TyKind::Ref(Box::new(substs[0].clone()), mutability);
                     }
-                    other => other,
+                    other => {
+                        let ref_ty = TyKind::Ref(Box::new(other.clone()), mutability);
+                        if let Some(item_ty) = self.lookup_assoc_type_impl(&ref_ty, "IntoIterator", "Item") {
+                            return item_ty;
+                        }
+                        other
+                    }
                 }
             }
             TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
@@ -693,6 +708,12 @@ impl<'a> TypeChecker<'a> {
                 self.fresh_infer(InferKind::General)
             }
             TyKind::Adt(def_id, substs) if self.is_punctuated_def(def_id) && !substs.is_empty() => {
+                substs[0].clone()
+            }
+            TyKind::Adt(def_id, substs) if self.is_hash_map_def(def_id) && substs.len() == 2 => {
+                TyKind::Tuple(vec![substs[0].clone(), substs[1].clone()])
+            }
+            TyKind::Adt(def_id, substs) if self.is_hash_set_def(def_id) && substs.len() == 1 => {
                 substs[0].clone()
             }
             TyKind::Adt(def_id, _) if self.is_token_stream_def(def_id) => {
@@ -1972,6 +1993,9 @@ impl<'a> TypeChecker<'a> {
                 TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
                     ty = *inner;
                 }
+                TyKind::Adt(def_id, substs) if self.is_box_def(def_id) && substs.len() == 1 => {
+                    ty = substs[0].clone();
+                }
                 other => return other,
             }
         }
@@ -2534,6 +2558,14 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::Call(callee, args) => {
                 if let HirExprKind::Path(path) = &callee.kind {
                     match self.path_to_string(path).as_str() {
+                        "core::cmp::min" | "core::cmp::max" | "cmp::min" | "cmp::max"
+                            if args.len() == 2 =>
+                        {
+                            let lhs_ty = self.check_expr(&args[0]);
+                            let rhs_ty = self.check_expr(&args[1]);
+                            self.unify(&lhs_ty, &rhs_ty, args[1].span);
+                            return lhs_ty;
+                        }
                         "core::str::from_utf8" if args.len() == 1 => {
                             let arg_ty = self.check_expr(&args[0]);
                             let expected = TyKind::Ref(
@@ -3300,6 +3332,13 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let TyKind::Adt(def_id, substs) = &inner_ty {
+                    if self.is_vec_def(*def_id) {
+                        match method_str {
+                            "len" if args.is_empty() => return TyKind::Uint(UintTy::Usize),
+                            "is_empty" if args.is_empty() => return TyKind::Bool,
+                            _ => {}
+                        }
+                    }
                     if self.is_nonzero_usize_def(*def_id) {
                         match method_str {
                             "get" if args.is_empty() => return TyKind::Uint(UintTy::Usize),
@@ -5338,6 +5377,16 @@ impl<'a> TypeChecker<'a> {
             || self.is_known_type_path(def_id, "Vec")
     }
 
+    fn is_hash_map_def(&self, def_id: DefId) -> bool {
+        self.local_type_name_is(def_id, "HashMap")
+            || self.is_known_type_path(def_id, "HashMap")
+    }
+
+    fn is_hash_set_def(&self, def_id: DefId) -> bool {
+        self.local_type_name_is(def_id, "HashSet")
+            || self.is_known_type_path(def_id, "HashSet")
+    }
+
     fn is_punctuated_def(&self, def_id: DefId) -> bool {
         self.local_type_name_is(def_id, "Punctuated")
             || self.is_known_type_path(def_id, "Punctuated")
@@ -6026,6 +6075,7 @@ impl<'a> TypeChecker<'a> {
                                 (*candidate == *def_id).then(|| self.interner.resolve(*name).to_string())
                             })
                     })
+                    .or_else(|| self.resolve.intrinsic_fns.get(def_id).cloned())
                     .unwrap_or_else(|| format!("Adt({:?})", def_id));
                 if substs.is_empty() {
                     name

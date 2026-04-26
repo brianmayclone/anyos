@@ -33,6 +33,28 @@ fn parse_binary_op_precedence() {
 }
 
 #[test]
+fn parse_shift_after_primitive_cast() {
+    let expr = parse_expr("(0 as u32 << 16) | 0");
+    match expr {
+        Expr::Binary(BinOp::BitOr, lhs, rhs, _) => {
+            assert!(matches!(*rhs, Expr::Lit(Literal::Int(0), _)));
+            let lhs = match *lhs {
+                Expr::Paren(inner, _) => inner,
+                other => Box::new(other),
+            };
+            match *lhs {
+                Expr::Binary(BinOp::Shl, cast, shift, _) => {
+                    assert!(matches!(*cast, Expr::Cast(_, _, _)));
+                    assert!(matches!(*shift, Expr::Lit(Literal::Int(16), _)));
+                }
+                _ => panic!("expected shift lhs"),
+            }
+        }
+        _ => panic!("expected bit-or"),
+    }
+}
+
+#[test]
 fn parse_function_call() {
     let expr = parse_expr("foo(1, 2)");
     match expr {

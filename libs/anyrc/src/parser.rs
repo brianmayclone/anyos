@@ -2833,12 +2833,38 @@ impl<'a> Parser<'a> {
 
     fn parse_path_segment_type_args(&mut self, ident: Symbol) -> Option<GenericArgs> {
         if self.at_exact(&TokenKind::Lt) || self.at_exact(&TokenKind::Shl) {
+            if self.is_primitive_type_ident(ident) {
+                return None;
+            }
             return Some(self.parse_generic_args());
         }
         if self.at_exact(&TokenKind::LParen) && self.is_callable_trait_ident(ident) {
             return Some(self.parse_callable_trait_args());
         }
         None
+    }
+
+    fn is_primitive_type_ident(&self, ident: Symbol) -> bool {
+        matches!(
+            self.interner.resolve(ident),
+            "bool"
+                | "char"
+                | "str"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "f32"
+                | "f64"
+        )
     }
 
     fn is_callable_trait_ident(&self, ident: Symbol) -> bool {
