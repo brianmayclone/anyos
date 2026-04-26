@@ -375,6 +375,7 @@ fn main() {
         | anyui::WIN_FLAG_ALWAYS_ON_TOP;
 
     let win = anyui::Window::new_with_flags("Dock", wx, wy, ww, wh, flags);
+    win.set_color(0x00000000);
 
     let canvas = anyui::Canvas::new(ww, wh);
     canvas.set_dock(anyui::DOCK_FILL);
@@ -383,6 +384,7 @@ fn main() {
 
     let (tx, ty, tw, th) = trigger_window_rect(geometry(), screen_width, screen_height);
     let trigger_win = anyui::Window::new_with_flags("DockTrigger", tx, ty, tw, th, flags);
+    trigger_win.set_color(0x00000000);
     let trigger_canvas = anyui::Canvas::new(tw, th);
     trigger_canvas.set_dock(anyui::DOCK_FILL);
     trigger_canvas.set_interactive(true);

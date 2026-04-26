@@ -7031,6 +7031,19 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
 
+            (TyKind::Ref(expected_inner, _), TyKind::Adt(def_id, substs))
+                if self.is_box_def(*def_id) && substs.len() == 1 =>
+            {
+                self.unify(expected_inner, &substs[0], span);
+                return;
+            }
+
+            (TyKind::Ref(expected_inner, _), TyKind::Adt(_, _))
+                if self.ref_deref_target_matches(expected_inner, &actual, span) =>
+            {
+                return;
+            }
+
             (TyKind::Ref(expected_inner, Mutability::Immutable), TyKind::Adt(def_id, substs))
                 if self.is_vec_def(*def_id) && substs.len() == 1 =>
             {

@@ -19,6 +19,8 @@ pub struct ResolveResult {
     pub variant_to_enum: HashMap<DefId, DefId>,
     /// Intrinsic DefIds: maps synthetic DefId to full path string (e.g. "core::ptr::null_mut")
     pub intrinsic_fns: HashMap<DefId, String>,
+    /// Canonical imported value symbol names for aliases resolved to real DefIds.
+    pub imported_value_names: HashMap<DefId, Symbol>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,6 +70,8 @@ pub struct Resolver<'a> {
     intrinsic_fns: HashMap<DefId, String>,
     /// Extern module aliases imported with `use core::foo::bar;`.
     extern_path_aliases: HashMap<(usize, Symbol), String>,
+    /// Canonical imported value symbol names for aliases resolved to real DefIds.
+    imported_value_names: HashMap<DefId, Symbol>,
     /// Current impl self type symbol for resolving `Self::assoc` within impls.
     current_impl_self_ty: Option<Symbol>,
     /// Current impl self type DefId for resolving `Self::Variant` on module-qualified types.
@@ -100,6 +104,7 @@ impl<'a> Resolver<'a> {
             module_stack: vec![0],
             intrinsic_fns: HashMap::new(),
             extern_path_aliases: HashMap::new(),
+            imported_value_names: HashMap::new(),
             current_impl_self_ty: None,
             current_impl_self_def_id: None,
             current_module_path: Vec::new(),
@@ -393,6 +398,7 @@ impl<'a> Resolver<'a> {
             variant_indices,
             variant_to_enum: core::mem::take(&mut self.variant_to_enum),
             intrinsic_fns: core::mem::take(&mut self.intrinsic_fns),
+            imported_value_names: core::mem::take(&mut self.imported_value_names),
         }
     }
 
@@ -490,9 +496,11 @@ impl<'a> Resolver<'a> {
                 }
                 if let Some(full_path) = self.resolve_extern_alias_use_path(&full_path) {
                     let def_id = self.alloc_synthetic_def_id();
-                    self.intrinsic_fns.insert(def_id, full_path);
+                    self.intrinsic_fns.insert(def_id, full_path.clone());
                     self.define(local_name, Namespace::Value, def_id);
                     self.define(local_name, Namespace::Type, def_id);
+                    self.extern_path_aliases
+                        .insert((self.current_scope, local_name), full_path);
                     return;
                 }
                 if let Some(full_path) = self.resolve_extern_backed_path_string(&full_path) {
@@ -507,6 +515,11 @@ impl<'a> Resolver<'a> {
                 // use a::b::c; or use a::b::c as d;
                 if let Some((def_id, ns)) = self.resolve_use_path(&full_path, use_tree.span) {
                     self.define(local_name, ns, def_id);
+                    if ns == Namespace::Value {
+                        if let Some(&canonical_name) = full_path.last() {
+                            self.imported_value_names.insert(def_id, canonical_name);
+                        }
+                    }
                     // Also define in the other namespace for cross-ns usage
                     let other_ns = if ns == Namespace::Value {
                         Namespace::Type

@@ -35,6 +35,9 @@ pub struct MirBuilder<'a> {
 
     /// Map from closure DefId to its symbol name
     closure_symbols: HashMap<DefId, Symbol>,
+
+    /// Canonical function symbols for real HIR function definitions.
+    fn_symbols: HashMap<DefId, Symbol>,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -49,10 +52,11 @@ impl<'a> MirBuilder<'a> {
         for item in &hir.items {
             Self::collect_fn_defs(item, &mut fn_defs);
         }
+        let fn_symbols = Self::collect_fn_symbols(&fn_defs);
         // Then build MIR for each (sequential, so &mut interner is fine)
         let mut bodies = Vec::new();
         for f in &fn_defs {
-            bodies.extend(Self::build_fn(interner, resolve, typeck, f));
+            bodies.extend(Self::build_fn(interner, resolve, typeck, f, &fn_symbols));
         }
         bodies
     }
@@ -89,6 +93,10 @@ impl<'a> MirBuilder<'a> {
             }
             _ => {}
         }
+    }
+
+    pub fn collect_fn_symbols(fn_defs: &[&HirFnDef]) -> HashMap<DefId, Symbol> {
+        fn_defs.iter().map(|f| (f.def_id, f.name)).collect()
     }
 
     fn collect_fn_defs_from_block<'b>(block: &'b HirBlock, out: &mut Vec<&'b HirFnDef>) {
@@ -229,6 +237,7 @@ impl<'a> MirBuilder<'a> {
         resolve: &ResolveResult,
         typeck: &TypeckResult,
         func: &HirFnDef,
+        fn_symbols: &HashMap<DefId, Symbol>,
     ) -> Vec<MirBody> {
         let mut builder = MirBuilder {
             interner,
@@ -243,6 +252,7 @@ impl<'a> MirBuilder<'a> {
             extra_bodies: Vec::new(),
             closure_counter: 0,
             closure_symbols: HashMap::new(),
+            fn_symbols: fn_symbols.clone(),
         };
 
         // Create entry block
@@ -513,23 +523,44 @@ impl<'a> MirBuilder<'a> {
             return None;
         }
 
-        let fn_sym = if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(&def_id) {
-            if intrinsic_path.contains("Atomic")
-                || intrinsic_path.starts_with("anyos_std::")
-                || Self::is_primitive_assoc_fn_path(intrinsic_path)
-            {
-                self.interner.intern(intrinsic_path)
-            } else {
-                path.segments.last()?.ident
-            }
-        } else {
-            path.segments.last()?.ident
-        };
+        let fn_sym = self.fn_symbol_for_def(def_id, path.segments.last()?.ident);
 
         Some(Operand::Constant(Constant {
             ty: TyKind::FnDef(def_id, vec![]),
             value: ConstValue::FnItem(fn_sym),
         }))
+    }
+
+    fn fn_symbol_for_def(&mut self, def_id: DefId, fallback: Symbol) -> Symbol {
+        if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(&def_id).cloned() {
+            if intrinsic_path.contains("Atomic")
+                || intrinsic_path.starts_with("anyos_std::")
+                || Self::is_primitive_assoc_fn_path(&intrinsic_path)
+            {
+                return self.interner.intern(&intrinsic_path);
+            }
+        }
+        self.fn_symbols
+            .get(&def_id)
+            .copied()
+            .or_else(|| self.resolve.imported_value_names.get(&def_id).copied())
+            .unwrap_or(fallback)
+    }
+
+    fn box_deref_target_matches(&self, expected_inner: &TyKind, actual_ty: &TyKind) -> bool {
+        let TyKind::Adt(def_id, substs) = actual_ty else {
+            return false;
+        };
+        if !self.type_def_name_is(*def_id, "Box") || substs.len() != 1 {
+            return false;
+        }
+        let boxed = &substs[0];
+        boxed == expected_inner
+            || matches!((expected_inner, boxed), (TyKind::Str, TyKind::Str))
+            || matches!(
+                (expected_inner, boxed),
+                (TyKind::Slice(a), TyKind::Array(b, _)) if a.as_ref() == b.as_ref()
+            )
     }
 
     fn hir_path_to_string(&self, path: &HirPath) -> String {
@@ -959,7 +990,10 @@ impl<'a> MirBuilder<'a> {
                                 }
                             }
                             _ => {
-                                let place = self.lower_place(arg);
+                                let mut place = self.lower_place(arg);
+                                if self.box_deref_target_matches(expected_inner, &arg_ty) {
+                                    place.projections.push(Projection::Deref);
+                                }
                                 let borrow_kind = if *expected_mut == Mutability::Mut {
                                     BorrowKind::Mutable
                                 } else {
@@ -2848,20 +2882,15 @@ impl<'a> MirBuilder<'a> {
                         }
                         // Keep full names where the final segment is too generic
                         // or where codegen needs the owning primitive/ADT.
-                        let fn_name = if intrinsic_path.contains("Atomic")
-                            || intrinsic_path.starts_with("anyos_std::")
-                            || Self::is_primitive_assoc_fn_path(&intrinsic_path)
-                        {
-                            self.interner.intern(&intrinsic_path)
-                        } else {
-                            path.segments.last().unwrap().ident
-                        };
+                        let fn_name =
+                            self.fn_symbol_for_def(*def_id, path.segments.last().unwrap().ident);
                         Operand::Constant(Constant {
                             ty: ty.clone(),
                             value: ConstValue::FnItem(fn_name),
                         })
                     } else {
-                        let fn_name = path.segments.last().unwrap().ident;
+                        let fn_name =
+                            self.fn_symbol_for_def(*def_id, path.segments.last().unwrap().ident);
                         Operand::Constant(Constant {
                             ty: ty.clone(),
                             value: ConstValue::FnItem(fn_name),

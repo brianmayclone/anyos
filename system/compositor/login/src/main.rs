@@ -452,13 +452,14 @@ fn main() -> u32 {
         win.add(&av);
         picker_ids.push(av.id());
 
+        let label_y = picker_y + PICKER_AVATAR_SIZE as i32 + 18;
         let lbl = ui::Label::new(&display);
         let lbl_shadow_soft = ui::Label::new(&display);
         lbl_shadow_soft.set_font_size((sh / 70).clamp(11, 15));
         lbl_shadow_soft.set_font(1);
         lbl_shadow_soft.set_text_color(shadow_soft);
         lbl_shadow_soft.set_text_align(ui::TEXT_ALIGN_CENTER);
-        lbl_shadow_soft.set_position(cell_x + 3, picker_y + PICKER_AVATAR_SIZE as i32 + 14);
+        lbl_shadow_soft.set_position(cell_x + 3, label_y + 4);
         lbl_shadow_soft.set_size(cell_w, 22);
         lbl_shadow_soft.set_visible(!has_last_user);
         win.add(&lbl_shadow_soft);
@@ -469,7 +470,7 @@ fn main() -> u32 {
         lbl_shadow.set_font(1);
         lbl_shadow.set_text_color(shadow_near);
         lbl_shadow.set_text_align(ui::TEXT_ALIGN_CENTER);
-        lbl_shadow.set_position(cell_x + 1, picker_y + PICKER_AVATAR_SIZE as i32 + 12);
+        lbl_shadow.set_position(cell_x + 1, label_y + 2);
         lbl_shadow.set_size(cell_w, 22);
         lbl_shadow.set_visible(!has_last_user);
         win.add(&lbl_shadow);
@@ -479,7 +480,7 @@ fn main() -> u32 {
         lbl.set_font(1);
         lbl.set_text_color(text);
         lbl.set_text_align(ui::TEXT_ALIGN_CENTER);
-        lbl.set_position(cell_x, picker_y + PICKER_AVATAR_SIZE as i32 + 10);
+        lbl.set_position(cell_x, label_y);
         lbl.set_size(cell_w, 22);
         lbl.set_visible(!has_last_user);
         win.add(&lbl);
@@ -538,11 +539,11 @@ fn choose_login_palette(sw: u32, sh: u32, uid: u32) -> LoginPalette {
     if use_dark_text {
         LoginPalette {
             text: 0xFF16181C,
-            text_soft: 0xE816181C,
-            shadow_soft: 0x22FFFFFF,
-            shadow_near: 0x38FFFFFF,
-            avatar_glow_outer: 0x16000000,
-            avatar_glow_inner: 0x28000000,
+            text_soft: 0xFF16181C,
+            shadow_soft: 0x08000000,
+            shadow_near: 0x18000000,
+            avatar_glow_outer: 0x12FFFFFF,
+            avatar_glow_inner: 0x18000000,
             panel: 0x88FFFFFF,
         }
     } else {

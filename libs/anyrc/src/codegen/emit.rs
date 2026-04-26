@@ -1548,7 +1548,7 @@ impl<'a> CodeEmitter<'a> {
                 true
             }
             // AtomicXxx::fetch_add(&self, val, ordering) → lock xadd
-            s if s.ends_with("::fetch_add") && s.contains("Atomic") => {
+            s if (s.ends_with("::fetch_add") && s.contains("Atomic")) || s == "fetch_add" => {
                 // arg0 = &self, arg1 = val, arg2 = ordering (ignored)
                 // lock xadd [rdi], rsi → old value ends up in rsi
                 self.asm.emit_raw(&[0xF0, 0x48, 0x0F, 0xC1, 0x37]); // lock xadd [rdi], rsi
@@ -1556,7 +1556,7 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
-            s if s.ends_with("::fetch_sub") && s.contains("Atomic") => {
+            s if (s.ends_with("::fetch_sub") && s.contains("Atomic")) || s == "fetch_sub" => {
                 // arg0 = &self, arg1 = val, arg2 = ordering (ignored)
                 // fetch_sub(x) == fetch_add(-x)
                 self.asm.emit_raw(&[0x48, 0xF7, 0xDE]); // neg rsi
@@ -2091,11 +2091,24 @@ impl<'a> CodeEmitter<'a> {
             }
 
             // ── Clone/Copy/Display intrinsics ──
-            "clone" => {
+            "clone" | "String::clone" => {
                 // For Copy types: identity. For heap types: deep copy.
                 // Simplified: just copy the value
                 self.asm.mov_rr(Reg::RAX, Reg::RDI);
                 self.store_place(dest, Reg::RAX);
+                true
+            }
+            "from_fn" | "array::from_fn" | "core::array::from_fn" => {
+                // Bootstrap lowering for core::array::from_fn. Full Rust
+                // semantics require invoking the closure once per element; for
+                // now materialize a zeroed aggregate-shaped result.
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let size = regalloc::ty_size(&self.body.locals[dest.local.0].ty, self.struct_sizes)
+                    .max(8) as usize;
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                for off in (0..size).step_by(8) {
+                    self.asm.mov_mr(Reg::RBP, slot + off as i32, Reg::RAX);
+                }
                 true
             }
             "to_string" => {

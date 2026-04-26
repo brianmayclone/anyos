@@ -103,6 +103,7 @@ pub fn monomorphize(
     // concrete instances are still emitted below with mangled names.
 
     // For each unique instantiation, build a specialized MIR body
+    let fn_symbols = collect_fn_symbols(hir);
     for ((def_id, substs), mangled_name) in &instances {
         if let Some(fn_def) = find_fn_def(hir, *def_id) {
             // Create a modified typeck result with concrete types for this instantiation
@@ -124,7 +125,8 @@ pub fn monomorphize(
             }
 
             // Build MIR for this specialization
-            let mut built = MirBuilder::build_fn(interner, resolve, &specialized_typeck, fn_def);
+            let mut built =
+                MirBuilder::build_fn(interner, resolve, &specialized_typeck, fn_def, &fn_symbols);
             // The main function body is last; any closures come before it
             let mut body = built.pop().expect("build_fn returned empty");
             // Add any closure bodies
@@ -219,6 +221,78 @@ pub fn monomorphize(
     }
 
     mir_bodies
+}
+
+fn collect_fn_symbols(hir: &HirCrate) -> HashMap<DefId, Symbol> {
+    let mut out = HashMap::new();
+    for item in &hir.items {
+        collect_fn_symbols_from_item(item, &mut out);
+    }
+    out
+}
+
+fn collect_fn_symbols_from_item(item: &HirItem, out: &mut HashMap<DefId, Symbol>) {
+    match &item.kind {
+        HirItemKind::Fn(f) => {
+            out.insert(f.def_id, f.name);
+            if let Some(body) = &f.body {
+                collect_fn_symbols_from_block(body, out);
+            }
+        }
+        HirItemKind::Impl(ib) => {
+            for sub in &ib.items {
+                collect_fn_symbols_from_item(sub, out);
+            }
+        }
+        HirItemKind::ExternBlock(eb) => {
+            for sub in &eb.items {
+                collect_fn_symbols_from_item(sub, out);
+            }
+        }
+        HirItemKind::Mod(m) => {
+            if let Some(sub_items) = &m.items {
+                for sub in sub_items {
+                    collect_fn_symbols_from_item(sub, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_fn_symbols_from_block(block: &HirBlock, out: &mut HashMap<DefId, Symbol>) {
+    for stmt in &block.stmts {
+        match stmt {
+            HirStmt::Let(_, _, _, Some(expr), _) => collect_fn_symbols_from_expr(expr, out),
+            HirStmt::Expr(expr) | HirStmt::Semi(expr, _) => collect_fn_symbols_from_expr(expr, out),
+            HirStmt::Item(item) => collect_fn_symbols_from_item(item, out),
+            _ => {}
+        }
+    }
+}
+
+fn collect_fn_symbols_from_expr(expr: &HirExpr, out: &mut HashMap<DefId, Symbol>) {
+    match &expr.kind {
+        HirExprKind::Call(callee, args) => {
+            collect_fn_symbols_from_expr(callee, out);
+            for arg in args {
+                collect_fn_symbols_from_expr(arg, out);
+            }
+        }
+        HirExprKind::MethodCall(receiver, _, _, args) => {
+            collect_fn_symbols_from_expr(receiver, out);
+            for arg in args {
+                collect_fn_symbols_from_expr(arg, out);
+            }
+        }
+        HirExprKind::Block(block) | HirExprKind::Unsafe(block) => {
+            collect_fn_symbols_from_block(block, out);
+        }
+        HirExprKind::Closure(_, _, body, _) => {
+            collect_fn_symbols_from_expr(body, out);
+        }
+        _ => {}
+    }
 }
 
 fn find_fn_def<'a>(hir: &'a HirCrate, target: DefId) -> Option<&'a HirFnDef> {
