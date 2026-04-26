@@ -9,6 +9,7 @@ dynlink = { path = "../../../libs/dynlink" }
 libanyui_client = { path = "../../../libs/libanyui_client" }
 libimage_client = { path = "../../../libs/libimage_client" }
 libconf_schema = { path = "../../../libs/libconf_schema" }
+libconf = { path = "../../../libs/libconf" }
 
 [profile.dev]
 panic = "abort"

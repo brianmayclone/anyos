@@ -27,6 +27,20 @@ fn login_schema() -> ServiceSchema<'static> {
     ServiceSchema::new("login", &LOGIN_MANIFEST)
 }
 
+/// Read the avatar path that the user with `uid` configured in Settings →
+/// Profile. Login runs as root so it may read any user's User-scope entries.
+fn read_avatar_path(uid: u32) -> Option<String> {
+    use libconf::{ConfClient, ConfTarget, ConfValue};
+    let mut client = ConfClient::connect("login").ok()?;
+    let item = client
+        .get_target(ConfTarget::User(uid as u16), "profiles/avatar")
+        .ok()?;
+    match item.value? {
+        ConfValue::String(s) if !s.is_empty() => Some(s),
+        _ => None,
+    }
+}
+
 const DIALOG_W: u32 = 380;
 const DIALOG_H: u32 = 470;
 const AVATAR_SIZE: u32 = 96;
@@ -236,6 +250,12 @@ fn current_username() -> &'static str {
     users.get(idx).map(|(_, u, _)| u.as_str()).unwrap_or("")
 }
 
+fn current_uid() -> u32 {
+    let users = user_list();
+    let idx = unsafe { CURRENT_USER };
+    users.get(idx).map(|(uid, _, _)| *uid).unwrap_or(0)
+}
+
 fn current_displayname() -> &'static str {
     let users = user_list();
     let idx = unsafe { CURRENT_USER };
@@ -298,9 +318,17 @@ fn update_avatar() {
     let username = current_username();
     let displayname = current_displayname();
 
-    // Background matches window so circle edges anti-alias correctly.
     canvas.clear(tc.window_bg);
 
+    // Try the user-chosen image first (Settings → Profile → Choose Image).
+    if let Some(path) = read_avatar_path(current_uid()) {
+        if let Some((pixels, w, h)) = load_avatar_image(&path) {
+            blit_circular(&canvas, &pixels, w, h);
+            return;
+        }
+    }
+
+    // Fallback: initials on a hashed colour.
     let half = (AVATAR_SIZE as i32) / 2;
     let radius = half - 1;
     let bg = avatar_color(username);
@@ -308,12 +336,69 @@ fn update_avatar() {
 
     let initials = compute_initials(displayname, username);
     let font_size: u16 = 40;
-    // Approximate text width — bold uppercase letters average ~0.6 * font size.
     let glyph_w = (font_size as i32) * 6 / 10;
     let text_w = glyph_w * (initials.chars().count() as i32);
     let tx = half - text_w / 2;
     let ty = half - (font_size as i32) / 2 - 2;
     canvas.draw_text(tx, ty, 0xFFFFFFFF, 1, font_size, &initials);
+}
+
+fn load_avatar_image(path: &str) -> Option<(Vec<u32>, u32, u32)> {
+    use anyos_std::fs;
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX { return None; }
+    let mut data: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == 0 || n == u32::MAX { break; }
+        data.extend_from_slice(&buf[..n as usize]);
+    }
+    fs::close(fd);
+    let info = libimage_client::probe(&data)?;
+    let w = info.width;
+    let h = info.height;
+    if w == 0 || h == 0 { return None; }
+    let mut pixels = alloc::vec![0u32; (w as usize).saturating_mul(h as usize)];
+    let mut scratch = alloc::vec![0u8; info.scratch_needed as usize];
+    libimage_client::decode(&data, &mut pixels, &mut scratch).ok()?;
+    let side = w.min(h);
+    let ox = (w - side) / 2;
+    let oy = (h - side) / 2;
+    let mut cropped = alloc::vec![0u32; (side as usize) * (side as usize)];
+    for y in 0..side {
+        let src_off = ((oy + y) * w + ox) as usize;
+        let dst_off = (y * side) as usize;
+        cropped[dst_off..dst_off + side as usize]
+            .copy_from_slice(&pixels[src_off..src_off + side as usize]);
+    }
+    let mut scaled = alloc::vec![0u32; (AVATAR_SIZE as usize) * (AVATAR_SIZE as usize)];
+    if libimage_client::scale_image(
+        &cropped, side, side,
+        &mut scaled, AVATAR_SIZE, AVATAR_SIZE,
+        libimage_client::MODE_SCALE,
+    ) {
+        Some((scaled, AVATAR_SIZE, AVATAR_SIZE))
+    } else {
+        Some((cropped, side, side))
+    }
+}
+
+fn blit_circular(canvas: &ui::Canvas, pixels: &[u32], w: u32, h: u32) {
+    let cx = (AVATAR_SIZE as i32) / 2;
+    let cy = (AVATAR_SIZE as i32) / 2;
+    let r = cx - 1;
+    let r2 = r * r;
+    for y in 0..h.min(AVATAR_SIZE) {
+        for x in 0..w.min(AVATAR_SIZE) {
+            let dx = x as i32 - cx;
+            let dy = y as i32 - cy;
+            if dx * dx + dy * dy <= r2 {
+                let p = pixels[(y * w + x) as usize];
+                canvas.set_pixel(x as i32, y as i32, p | 0xFF000000);
+            }
+        }
+    }
 }
 
 fn attempt_login(pf_id: u32) -> bool {

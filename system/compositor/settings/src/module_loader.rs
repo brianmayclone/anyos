@@ -23,6 +23,7 @@ pub fn builtin_pages() -> Vec<PageEntry> {
     };
     m.push(b(BuiltinId::Dashboard, i18n::t("Dashboard"), "home.ico", i18n::t("System"), 0));
     m.push(b(BuiltinId::General, i18n::t("General"), "dev_cpu.ico", i18n::t("System"), 1));
+    m.push(b(BuiltinId::Profile, i18n::t("Profile"), "dev_cpu.ico", i18n::t("System"), 1));
     m.push(b(BuiltinId::Display, i18n::t("Display"), "display.ico", i18n::t("System"), 2));
     m.push(b(BuiltinId::Dock, i18n::t("Dock"), "dock.ico", i18n::t("System"), 3));
     m.push(b(BuiltinId::Sound, i18n::t("Sound"), "dev_disk.ico", i18n::t("System"), 4));

@@ -12,6 +12,7 @@ mod module_loader;
 mod layout;
 mod page_dashboard;
 mod page_general;
+mod page_profile;
 mod page_display;
 mod page_dock;
 mod page_sound;
@@ -280,6 +281,7 @@ fn build_page(idx: usize) {
     let panel_id = match s.pages[idx].id {
         BuiltinId::Dashboard => page_dashboard::build(scroll),
         BuiltinId::General => page_general::build(scroll),
+        BuiltinId::Profile => page_profile::build(scroll),
         BuiltinId::Display => page_display::build(scroll),
         BuiltinId::Dock => page_dock::build(scroll),
         BuiltinId::Sound => page_sound::build(scroll),

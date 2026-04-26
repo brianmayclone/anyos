@@ -10,6 +10,7 @@ use alloc::string::String;
 pub enum BuiltinId {
     Dashboard,
     General,
+    Profile,
     Display,
     Dock,
     Sound,
