@@ -5,6 +5,7 @@ use crate::codegen::x86asm::RelocKind;
 use crate::diagnostics::{Diagnostic, Level, Span};
 use crate::hir_lower::LoweringContext;
 use crate::intern::Interner;
+use crate::lexer::TokenKind;
 use crate::linker::elf::{self, ElfRelocation, ElfSymbol, ObjectFile, Section};
 use crate::linker::link;
 use crate::macros::expand_macros;
@@ -179,6 +180,7 @@ pub fn compile(
         }
     }
     crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    let global_asm_objects = collect_global_asm_objects(&krate, &interner)?;
     let (public_interface_source, public_interface) = {
         let mut interface_lower_ctx = LoweringContext::new(&mut interner);
         let interface_hir = interface_lower_ctx.lower_crate(&krate);
@@ -377,6 +379,7 @@ pub fn compile(
             let obj_bytes = elf::write_object(&obj);
             // Collect all object files: our code + extern crate .rlib objects + runtime stubs
             let mut all_objects = vec![obj_bytes];
+            all_objects.extend(global_asm_objects.iter().cloned());
             // Add runtime support stubs (__anyrc_alloc, __anyrc_vec_push, etc.)
             let rt_obj = build_runtime_object();
             all_objects.push(elf::write_object(&rt_obj));
@@ -404,6 +407,7 @@ pub fn compile(
                     linker_script: options.linker_script.clone(),
                     extra_objects,
                     base_address: None,
+                    physical_base_address: None,
                     entry_symbol: None,
                     target_abi,
                 };
@@ -531,6 +535,256 @@ fn link_errors_to_diagnostics(errors: Vec<link::LinkError>) -> Vec<Diagnostic> {
             ))
         })
         .collect()
+}
+
+fn collect_global_asm_objects(
+    krate: &crate::ast::Crate,
+    interner: &Interner,
+) -> Result<Vec<Vec<u8>>, Vec<Diagnostic>> {
+    let mut blocks = Vec::new();
+    collect_global_asm_blocks_in_items(&krate.items, interner, &mut blocks);
+    assemble_global_asm_blocks(&blocks)
+}
+
+fn collect_global_asm_blocks_in_items(
+    items: &[crate::ast::Item],
+    interner: &Interner,
+    out: &mut Vec<(Span, Vec<String>)>,
+) {
+    for item in items {
+        match item {
+            crate::ast::Item::MacroCall(path, args, _, span)
+                if is_global_asm_path(path, interner) =>
+            {
+                let fragments = global_asm_string_fragments(args);
+                if !fragments.is_empty() {
+                    out.push((*span, fragments));
+                }
+            }
+            crate::ast::Item::Mod(m) => {
+                if let Some(items) = &m.items {
+                    collect_global_asm_blocks_in_items(items, interner, out);
+                }
+            }
+            crate::ast::Item::Impl(i) => {
+                collect_global_asm_blocks_in_items(&i.items, interner, out);
+            }
+            crate::ast::Item::Trait(t) => {
+                collect_global_asm_blocks_in_items(&t.items, interner, out);
+            }
+            crate::ast::Item::ExternBlock(e) => {
+                collect_global_asm_blocks_in_items(&e.items, interner, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn is_global_asm_path(path: &crate::ast::Path, interner: &Interner) -> bool {
+    path.segments
+        .last()
+        .map(|segment| interner.resolve(segment.ident) == "global_asm")
+        .unwrap_or(false)
+}
+
+fn global_asm_string_fragments(tokens: &[crate::ast::TokenTree]) -> Vec<String> {
+    let mut fragments = Vec::new();
+    for token in tokens {
+        match token {
+            crate::ast::TokenTree::Token(token) => {
+                if let TokenKind::StringLit(s) = &token.kind {
+                    fragments.push(s.clone());
+                }
+            }
+            crate::ast::TokenTree::Delimited(_, nested) => {
+                fragments.extend(global_asm_string_fragments(nested));
+            }
+        }
+    }
+    fragments
+}
+
+#[cfg(feature = "host")]
+fn assemble_global_asm_blocks(
+    blocks: &[(Span, Vec<String>)],
+) -> Result<Vec<Vec<u8>>, Vec<Diagnostic>> {
+    use std::io::Write;
+    use std::process::Command;
+
+    let mut objects = Vec::new();
+    for (idx, (span, fragments)) in blocks.iter().enumerate() {
+        let asm = normalize_global_asm_for_nasm(fragments, idx);
+        let dir =
+            std::env::temp_dir().join(format!("anyrc_global_asm_{}_{}", std::process::id(), idx));
+        std::fs::create_dir_all(&dir).map_err(|err| {
+            vec![link_diagnostic_at(
+                format!("global_asm: could not create temp dir: {}", err),
+                *span,
+            )]
+        })?;
+        let asm_path = dir.join("global.asm");
+        let obj_path = dir.join("global.o");
+        {
+            let mut file = std::fs::File::create(&asm_path).map_err(|err| {
+                vec![link_diagnostic_at(
+                    format!("global_asm: could not create asm input: {}", err),
+                    *span,
+                )]
+            })?;
+            file.write_all(asm.as_bytes()).map_err(|err| {
+                vec![link_diagnostic_at(
+                    format!("global_asm: could not write asm input: {}", err),
+                    *span,
+                )]
+            })?;
+        }
+
+        let output = Command::new("nasm")
+            .args(["-w-all", "-f", "elf64", "-o"])
+            .arg(&obj_path)
+            .arg(&asm_path)
+            .output()
+            .map_err(|err| {
+                vec![link_diagnostic_at(
+                    format!("global_asm: failed to run nasm: {}", err),
+                    *span,
+                )]
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(vec![link_diagnostic_at(
+                format!("global_asm: nasm failed\n{}\n{}", stdout, stderr),
+                *span,
+            )]);
+        }
+
+        let bytes = std::fs::read(&obj_path).map_err(|err| {
+            vec![link_diagnostic_at(
+                format!("global_asm: could not read assembled object: {}", err),
+                *span,
+            )]
+        })?;
+        let _ = std::fs::remove_dir_all(&dir);
+        objects.push(bytes);
+    }
+    Ok(objects)
+}
+
+#[cfg(not(feature = "host"))]
+fn assemble_global_asm_blocks(
+    blocks: &[(Span, Vec<String>)],
+) -> Result<Vec<Vec<u8>>, Vec<Diagnostic>> {
+    if let Some((span, _)) = blocks.first() {
+        return Err(vec![link_diagnostic_at(
+            "global_asm requires an integrated assembler on this target".to_string(),
+            *span,
+        )]);
+    }
+    Ok(Vec::new())
+}
+
+#[cfg(feature = "host")]
+fn normalize_global_asm_for_nasm(fragments: &[String], block_idx: usize) -> String {
+    use std::collections::BTreeMap;
+
+    let mut lines = Vec::new();
+    for fragment in fragments {
+        for line in fragment.lines() {
+            lines.push(line.to_string());
+        }
+    }
+
+    let mut numeric_labels = BTreeMap::new();
+    for line in &lines {
+        let trimmed = line.trim();
+        if let Some(label) = trimmed.strip_suffix(':') {
+            if label.as_bytes().iter().all(|b| b.is_ascii_digit()) {
+                numeric_labels
+                    .entry(label.to_string())
+                    .or_insert_with(|| format!("__anyrc_ga_{}_{}", block_idx, label));
+            }
+        }
+    }
+
+    let mut out = String::from("bits 64\nsection .text\n");
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            out.push('\n');
+            continue;
+        }
+        if trimmed == ".intel_syntax noprefix" || trimmed == ".att_syntax" {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix(".global ") {
+            out.push_str("global ");
+            out.push_str(rest.trim());
+            out.push('\n');
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix(".globl ") {
+            out.push_str("global ");
+            out.push_str(rest.trim());
+            out.push('\n');
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix(".section ") {
+            out.push_str("section ");
+            out.push_str(rest.trim());
+            out.push('\n');
+            continue;
+        }
+        if trimmed == ".text" {
+            out.push_str("section .text\n");
+            continue;
+        }
+        if let Some(label) = trimmed.strip_suffix(':') {
+            if let Some(mapped) = numeric_labels.get(label) {
+                out.push_str(mapped);
+                out.push_str(":\n");
+                continue;
+            }
+        }
+        out.push_str(&replace_numeric_label_refs(&line, &numeric_labels));
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(feature = "host")]
+fn replace_numeric_label_refs(
+    line: &str,
+    labels: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() && i + 1 < chars.len() && matches!(chars[i + 1], 'f' | 'b') {
+            let prev_boundary =
+                i == 0 || !(chars[i - 1].is_ascii_alphanumeric() || chars[i - 1] == '_');
+            let next = i + 2;
+            let next_boundary =
+                next >= chars.len() || !(chars[next].is_ascii_alphanumeric() || chars[next] == '_');
+            if prev_boundary && next_boundary {
+                let key = chars[i].to_string();
+                if let Some(label) = labels.get(&key) {
+                    out.push_str(label);
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn link_diagnostic_at(message: String, span: Span) -> Diagnostic {
+    Diagnostic::new(Level::Error, &message, span)
 }
 
 fn codegen_to_object(

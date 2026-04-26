@@ -66,7 +66,14 @@ pub fn check_borrows(
                     }
 
                     // Check operands in rvalue aren't moved
-                    check_rvalue_operands(rvalue, &moved, &body.locals, interner, &mut errors, stmt.span);
+                    check_rvalue_operands(
+                        rvalue,
+                        &moved,
+                        &body.locals,
+                        interner,
+                        &mut errors,
+                        stmt.span,
+                    );
 
                     // Check borrow-related rules
                     match rvalue {
@@ -81,8 +88,8 @@ pub fn check_borrows(
                             if !self_reborrow_assignment && !temporary_projected_borrow {
                                 match kind {
                                     BorrowKind::Mutable => {
-                                    // No existing borrow (shared or mutable) on this local
-                                    for b in &borrows {
+                                        // No existing borrow (shared or mutable) on this local
+                                        for b in &borrows {
                                             if places_conflict(&b.place, borrowed_place) {
                                                 errors.push(Diagnostic::new(
                                                     Level::Error,
@@ -161,7 +168,14 @@ pub fn check_borrows(
                         .map(|local| local.name.is_some())
                         .unwrap_or(false);
                     if assigns_to_named_local {
-                        record_moves(rvalue, &mut moved, &body.locals, struct_defs, enum_variants, copy_types);
+                        record_moves(
+                            rvalue,
+                            &mut moved,
+                            &body.locals,
+                            struct_defs,
+                            enum_variants,
+                            copy_types,
+                        );
                     }
                 }
                 StatementKind::StorageDead(local) => {
@@ -176,13 +190,41 @@ pub fn check_borrows(
         // Check operands in terminator
         match &block.terminator {
             Terminator::Call { args, func, .. } => {
-                check_operand_not_moved(func, &moved, &body.locals, interner, &mut errors, body.span);
+                check_operand_not_moved(
+                    func,
+                    &moved,
+                    &body.locals,
+                    interner,
+                    &mut errors,
+                    body.span,
+                );
                 for arg in args {
-                    check_operand_not_moved(arg, &moved, &body.locals, interner, &mut errors, body.span);
+                    check_operand_not_moved(
+                        arg,
+                        &moved,
+                        &body.locals,
+                        interner,
+                        &mut errors,
+                        body.span,
+                    );
                 }
-                record_operand_move(func, &mut moved, &body.locals, struct_defs, enum_variants, copy_types);
+                record_operand_move(
+                    func,
+                    &mut moved,
+                    &body.locals,
+                    struct_defs,
+                    enum_variants,
+                    copy_types,
+                );
                 for arg in args {
-                    record_operand_move(arg, &mut moved, &body.locals, struct_defs, enum_variants, copy_types);
+                    record_operand_move(
+                        arg,
+                        &mut moved,
+                        &body.locals,
+                        struct_defs,
+                        enum_variants,
+                        copy_types,
+                    );
                 }
                 // Temporary borrows for call args end when the call returns
                 borrows.clear();
@@ -194,7 +236,9 @@ pub fn check_borrows(
                 end_temporary_borrows(&mut borrows, &body.locals, body.arg_count);
                 merge_moved_entry(&mut moved_at_block_entry, target.0, &moved);
             }
-            Terminator::SwitchInt { targets, default, .. } => {
+            Terminator::SwitchInt {
+                targets, default, ..
+            } => {
                 end_temporary_borrows(&mut borrows, &body.locals, body.arg_count);
                 for (_, target) in targets {
                     merge_moved_entry(&mut moved_at_block_entry, target.0, &moved);
@@ -225,11 +269,7 @@ fn merge_moved_entry(
     }
 }
 
-fn end_temporary_borrows(
-    borrows: &mut Vec<ActiveBorrow>,
-    locals: &[LocalDecl],
-    arg_count: usize,
-) {
+fn end_temporary_borrows(borrows: &mut Vec<ActiveBorrow>, locals: &[LocalDecl], arg_count: usize) {
     borrows.retain(|b| {
         locals
             .get(b.holder.0)
@@ -252,7 +292,9 @@ fn check_rvalue_operands(
             check_operand_not_moved(l, moved, locals, interner, errors, span);
             check_operand_not_moved(r, moved, locals, interner, errors, span);
         }
-        Rvalue::UnaryOp(_, op) => check_operand_not_moved(op, moved, locals, interner, errors, span),
+        Rvalue::UnaryOp(_, op) => {
+            check_operand_not_moved(op, moved, locals, interner, errors, span)
+        }
         Rvalue::Cast(op, _) => check_operand_not_moved(op, moved, locals, interner, errors, span),
         Rvalue::Aggregate(_, ops) => {
             for op in ops {
@@ -326,7 +368,11 @@ fn record_operand_move(
     copy_types: &HashSet<DefId>,
 ) {
     if let Operand::Move(place) = op {
-        if place.projections.iter().any(|proj| matches!(proj, Projection::Deref)) {
+        if place
+            .projections
+            .iter()
+            .any(|proj| matches!(proj, Projection::Deref))
+        {
             return;
         }
         let ty = &locals[place.local.0].ty;

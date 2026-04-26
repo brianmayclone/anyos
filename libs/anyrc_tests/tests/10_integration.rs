@@ -54,6 +54,28 @@ fn compile_returns_ok() {
 }
 
 #[test]
+fn run_global_asm_extern_function() {
+    let source = r#"
+        core::arch::global_asm!(
+            ".global asm_answer",
+            "asm_answer:",
+            "mov eax, 77",
+            "ret",
+        );
+
+        extern "C" {
+            fn asm_answer() -> i32;
+        }
+
+        fn main() -> i32 {
+            unsafe { asm_answer() }
+        }
+    "#;
+
+    assert_eq!(compile_and_run(source), 77);
+}
+
+#[test]
 fn compile_with_error_returns_err() {
     let source = "fn main() { let x: i32 = true; }";
     let options = CompileOptions {

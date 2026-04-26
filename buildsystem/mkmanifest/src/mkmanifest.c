@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2024-2026 Mike Strathmann
  * SPDX-License-Identifier: MIT
- */
+ *
  * mkmanifest — Generate system-manifest.json from a sysroot directory.
  *
  * Recursively scans a sysroot directory and produces a JSON manifest

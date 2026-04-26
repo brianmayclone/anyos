@@ -13,10 +13,10 @@
 //! - `#[cfg(all(pred, pred, ...))]` — conjunction
 //! - `#[cfg_attr(pred, attr)]` — conditional attribute application
 
-use crate::prelude::*;
 use crate::ast::*;
 use crate::intern::Interner;
 use crate::lexer::TokenKind;
+use crate::prelude::*;
 use anyos_std::collections::HashMap;
 
 /// Holds the set of active cfg flags for the current compilation.
@@ -29,7 +29,9 @@ pub struct CfgContext {
 
 impl CfgContext {
     pub fn new() -> Self {
-        Self { flags: HashMap::new() }
+        Self {
+            flags: HashMap::new(),
+        }
     }
 
     /// Build from a list of flag strings.
@@ -117,13 +119,15 @@ fn parse_cfg_pred(tokens: &[TokenTree], interner: &Interner) -> CfgPred {
                             return CfgPred::Not(Box::new(inner_pred));
                         }
                         "any" => {
-                            let preds = split_comma(inner).iter()
+                            let preds = split_comma(inner)
+                                .iter()
                                 .map(|tts| parse_cfg_pred(tts, interner))
                                 .collect();
                             return CfgPred::Any(preds);
                         }
                         "all" => {
-                            let preds = split_comma(inner).iter()
+                            let preds = split_comma(inner)
+                                .iter()
                                 .map(|tts| parse_cfg_pred(tts, interner))
                                 .collect();
                             return CfgPred::All(preds);
@@ -309,10 +313,12 @@ fn strip_items(items: &mut Vec<Item>, ctx: &CfgContext, interner: &Interner) {
                 strip_items(&mut td.items, ctx, interner);
             }
             Item::Struct(s) => {
-                s.fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
+                s.fields
+                    .retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
             }
             Item::Enum(e) => {
-                e.variants.retain(|variant| should_keep_item_attrs(&variant.attrs, ctx, interner));
+                e.variants
+                    .retain(|variant| should_keep_item_attrs(&variant.attrs, ctx, interner));
                 for variant in &mut e.variants {
                     if let VariantFields::Struct(fields) = &mut variant.fields {
                         fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
@@ -320,7 +326,8 @@ fn strip_items(items: &mut Vec<Item>, ctx: &CfgContext, interner: &Interner) {
                 }
             }
             Item::Fn(f) => {
-                f.params.retain(|param| should_keep_item_attrs(&param.attrs, ctx, interner));
+                f.params
+                    .retain(|param| should_keep_item_attrs(&param.attrs, ctx, interner));
                 if let Some(ref mut body) = f.body {
                     strip_block(body, ctx, interner);
                 }
@@ -345,13 +352,11 @@ fn strip_block(block: &mut Block, ctx: &CfgContext, interner: &Interner) {
 }
 
 fn strip_stmts(stmts: &mut Vec<Stmt>, ctx: &CfgContext, interner: &Interner) {
-    stmts.retain(|stmt| {
-        match stmt {
-            Stmt::Item(item) => should_keep_item_attrs(item_attrs(item), ctx, interner),
-            Stmt::Attributed(attrs, _, _) => should_keep_item_attrs(attrs, ctx, interner),
-            Stmt::Expr(expr) | Stmt::Semi(expr, _) => should_keep_expr_attrs(expr, ctx, interner),
-            _ => true,
-        }
+    stmts.retain(|stmt| match stmt {
+        Stmt::Item(item) => should_keep_item_attrs(item_attrs(item), ctx, interner),
+        Stmt::Attributed(attrs, _, _) => should_keep_item_attrs(attrs, ctx, interner),
+        Stmt::Expr(expr) | Stmt::Semi(expr, _) => should_keep_expr_attrs(expr, ctx, interner),
+        _ => true,
     });
     for stmt in stmts.iter_mut() {
         loop {
@@ -397,10 +402,12 @@ fn strip_stmt(stmt: &mut Stmt, ctx: &CfgContext, interner: &Interner) {
             }
             Item::Impl(ib) => strip_items(&mut ib.items, ctx, interner),
             Item::Struct(s) => {
-                s.fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
+                s.fields
+                    .retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
             }
             Item::Enum(e) => {
-                e.variants.retain(|variant| should_keep_item_attrs(&variant.attrs, ctx, interner));
+                e.variants
+                    .retain(|variant| should_keep_item_attrs(&variant.attrs, ctx, interner));
                 for variant in &mut e.variants {
                     if let VariantFields::Struct(fields) = &mut variant.fields {
                         fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
@@ -430,7 +437,9 @@ fn strip_stmt(stmt: &mut Stmt, ctx: &CfgContext, interner: &Interner) {
 
 fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
     match expr {
-        Expr::Binary(_, lhs, rhs, _) | Expr::Assign(lhs, rhs, _) | Expr::AssignOp(_, lhs, rhs, _) => {
+        Expr::Binary(_, lhs, rhs, _)
+        | Expr::Assign(lhs, rhs, _)
+        | Expr::AssignOp(_, lhs, rhs, _) => {
             strip_expr(lhs, ctx, interner);
             strip_expr(rhs, ctx, interner);
         }
@@ -549,7 +558,9 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
             for operand in &mut asm.operands {
                 match operand {
                     AsmOperand::In { expr, .. } => strip_expr(expr, ctx, interner),
-                    AsmOperand::Out { expr: Some(expr), .. } => strip_expr(expr, ctx, interner),
+                    AsmOperand::Out {
+                        expr: Some(expr), ..
+                    } => strip_expr(expr, ctx, interner),
                     AsmOperand::InOut { expr, out_expr, .. } => {
                         strip_expr(expr, ctx, interner);
                         if let Some(out_expr) = out_expr {
@@ -639,9 +650,6 @@ fn strip_pattern(pat: &mut Pattern, ctx: &CfgContext, interner: &Interner) {
                 strip_expr(end, ctx, interner);
             }
         }
-        Pattern::Literal(_, _)
-        | Pattern::Wildcard(_)
-        | Pattern::Rest(_)
-        | Pattern::Path(_) => {}
+        Pattern::Literal(_, _) | Pattern::Wildcard(_) | Pattern::Rest(_) | Pattern::Path(_) => {}
     }
 }

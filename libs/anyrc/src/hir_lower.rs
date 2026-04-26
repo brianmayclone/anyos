@@ -1,9 +1,9 @@
-use crate::prelude::*;
 use crate::ast;
-use crate::hir::*;
-use crate::diagnostics::Span;
 use crate::ast::UnOp;
+use crate::diagnostics::Span;
+use crate::hir::*;
 use crate::intern::{Interner, Symbol};
+use crate::prelude::*;
 
 pub struct LoweringContext<'a> {
     next_hir_id: u32,
@@ -13,7 +13,11 @@ pub struct LoweringContext<'a> {
 
 impl<'a> LoweringContext<'a> {
     pub fn new(interner: &'a mut Interner) -> Self {
-        Self { next_hir_id: 0, next_def_id: 0, interner }
+        Self {
+            next_hir_id: 0,
+            next_def_id: 0,
+            interner,
+        }
     }
 
     fn alloc_hir_id(&mut self) -> HirId {
@@ -29,7 +33,11 @@ impl<'a> LoweringContext<'a> {
     }
 
     pub fn lower_crate(&mut self, krate: &ast::Crate) -> HirCrate {
-        let items = krate.items.iter().filter_map(|i| self.lower_item(i)).collect();
+        let items = krate
+            .items
+            .iter()
+            .filter_map(|i| self.lower_item(i))
+            .collect();
         HirCrate { items }
     }
 
@@ -40,17 +48,26 @@ impl<'a> LoweringContext<'a> {
             ast::Item::Enum(e) => (HirItemKind::Enum(self.lower_enum_def(e)), e.span),
             ast::Item::Impl(ib) => (HirItemKind::Impl(self.lower_impl_block(ib)), ib.span),
             ast::Item::Trait(td) => (HirItemKind::Trait(self.lower_trait_def(td)), td.span),
-            ast::Item::TypeAlias(ta) => (HirItemKind::TypeAlias(self.lower_type_alias(ta)), ta.span),
+            ast::Item::TypeAlias(ta) => {
+                (HirItemKind::TypeAlias(self.lower_type_alias(ta)), ta.span)
+            }
             ast::Item::Const(c) => (HirItemKind::Const(self.lower_const_def(c)), c.span),
             ast::Item::Static(s) => (HirItemKind::Static(self.lower_static_def(s)), s.span),
             ast::Item::Use(u) => (HirItemKind::Use(self.lower_use_tree(u)), u.span),
             ast::Item::Mod(m) => (HirItemKind::Mod(self.lower_mod_def(m)), m.span),
-            ast::Item::ExternBlock(eb) => (HirItemKind::ExternBlock(self.lower_extern_block(eb)), eb.span),
+            ast::Item::ExternBlock(eb) => (
+                HirItemKind::ExternBlock(self.lower_extern_block(eb)),
+                eb.span,
+            ),
             ast::Item::ExternCrate(_) => return None,
             ast::Item::MacroDef(_) => return None, // macro defs are consumed by expansion
             ast::Item::MacroCall(_, _, _, _span) => return None, // unexpanded macros are dropped
         };
-        Some(HirItem { id: self.alloc_hir_id(), kind, span })
+        Some(HirItem {
+            id: self.alloc_hir_id(),
+            kind,
+            span,
+        })
     }
 
     fn lower_fn_def(&mut self, f: &ast::FnDef) -> HirFnDef {
@@ -72,7 +89,9 @@ impl<'a> LoweringContext<'a> {
 
     fn has_attr(&mut self, attrs: &[ast::Attribute], name: &str) -> bool {
         let sym = self.interner.intern(name);
-        attrs.iter().any(|a| a.path.segments.len() == 1 && a.path.segments[0].ident == sym)
+        attrs
+            .iter()
+            .any(|a| a.path.segments.len() == 1 && a.path.segments[0].ident == sym)
     }
 
     fn has_derive(&mut self, attrs: &[ast::Attribute], name: &str) -> bool {
@@ -136,10 +155,17 @@ impl<'a> LoweringContext<'a> {
             name: v.name,
             fields: match &v.fields {
                 ast::VariantFields::Unit => HirVariantFields::Unit,
-                ast::VariantFields::Tuple(tys) => HirVariantFields::Tuple(tys.iter().map(|t| self.lower_ty(t)).collect()),
-                ast::VariantFields::Struct(fs) => HirVariantFields::Struct(fs.iter().map(|f| self.lower_field_def(f)).collect()),
+                ast::VariantFields::Tuple(tys) => {
+                    HirVariantFields::Tuple(tys.iter().map(|t| self.lower_ty(t)).collect())
+                }
+                ast::VariantFields::Struct(fs) => {
+                    HirVariantFields::Struct(fs.iter().map(|f| self.lower_field_def(f)).collect())
+                }
             },
-            discriminant: v.discriminant.as_ref().map(|e| Box::new(self.lower_expr(e))),
+            discriminant: v
+                .discriminant
+                .as_ref()
+                .map(|e| Box::new(self.lower_expr(e))),
             span: v.span,
         }
     }
@@ -160,7 +186,11 @@ impl<'a> LoweringContext<'a> {
             def_id: self.alloc_def_id(),
             name: td.name,
             generics: self.lower_generics(&td.generics),
-            supertraits: td.supertraits.iter().map(|tb| self.lower_trait_bound(tb)).collect(),
+            supertraits: td
+                .supertraits
+                .iter()
+                .map(|tb| self.lower_trait_bound(tb))
+                .collect(),
             items: td.items.iter().filter_map(|i| self.lower_item(i)).collect(),
             vis: td.vis,
             is_unsafe: td.is_unsafe,
@@ -206,7 +236,9 @@ impl<'a> LoweringContext<'a> {
             kind: match &u.kind {
                 ast::UseTreeKind::Simple(alias) => HirUseTreeKind::Simple(*alias),
                 ast::UseTreeKind::Glob => HirUseTreeKind::Glob,
-                ast::UseTreeKind::Nested(trees) => HirUseTreeKind::Nested(trees.iter().map(|t| self.lower_use_tree(t)).collect()),
+                ast::UseTreeKind::Nested(trees) => {
+                    HirUseTreeKind::Nested(trees.iter().map(|t| self.lower_use_tree(t)).collect())
+                }
             },
             span: u.span,
         }
@@ -216,7 +248,10 @@ impl<'a> LoweringContext<'a> {
         HirModDef {
             def_id: self.alloc_def_id(),
             name: m.name,
-            items: m.items.as_ref().map(|items| items.iter().filter_map(|i| self.lower_item(i)).collect()),
+            items: m
+                .items
+                .as_ref()
+                .map(|items| items.iter().filter_map(|i| self.lower_item(i)).collect()),
             vis: m.vis,
         }
     }
@@ -240,12 +275,21 @@ impl<'a> LoweringContext<'a> {
                 qp.span,
             ),
             ast::Expr::Binary(op, l, r, span) => (
-                HirExprKind::Binary(*op, Box::new(self.lower_expr(l)), Box::new(self.lower_expr(r))),
+                HirExprKind::Binary(
+                    *op,
+                    Box::new(self.lower_expr(l)),
+                    Box::new(self.lower_expr(r)),
+                ),
                 *span,
             ),
-            ast::Expr::Unary(op, e, span) => (HirExprKind::Unary(*op, Box::new(self.lower_expr(e))), *span),
+            ast::Expr::Unary(op, e, span) => {
+                (HirExprKind::Unary(*op, Box::new(self.lower_expr(e))), *span)
+            }
             ast::Expr::Call(callee, args, span) => (
-                HirExprKind::Call(Box::new(self.lower_expr(callee)), args.iter().map(|a| self.lower_expr(a)).collect()),
+                HirExprKind::Call(
+                    Box::new(self.lower_expr(callee)),
+                    args.iter().map(|a| self.lower_expr(a)).collect(),
+                ),
                 *span,
             ),
             ast::Expr::MethodCall(recv, name, tys, args, span) => (
@@ -257,8 +301,14 @@ impl<'a> LoweringContext<'a> {
                 ),
                 *span,
             ),
-            ast::Expr::Field(e, name, span) => (HirExprKind::Field(Box::new(self.lower_expr(e)), *name), *span),
-            ast::Expr::Index(a, b, span) => (HirExprKind::Index(Box::new(self.lower_expr(a)), Box::new(self.lower_expr(b))), *span),
+            ast::Expr::Field(e, name, span) => (
+                HirExprKind::Field(Box::new(self.lower_expr(e)), *name),
+                *span,
+            ),
+            ast::Expr::Index(a, b, span) => (
+                HirExprKind::Index(Box::new(self.lower_expr(a)), Box::new(self.lower_expr(b))),
+                *span,
+            ),
             ast::Expr::Block(b) => (HirExprKind::Block(self.lower_block(b)), b.span),
             ast::Expr::If(cond, then, else_, span) => (
                 HirExprKind::If(
@@ -275,7 +325,9 @@ impl<'a> LoweringContext<'a> {
                 ),
                 *span,
             ),
-            ast::Expr::Loop(b, label, span) => (HirExprKind::Loop(self.lower_block(b), *label), *span),
+            ast::Expr::Loop(b, label, span) => {
+                (HirExprKind::Loop(self.lower_block(b), *label), *span)
+            }
             // Desugar while → loop { if !cond { break; } body }
             ast::Expr::While(cond, body, label, span) => {
                 let hir_cond = self.lower_expr(cond);
@@ -315,7 +367,12 @@ impl<'a> LoweringContext<'a> {
             }
             // Keep for as-is for now (needs trait resolution)
             ast::Expr::For(pat, iter, body, label, span) => (
-                HirExprKind::For(self.lower_pattern(pat), Box::new(self.lower_expr(iter)), self.lower_block(body), *label),
+                HirExprKind::For(
+                    self.lower_pattern(pat),
+                    Box::new(self.lower_expr(iter)),
+                    self.lower_block(body),
+                    *label,
+                ),
                 *span,
             ),
             ast::Expr::Closure(params, ret_ty, body, is_move, span) => (
@@ -327,26 +384,68 @@ impl<'a> LoweringContext<'a> {
                 ),
                 *span,
             ),
-            ast::Expr::Return(e, span) => (HirExprKind::Return(e.as_ref().map(|e| Box::new(self.lower_expr(e)))), *span),
-            ast::Expr::Break(label, e, span) => (HirExprKind::Break(*label, e.as_ref().map(|e| Box::new(self.lower_expr(e)))), *span),
+            ast::Expr::Return(e, span) => (
+                HirExprKind::Return(e.as_ref().map(|e| Box::new(self.lower_expr(e)))),
+                *span,
+            ),
+            ast::Expr::Break(label, e, span) => (
+                HirExprKind::Break(*label, e.as_ref().map(|e| Box::new(self.lower_expr(e)))),
+                *span,
+            ),
             ast::Expr::Continue(label, span) => (HirExprKind::Continue(*label), *span),
-            ast::Expr::Assign(l, r, span) => (HirExprKind::Assign(Box::new(self.lower_expr(l)), Box::new(self.lower_expr(r))), *span),
-            ast::Expr::AssignOp(op, l, r, span) => (HirExprKind::AssignOp(*op, Box::new(self.lower_expr(l)), Box::new(self.lower_expr(r))), *span),
-            ast::Expr::Ref(e, m, span) => (HirExprKind::Ref(Box::new(self.lower_expr(e)), *m), *span),
-            ast::Expr::RawRef(e, m, span) => (HirExprKind::RawRef(Box::new(self.lower_expr(e)), *m), *span),
+            ast::Expr::Assign(l, r, span) => (
+                HirExprKind::Assign(Box::new(self.lower_expr(l)), Box::new(self.lower_expr(r))),
+                *span,
+            ),
+            ast::Expr::AssignOp(op, l, r, span) => (
+                HirExprKind::AssignOp(
+                    *op,
+                    Box::new(self.lower_expr(l)),
+                    Box::new(self.lower_expr(r)),
+                ),
+                *span,
+            ),
+            ast::Expr::Ref(e, m, span) => {
+                (HirExprKind::Ref(Box::new(self.lower_expr(e)), *m), *span)
+            }
+            ast::Expr::RawRef(e, m, span) => {
+                (HirExprKind::RawRef(Box::new(self.lower_expr(e)), *m), *span)
+            }
             ast::Expr::Deref(e, span) => (HirExprKind::Deref(Box::new(self.lower_expr(e))), *span),
-            ast::Expr::Cast(e, ty, span) => (HirExprKind::Cast(Box::new(self.lower_expr(e)), self.lower_ty(ty)), *span),
+            ast::Expr::Cast(e, ty, span) => (
+                HirExprKind::Cast(Box::new(self.lower_expr(e)), self.lower_ty(ty)),
+                *span,
+            ),
             ast::Expr::Struct(path, fields, base, span) => (
                 HirExprKind::Struct(
                     self.lower_path(path),
-                    fields.iter().map(|f| HirFieldExpr { name: f.name, value: self.lower_expr(&f.value), span: f.span }).collect(),
+                    fields
+                        .iter()
+                        .map(|f| HirFieldExpr {
+                            name: f.name,
+                            value: self.lower_expr(&f.value),
+                            span: f.span,
+                        })
+                        .collect(),
                     base.as_ref().map(|e| Box::new(self.lower_expr(e))),
                 ),
                 *span,
             ),
-            ast::Expr::Tuple(es, span) => (HirExprKind::Tuple(es.iter().map(|e| self.lower_expr(e)).collect()), *span),
-            ast::Expr::Array(es, span) => (HirExprKind::Array(es.iter().map(|e| self.lower_expr(e)).collect()), *span),
-            ast::Expr::ArrayRepeat(a, b, span) => (HirExprKind::ArrayRepeat(Box::new(self.lower_expr(a)), Box::new(self.lower_expr(b))), *span),
+            ast::Expr::Tuple(es, span) => (
+                HirExprKind::Tuple(es.iter().map(|e| self.lower_expr(e)).collect()),
+                *span,
+            ),
+            ast::Expr::Array(es, span) => (
+                HirExprKind::Array(es.iter().map(|e| self.lower_expr(e)).collect()),
+                *span,
+            ),
+            ast::Expr::ArrayRepeat(a, b, span) => (
+                HirExprKind::ArrayRepeat(
+                    Box::new(self.lower_expr(a)),
+                    Box::new(self.lower_expr(b)),
+                ),
+                *span,
+            ),
             ast::Expr::Range(a, b, inclusive, span) => (
                 HirExprKind::Range(
                     a.as_ref().map(|e| Box::new(self.lower_expr(e))),
@@ -366,7 +465,11 @@ impl<'a> LoweringContext<'a> {
             ast::Expr::InlineAsm(asm) => {
                 let hir_asm = HirInlineAsm {
                     template: asm.template.clone(),
-                    operands: asm.operands.iter().map(|op| self.lower_asm_operand(op)).collect(),
+                    operands: asm
+                        .operands
+                        .iter()
+                        .map(|op| self.lower_asm_operand(op))
+                        .collect(),
                     options: asm.options.clone(),
                 };
                 (HirExprKind::InlineAsm(hir_asm), asm.span)
@@ -395,7 +498,11 @@ impl<'a> LoweringContext<'a> {
                 let else_body = if let Some(e) = else_branch {
                     self.lower_expr(e)
                 } else {
-                    HirExpr { id: self.alloc_hir_id(), kind: HirExprKind::Tuple(vec![]), span: *span }
+                    HirExpr {
+                        id: self.alloc_hir_id(),
+                        kind: HirExprKind::Tuple(vec![]),
+                        span: *span,
+                    }
                 };
                 let wildcard_arm = HirMatchArm {
                     id: self.alloc_hir_id(),
@@ -404,7 +511,10 @@ impl<'a> LoweringContext<'a> {
                     body: Box::new(else_body),
                     span: *span,
                 };
-                (HirExprKind::Match(Box::new(hir_scrutinee), vec![match_arm, wildcard_arm]), *span)
+                (
+                    HirExprKind::Match(Box::new(hir_scrutinee), vec![match_arm, wildcard_arm]),
+                    *span,
+                )
             }
             // Desugar while let → loop { match expr { pat => body, _ => break } }
             ast::Expr::WhileLet(pat, scrutinee, body, label, span) => {
@@ -436,7 +546,10 @@ impl<'a> LoweringContext<'a> {
                 };
                 let match_expr = HirExpr {
                     id: self.alloc_hir_id(),
-                    kind: HirExprKind::Match(Box::new(hir_scrutinee), vec![match_arm, wildcard_arm]),
+                    kind: HirExprKind::Match(
+                        Box::new(hir_scrutinee),
+                        vec![match_arm, wildcard_arm],
+                    ),
                     span: *span,
                 };
                 let loop_block = HirBlock {
@@ -447,7 +560,11 @@ impl<'a> LoweringContext<'a> {
                 (HirExprKind::Loop(loop_block, *label), *span)
             }
         };
-        HirExpr { id: self.alloc_hir_id(), kind, span }
+        HirExpr {
+            id: self.alloc_hir_id(),
+            kind,
+            span,
+        }
     }
 
     fn lower_match_arm(&mut self, arm: &ast::MatchArm) -> HirMatchArm {
@@ -503,10 +620,18 @@ impl<'a> LoweringContext<'a> {
         match ty {
             ast::Ty::Path(p) => HirTy::Path(self.lower_path(p)),
             ast::Ty::QualifiedPath(qp) => HirTy::QualifiedPath(self.lower_qualified_path(qp)),
-            ast::Ty::Reference(lt, t, m, span) => HirTy::Reference(*lt, Box::new(self.lower_ty(t)), *m, *span),
+            ast::Ty::Reference(lt, t, m, span) => {
+                HirTy::Reference(*lt, Box::new(self.lower_ty(t)), *m, *span)
+            }
             ast::Ty::RawPtr(t, m, span) => HirTy::RawPtr(Box::new(self.lower_ty(t)), *m, *span),
-            ast::Ty::Tuple(ts, span) => HirTy::Tuple(ts.iter().map(|t| self.lower_ty(t)).collect(), *span),
-            ast::Ty::Array(t, len, span) => HirTy::Array(Box::new(self.lower_ty(t)), Box::new(self.lower_expr(len)), *span),
+            ast::Ty::Tuple(ts, span) => {
+                HirTy::Tuple(ts.iter().map(|t| self.lower_ty(t)).collect(), *span)
+            }
+            ast::Ty::Array(t, len, span) => HirTy::Array(
+                Box::new(self.lower_ty(t)),
+                Box::new(self.lower_expr(len)),
+                *span,
+            ),
             ast::Ty::Slice(t, span) => HirTy::Slice(Box::new(self.lower_ty(t)), *span),
             ast::Ty::FnPtr(params, ret, span) => HirTy::FnPtr(
                 params.iter().map(|t| self.lower_ty(t)).collect(),
@@ -528,29 +653,52 @@ impl<'a> LoweringContext<'a> {
     fn lower_pattern(&mut self, pat: &ast::Pattern) -> HirPattern {
         match pat {
             ast::Pattern::Ident(name, m, sub, span) => HirPattern::Ident(
-                self.alloc_hir_id(), *name, *m,
-                sub.as_ref().map(|p| Box::new(self.lower_pattern(p))), *span,
+                self.alloc_hir_id(),
+                *name,
+                *m,
+                sub.as_ref().map(|p| Box::new(self.lower_pattern(p))),
+                *span,
             ),
             ast::Pattern::Literal(lit, span) => HirPattern::Literal(lit.clone(), *span),
-            ast::Pattern::Tuple(ps, span) => HirPattern::Tuple(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span),
-            ast::Pattern::Slice(ps, span) => HirPattern::Slice(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span),
+            ast::Pattern::Tuple(ps, span) => {
+                HirPattern::Tuple(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span)
+            }
+            ast::Pattern::Slice(ps, span) => {
+                HirPattern::Slice(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span)
+            }
             ast::Pattern::Struct(path, fps, dots, span) => HirPattern::Struct(
                 self.lower_path(path),
-                fps.iter().map(|fp| HirFieldPat { name: fp.name, pat: self.lower_pattern(&fp.pat), span: fp.span }).collect(),
-                *dots, *span,
+                fps.iter()
+                    .map(|fp| HirFieldPat {
+                        name: fp.name,
+                        pat: self.lower_pattern(&fp.pat),
+                        span: fp.span,
+                    })
+                    .collect(),
+                *dots,
+                *span,
             ),
             ast::Pattern::TupleStruct(path, ps, span) => HirPattern::TupleStruct(
-                self.lower_path(path), ps.iter().map(|p| self.lower_pattern(p)).collect(), *span,
+                self.lower_path(path),
+                ps.iter().map(|p| self.lower_pattern(p)).collect(),
+                *span,
             ),
             ast::Pattern::Wildcard(span) => HirPattern::Wildcard(*span),
             ast::Pattern::Rest(span) => HirPattern::Rest(*span),
-            ast::Pattern::Ref(p, m, span) => HirPattern::Ref(Box::new(self.lower_pattern(p)), *m, *span),
-            ast::Pattern::RefBinding(p, m, span) => HirPattern::RefBinding(Box::new(self.lower_pattern(p)), *m, *span),
-            ast::Pattern::Or(ps, span) => HirPattern::Or(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span),
+            ast::Pattern::Ref(p, m, span) => {
+                HirPattern::Ref(Box::new(self.lower_pattern(p)), *m, *span)
+            }
+            ast::Pattern::RefBinding(p, m, span) => {
+                HirPattern::RefBinding(Box::new(self.lower_pattern(p)), *m, *span)
+            }
+            ast::Pattern::Or(ps, span) => {
+                HirPattern::Or(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span)
+            }
             ast::Pattern::Range(a, b, inc, span) => HirPattern::Range(
                 a.as_ref().map(|e| Box::new(self.lower_expr(e))),
                 b.as_ref().map(|e| Box::new(self.lower_expr(e))),
-                *inc, *span,
+                *inc,
+                *span,
             ),
             ast::Pattern::Path(p) => HirPattern::Path(self.lower_path(p)),
         }
@@ -560,20 +708,30 @@ impl<'a> LoweringContext<'a> {
 
     fn lower_path(&mut self, path: &ast::Path) -> HirPath {
         HirPath {
-            segments: path.segments.iter().map(|s| HirPathSegment {
-                ident: s.ident,
-                args: s.args.as_ref().map(|a| HirGenericArgs {
-                    args: a.args.iter().map(|arg| match arg {
-                        ast::GenericArg::Type(t) => HirGenericArg::Type(self.lower_ty(t)),
-                        ast::GenericArg::AssocTypeBinding(name, t) => {
-                            HirGenericArg::AssocTypeBinding(*name, self.lower_ty(t))
-                        }
-                        ast::GenericArg::Lifetime(lt) => HirGenericArg::Lifetime(*lt),
-                        ast::GenericArg::Const(e) => HirGenericArg::Const(self.lower_expr(e)),
-                    }).collect(),
-                    span: a.span,
-                }),
-            }).collect(),
+            segments: path
+                .segments
+                .iter()
+                .map(|s| HirPathSegment {
+                    ident: s.ident,
+                    args: s.args.as_ref().map(|a| HirGenericArgs {
+                        args: a
+                            .args
+                            .iter()
+                            .map(|arg| match arg {
+                                ast::GenericArg::Type(t) => HirGenericArg::Type(self.lower_ty(t)),
+                                ast::GenericArg::AssocTypeBinding(name, t) => {
+                                    HirGenericArg::AssocTypeBinding(*name, self.lower_ty(t))
+                                }
+                                ast::GenericArg::Lifetime(lt) => HirGenericArg::Lifetime(*lt),
+                                ast::GenericArg::Const(e) => {
+                                    HirGenericArg::Const(self.lower_expr(e))
+                                }
+                            })
+                            .collect(),
+                        span: a.span,
+                    }),
+                })
+                .collect(),
             span: path.span,
         }
     }
@@ -589,22 +747,33 @@ impl<'a> LoweringContext<'a> {
 
     fn lower_generics(&mut self, g: &ast::Generics) -> HirGenerics {
         HirGenerics {
-            params: g.params.iter().map(|p| match p {
-                ast::GenericParam::Type(name, bounds, default, span) => HirGenericParam::Type(
-                    *name,
-                    bounds.iter().map(|tb| self.lower_trait_bound(tb)).collect(),
-                    default.as_ref().map(|t| self.lower_ty(t)),
-                    *span,
-                ),
-                ast::GenericParam::Lifetime(name, bounds, span) => HirGenericParam::Lifetime(*name, bounds.clone(), *span),
-                ast::GenericParam::Const(name, ty, span) => HirGenericParam::Const(*name, self.lower_ty(ty), *span),
-            }).collect(),
+            params: g
+                .params
+                .iter()
+                .map(|p| match p {
+                    ast::GenericParam::Type(name, bounds, default, span) => HirGenericParam::Type(
+                        *name,
+                        bounds.iter().map(|tb| self.lower_trait_bound(tb)).collect(),
+                        default.as_ref().map(|t| self.lower_ty(t)),
+                        *span,
+                    ),
+                    ast::GenericParam::Lifetime(name, bounds, span) => {
+                        HirGenericParam::Lifetime(*name, bounds.clone(), *span)
+                    }
+                    ast::GenericParam::Const(name, ty, span) => {
+                        HirGenericParam::Const(*name, self.lower_ty(ty), *span)
+                    }
+                })
+                .collect(),
             span: g.span,
         }
     }
 
     fn lower_trait_bound(&mut self, tb: &ast::TraitBound) -> HirTraitBound {
-        HirTraitBound { path: self.lower_path(&tb.path), span: tb.span }
+        HirTraitBound {
+            path: self.lower_path(&tb.path),
+            span: tb.span,
+        }
     }
 
     fn lower_asm_operand(&mut self, op: &ast::AsmOperand) -> HirAsmOperand {
@@ -617,10 +786,16 @@ impl<'a> LoweringContext<'a> {
                 reg: self.lower_asm_reg(reg),
                 expr: expr.as_ref().map(|e| Box::new(self.lower_expr(e))),
             },
-            ast::AsmOperand::InOut { reg, expr, out_expr } => HirAsmOperand::InOut {
+            ast::AsmOperand::InOut {
+                reg,
+                expr,
+                out_expr,
+            } => HirAsmOperand::InOut {
                 reg: self.lower_asm_reg(reg),
                 expr: Box::new(self.lower_expr(expr)),
-                out_expr: out_expr.as_ref().map(|expr| Box::new(self.lower_expr(expr))),
+                out_expr: out_expr
+                    .as_ref()
+                    .map(|expr| Box::new(self.lower_expr(expr))),
             },
             ast::AsmOperand::Const { .. } | ast::AsmOperand::Sym { .. } => {
                 // Simplified: treat as no-op

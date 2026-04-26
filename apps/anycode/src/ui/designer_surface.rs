@@ -68,7 +68,9 @@ impl DesignerSurface {
                 selected
             };
             if let Some(control_name) = designer_toolbox::control_name_for_node(&drag_nodes, node) {
-                ui::drag_set_text(&alloc::format!("anycode-control:{}", control_name));
+                let payload = alloc::format!("anycode-control:{}", control_name);
+                ui::drag_set_text(&payload);
+                ui::drag_set_payload(ui::DND_FORMAT_TEXT, payload.as_bytes(), ui::DND_EFFECT_COPY);
             } else {
                 ui::drag_set_text("");
             }
@@ -104,9 +106,20 @@ impl DesignerSurface {
 
         let drop_path = String::from(file_path);
         let drop_canvas = canvas;
+        canvas.on_drag_enter(move |_| {
+            ui::drag_accept(ui::DND_EFFECT_COPY);
+        });
+
+        let drop_path = String::from(drop_path);
         canvas.on_drop(move |_| {
             let (x, y, _) = drop_canvas.get_mouse();
-            let payload = ui::drag_get_text();
+            let mut payload = ui::drag_get_text();
+            if payload.is_empty() {
+                let (bytes, format) = ui::drag_get_payload();
+                if format == ui::DND_FORMAT_TEXT {
+                    payload = String::from_utf8_lossy(&bytes).into_owned();
+                }
+            }
             crate::queue_designer_drop(&drop_path, x, y, &payload);
         });
 
@@ -240,26 +253,35 @@ fn near_handle(x: i32, y: i32, hx: i32, hy: i32) -> bool {
 }
 
 fn draw_grid(canvas: &ui::Canvas, width: u32, height: u32, color: u32) {
+    let minor = blend_rgb(color, 0x00202020, 50);
+    let major = blend_rgb(color, 0x00202020, 82);
     let mut x = 0;
     while x < width as i32 {
-        let line_color = if x % 64 == 0 {
-            color
-        } else {
-            color & 0x66ffffff
-        };
+        let line_color = if x % 64 == 0 { major } else { minor };
         canvas.draw_line(x, 0, x, height as i32, line_color);
         x += 16;
     }
     let mut y = 0;
     while y < height as i32 {
-        let line_color = if y % 64 == 0 {
-            color
-        } else {
-            color & 0x66ffffff
-        };
+        let line_color = if y % 64 == 0 { major } else { minor };
         canvas.draw_line(0, y, width as i32, y, line_color);
         y += 16;
     }
+}
+
+fn blend_rgb(a: u32, b: u32, percent_a: u32) -> u32 {
+    let percent_a = percent_a.min(100);
+    let percent_b = 100 - percent_a;
+    let ar = (a >> 16) & 0xff;
+    let ag = (a >> 8) & 0xff;
+    let ab = a & 0xff;
+    let br = (b >> 16) & 0xff;
+    let bg = (b >> 8) & 0xff;
+    let bb = b & 0xff;
+    let r = (ar * percent_a + br * percent_b) / 100;
+    let g = (ag * percent_a + bg * percent_b) / 100;
+    let blue = (ab * percent_a + bb * percent_b) / 100;
+    0xff000000 | (r << 16) | (g << 8) | blue
 }
 
 fn draw_control(

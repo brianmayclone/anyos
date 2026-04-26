@@ -259,7 +259,9 @@ fn rewrite_terminator_targets(term: &mut Terminator, forward: &[usize]) {
         Terminator::Goto(target) => {
             target.0 = forward[target.0];
         }
-        Terminator::SwitchInt { targets, default, .. } => {
+        Terminator::SwitchInt {
+            targets, default, ..
+        } => {
             for (_, target) in targets {
                 target.0 = forward[target.0];
             }

@@ -1,7 +1,7 @@
-use crate::prelude::*;
-use crate::intern::Symbol;
+use crate::ast::{BinOp, Literal, Mutability, UnOp, Visibility};
 use crate::diagnostics::Span;
-use crate::ast::{BinOp, UnOp, Mutability, Visibility, Literal};
+use crate::intern::Symbol;
+use crate::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HirId(pub u32);
@@ -227,9 +227,19 @@ pub struct HirInlineAsm {
 }
 
 pub enum HirAsmOperand {
-    In { reg: HirAsmReg, expr: Box<HirExpr> },
-    Out { reg: HirAsmReg, expr: Option<Box<HirExpr>> },
-    InOut { reg: HirAsmReg, expr: Box<HirExpr>, out_expr: Option<Box<HirExpr>> },
+    In {
+        reg: HirAsmReg,
+        expr: Box<HirExpr>,
+    },
+    Out {
+        reg: HirAsmReg,
+        expr: Option<Box<HirExpr>>,
+    },
+    InOut {
+        reg: HirAsmReg,
+        expr: Box<HirExpr>,
+        out_expr: Option<Box<HirExpr>>,
+    },
 }
 
 pub enum HirAsmReg {

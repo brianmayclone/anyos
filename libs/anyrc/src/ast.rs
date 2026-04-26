@@ -1,6 +1,6 @@
-use crate::prelude::*;
-use crate::intern::Symbol;
 use crate::diagnostics::Span;
+use crate::intern::Symbol;
+use crate::prelude::*;
 
 // Top-level
 pub struct Crate {
@@ -247,11 +247,25 @@ pub struct InlineAsm {
 }
 
 pub enum AsmOperand {
-    In { reg: AsmReg, expr: Box<Expr> },
-    Out { reg: AsmReg, expr: Option<Box<Expr>> },
-    InOut { reg: AsmReg, expr: Box<Expr>, out_expr: Option<Box<Expr>> },
-    Const { expr: Box<Expr> },
-    Sym { path: Path },
+    In {
+        reg: AsmReg,
+        expr: Box<Expr>,
+    },
+    Out {
+        reg: AsmReg,
+        expr: Option<Box<Expr>>,
+    },
+    InOut {
+        reg: AsmReg,
+        expr: Box<Expr>,
+        out_expr: Option<Box<Expr>>,
+    },
+    Const {
+        expr: Box<Expr>,
+    },
+    Sym {
+        path: Path,
+    },
 }
 
 pub enum AsmReg {
@@ -286,10 +300,24 @@ pub enum Literal {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Rem,
-    BitAnd, BitOr, BitXor, Shl, Shr,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

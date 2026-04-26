@@ -11,6 +11,8 @@ pub struct LinkOptions {
     pub extra_objects: Vec<Vec<u8>>,
     /// Base address override (from linker script or flag).
     pub base_address: Option<u64>,
+    /// Physical load address override (from linker script LMA).
+    pub physical_base_address: Option<u64>,
     /// Custom entry point symbol name (default: "_start").
     pub entry_symbol: Option<String>,
     /// Startup/exit syscall ABI for the generated `_start` stub.
@@ -23,6 +25,7 @@ impl Default for LinkOptions {
             linker_script: None,
             extra_objects: Vec::new(),
             base_address: None,
+            physical_base_address: None,
             entry_symbol: None,
             target_abi: TargetAbi::AnyOs,
         }
@@ -85,6 +88,14 @@ fn is_data_section(name: &str) -> bool {
         || name.starts_with(".bss.")
 }
 
+fn align_up(value: u64, align: u64) -> u64 {
+    if align <= 1 {
+        value
+    } else {
+        (value + align - 1) & !(align - 1)
+    }
+}
+
 /// Link one or more ELF object files into an executable (extended version).
 pub fn link_ext(
     objects: &[Vec<u8>],
@@ -111,6 +122,8 @@ pub fn link_ext_checked(
     let mut base_addr = opts
         .base_address
         .unwrap_or_else(|| default_base_address(opts.target_abi));
+    let mut physical_base_addr = opts.physical_base_address;
+    let mut code_starts_at_base = false;
     let mut entry_name = opts
         .entry_symbol
         .clone()
@@ -121,6 +134,11 @@ pub fn link_ext_checked(
             if let Some(addr) = parsed.base_address {
                 base_addr = addr;
             }
+            if let Some(addr) = parsed.physical_base_address {
+                physical_base_addr = Some(addr);
+            }
+            code_starts_at_base = parsed.code_starts_at_base
+                && (physical_base_addr.is_some() || base_addr >= 0xffff_8000_0000_0000);
             if let Some(ref entry) = parsed.entry_point {
                 entry_name = entry.clone();
             }
@@ -133,6 +151,8 @@ pub fn link_ext_checked(
         base_addr,
         &entry_name,
         opts.target_abi,
+        physical_base_addr,
+        code_starts_at_base,
     )
 }
 
@@ -153,6 +173,8 @@ pub fn link_checked(
         ANYOS_USER_BASE,
         "_start",
         TargetAbi::AnyOs,
+        None,
+        false,
     )
 }
 
@@ -178,6 +200,8 @@ pub fn link_for_target_checked(
         default_base_address(target_abi),
         "_start",
         target_abi,
+        None,
+        false,
     )
 }
 
@@ -187,6 +211,8 @@ fn link_impl(
     base_addr: u64,
     entry_name: &str,
     target_abi: TargetAbi,
+    physical_base_addr: Option<u64>,
+    code_starts_at_base: bool,
 ) -> Result<Vec<u8>, Vec<LinkError>> {
     let mut merged_code = Vec::new();
     let mut merged_data = Vec::new();
@@ -293,27 +319,43 @@ fn link_impl(
     }
 
     // Resolve relocations
-    // Content starts at offset 128 (64 ehdr + 56 phdr, aligned to 16 = 128)
-    let content_file_offset: u64 = 128;
+    // Content starts after the ELF/program header page. Keep this in sync
+    // with the executable writer so absolute and PC-relative relocations point
+    // at the same virtual addresses the loader will map.
+    let content_file_offset: u64 = elf::EXECUTABLE_CONTENT_OFFSET;
+    let code_vaddr = if code_starts_at_base || physical_base_addr.is_some() {
+        base_addr
+    } else {
+        base_addr + content_file_offset
+    };
 
     // Data section starts after code in the flat layout
     let code_size = merged_code.len() as u64;
-    let bss_start = code_size + merged_data.len() as u64;
+    let data_relative_offset = align_up(
+        content_file_offset + code_size,
+        elf::EXECUTABLE_SEGMENT_ALIGN,
+    ) - content_file_offset;
+    let bss_start = data_relative_offset + merged_data.len() as u64;
+    let kernel_symbol_base = if code_starts_at_base || physical_base_addr.is_some() {
+        code_vaddr
+    } else {
+        0
+    };
     global_symbols
         .entry("_bss_start".to_string())
-        .or_insert(bss_start);
+        .or_insert(kernel_symbol_base + bss_start);
     global_symbols
         .entry("_bss_end".to_string())
-        .or_insert(bss_start);
+        .or_insert(kernel_symbol_base + bss_start);
     global_symbols
         .entry("_boot_stack_bottom".to_string())
-        .or_insert(bss_start);
+        .or_insert(kernel_symbol_base + bss_start);
     global_symbols
         .entry("_boot_stack_top".to_string())
-        .or_insert(bss_start + 0x80000);
+        .or_insert(kernel_symbol_base + bss_start + 0x80000);
     global_symbols
         .entry("_kernel_end".to_string())
-        .or_insert(bss_start + 0x80000);
+        .or_insert(kernel_symbol_base + bss_start + 0x80000);
     let mut errors = Vec::new();
 
     for (offset, sym_name, rela_type, addend) in &pending_relocs {
@@ -350,18 +392,26 @@ fn link_impl(
                 continue;
             };
 
-        // For data symbols, the actual offset in the flat file is code_size + sym_offset
-        let file_sym_offset = if is_data {
-            code_size + sym_offset
-        } else {
+        // For data symbols, the actual offset is the aligned RW segment start
+        // plus the symbol's data-section offset.
+        let sym_addr = if is_data {
+            let sym_pos = data_relative_offset + sym_offset;
+            if sym_offset >= code_vaddr {
+                sym_offset
+            } else {
+                code_vaddr + sym_pos
+            }
+        } else if sym_offset >= code_vaddr {
             sym_offset
+        } else {
+            code_vaddr + sym_offset
         };
 
         match *rela_type {
             2 /* R_X86_64_PC32 */ => {
                 // S + A - P where S = sym_addr, P = reloc_addr
-                let s = base_addr + content_file_offset + file_sym_offset;
-                let p = base_addr + content_file_offset + offset;
+                let s = sym_addr;
+                let p = code_vaddr + offset;
                 let value = (s as i64) + addend - (p as i64);
                 if value < i32::MIN as i64 || value > i32::MAX as i64 {
                     errors.push(LinkError::new(
@@ -386,7 +436,7 @@ fn link_impl(
                 }
             }
             1 /* R_X86_64_64 */ => {
-                let s = base_addr + content_file_offset + file_sym_offset;
+                let s = sym_addr;
                 let value = (s as i64 + addend) as u64;
                 let bytes = value.to_le_bytes();
                 let off = *offset as usize;
@@ -419,18 +469,35 @@ fn link_impl(
     // Entry point
     let entry_offset = *global_symbols.get(entry_name).unwrap_or(&0);
 
-    Ok(elf::write_executable_at(
-        &merged_code,
-        &merged_data,
-        entry_offset,
-        base_addr,
-    ))
+    if code_starts_at_base || physical_base_addr.is_some() {
+        let entry_offset = if entry_offset >= code_vaddr {
+            entry_offset - code_vaddr
+        } else {
+            entry_offset
+        };
+        Ok(elf::write_executable_image_at(
+            &merged_code,
+            &merged_data,
+            entry_offset,
+            code_vaddr,
+            physical_base_addr.unwrap_or(code_vaddr),
+        ))
+    } else {
+        Ok(elf::write_executable_at(
+            &merged_code,
+            &merged_data,
+            entry_offset,
+            base_addr,
+        ))
+    }
 }
 
 /// Minimal linker script info extracted from a `.ld` file.
 struct LinkerScriptInfo {
     base_address: Option<u64>,
+    physical_base_address: Option<u64>,
     entry_point: Option<String>,
+    code_starts_at_base: bool,
 }
 
 /// Parse a linker script for ENTRY() and base address.
@@ -441,11 +508,17 @@ fn parse_linker_script_minimal(path: &str) -> Option<LinkerScriptInfo> {
 
     let mut info = LinkerScriptInfo {
         base_address: None,
+        physical_base_address: None,
         entry_point: None,
+        code_starts_at_base: false,
     };
+    let mut constants: HashMap<String, u64> = HashMap::new();
 
     for line in text.lines() {
-        let line = line.trim();
+        let line = strip_line_comment(line).trim();
+        if line.is_empty() {
+            continue;
+        }
 
         // ENTRY(symbol)
         if line.starts_with("ENTRY(") {
@@ -453,6 +526,16 @@ fn parse_linker_script_minimal(path: &str) -> Option<LinkerScriptInfo> {
                 let sym = line[6..end].trim();
                 info.entry_point = Some(sym.to_string());
             }
+        }
+
+        if let Some((name, value)) = parse_script_assignment(line, &constants) {
+            if name == "KERNEL_VMA" {
+                info.base_address = Some(value);
+            } else if name == "KERNEL_LMA" {
+                info.physical_base_address = Some(value);
+            }
+            constants.insert(name, value);
+            continue;
         }
 
         // . = 0xFFFFFFFF80000000; or . = 0x400000;
@@ -463,15 +546,41 @@ fn parse_linker_script_minimal(path: &str) -> Option<LinkerScriptInfo> {
                 &line[2..]
             };
             let after_eq = after_eq.trim().trim_end_matches(';').trim();
-            if let Some(addr) = parse_hex_or_dec(after_eq) {
+            if let Some(addr) = parse_script_value(after_eq, &constants) {
                 if info.base_address.is_none() {
                     info.base_address = Some(addr);
                 }
+                info.code_starts_at_base = true;
             }
         }
     }
 
     Some(info)
+}
+
+fn strip_line_comment(line: &str) -> &str {
+    line.split("//").next().unwrap_or(line)
+}
+
+fn parse_script_assignment(line: &str, constants: &HashMap<String, u64>) -> Option<(String, u64)> {
+    if line.starts_with('.') || line.starts_with('/') || line.starts_with('*') {
+        return None;
+    }
+    let (name, value) = line.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty() || !name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let value = value.trim().trim_end_matches(';').trim();
+    parse_script_value(value, constants).map(|v| (name.to_string(), v))
+}
+
+fn parse_script_value(s: &str, constants: &HashMap<String, u64>) -> Option<u64> {
+    let s = s.trim();
+    if let Some(value) = parse_hex_or_dec(s) {
+        return Some(value);
+    }
+    constants.get(s).copied()
 }
 
 fn parse_hex_or_dec(s: &str) -> Option<u64> {

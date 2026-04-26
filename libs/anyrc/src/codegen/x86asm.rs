@@ -1,15 +1,36 @@
 use crate::prelude::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reg {
-    RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
-    R8, R9, R10, R11, R12, R13, R14, R15,
+    RAX,
+    RCX,
+    RDX,
+    RBX,
+    RSP,
+    RBP,
+    RSI,
+    RDI,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CondCode {
-    Equal, NotEqual,
-    Less, LessEqual, Greater, GreaterEqual,
-    Below, BelowEqual, Above, AboveEqual,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Below,
+    BelowEqual,
+    Above,
+    AboveEqual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,8 +90,7 @@ impl X86Assembler {
 
     pub fn resolve_fixups(&mut self) {
         for fixup in &self.fixups {
-            let target = self.labels[fixup.label.0]
-                .expect("unresolved label");
+            let target = self.labels[fixup.label.0].expect("unresolved label");
             match fixup.kind {
                 FixupKind::Rel32 => {
                     // rel32 is relative to the end of the instruction (offset + 4)
@@ -84,16 +104,30 @@ impl X86Assembler {
 
     fn reg_code(reg: Reg) -> u8 {
         match reg {
-            Reg::RAX => 0, Reg::RCX => 1, Reg::RDX => 2, Reg::RBX => 3,
-            Reg::RSP => 4, Reg::RBP => 5, Reg::RSI => 6, Reg::RDI => 7,
-            Reg::R8 => 0, Reg::R9 => 1, Reg::R10 => 2, Reg::R11 => 3,
-            Reg::R12 => 4, Reg::R13 => 5, Reg::R14 => 6, Reg::R15 => 7,
+            Reg::RAX => 0,
+            Reg::RCX => 1,
+            Reg::RDX => 2,
+            Reg::RBX => 3,
+            Reg::RSP => 4,
+            Reg::RBP => 5,
+            Reg::RSI => 6,
+            Reg::RDI => 7,
+            Reg::R8 => 0,
+            Reg::R9 => 1,
+            Reg::R10 => 2,
+            Reg::R11 => 3,
+            Reg::R12 => 4,
+            Reg::R13 => 5,
+            Reg::R14 => 6,
+            Reg::R15 => 7,
         }
     }
 
     fn is_extended(reg: Reg) -> bool {
-        matches!(reg, Reg::R8 | Reg::R9 | Reg::R10 | Reg::R11 |
-                       Reg::R12 | Reg::R13 | Reg::R14 | Reg::R15)
+        matches!(
+            reg,
+            Reg::R8 | Reg::R9 | Reg::R10 | Reg::R11 | Reg::R12 | Reg::R13 | Reg::R14 | Reg::R15
+        )
     }
 
     /// Emit REX prefix. `reg` is the ModRM.reg field register, `rm` is the ModRM.rm register.
@@ -101,23 +135,19 @@ impl X86Assembler {
         let byte = 0x40
             | if w { 0x08 } else { 0 }
             | if Self::is_extended(reg) { 0x04 } else { 0 }  // REX.R
-            | if Self::is_extended(rm) { 0x01 } else { 0 };  // REX.B
+            | if Self::is_extended(rm) { 0x01 } else { 0 }; // REX.B
         self.code.push(byte);
     }
 
     /// Emit REX for single-operand instructions (reg field is opcode extension).
     fn rex_single(&mut self, w: bool, rm: Reg) {
-        let byte = 0x40
-            | if w { 0x08 } else { 0 }
-            | if Self::is_extended(rm) { 0x01 } else { 0 };
+        let byte = 0x40 | if w { 0x08 } else { 0 } | if Self::is_extended(rm) { 0x01 } else { 0 };
         self.code.push(byte);
     }
 
     /// Emit REX where `reg` is extended (R bit) but rm is an opcode extension.
     fn rex_r(&mut self, w: bool, reg: Reg) {
-        let byte = 0x40
-            | if w { 0x08 } else { 0 }
-            | if Self::is_extended(reg) { 0x04 } else { 0 };
+        let byte = 0x40 | if w { 0x08 } else { 0 } | if Self::is_extended(reg) { 0x04 } else { 0 };
         self.code.push(byte);
     }
 
@@ -159,7 +189,8 @@ impl X86Assembler {
         // MOV r/m64, r64: REX.W 89 /r (src is reg field, dst is rm field)
         self.rex(true, src, dst);
         self.code.push(0x89);
-        self.code.push(Self::modrm(0b11, Self::reg_code(src), Self::reg_code(dst)));
+        self.code
+            .push(Self::modrm(0b11, Self::reg_code(src), Self::reg_code(dst)));
     }
 
     pub fn mov_ri(&mut self, dst: Reg, imm: i64) {
@@ -246,13 +277,15 @@ impl X86Assembler {
         // MOVSXD r64, r/m32: REX.W 63 /r
         self.rex(true, dst, src);
         self.code.push(0x63);
-        self.code.push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(src)));
+        self.code
+            .push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(src)));
     }
 
     fn alu_rr(&mut self, opcode: u8, dst: Reg, src: Reg) {
         self.rex(true, src, dst);
         self.code.push(opcode);
-        self.code.push(Self::modrm(0b11, Self::reg_code(src), Self::reg_code(dst)));
+        self.code
+            .push(Self::modrm(0b11, Self::reg_code(src), Self::reg_code(dst)));
     }
 
     fn alu_ri(&mut self, ext: u8, dst: Reg, imm: i32) {
@@ -283,14 +316,16 @@ impl X86Assembler {
         self.rex(true, dst, src);
         self.code.push(0x0F);
         self.code.push(0xAF);
-        self.code.push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(src)));
+        self.code
+            .push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(src)));
     }
 
     pub fn imul_ri(&mut self, dst: Reg, imm: i64) {
         // IMUL r64, r/m64, imm32: REX.W 69 /r id
         self.rex(true, dst, dst);
         self.code.push(0x69);
-        self.code.push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(dst)));
+        self.code
+            .push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(dst)));
         self.code.extend_from_slice(&(imm as i32).to_le_bytes());
     }
 
@@ -425,7 +460,8 @@ impl X86Assembler {
         self.rex(true, dst, src);
         self.code.push(0x0F);
         self.code.push(0xB6);
-        self.code.push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(src)));
+        self.code
+            .push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(src)));
     }
 
     pub fn jmp(&mut self, label: Label) {
@@ -433,7 +469,11 @@ impl X86Assembler {
         self.code.push(0xE9);
         let offset = self.code.len();
         self.code.extend_from_slice(&[0; 4]);
-        self.fixups.push(Fixup { offset, label, kind: FixupKind::Rel32 });
+        self.fixups.push(Fixup {
+            offset,
+            label,
+            kind: FixupKind::Rel32,
+        });
     }
 
     pub fn jcc(&mut self, cc: CondCode, label: Label) {
@@ -442,7 +482,11 @@ impl X86Assembler {
         self.code.push(0x80 + Self::cc_byte(cc));
         let offset = self.code.len();
         self.code.extend_from_slice(&[0; 4]);
-        self.fixups.push(Fixup { offset, label, kind: FixupKind::Rel32 });
+        self.fixups.push(Fixup {
+            offset,
+            label,
+            kind: FixupKind::Rel32,
+        });
     }
 
     pub fn call_rel(&mut self, label: Label) {
@@ -450,7 +494,11 @@ impl X86Assembler {
         self.code.push(0xE8);
         let offset = self.code.len();
         self.code.extend_from_slice(&[0; 4]);
-        self.fixups.push(Fixup { offset, label, kind: FixupKind::Rel32 });
+        self.fixups.push(Fixup {
+            offset,
+            label,
+            kind: FixupKind::Rel32,
+        });
     }
 
     pub fn call_extern(&mut self, symbol: &str) {
@@ -507,7 +555,8 @@ impl X86Assembler {
         self.code.push(rex);
         self.code.push(0x8D);
         // ModRM: mod=00, reg=dst, rm=101 (RIP-relative)
-        self.code.push(Self::modrm(0b00, Self::reg_code(dst), 0b101));
+        self.code
+            .push(Self::modrm(0b00, Self::reg_code(dst), 0b101));
         let offset = self.code.len();
         self.code.extend_from_slice(&[0; 4]); // disp32 placeholder
         self.relocations.push(Relocation {

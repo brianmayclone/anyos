@@ -38,6 +38,9 @@ const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 const PF_R: u32 = 4;
 
+pub const EXECUTABLE_SEGMENT_ALIGN: u64 = 0x1000;
+pub const EXECUTABLE_CONTENT_OFFSET: u64 = EXECUTABLE_SEGMENT_ALIGN;
+
 pub struct ObjectFile {
     pub sections: Vec<Section>,
     pub symbols: Vec<ElfSymbol>,
@@ -417,13 +420,14 @@ pub fn write_executable(code: &[u8], data: &[u8], entry_offset: u64) -> Vec<u8> 
 pub fn write_executable_at(code: &[u8], data: &[u8], entry_offset: u64, base_addr: u64) -> Vec<u8> {
     // Layout:
     // ELF header (64 bytes)
-    // Program header (56 bytes)
-    // Code + data
+    // Program headers (56 bytes each)
+    // Code in an RX PT_LOAD
+    // Data in a separate RW PT_LOAD
     let phdr_offset: u64 = 64;
-    let phdr_size: u64 = 56;
-    let content_offset = (phdr_offset + phdr_size + 15) & !15; // align to 16
-    let total_content = code.len() + data.len();
-
+    let phnum: u16 = if data.is_empty() { 1 } else { 2 };
+    let content_offset = EXECUTABLE_CONTENT_OFFSET;
+    let code_file_size = content_offset + code.len() as u64;
+    let data_offset = align_up(code_file_size, EXECUTABLE_SEGMENT_ALIGN);
     let entry = base_addr + content_offset + entry_offset;
 
     let mut buf = Vec::new();
@@ -443,35 +447,136 @@ pub fn write_executable_at(code: &[u8], data: &[u8], entry_offset: u64, base_add
     // e_shoff = 0 (no section headers in exe for simplicity)
     buf[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
     buf[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
-    buf[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+    buf[56..58].copy_from_slice(&phnum.to_le_bytes()); // e_phnum
 
-    // Program header (single PT_LOAD, RWX)
-    let ph_start = phdr_offset as usize;
-    let file_size = content_offset as u64 + total_content as u64;
-    let mem_size = file_size; // no BSS for now
-
-    // p_type
-    buf[ph_start..ph_start + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
-    // p_flags
-    buf[ph_start + 4..ph_start + 8].copy_from_slice(&(PF_R | PF_W | PF_X).to_le_bytes());
-    // p_offset = 0 (load from start of file)
-    buf[ph_start + 8..ph_start + 16].copy_from_slice(&0u64.to_le_bytes());
-    // p_vaddr
-    buf[ph_start + 16..ph_start + 24].copy_from_slice(&base_addr.to_le_bytes());
-    // p_paddr
-    buf[ph_start + 24..ph_start + 32].copy_from_slice(&base_addr.to_le_bytes());
-    // p_filesz
-    buf[ph_start + 32..ph_start + 40].copy_from_slice(&file_size.to_le_bytes());
-    // p_memsz
-    buf[ph_start + 40..ph_start + 48].copy_from_slice(&mem_size.to_le_bytes());
-    // p_align
-    buf[ph_start + 48..ph_start + 56].copy_from_slice(&0x200000u64.to_le_bytes());
+    write_program_header(
+        &mut buf,
+        phdr_offset as usize,
+        PF_R | PF_X,
+        0,
+        base_addr,
+        base_addr,
+        code_file_size,
+        code_file_size,
+    );
+    if !data.is_empty() {
+        write_program_header(
+            &mut buf,
+            phdr_offset as usize + 56,
+            PF_R | PF_W,
+            data_offset,
+            base_addr + data_offset,
+            base_addr + data_offset,
+            data.len() as u64,
+            data.len() as u64,
+        );
+    }
 
     // Content
     buf.extend_from_slice(code);
+    if !data.is_empty() {
+        buf.resize(data_offset as usize, 0);
+    }
     buf.extend_from_slice(data);
 
     buf
+}
+
+/// Write an ELF64 executable whose load image starts at file offset 0x1000.
+///
+/// This is the kernel-style layout expected by the anyOS BIOS image builder:
+/// ELF headers remain metadata, while PT_LOAD segment physical addresses start
+/// at the script-provided LMA (usually 1 MiB) and virtual addresses use VMA.
+pub fn write_executable_image_at(
+    code: &[u8],
+    data: &[u8],
+    entry_offset: u64,
+    code_vaddr: u64,
+    code_paddr: u64,
+) -> Vec<u8> {
+    let phdr_offset: u64 = 64;
+    let phnum: u16 = if data.is_empty() { 1 } else { 2 };
+    let content_offset = EXECUTABLE_CONTENT_OFFSET;
+    let code_file_size = code.len() as u64;
+    let data_offset = align_up(content_offset + code_file_size, EXECUTABLE_SEGMENT_ALIGN);
+    let data_relative_offset = data_offset - content_offset;
+    let entry = code_vaddr + entry_offset;
+
+    let mut buf = Vec::new();
+    buf.resize(content_offset as usize, 0);
+
+    buf[0..4].copy_from_slice(&ELF_MAGIC);
+    buf[4] = ELFCLASS64;
+    buf[5] = ELFDATA2LSB;
+    buf[6] = EV_CURRENT;
+    buf[7] = ELFOSABI_NONE;
+    buf[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+    buf[18..20].copy_from_slice(&EM_X86_64.to_le_bytes());
+    buf[20..24].copy_from_slice(&1u32.to_le_bytes());
+    buf[24..32].copy_from_slice(&entry.to_le_bytes());
+    buf[32..40].copy_from_slice(&phdr_offset.to_le_bytes());
+    buf[52..54].copy_from_slice(&64u16.to_le_bytes());
+    buf[54..56].copy_from_slice(&56u16.to_le_bytes());
+    buf[56..58].copy_from_slice(&phnum.to_le_bytes());
+
+    write_program_header(
+        &mut buf,
+        phdr_offset as usize,
+        PF_R | PF_X,
+        content_offset,
+        code_vaddr,
+        code_paddr,
+        code_file_size,
+        code_file_size,
+    );
+    if !data.is_empty() {
+        write_program_header(
+            &mut buf,
+            phdr_offset as usize + 56,
+            PF_R | PF_W,
+            data_offset,
+            code_vaddr + data_relative_offset,
+            code_paddr + data_relative_offset,
+            data.len() as u64,
+            data.len() as u64,
+        );
+    }
+
+    buf.extend_from_slice(code);
+    if !data.is_empty() {
+        buf.resize(data_offset as usize, 0);
+        buf.extend_from_slice(data);
+    }
+
+    buf
+}
+
+fn write_program_header(
+    buf: &mut [u8],
+    ph_start: usize,
+    flags: u32,
+    offset: u64,
+    vaddr: u64,
+    paddr: u64,
+    filesz: u64,
+    memsz: u64,
+) {
+    buf[ph_start..ph_start + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+    buf[ph_start + 4..ph_start + 8].copy_from_slice(&flags.to_le_bytes());
+    buf[ph_start + 8..ph_start + 16].copy_from_slice(&offset.to_le_bytes());
+    buf[ph_start + 16..ph_start + 24].copy_from_slice(&vaddr.to_le_bytes());
+    buf[ph_start + 24..ph_start + 32].copy_from_slice(&paddr.to_le_bytes());
+    buf[ph_start + 32..ph_start + 40].copy_from_slice(&filesz.to_le_bytes());
+    buf[ph_start + 40..ph_start + 48].copy_from_slice(&memsz.to_le_bytes());
+    buf[ph_start + 48..ph_start + 56].copy_from_slice(&EXECUTABLE_SEGMENT_ALIGN.to_le_bytes());
+}
+
+fn align_up(value: u64, align: u64) -> u64 {
+    if align <= 1 {
+        value
+    } else {
+        (value + align - 1) & !(align - 1)
+    }
 }
 
 /// Parse an ELF64 object file. Returns sections, symbols, and relocations.

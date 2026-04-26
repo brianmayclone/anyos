@@ -110,12 +110,6 @@ fn assemble_kernel_x86_objects(root: &Path) -> KernelAsm {
         objects.push(obj.to_string_lossy().into_owned());
     }
 
-    let vmx_src = out_dir.join("vmx_global_asm.asm");
-    let vmx_obj = out_dir.join("kernel_asm_vmx.o");
-    std::fs::write(&vmx_src, vmx_global_asm()).expect("failed to write vmx global asm");
-    run_nasm(root, &["-w-all", "-f", "elf64", "-o"], &vmx_obj, &vmx_src);
-    objects.push(vmx_obj.to_string_lossy().into_owned());
-
     let trampoline_src = root.join("kernel/asm/x86/ap_trampoline.asm");
     let trampoline_out = out_dir.join("ap_trampoline.bin");
     run_nasm(
@@ -129,84 +123,6 @@ fn assemble_kernel_x86_objects(root: &Path) -> KernelAsm {
         objects,
         ap_trampoline: trampoline_out.to_string_lossy().into_owned(),
     }
-}
-
-fn vmx_global_asm() -> &'static str {
-    r#"
-global vmx_vcpu_run
-vmx_vcpu_run:
-    push rbx
-    push rbp
-    push r12
-    push r13
-    push r14
-    push r15
-    push rdi
-    mov rax, 0x6C14
-    mov rdx, rsp
-    vmwrite rax, rdx
-    mov rax, [rdi + 0x00]
-    mov rbx, [rdi + 0x08]
-    mov rcx, [rdi + 0x10]
-    mov rdx, [rdi + 0x18]
-    mov rbp, [rdi + 0x30]
-    mov r8,  [rdi + 0x38]
-    mov r9,  [rdi + 0x40]
-    mov r10, [rdi + 0x48]
-    mov r11, [rdi + 0x50]
-    mov r12, [rdi + 0x58]
-    mov r13, [rdi + 0x60]
-    mov r14, [rdi + 0x68]
-    mov r15, [rdi + 0x70]
-    test sil, sil
-    mov rsi, [rdi + 0x20]
-    mov rdi, [rdi + 0x28]
-    jnz vmx_vcpu_run_resume
-    vmlaunch
-    jmp vmx_vcpu_run_failed
-vmx_vcpu_run_resume:
-    vmresume
-    jmp vmx_vcpu_run_failed
-
-global vmx_vmexit_stub
-vmx_vmexit_stub:
-    xchg rdi, [rsp]
-    mov [rdi + 0x00], rax
-    mov [rdi + 0x08], rbx
-    mov [rdi + 0x10], rcx
-    mov [rdi + 0x18], rdx
-    mov [rdi + 0x20], rsi
-    pop rax
-    mov [rdi + 0x28], rax
-    mov [rdi + 0x30], rbp
-    mov [rdi + 0x38], r8
-    mov [rdi + 0x40], r9
-    mov [rdi + 0x48], r10
-    mov [rdi + 0x50], r11
-    mov [rdi + 0x58], r12
-    mov [rdi + 0x60], r13
-    mov [rdi + 0x68], r14
-    mov [rdi + 0x70], r15
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rbp
-    pop rbx
-    xor eax, eax
-    ret
-
-vmx_vcpu_run_failed:
-    pop rdi
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rbp
-    pop rbx
-    mov eax, 1
-    ret
-"#
 }
 
 fn run_nasm(root: &Path, prefix: &[&str], output: &Path, source: &Path) {

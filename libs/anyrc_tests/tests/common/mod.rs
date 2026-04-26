@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::{ExitStatus, Command};
+use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
 pub fn run_executable(exe_path: &Path) -> ExitStatus {

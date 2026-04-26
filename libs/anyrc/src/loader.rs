@@ -3,11 +3,11 @@
 //! Resolves `mod foo;` declarations by loading source files from disk.
 //! Supports both `foo.rs` and `foo/mod.rs` layout conventions.
 
-use crate::prelude::*;
 use crate::ast::{Crate, Delimiter, Item, ModDef, TokenTree};
 use crate::intern::Interner;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
+use crate::prelude::*;
 
 /// Loaded module source: (module_path, source_code)
 pub struct ModuleSource {
@@ -88,7 +88,14 @@ pub fn resolve_modules_with_env(
     env_vars: &[(String, String)],
 ) -> Vec<ModuleSource> {
     let mut loaded = Vec::new();
-    resolve_items(&mut krate.items, base_dir, interner, loader, env_vars, &mut loaded);
+    resolve_items(
+        &mut krate.items,
+        base_dir,
+        interner,
+        loader,
+        env_vars,
+        &mut loaded,
+    );
     loaded
 }
 
@@ -133,8 +140,9 @@ fn resolve_includes_in_items(
     let mut i = 0;
     while i < items.len() {
         let include_path = match &items[i] {
-            Item::MacroCall(path, args, _, _) if path.segments.len() == 1
-                && interner.resolve(path.segments[0].ident) == "include" =>
+            Item::MacroCall(path, args, _, _)
+                if path.segments.len() == 1
+                    && interner.resolve(path.segments[0].ident) == "include" =>
             {
                 include_arg_path(args, interner, env_vars)
             }
@@ -155,7 +163,10 @@ fn resolve_includes_in_items(
                     env_vars,
                     loaded,
                 );
-                loaded.push(ModuleSource { path: full_path, source });
+                loaded.push(ModuleSource {
+                    path: full_path,
+                    source,
+                });
                 items.splice(i..=i, sub_crate.items);
                 continue;
             }
@@ -165,7 +176,9 @@ fn resolve_includes_in_items(
             Item::Mod(mod_def) => {
                 if let Some(sub_items) = &mut mod_def.items {
                     let sub_dir = format!("{}/{}", dir, interner.resolve(mod_def.name));
-                    resolve_includes_in_items(sub_items, &sub_dir, interner, loader, env_vars, loaded);
+                    resolve_includes_in_items(
+                        sub_items, &sub_dir, interner, loader, env_vars, loaded,
+                    );
                 }
             }
             Item::Impl(ib) => {
@@ -287,7 +300,9 @@ fn lookup_env_var(key: &str, env_vars: &[(String, String)]) -> Option<String> {
     if len == u32::MAX || len as usize > buf.len() {
         return None;
     }
-    core::str::from_utf8(&buf[..len as usize]).ok().map(String::from)
+    core::str::from_utf8(&buf[..len as usize])
+        .ok()
+        .map(String::from)
 }
 
 fn join_path(dir: &str, path: &str) -> String {
@@ -352,7 +367,14 @@ fn resolve_items(
                 );
 
                 // Recursively resolve sub-modules
-                resolve_items(&mut sub_crate.items, &sub_dir, interner, loader, env_vars, loaded);
+                resolve_items(
+                    &mut sub_crate.items,
+                    &sub_dir,
+                    interner,
+                    loader,
+                    env_vars,
+                    loaded,
+                );
 
                 // Set the module's items
                 mod_def.items = Some(sub_crate.items);
@@ -364,7 +386,9 @@ fn resolve_items(
                 // Inline module `mod foo { ... }` — recurse into its items
                 if let Some(ref mut sub_items) = mod_def.items {
                     let sub_dir = format!("{}/{}", dir, interner.resolve(mod_def.name));
-                    resolve_includes_in_items(sub_items, &sub_dir, interner, loader, env_vars, loaded);
+                    resolve_includes_in_items(
+                        sub_items, &sub_dir, interner, loader, env_vars, loaded,
+                    );
                     resolve_items(sub_items, &sub_dir, interner, loader, env_vars, loaded);
                 }
             }
@@ -506,7 +530,9 @@ pub fn deserialize_metadata(data: &[u8]) -> Option<CrateMetadata> {
     let mut pos = 4;
 
     let read_u16 = |data: &[u8], pos: &mut usize| -> Option<u16> {
-        if *pos + 2 > data.len() { return None; }
+        if *pos + 2 > data.len() {
+            return None;
+        }
         let v = u16::from_le_bytes(data[*pos..*pos + 2].try_into().ok()?);
         *pos += 2;
         Some(v)
@@ -514,8 +540,12 @@ pub fn deserialize_metadata(data: &[u8]) -> Option<CrateMetadata> {
 
     let read_str = |data: &[u8], pos: &mut usize| -> Option<String> {
         let len = read_u16(data, pos)? as usize;
-        if *pos + len > data.len() { return None; }
-        let s = core::str::from_utf8(&data[*pos..*pos + len]).ok()?.to_string();
+        if *pos + len > data.len() {
+            return None;
+        }
+        let s = core::str::from_utf8(&data[*pos..*pos + len])
+            .ok()?
+            .to_string();
         *pos += len;
         Some(s)
     };
@@ -533,7 +563,9 @@ pub fn deserialize_metadata(data: &[u8]) -> Option<CrateMetadata> {
     let mut exports = Vec::new();
     for _ in 0..export_count {
         let exp_name = read_str(data, &mut pos)?;
-        if pos >= data.len() { return None; }
+        if pos >= data.len() {
+            return None;
+        }
         let kind = match data[pos] {
             0 => ExportKind::Function,
             1 => ExportKind::Static,
@@ -542,7 +574,10 @@ pub fn deserialize_metadata(data: &[u8]) -> Option<CrateMetadata> {
             _ => return None,
         };
         pos += 1;
-        exports.push(ExportedSymbol { name: exp_name, kind });
+        exports.push(ExportedSymbol {
+            name: exp_name,
+            kind,
+        });
     }
 
     let interface_source = if pos + 4 <= data.len() {
@@ -551,7 +586,9 @@ pub fn deserialize_metadata(data: &[u8]) -> Option<CrateMetadata> {
         if pos + len > data.len() {
             return None;
         }
-        let s = core::str::from_utf8(&data[pos..pos + len]).ok()?.to_string();
+        let s = core::str::from_utf8(&data[pos..pos + len])
+            .ok()?
+            .to_string();
         pos += len;
         s
     } else {
@@ -607,20 +644,32 @@ fn deserialize_interface(data: &[u8], mut pos: usize) -> Option<CrateInterface> 
     pos += 2;
 
     let read_str16 = |data: &[u8], pos: &mut usize| -> Option<String> {
-        if *pos + 2 > data.len() { return None; }
+        if *pos + 2 > data.len() {
+            return None;
+        }
         let len = u16::from_le_bytes(data[*pos..*pos + 2].try_into().ok()?) as usize;
         *pos += 2;
-        if *pos + len > data.len() { return None; }
-        let s = core::str::from_utf8(&data[*pos..*pos + len]).ok()?.to_string();
+        if *pos + len > data.len() {
+            return None;
+        }
+        let s = core::str::from_utf8(&data[*pos..*pos + len])
+            .ok()?
+            .to_string();
         *pos += len;
         Some(s)
     };
     let read_str32 = |data: &[u8], pos: &mut usize| -> Option<String> {
-        if *pos + 4 > data.len() { return None; }
+        if *pos + 4 > data.len() {
+            return None;
+        }
         let len = u32::from_le_bytes(data[*pos..*pos + 4].try_into().ok()?) as usize;
         *pos += 4;
-        if *pos + len > data.len() { return None; }
-        let s = core::str::from_utf8(&data[*pos..*pos + len]).ok()?.to_string();
+        if *pos + len > data.len() {
+            return None;
+        }
+        let s = core::str::from_utf8(&data[*pos..*pos + len])
+            .ok()?
+            .to_string();
         *pos += len;
         Some(s)
     };
@@ -634,7 +683,11 @@ fn deserialize_interface(data: &[u8], mut pos: usize) -> Option<CrateInterface> 
         pos += 1;
         let name = read_str16(data, &mut pos)?;
         let signature = read_str32(data, &mut pos)?;
-        items.push(InterfaceItem { name, kind, signature });
+        items.push(InterfaceItem {
+            name,
+            kind,
+            signature,
+        });
     }
 
     Some(CrateInterface { items })
@@ -686,9 +739,13 @@ pub fn pack_rlib(obj: &[u8], meta: &CrateMetadata) -> Vec<u8> {
 
 /// Unpack an .rlib file into (object_bytes, metadata).
 pub fn unpack_rlib(data: &[u8]) -> Option<(Vec<u8>, CrateMetadata)> {
-    if data.len() < 4 { return None; }
+    if data.len() < 4 {
+        return None;
+    }
     let obj_size = u32::from_le_bytes(data[0..4].try_into().ok()?) as usize;
-    if 4 + obj_size > data.len() { return None; }
+    if 4 + obj_size > data.len() {
+        return None;
+    }
     let obj = data[4..4 + obj_size].to_vec();
     let meta = deserialize_metadata(&data[4 + obj_size..])?;
     Some((obj, meta))

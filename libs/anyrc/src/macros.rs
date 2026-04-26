@@ -1,9 +1,9 @@
-use crate::prelude::*;
 use crate::ast::*;
 use crate::diagnostics::Span;
 use crate::intern::{Interner, Symbol};
-use crate::lexer::{Token, TokenKind, Keyword};
+use crate::lexer::{Keyword, Token, TokenKind};
 use crate::parser::Parser;
+use crate::prelude::*;
 
 use anyos_std::collections::HashMap;
 
@@ -113,7 +113,9 @@ pub fn expand_macros(krate: &mut Crate, interner: &mut Interner) {
     for _ in 0..64 {
         let mut changed = false;
         expand_items(&mut krate.items, &defs, interner, &mut changed);
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 }
 
@@ -126,7 +128,10 @@ fn collect_macro_defs(krate: &Crate) -> Vec<MacroDef> {
 fn collect_macro_defs_from_items(items: &[Item], defs: &mut Vec<MacroDef>) {
     for item in items {
         match item {
-            Item::MacroDef(md) => defs.push(MacroDef { name: md.name, rules: md.rules.clone() }),
+            Item::MacroDef(md) => defs.push(MacroDef {
+                name: md.name,
+                rules: md.rules.clone(),
+            }),
             Item::Mod(md) => {
                 if let Some(items) = &md.items {
                     collect_macro_defs_from_items(items, defs);
@@ -142,11 +147,19 @@ fn collect_macro_defs_from_items(items: &[Item], defs: &mut Vec<MacroDef>) {
 
 // ── AST walking and expansion ──
 
-fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interner, changed: &mut bool) {
+fn expand_items(
+    items: &mut Vec<Item>,
+    defs: &[MacroDef],
+    interner: &mut Interner,
+    changed: &mut bool,
+) {
     let mut scoped_defs = defs.to_vec();
     scoped_defs.extend(items.iter().filter_map(|item| {
         if let Item::MacroDef(md) = item {
-            Some(MacroDef { name: md.name, rules: md.rules.clone() })
+            Some(MacroDef {
+                name: md.name,
+                rules: md.rules.clone(),
+            })
         } else {
             None
         }
@@ -161,7 +174,9 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
             if let Item::MacroCall(path, args, attrs, span) = item {
                 // Check for built-in item macros
                 let macro_name = if !path.segments.is_empty() {
-                    interner.resolve(path.segments.last().unwrap().ident).to_string()
+                    interner
+                        .resolve(path.segments.last().unwrap().ident)
+                        .to_string()
                 } else {
                     String::new()
                 };
@@ -259,32 +274,30 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
         }
 
         // Recurse into item bodies
-        take_and_modify(&mut items[i], |item| {
-            match item {
-                Item::Fn(ref mut f) => {
-                    if let Some(ref mut body) = f.body {
-                        expand_block(body, &scoped_defs, interner, changed);
-                    }
+        take_and_modify(&mut items[i], |item| match item {
+            Item::Fn(ref mut f) => {
+                if let Some(ref mut body) = f.body {
+                    expand_block(body, &scoped_defs, interner, changed);
                 }
-                Item::Impl(ref mut ib) => expand_items(&mut ib.items, &scoped_defs, interner, changed),
-                Item::Trait(ref mut td) => expand_items(&mut td.items, &scoped_defs, interner, changed),
-                Item::Mod(ref mut md) => {
-                    if let Some(ref mut items) = md.items {
-                        expand_items(items, &scoped_defs, interner, changed);
-                    }
-                }
-                Item::Const(ref mut c) => {
-                    if let Some(ref mut value) = c.value {
-                        expand_expr(value, &scoped_defs, interner, changed);
-                    }
-                }
-                Item::Static(ref mut s) => {
-                    if let Some(ref mut value) = s.value {
-                        expand_expr(value, &scoped_defs, interner, changed);
-                    }
-                }
-                _ => {}
             }
+            Item::Impl(ref mut ib) => expand_items(&mut ib.items, &scoped_defs, interner, changed),
+            Item::Trait(ref mut td) => expand_items(&mut td.items, &scoped_defs, interner, changed),
+            Item::Mod(ref mut md) => {
+                if let Some(ref mut items) = md.items {
+                    expand_items(items, &scoped_defs, interner, changed);
+                }
+            }
+            Item::Const(ref mut c) => {
+                if let Some(ref mut value) = c.value {
+                    expand_expr(value, &scoped_defs, interner, changed);
+                }
+            }
+            Item::Static(ref mut s) => {
+                if let Some(ref mut value) = s.value {
+                    expand_expr(value, &scoped_defs, interner, changed);
+                }
+            }
+            _ => {}
         });
         i += 1;
     }
@@ -299,9 +312,15 @@ fn is_path_named(path: &Path, interner: &Interner, expected: &str) -> bool {
         == expected
 }
 
-fn expand_builtin_cpufeatures_new(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
+fn expand_builtin_cpufeatures_new(
+    args: &[TokenTree],
+    interner: &mut Interner,
+) -> Option<Vec<Item>> {
     let module_name = args.iter().find_map(|tt| match tt {
-        TokenTree::Token(Token { kind: TokenKind::Ident(sym), .. }) => Some(*sym),
+        TokenTree::Token(Token {
+            kind: TokenKind::Ident(sym),
+            ..
+        }) => Some(*sym),
         _ => None,
     })?;
     let module_name = interner.resolve(module_name).to_string();
@@ -354,7 +373,9 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
                 };
                 if let Some((path, args, _span)) = macro_stmt {
                     let macro_name = if !path.segments.is_empty() {
-                        interner.resolve(path.segments.last().unwrap().ident).to_string()
+                        interner
+                            .resolve(path.segments.last().unwrap().ident)
+                            .to_string()
                     } else {
                         String::new()
                     };
@@ -396,7 +417,9 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
         };
         if let Some((path, args, _span)) = macro_stmt {
             let macro_name = if !path.segments.is_empty() {
-                interner.resolve(path.segments.last().unwrap().ident).to_string()
+                interner
+                    .resolve(path.segments.last().unwrap().ident)
+                    .to_string()
             } else {
                 String::new()
             };
@@ -428,7 +451,9 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
             let stmt = core::mem::replace(&mut block.stmts[i], placeholder);
             if let Stmt::Item(Item::MacroCall(path, args, attrs, span)) = stmt {
                 let macro_name = if !path.segments.is_empty() {
-                    interner.resolve(path.segments.last().unwrap().ident).to_string()
+                    interner
+                        .resolve(path.segments.last().unwrap().ident)
+                        .to_string()
                 } else {
                     String::new()
                 };
@@ -492,7 +517,9 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
         if let Expr::MacroCall(path, args, span) = expr {
             // Check for built-in macros first
             let macro_name = if !path.segments.is_empty() {
-                interner.resolve(path.segments.last().unwrap().ident).to_string()
+                interner
+                    .resolve(path.segments.last().unwrap().ident)
+                    .to_string()
             } else {
                 String::new()
             };
@@ -503,22 +530,14 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     // Expand to a call to __anyrc_format intrinsic
                     let fn_path = make_intrinsic_path(interner, "__anyrc_format");
                     let call_args = collect_format_macro_args(args, interner);
-                    *expr = Expr::Call(
-                        Box::new(Expr::Path(fn_path)),
-                        call_args,
-                        *span,
-                    );
+                    *expr = Expr::Call(Box::new(Expr::Path(fn_path)), call_args, *span);
                     *changed = true;
                     return;
                 }
                 "format_args" => {
                     let fn_path = make_intrinsic_path(interner, "__anyrc_format_args");
                     let call_args = collect_format_macro_args(args, interner);
-                    *expr = Expr::Call(
-                        Box::new(Expr::Path(fn_path)),
-                        call_args,
-                        *span,
-                    );
+                    *expr = Expr::Call(Box::new(Expr::Path(fn_path)), call_args, *span);
                     *changed = true;
                     return;
                 }
@@ -531,18 +550,18 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     if let Some(parsed) = parse_vec_macro_expr(args, interner) {
                         let to_vec_sym = interner.intern("to_vec");
                         *expr = match parsed {
-                            Expr::Array(_, _) | Expr::ArrayRepeat(_, _, _) => {
-                                Expr::MethodCall(Box::new(parsed), to_vec_sym, vec![], vec![], *span)
-                            }
+                            Expr::Array(_, _) | Expr::ArrayRepeat(_, _, _) => Expr::MethodCall(
+                                Box::new(parsed),
+                                to_vec_sym,
+                                vec![],
+                                vec![],
+                                *span,
+                            ),
                             _ => parsed,
                         };
                     } else {
                         let fn_path = make_intrinsic_path(interner, "Vec::new");
-                        *expr = Expr::Call(
-                            Box::new(Expr::Path(fn_path)),
-                            vec![],
-                            *span,
-                        );
+                        *expr = Expr::Call(Box::new(Expr::Path(fn_path)), vec![], *span);
                     }
                     *changed = true;
                     return;
@@ -551,11 +570,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     // println!("...", args...) → __anyrc_println("...", args...)
                     let fn_path = make_intrinsic_path(interner, "__anyrc_println");
                     let call_args = collect_format_macro_args(args, interner);
-                    *expr = Expr::Call(
-                        Box::new(Expr::Path(fn_path)),
-                        call_args,
-                        *span,
-                    );
+                    *expr = Expr::Call(Box::new(Expr::Path(fn_path)), call_args, *span);
                     *changed = true;
                     return;
                 }
@@ -576,10 +591,22 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     };
                     let write_fmt_path = Path {
                         segments: vec![
-                            PathSegment { ident: interner.intern("core"), args: None },
-                            PathSegment { ident: interner.intern("fmt"), args: None },
-                            PathSegment { ident: interner.intern("Write"), args: None },
-                            PathSegment { ident: interner.intern("write_fmt"), args: None },
+                            PathSegment {
+                                ident: interner.intern("core"),
+                                args: None,
+                            },
+                            PathSegment {
+                                ident: interner.intern("fmt"),
+                                args: None,
+                            },
+                            PathSegment {
+                                ident: interner.intern("Write"),
+                                args: None,
+                            },
+                            PathSegment {
+                                ident: interner.intern("write_fmt"),
+                                args: None,
+                            },
                         ],
                         span: Span::dummy(),
                     };
@@ -606,7 +633,14 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     return;
                 }
                 "panic" | "unreachable" => {
-                    *expr = Expr::Loop(Block { stmts: Vec::new(), span: *span }, None, *span);
+                    *expr = Expr::Loop(
+                        Block {
+                            stmts: Vec::new(),
+                            span: *span,
+                        },
+                        None,
+                        *span,
+                    );
                     *changed = true;
                     return;
                 }
@@ -735,48 +769,94 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
 
     // Recurse
     match expr {
-        Expr::Binary(_, l, r, _) => { expand_expr(l, defs, interner, changed); expand_expr(r, defs, interner, changed); }
-        Expr::Unary(_, e, _) | Expr::Paren(e, _) | Expr::Deref(e, _) => expand_expr(e, defs, interner, changed),
+        Expr::Binary(_, l, r, _) => {
+            expand_expr(l, defs, interner, changed);
+            expand_expr(r, defs, interner, changed);
+        }
+        Expr::Unary(_, e, _) | Expr::Paren(e, _) | Expr::Deref(e, _) => {
+            expand_expr(e, defs, interner, changed)
+        }
         Expr::Call(callee, args, _) => {
             expand_expr(callee, defs, interner, changed);
-            for a in args { expand_expr(a, defs, interner, changed); }
+            for a in args {
+                expand_expr(a, defs, interner, changed);
+            }
         }
         Expr::MethodCall(recv, _, _, args, _) => {
             expand_expr(recv, defs, interner, changed);
-            for a in args { expand_expr(a, defs, interner, changed); }
+            for a in args {
+                expand_expr(a, defs, interner, changed);
+            }
         }
         Expr::Block(b) | Expr::Unsafe(b, _) => expand_block(b, defs, interner, changed),
         Expr::If(cond, then, else_, _) => {
             expand_expr(cond, defs, interner, changed);
             expand_block(then, defs, interner, changed);
-            if let Some(e) = else_ { expand_expr(e, defs, interner, changed); }
+            if let Some(e) = else_ {
+                expand_expr(e, defs, interner, changed);
+            }
         }
         Expr::Match(scrutinee, arms, _) => {
             expand_expr(scrutinee, defs, interner, changed);
-            for arm in arms { expand_expr(&mut arm.body, defs, interner, changed); }
+            for arm in arms {
+                expand_expr(&mut arm.body, defs, interner, changed);
+            }
         }
         Expr::Loop(b, _, _) => expand_block(b, defs, interner, changed),
-        Expr::While(cond, b, _, _) => { expand_expr(cond, defs, interner, changed); expand_block(b, defs, interner, changed); }
-        Expr::For(_, iter, b, _, _) => { expand_expr(iter, defs, interner, changed); expand_block(b, defs, interner, changed); }
-        Expr::Return(Some(e), _) | Expr::Break(_, Some(e), _) => expand_expr(e, defs, interner, changed),
-        Expr::Assign(l, r, _) | Expr::AssignOp(_, l, r, _) => { expand_expr(l, defs, interner, changed); expand_expr(r, defs, interner, changed); }
-        Expr::Ref(e, _, _) | Expr::RawRef(e, _, _) | Expr::Cast(e, _, _) | Expr::Field(e, _, _) => expand_expr(e, defs, interner, changed),
-        Expr::Index(a, b, _) => { expand_expr(a, defs, interner, changed); expand_expr(b, defs, interner, changed); }
-        Expr::Tuple(es, _) | Expr::Array(es, _) => { for e in es { expand_expr(e, defs, interner, changed); } }
+        Expr::While(cond, b, _, _) => {
+            expand_expr(cond, defs, interner, changed);
+            expand_block(b, defs, interner, changed);
+        }
+        Expr::For(_, iter, b, _, _) => {
+            expand_expr(iter, defs, interner, changed);
+            expand_block(b, defs, interner, changed);
+        }
+        Expr::Return(Some(e), _) | Expr::Break(_, Some(e), _) => {
+            expand_expr(e, defs, interner, changed)
+        }
+        Expr::Assign(l, r, _) | Expr::AssignOp(_, l, r, _) => {
+            expand_expr(l, defs, interner, changed);
+            expand_expr(r, defs, interner, changed);
+        }
+        Expr::Ref(e, _, _) | Expr::RawRef(e, _, _) | Expr::Cast(e, _, _) | Expr::Field(e, _, _) => {
+            expand_expr(e, defs, interner, changed)
+        }
+        Expr::Index(a, b, _) => {
+            expand_expr(a, defs, interner, changed);
+            expand_expr(b, defs, interner, changed);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            for e in es {
+                expand_expr(e, defs, interner, changed);
+            }
+        }
         Expr::Closure(_, _, body, _, _) => expand_expr(body, defs, interner, changed),
         Expr::Struct(_, fields, base, _) => {
-            for f in fields { expand_expr(&mut f.value, defs, interner, changed); }
-            if let Some(b) = base { expand_expr(b, defs, interner, changed); }
+            for f in fields {
+                expand_expr(&mut f.value, defs, interner, changed);
+            }
+            if let Some(b) = base {
+                expand_expr(b, defs, interner, changed);
+            }
         }
-        Expr::ArrayRepeat(a, b, _) => { expand_expr(a, defs, interner, changed); expand_expr(b, defs, interner, changed); }
+        Expr::ArrayRepeat(a, b, _) => {
+            expand_expr(a, defs, interner, changed);
+            expand_expr(b, defs, interner, changed);
+        }
         Expr::Range(a, b, _, _) => {
-            if let Some(a) = a { expand_expr(a, defs, interner, changed); }
-            if let Some(b) = b { expand_expr(b, defs, interner, changed); }
+            if let Some(a) = a {
+                expand_expr(a, defs, interner, changed);
+            }
+            if let Some(b) = b {
+                expand_expr(b, defs, interner, changed);
+            }
         }
         Expr::IfLet(_, scrutinee, then, else_, _) => {
             expand_expr(scrutinee, defs, interner, changed);
             expand_block(then, defs, interner, changed);
-            if let Some(e) = else_ { expand_expr(e, defs, interner, changed); }
+            if let Some(e) = else_ {
+                expand_expr(e, defs, interner, changed);
+            }
         }
         Expr::WhileLet(_, scrutinee, body, _, _) => {
             expand_expr(scrutinee, defs, interner, changed);
@@ -785,10 +865,14 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
         Expr::InlineAsm(asm) => {
             for op in &mut asm.operands {
                 match op {
-                    AsmOperand::In { expr, .. } | AsmOperand::InOut { expr, .. } | AsmOperand::Const { expr } => {
+                    AsmOperand::In { expr, .. }
+                    | AsmOperand::InOut { expr, .. }
+                    | AsmOperand::Const { expr } => {
                         expand_expr(expr, defs, interner, changed);
                     }
-                    AsmOperand::Out { expr: Some(expr), .. } => {
+                    AsmOperand::Out {
+                        expr: Some(expr), ..
+                    } => {
                         expand_expr(expr, defs, interner, changed);
                     }
                     _ => {}
@@ -888,7 +972,10 @@ fn parse_cfg_if_branches(args: &[TokenTree], interner: &Interner) -> Option<Vec<
             idx += 1;
             let cond = parse_cfg_if_condition(args, &mut idx, interner)?;
             let body = parse_cfg_if_body(args, &mut idx)?;
-            branches.push(CfgIfBranch { cond: Some(cond), body });
+            branches.push(CfgIfBranch {
+                cond: Some(cond),
+                body,
+            });
             expect_if = false;
         }
 
@@ -1048,11 +1135,7 @@ fn prepend_attr_to_item(item: &mut Item, attr: Attribute) {
     }
 }
 
-fn prepend_attrs_to_first_item(
-    items: &mut [Item],
-    attrs: Vec<Attribute>,
-    interner: &Interner,
-) {
+fn prepend_attrs_to_first_item(items: &mut [Item], attrs: Vec<Attribute>, interner: &Interner) {
     if attrs.is_empty() {
         return;
     }
@@ -1121,16 +1204,11 @@ fn prepend_attrs_to_first_stmt(
     *first = Stmt::Attributed(other_attrs, Box::new(stmt), span);
 }
 
-fn split_cfg_attrs(
-    attrs: Vec<Attribute>,
-    interner: &Interner,
-) -> (Vec<Attribute>, Vec<Attribute>) {
+fn split_cfg_attrs(attrs: Vec<Attribute>, interner: &Interner) -> (Vec<Attribute>, Vec<Attribute>) {
     let mut cfg_attrs = Vec::new();
     let mut other_attrs = Vec::new();
     for attr in attrs {
-        if attr.path.segments.len() == 1
-            && interner.resolve(attr.path.segments[0].ident) == "cfg"
-        {
+        if attr.path.segments.len() == 1 && interner.resolve(attr.path.segments[0].ident) == "cfg" {
             cfg_attrs.push(attr);
         } else {
             other_attrs.push(attr);
@@ -1168,7 +1246,11 @@ fn clone_cfg_attr(attr: &Attribute) -> Attribute {
 }
 
 fn expand_builtin_define_cast(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
-    let TokenTree::Token(Token { kind: TokenKind::Kw(Keyword::Unsafe), .. }) = args.first()? else {
+    let TokenTree::Token(Token {
+        kind: TokenKind::Kw(Keyword::Unsafe),
+        ..
+    }) = args.first()?
+    else {
         return None;
     };
     let TokenTree::Delimited(Delimiter::Brace, body) = args.get(1)? else {
@@ -1179,10 +1261,16 @@ fn expand_builtin_define_cast(args: &[TokenTree], interner: &mut Interner) -> Op
     let mut name = None;
     for tt in body {
         match tt {
-            TokenTree::Token(Token { kind: TokenKind::Kw(Keyword::Pub), .. }) => {
+            TokenTree::Token(Token {
+                kind: TokenKind::Kw(Keyword::Pub),
+                ..
+            }) => {
                 is_pub = true;
             }
-            TokenTree::Token(Token { kind: TokenKind::Ident(sym), .. }) => {
+            TokenTree::Token(Token {
+                kind: TokenKind::Ident(sym),
+                ..
+            }) => {
                 name = Some(*sym);
                 break;
             }
@@ -1206,7 +1294,13 @@ fn parse_dll_exports_spec(args: &[TokenTree], interner: &Interner) -> Option<Dll
     while i < args.len() {
         let key = token_tree_ident(&args[i], interner)?;
         i += 1;
-        if !matches!(args.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Colon, .. }))) {
+        if !matches!(
+            args.get(i),
+            Some(TokenTree::Token(Token {
+                kind: TokenKind::Colon,
+                ..
+            }))
+        ) {
             return None;
         }
         i += 1;
@@ -1234,7 +1328,13 @@ fn parse_dll_exports_spec(args: &[TokenTree], interner: &Interner) -> Option<Dll
             _ => return None,
         }
 
-        if matches!(args.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Comma, .. }))) {
+        if matches!(
+            args.get(i),
+            Some(TokenTree::Token(Token {
+                kind: TokenKind::Comma,
+                ..
+            }))
+        ) {
             i += 1;
         }
     }
@@ -1247,12 +1347,21 @@ fn parse_dll_exports_spec(args: &[TokenTree], interner: &Interner) -> Option<Dll
     })
 }
 
-fn parse_dll_export_symbols(tokens: &[TokenTree], interner: &Interner) -> Option<Vec<DllExportSymbol>> {
+fn parse_dll_export_symbols(
+    tokens: &[TokenTree],
+    interner: &Interner,
+) -> Option<Vec<DllExportSymbol>> {
     let mut symbols = Vec::new();
     let mut i = 0;
 
     while i < tokens.len() {
-        if matches!(tokens.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Comma, .. }))) {
+        if matches!(
+            tokens.get(i),
+            Some(TokenTree::Token(Token {
+                kind: TokenKind::Comma,
+                ..
+            }))
+        ) {
             i += 1;
             continue;
         }
@@ -1265,19 +1374,33 @@ fn parse_dll_export_symbols(tokens: &[TokenTree], interner: &Interner) -> Option
         };
         i += 1;
 
-        if !matches!(tokens.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Arrow, .. }))) {
+        if !matches!(
+            tokens.get(i),
+            Some(TokenTree::Token(Token {
+                kind: TokenKind::Arrow,
+                ..
+            }))
+        ) {
             return None;
         }
         i += 1;
 
         let ret_start = i;
         while i < tokens.len() {
-            if matches!(tokens.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Comma, .. }))) {
+            if matches!(
+                tokens.get(i),
+                Some(TokenTree::Token(Token {
+                    kind: TokenKind::Comma,
+                    ..
+                }))
+            ) {
                 break;
             }
             i += 1;
         }
-        let ret_ty = token_trees_to_string(&tokens[ret_start..i], interner).trim().to_string();
+        let ret_ty = token_trees_to_string(&tokens[ret_start..i], interner)
+            .trim()
+            .to_string();
         let param_tys = split_top_level_commas(params)
             .into_iter()
             .filter_map(|chunk| {
@@ -1298,7 +1421,13 @@ fn parse_dll_export_symbols(tokens: &[TokenTree], interner: &Interner) -> Option
             ret_ty,
         });
 
-        if matches!(tokens.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Comma, .. }))) {
+        if matches!(
+            tokens.get(i),
+            Some(TokenTree::Token(Token {
+                kind: TokenKind::Comma,
+                ..
+            }))
+        ) {
             i += 1;
         }
     }
@@ -1310,7 +1439,13 @@ fn split_top_level_commas(tokens: &[TokenTree]) -> Vec<&[TokenTree]> {
     let mut parts = Vec::new();
     let mut start = 0;
     for (i, tt) in tokens.iter().enumerate() {
-        if matches!(tt, TokenTree::Token(Token { kind: TokenKind::Comma, .. })) {
+        if matches!(
+            tt,
+            TokenTree::Token(Token {
+                kind: TokenKind::Comma,
+                ..
+            })
+        ) {
             parts.push(&tokens[start..i]);
             start = i + 1;
         }
@@ -1323,7 +1458,13 @@ fn split_top_level_commas(tokens: &[TokenTree]) -> Vec<&[TokenTree]> {
 
 fn strip_named_macro_param<'a>(tokens: &'a [TokenTree]) -> &'a [TokenTree] {
     for (i, tt) in tokens.iter().enumerate() {
-        if matches!(tt, TokenTree::Token(Token { kind: TokenKind::Colon, .. })) {
+        if matches!(
+            tt,
+            TokenTree::Token(Token {
+                kind: TokenKind::Colon,
+                ..
+            })
+        ) {
             return &tokens[i + 1..];
         }
     }
@@ -1331,14 +1472,22 @@ fn strip_named_macro_param<'a>(tokens: &'a [TokenTree]) -> &'a [TokenTree] {
 }
 
 fn token_tree_ident<'a>(tt: &'a TokenTree, interner: &'a Interner) -> Option<&'a str> {
-    let TokenTree::Token(Token { kind: TokenKind::Ident(sym), .. }) = tt else {
+    let TokenTree::Token(Token {
+        kind: TokenKind::Ident(sym),
+        ..
+    }) = tt
+    else {
         return None;
     };
     Some(interner.resolve(*sym))
 }
 
 fn token_tree_string(tt: &TokenTree) -> Option<String> {
-    let TokenTree::Token(Token { kind: TokenKind::StringLit(s), .. }) = tt else {
+    let TokenTree::Token(Token {
+        kind: TokenKind::StringLit(s),
+        ..
+    }) = tt
+    else {
         return None;
     };
     Some(s.clone())
@@ -1434,7 +1583,9 @@ fn render_dll_exports_source(spec: &DllExportsSpec) -> String {
     src.push_str("fn ");
     src.push_str(&missing_init_fn);
     src.push_str("(path: &str, sym: &str) {\n");
-    src.push_str("    anyos_std::println!(\"[dynlink] missing init symbol '{}' in {}\", sym, path);\n");
+    src.push_str(
+        "    anyos_std::println!(\"[dynlink] missing init symbol '{}' in {}\", sym, path);\n",
+    );
     src.push_str("}\n\n");
     src.push_str("fn ");
     src.push_str(&hash_fn);
@@ -1644,7 +1795,9 @@ fn render_dll_exports_source(spec: &DllExportsSpec) -> String {
         src.push_str("(&lib._handle, \"");
         src.push_str(init_call);
         src.push_str("\") {\n");
-        src.push_str("            let init_fn: extern \"C\" fn() = core::mem::transmute_copy(&init_ptr);\n");
+        src.push_str(
+            "            let init_fn: extern \"C\" fn() = core::mem::transmute_copy(&init_ptr);\n",
+        );
         src.push_str("            init_fn();\n");
         src.push_str("        } else {\n");
         src.push_str("            ");
@@ -1822,10 +1975,24 @@ impl<'a> PatternMatcher<'a> {
                                 if let TokenTree::Token(frag_tok) = &pattern[pi + 3] {
                                     if let TokenKind::Ident(frag_sym) = frag_tok.kind {
                                         let frag = self.interner.resolve(frag_sym);
-                                        if matches!(frag, "expr" | "ident" | "meta" | "ty" | "path" | "pat" | "tt" | "literal" | "stmt" | "block" | "vis") {
+                                        if matches!(
+                                            frag,
+                                            "expr"
+                                                | "ident"
+                                                | "meta"
+                                                | "ty"
+                                                | "path"
+                                                | "pat"
+                                                | "tt"
+                                                | "literal"
+                                                | "stmt"
+                                                | "block"
+                                                | "vis"
+                                        ) {
                                             pi += 4;
                                             // Capture based on fragment type
-                                            let captured = self.capture_fragment(frag, &input[ii..]);
+                                            let captured =
+                                                self.capture_fragment(frag, &input[ii..]);
                                             if let Some((tts, consumed)) = captured {
                                                 self.captures.insert(name, Capture::Single(tts));
                                                 ii += consumed;
@@ -1846,10 +2013,18 @@ impl<'a> PatternMatcher<'a> {
             if pi < pattern.len() && is_dollar(&pattern[pi]) {
                 // If next is just an ident without colon, skip for now
                 if pi + 1 < pattern.len() {
-                    if let TokenTree::Token(Token { kind: TokenKind::Ident(_), .. }) = &pattern[pi + 1] {
+                    if let TokenTree::Token(Token {
+                        kind: TokenKind::Ident(_),
+                        ..
+                    }) = &pattern[pi + 1]
+                    {
                         // Check if followed by colon
                         if pi + 2 < pattern.len() {
-                            if let TokenTree::Token(Token { kind: TokenKind::Colon, .. }) = &pattern[pi + 2] {
+                            if let TokenTree::Token(Token {
+                                kind: TokenKind::Colon,
+                                ..
+                            }) = &pattern[pi + 2]
+                            {
                                 // Already handled above, shouldn't reach here
                             }
                         }
@@ -1858,18 +2033,23 @@ impl<'a> PatternMatcher<'a> {
             }
 
             // Regular token matching
-            if ii >= input.len() { return (pattern.len() - pi, 0); }
+            if ii >= input.len() {
+                return (pattern.len() - pi, 0);
+            }
             match (&pattern[pi], &input[ii]) {
                 (TokenTree::Token(pt), TokenTree::Token(it)) => {
                     if !tokens_match(&pt.kind, &it.kind) {
                         return (pattern.len() - pi, input.len() - ii);
                     }
                 }
-                (TokenTree::Delimited(d1, p_inner), TokenTree::Delimited(d2, i_inner)) if d1 == d2 => {
+                (TokenTree::Delimited(d1, p_inner), TokenTree::Delimited(d2, i_inner))
+                    if d1 == d2 =>
+                {
                     let (pr, ir) = PatternMatcher {
                         interner: self.interner,
                         captures: self.captures,
-                    }.match_seq(p_inner, i_inner);
+                    }
+                    .match_seq(p_inner, i_inner);
                     if pr != 0 || ir != 0 {
                         return (pattern.len() - pi, input.len() - ii);
                     }
@@ -1884,11 +2064,11 @@ impl<'a> PatternMatcher<'a> {
     }
 
     fn capture_fragment(&self, frag: &str, input: &[TokenTree]) -> Option<(Vec<TokenTree>, usize)> {
-        if input.is_empty() { return None; }
+        if input.is_empty() {
+            return None;
+        }
         match frag {
-            "tt" => {
-                Some((vec![input[0].clone()], 1))
-            }
+            "tt" => Some((vec![input[0].clone()], 1)),
             "ident" => {
                 if let TokenTree::Token(t) = &input[0] {
                     if matches!(t.kind, TokenKind::Ident(_) | TokenKind::Kw(_)) {
@@ -1899,9 +2079,15 @@ impl<'a> PatternMatcher<'a> {
             }
             "literal" => {
                 if let TokenTree::Token(t) = &input[0] {
-                    if matches!(t.kind, TokenKind::IntLit(..) | TokenKind::FloatLit(_) |
-                                TokenKind::StringLit(_) | TokenKind::CharLit(_) |
-                                TokenKind::Kw(Keyword::True) | TokenKind::Kw(Keyword::False)) {
+                    if matches!(
+                        t.kind,
+                        TokenKind::IntLit(..)
+                            | TokenKind::FloatLit(_)
+                            | TokenKind::StringLit(_)
+                            | TokenKind::CharLit(_)
+                            | TokenKind::Kw(Keyword::True)
+                            | TokenKind::Kw(Keyword::False)
+                    ) {
                         return Some((vec![input[0].clone()], 1));
                     }
                 }
@@ -1915,7 +2101,9 @@ impl<'a> PatternMatcher<'a> {
             }
             "ty" => {
                 if input.len() >= 2 {
-                    if let (TokenTree::Token(first), TokenTree::Token(second)) = (&input[0], &input[1]) {
+                    if let (TokenTree::Token(first), TokenTree::Token(second)) =
+                        (&input[0], &input[1])
+                    {
                         let simple_first = matches!(
                             first.kind,
                             TokenKind::Ident(_) | TokenKind::Kw(Keyword::SelfType)
@@ -1944,7 +2132,10 @@ impl<'a> PatternMatcher<'a> {
                 if let TokenTree::Token(t) = &input[0] {
                     if t.kind == TokenKind::Kw(Keyword::Pub) {
                         let mut end = 1;
-                        if matches!(input.get(1), Some(TokenTree::Delimited(Delimiter::Paren, _))) {
+                        if matches!(
+                            input.get(1),
+                            Some(TokenTree::Delimited(Delimiter::Paren, _))
+                        ) {
                             end = 2;
                         }
                         return Some((input[..end].to_vec(), end));
@@ -1961,46 +2152,67 @@ impl<'a> PatternMatcher<'a> {
         let mut end = 0;
         for (i, tt) in input.iter().enumerate() {
             match tt {
-                TokenTree::Token(t) => {
-                    match t.kind {
-                        TokenKind::Comma | TokenKind::Semi | TokenKind::FatArrow if depth == 0 => break,
-                        TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket if depth == 0 => break,
-                        TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
-                        TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => depth -= 1,
-                        _ => {}
+                TokenTree::Token(t) => match t.kind {
+                    TokenKind::Comma | TokenKind::Semi | TokenKind::FatArrow if depth == 0 => break,
+                    TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket if depth == 0 => {
+                        break
                     }
-                }
+                    TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
+                    TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => depth -= 1,
+                    _ => {}
+                },
                 TokenTree::Delimited(..) => {}
             }
             end = i + 1;
         }
-        if end == 0 { return None; }
+        if end == 0 {
+            return None;
+        }
         Some((input[..end].to_vec(), end))
     }
 }
 
 fn is_dollar(tt: &TokenTree) -> bool {
-    matches!(tt, TokenTree::Token(Token { kind: TokenKind::Dollar, .. }))
+    matches!(
+        tt,
+        TokenTree::Token(Token {
+            kind: TokenKind::Dollar,
+            ..
+        })
+    )
 }
 
 fn parse_rep_suffix(tts: &[TokenTree]) -> (Option<Token>, char, usize) {
     // After $(...), expect optional separator then *, +, or ?
-    if tts.is_empty() { return (None, '*', 0); }
+    if tts.is_empty() {
+        return (None, '*', 0);
+    }
 
     // Check if first token is *, +, or ?
     if let TokenTree::Token(t) = &tts[0] {
-        if t.kind == TokenKind::Star { return (None, '*', 1); }
-        if t.kind == TokenKind::Plus { return (None, '+', 1); }
-        if t.kind == TokenKind::Question { return (None, '?', 1); }
+        if t.kind == TokenKind::Star {
+            return (None, '*', 1);
+        }
+        if t.kind == TokenKind::Plus {
+            return (None, '+', 1);
+        }
+        if t.kind == TokenKind::Question {
+            return (None, '?', 1);
+        }
     }
 
     // Otherwise first is separator, second is *, +, or ?
     if tts.len() >= 2 {
         if let (TokenTree::Token(sep), TokenTree::Token(kleene)) = (&tts[0], &tts[1]) {
-            let k = if kleene.kind == TokenKind::Star { '*' }
-                    else if kleene.kind == TokenKind::Plus { '+' }
-                    else if kleene.kind == TokenKind::Question { '?' }
-                    else { '*' };
+            let k = if kleene.kind == TokenKind::Star {
+                '*'
+            } else if kleene.kind == TokenKind::Plus {
+                '+'
+            } else if kleene.kind == TokenKind::Question {
+                '?'
+            } else {
+                '*'
+            };
             return (Some(sep.clone()), k, 2);
         }
     }
@@ -2020,7 +2232,11 @@ fn tokens_match(a: &TokenKind, b: &TokenKind) -> bool {
 
 // ── Substitution ──
 
-fn substitute(body: &[TokenTree], captures: &HashMap<String, Capture>, interner: &Interner) -> Vec<TokenTree> {
+fn substitute(
+    body: &[TokenTree],
+    captures: &HashMap<String, Capture>,
+    interner: &Interner,
+) -> Vec<TokenTree> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < body.len() {
@@ -2047,17 +2263,19 @@ fn substitute(body: &[TokenTree], captures: &HashMap<String, Capture>, interner:
             // Check for $name substitution
             if let TokenTree::Token(Token { kind, .. }) = &body[i + 1] {
                 if let Some(name) = macro_var_name(kind, interner) {
-                if let Some(cap) = captures.get(&name) {
-                    match cap {
-                        Capture::Single(tts) => out.extend(tts.iter().cloned()),
-                        Capture::Repeated(reps) => {
-                            // In non-repetition context, concat all
-                            for r in reps { out.extend(r.iter().cloned()); }
+                    if let Some(cap) = captures.get(&name) {
+                        match cap {
+                            Capture::Single(tts) => out.extend(tts.iter().cloned()),
+                            Capture::Repeated(reps) => {
+                                // In non-repetition context, concat all
+                                for r in reps {
+                                    out.extend(r.iter().cloned());
+                                }
+                            }
                         }
+                        i += 2;
+                        continue;
                     }
-                    i += 2;
-                    continue;
-                }
                 }
             }
         }
@@ -2075,7 +2293,12 @@ fn substitute(body: &[TokenTree], captures: &HashMap<String, Capture>, interner:
     out
 }
 
-fn substitute_rep(body: &[TokenTree], captures: &HashMap<String, Capture>, interner: &Interner, iter: usize) -> Vec<TokenTree> {
+fn substitute_rep(
+    body: &[TokenTree],
+    captures: &HashMap<String, Capture>,
+    interner: &Interner,
+    iter: usize,
+) -> Vec<TokenTree> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < body.len() {
@@ -2097,18 +2320,18 @@ fn substitute_rep(body: &[TokenTree], captures: &HashMap<String, Capture>, inter
             }
             if let TokenTree::Token(Token { kind, .. }) = &body[i + 1] {
                 if let Some(name) = macro_var_name(kind, interner) {
-                if let Some(cap) = captures.get(&name) {
-                    match cap {
-                        Capture::Single(tts) => out.extend(tts.iter().cloned()),
-                        Capture::Repeated(reps) => {
-                            if iter < reps.len() {
-                                out.extend(reps[iter].iter().cloned());
+                    if let Some(cap) = captures.get(&name) {
+                        match cap {
+                            Capture::Single(tts) => out.extend(tts.iter().cloned()),
+                            Capture::Repeated(reps) => {
+                                if iter < reps.len() {
+                                    out.extend(reps[iter].iter().cloned());
+                                }
                             }
                         }
+                        i += 2;
+                        continue;
                     }
-                    i += 2;
-                    continue;
-                }
                 }
             }
         }
@@ -2124,7 +2347,11 @@ fn substitute_rep(body: &[TokenTree], captures: &HashMap<String, Capture>, inter
     out
 }
 
-fn find_rep_count(rep_body: &[TokenTree], captures: &HashMap<String, Capture>, interner: &Interner) -> usize {
+fn find_rep_count(
+    rep_body: &[TokenTree],
+    captures: &HashMap<String, Capture>,
+    interner: &Interner,
+) -> usize {
     if let Some(count) = repeated_capture_count(rep_body, captures, interner) {
         return count;
     }
@@ -2208,7 +2435,11 @@ fn try_expand_to_expr(def: &MacroDef, args: &[TokenTree], interner: &mut Interne
     None
 }
 
-fn try_expand_to_items(def: &MacroDef, args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
+fn try_expand_to_items(
+    def: &MacroDef,
+    args: &[TokenTree],
+    interner: &mut Interner,
+) -> Option<Vec<Item>> {
     for rule in &def.rules {
         let mut captures = HashMap::new();
         if match_pattern(&rule.pattern, args, interner, &mut captures) {
@@ -2254,10 +2485,16 @@ fn has_unexpanded_dollar_tts(tts: &[TokenTree], interner: &Interner) -> bool {
             }
         }
         match &tts[i] {
-            TokenTree::Token(Token { kind: TokenKind::Dollar, .. }) => {
+            TokenTree::Token(Token {
+                kind: TokenKind::Dollar,
+                ..
+            }) => {
                 if matches!(
                     tts.get(i + 1),
-                    Some(TokenTree::Token(Token { kind: TokenKind::Kw(Keyword::Crate), .. }))
+                    Some(TokenTree::Token(Token {
+                        kind: TokenKind::Kw(Keyword::Crate),
+                        ..
+                    }))
                 ) {
                     i += 2;
                     continue;
@@ -2286,10 +2523,22 @@ fn token_tree_is_macro_rules(tt: &TokenTree, interner: &Interner) -> bool {
 
 fn skip_macro_rules_def(tts: &[TokenTree], start: usize) -> Option<usize> {
     let mut i = start + 1;
-    if matches!(tts.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Not, .. }))) {
+    if matches!(
+        tts.get(i),
+        Some(TokenTree::Token(Token {
+            kind: TokenKind::Not,
+            ..
+        }))
+    ) {
         i += 1;
     }
-    if matches!(tts.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Ident(_), .. }))) {
+    if matches!(
+        tts.get(i),
+        Some(TokenTree::Token(Token {
+            kind: TokenKind::Ident(_),
+            ..
+        }))
+    ) {
         i += 1;
     } else {
         return None;
@@ -2306,7 +2555,9 @@ fn skip_macro_rules_def(tts: &[TokenTree], start: usize) -> Option<usize> {
 fn token_trees_to_string(tts: &[TokenTree], interner: &Interner) -> String {
     let mut out = String::new();
     for tt in tts {
-        if !out.is_empty() { out.push(' '); }
+        if !out.is_empty() {
+            out.push(' ');
+        }
         tt_to_string(tt, interner, &mut out);
     }
     out
@@ -2316,12 +2567,22 @@ fn tt_to_string(tt: &TokenTree, interner: &Interner, out: &mut String) {
     match tt {
         TokenTree::Token(tok) => token_to_string(&tok.kind, interner, out),
         TokenTree::Delimited(delim, inner) => {
-            out.push(match delim { Delimiter::Paren => '(', Delimiter::Bracket => '[', Delimiter::Brace => '{' });
+            out.push(match delim {
+                Delimiter::Paren => '(',
+                Delimiter::Bracket => '[',
+                Delimiter::Brace => '{',
+            });
             for (i, tt) in inner.iter().enumerate() {
-                if i > 0 { out.push(' '); }
+                if i > 0 {
+                    out.push(' ');
+                }
                 tt_to_string(tt, interner, out);
             }
-            out.push(match delim { Delimiter::Paren => ')', Delimiter::Bracket => ']', Delimiter::Brace => '}' });
+            out.push(match delim {
+                Delimiter::Paren => ')',
+                Delimiter::Bracket => ']',
+                Delimiter::Brace => '}',
+            });
         }
     }
 }
@@ -2369,47 +2630,98 @@ fn token_to_string(kind: &TokenKind, interner: &Interner, out: &mut String) {
             push_escaped_string_literal(out, text);
             out.push(']');
         }
-        TokenKind::Lifetime(sym) => { out.push('\''); out.push_str(interner.resolve(*sym)); }
+        TokenKind::Lifetime(sym) => {
+            out.push('\'');
+            out.push_str(interner.resolve(*sym));
+        }
         TokenKind::Kw(kw) => out.push_str(match kw {
-            Keyword::Fn => "fn", Keyword::Let => "let", Keyword::Mut => "mut",
-            Keyword::Pub => "pub", Keyword::Struct => "struct", Keyword::Enum => "enum",
-            Keyword::Impl => "impl", Keyword::Trait => "trait", Keyword::Type => "type",
-            Keyword::Use => "use", Keyword::Mod => "mod", Keyword::Crate => "crate",
-            Keyword::SelfValue => "self", Keyword::SelfType => "Self", Keyword::Super => "super",
-            Keyword::As => "as", Keyword::In => "in", Keyword::For => "for",
-            Keyword::While => "while", Keyword::Loop => "loop", Keyword::If => "if",
-            Keyword::Else => "else", Keyword::Match => "match", Keyword::Return => "return",
-            Keyword::Break => "break", Keyword::Continue => "continue", Keyword::Where => "where",
-            Keyword::Const => "const", Keyword::Static => "static", Keyword::Unsafe => "unsafe",
-            Keyword::Extern => "extern", Keyword::Ref => "ref", Keyword::Move => "move",
-            Keyword::True => "true", Keyword::False => "false", Keyword::Dyn => "dyn",
+            Keyword::Fn => "fn",
+            Keyword::Let => "let",
+            Keyword::Mut => "mut",
+            Keyword::Pub => "pub",
+            Keyword::Struct => "struct",
+            Keyword::Enum => "enum",
+            Keyword::Impl => "impl",
+            Keyword::Trait => "trait",
+            Keyword::Type => "type",
+            Keyword::Use => "use",
+            Keyword::Mod => "mod",
+            Keyword::Crate => "crate",
+            Keyword::SelfValue => "self",
+            Keyword::SelfType => "Self",
+            Keyword::Super => "super",
+            Keyword::As => "as",
+            Keyword::In => "in",
+            Keyword::For => "for",
+            Keyword::While => "while",
+            Keyword::Loop => "loop",
+            Keyword::If => "if",
+            Keyword::Else => "else",
+            Keyword::Match => "match",
+            Keyword::Return => "return",
+            Keyword::Break => "break",
+            Keyword::Continue => "continue",
+            Keyword::Where => "where",
+            Keyword::Const => "const",
+            Keyword::Static => "static",
+            Keyword::Unsafe => "unsafe",
+            Keyword::Extern => "extern",
+            Keyword::Ref => "ref",
+            Keyword::Move => "move",
+            Keyword::True => "true",
+            Keyword::False => "false",
+            Keyword::Dyn => "dyn",
         }),
-        TokenKind::Plus => out.push('+'), TokenKind::Minus => out.push('-'),
-        TokenKind::Star => out.push('*'), TokenKind::Slash => out.push('/'),
-        TokenKind::Percent => out.push('%'), TokenKind::Amp => out.push('&'),
-        TokenKind::Pipe => out.push('|'), TokenKind::Caret => out.push('^'),
-        TokenKind::Tilde => out.push('~'), TokenKind::Not => out.push('!'),
-        TokenKind::Eq => out.push('='), TokenKind::EqEq => out.push_str("=="),
-        TokenKind::Ne => out.push_str("!="), TokenKind::Lt => out.push('<'),
-        TokenKind::Le => out.push_str("<="), TokenKind::Gt => out.push('>'),
-        TokenKind::Ge => out.push_str(">="), TokenKind::AndAnd => out.push_str("&&"),
-        TokenKind::OrOr => out.push_str("||"), TokenKind::Shl => out.push_str("<<"),
+        TokenKind::Plus => out.push('+'),
+        TokenKind::Minus => out.push('-'),
+        TokenKind::Star => out.push('*'),
+        TokenKind::Slash => out.push('/'),
+        TokenKind::Percent => out.push('%'),
+        TokenKind::Amp => out.push('&'),
+        TokenKind::Pipe => out.push('|'),
+        TokenKind::Caret => out.push('^'),
+        TokenKind::Tilde => out.push('~'),
+        TokenKind::Not => out.push('!'),
+        TokenKind::Eq => out.push('='),
+        TokenKind::EqEq => out.push_str("=="),
+        TokenKind::Ne => out.push_str("!="),
+        TokenKind::Lt => out.push('<'),
+        TokenKind::Le => out.push_str("<="),
+        TokenKind::Gt => out.push('>'),
+        TokenKind::Ge => out.push_str(">="),
+        TokenKind::AndAnd => out.push_str("&&"),
+        TokenKind::OrOr => out.push_str("||"),
+        TokenKind::Shl => out.push_str("<<"),
         TokenKind::Shr => out.push_str(">>"),
-        TokenKind::PlusEq => out.push_str("+="), TokenKind::MinusEq => out.push_str("-="),
-        TokenKind::StarEq => out.push_str("*="), TokenKind::SlashEq => out.push_str("/="),
-        TokenKind::PercentEq => out.push_str("%="), TokenKind::AmpEq => out.push_str("&="),
-        TokenKind::PipeEq => out.push_str("|="), TokenKind::CaretEq => out.push_str("^="),
-        TokenKind::ShlEq => out.push_str("<<="), TokenKind::ShrEq => out.push_str(">>="),
-        TokenKind::Arrow => out.push_str("->"), TokenKind::FatArrow => out.push_str("=>"),
-        TokenKind::ColonColon => out.push_str("::"), TokenKind::DotDot => out.push_str(".."),
+        TokenKind::PlusEq => out.push_str("+="),
+        TokenKind::MinusEq => out.push_str("-="),
+        TokenKind::StarEq => out.push_str("*="),
+        TokenKind::SlashEq => out.push_str("/="),
+        TokenKind::PercentEq => out.push_str("%="),
+        TokenKind::AmpEq => out.push_str("&="),
+        TokenKind::PipeEq => out.push_str("|="),
+        TokenKind::CaretEq => out.push_str("^="),
+        TokenKind::ShlEq => out.push_str("<<="),
+        TokenKind::ShrEq => out.push_str(">>="),
+        TokenKind::Arrow => out.push_str("->"),
+        TokenKind::FatArrow => out.push_str("=>"),
+        TokenKind::ColonColon => out.push_str("::"),
+        TokenKind::DotDot => out.push_str(".."),
         TokenKind::DotDotEq => out.push_str("..="),
-        TokenKind::LParen => out.push('('), TokenKind::RParen => out.push(')'),
-        TokenKind::LBrace => out.push('{'), TokenKind::RBrace => out.push('}'),
-        TokenKind::LBracket => out.push('['), TokenKind::RBracket => out.push(']'),
-        TokenKind::Semi => out.push(';'), TokenKind::Colon => out.push(':'),
-        TokenKind::Comma => out.push(','), TokenKind::Dot => out.push('.'),
-        TokenKind::At => out.push('@'), TokenKind::Hash => out.push('#'),
-        TokenKind::Question => out.push('?'), TokenKind::Dollar => out.push('$'),
+        TokenKind::LParen => out.push('('),
+        TokenKind::RParen => out.push(')'),
+        TokenKind::LBrace => out.push('{'),
+        TokenKind::RBrace => out.push('}'),
+        TokenKind::LBracket => out.push('['),
+        TokenKind::RBracket => out.push(']'),
+        TokenKind::Semi => out.push(';'),
+        TokenKind::Colon => out.push(':'),
+        TokenKind::Comma => out.push(','),
+        TokenKind::Dot => out.push('.'),
+        TokenKind::At => out.push('@'),
+        TokenKind::Hash => out.push('#'),
+        TokenKind::Question => out.push('?'),
+        TokenKind::Dollar => out.push('$'),
         TokenKind::Eof => {}
     }
 }

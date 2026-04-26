@@ -788,6 +788,40 @@ pub fn load_designer(file_path: &str) -> Option<DesignerDocument> {
     Some(DesignerDocument::parse(&data))
 }
 
+pub fn try_create_designer_from_rust_ui(file_path: &str) -> Option<String> {
+    if !file_path.ends_with(".rs") {
+        return None;
+    }
+    let data = anyos_std::fs::read_to_string(file_path).ok()?;
+    if !data.contains("ui::") && !data.contains("libanyui_client") {
+        return None;
+    }
+
+    let form_name =
+        parse_rust_form_name(&data).unwrap_or_else(|| rust_form_name_from_path(file_path));
+    let designer_path = sibling_designer_path(file_path, &form_name)?;
+    if crate::util::path::exists(&designer_path) {
+        return None;
+    }
+
+    let mut doc = DesignerDocument {
+        form_name: form_name.clone(),
+        title: form_name,
+        width: 640,
+        height: 420,
+        controls: Vec::new(),
+    };
+    import_rust_controls(&data, &mut doc);
+    if doc.controls.is_empty() {
+        return None;
+    }
+    if save_designer(&designer_path, &doc).is_ok() {
+        Some(designer_path)
+    } else {
+        None
+    }
+}
+
 pub fn save_designer(file_path: &str, doc: &DesignerDocument) -> Result<(), &'static str> {
     let mut normalized = doc.clone();
     normalized.normalize_layout();
@@ -1004,6 +1038,202 @@ fn default_control_base_name(kind_name: &str) -> &'static str {
         "Tooltip" => "tooltip",
         _ => "control",
     }
+}
+
+fn import_rust_controls(data: &str, doc: &mut DesignerDocument) {
+    for line in data.split('\n') {
+        let trimmed = line.trim();
+        if let Some((w, h)) = parse_method_u32_2(trimmed, "root", "set_size") {
+            doc.width = w;
+            doc.height = h;
+            continue;
+        }
+        if let Some((name, kind_name, text)) = parse_rust_control_new(trimmed) {
+            if name == "root" || doc.controls.iter().any(|control| control.name == name) {
+                continue;
+            }
+            let kind = DesignerControlKind::from_str(&kind_name);
+            let (width, height) = default_control_size(&kind);
+            doc.controls.push(DesignerControl {
+                name,
+                kind,
+                text,
+                x: 0,
+                y: 0,
+                width,
+                height,
+                properties: Vec::new(),
+            });
+            continue;
+        }
+        if let Some((control_name, x, y)) = parse_any_method_i32_2(trimmed, "set_position") {
+            if let Some(control) = doc
+                .controls
+                .iter_mut()
+                .find(|control| control.name == control_name)
+            {
+                control.x = x;
+                control.y = y;
+            }
+            continue;
+        }
+        if let Some((control_name, w, h)) = parse_any_method_u32_2(trimmed, "set_size") {
+            if control_name == "root" {
+                doc.width = w;
+                doc.height = h;
+            } else if let Some(control) = doc
+                .controls
+                .iter_mut()
+                .find(|control| control.name == control_name)
+            {
+                control.width = w;
+                control.height = h;
+            }
+        }
+    }
+    doc.normalize_layout();
+}
+
+fn parse_rust_control_new(line: &str) -> Option<(String, String, String)> {
+    let rest = line.strip_prefix("let ")?;
+    let eq = rest.find('=')?;
+    let name = rest[..eq].trim().trim_start_matches("mut ").trim();
+    if !is_valid_control_name(name) {
+        return None;
+    }
+    let rhs = rest[eq + 1..].trim();
+    let ui_pos = rhs.find("ui::")? + 4;
+    let after_ui = &rhs[ui_pos..];
+    let kind_end = after_ui.find("::new")?;
+    let kind = rust_type_to_designer_kind(after_ui[..kind_end].trim());
+    let text = first_quoted_string(rhs).unwrap_or_default();
+    Some((String::from(name), kind, text))
+}
+
+fn parse_any_method_i32_2(line: &str, method: &str) -> Option<(String, i32, i32)> {
+    let dot = line.find(&format!(".{}(", method))?;
+    let name = line[..dot].trim();
+    if !is_valid_control_name(name) {
+        return None;
+    }
+    let args = &line[dot + method.len() + 2..];
+    let end = args.find(')')?;
+    let mut parts = args[..end].split(',');
+    let a = parse_i32(parts.next()?.trim())?;
+    let b = parse_i32(parts.next()?.trim())?;
+    Some((String::from(name), a, b))
+}
+
+fn parse_any_method_u32_2(line: &str, method: &str) -> Option<(String, u32, u32)> {
+    let dot = line.find(&format!(".{}(", method))?;
+    let name = line[..dot].trim();
+    if !is_valid_control_name(name) {
+        return None;
+    }
+    let args = &line[dot + method.len() + 2..];
+    let end = args.find(')')?;
+    let mut parts = args[..end].split(',');
+    let a = parse_u32(parts.next()?.trim())?;
+    let b = parse_u32(parts.next()?.trim())?;
+    Some((String::from(name), a, b))
+}
+
+fn parse_method_u32_2(line: &str, receiver: &str, method: &str) -> Option<(u32, u32)> {
+    let (name, a, b) = parse_any_method_u32_2(line, method)?;
+    if name == receiver {
+        Some((a, b))
+    } else {
+        None
+    }
+}
+
+fn parse_rust_form_name(data: &str) -> Option<String> {
+    for line in data.split('\n') {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
+            .strip_prefix("pub struct ")
+            .or_else(|| trimmed.strip_prefix("struct "))
+        else {
+            continue;
+        };
+        let name_end = rest
+            .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .unwrap_or(rest.len());
+        let name = &rest[..name_end];
+        if is_valid_form_name(name) {
+            return Some(String::from(name));
+        }
+    }
+    None
+}
+
+fn rust_form_name_from_path(file_path: &str) -> String {
+    let basename = match file_path.rfind('/') {
+        Some(pos) => &file_path[pos + 1..],
+        None => file_path,
+    };
+    let stem = basename.strip_suffix(".rs").unwrap_or(basename);
+    let mut out = String::new();
+    let mut upper_next = true;
+    for b in stem.bytes() {
+        match b {
+            b'a'..=b'z' if upper_next => {
+                out.push((b - 32) as char);
+                upper_next = false;
+            }
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => {
+                out.push(b as char);
+                upper_next = false;
+            }
+            _ => upper_next = true,
+        }
+    }
+    if out.is_empty() {
+        String::from("ImportedForm")
+    } else {
+        out
+    }
+}
+
+fn sibling_designer_path(file_path: &str, form_name: &str) -> Option<String> {
+    let dir = match file_path.rfind('/') {
+        Some(pos) => &file_path[..pos],
+        None => return None,
+    };
+    Some(format!("{}/{}.Designer", dir, form_name))
+}
+
+fn rust_type_to_designer_kind(type_name: &str) -> String {
+    match type_name {
+        "Checkbox" => String::from("CheckBox"),
+        "View" => String::from("Panel"),
+        other => String::from(other),
+    }
+}
+
+fn first_quoted_string(value: &str) -> Option<String> {
+    let start = value.find('"')? + 1;
+    let rest = &value[start..];
+    let end = rest.find('"')?;
+    Some(String::from(&rest[..end]))
+}
+
+fn is_valid_control_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    for (i, b) in trimmed.bytes().enumerate() {
+        let valid = match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => true,
+            b'0'..=b'9' => i > 0,
+            _ => false,
+        };
+        if !valid {
+            return false;
+        }
+    }
+    true
 }
 
 fn default_control_size(kind: &DesignerControlKind) -> (u32, u32) {

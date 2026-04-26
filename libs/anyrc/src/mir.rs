@@ -1,7 +1,7 @@
+use crate::diagnostics::Span;
+use crate::intern::Symbol;
 use crate::prelude::*;
 use crate::typeck::TyKind;
-use crate::intern::Symbol;
-use crate::diagnostics::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub usize);
@@ -133,7 +133,10 @@ pub struct Place {
 
 impl Place {
     pub fn local(local: Local) -> Self {
-        Place { local, projections: vec![] }
+        Place {
+            local,
+            projections: vec![],
+        }
     }
 }
 

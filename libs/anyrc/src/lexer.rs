@@ -1,14 +1,45 @@
-use crate::prelude::*;
 use crate::diagnostics::Span;
 use crate::intern::{Interner, Symbol};
+use crate::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
-    Fn, Let, Mut, Pub, Struct, Enum, Impl, Trait, Type,
-    Use, Mod, Crate, SelfValue, SelfType, Super, As, In, For, While,
-    Loop, If, Else, Match, Return, Break, Continue,
-    Where, Const, Static, Unsafe, Extern, Ref, Move,
-    True, False, Dyn,
+    Fn,
+    Let,
+    Mut,
+    Pub,
+    Struct,
+    Enum,
+    Impl,
+    Trait,
+    Type,
+    Use,
+    Mod,
+    Crate,
+    SelfValue,
+    SelfType,
+    Super,
+    As,
+    In,
+    For,
+    While,
+    Loop,
+    If,
+    Else,
+    Match,
+    Return,
+    Break,
+    Continue,
+    Where,
+    Const,
+    Static,
+    Unsafe,
+    Extern,
+    Ref,
+    Move,
+    True,
+    False,
+    Dyn,
 }
 
 fn keyword_from_str(s: &str) -> Option<Keyword> {
@@ -84,17 +115,57 @@ pub enum TokenKind {
     // Keywords
     Kw(Keyword),
     // Operators
-    Plus, Minus, Star, Slash, Percent,
-    Amp, Pipe, Caret, Tilde, Not,
-    Eq, EqEq, Ne, Lt, Le, Gt, Ge,
-    AndAnd, OrOr,
-    Shl, Shr,
-    PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
-    AmpEq, PipeEq, CaretEq, ShlEq, ShrEq,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    Not,
+    Eq,
+    EqEq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    AndAnd,
+    OrOr,
+    Shl,
+    Shr,
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
     // Punctuation
-    Arrow, FatArrow, ColonColon, DotDot, DotDotEq,
-    LParen, RParen, LBrace, RBrace, LBracket, RBracket,
-    Semi, Colon, Comma, Dot, At, Hash, Question, Dollar,
+    Arrow,
+    FatArrow,
+    ColonColon,
+    DotDot,
+    DotDotEq,
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    Semi,
+    Colon,
+    Comma,
+    Dot,
+    At,
+    Hash,
+    Question,
+    Dollar,
     // Special
     Eof,
 }
@@ -121,12 +192,20 @@ impl<'a> Lexer<'a> {
     }
 
     fn peek(&self) -> u8 {
-        if self.pos < self.src.len() { self.src[self.pos] } else { 0 }
+        if self.pos < self.src.len() {
+            self.src[self.pos]
+        } else {
+            0
+        }
     }
 
     fn peek_at(&self, offset: usize) -> u8 {
         let i = self.pos + offset;
-        if i < self.src.len() { self.src[i] } else { 0 }
+        if i < self.src.len() {
+            self.src[i]
+        } else {
+            0
+        }
     }
 
     fn advance(&mut self) -> u8 {
@@ -180,7 +259,9 @@ impl<'a> Lexer<'a> {
         self.pos += 1; // skip opening "
         let mut s = String::new();
         loop {
-            if self.pos >= self.src.len() { break; }
+            if self.pos >= self.src.len() {
+                break;
+            }
             let b = self.advance();
             match b {
                 b'"' => break,
@@ -212,7 +293,10 @@ impl<'a> Lexer<'a> {
                 let mut val = 0u32;
                 loop {
                     let c = self.peek();
-                    if c == b'}' { self.pos += 1; break; }
+                    if c == b'}' {
+                        self.pos += 1;
+                        break;
+                    }
                     val = val * 16 + hex_val(self.advance()) as u32;
                 }
                 char::from_u32(val).unwrap_or('\u{FFFD}')
@@ -231,7 +315,9 @@ impl<'a> Lexer<'a> {
         self.pos += 1; // skip "
         let mut s = String::new();
         'outer: loop {
-            if self.pos >= self.src.len() { break; }
+            if self.pos >= self.src.len() {
+                break;
+            }
             let b = self.advance();
             if b == b'"' {
                 // check for matching hashes
@@ -244,7 +330,9 @@ impl<'a> Lexer<'a> {
                     break 'outer;
                 }
                 s.push('"');
-                for _ in 0..count { s.push('#'); }
+                for _ in 0..count {
+                    s.push('#');
+                }
             } else {
                 s.push(b as char);
             }
@@ -256,7 +344,9 @@ impl<'a> Lexer<'a> {
         self.pos += 1; // skip "
         let mut v = Vec::new();
         loop {
-            if self.pos >= self.src.len() { break; }
+            if self.pos >= self.src.len() {
+                break;
+            }
             let b = self.advance();
             match b {
                 b'"' => break,
@@ -383,14 +473,19 @@ impl<'a> Lexer<'a> {
         let mut val: u128 = 0;
         loop {
             let b = self.peek();
-            if b == b'_' { self.pos += 1; continue; }
+            if b == b'_' {
+                self.pos += 1;
+                continue;
+            }
             let d = match b {
                 b'0'..=b'9' => (b - b'0') as u128,
                 b'a'..=b'f' => (b - b'a' + 10) as u128,
                 b'A'..=b'F' => (b - b'A' + 10) as u128,
                 _ => break,
             };
-            if d >= radix as u128 { break; }
+            if d >= radix as u128 {
+                break;
+            }
             val = val * radix as u128 + d;
             self.pos += 1;
         }
@@ -401,7 +496,9 @@ impl<'a> Lexer<'a> {
     fn eat_decimal_digits(&mut self) {
         while self.pos < self.src.len() {
             match self.peek() {
-                b'0'..=b'9' | b'_' => { self.pos += 1; }
+                b'0'..=b'9' | b'_' => {
+                    self.pos += 1;
+                }
                 _ => break,
             }
         }
@@ -462,7 +559,11 @@ impl<'a> Lexer<'a> {
 
     fn num_text(&self, start: usize) -> String {
         let raw = &self.src[start..self.pos];
-        let s: String = raw.iter().filter(|&&b| b != b'_').map(|&b| b as char).collect();
+        let s: String = raw
+            .iter()
+            .filter(|&&b| b != b'_')
+            .map(|&b| b as char)
+            .collect();
         // strip suffix
         if let Some(idx) = s.rfind(|c: char| !c.is_ascii_alphabetic()) {
             s[..=idx].to_string()
@@ -483,7 +584,10 @@ impl<'a> Lexer<'a> {
         self.skip_whitespace_and_comments();
         let start = self.pos;
         if self.pos >= self.src.len() {
-            return Token { kind: TokenKind::Eof, span: Span::new(start as u32, start as u32) };
+            return Token {
+                kind: TokenKind::Eof,
+                span: Span::new(start as u32, start as u32),
+            };
         }
 
         let b = self.advance();
@@ -579,13 +683,33 @@ impl<'a> Lexer<'a> {
             }
 
             // Operators and punctuation
-            b'+' => if self.peek() == b'=' { self.pos += 1; TokenKind::PlusEq } else { TokenKind::Plus },
+            b'+' => {
+                if self.peek() == b'=' {
+                    self.pos += 1;
+                    TokenKind::PlusEq
+                } else {
+                    TokenKind::Plus
+                }
+            }
             b'-' => match self.peek() {
-                b'=' => { self.pos += 1; TokenKind::MinusEq }
-                b'>' => { self.pos += 1; TokenKind::Arrow }
+                b'=' => {
+                    self.pos += 1;
+                    TokenKind::MinusEq
+                }
+                b'>' => {
+                    self.pos += 1;
+                    TokenKind::Arrow
+                }
                 _ => TokenKind::Minus,
             },
-            b'*' => if self.peek() == b'=' { self.pos += 1; TokenKind::StarEq } else { TokenKind::Star },
+            b'*' => {
+                if self.peek() == b'=' {
+                    self.pos += 1;
+                    TokenKind::StarEq
+                } else {
+                    TokenKind::Star
+                }
+            }
             b'/' => {
                 if self.peek() == b'/' && matches!(self.peek_at(1), b'/' | b'!') {
                     self.lex_line_doc_comment()
@@ -598,50 +722,117 @@ impl<'a> Lexer<'a> {
                     TokenKind::Slash
                 }
             }
-            b'%' => if self.peek() == b'=' { self.pos += 1; TokenKind::PercentEq } else { TokenKind::Percent },
+            b'%' => {
+                if self.peek() == b'=' {
+                    self.pos += 1;
+                    TokenKind::PercentEq
+                } else {
+                    TokenKind::Percent
+                }
+            }
             b'&' => match self.peek() {
-                b'&' => { self.pos += 1; TokenKind::AndAnd }
-                b'=' => { self.pos += 1; TokenKind::AmpEq }
+                b'&' => {
+                    self.pos += 1;
+                    TokenKind::AndAnd
+                }
+                b'=' => {
+                    self.pos += 1;
+                    TokenKind::AmpEq
+                }
                 _ => TokenKind::Amp,
             },
             b'|' => match self.peek() {
-                b'|' => { self.pos += 1; TokenKind::OrOr }
-                b'=' => { self.pos += 1; TokenKind::PipeEq }
+                b'|' => {
+                    self.pos += 1;
+                    TokenKind::OrOr
+                }
+                b'=' => {
+                    self.pos += 1;
+                    TokenKind::PipeEq
+                }
                 _ => TokenKind::Pipe,
             },
-            b'^' => if self.peek() == b'=' { self.pos += 1; TokenKind::CaretEq } else { TokenKind::Caret },
+            b'^' => {
+                if self.peek() == b'=' {
+                    self.pos += 1;
+                    TokenKind::CaretEq
+                } else {
+                    TokenKind::Caret
+                }
+            }
             b'~' => TokenKind::Tilde,
-            b'!' => if self.peek() == b'=' { self.pos += 1; TokenKind::Ne } else { TokenKind::Not },
+            b'!' => {
+                if self.peek() == b'=' {
+                    self.pos += 1;
+                    TokenKind::Ne
+                } else {
+                    TokenKind::Not
+                }
+            }
             b'=' => match self.peek() {
-                b'=' => { self.pos += 1; TokenKind::EqEq }
-                b'>' => { self.pos += 1; TokenKind::FatArrow }
+                b'=' => {
+                    self.pos += 1;
+                    TokenKind::EqEq
+                }
+                b'>' => {
+                    self.pos += 1;
+                    TokenKind::FatArrow
+                }
                 _ => TokenKind::Eq,
             },
             b'<' => match self.peek() {
-                b'=' => { self.pos += 1; TokenKind::Le }
+                b'=' => {
+                    self.pos += 1;
+                    TokenKind::Le
+                }
                 b'<' => {
                     self.pos += 1;
-                    if self.peek() == b'=' { self.pos += 1; TokenKind::ShlEq } else { TokenKind::Shl }
+                    if self.peek() == b'=' {
+                        self.pos += 1;
+                        TokenKind::ShlEq
+                    } else {
+                        TokenKind::Shl
+                    }
                 }
                 _ => TokenKind::Lt,
             },
             b'>' => match self.peek() {
-                b'=' => { self.pos += 1; TokenKind::Ge }
+                b'=' => {
+                    self.pos += 1;
+                    TokenKind::Ge
+                }
                 b'>' => {
                     self.pos += 1;
-                    if self.peek() == b'=' { self.pos += 1; TokenKind::ShrEq } else { TokenKind::Shr }
+                    if self.peek() == b'=' {
+                        self.pos += 1;
+                        TokenKind::ShrEq
+                    } else {
+                        TokenKind::Shr
+                    }
                 }
                 _ => TokenKind::Gt,
             },
             b'.' => {
                 if self.peek() == b'.' {
                     self.pos += 1;
-                    if self.peek() == b'=' { self.pos += 1; TokenKind::DotDotEq } else { TokenKind::DotDot }
+                    if self.peek() == b'=' {
+                        self.pos += 1;
+                        TokenKind::DotDotEq
+                    } else {
+                        TokenKind::DotDot
+                    }
                 } else {
                     TokenKind::Dot
                 }
             }
-            b':' => if self.peek() == b':' { self.pos += 1; TokenKind::ColonColon } else { TokenKind::Colon },
+            b':' => {
+                if self.peek() == b':' {
+                    self.pos += 1;
+                    TokenKind::ColonColon
+                } else {
+                    TokenKind::Colon
+                }
+            }
             b';' => TokenKind::Semi,
             b',' => TokenKind::Comma,
             b'(' => TokenKind::LParen,
@@ -661,7 +852,10 @@ impl<'a> Lexer<'a> {
             }
         };
 
-        Token { kind, span: Span::new(start as u32, self.pos as u32) }
+        Token {
+            kind,
+            span: Span::new(start as u32, self.pos as u32),
+        }
     }
 }
 

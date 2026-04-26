@@ -3,15 +3,15 @@
 //! Supports build scripts (build.rs), feature resolution, incremental
 //! compilation via mtime fingerprinting, and dependency-ordered compilation.
 
-use crate::prelude::*;
-use anyos_std::println;
-use anyos_std::collections::HashMap;
-use crate::resolve::{self, BuildNode};
-use crate::manifest::CrateKind;
 use crate::build_script;
-use crate::workspace;
 use crate::fingerprint;
 use crate::fs;
+use crate::manifest::CrateKind;
+use crate::prelude::*;
+use crate::resolve::{self, BuildNode};
+use crate::workspace;
+use anyos_std::collections::HashMap;
+use anyos_std::println;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryFormat {
@@ -60,13 +60,21 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
     let nodes = resolve::resolve(&root_dir, &config.features);
     if nodes.is_empty() {
         println!("ccargo: error: no packages found");
-        return BuildResult { success: false, bin_path: None, compiled: 0 };
+        return BuildResult {
+            success: false,
+            bin_path: None,
+            compiled: 0,
+        };
     }
 
     let order = resolve::topological_sort(&nodes);
     if order.len() != nodes.len() {
         println!("ccargo: error: dependency graph is not acyclic");
-        return BuildResult { success: false, bin_path: None, compiled: 0 };
+        return BuildResult {
+            success: false,
+            bin_path: None,
+            compiled: 0,
+        };
     }
 
     // Setup output directories
@@ -141,7 +149,11 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
                             selected_bin,
                             bin_name,
                         );
-                        return BuildResult { success: false, bin_path: None, compiled };
+                        return BuildResult {
+                            success: false,
+                            bin_path: None,
+                            compiled,
+                        };
                     }
                 }
             }
@@ -208,16 +220,28 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         let mut fingerprint_features = resolved_features.clone();
         if !is_lib {
             fingerprint_features.push(format!("binary-format={:?}", final_format));
+            fingerprint_features.push(String::from("binary-layout=2"));
         }
         let opt_hash = fingerprint::hash_options(
-            if config.release { node.manifest.opt_level_release } else { node.manifest.opt_level_dev },
+            if config.release {
+                node.manifest.opt_level_release
+            } else {
+                node.manifest.opt_level_dev
+            },
             &crate_cfg_flags,
             &fingerprint_features,
             &crate_env_vars,
             config.release,
         );
 
-        if fingerprint::is_fresh(&fp_dir, &norm_name, &node.src_file, &output_path, &src_dir, opt_hash) {
+        if fingerprint::is_fresh(
+            &fp_dir,
+            &norm_name,
+            &node.src_file,
+            &output_path,
+            &src_dir,
+            opt_hash,
+        ) {
             if config.verbose {
                 println!("       Fresh {} v{}", node.name, node.manifest.version);
             }
@@ -233,7 +257,11 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
             Some(s) => s,
             None => {
                 println!("error[E0001]: cannot read `{}`", node.src_file);
-                return BuildResult { success: false, bin_path: None, compiled };
+                return BuildResult {
+                    success: false,
+                    bin_path: None,
+                    compiled,
+                };
             }
         };
 
@@ -267,12 +295,19 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
                     Some(s) => s,
                     None => {
                         println!("error[E0001]: cannot read `{}`", implicit_lib_src);
-                        return BuildResult { success: false, bin_path: None, compiled };
+                        return BuildResult {
+                            success: false,
+                            bin_path: None,
+                            compiled,
+                        };
                     }
                 };
                 let implicit_lib_src_dir = format!("{}/src", node.manifest_dir);
                 if config.verbose {
-                    println!("   Compiling {} v{} (lib)", node.name, node.manifest.version);
+                    println!(
+                        "   Compiling {} v{} (lib)",
+                        node.name, node.manifest.version
+                    );
                 }
                 let implicit_lib_options = anyrc::driver::CompileOptions {
                     input: implicit_lib_src.clone(),
@@ -312,7 +347,11 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
                         for diag in diags {
                             println!("{}", diag.render(&source_map));
                         }
-                        return BuildResult { success: false, bin_path: None, compiled };
+                        return BuildResult {
+                            success: false,
+                            bin_path: None,
+                            compiled,
+                        };
                     }
                 }
             }
@@ -354,8 +393,15 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
                     match convert_binary_format(&bytes, final_format) {
                         Ok(converted) => bytes = converted,
                         Err(err) => {
-                            println!("error: could not convert `{}` to {:?}: {}", node.name, final_format, err);
-                            return BuildResult { success: false, bin_path: None, compiled };
+                            println!(
+                                "error: could not convert `{}` to {:?}: {}",
+                                node.name, final_format, err
+                            );
+                            return BuildResult {
+                                success: false,
+                                bin_path: None,
+                                compiled,
+                            };
                         }
                     }
                 }
@@ -366,31 +412,46 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
                 compiled += 1;
 
                 // Write fingerprint for successful compilation
-                fingerprint::write_fingerprint(&fp_dir, &norm_name, &node.src_file, &output_path, opt_hash);
+                fingerprint::write_fingerprint(
+                    &fp_dir,
+                    &norm_name,
+                    &node.src_file,
+                    &output_path,
+                    opt_hash,
+                );
             }
             Err(errors) => {
-                let source_map = anyrc::diagnostics::SourceMap::new(
-                    node.src_file.clone(),
-                    source,
-                );
+                let source_map = anyrc::diagnostics::SourceMap::new(node.src_file.clone(), source);
                 println!("error: could not compile `{}`", node.name);
                 for err in &errors {
                     println!("{}", err.render(&source_map));
                 }
-                return BuildResult { success: false, bin_path: None, compiled };
+                return BuildResult {
+                    success: false,
+                    bin_path: None,
+                    compiled,
+                };
             }
         }
     }
 
     // Summary
     let profile_name = if config.release { "release" } else { "dev" };
-    let opt_label = if config.release { "optimized" } else { "unoptimized" };
-    if skipped > 0 {
-        println!("    Finished `{}` profile [{}] target(s) — {} compiled, {} fresh",
-            profile_name, opt_label, compiled, skipped);
+    let opt_label = if config.release {
+        "optimized"
     } else {
-        println!("    Finished `{}` profile [{}] target(s) in {} crate(s)",
-            profile_name, opt_label, compiled);
+        "unoptimized"
+    };
+    if skipped > 0 {
+        println!(
+            "    Finished `{}` profile [{}] target(s) — {} compiled, {} fresh",
+            profile_name, opt_label, compiled, skipped
+        );
+    } else {
+        println!(
+            "    Finished `{}` profile [{}] target(s) in {} crate(s)",
+            profile_name, opt_label, compiled
+        );
     }
 
     BuildResult {

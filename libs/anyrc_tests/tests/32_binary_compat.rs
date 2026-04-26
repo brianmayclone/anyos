@@ -138,7 +138,10 @@ fn build_ccargo_anyos_binary(crate_path: &str, extra_args: &[&str]) -> PathBuf {
     let root = repo_root();
     let ccargo = host_ccargo(&root);
 
-    println!("ccargo build {crate_path} --target x86_64-anyos {}...", extra_args.join(" "));
+    println!(
+        "ccargo build {crate_path} --target x86_64-anyos {}...",
+        extra_args.join(" ")
+    );
     let mut args = vec!["build", crate_path, "--target", "x86_64-anyos"];
     args.extend_from_slice(extra_args);
     let output = Command::new(ccargo)
@@ -165,7 +168,10 @@ fn assert_ccargo_default_anyos_binary_is_flat(crate_path: &str, binary_name: &st
     let bin = std::fs::read(&bin_path)
         .unwrap_or_else(|err| panic!("failed to read {}: {}", bin_path.display(), err));
     assert_ne!(&bin[0..4], &[0x7f, b'E', b'L', b'F']);
-    assert_eq!(bin[0], 0xe9, "flat binary should start with entry trampoline");
+    assert_eq!(
+        bin[0], 0xe9,
+        "flat binary should start with entry trampoline"
+    );
     println!("{crate_path} default flat binary ... ok");
 }
 
@@ -176,12 +182,22 @@ fn assert_ccargo_explicit_anyos_elf(crate_path: &str, binary_name: &str) {
     let exe = std::fs::read(&exe_path)
         .unwrap_or_else(|err| panic!("failed to read {}: {}", exe_path.display(), err));
     assert_anyos_loader_contract(&exe);
+    let loads = anyos::program_headers(&exe, &anyos::parse_elf64_header(&exe).unwrap())
+        .unwrap()
+        .into_iter()
+        .filter(|ph| ph.ty == PT_LOAD)
+        .collect::<Vec<_>>();
     assert!(
-        anyos::program_headers(&exe, &anyos::parse_elf64_header(&exe).unwrap())
-            .unwrap()
+        loads
             .iter()
-            .any(|ph| ph.ty == PT_LOAD && (ph.flags & (PF_R | PF_W | PF_X)) == (PF_R | PF_W | PF_X)),
-        "ccargo binary should currently be emitted as a single RWX PT_LOAD segment"
+            .any(|ph| (ph.flags & (PF_R | PF_X)) == (PF_R | PF_X) && (ph.flags & PF_W) == 0),
+        "ccargo binary should contain an RX load segment"
+    );
+    assert!(
+        loads
+            .iter()
+            .all(|ph| (ph.flags & (PF_W | PF_X)) != (PF_W | PF_X)),
+        "ccargo binary should not emit RWX load segments"
     );
     assert_eq!(target_dir, exe_path.parent().unwrap());
     println!("{crate_path} explicit ELF compatibility ... ok");

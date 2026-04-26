@@ -1,8 +1,8 @@
-use crate::prelude::*;
+use crate::diagnostics::{Diagnostic, Level, Span};
 use crate::hir::*;
 use crate::intern::{Interner, Symbol};
 use crate::lang_items;
-use crate::diagnostics::{Span, Diagnostic, Level};
+use crate::prelude::*;
 use anyos_std::collections::HashMap;
 
 /// Result of name resolution
@@ -80,7 +80,10 @@ pub struct Resolver<'a> {
 impl<'a> Resolver<'a> {
     pub fn new(interner: &'a mut Interner) -> Self {
         let mut this = Self {
-            scopes: vec![Scope { parent: None, bindings: HashMap::new() }],
+            scopes: vec![Scope {
+                parent: None,
+                bindings: HashMap::new(),
+            }],
             current_scope: 0,
             resolutions: HashMap::new(),
             errors: Vec::new(),
@@ -117,14 +120,18 @@ impl<'a> Resolver<'a> {
     }
 
     fn define_intrinsic_type(&mut self, local_name: &str, full_path: &str) {
-        let name = self.find_symbol(local_name).unwrap_or_else(|| self.interner.intern(local_name));
+        let name = self
+            .find_symbol(local_name)
+            .unwrap_or_else(|| self.interner.intern(local_name));
         let def_id = self.alloc_synthetic_def_id();
         self.intrinsic_fns.insert(def_id, full_path.to_string());
         self.define(name, Namespace::Type, def_id);
     }
 
     fn define_intrinsic_value(&mut self, local_name: &str, full_path: &str) {
-        let name = self.find_symbol(local_name).unwrap_or_else(|| self.interner.intern(local_name));
+        let name = self
+            .find_symbol(local_name)
+            .unwrap_or_else(|| self.interner.intern(local_name));
         let def_id = self.alloc_synthetic_def_id();
         self.intrinsic_fns.insert(def_id, full_path.to_string());
         self.define(name, Namespace::Value, def_id);
@@ -203,7 +210,8 @@ impl<'a> Resolver<'a> {
             }
 
             if self.intrinsic_fns.contains_key(&type_def_id) {
-                let type_path = self.intrinsic_fns
+                let type_path = self
+                    .intrinsic_fns
                     .get(&type_def_id)
                     .cloned()
                     .unwrap_or_else(|| self.interner.resolve(type_name).to_string());
@@ -219,9 +227,14 @@ impl<'a> Resolver<'a> {
         }
 
         let type_name_str = self.interner.resolve(type_name).to_string();
-        if assoc_name == self.find_symbol("default").unwrap_or_else(|| self.interner.intern("default")) {
+        if assoc_name
+            == self
+                .find_symbol("default")
+                .unwrap_or_else(|| self.interner.intern("default"))
+        {
             let def_id = self.alloc_synthetic_def_id();
-            self.intrinsic_fns.insert(def_id, "Default::default".to_string());
+            self.intrinsic_fns
+                .insert(def_id, "Default::default".to_string());
             if hir_id != HirId(u32::MAX) {
                 self.resolutions.insert(hir_id, def_id);
             }
@@ -231,22 +244,63 @@ impl<'a> Resolver<'a> {
             let assoc_str = self.interner.resolve(assoc_name);
             let is_assoc_const = matches!(
                 (type_name_str.as_str(), assoc_str),
-                ("u8", "MAX") | ("u16", "MAX") | ("u32", "MAX") | ("u64", "MAX") | ("u128", "MAX") | ("usize", "MAX")
-                | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
-                | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
-                | ("u8", "MIN") | ("u16", "MIN") | ("u32", "MIN") | ("u64", "MIN") | ("u128", "MIN") | ("usize", "MIN")
-                | ("f32", "MAX") | ("f32", "MIN") | ("f32", "MIN_POSITIVE")
-                | ("f32", "INFINITY") | ("f32", "NEG_INFINITY") | ("f32", "NAN") | ("f32", "EPSILON")
-                | ("f64", "MAX") | ("f64", "MIN") | ("f64", "MIN_POSITIVE")
-                | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN") | ("f64", "EPSILON")
+                ("u8", "MAX")
+                    | ("u16", "MAX")
+                    | ("u32", "MAX")
+                    | ("u64", "MAX")
+                    | ("u128", "MAX")
+                    | ("usize", "MAX")
+                    | ("i8", "MAX")
+                    | ("i16", "MAX")
+                    | ("i32", "MAX")
+                    | ("i64", "MAX")
+                    | ("i128", "MAX")
+                    | ("isize", "MAX")
+                    | ("i8", "MIN")
+                    | ("i16", "MIN")
+                    | ("i32", "MIN")
+                    | ("i64", "MIN")
+                    | ("i128", "MIN")
+                    | ("isize", "MIN")
+                    | ("u8", "MIN")
+                    | ("u16", "MIN")
+                    | ("u32", "MIN")
+                    | ("u64", "MIN")
+                    | ("u128", "MIN")
+                    | ("usize", "MIN")
+                    | ("f32", "MAX")
+                    | ("f32", "MIN")
+                    | ("f32", "MIN_POSITIVE")
+                    | ("f32", "INFINITY")
+                    | ("f32", "NEG_INFINITY")
+                    | ("f32", "NAN")
+                    | ("f32", "EPSILON")
+                    | ("f64", "MAX")
+                    | ("f64", "MIN")
+                    | ("f64", "MIN_POSITIVE")
+                    | ("f64", "INFINITY")
+                    | ("f64", "NEG_INFINITY")
+                    | ("f64", "NAN")
+                    | ("f64", "EPSILON")
             );
             let is_assoc_fn = matches!(
                 assoc_str,
-                "from" | "try_from" | "from_le" | "from_be" | "to_le" | "to_be"
-                    | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_bits" | "from_str_radix"
-                    | "min" | "max" | "to_string"
-            )
-                || (type_name_str == "char" && matches!(assoc_str, "from_u32" | "is_whitespace"));
+                "from"
+                    | "try_from"
+                    | "from_le"
+                    | "from_be"
+                    | "to_le"
+                    | "to_be"
+                    | "from_le_bytes"
+                    | "from_be_bytes"
+                    | "from_ne_bytes"
+                    | "from_bits"
+                    | "from_str_radix"
+                    | "min"
+                    | "max"
+                    | "to_string"
+            ) || (type_name_str == "char"
+                && matches!(assoc_str, "from_u32" | "is_whitespace"));
             if is_assoc_const || is_assoc_fn {
                 let full_path = format!("{}::{}", type_name_str, assoc_str);
                 let def_id = self.alloc_synthetic_def_id();
@@ -277,7 +331,11 @@ impl<'a> Resolver<'a> {
         }
 
         if self.intrinsic_fns.contains_key(&type_def_id) {
-            let type_path = self.intrinsic_fns.get(&type_def_id).cloned().unwrap_or_default();
+            let type_path = self
+                .intrinsic_fns
+                .get(&type_def_id)
+                .cloned()
+                .unwrap_or_default();
             let assoc_str = self.interner.resolve(assoc_name);
             let full_path = format!("{}::{}", type_path, assoc_str);
             let def_id = self.alloc_synthetic_def_id();
@@ -426,7 +484,8 @@ impl<'a> Resolver<'a> {
                     self.intrinsic_fns.insert(def_id, full_path.clone());
                     self.define(local_name, Namespace::Value, def_id);
                     self.define(local_name, Namespace::Type, def_id);
-                    self.extern_path_aliases.insert((self.current_scope, local_name), full_path);
+                    self.extern_path_aliases
+                        .insert((self.current_scope, local_name), full_path);
                     return;
                 }
                 if let Some(full_path) = self.resolve_extern_alias_use_path(&full_path) {
@@ -441,14 +500,19 @@ impl<'a> Resolver<'a> {
                     self.intrinsic_fns.insert(def_id, full_path.clone());
                     self.define(local_name, Namespace::Value, def_id);
                     self.define(local_name, Namespace::Type, def_id);
-                    self.extern_path_aliases.insert((self.current_scope, local_name), full_path);
+                    self.extern_path_aliases
+                        .insert((self.current_scope, local_name), full_path);
                     return;
                 }
                 // use a::b::c; or use a::b::c as d;
                 if let Some((def_id, ns)) = self.resolve_use_path(&full_path, use_tree.span) {
                     self.define(local_name, ns, def_id);
                     // Also define in the other namespace for cross-ns usage
-                    let other_ns = if ns == Namespace::Value { Namespace::Type } else { Namespace::Value };
+                    let other_ns = if ns == Namespace::Value {
+                        Namespace::Type
+                    } else {
+                        Namespace::Value
+                    };
                     // Try other ns too - don't error if not found
                     if let Some((def_id2, _)) = self.resolve_use_path_ns(&full_path, other_ns) {
                         self.define(local_name, other_ns, def_id2);
@@ -495,16 +559,21 @@ impl<'a> Resolver<'a> {
                 }
                 // use foo::*; - import all public items from module
                 // Resolve the path to find a module
-                if let Some(mod_def_id) = self.resolve_use_path_to_module(&use_tree.path, use_tree.span) {
+                if let Some(mod_def_id) =
+                    self.resolve_use_path_to_module(&use_tree.path, use_tree.span)
+                {
                     if let Some(&scope_idx) = self.module_scopes.get(&mod_def_id) {
                         // Copy all bindings from that scope into current scope
-                        let bindings: Vec<_> = self.scopes[scope_idx].bindings.iter()
+                        let bindings: Vec<_> = self.scopes[scope_idx]
+                            .bindings
+                            .iter()
                             .map(|(&k, &v)| (k, v))
                             .collect();
                         for ((name, ns), def_id) in bindings {
                             self.define(name, ns, def_id);
                         }
-                        let aliases: Vec<_> = self.extern_path_aliases
+                        let aliases: Vec<_> = self
+                            .extern_path_aliases
                             .iter()
                             .filter_map(|(&(scope, name), path)| {
                                 if scope == scope_idx {
@@ -515,10 +584,13 @@ impl<'a> Resolver<'a> {
                             })
                             .collect();
                         for (name, path) in aliases {
-                            self.extern_path_aliases.insert((self.current_scope, name), path);
+                            self.extern_path_aliases
+                                .insert((self.current_scope, name), path);
                         }
                     }
-                } else if let Some((type_def_id, _)) = self.resolve_use_path_ns(&use_tree.path, Namespace::Type) {
+                } else if let Some((type_def_id, _)) =
+                    self.resolve_use_path_ns(&use_tree.path, Namespace::Type)
+                {
                     if let Some(enum_info) = self.enum_variants.get(&type_def_id) {
                         let variants: Vec<_> = enum_info
                             .variants
@@ -601,18 +673,10 @@ impl<'a> Resolver<'a> {
                 "LinkedList",
                 "VecDeque",
             ],
-            "core::cmp::Ordering" => &[
-                "Less",
-                "Equal",
-                "Greater",
-            ],
-            "core::sync::atomic::Ordering" => &[
-                "Relaxed",
-                "Release",
-                "Acquire",
-                "AcqRel",
-                "SeqCst",
-            ],
+            "core::cmp::Ordering" => &["Less", "Equal", "Greater"],
+            "core::sync::atomic::Ordering" => {
+                &["Relaxed", "Release", "Acquire", "AcqRel", "SeqCst"]
+            }
             "serde::de" | "serde_core::de" => &[
                 "Deserialize",
                 "DeserializeOwned",
@@ -682,8 +746,7 @@ impl<'a> Resolver<'a> {
         let (&first, rest) = path.split_first()?;
         let first_str = self.interner.resolve(first);
         if Self::is_compiler_known_external_crate(first_str) {
-            if self
-                .scopes[self.root_scope]
+            if self.scopes[self.root_scope]
                 .bindings
                 .get(&(first, Namespace::Type))
                 .is_some_and(|def_id| self.module_scopes.contains_key(&def_id))
@@ -740,7 +803,13 @@ impl<'a> Resolver<'a> {
                 depth += 1;
             }
             let stack_idx = self.module_stack.len().saturating_sub(1 + depth);
-            return (self.module_stack.get(stack_idx).copied().unwrap_or(self.root_scope), depth);
+            return (
+                self.module_stack
+                    .get(stack_idx)
+                    .copied()
+                    .unwrap_or(self.root_scope),
+                depth,
+            );
         }
 
         if Self::is_compiler_known_external_crate(first_str)
@@ -763,7 +832,8 @@ impl<'a> Resolver<'a> {
                 if rest.is_empty() {
                     return Some(prefix.clone());
                 }
-                let suffix = rest.iter()
+                let suffix = rest
+                    .iter()
                     .map(|s| self.interner.resolve(*s).to_string())
                     .collect::<Vec<_>>()
                     .join("::");
@@ -820,8 +890,14 @@ impl<'a> Resolver<'a> {
         None
     }
 
-    fn resolve_use_path_ns_direct(&self, path: &[Symbol], ns: Namespace) -> Option<(DefId, Namespace)> {
-        if path.is_empty() { return None; }
+    fn resolve_use_path_ns_direct(
+        &self,
+        path: &[Symbol],
+        ns: Namespace,
+    ) -> Option<(DefId, Namespace)> {
+        if path.is_empty() {
+            return None;
+        }
 
         let (start_scope, start_idx) = self.path_start_scope_and_index(path);
 
@@ -844,7 +920,10 @@ impl<'a> Resolver<'a> {
                     let direct_ty = if i == 0 && start_idx == 0 {
                         self.lookup_from_scope(scope, seg, Namespace::Type)
                     } else {
-                        self.scopes[scope].bindings.get(&(seg, Namespace::Type)).copied()
+                        self.scopes[scope]
+                            .bindings
+                            .get(&(seg, Namespace::Type))
+                            .copied()
                     };
                     if let Some(def_id) = direct_ty {
                         return Some((def_id, Namespace::Type));
@@ -856,7 +935,10 @@ impl<'a> Resolver<'a> {
                 let mod_def_id = if i == 0 && start_idx == 0 {
                     self.lookup_from_scope(scope, seg, Namespace::Type)
                 } else {
-                    self.scopes[scope].bindings.get(&(seg, Namespace::Type)).copied()
+                    self.scopes[scope]
+                        .bindings
+                        .get(&(seg, Namespace::Type))
+                        .copied()
                 };
                 if let Some(mod_def_id) = mod_def_id {
                     if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
@@ -873,7 +955,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_use_path_to_module(&self, path: &[Symbol], span: Span) -> Option<DefId> {
-        if path.is_empty() { return None; }
+        if path.is_empty() {
+            return None;
+        }
 
         let (start_scope, start_idx) = self.path_start_scope_and_index(path);
 
@@ -883,7 +967,10 @@ impl<'a> Resolver<'a> {
             let mod_def_id = if idx == 0 && start_idx == 0 {
                 self.lookup_from_scope(scope, seg, Namespace::Type)
             } else {
-                self.scopes[scope].bindings.get(&(seg, Namespace::Type)).copied()
+                self.scopes[scope]
+                    .bindings
+                    .get(&(seg, Namespace::Type))
+                    .copied()
             };
             if let Some(mod_def_id) = mod_def_id {
                 if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
@@ -1083,10 +1170,14 @@ impl<'a> Resolver<'a> {
                 for v in &e.variants {
                     match &v.fields {
                         HirVariantFields::Tuple(tys) => {
-                            for ty in tys { self.resolve_ty(ty); }
+                            for ty in tys {
+                                self.resolve_ty(ty);
+                            }
                         }
                         HirVariantFields::Struct(fields) => {
-                            for f in fields { self.resolve_ty(&f.ty); }
+                            for f in fields {
+                                self.resolve_ty(&f.ty);
+                            }
                         }
                         HirVariantFields::Unit => {}
                     }
@@ -1195,9 +1286,17 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        if self.find_symbol("Self").is_some() && self.lookup(self.find_symbol("Self").unwrap(), Namespace::Type).is_none() {
+        if self.find_symbol("Self").is_some()
+            && self
+                .lookup(self.find_symbol("Self").unwrap(), Namespace::Type)
+                .is_none()
+        {
             let synthetic_self = self.alloc_synthetic_def_id();
-            self.define(self.find_symbol("Self").unwrap(), Namespace::Type, synthetic_self);
+            self.define(
+                self.find_symbol("Self").unwrap(),
+                Namespace::Type,
+                synthetic_self,
+            );
         }
 
         self.resolve_ty(&ib.self_ty);
@@ -1276,7 +1375,9 @@ impl<'a> Resolver<'a> {
     /// Try to resolve a trait bound path; silently ignore if not found
     /// (we don't have a trait solver, so bounds are informational only).
     fn resolve_trait_bound_path(&mut self, path: &HirPath) {
-        if path.segments.is_empty() { return; }
+        if path.segments.is_empty() {
+            return;
+        }
         let name = path.segments[0].ident;
         // Resolve generic args in segments
         for seg in &path.segments {
@@ -1311,12 +1412,18 @@ impl<'a> Resolver<'a> {
             HirExprKind::Unary(_, e) => self.resolve_expr(e),
             HirExprKind::Call(callee, args) => {
                 self.resolve_expr(callee);
-                for a in args { self.resolve_expr(a); }
+                for a in args {
+                    self.resolve_expr(a);
+                }
             }
             HirExprKind::MethodCall(recv, _, tys, args) => {
                 self.resolve_expr(recv);
-                for ty in tys { self.resolve_ty(ty); }
-                for a in args { self.resolve_expr(a); }
+                for ty in tys {
+                    self.resolve_ty(ty);
+                }
+                for a in args {
+                    self.resolve_expr(a);
+                }
             }
             HirExprKind::Field(e, _) => self.resolve_expr(e),
             HirExprKind::Index(a, b) => {
@@ -1327,14 +1434,18 @@ impl<'a> Resolver<'a> {
             HirExprKind::If(cond, then, else_) => {
                 self.resolve_expr(cond);
                 self.resolve_block(then);
-                if let Some(e) = else_ { self.resolve_expr(e); }
+                if let Some(e) = else_ {
+                    self.resolve_expr(e);
+                }
             }
             HirExprKind::Match(scrutinee, arms) => {
                 self.resolve_expr(scrutinee);
                 for arm in arms {
                     self.push_scope();
                     self.resolve_pattern_binding(&arm.pat);
-                    if let Some(guard) = &arm.guard { self.resolve_expr(guard); }
+                    if let Some(guard) = &arm.guard {
+                        self.resolve_expr(guard);
+                    }
                     self.resolve_expr(&arm.body);
                     self.pop_scope();
                 }
@@ -1346,22 +1457,32 @@ impl<'a> Resolver<'a> {
                     self.resolve_ty(&p.ty);
                     self.resolve_pattern_binding(&p.pat);
                 }
-                if let Some(ret) = ret_ty { self.resolve_ty(ret); }
+                if let Some(ret) = ret_ty {
+                    self.resolve_ty(ret);
+                }
                 self.resolve_expr(body);
                 self.pop_scope();
             }
             HirExprKind::Return(e) => {
-                if let Some(e) = e { self.resolve_expr(e); }
+                if let Some(e) = e {
+                    self.resolve_expr(e);
+                }
             }
             HirExprKind::Break(_, e) => {
-                if let Some(e) = e { self.resolve_expr(e); }
+                if let Some(e) = e {
+                    self.resolve_expr(e);
+                }
             }
             HirExprKind::Continue(_) => {}
             HirExprKind::Assign(l, r) | HirExprKind::AssignOp(_, l, r) => {
                 self.resolve_expr(l);
                 self.resolve_expr(r);
             }
-            HirExprKind::Ref(e, _) | HirExprKind::RawRef(e, _) | HirExprKind::Deref(e) | HirExprKind::Paren(e) | HirExprKind::Try(e) => {
+            HirExprKind::Ref(e, _)
+            | HirExprKind::RawRef(e, _)
+            | HirExprKind::Deref(e)
+            | HirExprKind::Paren(e)
+            | HirExprKind::Try(e) => {
                 self.resolve_expr(e);
             }
             HirExprKind::Cast(e, ty) => {
@@ -1370,19 +1491,29 @@ impl<'a> Resolver<'a> {
             }
             HirExprKind::Struct(path, fields, base) => {
                 self.resolve_path(path, Namespace::Type, expr.id);
-                for f in fields { self.resolve_expr(&f.value); }
-                if let Some(b) = base { self.resolve_expr(b); }
+                for f in fields {
+                    self.resolve_expr(&f.value);
+                }
+                if let Some(b) = base {
+                    self.resolve_expr(b);
+                }
             }
             HirExprKind::Tuple(es) | HirExprKind::Array(es) => {
-                for e in es { self.resolve_expr(e); }
+                for e in es {
+                    self.resolve_expr(e);
+                }
             }
             HirExprKind::ArrayRepeat(a, b) => {
                 self.resolve_expr(a);
                 self.resolve_expr(b);
             }
             HirExprKind::Range(a, b, _) => {
-                if let Some(a) = a { self.resolve_expr(a); }
-                if let Some(b) = b { self.resolve_expr(b); }
+                if let Some(a) = a {
+                    self.resolve_expr(a);
+                }
+                if let Some(b) = b {
+                    self.resolve_expr(b);
+                }
             }
             HirExprKind::Unsafe(block) => self.resolve_block(block),
             HirExprKind::For(pat, iter, body, _) => {
@@ -1396,7 +1527,9 @@ impl<'a> Resolver<'a> {
                 for op in &asm.operands {
                     match op {
                         crate::hir::HirAsmOperand::In { expr, .. } => self.resolve_expr(expr),
-                        crate::hir::HirAsmOperand::Out { expr: Some(e), .. } => self.resolve_expr(e),
+                        crate::hir::HirAsmOperand::Out { expr: Some(e), .. } => {
+                            self.resolve_expr(e)
+                        }
                         crate::hir::HirAsmOperand::InOut { expr, out_expr, .. } => {
                             self.resolve_expr(expr);
                             if let Some(out_expr) = out_expr {
@@ -1417,22 +1550,34 @@ impl<'a> Resolver<'a> {
                 let did = self.alloc_synthetic_def_id();
                 self.define(*name, Namespace::Value, did);
                 self.resolutions.insert(*hir_id, did);
-                if let Some(sub) = sub { self.resolve_pattern_binding(sub); }
+                if let Some(sub) = sub {
+                    self.resolve_pattern_binding(sub);
+                }
             }
             HirPattern::Tuple(pats, _) | HirPattern::Slice(pats, _) => {
-                for p in pats { self.resolve_pattern_binding(p); }
+                for p in pats {
+                    self.resolve_pattern_binding(p);
+                }
             }
             HirPattern::Struct(path, fields, _, _) => {
                 self.resolve_path(path, Namespace::Type, HirId(u32::MAX));
-                for fp in fields { self.resolve_pattern_binding(&fp.pat); }
+                for fp in fields {
+                    self.resolve_pattern_binding(&fp.pat);
+                }
             }
             HirPattern::TupleStruct(path, pats, _) => {
                 self.resolve_path(path, Namespace::Value, HirId(u32::MAX));
-                for p in pats { self.resolve_pattern_binding(p); }
+                for p in pats {
+                    self.resolve_pattern_binding(p);
+                }
             }
-            HirPattern::Ref(p, _, _) | HirPattern::RefBinding(p, _, _) => self.resolve_pattern_binding(p),
+            HirPattern::Ref(p, _, _) | HirPattern::RefBinding(p, _, _) => {
+                self.resolve_pattern_binding(p)
+            }
             HirPattern::Or(pats, _) => {
-                for p in pats { self.resolve_pattern_binding(p); }
+                for p in pats {
+                    self.resolve_pattern_binding(p);
+                }
             }
             HirPattern::Path(path) => {
                 self.resolve_path(path, Namespace::Value, HirId(u32::MAX));
@@ -1462,8 +1607,12 @@ impl<'a> Resolver<'a> {
             match stmt {
                 HirStmt::Let(_, pat, ty, init, _) => {
                     // Resolve init first (before introducing binding)
-                    if let Some(init) = init { self.resolve_expr(init); }
-                    if let Some(ty) = ty { self.resolve_ty(ty); }
+                    if let Some(init) = init {
+                        self.resolve_expr(init);
+                    }
+                    if let Some(ty) = ty {
+                        self.resolve_ty(ty);
+                    }
                     self.resolve_pattern_binding(pat);
                 }
                 HirStmt::Expr(e) | HirStmt::Semi(e, _) => self.resolve_expr(e),
@@ -1487,15 +1636,21 @@ impl<'a> Resolver<'a> {
                 self.resolve_ty(t);
             }
             HirTy::Tuple(tys, _) => {
-                for t in tys { self.resolve_ty(t); }
+                for t in tys {
+                    self.resolve_ty(t);
+                }
             }
             HirTy::Array(t, len, _) => {
                 self.resolve_ty(t);
                 self.resolve_expr(len);
             }
             HirTy::FnPtr(params, ret, _) => {
-                for p in params { self.resolve_ty(p); }
-                if let Some(r) = ret { self.resolve_ty(r); }
+                for p in params {
+                    self.resolve_ty(p);
+                }
+                if let Some(r) = ret {
+                    self.resolve_ty(r);
+                }
             }
             HirTy::DynTrait(bounds, _) => {
                 for bound in bounds {
@@ -1535,11 +1690,16 @@ impl<'a> Resolver<'a> {
                 if let Some(trait_def_id) = self.lookup(trait_name, Namespace::Type) {
                     if self.intrinsic_fns.contains_key(&trait_def_id) {
                         let trait_path_str = self.path_to_string(
-                            &trait_path.segments.iter().map(|seg| seg.ident).collect::<Vec<_>>()
+                            &trait_path
+                                .segments
+                                .iter()
+                                .map(|seg| seg.ident)
+                                .collect::<Vec<_>>(),
                         );
                         let assoc_str = self.interner.resolve(last.ident).to_string();
                         let def_id = self.alloc_synthetic_def_id();
-                        self.intrinsic_fns.insert(def_id, format!("{}::{}", trait_path_str, assoc_str));
+                        self.intrinsic_fns
+                            .insert(def_id, format!("{}::{}", trait_path_str, assoc_str));
                         if hir_id != HirId(u32::MAX) {
                             self.resolutions.insert(hir_id, def_id);
                         }
@@ -1560,7 +1720,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_path(&mut self, path: &HirPath, ns: Namespace, hir_id: HirId) {
-        if path.segments.is_empty() { return; }
+        if path.segments.is_empty() {
+            return;
+        }
 
         let first_seg = &path.segments[0];
         let name = first_seg.ident;
@@ -1599,7 +1761,11 @@ impl<'a> Resolver<'a> {
         }
 
         if path.segments.len() >= 2 {
-            let symbols = path.segments.iter().map(|seg| seg.ident).collect::<Vec<_>>();
+            let symbols = path
+                .segments
+                .iter()
+                .map(|seg| seg.ident)
+                .collect::<Vec<_>>();
             if let Some(full_path) = self.extern_crate_path_string(&symbols) {
                 let def_id = self.alloc_synthetic_def_id();
                 self.intrinsic_fns.insert(def_id, full_path);
@@ -1629,13 +1795,14 @@ impl<'a> Resolver<'a> {
         // Handle sysroot and anyOS runtime crate paths as compiler-known intrinsics.
         if path.segments.len() >= 2
             && Self::is_compiler_known_external_crate(name_str.as_str())
-            && !self
-                .scopes[self.root_scope]
+            && !self.scopes[self.root_scope]
                 .bindings
                 .get(&(name, Namespace::Type))
                 .is_some_and(|def_id| self.module_scopes.contains_key(&def_id))
         {
-            let full_path = path.segments.iter()
+            let full_path = path
+                .segments
+                .iter()
                 .map(|s| self.interner.resolve(s.ident).to_string())
                 .collect::<Vec<_>>()
                 .join("::");
@@ -1655,7 +1822,11 @@ impl<'a> Resolver<'a> {
                 }
             } else {
                 // Try the other namespace as fallback
-                let other_ns = if ns == Namespace::Value { Namespace::Type } else { Namespace::Value };
+                let other_ns = if ns == Namespace::Value {
+                    Namespace::Type
+                } else {
+                    Namespace::Value
+                };
                 if let Some(def_id) = self.lookup(name, other_ns) {
                     if hir_id != HirId(u32::MAX) {
                         self.resolutions.insert(hir_id, def_id);
@@ -1665,7 +1836,10 @@ impl<'a> Resolver<'a> {
                 } else if self.is_inside_injected_extern_interface() {
                     return;
                 } else {
-                    self.error(path.span, &format!("`{}` not found in this scope", name_str));
+                    self.error(
+                        path.span,
+                        &format!("`{}` not found in this scope", name_str),
+                    );
                 }
             }
         } else if path.segments.len() >= 2 {
@@ -1706,7 +1880,10 @@ impl<'a> Resolver<'a> {
 
                 // Could not resolve
                 let second_str = self.interner.resolve(second_name);
-                self.error(path.span, &format!("`{}::{}` not found", name_str, second_str));
+                self.error(
+                    path.span,
+                    &format!("`{}::{}` not found", name_str, second_str),
+                );
             }
             // else: 3+ segments without module match - skip (external paths)
         }
@@ -1775,7 +1952,11 @@ impl<'a> Resolver<'a> {
                     return Some(def_id);
                 }
                 // Try other namespace
-                let other_ns = if ns == Namespace::Value { Namespace::Type } else { Namespace::Value };
+                let other_ns = if ns == Namespace::Value {
+                    Namespace::Type
+                } else {
+                    Namespace::Value
+                };
                 if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg.ident, other_ns)) {
                     return Some(def_id);
                 }
@@ -1784,7 +1965,10 @@ impl<'a> Resolver<'a> {
                 return None;
             } else {
                 // Intermediate segment: must be a module or a type (for Type::method paths)
-                if let Some(&sub_def_id) = self.scopes[scope].bindings.get(&(seg.ident, Namespace::Type)) {
+                if let Some(&sub_def_id) = self.scopes[scope]
+                    .bindings
+                    .get(&(seg.ident, Namespace::Type))
+                {
                     if let Some(&sub_scope) = self.module_scopes.get(&sub_def_id) {
                         scope = sub_scope;
                     } else {
@@ -1801,7 +1985,8 @@ impl<'a> Resolver<'a> {
                                 }
                             }
                             if let Some(enum_info) = self.enum_variants.get(&sub_def_id) {
-                                if let Some(&variant_def_id) = enum_info.variants.get(&method_name) {
+                                if let Some(&variant_def_id) = enum_info.variants.get(&method_name)
+                                {
                                     return Some(variant_def_id);
                                 }
                             }
@@ -1818,7 +2003,11 @@ impl<'a> Resolver<'a> {
 
     /// Resolve a path starting with crate::, super::, or self::
     fn resolve_module_path(&mut self, path: &HirPath, ns: Namespace, hir_id: HirId) {
-        let symbols = path.segments.iter().map(|seg| seg.ident).collect::<Vec<_>>();
+        let symbols = path
+            .segments
+            .iter()
+            .map(|seg| seg.ident)
+            .collect::<Vec<_>>();
         let (mut scope, start_idx) = self.path_start_scope_and_index(&symbols);
         let segments = &path.segments[start_idx..];
 
@@ -1833,7 +2022,11 @@ impl<'a> Resolver<'a> {
                     return;
                 }
                 // Try other namespace
-                let other_ns = if ns == Namespace::Value { Namespace::Type } else { Namespace::Value };
+                let other_ns = if ns == Namespace::Value {
+                    Namespace::Type
+                } else {
+                    Namespace::Value
+                };
                 if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg.ident, other_ns)) {
                     if hir_id != HirId(u32::MAX) {
                         self.resolutions.insert(hir_id, def_id);
@@ -1841,14 +2034,20 @@ impl<'a> Resolver<'a> {
                     return;
                 }
                 let seg_str = self.interner.resolve(seg.ident);
-                self.error(path.span, &format!(
-                    "`{}` not found in module{}",
-                    seg_str,
-                    self.debug_type_bindings_suffix(scope),
-                ));
+                self.error(
+                    path.span,
+                    &format!(
+                        "`{}` not found in module{}",
+                        seg_str,
+                        self.debug_type_bindings_suffix(scope),
+                    ),
+                );
             } else {
                 // Intermediate segment: must be a module
-                if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg.ident, Namespace::Type)) {
+                if let Some(&mod_def_id) = self.scopes[scope]
+                    .bindings
+                    .get(&(seg.ident, Namespace::Type))
+                {
                     if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
                         scope = mod_scope;
                     } else {
@@ -1869,11 +2068,14 @@ impl<'a> Resolver<'a> {
                     }
                 } else {
                     let seg_str = self.interner.resolve(seg.ident);
-                    self.error(path.span, &format!(
-                        "`{}` not found in module{}",
-                        seg_str,
-                        self.debug_type_bindings_suffix(scope),
-                    ));
+                    self.error(
+                        path.span,
+                        &format!(
+                            "`{}` not found in module{}",
+                            seg_str,
+                            self.debug_type_bindings_suffix(scope),
+                        ),
+                    );
                     return;
                 }
             }
@@ -1917,7 +2119,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn define(&mut self, name: Symbol, ns: Namespace, def_id: DefId) {
-        self.scopes[self.current_scope].bindings.insert((name, ns), def_id);
+        self.scopes[self.current_scope]
+            .bindings
+            .insert((name, ns), def_id);
     }
 
     fn lookup(&self, name: Symbol, ns: Namespace) -> Option<DefId> {

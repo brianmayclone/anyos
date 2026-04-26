@@ -676,6 +676,15 @@ fn active_editor_context() -> Option<(String, String, u32, u32)> {
 // ════════════════════════════════════════════════════════════════
 
 pub fn open_file(file_path: &str) {
+    if let Some(designer_path) = designer::try_create_designer_from_rust_ui(file_path) {
+        let s = app();
+        s.welcome.hide();
+        s.status
+            .set_analysis_status("Created Designer metadata from Rust UI");
+        open_file(&designer_path);
+        return;
+    }
+
     let s = app();
     // Hide welcome tab when opening a file
     s.welcome.hide();
