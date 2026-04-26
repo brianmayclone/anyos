@@ -7,7 +7,8 @@ use anyrc::typeck::TypeChecker;
 use anyrc::mir_build::MirBuilder;
 use anyrc::codegen::regalloc;
 use anyrc::codegen::emit::CodeEmitter;
-use anyrc::linker::elf::{self, ObjectFile, Section, ElfSymbol};
+use anyrc::linker::elf::{self, ElfRelocation, ObjectFile, Section, ElfSymbol};
+use anyrc::linker::link::{self, LinkErrorKind, TargetAbi};
 
 fn compile_to_object(src: &str) -> Vec<u8> {
     let mut interner = Interner::new();
@@ -132,4 +133,55 @@ fn anyos_executable_loads_above_identity_map_boundary() {
     let vaddr = u64::from_le_bytes(exe[phoff + 16..phoff + 24].try_into().unwrap());
     assert_eq!(vaddr, 0x08000000);
     assert!(entry >= 0x08000000);
+}
+
+#[test]
+fn checked_linker_rejects_unresolved_relocations() {
+    let obj = ObjectFile {
+        sections: vec![Section {
+            name: ".text".to_string(),
+            data: vec![0xE8, 0, 0, 0, 0, 0xC3],
+            sh_type: 1,
+            sh_flags: 0x6,
+            sh_addralign: 16,
+        }],
+        symbols: vec![ElfSymbol {
+            name: "missing_symbol".to_string(),
+            section: None,
+            offset: 0,
+            size: 0,
+            binding: 1,
+            sym_type: 0,
+        }],
+        relocations: vec![ElfRelocation::pc32(1, 0, -4)],
+    };
+
+    let bytes = elf::write_object(&obj);
+    let errors = link::link_for_target_checked(&[bytes], "bad", true, TargetAbi::AnyOs)
+        .expect_err("unresolved relocation must be a hard linker error");
+
+    assert!(errors.iter().any(|err| {
+        err.kind == LinkErrorKind::UnresolvedSymbol && err.symbol == "missing_symbol"
+    }));
+}
+
+#[test]
+fn enum_variant_function_items_get_constructor_symbols() {
+    let exe = compile_and_link_anyos(
+        r#"
+        enum Value {
+            Null,
+            String(i32),
+        }
+
+        fn accept(_mapper: fn(i32) -> Value) -> i32 {
+            7
+        }
+
+        fn main() -> i32 {
+            accept(Value::String)
+        }
+        "#,
+    );
+    assert_eq!(&exe[0..4], &[0x7f, b'E', b'L', b'F']);
 }

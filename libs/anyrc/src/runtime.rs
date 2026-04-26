@@ -383,5 +383,70 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         code
     }));
 
+    let ret_zero = || vec![0x48, 0x31, 0xC0, 0xC3]; // xor rax, rax; ret
+    let ret_rdi = || vec![0x48, 0x89, 0xF8, 0xC3];  // mov rax, rdi; ret
+
+    for name in [
+        "__unknown",
+        "write_fmt",
+        "Vec::reserve",
+        "Vec::retain",
+        "Vec::extend_from_slice",
+        "Vec::extend",
+        "Vec::drain",
+        "Vec::sort_unstable",
+        "Vec::reverse",
+        "Vec::swap_remove",
+        "String::contains",
+        "String::ends_with",
+        "String::pop",
+        "String::trim",
+        "String::chars",
+        "hash_key",
+        "char::from_u32",
+        "from_utf8_unchecked",
+        "transmute_copy",
+        "zeroed",
+    ] {
+        stubs.push((name.to_string(), ret_zero()));
+    }
+
+    for name in [
+        "__anyrc_format_args",
+        "Result::?",
+        "Option::?",
+        "Result::ok",
+        "Result::unwrap_or",
+        "Result::unwrap_or_default",
+        "Option::as_ref",
+        "Option::as_mut",
+        "Option::unwrap_or_default",
+        "String::clone",
+        "Vec::as_mut_ptr",
+        "Vec::chunks_exact",
+    ] {
+        stubs.push((name.to_string(), ret_rdi()));
+    }
+
+    for name in [
+        "u16::from_le_bytes",
+        "u32::from_le_bytes",
+        "u64::from_le_bytes",
+        "i16::from_le_bytes",
+        "i32::from_le_bytes",
+    ] {
+        stubs.push((name.to_string(), ret_rdi()));
+    }
+
+    for name in ["u16::from_be_bytes"] {
+        stubs.push((name.to_string(), {
+            let mut code = Vec::new();
+            code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
+            code.extend_from_slice(&[0x66, 0xC1, 0xC0, 0x08]); // rol ax, 8
+            code.push(0xC3);
+            code
+        }));
+    }
+
     stubs
 }

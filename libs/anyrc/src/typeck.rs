@@ -2600,6 +2600,12 @@ impl<'a> TypeChecker<'a> {
                 return expected.clone();
             }
         }
+        if let (TyKind::FnPtr(_, _), TyKind::FnDef(_, _)) =
+            (self.shallow_resolve(expected.clone()), self.shallow_resolve(ty.clone()))
+        {
+            self.expr_types.insert(expr.id, expected.clone());
+            return expected.clone();
+        }
         self.unify(expected, &ty, expr.span);
         ty
     }

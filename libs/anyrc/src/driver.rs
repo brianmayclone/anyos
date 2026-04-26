@@ -314,11 +314,11 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     // 10. Emit based on type
     match options.emit {
         EmitKind::Obj => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data, &typeck_result.enum_variants, &typeck_result.type_def_to_name);
             Ok(elf::write_object(&obj))
         }
         EmitKind::Exe => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data, &typeck_result.enum_variants, &typeck_result.type_def_to_name);
             let obj_bytes = elf::write_object(&obj);
             // Collect all object files: our code + extern crate .rlib objects + runtime stubs
             let mut all_objects = vec![obj_bytes];
@@ -352,17 +352,19 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                     entry_symbol: None,
                     target_abi,
                 };
-                let exe = link::link_ext(&all_objects, &options.output, no_main_flag, &link_opts);
+                let exe = link::link_ext_checked(&all_objects, &options.output, no_main_flag, &link_opts)
+                    .map_err(link_errors_to_diagnostics)?;
                 validate_anyos_user_exe_if_needed(&exe, target_abi, no_main_flag, options)?;
                 Ok(exe)
             } else {
-                let exe = link::link_for_target(&all_objects, &options.output, no_main_flag, target_abi);
+                let exe = link::link_for_target_checked(&all_objects, &options.output, no_main_flag, target_abi)
+                    .map_err(link_errors_to_diagnostics)?;
                 validate_anyos_user_exe_if_needed(&exe, target_abi, no_main_flag, options)?;
                 Ok(exe)
             }
         }
         EmitKind::Rlib => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data, &typeck_result.enum_variants, &typeck_result.type_def_to_name);
             let obj_bytes = elf::write_object(&obj);
             let crate_name = options.crate_name.as_deref().unwrap_or("unknown");
             // Collect exported public symbols
@@ -436,6 +438,24 @@ fn link_diagnostic(message: String) -> Diagnostic {
     Diagnostic::new(Level::Error, &message, Span::dummy())
 }
 
+fn link_errors_to_diagnostics(errors: Vec<link::LinkError>) -> Vec<Diagnostic> {
+    errors
+        .into_iter()
+        .map(|err| {
+            let kind = match err.kind {
+                link::LinkErrorKind::UnresolvedSymbol => "unresolved symbol",
+                link::LinkErrorKind::RelocationOutOfBounds => "relocation out of bounds",
+                link::LinkErrorKind::RelocationOutOfRange => "relocation out of range",
+                link::LinkErrorKind::UnsupportedRelocation => "unsupported relocation",
+            };
+            link_diagnostic(format!(
+                "link error: {} '{}' at .text+0x{:x} (reloc type {})",
+                kind, err.symbol, err.offset, err.rela_type
+            ))
+        })
+        .collect()
+}
+
 fn codegen_to_object(
     bodies: &[MirBody],
     interner: &Interner,
@@ -443,7 +463,16 @@ fn codegen_to_object(
     field_offsets: &regalloc::StructFieldOffsets,
     field_types: &regalloc::StructFieldTypes,
 ) -> ObjectFile {
-    codegen_to_object_with_statics(bodies, interner, struct_sizes, field_offsets, field_types, &[])
+    codegen_to_object_with_statics(
+        bodies,
+        interner,
+        struct_sizes,
+        field_offsets,
+        field_types,
+        &[],
+        &anyos_std::collections::HashMap::new(),
+        &anyos_std::collections::HashMap::new(),
+    )
 }
 
 /// Static data entry: (symbol_name, initial_bytes)
@@ -459,6 +488,8 @@ fn codegen_to_object_with_statics(
     field_offsets: &regalloc::StructFieldOffsets,
     field_types: &regalloc::StructFieldTypes,
     statics: &[StaticData],
+    enum_variants: &anyos_std::collections::HashMap<crate::hir::DefId, Vec<(crate::intern::Symbol, Vec<crate::typeck::TyKind>)>>,
+    type_def_to_name: &anyos_std::collections::HashMap<crate::hir::DefId, crate::intern::Symbol>,
 ) -> ObjectFile {
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
@@ -522,6 +553,14 @@ fn codegen_to_object_with_statics(
         text_data.extend_from_slice(&code);
     }
 
+    append_enum_variant_constructor_symbols(
+        &mut text_data,
+        &mut symbols,
+        enum_variants,
+        type_def_to_name,
+        interner,
+    );
+
     let mut sections = vec![
         Section {
             name: ".text".to_string(),
@@ -573,6 +612,63 @@ fn codegen_to_object_with_statics(
     }
 }
 
+fn append_enum_variant_constructor_symbols(
+    text_data: &mut Vec<u8>,
+    symbols: &mut Vec<ElfSymbol>,
+    enum_variants: &anyos_std::collections::HashMap<crate::hir::DefId, Vec<(crate::intern::Symbol, Vec<crate::typeck::TyKind>)>>,
+    type_def_to_name: &anyos_std::collections::HashMap<crate::hir::DefId, crate::intern::Symbol>,
+    interner: &Interner,
+) {
+    for (enum_def_id, variants) in enum_variants {
+        let enum_name = type_def_to_name
+            .get(enum_def_id)
+            .map(|sym| interner.resolve(*sym).to_string());
+
+        for (idx, (variant_sym, fields)) in variants.iter().enumerate() {
+            if fields.is_empty() {
+                continue;
+            }
+
+            let variant_name = interner.resolve(*variant_sym).to_string();
+            let mut names = vec![variant_name.clone()];
+            if let Some(enum_name) = &enum_name {
+                names.push(format!("{}::{}", enum_name, variant_name));
+            }
+
+            for name in names {
+                if symbols
+                    .iter()
+                    .any(|sym| sym.name == name && sym.section.is_some())
+                {
+                    continue;
+                }
+
+                let fn_offset = text_data.len() as u64;
+                let code = enum_variant_constructor_code(idx as u64);
+                let fn_size = code.len() as u64;
+                text_data.extend_from_slice(&code);
+
+                if let Some(existing) = symbols.iter().position(|sym| sym.name == name) {
+                    symbols[existing].section = Some(0);
+                    symbols[existing].offset = fn_offset;
+                    symbols[existing].size = fn_size;
+                    symbols[existing].sym_type = 2;
+                } else {
+                    symbols.push(ElfSymbol::global_func(&name, 0, fn_offset, fn_size));
+                }
+            }
+        }
+    }
+}
+
+fn enum_variant_constructor_code(discriminant: u64) -> Vec<u8> {
+    let mut code = Vec::new();
+    code.extend_from_slice(&[0x48, 0xB8]); // mov rax, imm64
+    code.extend_from_slice(&discriminant.to_le_bytes());
+    code.push(0xC3); // ret
+    code
+}
+
 fn mir_to_string(bodies: &[MirBody], interner: &Interner) -> String {
     let mut out = String::new();
     for body in bodies {
@@ -603,10 +699,13 @@ fn build_runtime_object() -> elf::ObjectFile {
     let stubs = crate::runtime::runtime_stubs();
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
+    let mut relocations = Vec::new();
+    let mut stub_offsets = Vec::new();
 
     for (name, code) in &stubs {
         let offset = text_data.len() as u64;
         let size = code.len() as u64;
+        stub_offsets.push((name.as_str(), offset));
         text_data.extend_from_slice(code);
         symbols.push(elf::ElfSymbol {
             name: name.clone(),
@@ -618,6 +717,30 @@ fn build_runtime_object() -> elf::ObjectFile {
         });
     }
 
+    for ((name, code), (_, stub_offset)) in stubs.iter().zip(stub_offsets.iter()) {
+        let target = match name.as_str() {
+            "__anyrc_realloc" => Some("__anyrc_alloc"),
+            "__anyrc_vec_push" => Some("__anyrc_realloc"),
+            _ => None,
+        };
+        let Some(target) = target else {
+            continue;
+        };
+        let Some(target_idx) = symbols.iter().position(|sym| sym.name == target) else {
+            continue;
+        };
+        for (idx, window) in code.windows(5).enumerate() {
+            if window == [0xE8, 0x00, 0x00, 0x00, 0x00] {
+                relocations.push(elf::ElfRelocation {
+                    offset: *stub_offset + idx as u64 + 1,
+                    symbol: target_idx,
+                    rela_type: 2,
+                    addend: -4,
+                });
+            }
+        }
+    }
+
     elf::ObjectFile {
         sections: vec![elf::Section {
             name: ".text".to_string(),
@@ -627,7 +750,7 @@ fn build_runtime_object() -> elf::ObjectFile {
             sh_addralign: 16,
         }],
         symbols,
-        relocations: Vec::new(),
+        relocations,
     }
 }
 

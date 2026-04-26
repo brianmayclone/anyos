@@ -35,6 +35,33 @@ pub enum TargetAbi {
     Linux,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkError {
+    pub kind: LinkErrorKind,
+    pub symbol: String,
+    pub offset: u64,
+    pub rela_type: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkErrorKind {
+    UnresolvedSymbol,
+    RelocationOutOfBounds,
+    RelocationOutOfRange,
+    UnsupportedRelocation,
+}
+
+impl LinkError {
+    fn new(kind: LinkErrorKind, symbol: &str, offset: u64, rela_type: u32) -> Self {
+        Self {
+            kind,
+            symbol: symbol.to_string(),
+            offset,
+            rela_type,
+        }
+    }
+}
+
 const LINUX_USER_BASE: u64 = 0x400000;
 const ANYOS_USER_BASE: u64 = 0x08000000;
 
@@ -47,6 +74,16 @@ fn default_base_address(target_abi: TargetAbi) -> u64 {
 
 /// Link one or more ELF object files into an executable (extended version).
 pub fn link_ext(objects: &[Vec<u8>], _output_name: &str, no_main: bool, opts: &LinkOptions) -> Vec<u8> {
+    link_ext_checked(objects, _output_name, no_main, opts)
+        .expect("anyrc linker failed")
+}
+
+pub fn link_ext_checked(
+    objects: &[Vec<u8>],
+    _output_name: &str,
+    no_main: bool,
+    opts: &LinkOptions,
+) -> Result<Vec<u8>, Vec<LinkError>> {
     // Merge extra objects into the object list
     let mut all_objects = objects.to_vec();
     for extra in &opts.extra_objects {
@@ -76,14 +113,35 @@ pub fn link_ext(objects: &[Vec<u8>], _output_name: &str, no_main: bool, opts: &L
 /// Link one or more ELF object files into an executable.
 /// Returns the raw bytes of the ELF executable.
 pub fn link(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Vec<u8> {
+    link_checked(objects, _output_name, no_main)
+        .expect("anyrc linker failed")
+}
+
+pub fn link_checked(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Result<Vec<u8>, Vec<LinkError>> {
     link_impl(objects, no_main, ANYOS_USER_BASE, "_start", TargetAbi::AnyOs)
 }
 
 pub fn link_for_target(objects: &[Vec<u8>], _output_name: &str, no_main: bool, target_abi: TargetAbi) -> Vec<u8> {
+    link_for_target_checked(objects, _output_name, no_main, target_abi)
+        .expect("anyrc linker failed")
+}
+
+pub fn link_for_target_checked(
+    objects: &[Vec<u8>],
+    _output_name: &str,
+    no_main: bool,
+    target_abi: TargetAbi,
+) -> Result<Vec<u8>, Vec<LinkError>> {
     link_impl(objects, no_main, default_base_address(target_abi), "_start", target_abi)
 }
 
-fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &str, target_abi: TargetAbi) -> Vec<u8> {
+fn link_impl(
+    objects: &[Vec<u8>],
+    no_main: bool,
+    base_addr: u64,
+    entry_name: &str,
+    target_abi: TargetAbi,
+) -> Result<Vec<u8>, Vec<LinkError>> {
     let mut merged_code = Vec::new();
     let mut merged_data = Vec::new();
 
@@ -190,15 +248,39 @@ fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &st
 
     // Data section starts after code in the flat layout
     let code_size = merged_code.len() as u64;
+    let mut errors = Vec::new();
 
     for (offset, sym_name, rela_type, addend) in &pending_relocs {
         // Check if this is a data symbol (prefixed with \x01) or a code symbol
+        let short_sym_name = sym_name.rsplit("::").next().unwrap_or(sym_name.as_str());
+        let short_data_name = format!("\x01{}", short_sym_name);
+
         let (sym_offset, is_data) = if let Some(&o) = global_symbols.get(&format!("\x01{}", sym_name)) {
             (o, true)
         } else if let Some(&o) = global_symbols.get(sym_name) {
             (o, false)
+        } else if short_sym_name != sym_name {
+            if let Some(&o) = global_symbols.get(&short_data_name) {
+                (o, true)
+            } else if let Some(&o) = global_symbols.get(short_sym_name) {
+                (o, false)
+            } else {
+                errors.push(LinkError::new(
+                    LinkErrorKind::UnresolvedSymbol,
+                    sym_name,
+                    *offset,
+                    *rela_type,
+                ));
+                continue;
+            }
         } else {
-            continue; // unresolved, skip
+            errors.push(LinkError::new(
+                LinkErrorKind::UnresolvedSymbol,
+                sym_name,
+                *offset,
+                *rela_type,
+            ));
+            continue;
         };
 
         // For data symbols, the actual offset in the flat file is code_size + sym_offset
@@ -210,10 +292,26 @@ fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &st
                 let s = base_addr + content_file_offset + file_sym_offset;
                 let p = base_addr + content_file_offset + offset;
                 let value = (s as i64) + addend - (p as i64);
+                if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                    errors.push(LinkError::new(
+                        LinkErrorKind::RelocationOutOfRange,
+                        sym_name,
+                        *offset,
+                        *rela_type,
+                    ));
+                    continue;
+                }
                 let bytes = (value as i32).to_le_bytes();
                 let off = *offset as usize;
                 if off + 4 <= merged_code.len() {
                     merged_code[off..off + 4].copy_from_slice(&bytes);
+                } else {
+                    errors.push(LinkError::new(
+                        LinkErrorKind::RelocationOutOfBounds,
+                        sym_name,
+                        *offset,
+                        *rela_type,
+                    ));
                 }
             }
             1 /* R_X86_64_64 */ => {
@@ -223,16 +321,34 @@ fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &st
                 let off = *offset as usize;
                 if off + 8 <= merged_code.len() {
                     merged_code[off..off + 8].copy_from_slice(&bytes);
+                } else {
+                    errors.push(LinkError::new(
+                        LinkErrorKind::RelocationOutOfBounds,
+                        sym_name,
+                        *offset,
+                        *rela_type,
+                    ));
                 }
             }
-            _ => {}
+            _ => {
+                errors.push(LinkError::new(
+                    LinkErrorKind::UnsupportedRelocation,
+                    sym_name,
+                    *offset,
+                    *rela_type,
+                ));
+            }
         }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
     }
 
     // Entry point
     let entry_offset = *global_symbols.get(entry_name).unwrap_or(&0);
 
-    elf::write_executable_at(&merged_code, &merged_data, entry_offset, base_addr)
+    Ok(elf::write_executable_at(&merged_code, &merged_data, entry_offset, base_addr))
 }
 
 /// Minimal linker script info extracted from a `.ld` file.
