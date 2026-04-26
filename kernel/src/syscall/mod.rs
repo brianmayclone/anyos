@@ -157,6 +157,9 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_SLEEP => handlers::sys_sleep(arg1),
         SYS_SLEEP_US => handlers::sys_sleep_us(arg1),
         SYS_SBRK => handlers::sys_sbrk(arg1 as i32),
+        // SYS_MMAP / SYS_MUNMAP are intercepted in syscall_dispatch_64
+        // (u64 ABI). The legacy u32 handlers below are kept for in-kernel
+        // call sites that still go through dispatch_inner directly.
         SYS_MMAP => handlers::sys_mmap(arg1),
         SYS_MUNMAP => handlers::sys_munmap(arg1, arg2),
         SYS_WAITPID => handlers::sys_waitpid(arg1, arg2, arg3),
@@ -568,6 +571,19 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let arg5_64: u64 = regs.rdi;
 
     match syscall_num {
+        SYS_MMAP => {
+            // SYS_MMAP now returns the full 64-bit virtual address; user
+            // space uses libsyscall::mmap() which already plumbs u64.
+            let r = handlers::sys_mmap_u64(arg1_64);
+            handlers::deliver_pending_signal_default();
+            return r;
+        }
+        SYS_MUNMAP => {
+            // u64 address ABI for the standard mmap region.
+            let r = handlers::sys_munmap_u64(arg1_64, arg2_64);
+            handlers::deliver_pending_signal_default();
+            return r;
+        }
         SYS_MMAP64 => {
             let r = handlers::sys_mmap64(arg1_64);
             handlers::deliver_pending_signal_default();

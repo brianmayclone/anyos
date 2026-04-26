@@ -295,6 +295,9 @@ pub fn sys_sbrk(increment: i32) -> u32 {
 /// Allocates physical frames, maps them with PAGE_USER|PAGE_WRITABLE, zeroes them.
 /// Virtual addresses are found via the per-process VMA gap-finder, which reuses
 /// freed regions (unlike the old bump-pointer allocator).
+///
+/// NOTE: kept for the legacy in-kernel u32-only call sites. The 64-bit
+/// SYSCALL ABI for SYS_MMAP routes through `sys_mmap_u64` instead.
 pub fn sys_mmap(size: u32) -> u32 {
     let addr = sys_mmap_impl(size as u64, false);
     if addr > u32::MAX as u64 {
@@ -302,6 +305,22 @@ pub fn sys_mmap(size: u32) -> u32 {
     } else {
         addr as u32
     }
+}
+
+/// sys_mmap_u64 - Map anonymous pages, returning a full 64-bit user address.
+///
+/// This is the SYS_MMAP entry point used by syscall_dispatch_64. It routes
+/// through the high-VA allocator (MMAP64 region, above 4 GiB) so the result
+/// always fits in u64 but never collides with the legacy 32-bit
+/// PROGRAM_LOAD_ADDR / DLIB region. Callers must propagate the address as
+/// u64 throughout (libsyscall::mmap and stdlib::process::mmap).
+pub fn sys_mmap_u64(size: u64) -> u64 {
+    sys_mmap_impl(size, true)
+}
+
+/// sys_munmap_u64 - Unmap pages mapped via sys_mmap_u64 (high-VA region).
+pub fn sys_munmap_u64(addr: u64, size: u64) -> u64 {
+    sys_munmap_impl(addr, size, true)
 }
 
 /// sys_mmap64 - Map anonymous pages above 4 GiB for native 64-bit callers.
