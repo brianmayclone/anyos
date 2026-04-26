@@ -362,6 +362,24 @@ impl<'a> Parser<'a> {
         // Reference & and &mut
         if self.at_exact(&TokenKind::Amp) {
             self.bump();
+            if self.at_ident()
+                && self.interner.resolve(self.peek_ident()) == "raw"
+                && matches!(
+                    self.peek_kind(),
+                    TokenKind::Kw(Keyword::Const) | TokenKind::Kw(Keyword::Mut)
+                )
+            {
+                self.bump();
+                let mutability = if self.eat_exact(&TokenKind::Kw(Keyword::Mut)) {
+                    Mutability::Mut
+                } else {
+                    self.expect_exact(&TokenKind::Kw(Keyword::Const));
+                    Mutability::Immutable
+                };
+                let operand = self.parse_expr_bp(27);
+                return Expr::RawRef(Box::new(operand), mutability, self.span_from(start));
+            }
+
             let mutability = if self.eat_exact(&TokenKind::Kw(Keyword::Mut)) {
                 Mutability::Mut
             } else {
@@ -561,6 +579,12 @@ impl<'a> Parser<'a> {
             self.bump();
             let block = self.parse_block();
             return Expr::Unsafe(block, self.span_from(start));
+        }
+
+        // Const block expression: `const { ... }`.
+        if self.at_kw(Keyword::Const) && self.peek_kind() == &TokenKind::LBrace {
+            self.bump();
+            return Expr::Block(self.with_struct_literals_allowed(|this| this.parse_block()));
         }
 
         // Block expression

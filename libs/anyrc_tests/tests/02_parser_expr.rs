@@ -1,6 +1,6 @@
-use anyrc::parser::Parser;
-use anyrc::intern::Interner;
 use anyrc::ast::*;
+use anyrc::intern::Interner;
+use anyrc::parser::Parser;
 
 fn parse_expr(src: &str) -> Expr {
     let mut interner = Interner::new();
@@ -121,6 +121,17 @@ fn parse_reference() {
     match expr {
         Expr::Ref(_, Mutability::Mut, _) => {}
         _ => panic!("expected &mut"),
+    }
+}
+
+#[test]
+fn parse_ref_to_raw_identifier_index_is_not_raw_ref() {
+    let expr = parse_expr("&raw[offset as usize..]");
+    match expr {
+        Expr::Ref(inner, Mutability::Immutable, _) => {
+            assert!(matches!(*inner, Expr::Index(_, _, _)));
+        }
+        _ => panic!("expected shared ref to raw[index]"),
     }
 }
 
@@ -256,6 +267,12 @@ fn parse_tuple() {
 #[test]
 fn parse_block_expr() {
     let expr = parse_expr("{ let x = 1; x + 1 }");
+    assert!(matches!(expr, Expr::Block(_)));
+}
+
+#[test]
+fn parse_const_block_expr_as_block() {
+    let expr = parse_expr("const { 1 + 1 }");
     assert!(matches!(expr, Expr::Block(_)));
 }
 

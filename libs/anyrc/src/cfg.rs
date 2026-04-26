@@ -387,6 +387,7 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
         Expr::Unary(_, inner, _)
         | Expr::Return(Some(inner), _)
         | Expr::Ref(inner, _, _)
+        | Expr::RawRef(inner, _, _)
         | Expr::Deref(inner, _)
         | Expr::Paren(inner, _)
         | Expr::Cast(inner, _, _) => strip_expr(inner, ctx, interner),

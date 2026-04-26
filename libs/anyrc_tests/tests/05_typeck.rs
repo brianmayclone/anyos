@@ -1,9 +1,9 @@
-use anyrc::parser::Parser;
+use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
-use anyrc::hir_lower::LoweringContext;
+use anyrc::parser::Parser;
 use anyrc::resolve::Resolver;
-use anyrc::typeck::{TypeChecker, TypeckResult, TyKind, IntTy, UintTy, FloatTy};
+use anyrc::typeck::{FloatTy, IntTy, TyKind, TypeChecker, TypeckResult, UintTy};
 
 fn typecheck(src: &str) -> (TypeckResult, Interner) {
     let mut interner = Interner::new();
@@ -23,7 +23,10 @@ fn typecheck_with_cfg(src: &str, cfg_flags: &[&str]) -> (TypeckResult, Interner)
     let mut interner = Interner::new();
     let mut parser = Parser::new(src, &mut interner);
     let mut krate = parser.parse_crate();
-    let flags = cfg_flags.iter().map(|flag| flag.to_string()).collect::<Vec<_>>();
+    let flags = cfg_flags
+        .iter()
+        .map(|flag| flag.to_string())
+        .collect::<Vec<_>>();
     let cfg_ctx = anyrc::cfg::CfgContext::from_flags(&flags);
     anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
     expand_macros(&mut krate, &mut interner);
@@ -41,16 +44,29 @@ fn typecheck_with_cfg(src: &str, cfg_flags: &[&str]) -> (TypeckResult, Interner)
 
 fn assert_type_ok(src: &str) {
     let (result, _) = typecheck(src);
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 fn assert_type_error(src: &str, expected_msg: &str) {
     let (result, _) = typecheck(src);
-    assert!(!result.errors.is_empty(), "expected error containing '{}'", expected_msg);
-    assert!(result.errors.iter().any(|e| e.message.to_lowercase().contains(&expected_msg.to_lowercase())),
-        "expected error containing '{}', got: {:?}", expected_msg,
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        !result.errors.is_empty(),
+        "expected error containing '{}'",
+        expected_msg
+    );
+    assert!(
+        result.errors.iter().any(|e| e
+            .message
+            .to_lowercase()
+            .contains(&expected_msg.to_lowercase())),
+        "expected error containing '{}', got: {:?}",
+        expected_msg,
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -100,7 +116,8 @@ fn primitive_char_is_whitespace_assoc_fn_is_typed() {
 
 #[test]
 fn primitive_trait_assoc_fn_call_is_typed() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Decode {
             fn decode() -> Self;
         }
@@ -114,12 +131,14 @@ fn primitive_trait_assoc_fn_call_is_typed() {
         fn main() {
             let x: u64 = u64::decode();
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn option_some_struct_field_uses_variant_argument_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> { Some(T), None }
         struct Diag { value: u32 }
         struct Warning { diagnostic: Option<Diag> }
@@ -128,12 +147,14 @@ fn option_some_struct_field_uses_variant_argument_type() {
             let diag = Diag { value: 7 };
             let warning = Warning { diagnostic: Some(diag) };
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn macro_option_some_struct_field_uses_expr_argument_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> { Some(T), None }
         struct Diag { value: u32 }
         struct Warning { diagnostic: Option<Diag> }
@@ -148,12 +169,14 @@ fn macro_option_some_struct_field_uses_expr_argument_type() {
             let diag = Diag { value: 7 };
             let warning = push_warning!(diag);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn macro_pushes_warning_with_optional_diagnostic() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> { Some(T), None }
         struct Vec<T> {}
         impl<T> Vec<T> {
@@ -180,12 +203,14 @@ fn macro_pushes_warning_with_optional_diagnostic() {
             let diag = Diag { value: 7 };
             slot_bail!(warnings, 10, diag);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn vec_len_result_participates_in_integer_inference() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Vec<T> {}
         impl<T> Vec<T> {
             fn len(&self) -> usize { 0 }
@@ -197,12 +222,14 @@ fn vec_len_result_participates_in_integer_inference() {
             let attr_buf: Vec<u8> = Vec {};
             let take = min(64, attr_buf.len());
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn core_cmp_min_result_participates_in_integer_inference() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod cmp {}
         }
@@ -216,12 +243,14 @@ fn core_cmp_min_result_participates_in_integer_inference() {
             let attr_buf: Vec<u8> = Vec {};
             let take = core::cmp::min(64, attr_buf.len());
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn macro_introduced_let_does_not_capture_caller_local() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Error {}
 
         macro_rules! wrap_error {
@@ -236,12 +265,14 @@ fn macro_introduced_let_does_not_capture_caller_local() {
             wrap_error!(err);
             let n: i32 = e;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn macro_error_wrapper_inside_result_match_uses_outer_err_binding() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Result<T, E> { Ok(T), Err(E) }
         struct Error {}
         struct OtherError {}
@@ -263,12 +294,14 @@ fn macro_error_wrapper_inside_result_match_uses_outer_err_binding() {
                 }
             };
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn macro_slot_bail_style_result_match_with_continue_typechecks() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Result<T, E> { Ok(T), Err(E) }
         enum Option<T> { Some(T), None }
         struct Vec<T> {}
@@ -310,12 +343,14 @@ fn macro_slot_bail_style_result_match_with_continue_typechecks() {
                 };
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn macro_multiline_slot_bail_keeps_first_expr_capture() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Result<T, E> { Ok(T), Err(E) }
         enum Option<T> { Some(T), None }
         struct Vec<T> {}
@@ -348,12 +383,14 @@ fn macro_multiline_slot_bail_keeps_first_expr_capture() {
                 Error {}
             );
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn macro_slot_capture_from_u64_range_remains_integer() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Result<T, E> { Ok(T), Err(E) }
         enum Option<T> { Some(T), None }
         struct Vec<T> {}
@@ -389,12 +426,14 @@ fn macro_slot_capture_from_u64_range_remains_integer() {
             }
             Result::Ok(())
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn primitive_generic_trait_assoc_fn_call_result_is_typed() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Result<T, E> {
             Ok(T),
             Err(E),
@@ -415,12 +454,14 @@ fn primitive_generic_trait_assoc_fn_call_result_is_typed() {
         fn read<D: Decoder>(decoder: &mut D) {
             let value: u64 = u64::decode(decoder)?;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn trait_path_assoc_fn_infers_self_from_expected_result() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Result<T, E> {
             Ok(T),
             Err(E),
@@ -453,12 +494,14 @@ fn trait_path_assoc_fn_infers_self_from_expected_result() {
                 Decode::decode(decoder)
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn blanket_trait_impl_does_not_shadow_inherent_method_arity() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Peek {
             fn peek(&self) -> bool;
         }
@@ -481,12 +524,14 @@ fn blanket_trait_impl_does_not_shadow_inherent_method_arity() {
             let input = Input {};
             let ok = input.peek(1);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn scoped_use_prefers_local_type_over_same_named_external_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod fs {
             #[derive(Clone, Copy)]
             pub struct DirEntry {
@@ -555,12 +600,14 @@ fn scoped_use_prefers_local_type_over_same_named_external_type() {
                 fs::metadata_size(entry)
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn nested_use_of_root_reexport_chases_alias_target() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod token {
             pub struct Type {}
             pub struct Macro {}
@@ -606,12 +653,14 @@ fn nested_use_of_root_reexport_chases_alias_target() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn nested_crate_use_imports_trait_for_associated_function_call() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod de {
             pub enum Result<T, E> {
                 Ok(T),
@@ -647,12 +696,14 @@ fn nested_crate_use_imports_trait_for_associated_function_call() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn macro_generated_trait_methods_are_available_to_nested_imports() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod lib {
             mod core {
                 pub use core::*;
@@ -718,12 +769,14 @@ fn macro_generated_trait_methods_are_available_to_nested_imports() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn trait_self_associated_type_projection_in_method_signature_is_typed() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct NonNull<T> {}
         struct DstLayout {}
 
@@ -740,23 +793,27 @@ fn trait_self_associated_type_projection_in_method_signature_is_typed() {
         }
 
         trait PointerMetadata {}
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn core_float_consts_are_typed() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn main() {
             let a: f64 = core::f64::consts::LN_2;
             let b: f64 = core::f64::consts::FRAC_PI_2;
             let c: f32 = core::f32::consts::PI;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn vec_push_pop_last_truncate_are_typed() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Vec<T> {}
         impl<T> Vec<T> {
             fn new() -> Vec<T> { Vec {} }
@@ -774,12 +831,14 @@ fn vec_push_pop_last_truncate_are_typed() {
             let y: Option<&u32> = values.last();
             values.truncate(0);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn vec_macro_integer_element_infers_from_later_push() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Vec<T> {}
         impl<T> Vec<T> {
             fn push(&mut self, value: T) {}
@@ -793,12 +852,14 @@ fn vec_macro_integer_element_infers_from_later_push() {
             let offset: u32 = 1;
             values.push(offset);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn vec_new_element_infers_from_index_assignment() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Vec<T> {}
         impl<T> Vec<T> {
             fn new() -> Self { loop {} }
@@ -808,7 +869,8 @@ fn vec_new_element_infers_from_index_assignment() {
             let mut code = Vec::new();
             code[0] = 1u8;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
@@ -831,7 +893,8 @@ fn cfg_strips_false_tail_block_so_true_tail_returns() {
 
 #[test]
 fn loop_tail_match_does_not_force_arm_values_to_function_return() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Op { Value, Unit }
 
         fn value() -> u32 { 1 }
@@ -844,12 +907,14 @@ fn loop_tail_match_does_not_force_arm_values_to_function_return() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn nested_match_expression_inside_loop_keeps_its_value_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Op { Yes, No }
 
         fn run(op: Op) -> bool {
@@ -865,12 +930,14 @@ fn nested_match_expression_inside_loop_keeps_its_value_type() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn nested_match_inside_discarded_loop_tail_match_keeps_value_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Outer { Run, Done }
         enum Inner { Yes, No }
 
@@ -892,12 +959,14 @@ fn nested_match_inside_discarded_loop_tail_match_keeps_value_type() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn let_rebinding_from_if_branch_with_module_function_preserves_value_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod promise {
             use super::Value;
 
@@ -916,12 +985,14 @@ fn let_rebinding_from_if_branch_with_module_function_preserves_value_type() {
             };
             return ret;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn constructor_return_style_if_block_keeps_tail_value_after_continue_guard() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Value { Undefined, Object }
 
         impl Value {
@@ -945,12 +1016,14 @@ fn constructor_return_style_if_block_keeps_tail_value_after_continue_guard() {
             };
             return ret;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn break_inside_for_does_not_define_enclosing_loop_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn run() -> u32 {
             loop {
                 for i in 0..4 {
@@ -958,12 +1031,14 @@ fn break_inside_for_does_not_define_enclosing_loop_type() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn multiline_match_guard_condition_is_typed_as_bool() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Value {
             Object(u32),
             Other,
@@ -977,12 +1052,14 @@ fn multiline_match_guard_condition_is_typed_as_bool() {
                 _ => false,
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn match_arm_return_and_continue_paths_do_not_poison_numeric_arms() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> { Some(T), None }
 
         fn parse_digit(bytes: &[u8], pos: &mut usize) -> Option<u32> {
@@ -993,12 +1070,14 @@ fn match_arm_return_and_continue_paths_do_not_poison_numeric_arms() {
             *pos += 1;
             Some(d)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn ref_mut_tuple_variant_pattern_on_mut_ref_binds_inner_mut_ref() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Op {
             Jump(i32),
             Other,
@@ -1010,12 +1089,14 @@ fn ref_mut_tuple_variant_pattern_on_mut_ref_binds_inner_mut_ref() {
                 _ => {}
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn string_like_to_string_and_deref_are_typed() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct String {}
 
         fn take_str(_: &str) {}
@@ -1026,12 +1107,14 @@ fn string_like_to_string_and_deref_are_typed() {
             let owned_again: String = str::to_string(s);
             take_str(&*owned);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn string_like_as_str_returns_ref_str() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct String {}
 
         fn take_str(_: &str) {}
@@ -1045,12 +1128,14 @@ fn string_like_as_str_returns_ref_str() {
                 _ => {},
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn string_range_index_trim_passes_ref_str() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn take_str(_: &str) {}
 
         fn main() {
@@ -1063,12 +1148,14 @@ fn string_range_index_trim_passes_ref_str() {
                 .trim();
             take_str(w);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn string_like_comparisons_normalize_refs_and_slices() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct String {}
 
         fn main() {
@@ -1080,12 +1167,14 @@ fn string_like_comparisons_normalize_refs_and_slices() {
             let _c: bool = &mut mutable == "auto";
             let _d: &str = borrowed[..borrowed.len()];
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowed_field_ref_enum_string_pattern_matches_css_style_use() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct String {}
 
         enum Option<T> {
@@ -1143,12 +1232,14 @@ fn borrowed_field_ref_enum_string_pattern_matches_css_style_use() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn string_match_assigns_enum_field_from_string_patterns() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct String {}
 
         enum CssValue {
@@ -1183,12 +1274,14 @@ fn string_match_assigns_enum_field_from_string_patterns() {
                 };
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn string_match_assigns_enum_field_through_glob_imported_style_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct String {}
 
         enum CssValue {
@@ -1233,12 +1326,14 @@ fn string_match_assigns_enum_field_through_glob_imported_style_type() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn match_tuple_arms_coerce_function_items_to_fn_pointer_fields() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum WorkerClass {
             A,
             B,
@@ -1253,12 +1348,14 @@ fn match_tuple_arms_coerce_function_items_to_fn_pointer_fields() {
                 WorkerClass::B => (worker_b, "b"),
             };
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_ref_pattern_over_u8_slice_binds_u8() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn parse_decimal(b: &[u8]) -> u32 {
             let mut n: u32 = 0;
             for &c in b {
@@ -1268,12 +1365,14 @@ fn for_ref_pattern_over_u8_slice_binds_u8() {
             }
             n
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn intrinsic_box_preserves_type_argument_for_deref() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn take_boxed(value: Box<u8>) {
             let byte: u8 = *value;
         }
@@ -1282,12 +1381,14 @@ fn intrinsic_box_preserves_type_argument_for_deref() {
             let value = Box::new(7u8);
             let byte: u8 = *value;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn match_ref_enum_variant_fields_bind_by_reference() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Pattern {
             Ident(Option<Box<Pattern>>),
             Or(Vec<Pattern>),
@@ -1311,12 +1412,14 @@ fn match_ref_enum_variant_fields_bind_by_reference() {
                 Pattern::Other => {}
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn iterator_filter_preserves_borrowed_item_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Pattern {
             Rest,
             Other,
@@ -1330,12 +1433,14 @@ fn iterator_filter_preserves_borrowed_item_type() {
                 take_pattern_ref(pat);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn iterator_filter_closure_receives_reference_to_item() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Vec<T> {}
         impl<T> Vec<T> {
             fn iter(&self) -> Iter<T> { Iter {} }
@@ -1356,12 +1461,14 @@ fn iterator_filter_closure_receives_reference_to_item() {
         fn scan(values: Vec<u16>) {
             let non_zero = values.iter().filter(|c| **c > 0);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn vec_retain_on_mutably_borrowed_field_expects_bool_closure() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Statement {}
 
         struct Block {
@@ -1377,12 +1484,14 @@ fn vec_retain_on_mutably_borrowed_field_expects_bool_closure() {
                 keep(stmt)
             });
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn array_lengths_resolve_const_path_expressions() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         const TAG_SIZE: usize = 16;
 
         fn make_tag() -> [u8; TAG_SIZE] {
@@ -1392,12 +1501,14 @@ fn array_lengths_resolve_const_path_expressions() {
         fn take_tag(tag: &mut [u8; TAG_SIZE]) {
             *tag = make_tag();
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn const_generic_array_return_substitutes_explicit_const_arg() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn take<const N: usize>() -> [u8; N] {
             [0u8; N]
         }
@@ -1406,12 +1517,14 @@ fn const_generic_array_return_substitutes_explicit_const_arg() {
             let uuid: [u8; 16] = take::<16>();
             let label: [u8; 32] = take::<32>();
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn module_array_lengths_resolve_local_const_path_expressions() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod crypto {
             pub const TAG_SIZE: usize = 16;
 
@@ -1419,12 +1532,14 @@ fn module_array_lengths_resolve_local_const_path_expressions() {
                 [0u8; TAG_SIZE]
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn nested_module_array_lengths_resolve_local_const_path_expressions() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod crypto {
             pub mod poly1305 {
                 pub const TAG_SIZE: usize = 16;
@@ -1434,12 +1549,14 @@ pub fn make_tag() -> [u8; TAG_SIZE] {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn imported_module_const_paths_work_in_array_lengths() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod crypto {
             pub mod sha256 {
                 pub const DIGEST_SIZE: usize = 32;
@@ -1461,12 +1578,14 @@ fn imported_module_const_paths_work_in_array_lengths() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn imported_consts_work_in_array_repeat_lengths() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod panel {
             use crate::fs::{path_join, MAX_PATH};
 
@@ -1485,12 +1604,14 @@ fn imported_consts_work_in_array_repeat_lengths() {
                 (buf, 0usize)
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn fn_items_coerce_to_fn_pointer_in_arrays_and_matches() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn a(_: u32) {}
         fn b(_: u32) {}
         fn c(_: u32) {}
@@ -1510,24 +1631,28 @@ fn fn_items_coerce_to_fn_pointer_in_arrays_and_matches() {
             };
             call(selected);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn float_primitive_assoc_min_max_consts_typecheck() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn use_float_consts() {
             let a: f32 = f32::MAX;
             let b: f32 = f32::MIN;
             let c: f64 = f64::MAX;
             let d: f64 = f64::MIN;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn loop_expression_uses_break_value_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn recv() {
             let plaintext = loop {
                 let pt: Vec<u8> = Vec::new();
@@ -1535,31 +1660,37 @@ fn loop_expression_uses_break_value_type() {
             };
             let byte: u8 = plaintext[0];
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn shift_mask_inherits_integer_type_from_bitand_lhs() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn read_bits(bit_buf: u32, count: u8) -> u32 {
             bit_buf & ((1 << count) - 1)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn shift_assign_allows_different_integer_rhs_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn read_bits(mut bit_buf: u32, count: u8) -> u32 {
             bit_buf >>= count;
             bit_buf
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn struct_literal_prefers_resolved_local_use_over_same_name_global_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod object {
             pub struct Object {
                 pub data: u8,
@@ -1584,12 +1715,14 @@ fn struct_literal_prefers_resolved_local_use_over_same_name_global_type() {
                 write_object(obj);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn return_inside_retain_closure_targets_closure_return_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Statement {
             keep: bool,
         }
@@ -1606,12 +1739,14 @@ fn return_inside_retain_closure_targets_closure_return_type() {
                 false
             });
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn return_before_nested_item_keeps_block_diverging() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Error {}
         struct Span {}
         struct String {}
@@ -1623,12 +1758,14 @@ fn return_before_nested_item_keeps_block_diverging() {
                 Error {}
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn aliased_core_slice_iter_does_not_fall_back_to_local_iter() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         use core::slice;
 
         trait IntoIterator {
@@ -1663,12 +1800,14 @@ fn aliased_core_slice_iter_does_not_fall_back_to_local_iter() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn ref_to_box_str_coerces_to_ref_str() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Box<T> {}
 
         struct Repr {
@@ -1684,12 +1823,14 @@ fn ref_to_box_str_coerces_to_ref_str() {
                 &self.repr.suffix
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn qualified_anyos_std_vec_and_string_use_builtin_coercions() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod anyos_std {
             pub struct String {}
 
@@ -1717,12 +1858,14 @@ fn qualified_anyos_std_vec_and_string_use_builtin_coercions() {
 
             let first: &str = values[0];
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn qualified_anyos_std_consts_resolve_from_module_interface() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod anyos_std {
             pub mod sys {
                 pub const CON_MODE_HIDE_CURSOR: u32 = 1;
@@ -1748,21 +1891,25 @@ fn qualified_anyos_std_consts_resolve_from_module_interface() {
             let entry = Entry { direction: anyos_std::net::NET_TRACE_DIR_RX };
             let is_tx = entry.direction == anyos_std::net::NET_TRACE_DIR_TX;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn str_range_indexing_autoderefs_nested_refs() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn suffix(name: &&str, pos: usize) -> &str {
             &name[pos + 1..]
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn question_operator_unwraps_option_for_tuple_patterns() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> {
             Some(T),
             None,
@@ -1778,12 +1925,14 @@ fn question_operator_unwraps_option_for_tuple_patterns() {
             let (value, suffix) = parse_inner(input)?;
             Some((value, suffix))
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn primitive_integer_min_max_associated_functions_return_receiver_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn pick_usize(a: usize, b: usize) -> usize {
             usize::max(a, b)
         }
@@ -1791,12 +1940,14 @@ fn primitive_integer_min_max_associated_functions_return_receiver_type() {
         fn pick_i32(a: i32, b: i32) -> i32 {
             i32::min(a, b)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn if_let_chain_binds_pattern_in_guard_and_body() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> {
             Some(T),
             None,
@@ -1815,12 +1966,14 @@ fn if_let_chain_binds_pattern_in_guard_and_body() {
                 0
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn field_access_autoderefs_through_deref_target() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Deref {
             type Target;
         }
@@ -1841,12 +1994,14 @@ fn field_access_autoderefs_through_deref_target() {
         fn read_table<F>(guard: ScopeGuard<&mut RawTable, F>) -> usize {
             guard.table
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn unary_deref_uses_deref_target_impl() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Deref {
             type Target;
         }
@@ -1865,12 +2020,14 @@ fn unary_deref_uses_deref_target_impl() {
         fn use_guard<T, F>(guard: ScopeGuard<T, F>) {
             consume(*guard);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn ref_argument_coerces_through_deref_target() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Deref {
             type Target;
         }
@@ -1888,12 +2045,14 @@ fn ref_argument_coerces_through_deref_target() {
             let field = TextField {};
             get_field_text(&field);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_uses_concrete_into_iterator_item_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait IntoIterator {
             type Item;
         }
@@ -1915,12 +2074,14 @@ fn for_loop_uses_concrete_into_iterator_item_type() {
                 takes_index(full_byte_index);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_uses_assoc_item_from_unresolved_external_into_iterator_path() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod iter {}
         }
@@ -1942,12 +2103,14 @@ fn for_loop_uses_assoc_item_from_unresolved_external_into_iterator_path() {
                 let index: usize = 1 + bit;
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_uses_iterator_assoc_item_from_values_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Values<K, V> {}
         struct Entry {
             ref_count: u32,
@@ -1977,12 +2140,14 @@ fn for_loop_uses_iterator_assoc_item_from_values_type() {
                 let rc: u32 = entry.ref_count;
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_uses_iterator_item_type_through_blanket_into_iterator() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Iterator {
             type Item;
         }
@@ -2004,12 +2169,14 @@ fn for_loop_uses_iterator_item_type_through_blanket_into_iterator() {
                 takes_index(full_byte_index);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_can_infer_iterator_item_from_next_method() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> {
             Some(T),
             None,
@@ -2034,12 +2201,14 @@ fn for_loop_can_infer_iterator_item_from_next_method() {
                 takes_index(full_byte_index);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn syn_lit_style_option_parser_uses_question_on_string_get() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> {
             Some(T),
             None,
@@ -2081,12 +2250,14 @@ fn syn_lit_style_option_parser_uses_question_on_string_get() {
             let suffix = s.get(1..)?.to_owned().into_boxed_str();
             Some((content, suffix))
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn option_some_and_none_in_loop_parser_infer_same_payload() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> {
             Some(T),
             None,
@@ -2128,12 +2299,14 @@ fn option_some_and_none_in_loop_parser_infer_same_payload() {
             let suffix = content;
             Some((content, suffix))
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn assign_op_allows_adt_receiver_with_primitive_rhs() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct BigInt {}
 
         fn parse_lit_int() {
@@ -2141,12 +2314,14 @@ fn assign_op_allows_adt_receiver_with_primitive_rhs() {
             let digit: u8 = 7;
             value += digit;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn unreachable_macro_diverges_in_match_arm() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Option<T> {
             Some(T),
             None,
@@ -2165,12 +2340,14 @@ fn unreachable_macro_diverges_in_match_arm() {
                 _ => unreachable!(),
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_over_token_stream_binds_token_tree_items() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Span {}
 
         mod proc_macro2 {
@@ -2198,12 +2375,14 @@ fn for_loop_over_token_stream_binds_token_tree_items() {
                 respan_token_tree(token, span);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn proc_macro2_intrinsic_enum_variants_have_parent_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         use proc_macro2::{Delimiter, Spacing};
 
         fn takes_spacing(_: Spacing) {}
@@ -2215,12 +2394,14 @@ fn proc_macro2_intrinsic_enum_variants_have_parent_type() {
             takes_delimiter(Delimiter::Brace);
             takes_delimiter(Delimiter::None);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn quote_macros_typecheck_as_proc_macro2_token_stream() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod proc_macro2 {
             pub struct TokenStream {}
             impl TokenStream {
@@ -2255,12 +2436,14 @@ fn quote_macros_typecheck_as_proc_macro2_token_stream() {
         fn make_spanned(span: i32) -> proc_macro2::TokenStream {
             quote_spanned!(span=> struct Demo;)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn unexpanded_expr_macro_does_not_force_integer_inference() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod proc_macro2 {
             pub struct TokenStream {}
             impl TokenStream {
@@ -2291,12 +2474,14 @@ fn unexpanded_expr_macro_does_not_force_integer_inference() {
                 quote_block! { impl Demo {} }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn impl_method_body_resolves_self_enum_variants_against_impl_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum First {
             A,
             B,
@@ -2324,12 +2509,14 @@ fn impl_method_body_resolves_self_enum_variants_against_impl_type() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn self_enum_variant_resolution_wins_over_global_type_names() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct String {}
 
         enum SortType {
@@ -2345,12 +2532,14 @@ fn self_enum_variant_resolution_wins_over_global_type_names() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn module_qualified_impl_self_resolves_enum_variants() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod error {
             pub enum DecodeError {
                 OtherString(String),
@@ -2364,12 +2553,14 @@ fn module_qualified_impl_self_resolves_enum_variants() {
                 Self::OtherString(msg)
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn function_arg_autoderefs_nested_slice_references() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn takes_slice(item: &[u8]) -> bool {
             true
         }
@@ -2380,23 +2571,27 @@ fn function_arg_autoderefs_nested_slice_references() {
                 let ok = takes_slice(item);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn vec_u8_compares_with_byte_string_arrays() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn main() {
             let t: Vec<u8> = Vec::new();
             let is_time = &t == b"time";
             let is_date = t == b"date";
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn vec_reference_coerces_to_slice_argument() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Vec<T> {}
         impl<T> Vec<T> {
             fn new() -> Vec<T> { Vec {} }
@@ -2408,12 +2603,14 @@ fn vec_reference_coerces_to_slice_argument() {
             let mut buf: Vec<u8> = Vec::new();
             takes_slice(&buf);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn struct_literal_through_type_alias_has_aliased_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct FreeExtentRecord {
             device_block: u64,
             allocated_blocks: u64,
@@ -2427,52 +2624,62 @@ fn struct_literal_through_type_alias_has_aliased_type() {
                 allocated_blocks: 2,
             };
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn if_arms_allow_byte_string_literals_with_different_lengths_for_slice_use() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn takes_slice(item: &[u8]) {}
 
         fn main() {
             let flag = true;
             takes_slice(if flag { b"Folder" } else { b"File name" });
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn shift_rhs_accepts_usize_without_forcing_lhs_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn main() {
             let index: usize = 3;
             let mask = 1u64 << index;
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn binary_ops_autoderef_shared_primitive_refs() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn f(a: &u8, b: &u8) -> u8 {
             a ^ b
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn binary_ops_autoderef_mixed_primitive_ref_and_value() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn f(a: &u8, b: u8) -> u8 {
             a ^ b
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn impl_generic_params_are_visible_in_method_bodies() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Add<Rhs> {
             type Output;
         }
@@ -2494,23 +2701,27 @@ fn impl_generic_params_are_visible_in_method_bodies() {
                 UInt::new()
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn self_type_is_available_in_struct_fields() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Block<T> { value: T }
         struct BlockCtx<BS> {
             block: Block<Self>,
             marker: BS,
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn self_output_uses_current_impl_associated_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Trait {
             type Output;
         }
@@ -2535,12 +2746,14 @@ fn self_output_uses_current_impl_associated_type() {
                 Y {}
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn method_resolution_uses_argument_types_for_same_receiver_impls() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait BitOr<Rhs> {
             type Output;
             fn bitor(self, rhs: Rhs) -> Self::Output;
@@ -2562,12 +2775,14 @@ fn method_resolution_uses_argument_types_for_same_receiver_impls() {
         fn f(lhs: B0, rhs: B1) -> B1 {
             lhs.bitor(rhs)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn binary_operator_uses_trait_output_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod ops {
                 pub trait Mul<Rhs> {
@@ -2591,12 +2806,14 @@ fn binary_operator_uses_trait_output_type() {
         fn multiply(lhs: Aligned130, rhs: PrecomputedMultiplier) -> Unreduced130 {
             lhs * rhs
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn comparison_operator_uses_partial_eq_impl() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait PartialEq<Rhs> {
             fn eq(&self, rhs: &Rhs) -> bool;
         }
@@ -2617,12 +2834,14 @@ fn comparison_operator_uses_partial_eq_impl() {
         fn is_zero(value: Wrapped<Big>) -> bool {
             value == 0
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn function_arguments_allow_from_impl_into_expected_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait From<T> {}
 
         struct TokenTree {}
@@ -2635,12 +2854,14 @@ fn function_arguments_allow_from_impl_into_expected_type() {
         fn main() {
             append(Ident {});
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn comparison_operator_uses_generic_partial_eq_rhs() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait PartialEq<Rhs> {
             fn eq(&self, rhs: &Rhs) -> bool;
         }
@@ -2656,12 +2877,14 @@ fn comparison_operator_uses_generic_partial_eq_rhs() {
         fn is_keyword(ident: Ident, token: &str) -> bool {
             ident == token
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn module_alias_assoc_fn_resolves_same_named_type_in_target_module() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod internals {
             pub mod attr {
                 use crate::internals::Ctxt;
@@ -2816,12 +3039,14 @@ fn module_alias_assoc_fn_resolves_same_named_type_in_target_module() {
             pub struct DeriveInput {}
             pub struct Variant {}
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn generic_tuple_struct_constructor_infers_adt_args_from_fields() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct PhantomData<T>;
         struct SendSyncPhantomData<T>(PhantomData<T>);
         struct Wrapper<T> {
@@ -2841,12 +3066,14 @@ fn generic_tuple_struct_constructor_infers_adt_args_from_fields() {
                 marker: SendSyncPhantomData::default(),
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn generic_self_struct_literal_uses_impl_self_substs() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct PhantomData<T>;
         struct SendSyncPhantomData<T>(PhantomData<T>);
         struct AlignmentError<Src, Dst> {
@@ -2872,12 +3099,14 @@ fn generic_self_struct_literal_uses_impl_self_substs() {
         fn make<U>() -> AlignmentError<(), U> {
             AlignmentError::new(())
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn binary_operator_uses_reference_self_trait_output_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod ops {
                 pub trait Mul<Rhs> {
@@ -2901,12 +3130,14 @@ fn binary_operator_uses_reference_self_trait_output_type() {
         fn multiply(lhs: &Aligned4x130, rhs: PrecomputedMultiplier) -> Unreduced4x130 {
             lhs * rhs
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn operator_impl_does_not_bind_unanchored_infer_lhs() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod ops {
                 pub trait Sub<Rhs> {
@@ -2930,12 +3161,14 @@ fn operator_impl_does_not_bind_unanchored_infer_lhs() {
             let mask = align.get() - 1;
             mask
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn result_branches_with_unit_and_generic_error_align() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod mem {
                 pub fn align_of<T>() -> usize { 1 }
@@ -2978,12 +3211,14 @@ fn result_branches_with_unit_and_generic_error_align() {
                 Err(AlignmentError::new_unchecked(()))
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn imported_nonzero_usize_get_stays_primitive_with_byteorder_usize_nearby() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod num {
                 pub struct NonZeroUsize {}
@@ -3016,12 +3251,14 @@ fn imported_nonzero_usize_get_stays_primitive_with_byteorder_usize_nearby() {
             let mask = align.get() - 1;
             mask
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn external_nonzero_usize_get_stays_primitive_with_byteorder_usize_nearby() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         use core::num::NonZeroUsize;
 
         mod byteorder {
@@ -3048,12 +3285,14 @@ fn external_nonzero_usize_get_stays_primitive_with_byteorder_usize_nearby() {
                 mask
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn primitive_integer_methods_keep_receiver_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn padding_needed_for(len: usize, align: usize) -> usize {
             let mask = align - 1;
             !(len.wrapping_sub(1)) & mask
@@ -3068,12 +3307,14 @@ fn primitive_integer_methods_keep_receiver_type() {
         fn checked(n: usize, align: usize) -> Option<usize> {
             n.checked_add(align)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn generic_param_associated_function_uses_trait_bound_signature() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod marker_traits {
             pub trait Bit {
                 const U8: u8;
@@ -3122,12 +3363,14 @@ fn generic_param_associated_function_uses_trait_bound_signature() {
                 u16::from(B::to_u8()) | U::to_u16() << 1
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn generic_param_associated_const_mismatch_is_reported_from_bound() {
-    assert_type_error(r#"
+    assert_type_error(
+        r#"
         mod bit {
             pub trait Bit {
                 const U8: u8;
@@ -3166,12 +3409,15 @@ fn generic_param_associated_const_mismatch_is_reported_from_bound() {
                 }
             }
         }
-    "#, "mismatch");
+    "#,
+        "mismatch",
+    );
 }
 
 #[test]
 fn generic_param_associated_fn_mismatch_is_reported_from_bound() {
-    assert_type_error(r#"
+    assert_type_error(
+        r#"
         mod bit {
             pub trait Bit {
                 const U8: u8;
@@ -3210,12 +3456,15 @@ fn generic_param_associated_fn_mismatch_is_reported_from_bound() {
                 }
             }
         }
-    "#, "mismatch");
+    "#,
+        "mismatch",
+    );
 }
 
 #[test]
 fn typenum_style_primitive_powi_impls_typecheck() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Bit {}
         trait Unsigned {
             fn to_u32() -> u32;
@@ -3267,12 +3516,14 @@ fn typenum_style_primitive_powi_impls_typecheck() {
                 base
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn typenum_style_recursive_primitive_powi_macro_typechecks() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Bit {}
         trait Unsigned {
             fn to_u32() -> u32;
@@ -3321,12 +3572,14 @@ fn typenum_style_recursive_primitive_powi_macro_typechecks() {
         }
 
         impl_pow_i!(u8, u16, u32);
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn typenum_style_float_powi_macro_typechecks() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Bit {}
         trait Unsigned {
             fn to_u32() -> u32;
@@ -3411,12 +3664,14 @@ fn typenum_style_float_powi_macro_typechecks() {
 
         impl_pow_f!(f32);
         impl_pow_f!(f64);
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn typenum_style_generic_rem_uses_projection_not_concrete_operator_impl() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Rem<Rhs = Self> {
             type Output;
             fn rem(self, rhs: Rhs) -> Self::Output;
@@ -3499,12 +3754,14 @@ fn typenum_style_generic_rem_uses_projection_not_concrete_operator_impl() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn qualified_associated_type_projection_is_not_global_impl_output() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Trait {
             type Output;
         }
@@ -3526,12 +3783,14 @@ fn qualified_associated_type_projection_is_not_global_impl_output() {
         fn f(x: UTerm) -> Out<UTerm> {
             x
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn qualified_module_types_do_not_collide_by_leaf_name() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod fallback {
             pub struct TokenStream {}
             pub fn make() -> TokenStream { TokenStream {} }
@@ -3546,12 +3805,14 @@ fn qualified_module_types_do_not_collide_by_leaf_name() {
         fn wrap(inner: fallback::TokenStream) -> TokenStream {
             TokenStream { inner }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn qualified_assoc_fns_do_not_collide_by_leaf_name() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod fallback {
             pub struct TokenStream {}
             impl TokenStream {
@@ -3568,12 +3829,14 @@ fn qualified_assoc_fns_do_not_collide_by_leaf_name() {
         fn wrap() -> TokenStream {
             TokenStream { inner: imp::TokenStream::new() }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn assoc_from_selects_matching_impl_on_module_alias() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod fallback {
             pub struct TokenTree {}
             pub struct TokenStream {}
@@ -3590,12 +3853,14 @@ fn assoc_from_selects_matching_impl_on_module_alias() {
         fn wrap(tree: fallback::TokenTree) -> fallback::TokenStream {
             imp::TokenStream::from(tree)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn assoc_from_identity_uses_target_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod fallback {
             pub struct TokenStream {}
         }
@@ -3605,12 +3870,14 @@ fn assoc_from_identity_uses_target_type() {
         fn wrap(inner: fallback::TokenStream) -> fallback::TokenStream {
             imp::TokenStream::from(inner)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn assoc_from_identity_wins_when_single_impl_does_not_match() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod fallback {
             pub struct Foreign {}
             pub struct TokenStream {}
@@ -3627,12 +3894,14 @@ fn assoc_from_identity_wins_when_single_impl_does_not_match() {
         fn wrap(inner: fallback::TokenStream) -> fallback::TokenStream {
             imp::TokenStream::from(inner)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn cfg_selects_module_alias_before_wrapper_module() {
-    let (result, _) = typecheck_with_cfg(r#"
+    let (result, _) = typecheck_with_cfg(
+        r#"
         mod fallback {
             pub struct TokenStream {}
         }
@@ -3656,14 +3925,20 @@ fn cfg_selects_module_alias_before_wrapper_module() {
                 }
             }
         }
-    "#, &[]);
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    "#,
+        &[],
+    );
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn cfg_wrapper_module_assoc_from_uses_wrapper_impl() {
-    let (result, _) = typecheck_with_cfg(r#"
+    let (result, _) = typecheck_with_cfg(
+        r#"
         trait From<T> {
             fn from(value: T) -> Self;
         }
@@ -3699,14 +3974,20 @@ fn cfg_wrapper_module_assoc_from_uses_wrapper_impl() {
                 }
             }
         }
-    "#, &["wrap_proc_macro"]);
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    "#,
+        &["wrap_proc_macro"],
+    );
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn proc_macro2_style_fallback_wrappers_typecheck() {
-    let (result, _) = typecheck_with_cfg(r#"
+    let (result, _) = typecheck_with_cfg(
+        r#"
         trait From<T> {
             fn from(value: T) -> Self;
         }
@@ -3786,14 +4067,20 @@ fn proc_macro2_style_fallback_wrappers_typecheck() {
                 Ident::_new(imp::Ident::new_checked(string, span.inner))
             }
         }
-    "#, &[]);
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    "#,
+        &[],
+    );
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn proc_macro2_style_wrapper_from_overloads_typecheck() {
-    let (result, _) = typecheck_with_cfg(r#"
+    let (result, _) = typecheck_with_cfg(
+        r#"
         trait From<T> {
             fn from(value: T) -> Self;
         }
@@ -3864,14 +4151,20 @@ fn proc_macro2_style_wrapper_from_overloads_typecheck() {
                 TokenStream::_new(imp::TokenStream::from(token))
             }
         }
-    "#, &["wrap_proc_macro"]);
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    "#,
+        &["wrap_proc_macro"],
+    );
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn proc_macro2_style_scoped_fallback_imports_do_not_pick_root_wrappers() {
-    let (result, _) = typecheck_with_cfg(r#"
+    let (result, _) = typecheck_with_cfg(
+        r#"
         pub mod fallback {
             pub struct TokenStream {}
             pub struct TokenStreamBuilder {}
@@ -3969,14 +4262,20 @@ fn proc_macro2_style_scoped_fallback_imports_do_not_pick_root_wrappers() {
                 let span = crate::Span::_new_fallback(Span::call_site());
             }
         }
-    "#, &[]);
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    "#,
+        &[],
+    );
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn proc_macro2_style_qualified_enum_variant_pattern_binds_payload_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         pub mod fallback {
             pub struct Span {}
             pub struct Group {}
@@ -4012,12 +4311,14 @@ fn proc_macro2_style_qualified_enum_variant_pattern_binds_payload_type() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn proc_macro_intrinsic_enum_variant_constructors_have_parent_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn into_compiler_token(g: proc_macro::Group, p: proc_macro::Punct) -> proc_macro::TokenTree {
             if true {
                 proc_macro::TokenTree::Group(g)
@@ -4025,12 +4326,14 @@ fn proc_macro_intrinsic_enum_variant_constructors_have_parent_type() {
                 proc_macro::TokenTree::Punct(p)
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn proc_macro2_style_extend_maps_generic_into_iterator_item() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait IntoIterator {
             type Item;
             type IntoIter;
@@ -4069,12 +4372,14 @@ fn proc_macro2_style_extend_maps_generic_into_iterator_item() {
                 self.inner.extend(tokens.into_iter().map(imp::TokenTree::Ident));
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn proc_macro2_style_wrapper_into_iter_preserves_fallback_variant_field_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait IntoIterator {
             type Item;
             type IntoIter;
@@ -4128,12 +4433,14 @@ fn proc_macro2_style_wrapper_into_iter_preserves_fallback_variant_field_type() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn proc_macro2_style_into_iter_struct_name_wins_over_assoc_type_in_return_annotation() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait IntoIterator {
             type Item;
             type IntoIter;
@@ -4160,12 +4467,14 @@ fn proc_macro2_style_into_iter_struct_name_wins_over_assoc_type_in_return_annota
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn field_access_autoderefs_nested_references() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Package {
             name: String,
             version: String,
@@ -4174,12 +4483,14 @@ fn field_access_autoderefs_nested_references() {
         fn read(pkg: &&Package) -> String {
             pkg.name
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn sort_by_vec_of_refs_binds_double_ref_closure_params() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Ordering {}
         struct Package {
             name: String,
@@ -4201,12 +4512,14 @@ fn sort_by_vec_of_refs_binds_double_ref_closure_params() {
         fn sort(sorted: &mut Vec<&Package>) {
             sorted.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn generic_array_style_index_uses_deref_slice_target() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Deref {
             type Target;
         }
@@ -4235,24 +4548,340 @@ fn generic_array_style_index_uses_deref_slice_target() {
             let byte: u8 = array[0];
             let bytes = array[..1];
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn boxed_slice_index_uses_inner_slice_target() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Box<T> {}
 
         fn read(buf: Box<[u8]>) {
             let byte: u8 = buf[0];
             let tail: &[u8] = &buf[1..];
         }
-    "#);
+    "#,
+    );
+}
+
+#[test]
+fn raw_const_reference_has_raw_pointer_type() {
+    assert_type_ok(
+        r#"
+        struct Descriptor { limit: u16 }
+        static DESC: Descriptor = Descriptor { limit: 0 };
+
+        fn read() {
+            let ptr: *const Descriptor = &raw const DESC;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn unit_enum_variant_uses_expected_field_type() {
+    assert_type_ok(
+        r#"
+        enum MpState {
+            Runnable,
+            Halted,
+        }
+
+        struct Vcpu {
+            state: MpState,
+        }
+
+        fn make() -> Vcpu {
+            Vcpu { state: MpState::Runnable }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn imported_unit_enum_variant_uses_expected_struct_field_type() {
+    assert_type_ok(
+        r#"
+        mod virt {
+            pub enum MpState {
+                Runnable,
+                Halted,
+            }
+        }
+
+        mod arch {
+            use super::virt::MpState;
+
+            struct Vcpu {
+                state: MpState,
+            }
+
+            fn make() -> Vcpu {
+                Vcpu { state: MpState::Runnable }
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn imported_unit_enum_variant_uses_comparison_operand_type() {
+    assert_type_ok(
+        r#"
+        mod virt {
+            pub enum MpState {
+                Runnable,
+                Halted,
+            }
+        }
+
+        mod arch {
+            use super::virt::MpState;
+
+            struct Vcpu {
+                state: MpState,
+            }
+
+            fn paused(vcpu: Vcpu) -> bool {
+                vcpu.state == MpState::Halted
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn imported_unit_enum_variant_uses_assignment_lhs_type() {
+    assert_type_ok(
+        r#"
+        mod virt {
+            pub enum MpState {
+                Runnable,
+                Halted,
+            }
+        }
+
+        mod arch {
+            use super::virt::MpState;
+
+            struct Vcpu {
+                state: MpState,
+            }
+
+            fn halt(vcpu: &mut Vcpu) {
+                vcpu.state = MpState::Halted;
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn imported_unit_enum_variant_uses_function_parameter_type() {
+    assert_type_ok(
+        r#"
+        mod fs {
+            pub enum FsType {
+                Fat,
+                Iso9660,
+            }
+
+            pub fn mount(path: &str, fs_type: FsType, device: u32) {}
+        }
+
+        fn boot() {
+            fs::mount("/", fs::FsType::Fat, 0);
+        }
+    "#,
+    );
+}
+
+#[test]
+fn unit_enum_variants_share_match_arm_result_type() {
+    assert_type_ok(
+        r#"
+        mod usb {
+            pub enum ControllerType {
+                Uhci,
+                Ehci,
+                Xhci,
+            }
+        }
+
+        fn controller(raw: u32) -> usb::ControllerType {
+            match raw {
+                0 => usb::ControllerType::Uhci,
+                1 => usb::ControllerType::Ehci,
+                _ => usb::ControllerType::Xhci,
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn tuple_enum_variant_constructor_uses_variant_field_arity() {
+    assert_type_ok(
+        r#"
+        enum Key {
+            Char(char),
+            Unknown,
+        }
+
+        fn key(ch: char) -> Key {
+            Key::Char(ch)
+        }
+    "#,
+    );
+}
+
+#[test]
+fn impl_self_type_prefers_current_module_over_same_named_outer_type() {
+    assert_type_ok(
+        r#"
+        trait Into<T> {
+            fn into(self) -> T;
+        }
+
+        mod outer {
+            pub enum Error {
+                Serde(crate::inner::Error),
+            }
+        }
+
+        mod inner {
+            pub enum Error {
+                Local,
+            }
+
+            impl crate::Into<crate::outer::Error> for Error {
+                fn into(self) -> crate::outer::Error {
+                    crate::outer::Error::Serde(self)
+                }
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn nested_impl_self_type_prefers_current_module_over_crate_error_type() {
+    assert_type_ok(
+        r#"
+        trait Into<T> {
+            fn into(self) -> T;
+        }
+
+        mod features {
+            pub mod serde {
+                pub enum DecodeError {
+                    AnyNotSupported,
+                }
+
+                impl crate::Into<crate::error::DecodeError> for DecodeError {
+                    fn into(self) -> crate::error::DecodeError {
+                        crate::error::DecodeError::Serde(self)
+                    }
+                }
+            }
+        }
+
+        mod error {
+            pub enum DecodeError {
+                Serde(crate::features::serde::DecodeError),
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn glob_reexported_private_alias_does_not_shadow_local_type() {
+    assert_type_ok(
+        r#"
+        trait Into<T> {
+            fn into(self) -> T;
+        }
+
+        mod error {
+            pub enum DecodeError {
+                Serde(crate::features::serde::DecodeError),
+            }
+        }
+
+        mod features {
+            pub mod serde {
+                mod de_borrowed {
+                    use crate::error::DecodeError;
+                }
+
+                pub use self::de_borrowed::*;
+
+                pub enum DecodeError {
+                    AnyNotSupported,
+                }
+
+                impl crate::Into<crate::error::DecodeError> for DecodeError {
+                    fn into(self) -> crate::error::DecodeError {
+                        crate::error::DecodeError::Serde(self)
+                    }
+                }
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn method_autoref_receiver_substitutes_impl_generics_for_deref_index() {
+    assert_type_ok(
+        r#"
+        trait Deref {
+            type Target;
+            fn deref(&self) -> &Self::Target;
+        }
+
+        struct Spinlock<T> {}
+        struct Guard<T> {}
+        struct Vec<T> {}
+
+        impl<T> Spinlock<T> {
+            fn lock(&self) -> Guard<T> {
+                loop {}
+            }
+        }
+
+        impl<T> Deref for Guard<T> {
+            type Target = T;
+            fn deref(&self) -> &T {
+                loop {}
+            }
+        }
+
+        fn read(lock: Spinlock<[u8; 4]>) {
+            let guard = lock.lock();
+            let byte: u8 = guard[0];
+        }
+
+        fn read_vec(guard: Guard<Vec<u8>>) {
+            let byte: u8 = guard[0];
+        }
+
+        fn takes_slice(values: &[u8]) {}
+
+        fn pass_vec_guard_as_slice(guard: Guard<Vec<u8>>) {
+            takes_slice(&guard);
+        }
+    "#,
+    );
 }
 
 #[test]
 fn raw_pointer_add_result_can_initialize_local() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Header {
             buckets: *const u32,
         }
@@ -4261,12 +4890,14 @@ fn raw_pointer_add_result_can_initialize_local() {
             let buckets = unsafe { hash_ptr.add(2) };
             Header { buckets }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn referenced_raw_struct_array_field_can_be_indexed() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Elf64Ehdr {
             e_ident: [u8; 16],
         }
@@ -4278,12 +4909,14 @@ fn referenced_raw_struct_array_field_can_be_indexed() {
                 || ehdr.e_ident[2] == b'L'
                 || ehdr.e_ident[3] == b'F'
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn str_as_bytes_matches_slice_parameter_after_pointer_add() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Elf64Sym {
             st_name: u32,
         }
@@ -4301,12 +4934,14 @@ fn str_as_bytes_matches_slice_parameter_after_pointer_add() {
         fn probe(handle: &Handle, sym: &Elf64Sym, name: &str) -> bool {
             unsafe { cstr_eq(handle.strtab.add(sym.st_name as usize), name.as_bytes()) }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn builtin_dll_exports_generated_loader_typechecks() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod mem {
                 pub fn transmute_copy<T, U>(src: &T) -> U { loop {} }
@@ -4342,12 +4977,14 @@ fn builtin_dll_exports_generated_loader_typechecks() {
                 math_sqrt(x: f64) -> f64,
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn slice_iter_enumerate_binds_index_and_referenced_item() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn sum(bytes: &[u8]) -> usize {
             let mut out: usize = 0;
             for (i, &b) in bytes.iter().enumerate() {
@@ -4355,12 +4992,14 @@ fn slice_iter_enumerate_binds_index_and_referenced_item() {
             }
             out
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_over_mut_vec_reference_binds_mut_referenced_tuple_fields() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct String;
 
         impl String {
@@ -4378,12 +5017,14 @@ fn for_loop_over_mut_vec_reference_binds_mut_referenced_tuple_fields() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn core_index_impl_supplies_index_expression_output() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod core {
             pub mod ops {
                 pub trait Index<Idx> {
@@ -4410,12 +5051,14 @@ fn core_index_impl_supplies_index_expression_output() {
         fn get(v: Value) -> bool {
             v["enabled"].as_bool()
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn root_unqualified_types_do_not_collide_with_nested_leaf_names() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod fallback {
             pub struct Span {}
             impl Span {
@@ -4442,12 +5085,14 @@ fn root_unqualified_types_do_not_collide_with_nested_leaf_names() {
         fn get() -> Span {
             Span::call_site()
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn struct_like_enum_variant_construction_resolves_parent_enum() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod helper {
             pub trait Sized {}
         }
@@ -4467,12 +5112,14 @@ fn struct_like_enum_variant_construction_resolves_parent_enum() {
                 SizeInfo::Other => 0,
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn panic_macro_diverges_in_match_arm() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum SizeInfo {
             Sized { size: usize },
             Slice,
@@ -4484,12 +5131,14 @@ fn panic_macro_diverges_in_match_arm() {
                 SizeInfo::Sized { size } => (size, SizeInfo::Sized { size }),
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn cfg_attributed_panic_macro_is_expanded_after_strip() {
-    let (result, _) = typecheck_with_cfg(r#"
+    let (result, _) = typecheck_with_cfg(
+        r#"
         enum SizeInfo {
             Sized { size: usize },
             Slice,
@@ -4510,15 +5159,21 @@ fn cfg_attributed_panic_macro_is_expanded_after_strip() {
                 SizeInfo::Sized { size } => (size, SizeInfo::Sized { size }),
             }
         }
-    "#, &[]);
+    "#,
+        &[],
+    );
 
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn cfg_false_strips_call_arguments() {
-    let (result, _) = typecheck_with_cfg(r#"
+    let (result, _) = typecheck_with_cfg(
+        r#"
         fn one(_: i32) -> i32 { 1 }
         fn missing() -> bool { true }
 
@@ -4529,15 +5184,21 @@ fn cfg_false_strips_call_arguments() {
                 missing(),
             );
         }
-    "#, &[]);
+    "#,
+        &[],
+    );
 
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn cfg_false_strips_function_parameters() {
-    let (result, _) = typecheck_with_cfg(r#"
+    let (result, _) = typecheck_with_cfg(
+        r#"
         struct Missing;
 
         fn one(
@@ -4551,15 +5212,21 @@ fn cfg_false_strips_function_parameters() {
         fn main() {
             let _: i32 = one(1);
         }
-    "#, &[]);
+    "#,
+        &[],
+    );
 
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn from_impl_allows_into_parameter_coercion() {
-    let (result, _) = typecheck(r#"
+    let (result, _) = typecheck(
+        r#"
         trait From<T> {}
         struct TokenTree {}
         struct Ident {}
@@ -4571,15 +5238,20 @@ fn from_impl_allows_into_parameter_coercion() {
         fn main() {
             append(Ident {});
         }
-    "#);
+    "#,
+    );
 
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn generic_partial_eq_impl_allows_different_rhs() {
-    let (result, _) = typecheck(r#"
+    let (result, _) = typecheck(
+        r#"
         trait PartialEq<Rhs> {}
         struct Ident {}
 
@@ -4590,15 +5262,20 @@ fn generic_partial_eq_impl_allows_different_rhs() {
             let text: &str = "x";
             if ident == text {}
         }
-    "#);
+    "#,
+    );
 
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn trait_path_self_receiver_infers_self_from_first_argument() {
-    let (result, _) = typecheck(r#"
+    let (result, _) = typecheck(
+        r#"
         trait AsAddress {
             fn addr(self) -> usize;
         }
@@ -4614,10 +5291,14 @@ fn trait_path_self_receiver_infers_self_from_first_argument() {
         fn display_verbose_extras(addr: *const Unit) -> usize {
             AsAddress::addr(addr)
         }
-    "#);
+    "#,
+    );
 
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -4647,7 +5328,10 @@ fn infer_if_else() {
 
 #[test]
 fn error_if_else_mismatch() {
-    assert_type_error("fn main() { let x: i32 = if true { 1 } else { true }; }", "mismatch");
+    assert_type_error(
+        "fn main() { let x: i32 = if true { 1 } else { true }; }",
+        "mismatch",
+    );
 }
 
 #[test]
@@ -4657,42 +5341,54 @@ fn infer_block_type() {
 
 #[test]
 fn infer_struct_construction() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Point { x: i32, y: i32 }
         fn main() { let p = Point { x: 1, y: 2 }; }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn infer_field_access() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Point { x: i32, y: i32 }
         fn main() { let p = Point { x: 1, y: 2 }; let v: i32 = p.x; }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn check_fn_args() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn add(a: i32, b: i32) -> i32 { a + b }
         fn main() { let x: i32 = add(1, 2); }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn error_wrong_arg_type() {
-    assert_type_error(r#"
+    assert_type_error(
+        r#"
         fn add(a: i32, b: i32) -> i32 { a + b }
         fn main() { add(true, 2); }
-    "#, "mismatch");
+    "#,
+        "mismatch",
+    );
 }
 
 #[test]
 fn error_wrong_arg_count() {
-    assert_type_error(r#"
+    assert_type_error(
+        r#"
         fn add(a: i32, b: i32) -> i32 { a + b }
         fn main() { add(1); }
-    "#, "argument");
+    "#,
+        "argument",
+    );
 }
 
 #[test]
@@ -4722,15 +5418,18 @@ fn check_logical_ops() {
 
 #[test]
 fn infer_enum_variant() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Color { Red, Green, Blue }
         fn main() { let c = Color::Red; }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn block_like_statement_does_not_absorb_following_deref_expr() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         unsafe fn cstr_eq_sym(strtab: *const u8, offset: usize, name: &[u8]) -> bool {
             let s = strtab.add(offset);
             for (i, &b) in name.iter().enumerate() {
@@ -4738,22 +5437,26 @@ fn block_like_statement_does_not_absorb_following_deref_expr() {
             }
             *s.add(name.len()) == 0
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn vec_new_infers_element_type_through_slice_coercion() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         fn main() {
             let data = Vec::new();
             let _text = core::str::from_utf8(&data);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn trait_assoc_fn_self_is_inferred_from_expected_return_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait DeError {
             fn custom<T>(msg: T) -> Self;
         }
@@ -4775,12 +5478,14 @@ fn trait_assoc_fn_self_is_inferred_from_expected_return_type() {
                 DeError::custom(msg)
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn generic_bound_method_prefers_matching_trait_with_self_receiver() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         trait Deserialize {
             fn deserialize<D>(deserializer: D) -> Self;
         }
@@ -4809,12 +5514,14 @@ fn generic_bound_method_prefers_matching_trait_with_self_receiver() {
         {
             seed.deserialize(de)
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn glob_reexported_module_path_does_not_fall_back_to_local_same_named_type() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         mod lib {
             pub use core::*;
             pub use self::fmt::{self};
@@ -4836,12 +5543,14 @@ fn glob_reexported_module_path_does_not_fall_back_to_local_same_named_type() {
                 }
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn partial_eq_impl_on_owned_type_accepts_referenced_lhs() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Ident;
 
         impl<T> PartialEq<T> for Ident {
@@ -4853,12 +5562,14 @@ fn partial_eq_impl_on_owned_type_accepts_referenced_lhs() {
         fn eq_ident(ident: &Ident) -> bool {
             ident == "serde"
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn trait_assoc_constructor_on_type_alias_typechecks() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         enum Result<T, E> {
             Ok(T),
             Err(E),
@@ -4885,12 +5596,14 @@ fn trait_assoc_constructor_on_type_alias_typechecks() {
         fn wrap(key: &[u8]) {
             let _cipher = Cipher::new_from_slice(key);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_over_ref_map_uses_referenced_into_iterator_item() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct Map<K, V> {
             len: usize,
         }
@@ -4913,12 +5626,14 @@ fn for_loop_over_ref_map_uses_referenced_into_iterator_item() {
                 let _ = copied.raw;
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn for_loop_over_ref_hash_map_uses_referenced_entries() {
-    assert_type_ok(r#"
+    assert_type_ok(
+        r#"
         struct HashMap<K, V> {
             len: usize,
         }
@@ -4933,5 +5648,6 @@ fn for_loop_over_ref_hash_map_uses_referenced_entries() {
                 let _ = copied.raw;
             }
         }
-    "#);
+    "#,
+    );
 }

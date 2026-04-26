@@ -203,6 +203,7 @@ pub enum HirExprKind {
     Assign(Box<HirExpr>, Box<HirExpr>),
     AssignOp(BinOp, Box<HirExpr>, Box<HirExpr>),
     Ref(Box<HirExpr>, Mutability),
+    RawRef(Box<HirExpr>, Mutability),
     Deref(Box<HirExpr>),
     Cast(Box<HirExpr>, HirTy),
     Struct(HirPath, Vec<HirFieldExpr>, Option<Box<HirExpr>>),

@@ -760,7 +760,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
         Expr::For(_, iter, b, _, _) => { expand_expr(iter, defs, interner, changed); expand_block(b, defs, interner, changed); }
         Expr::Return(Some(e), _) | Expr::Break(_, Some(e), _) => expand_expr(e, defs, interner, changed),
         Expr::Assign(l, r, _) | Expr::AssignOp(_, l, r, _) => { expand_expr(l, defs, interner, changed); expand_expr(r, defs, interner, changed); }
-        Expr::Ref(e, _, _) | Expr::Cast(e, _, _) | Expr::Field(e, _, _) => expand_expr(e, defs, interner, changed),
+        Expr::Ref(e, _, _) | Expr::RawRef(e, _, _) | Expr::Cast(e, _, _) | Expr::Field(e, _, _) => expand_expr(e, defs, interner, changed),
         Expr::Index(a, b, _) => { expand_expr(a, defs, interner, changed); expand_expr(b, defs, interner, changed); }
         Expr::Tuple(es, _) | Expr::Array(es, _) => { for e in es { expand_expr(e, defs, interner, changed); } }
         Expr::Closure(_, _, body, _, _) => expand_expr(body, defs, interner, changed),

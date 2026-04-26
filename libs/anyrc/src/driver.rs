@@ -1736,6 +1736,7 @@ fn collect_const_refs_in_expr(
         | HirExprKind::Return(Some(inner))
         | HirExprKind::Break(_, Some(inner))
         | HirExprKind::Ref(inner, _)
+        | HirExprKind::RawRef(inner, _)
         | HirExprKind::Deref(inner)
         | HirExprKind::Paren(inner)
         | HirExprKind::Try(inner) => collect_const_refs_in_expr(inner, out),
@@ -2171,6 +2172,13 @@ fn render_expr(expr: &crate::hir::HirExpr, interner: &Interner) -> String {
                 format!("&mut {}", render_expr(inner, interner))
             } else {
                 format!("&{}", render_expr(inner, interner))
+            }
+        }
+        crate::hir::HirExprKind::RawRef(inner, mutability) => {
+            if *mutability == crate::ast::Mutability::Mut {
+                format!("&raw mut {}", render_expr(inner, interner))
+            } else {
+                format!("&raw const {}", render_expr(inner, interner))
             }
         }
         crate::hir::HirExprKind::Deref(inner) => format!("*{}", render_expr(inner, interner)),

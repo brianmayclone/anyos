@@ -15,6 +15,8 @@ pub struct ResolveResult {
     pub impl_methods: HashMap<Symbol, Vec<(Symbol, DefId)>>,
     /// Map from (enum_name, variant_name) to variant index
     pub variant_indices: HashMap<(Symbol, Symbol), usize>,
+    /// Map from synthetic variant DefId to owning enum DefId.
+    pub variant_to_enum: HashMap<DefId, DefId>,
     /// Intrinsic DefIds: maps synthetic DefId to full path string (e.g. "core::ptr::null_mut")
     pub intrinsic_fns: HashMap<DefId, String>,
 }
@@ -44,6 +46,8 @@ pub struct Resolver<'a> {
     interner: &'a mut Interner,
     /// Enum DefId -> variant info
     enum_variants: HashMap<DefId, EnumInfo>,
+    /// Synthetic variant DefId -> owning enum DefId
+    variant_to_enum: HashMap<DefId, DefId>,
     /// Next synthetic DefId for things without one (e.g. variants)
     next_synthetic_def_id: u32,
     /// Set of primitive type name strings
@@ -82,7 +86,8 @@ impl<'a> Resolver<'a> {
             errors: Vec::new(),
             interner,
             enum_variants: HashMap::new(),
-            next_synthetic_def_id: 10000,
+            variant_to_enum: HashMap::new(),
+            next_synthetic_def_id: 0x7000_0000,
             primitives: lang_items::PRIMITIVE_TYPES.to_vec(),
             impl_methods: HashMap::new(),
             impl_assoc_values: HashMap::new(),
@@ -328,6 +333,7 @@ impl<'a> Resolver<'a> {
             errors: core::mem::take(&mut self.errors),
             impl_methods: self.impl_methods.clone(),
             variant_indices,
+            variant_to_enum: core::mem::take(&mut self.variant_to_enum),
             intrinsic_fns: core::mem::take(&mut self.intrinsic_fns),
         }
     }
@@ -716,6 +722,39 @@ impl<'a> Resolver<'a> {
             .join("::")
     }
 
+    fn path_start_scope_and_index(&self, path: &[Symbol]) -> (usize, usize) {
+        if path.is_empty() {
+            return (self.root_scope, 0);
+        }
+
+        let first_str = self.interner.resolve(path[0]);
+        if first_str == "crate" {
+            return (self.root_scope, 1);
+        }
+        if first_str == "self" {
+            return (*self.module_stack.last().unwrap_or(&self.root_scope), 1);
+        }
+        if first_str == "super" {
+            let mut depth = 0usize;
+            while depth < path.len() && self.interner.resolve(path[depth]) == "super" {
+                depth += 1;
+            }
+            let stack_idx = self.module_stack.len().saturating_sub(1 + depth);
+            return (self.module_stack.get(stack_idx).copied().unwrap_or(self.root_scope), depth);
+        }
+
+        if Self::is_compiler_known_external_crate(first_str)
+            && self.scopes[self.root_scope]
+                .bindings
+                .get(&(path[0], Namespace::Type))
+                .is_some_and(|def_id| self.module_scopes.contains_key(def_id))
+        {
+            return (self.root_scope, 0);
+        }
+
+        (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
+    }
+
     fn resolve_extern_alias_use_path(&self, path: &[Symbol]) -> Option<String> {
         let (&first, rest) = path.split_first()?;
         let mut scope = Some(self.current_scope);
@@ -740,28 +779,7 @@ impl<'a> Resolver<'a> {
             return None;
         }
 
-        let first_str = self.interner.resolve(path[0]);
-        let (mut scope, start_idx) = if first_str == "crate" {
-            (self.root_scope, 1)
-        } else if first_str == "super" {
-            let parent_scope = if self.module_stack.len() >= 2 {
-                self.module_stack[self.module_stack.len() - 2]
-            } else {
-                self.root_scope
-            };
-            (parent_scope, 1)
-        } else if first_str == "self" {
-            (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
-        } else if Self::is_compiler_known_external_crate(first_str)
-            && self.scopes[self.root_scope]
-                .bindings
-                .get(&(path[0], Namespace::Type))
-                .is_some_and(|def_id| self.module_scopes.contains_key(def_id))
-        {
-            (self.root_scope, 0)
-        } else {
-            (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
-        };
+        let (mut scope, start_idx) = self.path_start_scope_and_index(path);
 
         let segments = &path[start_idx..];
         for (idx, &seg) in segments.iter().enumerate() {
@@ -805,29 +823,7 @@ impl<'a> Resolver<'a> {
     fn resolve_use_path_ns_direct(&self, path: &[Symbol], ns: Namespace) -> Option<(DefId, Namespace)> {
         if path.is_empty() { return None; }
 
-        // Determine starting scope
-        let first_str = self.interner.resolve(path[0]);
-        let (start_scope, start_idx) = if first_str == "crate" {
-            (self.root_scope, 1)
-        } else if first_str == "super" {
-            let parent_scope = if self.module_stack.len() >= 2 {
-                self.module_stack[self.module_stack.len() - 2]
-            } else {
-                self.root_scope
-            };
-            (parent_scope, 1)
-        } else if first_str == "self" {
-            (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
-        } else if Self::is_compiler_known_external_crate(first_str)
-            && self.scopes[self.root_scope]
-                .bindings
-                .get(&(path[0], Namespace::Type))
-                .is_some_and(|def_id| self.module_scopes.contains_key(def_id))
-        {
-            (self.root_scope, 0)
-        } else {
-            (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
-        };
+        let (start_scope, start_idx) = self.path_start_scope_and_index(path);
 
         let mut scope = start_scope;
         for (i, &seg) in path[start_idx..].iter().enumerate() {
@@ -879,28 +875,7 @@ impl<'a> Resolver<'a> {
     fn resolve_use_path_to_module(&self, path: &[Symbol], span: Span) -> Option<DefId> {
         if path.is_empty() { return None; }
 
-        let first_str = self.interner.resolve(path[0]);
-        let (start_scope, start_idx) = if first_str == "crate" {
-            (self.root_scope, 1)
-        } else if first_str == "super" {
-            let parent_scope = if self.module_stack.len() >= 2 {
-                self.module_stack[self.module_stack.len() - 2]
-            } else {
-                self.root_scope
-            };
-            (parent_scope, 1)
-        } else if first_str == "self" {
-            (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
-        } else if Self::is_compiler_known_external_crate(first_str)
-            && self.scopes[self.root_scope]
-                .bindings
-                .get(&(path[0], Namespace::Type))
-                .is_some_and(|def_id| self.module_scopes.contains_key(def_id))
-        {
-            (self.root_scope, 0)
-        } else {
-            (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
-        };
+        let (start_scope, start_idx) = self.path_start_scope_and_index(path);
 
         let mut scope = start_scope;
         for (idx, &seg) in path[start_idx..].iter().enumerate() {
@@ -944,6 +919,7 @@ impl<'a> Resolver<'a> {
                 for v in &e.variants {
                     let vid = self.alloc_synthetic_def_id();
                     variants.insert(v.name, vid);
+                    self.variant_to_enum.insert(vid, e.def_id);
                 }
                 self.enum_variants.insert(e.def_id, EnumInfo { variants });
             }
@@ -1385,7 +1361,7 @@ impl<'a> Resolver<'a> {
                 self.resolve_expr(l);
                 self.resolve_expr(r);
             }
-            HirExprKind::Ref(e, _) | HirExprKind::Deref(e) | HirExprKind::Paren(e) | HirExprKind::Try(e) => {
+            HirExprKind::Ref(e, _) | HirExprKind::RawRef(e, _) | HirExprKind::Deref(e) | HirExprKind::Paren(e) | HirExprKind::Try(e) => {
                 self.resolve_expr(e);
             }
             HirExprKind::Cast(e, ty) => {
@@ -1842,23 +1818,9 @@ impl<'a> Resolver<'a> {
 
     /// Resolve a path starting with crate::, super::, or self::
     fn resolve_module_path(&mut self, path: &HirPath, ns: Namespace, hir_id: HirId) {
-        let first_str = self.interner.resolve(path.segments[0].ident);
-
-        let start_scope = if first_str == "crate" {
-            self.root_scope
-        } else if first_str == "super" {
-            if self.module_stack.len() >= 2 {
-                self.module_stack[self.module_stack.len() - 2]
-            } else {
-                self.root_scope
-            }
-        } else {
-            // "self"
-            *self.module_stack.last().unwrap_or(&self.root_scope)
-        };
-
-        let mut scope = start_scope;
-        let segments = &path.segments[1..]; // skip crate/super/self
+        let symbols = path.segments.iter().map(|seg| seg.ident).collect::<Vec<_>>();
+        let (mut scope, start_idx) = self.path_start_scope_and_index(&symbols);
+        let segments = &path.segments[start_idx..];
 
         for (i, seg) in segments.iter().enumerate() {
             let is_last = i == segments.len() - 1;

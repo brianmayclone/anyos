@@ -222,6 +222,7 @@ pub enum Expr {
     Assign(Box<Expr>, Box<Expr>, Span),
     AssignOp(BinOp, Box<Expr>, Box<Expr>, Span),
     Ref(Box<Expr>, Mutability, Span),
+    RawRef(Box<Expr>, Mutability, Span),
     Deref(Box<Expr>, Span),
     Cast(Box<Expr>, Ty, Span),
     Struct(Path, Vec<FieldExpr>, Option<Box<Expr>>, Span),

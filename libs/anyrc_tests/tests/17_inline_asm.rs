@@ -1,7 +1,7 @@
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
-use anyrc::parser::Parser;
-use anyrc::intern::Interner;
 use anyrc::codegen::regalloc;
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
+use anyrc::intern::Interner;
+use anyrc::parser::Parser;
 use anyrc::typeck::{TyKind, UintTy};
 
 // ── Parser tests ──
@@ -26,6 +26,21 @@ fn parse_asm_with_operands() {
 }
 
 #[test]
+fn parse_asm_with_raw_const_operand() {
+    let src = r#"
+        struct Descriptor { limit: u16 }
+        static DESC: Descriptor = Descriptor { limit: 0 };
+        fn f() {
+            unsafe { asm!("lgdt [{}]", in(reg) &raw const DESC, options(nostack)); }
+        }
+    "#;
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(src, &mut interner);
+    let krate = parser.parse_crate();
+    assert_eq!(krate.items.len(), 3);
+}
+
+#[test]
 fn parse_asm_with_options() {
     let src = r#"fn f() { unsafe { asm!("cli", options(nostack, nomem)); } }"#;
     let mut interner = Interner::new();
@@ -36,7 +51,8 @@ fn parse_asm_with_options() {
 
 #[test]
 fn parse_asm_with_output() {
-    let src = r#"fn f() -> u64 { let val: u64; unsafe { asm!("mov {}, cr0", out(reg) val); } val }"#;
+    let src =
+        r#"fn f() -> u64 { let val: u64; unsafe { asm!("mov {}, cr0", out(reg) val); } val }"#;
     let mut interner = Interner::new();
     let mut parser = Parser::new(src, &mut interner);
     let krate = parser.parse_crate();
@@ -69,17 +85,20 @@ fn assert_compiles(src: &str) {
 
 #[test]
 fn compile_asm_nop() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         fn do_nop() {
             unsafe { asm!("nop"); }
         }
         fn main() -> i32 { do_nop(); 0 }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_asm_cli_sti() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         fn disable_interrupts() {
             unsafe { asm!("cli"); }
         }
@@ -87,32 +106,38 @@ fn compile_asm_cli_sti() {
             unsafe { asm!("sti"); }
         }
         fn main() -> i32 { 0 }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_asm_with_input() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         fn outb(port: u16, val: u8) {
             unsafe { asm!("out dx, al", in("dx") port, in("al") val); }
         }
         fn main() -> i32 { 0 }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_asm_with_options() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         fn cli() {
             unsafe { asm!("cli", options(nostack, nomem, preserves_flags)); }
         }
         fn main() -> i32 { 0 }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_asm_multiple_instructions() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         fn halt_loop() {
             unsafe {
                 asm!("cli");
@@ -120,7 +145,8 @@ fn compile_asm_multiple_instructions() {
             }
         }
         fn main() -> i32 { 0 }
-    "#);
+    "#,
+    );
 }
 
 // ── Codegen verification tests ──
@@ -144,8 +170,10 @@ fn codegen_nop_bytes() {
     };
     let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     // The object file should contain a 0x90 (nop) byte somewhere in the .text section
-    assert!(obj_bytes.windows(1).any(|w| w[0] == 0x90),
-        "expected nop (0x90) in generated object code");
+    assert!(
+        obj_bytes.windows(1).any(|w| w[0] == 0x90),
+        "expected nop (0x90) in generated object code"
+    );
 }
 
 #[test]
@@ -170,8 +198,10 @@ fn codegen_cli_sti_bytes() {
     };
     let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     // Should contain CLI (0xFA) followed by STI (0xFB) somewhere
-    assert!(obj_bytes.windows(2).any(|w| w[0] == 0xFA && w[1] == 0xFB),
-        "expected cli;sti (0xFA 0xFB) in generated object code");
+    assert!(
+        obj_bytes.windows(2).any(|w| w[0] == 0xFA && w[1] == 0xFB),
+        "expected cli;sti (0xFA 0xFB) in generated object code"
+    );
 }
 
 #[test]
@@ -193,8 +223,10 @@ fn codegen_port_io_bytes() {
     };
     let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     // Should contain OUT DX, AL (0xEE) somewhere
-    assert!(obj_bytes.contains(&0xEE),
-        "expected 'out dx, al' (0xEE) in generated object code");
+    assert!(
+        obj_bytes.contains(&0xEE),
+        "expected 'out dx, al' (0xEE) in generated object code"
+    );
 }
 
 #[test]
@@ -216,7 +248,9 @@ fn codegen_inline_syscall_bytes() {
     };
     let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     assert!(
-        obj_bytes.windows(7).any(|w| w == [0x53, 0x48, 0x89, 0xfb, 0x0f, 0x05, 0x5b]),
+        obj_bytes
+            .windows(7)
+            .any(|w| w == [0x53, 0x48, 0x89, 0xfb, 0x0f, 0x05, 0x5b]),
         "expected push rbx; mov rbx,rdi; syscall; pop rbx in generated object code",
     );
 }
@@ -243,13 +277,13 @@ fn codegen_raw_syscall_intrinsic_uses_native_anyos_abi() {
     assert!(
         obj_bytes.windows(16).any(|w| {
             w == [
-                0x53,             // push rbx
+                0x53, // push rbx
                 0x48, 0x89, 0xf8, // mov rax, rdi
                 0x48, 0x89, 0xf3, // mov rbx, rsi
                 0x49, 0x89, 0xd2, // mov r10, rdx
                 0x48, 0x89, 0xca, // mov rdx, rcx
-                0x0f, 0x05,       // syscall
-                0x5b,             // pop rbx
+                0x0f, 0x05, // syscall
+                0x5b, // pop rbx
             ]
         }),
         "expected raw syscall intrinsic to marshal SysV args into anyOS syscall registers",
@@ -277,12 +311,12 @@ fn codegen_fixed_syscall_intrinsic_uses_native_anyos_abi() {
     assert!(
         obj_bytes.windows(20).any(|w| {
             w == [
-                0x53,                                                 // push rbx
+                0x53, // push rbx
                 0x48, 0xb8, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, 2
-                0x48, 0x89, 0xfb,                                     // mov rbx, rdi
-                0x49, 0x89, 0xf2,                                     // mov r10, rsi
-                0x0f, 0x05,                                           // syscall
-                0x5b,                                                 // pop rbx
+                0x48, 0x89, 0xfb, // mov rbx, rdi
+                0x49, 0x89, 0xf2, // mov r10, rsi
+                0x0f, 0x05, // syscall
+                0x5b, // pop rbx
             ]
         }),
         "expected fixed syscall intrinsic to marshal SysV args into anyOS syscall registers",

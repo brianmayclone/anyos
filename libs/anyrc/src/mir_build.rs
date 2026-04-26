@@ -791,6 +791,18 @@ impl<'a> MirBuilder<'a> {
                 Operand::Copy(Place::local(tmp))
             }
 
+            HirExprKind::RawRef(inner, mutability) => {
+                let place = self.lower_place(inner);
+                let borrow_kind = match mutability {
+                    Mutability::Immutable => BorrowKind::Shared,
+                    Mutability::Mut => BorrowKind::Mutable,
+                };
+                let ty = self.get_expr_ty(expr);
+                let tmp = self.alloc_temp(ty, expr.span);
+                self.emit_assign(Place::local(tmp), Rvalue::Ref(borrow_kind, place), expr.span);
+                Operand::Copy(Place::local(tmp))
+            }
+
             HirExprKind::Deref(inner) => {
                 let mut place = self.lower_place(inner);
                 place.projections.push(Projection::Deref);

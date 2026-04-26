@@ -333,6 +333,7 @@ impl<'a> LoweringContext<'a> {
             ast::Expr::Assign(l, r, span) => (HirExprKind::Assign(Box::new(self.lower_expr(l)), Box::new(self.lower_expr(r))), *span),
             ast::Expr::AssignOp(op, l, r, span) => (HirExprKind::AssignOp(*op, Box::new(self.lower_expr(l)), Box::new(self.lower_expr(r))), *span),
             ast::Expr::Ref(e, m, span) => (HirExprKind::Ref(Box::new(self.lower_expr(e)), *m), *span),
+            ast::Expr::RawRef(e, m, span) => (HirExprKind::RawRef(Box::new(self.lower_expr(e)), *m), *span),
             ast::Expr::Deref(e, span) => (HirExprKind::Deref(Box::new(self.lower_expr(e))), *span),
             ast::Expr::Cast(e, ty, span) => (HirExprKind::Cast(Box::new(self.lower_expr(e)), self.lower_ty(ty)), *span),
             ast::Expr::Struct(path, fields, base, span) => (

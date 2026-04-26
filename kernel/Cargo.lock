@@ -127,6 +127,7 @@ name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
+ "quote",
  "unicode-ident",
  "proc-macro2",
 ]

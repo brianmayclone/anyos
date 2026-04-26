@@ -276,7 +276,7 @@ impl<'a> TypeChecker<'a> {
             type_alias_def_tys: HashMap::new(),
             enum_variant_fields: HashMap::new(),
             enum_variant_named_fields: HashMap::new(),
-            resolver_variant_to_enum: HashMap::new(),
+            resolver_variant_to_enum: resolve.variant_to_enum.clone(),
             current_generic_params: HashMap::new(),
             current_const_generic_params: HashMap::new(),
             generic_call_substs: HashMap::new(),
@@ -575,6 +575,9 @@ impl<'a> TypeChecker<'a> {
                 if *t_mut == Mutability::Immutable || t_mut == a_mut =>
             {
                 self.collect_param_substs(t_inner, a_inner, substs);
+            }
+            (TyKind::Ref(t_inner, _), actual) => {
+                self.collect_param_substs(t_inner, actual, substs);
             }
             (TyKind::RawPtr(t_inner, t_mut), TyKind::RawPtr(a_inner, a_mut))
                 if t_mut == a_mut =>
@@ -966,10 +969,6 @@ impl<'a> TypeChecker<'a> {
                 HirItemKind::Struct(s) => self.register_qualified_type(prefix, s.name, s.def_id),
                 HirItemKind::Enum(e) => self.register_qualified_type(prefix, e.name, e.def_id),
                 HirItemKind::Trait(t) => self.register_qualified_type(prefix, t.name, t.def_id),
-                HirItemKind::Use(u) => {
-                    self.collect_module_alias(prefix, u);
-                    self.collect_scoped_type_alias(prefix, u);
-                }
                 HirItemKind::Mod(m) => {
                     self.register_qualified_type(prefix, m.name, m.def_id);
                     if let Some(sub_items) = &m.items {
@@ -979,6 +978,13 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        for item in items {
+            if let HirItemKind::Use(u) = &item.kind {
+                self.collect_module_alias(prefix, u);
+                self.collect_scoped_type_alias(prefix, u);
             }
         }
     }
@@ -1068,6 +1074,19 @@ impl<'a> TypeChecker<'a> {
             .map(|sym| self.interner.resolve(*sym).to_string())
             .collect::<Vec<_>>()
             .join("::")
+    }
+
+    fn module_has_local_type(&self, module_key: &str, name: Symbol) -> bool {
+        let name_str = self.interner.resolve(name);
+        let path = if module_key.is_empty() {
+            name_str.to_string()
+        } else {
+            format!("{}::{}", module_key, name_str)
+        };
+        self.qualified_type_names.contains_key(&path)
+            || self
+                .qualified_type_names
+                .contains_key(&format!("crate::{}", path))
     }
 
     fn normalize_crate_path(&self, path: &[Symbol]) -> String {
@@ -1240,6 +1259,9 @@ impl<'a> TypeChecker<'a> {
                     })
                     .collect::<Vec<_>>();
                 for (name, alias_target) in aliases {
+                    if self.module_has_local_type(&module_key, name) {
+                        continue;
+                    }
                     self.scoped_type_aliases
                         .insert((module_key.clone(), name), alias_target);
                 }
@@ -1983,6 +2005,20 @@ impl<'a> TypeChecker<'a> {
                 self.error(expr_span, "cannot index this type: str");
                 Some(TyKind::Error)
             }
+            TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
+                self.check_builtin_index_ty(idx_ty, idx_span, is_range);
+                let elem_ty = self.shallow_resolve(substs[0].clone());
+                Some(if is_range {
+                    TyKind::Slice(Box::new(elem_ty))
+                } else {
+                    elem_ty
+                })
+            }
+            TyKind::Adt(def_id, _) if self.is_string_def(def_id) && is_range => Some(TyKind::Str),
+            TyKind::Adt(def_id, _) if self.is_string_def(def_id) => {
+                self.error(expr_span, "cannot index this type: String");
+                Some(TyKind::Error)
+            }
             _ => None,
         }
     }
@@ -2410,6 +2446,15 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_expr_with_expected(&mut self, expr: &HirExpr, expected: &TyKind) -> TyKind {
+        if let HirExprKind::Path(path) = &expr.kind {
+            if let TyKind::Adt(expected_def, _) = self.shallow_resolve(expected.clone()) {
+                if self.path_is_unit_variant_of_enum(path, expected_def) {
+                    self.expr_types.insert(expr.id, expected.clone());
+                    return expected.clone();
+                }
+            }
+        }
+
         if let HirExprKind::Call(callee, args) = &expr.kind {
             if let HirExprKind::Path(path) = &callee.kind {
                 if let Some(ret_ty) =
@@ -2451,6 +2496,19 @@ impl<'a> TypeChecker<'a> {
         ty
     }
 
+    fn path_is_unit_variant_of_enum(&self, path: &HirPath, enum_def_id: DefId) -> bool {
+        let Some(variant_name) = path.segments.last().map(|segment| segment.ident) else {
+            return false;
+        };
+        self.enum_variant_fields
+            .get(&enum_def_id)
+            .is_some_and(|variants| {
+                variants
+                    .iter()
+                    .any(|(name, fields)| *name == variant_name && fields.is_empty())
+            })
+    }
+
     fn get_expr_ty_cached(&self, expr: &HirExpr) -> TyKind {
         self.expr_types.get(&expr.id).cloned().unwrap_or(TyKind::Error)
     }
@@ -2480,8 +2538,8 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::Binary(op, lhs, rhs) => {
                 let raw_lty = self.check_expr(lhs);
                 let raw_rty = self.check_expr(rhs);
-                let lty = self.binary_operand_ty(raw_lty);
-                let rty = self.binary_operand_ty(raw_rty);
+                let mut lty = self.binary_operand_ty(raw_lty);
+                let mut rty = self.binary_operand_ty(raw_rty);
                 match op {
                     BinOp::And | BinOp::Or => {
                         self.unify(&TyKind::Bool, &lty, lhs.span);
@@ -2489,6 +2547,22 @@ impl<'a> TypeChecker<'a> {
                         TyKind::Bool
                     }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        if let HirExprKind::Path(path) = &rhs.kind {
+                            if let TyKind::Adt(expected_def, _) = self.shallow_resolve(lty.clone()) {
+                                if self.path_is_unit_variant_of_enum(path, expected_def) {
+                                    let coerced = self.check_expr_with_expected(rhs, &lty);
+                                    rty = self.binary_operand_ty(coerced);
+                                }
+                            }
+                        }
+                        if let HirExprKind::Path(path) = &lhs.kind {
+                            if let TyKind::Adt(expected_def, _) = self.shallow_resolve(rty.clone()) {
+                                if self.path_is_unit_variant_of_enum(path, expected_def) {
+                                    let coerced = self.check_expr_with_expected(lhs, &rty);
+                                    lty = self.binary_operand_ty(coerced);
+                                }
+                            }
+                        }
                         if let Some(impl_info) = self.lookup_operator_impl(*op, &lty, &rty) {
                             self.unify(&impl_info.self_ty, &lty, lhs.span);
                             self.unify(&impl_info.rhs_ty, &rty, rhs.span);
@@ -2623,6 +2697,43 @@ impl<'a> TypeChecker<'a> {
                             }
                             return self.fresh_infer(InferKind::General);
                         }
+                        if let Some(&enum_def_id) = self.resolver_variant_to_enum.get(&def_id) {
+                            let (enum_def_id, substs) = match self.fresh_adt_ty(enum_def_id, vec![]) {
+                                TyKind::Adt(def_id, substs) => (def_id, substs),
+                                _ => (enum_def_id, Vec::new()),
+                            };
+                            let variant_name = if let HirExprKind::Path(path) = &callee.kind {
+                                path.segments.last().map(|segment| segment.ident)
+                            } else {
+                                None
+                            };
+                            let expected_fields = variant_name
+                                .and_then(|name| {
+                                    self.enum_variant_fields
+                                        .get(&enum_def_id)
+                                        .and_then(|variants| variants.iter().find(|(variant, _)| *variant == name))
+                                })
+                                .map(|(_, fields)| fields.clone())
+                                .unwrap_or_default();
+                            if args.len() != expected_fields.len() {
+                                self.error(expr.span, &format!(
+                                    "wrong number of arguments for {}: expected {}, found {}",
+                                    self.describe_callee(callee),
+                                    expected_fields.len(),
+                                    args.len(),
+                                ));
+                                for arg in args {
+                                    self.check_expr(arg);
+                                }
+                            } else {
+                                for (arg, field_ty) in args.iter().zip(expected_fields.iter()) {
+                                    let expected = self.substitute_params(field_ty, &substs);
+                                    let actual = self.check_expr_with_expected(arg, &expected);
+                                    self.unify(&expected, &actual, arg.span);
+                                }
+                            }
+                            return TyKind::Adt(enum_def_id, substs);
+                        }
                         if let Some((param_tys, ret_ty)) = self.fn_sigs.get(&def_id).cloned() {
                             let const_substs = if let HirExprKind::Path(path) = &callee.kind {
                                 self.explicit_const_arg_substs_for_path(def_id, path)
@@ -2662,7 +2773,7 @@ impl<'a> TypeChecker<'a> {
                                 for a in args { self.check_expr(a); }
                             } else {
                                 for (arg, pty) in args.iter().zip(param_tys.iter()) {
-                                    let aty = self.check_expr(arg);
+                                    let aty = self.check_expr_with_expected(arg, pty);
                                     self.unify(pty, &aty, arg.span);
                                 }
                             }
@@ -2806,12 +2917,14 @@ impl<'a> TypeChecker<'a> {
                             .cloned()
                         {
                             for fe in fields {
-                                let val_ty = self.check_expr(&fe.value);
                                 if let Some((_, fty)) =
                                     expected_fields.iter().find(|(n, _)| *n == fe.name)
                                 {
                                     let expected_ty = self.substitute_params(fty, substs);
+                                    let val_ty = self.check_expr_with_expected(&fe.value, &expected_ty);
                                     self.unify(&expected_ty, &val_ty, fe.span);
+                                } else {
+                                    self.check_expr(&fe.value);
                                 }
                             }
                         } else {
@@ -2845,10 +2958,12 @@ impl<'a> TypeChecker<'a> {
                 if let Some(TyKind::Adt(def_id, substs)) = adt_ty {
                     if let Some(expected_fields) = self.struct_defs.get(&def_id).cloned() {
                         for fe in fields {
-                            let val_ty = self.check_expr(&fe.value);
                             if let Some((_, fty)) = expected_fields.iter().find(|(n, _)| *n == fe.name) {
                                 let expected_ty = self.substitute_params(fty, &substs);
+                                let val_ty = self.check_expr_with_expected(&fe.value, &expected_ty);
                                 self.unify(&expected_ty, &val_ty, fe.span);
+                            } else {
+                                self.check_expr(&fe.value);
                             }
                         }
                     } else {
@@ -2930,7 +3045,7 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::Assign(lhs, rhs) => {
                 let lty = self.check_expr(lhs);
-                let rty = self.check_expr(rhs);
+                let rty = self.check_expr_with_expected(rhs, &lty);
                 self.unify_with_context(&lty, &rty, expr.span, "checking assignment type");
                 TyKind::Unit
             }
@@ -2979,6 +3094,11 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::Ref(inner, mutability) => {
                 let inner_ty = self.check_expr(inner);
                 TyKind::Ref(Box::new(inner_ty), *mutability)
+            }
+
+            HirExprKind::RawRef(inner, mutability) => {
+                let inner_ty = self.check_expr(inner);
+                TyKind::RawPtr(Box::new(inner_ty), *mutability)
             }
 
             HirExprKind::Deref(inner) => {
@@ -4006,6 +4126,28 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Some(ty) = self.intrinsic_enum_variant_type(path_str) {
                     return ty;
+                }
+                return TyKind::FnDef(def_id, vec![]);
+            }
+            // Enum variant resolved by the name resolver. Unit variants are
+            // values of the enum type; tuple/struct variants remain callable
+            // constructors and are handled by call/struct-literal paths.
+            if let Some(&enum_def_id) = self.resolver_variant_to_enum.get(&def_id) {
+                let variant_name = path.segments.last().map(|segment| segment.ident);
+                let is_unit_variant = variant_name
+                    .and_then(|name| {
+                        self.enum_variant_fields
+                            .get(&enum_def_id)
+                            .and_then(|variants| variants.iter().find(|(variant, _)| *variant == name))
+                    })
+                    .is_some_and(|(_, fields)| fields.is_empty());
+                if is_unit_variant {
+                    let type_args = path
+                        .segments
+                        .get(path.segments.len().saturating_sub(2))
+                        .map(|segment| self.type_args_from_segment(segment))
+                        .unwrap_or_default();
+                    return self.fresh_adt_ty(enum_def_id, type_args);
                 }
                 return TyKind::FnDef(def_id, vec![]);
             }
@@ -5728,7 +5870,7 @@ impl<'a> TypeChecker<'a> {
                 return false;
             };
             let target = self.shallow_resolve(target);
-            if self.ty_matches_for_candidate(expected_inner, &target) {
+            if self.ref_inner_matches_or_coerces(expected_inner, &target, span) {
                 return true;
             }
             if target == current {
@@ -5737,6 +5879,26 @@ impl<'a> TypeChecker<'a> {
             current = target;
         }
         false
+    }
+
+    fn ref_inner_matches_or_coerces(&mut self, expected: &TyKind, actual: &TyKind, span: Span) -> bool {
+        if self.ty_matches_for_candidate(expected, actual) {
+            return true;
+        }
+        match (expected, actual) {
+            (TyKind::Slice(expected_elem), TyKind::Array(actual_elem, _)) => {
+                self.unify(expected_elem, actual_elem, span);
+                true
+            }
+            (TyKind::Slice(expected_elem), TyKind::Adt(def_id, substs))
+                if self.is_vec_def(*def_id) && substs.len() == 1 =>
+            {
+                self.unify(expected_elem, &substs[0], span);
+                true
+            }
+            (TyKind::Str, TyKind::Adt(def_id, _)) if self.is_string_def(*def_id) => true,
+            _ => false,
+        }
     }
 
     fn unify(&mut self, expected: &TyKind, actual: &TyKind, span: Span) {
