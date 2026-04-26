@@ -59,11 +59,8 @@ exclude = [
   "system/compositor/crashdialog",
   # UEFI bootloader uses x86_64-unknown-uefi target, built separately
   "bootloader/uefi",
-  # Non-Rust directories (C programs, placeholder stubs)
-  "bin/git",
-  "bin/make",
-  "bin/ssh",
-  "bin/sshd",
+  # 32-bit C placeholder dirs (bin/git, bin/make, bin/ssh, bin/sshd, bin/scp)
+  # were removed; Rust replacements live elsewhere (cgit, ccargo).
   # Legacy per-program build output directories; the real daemons live under system/.
   "bin/crond",
   "bin/ftpd",

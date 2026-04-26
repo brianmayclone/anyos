@@ -27,8 +27,6 @@ fi
 if [ "$1" = "--all" ]; then
     echo "Removing entire build directory..."
     rm -rf "$BUILD_DIR"
-    # Also clean libc build artifacts in source tree
-    make -C "${PROJECT_DIR}/libs/libc" clean 2>/dev/null
     echo "Done. Run: cmake -B build -G Ninja && ninja -C build"
     exit 0
 fi
@@ -58,15 +56,6 @@ rm -rf "${BUILD_DIR}/programs" 2>/dev/null
 # Buildsystem tools (anyelf, anyld, mkimage, mkappbundle)
 echo "  Buildsystem tools..."
 rm -rf "${BUILD_DIR}/buildsystem" 2>/dev/null
-
-# Libc (built in source tree via Makefile)
-echo "  Libc..."
-make -C "${PROJECT_DIR}/libs/libc" clean 2>/dev/null
-
-# TCC object
-echo "  TCC..."
-rm -f "${BUILD_DIR}/tcc.o" 2>/dev/null
-rm -f "${BUILD_DIR}/tcc.elf" 2>/dev/null
 
 # Sysroot (regenerated from build outputs)
 echo "  Sysroot..."
