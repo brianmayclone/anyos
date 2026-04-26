@@ -3,10 +3,10 @@
 //! Handles Cargo workspace resolution: finding workspace root, discovering
 //! member crates, and resolving workspace-level dependencies.
 
-use crate::prelude::*;
 use crate::fs;
-use crate::toml;
 use crate::manifest;
+use crate::prelude::*;
+use crate::toml;
 use anyos_std::println;
 
 /// A resolved workspace with all member paths.
@@ -99,11 +99,16 @@ fn discover_members_in_dir(dir: &str, members: &mut Vec<String>) {
         let off = i * entry_size;
         let file_type = buf[off];
         let name_len = buf[off + 1] as usize;
-        if name_len == 0 { continue; }
+        if name_len == 0 {
+            continue;
+        }
         let name_bytes = &buf[off + 8..off + 8 + name_len];
         if let Ok(name) = core::str::from_utf8(name_bytes) {
-            if name == "." || name == ".." { continue; }
-            if file_type == 1 { // directory
+            if name == "." || name == ".." {
+                continue;
+            }
+            if file_type == 1 {
+                // directory
                 let child_dir = format!("{}/{}", dir, name);
                 let cargo_path = format!("{}/Cargo.toml", child_dir);
                 if fs::file_exists(&cargo_path) {
@@ -115,10 +120,7 @@ fn discover_members_in_dir(dir: &str, members: &mut Vec<String>) {
 }
 
 /// Resolve features for a crate based on requested features and manifest defaults.
-pub fn resolve_features(
-    manifest: &manifest::Manifest,
-    requested: &[String],
-) -> Vec<String> {
+pub fn resolve_features(manifest: &manifest::Manifest, requested: &[String]) -> Vec<String> {
     let mut active = Vec::new();
 
     let use_defaults = !requested.iter().any(|f| f == "__no_default__");
@@ -145,7 +147,9 @@ pub fn resolve_features(
     } else {
         // Add explicitly requested features
         for feat in requested {
-            if feat.starts_with("__") { continue; } // skip internal markers
+            if feat.starts_with("__") {
+                continue;
+            } // skip internal markers
             activate_feature(manifest, &mut active, feat);
         }
     }

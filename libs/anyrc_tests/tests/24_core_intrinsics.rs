@@ -110,6 +110,103 @@ fn compile_use_import() {
 }
 
 #[test]
+fn compile_char_from_u32() {
+    assert_compiles(
+        r#"
+        fn main() -> i32 {
+            let c = core::char::from_u32(65);
+            0
+        }
+    "#,
+    );
+}
+
+#[test]
+fn compile_maybe_uninit_assume_init_array() {
+    assert_compiles(
+        r#"
+        fn main() -> i32 {
+            let values: [core::mem::MaybeUninit<u32>; 4] =
+                unsafe { core::mem::MaybeUninit::uninit().assume_init() };
+            0
+        }
+    "#,
+    );
+}
+
+#[test]
+fn compile_alloc_rc_weak_import() {
+    assert_compiles(
+        r#"
+        extern crate alloc;
+        use alloc::rc::{Rc, Weak};
+
+        struct Cell {
+            value: u32,
+        }
+
+        fn main() -> i32 {
+            let rc = Rc::new(Cell { value: 1 });
+            let weak: Weak<Cell> = Rc::downgrade(&rc);
+            0
+        }
+    "#,
+    );
+}
+
+#[test]
+fn compile_option_or_and_raw_pointer_helpers() {
+    assert_compiles(
+        r#"
+        extern crate alloc;
+
+        use alloc::rc::Rc;
+
+        fn main() -> i32 {
+            let a = Some(1usize);
+            let b = None.or(a);
+            let _ = b.unwrap_or(0);
+
+            let rc = Rc::new(7usize);
+            let _p = Rc::as_ptr(&rc);
+            let _raw = Rc::into_raw(rc);
+
+            let value = 3usize;
+            let _ptr = core::ptr::from_ref(&value);
+            let _one = core::slice::from_ref(&value);
+            let _f = f64::from_bits(0);
+            let _g = f32::from_bits(0);
+            0
+        }
+    "#,
+    );
+}
+
+#[test]
+fn compile_string_from_utf8_lossy_and_try_from() {
+    assert_compiles(
+        r#"
+        extern crate alloc;
+
+        use alloc::string::String;
+
+        fn parse(bytes: &[u8], value: i64) -> String {
+            let Ok(_n) = usize::try_from(value) else {
+                return String::new();
+            };
+            String::from_utf8_lossy(bytes).into_owned()
+        }
+
+        fn main() -> i32 {
+            let bytes = [65u8, 66u8];
+            let _s = parse(&bytes, 7);
+            0
+        }
+    "#,
+    );
+}
+
+#[test]
 fn run_primitive_assoc_from() {
     assert_run_returns(
         r#"

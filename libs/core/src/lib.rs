@@ -17,10 +17,12 @@ pub mod option {
         pub fn unwrap(self) -> T;
         pub fn unwrap_or(self, default: T) -> T;
         pub fn unwrap_or_default(self) -> T;
+        pub fn or(self, optb: Option<T>) -> Option<T>;
         pub fn ok_or<E>(self, err: E) -> crate::result::Result<T, E>;
         pub fn map<U, F>(self, f: F) -> Option<U>;
         pub fn map_or<U, F>(self, default: U, f: F) -> U;
         pub fn map_or_else<U, D, F>(self, default: D, f: F) -> U;
+        pub unsafe fn unwrap_unchecked(self) -> T;
     }
 }
 
@@ -96,6 +98,8 @@ pub mod default {
 }
 
 pub mod convert {
+    pub enum Infallible {}
+
     pub trait From<T> {
         fn from(value: T) -> Self;
     }
@@ -250,7 +254,11 @@ pub mod iter {
         pub value: crate::option::Option<T>,
     }
 
-    pub fn once<T>(value: T) -> Once<T>;
+    pub fn once<T>(value: T) -> Once<T> {
+        Once {
+            value: crate::option::Some(value),
+        }
+    }
 }
 
 pub mod mem {
@@ -271,8 +279,24 @@ pub mod mem {
         fn deref_mut(&mut self) -> &mut T;
     }
 
+    pub union MaybeUninit<T> {
+        pub value: T,
+    }
+
+    impl<T> MaybeUninit<T> {
+        pub const fn new(value: T) -> MaybeUninit<T>;
+        pub const fn uninit() -> MaybeUninit<T>;
+        pub fn as_ptr(&self) -> *const T;
+        pub fn as_mut_ptr(&mut self) -> *mut T;
+        pub unsafe fn assume_init(self) -> T;
+        pub unsafe fn assume_init_read(&self) -> T;
+        pub unsafe fn assume_init_ref(&self) -> &T;
+        pub unsafe fn assume_init_mut(&mut self) -> &mut T;
+    }
+
     pub fn size_of<T>() -> usize;
     pub fn size_of_val<T>(val: &T) -> usize;
+    pub unsafe fn size_of_val_raw<T>(val: *const T) -> usize;
     pub fn align_of<T>() -> usize;
     pub fn forget<T>(value: T);
     pub unsafe fn zeroed<T>() -> T;
@@ -283,6 +307,28 @@ pub mod mem {
 }
 
 pub mod ptr {
+    pub struct NonNull<T> {
+        pub pointer: *mut T,
+    }
+
+    impl<T> NonNull<T> {
+        pub const unsafe fn new_unchecked(ptr: *mut T) -> NonNull<T>;
+        pub fn new(ptr: *mut T) -> crate::option::Option<NonNull<T>>;
+        pub fn dangling() -> NonNull<T>;
+        pub fn as_ptr(self) -> *mut T;
+        pub unsafe fn as_ref<'a>(&self) -> &'a T;
+        pub unsafe fn as_mut<'a>(&mut self) -> &'a mut T;
+        pub fn cast<U>(self) -> NonNull<U>;
+    }
+
+    impl<T> crate::convert::From<&mut T> for NonNull<T> {
+        fn from(value: &mut T) -> NonNull<T>;
+    }
+
+    impl<T> crate::convert::From<&T> for NonNull<T> {
+        fn from(value: &T) -> NonNull<T>;
+    }
+
     pub fn null<T>() -> *const T;
     pub fn null_mut<T>() -> *mut T;
     pub unsafe fn read<T>(src: *const T) -> T;
@@ -293,6 +339,10 @@ pub mod ptr {
     pub unsafe fn write_volatile<T>(dst: *mut T, src: T);
     pub unsafe fn write_bytes<T>(dst: *mut T, val: u8, count: usize);
     pub unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
+    pub unsafe fn drop_in_place<T>(to_drop: *mut T);
+    pub unsafe fn swap_nonoverlapping<T>(x: *mut T, y: *mut T, count: usize);
+    pub fn slice_from_raw_parts_mut<T>(data: *mut T, len: usize) -> *mut [T];
+    pub fn from_ref<T>(s: &T) -> *const T;
 }
 
 pub mod slice {
@@ -310,6 +360,7 @@ pub mod slice {
 
     pub unsafe fn from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T];
     pub unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T];
+    pub fn from_ref<T>(s: &T) -> &[T];
 }
 
 pub mod str {
@@ -326,6 +377,20 @@ pub mod fmt {
     pub struct Arguments;
     pub struct Formatter<'a> {
         pub marker: crate::marker::PhantomData<&'a ()>,
+    }
+
+    pub struct DebugTuple<'a, 'b> {
+        pub marker: crate::marker::PhantomData<&'a &'b ()>,
+    }
+
+    impl<'a> Formatter<'a> {
+        pub fn pad(&mut self, s: &str) -> Result;
+        pub fn debug_tuple<'b>(&'b mut self, name: &str) -> DebugTuple<'b, 'a>;
+    }
+
+    impl<'a, 'b> DebugTuple<'a, 'b> {
+        pub fn field<T>(&mut self, value: &T) -> &mut DebugTuple<'a, 'b>;
+        pub fn finish(&mut self) -> Result;
     }
 
     pub trait Debug {
@@ -355,6 +420,7 @@ pub mod alloc {
             size: usize,
             align: usize,
         ) -> crate::result::Result<Layout, LayoutError>;
+        pub unsafe fn from_size_align_unchecked(size: usize, align: usize) -> Layout;
         pub fn size(&self) -> usize;
         pub fn align(&self) -> usize;
     }
@@ -424,6 +490,8 @@ pub mod sync {
 }
 
 pub mod hint {
+    pub fn likely(b: bool) -> bool;
+    pub fn unlikely(b: bool) -> bool;
     pub fn spin_loop();
     pub unsafe fn unreachable_unchecked() -> !;
 }
@@ -475,18 +543,46 @@ pub mod time {
     }
 
     impl Duration {
-        pub fn from_secs(secs: u64) -> Duration;
-        pub fn from_millis(ms: u64) -> Duration;
-        pub fn as_millis(&self) -> u128;
+        pub fn from_secs(secs: u64) -> Duration {
+            Duration { secs, nanos: 0 }
+        }
+
+        pub fn from_millis(ms: u64) -> Duration {
+            Duration {
+                secs: ms / 1000,
+                nanos: ((ms % 1000) as u32) * 1_000_000,
+            }
+        }
+
+        pub fn as_millis(&self) -> u128 {
+            (self.secs as u128) * 1000 + (self.nanos as u128) / 1_000_000
+        }
     }
 }
 
 pub mod any {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct TypeId {
+        value: u64,
+    }
+
+    impl TypeId {
+        pub fn of<T: ?Sized>() -> TypeId;
+    }
+
     pub trait Any {}
+    pub fn type_name<T>() -> &'static str;
 }
 
-pub mod char {}
+pub mod char {
+    pub fn from_u32(v: u32) -> crate::option::Option<char>;
+}
 pub mod f32 {
+    impl f32 {
+        pub fn from_bits(v: u32) -> f32;
+        pub fn to_bits(self) -> u32;
+    }
+
     pub mod consts {
         pub const PI: f32 = 3.1415927;
         pub const E: f32 = 2.7182817;
@@ -510,6 +606,11 @@ pub mod f32 {
 }
 
 pub mod f64 {
+    impl f64 {
+        pub fn from_bits(v: u64) -> f64;
+        pub fn to_bits(self) -> u64;
+    }
+
     pub mod consts {
         pub const PI: f64 = 3.141592653589793;
         pub const E: f64 = 2.718281828459045;

@@ -23,6 +23,7 @@ pub struct MirBuilder<'a> {
 
     /// Captured outer locals visible while lowering a closure body.
     capture_env: HashMap<DefId, TyKind>,
+    capture_name_env: HashMap<Symbol, TyKind>,
 
     /// Stack of (loop_header, loop_exit) block ids for break/continue
     loop_stack: Vec<(BlockId, BlockId)>,
@@ -52,7 +53,7 @@ impl<'a> MirBuilder<'a> {
         for item in &hir.items {
             Self::collect_fn_defs(item, &mut fn_defs);
         }
-        let fn_symbols = Self::collect_fn_symbols(&fn_defs);
+        let fn_symbols = Self::collect_qualified_fn_symbols(interner, hir);
         // Then build MIR for each (sequential, so &mut interner is fine)
         let mut bodies = Vec::new();
         for f in &fn_defs {
@@ -97,6 +98,121 @@ impl<'a> MirBuilder<'a> {
 
     pub fn collect_fn_symbols(fn_defs: &[&HirFnDef]) -> HashMap<DefId, Symbol> {
         fn_defs.iter().map(|f| (f.def_id, f.name)).collect()
+    }
+
+    fn collect_qualified_fn_symbols(
+        interner: &mut Interner,
+        hir: &HirCrate,
+    ) -> HashMap<DefId, Symbol> {
+        let mut out = HashMap::new();
+        for item in &hir.items {
+            Self::collect_qualified_fn_symbols_from_item(
+                item,
+                interner,
+                &mut out,
+                &mut Vec::new(),
+                None,
+            );
+        }
+        out
+    }
+
+    fn collect_qualified_fn_symbols_from_item(
+        item: &HirItem,
+        interner: &mut Interner,
+        out: &mut HashMap<DefId, Symbol>,
+        module_path: &mut Vec<Symbol>,
+        impl_owner: Option<Symbol>,
+    ) {
+        match &item.kind {
+            HirItemKind::Fn(f) => {
+                let sym = if module_path.is_empty() && impl_owner.is_none() {
+                    f.name
+                } else {
+                    let mut parts: Vec<String> = module_path
+                        .iter()
+                        .map(|sym| interner.resolve(*sym).to_string())
+                        .collect();
+                    if let Some(owner) = impl_owner {
+                        parts.push(interner.resolve(owner).to_string());
+                    }
+                    parts.push(interner.resolve(f.name).to_string());
+                    interner.intern(&parts.join("::"))
+                };
+                out.insert(f.def_id, sym);
+                if let Some(body) = &f.body {
+                    module_path.push(f.name);
+                    Self::collect_qualified_fn_symbols_from_block(
+                        body,
+                        interner,
+                        out,
+                        module_path,
+                    );
+                    module_path.pop();
+                }
+            }
+            HirItemKind::Impl(ib) => {
+                let owner = match &ib.self_ty {
+                    HirTy::Path(path) => path.segments.last().map(|seg| seg.ident),
+                    _ => None,
+                };
+                for sub in &ib.items {
+                    Self::collect_qualified_fn_symbols_from_item(
+                        sub,
+                        interner,
+                        out,
+                        module_path,
+                        owner,
+                    );
+                }
+            }
+            HirItemKind::Mod(m) => {
+                module_path.push(m.name);
+                if let Some(items) = &m.items {
+                    for sub in items {
+                        Self::collect_qualified_fn_symbols_from_item(
+                            sub,
+                            interner,
+                            out,
+                            module_path,
+                            None,
+                        );
+                    }
+                }
+                module_path.pop();
+            }
+            HirItemKind::ExternBlock(eb) => {
+                for sub in &eb.items {
+                    Self::collect_qualified_fn_symbols_from_item(
+                        sub,
+                        interner,
+                        out,
+                        module_path,
+                        impl_owner,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_qualified_fn_symbols_from_block(
+        block: &HirBlock,
+        interner: &mut Interner,
+        out: &mut HashMap<DefId, Symbol>,
+        module_path: &mut Vec<Symbol>,
+    ) {
+        for stmt in &block.stmts {
+            if let HirStmt::Item(item) = stmt {
+                Self::collect_qualified_fn_symbols_from_item(
+                    item,
+                    interner,
+                    out,
+                    module_path,
+                    None,
+                );
+            }
+        }
     }
 
     fn collect_fn_defs_from_block<'b>(block: &'b HirBlock, out: &mut Vec<&'b HirFnDef>) {
@@ -248,6 +364,7 @@ impl<'a> MirBuilder<'a> {
             current_block: BlockId(0),
             var_map: HashMap::new(),
             capture_env: HashMap::new(),
+            capture_name_env: HashMap::new(),
             loop_stack: Vec::new(),
             extra_bodies: Vec::new(),
             closure_counter: 0,
@@ -312,7 +429,11 @@ impl<'a> MirBuilder<'a> {
             basic_blocks: builder.blocks,
             locals: builder.locals,
             arg_count,
-            name: func.name,
+            name: builder
+                .fn_symbols
+                .get(&func.def_id)
+                .copied()
+                .unwrap_or(func.name),
             span: Span::dummy(),
             no_mangle: func.no_mangle,
         });
@@ -415,6 +536,16 @@ impl<'a> MirBuilder<'a> {
                 _ => None,
             };
         }
+        if self.type_def_name_is(enum_def_id, "Ordering") {
+            return match variant {
+                "Less" | "Relaxed" => Some(0),
+                "Equal" | "Release" => Some(1),
+                "Greater" | "Acquire" => Some(2),
+                "AcqRel" => Some(3),
+                "SeqCst" => Some(4),
+                _ => None,
+            };
+        }
         None
     }
 
@@ -503,6 +634,24 @@ impl<'a> MirBuilder<'a> {
 
         let full = self.hir_path_to_string(path);
         match full.as_str() {
+            "alloc::vec::Vec::new" | "std::vec::Vec::new" => {
+                Some(self.interner.intern("Vec::new"))
+            }
+            "alloc::vec::Vec::with_capacity" | "std::vec::Vec::with_capacity" => {
+                Some(self.interner.intern("Vec::with_capacity"))
+            }
+            "alloc::string::String::new" | "std::string::String::new" => {
+                Some(self.interner.intern("String::new"))
+            }
+            "alloc::string::String::with_capacity" | "std::string::String::with_capacity" => {
+                Some(self.interner.intern("String::with_capacity"))
+            }
+            "core::ptr::null" | "ptr::null" => Some(self.interner.intern("null")),
+            "core::ptr::null_mut" | "ptr::null_mut" => Some(self.interner.intern("null_mut")),
+            "core::mem::forget" | "mem::forget" => Some(self.interner.intern("forget")),
+            "core::hint::spin_loop" | "hint::spin_loop" => Some(self.interner.intern("spin_loop")),
+            "core::cmp::min" | "cmp::min" => Some(self.interner.intern("min")),
+            "core::cmp::max" | "cmp::max" => Some(self.interner.intern("max")),
             "core::str::from_utf8" | "str::from_utf8" => {
                 Some(self.interner.intern("core::str::from_utf8"))
             }
@@ -811,6 +960,14 @@ impl<'a> MirBuilder<'a> {
             }
 
             HirExprKind::Call(callee, args) => {
+                if let HirExprKind::QualifiedPath(qpath) = &callee.kind {
+                    if self.is_qualified_slice_get_unchecked(qpath) && args.len() == 2 {
+                        if let Some(op) = self.lower_slice_get_unchecked_call(args, expr) {
+                            return op;
+                        }
+                    }
+                }
+
                 // Check if this is an enum variant constructor call
                 if let HirExprKind::Path(path) = &callee.kind {
                     if let Some((enum_def_id, variant_idx)) =
@@ -857,27 +1014,18 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
 
-                // Check if this is a tuple struct constructor call: PhysAddr(val)
-                if let HirExprKind::Path(path) = &callee.kind {
-                    let struct_name = path
-                        .segments
-                        .last()
-                        .map(|s| s.ident)
-                        .unwrap_or(path.segments[0].ident);
-                    if let Some(&struct_def_id) = self
-                        .typeck
-                        .type_def_to_name
-                        .iter()
-                        .find(|(_, name)| **name == struct_name)
-                        .map(|(did, _)| did)
-                    {
-                        if let Some(fields) = self.typeck.struct_defs.get(&struct_def_id) {
-                            // It's a struct — treat as tuple struct constructor
+                // Tuple/unit struct constructor call: PhysAddr(val), Reverse(v),
+                // PhantomData(). Use the checked result type instead of the
+                // spelling of the callee so imports and aliases lower the same.
+                if matches!(&callee.kind, HirExprKind::Path(_))
+                    || matches!(&callee.kind, HirExprKind::QualifiedPath(_))
+                {
+                    if let TyKind::Adt(struct_def_id, substs) = self.get_expr_ty(expr) {
+                        if self.typeck.struct_defs.contains_key(&struct_def_id) {
                             let arg_ops: Vec<Operand> =
                                 args.iter().map(|a| self.lower_expr(a)).collect();
-                            let ty = TyKind::Adt(struct_def_id, vec![]);
+                            let ty = TyKind::Adt(struct_def_id, substs);
                             let tmp = self.alloc_temp(ty, expr.span);
-                            let _ = fields;
                             self.emit_assign(
                                 Place::local(tmp),
                                 Rvalue::Aggregate(AggregateKind::Adt(struct_def_id, 0), arg_ops),
@@ -889,7 +1037,11 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 let func_op = if let HirExprKind::Path(path) = &callee.kind {
-                    if let Some(sym) = self.known_path_call_symbol(path) {
+                    if self.resolve_path_to_local(path, callee.id).is_some() {
+                        self.lower_expr(callee)
+                    } else if let Some(op) = self.lower_captured_path(path, callee) {
+                        op
+                    } else if let Some(sym) = self.known_path_call_symbol(path) {
                         Operand::Constant(Constant {
                             ty: self.get_expr_ty(callee),
                             value: ConstValue::FnItem(sym),
@@ -912,6 +1064,17 @@ impl<'a> MirBuilder<'a> {
                         } else {
                             lowered
                         }
+                    } else {
+                        self.lower_expr(callee)
+                    }
+                } else if let HirExprKind::QualifiedPath(qpath) = &callee.kind {
+                    if let Some(op) = self.lower_captured_path(&qpath.path, callee) {
+                        op
+                    } else if let Some(sym) = self.qualified_primitive_call_symbol(qpath) {
+                        Operand::Constant(Constant {
+                            ty: self.get_expr_ty(callee),
+                            value: ConstValue::FnItem(sym),
+                        })
                     } else {
                         self.lower_expr(callee)
                     }
@@ -1663,7 +1826,7 @@ impl<'a> MirBuilder<'a> {
                 if let Some(method_did) = method_def_id {
                     let fn_name = self
                         .known_adt_method_symbol(&inner_ty, *method_name)
-                        .unwrap_or(*method_name);
+                        .unwrap_or_else(|| self.fn_symbol_for_def(method_did, *method_name));
 
                     // Check what self parameter the method expects
                     let method_self_param = self
@@ -2074,14 +2237,13 @@ impl<'a> MirBuilder<'a> {
 
                     // Bind inner pattern variables for TupleStruct patterns
                     if let HirPattern::TupleStruct(_, inner_pats, _) = &arm.pat {
-                        if let Some(scr_local) = scr_local {
-                            for (field_idx, inner_pat) in inner_pats.iter().enumerate() {
-                                if let HirPattern::Ident(hir_id, name, _, _, _) = inner_pat {
-                                    if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
-                                        let field_ty = TyKind::Int(IntTy::I64); // placeholder
-                                        let local =
-                                            self.alloc_local(field_ty, Some(*name), expr.span);
-                                        self.var_map.insert(def_id, local);
+                        for (field_idx, inner_pat) in inner_pats.iter().enumerate() {
+                            if let HirPattern::Ident(hir_id, name, _, _, _) = inner_pat {
+                                if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                                    let field_ty = TyKind::Int(IntTy::I64); // placeholder
+                                    let local = self.alloc_local(field_ty, Some(*name), expr.span);
+                                    self.var_map.insert(def_id, local);
+                                    if let Some(scr_local) = scr_local {
                                         // Load from scrutinee's field (slot 1 + field_idx, since slot 0 is disc)
                                         let src_place = Place {
                                             local: scr_local,
@@ -2090,6 +2252,15 @@ impl<'a> MirBuilder<'a> {
                                         self.emit_assign(
                                             Place::local(local),
                                             Rvalue::Use(Operand::Copy(src_place)),
+                                            expr.span,
+                                        );
+                                    } else {
+                                        self.emit_assign(
+                                            Place::local(local),
+                                            Rvalue::Use(Operand::Constant(Constant {
+                                                ty: TyKind::Int(IntTy::I64),
+                                                value: ConstValue::Int(0),
+                                            })),
                                             expr.span,
                                         );
                                     }
@@ -2309,16 +2480,27 @@ impl<'a> MirBuilder<'a> {
                 let saved_current_block = self.current_block;
                 let saved_var_map = core::mem::take(&mut self.var_map);
                 let saved_capture_env = core::mem::take(&mut self.capture_env);
+                let saved_capture_name_env = core::mem::take(&mut self.capture_name_env);
                 let mut closure_capture_env = saved_capture_env.clone();
+                let mut closure_capture_name_env = saved_capture_name_env.clone();
                 for (def_id, local) in &saved_var_map {
                     if let Some(decl) = saved_locals.get(local.0) {
                         closure_capture_env.insert(*def_id, decl.ty.clone());
+                        if let Some(name) = decl.name {
+                            closure_capture_name_env.insert(name, decl.ty.clone());
+                        }
+                    }
+                }
+                for decl in &saved_locals {
+                    if let Some(name) = decl.name {
+                        closure_capture_name_env.insert(name, decl.ty.clone());
                     }
                 }
 
                 self.blocks = Vec::new();
                 self.locals = Vec::new();
                 self.capture_env = closure_capture_env;
+                self.capture_name_env = closure_capture_name_env;
                 let entry_block = self.push_block();
                 self.current_block = entry_block;
 
@@ -2366,6 +2548,7 @@ impl<'a> MirBuilder<'a> {
                 self.current_block = saved_current_block;
                 self.var_map = saved_var_map;
                 self.capture_env = saved_capture_env;
+                self.capture_name_env = saved_capture_name_env;
 
                 let closure_body = MirBody {
                     basic_blocks: closure_blocks,
@@ -2676,6 +2859,183 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    fn is_qualified_slice_get_unchecked(&self, qpath: &HirQualifiedPath) -> bool {
+        qpath.trait_path.is_none()
+            && qpath
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| self.interner.resolve(segment.ident) == "get_unchecked")
+    }
+
+    fn qualified_primitive_call_symbol(&mut self, qpath: &HirQualifiedPath) -> Option<Symbol> {
+        if qpath.trait_path.is_some() {
+            return None;
+        }
+        let method = self
+            .interner
+            .resolve(qpath.path.segments.last()?.ident)
+            .to_string();
+        if !matches!(
+            method.as_str(),
+            "from_le_bytes" | "from_be_bytes" | "from_ne_bytes"
+        ) {
+            return None;
+        }
+        let owner = self.primitive_hir_ty_name(&qpath.self_ty)?;
+        Some(self.interner.intern(&format!("{owner}::{method}")))
+    }
+
+    fn primitive_hir_ty_name(&self, ty: &HirTy) -> Option<&'static str> {
+        let HirTy::Path(path) = ty else {
+            return None;
+        };
+        let name = self.interner.resolve(path.segments.last()?.ident);
+        match name {
+            "u8" => Some("u8"),
+            "u16" => Some("u16"),
+            "u32" => Some("u32"),
+            "u64" => Some("u64"),
+            "u128" => Some("u128"),
+            "usize" => Some("usize"),
+            "i8" => Some("i8"),
+            "i16" => Some("i16"),
+            "i32" => Some("i32"),
+            "i64" => Some("i64"),
+            "i128" => Some("i128"),
+            "isize" => Some("isize"),
+            _ => None,
+        }
+    }
+
+    fn lower_slice_get_unchecked_call(
+        &mut self,
+        args: &[HirExpr],
+        expr: &HirExpr,
+    ) -> Option<Operand> {
+        let slice_ty = self.get_expr_ty(&args[0]);
+        let (elem_ty, mutability) = self.slice_ref_parts(&slice_ty)?;
+        let elem_size = self.estimate_ty_size(&elem_ty).max(1);
+
+        let slice_op = self.lower_expr(&args[0]);
+        let slice_tmp = self.alloc_temp(slice_ty.clone(), args[0].span);
+        self.emit_assign(Place::local(slice_tmp), Rvalue::Use(slice_op), args[0].span);
+
+        let data_ptr = Operand::Copy(Place {
+            local: slice_tmp,
+            projections: vec![Projection::Field(0)],
+        });
+        let slice_len = Operand::Copy(Place {
+            local: slice_tmp,
+            projections: vec![Projection::Field(1)],
+        });
+
+        let index = &args[1];
+        let (start, result_len) = if let HirExprKind::Range(start, end, inclusive) = &index.kind {
+            self.lower_slice_range_bounds(
+                start.as_deref(),
+                end.as_deref(),
+                *inclusive,
+                slice_len,
+                index.span,
+            )
+        } else {
+            (self.lower_expr(index), None)
+        };
+
+        let byte_offset = if elem_size == 1 {
+            start.clone()
+        } else {
+            self.lower_usize_binop(
+                BinOp::Mul,
+                start.clone(),
+                self.const_usize(elem_size as u128),
+                index.span,
+            )
+        };
+        let ptr_ty = TyKind::RawPtr(Box::new(elem_ty.clone()), mutability);
+        let shifted_ptr = self.alloc_temp(ptr_ty.clone(), expr.span);
+        self.emit_assign(
+            Place::local(shifted_ptr),
+            Rvalue::BinaryOp(BinOp::Add, data_ptr, byte_offset),
+            expr.span,
+        );
+
+        let result_ty = self.get_expr_ty(expr);
+        let result = self.alloc_temp(result_ty.clone(), expr.span);
+        if let Some(len) = result_len {
+            self.emit_assign(
+                Place::local(result),
+                Rvalue::Aggregate(
+                    AggregateKind::Tuple,
+                    vec![Operand::Copy(Place::local(shifted_ptr)), len],
+                ),
+                expr.span,
+            );
+        } else {
+            self.emit_assign(
+                Place::local(result),
+                Rvalue::Use(Operand::Copy(Place::local(shifted_ptr))),
+                expr.span,
+            );
+        }
+        Some(Operand::Copy(Place::local(result)))
+    }
+
+    fn slice_ref_parts(&self, ty: &TyKind) -> Option<(TyKind, Mutability)> {
+        match ty {
+            TyKind::Ref(inner, mutability) => match inner.as_ref() {
+                TyKind::Slice(elem) | TyKind::Array(elem, _) => {
+                    Some((elem.as_ref().clone(), *mutability))
+                }
+                _ => None,
+            },
+            TyKind::Slice(elem) | TyKind::Array(elem, _) => {
+                Some((elem.as_ref().clone(), Mutability::Immutable))
+            }
+            _ => None,
+        }
+    }
+
+    fn lower_slice_range_bounds(
+        &mut self,
+        start: Option<&HirExpr>,
+        end: Option<&HirExpr>,
+        inclusive: bool,
+        slice_len: Operand,
+        span: Span,
+    ) -> (Operand, Option<Operand>) {
+        let start_op = start
+            .map(|expr| self.lower_expr(expr))
+            .unwrap_or_else(|| self.const_usize(0));
+        let end_op = end.map(|expr| {
+            let op = self.lower_expr(expr);
+            if inclusive {
+                self.lower_usize_binop(BinOp::Add, op, self.const_usize(1), expr.span)
+            } else {
+                op
+            }
+        });
+        let len_op = match end_op {
+            Some(end) => self.lower_usize_binop(BinOp::Sub, end, start_op.clone(), span),
+            None => self.lower_usize_binop(BinOp::Sub, slice_len, start_op.clone(), span),
+        };
+        (start_op, Some(len_op))
+    }
+
+    fn lower_usize_binop(&mut self, op: BinOp, lhs: Operand, rhs: Operand, span: Span) -> Operand {
+        let tmp = self.alloc_temp(TyKind::Uint(UintTy::Usize), span);
+        self.emit_assign(Place::local(tmp), Rvalue::BinaryOp(op, lhs, rhs), span);
+        Operand::Copy(Place::local(tmp))
+    }
+
+    fn const_usize(&self, value: u128) -> Operand {
+        Operand::Constant(Constant {
+            ty: TyKind::Uint(UintTy::Usize),
+            value: ConstValue::Uint(value),
+        })
+    }
+
     /// Try to get a Place for an expression without lowering it (no side effects).
     /// Returns None if the expression is not directly addressable.
     fn try_lower_to_place(&self, expr: &HirExpr) -> Option<Place> {
@@ -2862,6 +3222,68 @@ impl<'a> MirBuilder<'a> {
             let ty = self.get_expr_ty(expr);
             match &ty {
                 TyKind::FnDef(def_id, _) => {
+                    if let Some(fields) = self.typeck.struct_defs.get(def_id) {
+                        if fields.is_empty() {
+                            let ty = TyKind::Adt(*def_id, vec![]);
+                            let tmp = self.alloc_temp(ty, expr.span);
+                            self.emit_assign(
+                                Place::local(tmp),
+                                Rvalue::Aggregate(AggregateKind::Adt(*def_id, 0), Vec::new()),
+                                expr.span,
+                            );
+                            return Operand::Copy(Place::local(tmp));
+                        }
+                    }
+
+                    if let Some(enum_def_id) = self.resolve.variant_to_enum.get(def_id).copied() {
+                        let variant_name = path.segments.last().unwrap().ident;
+                        if let Some(idx) = self
+                            .typeck
+                            .enum_variants
+                            .get(&enum_def_id)
+                            .and_then(|variants| {
+                                variants
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(_, (name, fields))| {
+                                        *name == variant_name && fields.is_empty()
+                                    })
+                                    .map(|(idx, _)| idx)
+                            })
+                            .or_else(|| self.known_enum_variant_index(enum_def_id, variant_name))
+                        {
+                            if let Some(max_fields) = self.enum_max_fields(enum_def_id) {
+                                if max_fields > 0 {
+                                    let ty = TyKind::Adt(enum_def_id, vec![]);
+                                    let tmp = self.alloc_temp(ty, expr.span);
+                                    let mut operands = vec![Operand::Constant(Constant {
+                                        ty: TyKind::Int(IntTy::I64),
+                                        value: ConstValue::Int(idx as i128),
+                                    })];
+                                    for _ in 0..max_fields {
+                                        operands.push(Operand::Constant(Constant {
+                                            ty: TyKind::Int(IntTy::I64),
+                                            value: ConstValue::Int(0),
+                                        }));
+                                    }
+                                    self.emit_assign(
+                                        Place::local(tmp),
+                                        Rvalue::Aggregate(
+                                            AggregateKind::Adt(enum_def_id, idx),
+                                            operands,
+                                        ),
+                                        expr.span,
+                                    );
+                                    return Operand::Copy(Place::local(tmp));
+                                }
+                            }
+                            return Operand::Constant(Constant {
+                                ty: TyKind::Adt(enum_def_id, vec![]),
+                                value: ConstValue::Int(idx as i128),
+                            });
+                        }
+                    }
+
                     // For intrinsic fns, use the full path as the symbol name
                     // so codegen can distinguish e.g. "AtomicBool::new" from a regular "new"
                     if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(def_id).cloned() {
@@ -2961,11 +3383,18 @@ impl<'a> MirBuilder<'a> {
     }
 
     fn lower_captured_path(&mut self, path: &HirPath, expr: &HirExpr) -> Option<Operand> {
-        let def_id = *self.resolve.resolutions.get(&expr.id)?;
-        let ty = self.capture_env.get(&def_id).cloned()?;
         let name = path.segments.last().map(|segment| segment.ident);
+        let ty = self
+            .resolve
+            .resolutions
+            .get(&expr.id)
+            .and_then(|def_id| self.capture_env.get(def_id))
+            .cloned()
+            .or_else(|| name.and_then(|name| self.capture_name_env.get(&name).cloned()))?;
         let local = self.alloc_local(ty.clone(), name, expr.span);
-        self.var_map.insert(def_id, local);
+        if let Some(def_id) = self.resolve.resolutions.get(&expr.id).copied() {
+            self.var_map.insert(def_id, local);
+        }
         if self.is_copy_type(&ty) {
             Some(Operand::Copy(Place::local(local)))
         } else {
@@ -2975,10 +3404,17 @@ impl<'a> MirBuilder<'a> {
 
     fn resolve_path_to_local(&self, path: &HirPath, hir_id: HirId) -> Option<Local> {
         if let Some(&def_id) = self.resolve.resolutions.get(&hir_id) {
-            self.var_map.get(&def_id).copied()
-        } else {
-            None
+            if let Some(local) = self.var_map.get(&def_id).copied() {
+                return Some(local);
+            }
         }
+        let name = path.segments.last()?.ident;
+        self.locals
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, local)| local.name == Some(name))
+            .map(|(idx, _)| Local(idx))
     }
 
     fn resolve_field_index(&self, base_expr: &HirExpr, field_name: Symbol) -> usize {
@@ -3028,9 +3464,8 @@ impl<'a> MirBuilder<'a> {
         let method = self.interner.resolve(method_name);
         let full_name = match type_name {
             "String" => match method {
-                "len" | "is_empty" | "as_str" | "as_bytes" | "clear" | "push_str" | "push" => {
-                    format!("String::{}", method)
-                }
+                "len" | "is_empty" | "as_str" | "as_bytes" | "clear" | "push_str" | "push"
+                | "find" | "rfind" => format!("String::{}", method),
                 _ => return None,
             },
             "Vec" => match method {
@@ -3092,7 +3527,8 @@ impl<'a> MirBuilder<'a> {
                 "is_some" | "is_none" | "as_ref" | "as_mut" | "unwrap" | "unwrap_or"
                 | "unwrap_or_default" | "unwrap_or_else" | "take" | "replace" | "map"
                 | "and_then" | "or_else" | "ok_or" | "ok_or_else" | "is_some_and" | "map_or"
-                | "map_or_else" | "get_or_insert_with" | "copied" | "cloned" => "Option",
+                | "map_or_else" | "get_or_insert_with" | "copied" | "cloned"
+                | "unwrap_unchecked" => "Option",
                 _ => return None,
             },
             "Result" => match method {
@@ -3102,13 +3538,22 @@ impl<'a> MirBuilder<'a> {
             },
             "String" => match method {
                 "len" | "is_empty" | "as_str" | "as_bytes" | "clear" | "push_str" | "push"
-                | "to_uppercase" => "String",
+                | "to_uppercase" | "find" | "rfind" => "String",
                 _ => return None,
             },
             "Vec" => match method {
                 "new" | "with_capacity" | "len" | "capacity" | "is_empty" | "as_ptr"
                 | "as_mut_ptr" | "as_slice" | "as_mut_slice" | "as_ref" | "push" | "pop"
-                | "clear" | "truncate" | "chunks_exact" => "Vec",
+                | "clear" | "truncate" | "chunks_exact" | "sort_by" | "sort" | "sort_by_key"
+                | "dedup_by" | "last" | "last_mut" | "copy_from_slice" => "Vec",
+                _ => return None,
+            },
+            "Formatter" => match method {
+                "pad" | "debug_tuple" => "Formatter",
+                _ => return None,
+            },
+            "DebugTuple" => match method {
+                "field" | "finish" => "DebugTuple",
                 _ => return None,
             },
             "VecDeque" => match method {

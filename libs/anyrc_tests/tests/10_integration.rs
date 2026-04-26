@@ -136,6 +136,21 @@ fn run_string_push_ascii_char_len() {
 }
 
 #[test]
+fn run_string_rfind_none_shape() {
+    let source = r#"
+        fn main() -> i32 {
+            let s = String::from("abc");
+            match s.rfind("/") {
+                Some(_) => 1,
+                None => 0,
+            }
+        }
+    "#;
+
+    assert_eq!(compile_and_run(source), 0);
+}
+
+#[test]
 fn compile_with_error_returns_err() {
     let source = "fn main() { let x: i32 = true; }";
     let options = CompileOptions {

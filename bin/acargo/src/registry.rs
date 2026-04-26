@@ -18,11 +18,11 @@
 //!
 //! `.crate` files are gzip-compressed tar archives.
 
-use crate::prelude::*;
 use crate::fs;
+use crate::prelude::*;
 use crate::semver::{Version, VersionReq};
-use anyos_std::println;
 use anyos_std::collections::HashMap;
+use anyos_std::println;
 
 /// Registry base URLs.
 const INDEX_BASE: &str = "https://index.crates.io";
@@ -53,7 +53,7 @@ pub struct IndexDep {
     pub features: Vec<String>,
     pub optional: bool,
     pub default_features: bool,
-    pub kind: String,  // "normal", "dev", "build"
+    pub kind: String, // "normal", "dev", "build"
     /// Actual package name if renamed (package = "real_name" in Cargo.toml).
     pub package: Option<String>,
 }
@@ -114,7 +114,9 @@ pub fn fetch_index(name: &str) -> Option<Vec<IndexEntry>> {
     let mut entries = Vec::new();
     for line in index_data.lines() {
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         if let Some(entry) = parse_index_line(line) {
             entries.push(entry);
         }
@@ -141,7 +143,8 @@ pub fn resolve_version(name: &str, req_str: &str) -> Option<IndexEntry> {
     let entries = fetch_index(name)?;
     let req = VersionReq::parse(req_str)?;
 
-    let versions: Vec<(Version, bool)> = entries.iter()
+    let versions: Vec<(Version, bool)> = entries
+        .iter()
         .map(|e| (e.version.clone(), e.yanked))
         .collect();
 
@@ -175,7 +178,10 @@ pub fn fetch_crate(name: &str, version: &Version) -> Option<String> {
         if !libhttp_client::download(&url, &crate_path) {
             let status = libhttp_client::last_status();
             let err = libhttp_client::last_error();
-            println!("ccargo: error downloading {}: HTTP {} (err {})", name, status, err);
+            println!(
+                "ccargo: error downloading {}: HTTP {} (err {})",
+                name, status, err
+            );
             return None;
         }
     }
@@ -200,7 +206,9 @@ pub fn fetch_crate(name: &str, version: &Version) -> Option<String> {
             &entry_name
         };
 
-        if relative.is_empty() { continue; }
+        if relative.is_empty() {
+            continue;
+        }
 
         let out_path = format!("{}/{}", src_dir, relative);
 
@@ -261,14 +269,17 @@ fn find_cached_source(name: &str, version_req: &str) -> Option<(String, IndexEnt
         .find(|(version, _)| *version == best)
         .map(|(_, path)| path)?;
 
-    Some((src_dir, IndexEntry {
-        name: name.to_string(),
-        version: best,
-        deps: Vec::new(),
-        checksum: String::new(),
-        features: Vec::new(),
-        yanked: false,
-    }))
+    Some((
+        src_dir,
+        IndexEntry {
+            name: name.to_string(),
+            version: best,
+            deps: Vec::new(),
+            checksum: String::new(),
+            features: Vec::new(),
+            yanked: false,
+        },
+    ))
 }
 
 fn registry_source_roots() -> Vec<String> {
@@ -360,24 +371,45 @@ fn parse_index_line(line: &str) -> Option<IndexEntry> {
     };
 
     let features = if let Some(feat_obj) = json_object(&obj, "features") {
-        feat_obj.iter().map(|(k, v)| {
-            let vals = match v {
-                JsonValue::Array(arr) => arr.iter().filter_map(|x| {
-                    if let JsonValue::String(s) = x { Some(s.clone()) } else { None }
-                }).collect(),
-                _ => Vec::new(),
-            };
-            (k.clone(), vals)
-        }).collect()
+        feat_obj
+            .iter()
+            .map(|(k, v)| {
+                let vals = match v {
+                    JsonValue::Array(arr) => arr
+                        .iter()
+                        .filter_map(|x| {
+                            if let JsonValue::String(s) = x {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                (k.clone(), vals)
+            })
+            .collect()
     } else {
         Vec::new()
     };
 
-    Some(IndexEntry { name, version, deps, checksum, features, yanked })
+    Some(IndexEntry {
+        name,
+        version,
+        deps,
+        checksum,
+        features,
+        yanked,
+    })
 }
 
 fn parse_index_dep(val: &JsonValue) -> Option<IndexDep> {
-    let obj = if let JsonValue::Object(o) = val { o } else { return None };
+    let obj = if let JsonValue::Object(o) = val {
+        o
+    } else {
+        return None;
+    };
     let name = json_str_from(obj, "name")?.to_string();
     let req = json_str_from(obj, "req").unwrap_or("*").to_string();
     let optional = json_bool_from(obj, "optional").unwrap_or(false);
@@ -386,14 +418,28 @@ fn parse_index_dep(val: &JsonValue) -> Option<IndexDep> {
     let package = json_str_from(obj, "package").map(|s| s.to_string());
 
     let features = if let Some(JsonValue::Array(arr)) = obj.get("features") {
-        arr.iter().filter_map(|x| {
-            if let JsonValue::String(s) = x { Some(s.clone()) } else { None }
-        }).collect()
+        arr.iter()
+            .filter_map(|x| {
+                if let JsonValue::String(s) = x {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     } else {
         Vec::new()
     };
 
-    Some(IndexDep { name, req, features, optional, default_features, kind, package })
+    Some(IndexDep {
+        name,
+        req,
+        features,
+        optional,
+        default_features,
+        kind,
+        package,
+    })
 }
 
 // ── Minimal JSON parser ──
@@ -410,14 +456,18 @@ enum JsonValue {
 
 fn parse_json_object(s: &str) -> Option<HashMap<String, JsonValue>> {
     let s = s.trim();
-    if !s.starts_with('{') || !s.ends_with('}') { return None; }
+    if !s.starts_with('{') || !s.ends_with('}') {
+        return None;
+    }
     let inner = &s[1..s.len() - 1];
     let mut map = HashMap::new();
     let pairs = split_json_top(inner, b',');
 
     for pair in &pairs {
         let pair = pair.trim();
-        if pair.is_empty() { continue; }
+        if pair.is_empty() {
+            continue;
+        }
         // Find the colon separating key from value
         let (key, value) = split_json_kv(pair)?;
         let key = key.trim().trim_matches('"').to_string();
@@ -445,7 +495,8 @@ fn parse_json_value(s: &str) -> JsonValue {
         // Array
         let inner = &s[1..s.len().saturating_sub(1)];
         let items = split_json_top(inner, b',');
-        let arr = items.iter()
+        let arr = items
+            .iter()
             .map(|item| parse_json_value(item.trim()))
             .filter(|v| !matches!(v, JsonValue::Null) || true)
             .collect();
@@ -475,10 +526,21 @@ fn split_json_top(s: &str, sep: u8) -> Vec<&str> {
     let mut start = 0;
 
     for (i, b) in s.bytes().enumerate() {
-        if escape { escape = false; continue; }
-        if b == b'\\' && in_string { escape = true; continue; }
-        if b == b'"' { in_string = !in_string; continue; }
-        if in_string { continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
+        if b == b'\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if b == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
         match b {
             b'{' | b'[' => depth += 1,
             b'}' | b']' => depth -= 1,
@@ -500,9 +562,18 @@ fn split_json_kv<'a>(s: &'a str) -> Option<(&'a str, &'a str)> {
     let mut in_string = false;
     let mut escape = false;
     for (i, b) in s.bytes().enumerate() {
-        if escape { escape = false; continue; }
-        if b == b'\\' && in_string { escape = true; continue; }
-        if b == b'"' { in_string = !in_string; continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
+        if b == b'\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if b == b'"' {
+            in_string = !in_string;
+            continue;
+        }
         if !in_string && b == b':' {
             return Some((&s[..i], &s[i + 1..]));
         }
@@ -522,7 +593,10 @@ fn unescape_json_str(s: &str) -> String {
                 Some('\\') => out.push('\\'),
                 Some('"') => out.push('"'),
                 Some('/') => out.push('/'),
-                Some(other) => { out.push('\\'); out.push(other); }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
                 None => out.push('\\'),
             }
         } else {
@@ -533,19 +607,38 @@ fn unescape_json_str(s: &str) -> String {
 }
 
 fn json_str<'a>(map: &'a HashMap<String, JsonValue>, key: &str) -> Option<&'a str> {
-    if let Some(JsonValue::String(s)) = map.get(key) { Some(s) } else { None }
+    if let Some(JsonValue::String(s)) = map.get(key) {
+        Some(s)
+    } else {
+        None
+    }
 }
 
 fn json_bool(map: &HashMap<String, JsonValue>, key: &str) -> Option<bool> {
-    if let Some(JsonValue::Bool(b)) = map.get(key) { Some(*b) } else { None }
+    if let Some(JsonValue::Bool(b)) = map.get(key) {
+        Some(*b)
+    } else {
+        None
+    }
 }
 
 fn json_array<'a>(map: &'a HashMap<String, JsonValue>, key: &str) -> Option<&'a Vec<JsonValue>> {
-    if let Some(JsonValue::Array(a)) = map.get(key) { Some(a) } else { None }
+    if let Some(JsonValue::Array(a)) = map.get(key) {
+        Some(a)
+    } else {
+        None
+    }
 }
 
-fn json_object<'a>(map: &'a HashMap<String, JsonValue>, key: &str) -> Option<&'a HashMap<String, JsonValue>> {
-    if let Some(JsonValue::Object(o)) = map.get(key) { Some(o) } else { None }
+fn json_object<'a>(
+    map: &'a HashMap<String, JsonValue>,
+    key: &str,
+) -> Option<&'a HashMap<String, JsonValue>> {
+    if let Some(JsonValue::Object(o)) = map.get(key) {
+        Some(o)
+    } else {
+        None
+    }
 }
 
 fn json_str_from<'a>(map: &'a HashMap<String, JsonValue>, key: &str) -> Option<&'a str> {
@@ -570,17 +663,23 @@ pub fn list_cached() -> Vec<(String, String)> {
     let mut result = Vec::new();
     let mut buf = [0u8; 64 * 128];
     let count = anyos_std::fs::readdir(SRC_CACHE_DIR, &mut buf);
-    if count == u32::MAX { return result; }
+    if count == u32::MAX {
+        return result;
+    }
 
     let entry_size = 64;
     for i in 0..count as usize {
         let off = i * entry_size;
         let file_type = buf[off];
         let name_len = buf[off + 1] as usize;
-        if name_len == 0 || file_type != 1 { continue; }
+        if name_len == 0 || file_type != 1 {
+            continue;
+        }
         let name_bytes = &buf[off + 8..off + 8 + name_len];
         if let Ok(name) = core::str::from_utf8(name_bytes) {
-            if name == "." || name == ".." { continue; }
+            if name == "." || name == ".." {
+                continue;
+            }
             // Parse "crate_name-version" format
             if let Some(last_dash) = name.rfind('-') {
                 let crate_name = &name[..last_dash];

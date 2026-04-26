@@ -3090,7 +3090,10 @@ impl<'a> Parser<'a> {
         }
         self.bump(); // <
         let mut params = Vec::new();
-        while !self.at_exact(&TokenKind::Gt) && !self.at_exact(&TokenKind::Eof) {
+        while !self.at_exact(&TokenKind::Gt)
+            && !self.at_exact(&TokenKind::Shr)
+            && !self.at_exact(&TokenKind::Eof)
+        {
             let p_start = self.current().span;
             let _attrs = self.parse_attrs();
             if matches!(self.current().kind, TokenKind::Lifetime(_)) {
@@ -3179,7 +3182,10 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         self.expect_type_arg_lt();
         let mut args = Vec::new();
-        while !self.at_exact(&TokenKind::Gt) && !self.at_exact(&TokenKind::Eof) {
+        while !self.at_exact(&TokenKind::Gt)
+            && !self.at_exact(&TokenKind::Shr)
+            && !self.at_exact(&TokenKind::Eof)
+        {
             if matches!(self.current().kind, TokenKind::Lifetime(_)) {
                 if let TokenKind::Lifetime(sym) = self.bump().kind {
                     args.push(GenericArg::Lifetime(sym));

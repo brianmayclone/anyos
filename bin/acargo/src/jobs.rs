@@ -60,7 +60,9 @@ impl JobQueue {
                 continue;
             }
             let all_deps_done = job.deps.iter().all(|&dep_idx| {
-                self.jobs.iter().any(|j| j.index == dep_idx && j.state == JobState::Done)
+                self.jobs
+                    .iter()
+                    .any(|j| j.index == dep_idx && j.state == JobState::Done)
             });
             if all_deps_done {
                 return Some(i);
@@ -86,7 +88,9 @@ impl JobQueue {
 
     /// Check if all jobs are done or failed.
     pub fn is_finished(&self) -> bool {
-        self.jobs.iter().all(|j| j.state == JobState::Done || j.state == JobState::Failed)
+        self.jobs
+            .iter()
+            .all(|j| j.state == JobState::Done || j.state == JobState::Failed)
     }
 
     /// Check if any job failed.
@@ -96,7 +100,10 @@ impl JobQueue {
 
     /// Count running jobs.
     pub fn running_count(&self) -> usize {
-        self.jobs.iter().filter(|j| j.state == JobState::Running).count()
+        self.jobs
+            .iter()
+            .filter(|j| j.state == JobState::Running)
+            .count()
     }
 
     /// Get the build order as a sequence of job indices.
@@ -108,9 +115,14 @@ impl JobQueue {
         loop {
             let mut found = false;
             for (i, job) in self.jobs.iter().enumerate() {
-                if done.contains(&i) { continue; }
+                if done.contains(&i) {
+                    continue;
+                }
                 let all_deps_done = job.deps.iter().all(|&dep_idx| {
-                    self.jobs.iter().enumerate().any(|(j, jj)| jj.index == dep_idx && done.contains(&j))
+                    self.jobs
+                        .iter()
+                        .enumerate()
+                        .any(|(j, jj)| jj.index == dep_idx && done.contains(&j))
                 });
                 if all_deps_done {
                     order.push(i);
@@ -119,7 +131,9 @@ impl JobQueue {
                     break;
                 }
             }
-            if !found { break; }
+            if !found {
+                break;
+            }
         }
 
         order

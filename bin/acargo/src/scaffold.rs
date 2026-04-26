@@ -1,8 +1,8 @@
 //! Project scaffolding: `ccargo new` and `ccargo init`.
 
+use crate::fs;
 use crate::prelude::*;
 use anyos_std::println;
-use crate::fs;
 
 const ANYOS_STD_PATH: &str = "/Libraries/system/src/anyos/libs/stdlib";
 const LIBSTD_PATH: &str = "/Libraries/system/src/anyos/libs/libstd";
@@ -99,7 +99,15 @@ pub fn new_project(name: &str, is_lib: bool) {
         fs::write_file(&format!("{}/src/main.rs", name), main_rs.as_bytes());
     }
 
-    println!("     Created {} `{}` package", if is_lib { "library" } else { "binary (application)" }, name);
+    println!(
+        "     Created {} `{}` package",
+        if is_lib {
+            "library"
+        } else {
+            "binary (application)"
+        },
+        name
+    );
 }
 
 /// Initialize a project in an existing directory.
@@ -155,11 +163,18 @@ pub fn init_project(dir: &str, is_lib: bool) {
 
     if !fs::file_exists(&src_path) {
         if is_lib {
-            fs::write_file(&src_path, b"#![no_std]\n\npub fn hello() -> &'static str {\n    \"Hello!\"\n}\n");
+            fs::write_file(
+                &src_path,
+                b"#![no_std]\n\npub fn hello() -> &'static str {\n    \"Hello!\"\n}\n",
+            );
         } else {
             fs::write_file(&src_path, b"#![no_std]\n#![no_main]\n\nanyos_std::entry!(main);\n\nfn main() {\n    anyos_std::println!(\"Hello, anyOS!\");\n}\n");
         }
     }
 
-    println!("     Created {} package in `{}`", if is_lib { "library" } else { "binary" }, dir);
+    println!(
+        "     Created {} package in `{}`",
+        if is_lib { "library" } else { "binary" },
+        dir
+    );
 }

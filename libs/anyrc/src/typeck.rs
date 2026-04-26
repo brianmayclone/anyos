@@ -812,6 +812,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn intrinsic_call_return_type(&mut self, path_str: &str) -> Option<TyKind> {
+        if let Some(ty) = Self::primitive_from_bytes_return_type(path_str) {
+            return Some(ty);
+        }
         match path_str {
             "anyos_std::process::args" | "args" => {
                 Some(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable))
@@ -943,6 +946,28 @@ impl<'a> TypeChecker<'a> {
             "i128::from_str_radix" => self.result_of(TyKind::Int(IntTy::I128)),
             "isize::from_str_radix" => self.result_of(TyKind::Int(IntTy::Isize)),
             _ => self.intrinsic_constructor_type(path_str),
+        }
+    }
+
+    fn primitive_from_bytes_return_type(path_str: &str) -> Option<TyKind> {
+        let (owner, method) = path_str.split_once("::")?;
+        if !matches!(method, "from_le_bytes" | "from_be_bytes" | "from_ne_bytes") {
+            return None;
+        }
+        match owner {
+            "u8" => Some(TyKind::Uint(UintTy::U8)),
+            "u16" => Some(TyKind::Uint(UintTy::U16)),
+            "u32" => Some(TyKind::Uint(UintTy::U32)),
+            "u64" => Some(TyKind::Uint(UintTy::U64)),
+            "u128" => Some(TyKind::Uint(UintTy::U128)),
+            "usize" => Some(TyKind::Uint(UintTy::Usize)),
+            "i8" => Some(TyKind::Int(IntTy::I8)),
+            "i16" => Some(TyKind::Int(IntTy::I16)),
+            "i32" => Some(TyKind::Int(IntTy::I32)),
+            "i64" => Some(TyKind::Int(IntTy::I64)),
+            "i128" => Some(TyKind::Int(IntTy::I128)),
+            "isize" => Some(TyKind::Int(IntTy::Isize)),
+            _ => None,
         }
     }
 
@@ -4887,6 +4912,9 @@ impl<'a> TypeChecker<'a> {
         if let Some(ty) = Self::primitive_assoc_const_type(&path_str) {
             return ty;
         }
+        if let Some(ty) = self.intrinsic_enum_variant_type(&path_str) {
+            return ty;
+        }
 
         if let Some(ty) = self.generic_param_assoc_const_type(path) {
             return ty;
@@ -4998,6 +5026,9 @@ impl<'a> TypeChecker<'a> {
                         self.interner.resolve(assoc.ident)
                     );
                     if let Some(ty) = Self::primitive_assoc_const_type(&path_str) {
+                        return ty;
+                    }
+                    if let Some(ty) = self.intrinsic_enum_variant_type(&path_str) {
                         return ty;
                     }
                 }
@@ -5871,6 +5902,17 @@ impl<'a> TypeChecker<'a> {
         span: Span,
         callee: &HirExpr,
     ) -> Option<TyKind> {
+        if qpath.trait_path.is_none() {
+            if let Some(ret_ty) =
+                self.check_inherent_qualified_slice_call(qpath, args, span, callee)
+            {
+                return Some(ret_ty);
+            }
+            if let Some(ret_ty) = self.check_inherent_qualified_primitive_call(qpath, args, callee)
+            {
+                return Some(ret_ty);
+            }
+        }
         let trait_path = qpath.trait_path.as_ref()?;
         let trait_def_id = self.resolve_trait_bound_def(trait_path)?;
         let method_name = qpath.path.segments.last()?.ident;
@@ -5919,6 +5961,108 @@ impl<'a> TypeChecker<'a> {
         self.expr_types
             .insert(callee.id, TyKind::FnDef(method_def_id, vec![]));
         Some(ret_ty)
+    }
+
+    fn check_inherent_qualified_slice_call(
+        &mut self,
+        qpath: &HirQualifiedPath,
+        args: &[HirExpr],
+        span: Span,
+        callee: &HirExpr,
+    ) -> Option<TyKind> {
+        let method_name = qpath.path.segments.last()?.ident;
+        if self.interner.resolve(method_name) != "get_unchecked" || args.len() != 2 {
+            return None;
+        }
+
+        let self_ty = self.shallow_resolve(self.hir_ty_to_ty(&qpath.self_ty));
+        let elem_ty = match self_ty {
+            TyKind::Slice(elem) | TyKind::Array(elem, _) => elem,
+            _ => return None,
+        };
+
+        let receiver_ty = self.check_expr(&args[0]);
+        let receiver_mut = match self.shallow_resolve(receiver_ty.clone()) {
+            TyKind::Ref(_, mutability) => mutability,
+            _ => Mutability::Immutable,
+        };
+        let expected_receiver = TyKind::Ref(Box::new(TyKind::Slice(elem_ty.clone())), receiver_mut);
+        self.unify(&expected_receiver, &receiver_ty, args[0].span);
+
+        let returns_slice = matches!(&args[1].kind, HirExprKind::Range(_, _, _));
+        if let HirExprKind::Range(start, end, _) = &args[1].kind {
+            if let Some(start) = start {
+                let start_ty = self.check_expr(start);
+                self.unify(&TyKind::Uint(UintTy::Usize), &start_ty, start.span);
+            }
+            if let Some(end) = end {
+                let end_ty = self.check_expr(end);
+                self.unify(&TyKind::Uint(UintTy::Usize), &end_ty, end.span);
+            }
+        } else {
+            let idx_ty = self.check_expr(&args[1]);
+            self.unify(&TyKind::Uint(UintTy::Usize), &idx_ty, args[1].span);
+        }
+
+        self.expr_types
+            .insert(callee.id, TyKind::FnDef(DefId(0), vec![]));
+        Some(if returns_slice {
+            TyKind::Ref(Box::new(TyKind::Slice(elem_ty)), receiver_mut)
+        } else {
+            TyKind::Ref(elem_ty, receiver_mut)
+        })
+    }
+
+    fn check_inherent_qualified_primitive_call(
+        &mut self,
+        qpath: &HirQualifiedPath,
+        args: &[HirExpr],
+        callee: &HirExpr,
+    ) -> Option<TyKind> {
+        if qpath.trait_path.is_some() || args.len() != 1 {
+            return None;
+        }
+        let method_name = self.interner.resolve(qpath.path.segments.last()?.ident);
+        if !matches!(
+            method_name,
+            "from_le_bytes" | "from_be_bytes" | "from_ne_bytes"
+        ) {
+            return None;
+        }
+        let owner = self.primitive_hir_ty_name(&qpath.self_ty)?;
+        let full = format!("{owner}::{method_name}");
+        let ret_ty = Self::primitive_from_bytes_return_type(&full)?;
+
+        let arg_ty = self.check_expr(&args[0]);
+        if let Some(width) = self.primitive_byte_width(&ret_ty) {
+            let expected = TyKind::Array(Box::new(TyKind::Uint(UintTy::U8)), width);
+            self.unify(&expected, &arg_ty, args[0].span);
+        }
+        self.expr_types
+            .insert(callee.id, TyKind::FnDef(DefId(0), vec![]));
+        Some(ret_ty)
+    }
+
+    fn primitive_hir_ty_name(&self, ty: &HirTy) -> Option<&'static str> {
+        let HirTy::Path(path) = ty else {
+            return None;
+        };
+        let name = self.interner.resolve(path.segments.last()?.ident);
+        match name {
+            "u8" => Some("u8"),
+            "u16" => Some("u16"),
+            "u32" => Some("u32"),
+            "u64" => Some("u64"),
+            "u128" => Some("u128"),
+            "usize" => Some("usize"),
+            "i8" => Some("i8"),
+            "i16" => Some("i16"),
+            "i32" => Some("i32"),
+            "i64" => Some("i64"),
+            "i128" => Some("i128"),
+            "isize" => Some("isize"),
+            _ => None,
+        }
     }
 
     fn substitute_trait_self(&self, ty: &TyKind, trait_def_id: DefId, self_ty: &TyKind) -> TyKind {
@@ -6039,6 +6183,9 @@ impl<'a> TypeChecker<'a> {
             (TyKind::Infer(_), _) | (_, TyKind::Infer(_)) => true,
             (TyKind::Param(_), _) | (_, TyKind::Param(_)) => true,
             (TyKind::Adt(a, a_args), TyKind::Adt(b, b_args)) => {
+                if a != b && self.is_box_def(*b) && b_args.len() == 1 {
+                    return self.ty_matches_for_candidate(&expected, &b_args[0]);
+                }
                 a == b
                     && a_args.len() == b_args.len()
                     && a_args
@@ -6287,10 +6434,32 @@ impl<'a> TypeChecker<'a> {
     fn intrinsic_enum_variant_type(&self, path_str: &str) -> Option<TyKind> {
         let (parent_path, variant_name) = path_str.rsplit_once("::")?;
         match parent_path {
+            "Ordering" => {
+                if matches!(
+                    variant_name,
+                    "Relaxed" | "Release" | "Acquire" | "AcqRel" | "SeqCst"
+                ) {
+                    Some(self.atomic_ordering_ty())
+                } else if matches!(variant_name, "Less" | "Equal" | "Greater") {
+                    Some(self.comparison_ordering_ty())
+                } else {
+                    None
+                }
+            }
             "core::cmp::Ordering" if matches!(variant_name, "Less" | "Equal" | "Greater") => {
                 Some(self.comparison_ordering_ty())
             }
             "core::sync::atomic::Ordering" => {
+                if matches!(
+                    variant_name,
+                    "Relaxed" | "Release" | "Acquire" | "AcqRel" | "SeqCst"
+                ) {
+                    Some(self.atomic_ordering_ty())
+                } else {
+                    None
+                }
+            }
+            "std::sync::atomic::Ordering" => {
                 if matches!(
                     variant_name,
                     "Relaxed" | "Release" | "Acquire" | "AcqRel" | "SeqCst"
@@ -6881,6 +7050,14 @@ impl<'a> TypeChecker<'a> {
                     || self.def_ids_share_intrinsic_path(*expected_def, *actual_def) =>
             {
                 return
+            }
+            (TyKind::Adt(expected_def, _), TyKind::Adt(actual_def, actual_substs))
+                if expected_def != actual_def
+                    && self.is_box_def(*actual_def)
+                    && actual_substs.len() == 1 =>
+            {
+                self.unify(&expected, &actual_substs[0], span);
+                return;
             }
 
             (TyKind::Infer(v), _) => {

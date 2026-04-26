@@ -3,8 +3,8 @@
 //! Tracks modification times of source files and build artifacts to skip
 //! recompilation of crates whose inputs haven't changed.
 
-use crate::prelude::*;
 use crate::fs;
+use crate::prelude::*;
 use anyos_std::println;
 
 /// A fingerprint entry for a single crate.
@@ -77,7 +77,10 @@ pub fn write_fingerprint(
 ) {
     fs::mkdir_p(fingerprint_dir);
     let fp_path = format!("{}/{}.fp", fingerprint_dir, crate_name);
-    let content = format!("src={}\nout={}\nhash={}\n", src_file, output_path, options_hash);
+    let content = format!(
+        "src={}\nout={}\nhash={}\n",
+        src_file, output_path, options_hash
+    );
     fs::write_file(&fp_path, content.as_bytes());
 }
 
@@ -147,10 +150,14 @@ fn any_source_newer(dir: &str, threshold: u64) -> bool {
         let off = i * entry_size;
         let file_type = buf[off];
         let name_len = buf[off + 1] as usize;
-        if name_len == 0 { continue; }
+        if name_len == 0 {
+            continue;
+        }
         let name_bytes = &buf[off + 8..off + 8 + name_len];
         if let Ok(name) = core::str::from_utf8(name_bytes) {
-            if name == "." || name == ".." { continue; }
+            if name == "." || name == ".." {
+                continue;
+            }
             let child_path = format!("{}/{}", dir, name);
             if file_type == 1 {
                 // Directory: recurse

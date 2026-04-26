@@ -221,6 +221,7 @@ fn emulate_known_generated_build_script(
             .env_vars
             .push((String::from("CARGO_PKG_VERSION_PATCH"), patch.to_string()));
         push_cfg_once(&mut result.cfg_flags, "if_docsrs_then_no_serde_core");
+        push_cfg_once(&mut result.cfg_flags, "no_serde_derive");
     }
 }
 

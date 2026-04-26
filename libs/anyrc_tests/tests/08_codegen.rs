@@ -2,6 +2,7 @@ use anyrc::ast::Mutability;
 use anyrc::codegen::emit::CodeEmitter;
 use anyrc::codegen::regalloc;
 use anyrc::diagnostics::Span;
+use anyrc::hir::DefId;
 use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
@@ -77,6 +78,61 @@ fn codegen_loop_and_break() {
 fn codegen_fn_call() {
     let (code, _relocs) = compile_fn_with_relocs("fn bar() -> i32 { 0 } fn foo() -> i32 { bar() }");
     assert!(!code.is_empty());
+}
+
+#[test]
+fn codegen_fnitem_that_names_local_param_is_indirect_call() {
+    let mut interner = Interner::new();
+    let f = interner.intern("f");
+    let i32_ty = TyKind::Int(IntTy::I32);
+    let fn_ty = TyKind::FnDef(DefId(1), Vec::new());
+    let local = |ty, name| LocalDecl {
+        ty,
+        mutability: Mutability::Immutable,
+        name,
+        span: Span::dummy(),
+    };
+    let body = MirBody {
+        basic_blocks: vec![
+            BasicBlock {
+                statements: Vec::new(),
+                terminator: Terminator::Call {
+                    func: Operand::Constant(Constant {
+                        ty: fn_ty.clone(),
+                        value: ConstValue::FnItem(f),
+                    }),
+                    args: Vec::new(),
+                    dest: Place::local(Local(0)),
+                    target: BlockId(1),
+                },
+            },
+            BasicBlock {
+                statements: Vec::new(),
+                terminator: Terminator::Return,
+            },
+        ],
+        locals: vec![local(i32_ty, None), local(fn_ty, Some(f))],
+        arg_count: 1,
+        name: interner.intern("apply"),
+        span: Span::dummy(),
+        no_mangle: false,
+    };
+
+    let alloc = regalloc::allocate(&body, &regalloc::StructSizes::new());
+    let (_code, relocs) = CodeEmitter::emit_fn(
+        &body,
+        &alloc,
+        &interner,
+        &regalloc::StructSizes::new(),
+        &regalloc::StructFieldOffsets::new(),
+        &regalloc::StructFieldTypes::new(),
+    );
+
+    assert!(
+        relocs.iter().all(|rel| rel.symbol != "f"),
+        "local function parameter must not be emitted as external relocation: {:?}",
+        relocs.iter().map(|rel| rel.symbol.as_str()).collect::<Vec<_>>()
+    );
 }
 
 #[test]

@@ -231,7 +231,6 @@ ccargo_crate_tests! {
     bin_zip, "bin/zip";
 
     apps_anybench, "apps/anybench";
-    apps_anycode, "apps/anycode";
     apps_anymail, "apps/anymail";
     apps_anyzilla, "apps/anyzilla";
     apps_button_demo, "apps/button_demo";

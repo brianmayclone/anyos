@@ -11,11 +11,13 @@ pub struct BorrowckResult {
     pub errors: Vec<Diagnostic>,
 }
 
+#[derive(Clone)]
 struct ActiveBorrow {
     holder: Local,
     kind: BorrowKind,
     place: Place,
     span: Span,
+    temporary: bool,
 }
 
 fn places_conflict(a: &Place, b: &Place) -> bool {
@@ -107,6 +109,7 @@ pub fn check_borrows(
                                             kind: BorrowKind::Mutable,
                                             place: borrowed_place.clone(),
                                             span: stmt.span,
+                                            temporary: assigned_to_temp,
                                         });
                                     }
                                     BorrowKind::Shared => {
@@ -114,6 +117,7 @@ pub fn check_borrows(
                                         for b in &borrows {
                                             if places_conflict(&b.place, borrowed_place)
                                                 && b.kind == BorrowKind::Mutable
+                                                && !b.temporary
                                             {
                                                 errors.push(Diagnostic::new(
                                                     Level::Error,
@@ -131,6 +135,7 @@ pub fn check_borrows(
                                             kind: BorrowKind::Shared,
                                             place: borrowed_place.clone(),
                                             span: stmt.span,
+                                            temporary: assigned_to_temp,
                                         });
                                     }
                                 }
@@ -141,11 +146,31 @@ pub fn check_borrows(
                         _ => {}
                     }
 
+                    if local_ref_reassignment {
+                        if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rvalue {
+                            if let Some(existing) =
+                                borrows.iter().find(|b| b.holder.0 == src.local.0).cloned()
+                            {
+                                let assigned_to_temp = body
+                                    .locals
+                                    .get(assign_local)
+                                    .and_then(|local| local.name)
+                                    .is_none();
+                                borrows.push(ActiveBorrow {
+                                    holder: Local(assign_local),
+                                    temporary: assigned_to_temp,
+                                    ..existing
+                                });
+                            }
+                        }
+                    }
+
                     // If assigning to a place that has active borrows, error
                     for b in &borrows {
                         if places_conflict(&b.place, place)
                             && !self_reborrow_assignment
                             && !local_ref_reassignment
+                            && !b.temporary
                         {
                             errors.push(Diagnostic::new(
                                 Level::Error,
@@ -157,6 +182,9 @@ pub fn check_borrows(
                             ));
                             break;
                         }
+                    }
+                    if !matches!(rvalue, Rvalue::Ref(_, _)) {
+                        end_temporary_borrows(&mut borrows, &body.locals, body.arg_count);
                     }
 
                     // Track moves in rvalue. Moves into compiler temporaries are often
@@ -269,13 +297,8 @@ fn merge_moved_entry(
     }
 }
 
-fn end_temporary_borrows(borrows: &mut Vec<ActiveBorrow>, locals: &[LocalDecl], arg_count: usize) {
-    borrows.retain(|b| {
-        locals
-            .get(b.holder.0)
-            .map(|local| local.name.is_some() || b.holder.0 < arg_count)
-            .unwrap_or(false)
-    });
+fn end_temporary_borrows(borrows: &mut Vec<ActiveBorrow>, _locals: &[LocalDecl], _arg_count: usize) {
+    borrows.retain(|b| !b.temporary);
 }
 
 fn check_rvalue_operands(

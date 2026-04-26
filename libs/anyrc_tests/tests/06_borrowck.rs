@@ -114,6 +114,39 @@ fn borrowck_assign_while_borrowed() {
 }
 
 #[test]
+fn borrowck_reassign_from_shared_call_borrow_ok() {
+    assert_borrowck_ok(
+        r#"
+        fn replace(old: &i32) -> i32 { *old + 1 }
+        fn foo() {
+            let mut current: i32 = 1;
+            current = replace(&current);
+        }
+    "#,
+    );
+}
+
+#[test]
+fn borrowck_temporary_mut_method_borrow_allows_later_shared_arg() {
+    assert_borrowck_ok(
+        r#"
+        struct Buffer { value: i32 }
+
+        impl Buffer {
+            fn as_mut_ptr(&mut self) -> *mut i32 { &mut self.value as *mut i32 }
+            fn len(&self) -> usize { 1 }
+        }
+
+        fn sink(ptr: *mut i32, len: usize) {}
+
+        fn foo(buf: &mut Buffer) {
+            sink(buf.as_mut_ptr(), buf.len());
+        }
+    "#,
+    );
+}
+
+#[test]
 fn borrowck_copy_types_ok() {
     assert_borrowck_ok("fn foo() { let x: i32 = 5; let y: i32 = x; let z: i32 = x; }");
 }
