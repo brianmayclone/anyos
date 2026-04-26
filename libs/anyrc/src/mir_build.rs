@@ -2798,11 +2798,7 @@ impl<'a> MirBuilder<'a> {
         Some((full_name, wants_mut))
     }
 
-    fn fallback_alloc_method_call(
-        &self,
-        method: &str,
-        args: &[HirExpr],
-    ) -> Option<(String, bool)> {
+    fn fallback_alloc_method_call(&self, method: &str, args: &[HirExpr]) -> Option<(String, bool)> {
         let name = match method {
             "len" => String::from("len"),
             "push_str" => String::from("String::push_str"),

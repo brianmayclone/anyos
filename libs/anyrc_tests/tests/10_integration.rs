@@ -89,6 +89,37 @@ fn run_string_from_and_push_str_len() {
 }
 
 #[test]
+fn mir_string_methods_lower_to_intrinsic_calls() {
+    let source = r#"
+        fn main() -> i32 {
+            let mut s = String::from("ab");
+            s.push_str("cd");
+            s.len() as i32
+        }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test.mir".to_string(),
+        emit: EmitKind::Mir,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let mir = String::from_utf8(compile(source, "test.rs", &options).expect("compilation failed"))
+        .expect("mir utf8");
+    assert!(
+        mir.contains("fn from("),
+        "MIR missing String::from fallback:\n{mir}"
+    );
+    assert!(
+        mir.contains("fn String::push_str("),
+        "MIR missing String::push_str lowering:\n{mir}"
+    );
+    assert!(mir.contains("fn len("), "MIR missing len lowering:\n{mir}");
+}
+
+#[test]
 fn run_string_push_ascii_char_len() {
     let source = r#"
         fn main() -> i32 {

@@ -179,11 +179,21 @@ fn connected_services_text() -> alloc::string::String {
     for service in &services {
         let preview = crate::logic::connected_services::preview_service(project, service);
         out.push_str(&format!(
-            "\n{} ({})\n{}\n",
+            "\n{} ({})\n{}\nFiles:\n",
             service.name,
             service.kind.display_name(),
             preview.summary
         ));
+        for file in &preview.files {
+            out.push_str(&format!("  {}\n", file));
+        }
+        out.push_str("Operations:\n");
+        for operation in &preview.operations {
+            out.push_str(&format!(
+                "  {} {} -> {}\n",
+                operation.method, operation.path, operation.name
+            ));
+        }
     }
     out
 }

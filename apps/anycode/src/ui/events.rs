@@ -408,6 +408,7 @@ pub fn wire_run_panel() {
                 }
             }
             s.run_panel.update(&s.task_mgr);
+            s.run_panel.update_tests(&s.test_explorer);
             s.run_panel.update_debug_session(&s.debug_session);
         }
     });

@@ -327,8 +327,10 @@ pub fn save_run_configuration(
         Ok(()) => {
             proj.refresh();
             s.task_mgr.detect_from_project(proj, &s.config);
+            s.test_explorer.refresh_from_project(proj);
             s.task_mgr.select_run_by_name(&cfg.name);
             s.run_panel.update(&s.task_mgr);
+            s.run_panel.update_tests(&s.test_explorer);
             s.run_panel.update_debug_session(&s.debug_session);
             s.sidebar.populate_project(proj, &s.task_mgr);
             refresh_run_config_selector();
@@ -1173,8 +1175,19 @@ pub fn regenerate_connected_services() -> Result<String, String> {
     let Some(ref project) = s.current_project else {
         return Err(String::from("Open a Rust project first"));
     };
+    let services = crate::logic::connected_services::services_for_project(project);
+    let mut count = 0usize;
+    for service in &services {
+        match crate::logic::connected_services::regenerate_service(project, &service.module_name) {
+            Ok(_) => count += 1,
+            Err(err) => {
+                s.status.set_analysis_status(err);
+                return Err(String::from(err));
+            }
+        }
+    }
     match crate::logic::connected_services::regenerate_all(project) {
-        Ok(count) => {
+        Ok(_) => {
             if let Some(ref proj) = s.current_project {
                 s.sidebar.populate_project(proj, &s.task_mgr);
             }
@@ -1282,7 +1295,9 @@ fn refresh_project_metadata() {
     if let Some(ref mut project) = s.current_project {
         project.refresh();
         s.task_mgr.detect_from_project(project, &s.config);
+        s.test_explorer.refresh_from_project(project);
         s.run_panel.update(&s.task_mgr);
+        s.run_panel.update_tests(&s.test_explorer);
         s.run_panel.update_debug_session(&s.debug_session);
         s.sidebar.populate_project(project, &s.task_mgr);
         s.status.set_project_type(&project.display_context());
