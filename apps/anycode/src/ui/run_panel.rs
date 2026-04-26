@@ -1,6 +1,7 @@
 use alloc::format;
 use alloc::vec::Vec;
 use libanyui_client as ui;
+use ui::IconType;
 
 use crate::logic::debug_session::{DebugSession, DebugSessionStatus};
 use crate::logic::tasks::{TaskCategory, TaskManager};
@@ -99,19 +100,19 @@ impl RunPanel {
         btn_bar.set_padding(6, 0, 6, 0);
         panel.add(&btn_bar);
 
-        let btn_run = plain_text_button(t("Run"), 44, tc.success);
+        let btn_run = plain_icon_button("player-play", tc.success, t("Run selected target"));
         btn_run.set_tooltip(t("Run selected target"));
         btn_bar.add(&btn_run);
 
-        let btn_build = plain_text_button(t("Build"), 50, tc.accent);
+        let btn_build = plain_icon_button("hammer", tc.accent, t("Build selected target"));
         btn_build.set_tooltip(t("Build selected target"));
         btn_bar.add(&btn_build);
 
-        let btn_test = plain_text_button(t("Test"), 44, tc.warning);
+        let btn_test = plain_icon_button("flask-2", tc.warning, t("Run tests"));
         btn_test.set_tooltip(t("Run tests"));
         btn_bar.add(&btn_test);
 
-        let btn_stop = plain_text_button(t("Stop"), 44, tc.destructive);
+        let btn_stop = plain_icon_button("player-stop", tc.destructive, t("Stop current process"));
         btn_stop.set_tooltip(t("Stop current process"));
         btn_bar.add(&btn_stop);
 
@@ -133,7 +134,7 @@ impl RunPanel {
         debug_bar.set_padding(6, 0, 6, 0);
         panel.add(&debug_bar);
 
-        let btn_debug = plain_text_button(t("Debug"), 58, tc.accent);
+        let btn_debug = plain_icon_button("bug", tc.accent, t("Start debugging"));
         btn_debug.set_tooltip(t("Start debugging"));
         debug_bar.add(&btn_debug);
 
@@ -150,13 +151,13 @@ impl RunPanel {
         control_bar.set_padding(6, 0, 6, 0);
         panel.add(&control_bar);
 
-        let btn_continue = plain_text_button(t("Continue"), 70, tc.text);
+        let btn_continue = plain_icon_button("player-skip-forward", tc.text, t("Continue"));
         control_bar.add(&btn_continue);
 
-        let btn_pause = plain_text_button(t("Pause"), 54, tc.text);
+        let btn_pause = plain_icon_button("player-pause", tc.text, t("Pause"));
         control_bar.add(&btn_pause);
 
-        let btn_step_over = plain_text_button(t("Step"), 46, tc.text);
+        let btn_step_over = plain_icon_button("corner-down-right", tc.text, t("Step Over"));
         control_bar.add(&btn_step_over);
 
         let content_split = ui::SplitView::new();
@@ -289,6 +290,7 @@ impl RunPanel {
             let cat_node = self.tree.add_root(&label);
             self.tree.set_node_style(cat_node, STYLE_BOLD);
             self.tree.set_node_text_color(cat_node, tc.text);
+            set_node_icon(&self.tree, cat_node, icon_for_task_category(*category), tc.text_secondary);
             self.task_indices.push(None);
             self.tree.set_expanded(cat_node, true);
 
@@ -317,6 +319,7 @@ impl RunPanel {
                         tc.text_secondary
                     },
                 );
+                set_node_icon(&self.tree, node, icon_for_task_category(task.category), color);
                 self.task_indices.push(Some(*task_idx));
             }
         }
@@ -344,6 +347,7 @@ impl RunPanel {
         let session = self.debug_tree.add_root("Debug Session");
         self.debug_tree.set_node_style(session, STYLE_BOLD);
         self.debug_tree.set_node_text_color(session, status_color);
+        set_node_icon(&self.debug_tree, session, "bug", status_color);
         self.debug_tree.set_expanded(session, true);
         self.debug_tree
             .add_child(session, &format!("State: {}", debug.status_label()));
@@ -364,6 +368,7 @@ impl RunPanel {
             .debug_tree
             .add_root(&format!("Breakpoints ({})", debug.breakpoint_count()));
         self.debug_tree.set_node_style(bps, STYLE_BOLD);
+        set_node_icon(&self.debug_tree, bps, "circle-dot", tc.destructive);
         self.debug_tree.set_expanded(bps, true);
         for bp in &debug.breakpoints {
             let marker = if bp.enabled { "enabled" } else { "disabled" };
@@ -373,13 +378,15 @@ impl RunPanel {
                 bp.line + 1,
                 marker
             );
-            self.debug_tree.add_child(bps, &label);
+            let node = self.debug_tree.add_child(bps, &label);
+            set_node_icon(&self.debug_tree, node, "circle", tc.destructive);
         }
 
         let frames = self
             .debug_tree
             .add_root(&format!("Call Stack ({})", debug.call_stack.len()));
         self.debug_tree.set_node_style(frames, STYLE_BOLD);
+        set_node_icon(&self.debug_tree, frames, "layers", tc.text_secondary);
         self.debug_tree.set_expanded(frames, true);
         for frame in &debug.call_stack {
             let label = format!(
@@ -388,37 +395,42 @@ impl RunPanel {
                 path::basename(&frame.file_path),
                 frame.line + 1
             );
-            self.debug_tree.add_child(frames, &label);
+            let node = self.debug_tree.add_child(frames, &label);
+            set_node_icon(&self.debug_tree, node, "corner-down-right", tc.text_secondary);
         }
 
         let vars = self
             .debug_tree
             .add_root(&format!("Variables ({})", debug.variables.len()));
         self.debug_tree.set_node_style(vars, STYLE_BOLD);
+        set_node_icon(&self.debug_tree, vars, "braces", tc.text_secondary);
         for var in &debug.variables {
-            self.debug_tree.add_child(
+            let node = self.debug_tree.add_child(
                 vars,
                 &format!("{}: {} = {}", var.name, var.type_name, var.value),
             );
+            set_node_icon(&self.debug_tree, node, "equal", tc.text_secondary);
         }
 
         let regs = self
             .debug_tree
             .add_root(&format!("Registers ({})", debug.registers.len()));
         self.debug_tree.set_node_style(regs, STYLE_BOLD);
+        set_node_icon(&self.debug_tree, regs, "cpu", tc.text_secondary);
         for reg in &debug.registers {
-            self.debug_tree
-                .add_child(regs, &format!("{} = {}", reg.name, reg.value));
+            let node = self.debug_tree.add_child(regs, &format!("{} = {}", reg.name, reg.value));
+            set_node_icon(&self.debug_tree, node, "binary", tc.text_secondary);
         }
 
         let disasm = self
             .debug_tree
             .add_root(&format!("Disassembly ({})", debug.disassembly.len()));
         self.debug_tree.set_node_style(disasm, STYLE_BOLD);
+        set_node_icon(&self.debug_tree, disasm, "terminal", tc.text_secondary);
         self.debug_tree.set_expanded(disasm, true);
         for line in &debug.disassembly {
             let marker = if line.current { "=>" } else { "  " };
-            self.debug_tree.add_child(
+            let node = self.debug_tree.add_child(
                 disasm,
                 &format!(
                     "{} {}  {:<14} {}",
@@ -428,14 +440,18 @@ impl RunPanel {
                     line.text
                 ),
             );
+            if line.current {
+                self.debug_tree.set_node_text_color(node, tc.accent);
+            }
         }
 
         let memory = self
             .debug_tree
             .add_root(&format!("Stack Memory ({})", debug.memory_rows.len()));
         self.debug_tree.set_node_style(memory, STYLE_BOLD);
+        set_node_icon(&self.debug_tree, memory, "memory-stick", tc.text_secondary);
         for row in &debug.memory_rows {
-            self.debug_tree.add_child(
+            let node = self.debug_tree.add_child(
                 memory,
                 &format!(
                     "{}  {:<24} {}",
@@ -444,6 +460,7 @@ impl RunPanel {
                     row.ascii
                 ),
             );
+            set_node_icon(&self.debug_tree, node, "rows-3", tc.text_secondary);
         }
     }
 
@@ -486,10 +503,27 @@ fn section_label(text: &str) -> ui::Label {
     label
 }
 
-fn plain_text_button(text: &str, width: u32, color: u32) -> ui::PlainButton {
-    let btn = ui::PlainButton::new(text);
-    btn.set_size(width, 24);
-    btn.set_font_size(11);
-    btn.set_text_color(color);
+fn plain_icon_button(icon: &str, color: u32, tooltip: &str) -> ui::PlainButton {
+    let btn = ui::PlainButton::new("");
+    btn.set_size(26, 24);
+    btn.set_system_icon(icon, IconType::Outline, color, 17);
+    btn.set_tooltip(tooltip);
     btn
+}
+
+fn set_node_icon(tree: &ui::TreeView, node: u32, icon: &str, color: u32) {
+    if let Some(icon) = ui::Icon::system(icon, IconType::Outline, color, 16) {
+        tree.set_node_icon(node, &icon.pixels, icon.width, icon.height);
+    }
+}
+
+fn icon_for_task_category(category: TaskCategory) -> &'static str {
+    match category {
+        TaskCategory::Build => "hammer",
+        TaskCategory::Run => "player-play",
+        TaskCategory::Test => "flask-2",
+        TaskCategory::Check => "check",
+        TaskCategory::Clean => "trash",
+        TaskCategory::Custom => "terminal",
+    }
 }

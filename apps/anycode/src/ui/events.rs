@@ -183,6 +183,10 @@ pub fn wire_toolbar(tb: &AppToolbar) {
 pub fn wire_inspector() {
     app()
         .inspector_panel
+        .property_grid
+        .on_selection_changed(|_| commands::designer_property_selection_changed());
+    app()
+        .inspector_panel
         .property_dropdown
         .on_selection_changed(|_| commands::designer_property_selection_changed());
     app()

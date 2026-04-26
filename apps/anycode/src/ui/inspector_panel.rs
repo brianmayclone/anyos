@@ -1,14 +1,15 @@
 use alloc::format;
+use alloc::string::String;
 use libanyui_client as ui;
 
 use crate::logic::designer::{DesignerControl, DesignerDocument};
-use crate::ui::designer_toolbox;
 
 const STYLE_BOLD: u32 = 1;
 
 pub struct InspectorPanel {
     pub panel: ui::View,
     pub property_dropdown: ui::DropDown,
+    pub property_grid: ui::DataGrid,
     pub property_value: ui::TextField,
     pub btn_apply_property: ui::Button,
     pub btn_delete_control: ui::Button,
@@ -51,14 +52,26 @@ impl InspectorPanel {
         tree.set_row_height(20);
         panel.add(&tree);
 
+        let property_grid = ui::DataGrid::new(240, 320);
+        property_grid.set_dock(ui::DOCK_FILL);
+        property_grid.set_columns(&[
+            ui::ColumnDef::new("Property").width(96),
+            ui::ColumnDef::new("Value").width(136),
+        ]);
+        property_grid.set_row_height(22);
+        property_grid.set_header_height(24);
+        property_grid.set_selection_mode(ui::SELECTION_SINGLE);
+        property_grid.set_visible(false);
+        panel.add(&property_grid);
+
         let property_editor = ui::View::new();
         property_editor.set_dock(ui::DOCK_BOTTOM);
-        property_editor.set_size(240, 150);
+        property_editor.set_size(240, 128);
         property_editor.set_color(tc.sidebar_bg);
         property_editor.set_visible(false);
         panel.add(&property_editor);
 
-        let property_title = ui::Label::new("Edit Property");
+        let property_title = ui::Label::new("Value");
         property_title.set_position(12, 8);
         property_title.set_size(210, 18);
         property_title.set_font_size(11);
@@ -66,32 +79,34 @@ impl InspectorPanel {
         property_editor.add(&property_title);
 
         let property_dropdown = ui::DropDown::new("Text|X|Y|Width|Height");
-        property_dropdown.set_position(12, 30);
-        property_dropdown.set_size(216, 26);
+        property_dropdown.set_position(12, 2);
+        property_dropdown.set_size(1, 1);
+        property_dropdown.set_visible(false);
         property_editor.add(&property_dropdown);
 
         let property_value = ui::TextField::new();
-        property_value.set_position(12, 62);
-        property_value.set_size(128, 28);
+        property_value.set_position(12, 30);
+        property_value.set_size(216, 28);
         property_value.set_color(tc.control_bg);
         property_value.set_text_color(tc.text);
         property_editor.add(&property_value);
 
         let btn_apply_property = ui::Button::new("Apply");
-        btn_apply_property.set_position(148, 62);
-        btn_apply_property.set_size(80, 28);
+        btn_apply_property.set_position(12, 66);
+        btn_apply_property.set_size(104, 28);
         btn_apply_property.set_color(tc.accent);
         property_editor.add(&btn_apply_property);
 
         let btn_delete_control = ui::Button::new("Delete Control");
-        btn_delete_control.set_position(12, 98);
-        btn_delete_control.set_size(216, 28);
+        btn_delete_control.set_position(124, 66);
+        btn_delete_control.set_size(104, 28);
         btn_delete_control.set_color(0xff7f1d1d);
         property_editor.add(&btn_delete_control);
 
         let this = Self {
             panel,
             property_dropdown,
+            property_grid,
             property_value,
             btn_apply_property,
             btn_delete_control,
@@ -108,7 +123,10 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Properties");
         self.subtitle.set_text("No selection");
+        self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
+        self.tree.set_dock(ui::DOCK_FILL);
+        self.tree.set_visible(true);
         self.tree.clear();
         let root = self.tree.add_root("Inspector");
         self.tree.set_node_style(root, STYLE_BOLD);
@@ -123,7 +141,10 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Properties");
         self.subtitle.set_text(file_path);
+        self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
+        self.tree.set_dock(ui::DOCK_FILL);
+        self.tree.set_visible(true);
         self.tree.clear();
         let root = self.tree.add_root("File");
         self.tree.set_node_style(root, STYLE_BOLD);
@@ -136,7 +157,10 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Designer Properties");
         self.subtitle.set_text(&doc.form_name);
+        self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
+        self.tree.set_dock(ui::DOCK_FILL);
+        self.tree.set_visible(true);
         self.tree.clear();
 
         let form = self.tree.add_root(&format!("Form: {}", doc.form_name));
@@ -169,11 +193,6 @@ impl InspectorPanel {
         }
         self.tree.set_expanded(controls, true);
 
-        let toolbox = self.tree.add_root("Toolbox");
-        self.tree.set_node_style(toolbox, STYLE_BOLD);
-        self.tree.set_node_text_color(toolbox, tc.accent);
-        designer_toolbox::populate_toolbox_tree(&self.tree, toolbox);
-        self.tree.set_expanded(toolbox, true);
     }
 
     pub fn show_designer_control(&self, doc: &DesignerDocument, control_name: &str) {
@@ -190,10 +209,15 @@ impl InspectorPanel {
         self.subtitle
             .set_text(&format!("{} / {}", doc.form_name, control.name));
         self.property_editor.set_visible(true);
+        self.property_grid.set_visible(true);
+        self.tree.set_dock(ui::DOCK_BOTTOM);
+        self.tree.set_size(240, 150);
+        self.tree.set_visible(true);
         self.property_dropdown.set_items(&control.property_items());
         self.property_dropdown.set_state(0);
         self.property_value
             .set_text(&control.property_value("Text"));
+        self.populate_property_grid(control);
         self.tree.clear();
 
         let root = self.tree.add_root(&control.name);
@@ -224,21 +248,26 @@ impl InspectorPanel {
             .add_child(events, &format!("Default: {}", control.event_name()));
         self.tree.set_expanded(events, true);
 
-        let toolbox = self.tree.add_root("Toolbox");
-        self.tree.set_node_style(toolbox, STYLE_BOLD);
-        self.tree.set_node_text_color(toolbox, tc.text_secondary);
-        designer_toolbox::populate_toolbox_tree(&self.tree, toolbox);
     }
 
     pub fn update_property_value_from_selection(&self, doc: &DesignerDocument, control_name: &str) {
-        let property_name =
-            doc.control_property_name_at(control_name, self.property_dropdown.get_state());
+        let row = self.property_grid.selected_row();
+        if row == u32::MAX {
+            return;
+        }
+        self.property_dropdown.set_state(row);
+        let property_name = doc.control_property_name_at(control_name, row);
         let value = doc.control_property_value(control_name, &property_name);
         self.property_value.set_text(&value);
     }
 
     pub fn selected_property_index(&self) -> u32 {
-        self.property_dropdown.get_state()
+        let row = self.property_grid.selected_row();
+        if row == u32::MAX {
+            self.property_dropdown.get_state()
+        } else {
+            row
+        }
     }
 
     pub fn property_value_text(&self) -> alloc::string::String {
@@ -248,5 +277,31 @@ impl InspectorPanel {
             .unwrap_or("")
             .trim()
             .into()
+    }
+
+    fn populate_property_grid(&self, control: &DesignerControl) {
+        let mut raw = String::new();
+        let mut row = 0u32;
+        for name in control.property_items().split('|') {
+            if row > 0 {
+                raw.push('\x1e');
+            }
+            append_grid_cell(&mut raw, name);
+            raw.push('\x1f');
+            append_grid_cell(&mut raw, &control.property_value(name));
+            row += 1;
+        }
+        self.property_grid.set_data_raw(raw.as_bytes());
+        if row > 0 {
+            self.property_grid.set_selected_row(0);
+        }
+    }
+}
+
+fn append_grid_cell(out: &mut String, value: &str) {
+    for ch in value.chars() {
+        if ch != '\x1e' && ch != '\x1f' {
+            out.push(ch);
+        }
     }
 }

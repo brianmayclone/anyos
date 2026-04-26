@@ -2,6 +2,7 @@ use alloc::string::String;
 use libanyui_client as ui;
 
 use crate::logic::designer::{DesignerControl, DesignerDocument};
+use crate::ui::designer_toolbox;
 
 const SURFACE_W: u32 = 960;
 const SURFACE_H: u32 = 640;
@@ -10,6 +11,7 @@ const FORM_Y: i32 = 38;
 
 pub struct DesignerSurface {
     pub panel: ui::View,
+    _toolbox: ui::TreeView,
     canvas: ui::Canvas,
     file_path: String,
     doc: DesignerDocument,
@@ -21,6 +23,30 @@ impl DesignerSurface {
         let panel = ui::View::new();
         panel.set_dock(ui::DOCK_FILL);
         panel.set_color(tc.editor_bg);
+
+        let toolbox_panel = ui::View::new();
+        toolbox_panel.set_dock(ui::DOCK_LEFT);
+        toolbox_panel.set_size(210, SURFACE_H);
+        toolbox_panel.set_color(tc.sidebar_bg);
+        panel.add(&toolbox_panel);
+
+        let toolbox_header = ui::Label::new("Toolbox");
+        toolbox_header.set_dock(ui::DOCK_TOP);
+        toolbox_header.set_size(210, 34);
+        toolbox_header.set_font_size(13);
+        toolbox_header.set_text_color(tc.text);
+        toolbox_panel.add(&toolbox_header);
+
+        let toolbox = ui::TreeView::new(210, SURFACE_H - 34);
+        toolbox.set_dock(ui::DOCK_FILL);
+        toolbox.set_indent_width(14);
+        toolbox.set_row_height(22);
+        toolbox_panel.add(&toolbox);
+        let toolbox_root = toolbox.add_root("Controls");
+        toolbox.set_node_text_color(toolbox_root, tc.text);
+        toolbox.set_node_style(toolbox_root, ui::STYLE_BOLD);
+        toolbox.set_expanded(toolbox_root, true);
+        designer_toolbox::populate_toolbox_tree(&toolbox, toolbox_root);
 
         let canvas = ui::Canvas::new(SURFACE_W, SURFACE_H);
         canvas.set_dock(ui::DOCK_FILL);
@@ -41,6 +67,7 @@ impl DesignerSurface {
 
         let this = Self {
             panel,
+            _toolbox: toolbox,
             canvas,
             file_path: String::from(file_path),
             doc,

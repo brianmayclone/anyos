@@ -214,14 +214,75 @@ pub const TOOLBOX_CONTROLS: &[ToolboxControl] = &[
 ];
 
 pub fn populate_toolbox_tree(tree: &ui::TreeView, root: u32) {
+    let tc = ui::theme::colors();
     let mut current_category = "";
     let mut category_node = 0;
     for item in TOOLBOX_CONTROLS {
         if item.category != current_category {
             current_category = item.category;
             category_node = tree.add_child(root, current_category);
+            tree.set_node_text_color(category_node, tc.text_secondary);
             tree.set_expanded(category_node, true);
         }
-        tree.add_child(category_node, item.name);
+        let node = tree.add_child(category_node, item.name);
+        tree.set_node_text_color(node, tc.text);
+        set_control_icon(tree, node, item.name, tc.text_secondary);
+    }
+}
+
+pub fn set_control_icon(tree: &ui::TreeView, node: u32, control_name: &str, color: u32) {
+    if let Some(icon) = ui::Icon::system(
+        icon_name_for_control(control_name),
+        ui::IconType::Outline,
+        color,
+        16,
+    ) {
+        tree.set_node_icon(node, &icon.pixels, icon.width, icon.height);
+    }
+}
+
+fn icon_name_for_control(control_name: &str) -> &'static str {
+    match control_name {
+        "Pointer" => "mouse-pointer-2",
+        "Alert" => "triangle-alert",
+        "Badge" => "badge",
+        "StatusIndicator" => "circle-dot",
+        "Spinner" => "loader",
+        "Tag" => "tag",
+        "Tooltip" => "message-circle-question",
+        "Button" | "PlainButton" => "rectangle-horizontal",
+        "IconButton" => "badge-icon",
+        "ImageButton" => "image-up",
+        "Label" => "type",
+        "LinkLabel" => "link",
+        "TextField" | "AutoCompleteTextField" | "SearchField" => "text-cursor-input",
+        "TextArea" | "TextEditor" => "file-text",
+        "CheckBox" => "square-check",
+        "RadioButton" | "RadioGroup" => "circle-dot",
+        "Toggle" => "toggle-right",
+        "ProgressBar" => "chart-no-axes-column-increasing",
+        "Slider" => "sliders-horizontal",
+        "Stepper" => "plus-minus",
+        "ColorWell" => "palette",
+        "DatePicker" | "DateTimePicker" | "TimePicker" => "calendar-clock",
+        "DropDown" | "ComboBox" => "list-collapse",
+        "SegmentedControl" | "TabBar" => "panel-top",
+        "ListBox" => "list",
+        "TreeView" => "list-tree",
+        "DataGrid" | "TableView" | "TableLayout" => "table-2",
+        "Toolbar" => "panel-top-open",
+        "NavigationBar" => "navigation",
+        "Card" => "panel-top",
+        "Expander" => "chevrons-up-down",
+        "FlowPanel" => "layout-grid",
+        "GroupBox" => "group",
+        "ScrollView" => "scroll",
+        "SplitView" => "columns-2",
+        "StackPanel" => "rows-3",
+        "Panel" => "panel-left",
+        "Divider" => "separator-horizontal",
+        "Canvas" => "brush",
+        "ImageView" => "image",
+        _ => "box",
     }
 }
