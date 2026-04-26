@@ -59,7 +59,7 @@ static VMA_REGISTRY: Spinlock<Vec<ProcessVmas>> = Spinlock::new(Vec::new());
 ///
 /// Called from `load_and_run_with_args()` after the page directory is created.
 /// `mmap_hint` includes ASLR randomization.
-pub fn init_process(pd: PhysAddr, mmap_hint: u32) {
+pub fn init_process(pd: PhysAddr, mmap_hint: u64) {
     let mut reg = VMA_REGISTRY.lock();
     // Guard: don't double-init (shouldn't happen, but be safe).
     if reg.iter().any(|p| p.pd == pd) {
@@ -68,7 +68,7 @@ pub fn init_process(pd: PhysAddr, mmap_hint: u32) {
     reg.push(ProcessVmas {
         pd,
         vmas: BTreeMap::new(),
-        mmap_hint: (mmap_hint as u64).max(MMAP_BASE),
+        mmap_hint: mmap_hint.max(MMAP_BASE),
         mmap64_hint: MMAP64_BASE,
     });
 }

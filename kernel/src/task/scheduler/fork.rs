@@ -7,7 +7,7 @@ use crate::memory::address::PhysAddr;
 /// All fields captured under a single scheduler lock to prevent TOCTOU.
 pub struct ForkSnapshot {
     pub pd: PhysAddr,
-    pub brk: u32,
+    pub brk: u64,
     pub args: [u8; 256],
     pub cwd: [u8; 512],
     pub capabilities: crate::task::capabilities::CapSet,
@@ -16,7 +16,7 @@ pub struct ForkSnapshot {
     pub stdout_pipe: u32,
     pub stdin_pipe: u32,
     pub fpu_data: [u8; crate::task::thread::FPU_STATE_SIZE],
-    pub mmap_next: u32,
+    pub mmap_next: u64,
     pub user_pages: u32,
     pub priority: u8,
     pub name: [u8; 32],
@@ -68,7 +68,7 @@ pub fn set_thread_fpu_state(tid: u32, data: &[u8; crate::task::thread::FPU_STATE
 }
 
 /// Set mmap_next on a thread (for fork child).
-pub fn set_thread_mmap_next(tid: u32, val: u32) {
+pub fn set_thread_mmap_next(tid: u32, val: u64) {
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() {
         Some(s) => s,
@@ -95,7 +95,7 @@ pub fn set_thread_user_pages(tid: u32, val: u32) {
 pub fn exec_update_thread(
     tid: u32,
     new_pd: PhysAddr,
-    brk: u32,
+    brk: u64,
     user_pages: u32,
 ) {
     let mut guard = SCHEDULER.lock();
@@ -118,7 +118,7 @@ pub fn exec_update_thread(
         // ASLR: randomize the mmap base within [0x20000000, 0x20000000 + 16 MiB)
         let mmap_rand =
             crate::task::loader::random_page_offset(crate::task::loader::ASLR_MMAP_MAX_PAGES);
-        thread.mmap_next = 0x7000_0000u32.wrapping_add(mmap_rand * 4096);
+        thread.mmap_next = 0x7000_0000u64.wrapping_add(mmap_rand as u64 * 4096);
         thread.fpu_state = crate::task::thread::FxState::new_default();
         thread.user_pages = user_pages;
         thread.context.checksum = thread.context.compute_checksum();

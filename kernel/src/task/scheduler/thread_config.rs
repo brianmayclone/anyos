@@ -7,7 +7,7 @@ use crate::memory::address::PhysAddr;
 use crate::task::thread::ThreadState;
 
 /// Configure a thread as a user process.
-pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
+pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u64) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() {
@@ -119,7 +119,7 @@ pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
 }
 
 /// Get the current thread's program break.
-pub fn current_thread_brk() -> u32 {
+pub fn current_thread_brk() -> u64 {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_BRK);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -132,7 +132,7 @@ pub fn current_thread_brk() -> u32 {
 }
 
 /// Set the current thread's program break, syncing across sibling threads.
-pub fn set_current_thread_brk(brk: u32) {
+pub fn set_current_thread_brk(brk: u64) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_BRK);
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -152,7 +152,7 @@ pub fn set_current_thread_brk(brk: u32) {
 }
 
 /// Return the current thread's mmap bump pointer.
-pub fn current_thread_mmap_next() -> u32 {
+pub fn current_thread_mmap_next() -> u64 {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_MMAP);
     let guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
@@ -165,7 +165,7 @@ pub fn current_thread_mmap_next() -> u32 {
 }
 
 /// Set the current thread's mmap bump pointer, syncing across sibling threads.
-pub fn set_current_thread_mmap_next(val: u32) {
+pub fn set_current_thread_mmap_next(val: u64) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_MMAP);
     let mut guard = SCHEDULER.lock();
     let cpu_id = get_cpu_id();
