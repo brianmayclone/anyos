@@ -156,6 +156,7 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "font-weight" => Some(Property::FontWeight),
         "font-style" => Some(Property::FontStyle),
         "direction" => Some(Property::Direction),
+        "writing-mode" => Some(Property::WritingMode),
         "text-align" => Some(Property::TextAlign),
         "text-decoration" => Some(Property::TextDecoration),
         "text-indent" => Some(Property::TextIndent),
@@ -225,6 +226,7 @@ pub fn parse_property(name: &str) -> Option<Property> {
         // Flexbox
         "flex-direction" => Some(Property::FlexDirection),
         "flex-wrap" => Some(Property::FlexWrap),
+        "flex-flow" => Some(Property::FlexFlow),
         "justify-content" => Some(Property::JustifyContent),
         "align-items" => Some(Property::AlignItems),
         "align-self" => Some(Property::AlignSelf),
@@ -382,7 +384,7 @@ pub fn parse_property(name: &str) -> Option<Property> {
 #[cfg(test)]
 mod tests {
     use super::parse_inline_style;
-    use crate::css::types::{CssValue, Property};
+    use crate::css::{CssValue, Property};
 
     #[test]
     fn inline_font_shorthand_expands_family_size_and_line_height() {

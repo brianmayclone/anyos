@@ -43,6 +43,7 @@ const SET_OVERFLOW_WRAP: u32 = 1 << 16;
 const SET_LIST_STYLE_POS: u32 = 1 << 17;
 const SET_ACCENT_COLOR: u32 = 1 << 18;
 const SET_COLOR_SCHEME: u32 = 1 << 19;
+const SET_WRITING_MODE: u32 = 1 << 20;
 
 /// User-agent stylesheet: hardcoded browser defaults per HTML tag.
 /// Returns the base style AND a bitfield indicating which inheritable
@@ -2434,6 +2435,9 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u32) {
     if set & SET_DIRECTION == 0 {
         child.direction = parent.direction;
     }
+    if set & SET_WRITING_MODE == 0 {
+        child.writing_mode = parent.writing_mode;
+    }
     if set & SET_TEXT_ALIGN == 0 {
         child.text_align = parent.text_align;
     }
@@ -2489,6 +2493,7 @@ fn decl_set_flag(prop: &Property) -> u32 {
         Property::FontStyle => SET_FONT_STYLE,
         Property::FontFamily => SET_FONT_FAMILY,
         Property::Direction => SET_DIRECTION,
+        Property::WritingMode => SET_WRITING_MODE,
         Property::TextAlign => SET_TEXT_ALIGN,
         Property::LineHeight => SET_LINE_HEIGHT,
         Property::WhiteSpace => SET_WHITE_SPACE,
@@ -2645,6 +2650,17 @@ pub fn apply_declaration(
                 style.direction = match kw.as_str() {
                     "rtl" => Direction::Rtl,
                     _ => Direction::Ltr,
+                };
+            }
+        }
+        Property::WritingMode => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.writing_mode = match kw.as_str() {
+                    "vertical-lr" => WritingMode::VerticalLr,
+                    "vertical-rl" => WritingMode::VerticalRl,
+                    "sideways-lr" => WritingMode::SidewaysLr,
+                    "sideways-rl" => WritingMode::SidewaysRl,
+                    _ => WritingMode::HorizontalTb,
                 };
             }
         }
@@ -2920,47 +2936,72 @@ pub fn apply_declaration(
         }
         // Shorthand padding.
         Property::Padding => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if let CssValue::Percentage(v) = decl.value {
+                style.padding_top_pct = Some(v);
+                style.padding_right_pct = Some(v);
+                style.padding_bottom_pct = Some(v);
+                style.padding_left_pct = Some(v);
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_top = px;
                 style.padding_right = px;
                 style.padding_bottom = px;
                 style.padding_left = px;
+                style.padding_top_pct = None;
+                style.padding_right_pct = None;
+                style.padding_bottom_pct = None;
+                style.padding_left_pct = None;
             }
         }
         Property::PaddingTop => {
             if matches!(decl.value, CssValue::Inherit) {
                 if let Some(parent) = parent_style {
                     style.padding_top = parent.padding_top;
+                    style.padding_top_pct = parent.padding_top_pct;
                 }
+            } else if let CssValue::Percentage(v) = decl.value {
+                style.padding_top_pct = Some(v);
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_top = px;
+                style.padding_top_pct = None;
             }
         }
         Property::PaddingRight => {
             if matches!(decl.value, CssValue::Inherit) {
                 if let Some(parent) = parent_style {
                     style.padding_right = parent.padding_right;
+                    style.padding_right_pct = parent.padding_right_pct;
                 }
+            } else if let CssValue::Percentage(v) = decl.value {
+                style.padding_right_pct = Some(v);
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_right = px;
+                style.padding_right_pct = None;
             }
         }
         Property::PaddingBottom => {
             if matches!(decl.value, CssValue::Inherit) {
                 if let Some(parent) = parent_style {
                     style.padding_bottom = parent.padding_bottom;
+                    style.padding_bottom_pct = parent.padding_bottom_pct;
                 }
+            } else if let CssValue::Percentage(v) = decl.value {
+                style.padding_bottom_pct = Some(v);
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_bottom = px;
+                style.padding_bottom_pct = None;
             }
         }
         Property::PaddingLeft => {
             if matches!(decl.value, CssValue::Inherit) {
                 if let Some(parent) = parent_style {
                     style.padding_left = parent.padding_left;
+                    style.padding_left_pct = parent.padding_left_pct;
                 }
+            } else if let CssValue::Percentage(v) = decl.value {
+                style.padding_left_pct = Some(v);
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_left = px;
+                style.padding_left_pct = None;
             }
         }
         Property::BorderWidth => {
@@ -3204,6 +3245,22 @@ pub fn apply_declaration(
                     "wrap-reverse" => FlexWrap::WrapReverse,
                     _ => style.flex_wrap,
                 };
+            }
+        }
+        Property::FlexFlow => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                for part in kw.split_whitespace() {
+                    match part {
+                        "row" => style.flex_direction = FlexDirection::Row,
+                        "row-reverse" => style.flex_direction = FlexDirection::RowReverse,
+                        "column" => style.flex_direction = FlexDirection::Column,
+                        "column-reverse" => style.flex_direction = FlexDirection::ColumnReverse,
+                        "nowrap" => style.flex_wrap = FlexWrap::Nowrap,
+                        "wrap" => style.flex_wrap = FlexWrap::Wrap,
+                        "wrap-reverse" => style.flex_wrap = FlexWrap::WrapReverse,
+                        _ => {}
+                    }
+                }
             }
         }
         Property::JustifyContent => {
@@ -5552,7 +5609,7 @@ fn split_comma_respecting_parens(s: &str) -> Vec<&str> {
 }
 
 #[cfg(test)]
-mod tests {
+mod declaration_tests {
     use super::*;
 
     #[test]
@@ -6275,7 +6332,7 @@ fn parse_grid_template_areas_value(s: &str) -> Vec<GridArea> {
 }
 
 #[cfg(test)]
-mod tests {
+mod layout_regression_tests {
     use super::*;
 
     #[test]

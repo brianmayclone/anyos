@@ -275,6 +275,27 @@ pub enum Direction {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WritingMode {
+    HorizontalTb,
+    VerticalLr,
+    VerticalRl,
+    SidewaysLr,
+    SidewaysRl,
+}
+
+impl WritingMode {
+    pub fn is_vertical(self) -> bool {
+        matches!(
+            self,
+            WritingMode::VerticalLr
+                | WritingMode::VerticalRl
+                | WritingMode::SidewaysLr
+                | WritingMode::SidewaysRl
+        )
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InlineAxisAlignment {
     Start,
     End,
@@ -515,6 +536,7 @@ pub struct ComputedStyle {
     pub font_weight: FontWeight,
     pub font_style: FontStyleVal,
     pub direction: Direction,
+    pub writing_mode: WritingMode,
     pub text_align: TextAlignVal,
     pub text_decoration: TextDeco,
     pub line_height: i32,
@@ -534,6 +556,10 @@ pub struct ComputedStyle {
     pub padding_right: i32,
     pub padding_bottom: i32,
     pub padding_left: i32,
+    pub padding_top_pct: Option<i32>,
+    pub padding_right_pct: Option<i32>,
+    pub padding_bottom_pct: Option<i32>,
+    pub padding_left_pct: Option<i32>,
     pub border_width: i32,
     pub border_color: u32,
     pub border_radius: i32,
