@@ -226,6 +226,7 @@ pub fn stop() {
         s.status.set_analysis_status("Live check stopped");
     }
     s.build_process = None;
+    s.active_task_category = None;
     s.live_check_process = None;
     s.live_check.reset();
     s.debug_session.stop();
@@ -2380,7 +2381,9 @@ pub fn set_build_configuration(config: project::BuildConfiguration) {
 
     if let Some(ref proj) = s.current_project {
         s.task_mgr.detect_from_project(proj, &s.config);
+        s.test_explorer.refresh_from_project(proj);
         s.run_panel.update(&s.task_mgr);
+        s.run_panel.update_tests(&s.test_explorer);
         s.run_panel.update_debug_session(&s.debug_session);
         s.sidebar.populate_project(proj, &s.task_mgr);
         s.status.set_project_type(&project_context);
@@ -2439,7 +2442,9 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     let workspace_root = proj.root.clone();
 
     s.task_mgr.detect_from_project(&proj, &s.config);
+    s.test_explorer.refresh_from_project(&proj);
     s.run_panel.update(&s.task_mgr);
+    s.run_panel.update_tests(&s.test_explorer);
     s.run_panel.update_debug_session(&s.debug_session);
     s.sidebar.populate_project(&proj, &s.task_mgr);
     refresh_run_config_selector();

@@ -1618,6 +1618,69 @@ impl<'a> MirBuilder<'a> {
                     });
                     self.current_block = next_block;
                     Operand::Copy(Place::local(dest))
+                } else if let Some((fn_name, method_wants_mut)) =
+                    self.fallback_alloc_method_call(method_str, args)
+                {
+                    let recv_op = match &recv_ty {
+                        TyKind::Ref(_, _) => {
+                            let place = self.lower_place(recv);
+                            let local = match &place {
+                                Place { local, projections } if projections.is_empty() => *local,
+                                _ => {
+                                    let tmp = self.alloc_temp(recv_ty.clone(), expr.span);
+                                    self.emit_assign(
+                                        Place::local(tmp),
+                                        Rvalue::Use(Operand::Copy(place)),
+                                        expr.span,
+                                    );
+                                    tmp
+                                }
+                            };
+                            Operand::Copy(Place::local(local))
+                        }
+                        _ => {
+                            let place = self.lower_place(recv);
+                            let mutbl = if method_wants_mut {
+                                Mutability::Mut
+                            } else {
+                                Mutability::Immutable
+                            };
+                            let borrow = if method_wants_mut {
+                                BorrowKind::Mutable
+                            } else {
+                                BorrowKind::Shared
+                            };
+                            let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), mutbl);
+                            let tmp = self.alloc_temp(ref_ty, expr.span);
+                            self.emit_assign(
+                                Place::local(tmp),
+                                Rvalue::Ref(borrow, place),
+                                expr.span,
+                            );
+                            Operand::Copy(Place::local(tmp))
+                        }
+                    };
+
+                    let mut all_args = vec![recv_op];
+                    for a in args {
+                        all_args.push(self.lower_expr(a));
+                    }
+
+                    let ty = self.get_expr_ty(expr);
+                    let dest = self.alloc_temp(ty, expr.span);
+                    let next_block = self.push_block();
+                    let fn_sym = self.interner.intern(&fn_name);
+                    self.terminate(Terminator::Call {
+                        func: Operand::Constant(Constant {
+                            ty: TyKind::FnDef(DefId(0), vec![]),
+                            value: ConstValue::FnItem(fn_sym),
+                        }),
+                        args: all_args,
+                        dest: Place::local(dest),
+                        target: next_block,
+                    });
+                    self.current_block = next_block;
+                    Operand::Copy(Place::local(dest))
                 } else if let TyKind::Adt(def_id, _) = &inner_ty {
                     // Check if receiver is an intrinsic type (AtomicBool, etc.)
                     if self.resolve.intrinsic_fns.contains_key(def_id) {
@@ -2733,6 +2796,33 @@ impl<'a> MirBuilder<'a> {
             "clear" | "push_str" | "push" | "pop" | "push_back" | "truncate"
         );
         Some((full_name, wants_mut))
+    }
+
+    fn fallback_alloc_method_call(
+        &self,
+        method: &str,
+        args: &[HirExpr],
+    ) -> Option<(String, bool)> {
+        let name = match method {
+            "len" => String::from("len"),
+            "push_str" => String::from("String::push_str"),
+            "push" => {
+                if args
+                    .first()
+                    .is_some_and(|arg| matches!(self.get_expr_ty(arg), TyKind::Char))
+                {
+                    String::from("String::push")
+                } else {
+                    String::from("Vec::push")
+                }
+            }
+            "pop" => String::from("Vec::pop"),
+            "push_back" => String::from("VecDeque::push_back"),
+            "clear" => String::from("Vec::clear"),
+            _ => return None,
+        };
+        let wants_mut = matches!(method, "push_str" | "push" | "pop" | "push_back" | "clear");
+        Some((name, wants_mut))
     }
 
     fn estimate_ty_size(&self, ty: &TyKind) -> usize {
