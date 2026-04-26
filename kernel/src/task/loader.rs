@@ -858,9 +858,9 @@ pub fn load_binary_into_pd(
             tramp.offset(2).write_volatile(0x00);
             tramp.offset(3).write_volatile(0x00);
             tramp.offset(4).write_volatile(0x00);
-            // int 0x80
-            tramp.offset(5).write_volatile(0xCD);
-            tramp.offset(6).write_volatile(0x80);
+            // syscall  (2 bytes — same length as the old `int 0x80` opcode)
+            tramp.offset(5).write_volatile(0x0F);
+            tramp.offset(6).write_volatile(0x05);
             // nop (padding)
             tramp.offset(7).write_volatile(0x90);
 
@@ -1190,13 +1190,16 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             let old_pt_t = virtual_mem::current_cr3();
             core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
             let tramp = SIGRETURN_TRAMPOLINE_ADDR as *mut u8;
+            // mov eax, 246 (SYS_SIGRETURN)
             tramp.offset(0).write_volatile(0xB8);
             tramp.offset(1).write_volatile(246);
             tramp.offset(2).write_volatile(0x00);
             tramp.offset(3).write_volatile(0x00);
             tramp.offset(4).write_volatile(0x00);
-            tramp.offset(5).write_volatile(0xCD);
-            tramp.offset(6).write_volatile(0x80);
+            // syscall
+            tramp.offset(5).write_volatile(0x0F);
+            tramp.offset(6).write_volatile(0x05);
+            // nop (padding)
             tramp.offset(7).write_volatile(0x90);
             core::arch::asm!("mov cr3, {}", in(reg) old_pt_t);
             core::arch::asm!("push {}; popfq", in(reg) saved_flags_t, options(nomem));
