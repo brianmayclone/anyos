@@ -96,6 +96,11 @@ struct AppState {
     debug_profile_dropdown_id: u32,
     selected_designer_file: String,
     selected_designer_control: String,
+    pending_designer_event_file: String,
+    pending_designer_event_x: i32,
+    pending_designer_event_y: i32,
+    pending_designer_event_kind: u32,
+    designer_event_timer_id: u32,
 }
 
 anyos_std::global_app_state!(AppState);
@@ -335,6 +340,11 @@ fn build_and_run(
             debug_profile_dropdown_id: tb.debug_profile.id(),
             selected_designer_file: String::new(),
             selected_designer_control: String::new(),
+            pending_designer_event_file: String::new(),
+            pending_designer_event_x: 0,
+            pending_designer_event_y: 0,
+            pending_designer_event_kind: 0,
+            designer_event_timer_id: 0,
         });
     }
 
@@ -618,6 +628,66 @@ pub fn stop_live_check_timer() {
 
 fn poll_live_check() {
     logic::commands::poll_live_check();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Designer event queue
+// ════════════════════════════════════════════════════════════════
+
+pub fn queue_designer_click(file_path: &str, x: i32, y: i32) {
+    queue_designer_event(file_path, x, y, 1);
+}
+
+pub fn queue_designer_double_click(file_path: &str, x: i32, y: i32) {
+    queue_designer_event(file_path, x, y, 2);
+}
+
+fn queue_designer_event(file_path: &str, x: i32, y: i32, kind: u32) {
+    let s = app();
+    s.pending_designer_event_file = String::from(file_path);
+    s.pending_designer_event_x = x;
+    s.pending_designer_event_y = y;
+    s.pending_designer_event_kind = kind;
+    if s.designer_event_timer_id == 0 {
+        s.designer_event_timer_id = anyui::set_timer(1, poll_designer_event);
+    }
+}
+
+fn take_pending_designer_event() -> Option<(u32, String, i32, i32)> {
+    let s = app();
+    if s.pending_designer_event_kind == 0 {
+        if s.designer_event_timer_id != 0 {
+            anyui::kill_timer(s.designer_event_timer_id);
+            s.designer_event_timer_id = 0;
+        }
+        return None;
+    }
+
+    let kind = s.pending_designer_event_kind;
+    let file_path = s.pending_designer_event_file.clone();
+    let x = s.pending_designer_event_x;
+    let y = s.pending_designer_event_y;
+
+    s.pending_designer_event_file.clear();
+    s.pending_designer_event_x = 0;
+    s.pending_designer_event_y = 0;
+    s.pending_designer_event_kind = 0;
+    if s.designer_event_timer_id != 0 {
+        anyui::kill_timer(s.designer_event_timer_id);
+        s.designer_event_timer_id = 0;
+    }
+
+    Some((kind, file_path, x, y))
+}
+
+fn poll_designer_event() {
+    if let Some((kind, file_path, x, y)) = take_pending_designer_event() {
+        if kind == 2 {
+            logic::commands::designer_double_click_at(&file_path, x, y);
+        } else {
+            logic::commands::select_designer_control_at(&file_path, x, y);
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════

@@ -29,14 +29,14 @@ impl DesignerSurface {
 
         let click_path = String::from(file_path);
         canvas.on_mouse_down(move |x, y, _| {
-            crate::logic::commands::select_designer_control_at(&click_path, x, y);
+            crate::queue_designer_click(&click_path, x, y);
         });
 
         let dbl_path = String::from(file_path);
         let dbl_canvas = canvas;
         canvas.on_double_click(move |_| {
             let (x, y, _) = dbl_canvas.get_mouse();
-            crate::logic::commands::designer_double_click_at(&dbl_path, x, y);
+            crate::queue_designer_double_click(&dbl_path, x, y);
         });
 
         let this = Self {

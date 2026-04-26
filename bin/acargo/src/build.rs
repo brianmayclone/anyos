@@ -128,7 +128,7 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         let norm_name = node.name.replace('-', "_");
         let is_root = node.manifest_dir == root_dir;
 
-        let final_format = final_binary_format(config);
+        let final_format = final_binary_format(config, node);
         let output_path = if is_lib {
             format!("{}/lib{}.rlib", deps_dir, norm_name)
         } else {
@@ -400,9 +400,12 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
     }
 }
 
-fn final_binary_format(config: &BuildConfig) -> BinaryFormat {
+fn final_binary_format(config: &BuildConfig, node: &BuildNode) -> BinaryFormat {
     if let Some(format) = config.binary_format {
         return format;
+    }
+    if node.name == "anyos_kernel" {
+        return BinaryFormat::Elf;
     }
     if let Some(target) = config.target.as_ref() {
         if target.contains("anyos") {

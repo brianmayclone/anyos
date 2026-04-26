@@ -430,15 +430,25 @@ impl<'a> MirBuilder<'a> {
                         let enum_name = path.segments[0].ident;
                         let variant_name = path.segments[1].ident;
                         if let Some(&variant_idx) = self.resolve.variant_indices.get(&(enum_name, variant_name)) {
-                            // Check if this enum has data variants
                             let callee_ty = self.get_expr_ty(callee);
-                            if let TyKind::Adt(enum_def_id, _) = &callee_ty {
-                                if let Some(variants) = self.typeck.enum_variants.get(enum_def_id) {
+                            let enum_def_id = match callee_ty {
+                                TyKind::Adt(enum_def_id, _) => Some(enum_def_id),
+                                TyKind::FnDef(variant_def_id, _) => {
+                                    self.resolve.variant_to_enum.get(&variant_def_id).copied()
+                                }
+                                _ => None,
+                            };
+                            if let Some(enum_def_id) = enum_def_id {
+                                if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
                                     let max_fields = variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
                                     if max_fields > 0 {
                                         // This is a data enum variant constructor
                                         let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                                        let ty = TyKind::Adt(*enum_def_id, vec![]);
+                                        let expr_ty = self.get_expr_ty(expr);
+                                        let ty = match expr_ty {
+                                            TyKind::Adt(_, _) => expr_ty,
+                                            _ => TyKind::Adt(enum_def_id, vec![]),
+                                        };
                                         let tmp = self.alloc_temp(ty, expr.span);
                                         // Build aggregate: [discriminant, field0, field1, ...]
                                         let mut operands = vec![Operand::Constant(Constant {
@@ -456,7 +466,7 @@ impl<'a> MirBuilder<'a> {
                                         }
                                         self.emit_assign(
                                             Place::local(tmp),
-                                            Rvalue::Aggregate(AggregateKind::Adt(*enum_def_id, variant_idx), operands),
+                                            Rvalue::Aggregate(AggregateKind::Adt(enum_def_id, variant_idx), operands),
                                             expr.span,
                                         );
                                         return Operand::Copy(Place::local(tmp));
