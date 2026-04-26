@@ -7020,6 +7020,12 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
             (TyKind::Ref(a, _), TyKind::Ref(b, _)) => {
+                if let TyKind::Adt(def_id, substs) = b.as_ref() {
+                    if self.is_box_def(*def_id) && substs.len() == 1 {
+                        self.unify(a, &substs[0], span);
+                        return;
+                    }
+                }
                 self.unify(a, b, span);
                 return;
             }
