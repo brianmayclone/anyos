@@ -27,9 +27,15 @@ resvg = "0.45"
 # Build with: cargo +stable build --release
 
 [[bin]]
+name = "jpeg-corpus"
+path = "src/jpeg_corpus.rs"
+
+[[bin]]
 name = "webp-compare"
 path = "src/webp_compare.rs"
 
 [[bin]]
 name = "parse-test"
 path = "src/parse_test.rs"
+
+[workspace]

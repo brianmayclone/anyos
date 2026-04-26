@@ -13,14 +13,8 @@
 use crate::types::*;
 use crate::jpeg_tables::*;
 
-#[cfg(feature = "host")]
-macro_rules! trace { ($($arg:tt)*) => { eprintln!($($arg)*); }; }
-#[cfg(not(feature = "host"))]
 macro_rules! trace { ($($arg:tt)*) => {}; }
 
-#[cfg(feature = "host")]
-macro_rules! fail { ($code:expr, $($arg:tt)*) => {{ eprintln!("jpeg-fail {}:{}: {}", file!(), line!(), format!($($arg)*)); return $code; }}; }
-#[cfg(not(feature = "host"))]
 macro_rules! fail { ($code:expr, $($arg:tt)*) => { return $code; }; }
 
 // ---------------------------------------------------------------------------
@@ -1253,14 +1247,6 @@ fn decode_progressive_block(
             let mut r = (sym >> 4) & 0x0F;
             let s_size = sym & 0x0F;
             let mut new_val: i32 = 0;
-            #[cfg(feature = "host")]
-            {
-                let block_idx = block_off / 128;
-                if block_idx == 361 {
-                    eprintln!("  block#{} k={} sym=0x{:02X} (r={}, s={}) bits.pos={} acc=0x{:08X}/{}",
-                        block_idx, k, sym, r, s_size, bits.pos, bits.bits, bits.count);
-                }
-            }
 
             if s_size == 0 {
                 if r != 15 {
