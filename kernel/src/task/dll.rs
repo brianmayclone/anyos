@@ -14,6 +14,7 @@
 
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::physical;
+use crate::memory::user_vmap::{DLIB_REGION_END, DLIB_REGION_START};
 use crate::memory::virtual_mem;
 use crate::sync::spinlock::Spinlock;
 use alloc::vec::Vec;
@@ -24,8 +25,8 @@ const PAGE_USER: u64 = 0x04;
 const PAGE_WRITABLE: u64 = 0x02;
 
 /// Next available virtual address for dynamically loaded DLIBs.
-/// Starts after the last boot-time DLIB (0x0440_0000), incremented per load.
-static NEXT_DYNAMIC_BASE: AtomicU64 = AtomicU64::new(0x0440_0000);
+/// Starts after the last boot-time DLIB; incremented per load.
+static NEXT_DYNAMIC_BASE: AtomicU64 = AtomicU64::new(DLIB_REGION_START + 0x40_0000);
 
 /// DLIB virtual address range: 0x04000000 - 0x07FFFFFF.
 /// In x86-64 4-level paging, these are PML4[0], PDPT[0], PD[32..63].
@@ -666,7 +667,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         };
         let aligned_size = (total_vsize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let b = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
-        if b.checked_add(aligned_size).map_or(true, |end| end > 0x0800_0000) {
+        if b.checked_add(aligned_size).map_or(true, |end| end > DLIB_REGION_END) {
             crate::serial_verbose_println!("  dload: address space exhausted");
             return None;
         }
@@ -695,7 +696,7 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     let total_pages = ro_page_count + data_page_count + bss_page_count;
 
     let end_vaddr = actual_base + (total_pages as u64) * PAGE_SIZE;
-    if end_vaddr > 0x0800_0000 {
+    if end_vaddr > DLIB_REGION_END {
         crate::serial_verbose_println!("  dload: .so at {:#x} exceeds DLIB range", actual_base);
         return None;
     }
@@ -1008,7 +1009,7 @@ pub fn map_all_dlls_into(pd_phys: PhysAddr) {
 /// if the address is not covered by any loaded DLIB (real fault).
 pub fn handle_dll_demand_page(vaddr: u64) -> bool {
     // Quick range check — DLIB region is 0x04000000-0x07FFFFFF
-    if vaddr < 0x0400_0000 || vaddr >= 0x0800_0000 {
+    if vaddr < DLIB_REGION_START || vaddr >= DLIB_REGION_END {
         return false;
     }
 
@@ -1123,7 +1124,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
     } else {
         let aligned_size = (total as u64) * PAGE_SIZE;
         let b = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
-        if b + aligned_size > 0x0800_0000 {
+        if b + aligned_size > DLIB_REGION_END {
             crate::serial_verbose_println!("  dload: DLIB address space exhausted at {:#x}", b);
             return None;
         }
@@ -1131,7 +1132,7 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
     };
 
     // Sanity check: stay within DLIB range
-    if base + (total as u64) * PAGE_SIZE > 0x0800_0000 {
+    if base + (total as u64) * PAGE_SIZE > DLIB_REGION_END {
         crate::serial_verbose_println!("  dload: DLIB at {:#x} exceeds range", base);
         return None;
     }

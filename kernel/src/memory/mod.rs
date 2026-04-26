@@ -12,6 +12,7 @@ pub mod virtual_mem;
 pub mod virtual_mem_stub;
 #[cfg(target_arch = "aarch64")]
 pub use virtual_mem_stub as virtual_mem;
+pub mod user_vmap;
 pub mod vma;
 
 /// Size of a single memory page/frame in bytes (4 KiB).

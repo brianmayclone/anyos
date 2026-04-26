@@ -811,8 +811,10 @@ pub fn thread_info_ex(target_tid: u32, buf_ptr: u64, size: u32) -> u32 {
     put_u32(&mut buf, 12, thread.cpu_ticks);
     put_u32(&mut buf, 16, thread.last_cpu as u32);
     put_u32(&mut buf, 20, thread.user_pages);
-    put_u32(&mut buf, 24, thread.brk);
-    put_u32(&mut buf, 28, thread.mmap_next);
+    // brk/mmap_next are u64 internally; layout still exposes the low 32 bits
+    // because user space currently lives below 4 GiB. Kept as u32 for ABI.
+    put_u32(&mut buf, 24, thread.brk as u32);
+    put_u32(&mut buf, 28, thread.mmap_next as u32);
     // Extract user-space RIP/RSP from kernel stack IRET frame (kernel_stack_top - 40/16)
     // context.rip/rsp contain kernel-internal addresses from context_switch.
     let ktop = thread.kernel_stack_top();

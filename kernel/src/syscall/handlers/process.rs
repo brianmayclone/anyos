@@ -211,12 +211,16 @@ fn busy_wait_us(us: u32) {
 }
 
 /// sys_sbrk - Grow/shrink the process heap
+///
+/// The syscall ABI is still 32-bit (i32 increment, u32 return) because user
+/// space currently lives below 4 GiB. Internally brk is u64 — the cast at
+/// the boundary is lossless as long as that invariant holds.
 pub fn sys_sbrk(increment: i32) -> u32 {
     use crate::memory::address::VirtAddr;
     use crate::memory::physical;
     use crate::memory::virtual_mem;
 
-    let old_brk = crate::task::scheduler::current_thread_brk();
+    let old_brk = crate::task::scheduler::current_thread_brk() as u32;
     if old_brk == 0 {
         return u32::MAX;
     }
@@ -232,16 +236,15 @@ pub fn sys_sbrk(increment: i32) -> u32 {
             None => return u32::MAX,
         };
 
-        // Prevent heap from growing into the DLIB region (0x0400_0000 - 0x07FF_FFFF).
+        // Prevent heap from growing into the DLIB region.
         // DLLs are demand-paged there; heap writes would corrupt their export tables.
-        const DLIB_REGION_START: u32 = 0x0400_0000;
+        const DLIB_REGION_START: u32 = crate::memory::user_vmap::DLIB_REGION_START as u32;
         if old_brk < DLIB_REGION_START && new_brk >= DLIB_REGION_START {
             return u32::MAX;
         }
 
-        // Prevent heap from growing into the mmap region.
-        // mmap starts at 0x7000_0000.  Leave a 16 MiB guard gap.
-        const HEAP_LIMIT: u32 = 0x6F00_0000;
+        // Prevent heap from growing into the mmap region (16 MiB guard gap).
+        const HEAP_LIMIT: u32 = crate::memory::user_vmap::HEAP_LIMIT as u32;
         if new_brk >= HEAP_LIMIT {
             return u32::MAX;
         }
@@ -276,12 +279,12 @@ pub fn sys_sbrk(increment: i32) -> u32 {
 
         // set_current_thread_brk also syncs brk across all sibling threads
         // sharing the same page directory (with cli to prevent timer deadlock).
-        crate::task::scheduler::set_current_thread_brk(new_brk);
+        crate::task::scheduler::set_current_thread_brk(new_brk as u64);
         old_brk
     } else {
         let decrement = (-increment) as u32;
         let new_brk = old_brk.saturating_sub(decrement);
-        crate::task::scheduler::set_current_thread_brk(new_brk);
+        crate::task::scheduler::set_current_thread_brk(new_brk as u64);
         old_brk
     }
 }
@@ -450,7 +453,7 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
     crate::task::scheduler::adjust_current_user_pages(num_pages as i32);
     // Keep mmap_next in sync (threads sharing this PD read it).
     if !high {
-        crate::task::scheduler::set_current_thread_mmap_next((base + aligned_size) as u32);
+        crate::task::scheduler::set_current_thread_mmap_next(base + aligned_size);
     }
     mmap_diag_mark(b'F');
     mmap_diag_log(b"+mm-ok", tid, aligned_size as u32, pd.as_u64(), base as u32);
@@ -485,9 +488,7 @@ fn sys_munmap_impl(addr: u64, size: u64, high: bool) -> u64 {
     use crate::memory::physical;
     use crate::memory::virtual_mem;
 
-    const MMAP_BASE: u64 = 0x7000_0000;
-    const MMAP_LIMIT: u64 = 0xBF00_0000;
-    const MMAP64_BASE: u64 = 0x0000_0001_0000_0000;
+    use crate::memory::user_vmap::{MMAP64_BASE, MMAP_BASE, MMAP_LIMIT};
     const MMAP64_LIMIT: u64 = 0x0000_4000_0000_0000;
     const PAGE_SIZE: u64 = 4096;
 

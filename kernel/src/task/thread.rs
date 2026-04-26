@@ -145,7 +145,9 @@ pub struct Thread {
     /// Per-process page directory (None for kernel threads that share the kernel PD).
     pub page_directory: Option<PhysAddr>,
     /// Current program break (end of data/heap segment) for user processes.
-    pub brk: u32,
+    /// 64-bit virtual address; current user space still lives below 4 GiB
+    /// but the field is widened to permit a future upper-half user layout.
+    pub brk: u64,
     /// Command-line arguments (null-terminated string, set at spawn time).
     pub args: [u8; 256],
     /// Pipe ID for stdout redirection (0 = no pipe, write to serial).
@@ -190,7 +192,8 @@ pub struct Thread {
     pub user_pages: u32,
     /// Next virtual address for mmap allocations (bump pointer in the mmap region).
     /// Starts at MMAP_BASE (0x20000000) and grows upward.
-    pub mmap_next: u32,
+    /// 64-bit (widened together with `brk`).
+    pub mmap_next: u64,
     /// Current working directory (null-terminated, max 511 chars).
     /// Defaults to "/" for kernel threads and non-bundle processes.
     /// For .app bundles, set to the bundle directory (or per Info.conf working_dir).

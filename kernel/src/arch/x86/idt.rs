@@ -1118,7 +1118,7 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             // This must also handle kernel-mode faults (e.g. sys_write reading
             // from a user buffer whose DLL page hasn't been faulted in yet).
             if err_not_present {
-                let is_dll_range = cr2 >= 0x0400_0000 && cr2 < 0x0800_0000;
+                let is_dll_range = crate::memory::user_vmap::fault_diag::DLL_RANGE.contains(&cr2);
                 if (is_user_mode || is_dll_range) && crate::task::dll::handle_dll_demand_page(cr2) {
                     return; // DLL page mapped — retry faulting instruction via iretq
                 }
@@ -1128,7 +1128,7 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             if is_user_mode {
                 let tid = crate::task::scheduler::current_tid();
                 // Detect stack guard page hit (stack overflow)
-                let is_stack_area = cr2 >= 0xB000_0000 && cr2 < 0xC000_0000;
+                let is_stack_area = crate::memory::user_vmap::fault_diag::STACK_RANGE.contains(&cr2);
                 if is_stack_area && err_not_present {
                     crate::serial_println!(
                         "USER STACK OVERFLOW! TID={} addr={:#018x} RIP={:#018x} — killing thread",
