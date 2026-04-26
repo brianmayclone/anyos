@@ -423,15 +423,24 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         "String::trim_end",
         "String::strip_prefix",
         "String::split",
+        "String::split_inclusive",
         "String::split_whitespace",
         "String::split_ascii_whitespace",
+        "String::lines",
+        "String::trim_end_matches",
+        "String::insert_str",
         "String::repeat",
         "String::replace",
+        "String::replacen",
         "String::to_ascii_uppercase",
+        "String::to_ascii_lowercase",
+        "String::cmp",
+        "String::char_indices",
         "String::chars",
         "AtomicU32::fetch_update",
         "u16::from_str_radix",
         "u32::from_str_radix",
+        "u64::from_str_radix",
         "usize::from_str_radix",
         "usize::try_from",
         "from_bits",
@@ -494,6 +503,36 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         "_assert_same_size_and_validity",
         "put",
         "build_desired",
+        "Vec::splice",
+        "Vec::binary_search",
+        "Vec::sort_unstable_by",
+        "create_dir_all",
+        "copy",
+        "remove_dir_all",
+        "remove_dir",
+        "remove_file",
+        "set_permissions",
+        "read_dir",
+        "current_dir",
+        "set_var",
+        "remove_var",
+        "vars",
+        "yield_now",
+        "connect_timeout",
+        "Path::exists",
+        "Relaxed",
+        "V4",
+        "from_u32",
+        "from_millis",
+        "from_micros",
+        "var",
+        "id",
+        "populate_site_grid",
+        "populate_site_grid_inner",
+        "fmt_mem",
+        "on_line",
+        "read_u16",
+        "collect_struct_counts",
     ] {
         stubs.push((name.to_string(), ret_zero()));
     }
@@ -516,9 +555,13 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         "Option::as_deref",
         "Option::as_deref_mut",
         "Option::ok_or_else",
+        "Option::take",
+        "Option::replace",
         "Option::get_or_insert_with",
         "Option::clone",
         "Option::unwrap_or_default",
+        "Result::err",
+        "Result::unwrap_or_else",
         "Result::map_err",
         "String::clone",
         "String::into_bytes",
@@ -536,6 +579,7 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         "Vec::as_mut_ptr",
         "Vec::chunks_exact",
         "Box::as_ref",
+        "Box::clone",
         "Box::clone_box",
         "as_ptr",
         "from_ref",
@@ -566,6 +610,7 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         "NonZeroI128::ok_or",
         "NonZeroIsize::ok_or",
         "i128::from_ne_bytes",
+        "i64::from_le_bytes",
         "map_split",
     ] {
         stubs.push((name.to_string(), ret_rdi()));
@@ -588,6 +633,47 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
             let mut code = Vec::new();
             code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
             code.extend_from_slice(&[0x66, 0xC1, 0xC0, 0x08]); // rol ax, 8
+            code.push(0xC3);
+            code
+        }));
+    }
+
+    for name in ["u32::from_be_bytes"] {
+        stubs.push((name.to_string(), {
+            let mut code = Vec::new();
+            code.extend_from_slice(&[0x89, 0xF8]); // mov eax, edi
+            code.extend_from_slice(&[0x0F, 0xC8]); // bswap eax
+            code.push(0xC3);
+            code
+        }));
+    }
+
+    for name in ["i16::from_be_bytes"] {
+        stubs.push((name.to_string(), {
+            let mut code = Vec::new();
+            code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
+            code.extend_from_slice(&[0x66, 0xC1, 0xC0, 0x08]); // rol ax, 8
+            code.extend_from_slice(&[0x48, 0x0F, 0xBF, 0xC0]); // movsx rax, ax
+            code.push(0xC3);
+            code
+        }));
+    }
+
+    for name in ["i32::from_be_bytes", "f32::from_be_bytes"] {
+        stubs.push((name.to_string(), {
+            let mut code = Vec::new();
+            code.extend_from_slice(&[0x89, 0xF8]); // mov eax, edi
+            code.extend_from_slice(&[0x0F, 0xC8]); // bswap eax
+            code.push(0xC3);
+            code
+        }));
+    }
+
+    for name in ["f64::from_be_bytes"] {
+        stubs.push((name.to_string(), {
+            let mut code = Vec::new();
+            code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
+            code.extend_from_slice(&[0x48, 0x0F, 0xC8]); // bswap rax
             code.push(0xC3);
             code
         }));
