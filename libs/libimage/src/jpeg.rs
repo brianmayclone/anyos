@@ -249,6 +249,8 @@ struct FrameInfo {
     height: u16,
     num_comp: u8,
     progressive: bool,
+    /// Sample precision in bits (8 or 12).
+    precision: u8,
     comp: [Component; MAX_COMP],
     max_h: u8,
     max_v: u8,
@@ -266,6 +268,7 @@ impl FrameInfo {
         };
         FrameInfo {
             width: 0, height: 0, num_comp: 0, progressive: false,
+            precision: 8,
             comp: [COMP_INIT; MAX_COMP],
             max_h: 1, max_v: 1,
             adobe_transform: ADOBE_TRANSFORM_UNKNOWN,
@@ -321,7 +324,7 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
                 return None;
             }
             let precision = data[pos + 2];
-            if precision != 8 {
+            if precision != 8 && precision != 12 {
                 return None;
             }
             let height = read_u16_be(data, pos + 3) as u32;
@@ -498,9 +501,10 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
                     fail!(ERR_INVALID_DATA, "");
                 }
                 let precision = data[pos + 2];
-                if precision != 8 {
+                if precision != 8 && precision != 12 {
                     fail!(ERR_UNSUPPORTED, "");
                 }
+                frame.precision = precision;
                 frame.height = read_u16_be(data, pos + 3);
                 frame.width = read_u16_be(data, pos + 5);
                 frame.num_comp = data[pos + 7];
@@ -942,19 +946,20 @@ fn decode_baseline_scan(
                         for j in 0..64 {
                             block[j] *= qt[j];
                         }
-                        idct(&mut block);
+                        idct_p(&mut block, frame.precision);
 
                         let bx = (mcu_x * h_blocks + bh) * 8;
                         let by = (mcu_y * v_blocks + bv) * 8;
                         let pw = plane_w[c];
                         let base = plane_offset[c];
+                        let p = frame.precision;
                         for row in 0..8 {
                             for col in 0..8 {
                                 let px = bx + col;
                                 let py = by + row;
                                 if px < pw && py < plane_h[c] {
                                     let val = block[row * 8 + col];
-                                    scratch[base + py * pw + px] = clamp_u8(val);
+                                    scratch[base + py * pw + px] = clamp_u8_p(val, p);
                                 }
                             }
                         }
@@ -1469,19 +1474,20 @@ fn finalize_progressive(
                 for k in 0..64 {
                     block[k] = coef_get(scratch, coef_bytes_off, block_off, k) * qt[k];
                 }
-                idct(&mut block);
+                idct_p(&mut block, frame.precision);
 
                 let px0 = bx * 8;
                 let py0 = by * 8;
                 let pw = plane_w[c];
                 let base = plane_offset[c];
+                let p = frame.precision;
                 for row in 0..8 {
                     for col in 0..8 {
                         let px = px0 + col;
                         let py = py0 + row;
                         if px < pw && py < plane_h[c] {
                             scratch[base + py * pw + px] =
-                                clamp_u8(block[row * 8 + col]);
+                                clamp_u8_p(block[row * 8 + col], p);
                         }
                     }
                 }
@@ -1537,11 +1543,31 @@ fn clamp_u8(v: i32) -> u8 {
     else { v as u8 }
 }
 
+/// Clamp an IDCT output to 0..255 for storage in our 8-bit-per-sample plane
+/// buffer. For 12-bit precision input, the natural IDCT range is 0..4095, so
+/// we shift right by 4 before clamping.
+#[inline]
+fn clamp_u8_p(v: i32, precision: u8) -> u8 {
+    let s = if precision > 8 {
+        v >> (precision - 8) as i32
+    } else {
+        v
+    };
+    clamp_u8(s)
+}
+
 // ---------------------------------------------------------------------------
 // Integer IDCT based on stb_image (Loeffler-Ligtenberg-Moschytz).
 // ---------------------------------------------------------------------------
 
 pub fn idct(block: &mut [i32; 64]) {
+    idct_p(block, 8);
+}
+
+/// Precision-aware IDCT. `precision` is the JPEG sample precision (8 or 12).
+/// Output values are in the range `0 .. (1 << precision) - 1` (modulo
+/// clamping by the caller).
+pub fn idct_p(block: &mut [i32; 64], precision: u8) {
     let mut tmp = [0i32; 64];
 
     for col in 0..8 {
@@ -1555,11 +1581,12 @@ pub fn idct(block: &mut [i32; 64]) {
         }
     }
 
-    let bias = 65536 + (128 << 17);
+    let level_shift = 1i64 << (precision as i64 - 1);
+    let bias = (1i64 << 16) + (level_shift << 17);
     for row in 0..8 {
         let r = |c: usize| tmp[row * 8 + c];
-        idct_1d(r(0), r(1), r(2), r(3), r(4), r(5), r(6), r(7), bias, 17,
-                |i, v| block[row * 8 + i] = v);
+        idct_1d_i64(r(0), r(1), r(2), r(3), r(4), r(5), r(6), r(7), bias, 17,
+                    |i, v| block[row * 8 + i] = v);
     }
 }
 
@@ -1647,6 +1674,15 @@ fn idct_1d<F: FnMut(usize, i32)>(
     bias: i32, shift: u32,
     mut store: F,
 ) {
+    idct_1d_i64(s0, s1, s2, s3, s4, s5, s6, s7, bias as i64, shift, |i, v| store(i, v));
+}
+
+fn idct_1d_i64<F: FnMut(usize, i32)>(
+    s0: i32, s1: i32, s2: i32, s3: i32,
+    s4: i32, s5: i32, s6: i32, s7: i32,
+    bias: i64, shift: u32,
+    mut store: F,
+) {
     let p2 = s2 as i64;
     let p6 = s6 as i64;
     let p1 = (p2 + p6) * 2217;
@@ -1687,7 +1723,7 @@ fn idct_1d<F: FnMut(usize, i32)>(
     t2o = t2o + p2o + p3;
     t3o = t3o + p1o + p4o;
 
-    let b = bias as i64;
+    let b = bias;
     store(0, ((x0 + t3o + b) >> shift) as i32);
     store(7, ((x0 - t3o + b) >> shift) as i32);
     store(1, ((x1 + t2o + b) >> shift) as i32);
