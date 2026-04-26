@@ -1,16 +1,15 @@
-//! System call interface — dual-path dispatch for 32-bit and 64-bit user processes.
+//! System call interface — single-path SYSCALL dispatch for 64-bit user processes.
 //!
-//! **INT 0x80 path** (`syscall_dispatch_32`):
-//!   Used by 32-bit compatibility mode processes (libc, TCC).
-//!   Convention: EAX=num, EBX=arg1, ECX=arg2, EDX=arg3, ESI=arg4, EDI=arg5.
-//!   CPU zero-extends 32-bit registers to 64-bit on ring transition.
-//!   All arguments are explicitly treated as u32.
+//! All user space is 64-bit; the legacy INT 0x80 path was removed together
+//! with 32-bit user-space support.
 //!
 //! **SYSCALL path** (`syscall_dispatch_64`):
-//!   Used by native 64-bit Rust processes (compositor, terminal, etc.).
-//!   Convention: RAX=num, RBX=arg1, R10=arg2 (RCX clobbered), RDX=arg3, RSI=arg4, RDI=arg5.
-//!   Arguments are full 64-bit values (currently truncated to u32 for handler compatibility,
-//!   but the separation allows future widening without touching the 32-bit path).
+//!   Convention: RAX=num, RBX=arg1, R10=arg2 (RCX clobbered by SYSCALL),
+//!   RDX=arg3, RSI=arg4, RDI=arg5.
+//!   Arguments are full 64-bit values; most existing handlers still take
+//!   u32 args, so the dispatcher truncates after the special-cases for
+//!   handlers that genuinely need 64-bit args (mmap64/munmap64, virt
+//!   syscalls). Widening individual handlers to u64 is a follow-up.
 
 mod defs;
 pub mod handlers;
@@ -526,47 +525,11 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
 }
 
 // =========================================================================
-// 32-bit dispatch — called from syscall_entry.asm (INT 0x80)
-// =========================================================================
-
-/// Called from `syscall_entry.asm` for 32-bit compatibility mode processes.
-///
-/// INT 0x80 convention: EAX=num, EBX=arg1, ECX=arg2, EDX=arg3, ESI=arg4, EDI=arg5.
-/// The CPU zero-extends 32-bit registers to 64-bit on the ring transition.
-/// We explicitly mask to u32 to guarantee clean 32-bit values regardless of
-/// any garbage the caller may have left in the upper 32 bits.
-#[no_mangle]
-pub extern "C" fn syscall_dispatch_32(regs: &mut SyscallRegs) -> u32 {
-    let syscall_num = regs.rax as u32;
-
-    // fork() needs the full register frame — intercept before dispatch_inner.
-    // Currently x86_64-only; ARM64 fork uses a separate ERET-based path.
-    #[cfg(target_arch = "x86_64")]
-    if syscall_num == SYS_FORK {
-        let result = handlers::sys_fork(regs);
-        handlers::deliver_pending_signal_32(regs, result);
-        return result;
-    }
-
-    // sigreturn restores saved context — needs full register frame
-    if syscall_num == SYS_SIGRETURN {
-        return handlers::sys_sigreturn_32(regs);
-    }
-
-    let arg1 = regs.rbx as u32;
-    let arg2 = regs.rcx as u32;
-    let arg3 = regs.rdx as u32;
-    let arg4 = regs.rsi as u32;
-    let arg5 = regs.rdi as u32;
-
-    let result = dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5);
-    handlers::deliver_pending_signal_32(regs, result);
-    result
-}
-
-// =========================================================================
 // 64-bit dispatch — called from syscall_fast.asm (SYSCALL instruction)
 // =========================================================================
+// The legacy INT 0x80 / syscall_dispatch_32 path was removed when 32-bit
+// user space was dropped. The signal-return trampoline now uses SYSCALL
+// too (see kernel/src/task/loader.rs).
 
 /// Called from `syscall_fast.asm` for native 64-bit processes.
 ///
@@ -588,6 +551,13 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
         let result = handlers::sys_fork(regs);
         handlers::deliver_pending_signal_default();
         return result as u64;
+    }
+
+    // sigreturn restores saved context — needs the full register frame.
+    // The signal-return trampoline calls SYS_SIGRETURN via SYSCALL after
+    // a user signal handler returns.
+    if syscall_num == SYS_SIGRETURN {
+        return handlers::sys_sigreturn(regs) as u64;
     }
 
     // Full 64-bit argument extraction (R10 is in the RCX slot per syscall_fast.asm)

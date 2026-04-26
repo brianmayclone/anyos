@@ -16,7 +16,7 @@ pub(super) fn init_cpu() {
     serial_println!("[OK] GDT initialized");
 
     arch::x86::idt::init();
-    serial_println!("[OK] IDT initialized (256 entries + syscall int 0x80)");
+    serial_println!("[OK] IDT initialized (256 entries)");
 
     arch::x86::tss::init();
     arch::x86::pic::init();
