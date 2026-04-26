@@ -626,4 +626,60 @@ impl Compositor {
             }
         }
     }
+
+    /// Alpha-blend the drag-image overlay onto the back buffer at the given
+    /// screen position (pre-clipped to fb bounds; expects ARGB8888 source
+    /// pixels). Used by the cross-window drag pipeline. Pixels with alpha=0
+    /// are skipped.
+    pub(crate) fn blend_drag_image(
+        &mut self,
+        pixels: *const u32,
+        img_w: u32,
+        img_h: u32,
+        dst_x: i32,
+        dst_y: i32,
+    ) {
+        if pixels.is_null() || img_w == 0 || img_h == 0 {
+            return;
+        }
+        let bb_stride = self.fb_width as usize;
+        for sy in 0..img_h as i32 {
+            let py = dst_y + sy;
+            if py < 0 || (py as u32) >= self.fb_height {
+                continue;
+            }
+            for sx in 0..img_w as i32 {
+                let px = dst_x + sx;
+                if px < 0 || (px as u32) >= self.fb_width {
+                    continue;
+                }
+                let src_off = (sy as usize) * (img_w as usize) + (sx as usize);
+                let src = unsafe { *pixels.add(src_off) };
+                let sa = (src >> 24) & 0xFF;
+                if sa == 0 {
+                    continue;
+                }
+                let di = py as usize * bb_stride + px as usize;
+                if di >= self.back_buffer.len() {
+                    continue;
+                }
+                if sa == 0xFF {
+                    self.back_buffer[di] = src;
+                } else {
+                    let dst = self.back_buffer[di];
+                    let inv = 255 - sa;
+                    let sr = (src >> 16) & 0xFF;
+                    let sg = (src >> 8) & 0xFF;
+                    let sb = src & 0xFF;
+                    let dr = (dst >> 16) & 0xFF;
+                    let dg = (dst >> 8) & 0xFF;
+                    let db = dst & 0xFF;
+                    let r = ((sr * sa + dr * inv) / 255) & 0xFF;
+                    let g = ((sg * sa + dg * inv) / 255) & 0xFF;
+                    let b = ((sb * sa + db * inv) / 255) & 0xFF;
+                    self.back_buffer[di] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    }
 }

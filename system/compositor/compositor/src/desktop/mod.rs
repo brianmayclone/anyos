@@ -1,6 +1,7 @@
 //! Desktop manager — coordinates window management, menubar, wallpaper, cursor, and input.
 
 pub mod cursors;
+pub mod drag;
 pub mod drawing;
 pub mod input;
 pub mod ipc;
@@ -144,6 +145,10 @@ pub struct Desktop {
     /// changes, or that window is closed.
     pub(crate) app_cursor: Option<CursorShape>,
 
+    /// Active cross-window drag-and-drop session (at most one at a time).
+    /// Set by CMD_DRAG_BEGIN, cleared on drop / cancel / source death.
+    pub(crate) global_drag: Option<drag::GlobalDrag>,
+
     // Menu bar system
     pub(crate) menu_bar: MenuBar,
 
@@ -273,6 +278,7 @@ impl Desktop {
             last_clock_min: u32::MAX,
             current_cursor: CursorShape::Arrow,
             app_cursor: None,
+            global_drag: None,
             menu_bar: MenuBar::new(),
             btn_hover: None,
             btn_pressed: None,
@@ -1058,7 +1064,48 @@ impl Desktop {
     /// is held, which would cause the management thread to spin (busy-wait) and
     /// stall all input + IPC processing for the duration of the GPU round-trip.
     pub fn compose_deferred(&mut self) -> bool {
+        // If a drag-image is active, damage its previous position before
+        // compose so layers re-composite the underlying pixels (otherwise
+        // ghost trails remain when the cursor moves).
+        if let Some(img) = self.compositor.drag_image.as_ref() {
+            if img.last_drawn {
+                let r = Rect::new(
+                    img.last_x,
+                    img.last_y,
+                    img.image_w,
+                    img.image_h,
+                )
+                .clip_to_screen(self.screen_width, self.screen_height);
+                if !r.is_empty() {
+                    self.compositor.add_damage(r);
+                }
+            }
+        }
+
         let had_damage = self.compositor.compose();
+
+        // Now blend the drag image at the current cursor position on top
+        // of the freshly composited layers and flush that rect.
+        if self.compositor.drag_image.is_some() {
+            let (img_w, img_h, hot_x, hot_y, pixels_ptr) = {
+                let img = self.compositor.drag_image.as_ref().unwrap();
+                (img.image_w, img.image_h, img.hot_x, img.hot_y, img.pixels)
+            };
+            let new_x = self.mouse_x - hot_x;
+            let new_y = self.mouse_y - hot_y;
+            self.compositor
+                .blend_drag_image(pixels_ptr, img_w, img_h, new_x, new_y);
+            let rect = Rect::new(new_x, new_y, img_w, img_h)
+                .clip_to_screen(self.screen_width, self.screen_height);
+            if !rect.is_empty() {
+                self.compositor.flush_cursor_region(&rect);
+            }
+            if let Some(img) = self.compositor.drag_image.as_mut() {
+                img.last_x = new_x;
+                img.last_y = new_y;
+                img.last_drawn = true;
+            }
+        }
 
         if !self.compositor.has_hw_cursor() {
             // Only redraw + flush SW cursor if something changed:

@@ -48,6 +48,12 @@ impl Desktop {
                     EVENT_FOCUS_LOST => proto::EVT_FOCUS_LOST,
                     EVENT_FULLSCREEN_ENTER => proto::EVT_FULLSCREEN_ENTER,
                     EVENT_FULLSCREEN_EXIT => proto::EVT_FULLSCREEN_EXIT,
+                    EVENT_DRAG_ENTER => proto::EVT_DRAG_ENTER,
+                    EVENT_DRAG_OVER => proto::EVT_DRAG_OVER,
+                    EVENT_DRAG_LEAVE => proto::EVT_DRAG_LEAVE,
+                    EVENT_DROP => proto::EVT_DROP,
+                    EVENT_DRAG_FEEDBACK => proto::EVT_DRAG_FEEDBACK,
+                    EVENT_DRAG_END => proto::EVT_DRAG_END,
                     _ => continue,
                 };
                 out.push((target_sub, [ipc_type, win.id, evt[1], evt[2], evt[3]]));
@@ -415,6 +421,85 @@ impl Desktop {
                 }
                 None
             }
+            proto::CMD_DRAG_BEGIN => {
+                let source_window_id = cmd[1];
+                let format = cmd[2];
+                let payload_shm_id = cmd[3];
+                let packed = cmd[4];
+                let payload_len = packed >> 8;
+                let allowed_effects = packed & 0xFF;
+                // Look up the legitimate source TID from the window record;
+                // we don't trust caller-supplied TIDs.
+                let source_tid = self
+                    .windows
+                    .iter()
+                    .find(|w| w.id == source_window_id)
+                    .map(|w| w.owner_tid)
+                    .unwrap_or(0);
+                if source_tid != 0 {
+                    self.drag_begin(
+                        source_tid,
+                        source_window_id,
+                        format,
+                        payload_shm_id,
+                        payload_len,
+                        allowed_effects,
+                    );
+                }
+                None
+            }
+            proto::CMD_DRAG_ACCEPT => {
+                let target_window_id = cmd[1];
+                let requested_effects = cmd[2];
+                self.drag_accept(target_window_id, requested_effects);
+                None
+            }
+            proto::CMD_DRAG_REJECT => {
+                let target_window_id = cmd[1];
+                self.drag_reject(target_window_id);
+                None
+            }
+            proto::CMD_DRAG_CANCEL => {
+                let source_window_id = cmd[1];
+                let source_tid = self
+                    .windows
+                    .iter()
+                    .find(|w| w.id == source_window_id)
+                    .map(|w| w.owner_tid)
+                    .unwrap_or(0);
+                if source_tid != 0 {
+                    self.drag_cancel(source_tid, source_window_id);
+                }
+                None
+            }
+            proto::CMD_DRAG_SET_IMAGE => {
+                let source_window_id = cmd[1];
+                let shm_id = cmd[2];
+                let packed_size = cmd[3];
+                let packed_hot = cmd[4];
+                let w = packed_size >> 16;
+                let h = packed_size & 0xFFFF;
+                let hot_x = (packed_hot >> 16) as i32;
+                let hot_y = (packed_hot & 0xFFFF) as i32;
+                let source_tid = self
+                    .windows
+                    .iter()
+                    .find(|w| w.id == source_window_id)
+                    .map(|w| w.owner_tid)
+                    .unwrap_or(0);
+                if source_tid != 0 && shm_id != 0 {
+                    self.drag_set_image(
+                        source_tid,
+                        source_window_id,
+                        shm_id,
+                        w,
+                        h,
+                        hot_x,
+                        hot_y,
+                    );
+                }
+                None
+            }
             proto::CMD_SET_CURSOR => {
                 let shape = match cmd[2] {
                     1 => super::cursors::CursorShape::ResizeEW,
@@ -422,6 +507,9 @@ impl Desktop {
                     3 => super::cursors::CursorShape::ResizeNWSE,
                     4 => super::cursors::CursorShape::ResizeNESW,
                     5 => super::cursors::CursorShape::Move,
+                    6 => super::cursors::CursorShape::DragCopy,
+                    7 => super::cursors::CursorShape::DragLink,
+                    8 => super::cursors::CursorShape::DragNoDrop,
                     0xFF => super::cursors::CursorShape::Hidden,
                     _ => super::cursors::CursorShape::Arrow,
                 };

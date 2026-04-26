@@ -5,7 +5,7 @@
 //! only for interactive form elements (TextField, Checkbox, etc.).
 //!
 //! # Usage
-//! ```rust
+//! ```rust,ignore
 //! use libwebview::WebView;
 //!
 //! let mut wv = WebView::new(800, 600);
@@ -106,6 +106,14 @@ struct IncrementalRelayoutPlan {
 /// Global web font map pointer — set before layout, read by the renderer.
 /// Points to the current WebView's web_fonts Vec. Only valid during relayout.
 static mut WEB_FONT_MAP: *const Vec<(String, u32)> = core::ptr::null();
+const SYNTHETIC_AHEM_FONT_ID: u32 = u32::MAX - 1;
+
+fn font_family_contains_ahem(family: &str) -> bool {
+    family
+        .to_ascii_lowercase()
+        .split(',')
+        .any(|part| part.trim().trim_matches('\'').trim_matches('"').trim() == "ahem")
+}
 
 /// Look up a web font ID by family name (called from renderer/layout).
 /// `family` may be a single name or a comma-separated CSS font-family list
@@ -114,6 +122,9 @@ static mut WEB_FONT_MAP: *const Vec<(String, u32)> = core::ptr::null();
 pub fn lookup_web_font(family: &str) -> Option<u32> {
     unsafe {
         if WEB_FONT_MAP.is_null() {
+            if font_family_contains_ahem(family) {
+                return Some(SYNTHETIC_AHEM_FONT_ID);
+            }
             return None;
         }
         let map = &*WEB_FONT_MAP;
@@ -140,11 +151,17 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
                 return Some(id);
             }
         }
+        if font_family_contains_ahem(family) {
+            return Some(SYNTHETIC_AHEM_FONT_ID);
+        }
         None
     }
 }
 
 pub fn is_ahem_font_id(font_id: u32) -> bool {
+    if font_id == SYNTHETIC_AHEM_FONT_ID {
+        return true;
+    }
     if font_id == 0 {
         return false;
     }

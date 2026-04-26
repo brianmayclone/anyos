@@ -745,9 +745,8 @@ pub fn run_once() -> u32 {
                     }
 
                     maybe_begin_drag(st, win_id, comp_window_id, mx, my, &mut pending_cbs);
-                    if st.drag.is_some() {
-                        update_drag_target(st, win_id, mx, my, &mut pending_cbs);
-                    }
+                    // Note: target detection during a drag is driven by
+                    // compositor EVT_DRAG_OVER events, not by mouse_move.
                 }
 
                 compositor::EVT_MOUSE_DOWN => {
@@ -860,41 +859,19 @@ pub fn run_once() -> u32 {
                     let button = ev[4] & 0xFF;
                     st.last_modifiers = (ev[4] >> 8) & 0xFF;
 
+                    // Aborted drag (DRAG_START callback never installed a
+                    // payload, so we never announced to the compositor).
+                    // DROP/DRAG_LEAVE come via EVT_DROP / EVT_DRAG_END for
+                    // announced drags. Here we just fire DRAG_END and
+                    // restore the cursor.
                     if let Some(drag) = st.drag.as_ref() {
-                        // Snapshot fields we need without consuming the
-                        // session — DROP handlers need to be able to call
-                        // anyui_drag_get_payload, which reads st.drag.
                         let source_id = drag.source_id;
-                        let target_id = drag.target_id;
-                        let target_accepted = drag.target_accepted;
-                        if let Some(target_id) = target_id {
-                            set_drop_hover(&mut st.controls, target_id, false);
-                            // Only dispatch DROP when the target opted in via
-                            // anyui_drag_accept during ENTER/DRAG. Rejected
-                            // drops still fire DRAG_LEAVE + DRAG_END so apps
-                            // can cleanly tear down any preview state.
-                            if target_accepted {
-                                fire_event_callback(
-                                    &st.controls,
-                                    target_id,
-                                    control::EVENT_DROP,
-                                    &mut pending_cbs,
-                                );
-                            }
-                            fire_event_callback(
-                                &st.controls,
-                                target_id,
-                                control::EVENT_DRAG_LEAVE,
-                                &mut pending_cbs,
-                            );
-                        }
                         fire_event_callback(
                             &st.controls,
                             source_id,
                             control::EVENT_DRAG_END,
                             &mut pending_cbs,
                         );
-                        // Restore default cursor.
                         if st.current_cursor != 0 {
                             st.current_cursor = 0;
                             let cmd: [u32; 5] = [0x1018, comp_window_id, 0, 0, 0];
@@ -902,8 +879,6 @@ pub fn run_once() -> u32 {
                         }
                         st.pressed = None;
                         st.pressed_button = 0;
-                        // Defer st.drag = None until after Phase 3 so the
-                        // DROP callback can still read the payload.
                         st.drag_release_pending = true;
                         continue;
                     }
@@ -2232,6 +2207,165 @@ pub fn run_once() -> u32 {
                     }
                 }
 
+                compositor::EVT_DRAG_ENTER => {
+                    // [EVT, target_window_id, format, payload_shm_id, packed_meta]
+                    let format = ev[2];
+                    let payload_shm_id = ev[3];
+                    let packed_meta = ev[4];
+                    let allowed_effects = packed_meta & 0xFF;
+                    let source_tid = (packed_meta >> 8) & 0x00FF_FFFF;
+                    // Map the payload SHM read-only into our address space.
+                    let addr = crate::syscall::shm_map(payload_shm_id) as u32;
+                    st.incoming_drag = Some(crate::IncomingDrag {
+                        window_id: win_id,
+                        comp_window_id,
+                        payload_shm_id,
+                        payload_addr: addr,
+                        payload_len: 0, // updated on first OVER
+                        format,
+                        allowed_effects,
+                        source_tid,
+                        target_control: None,
+                        target_accepted: false,
+                        negotiated_effect: 0,
+                        pointer_x: 0,
+                        pointer_y: 0,
+                        modifiers: 0,
+                        accept_modifiers: 0,
+                    });
+                }
+
+                compositor::EVT_DRAG_OVER => {
+                    // Wire: [type, target_window_id, payload_len, packed_xy, packed_mod_eff]
+                    let payload_len = ev[2];
+                    let packed_xy = ev[3];
+                    let packed_mod_eff = ev[4];
+                    let lx = (packed_xy >> 16) as i32;
+                    let ly = (packed_xy & 0xFFFF) as i32;
+                    let modifiers = packed_mod_eff & 0xFF;
+                    if let Some(inc) = st.incoming_drag.as_mut() {
+                        inc.payload_len = payload_len;
+                    }
+                    dispatch_drag_over(st, win_id, lx, ly, modifiers, &mut pending_cbs);
+                }
+
+                compositor::EVT_DRAG_LEAVE => {
+                    if let Some(target_id) = st
+                        .incoming_drag
+                        .as_ref()
+                        .and_then(|i| i.target_control)
+                    {
+                        set_drop_hover(&mut st.controls, target_id, false);
+                        fire_event_callback(
+                            &st.controls,
+                            target_id,
+                            control::EVENT_DRAG_LEAVE,
+                            &mut pending_cbs,
+                        );
+                    }
+                    if let Some(inc) = st.incoming_drag.as_mut() {
+                        inc.target_control = None;
+                        inc.target_accepted = false;
+                        inc.negotiated_effect = 0;
+                    }
+                    // Don't drop the SHM mapping here — the drag may re-enter
+                    // this window. The mapping is released on EVT_DROP, on
+                    // EVT_DRAG_END (when the source-side cleanup fires for
+                    // the same app), or when a new EVT_DRAG_ENTER arrives.
+                }
+
+                compositor::EVT_DROP => {
+                    // [EVT, target_window_id, packed_xy, negotiated_effect, source_tid]
+                    let packed_xy = ev[2];
+                    let negotiated_effect = ev[3];
+                    let lx = (packed_xy >> 16) as i32;
+                    let ly = (packed_xy & 0xFFFF) as i32;
+                    let target_control = st
+                        .incoming_drag
+                        .as_ref()
+                        .and_then(|i| i.target_control);
+                    if let Some(inc) = st.incoming_drag.as_mut() {
+                        inc.pointer_x = lx;
+                        inc.pointer_y = ly;
+                        inc.negotiated_effect = negotiated_effect;
+                        inc.target_accepted = negotiated_effect != 0;
+                    }
+                    if let Some(target_id) = target_control {
+                        set_drop_hover(&mut st.controls, target_id, false);
+                        if negotiated_effect != 0 {
+                            fire_event_callback(
+                                &st.controls,
+                                target_id,
+                                control::EVENT_DROP,
+                                &mut pending_cbs,
+                            );
+                        }
+                        fire_event_callback(
+                            &st.controls,
+                            target_id,
+                            control::EVENT_DRAG_LEAVE,
+                            &mut pending_cbs,
+                        );
+                    }
+                    // Defer SHM unmap + state teardown until after Phase 3
+                    // so the DROP callback can read the payload.
+                    st.incoming_release_pending = true;
+                }
+
+                compositor::EVT_DRAG_FEEDBACK => {
+                    // Source-side: [EVT, src_window_id, target_present, negotiated_effect, 0]
+                    // Adjust the cursor shape to mirror the negotiated effect.
+                    let target_present = ev[2] != 0;
+                    let effect = ev[3];
+                    let new_shape: u32 = if !target_present {
+                        // Cursor over no drop target — show No-Drop badge.
+                        8
+                    } else if effect & 0x02 != 0 {
+                        5 // Move
+                    } else if effect & 0x01 != 0 {
+                        6 // Copy
+                    } else if effect & 0x04 != 0 {
+                        7 // Link
+                    } else {
+                        // Target present but acceptance not yet negotiated
+                        // (transient — accept callback queued in pending_cbs
+                        // but hasn't fired yet). Keep showing Move so we
+                        // don't flicker the cursor every time the target
+                        // changes; if the target eventually rejects we'll
+                        // get FEEDBACK[present=0] and switch to NoDrop.
+                        5
+                    };
+                    if st.current_cursor != new_shape {
+                        st.current_cursor = new_shape;
+                        let cmd: [u32; 5] = [0x1018, comp_window_id, new_shape, 0, 0];
+                        crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+                    }
+                }
+
+                compositor::EVT_DRAG_END => {
+                    // Source-side: [EVT, src_window_id, completed, negotiated_effect, 0]
+                    // The drag ended (either by drop or cancel). Tear down
+                    // the source-side session and the SHM bridge.
+                    if let Some(drag) = st.drag.as_ref() {
+                        let source_id = drag.source_id;
+                        fire_event_callback(
+                            &st.controls,
+                            source_id,
+                            control::EVENT_DRAG_END,
+                            &mut pending_cbs,
+                        );
+                    }
+                    if st.current_cursor != 0 {
+                        st.current_cursor = 0;
+                        let cmd: [u32; 5] = [0x1018, comp_window_id, 0, 0, 0];
+                        crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+                    }
+                    st.pressed = None;
+                    st.pressed_button = 0;
+                    // Defer drag teardown until after callbacks fire.
+                    st.drag_release_pending = true;
+                }
+
                 _ => {}
             }
         }
@@ -2276,7 +2410,17 @@ pub fn run_once() -> u32 {
     // had a chance to read the payload via anyui_drag_get_payload.
     {
         let st = crate::state();
+        if st.incoming_release_pending {
+            if let Some(inc) = st.incoming_drag.take() {
+                if inc.payload_addr != 0 {
+                    crate::syscall::shm_unmap(inc.payload_shm_id);
+                }
+            }
+            st.incoming_release_pending = false;
+        }
         if st.drag_release_pending {
+            // Source-side: release the bridge SHM (unmap + destroy).
+            crate::dnd_ipc::release_bridge(st);
             st.drag = None;
             st.drag_release_pending = false;
         }
@@ -2739,6 +2883,7 @@ fn maybe_begin_drag(
         pointer_x: mx,
         pointer_y: my,
         modifiers: dnd_modifier_bits(st),
+        bridge: None,
         accept_modifiers: 0,
     });
     fire_event_callback(&st.controls, source_id, control::EVENT_DRAG_START, pending);
@@ -2750,80 +2895,63 @@ fn maybe_begin_drag(
         crate::syscall::evt_chan_emit(st.channel_id, &cmd);
     }
 
-    let payload_format = st
-        .drag
-        .as_ref()
-        .map(|d| d.format)
-        .unwrap_or(crate::dnd::DND_FORMAT_TEXT);
-    let new_target = drop_target_at_point(&st.controls, win_id, mx, my, payload_format);
-    if let Some(drag) = st.drag.as_mut() {
-        drag.target_id = new_target;
-        drag.target_accepted = false;
-        drag.negotiated_effect = crate::dnd::DND_EFFECT_NONE;
-    }
-    if let Some(target_id) = new_target {
-        set_drop_hover(&mut st.controls, target_id, true);
-        fire_event_callback(&st.controls, target_id, control::EVENT_DRAG_ENTER, pending);
-    }
+    // Cross-window DnD: target detection is now driven by the compositor's
+    // EVT_DRAG_ENTER / EVT_DRAG_OVER. No local hit-test here — the source's
+    // DRAG_START callback (queued above) installs the payload via
+    // anyui_drag_set_payload, which sends CMD_DRAG_BEGIN to the compositor.
+    // Once the compositor sees the cursor over a target window, it dispatches
+    // EVT_DRAG_ENTER, which our event-loop translates back into local
+    // EVENT_DRAG_ENTER callbacks on the hit-tested control.
+    let _ = (win_id, mx, my);
 }
 
-fn update_drag_target(
+/// Drive target hit-testing for an incoming cross-process drag based on
+/// pointer coordinates from `EVT_DRAG_OVER`. Replaces the old mouse_move-
+/// driven local target detection.
+fn dispatch_drag_over(
     st: &mut crate::AnyuiState,
     win_id: ControlId,
     mx: i32,
     my: i32,
+    modifiers: u32,
     pending: &mut Vec<PendingCallback>,
 ) {
-    // Refresh per-event session fields so callbacks reading
-    // anyui_drag_get_pos / effect state see current values.
-    if let Some(drag) = st.drag.as_mut() {
-        drag.pointer_x = mx;
-        drag.pointer_y = my;
-        drag.modifiers = 0; // set after borrow below
+    let payload_format = match st.incoming_drag.as_ref() {
+        Some(i) => i.format,
+        None => return,
+    };
+    if let Some(inc) = st.incoming_drag.as_mut() {
+        inc.pointer_x = mx;
+        inc.pointer_y = my;
+        inc.modifiers = modifiers;
     }
-    let mods = dnd_modifier_bits(st);
-    if let Some(drag) = st.drag.as_mut() {
-        drag.modifiers = mods;
-    }
-
-    let payload_format = st
-        .drag
-        .as_ref()
-        .map(|d| d.format)
-        .unwrap_or(crate::dnd::DND_FORMAT_TEXT);
     let new_target = drop_target_at_point(&st.controls, win_id, mx, my, payload_format);
-    let old_target = st.drag.as_ref().and_then(|d| d.target_id);
+    let old_target = st.incoming_drag.as_ref().and_then(|i| i.target_control);
+
     if new_target != old_target {
         if let Some(old_id) = old_target {
             set_drop_hover(&mut st.controls, old_id, false);
             fire_event_callback(&st.controls, old_id, control::EVENT_DRAG_LEAVE, pending);
         }
-        if let Some(drag) = st.drag.as_mut() {
-            drag.target_id = new_target;
-            drag.target_accepted = false;
-            drag.negotiated_effect = crate::dnd::DND_EFFECT_NONE;
+        if let Some(inc) = st.incoming_drag.as_mut() {
+            inc.target_control = new_target;
+            inc.target_accepted = false;
+            inc.negotiated_effect = 0;
         }
         if let Some(new_id) = new_target {
             set_drop_hover(&mut st.controls, new_id, true);
             fire_event_callback(&st.controls, new_id, control::EVENT_DRAG_ENTER, pending);
         }
     } else if let Some(target_id) = new_target {
-        // Same target: keep prior acceptance so simple targets don't have to
-        // re-accept on every move. Reset only when modifiers changed since
-        // the last accept, so modifier-aware targets still get a chance to
-        // re-negotiate Copy/Move/Link via their EVENT_DRAG handler.
-        if let Some(drag) = st.drag.as_mut() {
-            if drag.modifiers != drag.accept_modifiers {
-                drag.target_accepted = false;
-                drag.negotiated_effect = crate::dnd::DND_EFFECT_NONE;
+        // Same control: reset acceptance only on modifier change so modifier-
+        // aware targets can re-evaluate the negotiated effect.
+        if let Some(inc) = st.incoming_drag.as_mut() {
+            if inc.modifiers != inc.accept_modifiers {
+                inc.target_accepted = false;
+                inc.negotiated_effect = 0;
             }
         }
-        // Fire a DRAG (over) event so modifier-aware targets can re-accept.
         fire_event_callback(&st.controls, target_id, control::EVENT_DRAG, pending);
-    }
-
-    if let Some(source_id) = st.drag.as_ref().map(|d| d.source_id) {
-        fire_event_callback(&st.controls, source_id, control::EVENT_DRAG, pending);
     }
 
     drag_autoscroll(st, mx, my);
@@ -2833,7 +2961,11 @@ fn update_drag_target(
 /// ancestor whose control opts in as a drag-autoscroll target. Quiet when
 /// no drag is active or no scrollable ancestor exists.
 fn drag_autoscroll(st: &mut crate::AnyuiState, mx: i32, my: i32) {
-    let mut cur = st.drag.as_ref().and_then(|d| d.target_id).or(st.hovered);
+    let mut cur = st
+        .incoming_drag
+        .as_ref()
+        .and_then(|i| i.target_control)
+        .or(st.hovered);
     while let Some(id) = cur {
         let idx = match control::find_idx(&st.controls, id) {
             Some(i) => i,

@@ -47,6 +47,12 @@ pub enum CursorShape {
     ResizeNESW,
     Move,
     Hidden,
+    /// Cursor for drags negotiated as `Copy` — arrow + small `+` badge.
+    DragCopy,
+    /// Cursor for drags negotiated as `Link` — arrow + small chain badge.
+    DragLink,
+    /// Cursor over a non-accepting target during a drag — arrow + slash circle.
+    DragNoDrop,
 }
 
 // ── Arrow Cursor ───────────────────────────────────────────────────────────
@@ -175,6 +181,111 @@ static HW_RESIZE_NESW: [u32; (14 * 14) as usize] = [
     B,W,W,W,B,T,T,T,T,T,T,T,T,T,
     B,W,W,W,W,B,T,T,T,T,T,T,T,T,
     B,B,B,B,B,B,B,T,T,T,T,T,T,T,
+];
+
+// ── Drag Copy Cursor (arrow + small "+" badge in lower-right) ─────────────
+
+const HW_DRAG_COPY_W: u32 = 24;
+const HW_DRAG_COPY_H: u32 = 24;
+const HW_DRAG_COPY_HOT_X: u32 = 0;
+const HW_DRAG_COPY_HOT_Y: u32 = 0;
+
+#[rustfmt::skip]
+static HW_DRAG_COPY: [u32; (24 * 24) as usize] = [
+    B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,B,B,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,B,W,W,B,T,T,T,T,T,T,T,B,B,B,B,B,B,B,B,T,
+    B,W,W,B,T,B,W,W,B,T,T,T,T,T,T,B,W,W,W,W,W,W,B,T,
+    B,W,B,T,T,B,W,W,B,T,T,T,T,T,T,B,W,W,B,B,W,W,B,T,
+    B,B,T,T,T,T,B,W,W,B,T,T,T,T,T,B,W,W,B,B,W,W,B,T,
+    T,T,T,T,T,T,B,W,W,B,T,T,T,T,T,B,W,B,B,B,B,W,B,T,
+    T,T,T,T,T,T,T,B,B,T,T,T,T,T,T,B,W,B,B,B,B,W,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,W,W,B,B,W,W,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,W,W,B,B,W,W,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,W,W,W,W,W,W,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,B,B,B,B,B,B,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+];
+
+// ── Drag Link Cursor (arrow + small "→" badge in lower-right) ─────────────
+
+const HW_DRAG_LINK_W: u32 = 24;
+const HW_DRAG_LINK_H: u32 = 24;
+const HW_DRAG_LINK_HOT_X: u32 = 0;
+const HW_DRAG_LINK_HOT_Y: u32 = 0;
+
+#[rustfmt::skip]
+static HW_DRAG_LINK: [u32; (24 * 24) as usize] = [
+    B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,B,B,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,B,W,W,B,T,T,T,T,T,T,T,B,B,B,B,B,B,B,B,T,
+    B,W,W,B,T,B,W,W,B,T,T,T,T,T,T,B,W,W,W,W,W,W,B,T,
+    B,W,B,T,T,B,W,W,B,T,T,T,T,T,T,B,W,W,W,B,W,W,B,T,
+    B,B,T,T,T,T,B,W,W,B,T,T,T,T,T,B,W,B,W,W,B,W,B,T,
+    T,T,T,T,T,T,B,W,W,B,T,T,T,T,T,B,W,B,B,W,B,W,B,T,
+    T,T,T,T,T,T,T,B,B,T,T,T,T,T,T,B,W,B,W,W,B,W,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,W,W,W,B,W,W,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,W,W,W,W,W,W,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,W,W,W,W,W,W,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,B,B,B,B,B,B,B,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+];
+
+// ── Drag No-Drop Cursor (arrow + circle-with-slash badge) ─────────────────
+
+const HW_DRAG_NODROP_W: u32 = 24;
+const HW_DRAG_NODROP_H: u32 = 24;
+const HW_DRAG_NODROP_HOT_X: u32 = 0;
+const HW_DRAG_NODROP_HOT_Y: u32 = 0;
+
+#[rustfmt::skip]
+static HW_DRAG_NODROP: [u32; (24 * 24) as usize] = [
+    B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,W,W,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,W,W,W,B,B,B,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    B,W,W,W,B,W,W,B,T,T,T,T,T,T,T,T,B,B,B,B,B,T,T,T,
+    B,W,W,B,T,B,W,W,B,T,T,T,T,T,T,B,B,W,W,W,B,B,T,T,
+    B,W,B,T,T,B,W,W,B,T,T,T,T,T,T,B,W,W,W,B,W,B,T,T,
+    B,B,T,T,T,T,B,W,W,B,T,T,T,T,B,W,W,W,B,W,W,B,T,T,
+    T,T,T,T,T,T,B,W,W,B,T,T,T,T,B,W,W,B,W,W,W,B,T,T,
+    T,T,T,T,T,T,T,B,B,T,T,T,T,T,B,W,B,W,W,W,W,B,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,B,W,W,W,W,B,B,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,B,B,B,B,B,B,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
+    T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,
 ];
 
 // ── Move/Grab Cursor ───────────────────────────────────────────────────────
@@ -362,6 +473,33 @@ impl Desktop {
                     HW_MOVE_HOT_X,
                     HW_MOVE_HOT_Y,
                     &HW_MOVE,
+                );
+            }
+            CursorShape::DragCopy => {
+                self.compositor.define_hw_cursor(
+                    HW_DRAG_COPY_W,
+                    HW_DRAG_COPY_H,
+                    HW_DRAG_COPY_HOT_X,
+                    HW_DRAG_COPY_HOT_Y,
+                    &HW_DRAG_COPY,
+                );
+            }
+            CursorShape::DragLink => {
+                self.compositor.define_hw_cursor(
+                    HW_DRAG_LINK_W,
+                    HW_DRAG_LINK_H,
+                    HW_DRAG_LINK_HOT_X,
+                    HW_DRAG_LINK_HOT_Y,
+                    &HW_DRAG_LINK,
+                );
+            }
+            CursorShape::DragNoDrop => {
+                self.compositor.define_hw_cursor(
+                    HW_DRAG_NODROP_W,
+                    HW_DRAG_NODROP_H,
+                    HW_DRAG_NODROP_HOT_X,
+                    HW_DRAG_NODROP_HOT_Y,
+                    &HW_DRAG_NODROP,
                 );
             }
             CursorShape::Hidden => {

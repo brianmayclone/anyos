@@ -150,6 +150,12 @@ pub const EVT_STATUS_ICON_CLICK: u32 = 0x3009;
 pub const EVT_MENU_ITEM: u32 = 0x3008;
 pub const EVT_FULLSCREEN_ENTER: u32 = 0x300D;
 pub const EVT_FULLSCREEN_EXIT: u32 = 0x300E;
+pub const EVT_DRAG_ENTER: u32 = 0x3020;
+pub const EVT_DRAG_OVER: u32 = 0x3021;
+pub const EVT_DRAG_LEAVE: u32 = 0x3022;
+pub const EVT_DROP: u32 = 0x3023;
+pub const EVT_DRAG_FEEDBACK: u32 = 0x3024;
+pub const EVT_DRAG_END: u32 = 0x3025;
 
 // ── High-level wrappers ──────────────────────────────────────────────
 

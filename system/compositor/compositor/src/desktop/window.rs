@@ -158,6 +158,14 @@ pub const EVENT_STATUS_ICON_CLICK: u32 = 10;
 pub const EVENT_FOCUS_LOST: u32 = 11;
 pub const EVENT_FULLSCREEN_ENTER: u32 = 12;
 pub const EVENT_FULLSCREEN_EXIT: u32 = 13;
+// Cross-window drag-and-drop (compositor-internal codes — translated to
+// proto::EVT_DRAG_* in drain_ipc_events).
+pub const EVENT_DRAG_ENTER: u32 = 14;
+pub const EVENT_DRAG_OVER: u32 = 15;
+pub const EVENT_DRAG_LEAVE: u32 = 16;
+pub const EVENT_DROP: u32 = 17;
+pub const EVENT_DRAG_FEEDBACK: u32 = 18;
+pub const EVENT_DRAG_END: u32 = 19;
 
 // ── Hit Test ───────────────────────────────────────────────────────────────
 
@@ -584,6 +592,8 @@ impl Desktop {
     /// Destroy a window.
     pub fn destroy_window(&mut self, id: u32) {
         self.release_fkey_slot(id);
+        // Cancel any drag rooted at this window before tearing it down.
+        self.drag_cancel_for_window(id);
         if let Some(idx) = self.windows.iter().position(|w| w.id == id) {
             // Clear modal_owner on any windows that reference the destroyed window.
             for w in &mut self.windows {
@@ -628,6 +638,9 @@ impl Desktop {
                 self.exit_fullscreen();
             }
         }
+        // Tear down any drag whose source belongs to the exiting process,
+        // so the target doesn't keep dangling DRAG_ENTER state.
+        self.drag_cancel_for_tid(tid);
 
         let window_ids: Vec<u32> = self.windows.iter()
             .filter(|w| w.owner_tid == tid)

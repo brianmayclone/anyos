@@ -1186,6 +1186,7 @@ pub fn layout_with_budget(
             &mut root,
             images,
             viewport_width,
+            None,
         )
     } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
         grid::layout_grid(

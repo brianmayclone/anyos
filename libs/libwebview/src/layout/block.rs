@@ -62,6 +62,60 @@ pub fn build_block_with_budget(
     abs_y: i32,
     layout_budget_bottom: Option<i32>,
 ) -> LayoutBox {
+    build_block_internal(
+        dom,
+        styles,
+        pseudo,
+        node_id,
+        available_width,
+        images,
+        viewport_w,
+        parent_height,
+        abs_y,
+        layout_budget_bottom,
+        None,
+    )
+}
+
+pub(super) fn build_block_with_forced_outer_height(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    available_width: i32,
+    images: &ImageCache,
+    viewport_w: i32,
+    parent_height: i32,
+    forced_outer_height: i32,
+) -> LayoutBox {
+    build_block_internal(
+        dom,
+        styles,
+        pseudo,
+        node_id,
+        available_width,
+        images,
+        viewport_w,
+        parent_height,
+        0,
+        None,
+        Some(forced_outer_height),
+    )
+}
+
+fn build_block_internal(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    available_width: i32,
+    images: &ImageCache,
+    viewport_w: i32,
+    parent_height: i32,
+    abs_y: i32,
+    layout_budget_bottom: Option<i32>,
+    forced_outer_height: Option<i32>,
+) -> LayoutBox {
     let style = &styles[node_id];
     let tag = dom.tag(node_id);
 
@@ -175,11 +229,21 @@ pub fn build_block_with_budget(
     let (margin_top, margin_right, margin_bottom, margin_left) =
         resolve_margins(style, available_width);
     bx.margin = edges_from(margin_top, margin_right, margin_bottom, margin_left);
+    let padding_pct_basis = if style.writing_mode.is_vertical() && parent_height > 0 {
+        parent_height
+    } else {
+        available_width
+    }
+    .max(0);
+    let resolve_padding = |px: i32, pct: Option<i32>| -> i32 {
+        pct.map(|v| (padding_pct_basis as i64 * v as i64 / 10000) as i32)
+            .unwrap_or(px)
+    };
     bx.padding = edges_from(
-        style.padding_top,
-        style.padding_right,
-        style.padding_bottom,
-        style.padding_left,
+        resolve_padding(style.padding_top, style.padding_top_pct),
+        resolve_padding(style.padding_right, style.padding_right_pct),
+        resolve_padding(style.padding_bottom, style.padding_bottom_pct),
+        resolve_padding(style.padding_left, style.padding_left_pct),
     );
 
     // ---- Width resolution ----
@@ -794,7 +858,9 @@ pub fn build_block_with_budget(
     let resolve_height_calc = |calc: (i32, i32)| -> i32 {
         calc.0 / 100 + (parent_height.max(0) as i64 * calc.1 as i64 / 10000) as i32
     };
-    let explicit_outer_height_hint = if let Some(h) = style.height {
+    let explicit_outer_height_hint = if let Some(h) = forced_outer_height {
+        Some(h.max(0))
+    } else if let Some(h) = style.height {
         Some(if is_border_box {
             h
         } else {
@@ -892,6 +958,7 @@ pub fn build_block_with_budget(
             &mut bx,
             images,
             viewport_w,
+            definite_parent_content_h,
         );
         if after_is_block {
             if let Some(pb) = build_pseudo_element_box(
@@ -1054,7 +1121,9 @@ pub fn build_block_with_budget(
         None
     };
 
-    if let Some(h) = explicit_h {
+    if let Some(h) = forced_outer_height {
+        bx.height = h.max(0);
+    } else if let Some(h) = explicit_h {
         if is_border_box {
             bx.height = h;
         } else {

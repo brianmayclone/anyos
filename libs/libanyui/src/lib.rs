@@ -65,6 +65,7 @@ mod control;
 mod controls;
 mod dialogs;
 pub mod dnd;
+pub mod dnd_ipc;
 pub mod draw;
 mod event_loop;
 pub mod font_bitmap;
@@ -155,6 +156,61 @@ pub(crate) struct PopupInfo {
     pub owner_autocomplete: Option<ControlId>,
 }
 
+/// Source-side payload SHM tied to a `DragSession`. Allocated lazily when
+/// the source first sets a payload, kept alive until the compositor sends
+/// `EVT_DRAG_END`, then unmapped + destroyed.
+pub(crate) struct DragBridge {
+    pub shm_id: u32,
+    pub shm_addr: u32,
+    pub shm_cap: u32,
+    /// Compositor window-id of the source window (needed for CMD_DRAG_*).
+    pub source_window_id: u32,
+    /// True after we've sent CMD_DRAG_BEGIN to the compositor.
+    pub announced: bool,
+    /// Drag-image SHM allocated by `drag_set_image` (0 = no image).
+    pub image_shm_id: u32,
+    /// Local mapping of the drag-image SHM (0 = not mapped).
+    pub image_addr: u32,
+}
+
+/// Target-side state for an incoming cross-process drag. Created on
+/// `EVT_DRAG_ENTER` for one of our windows, updated on `EVT_DRAG_OVER`,
+/// torn down on `EVT_DRAG_LEAVE` / `EVT_DROP`.
+pub(crate) struct IncomingDrag {
+    /// The window-id this drag is currently over (one of our windows).
+    pub window_id: ControlId,
+    /// Compositor window-id (the cross-process equivalent).
+    pub comp_window_id: u32,
+    /// Payload SHM id received from the source via the compositor.
+    pub payload_shm_id: u32,
+    /// Local mapping of the payload SHM (0 if not yet mapped).
+    pub payload_addr: u32,
+    /// Total payload length.
+    pub payload_len: u32,
+    /// Payload format (`dnd::DND_FORMAT_*`).
+    pub format: u32,
+    /// Effects the source allows.
+    pub allowed_effects: u32,
+    /// Source process TID.
+    pub source_tid: u32,
+
+    /// Currently hovered control inside this window, if any.
+    pub target_control: Option<ControlId>,
+    /// Whether the current control accepted via `anyui_drag_accept`.
+    pub target_accepted: bool,
+    /// Negotiated effect (after target accept).
+    pub negotiated_effect: u32,
+
+    /// Last reported pointer position (window-local logical pixels).
+    pub pointer_x: i32,
+    pub pointer_y: i32,
+    /// Last reported modifier bits (Ctrl=1, Shift=2).
+    pub modifiers: u32,
+    /// Modifier bits at the last accept; when current `modifiers` differs,
+    /// acceptance is reset so the target re-evaluates on EVT_DRAG_OVER.
+    pub accept_modifiers: u32,
+}
+
 /// Active drag-and-drop session owned by the framework.
 pub(crate) struct DragSession {
     /// Control that initiated the drag.
@@ -182,6 +238,11 @@ pub(crate) struct DragSession {
     /// Ctrl/Shift modifier bits from the latest pointer event (bit 0 = Ctrl,
     /// bit 1 = Shift). Used by `dnd::negotiate_effect`.
     pub modifiers: u32,
+    /// Source-side cross-process bridge: the payload SHM allocated by us
+    /// and shared with the compositor + target processes. `None` until the
+    /// drag has been announced to the compositor (after the DRAG_START
+    /// callback set the payload).
+    pub bridge: Option<DragBridge>,
     /// Modifier bits captured the last time the target accepted. When
     /// `modifiers` differs from this, acceptance is reset so the target's
     /// `EVENT_DRAG` handler can re-evaluate based on the new modifiers.
@@ -261,6 +322,15 @@ pub(crate) struct AnyuiState {
     /// callback dispatch so handlers can still call `anyui_drag_get_payload`
     /// and friends; cleared at the end of the event-loop iteration.
     pub drag_release_pending: bool,
+    /// Incoming cross-process drag — present whenever the cursor (or a
+    /// drag pointer) is over one of our windows during an active global
+    /// drag. Created on `EVT_DRAG_ENTER`, updated on `EVT_DRAG_OVER`,
+    /// torn down on `EVT_DRAG_LEAVE` / `EVT_DROP`.
+    pub incoming_drag: Option<IncomingDrag>,
+    /// Set when a DROP has fired and the SHM mapping should be released
+    /// after the post-Phase-3 cleanup pass (so DROP callbacks can still
+    /// read the payload via `anyui_drag_get_payload`).
+    pub incoming_release_pending: bool,
 
     // ── Timers ───────────────────────────────────────────────────────
     pub timers: timer::TimerState,
@@ -439,6 +509,8 @@ pub extern "C" fn anyui_init() -> u32 {
             popup: None,
             drag: None,
             drag_release_pending: false,
+            incoming_drag: None,
+            incoming_release_pending: false,
             timers: timer::TimerState::new(),
             needs_repaint: true,
             needs_layout: true,
@@ -2900,6 +2972,11 @@ pub extern "C" fn anyui_set_drop_formats(id: ControlId, mask: u32) {
 /// Install a binary payload for the active drag. Safe to call only from a
 /// DRAG_START callback on the source control. `allowed_effects` is a bitmask
 /// of `dnd::DND_EFFECT_*` describing which semantics the source permits.
+///
+/// On the first call (per drag), this also allocates a small SHM region,
+/// writes the payload into it, and announces the drag to the compositor
+/// (CMD_DRAG_BEGIN) so the cursor can cross window boundaries. Subsequent
+/// calls update the SHM in place but do not re-announce.
 #[no_mangle]
 pub extern "C" fn anyui_drag_set_payload(
     format: u32,
@@ -2908,6 +2985,10 @@ pub extern "C" fn anyui_drag_set_payload(
     allowed_effects: u32,
 ) {
     let st = state();
+    let source_id = match st.drag.as_ref() {
+        Some(d) => d.source_id,
+        None => return,
+    };
     if let Some(drag) = st.drag.as_mut() {
         drag.format = format;
         drag.allowed_effects = allowed_effects;
@@ -2917,15 +2998,47 @@ pub extern "C" fn anyui_drag_set_payload(
             drag.data.extend_from_slice(src);
         }
     }
+    // Ensure the cross-window bridge exists, then push the payload to the
+    // compositor.
+    let comp_win = dnd_ipc::comp_window_for_control(st, source_id);
+    if comp_win != 0 {
+        if dnd_ipc::ensure_bridge_shm(st, comp_win) {
+            dnd_ipc::announce_drag(st);
+        }
+    }
 }
 
 /// Read the current drag payload's raw bytes into `buf`. Returns the total
 /// length (not the number copied — use `min(return, cap)` to know the
 /// copied slice). Writes the payload's format to `*format_out` when
 /// `format_out` is non-null.
+///
+/// Reads from the incoming-drag SHM mapping when called from a
+/// DRAG_ENTER/DRAG/DROP callback (target side); falls back to the local
+/// source payload when called from a DRAG_START callback (source side).
 #[no_mangle]
 pub extern "C" fn anyui_drag_get_payload(buf: *mut u8, cap: u32, format_out: *mut u32) -> u32 {
     let st = state();
+    // Target-side read (cross-process payload SHM).
+    if let Some(inc) = st.incoming_drag.as_ref() {
+        if !format_out.is_null() {
+            unsafe { *format_out = inc.format; }
+        }
+        let total = inc.payload_len as usize;
+        let n = core::cmp::min(total, cap as usize);
+        if !buf.is_null() && n > 0 && inc.payload_addr != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    inc.payload_addr as *const u8,
+                    buf,
+                    n,
+                );
+            }
+        }
+        return total as u32;
+    }
+    // Source-side read (local payload Vec, before any cross-process target
+    // has mapped the SHM yet).
     let drag = match st.drag.as_ref() {
         Some(d) => d,
         None => return 0,
@@ -2971,17 +3084,28 @@ pub extern "C" fn anyui_drag_get_allowed_effects() -> u32 {
 #[no_mangle]
 pub extern "C" fn anyui_drag_accept(requested_effects: u32) -> u32 {
     let st = state();
-    let (allowed, mods) = match st.drag.as_ref() {
-        Some(d) => (d.allowed_effects, d.modifiers),
-        None => return dnd::DND_EFFECT_NONE,
-    };
-    let effect = dnd::negotiate_effect(allowed, requested_effects, mods);
-    if let Some(drag) = st.drag.as_mut() {
-        drag.negotiated_effect = effect;
-        drag.target_accepted = effect != dnd::DND_EFFECT_NONE;
-        drag.accept_modifiers = mods;
+    // Target side: incoming cross-process drag.
+    if let Some(inc) = st.incoming_drag.as_ref() {
+        let allowed = inc.allowed_effects;
+        let mods = inc.modifiers;
+        let effect = dnd::negotiate_effect(allowed, requested_effects, mods);
+        if let Some(inc) = st.incoming_drag.as_mut() {
+            inc.negotiated_effect = effect;
+            inc.target_accepted = effect != dnd::DND_EFFECT_NONE;
+            inc.accept_modifiers = mods;
+        }
+        // Mirror to the compositor so the source learns about the
+        // negotiated effect via EVT_DRAG_FEEDBACK.
+        if effect != dnd::DND_EFFECT_NONE {
+            dnd_ipc::send_accept(st, effect);
+        } else {
+            dnd_ipc::send_reject(st);
+        }
+        return effect;
     }
-    effect
+    // Source-only context (DRAG_START before payload has been announced):
+    // no target to negotiate with yet.
+    dnd::DND_EFFECT_NONE
 }
 
 /// Explicitly reject the current drag from a drop-target callback. Not
@@ -2990,10 +3114,11 @@ pub extern "C" fn anyui_drag_accept(requested_effects: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn anyui_drag_reject() {
     let st = state();
-    if let Some(drag) = st.drag.as_mut() {
-        drag.target_accepted = false;
-        drag.negotiated_effect = dnd::DND_EFFECT_NONE;
+    if let Some(inc) = st.incoming_drag.as_mut() {
+        inc.target_accepted = false;
+        inc.negotiated_effect = dnd::DND_EFFECT_NONE;
     }
+    dnd_ipc::send_reject(st);
 }
 
 #[no_mangle]
@@ -3048,9 +3173,41 @@ pub extern "C" fn anyui_drag_get_target() -> u32 {
     state().drag.as_ref().and_then(|d| d.target_id).unwrap_or(0)
 }
 
+/// Attach a drag-image (ghost) to the active drag. Pixels are ARGB8888,
+/// `w` × `h`, top-left origin. The hot-spot is the offset within the image
+/// that should track the cursor (e.g. (0,0) for "image follows cursor's
+/// top-left", or `(w/2, h/2)` for "image centred on cursor").
+///
+/// Must be called after `anyui_drag_set_payload` (which announces the drag
+/// to the compositor). Replaces any previously-set image.
+#[no_mangle]
+pub extern "C" fn anyui_drag_set_image(
+    pixels: *const u32,
+    w: u32,
+    h: u32,
+    hot_x: i32,
+    hot_y: i32,
+) -> u32 {
+    if pixels.is_null() || w == 0 || h == 0 {
+        return 0;
+    }
+    let total = (w as usize) * (h as usize);
+    let st = state();
+    let slice = unsafe { core::slice::from_raw_parts(pixels, total) };
+    if dnd_ipc::install_drag_image(st, slice, w, h, hot_x, hot_y) {
+        1
+    } else {
+        0
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn anyui_drag_set_text(text: *const u8, len: u32) {
     let st = state();
+    let source_id = match st.drag.as_ref() {
+        Some(d) => d.source_id,
+        None => return,
+    };
     if let Some(drag) = st.drag.as_mut() {
         drag.format = dnd::DND_FORMAT_TEXT;
         drag.data.clear();
@@ -3058,6 +3215,10 @@ pub extern "C" fn anyui_drag_set_text(text: *const u8, len: u32) {
             let src = unsafe { core::slice::from_raw_parts(text, len as usize) };
             drag.data.extend_from_slice(src);
         }
+    }
+    let comp_win = dnd_ipc::comp_window_for_control(st, source_id);
+    if comp_win != 0 && dnd_ipc::ensure_bridge_shm(st, comp_win) {
+        dnd_ipc::announce_drag(st);
     }
 }
 

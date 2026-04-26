@@ -10,7 +10,7 @@ use crate::style::{
 };
 use crate::ImageCache;
 
-use super::block::build_block;
+use super::block::{build_block, build_block_with_forced_outer_height};
 use super::LayoutBox;
 
 struct FlexItem {
@@ -82,6 +82,16 @@ fn justify_offset_before_item(
 /// Resolve the effective align-items for a child (considering align-self).
 fn resolve_align(container_align: AlignItems, child_style: &ComputedStyle) -> AlignItems {
     child_style.align_self.unwrap_or(container_align)
+}
+
+fn flex_item_baseline(style: &ComputedStyle, bx: &LayoutBox, is_row: bool) -> i32 {
+    let font_baseline = style.font_size.max(1) * 4 / 5;
+    if is_row {
+        font_baseline.max(0)
+    } else {
+        let size = bx.width.max(0);
+        font_baseline.max(0).min(size)
+    }
 }
 
 /// Check whether a DOM subtree contains a descendant with a percentage main-axis
@@ -284,6 +294,7 @@ pub fn layout_flex(
     parent: &mut LayoutBox,
     images: &ImageCache,
     viewport_w: i32,
+    container_height_hint: Option<i32>,
 ) -> i32 {
     let parent_style_idx = parent.node_id.unwrap_or(0);
     let parent_style = &styles[parent_style_idx];
@@ -303,7 +314,9 @@ pub fn layout_flex(
     // §9.2 Step 1: Determine available main space.
     // For row flex: available_width is the container's content width.
     // For column flex: resolve height against a definite containing-block height.
-    let definite_container_height = if let Some(h) = parent_style.height {
+    let definite_container_height = if let Some(h) = container_height_hint {
+        Some(h)
+    } else if let Some(h) = parent_style.height {
         Some(h)
     } else if let Some(pct) = parent_style.height_pct {
         if pct > 0 && parent_height > 0 {
@@ -410,6 +423,11 @@ pub fn layout_flex(
     let parent_font_size = parent_style.font_size.max(1);
     let parent_bold = matches!(parent_style.font_weight, crate::style::FontWeight::Bold);
     let parent_color = parent_style.color;
+    let parent_custom_font_id = parent_style
+        .font_family
+        .as_ref()
+        .and_then(|family| crate::lookup_web_font(family))
+        .unwrap_or(0);
 
     for item in &mut items {
         // Handle text nodes as anonymous flex items (CSS Flexbox §4).
@@ -425,7 +443,13 @@ pub fn layout_flex(
                 item.cross_base = 0;
                 continue;
             }
-            let (tw, th) = super::measure_text(trimmed, parent_font_size, 0, parent_bold, false);
+            let (tw, th) = super::measure_text(
+                trimmed,
+                parent_font_size,
+                parent_custom_font_id,
+                parent_bold,
+                false,
+            );
             let mut text_box = super::LayoutBox::new_text(
                 String::from(trimmed),
                 parent_font_size,
@@ -433,13 +457,15 @@ pub fn layout_flex(
                 false,
                 parent_color,
             );
+            text_box.custom_font_id = parent_custom_font_id;
+            let measured_h = th.max(parent_font_size);
             text_box.width = tw;
-            text_box.height = th;
+            text_box.height = measured_h;
             if is_row {
                 item.main_base = tw;
-                item.cross_base = th;
+                item.cross_base = measured_h;
             } else {
-                item.main_base = th;
+                item.main_base = measured_h;
                 item.cross_base = tw;
             }
             item.layout = Some(text_box);
@@ -447,9 +473,14 @@ pub fn layout_flex(
         }
 
         let st = &styles[item.node_id];
+        let main_margins = if is_row {
+            st.margin_left + st.margin_right
+        } else {
+            st.margin_top + st.margin_bottom
+        };
         if let Some(basis) = st.flex_basis {
             // Case A: definite flex-basis (absolute length).
-            item.main_base = basis;
+            item.main_base = basis + main_margins;
         } else if let Some(pct) = st.flex_basis_pct {
             // Case A: definite flex-basis (percentage of container main size).
             // If container main size is indefinite, fall through to auto handling below.
@@ -459,7 +490,8 @@ pub fn layout_flex(
                 definite_container_height.unwrap_or(-1)
             };
             if container_main > 0 {
-                item.main_base = (container_main as i64 * pct as i64 / 10000) as i32;
+                item.main_base =
+                    (container_main as i64 * pct as i64 / 10000) as i32 + main_margins;
             } else {
                 // Indefinite container — fall back to max-content
                 if is_row {
@@ -475,12 +507,14 @@ pub fn layout_flex(
         } else if is_row {
             if let Some(w) = st.width {
                 // Case A: definite width.
-                item.main_base = w;
+                item.main_base = w + main_margins;
             } else if let Some(pct) = st.width_pct {
-                item.main_base = (available_width as i64 * pct as i64 / 10000) as i32;
+                item.main_base =
+                    (available_width as i64 * pct as i64 / 10000) as i32 + main_margins;
             } else if let Some((px100, pct100)) = st.width_calc {
                 item.main_base =
-                    px100 / 100 + (available_width as i64 * pct100 as i64 / 10000) as i32;
+                    px100 / 100 + (available_width as i64 * pct100 as i64 / 10000) as i32
+                        + main_margins;
             } else {
                 // Case E: flex-basis:auto + width:auto → max-content size.
                 // Measure the natural content width by recursively walking the
@@ -507,7 +541,7 @@ pub fn layout_flex(
             }
         } else {
             if let Some(h) = st.height {
-                item.main_base = h;
+                item.main_base = h + main_margins;
             } else {
                 let child_box = build_block(
                     dom,
@@ -586,7 +620,11 @@ pub fn layout_flex(
 
         // Distribute free space along main axis.
         let total_gaps = gap * (count as i32 - 1).max(0);
-        let free_space = main_size - line.total_main - total_gaps;
+        let free_space = if main_size > 0 {
+            main_size - line.total_main - total_gaps
+        } else {
+            0
+        };
 
         let total_grow: i32 = items[line.start..line.end].iter().map(|it| it.grow).sum();
         let total_shrink: i32 = items[line.start..line.end].iter().map(|it| it.shrink).sum();
@@ -666,6 +704,11 @@ pub fn layout_flex(
             } else {
                 available_width
             };
+            let forced_child_outer_height = if is_row {
+                None
+            } else {
+                Some((item_main - item_margins).max(0))
+            };
 
             let mut child_box = if let Some(existing) = items[i].layout.take() {
                 let existing_main = if is_row {
@@ -677,6 +720,48 @@ pub fn layout_flex(
                 // This is common when flex-grow/shrink changed the size from the
                 // max-content base, or when Phase 1 didn't cache a layout.
                 if existing_main != item_main {
+                    if let Some(forced_h) = forced_child_outer_height {
+                        build_block_with_forced_outer_height(
+                            dom,
+                            styles,
+                            pseudo,
+                            items[i].node_id,
+                            child_avail,
+                            images,
+                            viewport_w,
+                            definite_container_height.unwrap_or(0),
+                            forced_h,
+                        )
+                    } else {
+                        build_block(
+                            dom,
+                            styles,
+                            pseudo,
+                            items[i].node_id,
+                            child_avail,
+                            images,
+                            viewport_w,
+                            definite_container_height.unwrap_or(0),
+                        )
+                    }
+                } else {
+                    existing
+                }
+            } else {
+                // No cached layout (e.g. row-flex items measured at max-content width).
+                if let Some(forced_h) = forced_child_outer_height {
+                    build_block_with_forced_outer_height(
+                        dom,
+                        styles,
+                        pseudo,
+                        items[i].node_id,
+                        child_avail,
+                        images,
+                        viewport_w,
+                        definite_container_height.unwrap_or(0),
+                        forced_h,
+                    )
+                } else {
                     build_block(
                         dom,
                         styles,
@@ -687,27 +772,24 @@ pub fn layout_flex(
                         viewport_w,
                         definite_container_height.unwrap_or(0),
                     )
-                } else {
-                    existing
                 }
-            } else {
-                // No cached layout (e.g. row-flex items measured at max-content width).
-                build_block(
-                    dom,
-                    styles,
-                    pseudo,
-                    items[i].node_id,
-                    child_avail,
-                    images,
-                    viewport_w,
-                    definite_container_height.unwrap_or(0),
-                )
             };
 
             // §8.1: Auto margins on flex items are treated as 0 during layout.
             // build_block may have set auto margins for block-centering — reset them.
             // The flex positioning code will distribute auto margins later.
             let st = &styles[items[i].node_id];
+            if !is_row && !matches!(dom.get(items[i].node_id).node_type, NodeType::Text(_)) {
+                let item_align = resolve_align(align, st);
+                let auto_cross_size =
+                    st.width.is_none() && st.width_pct.is_none() && st.width_calc.is_none();
+                if auto_cross_size && !matches!(item_align, AlignItems::Stretch) {
+                    let fit_w =
+                        measure_max_content(dom, styles, pseudo, items[i].node_id, images, viewport_w)
+                            .max(0);
+                    child_box.width = fit_w.min(available_width.max(0));
+                }
+            }
             if is_row {
                 // Cross axis = vertical for row flex.
                 // (vertical auto margins are rare, skip for now)
@@ -752,6 +834,26 @@ pub fn layout_flex(
             items[i].layout = Some(child_box);
         }
 
+        let line_baseline = if is_row {
+            let mut max_baseline = 0;
+            for i in line.start..line.end {
+                let item_node = items[i].node_id;
+                if !matches!(resolve_align(align, &styles[item_node]), AlignItems::Baseline) {
+                    continue;
+                }
+                if let Some(child_box) = items[i].layout.as_ref() {
+                    let baseline =
+                        child_box.margin.top + flex_item_baseline(&styles[item_node], child_box, true);
+                    if baseline > max_baseline {
+                        max_baseline = baseline;
+                    }
+                }
+            }
+            max_baseline
+        } else {
+            0
+        };
+
         // Position items along main axis.
         let used_main: i32 = main_sizes.iter().sum::<i32>() + total_gaps;
         // If main_size is 0 (content-sized container), use the actual content size.
@@ -785,12 +887,31 @@ pub fn layout_flex(
                     AlignItems::Center => (cross_max - item_h).max(0) / 2,
                     AlignItems::Stretch => {
                         if no_explicit_h {
-                            child_box.height =
+                            let stretched_h =
                                 cross_max - child_box.margin.top - child_box.margin.bottom;
+                            if styles[item_node].writing_mode.is_vertical() {
+                                let relaid = build_block_with_forced_outer_height(
+                                    dom,
+                                    styles,
+                                    pseudo,
+                                    item_node,
+                                    stretched_h.max(child_box.width),
+                                    images,
+                                    viewport_w,
+                                    definite_container_height.unwrap_or(0),
+                                    stretched_h,
+                                );
+                                *child_box = relaid;
+                            }
+                            child_box.height = stretched_h;
                         }
                         0
                     }
-                    AlignItems::Baseline => 0,
+                    AlignItems::Baseline => {
+                        let baseline = child_box.margin.top
+                            + flex_item_baseline(&styles[item_node], child_box, true);
+                        (line_baseline - baseline).max(0)
+                    }
                 };
                 child_box.y = cross_cursor + cross_offset + child_box.margin.top;
             } else {

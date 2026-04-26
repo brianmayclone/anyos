@@ -341,36 +341,69 @@ impl DisplayList {
                 let is_vertical = angle == 0 || angle == 180;
 
                 if is_horizontal || is_vertical {
-                    // Fast path: axis-aligned gradients rendered as stripe rects.
+                    // Axis-aligned gradients can be sampled exactly along one pixel axis.
+                    // Coalescing adjacent pixels with the same color keeps hard stops exact
+                    // without exploding the display list for common solid bands.
                     let dimension = if is_horizontal { bg_w } else { bg_h };
-                    let stripe_count = dimension.min(64).max(2);
-                    let stripe_size = dimension / stripe_count;
-                    if stripe_size <= 0 {
+                    if dimension <= 0 {
                         return;
                     }
 
                     let reversed = angle == 270 || angle == 0;
-                    for i in 0..stripe_count {
-                        let t_raw = i * 10000 / stripe_count;
+                    let mut run_start = 0;
+                    let mut run_color: Option<u32> = None;
+
+                    for pos in 0..dimension {
+                        let t_raw = (((pos as i64 * 10000) + (dimension as i64 / 2))
+                            / dimension as i64)
+                            .min(10000) as i32;
                         let t = if reversed { 10000 - t_raw } else { t_raw };
                         let color = interpolate_gradient_color(stops, t);
 
-                        if is_horizontal {
-                            let sx = bg_x + i * stripe_size;
-                            let sw = if i == stripe_count - 1 {
-                                bg_w - i * stripe_size
-                            } else {
-                                stripe_size
-                            };
-                            self.push(sx, bg_y, sw, bg_h, DrawKind::Rect { color });
+                        if let Some(previous) = run_color {
+                            if previous != color {
+                                if is_horizontal {
+                                    self.push(
+                                        bg_x + run_start,
+                                        bg_y,
+                                        pos - run_start,
+                                        bg_h,
+                                        DrawKind::Rect { color: previous },
+                                    );
+                                } else {
+                                    self.push(
+                                        bg_x,
+                                        bg_y + run_start,
+                                        bg_w,
+                                        pos - run_start,
+                                        DrawKind::Rect { color: previous },
+                                    );
+                                }
+                                run_start = pos;
+                                run_color = Some(color);
+                            }
                         } else {
-                            let sy = bg_y + i * stripe_size;
-                            let sh = if i == stripe_count - 1 {
-                                bg_h - i * stripe_size
-                            } else {
-                                stripe_size
-                            };
-                            self.push(bg_x, sy, bg_w, sh, DrawKind::Rect { color });
+                            run_color = Some(color);
+                        }
+                    }
+
+                    if let Some(color) = run_color {
+                        if is_horizontal {
+                            self.push(
+                                bg_x + run_start,
+                                bg_y,
+                                dimension - run_start,
+                                bg_h,
+                                DrawKind::Rect { color },
+                            );
+                        } else {
+                            self.push(
+                                bg_x,
+                                bg_y + run_start,
+                                bg_w,
+                                dimension - run_start,
+                                DrawKind::Rect { color },
+                            );
                         }
                     }
                 } else {

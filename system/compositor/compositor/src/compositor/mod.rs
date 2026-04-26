@@ -21,6 +21,25 @@ use vram_alloc::VramAllocator;
 
 // ── Compositor ──────────────────────────────────────────────────────────────
 
+/// Pixels + geometry for the drag-image overlay rendered during a cross-
+/// window drag. The compositor maps the source-allocated SHM read-only and
+/// blends `image` under the cursor each compose pass.
+pub struct DragImageOverlay {
+    /// Source-allocated SHM region holding ARGB8888 pixels. Owned by source.
+    pub shm_id: u32,
+    /// Read-only mapping of the SHM in compositor address space.
+    pub pixels: *const u32,
+    pub image_w: u32,
+    pub image_h: u32,
+    pub hot_x: i32,
+    pub hot_y: i32,
+    /// Last drawn screen position (top-left); used so we can damage the
+    /// previous spot on the next compose.
+    pub last_x: i32,
+    pub last_y: i32,
+    pub last_drawn: bool,
+}
+
 pub struct Compositor {
     /// Framebuffer pointer (MMIO VRAM mapped at 0x20000000)
     pub(crate) fb_ptr: *mut u32,
@@ -55,6 +74,13 @@ pub struct Compositor {
 
     /// Resize outline (drawn as overlay during resize operations)
     pub resize_outline: Option<Rect>,
+
+    /// Drag-image overlay (drawn under the cursor during cross-window
+    /// drag-and-drop). Pixels are ARGB8888 in `image`, sized `image_w` ×
+    /// `image_h`, and the top-left of the rendered position is
+    /// `(cursor_x - hot_x, cursor_y - hot_y)`. `None` while no drag image
+    /// is set.
+    pub drag_image: Option<DragImageOverlay>,
 
     /// The currently focused layer (gets stronger shadow)
     pub focused_layer_id: Option<u32>,
@@ -99,6 +125,7 @@ impl Compositor {
             gpu_cmds: Vec::with_capacity(32),
             hw_cursor: false,
             resize_outline: None,
+            drag_image: None,
             focused_layer_id: None,
             accel_move_hint: None,
             vram_allocator: None,

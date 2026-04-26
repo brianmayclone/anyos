@@ -243,6 +243,7 @@ struct AnyuiLib {
     drag_get_text: extern "C" fn(*mut u8, u32) -> u32,
     set_drop_formats: extern "C" fn(u32, u32),
     drag_set_payload: extern "C" fn(u32, *const u8, u32, u32),
+    drag_set_image: extern "C" fn(*const u32, u32, u32, i32, i32) -> u32,
     drag_get_payload: extern "C" fn(*mut u8, u32, *mut u32) -> u32,
     drag_get_format: extern "C" fn() -> u32,
     drag_get_allowed_effects: extern "C" fn() -> u32,
@@ -564,6 +565,7 @@ pub fn init() -> bool {
             drag_get_text: resolve(&handle, "anyui_drag_get_text"),
             set_drop_formats: resolve(&handle, "anyui_set_drop_formats"),
             drag_set_payload: resolve(&handle, "anyui_drag_set_payload"),
+            drag_set_image: resolve(&handle, "anyui_drag_set_image"),
             drag_get_payload: resolve(&handle, "anyui_drag_get_payload"),
             drag_get_format: resolve(&handle, "anyui_drag_get_format"),
             drag_get_allowed_effects: resolve(&handle, "anyui_drag_get_allowed_effects"),
@@ -1250,6 +1252,46 @@ pub fn drag_get_payload() -> (alloc::vec::Vec<u8>, u32) {
     let n = (lib().drag_get_payload)(buf.as_mut_ptr(), buf.len() as u32, &mut fmt) as usize;
     buf.truncate(core::cmp::min(n, buf.len()));
     (buf, fmt)
+}
+
+/// Install a list of absolute filesystem paths as the drag payload (format
+/// `DND_FORMAT_FILES`). Paths are stored NUL-separated, no trailing NUL.
+/// Call from a DRAG_START callback on the source. Empty paths are skipped.
+pub fn drag_set_files(paths: &[&str], allowed_effects: u32) {
+    let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    for (i, p) in paths.iter().filter(|p| !p.is_empty()).enumerate() {
+        if i > 0 { buf.push(0); }
+        buf.extend_from_slice(p.as_bytes());
+    }
+    drag_set_payload(DND_FORMAT_FILES, &buf, allowed_effects);
+}
+
+/// Attach a drag-image (ghost) to the active drag. `pixels` is `w * h`
+/// ARGB8888 pixels (top-left origin). The hot-spot is the offset within
+/// the image that should track the cursor — e.g. `(0, 0)` for "follow the
+/// cursor's tip", or `(w/2, h/2)` for "centre the image on the cursor".
+///
+/// Must be called *after* `drag_set_payload` (which announces the drag to
+/// the compositor). Replaces any previously-attached image. Max 1024×1024.
+pub fn drag_set_image(pixels: &[u32], w: u32, h: u32, hot_x: i32, hot_y: i32) -> bool {
+    if (w as usize) * (h as usize) > pixels.len() {
+        return false;
+    }
+    (lib().drag_set_image)(pixels.as_ptr(), w, h, hot_x, hot_y) != 0
+}
+
+/// Decode a `DND_FORMAT_FILES` payload into a list of paths. Returns an
+/// empty vec when the active drag is not a files-format drag.
+pub fn drag_get_files() -> alloc::vec::Vec<alloc::string::String> {
+    let (bytes, fmt) = drag_get_payload();
+    if fmt != DND_FORMAT_FILES || bytes.is_empty() {
+        return alloc::vec::Vec::new();
+    }
+    bytes
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| alloc::string::String::from_utf8_lossy(s).into_owned())
+        .collect()
 }
 
 /// Current drag payload format identifier.

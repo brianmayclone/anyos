@@ -58,7 +58,7 @@ impl Desktop {
         None
     }
 
-    fn topmost_window_hit(&self, mx: i32, my: i32, ipc_only: bool) -> Option<(u32, HitTest)> {
+    pub(crate) fn topmost_window_hit(&self, mx: i32, my: i32, ipc_only: bool) -> Option<(u32, HitTest)> {
         self.topmost_hit_in_group(mx, my, ipc_only, |w| w.is_always_on_top())
             .or_else(|| {
                 self.topmost_hit_in_group(mx, my, ipc_only, |w| {
@@ -319,6 +319,15 @@ impl Desktop {
                 }
                 self.btn_hover = new_hover;
             }
+        }
+
+        // Cross-window drag: route DRAG_OVER / DRAG_ENTER / DRAG_LEAVE.
+        // While a global drag is active we suppress regular MOUSE_MOVE
+        // forwarding; the target window receives motion via EVT_DRAG_OVER
+        // and the source learns about target changes via EVT_DRAG_FEEDBACK.
+        if self.global_drag.is_some() {
+            self.drag_update_target(self.mouse_x, self.mouse_y);
+            return;
         }
 
         // Forward mouse move to topmost IPC window under cursor
@@ -785,6 +794,14 @@ impl Desktop {
                 }
             }
 
+            // Cross-window drag: finish the drag (drop or cancel) instead
+            // of forwarding a regular MOUSE_UP. EVT_DROP / EVT_DRAG_END are
+            // dispatched to the target / source by drag_finish_on_release.
+            if self.global_drag.is_some() {
+                self.drag_finish_on_release(self.mouse_x, self.mouse_y);
+                return;
+            }
+
             // Forward mouse up to focused window
             if let Some(win_id) = self.focused_window {
                 if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
@@ -814,6 +831,17 @@ impl Desktop {
         // Debug: log Escape key events
         if key_code == KEY_ESCAPE && down {
             anyos_std::println!("[compositor] ESC down: scancode=0x{:x} mods=0x{:x} ctrl={} alt={}", scancode, mods, ctrl, alt);
+        }
+
+        // ESC cancels an active cross-window drag, regardless of focus.
+        // Apps that wanted to use ESC for their own UI still get the key
+        // event; we just additionally tear the drag down.
+        if key_code == KEY_ESCAPE && down && self.global_drag.is_some() {
+            if let Some(d) = self.global_drag.as_ref() {
+                let tid = d.source_tid;
+                let wid = d.source_window_id;
+                self.drag_cancel(tid, wid);
+            }
         }
 
         // ── Super key tap detection ─────────────────────────────────────────

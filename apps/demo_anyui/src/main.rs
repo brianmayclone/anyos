@@ -950,6 +950,21 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
     custom_sink.set_drop_formats(ui::dnd_format_mask(ui::DND_FORMAT_CUSTOM));
     effect_row.add(&custom_sink);
 
+    // ── Section 5: Cross-window drop receiver ────────────────────────
+    let exp_xwin = ui::Expander::new("5. Cross-window drag (drag any source into the second window)");
+    exp_xwin.set_size(460, 80);
+    exp_xwin.set_margin(0, 0, 0, 8);
+    dnd_content.add(&exp_xwin);
+
+    let xwin_btn = ui::Button::new("Open second window");
+    xwin_btn.set_position(8, 4);
+    xwin_btn.set_size(180, 28);
+    exp_xwin.add(&xwin_btn);
+
+    xwin_btn.on_click(|_| {
+        open_xwin_receiver();
+    });
+
     // ── Persist state for closures ────────────────────────────────────
     unsafe {
         DND = Some(DndState {
@@ -1003,6 +1018,21 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
                 &bytes,
                 ui::DND_EFFECT_MOVE,
             );
+            // Simple ghost: a 200×30 semi-transparent rect in the card's
+            // colour, with the label text drawn (compositor expects ARGB).
+            let palette = [0xFFE53935u32, 0xFF24B04Au32, 0xFF167CFFu32, 0xFF7A35D8u32];
+            let w = 200u32;
+            let h = 30u32;
+            let mut pixels = alloc::vec![0u32; (w * h) as usize];
+            let base = palette[src_idx as usize % 4];
+            // 60% alpha
+            let alpha = 0x99u32;
+            let r = (base >> 16) & 0xFF;
+            let g = (base >> 8) & 0xFF;
+            let b = base & 0xFF;
+            let argb = (alpha << 24) | (r << 16) | (g << 8) | b;
+            for px in pixels.iter_mut() { *px = argb; }
+            ui::drag_set_image(&pixels, w, h, (w / 2) as i32, (h / 2) as i32);
             let _ = cards_ref;
         });
         cards[i].on_drag_enter(move |_| {
@@ -1089,5 +1119,75 @@ extern "C" fn custom_update_thunk_c(id: u32, _ev: u32, _ud: u64) {
 extern "C" fn text_over_thunk_c(_id: u32, _ev: u32, _ud: u64) {
     // Re-accept on every over event so modifier changes update the effect.
     ui::drag_accept(ui::DND_EFFECT_COPY | ui::DND_EFFECT_MOVE);
+}
+
+// ── Cross-window receiver ──────────────────────────────────────────────
+//
+// Opens a second window with a single big drop target that accepts any
+// format. Used to demo cross-window drag-and-drop: drag a card from the
+// main window's reorder section into this second window and watch the
+// payload appear here.
+
+static mut XWIN_SINK: Option<ui::Label> = None;
+
+fn open_xwin_receiver() {
+    if unsafe { XWIN_SINK.is_some() } {
+        return; // already open
+    }
+    let win = ui::Window::new("Drop Receiver", -1, -1, 360, 200);
+    let sink = ui::Label::new("Drop anything here\n(from this app or another)");
+    sink.set_dock(ui::DOCK_FILL);
+    sink.set_color(0xFF252C38);
+    sink.set_text_color(0xFFD8DEE8);
+    sink.set_text_align(ui::TEXT_ALIGN_CENTER);
+    sink.set_drop_target(true);
+    sink.set_drop_formats(ui::DND_FORMAT_ACCEPT_ANY);
+    win.add(&sink);
+
+    sink.on_drag_enter(|_| {
+        ui::drag_accept(ui::DND_EFFECT_COPY | ui::DND_EFFECT_MOVE);
+    });
+    sink.on_drop(|_| {
+        let (bytes, fmt) = ui::drag_get_payload();
+        let mut msg = alloc::string::String::from("Received format=");
+        // u32 → ASCII without alloc::format (no_std-friendly)
+        let mut buf = [0u8; 12];
+        let mut i = buf.len();
+        let mut n = fmt;
+        if n == 0 {
+            i -= 1; buf[i] = b'0';
+        } else {
+            while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+        }
+        msg.push_str(core::str::from_utf8(&buf[i..]).unwrap_or("?"));
+        msg.push_str(", ");
+        let mut i = buf.len();
+        let mut n = bytes.len() as u32;
+        if n == 0 { i -= 1; buf[i] = b'0'; }
+        else { while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; } }
+        msg.push_str(core::str::from_utf8(&buf[i..]).unwrap_or("?"));
+        msg.push_str(" bytes:\n");
+        // Show the payload as text when possible, else as hex prefix.
+        if bytes.iter().all(|&b| b == 0 || (b >= 0x20 && b < 0x7F) || b == b'\n') {
+            msg.push_str(&alloc::string::String::from_utf8_lossy(&bytes));
+        } else {
+            let hex = b"0123456789ABCDEF";
+            for (k, &b) in bytes.iter().take(16).enumerate() {
+                if k > 0 { msg.push(' '); }
+                msg.push(hex[(b >> 4) as usize] as char);
+                msg.push(hex[(b & 0xF) as usize] as char);
+            }
+            if bytes.len() > 16 { msg.push_str(" …"); }
+        }
+        if let Some(s) = unsafe { XWIN_SINK.as_ref() } {
+            s.set_text(&msg);
+        }
+    });
+
+    win.on_close(|_| {
+        unsafe { XWIN_SINK = None; }
+    });
+
+    unsafe { XWIN_SINK = Some(sink); }
 }
 

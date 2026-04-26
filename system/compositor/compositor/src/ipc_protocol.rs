@@ -356,6 +356,79 @@ pub const EVT_WINDOW_LIST_END: u32 = 0x0065;
 /// Sent in response to CMD_GET_CURSOR_POS, targeted to the requested subscription.
 pub const EVT_CURSOR_POS: u32 = 0x0066;
 
+// ── Cross-Window Drag & Drop ─────────────────────────────────────────────────
+//
+// The compositor coordinates a single global drag session. Source apps begin
+// it via CMD_DRAG_BEGIN and pass an SHM handle holding the payload bytes.
+// As the cursor crosses windows, the compositor routes EVT_DRAG_ENTER /
+// EVT_DRAG_OVER / EVT_DRAG_LEAVE events to the appropriate target window.
+// Targets call CMD_DRAG_ACCEPT / CMD_DRAG_REJECT to negotiate the effect;
+// the compositor relays that as EVT_DRAG_FEEDBACK to the source. Mouse-up
+// fires EVT_DROP at the current target and EVT_DRAG_END at the source.
+
+/// Begin a global drag session.
+/// [CMD, source_window_id, format, payload_shm_id, packed_len_effects]
+/// `packed_len_effects` = (payload_len << 8) | (allowed_effects & 0xFF)
+/// (effects are a 3-bit mask: COPY=1, MOVE=2, LINK=4, so 8 bits is plenty).
+/// The source keeps the payload SHM alive until it sees EVT_DRAG_END.
+pub const CMD_DRAG_BEGIN: u32 = 0x1040;
+
+/// Drop target accepts the current drag and requests an effect.
+/// [CMD, target_window_id, requested_effects, 0, 0]
+/// Sent in response to EVT_DRAG_ENTER or EVT_DRAG_OVER.
+pub const CMD_DRAG_ACCEPT: u32 = 0x1041;
+
+/// Drop target rejects the current drag.
+/// [CMD, target_window_id, 0, 0, 0]
+pub const CMD_DRAG_REJECT: u32 = 0x1042;
+
+/// Source cancels its drag (e.g. on ESC, or window closing).
+/// [CMD, source_window_id, 0, 0, 0]
+pub const CMD_DRAG_CANCEL: u32 = 0x1043;
+
+/// Source attaches a drag-image (ghost) to the active drag.
+/// [CMD, source_window_id, image_shm_id, packed_size, packed_hot]
+/// `packed_size` = (w << 16) | h     (each ≤ 0xFFFF)
+/// `packed_hot`  = (hot_x << 16) | hot_y
+/// SHM contains `w * h` ARGB8888 pixels (top-left origin). The compositor
+/// keeps the SHM mapped read-only for the lifetime of the drag and renders
+/// the image at `(cursor_x - hot_x, cursor_y - hot_y)` on every compose.
+/// Source must keep the SHM alive until it sees `EVT_DRAG_END`.
+pub const CMD_DRAG_SET_IMAGE: u32 = 0x1044;
+
+/// Cursor has entered a new target window during an active drag.
+/// [EVT, target_window_id, format, payload_shm_id, packed_meta]
+/// `packed_meta` = (allowed_effects & 0xFF) | ((source_tid & 0xFFFFFF) << 8)
+/// The target maps payload_shm_id read-only and reads `payload_len` bytes
+/// (length is communicated separately in the first EVT_DRAG_OVER as well).
+pub const EVT_DRAG_ENTER: u32 = 0x3020;
+
+/// Pointer is moving over a drag target.
+/// [EVT, target_window_id, packed_xy, packed_mod_eff, payload_len]
+/// `packed_xy` = (local_x_u16 << 16) | local_y_u16
+/// `packed_mod_eff` = (modifiers & 0xFF) | ((allowed_effects & 0xFF) << 8)
+pub const EVT_DRAG_OVER: u32 = 0x3021;
+
+/// Pointer has left the drop target (without dropping).
+/// [EVT, target_window_id, 0, 0, 0]
+pub const EVT_DRAG_LEAVE: u32 = 0x3022;
+
+/// Drop occurred on the target.
+/// [EVT, target_window_id, packed_xy, negotiated_effect, source_tid]
+/// `packed_xy` = (local_x_u16 << 16) | local_y_u16
+pub const EVT_DROP: u32 = 0x3023;
+
+/// Compositor → source: target acceptance / negotiated effect changed.
+/// [EVT, source_window_id, target_present, negotiated_effect, 0]
+/// `target_present` = 1 if the cursor is over an accepting target, 0 otherwise.
+/// Source uses this to update its cursor (Move/Copy/Link/No-Drop).
+pub const EVT_DRAG_FEEDBACK: u32 = 0x3024;
+
+/// Compositor → source: drag session has ended.
+/// [EVT, source_window_id, completed, negotiated_effect, 0]
+/// `completed` = 1 if a drop fired, 0 if the drag was cancelled.
+pub const EVT_DRAG_END: u32 = 0x3025;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Pack up to 12 ASCII characters into 3 u32 words.

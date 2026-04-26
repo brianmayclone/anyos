@@ -1745,3 +1745,197 @@ End-to-end latency: **4-9ms** (vs 18-53ms with fixed timer).
 | Expander | `on_toggled` |
 | TrayIcon | `on_click` |
 | MenuBar | `on_item` |
+
+## Drag & Drop
+
+anyui ships a built-in drag-and-drop framework that works **within a window**
+(reorderable lists, tab-reorder, etc.) and **across windows / processes**
+(drag a file from a files manager into an editor, drag mail into a folder,
+etc.). Both flows use the same controls and callbacks — the framework
+transparently routes through the compositor when the cursor crosses window
+boundaries.
+
+### Roles
+
+| Role | Setup | Receives |
+|------|-------|----------|
+| **Source** | `set_draggable(true)` | `EVENT_DRAG_START`, `EVENT_DRAG_END` |
+| **Target** | `set_drop_target(true)` + (optional) `set_drop_formats(mask)` | `EVENT_DRAG_ENTER`, `EVENT_DRAG`, `EVENT_DRAG_LEAVE`, `EVENT_DROP` |
+
+A control can be both source and target (used by reorder lists).
+
+### Payload formats
+
+```rust
+DND_FORMAT_TEXT      // UTF-8 plain text
+DND_FORMAT_URI_LIST  // Newline-separated file:// URIs
+DND_FORMAT_FILES     // NUL-separated absolute paths
+DND_FORMAT_CUSTOM    // App-defined start (use offsets for subtypes)
+DND_FORMAT_ACCEPT_ANY // Sentinel mask: target accepts any non-zero format
+```
+
+Build a per-target acceptance mask with `dnd_format_mask(fmt)` (OR several
+together for multiple formats), or pass `DND_FORMAT_ACCEPT_ANY`.
+
+### Effects
+
+```rust
+DND_EFFECT_COPY  // 1
+DND_EFFECT_MOVE  // 2
+DND_EFFECT_LINK  // 4
+DND_EFFECT_ALL   // COPY | MOVE | LINK
+```
+
+The framework intersects source-allowed effects, target-requested effects,
+and current modifiers (Ctrl=Copy, Shift=Move, Ctrl+Shift=Link) to pick a
+single negotiated effect. Targets read the negotiated effect via
+`drag_effect()`.
+
+### Source flow (DRAG_START)
+
+```rust
+let card = ui::Card::new();
+card.set_draggable(true);
+card.on_drag_start(move |_| {
+    // Install the payload — also announces the drag to the compositor
+    // so the cursor can cross window boundaries.
+    ui::drag_set_payload(
+        ui::DND_FORMAT_CUSTOM,
+        b"my opaque blob",
+        ui::DND_EFFECT_MOVE,
+    );
+});
+card.on_drag_end(|_| {
+    // Drag finished — completed or cancelled. Optional cleanup.
+});
+```
+
+Convenience helpers for common formats:
+
+```rust
+ui::drag_set_text("hello world");
+ui::drag_set_files(&["/home/strati/a.txt", "/home/strati/b.png"],
+                   ui::DND_EFFECT_COPY);
+```
+
+### Target flow (DRAG_ENTER → DRAG → DROP)
+
+```rust
+let sink = ui::Label::new("Drop here");
+sink.set_drop_target(true);
+sink.set_drop_formats(ui::dnd_format_mask(ui::DND_FORMAT_FILES));
+
+sink.on_drag_enter(|_| {
+    ui::drag_accept(ui::DND_EFFECT_COPY);
+});
+sink.on_drop(|_| {
+    let paths = ui::drag_get_files();
+    for p in &paths { /* open / import / etc. */ }
+});
+```
+
+Acceptance is **persistent across pointer moves** as long as the modifiers
+don't change. Modifier-aware targets (e.g. Copy vs. Move based on Ctrl)
+should also handle `EVENT_DRAG` to re-call `drag_accept` with the new
+effect:
+
+```rust
+sink.on_event_raw(ui::EVENT_DRAG, |_id, _ev, _ud| {
+    ui::drag_accept(ui::DND_EFFECT_ALL); // framework picks based on mods
+}, 0);
+```
+
+### Cross-window behaviour
+
+When the cursor leaves the source's window, the compositor routes
+`EVENT_DRAG_ENTER` / `EVENT_DRAG` / `EVENT_DRAG_LEAVE` / `EVENT_DROP` to
+whichever window is under the cursor — including windows of other
+processes. Apps don't need any extra code: source registers a payload,
+target registers a drop handler, the rest is automatic.
+
+The payload is passed via a small SHM region allocated by the source
+(64 KiB cap), mapped read-only by the target during DRAG_ENTER, and
+released after DRAG_END. Target apps can read it via the standard
+`drag_get_payload`, `drag_get_text`, `drag_get_files` helpers.
+
+### Cancel paths
+
+- **ESC** during a drag cancels it (no DROP fires; `EVENT_DRAG_END` fires
+  with `completed=0`).
+- **Source window closes** → drag is cancelled, target sees `EVENT_DRAG_LEAVE`.
+- **Source process exits** → same.
+- **No matching target under cursor on release** → source sees DRAG_END,
+  target sees nothing.
+
+### Auto-scroll during drag
+
+Containers can opt in to dragging-near-edge auto-scroll by overriding
+`is_drag_autoscroll_target()` and `drag_autoscroll(dx, dy)`. The framework
+walks up the ancestor chain from the current target to find the nearest
+opt-in container and applies the scroll delta automatically.
+
+### API surface
+
+| Function | Side | Use |
+|---|---|---|
+| `set_draggable(bool)` | Source | Mark a control as a drag source |
+| `set_drop_target(bool)` | Target | Mark a control as a drop target |
+| `set_drop_formats(mask)` | Target | Restrict accepted formats |
+| `drag_set_payload(fmt, bytes, effects)` | Source | Install payload (in DRAG_START) |
+| `drag_set_text(s)`, `drag_set_files(&[...])` | Source | Convenience helpers |
+| `drag_set_image(pixels, w, h, hot_x, hot_y) -> bool` | Source | Attach a ghost image that follows the cursor (after `drag_set_payload`) |
+| `drag_get_payload() -> (bytes, fmt)` | Target | Read payload (in DRAG_ENTER/DROP) |
+| `drag_get_text()`, `drag_get_files()` | Target | Convenience helpers |
+| `drag_accept(effects) -> negotiated` | Target | Accept (in DRAG_ENTER / DRAG) |
+| `drag_reject()` | Target | Reject explicitly |
+| `drag_effect() -> u32` | Either | Currently negotiated effect |
+| `drag_format() -> u32` | Either | Current payload format |
+| `drag_is_active() -> bool` | Either | Drag in progress? |
+
+### Cursor feedback
+
+While a cross-window drag is active, the compositor renders different
+cursor shapes based on the current target acceptance:
+
+| Cursor | When |
+|---|---|
+| `Move` (open four-arrow) | Hovering over a target that accepted with `MOVE` |
+| `DragCopy` (arrow + small `+`) | Negotiated `COPY` (e.g. Ctrl held) |
+| `DragLink` (arrow + small chain) | Negotiated `LINK` (Ctrl+Shift held) |
+| `DragNoDrop` (arrow + slash circle) | Cursor over no target, or target rejected |
+
+Apps don't have to do anything — `EVT_DRAG_FEEDBACK` from the compositor
+drives the cursor. Targets just need to call `drag_accept` with the right
+effect bits and the user sees the appropriate cursor.
+
+### Drag images (ghosts)
+
+A drag-image is an optional semi-transparent picture that follows the
+cursor while the drag is active. Useful to show "what is being dragged"
+across window boundaries, especially when the source was a small clickable
+target (e.g. a list row, a tab, a thumbnail).
+
+```rust
+on_drag_start(|_| {
+    drag_set_payload(DND_FORMAT_FILES, &payload, DND_EFFECT_COPY);
+    // 200×30 ARGB8888 ghost, anchored at the centre.
+    let pixels: Vec<u32> = build_thumbnail();
+    drag_set_image(&pixels, 200, 30, 100, 15);
+});
+```
+
+Constraints: maximum size is 1024 × 1024. Pixels are ARGB8888, top-left
+origin. The compositor maps the SHM read-only and blends it under the
+cursor each compose pass; the framework releases the SHM on `EVT_DRAG_END`.
+
+### Pitfalls
+
+- `drag_set_payload` MUST be called in `on_drag_start`, not earlier — the
+  drag session doesn't exist before then.
+- Drop targets must call `drag_accept` from `on_drag_enter` (and re-call
+  from `EVENT_DRAG` if modifier-aware), otherwise DROP is silently dropped.
+- A target's `set_drop_formats` mask defaults to `DND_FORMAT_ACCEPT_ANY`
+  if not set after `set_drop_target(true)`.
+- Cards/Labels are non-interactive by default, so `set_draggable(true)` /
+  `set_drop_target(true)` is what makes them participate in hit-testing
+  for drag purposes.

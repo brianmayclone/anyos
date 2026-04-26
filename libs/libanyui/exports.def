@@ -104,6 +104,7 @@ anyui_marshal_set_text
     anyui_drag_get_text
     anyui_set_drop_formats
     anyui_drag_set_payload
+    anyui_drag_set_image
     anyui_drag_get_payload
     anyui_drag_get_format
     anyui_drag_get_allowed_effects
