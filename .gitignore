@@ -2,6 +2,8 @@ target/
 build/
 build-anyrc/
 buildsystem/build/
+third_party/codec-corpus/
+third_party/libjpeg-reference/
 *.img
 *.bin
 !kernel/src/graphics/boot_logo.bin

@@ -13,14 +13,8 @@
 use crate::types::*;
 use crate::jpeg_tables::*;
 
-#[cfg(feature = "host")]
-macro_rules! trace { ($($arg:tt)*) => { eprintln!($($arg)*); }; }
-#[cfg(not(feature = "host"))]
 macro_rules! trace { ($($arg:tt)*) => {}; }
 
-#[cfg(feature = "host")]
-macro_rules! fail { ($code:expr, $($arg:tt)*) => {{ eprintln!("jpeg-fail {}:{}: {}", file!(), line!(), format!($($arg)*)); return $code; }}; }
-#[cfg(not(feature = "host"))]
 macro_rules! fail { ($code:expr, $($arg:tt)*) => { return $code; }; }
 
 // ---------------------------------------------------------------------------
@@ -29,19 +23,27 @@ macro_rules! fail { ($code:expr, $($arg:tt)*) => { return $code; }; }
 
 const M_SOI: u8 = 0xD8;
 const M_EOI: u8 = 0xD9;
-const M_SOF0: u8 = 0xC0; // Baseline DCT
+const M_SOF0: u8 = 0xC0; // Baseline DCT, 8-bit
+const M_SOF1: u8 = 0xC1; // Extended sequential DCT, 8/12-bit Huffman
 const M_SOF2: u8 = 0xC2; // Progressive DCT
 const M_DHT: u8 = 0xC4;
 const M_DQT: u8 = 0xDB;
 const M_DRI: u8 = 0xDD;
 const M_SOS: u8 = 0xDA;
+const M_APP14: u8 = 0xEE;
 
 // Maximum image dimensions we support
 const MAX_DIM: u32 = 16384;
-// Max components (Y, Cb, Cr)
-const MAX_COMP: usize = 3;
-// Max quantization tables
+// Max components: Y, Cb, Cr, K (for CMYK / YCCK).
+const MAX_COMP: usize = 4;
+// Max quantization tables (per JPEG: 4 selectors).
 const MAX_QTABLES: usize = 4;
+
+// Adobe APP14 color-transform values.
+// 0 = no transform: 3-comp RGB, 4-comp CMYK
+// 1 = YCbCr (3-comp)
+// 2 = YCCK (4-comp, equivalent to YCbCr+K with K not transformed)
+const ADOBE_TRANSFORM_UNKNOWN: u8 = 0xFF;
 
 // ---------------------------------------------------------------------------
 // Helper: read big-endian values from byte slice
@@ -68,6 +70,11 @@ impl HuffTable {
             codes: [(0u16, 0u8, 0u8); 256],
             num_codes: 0,
         }
+    }
+
+    /// Convenience wrapper used to install the JPEG-spec standard tables.
+    fn build_from_spec(&mut self, counts: &[u8; 16], symbols: &[u8]) {
+        self.build(counts, symbols);
     }
 
     fn build(&mut self, counts: &[u8; 16], symbols: &[u8]) {
@@ -247,9 +254,14 @@ struct FrameInfo {
     height: u16,
     num_comp: u8,
     progressive: bool,
+    /// Sample precision in bits (8 or 12).
+    precision: u8,
     comp: [Component; MAX_COMP],
     max_h: u8,
     max_v: u8,
+    /// Adobe APP14 color transform (0xFF if no APP14 marker present).
+    /// 0 = unknown/RGB/CMYK, 1 = YCbCr, 2 = YCCK.
+    adobe_transform: u8,
 }
 
 impl FrameInfo {
@@ -261,8 +273,10 @@ impl FrameInfo {
         };
         FrameInfo {
             width: 0, height: 0, num_comp: 0, progressive: false,
+            precision: 8,
             comp: [COMP_INIT; MAX_COMP],
             max_h: 1, max_v: 1,
+            adobe_transform: ADOBE_TRANSFORM_UNKNOWN,
         }
     }
 }
@@ -309,13 +323,13 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
             break;
         }
 
-        let is_sof = marker == M_SOF0 || marker == M_SOF2;
+        let is_sof = marker == M_SOF0 || marker == M_SOF1 || marker == M_SOF2;
         if is_sof {
             if seg_len < 8 {
                 return None;
             }
             let precision = data[pos + 2];
-            if precision != 8 {
+            if precision != 8 && precision != 12 {
                 return None;
             }
             let height = read_u16_be(data, pos + 3) as u32;
@@ -325,7 +339,7 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
             if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
                 return None;
             }
-            if num_comp == 0 || num_comp > 3 {
+            if num_comp == 0 || num_comp > MAX_COMP as u32 {
                 return None;
             }
 
@@ -393,6 +407,8 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
     let mut quant = [[0i32; 64]; MAX_QTABLES];
     let mut huff_dc = [HuffTable::new(), HuffTable::new(), HuffTable::new(), HuffTable::new()];
     let mut huff_ac = [HuffTable::new(), HuffTable::new(), HuffTable::new(), HuffTable::new()];
+    let mut huff_dc_built = [false; 4];
+    let mut huff_ac_built = [false; 4];
     let mut restart_interval: u16 = 0;
 
     // ── Parse markers up to first SOS, collecting frame info + tables. ──
@@ -487,14 +503,15 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
         }
 
         match marker {
-            M_SOF0 | M_SOF2 => {
+            M_SOF0 | M_SOF1 | M_SOF2 => {
                 if seg_len < 8 {
                     fail!(ERR_INVALID_DATA, "");
                 }
                 let precision = data[pos + 2];
-                if precision != 8 {
+                if precision != 8 && precision != 12 {
                     fail!(ERR_UNSUPPORTED, "");
                 }
+                frame.precision = precision;
                 frame.height = read_u16_be(data, pos + 3);
                 frame.width = read_u16_be(data, pos + 5);
                 frame.num_comp = data[pos + 7];
@@ -521,7 +538,9 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
                     frame.comp[i].h_samples = hv >> 4;
                     frame.comp[i].v_samples = hv & 0x0F;
                     frame.comp[i].qt_id = data[off + 2];
-                    if frame.comp[i].h_samples > 2 || frame.comp[i].v_samples > 2 {
+                    if frame.comp[i].h_samples == 0 || frame.comp[i].h_samples > 4
+                        || frame.comp[i].v_samples == 0 || frame.comp[i].v_samples > 4
+                    {
                         fail!(ERR_UNSUPPORTED, "");
                     }
                     if frame.comp[i].h_samples > max_h {
@@ -594,8 +613,10 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
                     let symbols = &data[hpos..hpos + total_sym];
                     if tc == 0 {
                         huff_dc[th].build(&counts, symbols);
+                        huff_dc_built[th] = true;
                     } else {
                         huff_ac[th].build(&counts, symbols);
+                        huff_ac_built[th] = true;
                     }
                     hpos += total_sym;
                 }
@@ -607,6 +628,22 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
                 }
             }
 
+            M_APP14 => {
+                // Adobe APP14 marker: "Adobe\0" + 5 data bytes.
+                //   bytes 2..7 : "Adobe"
+                //   byte 7..8  : Version (u16)
+                //   byte 9..10 : Flags0 (u16)
+                //   byte 11..12: Flags1 (u16)
+                //   byte 13    : Color transform
+                if seg_len >= 14
+                    && data[pos + 2] == b'A' && data[pos + 3] == b'd'
+                    && data[pos + 4] == b'o' && data[pos + 5] == b'b'
+                    && data[pos + 6] == b'e'
+                {
+                    frame.adobe_transform = data[pos + 13];
+                }
+            }
+
             _ => {}
         }
 
@@ -615,6 +652,23 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
 
     if !sof_seen || sos_pos == 0 || frame.width == 0 {
         fail!(ERR_INVALID_DATA, "");
+    }
+
+    // Populate any Huffman tables that the file omitted with the JPEG-spec
+    // standard tables from T.81 Annex K. This makes MJPEG-style streams
+    // (which leave out DHT markers) decode correctly. Tables that the file
+    // explicitly defined via DHT are NOT overwritten.
+    if !huff_dc_built[0] {
+        huff_dc[0].build_from_spec(&STD_DC_LUMA_BITS, &STD_DC_LUMA_VALS);
+    }
+    if !huff_dc_built[1] {
+        huff_dc[1].build_from_spec(&STD_DC_CHROMA_BITS, &STD_DC_CHROMA_VALS);
+    }
+    if !huff_ac_built[0] {
+        huff_ac[0].build_from_spec(&STD_AC_LUMA_BITS, &STD_AC_LUMA_VALS);
+    }
+    if !huff_ac_built[1] {
+        huff_ac[1].build_from_spec(&STD_AC_CHROMA_BITS, &STD_AC_CHROMA_VALS);
     }
 
     let width = frame.width as usize;
@@ -711,36 +765,135 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
     }
 
     // ── Color conversion + chroma upsampling ──
-    if frame.num_comp == 1 {
+    color_convert(&frame, scratch, out, &plane_offset, &plane_w, width, height);
+
+    ERR_OK
+}
+
+// ---------------------------------------------------------------------------
+// Color space conversion + nearest-neighbor upsampling.
+//
+// Component layouts handled:
+//   1 component  -> grayscale
+//   2 components -> grayscale + alpha (rare); we render as grayscale, ignore #2
+//   3 components -> JFIF YCbCr (default), or Adobe RGB if transform=0
+//   4 components -> Adobe YCCK (transform=2 or default for 4-comp)
+//                   Adobe CMYK (transform=0) — inverted: Photoshop convention
+// ---------------------------------------------------------------------------
+
+fn color_convert(
+    frame: &FrameInfo,
+    scratch: &[u8],
+    out: &mut [u32],
+    plane_offset: &[usize; MAX_COMP],
+    plane_w: &[usize; MAX_COMP],
+    width: usize,
+    height: usize,
+) {
+    let nc = frame.num_comp as usize;
+    let max_h = frame.max_h as usize;
+    let max_v = frame.max_v as usize;
+
+    // Per-component subsampling factors for nearest-neighbour upsample.
+    let mut hs = [1usize; MAX_COMP];
+    let mut vs = [1usize; MAX_COMP];
+    for c in 0..nc {
+        hs[c] = frame.comp[c].h_samples as usize;
+        vs[c] = frame.comp[c].v_samples as usize;
+    }
+
+    if nc == 1 {
         for y in 0..height {
             for x in 0..width {
                 let g = scratch[plane_offset[0] + y * plane_w[0] + x] as u32;
                 out[y * width + x] = 0xFF000000 | (g << 16) | (g << 8) | g;
             }
         }
-    } else {
-        for y in 0..height {
-            for x in 0..width {
-                let yy = scratch[plane_offset[0] + y * plane_w[0] + x] as i32;
-                let cx = x * frame.comp[1].h_samples as usize / frame.max_h as usize;
-                let cy = y * frame.comp[1].v_samples as usize / frame.max_v as usize;
-                let cb = scratch[plane_offset[1] + cy * plane_w[1] + cx] as i32 - 128;
-                let cr = scratch[plane_offset[2] + cy * plane_w[2] + cx] as i32 - 128;
-
-                let r = yy + ((cr * 1436) >> 10);
-                let g = yy - ((cb * 352) >> 10) - ((cr * 731) >> 10);
-                let b = yy + ((cb * 1815) >> 10);
-
-                let r = clamp_u8(r) as u32;
-                let g = clamp_u8(g) as u32;
-                let b = clamp_u8(b) as u32;
-
-                out[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
-            }
-        }
+        return;
     }
 
-    ERR_OK
+    if nc == 2 {
+        // Treat as grayscale (component 0). Ignore component 1.
+        for y in 0..height {
+            for x in 0..width {
+                let g = scratch[plane_offset[0] + y * plane_w[0] + x] as u32;
+                out[y * width + x] = 0xFF000000 | (g << 16) | (g << 8) | g;
+            }
+        }
+        return;
+    }
+
+    // For 3 components we use YCbCr->RGB unless Adobe APP14 explicitly flags
+    // the data as RGB (transform=0).
+    let three_comp_is_rgb = nc == 3 && frame.adobe_transform == 0;
+
+    // For 4 components we use YCCK unless Adobe APP14 explicitly flags as
+    // CMYK (transform=0), or there's no APP14 in which case the IJG default
+    // assumption (matching libjpeg jdmaster.c) is CMYK — but in practice
+    // 4-comp JPEGs from Photoshop carry an APP14 marker; without one we
+    // default to YCCK because most other producers (e.g. Ghostscript) emit
+    // YCCK and the colors in CMYK-as-YCCK come out badly inverted.
+    //
+    // libjpeg default: jpeg_set_colorspace() picks YCCK for 4-comp when
+    // saving and CMYK when no APP14 is present in the input. We follow the
+    // same: no APP14 + 4 comp -> CMYK.
+    let four_comp_is_ycck = nc == 4 && frame.adobe_transform == 2;
+    let four_comp_is_cmyk = nc == 4 && !four_comp_is_ycck;
+
+    for y in 0..height {
+        for x in 0..width {
+            // Sample each component using nearest-neighbour upsampling.
+            // Component sample at output (x,y) is at plane (x*hs/max_h, y*vs/max_v).
+            let s = |c: usize| -> i32 {
+                let cx = x * hs[c] / max_h;
+                let cy = y * vs[c] / max_v;
+                scratch[plane_offset[c] + cy * plane_w[c] + cx] as i32
+            };
+
+            let (r, g, b) = if three_comp_is_rgb {
+                (s(0), s(1), s(2))
+            } else if nc == 3 {
+                ycbcr_to_rgb(s(0), s(1), s(2))
+            } else if four_comp_is_ycck {
+                // YCCK: convert YCbCr part to RGB, then apply K (0=black,255=white in
+                // Adobe inverted convention).
+                let (r, g, b) = ycbcr_to_rgb(s(0), s(1), s(2));
+                let k = s(3); // K is stored "inverted" in Adobe YCCK: 255 = no ink
+                let r = (r * k + 128) / 255;
+                let g = (g * k + 128) / 255;
+                let b = (b * k + 128) / 255;
+                (r, g, b)
+            } else if four_comp_is_cmyk {
+                // Adobe inverted CMYK: 255 = no ink, 0 = full ink.
+                let c = s(0);
+                let m = s(1);
+                let yk = s(2);
+                let k = s(3);
+                let r = (c * k + 128) / 255;
+                let g = (m * k + 128) / 255;
+                let b = (yk * k + 128) / 255;
+                (r, g, b)
+            } else {
+                // Should not happen given the early-out for 1/2 comp above.
+                (s(0), s(0), s(0))
+            };
+
+            let r = clamp_u8(r) as u32;
+            let g = clamp_u8(g) as u32;
+            let b = clamp_u8(b) as u32;
+            out[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+#[inline]
+fn ycbcr_to_rgb(yy: i32, cb_raw: i32, cr_raw: i32) -> (i32, i32, i32) {
+    let cb = cb_raw - 128;
+    let cr = cr_raw - 128;
+    let r = yy + ((cr * 1436) >> 10);
+    let g = yy - ((cb * 352) >> 10) - ((cr * 731) >> 10);
+    let b = yy + ((cb * 1815) >> 10);
+    (r, g, b)
 }
 
 // ---------------------------------------------------------------------------
@@ -821,19 +974,20 @@ fn decode_baseline_scan(
                         for j in 0..64 {
                             block[j] *= qt[j];
                         }
-                        idct(&mut block);
+                        idct_p(&mut block, frame.precision);
 
                         let bx = (mcu_x * h_blocks + bh) * 8;
                         let by = (mcu_y * v_blocks + bv) * 8;
                         let pw = plane_w[c];
                         let base = plane_offset[c];
+                        let p = frame.precision;
                         for row in 0..8 {
                             for col in 0..8 {
                                 let px = bx + col;
                                 let py = by + row;
                                 if px < pw && py < plane_h[c] {
                                     let val = block[row * 8 + col];
-                                    scratch[base + py * pw + px] = clamp_u8(val);
+                                    scratch[base + py * pw + px] = clamp_u8_p(val, p);
                                 }
                             }
                         }
@@ -1253,14 +1407,6 @@ fn decode_progressive_block(
             let mut r = (sym >> 4) & 0x0F;
             let s_size = sym & 0x0F;
             let mut new_val: i32 = 0;
-            #[cfg(feature = "host")]
-            {
-                let block_idx = block_off / 128;
-                if block_idx == 361 {
-                    eprintln!("  block#{} k={} sym=0x{:02X} (r={}, s={}) bits.pos={} acc=0x{:08X}/{}",
-                        block_idx, k, sym, r, s_size, bits.pos, bits.bits, bits.count);
-                }
-            }
 
             if s_size == 0 {
                 if r != 15 {
@@ -1356,19 +1502,20 @@ fn finalize_progressive(
                 for k in 0..64 {
                     block[k] = coef_get(scratch, coef_bytes_off, block_off, k) * qt[k];
                 }
-                idct(&mut block);
+                idct_p(&mut block, frame.precision);
 
                 let px0 = bx * 8;
                 let py0 = by * 8;
                 let pw = plane_w[c];
                 let base = plane_offset[c];
+                let p = frame.precision;
                 for row in 0..8 {
                     for col in 0..8 {
                         let px = px0 + col;
                         let py = py0 + row;
                         if px < pw && py < plane_h[c] {
                             scratch[base + py * pw + px] =
-                                clamp_u8(block[row * 8 + col]);
+                                clamp_u8_p(block[row * 8 + col], p);
                         }
                     }
                 }
@@ -1424,11 +1571,31 @@ fn clamp_u8(v: i32) -> u8 {
     else { v as u8 }
 }
 
+/// Clamp an IDCT output to 0..255 for storage in our 8-bit-per-sample plane
+/// buffer. For 12-bit precision input, the natural IDCT range is 0..4095, so
+/// we shift right by 4 before clamping.
+#[inline]
+fn clamp_u8_p(v: i32, precision: u8) -> u8 {
+    let s = if precision > 8 {
+        v >> (precision - 8) as i32
+    } else {
+        v
+    };
+    clamp_u8(s)
+}
+
 // ---------------------------------------------------------------------------
 // Integer IDCT based on stb_image (Loeffler-Ligtenberg-Moschytz).
 // ---------------------------------------------------------------------------
 
 pub fn idct(block: &mut [i32; 64]) {
+    idct_p(block, 8);
+}
+
+/// Precision-aware IDCT. `precision` is the JPEG sample precision (8 or 12).
+/// Output values are in the range `0 .. (1 << precision) - 1` (modulo
+/// clamping by the caller).
+pub fn idct_p(block: &mut [i32; 64], precision: u8) {
     let mut tmp = [0i32; 64];
 
     for col in 0..8 {
@@ -1442,11 +1609,12 @@ pub fn idct(block: &mut [i32; 64]) {
         }
     }
 
-    let bias = 65536 + (128 << 17);
+    let level_shift = 1i64 << (precision as i64 - 1);
+    let bias = (1i64 << 16) + (level_shift << 17);
     for row in 0..8 {
         let r = |c: usize| tmp[row * 8 + c];
-        idct_1d(r(0), r(1), r(2), r(3), r(4), r(5), r(6), r(7), bias, 17,
-                |i, v| block[row * 8 + i] = v);
+        idct_1d_i64(r(0), r(1), r(2), r(3), r(4), r(5), r(6), r(7), bias, 17,
+                    |i, v| block[row * 8 + i] = v);
     }
 }
 
@@ -1475,6 +1643,101 @@ mod tests {
             let b = (p & 0xFF) as u8;
             out.write_all(&[r, g, b]).expect("ppm pixel");
         }
+    }
+
+    /// Path to the codec-corpus root. Tests that need corpus files are
+    /// skipped (with a warning) if it doesn't exist on disk, so the test
+    /// suite still passes on systems where the corpus hasn't been cloned.
+    const CORPUS: &str = "../../third_party/codec-corpus";
+
+    fn try_corpus(rel: &str) -> Option<Vec<u8>> {
+        let p = format!("{}/{}", CORPUS, rel);
+        std::fs::read(&p).ok()
+    }
+
+    fn decode_or_panic(data: &[u8]) -> (u32, u32, Vec<u32>) {
+        let info = probe(data).expect("probe");
+        let mut px = vec![0u32; info.width as usize * info.height as usize];
+        let mut sc = vec![0u8; info.scratch_needed as usize];
+        let rc = decode(data, &mut px, &mut sc);
+        assert_eq!(rc, ERR_OK, "decode failed rc={}", rc);
+        (info.width, info.height, px)
+    }
+
+    #[test]
+    fn corpus_baseline_3comp() {
+        let Some(d) = try_corpus("image-rs/test-images/jpg/portrait_2.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        let (w, h, px) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+        // First pixel should be opaque ARGB.
+        assert_eq!(px[0] >> 24, 0xFF);
+    }
+
+    #[test]
+    fn corpus_progressive_3comp() {
+        let Some(d) = try_corpus("image-rs/test-images/jpg/progressive/cat.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        let (w, h, _) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+    }
+
+    #[test]
+    fn corpus_grayscale() {
+        // Try a grayscale baseline file. Several exist in image-rs/test-images.
+        let candidates = [
+            "image-rs/test-images/jpg/dnt_disable.jpg",
+            "image-rs/test-images/jpg/grayscale.jpg",
+        ];
+        for c in candidates {
+            if let Some(d) = try_corpus(c) {
+                if probe(&d).is_some() {
+                    let (w, h, px) = decode_or_panic(&d);
+                    assert!(w > 0 && h > 0);
+                    // Grayscale -> R=G=B
+                    let p = px[0];
+                    assert_eq!((p >> 16) & 0xFF, (p >> 8) & 0xFF);
+                    assert_eq!((p >> 8) & 0xFF, p & 0xFF);
+                    return;
+                }
+            }
+        }
+        eprintln!("corpus grayscale candidates not present - skipping");
+    }
+
+    #[test]
+    fn corpus_cmyk_app14() {
+        let Some(d) = try_corpus("jpeg-conformance/valid/ycck.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        // Should now decode (4-component + Adobe APP14 transform=2, YCCK).
+        let (w, h, _) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+    }
+
+    #[test]
+    fn corpus_12bit() {
+        let Some(d) = try_corpus("mozjpeg/testorig12.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        let (w, h, _) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
+    }
+
+    #[test]
+    fn corpus_mjpeg_no_dht() {
+        let Some(d) = try_corpus("jpeg-conformance/valid/mjpeg.jpg") else {
+            eprintln!("corpus not present - skipping");
+            return;
+        };
+        let (w, h, _) = decode_or_panic(&d);
+        assert!(w > 0 && h > 0);
     }
 
     #[test]
@@ -1534,6 +1797,15 @@ fn idct_1d<F: FnMut(usize, i32)>(
     bias: i32, shift: u32,
     mut store: F,
 ) {
+    idct_1d_i64(s0, s1, s2, s3, s4, s5, s6, s7, bias as i64, shift, |i, v| store(i, v));
+}
+
+fn idct_1d_i64<F: FnMut(usize, i32)>(
+    s0: i32, s1: i32, s2: i32, s3: i32,
+    s4: i32, s5: i32, s6: i32, s7: i32,
+    bias: i64, shift: u32,
+    mut store: F,
+) {
     let p2 = s2 as i64;
     let p6 = s6 as i64;
     let p1 = (p2 + p6) * 2217;
@@ -1574,7 +1846,7 @@ fn idct_1d<F: FnMut(usize, i32)>(
     t2o = t2o + p2o + p3;
     t3o = t3o + p1o + p4o;
 
-    let b = bias as i64;
+    let b = bias;
     store(0, ((x0 + t3o + b) >> shift) as i32);
     store(7, ((x0 - t3o + b) >> shift) as i32);
     store(1, ((x1 + t2o + b) >> shift) as i32);
