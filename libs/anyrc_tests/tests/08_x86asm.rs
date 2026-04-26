@@ -1,4 +1,4 @@
-use anyrc::codegen::x86asm::{X86Assembler, Reg, CondCode};
+use anyrc::codegen::x86asm::{CondCode, Reg, X86Assembler};
 
 #[test]
 fn encode_mov_reg_reg() {

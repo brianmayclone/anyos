@@ -1,8 +1,8 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
+use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::parser::Parser;
-use anyrc::hir_lower::LoweringContext;
 use anyrc::resolve::Resolver;
 use anyrc::typeck::TypeChecker;
 use std::io::Write;
@@ -18,8 +18,7 @@ fn assert_run_returns(src: &str, expected: i32) {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(src, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("anyrc_dyn_test_{}_{}", std::process::id(), id));
@@ -38,7 +37,11 @@ fn assert_run_returns(src: &str, expected: i32) {
     let status = common::run_executable(&exe_path);
     let _ = std::fs::remove_dir_all(&dir);
     let code = status.code().unwrap_or(-1);
-    assert_eq!(code, expected, "expected exit code {}, got {}", expected, code);
+    assert_eq!(
+        code, expected,
+        "expected exit code {}, got {}",
+        expected, code
+    );
 }
 
 #[test]
@@ -116,10 +119,18 @@ fn typecheck_dyn_trait() {
     drop(lower_ctx);
     let mut resolver = Resolver::new(&mut interner);
     let resolve_result = resolver.resolve_crate(&hir);
-    assert!(resolve_result.errors.is_empty(), "resolve errors: {:?}", resolve_result.errors);
+    assert!(
+        resolve_result.errors.is_empty(),
+        "resolve errors: {:?}",
+        resolve_result.errors
+    );
     let mut checker = TypeChecker::new(&interner, &resolve_result);
     let typeck_result = checker.check_crate(&hir);
-    assert!(typeck_result.errors.is_empty(), "typeck errors: {:?}", typeck_result.errors);
+    assert!(
+        typeck_result.errors.is_empty(),
+        "typeck errors: {:?}",
+        typeck_result.errors
+    );
 }
 
 #[test]
@@ -153,7 +164,8 @@ fn compile_dyn_trait() {
 
 #[test]
 fn run_dyn_trait_call() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         trait Animal {
             fn sound(&self) -> i32;
         }
@@ -168,5 +180,7 @@ fn run_dyn_trait_call() {
             let c = Cat { id: 0 };
             get_sound(&c)
         }
-    "#, 1);
+    "#,
+        1,
+    );
 }

@@ -169,6 +169,12 @@ pub fn run() {
 
 pub fn test() {
     let s = app();
+    if s.current_project.is_none() {
+        s.status
+            .set_analysis_status("Open a project before running tests");
+        update_action_state();
+        return;
+    }
     let test_tasks: Vec<usize> = s
         .task_mgr
         .tasks
@@ -179,11 +185,25 @@ pub fn test() {
         .collect();
     if let Some(&idx) = test_tasks.first() {
         execute_task(idx);
+    } else {
+        s.status.set_analysis_status("No test task detected");
+        s.output.show_output();
+        s.output
+            .append_line("[Test] No test task was detected for this project.");
+        s.output
+            .append_line("[Test] Run task discovery or configure a ccargo test target.");
+        update_action_state();
     }
 }
 
 pub fn check() {
     let s = app();
+    if s.current_project.is_none() {
+        s.status
+            .set_analysis_status("Open a project before checking");
+        update_action_state();
+        return;
+    }
     let check_tasks: Vec<usize> = s
         .task_mgr
         .tasks
@@ -194,11 +214,25 @@ pub fn check() {
         .collect();
     if let Some(&idx) = check_tasks.first() {
         execute_task(idx);
+    } else {
+        s.status.set_analysis_status("No check task detected");
+        s.output.show_output();
+        s.output
+            .append_line("[Check] No check task was detected for this project.");
+        s.output
+            .append_line("[Check] Configure ccargo/crust in Settings > Toolchains.");
+        update_action_state();
     }
 }
 
 pub fn clean() {
     let s = app();
+    if s.current_project.is_none() {
+        s.status
+            .set_analysis_status("Open a project before cleaning");
+        update_action_state();
+        return;
+    }
     let clean_tasks: Vec<usize> = s
         .task_mgr
         .tasks
@@ -209,11 +243,21 @@ pub fn clean() {
         .collect();
     if let Some(&idx) = clean_tasks.first() {
         execute_task(idx);
+    } else {
+        s.status.set_analysis_status("No clean task detected");
+        s.output.show_output();
+        s.output
+            .append_line("[Clean] No clean task was detected for this project.");
+        update_action_state();
     }
 }
 
 pub fn stop() {
     let s = app();
+    let had_debug = s.debug_backend.is_attached()
+        || s.debug_session.status != debug_session::DebugSessionStatus::Idle;
+    let had_build = s.build_process.is_some();
+    let had_live_check = s.live_check_process.is_some();
     if s.debug_backend.is_attached() {
         s.debug_backend.detach();
     }
@@ -235,6 +279,9 @@ pub fn stop() {
     crate::stop_build_timer();
     crate::stop_debug_timer();
     crate::stop_live_check_timer();
+    if !had_debug && !had_build && !had_live_check {
+        s.status.set_analysis_status("Nothing is running");
+    }
     update_action_state();
 }
 
@@ -1305,24 +1352,24 @@ fn refresh_project_metadata() {
     }
 }
 
-pub fn create_ui_form_named(form_name: String) {
+pub fn create_ui_form_named(form_name: String) -> bool {
     let s = app();
     let root = match s.current_project.as_ref() {
         Some(project) => project.root.clone(),
         None => {
             s.status.set_analysis_status("Open a Rust project first");
-            return;
+            return false;
         }
     };
     if !designer::is_valid_form_name(&form_name) {
         s.status
             .set_analysis_status("Use a valid Rust type name, for example MainForm");
-        return;
+        return false;
     }
     if designer::form_exists(&root, &form_name) {
         s.status
             .set_analysis_status("A UI form with this name already exists");
-        return;
+        return false;
     }
     match designer::create_form_files(&root, &form_name) {
         Ok(()) => {
@@ -1333,8 +1380,12 @@ pub fn create_ui_form_named(form_name: String) {
             if let Some(ref project) = s.current_project {
                 s.sidebar.populate_project(project, &s.task_mgr);
             }
+            true
         }
-        Err(err) => s.status.set_analysis_status(err),
+        Err(err) => {
+            s.status.set_analysis_status(err);
+            false
+        }
     }
 }
 
@@ -1433,6 +1484,11 @@ fn save_all_files(s: &mut AppState) {
 }
 
 fn save_index(s: &mut AppState, index: usize) {
+    if !s.editor_view.is_text_editor(index) {
+        s.status
+            .set_analysis_status("This viewer does not edit text content");
+        return;
+    }
     let mut buf = vec![0u8; 128 * 1024];
     let len = s.editor_view.get_editor_text(index, &mut buf);
     if let Some(f) = s.file_mgr.files.get(index) {
@@ -1465,9 +1521,19 @@ struct ProblemTarget {
 }
 
 pub fn schedule_live_check(editor_index: usize) {
+    let s = app();
+    if !s.editor_view.is_text_editor(editor_index) {
+        if let Some(file) = s.file_mgr.files.get(editor_index) {
+            s.diagnostics
+                .remove_source_for_file(live_analysis::LIVE_SOURCE, &file.path);
+            s.diagnostics
+                .remove_source_for_file(live_analysis::LIVE_CHECK_SOURCE, &file.path);
+            refresh_problem_views();
+        }
+        return;
+    }
     run_static_analysis_for_editor(editor_index);
 
-    let s = app();
     let file = match s.file_mgr.files.get(editor_index) {
         Some(file) => file,
         None => return,
@@ -1540,11 +1606,18 @@ pub fn clear_problems() {
 pub fn start_debugging() {
     let task = {
         let s = app();
+        if s.current_project.is_none() {
+            s.status
+                .set_analysis_status("Open a project before debugging");
+            update_action_state();
+            return;
+        }
         match s.task_mgr.selected_run() {
             Some(task) => task.clone(),
             None => {
                 s.status
                     .set_analysis_status("No run configuration selected");
+                update_action_state();
                 return;
             }
         }
@@ -2409,17 +2482,29 @@ pub fn set_build_configuration(config: project::BuildConfiguration) {
 pub fn refresh_run_config_selector() {
     let s = app();
     let dropdown = libanyui_client::Control::from_id(s.run_config_dropdown_id);
-    dropdown.set_text(&s.task_mgr.run_config_labels());
-    dropdown.set_state(s.task_mgr.selected_run_dropdown_index());
+    if s.current_project.is_none() {
+        dropdown.set_text("No project open");
+        dropdown.set_state(0);
+    } else {
+        dropdown.set_text(&s.task_mgr.run_config_labels());
+        dropdown.set_state(s.task_mgr.selected_run_dropdown_index());
+    }
 }
 
 pub fn select_run_config_from_toolbar(index: usize) {
     let s = app();
+    if s.current_project.is_none() {
+        s.status.set_analysis_status("Open a project first");
+        refresh_run_config_selector();
+        update_action_state();
+        return;
+    }
     if let Some(task_idx) = s.task_mgr.run_task_index_for_dropdown(index) {
         s.task_mgr.selected_run_task = task_idx;
         s.run_panel.update(&s.task_mgr);
         s.run_panel.update_debug_session(&s.debug_session);
         refresh_run_config_selector();
+        update_action_state();
     }
 }
 
@@ -2453,6 +2538,10 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     let s = app();
     reset_workspace_views();
     let proj = project::Project::open(folder);
+    let solution = crate::logic::solution::SolutionMetadata::load(&proj);
+    if !path::exists(&solution.path) {
+        let _ = solution.save();
+    }
     let project_context = proj.display_context();
     let workspace_root = proj.root.clone();
 
@@ -2468,6 +2557,7 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     s.status.set_branch("");
     s.output.start_shell(&workspace_root);
 
+    s.solution = Some(solution);
     s.current_project = Some(proj);
     s.git_state = git::GitState::empty();
     if let Some(repo_root) = git::find_repository_root(&workspace_root) {
@@ -2592,6 +2682,8 @@ fn reset_workspace_views() {
     s.side_editor_view
         .set_breadcrumb("Open a file to the side for reference");
     s.symbol_index.clear();
+    s.solution = None;
+    s.active_task_category = None;
     if s.debug_backend.is_attached() {
         s.debug_backend.detach();
     }

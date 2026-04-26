@@ -1,11 +1,11 @@
-use anyrc::parser::Parser;
+use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
-use anyrc::hir_lower::LoweringContext;
+use anyrc::mir::*;
+use anyrc::mir_build::MirBuilder;
+use anyrc::parser::Parser;
 use anyrc::resolve::Resolver;
 use anyrc::typeck::TypeChecker;
-use anyrc::mir_build::MirBuilder;
-use anyrc::mir::*;
 
 fn build_fn_mir(src: &str) -> MirBody {
     let mut interner = Interner::new();
@@ -19,7 +19,9 @@ fn build_fn_mir(src: &str) -> MirBody {
     let mut checker = TypeChecker::new(&interner, &resolve_result);
     let typeck_result = checker.check_crate(&hir);
     MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir)
-        .into_iter().next().unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
 }
 
 #[test]
@@ -51,5 +53,8 @@ fn simplify_cfg_merges_blocks() {
 fn optimize_doesnt_break_simple_fn() {
     let mut mir = build_fn_mir("fn foo(a: i32, b: i32) -> i32 { a + b }");
     anyrc::mir_opt::optimize(&mut mir);
-    assert!(matches!(mir.basic_blocks.last().unwrap().terminator, Terminator::Return));
+    assert!(matches!(
+        mir.basic_blocks.last().unwrap().terminator,
+        Terminator::Return
+    ));
 }

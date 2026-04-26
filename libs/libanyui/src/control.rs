@@ -440,6 +440,7 @@ pub struct ControlBase {
     pub prev_h: u32,
     pub visible: bool,
     pub color: u32,
+    pub color_set: bool,
     pub state: u32,
     pub style: ControlStyle,
 
@@ -519,6 +520,7 @@ impl ControlBase {
             prev_h: h,
             visible: true,
             color: 0,
+            color_set: false,
             state: 0,
             style: ControlStyle::default(),
             dirty: true,
@@ -557,6 +559,7 @@ impl ControlBase {
     #[allow(dead_code)]
     pub fn with_color(mut self, color: u32) -> Self {
         self.color = color;
+        self.color_set = true;
         self
     }
 
@@ -982,8 +985,9 @@ pub trait Control {
     }
     fn set_color(&mut self, c: u32) {
         let b = self.base_mut();
-        if b.color != c {
+        if b.color != c || !b.color_set {
             b.color = c;
+            b.color_set = true;
             b.mark_dirty();
         }
     }

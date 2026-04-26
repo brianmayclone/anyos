@@ -1,9 +1,9 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
-use anyrc::parser::Parser;
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
+use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
-use anyrc::hir_lower::LoweringContext;
+use anyrc::parser::Parser;
 use anyrc::resolve::Resolver;
 use anyrc::typeck::{TypeChecker, TypeckResult};
 use std::io::Write;
@@ -31,8 +31,11 @@ fn typecheck(src: &str) -> TypeckResult {
 
 fn assert_type_ok(src: &str) {
     let result = typecheck(src);
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 fn compile_and_run(source: &str) -> i32 {
@@ -45,8 +48,7 @@ fn compile_and_run(source: &str) -> i32 {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(source, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(source, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("anyrc_bounds_test_{}_{}", std::process::id(), id));
@@ -125,22 +127,26 @@ fn compile_bounded_generic() {
 
 #[test]
 fn run_bounded_generic() {
-    let code = compile_and_run(r#"
+    let code = compile_and_run(
+        r#"
         fn id<T: Copy>(x: T) -> T { x }
         fn main() -> i32 { id(42) }
-    "#);
+    "#,
+    );
     assert_eq!(code, 42);
 }
 
 #[test]
 fn run_lifetime_fn() {
-    let code = compile_and_run(r#"
+    let code = compile_and_run(
+        r#"
         fn pass<'a>(x: &'a i32) -> &'a i32 { x }
         fn main() -> i32 {
             let val: i32 = 99;
             let r: &i32 = pass(&val);
             *r
         }
-    "#);
+    "#,
+    );
     assert_eq!(code, 99);
 }

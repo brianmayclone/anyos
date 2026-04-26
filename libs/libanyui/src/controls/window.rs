@@ -38,7 +38,13 @@ impl Control for Window {
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let bg = crate::theme::colors().window_bg;
-        crate::draw::fill_rect(surface, p.x, p.y, p.w, p.h, bg);
+        let bg = if b.color_set {
+            b.color
+        } else {
+            crate::theme::colors().window_bg
+        };
+        if (bg >> 24) != 0 {
+            crate::draw::fill_rect(surface, p.x, p.y, p.w, p.h, bg);
+        }
     }
 }

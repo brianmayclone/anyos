@@ -89,8 +89,7 @@ fn rlib_emit_includes_structured_public_interface() {
         .interface
         .items
         .iter()
-        .any(|item| item.name == "PublicThing"
-            && matches!(item.kind, InterfaceItemKind::Struct)));
+        .any(|item| item.name == "PublicThing" && matches!(item.kind, InterfaceItemKind::Struct)));
     assert!(meta
         .interface
         .items
@@ -142,8 +141,12 @@ fn rlib_interface_exports_conversion_and_comparison_trait_impls() {
     let rlib = compile(source, "lib.rs", &options).expect("rlib compilation should succeed");
     let (_, meta) = unpack_rlib(&rlib).expect("rlib should unpack");
 
-    assert!(meta.interface_source.contains("impl From<Ident> for TokenTree"));
-    assert!(meta.interface_source.contains("impl<T> PartialEq<T> for Ident"));
+    assert!(meta
+        .interface_source
+        .contains("impl From<Ident> for TokenTree"));
+    assert!(meta
+        .interface_source
+        .contains("impl<T> PartialEq<T> for Ident"));
 }
 
 #[test]
@@ -184,7 +187,9 @@ fn rlib_interface_exports_iterator_associated_item_impls() {
     let rlib = compile(source, "lib.rs", &options).expect("rlib compilation should succeed");
     let (_, meta) = unpack_rlib(&rlib).expect("rlib should unpack");
 
-    assert!(meta.interface_source.contains("impl<K, V> Iterator for Values<K, V>"));
+    assert!(meta
+        .interface_source
+        .contains("impl<K, V> Iterator for Values<K, V>"));
     assert!(meta.interface_source.contains("type Item = &V;"));
 }
 
@@ -284,7 +289,9 @@ fn rlib_interface_includes_items_from_loaded_macro_rules_module() {
     assert!(meta
         .interface_source
         .contains("pub use crate::de::{Deserialize, Visitor};"));
-    assert!(meta.interface_source.contains("pub use crate::ser::Serialize;"));
+    assert!(meta
+        .interface_source
+        .contains("pub use crate::ser::Serialize;"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -368,7 +375,9 @@ fn rlib_interface_resolves_modules_created_by_macro_expansion() {
     assert!(meta
         .interface_source
         .contains("pub use crate::de::{Deserialize, Visitor};"));
-    assert!(meta.interface_source.contains("pub use crate::ser::Serialize;"));
+    assert!(meta
+        .interface_source
+        .contains("pub use crate::ser::Serialize;"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

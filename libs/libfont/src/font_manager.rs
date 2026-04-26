@@ -966,7 +966,7 @@ fn draw_glyph_greyscale_buf(
 fn draw_glyph_subpixel_buf(
     buf: *mut u32, sw: u32, sh: u32,
     x: i32, y: i32, glyph: &CachedGlyph,
-    _col_a: u32, col_r: u8, col_g: u8, col_b: u8,
+    col_a: u32, col_r: u8, col_g: u8, col_b: u8,
     clip_x: i32, clip_y: i32, clip_r: i32, clip_b: i32,
 ) {
     let pixel_w = (glyph.width / 3) as i32;
@@ -1017,7 +1017,7 @@ fn draw_glyph_subpixel_buf(
             let idx = (py as u32 * sw + px as u32) as usize;
             if idx >= buf_len { continue; }
             let dst = unsafe { *buf.add(idx) };
-            let blended = subpixel_blend(dst, r_filt, g_filt, b_filt, col_r, col_g, col_b);
+            let blended = subpixel_blend(dst, r_filt, g_filt, b_filt, col_a, col_r, col_g, col_b);
             unsafe { *buf.add(idx) = blended; }
         }
     }
@@ -1072,26 +1072,48 @@ fn draw_glyph_color_buf(
 #[inline(always)]
 fn alpha_blend_pixel(dst: u32, alpha: u32, r: u8, g: u8, b: u8) -> u32 {
     let inv = 255 - alpha;
+    let da = (dst >> 24) & 0xFF;
     let dr = (dst >> 16) & 0xFF;
     let dg = (dst >> 8) & 0xFF;
     let db = dst & 0xFF;
-    let nr = div255(r as u32 * alpha + dr * inv);
-    let ng = div255(g as u32 * alpha + dg * inv);
-    let nb = div255(b as u32 * alpha + db * inv);
-    0xFF000000 | (nr << 16) | (ng << 8) | nb
+    let dst_a = div255(da * inv);
+    let out_a = alpha + dst_a;
+    if out_a == 0 {
+        return 0;
+    }
+    let nr = (r as u32 * alpha + dr * dst_a) / out_a;
+    let ng = (g as u32 * alpha + dg * dst_a) / out_a;
+    let nb = (b as u32 * alpha + db * dst_a) / out_a;
+    (out_a << 24) | (nr << 16) | (ng << 8) | nb
 }
 
 /// Division-free subpixel blend for LCD font rendering.
 #[inline(always)]
-fn subpixel_blend(dst: u32, r_cov: u8, g_cov: u8, b_cov: u8, col_r: u8, col_g: u8, col_b: u8) -> u32 {
+fn subpixel_blend(
+    dst: u32,
+    r_cov: u8,
+    g_cov: u8,
+    b_cov: u8,
+    col_a: u32,
+    col_r: u8,
+    col_g: u8,
+    col_b: u8,
+) -> u32 {
+    let da = (dst >> 24) & 0xFF;
     let dr = (dst >> 16) & 0xFF;
     let dg = (dst >> 8) & 0xFF;
     let db = dst & 0xFF;
-    let ra = r_cov as u32;
-    let ga = g_cov as u32;
-    let ba = b_cov as u32;
-    let nr = div255(col_r as u32 * ra + dr * (255 - ra));
-    let ng = div255(col_g as u32 * ga + dg * (255 - ga));
-    let nb = div255(col_b as u32 * ba + db * (255 - ba));
-    0xFF000000 | (nr << 16) | (ng << 8) | nb
+    let ra = div255(r_cov as u32 * col_a);
+    let ga = div255(g_cov as u32 * col_a);
+    let ba = div255(b_cov as u32 * col_a);
+    let src_a = ra.max(ga).max(ba);
+    let dst_a = div255(da * (255 - src_a));
+    let out_a = src_a + dst_a;
+    if out_a == 0 {
+        return 0;
+    }
+    let nr = (col_r as u32 * ra + dr * dst_a) / out_a;
+    let ng = (col_g as u32 * ga + dg * dst_a) / out_a;
+    let nb = (col_b as u32 * ba + db * dst_a) / out_a;
+    (out_a << 24) | (nr << 16) | (ng << 8) | nb
 }

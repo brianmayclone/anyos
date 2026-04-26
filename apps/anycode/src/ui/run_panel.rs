@@ -534,15 +534,17 @@ impl RunPanel {
         self.test_status_label.set_text_color(status_color);
 
         if tests.projects.is_empty() {
-            let node = self.test_tree.add_root("Open a Rust project to discover tests");
+            let node = self
+                .test_tree
+                .add_root("Open a Rust project to discover tests");
             self.test_tree.set_node_text_color(node, tc.text_secondary);
             return;
         }
 
         for project in &tests.projects {
-            let root = self
-                .test_tree
-                .add_root(&format!("{} ({})", project.name, project.cases.len()));
+            let root =
+                self.test_tree
+                    .add_root(&format!("{} ({})", project.name, project.cases.len()));
             self.test_tree.set_node_style(root, STYLE_BOLD);
             set_node_icon(&self.test_tree, root, "folder-code", tc.text_secondary);
             self.test_tree.set_expanded(root, true);

@@ -1,7 +1,7 @@
 mod common;
-use anyrc::parser::Parser;
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
 use anyrc::intern::Interner;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use anyrc::parser::Parser;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,11 +15,11 @@ fn compile_and_run(source: &str) -> i32 {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(source, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(source, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_closure_test_{}_{}", std::process::id(), id));
+    let dir =
+        std::env::temp_dir().join(format!("anyrc_closure_test_{}_{}", std::process::id(), id));
     std::fs::create_dir_all(&dir).unwrap();
     let exe_path = dir.join("test_exe");
     {
@@ -71,7 +71,11 @@ fn compile_closure_as_value() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "closure compilation failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "closure compilation failed: {:?}",
+        result.err()
+    );
 }
 
 // ── Runtime tests ──

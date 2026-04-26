@@ -84,7 +84,7 @@ pub fn show() {
     btn_close.set_color(tc.control_bg);
     footer.add(&btn_close);
     btn_close.on_click(move |_| {
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 }
 
@@ -254,7 +254,7 @@ fn build_add_page(page: &ui::View, win_id: u32) {
         match result {
             Ok(msg) => {
                 ui::Control::from_id(status_id).set_text(&msg);
-                ui::Control::from_id(win_id).set_visible(false);
+                ui::Window::from_id(win_id).destroy();
             }
             Err(msg) => {
                 ui::Control::from_id(status_id).set_text(&msg);

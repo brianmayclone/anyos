@@ -12,8 +12,11 @@ pub mod option {
     impl<T> Option<T> {
         pub fn is_some(&self) -> bool;
         pub fn is_none(&self) -> bool;
+        pub fn as_ref(&self) -> Option<&T>;
+        pub fn as_mut(&mut self) -> Option<&mut T>;
         pub fn unwrap(self) -> T;
         pub fn unwrap_or(self, default: T) -> T;
+        pub fn unwrap_or_default(self) -> T;
         pub fn ok_or<E>(self, err: E) -> crate::result::Result<T, E>;
         pub fn map<U, F>(self, f: F) -> Option<U>;
         pub fn map_or<U, F>(self, default: U, f: F) -> U;
@@ -36,6 +39,7 @@ pub mod result {
         pub fn err(self) -> crate::option::Option<E>;
         pub fn unwrap(self) -> T;
         pub fn unwrap_or(self, default: T) -> T;
+        pub fn unwrap_or_default(self) -> T;
         pub fn map<U, F>(self, op: F) -> Result<U, E>;
         pub fn map_err<F, O>(self, op: O) -> Result<T, F>;
     }
@@ -258,6 +262,15 @@ pub mod mem {
         pub fn new(value: T) -> ManuallyDrop<T>;
     }
 
+    impl<T> crate::ops::Deref for ManuallyDrop<T> {
+        type Target = T;
+        fn deref(&self) -> &T;
+    }
+
+    impl<T> crate::ops::DerefMut for ManuallyDrop<T> {
+        fn deref_mut(&mut self) -> &mut T;
+    }
+
     pub fn size_of<T>() -> usize;
     pub fn size_of_val<T>(val: &T) -> usize;
     pub fn align_of<T>() -> usize;
@@ -338,7 +351,10 @@ pub mod alloc {
     }
 
     impl Layout {
-        pub fn from_size_align(size: usize, align: usize) -> crate::result::Result<Layout, LayoutError>;
+        pub fn from_size_align(
+            size: usize,
+            align: usize,
+        ) -> crate::result::Result<Layout, LayoutError>;
         pub fn size(&self) -> usize;
         pub fn align(&self) -> usize;
     }

@@ -1,5 +1,5 @@
 //! Integration tests that compile kernel-like code patterns.
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,11 +13,15 @@ fn assert_run_returns(src: &str, expected: i32) {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(src, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_kernel_test_{}_{}_{:?}", std::process::id(), id, std::thread::current().id()));
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_kernel_test_{}_{}_{:?}",
+        std::process::id(),
+        id,
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let exe_path = dir.join("test_exe");
     {
@@ -46,7 +50,11 @@ fn assert_run_returns(src: &str, expected: i32) {
     };
     let _ = std::fs::remove_dir_all(&dir);
     let code = status.code().unwrap_or(-1);
-    assert_eq!(code, expected, "expected exit code {}, got {}", expected, code);
+    assert_eq!(
+        code, expected,
+        "expected exit code {}, got {}",
+        expected, code
+    );
 }
 
 fn assert_compiles(src: &str) {
@@ -66,7 +74,8 @@ fn assert_compiles(src: &str) {
 
 #[test]
 fn kernel_phys_addr() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         const FRAME_SIZE: u64 = 4096;
 
         struct PhysAddr { val: u64 }
@@ -97,13 +106,16 @@ fn kernel_phys_addr() {
             if down.as_u64() == 8192 { result += 100; }
             result
         }
-    "#, 112);  // 2 + 10 + 100
+    "#,
+        112,
+    ); // 2 + 10 + 100
 }
 
 #[test]
 fn debug_phys_addr_minimal() {
     // Minimal reproduction of failing kernel_phys_addr
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         const FRAME_SIZE: u64 = 4096;
         struct PhysAddr { val: u64 }
         impl PhysAddr {
@@ -118,14 +130,17 @@ fn debug_phys_addr_minimal() {
             let down = a.frame_align_down();
             if down.as_u64() == 8192 { 1 } else { 0 }
         }
-    "#, 1);
+    "#,
+        1,
+    );
 }
 
 // ── Kernel hex output pattern ──
 
 #[test]
 fn kernel_hex_digits() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         fn hex_digit(n: u64) -> i32 {
             let d = (n & 0xF) as u8;
             if d < 10 { (48 + d) as i32 } else { (97 + d - 10) as i32 }
@@ -144,14 +159,17 @@ fn kernel_hex_digits() {
             if df == 102 { ok += 1; }
             ok
         }
-    "#, 4);
+    "#,
+        4,
+    );
 }
 
 // ── Kernel spinlock pattern (simplified) ──
 
 #[test]
 fn kernel_spinlock_pattern() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         use core::sync::atomic::{AtomicBool, Ordering};
 
         struct Spinlock {
@@ -184,14 +202,17 @@ fn kernel_spinlock_pattern() {
 
             sum
         }
-    "#, 11);
+    "#,
+        11,
+    );
 }
 
 // ── Kernel memory operations pattern ──
 
 #[test]
 fn kernel_bitfield_ops() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         const PRESENT: u64 = 1;
         const WRITABLE: u64 = 1 << 1;
         const USER: u64 = 1 << 2;
@@ -216,14 +237,17 @@ fn kernel_bitfield_ops() {
             if entry & USER == 0 { r += 100; }
             r
         }
-    "#, 111);
+    "#,
+        111,
+    );
 }
 
 // ── Kernel array + for loop ──
 
 #[test]
 fn kernel_array_processing() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         fn main() -> i32 {
             let mut buf = [0i32; 8];
             
@@ -237,14 +261,17 @@ fn kernel_array_processing() {
             }
             sum
         }
-    "#, 56);  // 0+2+4+6+8+10+12+14 = 56
+    "#,
+        56,
+    ); // 0+2+4+6+8+10+12+14 = 56
 }
 
 // ── Kernel enum dispatch pattern ──
 
 #[test]
 fn kernel_device_dispatch() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         enum DeviceType {
             Serial,
             Vga,
@@ -265,14 +292,17 @@ fn kernel_device_dispatch() {
             let n = device_priority(DeviceType::Network);
             s + v + n
         }
-    "#, 6);
+    "#,
+        6,
+    );
 }
 
 // ── Kernel module pattern ──
 
 #[test]
 fn kernel_module_structure() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         mod memory {
             pub const FRAME_SIZE: u64 = 4096;
             
@@ -294,7 +324,9 @@ fn kernel_module_structure() {
             let levels = arch::page_table_levels();
             (frame as i32) + levels
         }
-    "#, 8);  // 16384/4096=4, +4 levels = 8
+    "#,
+        8,
+    ); // 16384/4096=4, +4 levels = 8
 }
 
 // ── Real kernel address.rs (adapted) ──
@@ -302,7 +334,8 @@ fn kernel_module_structure() {
 #[test]
 fn debug_frame_index() {
     // PhysAddr(0x2000).frame_index() should be 2 — tuple struct with const fn
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         const FRAME_SIZE: u64 = 4096;
 
         struct PhysAddr(u64);
@@ -319,13 +352,16 @@ fn debug_frame_index() {
             let p = PhysAddr::new(0x2000);
             p.frame_index() as i32
         }
-    "#, 2);
+    "#,
+        2,
+    );
 }
 
 #[test]
 fn debug_as_u32() {
     // Tuple struct .0 access + u64 -> u32 cast
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct PhysAddr(u64);
 
         impl PhysAddr {
@@ -337,14 +373,17 @@ fn debug_as_u32() {
             let p = PhysAddr::new(0x2000);
             if p.as_u32() == 0x2000 { 1 } else { 0 }
         }
-    "#, 1);
+    "#,
+        1,
+    );
 }
 
 #[test]
 fn real_kernel_address_module() {
     // Actual kernel/src/memory/address.rs adapted:
     // - FRAME_SIZE inlined, derive removed, usize -> u64
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         const FRAME_SIZE: u64 = 4096;
 
         struct PhysAddr(u64);
@@ -394,7 +433,9 @@ fn real_kernel_address_module() {
 
             result
         }
-    "#, 255);
+    "#,
+        255,
+    );
 }
 
 // ── Real kernel port.rs (x86 I/O) ──
@@ -402,7 +443,8 @@ fn real_kernel_address_module() {
 #[test]
 fn real_kernel_port_io() {
     // Actual kernel/src/arch/x86/port.rs — compile only (can't run I/O port code on host)
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         #![no_std]
         #![no_main]
 
@@ -439,7 +481,8 @@ fn real_kernel_port_io() {
         unsafe fn io_wait() {
             outb(0x80, 0);
         }
-    "#);
+    "#,
+    );
 }
 
 // ── Real kernel boot_info.rs (adapted) ──
@@ -448,7 +491,8 @@ fn real_kernel_port_io() {
 fn real_kernel_boot_info() {
     // Actual kernel/src/boot_info.rs — structs + consts + method
     // Stripped: derive, doc comments, unsafe memory_map (needs core::slice)
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         #![no_std]
         #![no_main]
 
@@ -489,7 +533,8 @@ fn real_kernel_boot_info() {
                 self.magic == BOOT_INFO_MAGIC
             }
         }
-    "#);
+    "#,
+    );
 }
 
 // ── Combined kernel modules: address + boot_info ──
@@ -497,7 +542,8 @@ fn real_kernel_boot_info() {
 #[test]
 fn real_kernel_combined_modules() {
     // Multiple kernel modules combined as inline mod blocks
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         mod memory {
             pub const FRAME_SIZE: u64 = 4096;
 
@@ -571,7 +617,9 @@ fn real_kernel_combined_modules() {
 
             result
         }
-    "#, 255);
+    "#,
+        255,
+    );
 }
 
 // ── Debug: &mut self method called twice ──
@@ -579,7 +627,8 @@ fn real_kernel_combined_modules() {
 #[test]
 fn debug_simple_field_set() {
     // Simplest possible: set a single field through &mut self method
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct S { val: i32 }
         impl S {
             fn set(&mut self, v: i32) { self.val = v; }
@@ -590,13 +639,16 @@ fn debug_simple_field_set() {
             s.set(42);
             s.get()
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn debug_array_set_direct() {
     // Array set through method, read directly (no method)
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct Buf { data: [u8; 4] }
         impl Buf {
             fn new() -> Buf { Buf { data: [0u8; 4] } }
@@ -609,13 +661,16 @@ fn debug_array_set_direct() {
             b.set(0, 42);
             b.data[0] as i32
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn debug_array_get_method() {
     // Simplified: just test reading from a struct with method, using 0-init + set
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct Buf { data: [u8; 4] }
         impl Buf {
             fn get(&self, idx: i32) -> u8 {
@@ -627,13 +682,16 @@ fn debug_array_get_method() {
             b.data[0] = 42;
             b.get(0) as i32
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn debug_array_set_then_get_method() {
     // set through &mut self, then get through &self
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct Buf { data: [u8; 4] }
         impl Buf {
             fn set(&mut self, idx: i32, val: u8) {
@@ -648,12 +706,15 @@ fn debug_array_set_then_get_method() {
             b.set(0, 42);
             b.get(0) as i32
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn debug_mut_self_twice() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct Buf { data: [u8; 4] }
         impl Buf {
             fn new() -> Buf { Buf { data: [0u8; 4] } }
@@ -669,12 +730,15 @@ fn debug_mut_self_twice() {
             b.set(0, 42);
             b.get(0) as i32
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn debug_mut_self_in_module() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         mod stuff {
             pub struct Buf { pub data: [u8; 4] }
             impl Buf {
@@ -692,13 +756,16 @@ fn debug_mut_self_in_module() {
             b.set(0, 42);
             b.get(0) as i32
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn debug_self_method_in_method() {
     // While loop + sum of self.data[i] as i32
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct Buf { data: [u8; 4] }
         impl Buf {
             fn sum(&self) -> i32 {
@@ -720,14 +787,17 @@ fn debug_self_method_in_method() {
             b.data[3] = 4;
             b.sum()
         }
-    "#, 10);
+    "#,
+        10,
+    );
 }
 
 // ── Kernel bitmap frame allocator (simplified) ──
 
 #[test]
 fn real_kernel_frame_allocator() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         mod memory {
             pub const FRAME_SIZE: u64 = 4096;
 
@@ -800,5 +870,7 @@ fn real_kernel_frame_allocator() {
             let f = alloc.alloc_frame();
             if f == 0 { 1 } else { 0 }
         }
-    "#, 1);
+    "#,
+        1,
+    );
 }

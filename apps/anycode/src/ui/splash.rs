@@ -1,6 +1,5 @@
 use alloc::format;
 use alloc::string::String;
-use anyui::Widget;
 use libanyui_client as anyui;
 
 use crate::logic::build::ToolStatus;

@@ -320,6 +320,182 @@ fn result_variant_constructors_use_expected_payload_types() {
 }
 
 #[test]
+fn module_result_alias_is_not_confused_by_prior_struct_layout() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod result {
+                pub enum Result<T, E> { Ok(T), Err(E) }
+            }
+        }
+
+        mod args {
+            pub struct ParsedArgs<'a> {
+                pub positional: [&'a str; 32],
+                pub pos_count: usize,
+            }
+        }
+
+        mod error {
+            pub enum Error {
+                NotFound,
+                Other(u32),
+            }
+
+            pub type Result<T> = crate::core::result::Result<T, Error>;
+
+            impl Error {
+                pub fn from_errno(errno: u32) -> Error {
+                    match errno {
+                        2 => Error::NotFound,
+                        other => Error::Other(other),
+                    }
+                }
+
+                pub fn from_syscall(v: u32) -> Result<u32> {
+                    let signed = v as i32;
+                    if signed < 0 {
+                        Err(Error::from_errno((-signed) as u32))
+                    } else {
+                        Ok(v)
+                    }
+                }
+            }
+        }
+
+        mod fs {
+            pub struct File {
+                fd: u32,
+            }
+
+            pub fn open(path: &str, flags: u32) -> u32 {
+                flags
+            }
+
+            impl File {
+                pub fn open(path: &str) -> crate::error::Result<File> {
+                    let fd = open(path, 0);
+                    if fd == u32::MAX {
+                        return Err(crate::error::Error::NotFound);
+                    }
+                    Ok(File { fd })
+                }
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn alloc_borrow_cow_variants_resolve_through_import() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod borrow {
+                pub trait Borrow<T> {
+                    fn borrow(&self) -> &T;
+                }
+            }
+        }
+
+        mod alloc {
+            pub mod borrow {
+                pub trait ToOwned {
+                    type Owned;
+                    fn to_owned(&self) -> Self::Owned;
+                }
+
+                pub enum Cow<'a, B: ?Sized + ToOwned + 'a> {
+                    Borrowed(&'a B),
+                    Owned(<B as ToOwned>::Owned),
+                }
+            }
+        }
+
+        use alloc::borrow::{Cow, ToOwned};
+
+        struct Path {
+            inner: str,
+        }
+
+        struct PathBuf {
+            inner: u32,
+        }
+
+        impl ToOwned for Path {
+            type Owned = PathBuf;
+            fn to_owned(&self) -> PathBuf {
+                PathBuf { inner: 1 }
+            }
+        }
+
+        fn borrowed(path: &Path) -> Cow<'_, Path> {
+            Cow::Borrowed(path)
+        }
+
+        fn into_buf(cow: Cow<'_, Path>) -> PathBuf {
+            match cow {
+                Cow::Borrowed(path) => path.to_owned(),
+                Cow::Owned(path) => path,
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn manually_drop_field_access_autoderefs_to_inner_type() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod ops {
+                pub trait Deref {
+                    type Target;
+                    fn deref(&self) -> &Self::Target;
+                }
+
+                pub trait DerefMut: Deref {
+                    fn deref_mut(&mut self) -> &mut Self::Target;
+                }
+            }
+
+            pub mod mem {
+                pub struct ManuallyDrop<T> {
+                    pub value: T,
+                }
+
+                impl<T> ManuallyDrop<T> {
+                    pub fn new(value: T) -> ManuallyDrop<T>;
+                }
+
+                impl<T> crate::core::ops::Deref for ManuallyDrop<T> {
+                    type Target = T;
+                    fn deref(&self) -> &T;
+                }
+
+                impl<T> crate::core::ops::DerefMut for ManuallyDrop<T> {
+                    fn deref_mut(&mut self) -> &mut T;
+                }
+            }
+
+            pub mod ptr {
+                pub unsafe fn read<T>(src: *const T) -> T;
+            }
+        }
+
+        struct BufWriter<W> {
+            inner: W,
+        }
+
+        fn into_inner<W>(writer: BufWriter<W>) -> W {
+            let this = core::mem::ManuallyDrop::new(writer);
+            unsafe { core::ptr::read(&this.inner) }
+        }
+    "#,
+    );
+}
+
+#[test]
 fn vec_macro_to_vec_propagates_expected_element_type() {
     assert_type_ok(
         r#"

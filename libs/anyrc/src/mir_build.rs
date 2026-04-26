@@ -21,6 +21,9 @@ pub struct MirBuilder<'a> {
     /// Map from DefId to Local index for local variables
     var_map: HashMap<DefId, Local>,
 
+    /// Captured outer locals visible while lowering a closure body.
+    capture_env: HashMap<DefId, TyKind>,
+
     /// Stack of (loop_header, loop_exit) block ids for break/continue
     loop_stack: Vec<(BlockId, BlockId)>,
 
@@ -70,15 +73,7 @@ impl<'a> MirBuilder<'a> {
                 }
             }
             HirItemKind::Trait(t) => {
-                // Collect trait methods that have default bodies — these are
-                // codegen'd so that impls which don't override them can call them.
-                for sub in &t.items {
-                    if let HirItemKind::Fn(f) = &sub.kind {
-                        if f.body.is_some() {
-                            out.push(f);
-                        }
-                    }
-                }
+                let _ = t;
             }
             HirItemKind::ExternBlock(eb) => {
                 for sub in &eb.items {
@@ -243,6 +238,7 @@ impl<'a> MirBuilder<'a> {
             locals: Vec::new(),
             current_block: BlockId(0),
             var_map: HashMap::new(),
+            capture_env: HashMap::new(),
             loop_stack: Vec::new(),
             extra_bodies: Vec::new(),
             closure_counter: 0,
@@ -337,6 +333,7 @@ impl<'a> MirBuilder<'a> {
 
     fn enum_variant_constructor_info(
         &self,
+        call_expr: &HirExpr,
         callee: &HirExpr,
         path: &HirPath,
     ) -> Option<(DefId, usize)> {
@@ -354,6 +351,20 @@ impl<'a> MirBuilder<'a> {
                 {
                     return Some((enum_def_id, idx));
                 }
+            }
+        }
+
+        if let TyKind::Adt(enum_def_id, _) = self.get_expr_ty(call_expr) {
+            if let Some(idx) = self
+                .typeck
+                .enum_variants
+                .get(&enum_def_id)
+                .and_then(|variants| variants.iter().position(|(name, _)| *name == variant_name))
+            {
+                return Some((enum_def_id, idx));
+            }
+            if let Some(idx) = self.known_enum_variant_index(enum_def_id, variant_name) {
+                return Some((enum_def_id, idx));
             }
         }
 
@@ -376,6 +387,160 @@ impl<'a> MirBuilder<'a> {
                 .map(|enum_def_id| (enum_def_id, variant_idx)),
             _ => None,
         }
+    }
+
+    fn known_enum_variant_index(&self, enum_def_id: DefId, variant_name: Symbol) -> Option<usize> {
+        let variant = self.interner.resolve(variant_name);
+        if self.type_def_name_is(enum_def_id, "Option") {
+            return match variant {
+                "None" => Some(0),
+                "Some" => Some(1),
+                _ => None,
+            };
+        }
+        if self.type_def_name_is(enum_def_id, "Result") {
+            return match variant {
+                "Ok" => Some(0),
+                "Err" => Some(1),
+                _ => None,
+            };
+        }
+        None
+    }
+
+    fn enum_max_fields(&self, enum_def_id: DefId) -> Option<usize> {
+        if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
+            return Some(
+                variants
+                    .iter()
+                    .map(|(_, fields)| fields.len())
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+        if self.type_def_name_is(enum_def_id, "Option")
+            || self.type_def_name_is(enum_def_id, "Result")
+        {
+            return Some(1);
+        }
+        None
+    }
+
+    fn enum_variant_field_count(&self, enum_def_id: DefId, variant_idx: usize) -> Option<usize> {
+        if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
+            return variants.get(variant_idx).map(|(_, fields)| fields.len());
+        }
+        if self.type_def_name_is(enum_def_id, "Option") {
+            return Some(if variant_idx == 1 { 1 } else { 0 });
+        }
+        if self.type_def_name_is(enum_def_id, "Result") {
+            return Some(1);
+        }
+        None
+    }
+
+    fn type_def_name_is(&self, def_id: DefId, expected: &str) -> bool {
+        self.typeck
+            .type_def_to_name
+            .get(&def_id)
+            .is_some_and(|sym| self.interner.resolve(*sym) == expected)
+            || self
+                .resolve
+                .intrinsic_fns
+                .get(&def_id)
+                .is_some_and(|path| path == expected || path.ends_with(&format!("::{expected}")))
+    }
+
+    fn known_path_call_symbol(&mut self, path: &HirPath) -> Option<Symbol> {
+        let last = self.interner.resolve(path.segments.last()?.ident);
+        let owner = path
+            .segments
+            .iter()
+            .rev()
+            .nth(1)
+            .map(|segment| self.interner.resolve(segment.ident));
+
+        match (owner, last) {
+            (Some("Vec"), "new" | "with_capacity") => {
+                return Some(self.interner.intern(&format!("Vec::{last}")));
+            }
+            (
+                Some("String"),
+                "new" | "with_capacity" | "from" | "from_utf8" | "from_utf8_lossy",
+            ) => {
+                return Some(self.interner.intern(&format!("String::{last}")));
+            }
+            (Some("Box"), "new" | "leak" | "into_raw" | "from_raw") => {
+                return Some(self.interner.intern(&format!("Box::{last}")));
+            }
+            (Some("HashMap"), "new") => {
+                return Some(self.interner.intern("HashMap::new"));
+            }
+            (Some("ManuallyDrop"), "new") => {
+                return Some(self.interner.intern("ManuallyDrop::new"));
+            }
+            (
+                Some(
+                    owner @ ("u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32"
+                    | "i64" | "i128" | "isize"),
+                ),
+                "from" | "from_le_bytes" | "from_ne_bytes" | "from_be_bytes" | "min" | "max",
+            ) => {
+                return Some(self.interner.intern(&format!("{owner}::{last}")));
+            }
+            _ => {}
+        }
+
+        let full = self.hir_path_to_string(path);
+        match full.as_str() {
+            "core::str::from_utf8" | "str::from_utf8" => {
+                Some(self.interner.intern("core::str::from_utf8"))
+            }
+            "core::str::from_utf8_unchecked" | "str::from_utf8_unchecked" => {
+                Some(self.interner.intern("from_utf8_unchecked"))
+            }
+            "core::mem::zeroed" | "mem::zeroed" => Some(self.interner.intern("zeroed")),
+            "core::mem::transmute_copy" | "mem::transmute_copy" => {
+                Some(self.interner.intern("transmute_copy"))
+            }
+            _ => None,
+        }
+    }
+
+    fn resolved_path_call_operand(&mut self, path: &HirPath, callee: &HirExpr) -> Option<Operand> {
+        let def_id = *self.resolve.resolutions.get(&callee.id)?;
+        if !self.typeck.fn_sigs.contains_key(&def_id) {
+            return None;
+        }
+
+        let fn_sym = if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(&def_id) {
+            if intrinsic_path.contains("Atomic")
+                || intrinsic_path.starts_with("anyos_std::")
+                || Self::is_primitive_assoc_fn_path(intrinsic_path)
+            {
+                self.interner.intern(intrinsic_path)
+            } else {
+                path.segments.last()?.ident
+            }
+        } else {
+            path.segments.last()?.ident
+        };
+
+        Some(Operand::Constant(Constant {
+            ty: TyKind::FnDef(def_id, vec![]),
+            value: ConstValue::FnItem(fn_sym),
+        }))
+    }
+
+    fn hir_path_to_string(&self, path: &HirPath) -> String {
+        let mut out = String::new();
+        for (idx, segment) in path.segments.iter().enumerate() {
+            if idx > 0 {
+                out.push_str("::");
+            }
+            out.push_str(self.interner.resolve(segment.ident));
+        }
+        out
     }
 
     fn alloc_local(&mut self, ty: TyKind, name: Option<Symbol>, span: Span) -> Local {
@@ -618,11 +783,9 @@ impl<'a> MirBuilder<'a> {
                 // Check if this is an enum variant constructor call
                 if let HirExprKind::Path(path) = &callee.kind {
                     if let Some((enum_def_id, variant_idx)) =
-                        self.enum_variant_constructor_info(callee, path)
+                        self.enum_variant_constructor_info(expr, callee, path)
                     {
-                        if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
-                            let max_fields =
-                                variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+                        if let Some(max_fields) = self.enum_max_fields(enum_def_id) {
                             if max_fields > 0 {
                                 // This is a data enum variant constructor.
                                 let arg_ops: Vec<Operand> =
@@ -640,8 +803,9 @@ impl<'a> MirBuilder<'a> {
                                 })];
                                 operands.extend(arg_ops);
                                 // Pad with zeros up to max_fields.
-                                let variant_fields =
-                                    variants.get(variant_idx).map(|(_, f)| f.len()).unwrap_or(0);
+                                let variant_fields = self
+                                    .enum_variant_field_count(enum_def_id, variant_idx)
+                                    .unwrap_or(args.len());
                                 for _ in variant_fields..max_fields {
                                     operands.push(Operand::Constant(Constant {
                                         ty: TyKind::Int(IntTy::I64),
@@ -693,7 +857,36 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
 
-                let func_op = self.lower_expr(callee);
+                let func_op = if let HirExprKind::Path(path) = &callee.kind {
+                    if let Some(sym) = self.known_path_call_symbol(path) {
+                        Operand::Constant(Constant {
+                            ty: self.get_expr_ty(callee),
+                            value: ConstValue::FnItem(sym),
+                        })
+                    } else if let Some(op) = self.resolved_path_call_operand(path, callee) {
+                        op
+                    } else if let Some(last) = path.segments.last() {
+                        let lowered = self.lower_expr(callee);
+                        if matches!(
+                            &lowered,
+                            Operand::Constant(Constant {
+                                value: ConstValue::Unit,
+                                ..
+                            })
+                        ) {
+                            Operand::Constant(Constant {
+                                ty: self.get_expr_ty(callee),
+                                value: ConstValue::FnItem(last.ident),
+                            })
+                        } else {
+                            lowered
+                        }
+                    } else {
+                        self.lower_expr(callee)
+                    }
+                } else {
+                    self.lower_expr(callee)
+                };
                 let expected_param_tys = match &func_op {
                     Operand::Constant(c) => {
                         if let TyKind::FnDef(fn_def_id, _) = &c.ty {
@@ -1434,8 +1627,9 @@ impl<'a> MirBuilder<'a> {
                 };
 
                 if let Some(method_did) = method_def_id {
-                    // Get method name symbol
-                    let fn_name = *method_name;
+                    let fn_name = self
+                        .known_adt_method_symbol(&inner_ty, *method_name)
+                        .unwrap_or(*method_name);
 
                     // Check what self parameter the method expects
                     let method_self_param = self
@@ -2080,9 +2274,17 @@ impl<'a> MirBuilder<'a> {
                 let saved_locals = core::mem::take(&mut self.locals);
                 let saved_current_block = self.current_block;
                 let saved_var_map = core::mem::take(&mut self.var_map);
+                let saved_capture_env = core::mem::take(&mut self.capture_env);
+                let mut closure_capture_env = saved_capture_env.clone();
+                for (def_id, local) in &saved_var_map {
+                    if let Some(decl) = saved_locals.get(local.0) {
+                        closure_capture_env.insert(*def_id, decl.ty.clone());
+                    }
+                }
 
                 self.blocks = Vec::new();
                 self.locals = Vec::new();
+                self.capture_env = closure_capture_env;
                 let entry_block = self.push_block();
                 self.current_block = entry_block;
 
@@ -2129,6 +2331,7 @@ impl<'a> MirBuilder<'a> {
                 self.locals = saved_locals;
                 self.current_block = saved_current_block;
                 self.var_map = saved_var_map;
+                self.capture_env = saved_capture_env;
 
                 let closure_body = MirBody {
                     basic_blocks: closure_blocks,
@@ -2619,6 +2822,8 @@ impl<'a> MirBuilder<'a> {
             } else {
                 Operand::Move(Place::local(local))
             }
+        } else if let Some(op) = self.lower_captured_path(path, expr) {
+            op
         } else {
             let ty = self.get_expr_ty(expr);
             match &ty {
@@ -2663,17 +2868,25 @@ impl<'a> MirBuilder<'a> {
                         })
                     }
                 }
-                TyKind::Adt(ref enum_def_id, _) if path.segments.len() == 2 => {
+                TyKind::Adt(ref enum_def_id, _) => {
                     let enum_def_id = *enum_def_id;
                     // Enum variant: look up discriminant
-                    let enum_name = path.segments[0].ident;
-                    let variant_name = path.segments[1].ident;
-                    if let Some(&idx) = self.resolve.variant_indices.get(&(enum_name, variant_name))
-                    {
+                    let variant_name = path.segments.last().unwrap().ident;
+                    let variant_idx = self
+                        .typeck
+                        .enum_variants
+                        .get(&enum_def_id)
+                        .and_then(|variants| {
+                            variants
+                                .iter()
+                                .enumerate()
+                                .find(|(_, (name, _))| *name == variant_name)
+                                .map(|(idx, _)| idx)
+                        })
+                        .or_else(|| self.known_enum_variant_index(enum_def_id, variant_name));
+                    if let Some(idx) = variant_idx {
                         // Check if this is a data enum (has variants with fields)
-                        if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
-                            let max_fields =
-                                variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+                        if let Some(max_fields) = self.enum_max_fields(enum_def_id) {
                             if max_fields > 0 {
                                 // Data enum unit variant: emit Aggregate with disc + zero padding
                                 let tmp = self.alloc_temp(ty.clone(), expr.span);
@@ -2715,6 +2928,19 @@ impl<'a> MirBuilder<'a> {
                     value: ConstValue::Unit,
                 }),
             }
+        }
+    }
+
+    fn lower_captured_path(&mut self, path: &HirPath, expr: &HirExpr) -> Option<Operand> {
+        let def_id = *self.resolve.resolutions.get(&expr.id)?;
+        let ty = self.capture_env.get(&def_id).cloned()?;
+        let name = path.segments.last().map(|segment| segment.ident);
+        let local = self.alloc_local(ty.clone(), name, expr.span);
+        self.var_map.insert(def_id, local);
+        if self.is_copy_type(&ty) {
+            Some(Operand::Copy(Place::local(local)))
+        } else {
+            Some(Operand::Move(Place::local(local)))
         }
     }
 
@@ -2819,6 +3045,50 @@ impl<'a> MirBuilder<'a> {
         };
         let wants_mut = matches!(method, "push_str" | "push" | "pop" | "push_back" | "clear");
         Some((name, wants_mut))
+    }
+
+    fn known_adt_method_symbol(
+        &mut self,
+        receiver_ty: &TyKind,
+        method_name: Symbol,
+    ) -> Option<Symbol> {
+        let TyKind::Adt(def_id, _) = receiver_ty else {
+            return None;
+        };
+        let type_sym = self.typeck.type_def_to_name.get(def_id).copied()?;
+        let type_name = self.interner.resolve(type_sym);
+        let method = self.interner.resolve(method_name);
+        let owner = match type_name {
+            "Option" => match method {
+                "is_some" | "is_none" | "as_ref" | "as_mut" | "unwrap" | "unwrap_or"
+                | "unwrap_or_default" | "unwrap_or_else" | "take" | "replace" | "map"
+                | "and_then" | "or_else" | "ok_or" | "ok_or_else" | "is_some_and" | "map_or"
+                | "map_or_else" | "get_or_insert_with" | "copied" | "cloned" => "Option",
+                _ => return None,
+            },
+            "Result" => match method {
+                "is_ok" | "is_err" | "ok" | "err" | "unwrap" | "unwrap_or"
+                | "unwrap_or_default" | "unwrap_or_else" | "map" | "map_err" => "Result",
+                _ => return None,
+            },
+            "String" => match method {
+                "len" | "is_empty" | "as_str" | "as_bytes" | "clear" | "push_str" | "push"
+                | "to_uppercase" => "String",
+                _ => return None,
+            },
+            "Vec" => match method {
+                "new" | "with_capacity" | "len" | "capacity" | "is_empty" | "as_ptr"
+                | "as_mut_ptr" | "as_slice" | "as_mut_slice" | "as_ref" | "push" | "pop"
+                | "clear" | "truncate" | "chunks_exact" => "Vec",
+                _ => return None,
+            },
+            "VecDeque" => match method {
+                "push_back" => "VecDeque",
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(self.interner.intern(&format!("{owner}::{method}")))
     }
 
     fn estimate_ty_size(&self, ty: &TyKind) -> usize {

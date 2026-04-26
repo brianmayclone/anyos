@@ -25,7 +25,7 @@ use libanyui_client as anyui;
 
 use crate::logic::{
     ai, build, config, debug_backend, debug_session, diagnostic_pipeline, diagnostics,
-    file_manager, git, plugin, project, symbol_index, tasks,
+    file_manager, git, plugin, project, solution, symbol_index, tasks,
 };
 use crate::ui::{
     activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel, git_panel,
@@ -206,6 +206,13 @@ fn build_and_run(
         sidebar.populate(folder);
         project::Project::open(folder)
     });
+    let solution = current_project.as_ref().map(|project| {
+        let metadata = solution::SolutionMetadata::load(project);
+        if !path::exists(&metadata.path) {
+            let _ = metadata.save();
+        }
+        metadata
+    });
 
     let mut git_state = git::GitState::empty();
     if let Some(ref proj) = current_project {
@@ -230,6 +237,7 @@ fn build_and_run(
             file_mgr: file_manager::FileManager::new(),
             config,
             current_project,
+            solution,
             task_mgr,
             test_explorer,
             diagnostics: diagnostics::DiagnosticSet::new(),

@@ -69,12 +69,12 @@ pub enum FloatTy {
     F64,
 }
 
-const SYNTH_PARSED_ARGS_DEF_ID: DefId = DefId(0x7000_0001);
-const SYNTH_CMP_ORDERING_DEF_ID: DefId = DefId(0x7000_0002);
-const SYNTH_ATOMIC_ORDERING_DEF_ID: DefId = DefId(0x7000_0003);
-const SYNTH_PROC_MACRO_TOKEN_TREE_DEF_ID: DefId = DefId(0x7000_0004);
-const SYNTH_PROC_MACRO_SPACING_DEF_ID: DefId = DefId(0x7000_0005);
-const SYNTH_PROC_MACRO_DELIMITER_DEF_ID: DefId = DefId(0x7000_0006);
+const SYNTH_PARSED_ARGS_DEF_ID: DefId = DefId(0x7F00_0001);
+const SYNTH_CMP_ORDERING_DEF_ID: DefId = DefId(0x7F00_0002);
+const SYNTH_ATOMIC_ORDERING_DEF_ID: DefId = DefId(0x7F00_0003);
+const SYNTH_PROC_MACRO_TOKEN_TREE_DEF_ID: DefId = DefId(0x7F00_0004);
+const SYNTH_PROC_MACRO_SPACING_DEF_ID: DefId = DefId(0x7F00_0005);
+const SYNTH_PROC_MACRO_DELIMITER_DEF_ID: DefId = DefId(0x7F00_0006);
 
 pub struct TypeckResult {
     pub expr_types: HashMap<HirId, TyKind>,
@@ -5431,6 +5431,28 @@ impl<'a> TypeChecker<'a> {
             return Some(ret_ty);
         }
 
+        if method_name_str == "from" && args.len() == 1 {
+            let target_ty = self.assoc_parent_ty_for_path(path).unwrap_or_else(|| {
+                self.path_segments_to_ty(&path.segments[..path.segments.len() - 1])
+            });
+            let target_resolved = self.shallow_resolve(target_ty.clone());
+            let target_is_string = match &target_resolved {
+                TyKind::Adt(def_id, _) => {
+                    self.is_string_def(*def_id)
+                        || self.describe_ty(&target_resolved).rsplit("::").next() == Some("String")
+                }
+                _ => false,
+            };
+            if target_is_string {
+                let arg_ty = self.check_expr(&args[0]);
+                let expected = TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable);
+                self.unify(&expected, &arg_ty, args[0].span);
+                self.expr_types
+                    .insert(callee.id, TyKind::FnDef(DefId(0), vec![]));
+                return Some(target_resolved);
+            }
+        }
+
         let trait_candidates = self
             .trait_assoc_fn_candidates_on_self_path(path)
             .unwrap_or_default();
@@ -6171,7 +6193,10 @@ impl<'a> TypeChecker<'a> {
                         return TyKind::Adt(def_id, type_args);
                     }
                 }
-                if let Some(def_id) = self.resolve_scoped_type_name(sym) {
+                if let Some(alias_ty) = self.resolve_scoped_type_alias(sym) {
+                    let type_args = self.type_args_from_segment(last_segment);
+                    self.substitute_params(&alias_ty, &type_args)
+                } else if let Some(def_id) = self.resolve_scoped_type_name(sym) {
                     let type_args = if let Some(ref args) = last_segment.args {
                         args.args
                             .iter()
@@ -6187,9 +6212,6 @@ impl<'a> TypeChecker<'a> {
                         vec![]
                     };
                     TyKind::Adt(def_id, type_args)
-                } else if let Some(alias_ty) = self.resolve_scoped_type_alias(sym) {
-                    let type_args = self.type_args_from_segment(last_segment);
-                    self.substitute_params(&alias_ty, &type_args)
                 } else {
                     if let Some(full_path) = &full_path {
                         if let Some(def_id) = self.lookup_intrinsic_def_by_path(full_path) {

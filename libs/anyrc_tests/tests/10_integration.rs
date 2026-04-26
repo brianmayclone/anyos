@@ -109,14 +109,17 @@ fn mir_string_methods_lower_to_intrinsic_calls() {
     let mir = String::from_utf8(compile(source, "test.rs", &options).expect("compilation failed"))
         .expect("mir utf8");
     assert!(
-        mir.contains("fn from("),
+        mir.contains("fn String::from(") || mir.contains("fn from("),
         "MIR missing String::from fallback:\n{mir}"
     );
     assert!(
         mir.contains("fn String::push_str("),
         "MIR missing String::push_str lowering:\n{mir}"
     );
-    assert!(mir.contains("fn len("), "MIR missing len lowering:\n{mir}");
+    assert!(
+        mir.contains("fn String::len(") || mir.contains("fn len("),
+        "MIR missing len lowering:\n{mir}"
+    );
 }
 
 #[test]

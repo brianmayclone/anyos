@@ -2397,6 +2397,12 @@ pub fn run_once() -> u32 {
                 full_surf
             };
 
+            if let Some((dx, dy, dw, dh)) = physical_dr {
+                clear_back_buffer_rect(back_buf, sw, sh, dx, dy, dw, dh);
+            } else {
+                st.comp_windows[wi].back_buffer.fill(0x00000000);
+            }
+
             render_tree(&st.controls, win_id, &surf, 0, 0, logical_dr);
 
             clear_dirty(&mut st.controls, win_id);
@@ -3238,6 +3244,36 @@ fn collect_dirty_rects(
 
     for &cid in &children {
         collect_dirty_rects(controls, cid, abs_x, child_abs_y, cw);
+    }
+}
+
+fn clear_back_buffer_rect(
+    back_buf: *mut u32,
+    stride: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) {
+    if back_buf.is_null() || w == 0 || h == 0 || stride == 0 || height == 0 {
+        return;
+    }
+    let x0 = x.max(0) as u32;
+    let y0 = y.max(0) as u32;
+    let x1 = (x + w as i32).max(0) as u32;
+    let y1 = (y + h as i32).max(0) as u32;
+    let x1 = x1.min(stride);
+    let y1 = y1.min(height);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    for row in y0..y1 {
+        let off = row as usize * stride as usize + x0 as usize;
+        let count = (x1 - x0) as usize;
+        unsafe {
+            core::ptr::write_bytes(back_buf.add(off), 0, count);
+        }
     }
 }
 

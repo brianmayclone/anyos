@@ -227,7 +227,14 @@ fn count_passed_tests(output: &str) -> usize {
 
 fn output_excerpt(output: &str) -> String {
     let mut out = String::new();
-    for line in output.split('\n').rev().take(12).collect::<Vec<&str>>().iter().rev() {
+    for line in output
+        .split('\n')
+        .rev()
+        .take(12)
+        .collect::<Vec<&str>>()
+        .iter()
+        .rev()
+    {
         if !out.is_empty() {
             out.push('\n');
         }

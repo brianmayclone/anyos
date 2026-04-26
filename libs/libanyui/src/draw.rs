@@ -966,9 +966,88 @@ pub fn blit_argb(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
                 let r = ((src_px >> 16) & 0xFF) * alpha + ((dst_px >> 16) & 0xFF) * inv;
                 let g = ((src_px >> 8) & 0xFF) * alpha + ((dst_px >> 8) & 0xFF) * inv;
                 let b = (src_px & 0xFF) * alpha + (dst_px & 0xFF) * inv;
+                let da = (dst_px >> 24) & 0xFF;
+                let out_a = alpha + da * inv / 255;
                 unsafe {
                     *s.pixels.add(dst_idx) =
-                        0xFF000000 | ((r / 255) << 16) | ((g / 255) << 8) | (b / 255);
+                        (out_a << 24) | ((r / 255) << 16) | ((g / 255) << 8) | (b / 255);
+                }
+            }
+        }
+    }
+}
+
+/// Blit an ARGB source buffer with nearest-neighbor scaling and alpha blending.
+pub fn blit_argb_scaled(
+    s: &Surface,
+    x: i32,
+    y: i32,
+    dst_w: u32,
+    dst_h: u32,
+    src_w: u32,
+    src_h: u32,
+    src: &[u32],
+) {
+    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 || src.is_empty() {
+        return;
+    }
+    let sw = s.width as i32;
+    let sh = s.height as i32;
+    let clip_x0 = s.clip_x.max(0);
+    let clip_y0 = s.clip_y.max(0);
+    let clip_x1 = (s.clip_x + s.clip_w as i32).min(sw);
+    let clip_y1 = (s.clip_y + s.clip_h as i32).min(sh);
+    let step_x = ((src_w as u64) << 16) / dst_w as u64;
+    let step_y = ((src_h as u64) << 16) / dst_h as u64;
+
+    for dy_off in 0..dst_h as i32 {
+        let dest_y = y + dy_off;
+        if dest_y < clip_y0 || dest_y >= clip_y1 {
+            continue;
+        }
+        let src_y = ((dy_off as u64 * step_y) >> 16) as u32;
+        if src_y >= src_h {
+            break;
+        }
+        let src_row = src_y as usize * src_w as usize;
+        let x0 = x.max(clip_x0);
+        let x1 = (x + dst_w as i32).min(clip_x1);
+        if x0 >= x1 {
+            continue;
+        }
+
+        let dst_row_base = dest_y as usize * s.width as usize;
+        let skip = (x0 - x) as u64;
+        let mut src_fx = skip * step_x;
+        for dx in x0..x1 {
+            let src_x = (src_fx >> 16) as usize;
+            src_fx += step_x;
+            if src_x >= src_w as usize {
+                continue;
+            }
+            let idx = src_row + src_x;
+            if idx >= src.len() {
+                continue;
+            }
+            let src_px = src[idx];
+            let alpha = (src_px >> 24) & 0xFF;
+            if alpha == 0 {
+                continue;
+            }
+            let dst_idx = dst_row_base + dx as usize;
+            if alpha == 255 {
+                unsafe { *s.pixels.add(dst_idx) = src_px; }
+            } else {
+                let dst_px = unsafe { *s.pixels.add(dst_idx) };
+                let inv = 255 - alpha;
+                let r = ((src_px >> 16) & 0xFF) * alpha + ((dst_px >> 16) & 0xFF) * inv;
+                let g = ((src_px >> 8) & 0xFF) * alpha + ((dst_px >> 8) & 0xFF) * inv;
+                let b = (src_px & 0xFF) * alpha + (dst_px & 0xFF) * inv;
+                let da = (dst_px >> 24) & 0xFF;
+                let out_a = alpha + da * inv / 255;
+                unsafe {
+                    *s.pixels.add(dst_idx) =
+                        (out_a << 24) | ((r / 255) << 16) | ((g / 255) << 8) | (b / 255);
                 }
             }
         }

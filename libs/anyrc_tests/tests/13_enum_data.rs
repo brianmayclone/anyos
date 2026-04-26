@@ -1,5 +1,5 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,11 +13,14 @@ fn assert_run_returns(src: &str, expected: i32) {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(src, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_test_enum_data_{}_{}", std::process::id(), id));
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_test_enum_data_{}_{}",
+        std::process::id(),
+        id
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let exe_path = dir.join("test_exe");
     {
@@ -33,7 +36,11 @@ fn assert_run_returns(src: &str, expected: i32) {
     let status = common::run_executable(&exe_path);
     let _ = std::fs::remove_dir_all(&dir);
     let code = status.code().unwrap_or(-1);
-    assert_eq!(code, expected, "expected exit code {}, got {}", expected, code);
+    assert_eq!(
+        code, expected,
+        "expected exit code {}, got {}",
+        expected, code
+    );
 }
 
 fn assert_compiles(src: &str) {
@@ -51,7 +58,8 @@ fn assert_compiles(src: &str) {
 
 #[test]
 fn enum_option_none() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         enum MyOption { None, Some(i64) }
         fn main() -> i32 {
             let x = MyOption::None;
@@ -60,12 +68,14 @@ fn enum_option_none() {
                 MyOption::Some(v) => 1,
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn enum_option_some() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         enum MyOption { None, Some(i64) }
         fn main() -> i32 {
             let x = MyOption::Some(42);
@@ -74,12 +84,14 @@ fn enum_option_some() {
                 MyOption::Some(v) => 1,
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn enum_multiple_fields() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         enum Pair { Empty, Two(i64, i64) }
         fn main() -> i32 {
             let p = Pair::Two(10, 20);
@@ -88,12 +100,14 @@ fn enum_multiple_fields() {
                 Pair::Two(a, b) => 1,
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn enum_nested_match() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         enum MyOption { None, Some(i64) }
         fn main() -> i32 {
             let a = MyOption::None;
@@ -108,12 +122,14 @@ fn enum_nested_match() {
             };
             x + y
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn run_option_none() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         enum MyOption { None, Some(i64) }
         fn main() -> i32 {
             let x = MyOption::None;
@@ -122,12 +138,15 @@ fn run_option_none() {
                 MyOption::Some(v) => 1,
             }
         }
-    "#, 0);
+    "#,
+        0,
+    );
 }
 
 #[test]
 fn run_option_some() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         enum MyOption { None, Some(i64) }
         fn main() -> i32 {
             let x = MyOption::Some(42);
@@ -136,12 +155,15 @@ fn run_option_some() {
                 MyOption::Some(v) => v as i32,
             }
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn run_enum_multi_variant() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         enum Shape { Circle(i64), Rect(i64, i64), Empty }
         fn area(s: Shape) -> i32 {
             match s {
@@ -156,5 +178,7 @@ fn run_enum_multi_variant() {
             let c = area(Shape::Empty);
             a + b + c
         }
-    "#, 17);
+    "#,
+        17,
+    );
 }

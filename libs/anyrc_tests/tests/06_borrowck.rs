@@ -1,11 +1,11 @@
-use anyrc::parser::Parser;
+use anyrc::borrowck::{self, BorrowckResult};
+use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
-use anyrc::hir_lower::LoweringContext;
+use anyrc::mir_build::MirBuilder;
+use anyrc::parser::Parser;
 use anyrc::resolve::Resolver;
 use anyrc::typeck::TypeChecker;
-use anyrc::mir_build::MirBuilder;
-use anyrc::borrowck::{self, BorrowckResult};
 
 fn build_and_check(src: &str) -> Vec<(String, BorrowckResult)> {
     let mut interner = Interner::new();
@@ -40,18 +40,35 @@ fn build_and_check(src: &str) -> Vec<(String, BorrowckResult)> {
 fn assert_borrowck_ok(src: &str) {
     let results = build_and_check(src);
     for (body_name, result) in &results {
-        assert!(result.errors.is_empty(), "unexpected borrow errors: {:?}",
-            result.errors.iter().map(|e| format!("in {}: {}", body_name, e.message)).collect::<Vec<_>>());
+        assert!(
+            result.errors.is_empty(),
+            "unexpected borrow errors: {:?}",
+            result
+                .errors
+                .iter()
+                .map(|e| format!("in {}: {}", body_name, e.message))
+                .collect::<Vec<_>>()
+        );
     }
 }
 
 fn assert_borrowck_error(src: &str, expected_msg: &str) {
     let results = build_and_check(src);
     let all_errors: Vec<_> = results.iter().flat_map(|(_, r)| &r.errors).collect();
-    assert!(!all_errors.is_empty(), "expected borrow error containing '{}'", expected_msg);
-    assert!(all_errors.iter().any(|e| e.message.to_lowercase().contains(&expected_msg.to_lowercase())),
-        "expected error containing '{}', got: {:?}", expected_msg,
-        all_errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        !all_errors.is_empty(),
+        "expected borrow error containing '{}'",
+        expected_msg
+    );
+    assert!(
+        all_errors.iter().any(|e| e
+            .message
+            .to_lowercase()
+            .contains(&expected_msg.to_lowercase())),
+        "expected error containing '{}', got: {:?}",
+        expected_msg,
+        all_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -66,25 +83,34 @@ fn borrowck_simple_mut_ref() {
 
 #[test]
 fn borrowck_use_after_move() {
-    assert_borrowck_error(r#"
+    assert_borrowck_error(
+        r#"
         struct S { x: &mut i32 }
         fn take(s: S) {}
         fn foo() { let mut v: i32 = 1; let s = S { x: &mut v }; take(s); take(s); }
-    "#, "moved");
+    "#,
+        "moved",
+    );
 }
 
 #[test]
 fn borrowck_two_mut_borrows() {
-    assert_borrowck_error(r#"
+    assert_borrowck_error(
+        r#"
         fn foo() { let mut x: i32 = 5; let a: &mut i32 = &mut x; let b: &mut i32 = &mut x; }
-    "#, "borrow");
+    "#,
+        "borrow",
+    );
 }
 
 #[test]
 fn borrowck_assign_while_borrowed() {
-    assert_borrowck_error(r#"
+    assert_borrowck_error(
+        r#"
         fn foo() { let mut x: i32 = 5; let r: &i32 = &x; x = 6; }
-    "#, "borrow");
+    "#,
+        "borrow",
+    );
 }
 
 #[test]
@@ -94,7 +120,8 @@ fn borrowck_copy_types_ok() {
 
 #[test]
 fn borrowck_derived_copy_adt_can_be_reused() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         #[derive(Copy, Clone)]
         struct Span {
             lo: usize,
@@ -108,12 +135,14 @@ fn borrowck_derived_copy_adt_can_be_reused() {
             take(span);
             take(span);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_match_scrutinee_can_be_used_in_wildcard_arm() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         struct Token {}
 
         fn take(token: Token) {}
@@ -123,24 +152,28 @@ fn borrowck_match_scrutinee_can_be_used_in_wildcard_arm() {
                 _ => take(token),
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_mut_ref_argument_is_reborrowed_for_calls() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         fn write(f: &mut i32) {}
 
         fn foo(f: &mut i32) {
             write(f);
             write(f);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_move_in_if_branch_does_not_poison_else_branch() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         struct Token {}
 
         fn take(token: Token) {}
@@ -153,12 +186,14 @@ fn borrowck_move_in_if_branch_does_not_poison_else_branch() {
                 take(token);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_move_in_match_arm_does_not_poison_sibling_arms() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         struct Token {}
 
         enum Context {
@@ -176,12 +211,14 @@ fn borrowck_move_in_match_arm_does_not_poison_sibling_arms() {
                 Context::C => {}
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_method_chain_consumes_each_receiver_once() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         struct Iter {}
         struct Filtered {}
         struct Mapped {}
@@ -202,12 +239,14 @@ fn borrowck_method_chain_consumes_each_receiver_once() {
         fn foo(iter: Iter, acc: Acc) {
             let _result = iter.filter().map().fold(acc);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_enum_with_only_copy_fields_can_be_reused() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         struct Name {}
 
         enum StructVariant<'a> {
@@ -238,7 +277,8 @@ fn borrowck_enum_with_only_copy_fields_can_be_reused() {
                 StructVariant::Untagged => {}
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
@@ -253,7 +293,8 @@ fn borrowck_slice_reference_can_be_reassigned_to_subslice() {
 
 #[test]
 fn borrowck_str_slice_values_are_reusable() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         struct String {}
 
         impl String {
@@ -265,12 +306,14 @@ fn borrowck_str_slice_values_are_reusable() {
             let path = String::from(cmd);
             let failed = String::from(cmd);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_trait_default_copy_self_is_not_moved() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         trait Copy {}
 
         trait ConditionallySelectable: Copy {
@@ -286,23 +329,27 @@ fn borrowck_trait_default_copy_self_is_not_moved() {
                 b.conditional_assign(&t, choice);
             }
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_mut_ref_call_arg_is_reborrowed_not_moved() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         fn select(a: &i32, b: &i32) -> i32 { *a }
 
         fn assign_through_ref(self_ref: &mut i32, other: &i32) {
             *self_ref = select(self_ref, other);
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn borrowck_subtle_integer_conditional_assign_pattern() {
-    assert_borrowck_ok(r#"
+    assert_borrowck_ok(
+        r#"
         struct Choice(u8);
 
         impl Choice {
@@ -332,5 +379,6 @@ fn borrowck_subtle_integer_conditional_assign_pattern() {
                 *self ^= mask & (*self ^ *other);
             }
         }
-    "#);
+    "#,
+    );
 }

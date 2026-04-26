@@ -1,9 +1,8 @@
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
 use libanyui_client as ui;
 
-use crate::logic::ai::{AiProvider, ChatMessage, MessageRole};
+use crate::logic::ai::AiProvider;
 
 // ════════════════════════════════════════════════════════════════
 //  AI Chat Panel — Vibe Coding Interface

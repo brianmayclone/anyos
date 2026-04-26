@@ -1,8 +1,8 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
-use anyrc::parser::Parser;
-use anyrc::intern::Interner;
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
 use anyrc::hir_lower::LoweringContext;
+use anyrc::intern::Interner;
+use anyrc::parser::Parser;
 use anyrc::resolve::Resolver;
 use anyrc::typeck::TypeChecker;
 use std::io::Write;
@@ -37,8 +37,7 @@ fn assert_run_returns(src: &str, expected: i32) {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(src, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("anyrc_test_repr_{}_{}", std::process::id(), id));
@@ -57,70 +56,85 @@ fn assert_run_returns(src: &str, expected: i32) {
     let status = common::run_executable(&exe_path);
     let _ = std::fs::remove_dir_all(&dir);
     let code = status.code().unwrap_or(-1);
-    assert_eq!(code, expected, "expected exit code {}, got {}", expected, code);
+    assert_eq!(
+        code, expected,
+        "expected exit code {}, got {}",
+        expected, code
+    );
 }
 
 // ── Parse tests ──
 
 #[test]
 fn parse_repr_c() {
-    assert_parses(r#"
+    assert_parses(
+        r#"
         #[repr(C)]
         struct Foo {
             x: i32,
             y: i32,
         }
         fn main() {}
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn parse_repr_packed() {
-    assert_parses(r#"
+    assert_parses(
+        r#"
         #[repr(C, packed)]
         struct Bar {
             a: u8,
             b: u32,
         }
         fn main() {}
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn parse_repr_transparent() {
-    assert_parses(r#"
+    assert_parses(
+        r#"
         #[repr(transparent)]
         struct Wrapper(i32);
         fn main() {}
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn parse_const_fn() {
-    assert_parses(r#"
+    assert_parses(
+        r#"
         struct Foo { x: i32, y: i32 }
         const fn new(x: i32) -> Foo { Foo { x: x, y: 0 } }
         fn main() {}
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn parse_derive() {
-    assert_parses(r#"
+    assert_parses(
+        r#"
         #[derive(Clone, Copy)]
         struct Point {
             x: i32,
             y: i32,
         }
         fn main() {}
-    "#);
+    "#,
+    );
 }
 
 // ── Compile tests ──
 
 #[test]
 fn compile_repr_c_struct() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         #[repr(C)]
         struct Foo {
             x: i32,
@@ -130,12 +144,14 @@ fn compile_repr_c_struct() {
             let f: Foo = Foo { x: 10, y: 20 };
             f.x + f.y
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_const_fn() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         struct Foo { x: i32, y: i32 }
         const fn make_foo(x: i32) -> Foo {
             Foo { x: x, y: 0 }
@@ -144,14 +160,16 @@ fn compile_const_fn() {
             let f: Foo = make_foo(42);
             f.x
         }
-    "#);
+    "#,
+    );
 }
 
 // ── Runtime tests ──
 
 #[test]
 fn run_const_fn() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct Foo { x: i32, y: i32 }
         const fn make_foo(x: i32) -> Foo {
             Foo { x: x, y: 0 }
@@ -160,12 +178,15 @@ fn run_const_fn() {
             let f: Foo = make_foo(42);
             f.x
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn run_repr_c_struct() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         #[repr(C)]
         struct Pair {
             a: i32,
@@ -175,5 +196,7 @@ fn run_repr_c_struct() {
             let p: Pair = Pair { a: 10, b: 20 };
             p.a + p.b
         }
-    "#, 30);
+    "#,
+        30,
+    );
 }

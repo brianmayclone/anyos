@@ -1,10 +1,10 @@
 mod common;
-use anyrc::parser::Parser;
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
+use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
-use anyrc::hir_lower::LoweringContext;
+use anyrc::parser::Parser;
 use anyrc::resolve::Resolver;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,16 +23,29 @@ fn resolve_src(src: &str) -> (anyrc::resolve::ResolveResult, Interner) {
 
 fn assert_resolves(src: &str) {
     let (result, _) = resolve_src(src);
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 fn assert_resolve_error(src: &str, expected_msg: &str) {
     let (result, _) = resolve_src(src);
-    assert!(!result.errors.is_empty(), "expected error containing '{}' but got none", expected_msg);
-    assert!(result.errors.iter().any(|e| e.message.contains(expected_msg)),
-        "expected error containing '{}', got: {:?}", expected_msg,
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        !result.errors.is_empty(),
+        "expected error containing '{}' but got none",
+        expected_msg
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains(expected_msg)),
+        "expected error containing '{}', got: {:?}",
+        expected_msg,
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 fn compile_and_run(source: &str) -> i32 {
@@ -45,8 +58,7 @@ fn compile_and_run(source: &str) -> i32 {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(source, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(source, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("anyrc_test_mod_{}_{}", std::process::id(), id));
@@ -90,56 +102,66 @@ fn parse_inline_module() {
 
 #[test]
 fn resolve_module_path() {
-    assert_resolves(r#"
+    assert_resolves(
+        r#"
         mod foo {
             pub fn bar() -> i32 { 42 }
         }
         fn main() -> i32 { foo::bar() }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn resolve_nested_modules() {
-    assert_resolves(r#"
+    assert_resolves(
+        r#"
         mod a {
             pub mod b {
                 pub fn c() -> i32 { 7 }
             }
         }
         fn main() -> i32 { a::b::c() }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn resolve_use_import() {
-    assert_resolves(r#"
+    assert_resolves(
+        r#"
         mod foo {
             pub fn bar() -> i32 { 42 }
         }
         use foo::bar;
         fn main() -> i32 { bar() }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn resolve_use_alias() {
-    assert_resolves(r#"
+    assert_resolves(
+        r#"
         mod foo {
             pub fn bar() -> i32 { 10 }
         }
         use foo::bar as baz;
         fn main() -> i32 { baz() }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn resolve_crate_prefix() {
-    assert_resolves(r#"
+    assert_resolves(
+        r#"
         mod foo {
             pub fn val() -> i32 { 5 }
         }
         fn main() -> i32 { crate::foo::val() }
-    "#);
+    "#,
+    );
 }
 
 // ── Compile / pipeline tests ──
@@ -169,36 +191,42 @@ fn compile_inline_module() {
 
 #[test]
 fn run_module_fn_call() {
-    let code = compile_and_run(r#"
+    let code = compile_and_run(
+        r#"
         mod foo {
             pub fn bar() -> i32 { 42 }
         }
         fn main() -> i32 { foo::bar() }
-    "#);
+    "#,
+    );
     assert_eq!(code, 42);
 }
 
 #[test]
 fn run_use_import() {
-    let code = compile_and_run(r#"
+    let code = compile_and_run(
+        r#"
         mod foo {
             pub fn val() -> i32 { 17 }
         }
         use foo::val;
         fn main() -> i32 { val() }
-    "#);
+    "#,
+    );
     assert_eq!(code, 17);
 }
 
 #[test]
 fn run_nested_module() {
-    let code = compile_and_run(r#"
+    let code = compile_and_run(
+        r#"
         mod a {
             pub mod b {
                 pub fn c() -> i32 { 99 }
             }
         }
         fn main() -> i32 { a::b::c() }
-    "#);
+    "#,
+    );
     assert_eq!(code, 99);
 }

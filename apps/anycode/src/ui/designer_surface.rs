@@ -1,11 +1,15 @@
 use alloc::string::String;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 use libanyui_client as ui;
+use ui::Widget;
 
 use crate::logic::designer::{DesignerControl, DesignerDocument};
 use crate::ui::designer_toolbox;
 
-const SURFACE_W: u32 = 960;
 const SURFACE_H: u32 = 640;
+const DESIGNER_CONTENT_W: u32 = 1280;
+const DESIGNER_CONTENT_H: u32 = 920;
 const FORM_X: i32 = 42;
 const FORM_Y: i32 = 38;
 const FORM_CONTENT_Y: i32 = FORM_Y + 34;
@@ -21,7 +25,10 @@ pub const DESIGNER_DRAG_RESIZE_SE: u32 = 5;
 pub struct DesignerSurface {
     pub panel: ui::View,
     _toolbox: ui::TreeView,
+    _scroll: ui::ScrollView,
+    content: ui::View,
     canvas: ui::Canvas,
+    preview_controls: RefCell<Vec<ui::Control>>,
     file_path: String,
     doc: DesignerDocument,
 }
@@ -76,11 +83,23 @@ impl DesignerSurface {
             }
         });
 
-        let canvas = ui::Canvas::new(SURFACE_W, SURFACE_H);
-        canvas.set_dock(ui::DOCK_FILL);
+        let scroll = ui::ScrollView::new();
+        scroll.set_dock(ui::DOCK_FILL);
+        scroll.set_color(tc.editor_bg);
+        panel.add(&scroll);
+
+        let content = ui::View::new();
+        content.set_position(0, 0);
+        content.set_size(DESIGNER_CONTENT_W, DESIGNER_CONTENT_H);
+        content.set_color(tc.editor_bg);
+        scroll.add(&content);
+
+        let canvas = ui::Canvas::new(DESIGNER_CONTENT_W, DESIGNER_CONTENT_H);
+        canvas.set_position(0, 0);
+        canvas.set_size(DESIGNER_CONTENT_W, DESIGNER_CONTENT_H);
         canvas.set_interactive(true);
         canvas.set_drop_target(true);
-        panel.add(&canvas);
+        content.add(&canvas);
 
         let click_path = String::from(file_path);
         canvas.on_mouse_down(move |x, y, _| {
@@ -126,7 +145,10 @@ impl DesignerSurface {
         let this = Self {
             panel,
             _toolbox: toolbox,
+            _scroll: scroll,
+            content,
             canvas,
+            preview_controls: RefCell::new(Vec::new()),
             file_path: String::from(file_path),
             doc,
         };
@@ -183,8 +205,9 @@ impl DesignerSurface {
         );
 
         for control in &self.doc.controls {
-            draw_control(&self.canvas, &self.doc, control, selected_control, tc);
+            draw_control_outline(&self.canvas, &self.doc, control, selected_control, tc);
         }
+        self.render_preview_controls();
 
         self.canvas.draw_text(
             16,
@@ -203,6 +226,31 @@ impl DesignerSurface {
     pub fn set_document(&mut self, doc: DesignerDocument, selected_control: Option<&str>) {
         self.doc = doc;
         self.render(selected_control);
+    }
+
+    fn render_preview_controls(&self) {
+        let old_controls = self.preview_controls.replace(Vec::new());
+        for control in old_controls {
+            control.remove();
+        }
+
+        for control in &self.doc.controls {
+            let Some(preview) = create_anyui_preview_control(control) else {
+                continue;
+            };
+            let (abs_x, abs_y, _, _) = self.doc.control_absolute_bounds(&control.name).unwrap_or((
+                control.x,
+                control.y,
+                control.width,
+                control.height,
+            ));
+            preview.set_position(FORM_X + abs_x, FORM_CONTENT_Y + abs_y);
+            preview.set_size(control.width, control.height);
+            preview.set_enabled(false);
+            apply_preview_common_style(&preview, control);
+            self.content.add_child(preview.id());
+            self.preview_controls.borrow_mut().push(preview);
+        }
     }
 }
 
@@ -334,7 +382,7 @@ fn blend_rgb(a: u32, b: u32, percent_a: u32) -> u32 {
     0xff000000 | (r << 16) | (g << 8) | blue
 }
 
-fn draw_control(
+fn draw_control_outline(
     canvas: &ui::Canvas,
     doc: &DesignerDocument,
     control: &DesignerControl,
@@ -350,13 +398,7 @@ fn draw_control(
     let x = FORM_X + abs_x;
     let y = FORM_CONTENT_Y + abs_y;
     let selected = selected_control == Some(control.name.as_str());
-    let fill = match control.kind.as_str() {
-        "Label" => tc.sidebar_bg,
-        "Panel" => tc.editor_bg,
-        _ => tc.control_bg,
-    };
     let border = if selected { tc.accent } else { tc.separator };
-    canvas.fill_rect(x, y, control.width, control.height, fill);
     canvas.draw_rect(
         x,
         y,
@@ -365,18 +407,6 @@ fn draw_control(
         border,
         if selected { 2 } else { 1 },
     );
-    if !control.text.is_empty() {
-        canvas.draw_text(x + 7, y + 7, tc.text, 0, 12, &control.text);
-    } else {
-        canvas.draw_text(
-            x + 7,
-            y + 7,
-            tc.text_secondary,
-            0,
-            11,
-            control.kind.as_str(),
-        );
-    }
     if is_paged_kind(control.kind.as_str()) {
         let page_y = y + control.height as i32 + paged_content_gap(control);
         let page_h = paged_content_height(control);
@@ -394,6 +424,153 @@ fn draw_control(
     if selected {
         draw_handles(canvas, x, y, control.width, control.height, tc.accent);
     }
+}
+
+fn create_anyui_preview_control(control: &DesignerControl) -> Option<ui::Control> {
+    let text = preview_text(control);
+    let items = preview_items(control);
+    let id = match control.kind.as_str() {
+        "Alert" => ui::Alert::new(&text).id(),
+        "AutoCompleteTextField" => {
+            let c = ui::AutoCompleteTextField::new();
+            c.set_placeholder(&text);
+            c.id()
+        }
+        "Badge" => ui::Badge::new(&text).id(),
+        "Button" => ui::Button::new(&text).id(),
+        "Canvas" => ui::Canvas::new(control.width, control.height).id(),
+        "Card" => ui::Card::new().id(),
+        "CheckBox" => ui::Checkbox::new(&text).id(),
+        "ColorWell" => ui::ColorWell::new().id(),
+        "ComboBox" => {
+            let c = ui::ComboBox::new();
+            c.set_items(&items);
+            c.set_placeholder(&text);
+            c.id()
+        }
+        "DataGrid" => {
+            let c = ui::DataGrid::new(control.width, control.height);
+            c.set_columns(&[
+                ui::ColumnDef::new("Property").width(120),
+                ui::ColumnDef::new("Value").width(120),
+            ]);
+            c.id()
+        }
+        "DatePicker" => ui::DatePicker::new().id(),
+        "DateTimePicker" => ui::DateTimePicker::new().id(),
+        "Divider" => ui::Divider::new().id(),
+        "DropDown" => ui::DropDown::new(&items).id(),
+        "Expander" => ui::Expander::new(&text).id(),
+        "FlowPanel" => ui::FlowPanel::new().id(),
+        "GroupBox" => ui::GroupBox::new(&text).id(),
+        "IconButton" => ui::IconButton::new("...").id(),
+        "ImageButton" => ui::ImageButton::new(control.width, control.height).id(),
+        "ImageView" => ui::ImageView::new(control.width, control.height).id(),
+        "Label" => ui::Label::new(&text).id(),
+        "LinkLabel" => ui::LinkLabel::new(&text).id(),
+        "ListBox" => ui::ListBox::new(&items).id(),
+        "NavigationBar" => ui::NavigationBar::new(&text).id(),
+        "Panel" => ui::View::new().id(),
+        "PlainButton" => ui::PlainButton::new(&text).id(),
+        "ProgressBar" => ui::ProgressBar::new(preview_value(control)).id(),
+        "RadioButton" => ui::RadioButton::new(&text).id(),
+        "RadioGroup" => {
+            let c = ui::RadioGroup::new();
+            c.set_text(&items);
+            c.id()
+        }
+        "ScrollView" => ui::ScrollView::new().id(),
+        "SearchField" => ui::SearchField::new().id(),
+        "SegmentedControl" => ui::SegmentedControl::new(&items).id(),
+        "Slider" => ui::Slider::new(preview_value(control)).id(),
+        "Spinner" => ui::Spinner::new().id(),
+        "SplitView" => ui::SplitView::new().id(),
+        "StackPanel" => ui::StackPanel::new(ui::ORIENTATION_VERTICAL).id(),
+        "StatusIndicator" => ui::StatusIndicator::new(&text).id(),
+        "Stepper" => ui::Stepper::new().id(),
+        "TabBar" => ui::TabBar::new(&items).id(),
+        "TableLayout" => ui::TableLayout::new(2).id(),
+        "TableView" => ui::TableView::new().id(),
+        "Tag" => ui::Tag::new(&text).id(),
+        "TextArea" => {
+            let c = ui::TextArea::new();
+            c.set_text(&text);
+            c.set_read_only(true);
+            c.id()
+        }
+        "TextEditor" => {
+            let c = ui::TextEditor::new(control.width, control.height);
+            c.set_text(&text);
+            c.set_read_only(true);
+            c.id()
+        }
+        "TextField" => {
+            let c = ui::TextField::new();
+            c.set_text(&text);
+            c.set_read_only(true);
+            c.id()
+        }
+        "TimePicker" => ui::TimePicker::new().id(),
+        "Toggle" => ui::Toggle::new(false).id(),
+        "Toolbar" => ui::Toolbar::new().id(),
+        "Tooltip" => ui::Tooltip::new(&text).id(),
+        _ => return None,
+    };
+    Some(ui::Control::from_id(id))
+}
+
+fn apply_preview_common_style(preview: &ui::Control, control: &DesignerControl) {
+    if let Some(color) = parse_color(&control.property_value("BackgroundColor")) {
+        preview.set_color(color);
+    }
+    if let Some(color) = parse_color(&control.property_value("TextColor")) {
+        preview.set_text_color(color);
+    }
+    if let Some(font_size) = parse_u32(&control.property_value("FontSize")) {
+        preview.set_font_size(font_size);
+    }
+}
+
+fn preview_text(control: &DesignerControl) -> String {
+    if !control.text.is_empty() {
+        return control.text.clone();
+    }
+    let value = control.property_value("Text");
+    if !value.is_empty() {
+        value
+    } else {
+        String::from(control.kind.as_str())
+    }
+}
+
+fn preview_items(control: &DesignerControl) -> String {
+    let items = control.property_value("Items");
+    if !items.is_empty() {
+        items
+    } else if !control.text.is_empty() {
+        control.text.clone()
+    } else {
+        String::from("Item 1|Item 2")
+    }
+}
+
+fn preview_value(control: &DesignerControl) -> u32 {
+    parse_u32(&control.property_value("Value")).unwrap_or(40)
+}
+
+fn parse_u32(value: &str) -> Option<u32> {
+    value.trim().parse::<u32>().ok()
+}
+
+fn parse_color(value: &str) -> Option<u32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix('#'))?;
+    u32::from_str_radix(hex, 16).ok()
 }
 
 fn is_container_kind(kind: &str) -> bool {

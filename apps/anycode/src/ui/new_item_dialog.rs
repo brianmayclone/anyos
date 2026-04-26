@@ -77,20 +77,20 @@ pub fn show() {
 
     btn_file.on_click(move |_| {
         crate::logic::commands::new_text_file();
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 
     btn_form.on_click(move |_| {
         crate::logic::commands::show_new_ui_form_dialog();
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 
     btn_service.on_click(move |_| {
         crate::logic::commands::manage_connected_services();
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 
     btn_cancel.on_click(move |_| {
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 }

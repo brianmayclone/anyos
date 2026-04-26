@@ -171,7 +171,6 @@ fn main() {
         | ui::WIN_FLAG_NO_MINIMIZE
         | ui::WIN_FLAG_NO_MAXIMIZE;
     let win = ui::Window::new_with_flags("System", wx, wy, DIALOG_W, DIALOG_H, flags);
-    win.set_color(0xFFF0F0F0);
 
     // ── Logo ──
     let mut y_cursor: i32 = 30;

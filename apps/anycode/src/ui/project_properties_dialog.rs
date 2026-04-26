@@ -81,7 +81,7 @@ pub fn show() {
     btn_close.set_color(tc.control_bg);
     footer.add(&btn_close);
     btn_close.on_click(move |_| {
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 }
 
@@ -110,13 +110,30 @@ fn application_text() -> alloc::string::String {
     let Some(project) = s.current_project.as_ref() else {
         return alloc::string::String::new();
     };
+    let startup_project = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.startup_project.as_str())
+        .unwrap_or(project.name.as_str());
+    let startup_form = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.startup_form.as_str())
+        .unwrap_or("");
+    let project_count = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.project_count(project))
+        .unwrap_or(1);
     format!(
-        "Name: {}\nRoot: {}\nType: {}\nWorkspace: {}\nStartup project: {}\nStartup form: pending selection model\n",
+        "Name: {}\nRoot: {}\nType: {}\nWorkspace: {}\nProjects: {}\nStartup project: {}\nStartup form: {}\nMetadata: .anycode-workspace\n",
         project.name,
         project.root,
         project.project_type.display_name(),
         if project.is_workspace { "yes" } else { "no" },
-        project.name
+        project_count,
+        startup_project,
+        if startup_form.is_empty() { "not set" } else { startup_form }
     )
 }
 
@@ -125,10 +142,16 @@ fn build_text() -> alloc::string::String {
     let Some(project) = s.current_project.as_ref() else {
         return alloc::string::String::new();
     };
+    let build_order = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.build_order.join(" -> "))
+        .unwrap_or_else(|| project.name.clone());
     format!(
-        "Configuration: {}\nTargets: {}\nBuild order: workspace order / dependency graph pending\nToolchain: ccargo/crust/anyrc from confd settings\n",
+        "Configuration: {}\nTargets: {}\nBuild order: {}\nToolchain: ccargo/crust/anyrc from confd settings\n",
         project.active_configuration.display_name(),
-        project.target_count()
+        project.target_count(),
+        build_order
     )
 }
 
@@ -137,14 +160,24 @@ fn run_text() -> alloc::string::String {
     let Some(project) = s.current_project.as_ref() else {
         return alloc::string::String::new();
     };
+    let startup_run_config = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.startup_run_config.as_str())
+        .unwrap_or("");
     format!(
-        "Run configurations: {}\nToolbar selected run config is reflected from Project metadata.\n",
+        "Run configurations: {}\nStartup run config: {}\nToolbar selected run config is reflected from Project metadata.\n",
         project.run_configs.len()
             + project
                 .cargo_projects
                 .iter()
                 .map(|p| p.run_configs.len())
-                .sum::<usize>()
+                .sum::<usize>(),
+        if startup_run_config.is_empty() {
+            "not set"
+        } else {
+            startup_run_config
+        }
     )
 }
 

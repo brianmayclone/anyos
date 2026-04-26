@@ -223,6 +223,11 @@ pub fn compile(
         &resolve_result,
     );
 
+    let call_target_errors = validate_mir_call_targets(&mir_bodies, &interner);
+    if !call_target_errors.is_empty() {
+        return Err(call_target_errors);
+    }
+
     // 7. Borrow check
     for body in &mir_bodies {
         let result = check_borrows(
@@ -1166,9 +1171,64 @@ fn format_mir_place(place: &crate::mir::Place) -> String {
     out
 }
 
-fn format_mir_ty(ty: &crate::typeck::TyKind, interner: &Interner) -> String {
-    let _ = interner;
+fn format_mir_ty(ty: &crate::typeck::TyKind, _interner: &Interner) -> String {
     format!("{:?}", ty)
+}
+
+fn validate_mir_call_targets(
+    bodies: &[MirBody],
+    interner: &Interner,
+) -> Vec<crate::diagnostics::Diagnostic> {
+    let mut errors = Vec::new();
+    for body in bodies {
+        let body_name = interner.resolve(body.name).to_string();
+        for (bb_idx, bb) in body.basic_blocks.iter().enumerate() {
+            if let crate::mir::Terminator::Call { func, .. } = &bb.terminator {
+                match func {
+                    crate::mir::Operand::Constant(c) => match &c.value {
+                        crate::mir::ConstValue::FnItem(_)
+                        | crate::mir::ConstValue::MethodRef(_) => {}
+                        _ => errors.push(crate::diagnostics::Diagnostic::new(
+                            crate::diagnostics::Level::Error,
+                            &format!(
+                                "invalid MIR call target in {} bb{}: {} ({})\n{}",
+                                body_name,
+                                bb_idx,
+                                format_mir_operand(func, interner),
+                                format_mir_terminator(&bb.terminator, interner),
+                                format_mir_invalid_context(body, bb_idx, interner)
+                            ),
+                            body.span,
+                        )),
+                    },
+                    crate::mir::Operand::Copy(_)
+                    | crate::mir::Operand::Move(_)
+                    | crate::mir::Operand::Ref(_, _) => {}
+                }
+            }
+        }
+    }
+    errors
+}
+
+fn format_mir_invalid_context(body: &MirBody, bb_idx: usize, interner: &Interner) -> String {
+    let mut out = String::new();
+    out.push_str("locals:");
+    for (idx, local) in body.locals.iter().enumerate() {
+        out.push_str(&format!(
+            " _{}:{:?}",
+            idx,
+            format_mir_ty(&local.ty, interner)
+        ));
+    }
+    if let Some(bb) = body.basic_blocks.get(bb_idx) {
+        out.push_str(" statements:");
+        for stmt in &bb.statements {
+            out.push_str(" ");
+            out.push_str(&format_mir_statement(stmt, interner));
+        }
+    }
+    out
 }
 
 /// Build an ELF object file containing the runtime support stubs.

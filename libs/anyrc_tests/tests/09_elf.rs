@@ -1,14 +1,14 @@
-use anyrc::parser::Parser;
-use anyrc::intern::Interner;
-use anyrc::macros::expand_macros;
+use anyrc::codegen::emit::CodeEmitter;
+use anyrc::codegen::regalloc;
 use anyrc::hir_lower::LoweringContext;
+use anyrc::intern::Interner;
+use anyrc::linker::elf::{self, ElfRelocation, ElfSymbol, ObjectFile, Section};
+use anyrc::linker::link::{self, LinkErrorKind, TargetAbi};
+use anyrc::macros::expand_macros;
+use anyrc::mir_build::MirBuilder;
+use anyrc::parser::Parser;
 use anyrc::resolve::Resolver;
 use anyrc::typeck::TypeChecker;
-use anyrc::mir_build::MirBuilder;
-use anyrc::codegen::regalloc;
-use anyrc::codegen::emit::CodeEmitter;
-use anyrc::linker::elf::{self, ElfRelocation, ObjectFile, Section, ElfSymbol};
-use anyrc::linker::link::{self, LinkErrorKind, TargetAbi};
 
 fn compile_to_object(src: &str) -> Vec<u8> {
     let mut interner = Interner::new();
@@ -31,8 +31,14 @@ fn compile_to_object(src: &str) -> Vec<u8> {
     let field_types = regalloc::StructFieldTypes::new();
     for body in &bodies {
         let alloc = regalloc::allocate(body, &struct_sizes);
-        let (code, _relocs) =
-            CodeEmitter::emit_fn(body, &alloc, &interner, &struct_sizes, &field_offsets, &field_types);
+        let (code, _relocs) = CodeEmitter::emit_fn(
+            body,
+            &alloc,
+            &interner,
+            &struct_sizes,
+            &field_offsets,
+            &field_types,
+        );
         let fn_offset = text_data.len() as u64;
         let fn_size = code.len() as u64;
         let fn_name = interner.resolve(body.name).to_string();
@@ -41,15 +47,13 @@ fn compile_to_object(src: &str) -> Vec<u8> {
     }
 
     let obj = ObjectFile {
-        sections: vec![
-            Section {
-                name: ".text".to_string(),
-                data: text_data,
-                sh_type: 1,
-                sh_flags: 0x6,
-                sh_addralign: 16,
-            },
-        ],
+        sections: vec![Section {
+            name: ".text".to_string(),
+            data: text_data,
+            sh_type: 1,
+            sh_flags: 0x6,
+            sh_addralign: 16,
+        }],
         symbols,
         relocations: vec![],
     };
@@ -57,7 +61,7 @@ fn compile_to_object(src: &str) -> Vec<u8> {
 }
 
 fn compile_and_link(src: &str) -> Vec<u8> {
-    use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+    use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
     let options = CompileOptions {
         input: "test.rs".to_string(),
         output: "test".to_string(),
@@ -71,7 +75,7 @@ fn compile_and_link(src: &str) -> Vec<u8> {
 }
 
 fn compile_and_link_anyos(src: &str) -> Vec<u8> {
-    use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+    use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
     let options = CompileOptions {
         input: "test.rs".to_string(),
         output: "test".to_string(),
@@ -92,8 +96,8 @@ fn compile_and_link_anyos(src: &str) -> Vec<u8> {
 fn generate_valid_elf_object() {
     let obj = compile_to_object("fn foo() -> i32 { 42 }");
     assert_eq!(&obj[0..4], &[0x7f, b'E', b'L', b'F']);
-    assert_eq!(obj[4], 2);  // ELFCLASS64
-    assert_eq!(obj[5], 1);  // ELFDATA2LSB
+    assert_eq!(obj[4], 2); // ELFCLASS64
+    assert_eq!(obj[5], 1); // ELFDATA2LSB
 }
 
 #[test]

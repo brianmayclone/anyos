@@ -334,17 +334,23 @@ pub fn blit_alpha_opacity(
             } else {
                 let dst = unsafe { *s.pixels.add(di) };
                 let inv = 255 - a;
+                let da = (dst >> 24) & 0xFF;
                 let sr = (pixel >> 16) & 0xFF;
                 let sg = (pixel >> 8) & 0xFF;
                 let sb = pixel & 0xFF;
                 let dr = (dst >> 16) & 0xFF;
                 let dg = (dst >> 8) & 0xFF;
                 let db = dst & 0xFF;
-                let r = (sr * a + dr * inv) / 255;
-                let g = (sg * a + dg * inv) / 255;
-                let b = (sb * a + db * inv) / 255;
+                let dst_a = da * inv / 255;
+                let out_a = a + dst_a;
+                if out_a == 0 {
+                    continue;
+                }
+                let r = (sr * a + dr * dst_a) / out_a;
+                let g = (sg * a + dg * dst_a) / out_a;
+                let b = (sb * a + db * dst_a) / out_a;
                 unsafe {
-                    *s.pixels.add(di) = 0xFF000000 | (r << 16) | (g << 8) | b;
+                    *s.pixels.add(di) = (out_a << 24) | (r << 16) | (g << 8) | b;
                 }
             }
         }

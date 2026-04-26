@@ -1,12 +1,14 @@
 use acargo::build::{self, BuildConfig};
-use std::panic::{self, AssertUnwindSafe};
 use std::fs;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .to_path_buf()
 }
 
@@ -21,6 +23,8 @@ fn make_config(target: Option<&str>) -> BuildConfig {
         link_args: Vec::new(),
         env_vars: Vec::new(),
         target: target.map(str::to_string),
+        bin: None,
+        binary_format: None,
     }
 }
 
@@ -106,6 +110,20 @@ fn build_repo_lib(rel: &str, target: Option<&str>) -> Result<(), String> {
 #[test]
 fn compile_all_bin_packages_with_ccargo() {
     run_sweep("bin", bin_package_dirs(), None);
+}
+
+#[test]
+fn compile_smoke_bin_packages_with_ccargo() {
+    let root = repo_root();
+    run_sweep(
+        "bin smoke",
+        vec![
+            root.join("bin/true"),
+            root.join("bin/pwd"),
+            root.join("bin/clear"),
+        ],
+        None,
+    );
 }
 
 #[test]

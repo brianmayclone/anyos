@@ -127,13 +127,12 @@ impl SearchPanel {
         // Group results by file
         let mut current_file = String::new();
         let mut file_node: u32 = 0;
-        let mut file_count: u32 = 0;
 
         for result in results {
             if result.file_path != current_file {
                 // New file group
                 current_file = result.file_path.clone();
-                file_count = results
+                let file_count = results
                     .iter()
                     .filter(|r| r.file_path == current_file)
                     .count() as u32;

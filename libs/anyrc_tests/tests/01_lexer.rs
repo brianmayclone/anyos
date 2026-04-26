@@ -1,5 +1,5 @@
-use anyrc::lexer::{Lexer, TokenKind, Keyword};
 use anyrc::intern::Interner;
+use anyrc::lexer::{Keyword, Lexer, TokenKind};
 
 fn lex(src: &str) -> Vec<TokenKind> {
     let mut interner = Interner::new();
@@ -7,7 +7,9 @@ fn lex(src: &str) -> Vec<TokenKind> {
     let mut tokens = Vec::new();
     loop {
         let tok = lexer.next_token();
-        if tok.kind == TokenKind::Eof { break; }
+        if tok.kind == TokenKind::Eof {
+            break;
+        }
         tokens.push(tok.kind);
     }
     tokens
@@ -190,7 +192,11 @@ fn lex_raw_identifier() {
 fn lex_all_keywords() {
     let tokens = lex("fn let mut pub struct enum impl trait type use mod crate self Self super as in for while loop if else match return break continue where const static unsafe extern ref move true false");
     for tok in &tokens {
-        assert!(matches!(tok, TokenKind::Kw(_)), "expected keyword, got {:?}", tok);
+        assert!(
+            matches!(tok, TokenKind::Kw(_)),
+            "expected keyword, got {:?}",
+            tok
+        );
     }
 }
 

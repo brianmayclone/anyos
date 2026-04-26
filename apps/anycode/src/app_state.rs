@@ -3,7 +3,7 @@ use libanyui_client as anyui;
 
 use crate::logic::{
     ai, build, config, debug_backend, debug_session, diagnostic_pipeline, diagnostics,
-    file_manager, git, plugin, project, symbol_index, tasks, test_explorer,
+    file_manager, git, plugin, project, solution, symbol_index, tasks, test_explorer,
 };
 use crate::ui::{
     activity_bar, ai_panel, command_palette, editor_view, extensions_panel, git_panel,
@@ -16,6 +16,7 @@ pub struct AppState {
     pub file_mgr: file_manager::FileManager,
     pub config: config::Config,
     pub current_project: Option<project::Project>,
+    pub solution: Option<solution::SolutionMetadata>,
 
     // Subsystems
     pub task_mgr: tasks::TaskManager,

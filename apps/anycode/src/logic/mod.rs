@@ -20,6 +20,7 @@ pub mod plugin;
 pub mod project;
 pub mod rust_backend;
 pub mod search;
+pub mod solution;
 pub mod symbol_index;
 pub mod symbols;
 pub mod tasks;

@@ -1,7 +1,7 @@
-use anyrc::parser::Parser;
+use anyrc::ast::*;
 use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
-use anyrc::ast::*;
+use anyrc::parser::Parser;
 
 fn parse_and_expand(src: &str) -> Crate {
     let mut interner = Interner::new();
@@ -21,19 +21,27 @@ fn parse_and_expand_with_interner(src: &str) -> (Crate, Interner) {
 
 #[test]
 fn expand_simple_macro() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! five {
             () => { 5 }
         }
         fn main() -> i32 { five!() }
-    "#);
+    "#,
+    );
     // After expansion, five!() should be replaced with the literal 5
     match &krate.items[1] {
         Item::Fn(f) => {
             let body = f.body.as_ref().unwrap();
             match &body.stmts[0] {
                 Stmt::Expr(Expr::Lit(Literal::Int(5), _)) => {} // ok
-                other => panic!("expected literal 5, got {:?}", std::mem::discriminant(match other { Stmt::Expr(e) => e, _ => panic!() })),
+                other => panic!(
+                    "expected literal 5, got {:?}",
+                    std::mem::discriminant(match other {
+                        Stmt::Expr(e) => e,
+                        _ => panic!(),
+                    })
+                ),
             }
         }
         _ => panic!("expected fn"),
@@ -42,12 +50,14 @@ fn expand_simple_macro() {
 
 #[test]
 fn expand_macro_with_expr_arg() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! double {
             ($x:expr) => { $x + $x }
         }
         fn main() -> i32 { double!(21) }
-    "#);
+    "#,
+    );
     match &krate.items[1] {
         Item::Fn(f) => {
             let body = f.body.as_ref().unwrap();
@@ -63,10 +73,12 @@ fn expand_macro_with_expr_arg() {
 
 #[test]
 fn expand_global_app_state_builtin_item_macro() {
-    let (krate, interner) = parse_and_expand_with_interner(r#"
+    let (krate, interner) = parse_and_expand_with_interner(
+        r#"
         struct AppState {}
         anyos_std::global_app_state!(AppState);
-    "#);
+    "#,
+    );
 
     assert_eq!(krate.items.len(), 3);
     match &krate.items[1] {
@@ -81,7 +93,8 @@ fn expand_global_app_state_builtin_item_macro() {
 
 #[test]
 fn expand_format_macro_preserves_escaped_quotes_in_string_args() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         fn main(attr_name: i32, meta_item_name: i32) {
             format!(
                 "expected serde {} attribute to be a string: `{} = \"...\"`",
@@ -89,7 +102,8 @@ fn expand_format_macro_preserves_escaped_quotes_in_string_args() {
                 meta_item_name,
             );
         }
-    "#);
+    "#,
+    );
 
     match &krate.items[0] {
         Item::Fn(f) => {
@@ -99,7 +113,10 @@ fn expand_format_macro_preserves_escaped_quotes_in_string_args() {
             };
             match &args[0] {
                 Expr::Lit(Literal::String(s), _) => {
-                    assert_eq!(s, "expected serde {} attribute to be a string: `{} = \"...\"`");
+                    assert_eq!(
+                        s,
+                        "expected serde {} attribute to be a string: `{} = \"...\"`"
+                    );
                 }
                 _ => panic!("expected first format arg to remain a string literal"),
             }
@@ -110,11 +127,13 @@ fn expand_format_macro_preserves_escaped_quotes_in_string_args() {
 
 #[test]
 fn expand_format_macro_strips_named_argument_labels() {
-    let (krate, interner) = parse_and_expand_with_interner(r#"
+    let (krate, interner) = parse_and_expand_with_interner(
+        r#"
         fn main(name: &str) {
             format!("hello {name}", name = name);
         }
-    "#);
+    "#,
+    );
 
     match &krate.items[0] {
         Item::Fn(f) => {
@@ -138,12 +157,14 @@ fn expand_format_macro_strips_named_argument_labels() {
 
 #[test]
 fn expand_quote_macros_to_proc_macro2_token_stream_constructor() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         fn main(span: i32) {
             quote! { struct Demo; };
             quote_spanned!(span=> impl Demo {});
         }
-    "#);
+    "#,
+    );
 
     match &krate.items[0] {
         Item::Fn(f) => {
@@ -170,12 +191,14 @@ fn expand_quote_macros_to_proc_macro2_token_stream_constructor() {
 
 #[test]
 fn expand_macro_with_repetition() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! count {
             ($($x:expr),*) => { 0 $(+ 1)* }
         }
         fn main() -> i32 { count!(a, b, c) }
-    "#);
+    "#,
+    );
     // count!(a, b, c) should expand to 0 + 1 + 1 + 1
     match &krate.items[1] {
         Item::Fn(f) => {
@@ -187,7 +210,8 @@ fn expand_macro_with_repetition() {
 
 #[test]
 fn expand_unseparated_ty_repetition() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         trait SeekNum {}
 
         macro_rules! impl_seek_num {
@@ -199,25 +223,29 @@ fn expand_unseparated_ty_repetition() {
         }
 
         impl_seek_num! { i32 u32 u64 u128 usize }
-    "#);
+    "#,
+    );
     assert_eq!(krate.items.len(), 7);
 }
 
 #[test]
 fn expand_macro_with_ident_arg() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! make_fn {
             ($name:ident) => { fn $name() -> i32 { 42 } }
         }
         make_fn!(hello);
-    "#);
+    "#,
+    );
     // Should have two items: the macro def and the generated fn
     assert!(krate.items.len() >= 2);
 }
 
 #[test]
 fn expand_syn_style_ast_struct_keyword_idents_and_meta_attrs() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! ast_struct {
             (
                 $(#[$attr:meta])*
@@ -233,13 +261,18 @@ fn expand_syn_style_ast_struct_keyword_idents_and_meta_attrs() {
                 repr: usize,
             }
         }
-    "#);
-    assert!(krate.items.iter().any(|item| matches!(item, Item::Struct(s) if s.fields.len() == 1)));
+    "#,
+    );
+    assert!(krate
+        .items
+        .iter()
+        .any(|item| matches!(item, Item::Struct(s) if s.fields.len() == 1)));
 }
 
 #[test]
 fn expand_syn_style_punctuation_struct_repetition() {
-    let (krate, interner) = parse_and_expand_with_interner(r#"
+    let (krate, interner) = parse_and_expand_with_interner(
+        r#"
         struct Span;
 
         macro_rules! define_punctuation_structs {
@@ -257,19 +290,22 @@ fn expand_syn_style_punctuation_struct_repetition() {
             "_" pub struct Underscore/1 /// wildcard patterns
             "(" pub struct Paren/1 /// parentheses
         }
-    "#);
+    "#,
+    );
 
     assert!(krate.items.iter().any(|item| {
         matches!(item, Item::Struct(s) if interner.resolve(s.name) == "Underscore")
     }));
-    assert!(krate.items.iter().any(|item| {
-        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "Paren")
-    }));
+    assert!(krate
+        .items
+        .iter()
+        .any(|item| { matches!(item, Item::Struct(s) if interner.resolve(s.name) == "Paren") }));
 }
 
 #[test]
 fn expand_prefers_local_macro_definition_over_same_named_macro_elsewhere() {
-    let (krate, interner) = parse_and_expand_with_interner(r#"
+    let (krate, interner) = parse_and_expand_with_interner(
+        r#"
         mod a {
             macro_rules! make {
                 () => {
@@ -287,33 +323,37 @@ fn expand_prefers_local_macro_definition_over_same_named_macro_elsewhere() {
 
             make!();
         }
-    "#);
+    "#,
+    );
 
     let Item::Mod(module) = &krate.items[1] else {
         panic!("expected module");
     };
     let items = module.items.as_ref().expect("module should have items");
-    assert!(items.iter().any(|item| {
-        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "B")
-    }));
-    assert!(!items.iter().any(|item| {
-        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "A")
-    }));
+    assert!(items
+        .iter()
+        .any(|item| { matches!(item, Item::Struct(s) if interner.resolve(s.name) == "B") }));
+    assert!(!items
+        .iter()
+        .any(|item| { matches!(item, Item::Struct(s) if interner.resolve(s.name) == "A") }));
 }
 
 #[test]
 fn macro_not_found_is_preserved() {
     // Unknown macros should remain as MacroCall (or could be an error)
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         fn main() { unknown_macro!(1, 2, 3); }
-    "#);
+    "#,
+    );
     // Should not crash
     assert_eq!(krate.items.len(), 1);
 }
 
 #[test]
 fn empty_expr_macro_expansion_is_not_parsed_as_expr() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! maybe_empty {
             () => {}
         }
@@ -321,13 +361,15 @@ fn empty_expr_macro_expansion_is_not_parsed_as_expr() {
         fn main() {
             maybe_empty!();
         }
-    "#);
+    "#,
+    );
     assert_eq!(krate.items.len(), 2);
 }
 
 #[test]
 fn expand_cfg_if_items() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")] {
                 pub use crate::fallback::AHasher;
@@ -337,7 +379,8 @@ fn expand_cfg_if_items() {
                 mod fallback_hash;
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(krate.items.len(), 3);
     for item in &krate.items {
         match item {
@@ -350,7 +393,8 @@ fn expand_cfg_if_items() {
 
 #[test]
 fn expand_cfg_if_protects_macro_calls_inside_item_branches() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! platform_items {
             () => {
                 mod selected_a;
@@ -365,7 +409,8 @@ fn expand_cfg_if_protects_macro_calls_inside_item_branches() {
                 mod fallback;
             }
         }
-    "#);
+    "#,
+    );
 
     let mut cfg_protected_mods = 0;
     for item in &krate.items {
@@ -379,7 +424,8 @@ fn expand_cfg_if_protects_macro_calls_inside_item_branches() {
 
 #[test]
 fn expand_cfg_if_statements() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         fn main() {
             cfg_if! {
                 if #[cfg(target_arch = "x86_64")] {
@@ -391,7 +437,8 @@ fn expand_cfg_if_statements() {
 
             tokens;
         }
-    "#);
+    "#,
+    );
     let Item::Fn(f) = &krate.items[0] else {
         panic!("expected fn");
     };
@@ -403,7 +450,8 @@ fn expand_cfg_if_statements() {
 
 #[test]
 fn expand_attributed_statement_macro_to_item() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! make_mod {
             () => {
                 #[cfg_attr(doc_cfg, doc(cfg(rust = "1.89.0")))]
@@ -415,7 +463,8 @@ fn expand_attributed_statement_macro_to_item() {
             #[cfg(not(disabled))]
             make_mod!();
         }
-    "#);
+    "#,
+    );
     let Item::Fn(f) = &krate.items[1] else {
         panic!("expected fn");
     };
@@ -428,7 +477,8 @@ fn expand_attributed_statement_macro_to_item() {
 
 #[test]
 fn expand_nested_macro_calls_inside_generated_module() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! module {
             ($name:ident) => {
                 pub mod $name {
@@ -441,7 +491,8 @@ fn expand_nested_macro_calls_inside_generated_module() {
         }
 
         module!(big_endian);
-    "#);
+    "#,
+    );
     let Item::Mod(m) = &krate.items[1] else {
         panic!("expected generated module");
     };
@@ -451,7 +502,8 @@ fn expand_nested_macro_calls_inside_generated_module() {
 
 #[test]
 fn expand_macro_path_fragments() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! make_fn {
             ($name:ident, $ctor:path) => {
                 pub fn $name() -> u16 {
@@ -461,13 +513,15 @@ fn expand_macro_path_fragments() {
         }
 
         make_fn!(from_be, u16::from_be);
-    "#);
+    "#,
+    );
     assert!(matches!(krate.items[1], Item::Fn(_)));
 }
 
 #[test]
 fn expand_macro_path_fragments_with_float_primitive_idents() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         macro_rules! define_type {
             (
                 $name:ident,
@@ -498,8 +552,12 @@ fn expand_macro_path_fragments_with_float_primitive_idents() {
         pub mod big_endian {
             pub type F32 = crate::F32;
         }
-    "#);
-    assert!(krate.items.iter().any(|item| matches!(item, Item::Struct(_))));
+    "#,
+    );
+    assert!(krate
+        .items
+        .iter()
+        .any(|item| matches!(item, Item::Struct(_))));
     assert!(krate.items.iter().any(|item| {
         matches!(
             item,
@@ -513,7 +571,8 @@ fn expand_macro_path_fragments_with_float_primitive_idents() {
 
 #[test]
 fn expand_doc_comment_wrapped_float_type_macro_and_module_alias() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         struct PhantomData<T>;
         trait ByteOrder {}
         enum BigEndian {}
@@ -607,8 +666,12 @@ fn expand_doc_comment_wrapped_float_type_macro_and_module_alias() {
         );
 
         module!(big_endian, BigEndian);
-    "#);
-    assert!(krate.items.iter().any(|item| matches!(item, Item::Struct(_))));
+    "#,
+    );
+    assert!(krate
+        .items
+        .iter()
+        .any(|item| matches!(item, Item::Struct(_))));
     assert!(krate.items.iter().any(|item| {
         matches!(
             item,
@@ -622,7 +685,8 @@ fn expand_doc_comment_wrapped_float_type_macro_and_module_alias() {
 
 #[test]
 fn expand_define_type_with_zerocopy_style_float_arguments() {
-    let (krate, interner) = parse_and_expand_with_interner(r#"
+    let (krate, interner) = parse_and_expand_with_interner(
+        r#"
         struct PhantomData<T>;
         trait ByteOrder {}
         enum BigEndian {}
@@ -747,13 +811,16 @@ fn expand_define_type_with_zerocopy_style_float_arguments() {
         );
 
         module!(big_endian, BigEndian);
-    "#);
-    assert!(krate.items.iter().any(|item| {
-        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "F32")
-    }));
-    assert!(krate.items.iter().any(|item| {
-        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "F64")
-    }));
+    "#,
+    );
+    assert!(krate
+        .items
+        .iter()
+        .any(|item| { matches!(item, Item::Struct(s) if interner.resolve(s.name) == "F32") }));
+    assert!(krate
+        .items
+        .iter()
+        .any(|item| { matches!(item, Item::Struct(s) if interner.resolve(s.name) == "F64") }));
     assert!(krate.items.iter().any(|item| {
         matches!(
             item,
@@ -767,9 +834,11 @@ fn expand_define_type_with_zerocopy_style_float_arguments() {
 
 #[test]
 fn expand_cpufeatures_new_item_macro() {
-    let krate = parse_and_expand(r#"
+    let krate = parse_and_expand(
+        r#"
         cpufeatures::new!(avx2_cpuid, "avx2");
-    "#);
+    "#,
+    );
     assert_eq!(krate.items.len(), 1);
     match &krate.items[0] {
         Item::Mod(m) => assert!(m.items.as_ref().is_some_and(|items| items.len() >= 4)),

@@ -154,6 +154,7 @@ impl Sidebar {
         self.tree.set_expanded(project_node, true);
         self.set_folder_icon(project_node);
 
+        self.add_solution_nodes(project_node, project);
         self.add_config_nodes(project_node, project);
         self.add_target_nodes(project_node, project);
         self.add_crate_nodes(project_node, project);
@@ -175,6 +176,49 @@ impl Sidebar {
         self.set_folder_icon(root_node);
         self.add_dir_entries(root_node, &project.root, 0, false);
         self.tree.set_expanded(root_node, true);
+    }
+
+    fn add_solution_nodes(&mut self, parent: u32, project: &Project) {
+        let solution = crate::app()
+            .solution
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| crate::logic::solution::SolutionMetadata::load(project));
+        let tc = ui::theme::colors();
+        let root = self.tree.add_child(parent, "Solution");
+        self.remember_virtual(root);
+        self.tree.set_node_style(root, STYLE_BOLD);
+        self.tree.set_node_text_color(root, tc.text);
+        self.set_system_icon(root, "layout-dashboard", tc.text_secondary);
+
+        let startup = self.tree.add_child(
+            root,
+            &format!("Startup Project: {}", solution.startup_project),
+        );
+        self.remember_virtual(startup);
+        self.set_system_icon(startup, "rocket", tc.success);
+
+        if !solution.startup_form.is_empty() {
+            let form = self
+                .tree
+                .add_child(root, &format!("Startup Form: {}", solution.startup_form));
+            self.remember_virtual(form);
+            self.set_system_icon(form, "panel-top", tc.text_secondary);
+        }
+
+        let order = self.tree.add_child(
+            root,
+            &format!("Build Order ({})", solution.build_order.len()),
+        );
+        self.remember_virtual(order);
+        self.set_system_icon(order, "list-ordered", tc.text_secondary);
+        for name in &solution.build_order {
+            let node = self.tree.add_child(order, name);
+            self.remember_virtual(node);
+            self.set_system_icon(node, "box", tc.text_secondary);
+        }
+        self.tree.set_expanded(order, false);
+        self.tree.set_expanded(root, false);
     }
 
     fn add_crate_nodes(&mut self, parent: u32, project: &Project) {

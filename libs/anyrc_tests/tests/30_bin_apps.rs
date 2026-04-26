@@ -78,7 +78,11 @@ fn truncate_output(output: &str) -> String {
     if output.len() <= MAX {
         return output.to_string();
     }
-    format!("{}... <truncated {} bytes>", &output[..MAX], output.len() - MAX)
+    format!(
+        "{}... <truncated {} bytes>",
+        &output[..MAX],
+        output.len() - MAX
+    )
 }
 
 macro_rules! ccargo_crate_tests {

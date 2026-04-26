@@ -1,6 +1,6 @@
-use anyrc::parser::Parser;
-use anyrc::intern::Interner;
 use anyrc::ast::*;
+use anyrc::intern::Interner;
+use anyrc::parser::Parser;
 
 fn parse(src: &str) -> Crate {
     let mut interner = Interner::new();
@@ -24,12 +24,14 @@ fn parse_simple_fn() {
 
 #[test]
 fn parse_inner_doc_comment_in_inline_module() {
-    let krate = parse(r#"
+    let krate = parse(
+        r#"
         pub mod hash_map {
             //! A hash map implemented with quadratic probing.
             pub use crate::map::HashMap;
         }
-    "#);
+    "#,
+    );
     match &krate.items[0] {
         Item::Mod(m) => {
             assert_eq!(m.attrs.len(), 1);
@@ -64,7 +66,8 @@ fn parse_generic_param_outer_attribute() {
 
 #[test]
 fn parse_enum_where_clause_after_generics() {
-    let krate = parse("pub enum Entry<'a, T, A = Global> where A: Allocator { Occupied(T), Vacant }");
+    let krate =
+        parse("pub enum Entry<'a, T, A = Global> where A: Allocator { Occupied(T), Vacant }");
     match &krate.items[0] {
         Item::Enum(enum_def) => {
             assert_eq!(enum_def.generics.params.len(), 3);
@@ -98,7 +101,8 @@ fn parse_higher_ranked_supertrait_bound() {
 
 #[test]
 fn parse_stringify_macro_pattern_as_literal() {
-    let krate = parse(r#"fn f(value: &str) -> i32 { match value { stringify!(Unix) => 1, _ => 0 } }"#);
+    let krate =
+        parse(r#"fn f(value: &str) -> i32 { match value { stringify!(Unix) => 1, _ => 0 } }"#);
     match &krate.items[0] {
         Item::Fn(f) => assert!(f.body.is_some()),
         _ => panic!("expected fn"),
@@ -122,9 +126,15 @@ fn parse_bracketed_type_macro_in_generic_arg() {
     match &krate.items[0] {
         Item::Impl(impl_block) => {
             let trait_ref = impl_block.trait_ref.as_ref().expect("expected trait impl");
-            let args = trait_ref.segments[0].args.as_ref().expect("expected generic args");
+            let args = trait_ref.segments[0]
+                .args
+                .as_ref()
+                .expect("expected generic args");
             assert_eq!(args.args.len(), 1);
-            assert!(matches!(args.args[0], GenericArg::Type(Ty::MacroCall(_, _, _))));
+            assert!(matches!(
+                args.args[0],
+                GenericArg::Type(Ty::MacroCall(_, _, _))
+            ));
         }
         _ => panic!("expected impl"),
     }
@@ -140,7 +150,8 @@ fn parse_inner_key_value_attributes() {
 
 #[test]
 fn parse_extern_c_variadic_function() {
-    let krate = parse(r#"extern "C" { fn sem_open(name: *const u8, oflag: c_int, ...) -> *mut sem_t; }"#);
+    let krate =
+        parse(r#"extern "C" { fn sem_open(name: *const u8, oflag: c_int, ...) -> *mut sem_t; }"#);
     match &krate.items[0] {
         Item::ExternBlock(block) => match &block.items[0] {
             Item::Fn(f) => assert_eq!(f.params.len(), 2),
@@ -254,7 +265,9 @@ fn parse_generic_struct() {
 
 #[test]
 fn parse_struct_field_attrs() {
-    let krate = parse(r#"struct Wire { #[serde(rename = "secs")] secs: u64, #[cfg(anyos)] pub nanos: u32 }"#);
+    let krate = parse(
+        r#"struct Wire { #[serde(rename = "secs")] secs: u64, #[cfg(anyos)] pub nanos: u32 }"#,
+    );
     match &krate.items[0] {
         Item::Struct(s) => {
             assert_eq!(s.fields.len(), 2);
@@ -268,7 +281,8 @@ fn parse_struct_field_attrs() {
 
 #[test]
 fn parse_struct_literal_field_attrs() {
-    let krate = parse(r#"fn f(rest: i32) { let _ = Cursor { rest, #[cfg(span_locations)] off: 1 }; }"#);
+    let krate =
+        parse(r#"fn f(rest: i32) { let _ = Cursor { rest, #[cfg(span_locations)] off: 1 }; }"#);
     match &krate.items[0] {
         Item::Fn(f) => {
             let body = f.body.as_ref().expect("expected body");
@@ -291,7 +305,9 @@ fn parse_struct_literal_field_attrs() {
 
 #[test]
 fn parse_struct_pattern_field_attrs() {
-    let krate = parse(r#"fn f(lit: Literal) { match lit { Literal { #[cfg(wrap_proc_macro)] inner, repr } => repr } }"#);
+    let krate = parse(
+        r#"fn f(lit: Literal) { match lit { Literal { #[cfg(wrap_proc_macro)] inner, repr } => repr } }"#,
+    );
     match &krate.items[0] {
         Item::Fn(f) => {
             let body = f.body.as_ref().expect("expected body");
@@ -326,7 +342,9 @@ fn parse_enum_with_data() {
 
 #[test]
 fn parse_enum_variant_and_field_attrs() {
-    let krate = parse(r#"enum Event { #[cfg(anyos)] Ready { #[serde(rename = "fd")] fd: u32 }, Data(#[cfg(anyos)] u8) }"#);
+    let krate = parse(
+        r#"enum Event { #[cfg(anyos)] Ready { #[serde(rename = "fd")] fd: u32 }, Data(#[cfg(anyos)] u8) }"#,
+    );
     match &krate.items[0] {
         Item::Enum(e) => {
             assert_eq!(e.variants.len(), 2);
@@ -376,7 +394,8 @@ fn parse_extern_crate_self_alias() {
 
 #[test]
 fn parse_root_nested_use_tree() {
-    let krate = parse("use {FromZeros as FromZeroes, IntoBytes as AsBytes, Ref as LayoutVerified};");
+    let krate =
+        parse("use {FromZeros as FromZeroes, IntoBytes as AsBytes, Ref as LayoutVerified};");
     match &krate.items[0] {
         Item::Use(u) => match &u.kind {
             UseTreeKind::Nested(items) => assert_eq!(items.len(), 3),
@@ -544,7 +563,8 @@ fn parse_attributed_closure_expression() {
 
 #[test]
 fn parse_restricted_visibility_use_items() {
-    let krate = parse("mod m { pub(super) use rand::Rng; pub(in crate::m) struct S { value: u8 } }");
+    let krate =
+        parse("mod m { pub(super) use rand::Rng; pub(in crate::m) struct S { value: u8 } }");
     assert!(matches!(&krate.items[0], Item::Mod(_)));
 }
 
@@ -587,7 +607,8 @@ fn cfg_strips_disabled_match_arm() {
 
 #[test]
 fn parse_tuple_struct_rest_pattern() {
-    let krate = parse("fn f(value: SizeInfo) { match value { SizeInfo::SliceDst(..) => 1, _ => 0 } }");
+    let krate =
+        parse("fn f(value: SizeInfo) { match value { SizeInfo::SliceDst(..) => 1, _ => 0 } }");
     assert!(matches!(&krate.items[0], Item::Fn(_)));
 }
 
@@ -600,7 +621,9 @@ fn parse_ref_slice_pattern() {
             match &body.stmts[0] {
                 Stmt::Let(pat, _, _, _) => match pat {
                     Pattern::Ref(inner, _, _) => {
-                        assert!(matches!(inner.as_ref(), Pattern::Slice(pats, _) if pats.len() == 4));
+                        assert!(
+                            matches!(inner.as_ref(), Pattern::Slice(pats, _) if pats.len() == 4)
+                        );
                     }
                     _ => panic!("expected ref slice pattern"),
                 },
@@ -670,7 +693,8 @@ fn parse_qualified_path_type() {
 
 #[test]
 fn parse_macro_crate_path_type_bound() {
-    let krate = parse("fn cast<Src, Dst>() where Src: $crate::IntoBytes, Dst: $crate::FromBytes {}");
+    let krate =
+        parse("fn cast<Src, Dst>() where Src: $crate::IntoBytes, Dst: $crate::FromBytes {}");
     assert!(matches!(&krate.items[0], Item::Fn(_)));
 }
 

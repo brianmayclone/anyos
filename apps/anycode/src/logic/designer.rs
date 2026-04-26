@@ -1066,6 +1066,10 @@ pub fn try_create_designer_from_rust_ui(file_path: &str) -> Option<String> {
     if !file_path.ends_with(".rs") {
         return None;
     }
+    let basename = crate::util::path::basename(file_path);
+    if basename == "designer.rs" || basename.ends_with(".Designer.rs") {
+        return None;
+    }
     let data = anyos_std::fs::read_to_string(file_path).ok()?;
     if !data.contains("ui::") && !data.contains("libanyui_client") {
         return None;

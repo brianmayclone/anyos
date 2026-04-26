@@ -1,5 +1,5 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,8 +13,7 @@ fn assert_run_returns(src: &str, expected: i32) {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(src, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("anyrc_test_{}_{}", std::process::id(), id));
@@ -33,14 +32,19 @@ fn assert_run_returns(src: &str, expected: i32) {
     let status = common::run_executable(&exe_path);
     let _ = std::fs::remove_dir_all(&dir);
     let code = status.code().unwrap_or(-1);
-    assert_eq!(code, expected, "expected exit code {}, got {}", expected, code);
+    assert_eq!(
+        code, expected,
+        "expected exit code {}, got {}",
+        expected, code
+    );
 }
 
 // === Trait tests ===
 
 #[test]
 fn trait_method_call() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct Counter { n: i32 }
         impl Counter {
             fn get(&self) -> i32 { self.n }
@@ -49,12 +53,15 @@ fn trait_method_call() {
             let c = Counter { n: 42 };
             c.get()
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn trait_method_with_args() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct Adder { base: i32 }
         impl Adder {
             fn add(&self, x: i32) -> i32 { self.base + x }
@@ -63,12 +70,15 @@ fn trait_method_with_args() {
             let a = Adder { base: 10 };
             a.add(32)
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn trait_impl_for_type() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         trait GetValue {
             fn value(&self) -> i32;
         }
@@ -80,12 +90,15 @@ fn trait_impl_for_type() {
             let f = Foo { x: 55 };
             f.value()
         }
-    "#, 55);
+    "#,
+        55,
+    );
 }
 
 #[test]
 fn method_via_reference() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct S { val: i32 }
         impl S {
             fn get(&self) -> i32 { self.val }
@@ -95,14 +108,17 @@ fn method_via_reference() {
             let s = S { val: 77 };
             use_ref(&s)
         }
-    "#, 77);
+    "#,
+        77,
+    );
 }
 
 // === Enum tests ===
 
 #[test]
 fn enum_c_like() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         enum Dir { N, S, E, W }
         fn main() -> i32 {
             let d = Dir::E;
@@ -113,12 +129,15 @@ fn enum_c_like() {
                 Dir::W => 3,
             }
         }
-    "#, 2);
+    "#,
+        2,
+    );
 }
 
 #[test]
 fn enum_match_all_variants() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         enum Color { R, G, B }
         fn to_num(c: Color) -> i32 {
             match c {
@@ -128,12 +147,15 @@ fn enum_match_all_variants() {
             }
         }
         fn main() -> i32 { to_num(Color::B) }
-    "#, 30);
+    "#,
+        30,
+    );
 }
 
 #[test]
 fn enum_as_fn_arg() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         enum Bool { T, F }
         fn is_true(b: Bool) -> i32 {
             match b {
@@ -142,12 +164,15 @@ fn enum_as_fn_arg() {
             }
         }
         fn main() -> i32 { is_true(Bool::T) }
-    "#, 1);
+    "#,
+        1,
+    );
 }
 
 #[test]
 fn enum_in_if() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         enum Choice { A, B }
         fn pick(c: Choice) -> i32 {
             let v: i32 = match c {
@@ -157,5 +182,7 @@ fn enum_in_if() {
             v + 5
         }
         fn main() -> i32 { pick(Choice::B) }
-    "#, 25);
+    "#,
+        25,
+    );
 }

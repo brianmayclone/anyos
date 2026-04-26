@@ -121,11 +121,11 @@ pub fn show() {
             read_string(working_dir_id),
             read_string(package_id),
         );
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 
     btn_cancel.on_click(move |_| {
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 }
 

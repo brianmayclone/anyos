@@ -719,11 +719,11 @@ pub fn show() {
         }
 
         // Close
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 
     btn_cancel.on_click(move |_| {
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 }
 

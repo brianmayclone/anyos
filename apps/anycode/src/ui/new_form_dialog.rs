@@ -79,12 +79,13 @@ pub fn show(default_name: &str) {
 
     let field_id = field.id();
     btn_create.on_click(move |_| {
-        crate::logic::commands::create_ui_form_named(read_string(field_id));
-        ui::Control::from_id(win_id).set_visible(false);
+        if crate::logic::commands::create_ui_form_named(read_string(field_id)) {
+            ui::Window::from_id(win_id).destroy();
+        }
     });
 
     btn_cancel.on_click(move |_| {
-        ui::Control::from_id(win_id).set_visible(false);
+        ui::Window::from_id(win_id).destroy();
     });
 }
 

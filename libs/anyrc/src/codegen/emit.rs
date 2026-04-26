@@ -973,34 +973,34 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
-            "from_ne_bytes" | "from_le_bytes" => {
+            "from_ne_bytes" | "from_le_bytes" | "from_be_bytes" => {
                 let size =
                     regalloc::ty_layout_size(&self.body.locals[dest.local.0].ty, self.struct_sizes)
                         .clamp(1, 8);
                 self.emit_primitive_from_ne_bytes(args, dest, size, false);
                 true
             }
-            "u16::from_ne_bytes" | "u16::from_le_bytes" => {
+            "u16::from_ne_bytes" | "u16::from_le_bytes" | "u16::from_be_bytes" => {
                 self.emit_primitive_from_ne_bytes(args, dest, 2, false);
                 true
             }
-            "u32::from_ne_bytes" | "u32::from_le_bytes" => {
+            "u32::from_ne_bytes" | "u32::from_le_bytes" | "u32::from_be_bytes" => {
                 self.emit_primitive_from_ne_bytes(args, dest, 4, false);
                 true
             }
-            "u64::from_ne_bytes" | "u64::from_le_bytes" => {
+            "u64::from_ne_bytes" | "u64::from_le_bytes" | "u64::from_be_bytes" => {
                 self.emit_primitive_from_ne_bytes(args, dest, 8, false);
                 true
             }
-            "i16::from_ne_bytes" | "i16::from_le_bytes" => {
+            "i16::from_ne_bytes" | "i16::from_le_bytes" | "i16::from_be_bytes" => {
                 self.emit_primitive_from_ne_bytes(args, dest, 2, true);
                 true
             }
-            "i32::from_ne_bytes" | "i32::from_le_bytes" => {
+            "i32::from_ne_bytes" | "i32::from_le_bytes" | "i32::from_be_bytes" => {
                 self.emit_primitive_from_ne_bytes(args, dest, 4, true);
                 true
             }
-            "i64::from_ne_bytes" | "i64::from_le_bytes" => {
+            "i64::from_ne_bytes" | "i64::from_le_bytes" | "i64::from_be_bytes" => {
                 self.emit_primitive_from_ne_bytes(args, dest, 8, true);
                 true
             }
@@ -1217,6 +1217,13 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "Box::into_raw" | "Box::from_raw" => {
+                // In this backend Box<T> is represented by the owned allocation
+                // pointer, so raw conversion is a representation-preserving cast.
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
 
             // ── Vec intrinsics ──
             // Vec layout: [ptr: *mut T, len: usize, capacity: usize] = 24 bytes
@@ -1291,13 +1298,13 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX); // value
                 true
             }
-            "Vec::as_ptr" => {
+            "Vec::as_ptr" | "Vec::as_mut_ptr" => {
                 // arg0 = &Vec in RDI → return ptr field
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
                 self.store_place(dest, Reg::RAX);
                 true
             }
-            "Vec::as_slice" | "Vec::as_ref" => {
+            "Vec::as_slice" | "Vec::as_mut_slice" | "Vec::as_ref" => {
                 // Return fat pointer (ptr, len) from Vec
                 let slot = self.alloc.stack_slots[dest.local.0];
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0); // ptr
@@ -1306,10 +1313,32 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
                 true
             }
+            "Vec::truncate" => {
+                // arg0 = &mut Vec in RDI, arg1 = new len in RSI. Clamp len
+                // downward; growing via truncate is a no-op.
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+                self.asm.emit_raw(&[0x48, 0x39, 0xC6]); // cmp rsi, rax
+                self.asm.emit_raw(&[0x73, 0x04]); // jae .done
+                self.asm.mov_mr(Reg::RDI, 8, Reg::RSI);
+                true
+            }
             "Vec::clear" | "String::clear" => {
                 // Set len to 0 (keep allocation)
                 self.asm.xor_rr(Reg::RAX, Reg::RAX);
                 self.asm.mov_mr(Reg::RDI, 8, Reg::RAX); // len = 0
+                true
+            }
+            "Vec::chunks_exact" => {
+                // Model ChunksExact as a compact iterator state: current ptr,
+                // end ptr, chunk size.
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8);
+                self.asm.emit_raw(&[0x48, 0xC1, 0xE1, 0x03]); // len * 8
+                self.asm.emit_raw(&[0x48, 0x01, 0xC1]); // end = ptr + bytes
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+                self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RSI);
                 true
             }
             "Vec::sort_unstable_by_key" => {
@@ -1354,7 +1383,32 @@ impl<'a> CodeEmitter<'a> {
             }
             "String::push_str" => {
                 // arg0 = &mut String in RDI, arg1 = &str (ptr,len) fat ptr
-                // Call runtime helper
+                if let Some(Operand::Constant(Constant {
+                    value: ConstValue::Str(value),
+                    ..
+                })) = args.get(1)
+                {
+                    let bytes = value.as_bytes();
+                    self.asm.push(Reg::RDI); // preserve &mut String
+                    self.asm.mov_ri(Reg::RDI, bytes.len() as i64);
+                    self.asm.call_extern("__anyrc_alloc");
+                    for (offset, chunk) in bytes.chunks(8).enumerate() {
+                        let mut word = 0u64;
+                        for (idx, byte) in chunk.iter().enumerate() {
+                            word |= (*byte as u64) << (idx * 8);
+                        }
+                        self.asm.mov_ri(Reg::RDX, word as i64);
+                        self.asm.mov_mr_sized(
+                            Reg::RAX,
+                            (offset * 8) as i32,
+                            Reg::RDX,
+                            chunk.len() as i32,
+                        );
+                    }
+                    self.asm.mov_rr(Reg::RSI, Reg::RAX);
+                    self.asm.mov_ri(Reg::RDX, bytes.len() as i64);
+                    self.asm.pop(Reg::RDI);
+                }
                 self.asm.call_extern("__anyrc_string_push_str");
                 true
             }
@@ -1592,6 +1646,30 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "zeroed" => {
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "transmute_copy" => {
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "core::str::from_utf8" | "from_utf8" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDI);
+                self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RSI);
+                true
+            }
+            "from_utf8_unchecked" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RDI);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
+                true
+            }
             "ManuallyDrop::new" => {
                 // Just pass through the value
                 self.asm.mov_rr(Reg::RAX, Reg::RDI);
@@ -1600,7 +1678,7 @@ impl<'a> CodeEmitter<'a> {
             }
 
             // ── Option/Result combinator methods ──
-            "Option::unwrap" | "Result::unwrap" => {
+            "Option::unwrap" | "Result::unwrap" | "Option::?" | "Result::?" => {
                 // Extract value from Some/Ok (field 1), panic on None/Err
                 // arg0 = &Option/Result in RDI
                 // Check discriminant (field 0): 0 = Some/Ok
@@ -1610,8 +1688,8 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
-            "Option::unwrap_or" => {
-                // arg0 = &Option in RDI, arg1 = default in RSI
+            "Option::unwrap_or" | "Result::unwrap_or" => {
+                // arg0 = &Option/&Result in RDI, arg1 = default in RSI
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0); // disc
                 self.asm.emit_raw(&[0x48, 0x85, 0xC0]); // test rax, rax
                                                         // If disc == 0 (Some), load value; else use default
@@ -1619,6 +1697,16 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.emit_raw(&[0x74, 0x03]); // je .done (disc==0 → Some)
                 self.asm.mov_rr(Reg::RAX, Reg::RSI); // else: use default
                                                      // .done:
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Option::unwrap_or_default" | "Result::unwrap_or_default" => {
+                // For zero-initializable bootstrap values, default is all-zero.
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 0);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC9]); // test rcx, rcx
+                self.asm.emit_raw(&[0x74, 0x03]); // je .done
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
                 self.store_place(dest, Reg::RAX);
                 true
             }
@@ -1717,6 +1805,16 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
                 true
             }
+            "Result::ok" => {
+                // Ok(v) -> Some(v), Err(_) -> None. The discriminant encoding
+                // matches our Option layout: 0 = Some/Ok, non-zero = None/Err.
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.mov_rm(Reg::RDX, Reg::RDI, 8);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                true
+            }
             "Option::is_none" => {
                 // arg0 = &Option in RDI → disc != 0 means None
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
@@ -1724,6 +1822,16 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.emit_raw(&[0x0F, 0x95, 0xC0]); // setne al
                 self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
                 self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Option::as_ref" | "Option::as_mut" => {
+                // &Option<T> -> Option<&T>. Payload is ignored for None, so it
+                // is fine to materialize &payload unconditionally.
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.lea(Reg::RDX, Reg::RDI, 8);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
                 true
             }
             "Option::copied" | "Option::cloned" => {
@@ -1742,6 +1850,14 @@ impl<'a> CodeEmitter<'a> {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RAX); // disc
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX); // value
+                true
+            }
+            "Result::map_err" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.mov_rm(Reg::RDX, Reg::RDI, 8);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
                 true
             }
             "Option::and_then" => {
@@ -1861,6 +1977,13 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.emit_raw(&[0x0F, 0x94, 0xC0]); // sete al
                 self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
                 self.store_place(dest, Reg::RAX);
+                true
+            }
+            "char::from_u32" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDI);
                 true
             }
 
@@ -1992,6 +2115,20 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "__anyrc_format_args" => {
+                // core::fmt::Arguments is opaque to the bootstrap backend.
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "write_fmt" => {
+                // Return Ok(()) for the bootstrap formatting call contract.
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);
+                true
+            }
             "__anyrc_println" => {
                 // println!() expansion — write string to stdout via syscall
                 // arg0 = format string ptr in RDI
@@ -2084,6 +2221,11 @@ impl<'a> CodeEmitter<'a> {
             // Raw syscall passthrough
             "syscall" | "anyos_std::raw::syscall" => {
                 self.emit_anyos_raw_syscall(6, dest);
+                true
+            }
+            "store" => {
+                // Short-form atomic store that lost its owner name before MIR.
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RSI);
                 true
             }
 

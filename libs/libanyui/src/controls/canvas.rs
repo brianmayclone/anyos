@@ -29,7 +29,7 @@ impl Canvas {
             .saturating_mul(base.h as usize)
             .min(16384 * 16384);
         Self {
-            pixels: vec![0xFF000000; size], // opaque black
+            pixels: vec![0; size],
             base,
             last_mouse_x: 0,
             last_mouse_y: 0,
@@ -424,7 +424,7 @@ impl Control for Canvas {
             // A plain Vec::resize preserves the old linear memory layout, which
             // corrupts rows visually when the stride changes after docking.
             let expected = (w * h) as usize;
-            self.pixels = vec![0xFF000000; expected];
+            self.pixels = vec![0; expected];
             if expected > 0 && old_w > 0 && old_h > 0 && !old_pixels.is_empty() {
                 let copy_w = old_w.min(w) as usize;
                 let copy_h = old_h.min(h) as usize;
@@ -452,9 +452,9 @@ impl Control for Canvas {
         // match and we do a fast 1:1 copy. At higher DPI we nearest-neighbor
         // upscale from logical (b.w × b.h) to physical (p.w × p.h).
         if b.w == p.w && b.h == p.h {
-            crate::draw::blit_buffer(surface, p.x, p.y, b.w, b.h, &self.pixels);
+            crate::draw::blit_argb(surface, p.x, p.y, b.w, b.h, &self.pixels);
         } else {
-            crate::draw::blit_buffer_scaled(surface, p.x, p.y, p.w, p.h, b.w, b.h, &self.pixels);
+            crate::draw::blit_argb_scaled(surface, p.x, p.y, p.w, p.h, b.w, b.h, &self.pixels);
         }
     }
 

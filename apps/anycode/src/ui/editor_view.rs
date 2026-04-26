@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::vec::Vec;
 use libanyui_client as ui;
 
@@ -10,6 +11,7 @@ use crate::util::{path, syntax_map};
 enum EditorTab {
     Text { editor: ui::TextEditor },
     Designer { surface: DesignerSurface },
+    Image { panel: ui::View },
 }
 
 /// Manages the tab bar and TextEditor instances (UI layer).
@@ -157,6 +159,13 @@ impl EditorView {
             }
         }
 
+        if is_image_file(file_path) {
+            let image_panel = self.create_image_viewer(file_path, content);
+            let idx = self.editors.len();
+            self.editors.push(EditorTab::Image { panel: image_panel });
+            return idx;
+        }
+
         let editor = ui::TextEditor::new(600, 400);
         editor.set_dock(ui::DOCK_FILL);
         config.apply_to_editor(&editor);
@@ -196,6 +205,53 @@ impl EditorView {
         idx
     }
 
+    fn create_image_viewer(&self, file_path: &str, content: Option<&[u8]>) -> ui::View {
+        let tc = ui::theme::colors();
+        let panel = ui::View::new();
+        panel.set_dock(ui::DOCK_FILL);
+        panel.set_color(tc.editor_bg);
+
+        let header = ui::View::new();
+        header.set_dock(ui::DOCK_TOP);
+        header.set_size(600, 34);
+        header.set_color(tc.toolbar_bg);
+        panel.add(&header);
+
+        let title = ui::Label::new(path::basename(file_path));
+        title.set_position(12, 7);
+        title.set_size(360, 18);
+        title.set_font_size(12);
+        title.set_text_color(tc.text);
+        header.add(&title);
+
+        let image = ui::ImageView::new(800, 520);
+        image.set_dock(ui::DOCK_FILL);
+        image.set_scale_mode(ui::SCALE_FIT);
+        image.set_color(tc.editor_bg);
+        if let Some(data) = content {
+            image.load_from_bytes(data);
+        } else {
+            image.load_from_file(file_path);
+        }
+        panel.add(&image);
+
+        let (w, h) = image.image_size();
+        let meta = if w > 0 && h > 0 {
+            alloc::format!("{} x {}", w, h)
+        } else {
+            String::from("Image preview")
+        };
+        let subtitle = ui::Label::new(&meta);
+        subtitle.set_position(388, 7);
+        subtitle.set_size(190, 18);
+        subtitle.set_font_size(11);
+        subtitle.set_text_color(tc.text_secondary);
+        header.add(&subtitle);
+
+        self.panel.add(&panel);
+        panel
+    }
+
     /// Switch to a specific editor tab (hide others, show this one).
     pub fn set_active(&self, index: usize) {
         for (i, tab) in self.editors.iter().enumerate() {
@@ -231,6 +287,10 @@ impl EditorView {
         }
     }
 
+    pub fn is_text_editor(&self, index: usize) -> bool {
+        matches!(self.editors.get(index), Some(EditorTab::Text { .. }))
+    }
+
     pub fn show_completions(&self, items: &str, detail: &str) {
         self.completion_list.set_items(items);
         self.completion_detail.set_text(detail);
@@ -252,6 +312,7 @@ impl EditorView {
             match tab {
                 EditorTab::Text { editor } => editor.get_text(buf),
                 EditorTab::Designer { .. } => 0,
+                EditorTab::Image { .. } => 0,
             }
         } else {
             0
@@ -264,6 +325,7 @@ impl EditorView {
             match tab {
                 EditorTab::Text { editor } => editor.cursor(),
                 EditorTab::Designer { .. } => (0, 0),
+                EditorTab::Image { .. } => (0, 0),
             }
         } else {
             (0, 0)
@@ -275,6 +337,7 @@ impl EditorView {
         self.editors.get(index).and_then(|tab| match tab {
             EditorTab::Text { editor } => Some(editor),
             EditorTab::Designer { .. } => None,
+            EditorTab::Image { .. } => None,
         })
     }
 
@@ -315,6 +378,7 @@ impl EditorTab {
         match self {
             EditorTab::Text { editor } => editor.set_visible(visible),
             EditorTab::Designer { surface } => surface.set_visible(visible),
+            EditorTab::Image { panel } => panel.set_visible(visible),
         }
     }
 
@@ -322,8 +386,20 @@ impl EditorTab {
         match self {
             EditorTab::Text { editor } => editor.remove(),
             EditorTab::Designer { surface } => surface.remove(),
+            EditorTab::Image { panel } => panel.remove(),
         }
     }
+}
+
+fn is_image_file(file_path: &str) -> bool {
+    let lower = path::basename(file_path).to_ascii_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".bmp")
+        || lower.ends_with(".ico")
+        || lower.ends_with(".webp")
 }
 
 impl Config {

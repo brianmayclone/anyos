@@ -1,4 +1,4 @@
-use anyrc::diagnostics::{Span, SourceMap, Diagnostic, Level};
+use anyrc::diagnostics::{Diagnostic, Level, SourceMap, Span};
 
 #[test]
 fn span_contains_offset() {

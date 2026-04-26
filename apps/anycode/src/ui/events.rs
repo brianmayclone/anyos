@@ -261,16 +261,34 @@ pub fn wire_sidebar() {
         }
     });
 
-    // File tree selection opens file
-    app().sidebar.tree.on_selection_changed(|e| {
+    // Explicit action nodes open dialogs only on a click, not during selection changes.
+    app().sidebar.tree.on_node_clicked(|_| {
         let s = app();
-        let idx = e.index;
+        let hovered = s.sidebar.tree.hovered();
+        let selected = s.sidebar.tree.selected();
+        let idx = if hovered != u32::MAX {
+            hovered
+        } else {
+            selected
+        };
         if idx != u32::MAX && s.sidebar.is_manage_crates_node(idx) {
             commands::manage_crates();
         } else if idx != u32::MAX && s.sidebar.is_connected_services_node(idx) {
             commands::manage_connected_services();
-        } else if idx != u32::MAX && s.sidebar.is_file_node(idx) {
-            if let Some(p) = s.sidebar.path_for_node(idx) {
+        }
+    });
+
+    // File tree selection opens files only. Dialog actions are handled above.
+    app().sidebar.tree.on_selection_changed(|e| {
+        let s = app();
+        let selected = s.sidebar.tree.selected();
+        let file_idx = if selected != u32::MAX {
+            selected
+        } else {
+            e.index
+        };
+        if file_idx != u32::MAX && s.sidebar.is_file_node(file_idx) {
+            if let Some(p) = s.sidebar.path_for_node(file_idx) {
                 let owned = String::from(p);
                 commands::open_file(&owned);
                 commands::update_status();

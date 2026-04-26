@@ -327,12 +327,12 @@ impl AiSettingsDialog {
             save_config(
                 prov_id, key_id, model_id, tokens_id, temp_id, ep_id, status_id,
             );
-            ui::Control::from_id(win_id).set_visible(false);
+            ui::Window::from_id(win_id).destroy();
         });
 
         // Cancel button
         btn_cancel.on_click(move |_| {
-            ui::Control::from_id(win_id).set_visible(false);
+            ui::Window::from_id(win_id).destroy();
         });
 
         // Test button

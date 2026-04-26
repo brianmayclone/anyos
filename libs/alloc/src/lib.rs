@@ -78,6 +78,17 @@ pub mod borrow {
         type Owned;
         fn to_owned(&self) -> Self::Owned;
     }
+
+    pub enum Cow<'a, B: ?Sized + ToOwned + 'a> {
+        Borrowed(&'a B),
+        Owned(<B as ToOwned>::Owned),
+    }
+
+    impl<'a, B: ?Sized + ToOwned + 'a> Cow<'a, B> {
+        pub fn is_borrowed(&self) -> bool;
+        pub fn is_owned(&self) -> bool;
+        pub fn into_owned(self) -> <B as ToOwned>::Owned;
+    }
 }
 
 pub mod collections {

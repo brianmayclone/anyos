@@ -1,8 +1,8 @@
-use anyrc::parser::Parser;
+use anyrc::hir::*;
+use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
-use anyrc::hir_lower::LoweringContext;
-use anyrc::hir::*;
+use anyrc::parser::Parser;
 
 fn lower(src: &str) -> HirCrate {
     let mut interner = Interner::new();
@@ -33,8 +33,19 @@ fn lower_while_to_loop() {
         HirItemKind::Fn(f) => {
             let body = f.body.as_ref().unwrap();
             // while should be lowered to loop
-            assert!(body.stmts.iter().any(|s| matches!(s, HirStmt::Expr(HirExpr { kind: HirExprKind::Loop(_, _), .. })
-                                                        | HirStmt::Semi(HirExpr { kind: HirExprKind::Loop(_, _), .. }, _))));
+            assert!(body.stmts.iter().any(|s| matches!(
+                s,
+                HirStmt::Expr(HirExpr {
+                    kind: HirExprKind::Loop(_, _),
+                    ..
+                }) | HirStmt::Semi(
+                    HirExpr {
+                        kind: HirExprKind::Loop(_, _),
+                        ..
+                    },
+                    _
+                )
+            )));
         }
         _ => panic!("expected fn"),
     }

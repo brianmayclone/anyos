@@ -1,7 +1,7 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
-use anyrc::parser::Parser;
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
 use anyrc::intern::Interner;
+use anyrc::parser::Parser;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,8 +15,7 @@ fn assert_run_returns(src: &str, expected: i32) {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(src, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("anyrc_test_no_std_{}_{}", std::process::id(), id));
@@ -35,7 +34,11 @@ fn assert_run_returns(src: &str, expected: i32) {
     let status = common::run_executable(&exe_path);
     let _ = std::fs::remove_dir_all(&dir);
     let code = status.code().unwrap_or(-1);
-    assert_eq!(code, expected, "expected exit code {}, got {}", expected, code);
+    assert_eq!(
+        code, expected,
+        "expected exit code {}, got {}",
+        expected, code
+    );
 }
 
 fn assert_compiles(src: &str) {

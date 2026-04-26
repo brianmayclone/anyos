@@ -19,6 +19,15 @@ pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
 pub const WIN_FLAG_SHADOW: u32 = 0x40;
 
 impl Window {
+    /// Wrap an existing top-level window control ID.
+    pub fn from_id(id: u32) -> Self {
+        Self {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
+    }
+
     /// Create a new window at position (x, y) with default flags.
     /// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
     pub fn new(title: &str, x: i32, y: i32, w: u32, h: u32) -> Self {
