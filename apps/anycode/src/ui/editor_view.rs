@@ -44,7 +44,7 @@ impl EditorView {
         tab_bar.set_style(ui::STYLE_INACTIVE_TEXT, tc.text_secondary);
         tab_bar.set_style(ui::STYLE_HOVER_BG, tc.sidebar_bg);
         tab_bar.set_style(ui::STYLE_ACCENT, tc.accent);
-        tab_bar.set_style(ui::STYLE_RADIUS, 6);
+        tab_bar.set_style(ui::STYLE_RADIUS, 2);
         panel.add(&tab_bar);
 
         let breadcrumb_bar = ui::View::new();

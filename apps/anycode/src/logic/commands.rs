@@ -60,6 +60,11 @@ pub fn save_all() {
 
 pub fn build() {
     let s = app();
+    if s.current_project.is_none() {
+        s.status.set_analysis_status("Open a project before building");
+        update_action_state();
+        return;
+    }
     // Try task manager first
     if let Some(task) = s.task_mgr.selected_build() {
         let task_clone = task.clone();
@@ -102,11 +107,17 @@ pub fn build() {
         if s.build_process.is_some() {
             crate::start_build_timer();
         }
+        update_action_state();
     }
 }
 
 pub fn run() {
     let s = app();
+    if s.current_project.is_none() {
+        s.status.set_analysis_status("Open a project before running");
+        update_action_state();
+        return;
+    }
     if let Some(task) = s.task_mgr.selected_run() {
         let task_clone = task.clone();
         execute_task_direct(&task_clone);
@@ -148,6 +159,7 @@ pub fn run() {
         if s.build_process.is_some() {
             crate::start_build_timer();
         }
+        update_action_state();
     }
 }
 
@@ -218,6 +230,7 @@ pub fn stop() {
     crate::stop_build_timer();
     crate::stop_debug_timer();
     crate::stop_live_check_timer();
+    update_action_state();
 }
 
 pub fn search_in_project() {
@@ -1232,6 +1245,7 @@ pub fn start_debugging() {
         s.output.append_debug_line("launch failed");
     }
     s.run_panel.update_debug_session(&s.debug_session);
+    update_action_state();
 }
 
 pub fn debug_continue() {
@@ -1895,11 +1909,12 @@ fn execute_task_direct(task: &tasks::Task) {
     if s.build_process.is_some() {
         crate::start_build_timer();
     }
+    update_action_state();
 }
 
 fn can_use_legacy_build_fallback(s: &AppState) -> bool {
     match s.current_project.as_ref().map(|proj| proj.project_type) {
-        Some(project::ProjectType::Generic) | None => true,
+        Some(project::ProjectType::Generic) => true,
         _ => false,
     }
 }
@@ -1924,6 +1939,58 @@ pub fn update_status() {
     s.status.set_branch(&s.git_state.branch);
     s.status
         .set_problems(s.diagnostics.error_count(), s.diagnostics.warning_count());
+    update_action_state();
+}
+
+pub fn update_action_state() {
+    let s = app();
+    let has_project = s.current_project.is_some();
+    let has_files = s.file_mgr.count() > 0;
+    let process_running = s.build_process.is_some();
+    let has_build =
+        has_project && (s.task_mgr.selected_build().is_some() || can_use_legacy_build_fallback(s));
+    let has_run = has_project
+        && (s.task_mgr.selected_run().is_some()
+            || (s.task_mgr.tasks.is_empty() && can_use_legacy_build_fallback(s)));
+    let has_tests = has_project
+        && s.task_mgr
+            .tasks
+            .iter()
+            .any(|task| task.category == tasks::TaskCategory::Test);
+    let debug_launching = s.debug_session.status == debug_session::DebugSessionStatus::Launching;
+    let debug_running = s.debug_session.status == debug_session::DebugSessionStatus::Running;
+    let debug_stopped = s.debug_session.status == debug_session::DebugSessionStatus::Stopped;
+    let debug_active = debug_launching || debug_running || debug_stopped;
+    let can_continue_debug = debug_stopped;
+    let can_pause_debug = debug_launching || debug_running;
+    let can_step_debug = debug_stopped;
+    let can_stop_debug = process_running || debug_active;
+
+    set_enabled(s.toolbar_save_id, has_files);
+    set_enabled(s.toolbar_save_all_id, has_files);
+    set_enabled(s.toolbar_build_id, has_build && !process_running);
+    set_enabled(s.toolbar_run_config_button_id, has_project && !process_running);
+    set_enabled(s.run_config_dropdown_id, has_project && !process_running);
+    set_enabled(s.debug_profile_dropdown_id, has_project && !process_running);
+    set_enabled(s.toolbar_run_id, has_run && !process_running);
+    set_enabled(s.toolbar_debug_id, has_run && !process_running);
+    set_enabled(s.toolbar_debug_continue_id, can_continue_debug);
+    set_enabled(s.toolbar_debug_pause_id, can_pause_debug);
+    set_enabled(s.toolbar_debug_step_id, can_step_debug);
+    set_enabled(s.toolbar_stop_id, can_stop_debug);
+
+    s.run_panel.btn_build.set_enabled(has_build && !process_running);
+    s.run_panel.btn_run.set_enabled(has_run && !process_running);
+    s.run_panel.btn_test.set_enabled(has_tests && !process_running);
+    s.run_panel.btn_debug.set_enabled(has_run && !process_running);
+    s.run_panel.btn_continue.set_enabled(can_continue_debug);
+    s.run_panel.btn_pause.set_enabled(can_pause_debug);
+    s.run_panel.btn_step_over.set_enabled(can_step_debug);
+    s.run_panel.btn_stop.set_enabled(can_stop_debug);
+}
+
+fn set_enabled(id: u32, enabled: bool) {
+    libanyui_client::Control::from_id(id).set_enabled(enabled);
 }
 
 pub fn show_recent_projects() {

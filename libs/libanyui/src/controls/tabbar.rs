@@ -6,8 +6,8 @@ const CLOSE_BTN_SIZE: i32 = 16;
 const CLOSE_BTN_PAD: i32 = 8;
 const TAB_HEIGHT: i32 = 28;
 const TAB_FONT_SIZE: u16 = 12;
-const TAB_GAP: i32 = 4;
-const TAB_TOP_MARGIN: i32 = 4;
+const TAB_GAP: i32 = 1;
+const TAB_TOP_MARGIN: i32 = 2;
 const MAX_TAB_WIDTH: i32 = 200;
 const MIN_TAB_WIDTH: i32 = 80;
 /// Size of the navigation / "+" buttons on the right side.
@@ -310,7 +310,7 @@ impl Control for TabBar {
         } else {
             tc.tab_border_active
         };
-        let track_corner = crate::theme::scale(if style.radius != 0 { style.radius } else { 6 })
+        let track_corner = crate::theme::scale(if style.radius != 0 { style.radius } else { 2 })
             .min(h.saturating_sub(2) / 2);
         let nav_corner = track_corner.saturating_sub(crate::theme::scale(1));
 

@@ -16,6 +16,7 @@
 mod logic;
 mod ui;
 mod util;
+mod app_state;
 
 use alloc::format;
 use alloc::string::String;
@@ -32,76 +33,7 @@ use crate::ui::{
     status_bar, symbols_panel, toolbar, welcome_tab,
 };
 use crate::util::path;
-
-// ════════════════════════════════════════════════════════════════
-//  Global application state
-// ════════════════════════════════════════════════════════════════
-
-struct AppState {
-    // Core
-    file_mgr: file_manager::FileManager,
-    config: config::Config,
-    current_project: Option<project::Project>,
-
-    // Subsystems
-    task_mgr: tasks::TaskManager,
-    diagnostics: diagnostics::DiagnosticSet,
-    symbol_index: symbol_index::SymbolIndex,
-    active_completions: alloc::vec::Vec<crate::logic::intellisense::CompletionItem>,
-    active_completion_prefix: String,
-    debug_backend: debug_backend::DebugBackend,
-    debug_session: debug_session::DebugSession,
-    plugin_mgr: plugin::PluginManager,
-    ai_client: ai::AiClient,
-
-    // Build
-    build_process: Option<build::BuildProcess>,
-    build_rules: build::BuildRules,
-    build_timer_id: u32,
-    debug_timer_id: u32,
-    build_output_buffer: String,
-
-    // Live analysis
-    live_check_process: Option<build::BuildProcess>,
-    live_check: diagnostic_pipeline::LiveCheckState,
-
-    // Git
-    git_state: git::GitState,
-    git_process: Option<git::GitProcess>,
-    git_pending_op: Option<git::GitOp>,
-    git_timer_id: u32,
-
-    // UI panels
-    editor_view: editor_view::EditorView,
-    side_editor_view: editor_view::EditorView,
-    welcome: welcome_tab::WelcomeTab,
-    sidebar: sidebar::Sidebar,
-    git_panel: git_panel::GitPanel,
-    search_panel: search_panel::SearchPanel,
-    run_panel: run_panel::RunPanel,
-    symbols_panel: symbols_panel::SymbolsPanel,
-    ai_panel: ai_panel::AiPanel,
-    extensions_panel: extensions_panel::ExtensionsPanel,
-    output: output_panel::OutputPanel,
-    problems_panel: problems_panel::ProblemsPanel,
-    inspector_panel: inspector_panel::InspectorPanel,
-    status: status_bar::StatusBar,
-    activity_bar: activity_bar::ActivityBar,
-    command_palette: command_palette::CommandPalette,
-    editor_groups_split: anyui::SplitView,
-    side_file_mgr: file_manager::FileManager,
-    split_visible: bool,
-    panel_ids: [u32; 7], // Explorer, Git, Search, Run, Outline, AI, Extensions
-    run_config_dropdown_id: u32,
-    debug_profile_dropdown_id: u32,
-    selected_designer_file: String,
-    selected_designer_control: String,
-    pending_designer_event_file: String,
-    pending_designer_event_x: i32,
-    pending_designer_event_y: i32,
-    pending_designer_event_kind: u32,
-    designer_event_timer_id: u32,
-}
+pub use app_state::AppState;
 
 anyos_std::global_app_state!(AppState);
 
@@ -336,6 +268,16 @@ fn build_and_run(
             side_file_mgr: file_manager::FileManager::new(),
             split_visible: false,
             panel_ids,
+            toolbar_save_id: tb.btn_save.id(),
+            toolbar_save_all_id: tb.btn_save_all.id(),
+            toolbar_build_id: tb.btn_build.id(),
+            toolbar_run_config_button_id: tb.btn_run_config.id(),
+            toolbar_run_id: tb.btn_run.id(),
+            toolbar_debug_id: tb.btn_debug.id(),
+            toolbar_debug_continue_id: tb.btn_debug_continue.id(),
+            toolbar_debug_pause_id: tb.btn_debug_pause.id(),
+            toolbar_debug_step_id: tb.btn_debug_step.id(),
+            toolbar_stop_id: tb.btn_stop.id(),
             run_config_dropdown_id: tb.run_config.id(),
             debug_profile_dropdown_id: tb.debug_profile.id(),
             selected_designer_file: String::new(),
@@ -487,6 +429,7 @@ fn build_and_run(
             s.welcome.show();
         }
     }
+    logic::commands::update_status();
 
     // ── Run ──
     anyui::run();
