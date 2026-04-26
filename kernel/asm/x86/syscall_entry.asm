@@ -1,14 +1,20 @@
 ; =============================================================================
 ; syscall_entry.asm - System call entry point (int 0x80) for x86-64
 ; =============================================================================
-; INT 0x80 convention — used by 32-bit compatibility mode processes
-; (libc etc.):
+; 32-bit compatibility-mode user space was removed. The only remaining
+; consumer of INT 0x80 is the in-kernel signal-return trampoline mapped
+; into user processes (see task::loader), which calls SYS_SIGRETURN via:
+;   mov eax, 246 ; int 0x80
+; All regular 64-bit programs use the SYSCALL fast path
+; (kernel/asm/x86/syscall_fast.asm).
+;
+; Calling convention (kept as-is for the signal trampoline):
 ;   EAX = syscall number
 ;   EBX = arg1, ECX = arg2, EDX = arg3, ESI = arg4, EDI = arg5
 ;   Return value in EAX
 ;
-; CPU zero-extends 32-bit registers to 64-bit on ring transition.
-; The dispatcher (syscall_dispatch_32) explicitly truncates args to u32.
+; The dispatcher (syscall_dispatch_32) truncates args to u32. In practice
+; SYS_SIGRETURN takes no arguments, so the truncation is harmless.
 ;
 ; CPU pushes on INT: SS, RSP, RFLAGS, CS, RIP (always in 64-bit mode)
 

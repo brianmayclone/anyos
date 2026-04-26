@@ -164,13 +164,12 @@ struct PendingSlot {
     entry: u64,
     user_stack: u64,
     user_lr: u64,
-    is_compat32: bool,
     used: bool,
 }
 
 impl PendingSlot {
     const fn empty() -> Self {
-        PendingSlot { tid: 0, entry: 0, user_stack: 0, user_lr: 0, is_compat32: false, used: false }
+        PendingSlot { tid: 0, entry: 0, user_stack: 0, user_lr: 0, used: false }
     }
 }
 
@@ -182,7 +181,6 @@ fn try_store_pending_program(
     entry: u64,
     user_stack: u64,
     user_lr: u64,
-    is_compat32: bool,
 ) -> bool {
     let mut slots = PENDING_PROGRAMS.lock();
     let Some(slot) = slots.iter_mut().find(|s| !s.used) else {
@@ -192,7 +190,6 @@ fn try_store_pending_program(
     slot.entry = entry;
     slot.user_stack = user_stack;
     slot.user_lr = user_lr;
-    slot.is_compat32 = is_compat32;
     slot.used = true;
     true
 }
@@ -200,7 +197,7 @@ fn try_store_pending_program(
 fn take_pending_program(
     tid: u32,
     trampoline_name: &str,
-) -> (u64, u64, u64, bool) {
+) -> (u64, u64, u64) {
     let mut spins = 0usize;
     loop {
         {
@@ -209,9 +206,8 @@ fn take_pending_program(
                 let e = slot.entry;
                 let s = slot.user_stack;
                 let lr = slot.user_lr;
-                let c = slot.is_compat32;
                 slot.used = false;
-                return (e, s, lr, c);
+                return (e, s, lr);
             }
 
             if spins >= PENDING_LOOKUP_SPIN_LIMIT {
@@ -225,11 +221,10 @@ fn take_pending_program(
                 );
                 for slot in slots.iter().filter(|s| s.used).take(8) {
                     crate::serial_println!(
-                        "[loader]   pending tid={} entry={:#x} stack={:#x} compat32={}",
+                        "[loader]   pending tid={} entry={:#x} stack={:#x}",
                         slot.tid,
                         slot.entry,
                         slot.user_stack,
-                        slot.is_compat32,
                     );
                 }
                 drop(slots);
@@ -595,38 +590,6 @@ struct Elf64Phdr {
     p_align: u64,
 }
 
-/// ELF32 file header layout (52 bytes, packed to match on-disk format).
-#[repr(C, packed)]
-struct Elf32Header {
-    e_ident: [u8; 16],
-    e_type: u16,
-    e_machine: u16,
-    e_version: u32,
-    e_entry: u32,
-    e_phoff: u32,
-    e_shoff: u32,
-    e_flags: u32,
-    e_ehsize: u16,
-    e_phentsize: u16,
-    e_phnum: u16,
-    e_shentsize: u16,
-    e_shnum: u16,
-    e_shstrndx: u16,
-}
-
-/// ELF32 program header layout (32 bytes, packed to match on-disk format).
-#[repr(C, packed)]
-struct Elf32Phdr {
-    p_type: u32,
-    p_offset: u32,
-    p_vaddr: u32,
-    p_paddr: u32,
-    p_filesz: u32,
-    p_memsz: u32,
-    p_flags: u32,
-    p_align: u32,
-}
-
 /// Result of loading an ELF: entry point and brk address.
 struct ElfLoadResult {
     entry: u64,
@@ -819,161 +782,6 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     Ok(ElfLoadResult { entry, brk, pages_mapped: total_pages })
 }
 
-/// Load an ELF32 binary into a user PML4 (for 32-bit compatibility mode).
-fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<ElfLoadResult, &'static str> {
-    if data.len() < 52 {
-        return Err("ELF32 file too small");
-    }
-
-    let hdr = unsafe { &*(data.as_ptr() as *const Elf32Header) };
-
-    let entry = hdr.e_entry as u64;
-    let ph_off = hdr.e_phoff as usize;
-    let ph_size = hdr.e_phentsize as usize;
-    let ph_num = hdr.e_phnum as usize;
-
-
-
-    let mut max_vaddr_end: u64 = 0;
-    let mut total_pages: u32 = 0;
-
-    for i in 0..ph_num {
-        let ph_offset = ph_off + i * ph_size;
-        if ph_offset + ph_size > data.len() {
-            return Err("ELF32 program header out of bounds");
-        }
-        let phdr = unsafe { &*(data.as_ptr().add(ph_offset) as *const Elf32Phdr) };
-
-        if phdr.p_type != PT_LOAD {
-            continue;
-        }
-
-        let vaddr = phdr.p_vaddr as u64;
-        let memsz = phdr.p_memsz as u64;
-        let _filesz = phdr.p_filesz as u64;
-
-        if memsz == 0 {
-            continue;
-        }
-
-        if vaddr >= 0xC000_0000 {
-            return Err("ELF32 segment in kernel space");
-        }
-
-        // Reject segments below identity-map boundary (see ELF64 comment).
-        if vaddr < 0x0800_0000 {
-            return Err("ELF32 segment below 128 MiB identity-map boundary");
-        }
-
-        let page_start = vaddr & !0xFFF;
-        let seg_total = match vaddr.checked_add(memsz).and_then(|v| v.checked_add(PAGE_SIZE - 1)) {
-            Some(v) => v,
-            None => return Err("ELF32 segment vaddr+memsz overflow"),
-        };
-        let page_end = seg_total & !0xFFF;
-        let num_pages = (page_end - page_start) / PAGE_SIZE;
-
-        // Derive PTE flags from ELF p_flags (same logic as ELF64 above).
-        let seg_flags = phdr.p_flags;
-        let is_writable = (seg_flags & PF_W) != 0;
-        let is_exec     = (seg_flags & PF_X) != 0;
-        let pte_flags: u64 = PAGE_USER
-            | if is_writable { PAGE_WRITABLE } else { 0 }
-            | if !is_exec { virtual_mem::page_nx_flag() } else { 0 };
-
-        for p in 0..num_pages {
-            let page_virt = VirtAddr::new(page_start + p * PAGE_SIZE);
-            if !virtual_mem::is_mapped_in_pd(pd_phys, page_virt) {
-                let phys = physical::alloc_frame()
-                    .ok_or("Failed to allocate frame for ELF32 segment")?;
-                virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, pte_flags);
-                total_pages += 1;
-            }
-        }
-
-        let seg_end = match vaddr.checked_add(memsz) {
-            Some(v) => v,
-            None => return Err("ELF32 segment vaddr+memsz overflow"),
-        };
-        if seg_end > max_vaddr_end {
-            max_vaddr_end = seg_end;
-        }
-    }
-
-    unsafe {
-        #[cfg(target_arch = "x86_64")]
-        let saved_flags: u64;
-        #[cfg(target_arch = "x86_64")]
-        {
-            core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
-            core::arch::asm!("cli", options(nomem, nostack));
-        }
-        #[cfg(target_arch = "aarch64")]
-        let saved_daif: u64;
-        #[cfg(target_arch = "aarch64")]
-        {
-            core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
-            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
-        }
-        let old_pt = virtual_mem::current_cr3();
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
-        #[cfg(target_arch = "aarch64")]
-        {
-            core::arch::asm!("msr ttbr0_el1, {}", in(reg) pd_phys.as_u64(), options(nomem, nostack));
-            core::arch::asm!("isb", options(nomem, nostack));
-        }
-
-        for i in 0..ph_num {
-            let ph_offset = ph_off + i * ph_size;
-            let phdr = &*(data.as_ptr().add(ph_offset) as *const Elf32Phdr);
-
-            if phdr.p_type != PT_LOAD || phdr.p_memsz == 0 {
-                continue;
-            }
-
-            let vaddr = phdr.p_vaddr as u64;
-            let filesz = phdr.p_filesz as usize;
-            let memsz = phdr.p_memsz as usize;
-            let offset = phdr.p_offset as usize;
-
-            let page_start = (vaddr & !0xFFF) as usize;
-            let page_end = match (vaddr as usize).checked_add(memsz).and_then(|v| v.checked_add(0xFFF)) {
-                Some(v) => v & !0xFFF,
-                None => continue,
-            };
-            core::ptr::write_bytes(page_start as *mut u8, 0, page_end - page_start);
-
-            if filesz > 0 && offset.checked_add(filesz).map_or(false, |end| end <= data.len()) {
-                core::ptr::copy_nonoverlapping(
-                    data.as_ptr().add(offset),
-                    vaddr as *mut u8,
-                    filesz,
-                );
-            }
-
-            #[cfg(target_arch = "aarch64")]
-            if (phdr.p_flags & PF_X) != 0 {
-                sync_user_text_range_for_exec(page_start as u64, page_end - page_start);
-            }
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            core::arch::asm!("mov cr3, {}", in(reg) old_pt);
-            core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            core::arch::asm!("msr ttbr0_el1, {}", in(reg) old_pt, options(nomem, nostack));
-            core::arch::asm!("isb", options(nomem, nostack));
-            core::arch::asm!("msr daif, {}", in(reg) saved_daif, options(nomem, nostack));
-        }
-    }
-
-    let brk = (max_vaddr_end + PAGE_SIZE - 1) & !0xFFF;
-    Ok(ElfLoadResult { entry, brk, pages_mapped: total_pages })
-}
 
 /// Check if data starts with ELF magic bytes.
 fn is_elf(data: &[u8]) -> bool {
@@ -997,14 +805,13 @@ fn elf_class(data: &[u8]) -> u8 {
 pub struct LoadResult {
     pub entry: u64,
     pub brk: u64,
-    pub is_compat32: bool,
     pub user_pages: u32,
     /// Initial user stack pointer (ASLR-randomized, ABI-aligned: `stack_top % 16 == 8`).
     pub stack_top: u64,
 }
 
-/// Load a binary (ELF64/ELF32/flat) into an already-created page directory.
-/// Maps code segments + user stack. Returns entry point, brk, arch mode, page count.
+/// Load a binary (ELF64/flat) into an already-created page directory.
+/// Maps code segments + user stack. Returns entry point, brk, page count.
 pub fn load_binary_into_pd(
     data: &[u8],
     pd_phys: crate::memory::address::PhysAddr,
@@ -1086,30 +893,14 @@ pub fn load_binary_into_pd(
         Ok(LoadResult {
             entry: elf_result.entry,
             brk: elf_result.brk,
-            is_compat32: false,
             user_pages: total_user_pages,
             // x86-64 ABI: RSP % 16 == 8 at function entry (simulates `call` push).
             stack_top: aslr_stack_top - 8,
         })
     } else if class == ELFCLASS32 {
-        let stack_mapped = virtual_mem::map_pages_range_in_pd(
-            pd_phys,
-            VirtAddr::new(stack_usable_bottom),
-            stack_usable_pages,
-            stack_flags,
-            true,
-        )?;
-        let elf_result = load_elf32(data, pd_phys)?;
-        total_user_pages += elf_result.pages_mapped + stack_mapped;
-        Ok(LoadResult {
-            entry: elf_result.entry,
-            brk: elf_result.brk,
-            is_compat32: true,
-            user_pages: total_user_pages,
-            stack_top: aslr_stack_top - 8,
-        })
+        Err("ELF32 binaries are no longer supported (32-bit user space removed)")
     } else if is_elf(data) {
-        Err("Unknown ELF class (not ELF32 or ELF64)")
+        Err("Unknown ELF class (only ELF64 is supported)")
     } else {
         // Flat binary: no ELF headers so we cannot know which sections are
         // code vs. data.  Map everything RWX for backwards compatibility.
@@ -1177,7 +968,6 @@ pub fn load_binary_into_pd(
         Ok(LoadResult {
             entry: PROGRAM_LOAD_ADDR,
             brk: PROGRAM_LOAD_ADDR + code_pages * PAGE_SIZE,
-            is_compat32: false,
             user_pages: total_user_pages,
             stack_top: aslr_stack_top - 8,
         })
@@ -1218,12 +1008,8 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     // Map DLLs into new address space
     crate::task::dll::map_all_dlls_into(new_pd);
 
-    // Determine architecture mode
-    let arch_mode = if result.is_compat32 {
-        crate::task::thread::ArchMode::Compat32
-    } else {
-        crate::task::thread::ArchMode::Native64
-    };
+    // All user threads now run in 64-bit native mode.
+    let arch_mode = crate::task::thread::ArchMode::Native64;
 
     // Update thread metadata (PD, brk, arch_mode, FPU reset, mmap reset)
     crate::task::scheduler::exec_update_thread(
@@ -1258,18 +1044,13 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     // stack_top already includes ABI alignment (-8) and ASLR offset.
     let user_stack = result.stack_top;
 
-    let fmt = if result.is_compat32 { "elf32" } else { "elf64" };
-    crate::serial_verbose_println!("exec: T{} -> ({}, {} pages, entry={:#x})",
-        tid, fmt, result.user_pages, result.entry);
+    crate::serial_verbose_println!("exec: T{} -> (elf64, {} pages, entry={:#x})",
+        tid, result.user_pages, result.entry);
 
-    if result.is_compat32 {
-        unsafe { jump_to_user_mode_compat32(result.entry, user_stack); }
-    } else {
-        #[cfg(target_arch = "x86_64")]
-        unsafe { jump_to_user_mode(result.entry, user_stack); }
-        #[cfg(target_arch = "aarch64")]
-        unsafe { jump_to_user_mode(result.entry, user_stack, 0); }
-    }
+    #[cfg(target_arch = "x86_64")]
+    unsafe { jump_to_user_mode(result.entry, user_stack); }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { jump_to_user_mode(result.entry, user_stack, 0); }
 }
 
 /// Load a flat binary from the filesystem and run it in Ring 3.
@@ -1384,7 +1165,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         .ok_or("Failed to create user page directory")?;
 
     let (entry_point, brk);
-    let mut is_compat32 = false;
     let mut total_user_pages: u32 = 0;
 
     // ASLR: randomize the stack top within the 8 MiB region.
@@ -1452,28 +1232,9 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         total_user_pages += elf_result.pages_mapped + stack_mapped;
 
     } else if class == ELFCLASS32 {
-        // ---- ELF32 binary path (32-bit compatibility) ----
-
-        let stack_bottom = aslr_stack_top - USER_STACK_PAGES * PAGE_SIZE;
-        let stack_mapped = virtual_mem::map_pages_range_in_pd(
-            pd_phys,
-            VirtAddr::new(stack_bottom),
-            USER_STACK_PAGES,
-            stack_flags,
-            true,
-        )?;
-
-        // Pre-map DLIB shared RO pages (same as ELF64 path above)
-        crate::task::dll::map_all_dlls_into(pd_phys);
-
-        let elf_result = load_elf32(&data, pd_phys)?;
-        entry_point = elf_result.entry;
-        brk = elf_result.brk;
-        is_compat32 = true;
-        total_user_pages += elf_result.pages_mapped + stack_mapped;
-
+        return Err("ELF32 binaries are no longer supported (32-bit user space removed)");
     } else if is_elf(&data) {
-        return Err("Unknown ELF class (not ELF32 or ELF64)");
+        return Err("Unknown ELF class (only ELF64 is supported)");
     } else {
         // ---- Flat binary path (no ELF headers → map code RWX for compat) ----
         let code_pages = (data.len() as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -1563,13 +1324,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         crate::task::scheduler::adjust_thread_user_pages(tid, total_user_pages as i32);
     }
 
-    // Set architecture mode for compat32 threads
-    if is_compat32 {
-        crate::task::scheduler::set_thread_arch_mode(
-            tid, crate::task::thread::ArchMode::Compat32,
-        );
-    }
-
     // Store pending program info keyed by TID (after spawn so we know the TID).
     // x86_64 enters userspace via `iretq` into a call-like ABI state and
     // therefore wants RSP % 16 == 8. AArch64 enters EL0 via `eret` and
@@ -1579,7 +1333,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     #[cfg(target_arch = "aarch64")]
     let pending_user_stack = aslr_stack_top;
 
-    if !try_store_pending_program(tid, entry_point, pending_user_stack, 0, is_compat32) {
+    if !try_store_pending_program(tid, entry_point, pending_user_stack, 0) {
         crate::serial_println!(
             "load_and_run: pending-program table full for '{}' (tid={})",
             path,
@@ -1652,7 +1406,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     };
     crate::task::scheduler::set_thread_identity(tid, parent_uid, parent_gid);
 
-    let fmt = if is_compat32 { "elf32" } else if is_elf(&data) { "elf64" } else { "flat" };
+    let fmt = if is_elf(&data) { "elf64" } else { "flat" };
     crate::serial_verbose_println!("spawn: '{}' -> T{} ({}, {} pages, entry={:#x})",
         path, tid, fmt, total_user_pages, entry_point);
 
@@ -1669,26 +1423,23 @@ pub(crate) extern "C" fn user_thread_trampoline() {
     #[cfg(target_arch = "x86_64")]
     crate::serial_verbose_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
     let tid = crate::task::scheduler::current_tid();
-    let (entry, user_stack, user_lr, compat32) =
+    let (entry, user_stack, user_lr) =
         take_pending_program(tid, "trampoline");
 
     #[cfg(target_arch = "x86_64")]
-    crate::serial_verbose_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x} compat32={}",
-        tid, entry, user_stack, compat32);
-    if compat32 {
-        unsafe { jump_to_user_mode_compat32(entry, user_stack); }
-    } else {
-        #[cfg(target_arch = "x86_64")]
-        unsafe { jump_to_user_mode(entry, user_stack); }
-        #[cfg(target_arch = "aarch64")]
-        unsafe { jump_to_user_mode(entry, user_stack, user_lr); }
-    }
+    crate::serial_verbose_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x}",
+        tid, entry, user_stack);
+    let _ = user_lr;
+    #[cfg(target_arch = "x86_64")]
+    unsafe { jump_to_user_mode(entry, user_stack); }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { jump_to_user_mode(entry, user_stack, user_lr); }
 }
 
 /// Store a pending entry point and user stack for a new intra-process thread.
 /// Called by `scheduler::create_thread_in_current_process()`.
 pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64, user_lr: u64) -> bool {
-    try_store_pending_program(tid, entry, user_stack, user_lr, false)
+    try_store_pending_program(tid, entry, user_stack, user_lr)
 }
 
 /// Trampoline for intra-process threads created via SYS_THREAD_CREATE.
@@ -1696,17 +1447,14 @@ pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64, user_lr: u64)
 pub extern "C" fn thread_create_trampoline() {
     enable_irqs_before_user_entry();
     let tid = crate::task::scheduler::current_tid();
-    let (entry, user_stack, user_lr, compat32) =
+    let (entry, user_stack, user_lr) =
         take_pending_program(tid, "thread_create trampoline");
 
-    if compat32 {
-        unsafe { jump_to_user_mode_compat32(entry, user_stack); }
-    } else {
-        #[cfg(target_arch = "x86_64")]
-        unsafe { jump_to_user_mode(entry, user_stack); }
-        #[cfg(target_arch = "aarch64")]
-        unsafe { jump_to_user_mode(entry, user_stack, user_lr); }
-    }
+    let _ = user_lr;
+    #[cfg(target_arch = "x86_64")]
+    unsafe { jump_to_user_mode(entry, user_stack); }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { jump_to_user_mode(entry, user_stack, user_lr); }
 }
 
 /// Transition to Ring 3 (user mode) for 64-bit programs.
@@ -1830,67 +1578,3 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64, user_lr: u64) -> ! {
     );
 }
 
-/// Transition to Ring 3 in 32-bit compatibility mode via iretq (x86_64 only).
-///
-/// User code segment 32-bit = 0x1B (GDT entry 3 | RPL=3, L=0, D=1)
-/// User data segment = 0x23 (GDT entry 4 | RPL=3)
-/// When IRETQ loads CS=0x1B (a 32-bit code segment), the CPU enters
-/// compatibility mode: the thread runs 32-bit code under the 64-bit kernel.
-///
-/// On AArch64 this is unreachable — ARM64 does not support 32-bit compat mode
-/// in this kernel. Callers must not invoke this on ARM64.
-#[cfg(target_arch = "x86_64")]
-unsafe fn jump_to_user_mode_compat32(entry: u64, user_stack: u64) -> ! {
-    crate::arch::x86::syscall_msr::debug_assert_gs_is_kernel();
-    core::arch::asm!(
-        "cli",
-        // Set data segment registers to user data segment
-        "mov ax, 0x23",
-        "mov ds, ax",
-        "mov es, ax",
-        "mov fs, ax",
-        "mov gs, ax",
-        // Build iretq frame on the kernel stack:
-        //   SS, RSP, RFLAGS, CS, RIP
-        "push 0x23",       // SS = user data segment
-        "push r14",        // RSP = user stack pointer (truncated to 32-bit by compat mode)
-        "pushfq",          // RFLAGS
-        "pop rax",
-        "or rax, 0x200",   // Set IF (interrupts enabled)
-        "push rax",
-        "push 0x1B",       // CS = user code 32-bit compat segment
-        "push r15",        // EIP = program entry point (32-bit)
-        // Preserve the PERCPU invariant across the ring 3 transition.
-        crate::prepare_gs_for_ring3_asm!(),
-        // Clear all GPRs to prevent kernel address leaks to user mode
-        "xor eax, eax",
-        "xor ebx, ebx",
-        "xor ecx, ecx",
-        "xor edx, edx",
-        "xor esi, esi",
-        "xor edi, edi",
-        "xor ebp, ebp",
-        "xor r8d, r8d",
-        "xor r9d, r9d",
-        "xor r10d, r10d",
-        "xor r11d, r11d",
-        "xor r12d, r12d",
-        "xor r13d, r13d",
-        "xor r14d, r14d",
-        "xor r15d, r15d",
-        "iretq",           // Enter Ring 3 in compatibility mode!
-        in("r14") user_stack,
-        in("r15") entry,
-        options(noreturn)
-    );
-}
-
-/// Stub for 32-bit compat mode on AArch64 (unsupported).
-///
-/// ARM64 does not support x86 32-bit compatibility mode. This function
-/// panics if called, which should never happen because `is_compat32` is
-/// always false for ARM64 ELF binaries.
-#[cfg(target_arch = "aarch64")]
-unsafe fn jump_to_user_mode_compat32(_entry: u64, _user_stack: u64) -> ! {
-    panic!("32-bit compatibility mode is not supported on AArch64");
-}
