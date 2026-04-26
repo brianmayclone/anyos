@@ -67,6 +67,7 @@ fn main() {
     let mut features: Vec<String> = Vec::new();
     let mut target: Option<String> = None;
     let mut bin: Option<String> = None;
+    let mut binary_format: Option<build::BinaryFormat> = None;
     let mut jobs: u32 = 1;
 
     let mut i = 1;
@@ -105,6 +106,21 @@ fn main() {
                 println!("ccargo: --bin expects a binary target name");
                 return;
             }
+        } else if args[i] == "--format" {
+            i += 1;
+            if i < args.len() {
+                match parse_binary_format(args[i]) {
+                    Some(format) => binary_format = Some(format),
+                    None => {
+                        println!("ccargo: unknown binary format `{}`", args[i]);
+                        println!("ccargo: expected one of: elf, bin, flat, pflat, dlib, kdrv");
+                        return;
+                    }
+                }
+            } else {
+                println!("ccargo: --format expects a value");
+                return;
+            }
         } else if args[i] == "--jobs" || args[i] == "-j" {
             i += 1;
             if i < args.len() {
@@ -129,10 +145,10 @@ fn main() {
 
     match command {
         "build" | "b" => {
-            cmd_build(&positional, release, verbose, &features, target, bin);
+            cmd_build(&positional, release, verbose, &features, target, bin, binary_format);
         }
         "run" => {
-            cmd_run(&positional, &run_args, release, verbose, &features, target, bin);
+            cmd_run(&positional, &run_args, release, verbose, &features, target, bin, binary_format);
         }
         "new" => {
             cmd_new(&positional, is_lib);
@@ -144,10 +160,10 @@ fn main() {
             cmd_clean(&positional);
         }
         "check" | "c" => {
-            cmd_check(&positional, release, &features, target, bin);
+            cmd_check(&positional, release, &features, target, bin, binary_format);
         }
         "test" | "t" => {
-            cmd_test(&positional, release, &features, target, bin);
+            cmd_test(&positional, release, &features, target, bin, binary_format);
         }
         "bench" => {
             cmd_bench(&positional, &features, target);
@@ -189,7 +205,18 @@ fn is_ccargo_argv0(arg: &str) -> bool {
     matches!(name, "ccargo" | "cargo" | "acargo")
 }
 
-fn make_config(release: bool, features: &[String], target: Option<String>, bin: Option<String>) -> build::BuildConfig {
+fn parse_binary_format(value: &str) -> Option<build::BinaryFormat> {
+    match value {
+        "elf" => Some(build::BinaryFormat::Elf),
+        "bin" | "flat" => Some(build::BinaryFormat::Bin),
+        "pflat" => Some(build::BinaryFormat::PFlat),
+        "dlib" => Some(build::BinaryFormat::Dlib),
+        "kdrv" => Some(build::BinaryFormat::Kdrv),
+        _ => None,
+    }
+}
+
+fn make_config(release: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>) -> build::BuildConfig {
     build::BuildConfig {
         release,
         verbose: true,
@@ -201,21 +228,22 @@ fn make_config(release: bool, features: &[String], target: Option<String>, bin: 
         env_vars: Vec::new(),
         target,
         bin,
+        binary_format,
     }
 }
 
-fn cmd_build(positional: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>, bin: Option<String>) {
+fn cmd_build(positional: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
-    let config = make_config(release, features, target, bin);
+    let config = make_config(release, features, target, bin, binary_format);
     let result = build::build(dir, &config);
     if !result.success {
         anyos_std::process::exit(1);
     }
 }
 
-fn cmd_run(positional: &[&str], run_args: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>, bin: Option<String>) {
+fn cmd_run(positional: &[&str], run_args: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>) {
     let dir = ".";
-    let config = make_config(release, features, target, bin);
+    let config = make_config(release, features, target, bin, binary_format);
     let result = build::build(dir, &config);
     if !result.success {
         anyos_std::process::exit(1);
@@ -257,10 +285,10 @@ fn cmd_clean(positional: &[&str]) {
     println!("     Removed target directory");
 }
 
-fn cmd_check(positional: &[&str], release: bool, features: &[String], target: Option<String>, bin: Option<String>) {
+fn cmd_check(positional: &[&str], release: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
     // Check mode: compile but emit object files only (no linking)
-    let mut config = make_config(release, features, target, bin);
+    let mut config = make_config(release, features, target, bin, binary_format);
     let result = build::build(dir, &config);
     if result.success {
         println!("    Finished checking {} crate(s)", result.compiled);
@@ -269,14 +297,14 @@ fn cmd_check(positional: &[&str], release: bool, features: &[String], target: Op
     }
 }
 
-fn cmd_test(positional: &[&str], release: bool, features: &[String], target: Option<String>, bin: Option<String>) {
+fn cmd_test(positional: &[&str], release: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
     let mut feat = features.to_vec();
     // Automatically enable kunit feature for test builds if available
     if !feat.iter().any(|f| f == "kunit") {
         feat.push(String::from("kunit"));
     }
-    let config = make_config(release, &feat, target, bin);
+    let config = make_config(release, &feat, target, bin, binary_format);
     let result = build::build(dir, &config);
     if !result.success {
         anyos_std::process::exit(1);
@@ -523,6 +551,7 @@ fn print_usage() {
     println!("  --no-default-features  Disable default features");
     println!("  --target <SPEC>        Target specification");
     println!("  --bin <NAME>           Select binary target");
+    println!("  --format <FMT>         Output format: elf, bin, pflat, dlib, kdrv");
     println!("  --jobs, -j <N>         Number of parallel jobs");
     println!("  --lib                  Create a library project (with new/init)");
     println!("  --                     Pass remaining args to the binary (with run)");

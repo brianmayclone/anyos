@@ -13,6 +13,15 @@ use crate::workspace;
 use crate::fingerprint;
 use crate::fs;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryFormat {
+    Elf,
+    Bin,
+    PFlat,
+    Dlib,
+    Kdrv,
+}
+
 /// Build configuration.
 pub struct BuildConfig {
     pub release: bool,
@@ -32,6 +41,8 @@ pub struct BuildConfig {
     pub target: Option<String>,
     /// Selected binary target from `--bin`.
     pub bin: Option<String>,
+    /// Final binary artifact format. None means target default.
+    pub binary_format: Option<BinaryFormat>,
 }
 
 /// Build result.
@@ -117,6 +128,7 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         let norm_name = node.name.replace('-', "_");
         let is_root = node.manifest_dir == root_dir;
 
+        let final_format = final_binary_format(config);
         let output_path = if is_lib {
             format!("{}/lib{}.rlib", deps_dir, norm_name)
         } else {
@@ -133,9 +145,14 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
                     }
                 }
             }
-            let path = format!("{}/{}", profile_dir, bin_name);
+            let path = binary_output_path(&profile_dir, bin_name, final_format);
             final_bin_path = Some(path.clone());
             path
+        };
+        let compile_output_path = if !is_lib && final_format != BinaryFormat::Elf {
+            format!("{}.elf", output_path)
+        } else {
+            output_path.clone()
         };
 
         // Derive source directory for module resolution
@@ -188,10 +205,14 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         }
 
         // Incremental compilation: check fingerprint
+        let mut fingerprint_features = resolved_features.clone();
+        if !is_lib {
+            fingerprint_features.push(format!("binary-format={:?}", final_format));
+        }
         let opt_hash = fingerprint::hash_options(
             if config.release { node.manifest.opt_level_release } else { node.manifest.opt_level_dev },
             &crate_cfg_flags,
-            &resolved_features,
+            &fingerprint_features,
             &crate_env_vars,
             config.release,
         );
@@ -309,7 +330,7 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
 
         let options = anyrc::driver::CompileOptions {
             input: node.src_file.clone(),
-            output: output_path.clone(),
+            output: compile_output_path.clone(),
             emit,
             opt_level: opt,
             crate_type: if is_lib {
@@ -328,7 +349,16 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         };
 
         match anyrc::driver::compile(&source, &node.src_file, &options) {
-            Ok(bytes) => {
+            Ok(mut bytes) => {
+                if !is_lib {
+                    match convert_binary_format(&bytes, final_format) {
+                        Ok(converted) => bytes = converted,
+                        Err(err) => {
+                            println!("error: could not convert `{}` to {:?}: {}", node.name, final_format, err);
+                            return BuildResult { success: false, bin_path: None, compiled };
+                        }
+                    }
+                }
                 fs::write_file(&output_path, &bytes);
                 if is_lib {
                     built_rlibs.insert(norm_name.clone(), output_path.clone());
@@ -367,6 +397,43 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         success: true,
         bin_path: final_bin_path,
         compiled,
+    }
+}
+
+fn final_binary_format(config: &BuildConfig) -> BinaryFormat {
+    if let Some(format) = config.binary_format {
+        return format;
+    }
+    if let Some(target) = config.target.as_ref() {
+        if target.contains("anyos") {
+            return BinaryFormat::Bin;
+        }
+        return BinaryFormat::Elf;
+    }
+    if cfg!(feature = "host") {
+        BinaryFormat::Elf
+    } else {
+        BinaryFormat::Bin
+    }
+}
+
+fn binary_output_path(profile_dir: &str, bin_name: &str, format: BinaryFormat) -> String {
+    match format {
+        BinaryFormat::Elf => format!("{}/{}", profile_dir, bin_name),
+        BinaryFormat::Bin => format!("{}/{}", profile_dir, bin_name),
+        BinaryFormat::PFlat => format!("{}/{}.pflat", profile_dir, bin_name),
+        BinaryFormat::Dlib => format!("{}/{}.dlib", profile_dir, bin_name),
+        BinaryFormat::Kdrv => format!("{}/{}.kdrv", profile_dir, bin_name),
+    }
+}
+
+fn convert_binary_format(bytes: &[u8], format: BinaryFormat) -> Result<Vec<u8>, String> {
+    match format {
+        BinaryFormat::Elf => Ok(bytes.to_vec()),
+        BinaryFormat::Bin => anyrc::linker::anyos::to_flat_binary(bytes),
+        BinaryFormat::PFlat => anyrc::linker::anyos::to_physical_flat_binary(bytes, 0x0010_0000),
+        BinaryFormat::Dlib => anyrc::linker::anyos::to_dlib_v3(bytes),
+        BinaryFormat::Kdrv => anyrc::linker::anyos::to_kdrv(bytes, 0),
     }
 }
 

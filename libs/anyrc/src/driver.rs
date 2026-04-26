@@ -2,7 +2,7 @@ use crate::prelude::*;
 use crate::codegen::emit::CodeEmitter;
 use crate::codegen::regalloc;
 use crate::codegen::x86asm::RelocKind;
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::{Diagnostic, Level, Span};
 use crate::hir_lower::LoweringContext;
 use crate::intern::Interner;
 use crate::linker::elf::{self, ElfRelocation, ElfSymbol, ObjectFile, Section};
@@ -348,9 +348,11 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                     target_abi,
                 };
                 let exe = link::link_ext(&all_objects, &options.output, no_main_flag, &link_opts);
+                validate_anyos_user_exe_if_needed(&exe, target_abi, no_main_flag, options)?;
                 Ok(exe)
             } else {
                 let exe = link::link_for_target(&all_objects, &options.output, no_main_flag, target_abi);
+                validate_anyos_user_exe_if_needed(&exe, target_abi, no_main_flag, options)?;
                 Ok(exe)
             }
         }
@@ -394,6 +396,39 @@ fn target_abi_from_cfg(cfg_flags: &[String]) -> link::TargetAbi {
     } else {
         link::TargetAbi::AnyOs
     }
+}
+
+fn validate_anyos_user_exe_if_needed(
+    exe: &[u8],
+    target_abi: link::TargetAbi,
+    no_main: bool,
+    options: &CompileOptions,
+) -> Result<(), Vec<Diagnostic>> {
+    if target_abi != link::TargetAbi::AnyOs
+        || is_kernel_linker_script(options.linker_script.as_deref())
+    {
+        return Ok(());
+    }
+
+    crate::linker::anyos::validate_user_elf(exe)
+        .map_err(|err| vec![link_diagnostic(format!("invalid anyOS user ELF: {}", err))])?;
+
+    if !no_main {
+        crate::linker::anyos::validate_generated_start_stub(exe)
+            .map_err(|err| vec![link_diagnostic(format!("invalid anyOS entry ABI: {}", err))])?;
+    }
+
+    Ok(())
+}
+
+fn is_kernel_linker_script(script: Option<&str>) -> bool {
+    script
+        .map(|path| path.ends_with("kernel/link.ld") || path.contains("/kernel/link.ld"))
+        .unwrap_or(false)
+}
+
+fn link_diagnostic(message: String) -> Diagnostic {
+    Diagnostic::new(Level::Error, &message, Span::dummy())
 }
 
 fn codegen_to_object(
