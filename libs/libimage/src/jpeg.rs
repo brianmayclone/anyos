@@ -23,19 +23,27 @@ macro_rules! fail { ($code:expr, $($arg:tt)*) => { return $code; }; }
 
 const M_SOI: u8 = 0xD8;
 const M_EOI: u8 = 0xD9;
-const M_SOF0: u8 = 0xC0; // Baseline DCT
+const M_SOF0: u8 = 0xC0; // Baseline DCT, 8-bit
+const M_SOF1: u8 = 0xC1; // Extended sequential DCT, 8/12-bit Huffman
 const M_SOF2: u8 = 0xC2; // Progressive DCT
 const M_DHT: u8 = 0xC4;
 const M_DQT: u8 = 0xDB;
 const M_DRI: u8 = 0xDD;
 const M_SOS: u8 = 0xDA;
+const M_APP14: u8 = 0xEE;
 
 // Maximum image dimensions we support
 const MAX_DIM: u32 = 16384;
-// Max components (Y, Cb, Cr)
-const MAX_COMP: usize = 3;
-// Max quantization tables
+// Max components: Y, Cb, Cr, K (for CMYK / YCCK).
+const MAX_COMP: usize = 4;
+// Max quantization tables (per JPEG: 4 selectors).
 const MAX_QTABLES: usize = 4;
+
+// Adobe APP14 color-transform values.
+// 0 = no transform: 3-comp RGB, 4-comp CMYK
+// 1 = YCbCr (3-comp)
+// 2 = YCCK (4-comp, equivalent to YCbCr+K with K not transformed)
+const ADOBE_TRANSFORM_UNKNOWN: u8 = 0xFF;
 
 // ---------------------------------------------------------------------------
 // Helper: read big-endian values from byte slice
@@ -244,6 +252,9 @@ struct FrameInfo {
     comp: [Component; MAX_COMP],
     max_h: u8,
     max_v: u8,
+    /// Adobe APP14 color transform (0xFF if no APP14 marker present).
+    /// 0 = unknown/RGB/CMYK, 1 = YCbCr, 2 = YCCK.
+    adobe_transform: u8,
 }
 
 impl FrameInfo {
@@ -257,6 +268,7 @@ impl FrameInfo {
             width: 0, height: 0, num_comp: 0, progressive: false,
             comp: [COMP_INIT; MAX_COMP],
             max_h: 1, max_v: 1,
+            adobe_transform: ADOBE_TRANSFORM_UNKNOWN,
         }
     }
 }
@@ -303,7 +315,7 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
             break;
         }
 
-        let is_sof = marker == M_SOF0 || marker == M_SOF2;
+        let is_sof = marker == M_SOF0 || marker == M_SOF1 || marker == M_SOF2;
         if is_sof {
             if seg_len < 8 {
                 return None;
@@ -319,7 +331,7 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
             if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
                 return None;
             }
-            if num_comp == 0 || num_comp > 3 {
+            if num_comp == 0 || num_comp > MAX_COMP as u32 {
                 return None;
             }
 
@@ -481,7 +493,7 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
         }
 
         match marker {
-            M_SOF0 | M_SOF2 => {
+            M_SOF0 | M_SOF1 | M_SOF2 => {
                 if seg_len < 8 {
                     fail!(ERR_INVALID_DATA, "");
                 }
@@ -601,6 +613,22 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
                 }
             }
 
+            M_APP14 => {
+                // Adobe APP14 marker: "Adobe\0" + 5 data bytes.
+                //   bytes 2..7 : "Adobe"
+                //   byte 7..8  : Version (u16)
+                //   byte 9..10 : Flags0 (u16)
+                //   byte 11..12: Flags1 (u16)
+                //   byte 13    : Color transform
+                if seg_len >= 14
+                    && data[pos + 2] == b'A' && data[pos + 3] == b'd'
+                    && data[pos + 4] == b'o' && data[pos + 5] == b'b'
+                    && data[pos + 6] == b'e'
+                {
+                    frame.adobe_transform = data[pos + 13];
+                }
+            }
+
             _ => {}
         }
 
@@ -705,36 +733,135 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
     }
 
     // ── Color conversion + chroma upsampling ──
-    if frame.num_comp == 1 {
+    color_convert(&frame, scratch, out, &plane_offset, &plane_w, width, height);
+
+    ERR_OK
+}
+
+// ---------------------------------------------------------------------------
+// Color space conversion + nearest-neighbor upsampling.
+//
+// Component layouts handled:
+//   1 component  -> grayscale
+//   2 components -> grayscale + alpha (rare); we render as grayscale, ignore #2
+//   3 components -> JFIF YCbCr (default), or Adobe RGB if transform=0
+//   4 components -> Adobe YCCK (transform=2 or default for 4-comp)
+//                   Adobe CMYK (transform=0) — inverted: Photoshop convention
+// ---------------------------------------------------------------------------
+
+fn color_convert(
+    frame: &FrameInfo,
+    scratch: &[u8],
+    out: &mut [u32],
+    plane_offset: &[usize; MAX_COMP],
+    plane_w: &[usize; MAX_COMP],
+    width: usize,
+    height: usize,
+) {
+    let nc = frame.num_comp as usize;
+    let max_h = frame.max_h as usize;
+    let max_v = frame.max_v as usize;
+
+    // Per-component subsampling factors for nearest-neighbour upsample.
+    let mut hs = [1usize; MAX_COMP];
+    let mut vs = [1usize; MAX_COMP];
+    for c in 0..nc {
+        hs[c] = frame.comp[c].h_samples as usize;
+        vs[c] = frame.comp[c].v_samples as usize;
+    }
+
+    if nc == 1 {
         for y in 0..height {
             for x in 0..width {
                 let g = scratch[plane_offset[0] + y * plane_w[0] + x] as u32;
                 out[y * width + x] = 0xFF000000 | (g << 16) | (g << 8) | g;
             }
         }
-    } else {
-        for y in 0..height {
-            for x in 0..width {
-                let yy = scratch[plane_offset[0] + y * plane_w[0] + x] as i32;
-                let cx = x * frame.comp[1].h_samples as usize / frame.max_h as usize;
-                let cy = y * frame.comp[1].v_samples as usize / frame.max_v as usize;
-                let cb = scratch[plane_offset[1] + cy * plane_w[1] + cx] as i32 - 128;
-                let cr = scratch[plane_offset[2] + cy * plane_w[2] + cx] as i32 - 128;
-
-                let r = yy + ((cr * 1436) >> 10);
-                let g = yy - ((cb * 352) >> 10) - ((cr * 731) >> 10);
-                let b = yy + ((cb * 1815) >> 10);
-
-                let r = clamp_u8(r) as u32;
-                let g = clamp_u8(g) as u32;
-                let b = clamp_u8(b) as u32;
-
-                out[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
-            }
-        }
+        return;
     }
 
-    ERR_OK
+    if nc == 2 {
+        // Treat as grayscale (component 0). Ignore component 1.
+        for y in 0..height {
+            for x in 0..width {
+                let g = scratch[plane_offset[0] + y * plane_w[0] + x] as u32;
+                out[y * width + x] = 0xFF000000 | (g << 16) | (g << 8) | g;
+            }
+        }
+        return;
+    }
+
+    // For 3 components we use YCbCr->RGB unless Adobe APP14 explicitly flags
+    // the data as RGB (transform=0).
+    let three_comp_is_rgb = nc == 3 && frame.adobe_transform == 0;
+
+    // For 4 components we use YCCK unless Adobe APP14 explicitly flags as
+    // CMYK (transform=0), or there's no APP14 in which case the IJG default
+    // assumption (matching libjpeg jdmaster.c) is CMYK — but in practice
+    // 4-comp JPEGs from Photoshop carry an APP14 marker; without one we
+    // default to YCCK because most other producers (e.g. Ghostscript) emit
+    // YCCK and the colors in CMYK-as-YCCK come out badly inverted.
+    //
+    // libjpeg default: jpeg_set_colorspace() picks YCCK for 4-comp when
+    // saving and CMYK when no APP14 is present in the input. We follow the
+    // same: no APP14 + 4 comp -> CMYK.
+    let four_comp_is_ycck = nc == 4 && frame.adobe_transform == 2;
+    let four_comp_is_cmyk = nc == 4 && !four_comp_is_ycck;
+
+    for y in 0..height {
+        for x in 0..width {
+            // Sample each component using nearest-neighbour upsampling.
+            // Component sample at output (x,y) is at plane (x*hs/max_h, y*vs/max_v).
+            let s = |c: usize| -> i32 {
+                let cx = x * hs[c] / max_h;
+                let cy = y * vs[c] / max_v;
+                scratch[plane_offset[c] + cy * plane_w[c] + cx] as i32
+            };
+
+            let (r, g, b) = if three_comp_is_rgb {
+                (s(0), s(1), s(2))
+            } else if nc == 3 {
+                ycbcr_to_rgb(s(0), s(1), s(2))
+            } else if four_comp_is_ycck {
+                // YCCK: convert YCbCr part to RGB, then apply K (0=black,255=white in
+                // Adobe inverted convention).
+                let (r, g, b) = ycbcr_to_rgb(s(0), s(1), s(2));
+                let k = s(3); // K is stored "inverted" in Adobe YCCK: 255 = no ink
+                let r = (r * k + 128) / 255;
+                let g = (g * k + 128) / 255;
+                let b = (b * k + 128) / 255;
+                (r, g, b)
+            } else if four_comp_is_cmyk {
+                // Adobe inverted CMYK: 255 = no ink, 0 = full ink.
+                let c = s(0);
+                let m = s(1);
+                let yk = s(2);
+                let k = s(3);
+                let r = (c * k + 128) / 255;
+                let g = (m * k + 128) / 255;
+                let b = (yk * k + 128) / 255;
+                (r, g, b)
+            } else {
+                // Should not happen given the early-out for 1/2 comp above.
+                (s(0), s(0), s(0))
+            };
+
+            let r = clamp_u8(r) as u32;
+            let g = clamp_u8(g) as u32;
+            let b = clamp_u8(b) as u32;
+            out[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+#[inline]
+fn ycbcr_to_rgb(yy: i32, cb_raw: i32, cr_raw: i32) -> (i32, i32, i32) {
+    let cb = cb_raw - 128;
+    let cr = cr_raw - 128;
+    let r = yy + ((cr * 1436) >> 10);
+    let g = yy - ((cb * 352) >> 10) - ((cr * 731) >> 10);
+    let b = yy + ((cb * 1815) >> 10);
+    (r, g, b)
 }
 
 // ---------------------------------------------------------------------------
