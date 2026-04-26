@@ -76,14 +76,9 @@ impl Drop for PageAlignedStack {
 
 static NEXT_TID: AtomicU32 = AtomicU32::new(1);
 
-/// Architecture mode for user-space threads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchMode {
-    /// Native 64-bit long mode (CS=0x2B).
-    Native64 = 0,
-    /// 32-bit compatibility mode under long mode (CS=0x1B).
-    Compat32 = 1,
-}
+// ArchMode enum removed: all user threads run in 64-bit native long mode
+// (CS=0x2B) since 32-bit user space was dropped. The previous Native64 /
+// Compat32 distinction is no longer meaningful.
 
 /// Execution state of a thread in the scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,8 +154,6 @@ pub struct Thread {
     pub stdin_pipe: u32,
     /// CPU ticks consumed by this thread (incremented each scheduler tick while running).
     pub cpu_ticks: u32,
-    /// Architecture mode for user threads (Native64 or Compat32).
-    pub arch_mode: ArchMode,
     /// Saved FPU/SSE/AVX register state (832 bytes, XSAVE format).
     pub fpu_state: FxState,
     /// PIT tick at which a sleeping thread should be woken (None = not sleeping).
@@ -341,7 +334,6 @@ impl Thread {
             stdout_pipe: 0,
             stdin_pipe: 0,
             cpu_ticks: 0,
-            arch_mode: ArchMode::Native64,
             fpu_state: FxState::new_default(),
             wake_at_tick: None,
             sleep_remaining: 0,

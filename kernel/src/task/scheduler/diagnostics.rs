@@ -92,7 +92,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     tid: thread.tid,
                     priority: thread.priority,
                     state: state_num,
-                    arch_mode: thread.arch_mode as u8,
+                    arch_mode: 0, // reserved (always 0 since 32-bit user removed)
                     cpu_ticks: thread.cpu_ticks,
                     io_read_bytes: thread.io_read_bytes,
                     io_write_bytes: thread.io_write_bytes,

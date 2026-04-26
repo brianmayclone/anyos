@@ -1008,12 +1008,9 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     // Map DLLs into new address space
     crate::task::dll::map_all_dlls_into(new_pd);
 
-    // All user threads now run in 64-bit native mode.
-    let arch_mode = crate::task::thread::ArchMode::Native64;
-
-    // Update thread metadata (PD, brk, arch_mode, FPU reset, mmap reset)
+    // Update thread metadata (PD, brk, FPU reset, mmap reset)
     crate::task::scheduler::exec_update_thread(
-        tid, new_pd, result.brk as u32, arch_mode, result.user_pages,
+        tid, new_pd, result.brk as u32, result.user_pages,
     );
 
     // Set new args (clear old args first)

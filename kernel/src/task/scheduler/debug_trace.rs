@@ -760,7 +760,7 @@ pub fn debug_wait_event(debugger_tid: u32, target_tid: u32, buf_ptr: u64, size: 
 ///  78: gid (u16)
 ///  80: debug_attached_by (u32)
 ///  84: name (32 bytes)
-/// 116: arch_mode (u32)
+/// 116: arch_mode (u32, reserved — always 0 since 32-bit user space removed)
 /// 120: reserved (8 bytes)
 ///
 /// Returns number of bytes written.
@@ -839,11 +839,9 @@ pub fn thread_info_ex(target_tid: u32, buf_ptr: u64, size: u32) -> u32 {
     if name_end <= buf.len() {
         buf[84..name_end].copy_from_slice(&thread.name);
     }
-    let arch_mode_u32: u32 = match thread.arch_mode {
-        crate::task::thread::ArchMode::Native64 => 0,
-        crate::task::thread::ArchMode::Compat32 => 1,
-    };
-    put_u32(&mut buf, 116, arch_mode_u32);
+    // arch_mode field reserved (always 0 = native 64-bit since 32-bit user
+    // space was removed). Kept in the layout for ABI compatibility.
+    put_u32(&mut buf, 116, 0);
 
     // Copy to user buffer
     unsafe {

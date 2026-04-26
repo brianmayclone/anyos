@@ -8,7 +8,6 @@ use crate::memory::address::PhysAddr;
 pub struct ForkSnapshot {
     pub pd: PhysAddr,
     pub brk: u32,
-    pub arch_mode: crate::task::thread::ArchMode,
     pub args: [u8; 256],
     pub cwd: [u8; 512],
     pub capabilities: crate::task::capabilities::CapSet,
@@ -38,7 +37,6 @@ pub fn current_thread_fork_snapshot() -> Option<ForkSnapshot> {
     Some(ForkSnapshot {
         pd,
         brk: thread.brk,
-        arch_mode: thread.arch_mode,
         args: thread.args,
         cwd: thread.cwd,
         capabilities: thread.capabilities,
@@ -93,12 +91,11 @@ pub fn set_thread_user_pages(tid: u32, val: u32) {
     }
 }
 
-/// Update thread state for exec(): new PD, reset brk/mmap/fpu, change arch mode.
+/// Update thread state for exec(): new PD, reset brk/mmap/fpu.
 pub fn exec_update_thread(
     tid: u32,
     new_pd: PhysAddr,
     brk: u32,
-    arch_mode: crate::task::thread::ArchMode,
     user_pages: u32,
 ) {
     let mut guard = SCHEDULER.lock();
@@ -124,7 +121,6 @@ pub fn exec_update_thread(
         thread.mmap_next = 0x7000_0000u32.wrapping_add(mmap_rand * 4096);
         thread.fpu_state = crate::task::thread::FxState::new_default();
         thread.user_pages = user_pages;
-        thread.arch_mode = arch_mode;
         thread.context.checksum = thread.context.compute_checksum();
     }
 }

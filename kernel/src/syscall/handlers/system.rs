@@ -137,7 +137,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                         "ready" => 0, "running" => 1, "blocked" => 2, "dead" => 3,
                         "stopped" => 4, _ => 255,
                     };
-                    buf[off + 6] = t.arch_mode; // 0=x86_64, 1=x86
+                    buf[off + 6] = t.arch_mode; // reserved (always 0 = 64-bit since 32-bit user removed)
                     buf[off + 7] = if t.pd_shared { 1 } else { 0 };
                     let name_bytes = t.name.as_bytes();
                     let n = name_bytes.len().min(23);
