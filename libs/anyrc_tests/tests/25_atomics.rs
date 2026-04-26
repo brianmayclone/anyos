@@ -115,8 +115,23 @@ fn compile_ordering_import() {
         r#"
         use core::sync::atomic::Ordering;
         fn main() -> i32 {
-            let _r = Ordering::Relaxed;
-            let _a = Ordering::Acquire;
+            let _r: Ordering = Ordering::Relaxed;
+            let _a: Ordering = Ordering::Acquire;
+            let _s: Ordering = Ordering::SeqCst;
+            0
+        }
+    "#,
+    );
+}
+
+#[test]
+fn compile_std_ordering_import() {
+    assert_compiles(
+        r#"
+        use std::sync::atomic::{AtomicU32, Ordering};
+        fn main() -> i32 {
+            let x = AtomicU32::new(0);
+            x.fetch_add(1, Ordering::Relaxed);
             0
         }
     "#,

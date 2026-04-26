@@ -28,7 +28,10 @@ pub struct Manifest {
 
 #[derive(Debug, Clone)]
 pub struct Dependency {
+    /// The name used by the dependent crate (`foo` in `foo = { package = "bar" }`).
     pub name: String,
+    /// The actual package name to resolve from the registry or lockfile.
+    pub package: Option<String>,
     pub path: Option<String>,
     pub version: Option<String>,
     pub optional: bool,
@@ -41,16 +44,26 @@ pub struct Dependency {
 pub enum CrateKind {
     Bin,
     Lib,
+    ProcMacro,
 }
 
 pub fn parse(toml: &Table) -> Manifest {
     let pkg = toml.get("package").and_then(|v| v.as_table());
-    let name = pkg.and_then(|p| p.get("name")).and_then(|v| v.as_str())
-        .unwrap_or("unknown").to_string();
-    let version = pkg.and_then(|p| p.get("version")).and_then(|v| v.as_str())
-        .unwrap_or("0.1.0").to_string();
-    let edition = pkg.and_then(|p| p.get("edition")).and_then(|v| v.as_str())
-        .unwrap_or("2021").to_string();
+    let name = pkg
+        .and_then(|p| p.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let version = pkg
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("0.1.0")
+        .to_string();
+    let edition = pkg
+        .and_then(|p| p.get("edition"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("2021")
+        .to_string();
 
     // Dependencies
     let dependencies = parse_dependencies(toml);
@@ -63,14 +76,32 @@ pub fn parse(toml: &Table) -> Manifest {
 
     if let Some(Value::Array(bins)) = toml.get("bin") {
         if let Some(Value::Table(bin)) = bins.first() {
-            bin_name = bin.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-            bin_path = bin.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
+            bin_name = bin
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            bin_path = bin
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
         }
     }
 
     if let Some(lib_table) = toml.get("lib").and_then(|v| v.as_table()) {
-        crate_type = CrateKind::Lib;
-        lib_name = lib_table.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+        crate_type = if lib_table
+            .get("proc-macro")
+            .or_else(|| lib_table.get("proc_macro"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            CrateKind::ProcMacro
+        } else {
+            CrateKind::Lib
+        };
+        lib_name = lib_table
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
     }
 
     // Profiles
@@ -144,11 +175,15 @@ fn parse_dependencies(toml: &Table) -> Vec<Dependency> {
     }
 
     if let Some(targets) = toml.get("target").and_then(|v| v.as_table()) {
-        for (_target_cfg, target_val) in targets.iter() {
+        for (target_cfg, target_val) in targets.iter() {
+            if !target_dependency_cfg_matches_anyos(target_cfg) {
+                continue;
+            }
             let Some(target_table) = target_val.as_table() else {
                 continue;
             };
-            let Some(dep_table) = target_table.get("dependencies").and_then(|v| v.as_table()) else {
+            let Some(dep_table) = target_table.get("dependencies").and_then(|v| v.as_table())
+            else {
                 continue;
             };
             for (dep_name, dep_val) in dep_table.iter() {
@@ -158,6 +193,24 @@ fn parse_dependencies(toml: &Table) -> Vec<Dependency> {
     }
 
     deps
+}
+
+fn target_dependency_cfg_matches_anyos(target_cfg: &str) -> bool {
+    let compact = target_cfg
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    if compact.contains("target_os=\"linux\"") && !compact.starts_with("cfg(not(") {
+        return false;
+    }
+    if compact.contains("not(target_os=\"linux\")")
+        || compact.contains("target_os=\"none\"")
+        || compact.contains("target_os=\"anyos\"")
+        || compact.contains("x86_64-anyos")
+    {
+        return true;
+    }
+    true
 }
 
 fn push_dependency(deps: &mut Vec<Dependency>, dep: Dependency) {
@@ -184,6 +237,7 @@ fn parse_single_dep(name: &str, val: &Value) -> Dependency {
     match val {
         Value::String(v) => Dependency {
             name: name.to_string(),
+            package: None,
             path: None,
             version: Some(v.clone()),
             optional: false,
@@ -192,15 +246,28 @@ fn parse_single_dep(name: &str, val: &Value) -> Dependency {
             workspace: false,
         },
         Value::Table(t) => {
-            let path = t.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let version = t.get("version").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let package = t
+                .get("package")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let path = t
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let version = t
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             let optional = t.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
             let default_features = t
                 .get("default-features")
                 .or_else(|| t.get("default_features"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let workspace = t.get("workspace").and_then(|v| v.as_bool()).unwrap_or(false);
+            let workspace = t
+                .get("workspace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let mut features = Vec::new();
             if let Some(arr) = t.get("features").and_then(|v| v.as_array()) {
                 for f in arr {
@@ -211,6 +278,7 @@ fn parse_single_dep(name: &str, val: &Value) -> Dependency {
             }
             Dependency {
                 name: name.to_string(),
+                package,
                 path,
                 version,
                 optional,
@@ -221,6 +289,7 @@ fn parse_single_dep(name: &str, val: &Value) -> Dependency {
         }
         _ => Dependency {
             name: name.to_string(),
+            package: None,
             path: None,
             version: None,
             optional: false,
@@ -242,7 +311,9 @@ fn parse_profile_opt(toml: &Table, profile: &str) -> Option<u32> {
 fn parse_profile_panic(toml: &Table, profile: &str) -> Option<String> {
     let profiles = toml.get("profile").and_then(|v| v.as_table())?;
     let p = profiles.get(profile).and_then(|v| v.as_table())?;
-    p.get("panic").and_then(|v| v.as_str()).map(|s| s.to_string())
+    p.get("panic")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -289,11 +360,48 @@ mod tests {
         );
         assert!(!syn.default_features);
     }
+
+    #[test]
+    fn parses_proc_macro_lib_kind() {
+        let table = toml::parse(
+            r#"
+            [package]
+            name = "derive_demo"
+
+            [lib]
+            proc-macro = true
+            "#,
+        );
+
+        let manifest = parse(&table);
+        assert_eq!(manifest.crate_type, CrateKind::ProcMacro);
+    }
+
+    #[test]
+    fn target_dependencies_filter_linux_for_anyos() {
+        let table = toml::parse(
+            r#"
+            [package]
+            name = "target_deps"
+
+            [target.'cfg(target_os = "linux")'.dependencies]
+            anyos_std = { path = "../../libs/stdlib", features = ["host"] }
+
+            [target.'cfg(not(target_os = "linux"))'.dependencies]
+            anyos_std = { path = "../../libs/stdlib" }
+            "#,
+        );
+
+        let manifest = parse(&table);
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.dependencies[0].name, "anyos_std");
+        assert!(manifest.dependencies[0].features.is_empty());
+    }
 }
 
 /// Determine the source file for a crate given its manifest and directory.
 pub fn source_file(manifest: &Manifest, manifest_dir: &str) -> String {
-    if manifest.crate_type == CrateKind::Lib {
+    if matches!(manifest.crate_type, CrateKind::Lib | CrateKind::ProcMacro) {
         format!("{}/src/lib.rs", manifest_dir)
     } else if let Some(ref path) = manifest.bin_path {
         format!("{}/{}", manifest_dir, path)
@@ -309,7 +417,9 @@ pub fn infer_crate_layout(manifest: &mut Manifest, manifest_dir: &str) {
     let has_main = crate::fs::file_exists(&main_rs);
 
     if manifest.lib_name.is_some() {
-        manifest.crate_type = CrateKind::Lib;
+        if manifest.crate_type != CrateKind::ProcMacro {
+            manifest.crate_type = CrateKind::Lib;
+        }
         return;
     }
 

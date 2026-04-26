@@ -106,10 +106,14 @@ pub fn rm_rf(path: &str) {
         let off = i * entry_size;
         let file_type = buf[off]; // 0=file, 1=dir
         let name_len = buf[off + 1] as usize;
-        if name_len == 0 { continue; }
+        if name_len == 0 {
+            continue;
+        }
         let name_bytes = &buf[off + 8..off + 8 + name_len];
         if let Ok(name) = core::str::from_utf8(name_bytes) {
-            if name == "." || name == ".." { continue; }
+            if name == "." || name == ".." {
+                continue;
+            }
             let child = format!("{}/{}", path, name);
             if file_type == 1 {
                 rm_rf(&child);
@@ -134,7 +138,9 @@ pub fn resolve_path(base: &str, relative: &str) -> String {
 
     for part in relative.split('/') {
         match part {
-            ".." => { components.pop(); }
+            ".." => {
+                components.pop();
+            }
             "." | "" => {}
             other => components.push(other),
         }

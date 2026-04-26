@@ -1,6 +1,33 @@
 #![no_std]
 #![allow(dead_code)]
 
+pub mod alloc {
+    pub use core::alloc::{GlobalAlloc, Layout, LayoutError};
+
+    pub struct AllocError;
+
+    pub struct Global;
+
+    pub unsafe trait Allocator {
+        fn allocate(&self, layout: Layout) -> core::result::Result<core::ptr::NonNull<u8>, AllocError>;
+        unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: Layout);
+    }
+
+    unsafe impl Allocator for Global {
+        fn allocate(&self, layout: Layout) -> core::result::Result<core::ptr::NonNull<u8>, AllocError>;
+        unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: Layout);
+    }
+
+    impl core::default::Default for Global {
+        fn default() -> Global;
+    }
+
+    pub unsafe fn alloc(layout: Layout) -> *mut u8;
+    pub unsafe fn dealloc(ptr: *mut u8, layout: Layout);
+    pub unsafe fn realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8;
+    pub fn handle_alloc_error(layout: Layout) -> !;
+}
+
 pub mod boxed {
     pub struct Box<T> {
         pub ptr: *mut T,
@@ -9,6 +36,15 @@ pub mod boxed {
     impl<T> Box<T> {
         pub fn new(value: T) -> Box<T>;
         pub fn leak<'a>(boxed: Box<T>) -> &'a mut T;
+    }
+
+    impl<T> core::ops::Deref for Box<T> {
+        type Target = T;
+        fn deref(&self) -> &T;
+    }
+
+    impl<T> core::ops::DerefMut for Box<T> {
+        fn deref_mut(&mut self) -> &mut T;
     }
 }
 
@@ -42,6 +78,12 @@ pub mod vec {
         pub fn as_slice(&self) -> &[T];
         pub fn as_mut_slice(&mut self) -> &mut [T];
         pub fn into_iter(self) -> IntoIter<T>;
+        pub fn sort_by<F>(&mut self, compare: F);
+        pub fn sort(&mut self);
+        pub fn sort_by_key<K, F>(&mut self, f: F);
+        pub fn dedup_by<F>(&mut self, same_bucket: F);
+        pub fn last_mut(&mut self) -> core::option::Option<&mut T>;
+        pub fn copy_from_slice(&mut self, src: &[T]);
     }
 }
 
@@ -67,6 +109,16 @@ pub mod string {
         pub fn push(&mut self, ch: char);
         pub fn as_str(&self) -> &str;
         pub fn as_bytes(&self) -> &[u8];
+        pub fn find(&self, pat: &str) -> core::option::Option<usize>;
+        pub fn rfind(&self, pat: &str) -> core::option::Option<usize>;
+        pub fn into_bytes(self) -> crate::vec::Vec<u8>;
+        pub fn from_utf8(vec: crate::vec::Vec<u8>) -> core::result::Result<String, FromUtf8Error>;
+        pub fn from_utf8_lossy(v: &[u8]) -> crate::borrow::Cow<'_, str>;
+    }
+
+    pub struct FromUtf8Error;
+
+    impl FromUtf8Error {
         pub fn into_bytes(self) -> crate::vec::Vec<u8>;
     }
 }
@@ -138,8 +190,18 @@ pub mod rc {
         pub ptr: *mut T,
     }
 
+    pub struct Weak<T> {
+        pub ptr: *mut T,
+    }
+
     impl<T> Rc<T> {
         pub fn new(value: T) -> Rc<T>;
+        pub fn downgrade(this: &Rc<T>) -> Weak<T>;
+        pub fn as_ptr(this: &Rc<T>) -> *const T;
+        pub fn into_raw(this: Rc<T>) -> *const T;
+        pub fn strong_count(_this: &Rc<T>) -> usize {
+            1
+        }
     }
 }
 
@@ -154,6 +216,9 @@ pub mod sync {
 
     impl<T> Arc<T> {
         pub fn new(value: T) -> Arc<T>;
+        pub fn strong_count(_this: &Arc<T>) -> usize {
+            1
+        }
     }
 }
 
@@ -162,8 +227,16 @@ pub mod ffi {
         pub bytes: crate::vec::Vec<u8>,
     }
 
+    pub struct CStr;
+    pub struct BoxedCStr {
+        pub ptr: *mut CStr,
+    }
     pub struct NulError;
     pub struct FromBytesWithNulError;
+
+    impl CString {
+        pub fn into_boxed_c_str(self) -> BoxedCStr;
+    }
 }
 
 pub mod format {

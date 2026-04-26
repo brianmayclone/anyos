@@ -59,6 +59,26 @@ pub fn runtime_stubs(target_abi: TargetAbi) -> Vec<(String, Vec<u8>)> {
         code
     }));
 
+    // Function-item shims used when Core/Alloc constructors or methods are
+    // passed as callbacks, e.g. `Deserialize::deserialize(...).map(Wrapping)`.
+    // These are ABI entry points for real Rust function values; direct calls
+    // are still lowered by the compiler intrinsics above.
+    for name in [
+        "Reverse",
+        "Wrapping",
+        "into_boxed_c_str",
+        "into_boxed_slice",
+        "into_boxed_str",
+    ] {
+        stubs.push((name.to_string(), vec![0x48, 0x89, 0xF8, 0xC3])); // mov rax, rdi; ret
+    }
+    for name in ["drop_in_place"] {
+        stubs.push((name.to_string(), vec![0xC3])); // ret
+    }
+    for name in ["Error"] {
+        stubs.push((name.to_string(), vec![0x48, 0x31, 0xC0, 0xC3])); // xor rax, rax; ret
+    }
+
     // __anyrc_realloc(ptr: *mut u8, old_size: usize, new_size: usize) -> *mut u8
     // Simple: alloc new, copy old, return new (dealloc is no-op)
     stubs.push(("__anyrc_realloc".to_string(), {

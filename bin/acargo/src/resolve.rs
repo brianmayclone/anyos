@@ -22,6 +22,8 @@ pub struct BuildNode {
     pub src_file: String,
     /// Indices of dependencies in the node list.
     pub deps: Vec<usize>,
+    /// Dependency names as they are visible from this crate.
+    pub dep_aliases: Vec<(usize, String)>,
     /// Whether this crate was fetched from the registry.
     pub from_registry: bool,
     /// Cargo features active for this crate.
@@ -71,7 +73,7 @@ pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
                     changed = true;
                 }
             }
-            if changed {
+            if changed && mf.crate_type != CrateKind::ProcMacro {
                 let merged = nodes[existing_idx].active_features.clone();
                 queue_manifest_dependencies(&mut queue, &mf, &dir, &merged, lockfile.as_ref());
             }
@@ -84,7 +86,9 @@ pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
 
         // Queue dependencies. Existing packages are still queued so their
         // feature set can be unified if this edge asks for more.
-        queue_manifest_dependencies(&mut queue, &mf, &dir, &active_features, lockfile.as_ref());
+        if mf.crate_type != CrateKind::ProcMacro {
+            queue_manifest_dependencies(&mut queue, &mf, &dir, &active_features, lockfile.as_ref());
+        }
 
         nodes.push(BuildNode {
             name: mf.name.clone(),
@@ -92,6 +96,7 @@ pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
             manifest: mf,
             src_file,
             deps: Vec::new(),
+            dep_aliases: Vec::new(),
             from_registry,
             active_features,
         });
@@ -100,15 +105,19 @@ pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
     // Second pass: resolve dependency indices
     for i in 0..nodes.len() {
         let mut dep_indices = Vec::new();
+        let mut dep_aliases = Vec::new();
         for dep in &nodes[i].manifest.dependencies {
             if !dependency_is_active(dep, &nodes[i].active_features) {
                 continue;
             }
-            if let Some(&idx) = name_to_idx.get(&dep.name) {
+            let package_name = dep.package.as_deref().unwrap_or(&dep.name);
+            if let Some(&idx) = name_to_idx.get(package_name) {
                 dep_indices.push(idx);
+                dep_aliases.push((idx, dep.name.clone()));
             }
         }
         nodes[i].deps = dep_indices;
+        nodes[i].dep_aliases = dep_aliases;
     }
 
     // Write updated Cargo.lock if we resolved any registry dependencies
@@ -132,6 +141,7 @@ fn inject_implicit_anyos_crates(
         if let Some(core_dir) = find_repo_library_dir(manifest_dir, "core") {
             manifest.dependencies.push(manifest::Dependency {
                 name: String::from("core"),
+                package: None,
                 path: Some(core_dir),
                 version: None,
                 optional: false,
@@ -146,6 +156,7 @@ fn inject_implicit_anyos_crates(
         if let Some(alloc_dir) = find_repo_library_dir(manifest_dir, "alloc") {
             manifest.dependencies.push(manifest::Dependency {
                 name: String::from("alloc"),
+                package: None,
                 path: Some(alloc_dir),
                 version: None,
                 optional: false,
@@ -160,6 +171,7 @@ fn inject_implicit_anyos_crates(
         if let Some(stdlib_dir) = find_repo_library_dir(manifest_dir, "stdlib") {
             manifest.dependencies.push(manifest::Dependency {
                 name: String::from("anyos_std"),
+                package: None,
                 path: Some(stdlib_dir),
                 version: None,
                 optional: false,
@@ -178,6 +190,7 @@ fn inject_implicit_anyos_crates(
         if let Some(libstd_dir) = find_repo_library_dir(manifest_dir, "libstd") {
             manifest.dependencies.push(manifest::Dependency {
                 name: String::from("libstd"),
+                package: None,
                 path: Some(libstd_dir),
                 version: None,
                 optional: true,
@@ -224,7 +237,7 @@ fn queue_manifest_dependencies(
                 dep_default_features,
             ));
         } else if let Some(ref version_req) = dep.version {
-            let actual_name = dep.name.clone();
+            let actual_name = dep.package.clone().unwrap_or_else(|| dep.name.clone());
             let resolved = if let Some(lf) = lockfile {
                 if let Some(locked) = lf.find(&actual_name) {
                     let pinned_req = format!("={}", locked.version);

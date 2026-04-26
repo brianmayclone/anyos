@@ -2,8 +2,8 @@
 //!
 //! Supports Cargo.lock v3 format for reproducible builds.
 
-use crate::prelude::*;
 use crate::fs;
+use crate::prelude::*;
 use crate::toml;
 use anyos_std::println;
 
@@ -28,7 +28,10 @@ pub struct Lockfile {
 
 impl Lockfile {
     pub fn new() -> Self {
-        Self { version: 3, packages: Vec::new() }
+        Self {
+            version: 3,
+            packages: Vec::new(),
+        }
     }
 
     /// Find a locked version for a crate name.
@@ -52,22 +55,30 @@ pub fn read(dir: &str) -> Option<Lockfile> {
     let content = fs::read_file(&path)?;
 
     let table = toml::parse(&content);
-    let version = table.get("version")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(3) as u32;
+    let version = table.get("version").and_then(|v| v.as_i64()).unwrap_or(3) as u32;
 
     let mut packages = Vec::new();
 
     if let Some(toml::Value::Array(pkg_array)) = table.get("package") {
         for pkg_val in pkg_array {
             if let toml::Value::Table(pkg) = pkg_val {
-                let name = pkg.get("name").and_then(|v| v.as_str())
-                    .unwrap_or("").to_string();
-                let version_str = pkg.get("version").and_then(|v| v.as_str())
-                    .unwrap_or("0.0.0").to_string();
-                let source = pkg.get("source").and_then(|v| v.as_str())
+                let name = pkg
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let version_str = pkg
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0.0.0")
+                    .to_string();
+                let source = pkg
+                    .get("source")
+                    .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                let checksum = pkg.get("checksum").and_then(|v| v.as_str())
+                let checksum = pkg
+                    .get("checksum")
+                    .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
                 let mut dependencies = Vec::new();

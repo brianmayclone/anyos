@@ -15,28 +15,28 @@ anyos_std::entry!(main);
 /// Prelude: common types from alloc for no_std usage.
 mod prelude {
     pub use alloc::boxed::Box;
+    pub use alloc::format;
     pub use alloc::string::{String, ToString};
     pub use alloc::vec;
     pub use alloc::vec::Vec;
-    pub use alloc::format;
 }
 
-mod toml;
-mod manifest;
-mod resolve;
 mod build;
 mod build_script;
-mod workspace;
 mod fingerprint;
-mod jobs;
-mod scaffold;
-mod registry;
-mod semver;
-mod lockfile;
 mod fs;
+mod jobs;
+mod lockfile;
+mod manifest;
+mod registry;
+mod resolve;
+mod scaffold;
+mod semver;
+mod toml;
+mod workspace;
 
-use prelude::*;
 use anyos_std::println;
+use prelude::*;
 
 fn main() {
     let mut args_buf = [0u8; 4096];
@@ -154,10 +154,29 @@ fn main() {
 
     match command {
         "build" | "b" => {
-            cmd_build(&positional, release, verbose, &features, target, bin, binary_format, &link_args);
+            cmd_build(
+                &positional,
+                release,
+                verbose,
+                &features,
+                target,
+                bin,
+                binary_format,
+                &link_args,
+            );
         }
         "run" => {
-            cmd_run(&positional, &run_args, release, verbose, &features, target, bin, binary_format, &link_args);
+            cmd_run(
+                &positional,
+                &run_args,
+                release,
+                verbose,
+                &features,
+                target,
+                bin,
+                binary_format,
+                &link_args,
+            );
         }
         "new" => {
             cmd_new(&positional, is_lib);
@@ -225,7 +244,14 @@ fn parse_binary_format(value: &str) -> Option<build::BinaryFormat> {
     }
 }
 
-fn make_config(release: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>, link_args: &[String]) -> build::BuildConfig {
+fn make_config(
+    release: bool,
+    features: &[String],
+    target: Option<String>,
+    bin: Option<String>,
+    binary_format: Option<build::BinaryFormat>,
+    link_args: &[String],
+) -> build::BuildConfig {
     build::BuildConfig {
         release,
         verbose: true,
@@ -241,8 +267,21 @@ fn make_config(release: bool, features: &[String], target: Option<String>, bin: 
     }
 }
 
-fn cmd_build(positional: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>, link_args: &[String]) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+fn cmd_build(
+    positional: &[&str],
+    release: bool,
+    verbose: bool,
+    features: &[String],
+    target: Option<String>,
+    bin: Option<String>,
+    binary_format: Option<build::BinaryFormat>,
+    link_args: &[String],
+) {
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
     let config = make_config(release, features, target, bin, binary_format, link_args);
     let result = build::build(dir, &config);
     if !result.success {
@@ -250,7 +289,17 @@ fn cmd_build(positional: &[&str], release: bool, verbose: bool, features: &[Stri
     }
 }
 
-fn cmd_run(positional: &[&str], run_args: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>, link_args: &[String]) {
+fn cmd_run(
+    positional: &[&str],
+    run_args: &[&str],
+    release: bool,
+    verbose: bool,
+    features: &[String],
+    target: Option<String>,
+    bin: Option<String>,
+    binary_format: Option<build::BinaryFormat>,
+    link_args: &[String],
+) {
     let dir = ".";
     let config = make_config(release, features, target, bin, binary_format, link_args);
     let result = build::build(dir, &config);
@@ -283,19 +332,38 @@ fn cmd_new(positional: &[&str], is_lib: bool) {
 }
 
 fn cmd_init(positional: &[&str], is_lib: bool) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
     scaffold::init_project(dir, is_lib);
 }
 
 fn cmd_clean(positional: &[&str]) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
     let target_dir = format!("{}/target", dir);
     fs::rm_rf(&target_dir);
     println!("     Removed target directory");
 }
 
-fn cmd_check(positional: &[&str], release: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+fn cmd_check(
+    positional: &[&str],
+    release: bool,
+    features: &[String],
+    target: Option<String>,
+    bin: Option<String>,
+    binary_format: Option<build::BinaryFormat>,
+) {
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
     // Check mode: compile but emit object files only (no linking)
     let mut config = make_config(release, features, target, bin, binary_format, &[]);
     let result = build::build(dir, &config);
@@ -306,8 +374,19 @@ fn cmd_check(positional: &[&str], release: bool, features: &[String], target: Op
     }
 }
 
-fn cmd_test(positional: &[&str], release: bool, features: &[String], target: Option<String>, bin: Option<String>, binary_format: Option<build::BinaryFormat>) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+fn cmd_test(
+    positional: &[&str],
+    release: bool,
+    features: &[String],
+    target: Option<String>,
+    bin: Option<String>,
+    binary_format: Option<build::BinaryFormat>,
+) {
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
     let mut feat = features.to_vec();
     // Automatically enable kunit feature for test builds if available
     if !feat.iter().any(|f| f == "kunit") {
@@ -332,7 +411,11 @@ fn cmd_bench(positional: &[&str], features: &[String], target: Option<String>) {
 }
 
 fn cmd_tree(positional: &[&str]) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
     let nodes = resolve::resolve(dir, &[]);
     if nodes.is_empty() {
         println!("ccargo: no packages found");
@@ -349,14 +432,21 @@ fn print_tree_deps(nodes: &[resolve::BuildNode], idx: usize, prefix: &str, last:
         let is_last = i == node.deps.len() - 1;
         let connector = if is_last { "└── " } else { "├── " };
         let dep = &nodes[dep_idx];
-        println!("{}{}{} v{}", prefix, connector, dep.name, dep.manifest.version);
+        println!(
+            "{}{}{} v{}",
+            prefix, connector, dep.name, dep.manifest.version
+        );
         let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
         print_tree_deps(nodes, dep_idx, &new_prefix, is_last);
     }
 }
 
 fn cmd_fetch(positional: &[&str]) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
     println!("      Fetching dependencies for {}", dir);
     registry::init_cache();
     // Resolve triggers the fetch automatically
@@ -370,7 +460,11 @@ fn cmd_fetch(positional: &[&str]) {
 }
 
 fn cmd_update(positional: &[&str]) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
 
     if positional.len() > 1 && positional[0] == "--aggressive" {
         // Clear all index caches to force re-fetch
@@ -441,23 +535,29 @@ fn print_search_results(json: &str) {
 
                 // Find "max_version":"
                 let search_from = abs_start + name_end;
-                let version = if let Some(ver_start) = json[search_from..].find("\"max_version\":\"") {
-                    let abs_ver = search_from + ver_start + 15;
-                    if let Some(ver_end) = json[abs_ver..].find('"') {
-                        &json[abs_ver..abs_ver + ver_end]
+                let version =
+                    if let Some(ver_start) = json[search_from..].find("\"max_version\":\"") {
+                        let abs_ver = search_from + ver_start + 15;
+                        if let Some(ver_end) = json[abs_ver..].find('"') {
+                            &json[abs_ver..abs_ver + ver_end]
+                        } else {
+                            "?"
+                        }
                     } else {
                         "?"
-                    }
-                } else {
-                    "?"
-                };
+                    };
 
                 // Find "description":"
-                let desc = if let Some(desc_start) = json[search_from..].find("\"description\":\"") {
+                let desc = if let Some(desc_start) = json[search_from..].find("\"description\":\"")
+                {
                     let abs_desc = search_from + desc_start + 15;
                     if let Some(desc_end) = json[abs_desc..].find('"') {
                         let d = &json[abs_desc..abs_desc + desc_end];
-                        if d.len() > 60 { &d[..60] } else { d }
+                        if d.len() > 60 {
+                            &d[..60]
+                        } else {
+                            d
+                        }
                     } else {
                         ""
                     }
@@ -486,7 +586,11 @@ fn print_search_results(json: &str) {
 }
 
 fn cmd_metadata(positional: &[&str]) {
-    let dir = if positional.is_empty() { "." } else { positional[0] };
+    let dir = if positional.is_empty() {
+        "."
+    } else {
+        positional[0]
+    };
     let manifest_path = format!("{}/Cargo.toml", dir);
     if let Some(toml_src) = fs::read_file(&manifest_path) {
         let toml_table = crate::toml::parse(&toml_src);
@@ -497,11 +601,21 @@ fn cmd_metadata(positional: &[&str]) {
         println!("  \"edition\": \"{}\",", mf.edition);
         println!("  \"dependencies\": [");
         for (i, dep) in mf.dependencies.iter().enumerate() {
-            let comma = if i + 1 < mf.dependencies.len() { "," } else { "" };
+            let comma = if i + 1 < mf.dependencies.len() {
+                ","
+            } else {
+                ""
+            };
             if let Some(ref path) = dep.path {
-                println!("    {{ \"name\": \"{}\", \"path\": \"{}\" }}{}", dep.name, path, comma);
+                println!(
+                    "    {{ \"name\": \"{}\", \"path\": \"{}\" }}{}",
+                    dep.name, path, comma
+                );
             } else if let Some(ref ver) = dep.version {
-                println!("    {{ \"name\": \"{}\", \"version\": \"{}\" }}{}", dep.name, ver, comma);
+                println!(
+                    "    {{ \"name\": \"{}\", \"version\": \"{}\" }}{}",
+                    dep.name, ver, comma
+                );
             } else {
                 println!("    {{ \"name\": \"{}\" }}{}", dep.name, comma);
             }

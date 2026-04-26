@@ -78,6 +78,66 @@ fn compile_closure_as_value() {
     );
 }
 
+#[test]
+fn compile_closure_calling_captured_fn_param() {
+    let source = r#"
+        fn inc(x: i32) -> i32 { x + 1 }
+        fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+            let g = |y: i32| -> i32 { f(y) };
+            g(x)
+        }
+        fn main() -> i32 { apply(inc, 41) }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(
+        result.is_ok(),
+        "closure capture compilation failed: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn compile_match_tuple_variant_binds_callback_name() {
+    let source = r#"
+        enum MaybeFn {
+            Some(fn() -> i32),
+            None,
+        }
+        fn value() -> i32 { 7 }
+        fn apply(opt: MaybeFn) -> i32 {
+            match opt {
+                MaybeFn::Some(f) => f(),
+                MaybeFn::None => 0,
+            }
+        }
+        fn main() -> i32 { apply(MaybeFn::Some(value)) }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(
+        result.is_ok(),
+        "tuple variant callback binding failed: {:?}",
+        result.err()
+    );
+}
+
 // ── Runtime tests ──
 
 #[test]

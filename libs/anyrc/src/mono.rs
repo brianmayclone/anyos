@@ -307,6 +307,10 @@ fn find_fn_def<'a>(hir: &'a HirCrate, target: DefId) -> Option<&'a HirFnDef> {
 fn find_fn_in_item<'a>(item: &'a HirItem, target: DefId) -> Option<&'a HirFnDef> {
     match &item.kind {
         HirItemKind::Fn(f) if f.def_id == target => Some(f),
+        HirItemKind::Fn(f) => f
+            .body
+            .as_ref()
+            .and_then(|body| find_fn_in_block(body, target)),
         HirItemKind::Impl(ib) => {
             for sub in &ib.items {
                 if let Some(f) = find_fn_in_item(sub, target) {
@@ -315,6 +319,64 @@ fn find_fn_in_item<'a>(item: &'a HirItem, target: DefId) -> Option<&'a HirFnDef>
             }
             None
         }
+        _ => None,
+    }
+}
+
+fn find_fn_in_block<'a>(block: &'a HirBlock, target: DefId) -> Option<&'a HirFnDef> {
+    for stmt in &block.stmts {
+        match stmt {
+            HirStmt::Item(item) => {
+                if let Some(f) = find_fn_in_item(item, target) {
+                    return Some(f);
+                }
+            }
+            HirStmt::Let(_, _, _, Some(expr), _) => {
+                if let Some(f) = find_fn_in_expr(expr, target) {
+                    return Some(f);
+                }
+            }
+            HirStmt::Expr(expr) | HirStmt::Semi(expr, _) => {
+                if let Some(f) = find_fn_in_expr(expr, target) {
+                    return Some(f);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_fn_in_expr<'a>(expr: &'a HirExpr, target: DefId) -> Option<&'a HirFnDef> {
+    match &expr.kind {
+        HirExprKind::Block(block) | HirExprKind::Unsafe(block) => find_fn_in_block(block, target),
+        HirExprKind::Call(callee, args) => find_fn_in_expr(callee, target)
+            .or_else(|| args.iter().find_map(|arg| find_fn_in_expr(arg, target))),
+        HirExprKind::MethodCall(receiver, _, _, args) => find_fn_in_expr(receiver, target)
+            .or_else(|| args.iter().find_map(|arg| find_fn_in_expr(arg, target))),
+        HirExprKind::If(cond, then_block, else_expr) => find_fn_in_expr(cond, target)
+            .or_else(|| find_fn_in_block(then_block, target))
+            .or_else(|| {
+                else_expr
+                    .as_ref()
+                    .and_then(|else_expr| find_fn_in_expr(else_expr, target))
+            }),
+        HirExprKind::Match(scrutinee, arms) => find_fn_in_expr(scrutinee, target).or_else(|| {
+            arms.iter().find_map(|arm| {
+                arm.guard
+                    .as_ref()
+                    .and_then(|guard| find_fn_in_expr(guard, target))
+                    .or_else(|| find_fn_in_expr(&arm.body, target))
+            })
+        }),
+        HirExprKind::Struct(_, fields, base) => fields
+            .iter()
+            .find_map(|field| find_fn_in_expr(&field.value, target))
+            .or_else(|| base.as_ref().and_then(|base| find_fn_in_expr(base, target))),
+        HirExprKind::Array(elems) | HirExprKind::Tuple(elems) => {
+            elems.iter().find_map(|elem| find_fn_in_expr(elem, target))
+        }
+        HirExprKind::Closure(_, _, body, _) => find_fn_in_expr(body, target),
         _ => None,
     }
 }

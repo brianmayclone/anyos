@@ -132,9 +132,24 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
     for &idx in &order {
         let node = &nodes[idx];
         let resolved_features = node.active_features.clone();
-        let is_lib = node.manifest.crate_type == CrateKind::Lib;
+        let is_proc_macro = node.manifest.crate_type == CrateKind::ProcMacro;
+        let is_lib = matches!(
+            node.manifest.crate_type,
+            CrateKind::Lib | CrateKind::ProcMacro
+        );
         let norm_name = node.name.replace('-', "_");
         let is_root = node.manifest_dir == root_dir;
+
+        if is_proc_macro {
+            if config.verbose {
+                println!(
+                    "       Skipping proc-macro {} v{} (host compiler input)",
+                    node.name, node.manifest.version
+                );
+            }
+            skipped += 1;
+            continue;
+        }
 
         let final_format = final_binary_format(config, node);
         let output_path = if is_lib {
@@ -275,13 +290,14 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         // interface wrappers, so re-exported APIs need transitive dependency
         // interfaces to be visible to downstream crates.
         let mut externs = Vec::new();
-        let mut extern_indices = Vec::new();
-        collect_transitive_dep_indices(&nodes, idx, &mut extern_indices);
-        for dep_idx in extern_indices {
+        let mut extern_edges = Vec::new();
+        collect_transitive_dep_edges(&nodes, idx, &mut extern_edges);
+        for (dep_idx, visible_name) in extern_edges {
             let dep_norm = nodes[dep_idx].name.replace('-', "_");
             if let Some(rlib_path) = built_rlibs.get(&dep_norm) {
+                let extern_name = visible_name.replace('-', "_");
                 externs.push(anyrc::driver::ExternCrateSpec {
-                    name: dep_norm,
+                    name: extern_name,
                     rlib_path: rlib_path.clone(),
                 });
             }
@@ -501,12 +517,15 @@ fn convert_binary_format(bytes: &[u8], format: BinaryFormat) -> Result<Vec<u8>, 
     }
 }
 
-fn collect_transitive_dep_indices(nodes: &[BuildNode], idx: usize, out: &mut Vec<usize>) {
-    for &dep_idx in &nodes[idx].deps {
-        if out.contains(&dep_idx) {
+fn collect_transitive_dep_edges(nodes: &[BuildNode], idx: usize, out: &mut Vec<(usize, String)>) {
+    for &(dep_idx, ref visible_name) in &nodes[idx].dep_aliases {
+        if out
+            .iter()
+            .any(|(idx, name)| *idx == dep_idx && name == visible_name)
+        {
             continue;
         }
-        collect_transitive_dep_indices(nodes, dep_idx, out);
-        out.push(dep_idx);
+        collect_transitive_dep_edges(nodes, dep_idx, out);
+        out.push((dep_idx, visible_name.clone()));
     }
 }

@@ -6027,3 +6027,102 @@ fn for_loop_over_ref_hash_map_uses_referenced_entries() {
     "#,
     );
 }
+
+#[test]
+fn match_ref_enum_box_field_coerces_to_inner_ref_arg() {
+    assert_type_ok(
+        r#"
+        use alloc::boxed::Box;
+
+        enum Expr {
+            Empty,
+        }
+
+        enum Stmt {
+            If {
+                condition: Expr,
+                consequent: Box<Stmt>,
+                alternate: Option<Box<Stmt>>,
+            },
+            While {
+                condition: Expr,
+                body: Box<Stmt>,
+            },
+            DoWhile {
+                body: Box<Stmt>,
+                condition: Expr,
+            },
+            For {
+                init: Option<Box<ForInit>>,
+                test: Option<Expr>,
+                update: Option<Expr>,
+                body: Box<Stmt>,
+            },
+            ForIn {
+                left: Box<ForInit>,
+                right: Expr,
+                body: Box<Stmt>,
+            },
+            Labeled {
+                label: usize,
+                body: Box<Stmt>,
+            },
+            Empty,
+        }
+
+        enum ForInit {
+            Expr(Expr),
+        }
+
+        fn compile_for_in_of(left: &ForInit, right: &Expr, body: &Stmt) {}
+        fn compile_labeled(label: &usize, body: &Stmt) {}
+
+        struct Compiler {}
+
+        impl Compiler {
+            fn compile_expr(&mut self, expr: &Expr) {}
+
+            fn compile_stmt(&mut self, stmt: &Stmt) {
+                match stmt {
+                    Stmt::If { condition, consequent, alternate } => {
+                        self.compile_expr(condition);
+                        self.compile_stmt(consequent);
+                        if let Some(alt) = alternate {
+                            self.compile_stmt(alt);
+                        }
+                    }
+                    Stmt::While { condition, body } => {
+                        self.compile_expr(condition);
+                        self.compile_stmt(body);
+                    }
+                    Stmt::DoWhile { body, condition } => {
+                        self.compile_stmt(body);
+                        self.compile_expr(condition);
+                    }
+                    Stmt::For { init, test, update, body } => {
+                        if let Some(init) = init {
+                            match init.as_ref() {
+                                ForInit::Expr(e) => self.compile_expr(e),
+                            }
+                        }
+                        if let Some(test) = test {
+                            self.compile_expr(test);
+                        }
+                        self.compile_stmt(body);
+                        if let Some(update) = update {
+                            self.compile_expr(update);
+                        }
+                    }
+                    Stmt::ForIn { left, right, body } => {
+                        compile_for_in_of(left, right, body);
+                    }
+                    Stmt::Labeled { label, body } => {
+                        compile_labeled(label, body);
+                    }
+                    Stmt::Empty => {}
+                }
+            }
+        }
+    "#,
+    );
+}

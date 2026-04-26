@@ -10,16 +10,16 @@ pub mod prelude {
     pub use alloc::vec::Vec;
 }
 
-pub mod toml;
-pub mod manifest;
-pub mod resolve;
 pub mod build;
 pub mod build_script;
-pub mod workspace;
 pub mod fingerprint;
-pub mod jobs;
-pub mod scaffold;
-pub mod registry;
-pub mod semver;
-pub mod lockfile;
 pub mod fs;
+pub mod jobs;
+pub mod lockfile;
+pub mod manifest;
+pub mod registry;
+pub mod resolve;
+pub mod scaffold;
+pub mod semver;
+pub mod toml;
+pub mod workspace;

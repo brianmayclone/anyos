@@ -373,6 +373,12 @@ fn link_impl(
                     (o, true)
                 } else if let Some(&o) = global_symbols.get(short_sym_name) {
                     (o, false)
+                } else if let Some(o) = unique_symbol_with_path_suffix(&global_symbols, sym_name)
+                {
+                    (o, false)
+                } else if let Some(o) = unique_symbol_with_short_name(&global_symbols, short_sym_name)
+                {
+                    (o, false)
                 } else {
                     errors.push(LinkError::new(
                         LinkErrorKind::UnresolvedSymbol,
@@ -383,13 +389,20 @@ fn link_impl(
                     continue;
                 }
             } else {
-                errors.push(LinkError::new(
-                    LinkErrorKind::UnresolvedSymbol,
-                    sym_name,
-                    *offset,
-                    *rela_type,
-                ));
-                continue;
+                match unique_symbol_with_path_suffix(&global_symbols, sym_name)
+                    .or_else(|| unique_symbol_with_short_name(&global_symbols, sym_name))
+                {
+                    Some(o) => (o, false),
+                    None => {
+                        errors.push(LinkError::new(
+                            LinkErrorKind::UnresolvedSymbol,
+                            sym_name,
+                            *offset,
+                            *rela_type,
+                        ));
+                        continue;
+                    }
+                }
             };
 
         // For data symbols, the actual offset is the aligned RW segment start
@@ -490,6 +503,40 @@ fn link_impl(
             base_addr,
         ))
     }
+}
+
+fn unique_symbol_with_short_name(symbols: &HashMap<String, u64>, short_name: &str) -> Option<u64> {
+    let mut found = None;
+    for (name, offset) in symbols {
+        if name.starts_with('\x01') {
+            continue;
+        }
+        if name.rsplit("::").next() == Some(short_name) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(*offset);
+        }
+    }
+    found
+}
+
+fn unique_symbol_with_path_suffix(symbols: &HashMap<String, u64>, requested: &str) -> Option<u64> {
+    let mut found = None;
+    for (name, offset) in symbols {
+        if name.starts_with('\x01') {
+            continue;
+        }
+        if name == requested || requested.strip_suffix(name).is_some_and(|prefix| {
+            prefix.is_empty() || prefix.ends_with("::")
+        }) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(*offset);
+        }
+    }
+    found
 }
 
 /// Minimal linker script info extracted from a `.ld` file.

@@ -19,19 +19,39 @@ pub type Table = HashMap<String, Value>;
 
 impl Value {
     pub fn as_str(&self) -> Option<&str> {
-        if let Value::String(s) = self { Some(s) } else { None }
+        if let Value::String(s) = self {
+            Some(s)
+        } else {
+            None
+        }
     }
     pub fn as_table(&self) -> Option<&Table> {
-        if let Value::Table(t) = self { Some(t) } else { None }
+        if let Value::Table(t) = self {
+            Some(t)
+        } else {
+            None
+        }
     }
     pub fn as_i64(&self) -> Option<i64> {
-        if let Value::Integer(n) = self { Some(*n) } else { None }
+        if let Value::Integer(n) = self {
+            Some(*n)
+        } else {
+            None
+        }
     }
     pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = self { Some(*b) } else { None }
+        if let Value::Bool(b) = self {
+            Some(*b)
+        } else {
+            None
+        }
     }
     pub fn as_array(&self) -> Option<&[Value]> {
-        if let Value::Array(a) = self { Some(a) } else { None }
+        if let Value::Array(a) = self {
+            Some(a)
+        } else {
+            None
+        }
     }
 }
 
@@ -50,7 +70,7 @@ pub fn parse(input: &str) -> Table {
         // Array of tables: [[section]]
         if line.starts_with("[[") && line.ends_with("]]") {
             let key = line[2..line.len() - 2].trim();
-            current_path = key.split('.').map(|s| String::from(s.trim())).collect();
+            current_path = split_dotted_key(key);
             current_is_array = true;
             ensure_array_table(&mut root, &current_path);
             continue;
@@ -59,7 +79,7 @@ pub fn parse(input: &str) -> Table {
         // Table header: [section]
         if line.starts_with('[') && line.ends_with(']') {
             let key = line[1..line.len() - 1].trim();
-            current_path = key.split('.').map(|s| String::from(s.trim())).collect();
+            current_path = split_dotted_key(key);
             current_is_array = false;
             ensure_table(&mut root, &current_path);
             continue;
@@ -100,6 +120,32 @@ pub fn parse(input: &str) -> Table {
     }
 
     root
+}
+
+fn split_dotted_key(key: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in key.chars() {
+        match quote {
+            Some(q) if ch == q => {
+                quote = None;
+            }
+            Some(_) => current.push(ch),
+            None if ch == '\'' || ch == '"' => {
+                quote = Some(ch);
+            }
+            None if ch == '.' => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            None => current.push(ch),
+        }
+    }
+    if !current.is_empty() || key.ends_with('.') {
+        parts.push(current.trim().to_string());
+    }
+    parts
 }
 
 fn starts_unclosed_array(s: &str) -> bool {
@@ -170,8 +216,12 @@ fn parse_value(s: &str) -> Value {
         }
     }
     // Boolean
-    if s == "true" { return Value::Bool(true); }
-    if s == "false" { return Value::Bool(false); }
+    if s == "true" {
+        return Value::Bool(true);
+    }
+    if s == "false" {
+        return Value::Bool(false);
+    }
     // Integer
     if let Some(n) = parse_i64(s) {
         return Value::Integer(n);
@@ -221,7 +271,10 @@ fn unescape(s: &str) -> String {
                 Some('r') => out.push('\r'),
                 Some('\\') => out.push('\\'),
                 Some('"') => out.push('"'),
-                Some(other) => { out.push('\\'); out.push(other); }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
                 None => out.push('\\'),
             }
         } else {
@@ -233,11 +286,19 @@ fn unescape(s: &str) -> String {
 
 fn parse_i64(s: &str) -> Option<i64> {
     let s = s.trim();
-    if s.is_empty() { return None; }
-    let (neg, digits) = if s.starts_with('-') { (true, &s[1..]) } else { (false, s) };
+    if s.is_empty() {
+        return None;
+    }
+    let (neg, digits) = if s.starts_with('-') {
+        (true, &s[1..])
+    } else {
+        (false, s)
+    };
     let mut n: i64 = 0;
     for b in digits.bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         n = n.checked_mul(10)?.checked_add((b - b'0') as i64)?;
     }
     Some(if neg { -n } else { n })
@@ -249,8 +310,13 @@ fn split_respecting_delimiters(s: &str, sep: u8) -> Vec<&str> {
     let mut in_string = false;
     let mut start = 0;
     for (i, b) in s.bytes().enumerate() {
-        if b == b'"' { in_string = !in_string; continue; }
-        if in_string { continue; }
+        if b == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
         match b {
             b'{' | b'[' => depth += 1,
             b'}' | b']' => depth -= 1,
@@ -281,7 +347,9 @@ fn ensure_table(root: &mut Table, path: &[String]) {
 }
 
 fn ensure_array_table(root: &mut Table, path: &[String]) {
-    if path.is_empty() { return; }
+    if path.is_empty() {
+        return;
+    }
     let last = &path[path.len() - 1];
     let parent_path = &path[..path.len() - 1];
 
@@ -320,7 +388,9 @@ pub fn get_table_mut<'a>(root: &'a mut Table, path: &[String]) -> Option<&'a mut
 }
 
 fn get_last_array_table_mut<'a>(root: &'a mut Table, path: &[String]) -> Option<&'a mut Table> {
-    if path.is_empty() { return None; }
+    if path.is_empty() {
+        return None;
+    }
     let last = &path[path.len() - 1];
     let parent_path = &path[..path.len() - 1];
 

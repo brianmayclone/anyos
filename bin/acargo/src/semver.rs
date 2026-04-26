@@ -31,10 +31,21 @@ impl Version {
 
         let parts: Vec<&str> = version_part.split('.').collect();
         let major = parts.first()?.parse::<u32>().ok()?;
-        let minor = parts.get(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-        let patch = parts.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let minor = parts
+            .get(1)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        let patch = parts
+            .get(2)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
 
-        Some(Version { major, minor, patch, pre })
+        Some(Version {
+            major,
+            minor,
+            patch,
+            pre,
+        })
     }
 
     pub fn is_prerelease(&self) -> bool {
@@ -84,14 +95,19 @@ enum Comparator {
 
 #[derive(Debug, Clone, Copy)]
 enum RangeOp {
-    Ge, Gt, Le, Lt,
+    Ge,
+    Gt,
+    Le,
+    Lt,
 }
 
 impl Comparator {
     fn matches(&self, v: &Version) -> bool {
         match self {
             Comparator::Any => true,
-            Comparator::Exact(req) => v.major == req.major && v.minor == req.minor && v.patch == req.patch,
+            Comparator::Exact(req) => {
+                v.major == req.major && v.minor == req.minor && v.patch == req.patch
+            }
             Comparator::Caret(req) => caret_matches(req, v),
             Comparator::Tilde(req) => tilde_matches(req, v),
             Comparator::Range(op, req) => {
@@ -144,13 +160,17 @@ impl VersionReq {
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
         if s.is_empty() || s == "*" {
-            return Some(VersionReq { comparators: vec![Comparator::Any] });
+            return Some(VersionReq {
+                comparators: vec![Comparator::Any],
+            });
         }
 
         let mut comparators = Vec::new();
         for part in s.split(',') {
             let part = part.trim();
-            if part.is_empty() { continue; }
+            if part.is_empty() {
+                continue;
+            }
             comparators.push(parse_single_comparator(part)?);
         }
 
@@ -165,12 +185,12 @@ impl VersionReq {
     pub fn matches(&self, v: &Version) -> bool {
         // Skip pre-release versions unless explicitly requested
         if v.is_prerelease() {
-            let any_prerelease_req = self.comparators.iter().any(|c| {
-                match c {
-                    Comparator::Exact(r) | Comparator::Caret(r) | Comparator::Tilde(r) => r.is_prerelease(),
-                    Comparator::Range(_, r) => r.is_prerelease(),
-                    Comparator::Any => false,
+            let any_prerelease_req = self.comparators.iter().any(|c| match c {
+                Comparator::Exact(r) | Comparator::Caret(r) | Comparator::Tilde(r) => {
+                    r.is_prerelease()
                 }
+                Comparator::Range(_, r) => r.is_prerelease(),
+                Comparator::Any => false,
             });
             if !any_prerelease_req {
                 return false;
@@ -215,13 +235,17 @@ fn parse_single_comparator(s: &str) -> Option<Comparator> {
 /// Given a list of available versions and a requirement, find the best match.
 /// Returns the newest non-yanked version that satisfies the requirement.
 pub fn resolve_best(
-    versions: &[(Version, bool)],  // (version, yanked)
+    versions: &[(Version, bool)], // (version, yanked)
     req: &VersionReq,
 ) -> Option<Version> {
     let mut best: Option<&Version> = None;
     for (v, yanked) in versions {
-        if *yanked { continue; }
-        if !req.matches(v) { continue; }
+        if *yanked {
+            continue;
+        }
+        if !req.matches(v) {
+            continue;
+        }
         match best {
             None => best = Some(v),
             Some(current) => {
