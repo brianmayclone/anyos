@@ -538,7 +538,9 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
                     frame.comp[i].h_samples = hv >> 4;
                     frame.comp[i].v_samples = hv & 0x0F;
                     frame.comp[i].qt_id = data[off + 2];
-                    if frame.comp[i].h_samples > 2 || frame.comp[i].v_samples > 2 {
+                    if frame.comp[i].h_samples == 0 || frame.comp[i].h_samples > 4
+                        || frame.comp[i].v_samples == 0 || frame.comp[i].v_samples > 4
+                    {
                         fail!(ERR_UNSUPPORTED, "");
                     }
                     if frame.comp[i].h_samples > max_h {

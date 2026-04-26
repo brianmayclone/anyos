@@ -39,6 +39,3 @@ name = "parse-test"
 path = "src/parse_test.rs"
 
 [workspace]
-[[bin]]
-name = "decode-one"
-path = "/tmp/decode_one.rs"
