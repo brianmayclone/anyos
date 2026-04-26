@@ -188,6 +188,51 @@ impl<'a> MirBuilder<'a> {
         self.typeck.expr_types.get(&expr.id).cloned().unwrap_or(TyKind::Error)
     }
 
+    fn enum_variant_constructor_info(
+        &self,
+        callee: &HirExpr,
+        path: &HirPath,
+    ) -> Option<(DefId, usize)> {
+        let variant_name = path.segments.last()?.ident;
+
+        if let Some(&variant_def_id) = self.resolve.resolutions.get(&callee.id) {
+            if let Some(&enum_def_id) = self.resolve.variant_to_enum.get(&variant_def_id) {
+                if let Some(idx) = self
+                    .typeck
+                    .enum_variants
+                    .get(&enum_def_id)
+                    .and_then(|variants| {
+                        variants
+                            .iter()
+                            .position(|(name, _)| *name == variant_name)
+                    })
+                {
+                    return Some((enum_def_id, idx));
+                }
+            }
+        }
+
+        let enum_name = path
+            .segments
+            .get(path.segments.len().checked_sub(2)?)?
+            .ident;
+        let variant_idx = self
+            .resolve
+            .variant_indices
+            .get(&(enum_name, variant_name))
+            .copied()?;
+        match self.get_expr_ty(callee) {
+            TyKind::Adt(enum_def_id, _) => Some((enum_def_id, variant_idx)),
+            TyKind::FnDef(variant_def_id, _) => self
+                .resolve
+                .variant_to_enum
+                .get(&variant_def_id)
+                .copied()
+                .map(|enum_def_id| (enum_def_id, variant_idx)),
+            _ => None,
+        }
+    }
+
     fn alloc_local(&mut self, ty: TyKind, name: Option<Symbol>, span: Span) -> Local {
         let local = Local(self.locals.len());
         self.locals.push(LocalDecl {
@@ -426,52 +471,40 @@ impl<'a> MirBuilder<'a> {
             HirExprKind::Call(callee, args) => {
                 // Check if this is an enum variant constructor call
                 if let HirExprKind::Path(path) = &callee.kind {
-                    if path.segments.len() == 2 {
-                        let enum_name = path.segments[0].ident;
-                        let variant_name = path.segments[1].ident;
-                        if let Some(&variant_idx) = self.resolve.variant_indices.get(&(enum_name, variant_name)) {
-                            let callee_ty = self.get_expr_ty(callee);
-                            let enum_def_id = match callee_ty {
-                                TyKind::Adt(enum_def_id, _) => Some(enum_def_id),
-                                TyKind::FnDef(variant_def_id, _) => {
-                                    self.resolve.variant_to_enum.get(&variant_def_id).copied()
+                    if let Some((enum_def_id, variant_idx)) =
+                        self.enum_variant_constructor_info(callee, path)
+                    {
+                        if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
+                            let max_fields = variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+                            if max_fields > 0 {
+                                // This is a data enum variant constructor.
+                                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                                let expr_ty = self.get_expr_ty(expr);
+                                let ty = match expr_ty {
+                                    TyKind::Adt(_, _) => expr_ty,
+                                    _ => TyKind::Adt(enum_def_id, vec![]),
+                                };
+                                let tmp = self.alloc_temp(ty, expr.span);
+                                // Build aggregate: [discriminant, field0, field1, ...]
+                                let mut operands = vec![Operand::Constant(Constant {
+                                    ty: TyKind::Int(IntTy::I64),
+                                    value: ConstValue::Int(variant_idx as i128),
+                                })];
+                                operands.extend(arg_ops);
+                                // Pad with zeros up to max_fields.
+                                let variant_fields = variants.get(variant_idx).map(|(_, f)| f.len()).unwrap_or(0);
+                                for _ in variant_fields..max_fields {
+                                    operands.push(Operand::Constant(Constant {
+                                        ty: TyKind::Int(IntTy::I64),
+                                        value: ConstValue::Int(0),
+                                    }));
                                 }
-                                _ => None,
-                            };
-                            if let Some(enum_def_id) = enum_def_id {
-                                if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
-                                    let max_fields = variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
-                                    if max_fields > 0 {
-                                        // This is a data enum variant constructor
-                                        let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                                        let expr_ty = self.get_expr_ty(expr);
-                                        let ty = match expr_ty {
-                                            TyKind::Adt(_, _) => expr_ty,
-                                            _ => TyKind::Adt(enum_def_id, vec![]),
-                                        };
-                                        let tmp = self.alloc_temp(ty, expr.span);
-                                        // Build aggregate: [discriminant, field0, field1, ...]
-                                        let mut operands = vec![Operand::Constant(Constant {
-                                            ty: TyKind::Int(IntTy::I64),
-                                            value: ConstValue::Int(variant_idx as i128),
-                                        })];
-                                        operands.extend(arg_ops);
-                                        // Pad with zeros up to max_fields
-                                        let variant_fields = variants.get(variant_idx).map(|(_, f)| f.len()).unwrap_or(0);
-                                        for _ in variant_fields..max_fields {
-                                            operands.push(Operand::Constant(Constant {
-                                                ty: TyKind::Int(IntTy::I64),
-                                                value: ConstValue::Int(0),
-                                            }));
-                                        }
-                                        self.emit_assign(
-                                            Place::local(tmp),
-                                            Rvalue::Aggregate(AggregateKind::Adt(enum_def_id, variant_idx), operands),
-                                            expr.span,
-                                        );
-                                        return Operand::Copy(Place::local(tmp));
-                                    }
-                                }
+                                self.emit_assign(
+                                    Place::local(tmp),
+                                    Rvalue::Aggregate(AggregateKind::Adt(enum_def_id, variant_idx), operands),
+                                    expr.span,
+                                );
+                                return Operand::Copy(Place::local(tmp));
                             }
                         }
                     }
