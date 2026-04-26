@@ -72,6 +72,11 @@ impl HuffTable {
         }
     }
 
+    /// Convenience wrapper used to install the JPEG-spec standard tables.
+    fn build_from_spec(&mut self, counts: &[u8; 16], symbols: &[u8]) {
+        self.build(counts, symbols);
+    }
+
     fn build(&mut self, counts: &[u8; 16], symbols: &[u8]) {
         self.fast = [0u16; 256];
         self.num_codes = 0;
@@ -402,6 +407,8 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
     let mut quant = [[0i32; 64]; MAX_QTABLES];
     let mut huff_dc = [HuffTable::new(), HuffTable::new(), HuffTable::new(), HuffTable::new()];
     let mut huff_ac = [HuffTable::new(), HuffTable::new(), HuffTable::new(), HuffTable::new()];
+    let mut huff_dc_built = [false; 4];
+    let mut huff_ac_built = [false; 4];
     let mut restart_interval: u16 = 0;
 
     // ── Parse markers up to first SOS, collecting frame info + tables. ──
@@ -604,8 +611,10 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
                     let symbols = &data[hpos..hpos + total_sym];
                     if tc == 0 {
                         huff_dc[th].build(&counts, symbols);
+                        huff_dc_built[th] = true;
                     } else {
                         huff_ac[th].build(&counts, symbols);
+                        huff_ac_built[th] = true;
                     }
                     hpos += total_sym;
                 }
@@ -641,6 +650,23 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
 
     if !sof_seen || sos_pos == 0 || frame.width == 0 {
         fail!(ERR_INVALID_DATA, "");
+    }
+
+    // Populate any Huffman tables that the file omitted with the JPEG-spec
+    // standard tables from T.81 Annex K. This makes MJPEG-style streams
+    // (which leave out DHT markers) decode correctly. Tables that the file
+    // explicitly defined via DHT are NOT overwritten.
+    if !huff_dc_built[0] {
+        huff_dc[0].build_from_spec(&STD_DC_LUMA_BITS, &STD_DC_LUMA_VALS);
+    }
+    if !huff_dc_built[1] {
+        huff_dc[1].build_from_spec(&STD_DC_CHROMA_BITS, &STD_DC_CHROMA_VALS);
+    }
+    if !huff_ac_built[0] {
+        huff_ac[0].build_from_spec(&STD_AC_LUMA_BITS, &STD_AC_LUMA_VALS);
+    }
+    if !huff_ac_built[1] {
+        huff_ac[1].build_from_spec(&STD_AC_CHROMA_BITS, &STD_AC_CHROMA_VALS);
     }
 
     let width = frame.width as usize;
