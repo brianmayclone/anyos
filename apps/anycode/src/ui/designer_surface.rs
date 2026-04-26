@@ -242,12 +242,22 @@ fn near_handle(x: i32, y: i32, hx: i32, hy: i32) -> bool {
 fn draw_grid(canvas: &ui::Canvas, width: u32, height: u32, color: u32) {
     let mut x = 0;
     while x < width as i32 {
-        canvas.draw_line(x, 0, x, height as i32, color);
+        let line_color = if x % 64 == 0 {
+            color
+        } else {
+            color & 0x66ffffff
+        };
+        canvas.draw_line(x, 0, x, height as i32, line_color);
         x += 16;
     }
     let mut y = 0;
     while y < height as i32 {
-        canvas.draw_line(0, y, width as i32, y, color);
+        let line_color = if y % 64 == 0 {
+            color
+        } else {
+            color & 0x66ffffff
+        };
+        canvas.draw_line(0, y, width as i32, y, line_color);
         y += 16;
     }
 }

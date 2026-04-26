@@ -713,6 +713,7 @@ fn refresh_inspector_for_file(file_path: &str) {
 }
 
 const DESIGNER_MIN_DRAG_SIZE: i32 = 8;
+const DESIGNER_SNAP: i32 = 8;
 
 pub fn designer_pointer_down_at(file_path: &str, x: i32, y: i32) {
     let s = app();
@@ -784,6 +785,8 @@ pub fn designer_drop_tool_at(file_path: &str, x: i32, y: i32, payload: &str) {
         None => return,
     };
     let (form_x, form_y) = crate::ui::designer_surface::canvas_to_form(x, y);
+    let form_x = snap_i32(form_x.max(0), DESIGNER_SNAP);
+    let form_y = snap_i32(form_y.max(0), DESIGNER_SNAP);
     let control_name = match doc.add_control(control_kind, form_x, form_y) {
         Ok(name) => name,
         Err(err) => {
@@ -860,35 +863,68 @@ fn designer_drag_bounds(
     let w = orig_w as i32;
     let h = orig_h as i32;
     match mode {
-        crate::ui::designer_surface::DESIGNER_DRAG_MOVE => {
-            (orig_x + dx, orig_y + dy, orig_w, orig_h)
-        }
+        crate::ui::designer_surface::DESIGNER_DRAG_MOVE => (
+            snap_i32(orig_x + dx, DESIGNER_SNAP),
+            snap_i32(orig_y + dy, DESIGNER_SNAP),
+            orig_w,
+            orig_h,
+        ),
         crate::ui::designer_surface::DESIGNER_DRAG_RESIZE_NW => {
             let adx = dx.min(w - DESIGNER_MIN_DRAG_SIZE);
             let ady = dy.min(h - DESIGNER_MIN_DRAG_SIZE);
+            let new_x = snap_i32(orig_x + adx, DESIGNER_SNAP);
+            let new_y = snap_i32(orig_y + ady, DESIGNER_SNAP);
             (
-                orig_x + adx,
-                orig_y + ady,
-                (w - adx) as u32,
-                (h - ady) as u32,
+                new_x,
+                new_y,
+                (orig_x + w - new_x).max(DESIGNER_MIN_DRAG_SIZE) as u32,
+                (orig_y + h - new_y).max(DESIGNER_MIN_DRAG_SIZE) as u32,
             )
         }
         crate::ui::designer_surface::DESIGNER_DRAG_RESIZE_NE => {
             let ady = dy.min(h - DESIGNER_MIN_DRAG_SIZE);
-            let nw = (w + dx).max(DESIGNER_MIN_DRAG_SIZE) as u32;
-            (orig_x, orig_y + ady, nw, (h - ady) as u32)
+            let new_y = snap_i32(orig_y + ady, DESIGNER_SNAP);
+            let nw = snap_i32((w + dx).max(DESIGNER_MIN_DRAG_SIZE), DESIGNER_SNAP)
+                .max(DESIGNER_MIN_DRAG_SIZE) as u32;
+            (
+                orig_x,
+                new_y,
+                nw,
+                (orig_y + h - new_y).max(DESIGNER_MIN_DRAG_SIZE) as u32,
+            )
         }
         crate::ui::designer_surface::DESIGNER_DRAG_RESIZE_SW => {
             let adx = dx.min(w - DESIGNER_MIN_DRAG_SIZE);
-            let nh = (h + dy).max(DESIGNER_MIN_DRAG_SIZE) as u32;
-            (orig_x + adx, orig_y, (w - adx) as u32, nh)
+            let new_x = snap_i32(orig_x + adx, DESIGNER_SNAP);
+            let nh = snap_i32((h + dy).max(DESIGNER_MIN_DRAG_SIZE), DESIGNER_SNAP)
+                .max(DESIGNER_MIN_DRAG_SIZE) as u32;
+            (
+                new_x,
+                orig_y,
+                (orig_x + w - new_x).max(DESIGNER_MIN_DRAG_SIZE) as u32,
+                nh,
+            )
         }
         crate::ui::designer_surface::DESIGNER_DRAG_RESIZE_SE => {
-            let nw = (w + dx).max(DESIGNER_MIN_DRAG_SIZE) as u32;
-            let nh = (h + dy).max(DESIGNER_MIN_DRAG_SIZE) as u32;
+            let nw = snap_i32((w + dx).max(DESIGNER_MIN_DRAG_SIZE), DESIGNER_SNAP)
+                .max(DESIGNER_MIN_DRAG_SIZE) as u32;
+            let nh = snap_i32((h + dy).max(DESIGNER_MIN_DRAG_SIZE), DESIGNER_SNAP)
+                .max(DESIGNER_MIN_DRAG_SIZE) as u32;
             (orig_x, orig_y, nw, nh)
         }
         _ => (orig_x, orig_y, orig_w, orig_h),
+    }
+}
+
+fn snap_i32(value: i32, grid: i32) -> i32 {
+    if grid <= 1 {
+        return value;
+    }
+    let half = grid / 2;
+    if value >= 0 {
+        ((value + half) / grid) * grid
+    } else {
+        ((value - half) / grid) * grid
     }
 }
 
@@ -916,10 +952,32 @@ pub fn designer_double_click_at(file_path: &str, x: i32, y: i32) {
             s.selected_designer_control = control_name.clone();
             s.inspector_panel.show_designer_control(&doc, &control_name);
             open_file(&events_path);
+            jump_to_text_in_active_editor(&format!("pub fn {}()", control.event_name()));
             s.status
                 .set_analysis_status(&format!("Opened handler {}", control.event_name()));
         }
         Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
+fn jump_to_text_in_active_editor(needle: &str) {
+    let s = app();
+    let mut buf = vec![0u8; 128 * 1024];
+    let len = s.editor_view.get_editor_text(s.file_mgr.active, &mut buf);
+    let Ok(text) = core::str::from_utf8(&buf[..len as usize]) else {
+        return;
+    };
+    let mut line = 0u32;
+    for current in text.split('\n') {
+        if current.contains(needle) {
+            if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+                editor.set_cursor(line, 0);
+                editor.ensure_line_visible(line);
+            }
+            s.status.set_cursor(line, 0);
+            return;
+        }
+        line = line.saturating_add(1);
     }
 }
 

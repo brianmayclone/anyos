@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::borrowck::check_borrows;
 use crate::codegen::emit::CodeEmitter;
 use crate::codegen::regalloc;
 use crate::codegen::x86asm::RelocKind;
@@ -12,8 +12,8 @@ use crate::mir::MirBody;
 use crate::mir_build::MirBuilder;
 use crate::mir_opt::optimize;
 use crate::mono::monomorphize;
-use crate::borrowck::check_borrows;
 use crate::parser::Parser;
+use crate::prelude::*;
 use crate::resolve::Resolver;
 use crate::typeck::TypeChecker;
 use anyos_std::collections::HashSet;
@@ -86,7 +86,11 @@ pub enum CrateType {
     StaticLib,
 }
 
-pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Result<Vec<u8>, Vec<Diagnostic>> {
+pub fn compile(
+    source: &str,
+    _filename: &str,
+    options: &CompileOptions,
+) -> Result<Vec<u8>, Vec<Diagnostic>> {
     // 1. Lex + Parse
     let mut interner = Interner::new();
     let mut parser = Parser::new(source, &mut interner);
@@ -103,25 +107,33 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     // Recognize #![feature(...)] attributes — accepted silently for compatibility.
     // anyrc doesn't have unstable features like rustc, but we need to accept
     // these attributes without erroring so that kernel code compiles.
-    let _feature_gates: Vec<String> = krate.attrs.iter().filter_map(|a| {
-        if a.path.segments.len() == 1 && interner.resolve(a.path.segments[0].ident) == "feature" {
-            // Extract feature names from the token tree
-            if let crate::ast::AttrArgs::Delimited(tokens) = &a.args {
-                let names: Vec<String> = tokens.iter().filter_map(|tt| {
-                    if let crate::ast::TokenTree::Token(t) = tt {
-                        if let crate::lexer::TokenKind::Ident(sym) = t.kind {
-                            return Some(interner.resolve(sym).to_string());
-                        }
-                    }
-                    None
-                }).collect();
-                return Some(names.join(","));
+    let _feature_gates: Vec<String> = krate
+        .attrs
+        .iter()
+        .filter_map(|a| {
+            if a.path.segments.len() == 1 && interner.resolve(a.path.segments[0].ident) == "feature"
+            {
+                // Extract feature names from the token tree
+                if let crate::ast::AttrArgs::Delimited(tokens) = &a.args {
+                    let names: Vec<String> = tokens
+                        .iter()
+                        .filter_map(|tt| {
+                            if let crate::ast::TokenTree::Token(t) = tt {
+                                if let crate::lexer::TokenKind::Ident(sym) = t.kind {
+                                    return Some(interner.resolve(sym).to_string());
+                                }
+                            }
+                            None
+                        })
+                        .collect();
+                    return Some(names.join(","));
+                }
+                None
+            } else {
+                None
             }
-            None
-        } else {
-            None
-        }
-    }).collect();
+        })
+        .collect();
 
     // 1b. Build cfg context from options
     let cfg_ctx = crate::cfg::CfgContext::from_flags(&options.cfg_flags);
@@ -148,22 +160,20 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     for _ in 0..16 {
         crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
         expand_macros(&mut krate, &mut interner);
-        let included_sources =
-            crate::loader::resolve_includes_with_env(
-                &mut krate,
-                &src_dir,
-                &mut interner,
-                &loader,
-                &options.env_vars,
-            );
-        let loaded_modules =
-            crate::loader::resolve_modules_with_env(
-                &mut krate,
-                &src_dir,
-                &mut interner,
-                &loader,
-                &options.env_vars,
-            );
+        let included_sources = crate::loader::resolve_includes_with_env(
+            &mut krate,
+            &src_dir,
+            &mut interner,
+            &loader,
+            &options.env_vars,
+        );
+        let loaded_modules = crate::loader::resolve_modules_with_env(
+            &mut krate,
+            &src_dir,
+            &mut interner,
+            &loader,
+            &options.env_vars,
+        );
         if included_sources.is_empty() && loaded_modules.is_empty() {
             break;
         }
@@ -199,10 +209,17 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     }
 
     // 6. Build MIR
-    let mut mir_bodies = MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir);
+    let mut mir_bodies =
+        MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir);
 
     // 6b. Monomorphize generic functions
-    let mut mir_bodies = monomorphize(mir_bodies, &typeck_result, &mut interner, &hir, &resolve_result);
+    let mut mir_bodies = monomorphize(
+        mir_bodies,
+        &typeck_result,
+        &mut interner,
+        &hir,
+        &resolve_result,
+    );
 
     // 7. Borrow check
     for body in &mir_bodies {
@@ -237,25 +254,40 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     // 9. Build struct size map: DefId -> stack storage size in bytes
     //    Uses typeck struct_defs for field types to compute accurate sizes.
     let struct_sizes = {
-        use crate::hir::{HirItemKind, HirVariantFields, HirItem};
         use crate::codegen::regalloc::ty_size;
+        use crate::hir::{HirItem, HirItemKind, HirVariantFields};
 
         // First pass: collect field storage as fallback for structs not in typeck
-        let mut map: anyos_std::collections::HashMap<crate::hir::DefId, usize> = anyos_std::collections::HashMap::new();
-        fn collect_struct_counts(items: &[HirItem], map: &mut anyos_std::collections::HashMap<crate::hir::DefId, usize>) {
+        let mut map: anyos_std::collections::HashMap<crate::hir::DefId, usize> =
+            anyos_std::collections::HashMap::new();
+        fn collect_struct_counts(
+            items: &[HirItem],
+            map: &mut anyos_std::collections::HashMap<crate::hir::DefId, usize>,
+        ) {
             for item in items {
                 match &item.kind {
-                    HirItemKind::Struct(s) => { map.insert(s.def_id, s.fields.len().max(1) * 8); }
+                    HirItemKind::Struct(s) => {
+                        map.insert(s.def_id, s.fields.len().max(1) * 8);
+                    }
                     HirItemKind::Enum(e) => {
-                        let max_fields = e.variants.iter().map(|v| match &v.fields {
-                            HirVariantFields::Unit => 0,
-                            HirVariantFields::Tuple(tys) => tys.len(),
-                            HirVariantFields::Struct(fields) => fields.len(),
-                        }).max().unwrap_or(0);
-                        if max_fields > 0 { map.insert(e.def_id, (1 + max_fields) * 8); }
+                        let max_fields = e
+                            .variants
+                            .iter()
+                            .map(|v| match &v.fields {
+                                HirVariantFields::Unit => 0,
+                                HirVariantFields::Tuple(tys) => tys.len(),
+                                HirVariantFields::Struct(fields) => fields.len(),
+                            })
+                            .max()
+                            .unwrap_or(0);
+                        if max_fields > 0 {
+                            map.insert(e.def_id, (1 + max_fields) * 8);
+                        }
                     }
                     HirItemKind::Mod(m) => {
-                        if let Some(sub_items) = &m.items { collect_struct_counts(sub_items, map); }
+                        if let Some(sub_items) = &m.items {
+                            collect_struct_counts(sub_items, map);
+                        }
                     }
                     _ => {}
                 }
@@ -265,9 +297,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 
         // Second pass: compute accurate storage sizes from field types.
         for (def_id, fields) in &typeck_result.struct_defs {
-            let total_bytes: i32 = fields.iter()
-                .map(|(_, ty)| ty_size(ty, &map))
-                .sum();
+            let total_bytes: i32 = fields.iter().map(|(_, ty)| ty_size(ty, &map)).sum();
             map.insert(*def_id, total_bytes.max(8) as usize);
         }
         map
@@ -301,24 +331,49 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         .collect();
 
     // 9b. Collect static data from typeck results
-    let static_data: Vec<StaticData> = typeck_result.static_defs.values().map(|(name, _ty, val, _is_mut)| {
-        let name_str = interner.resolve(*name).to_string();
-        let bytes = match val {
-            crate::typeck::ConstVal::Int(v) => (*v as i64).to_le_bytes().to_vec(),
-            crate::typeck::ConstVal::Bool(v) => (*v as i64).to_le_bytes().to_vec(),
-            crate::typeck::ConstVal::Char(v) => (*v as i64).to_le_bytes().to_vec(),
-        };
-        StaticData { name: name_str, data: bytes }
-    }).collect();
+    let static_data: Vec<StaticData> = typeck_result
+        .static_defs
+        .values()
+        .map(|(name, _ty, val, _is_mut)| {
+            let name_str = interner.resolve(*name).to_string();
+            let bytes = match val {
+                crate::typeck::ConstVal::Int(v) => (*v as i64).to_le_bytes().to_vec(),
+                crate::typeck::ConstVal::Bool(v) => (*v as i64).to_le_bytes().to_vec(),
+                crate::typeck::ConstVal::Char(v) => (*v as i64).to_le_bytes().to_vec(),
+            };
+            StaticData {
+                name: name_str,
+                data: bytes,
+            }
+        })
+        .collect();
 
     // 10. Emit based on type
     match options.emit {
         EmitKind::Obj => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data, &typeck_result.enum_variants, &typeck_result.type_def_to_name);
+            let obj = codegen_to_object_with_statics(
+                &mir_bodies,
+                &interner,
+                &struct_sizes,
+                &field_offsets,
+                &field_types,
+                &static_data,
+                &typeck_result.enum_variants,
+                &typeck_result.type_def_to_name,
+            );
             Ok(elf::write_object(&obj))
         }
         EmitKind::Exe => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data, &typeck_result.enum_variants, &typeck_result.type_def_to_name);
+            let obj = codegen_to_object_with_statics(
+                &mir_bodies,
+                &interner,
+                &struct_sizes,
+                &field_offsets,
+                &field_types,
+                &static_data,
+                &typeck_result.enum_variants,
+                &typeck_result.type_def_to_name,
+            );
             let obj_bytes = elf::write_object(&obj);
             // Collect all object files: our code + extern crate .rlib objects + runtime stubs
             let mut all_objects = vec![obj_bytes];
@@ -352,19 +407,34 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                     entry_symbol: None,
                     target_abi,
                 };
-                let exe = link::link_ext_checked(&all_objects, &options.output, no_main_flag, &link_opts)
-                    .map_err(link_errors_to_diagnostics)?;
+                let exe =
+                    link::link_ext_checked(&all_objects, &options.output, no_main_flag, &link_opts)
+                        .map_err(link_errors_to_diagnostics)?;
                 validate_anyos_user_exe_if_needed(&exe, target_abi, no_main_flag, options)?;
                 Ok(exe)
             } else {
-                let exe = link::link_for_target_checked(&all_objects, &options.output, no_main_flag, target_abi)
-                    .map_err(link_errors_to_diagnostics)?;
+                let exe = link::link_for_target_checked(
+                    &all_objects,
+                    &options.output,
+                    no_main_flag,
+                    target_abi,
+                )
+                .map_err(link_errors_to_diagnostics)?;
                 validate_anyos_user_exe_if_needed(&exe, target_abi, no_main_flag, options)?;
                 Ok(exe)
             }
         }
         EmitKind::Rlib => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data, &typeck_result.enum_variants, &typeck_result.type_def_to_name);
+            let obj = codegen_to_object_with_statics(
+                &mir_bodies,
+                &interner,
+                &struct_sizes,
+                &field_offsets,
+                &field_types,
+                &static_data,
+                &typeck_result.enum_variants,
+                &typeck_result.type_def_to_name,
+            );
             let obj_bytes = elf::write_object(&obj);
             let crate_name = options.crate_name.as_deref().unwrap_or("unknown");
             // Collect exported public symbols
@@ -380,7 +450,11 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                 name: crate_name.to_string(),
                 version: "0.1.0".to_string(),
                 exports,
-                deps: options.extern_crates.iter().map(|e| e.name.clone()).collect(),
+                deps: options
+                    .extern_crates
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect(),
                 interface_source: public_interface_source,
                 interface: public_interface,
             };
@@ -398,7 +472,10 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 }
 
 fn target_abi_from_cfg(cfg_flags: &[String]) -> link::TargetAbi {
-    if cfg_flags.iter().any(|flag| flag == "target_os=\"linux\"" || flag == "target_os=linux") {
+    if cfg_flags
+        .iter()
+        .any(|flag| flag == "target_os=\"linux\"" || flag == "target_os=linux")
+    {
         link::TargetAbi::Linux
     } else {
         link::TargetAbi::AnyOs
@@ -488,7 +565,10 @@ fn codegen_to_object_with_statics(
     field_offsets: &regalloc::StructFieldOffsets,
     field_types: &regalloc::StructFieldTypes,
     statics: &[StaticData],
-    enum_variants: &anyos_std::collections::HashMap<crate::hir::DefId, Vec<(crate::intern::Symbol, Vec<crate::typeck::TyKind>)>>,
+    enum_variants: &anyos_std::collections::HashMap<
+        crate::hir::DefId,
+        Vec<(crate::intern::Symbol, Vec<crate::typeck::TyKind>)>,
+    >,
     type_def_to_name: &anyos_std::collections::HashMap<crate::hir::DefId, crate::intern::Symbol>,
 ) -> ObjectFile {
     let mut text_data = Vec::new();
@@ -497,8 +577,14 @@ fn codegen_to_object_with_statics(
 
     for body in bodies {
         let alloc = regalloc::allocate(body, struct_sizes);
-        let (code, relocs) =
-            CodeEmitter::emit_fn(body, &alloc, interner, struct_sizes, field_offsets, field_types);
+        let (code, relocs) = CodeEmitter::emit_fn(
+            body,
+            &alloc,
+            interner,
+            struct_sizes,
+            field_offsets,
+            field_types,
+        );
 
         let fn_offset = text_data.len() as u64;
         let fn_size = code.len() as u64;
@@ -507,9 +593,11 @@ fn codegen_to_object_with_statics(
         // Convert assembler relocations to ELF relocations
         for rel in &relocs {
             let sym_idx = symbols.len() + 1; // will be added after this symbol? No, we need to find existing
-            // For now, create a symbol for the target if it doesn't exist
-            // The relocation target might be another function in this compilation unit
-            let target_sym = symbols.iter().position(|s: &ElfSymbol| s.name == rel.symbol);
+                                             // For now, create a symbol for the target if it doesn't exist
+                                             // The relocation target might be another function in this compilation unit
+            let target_sym = symbols
+                .iter()
+                .position(|s: &ElfSymbol| s.name == rel.symbol);
             let sym_idx = match target_sym {
                 Some(i) => i,
                 None => {
@@ -520,7 +608,7 @@ fn codegen_to_object_with_statics(
                         section: None,
                         offset: 0,
                         size: 0,
-                        binding: 1, // STB_GLOBAL
+                        binding: 1,  // STB_GLOBAL
                         sym_type: 0, // STT_NOTYPE
                     });
                     idx
@@ -531,6 +619,7 @@ fn codegen_to_object_with_statics(
                 RelocKind::Abs64 => 1,   // R_X86_64_64
             };
             relocations.push(ElfRelocation {
+                section: Some(0),
                 offset: fn_offset + rel.offset as u64,
                 symbol: sym_idx,
                 rela_type,
@@ -561,15 +650,13 @@ fn codegen_to_object_with_statics(
         interner,
     );
 
-    let mut sections = vec![
-        Section {
-            name: ".text".to_string(),
-            data: text_data,
-            sh_type: 1, // SHT_PROGBITS
-            sh_flags: 0x2 | 0x4, // SHF_ALLOC | SHF_EXECINSTR
-            sh_addralign: 16,
-        },
-    ];
+    let mut sections = vec![Section {
+        name: ".text".to_string(),
+        data: text_data,
+        sh_type: 1,          // SHT_PROGBITS
+        sh_flags: 0x2 | 0x4, // SHF_ALLOC | SHF_EXECINSTR
+        sh_addralign: 16,
+    }];
 
     // Add .data section if there are statics
     if !statics.is_empty() {
@@ -591,7 +678,7 @@ fn codegen_to_object_with_statics(
                     section: Some(data_section_idx),
                     offset,
                     size: s.data.len() as u64,
-                    binding: 1, // STB_GLOBAL
+                    binding: 1,  // STB_GLOBAL
                     sym_type: 1, // STT_OBJECT
                 });
             }
@@ -599,7 +686,7 @@ fn codegen_to_object_with_statics(
         sections.push(Section {
             name: ".data".to_string(),
             data: data_bytes,
-            sh_type: 1, // SHT_PROGBITS
+            sh_type: 1,          // SHT_PROGBITS
             sh_flags: 0x2 | 0x1, // SHF_ALLOC | SHF_WRITE
             sh_addralign: 8,
         });
@@ -615,7 +702,10 @@ fn codegen_to_object_with_statics(
 fn append_enum_variant_constructor_symbols(
     text_data: &mut Vec<u8>,
     symbols: &mut Vec<ElfSymbol>,
-    enum_variants: &anyos_std::collections::HashMap<crate::hir::DefId, Vec<(crate::intern::Symbol, Vec<crate::typeck::TyKind>)>>,
+    enum_variants: &anyos_std::collections::HashMap<
+        crate::hir::DefId,
+        Vec<(crate::intern::Symbol, Vec<crate::typeck::TyKind>)>,
+    >,
     type_def_to_name: &anyos_std::collections::HashMap<crate::hir::DefId, crate::intern::Symbol>,
     interner: &Interner,
 ) {
@@ -676,7 +766,10 @@ fn mir_to_string(bodies: &[MirBody], interner: &Interner) -> String {
         for (i, bb) in body.basic_blocks.iter().enumerate() {
             out.push_str(&format!("  bb{}: {{\n", i));
             out.push_str(&format!("    // {} statements\n", bb.statements.len()));
-            out.push_str(&format!("    // terminator: {:?}\n", terminator_kind(&bb.terminator)));
+            out.push_str(&format!(
+                "    // terminator: {:?}\n",
+                terminator_kind(&bb.terminator)
+            ));
             out.push_str("  }\n");
         }
         out.push_str("}\n\n");
@@ -712,7 +805,7 @@ fn build_runtime_object() -> elf::ObjectFile {
             section: Some(0), // .text
             offset,
             size,
-            binding: 1, // STB_GLOBAL
+            binding: 1,  // STB_GLOBAL
             sym_type: 2, // STT_FUNC
         });
     }
@@ -732,6 +825,7 @@ fn build_runtime_object() -> elf::ObjectFile {
         for (idx, window) in code.windows(5).enumerate() {
             if window == [0xE8, 0x00, 0x00, 0x00, 0x00] {
                 relocations.push(elf::ElfRelocation {
+                    section: Some(0),
                     offset: *stub_offset + idx as u64 + 1,
                     symbol: target_idx,
                     rela_type: 2,
@@ -745,7 +839,7 @@ fn build_runtime_object() -> elf::ObjectFile {
         sections: vec![elf::Section {
             name: ".text".to_string(),
             data: text_data,
-            sh_type: 1,         // SHT_PROGBITS
+            sh_type: 1,          // SHT_PROGBITS
             sh_flags: 0x2 | 0x4, // SHF_ALLOC | SHF_EXECINSTR
             sh_addralign: 16,
         }],
@@ -771,7 +865,8 @@ fn inject_extern_crate_interfaces(
             continue;
         }
 
-        let interface_source = relativize_extern_interface_source(&meta.interface_source, &ext.name);
+        let interface_source =
+            relativize_extern_interface_source(&meta.interface_source, &ext.name);
         let wrapper_src = format!("mod {} {{\n{}\n}}", ext.name, interface_source);
         let mut parser = Parser::new(&wrapper_src, interner);
         let mut iface_krate = parser.parse_crate();
@@ -922,10 +1017,7 @@ fn interface_item_name_and_kind(
             interner.resolve(m.name).to_string(),
             InterfaceItemKind::Module,
         )),
-        HirItemKind::ExternBlock(_) => Some((
-            "extern".to_string(),
-            InterfaceItemKind::ExternBlock,
-        )),
+        HirItemKind::ExternBlock(_) => Some(("extern".to_string(), InterfaceItemKind::ExternBlock)),
     }
 }
 
@@ -1013,7 +1105,9 @@ fn render_item(
             if s.fields.is_empty() {
                 out.push_str(";\n");
             } else if is_tuple_fields(&s.fields, interner) {
-                let public_fields: Vec<_> = s.fields.iter()
+                let public_fields: Vec<_> = s
+                    .fields
+                    .iter()
                     .filter(|field| is_public_vis(field.vis))
                     .collect();
                 out.push('(');
@@ -1032,7 +1126,9 @@ fn render_item(
                 }
                 out.push_str(");\n");
             } else {
-                let public_fields: Vec<_> = s.fields.iter()
+                let public_fields: Vec<_> = s
+                    .fields
+                    .iter()
                     .filter(|field| is_public_vis(field.vis))
                     .collect();
                 out.push_str(" {\n");
@@ -1099,31 +1195,34 @@ fn render_item(
         HirItemKind::Impl(ib) => {
             let impl_local_names = local_item_names(&ib.items);
             let impl_public_type_names = local_public_type_names(&ib.items);
-            let exported_items: Vec<&crate::hir::HirItem> = if trait_impl_is_interface_relevant(ib, interner) {
-                ib.items.iter()
-                    .filter(|item| {
-                        matches!(
-                            item.kind,
-                            HirItemKind::Fn(_)
-                                | HirItemKind::TypeAlias(_)
-                                | HirItemKind::Const(_)
-                                | HirItemKind::Static(_)
-                        )
-                    })
-                    .collect()
-            } else {
-                ib.items.iter()
-                    .filter(|item| {
-                        item_is_exported(
-                            item,
-                            false,
-                            &impl_local_names,
-                            &impl_public_type_names,
-                            interner,
-                        )
-                    })
-                    .collect()
-            };
+            let exported_items: Vec<&crate::hir::HirItem> =
+                if trait_impl_is_interface_relevant(ib, interner) {
+                    ib.items
+                        .iter()
+                        .filter(|item| {
+                            matches!(
+                                item.kind,
+                                HirItemKind::Fn(_)
+                                    | HirItemKind::TypeAlias(_)
+                                    | HirItemKind::Const(_)
+                                    | HirItemKind::Static(_)
+                            )
+                        })
+                        .collect()
+                } else {
+                    ib.items
+                        .iter()
+                        .filter(|item| {
+                            item_is_exported(
+                                item,
+                                false,
+                                &impl_local_names,
+                                &impl_public_type_names,
+                                interner,
+                            )
+                        })
+                        .collect()
+                };
             if exported_items.is_empty() {
                 return;
             }
@@ -1230,7 +1329,9 @@ fn render_item(
         HirItemKind::ExternBlock(eb) => {
             let extern_local_names = local_item_names(&eb.items);
             let extern_public_type_names = local_public_type_names(&eb.items);
-            let exported_items: Vec<&crate::hir::HirItem> = eb.items.iter()
+            let exported_items: Vec<&crate::hir::HirItem> = eb
+                .items
+                .iter()
                 .filter(|item| {
                     item_is_exported(
                         item,
@@ -1255,7 +1356,9 @@ fn render_item(
             out.push_str("{\n");
             for sub in exported_items {
                 match &sub.kind {
-                    HirItemKind::Fn(_) | HirItemKind::Static(_) => render_item(out, sub, interner, indent + 1, false),
+                    HirItemKind::Fn(_) | HirItemKind::Static(_) => {
+                        render_item(out, sub, interner, indent + 1, false)
+                    }
                     _ => {}
                 }
             }
@@ -1368,10 +1471,7 @@ fn item_is_exported(
     }
 }
 
-fn trait_impl_is_interface_relevant(
-    ib: &crate::hir::HirImplBlock,
-    interner: &Interner,
-) -> bool {
+fn trait_impl_is_interface_relevant(ib: &crate::hir::HirImplBlock, interner: &Interner) -> bool {
     let Some(trait_ref) = &ib.trait_ref else {
         return false;
     };
@@ -1434,9 +1534,7 @@ fn private_const_is_needed(
     needed: &HashSet<crate::intern::Symbol>,
 ) -> bool {
     match &item.kind {
-        crate::hir::HirItemKind::Const(c) => {
-            !is_public_vis(c.vis) && needed.contains(&c.name)
-        }
+        crate::hir::HirItemKind::Const(c) => !is_public_vis(c.vis) && needed.contains(&c.name),
         _ => false,
     }
 }
@@ -1446,18 +1544,10 @@ fn private_type_is_needed(
     needed: &HashSet<crate::intern::Symbol>,
 ) -> bool {
     match &item.kind {
-        crate::hir::HirItemKind::Struct(s) => {
-            !is_public_vis(s.vis) && needed.contains(&s.name)
-        }
-        crate::hir::HirItemKind::Enum(e) => {
-            !is_public_vis(e.vis) && needed.contains(&e.name)
-        }
-        crate::hir::HirItemKind::Trait(t) => {
-            !is_public_vis(t.vis) && needed.contains(&t.name)
-        }
-        crate::hir::HirItemKind::TypeAlias(t) => {
-            !is_public_vis(t.vis) && needed.contains(&t.name)
-        }
+        crate::hir::HirItemKind::Struct(s) => !is_public_vis(s.vis) && needed.contains(&s.name),
+        crate::hir::HirItemKind::Enum(e) => !is_public_vis(e.vis) && needed.contains(&e.name),
+        crate::hir::HirItemKind::Trait(t) => !is_public_vis(t.vis) && needed.contains(&t.name),
+        crate::hir::HirItemKind::TypeAlias(t) => !is_public_vis(t.vis) && needed.contains(&t.name),
         _ => false,
     }
 }
@@ -1599,10 +1689,7 @@ fn collect_type_refs_in_generics(
     }
 }
 
-fn collect_type_refs_in_ty(
-    ty: &crate::hir::HirTy,
-    out: &mut HashSet<crate::intern::Symbol>,
-) {
+fn collect_type_refs_in_ty(ty: &crate::hir::HirTy, out: &mut HashSet<crate::intern::Symbol>) {
     match ty {
         crate::hir::HirTy::Path(path) => collect_type_refs_in_path(path, out),
         crate::hir::HirTy::QualifiedPath(qpath) => {
@@ -1640,10 +1727,7 @@ fn collect_type_refs_in_ty(
     }
 }
 
-fn collect_type_refs_in_path(
-    path: &crate::hir::HirPath,
-    out: &mut HashSet<crate::intern::Symbol>,
-) {
+fn collect_type_refs_in_path(path: &crate::hir::HirPath, out: &mut HashSet<crate::intern::Symbol>) {
     if path.segments.len() == 1 {
         out.insert(path.segments[0].ident);
     }
@@ -1802,10 +1886,7 @@ fn collect_const_refs_in_generics(
     }
 }
 
-fn collect_const_refs_in_ty(
-    ty: &crate::hir::HirTy,
-    out: &mut HashSet<crate::intern::Symbol>,
-) {
+fn collect_const_refs_in_ty(ty: &crate::hir::HirTy, out: &mut HashSet<crate::intern::Symbol>) {
     match ty {
         crate::hir::HirTy::Path(path) => collect_const_refs_in_path(path, out),
         crate::hir::HirTy::QualifiedPath(qpath) => {
@@ -1858,7 +1939,9 @@ fn collect_const_refs_in_path(
             for arg in &args.args {
                 match arg {
                     crate::hir::HirGenericArg::Type(ty) => collect_const_refs_in_ty(ty, out),
-                    crate::hir::HirGenericArg::AssocTypeBinding(_, ty) => collect_const_refs_in_ty(ty, out),
+                    crate::hir::HirGenericArg::AssocTypeBinding(_, ty) => {
+                        collect_const_refs_in_ty(ty, out)
+                    }
                     crate::hir::HirGenericArg::Const(expr) => collect_const_refs_in_expr(expr, out),
                     crate::hir::HirGenericArg::Lifetime(_) => {}
                 }
@@ -2096,7 +2179,11 @@ fn render_generic_param(param: &crate::hir::HirGenericParam, interner: &Interner
             out
         }
         crate::hir::HirGenericParam::Const(name, ty, _) => {
-            format!("const {}: {}", interner.resolve(*name), render_ty(ty, interner))
+            format!(
+                "const {}: {}",
+                interner.resolve(*name),
+                render_ty(ty, interner)
+            )
         }
     }
 }
@@ -2129,7 +2216,11 @@ fn render_ty(ty: &crate::hir::HirTy, interner: &Interner) -> String {
         }
         crate::hir::HirTy::RawPtr(inner, mutability, _) => {
             let mut out = String::from("*");
-            out.push_str(if *mutability == crate::ast::Mutability::Mut { "mut " } else { "const " });
+            out.push_str(if *mutability == crate::ast::Mutability::Mut {
+                "mut "
+            } else {
+                "const "
+            });
             out.push_str(&render_ty(inner, interner));
             out
         }
@@ -2148,7 +2239,11 @@ fn render_ty(ty: &crate::hir::HirTy, interner: &Interner) -> String {
             out
         }
         crate::hir::HirTy::Array(inner, len, _) => {
-            format!("[{}; {}]", render_ty(inner, interner), render_expr(len, interner))
+            format!(
+                "[{}; {}]",
+                render_ty(inner, interner),
+                render_expr(len, interner)
+            )
         }
         crate::hir::HirTy::Slice(inner, _) => format!("[{}]", render_ty(inner, interner)),
         crate::hir::HirTy::FnPtr(params, ret, _) => {
@@ -2167,7 +2262,8 @@ fn render_ty(ty: &crate::hir::HirTy, interner: &Interner) -> String {
             out
         }
         crate::hir::HirTy::DynTrait(bounds, _) => {
-            let rendered: Vec<String> = bounds.iter()
+            let rendered: Vec<String> = bounds
+                .iter()
                 .map(|b| render_path(&b.path, interner))
                 .collect();
             format!("dyn {}", rendered.join(" + "))
@@ -2203,8 +2299,12 @@ fn render_path(path: &crate::hir::HirPath, interner: &Interner) -> String {
                         out.push_str(" = ");
                         out.push_str(&render_ty(ty, interner));
                     }
-                    crate::hir::HirGenericArg::Lifetime(sym) => out.push_str(&render_lifetime(*sym, interner)),
-                    crate::hir::HirGenericArg::Const(expr) => out.push_str(&render_expr(expr, interner)),
+                    crate::hir::HirGenericArg::Lifetime(sym) => {
+                        out.push_str(&render_lifetime(*sym, interner))
+                    }
+                    crate::hir::HirGenericArg::Const(expr) => {
+                        out.push_str(&render_expr(expr, interner))
+                    }
                 }
             }
             out.push('>');
@@ -2296,10 +2396,19 @@ fn render_expr(expr: &crate::hir::HirExpr, interner: &Interner) -> String {
                 crate::ast::BinOp::And => "&&",
                 crate::ast::BinOp::Or => "||",
             };
-            format!("({} {} {})", render_expr(lhs, interner), op_str, render_expr(rhs, interner))
+            format!(
+                "({} {} {})",
+                render_expr(lhs, interner),
+                op_str,
+                render_expr(rhs, interner)
+            )
         }
         crate::hir::HirExprKind::Cast(inner, ty) => {
-            format!("{} as {}", render_expr(inner, interner), render_ty(ty, interner))
+            format!(
+                "{} as {}",
+                render_expr(inner, interner),
+                render_ty(ty, interner)
+            )
         }
         crate::hir::HirExprKind::Paren(inner) => format!("({})", render_expr(inner, interner)),
         crate::hir::HirExprKind::Tuple(items) => {
@@ -2328,7 +2437,11 @@ fn render_expr(expr: &crate::hir::HirExpr, interner: &Interner) -> String {
             out
         }
         crate::hir::HirExprKind::ArrayRepeat(value, count) => {
-            format!("[{}; {}]", render_expr(value, interner), render_expr(count, interner))
+            format!(
+                "[{}; {}]",
+                render_expr(value, interner),
+                render_expr(count, interner)
+            )
         }
         crate::hir::HirExprKind::Ref(inner, mutability) => {
             if *mutability == crate::ast::Mutability::Mut {

@@ -1,5 +1,5 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,11 +26,11 @@ fn assert_run_returns(src: &str, expected: i32) {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(src, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_test_atomics_{}_{}", std::process::id(), id));
+    let dir =
+        std::env::temp_dir().join(format!("anyrc_test_atomics_{}_{}", std::process::id(), id));
     std::fs::create_dir_all(&dir).unwrap();
     let exe_path = dir.join("test_exe");
     {
@@ -46,33 +46,42 @@ fn assert_run_returns(src: &str, expected: i32) {
     let status = common::run_executable(&exe_path);
     let _ = std::fs::remove_dir_all(&dir);
     let code = status.code().unwrap_or(-1);
-    assert_eq!(code, expected, "expected exit code {}, got {}", expected, code);
+    assert_eq!(
+        code, expected,
+        "expected exit code {}, got {}",
+        expected, code
+    );
 }
 
 // ── Parse/compile tests ──
 
 #[test]
 fn parse_atomic_import() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         use core::sync::atomic::{AtomicBool, Ordering};
         fn main() -> i32 { 0 }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_atomic_new() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         use core::sync::atomic::AtomicBool;
         fn main() -> i32 {
             let x = AtomicBool::new(false);
             0
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_atomic_load_store() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         use core::sync::atomic::{AtomicBool, Ordering};
         fn main() -> i32 {
             let mut x = AtomicBool::new(false);
@@ -80,12 +89,14 @@ fn compile_atomic_load_store() {
             let v = x.load(Ordering::Acquire);
             0
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_atomic_u32() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         use core::sync::atomic::{AtomicU32, Ordering};
         fn main() -> i32 {
             let mut x = AtomicU32::new(0);
@@ -93,27 +104,31 @@ fn compile_atomic_u32() {
             let v = x.load(Ordering::SeqCst);
             0
         }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_ordering_import() {
     // Ordering variants should be accepted as expressions
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         use core::sync::atomic::Ordering;
         fn main() -> i32 {
             let _r = Ordering::Relaxed;
             let _a = Ordering::Acquire;
             0
         }
-    "#);
+    "#,
+    );
 }
 
 // ── Runtime tests ──
 
 #[test]
 fn run_atomic_store_load() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         use core::sync::atomic::{AtomicU32, Ordering};
         fn main() -> i32 {
             let mut x = AtomicU32::new(0);
@@ -121,37 +136,46 @@ fn run_atomic_store_load() {
             let v = x.load(Ordering::Relaxed);
             v as i32
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }
 
 #[test]
 fn run_atomic_new_value() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         use core::sync::atomic::{AtomicU32, Ordering};
         fn main() -> i32 {
             let mut x = AtomicU32::new(7);
             let v = x.load(Ordering::Relaxed);
             v as i32
         }
-    "#, 7);
+    "#,
+        7,
+    );
 }
 
 #[test]
 fn run_atomic_fetch_add() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         use core::sync::atomic::{AtomicU32, Ordering};
         fn main() -> i32 {
             let mut x = AtomicU32::new(10);
             let old = x.fetch_add(5, Ordering::Relaxed);
             old as i32
         }
-    "#, 10);
+    "#,
+        10,
+    );
 }
 
 #[test]
 fn run_atomic_fetch_add_new_value() {
     // After fetch_add, the new value should be old + delta
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         use core::sync::atomic::{AtomicU32, Ordering};
         fn main() -> i32 {
             let mut x = AtomicU32::new(10);
@@ -159,38 +183,93 @@ fn run_atomic_fetch_add_new_value() {
             let v = x.load(Ordering::Relaxed);
             v as i32
         }
-    "#, 15);
+    "#,
+        15,
+    );
+}
+
+#[test]
+fn run_atomic_fetch_or_returns_old_and_updates_value() {
+    assert_run_returns(
+        r#"
+        use core::sync::atomic::{AtomicU32, Ordering};
+        fn main() -> i32 {
+            let mut x = AtomicU32::new(0b1010);
+            let old = x.fetch_or(0b0101, Ordering::Relaxed);
+            let new = x.load(Ordering::Relaxed);
+            (old + new) as i32
+        }
+    "#,
+        25,
+    );
+}
+
+#[test]
+fn run_atomic_fetch_and_returns_old_and_updates_value() {
+    assert_run_returns(
+        r#"
+        use core::sync::atomic::{AtomicU32, Ordering};
+        fn main() -> i32 {
+            let mut x = AtomicU32::new(0b1111);
+            let old = x.fetch_and(0b0110, Ordering::Relaxed);
+            let new = x.load(Ordering::Relaxed);
+            (old + new) as i32
+        }
+    "#,
+        21,
+    );
+}
+
+#[test]
+fn compile_atomic_fence() {
+    assert_compiles(
+        r#"
+        use core::sync::atomic::{fence, compiler_fence, Ordering};
+        fn main() -> i32 {
+            compiler_fence(Ordering::Acquire);
+            fence(Ordering::SeqCst);
+            0
+        }
+    "#,
+    );
 }
 
 // ── Alloc type import tests (compile only) ──
 
 #[test]
 fn compile_vec_import() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         use alloc::vec::Vec;
         fn main() -> i32 { 0 }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_box_import() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         use alloc::boxed::Box;
         fn main() -> i32 { 0 }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn compile_string_import() {
-    assert_compiles(r#"
+    assert_compiles(
+        r#"
         use alloc::string::String;
         fn main() -> i32 { 0 }
-    "#);
+    "#,
+    );
 }
 
 #[test]
 fn run_kernel_address_module() {
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         struct PhysAddr { val: u64 }
         impl PhysAddr {
             fn new(addr: u64) -> PhysAddr { PhysAddr { val: addr } }
@@ -205,13 +284,16 @@ fn run_kernel_address_module() {
             let addr = PhysAddr::new(8192);
             addr.frame_index()
         }
-    "#, 2);
+    "#,
+        2,
+    );
 }
 
 #[test]
 fn run_kernel_mini_spinlock() {
     // Simplified spinlock pattern from kernel
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         use core::sync::atomic::{AtomicBool, Ordering};
 
         struct Spinlock { locked: AtomicBool }
@@ -240,13 +322,16 @@ fn run_kernel_mini_spinlock() {
             let r2 = s.is_locked();
             r1 + r2
         }
-    "#, 1);
+    "#,
+        1,
+    );
 }
 
 #[test]
 fn run_kernel_port_io() {
     // Kernel-like: unsafe, inline asm, static, bitwise ops
-    assert_run_returns(r#"
+    assert_run_returns(
+        r#"
         static mut TEST_PORT: u32 = 0;
 
         fn outb(port: u16, val: u8) {
@@ -262,5 +347,7 @@ fn run_kernel_port_io() {
             let v = inb(0x3F8);
             v as i32
         }
-    "#, 42);
+    "#,
+        42,
+    );
 }

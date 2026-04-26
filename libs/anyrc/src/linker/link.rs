@@ -1,6 +1,6 @@
+use super::elf;
 use crate::prelude::*;
 use anyos_std::collections::HashMap;
-use super::elf;
 
 /// Extended link options for kernel-level linking.
 #[derive(Debug, Clone)]
@@ -72,10 +72,27 @@ fn default_base_address(target_abi: TargetAbi) -> u64 {
     }
 }
 
+fn is_text_section(name: &str) -> bool {
+    name == ".text" || name.starts_with(".text.")
+}
+
+fn is_data_section(name: &str) -> bool {
+    name == ".data"
+        || name.starts_with(".data.")
+        || name == ".rodata"
+        || name.starts_with(".rodata.")
+        || name == ".bss"
+        || name.starts_with(".bss.")
+}
+
 /// Link one or more ELF object files into an executable (extended version).
-pub fn link_ext(objects: &[Vec<u8>], _output_name: &str, no_main: bool, opts: &LinkOptions) -> Vec<u8> {
-    link_ext_checked(objects, _output_name, no_main, opts)
-        .expect("anyrc linker failed")
+pub fn link_ext(
+    objects: &[Vec<u8>],
+    _output_name: &str,
+    no_main: bool,
+    opts: &LinkOptions,
+) -> Vec<u8> {
+    link_ext_checked(objects, _output_name, no_main, opts).expect("anyrc linker failed")
 }
 
 pub fn link_ext_checked(
@@ -94,7 +111,10 @@ pub fn link_ext_checked(
     let mut base_addr = opts
         .base_address
         .unwrap_or_else(|| default_base_address(opts.target_abi));
-    let mut entry_name = opts.entry_symbol.clone().unwrap_or_else(|| "_start".to_string());
+    let mut entry_name = opts
+        .entry_symbol
+        .clone()
+        .unwrap_or_else(|| "_start".to_string());
 
     if let Some(ref script_path) = opts.linker_script {
         if let Some(parsed) = parse_linker_script_minimal(script_path) {
@@ -107,21 +127,41 @@ pub fn link_ext_checked(
         }
     }
 
-    link_impl(&all_objects, no_main, base_addr, &entry_name, opts.target_abi)
+    link_impl(
+        &all_objects,
+        no_main,
+        base_addr,
+        &entry_name,
+        opts.target_abi,
+    )
 }
 
 /// Link one or more ELF object files into an executable.
 /// Returns the raw bytes of the ELF executable.
 pub fn link(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Vec<u8> {
-    link_checked(objects, _output_name, no_main)
-        .expect("anyrc linker failed")
+    link_checked(objects, _output_name, no_main).expect("anyrc linker failed")
 }
 
-pub fn link_checked(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Result<Vec<u8>, Vec<LinkError>> {
-    link_impl(objects, no_main, ANYOS_USER_BASE, "_start", TargetAbi::AnyOs)
+pub fn link_checked(
+    objects: &[Vec<u8>],
+    _output_name: &str,
+    no_main: bool,
+) -> Result<Vec<u8>, Vec<LinkError>> {
+    link_impl(
+        objects,
+        no_main,
+        ANYOS_USER_BASE,
+        "_start",
+        TargetAbi::AnyOs,
+    )
 }
 
-pub fn link_for_target(objects: &[Vec<u8>], _output_name: &str, no_main: bool, target_abi: TargetAbi) -> Vec<u8> {
+pub fn link_for_target(
+    objects: &[Vec<u8>],
+    _output_name: &str,
+    no_main: bool,
+    target_abi: TargetAbi,
+) -> Vec<u8> {
     link_for_target_checked(objects, _output_name, no_main, target_abi)
         .expect("anyrc linker failed")
 }
@@ -132,7 +172,13 @@ pub fn link_for_target_checked(
     no_main: bool,
     target_abi: TargetAbi,
 ) -> Result<Vec<u8>, Vec<LinkError>> {
-    link_impl(objects, no_main, default_base_address(target_abi), "_start", target_abi)
+    link_impl(
+        objects,
+        no_main,
+        default_base_address(target_abi),
+        "_start",
+        target_abi,
+    )
 }
 
 fn link_impl(
@@ -159,7 +205,7 @@ fn link_impl(
         // CALL rel32 (placeholder, will be patched)
         merged_code.push(0xE8);
         merged_code.extend_from_slice(&[0, 0, 0, 0]); // rel32 placeholder
-        // mov rdi, rax
+                                                      // mov rdi, rax
         merged_code.extend_from_slice(&[0x48, 0x89, 0xC7]);
         match target_abi {
             TargetAbi::AnyOs => {
@@ -176,7 +222,12 @@ fn link_impl(
         }
 
         // Add _start->main relocation
-        pending_relocs.push((start_offset + 1, "main".to_string(), 2 /* R_X86_64_PC32 */, -4));
+        pending_relocs.push((
+            start_offset + 1,
+            "main".to_string(),
+            2, /* R_X86_64_PC32 */
+            -4,
+        ));
 
         global_symbols.insert("_start".to_string(), start_offset);
     }
@@ -188,32 +239,26 @@ fn link_impl(
             None => continue,
         };
 
-        // Find .text section
-        let text_idx = obj.sections.iter().position(|s| s.name == ".text");
-        let text_offset_in_merged = merged_code.len() as u64;
+        let mut text_section_offsets: HashMap<usize, u64> = HashMap::new();
+        let mut data_section_offsets: HashMap<usize, u64> = HashMap::new();
 
-        if let Some(ti) = text_idx {
-            merged_code.extend_from_slice(&obj.sections[ti].data);
-        }
-
-        // Find .data section
-        let data_idx = obj.sections.iter().position(|s| s.name == ".data");
-        let data_offset_in_merged = merged_data.len() as u64;
-
-        if let Some(di) = data_idx {
-            merged_data.extend_from_slice(&obj.sections[di].data);
+        for (sec_idx, section) in obj.sections.iter().enumerate() {
+            if is_text_section(&section.name) {
+                let offset = merged_code.len() as u64;
+                text_section_offsets.insert(sec_idx, offset);
+                merged_code.extend_from_slice(&section.data);
+            } else if is_data_section(&section.name) {
+                let offset = merged_data.len() as u64;
+                data_section_offsets.insert(sec_idx, offset);
+                merged_data.extend_from_slice(&section.data);
+            }
         }
 
         // Register symbols
         for sym in &obj.symbols {
             if !sym.name.is_empty() && sym.section.is_some() {
                 let sec_idx = sym.section.unwrap();
-                let sec_name = if sec_idx < obj.sections.len() {
-                    &obj.sections[sec_idx].name
-                } else {
-                    ""
-                };
-                if sec_name == ".data" {
+                if let Some(section_offset) = data_section_offsets.get(&sec_idx) {
                     // Data symbol: offset relative to start of data in merged output
                     // Data follows code in the flat layout, so offset = code_total + data_offset
                     // We'll use a special marker to handle this at relocation time
@@ -221,10 +266,10 @@ fn link_impl(
                     // Actually, let's store (data_offset, true) meaning it's in data
                     // We need the final code length to compute this, so we defer.
                     // Instead, use a prefix convention:
-                    let final_offset = data_offset_in_merged + sym.offset;
+                    let final_offset = section_offset + sym.offset;
                     global_symbols.insert(format!("\x01{}", sym.name), final_offset);
-                } else {
-                    let final_offset = text_offset_in_merged + sym.offset;
+                } else if let Some(section_offset) = text_section_offsets.get(&sec_idx) {
+                    let final_offset = section_offset + sym.offset;
                     global_symbols.insert(sym.name.clone(), final_offset);
                 }
             }
@@ -237,7 +282,12 @@ fn link_impl(
             } else {
                 continue;
             };
-            let offset_in_merged = text_offset_in_merged + rel.offset;
+            let reloc_section = rel.section.unwrap_or(0);
+            let offset_in_merged = text_section_offsets
+                .get(&reloc_section)
+                .copied()
+                .unwrap_or(0)
+                + rel.offset;
             pending_relocs.push((offset_in_merged, sym_name, rel.rela_type, rel.addend));
         }
     }
@@ -248,6 +298,22 @@ fn link_impl(
 
     // Data section starts after code in the flat layout
     let code_size = merged_code.len() as u64;
+    let bss_start = code_size + merged_data.len() as u64;
+    global_symbols
+        .entry("_bss_start".to_string())
+        .or_insert(bss_start);
+    global_symbols
+        .entry("_bss_end".to_string())
+        .or_insert(bss_start);
+    global_symbols
+        .entry("_boot_stack_bottom".to_string())
+        .or_insert(bss_start);
+    global_symbols
+        .entry("_boot_stack_top".to_string())
+        .or_insert(bss_start + 0x80000);
+    global_symbols
+        .entry("_kernel_end".to_string())
+        .or_insert(bss_start + 0x80000);
     let mut errors = Vec::new();
 
     for (offset, sym_name, rela_type, addend) in &pending_relocs {
@@ -255,15 +321,25 @@ fn link_impl(
         let short_sym_name = sym_name.rsplit("::").next().unwrap_or(sym_name.as_str());
         let short_data_name = format!("\x01{}", short_sym_name);
 
-        let (sym_offset, is_data) = if let Some(&o) = global_symbols.get(&format!("\x01{}", sym_name)) {
-            (o, true)
-        } else if let Some(&o) = global_symbols.get(sym_name) {
-            (o, false)
-        } else if short_sym_name != sym_name {
-            if let Some(&o) = global_symbols.get(&short_data_name) {
+        let (sym_offset, is_data) =
+            if let Some(&o) = global_symbols.get(&format!("\x01{}", sym_name)) {
                 (o, true)
-            } else if let Some(&o) = global_symbols.get(short_sym_name) {
+            } else if let Some(&o) = global_symbols.get(sym_name) {
                 (o, false)
+            } else if short_sym_name != sym_name {
+                if let Some(&o) = global_symbols.get(&short_data_name) {
+                    (o, true)
+                } else if let Some(&o) = global_symbols.get(short_sym_name) {
+                    (o, false)
+                } else {
+                    errors.push(LinkError::new(
+                        LinkErrorKind::UnresolvedSymbol,
+                        sym_name,
+                        *offset,
+                        *rela_type,
+                    ));
+                    continue;
+                }
             } else {
                 errors.push(LinkError::new(
                     LinkErrorKind::UnresolvedSymbol,
@@ -272,19 +348,14 @@ fn link_impl(
                     *rela_type,
                 ));
                 continue;
-            }
-        } else {
-            errors.push(LinkError::new(
-                LinkErrorKind::UnresolvedSymbol,
-                sym_name,
-                *offset,
-                *rela_type,
-            ));
-            continue;
-        };
+            };
 
         // For data symbols, the actual offset in the flat file is code_size + sym_offset
-        let file_sym_offset = if is_data { code_size + sym_offset } else { sym_offset };
+        let file_sym_offset = if is_data {
+            code_size + sym_offset
+        } else {
+            sym_offset
+        };
 
         match *rela_type {
             2 /* R_X86_64_PC32 */ => {
@@ -348,7 +419,12 @@ fn link_impl(
     // Entry point
     let entry_offset = *global_symbols.get(entry_name).unwrap_or(&0);
 
-    Ok(elf::write_executable_at(&merged_code, &merged_data, entry_offset, base_addr))
+    Ok(elf::write_executable_at(
+        &merged_code,
+        &merged_data,
+        entry_offset,
+        base_addr,
+    ))
 }
 
 /// Minimal linker script info extracted from a `.ld` file.

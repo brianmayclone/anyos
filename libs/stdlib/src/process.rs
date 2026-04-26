@@ -443,7 +443,7 @@ pub fn getargs(buf: &mut [u8]) -> usize {
 /// Returns the argument portion of the args string (after the first space).
 ///
 /// Handles quoted argv[0] for paths with spaces (e.g. `"/Applications/My App.app" file.md`).
-pub fn args(buf: &mut [u8; 256]) -> &str {
+pub fn args(buf: &mut [u8]) -> &str {
     let len = getargs(buf);
     let all = core::str::from_utf8(&buf[..len]).unwrap_or("");
     if all.starts_with('"') {

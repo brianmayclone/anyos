@@ -1,11 +1,11 @@
-use crate::prelude::*;
-use anyos_std::collections::HashMap;
 use crate::hir::DefId;
 use crate::mir::{
-    Local, MirAsmOperandKind, MirBody, Operand, Place, Projection, Rvalue,
-    StatementKind, Terminator,
+    Local, MirAsmOperandKind, MirBody, Operand, Place, Projection, Rvalue, StatementKind,
+    Terminator,
 };
+use crate::prelude::*;
 use crate::typeck::TyKind;
+use anyos_std::collections::HashMap;
 
 pub struct RegAlloc {
     /// Stack offset for each local (negative from RBP)
@@ -48,10 +48,15 @@ pub fn ty_layout_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
             }
         }
         TyKind::Adt(def_id, _) => struct_sizes.get(def_id).copied().unwrap_or(8) as i32,
-        TyKind::Array(elem, len) if *len > (1usize << 30) => ty_layout_size(elem, struct_sizes).max(1),
+        TyKind::Array(elem, len) if *len > (1usize << 30) => {
+            ty_layout_size(elem, struct_sizes).max(1)
+        }
         TyKind::Array(elem, len) => ty_layout_size(elem, struct_sizes).max(1) * (*len as i32),
         TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _)
-            if matches!(inner.as_ref(), TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_)) =>
+            if matches!(
+                inner.as_ref(),
+                TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_)
+            ) =>
         {
             16
         }
@@ -68,7 +73,11 @@ pub fn ty_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
 
 pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
     // First pass: determine sizes, looking at Aggregate assignments to find struct sizes
-    let mut local_sizes: Vec<i32> = body.locals.iter().map(|l| ty_size(&l.ty, struct_sizes)).collect();
+    let mut local_sizes: Vec<i32> = body
+        .locals
+        .iter()
+        .map(|l| ty_size(&l.ty, struct_sizes))
+        .collect();
 
     // Scan statements for Aggregate assignments to learn actual field counts
     for bb in &body.basic_blocks {
@@ -78,7 +87,10 @@ pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
                     match rvalue {
                         crate::mir::Rvalue::Aggregate(_, operands)
                             if operands.len() > 1
-                                && !matches!(body.locals[place.local.0].ty, TyKind::Array(_, _)) =>
+                                && !matches!(
+                                    body.locals[place.local.0].ty,
+                                    TyKind::Array(_, _)
+                                ) =>
                         {
                             let needed = operands.len() as i32 * 8;
                             if needed > local_sizes[place.local.0] {
@@ -92,7 +104,9 @@ pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
                             }
                         }
                         // Propagate sizes through Use(Copy/Move) assignments
-                        crate::mir::Rvalue::Use(crate::mir::Operand::Copy(src) | crate::mir::Operand::Move(src)) if src.projections.is_empty() => {
+                        crate::mir::Rvalue::Use(
+                            crate::mir::Operand::Copy(src) | crate::mir::Operand::Move(src),
+                        ) if src.projections.is_empty() => {
                             let src_size = local_sizes[src.local.0];
                             if src_size > local_sizes[place.local.0] {
                                 local_sizes[place.local.0] = src_size;
@@ -111,9 +125,13 @@ pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
         changed = false;
         for bb in &body.basic_blocks {
             for stmt in &bb.statements {
-                if let crate::mir::StatementKind::Assign(place, crate::mir::Rvalue::Use(
-                    crate::mir::Operand::Copy(src) | crate::mir::Operand::Move(src)
-                )) = &stmt.kind {
+                if let crate::mir::StatementKind::Assign(
+                    place,
+                    crate::mir::Rvalue::Use(
+                        crate::mir::Operand::Copy(src) | crate::mir::Operand::Move(src),
+                    ),
+                ) = &stmt.kind
+                {
                     if place.projections.is_empty() && src.projections.is_empty() {
                         let src_size = local_sizes[src.local.0];
                         if src_size > local_sizes[place.local.0] {
@@ -129,7 +147,11 @@ pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
     let (stack_slots, used_size) = allocate_stack_slots(body, &local_sizes);
     // Align to 16 so every emitted call keeps the SysV stack contract.
     let frame_size = ((used_size + 15) / 16) * 16;
-    RegAlloc { stack_slots, local_sizes, frame_size }
+    RegAlloc {
+        stack_slots,
+        local_sizes,
+        frame_size,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -195,44 +217,42 @@ fn allocate_stack_slots(body: &MirBody, local_sizes: &[i32]) -> (Vec<i32>, i32) 
 fn compute_live_intervals(body: &MirBody, local_sizes: &[i32]) -> Vec<LiveInterval> {
     let mut first = vec![usize::MAX; body.locals.len()];
     let mut last = vec![0usize; body.locals.len()];
-    let mut first_block = vec![usize::MAX; body.locals.len()];
-    let mut last_block = vec![0usize; body.locals.len()];
     let mut address_taken = vec![false; body.locals.len()];
     let mut pos = 0usize;
 
     // Return place and incoming arguments exist at function entry. The return
     // place is read by every explicit return terminator.
-    mark_local(Local(0), 0, 0, &mut first, &mut last, &mut first_block, &mut last_block);
+    mark_local(Local(0), 0, &mut first, &mut last);
     for local in 1..=body.arg_count {
-        mark_local(Local(local), 0, 0, &mut first, &mut last, &mut first_block, &mut last_block);
+        mark_local(Local(local), 0, &mut first, &mut last);
     }
 
-    for (block_idx, bb) in body.basic_blocks.iter().enumerate() {
+    for bb in &body.basic_blocks {
         for stmt in &bb.statements {
             pos += 1;
             match &stmt.kind {
                 StatementKind::Assign(place, rvalue) => {
-                    mark_place(place, pos, block_idx, &mut first, &mut last, &mut first_block, &mut last_block);
-                    mark_rvalue(rvalue, pos, block_idx, &mut first, &mut last, &mut first_block, &mut last_block, &mut address_taken);
+                    mark_place(place, pos, &mut first, &mut last);
+                    mark_rvalue(rvalue, pos, &mut first, &mut last, &mut address_taken);
                 }
                 StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
-                    mark_local(*local, pos, block_idx, &mut first, &mut last, &mut first_block, &mut last_block);
+                    mark_local(*local, pos, &mut first, &mut last);
                 }
                 StatementKind::InlineAsm { operands, .. } => {
                     for operand in operands {
                         match &operand.kind {
                             MirAsmOperandKind::In(op) => {
-                                mark_operand(op, pos, block_idx, &mut first, &mut last, &mut first_block, &mut last_block, &mut address_taken);
+                                mark_operand(op, pos, &mut first, &mut last, &mut address_taken);
                             }
                             MirAsmOperandKind::Out(place) => {
                                 if let Some(place) = place {
-                                    mark_place(place, pos, block_idx, &mut first, &mut last, &mut first_block, &mut last_block);
+                                    mark_place(place, pos, &mut first, &mut last);
                                 }
                             }
                             MirAsmOperandKind::InOut(op, place) => {
-                                mark_operand(op, pos, block_idx, &mut first, &mut last, &mut first_block, &mut last_block, &mut address_taken);
+                                mark_operand(op, pos, &mut first, &mut last, &mut address_taken);
                                 if let Some(place) = place {
-                                    mark_place(place, pos, block_idx, &mut first, &mut last, &mut first_block, &mut last_block);
+                                    mark_place(place, pos, &mut first, &mut last);
                                 }
                             }
                         }
@@ -242,7 +262,13 @@ fn compute_live_intervals(body: &MirBody, local_sizes: &[i32]) -> Vec<LiveInterv
             }
         }
         pos += 1;
-        mark_terminator(&bb.terminator, pos, block_idx, &mut first, &mut last, &mut first_block, &mut last_block, &mut address_taken);
+        mark_terminator(
+            &bb.terminator,
+            pos,
+            &mut first,
+            &mut last,
+            &mut address_taken,
+        );
     }
 
     let end = pos.saturating_add(1);
@@ -353,14 +379,24 @@ fn compute_block_liveness(body: &MirBody) -> BlockLiveness {
         }
     }
 
-    BlockLiveness { live_in, live_out, block_start, block_end }
+    BlockLiveness {
+        live_in,
+        live_out,
+        block_start,
+        block_end,
+    }
 }
 
 fn terminator_successors(term: &Terminator) -> Vec<crate::mir::BlockId> {
     match term {
         Terminator::Goto(target) => vec![*target],
-        Terminator::SwitchInt { targets, default, .. } => {
-            let mut out = targets.iter().map(|(_, target)| *target).collect::<Vec<_>>();
+        Terminator::SwitchInt {
+            targets, default, ..
+        } => {
+            let mut out = targets
+                .iter()
+                .map(|(_, target)| *target)
+                .collect::<Vec<_>>();
             out.push(*default);
             out
         }
@@ -402,7 +438,9 @@ fn collect_terminator_use_def(term: &Terminator, uses: &mut [bool], defs: &mut [
     match term {
         Terminator::Goto(_) | Terminator::Unreachable => {}
         Terminator::SwitchInt { operand, .. } => collect_operand_use(operand, uses, defs),
-        Terminator::Call { func, args, dest, .. } => {
+        Terminator::Call {
+            func, args, dest, ..
+        } => {
             collect_operand_use(func, uses, defs);
             for arg in args {
                 collect_operand_use(arg, uses, defs);
@@ -481,27 +519,26 @@ fn collect_local_def(local: Local, defs: &mut [bool]) {
 fn mark_terminator(
     terminator: &Terminator,
     pos: usize,
-    block_idx: usize,
     first: &mut [usize],
     last: &mut [usize],
-    first_block: &mut [usize],
-    last_block: &mut [usize],
     address_taken: &mut [bool],
 ) {
     match terminator {
         Terminator::Goto(_) | Terminator::Unreachable => {}
         Terminator::SwitchInt { operand, .. } => {
-            mark_operand(operand, pos, block_idx, first, last, first_block, last_block, address_taken);
+            mark_operand(operand, pos, first, last, address_taken);
         }
-        Terminator::Call { func, args, dest, .. } => {
-            mark_operand(func, pos, block_idx, first, last, first_block, last_block, address_taken);
+        Terminator::Call {
+            func, args, dest, ..
+        } => {
+            mark_operand(func, pos, first, last, address_taken);
             for arg in args {
-                mark_operand(arg, pos, block_idx, first, last, first_block, last_block, address_taken);
+                mark_operand(arg, pos, first, last, address_taken);
             }
-            mark_place(dest, pos, block_idx, first, last, first_block, last_block);
+            mark_place(dest, pos, first, last);
         }
         Terminator::Return => {
-            mark_local(Local(0), pos, block_idx, first, last, first_block, last_block);
+            mark_local(Local(0), pos, first, last);
         }
     }
 }
@@ -509,31 +546,28 @@ fn mark_terminator(
 fn mark_rvalue(
     rvalue: &Rvalue,
     pos: usize,
-    block_idx: usize,
     first: &mut [usize],
     last: &mut [usize],
-    first_block: &mut [usize],
-    last_block: &mut [usize],
     address_taken: &mut [bool],
 ) {
     match rvalue {
         Rvalue::Use(op) | Rvalue::Cast(op, _) | Rvalue::UnaryOp(_, op) => {
-            mark_operand(op, pos, block_idx, first, last, first_block, last_block, address_taken);
+            mark_operand(op, pos, first, last, address_taken);
         }
         Rvalue::Ref(_, place) => {
-            mark_address_taken(place, pos, block_idx, first, last, first_block, last_block, address_taken);
+            mark_address_taken(place, pos, first, last, address_taken);
         }
         Rvalue::BinaryOp(_, lhs, rhs) => {
-            mark_operand(lhs, pos, block_idx, first, last, first_block, last_block, address_taken);
-            mark_operand(rhs, pos, block_idx, first, last, first_block, last_block, address_taken);
+            mark_operand(lhs, pos, first, last, address_taken);
+            mark_operand(rhs, pos, first, last, address_taken);
         }
         Rvalue::Aggregate(_, operands) => {
             for operand in operands {
-                mark_operand(operand, pos, block_idx, first, last, first_block, last_block, address_taken);
+                mark_operand(operand, pos, first, last, address_taken);
             }
         }
         Rvalue::Discriminant(place) | Rvalue::Len(place) => {
-            mark_place(place, pos, block_idx, first, last, first_block, last_block);
+            mark_place(place, pos, first, last);
         }
         Rvalue::MakeVtable(_) => {}
     }
@@ -542,19 +576,16 @@ fn mark_rvalue(
 fn mark_operand(
     operand: &Operand,
     pos: usize,
-    block_idx: usize,
     first: &mut [usize],
     last: &mut [usize],
-    first_block: &mut [usize],
-    last_block: &mut [usize],
     address_taken: &mut [bool],
 ) {
     match operand {
         Operand::Copy(place) | Operand::Move(place) => {
-            mark_place(place, pos, block_idx, first, last, first_block, last_block);
+            mark_place(place, pos, first, last);
         }
         Operand::Ref(place, _) => {
-            mark_address_taken(place, pos, block_idx, first, last, first_block, last_block, address_taken);
+            mark_address_taken(place, pos, first, last, address_taken);
         }
         Operand::Constant(_) => {}
     }
@@ -563,49 +594,30 @@ fn mark_operand(
 fn mark_address_taken(
     place: &Place,
     pos: usize,
-    block_idx: usize,
     first: &mut [usize],
     last: &mut [usize],
-    first_block: &mut [usize],
-    last_block: &mut [usize],
     address_taken: &mut [bool],
 ) {
-    mark_place(place, pos, block_idx, first, last, first_block, last_block);
-    address_taken[place.local.0] = true;
+    mark_place(place, pos, first, last);
+    if place.local.0 < address_taken.len() {
+        address_taken[place.local.0] = true;
+    }
 }
 
-fn mark_place(
-    place: &Place,
-    pos: usize,
-    block_idx: usize,
-    first: &mut [usize],
-    last: &mut [usize],
-    first_block: &mut [usize],
-    last_block: &mut [usize],
-) {
-    mark_local(place.local, pos, block_idx, first, last, first_block, last_block);
+fn mark_place(place: &Place, pos: usize, first: &mut [usize], last: &mut [usize]) {
+    mark_local(place.local, pos, first, last);
     for projection in &place.projections {
         if let Projection::Index(local) = projection {
-            mark_local(*local, pos, block_idx, first, last, first_block, last_block);
+            mark_local(*local, pos, first, last);
         }
     }
 }
 
-fn mark_local(
-    local: Local,
-    pos: usize,
-    block_idx: usize,
-    first: &mut [usize],
-    last: &mut [usize],
-    first_block: &mut [usize],
-    last_block: &mut [usize],
-) {
+fn mark_local(local: Local, pos: usize, first: &mut [usize], last: &mut [usize]) {
     let idx = local.0;
     if idx >= first.len() {
         return;
     }
     first[idx] = first[idx].min(pos);
     last[idx] = last[idx].max(pos);
-    first_block[idx] = first_block[idx].min(block_idx);
-    last_block[idx] = last_block[idx].max(block_idx);
 }

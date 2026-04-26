@@ -2,12 +2,12 @@ use crate::prelude::*;
 use anyos_std::collections::HashMap;
 
 use crate::ast::{BinOp, Literal, Mutability};
+use crate::diagnostics::Span;
 use crate::hir::*;
 use crate::intern::{Interner, Symbol};
 use crate::mir::*;
 use crate::resolve::ResolveResult;
-use crate::typeck::{TyKind, TypeckResult, IntTy, UintTy, FloatTy};
-use crate::diagnostics::Span;
+use crate::typeck::{FloatTy, IntTy, TyKind, TypeckResult, UintTy};
 
 pub struct MirBuilder<'a> {
     interner: &'a mut Interner,
@@ -59,6 +59,9 @@ impl<'a> MirBuilder<'a> {
             HirItemKind::Fn(f) => {
                 if f.body.is_some() {
                     out.push(f);
+                    if let Some(body) = &f.body {
+                        Self::collect_fn_defs_from_block(body, out);
+                    }
                 }
             }
             HirItemKind::Impl(ib) => {
@@ -93,6 +96,139 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    fn collect_fn_defs_from_block<'b>(block: &'b HirBlock, out: &mut Vec<&'b HirFnDef>) {
+        for stmt in &block.stmts {
+            Self::collect_fn_defs_from_stmt(stmt, out);
+        }
+    }
+
+    fn collect_fn_defs_from_stmt<'b>(stmt: &'b HirStmt, out: &mut Vec<&'b HirFnDef>) {
+        match stmt {
+            HirStmt::Let(_, _, _, init, _) => {
+                if let Some(init) = init {
+                    Self::collect_fn_defs_from_expr(init, out);
+                }
+            }
+            HirStmt::Expr(expr) | HirStmt::Semi(expr, _) => {
+                Self::collect_fn_defs_from_expr(expr, out);
+            }
+            HirStmt::Item(item) => {
+                Self::collect_fn_defs(item, out);
+            }
+        }
+    }
+
+    fn collect_fn_defs_from_expr<'b>(expr: &'b HirExpr, out: &mut Vec<&'b HirFnDef>) {
+        match &expr.kind {
+            HirExprKind::Call(callee, args) => {
+                Self::collect_fn_defs_from_expr(callee, out);
+                for arg in args {
+                    Self::collect_fn_defs_from_expr(arg, out);
+                }
+            }
+            HirExprKind::MethodCall(receiver, _, _, args) => {
+                Self::collect_fn_defs_from_expr(receiver, out);
+                for arg in args {
+                    Self::collect_fn_defs_from_expr(arg, out);
+                }
+            }
+            HirExprKind::Field(base, _)
+            | HirExprKind::Deref(base)
+            | HirExprKind::Paren(base)
+            | HirExprKind::Try(base)
+            | HirExprKind::Return(Some(base))
+            | HirExprKind::Break(_, Some(base)) => {
+                Self::collect_fn_defs_from_expr(base, out);
+            }
+            HirExprKind::Index(base, index)
+            | HirExprKind::Binary(_, base, index)
+            | HirExprKind::Assign(base, index)
+            | HirExprKind::AssignOp(_, base, index) => {
+                Self::collect_fn_defs_from_expr(base, out);
+                Self::collect_fn_defs_from_expr(index, out);
+            }
+            HirExprKind::Unary(_, base)
+            | HirExprKind::Ref(base, _)
+            | HirExprKind::RawRef(base, _)
+            | HirExprKind::Cast(base, _) => {
+                Self::collect_fn_defs_from_expr(base, out);
+            }
+            HirExprKind::Block(block)
+            | HirExprKind::Unsafe(block)
+            | HirExprKind::Loop(block, _) => {
+                Self::collect_fn_defs_from_block(block, out);
+            }
+            HirExprKind::If(cond, then_block, else_expr) => {
+                Self::collect_fn_defs_from_expr(cond, out);
+                Self::collect_fn_defs_from_block(then_block, out);
+                if let Some(else_expr) = else_expr {
+                    Self::collect_fn_defs_from_expr(else_expr, out);
+                }
+            }
+            HirExprKind::Match(scrutinee, arms) => {
+                Self::collect_fn_defs_from_expr(scrutinee, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        Self::collect_fn_defs_from_expr(guard, out);
+                    }
+                    Self::collect_fn_defs_from_expr(&arm.body, out);
+                }
+            }
+            HirExprKind::Closure(_, _, body, _) => {
+                Self::collect_fn_defs_from_expr(body, out);
+            }
+            HirExprKind::Struct(_, fields, base) => {
+                for field in fields {
+                    Self::collect_fn_defs_from_expr(&field.value, out);
+                }
+                if let Some(base) = base {
+                    Self::collect_fn_defs_from_expr(base, out);
+                }
+            }
+            HirExprKind::Tuple(elems) | HirExprKind::Array(elems) => {
+                for elem in elems {
+                    Self::collect_fn_defs_from_expr(elem, out);
+                }
+            }
+            HirExprKind::ArrayRepeat(value, len) => {
+                Self::collect_fn_defs_from_expr(value, out);
+                Self::collect_fn_defs_from_expr(len, out);
+            }
+            HirExprKind::Range(start, end, _) => {
+                if let Some(start) = start {
+                    Self::collect_fn_defs_from_expr(start, out);
+                }
+                if let Some(end) = end {
+                    Self::collect_fn_defs_from_expr(end, out);
+                }
+            }
+            HirExprKind::For(_, iter, body, _) => {
+                Self::collect_fn_defs_from_expr(iter, out);
+                Self::collect_fn_defs_from_block(body, out);
+            }
+            HirExprKind::InlineAsm(asm) => {
+                for operand in &asm.operands {
+                    match operand {
+                        HirAsmOperand::In { expr, .. } | HirAsmOperand::InOut { expr, .. } => {
+                            Self::collect_fn_defs_from_expr(expr, out);
+                        }
+                        HirAsmOperand::Out { expr, .. } => {
+                            if let Some(expr) = expr {
+                                Self::collect_fn_defs_from_expr(expr, out);
+                            }
+                        }
+                    }
+                }
+            }
+            HirExprKind::Lit(_)
+            | HirExprKind::Path(_)
+            | HirExprKind::QualifiedPath(_)
+            | HirExprKind::Return(None)
+            | HirExprKind::Break(_, None)
+            | HirExprKind::Continue(_) => {}
+        }
+    }
+
     pub fn build_fn(
         interner: &mut Interner,
         resolve: &ResolveResult,
@@ -117,7 +253,9 @@ impl<'a> MirBuilder<'a> {
         builder.push_block();
 
         // Local _0 = return place
-        let ret_ty = func.ret_ty.as_ref()
+        let ret_ty = func
+            .ret_ty
+            .as_ref()
             .and_then(|_| typeck.expr_types.values().next()) // We'll derive from fn sig
             .cloned()
             .unwrap_or(TyKind::Unit);
@@ -127,11 +265,16 @@ impl<'a> MirBuilder<'a> {
 
         // Params: _1 .. _arg_count
         let arg_count = func.params.len();
-        let param_tys = builder.typeck.fn_sigs.get(&func.def_id)
+        let param_tys = builder
+            .typeck
+            .fn_sigs
+            .get(&func.def_id)
             .map(|(params, _)| params.clone())
             .unwrap_or_default();
         for (i, param) in func.params.iter().enumerate() {
-            let ty = param_tys.get(i).cloned()
+            let ty = param_tys
+                .get(i)
+                .cloned()
                 .unwrap_or_else(|| builder.get_expr_ty_from_hir_ty(&param.ty));
             let name = match &param.pat {
                 HirPattern::Ident(_, sym, _, _, _) => Some(*sym),
@@ -185,7 +328,11 @@ impl<'a> MirBuilder<'a> {
     }
 
     fn get_expr_ty(&self, expr: &HirExpr) -> TyKind {
-        self.typeck.expr_types.get(&expr.id).cloned().unwrap_or(TyKind::Error)
+        self.typeck
+            .expr_types
+            .get(&expr.id)
+            .cloned()
+            .unwrap_or(TyKind::Error)
     }
 
     fn enum_variant_constructor_info(
@@ -197,15 +344,13 @@ impl<'a> MirBuilder<'a> {
 
         if let Some(&variant_def_id) = self.resolve.resolutions.get(&callee.id) {
             if let Some(&enum_def_id) = self.resolve.variant_to_enum.get(&variant_def_id) {
-                if let Some(idx) = self
-                    .typeck
-                    .enum_variants
-                    .get(&enum_def_id)
-                    .and_then(|variants| {
-                        variants
-                            .iter()
-                            .position(|(name, _)| *name == variant_name)
-                    })
+                if let Some(idx) =
+                    self.typeck
+                        .enum_variants
+                        .get(&enum_def_id)
+                        .and_then(|variants| {
+                            variants.iter().position(|(name, _)| *name == variant_name)
+                        })
                 {
                     return Some((enum_def_id, idx));
                 }
@@ -292,7 +437,8 @@ impl<'a> MirBuilder<'a> {
             let is_last = i == block.stmts.len() - 1;
             match stmt {
                 HirStmt::Let(hir_id, pat, _ty_ann, init, span) => {
-                    let ty = init.as_ref()
+                    let ty = init
+                        .as_ref()
                         .map(|e| self.get_expr_ty(e))
                         .unwrap_or(TyKind::Int(IntTy::I32));
                     if let HirPattern::Ident(pat_hir_id, _, _, _, _) = pat {
@@ -354,7 +500,11 @@ impl<'a> MirBuilder<'a> {
                     kind: StatementKind::StorageLive(local),
                     span,
                 });
-                self.emit_assign(Place::local(local), Rvalue::Use(Operand::Copy(source)), span);
+                self.emit_assign(
+                    Place::local(local),
+                    Rvalue::Use(Operand::Copy(source)),
+                    span,
+                );
             }
             HirPattern::Tuple(pats, _) => {
                 if let TyKind::Tuple(elem_tys) = ty {
@@ -383,7 +533,11 @@ impl<'a> MirBuilder<'a> {
                     _ => None,
                 };
                 if let Some(elem_ty) = elem_ty {
-                    for (idx, pat) in pats.iter().filter(|p| !matches!(p, HirPattern::Rest(_))).enumerate() {
+                    for (idx, pat) in pats
+                        .iter()
+                        .filter(|p| !matches!(p, HirPattern::Rest(_)))
+                        .enumerate()
+                    {
                         let mut projections = source.projections.clone();
                         projections.push(Projection::Field(idx));
                         self.bind_let_pattern(
@@ -448,11 +602,7 @@ impl<'a> MirBuilder<'a> {
                 let r = self.lower_expr(rhs);
                 let ty = self.get_expr_ty(expr);
                 let tmp = self.alloc_temp(ty, expr.span);
-                self.emit_assign(
-                    Place::local(tmp),
-                    Rvalue::BinaryOp(*op, l, r),
-                    expr.span,
-                );
+                self.emit_assign(Place::local(tmp), Rvalue::BinaryOp(*op, l, r), expr.span);
                 Operand::Copy(Place::local(tmp))
             }
 
@@ -460,11 +610,7 @@ impl<'a> MirBuilder<'a> {
                 let operand = self.lower_expr(inner);
                 let ty = self.get_expr_ty(expr);
                 let tmp = self.alloc_temp(ty, expr.span);
-                self.emit_assign(
-                    Place::local(tmp),
-                    Rvalue::UnaryOp(*op, operand),
-                    expr.span,
-                );
+                self.emit_assign(Place::local(tmp), Rvalue::UnaryOp(*op, operand), expr.span);
                 Operand::Copy(Place::local(tmp))
             }
 
@@ -475,10 +621,12 @@ impl<'a> MirBuilder<'a> {
                         self.enum_variant_constructor_info(callee, path)
                     {
                         if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
-                            let max_fields = variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+                            let max_fields =
+                                variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
                             if max_fields > 0 {
                                 // This is a data enum variant constructor.
-                                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                                let arg_ops: Vec<Operand> =
+                                    args.iter().map(|a| self.lower_expr(a)).collect();
                                 let expr_ty = self.get_expr_ty(expr);
                                 let ty = match expr_ty {
                                     TyKind::Adt(_, _) => expr_ty,
@@ -492,7 +640,8 @@ impl<'a> MirBuilder<'a> {
                                 })];
                                 operands.extend(arg_ops);
                                 // Pad with zeros up to max_fields.
-                                let variant_fields = variants.get(variant_idx).map(|(_, f)| f.len()).unwrap_or(0);
+                                let variant_fields =
+                                    variants.get(variant_idx).map(|(_, f)| f.len()).unwrap_or(0);
                                 for _ in variant_fields..max_fields {
                                     operands.push(Operand::Constant(Constant {
                                         ty: TyKind::Int(IntTy::I64),
@@ -501,7 +650,10 @@ impl<'a> MirBuilder<'a> {
                                 }
                                 self.emit_assign(
                                     Place::local(tmp),
-                                    Rvalue::Aggregate(AggregateKind::Adt(enum_def_id, variant_idx), operands),
+                                    Rvalue::Aggregate(
+                                        AggregateKind::Adt(enum_def_id, variant_idx),
+                                        operands,
+                                    ),
                                     expr.span,
                                 );
                                 return Operand::Copy(Place::local(tmp));
@@ -512,14 +664,22 @@ impl<'a> MirBuilder<'a> {
 
                 // Check if this is a tuple struct constructor call: PhysAddr(val)
                 if let HirExprKind::Path(path) = &callee.kind {
-                    let struct_name = path.segments.last().map(|s| s.ident).unwrap_or(path.segments[0].ident);
-                    if let Some(&struct_def_id) = self.typeck.type_def_to_name.iter()
+                    let struct_name = path
+                        .segments
+                        .last()
+                        .map(|s| s.ident)
+                        .unwrap_or(path.segments[0].ident);
+                    if let Some(&struct_def_id) = self
+                        .typeck
+                        .type_def_to_name
+                        .iter()
                         .find(|(_, name)| **name == struct_name)
                         .map(|(did, _)| did)
                     {
                         if let Some(fields) = self.typeck.struct_defs.get(&struct_def_id) {
                             // It's a struct — treat as tuple struct constructor
-                            let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                            let arg_ops: Vec<Operand> =
+                                args.iter().map(|a| self.lower_expr(a)).collect();
                             let ty = TyKind::Adt(struct_def_id, vec![]);
                             let tmp = self.alloc_temp(ty, expr.span);
                             let _ = fields;
@@ -537,7 +697,10 @@ impl<'a> MirBuilder<'a> {
                 let expected_param_tys = match &func_op {
                     Operand::Constant(c) => {
                         if let TyKind::FnDef(fn_def_id, _) = &c.ty {
-                            self.typeck.fn_sigs.get(fn_def_id).map(|(params, _)| params.clone())
+                            self.typeck
+                                .fn_sigs
+                                .get(fn_def_id)
+                                .map(|(params, _)| params.clone())
                         } else {
                             None
                         }
@@ -547,76 +710,80 @@ impl<'a> MirBuilder<'a> {
 
                 let mut arg_ops: Vec<Operand> = Vec::new();
                 for (i, arg) in args.iter().enumerate() {
-                    let expected_param = expected_param_tys.as_ref().and_then(|params| params.get(i));
+                    let expected_param =
+                        expected_param_tys.as_ref().and_then(|params| params.get(i));
                     let arg_ty = self.get_expr_ty(arg);
                     let arg_op = match expected_param {
-                        Some(TyKind::Ref(expected_inner, expected_mut)) => {
-                            match &arg_ty {
-                                TyKind::Ref(actual_inner, actual_mut) => {
-                                    let place = self.lower_place(arg);
-                                    if *expected_mut == Mutability::Immutable
-                                        && *actual_mut == Mutability::Mut
-                                    {
-                                        let local = match &place {
-                                            Place { local, projections } if projections.is_empty() => *local,
-                                            _ => {
-                                                let tmp = self.alloc_temp(arg_ty.clone(), arg.span);
-                                                self.emit_assign(
-                                                    Place::local(tmp),
-                                                    Rvalue::Use(Operand::Copy(place)),
-                                                    arg.span,
-                                                );
-                                                tmp
-                                            }
-                                        };
-                                        let deref_place = Place {
-                                            local,
-                                            projections: vec![Projection::Deref],
-                                        };
-                                        let ref_ty = TyKind::Ref(expected_inner.clone(), Mutability::Immutable);
-                                        let tmp = self.alloc_temp(ref_ty, arg.span);
-                                        self.emit_assign(
-                                            Place::local(tmp),
-                                            Rvalue::Ref(BorrowKind::Shared, deref_place),
-                                            arg.span,
-                                        );
-                                        Operand::Copy(Place::local(tmp))
-                                    } else {
-                                        let local = match &place {
-                                            Place { local, projections } if projections.is_empty() => *local,
-                                            _ => {
-                                                let tmp = self.alloc_temp(arg_ty.clone(), arg.span);
-                                                self.emit_assign(
-                                                    Place::local(tmp),
-                                                    Rvalue::Use(Operand::Copy(place)),
-                                                    arg.span,
-                                                );
-                                                tmp
-                                            }
-                                        };
-                                        Operand::Copy(Place::local(local))
-                                    }
-                                }
-                                _ => {
-                                    let place = self.lower_place(arg);
-                                    let borrow_kind = if *expected_mut == Mutability::Mut {
-                                        BorrowKind::Mutable
-                                    } else {
-                                        BorrowKind::Shared
+                        Some(TyKind::Ref(expected_inner, expected_mut)) => match &arg_ty {
+                            TyKind::Ref(actual_inner, actual_mut) => {
+                                let place = self.lower_place(arg);
+                                if *expected_mut == Mutability::Immutable
+                                    && *actual_mut == Mutability::Mut
+                                {
+                                    let local = match &place {
+                                        Place { local, projections } if projections.is_empty() => {
+                                            *local
+                                        }
+                                        _ => {
+                                            let tmp = self.alloc_temp(arg_ty.clone(), arg.span);
+                                            self.emit_assign(
+                                                Place::local(tmp),
+                                                Rvalue::Use(Operand::Copy(place)),
+                                                arg.span,
+                                            );
+                                            tmp
+                                        }
                                     };
-                                    let tmp = self.alloc_temp(
-                                        TyKind::Ref(expected_inner.clone(), *expected_mut),
-                                        arg.span,
-                                    );
+                                    let deref_place = Place {
+                                        local,
+                                        projections: vec![Projection::Deref],
+                                    };
+                                    let ref_ty =
+                                        TyKind::Ref(expected_inner.clone(), Mutability::Immutable);
+                                    let tmp = self.alloc_temp(ref_ty, arg.span);
                                     self.emit_assign(
                                         Place::local(tmp),
-                                        Rvalue::Ref(borrow_kind, place),
+                                        Rvalue::Ref(BorrowKind::Shared, deref_place),
                                         arg.span,
                                     );
                                     Operand::Copy(Place::local(tmp))
+                                } else {
+                                    let local = match &place {
+                                        Place { local, projections } if projections.is_empty() => {
+                                            *local
+                                        }
+                                        _ => {
+                                            let tmp = self.alloc_temp(arg_ty.clone(), arg.span);
+                                            self.emit_assign(
+                                                Place::local(tmp),
+                                                Rvalue::Use(Operand::Copy(place)),
+                                                arg.span,
+                                            );
+                                            tmp
+                                        }
+                                    };
+                                    Operand::Copy(Place::local(local))
                                 }
                             }
-                        }
+                            _ => {
+                                let place = self.lower_place(arg);
+                                let borrow_kind = if *expected_mut == Mutability::Mut {
+                                    BorrowKind::Mutable
+                                } else {
+                                    BorrowKind::Shared
+                                };
+                                let tmp = self.alloc_temp(
+                                    TyKind::Ref(expected_inner.clone(), *expected_mut),
+                                    arg.span,
+                                );
+                                self.emit_assign(
+                                    Place::local(tmp),
+                                    Rvalue::Ref(borrow_kind, place),
+                                    arg.span,
+                                );
+                                Operand::Copy(Place::local(tmp))
+                            }
+                        },
                         _ => self.lower_expr(arg),
                     };
                     arg_ops.push(arg_op);
@@ -627,7 +794,9 @@ impl<'a> MirBuilder<'a> {
                     if let TyKind::FnDef(fn_def_id, _) = &c.ty {
                         if let Some((param_tys, _)) = self.typeck.fn_sigs.get(fn_def_id).cloned() {
                             for (i, pty) in param_tys.iter().enumerate() {
-                                if i >= arg_ops.len() { break; }
+                                if i >= arg_ops.len() {
+                                    break;
+                                }
                                 if let TyKind::Ref(inner, _) = pty {
                                     if let TyKind::DynTrait(trait_def_id) = inner.as_ref() {
                                         let arg_op = arg_ops[i].clone();
@@ -635,24 +804,44 @@ impl<'a> MirBuilder<'a> {
                                         let concrete_ty_name = match &arg_expr_ty {
                                             TyKind::Ref(inner, _) => {
                                                 if let TyKind::Adt(_, _) = inner.as_ref() {
-                                                    self.resolve.impl_methods.keys()
+                                                    self.resolve
+                                                        .impl_methods
+                                                        .keys()
                                                         .find(|ty_name| {
-                                                            self.typeck.trait_impls.contains_key(&(**ty_name, *trait_def_id))
+                                                            self.typeck.trait_impls.contains_key(&(
+                                                                **ty_name,
+                                                                *trait_def_id,
+                                                            ))
                                                         })
                                                         .copied()
-                                                } else { None }
+                                                } else {
+                                                    None
+                                                }
                                             }
                                             _ => None,
                                         };
                                         if let Some(type_name) = concrete_ty_name {
                                             // Build vtable: get impl method names in trait method order
-                                            let trait_methods = self.typeck.trait_methods.get(trait_def_id).cloned().unwrap_or_default();
-                                            let impl_methods = self.typeck.trait_impls.get(&(type_name, *trait_def_id)).cloned().unwrap_or_default();
+                                            let trait_methods = self
+                                                .typeck
+                                                .trait_methods
+                                                .get(trait_def_id)
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            let impl_methods = self
+                                                .typeck
+                                                .trait_impls
+                                                .get(&(type_name, *trait_def_id))
+                                                .cloned()
+                                                .unwrap_or_default();
 
                                             let mut vtable_fn_names = Vec::new();
                                             for (method_name, _) in &trait_methods {
                                                 // Find matching impl method
-                                                if let Some((_, impl_def_id)) = impl_methods.iter().find(|(n, _)| n == method_name) {
+                                                if let Some((_, impl_def_id)) = impl_methods
+                                                    .iter()
+                                                    .find(|(n, _)| n == method_name)
+                                                {
                                                     // Get the function symbol name from fn_sigs
                                                     let _ = impl_def_id;
                                                     vtable_fn_names.push(*method_name);
@@ -660,8 +849,15 @@ impl<'a> MirBuilder<'a> {
                                             }
 
                                             // Create vtable on stack
-                                            let vtable_ty = TyKind::Array(Box::new(TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable)), vtable_fn_names.len());
-                                            let vtable_local = self.alloc_temp(vtable_ty, expr.span);
+                                            let vtable_ty = TyKind::Array(
+                                                Box::new(TyKind::RawPtr(
+                                                    Box::new(TyKind::Unit),
+                                                    Mutability::Immutable,
+                                                )),
+                                                vtable_fn_names.len(),
+                                            );
+                                            let vtable_local =
+                                                self.alloc_temp(vtable_ty, expr.span);
                                             self.emit_assign(
                                                 Place::local(vtable_local),
                                                 Rvalue::MakeVtable(vtable_fn_names),
@@ -669,23 +865,39 @@ impl<'a> MirBuilder<'a> {
                                             );
 
                                             // Get pointer to vtable
-                                            let vtable_ptr_ty = TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable);
-                                            let vtable_ptr_local = self.alloc_temp(vtable_ptr_ty, expr.span);
+                                            let vtable_ptr_ty = TyKind::RawPtr(
+                                                Box::new(TyKind::Unit),
+                                                Mutability::Immutable,
+                                            );
+                                            let vtable_ptr_local =
+                                                self.alloc_temp(vtable_ptr_ty, expr.span);
                                             self.emit_assign(
                                                 Place::local(vtable_ptr_local),
-                                                Rvalue::Ref(BorrowKind::Shared, Place::local(vtable_local)),
+                                                Rvalue::Ref(
+                                                    BorrowKind::Shared,
+                                                    Place::local(vtable_local),
+                                                ),
                                                 expr.span,
                                             );
 
                                             // Build fat pointer: (data_ptr, vtable_ptr)
-                                            let fat_ptr_ty = TyKind::Ref(Box::new(TyKind::DynTrait(*trait_def_id)), Mutability::Immutable);
-                                            let fat_ptr_local = self.alloc_temp(fat_ptr_ty, expr.span);
+                                            let fat_ptr_ty = TyKind::Ref(
+                                                Box::new(TyKind::DynTrait(*trait_def_id)),
+                                                Mutability::Immutable,
+                                            );
+                                            let fat_ptr_local =
+                                                self.alloc_temp(fat_ptr_ty, expr.span);
                                             self.emit_assign(
                                                 Place::local(fat_ptr_local),
-                                                Rvalue::Aggregate(AggregateKind::Tuple, vec![
-                                                    arg_op,
-                                                    Operand::Copy(Place::local(vtable_ptr_local)),
-                                                ]),
+                                                Rvalue::Aggregate(
+                                                    AggregateKind::Tuple,
+                                                    vec![
+                                                        arg_op,
+                                                        Operand::Copy(Place::local(
+                                                            vtable_ptr_local,
+                                                        )),
+                                                    ],
+                                                ),
                                                 expr.span,
                                             );
                                             arg_ops[i] = Operand::Copy(Place::local(fat_ptr_local));
@@ -747,17 +959,21 @@ impl<'a> MirBuilder<'a> {
             }
 
             HirExprKind::Block(block) => {
-                self.lower_block(block).unwrap_or(Operand::Constant(Constant {
-                    ty: TyKind::Unit,
-                    value: ConstValue::Unit,
-                }))
+                self.lower_block(block)
+                    .unwrap_or(Operand::Constant(Constant {
+                        ty: TyKind::Unit,
+                        value: ConstValue::Unit,
+                    }))
             }
 
             HirExprKind::Assign(lhs, rhs) => {
                 let rhs_op = self.lower_expr(rhs);
                 let place = self.lower_place(lhs);
                 self.emit_assign(place, Rvalue::Use(rhs_op), expr.span);
-                Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                Operand::Constant(Constant {
+                    ty: TyKind::Unit,
+                    value: ConstValue::Unit,
+                })
             }
 
             HirExprKind::AssignOp(op, lhs, rhs) => {
@@ -766,23 +982,40 @@ impl<'a> MirBuilder<'a> {
                 let place = self.lower_place(lhs);
                 let ty = self.get_expr_ty(lhs);
                 let tmp = self.alloc_temp(ty, expr.span);
-                self.emit_assign(Place::local(tmp), Rvalue::BinaryOp(*op, lhs_op, rhs_op), expr.span);
-                self.emit_assign(place, Rvalue::Use(Operand::Copy(Place::local(tmp))), expr.span);
-                Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                self.emit_assign(
+                    Place::local(tmp),
+                    Rvalue::BinaryOp(*op, lhs_op, rhs_op),
+                    expr.span,
+                );
+                self.emit_assign(
+                    place,
+                    Rvalue::Use(Operand::Copy(Place::local(tmp))),
+                    expr.span,
+                );
+                Operand::Constant(Constant {
+                    ty: TyKind::Unit,
+                    value: ConstValue::Unit,
+                })
             }
 
             HirExprKind::Return(val) => {
                 let op = if let Some(v) = val {
                     self.lower_expr(v)
                 } else {
-                    Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                    Operand::Constant(Constant {
+                        ty: TyKind::Unit,
+                        value: ConstValue::Unit,
+                    })
                 };
                 self.emit_assign(Place::local(Local(0)), Rvalue::Use(op), expr.span);
                 self.terminate(Terminator::Return);
                 // Create a new unreachable block for any subsequent code
                 let unreachable_bb = self.push_block();
                 self.current_block = unreachable_bb;
-                Operand::Constant(Constant { ty: TyKind::Never, value: ConstValue::Unit })
+                Operand::Constant(Constant {
+                    ty: TyKind::Never,
+                    value: ConstValue::Unit,
+                })
             }
 
             HirExprKind::Loop(block, _label) => {
@@ -798,7 +1031,10 @@ impl<'a> MirBuilder<'a> {
                 // Back edge
                 self.terminate(Terminator::Goto(loop_header));
                 self.current_block = loop_exit;
-                Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                Operand::Constant(Constant {
+                    ty: TyKind::Unit,
+                    value: ConstValue::Unit,
+                })
             }
 
             HirExprKind::Break(_label, val) => {
@@ -810,7 +1046,10 @@ impl<'a> MirBuilder<'a> {
                 }
                 let unreachable_bb = self.push_block();
                 self.current_block = unreachable_bb;
-                Operand::Constant(Constant { ty: TyKind::Never, value: ConstValue::Unit })
+                Operand::Constant(Constant {
+                    ty: TyKind::Never,
+                    value: ConstValue::Unit,
+                })
             }
 
             HirExprKind::Continue(_label) => {
@@ -819,7 +1058,10 @@ impl<'a> MirBuilder<'a> {
                 }
                 let unreachable_bb = self.push_block();
                 self.current_block = unreachable_bb;
-                Operand::Constant(Constant { ty: TyKind::Never, value: ConstValue::Unit })
+                Operand::Constant(Constant {
+                    ty: TyKind::Never,
+                    value: ConstValue::Unit,
+                })
             }
 
             HirExprKind::Ref(inner, mutability) => {
@@ -830,7 +1072,11 @@ impl<'a> MirBuilder<'a> {
                 };
                 let ty = self.get_expr_ty(expr);
                 let tmp = self.alloc_temp(ty, expr.span);
-                self.emit_assign(Place::local(tmp), Rvalue::Ref(borrow_kind, place), expr.span);
+                self.emit_assign(
+                    Place::local(tmp),
+                    Rvalue::Ref(borrow_kind, place),
+                    expr.span,
+                );
                 Operand::Copy(Place::local(tmp))
             }
 
@@ -842,7 +1088,11 @@ impl<'a> MirBuilder<'a> {
                 };
                 let ty = self.get_expr_ty(expr);
                 let tmp = self.alloc_temp(ty, expr.span);
-                self.emit_assign(Place::local(tmp), Rvalue::Ref(borrow_kind, place), expr.span);
+                self.emit_assign(
+                    Place::local(tmp),
+                    Rvalue::Ref(borrow_kind, place),
+                    expr.span,
+                );
                 Operand::Copy(Place::local(tmp))
             }
 
@@ -853,9 +1103,8 @@ impl<'a> MirBuilder<'a> {
             }
 
             HirExprKind::Struct(path, fields, _base) => {
-                let field_ops: Vec<Operand> = fields.iter()
-                    .map(|f| self.lower_expr(&f.value))
-                    .collect();
+                let field_ops: Vec<Operand> =
+                    fields.iter().map(|f| self.lower_expr(&f.value)).collect();
                 // Find struct DefId from path
                 let def_id = if !path.segments.is_empty() {
                     // Try to resolve via the type checker's path
@@ -881,7 +1130,10 @@ impl<'a> MirBuilder<'a> {
             HirExprKind::Tuple(elems) => {
                 let ops: Vec<Operand> = elems.iter().map(|e| self.lower_expr(e)).collect();
                 if ops.is_empty() {
-                    return Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit });
+                    return Operand::Constant(Constant {
+                        ty: TyKind::Unit,
+                        value: ConstValue::Unit,
+                    });
                 }
                 let ty = self.get_expr_ty(expr);
                 let tmp = self.alloc_temp(ty, expr.span);
@@ -968,10 +1220,11 @@ impl<'a> MirBuilder<'a> {
 
             HirExprKind::Paren(inner) => self.lower_expr(inner),
             HirExprKind::Unsafe(block) => {
-                self.lower_block(block).unwrap_or(Operand::Constant(Constant {
-                    ty: TyKind::Unit,
-                    value: ConstValue::Unit,
-                }))
+                self.lower_block(block)
+                    .unwrap_or(Operand::Constant(Constant {
+                        ty: TyKind::Unit,
+                        value: ConstValue::Unit,
+                    }))
             }
 
             HirExprKind::MethodCall(recv, method_name, _, args) => {
@@ -1034,7 +1287,11 @@ impl<'a> MirBuilder<'a> {
                             count_scaled
                         } else {
                             let count_local = self.alloc_temp(usize_ty.clone(), expr.span);
-                            self.emit_assign(Place::local(count_local), Rvalue::Use(count_op), expr.span);
+                            self.emit_assign(
+                                Place::local(count_local),
+                                Rvalue::Use(count_op),
+                                expr.span,
+                            );
                             count_local
                         };
 
@@ -1081,19 +1338,28 @@ impl<'a> MirBuilder<'a> {
                 // Handle dyn Trait virtual dispatch
                 if let TyKind::DynTrait(trait_def_id) = &inner_ty {
                     if let Some(trait_methods) = self.typeck.trait_methods.get(trait_def_id) {
-                        let method_index = trait_methods.iter()
+                        let method_index = trait_methods
+                            .iter()
                             .position(|(n, _)| *n == *method_name)
                             .unwrap_or(0);
 
                         // Lower receiver (already a &dyn Trait = fat pointer)
                         let recv_op = self.lower_expr(recv);
                         // Store fat pointer to a local so we can project into it
-                        let fat_ptr_ty = TyKind::Ref(Box::new(inner_ty.clone()), Mutability::Immutable);
+                        let fat_ptr_ty =
+                            TyKind::Ref(Box::new(inner_ty.clone()), Mutability::Immutable);
                         let fat_ptr_local = self.alloc_temp(fat_ptr_ty, expr.span);
-                        self.emit_assign(Place::local(fat_ptr_local), Rvalue::Use(recv_op), expr.span);
+                        self.emit_assign(
+                            Place::local(fat_ptr_local),
+                            Rvalue::Use(recv_op),
+                            expr.span,
+                        );
 
                         // Extract data_ptr (field 0) and vtable_ptr (field 1)
-                        let data_ptr_local = self.alloc_temp(TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable), expr.span);
+                        let data_ptr_local = self.alloc_temp(
+                            TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable),
+                            expr.span,
+                        );
                         self.emit_assign(
                             Place::local(data_ptr_local),
                             Rvalue::Use(Operand::Copy(Place {
@@ -1102,7 +1368,10 @@ impl<'a> MirBuilder<'a> {
                             })),
                             expr.span,
                         );
-                        let vtable_ptr_local = self.alloc_temp(TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable), expr.span);
+                        let vtable_ptr_local = self.alloc_temp(
+                            TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable),
+                            expr.span,
+                        );
                         self.emit_assign(
                             Place::local(vtable_ptr_local),
                             Rvalue::Use(Operand::Copy(Place {
@@ -1114,12 +1383,16 @@ impl<'a> MirBuilder<'a> {
 
                         // Load fn_ptr from vtable[method_index]
                         // vtable_ptr points to an array of fn ptrs; fn_ptr = *(vtable_ptr + method_index * 8)
-                        let fn_ptr_local = self.alloc_temp(TyKind::FnPtr(vec![], Box::new(TyKind::Unit)), expr.span);
+                        let fn_ptr_local = self
+                            .alloc_temp(TyKind::FnPtr(vec![], Box::new(TyKind::Unit)), expr.span);
                         self.emit_assign(
                             Place::local(fn_ptr_local),
                             Rvalue::Use(Operand::Copy(Place {
                                 local: vtable_ptr_local,
-                                projections: vec![Projection::Deref, Projection::Field(method_index)],
+                                projections: vec![
+                                    Projection::Deref,
+                                    Projection::Field(method_index),
+                                ],
                             })),
                             expr.span,
                         );
@@ -1146,10 +1419,13 @@ impl<'a> MirBuilder<'a> {
 
                 let method_def_id = if let TyKind::Adt(def_id, _) = &inner_ty {
                     // Look up type name from DefId, then find method in impl_methods
-                    self.typeck.type_def_to_name.get(def_id)
+                    self.typeck
+                        .type_def_to_name
+                        .get(def_id)
                         .and_then(|type_name| self.resolve.impl_methods.get(type_name))
                         .and_then(|methods| {
-                            methods.iter()
+                            methods
+                                .iter()
                                 .find(|(n, _)| *n == *method_name)
                                 .map(|(_, did)| *did)
                         })
@@ -1162,9 +1438,13 @@ impl<'a> MirBuilder<'a> {
                     let fn_name = *method_name;
 
                     // Check what self parameter the method expects
-                    let method_self_param = self.typeck.fn_sigs.get(&method_did)
+                    let method_self_param = self
+                        .typeck
+                        .fn_sigs
+                        .get(&method_did)
                         .and_then(|(params, _)| params.first().cloned());
-                    let self_is_ref = method_self_param.as_ref()
+                    let self_is_ref = method_self_param
+                        .as_ref()
                         .map(|p| matches!(p, TyKind::Ref(_, _)))
                         .unwrap_or(true);
                     let method_wants_mut = match &method_self_param {
@@ -1181,10 +1461,16 @@ impl<'a> MirBuilder<'a> {
                                 if method_wants_mut || *recv_mut == Mutability::Immutable {
                                     // Same mutability or method wants &mut and we have &mut — just copy the ref
                                     let local = match &place {
-                                        Place { local, projections } if projections.is_empty() => *local,
+                                        Place { local, projections } if projections.is_empty() => {
+                                            *local
+                                        }
                                         _ => {
                                             let tmp = self.alloc_temp(recv_ty.clone(), expr.span);
-                                            self.emit_assign(Place::local(tmp), Rvalue::Use(Operand::Copy(place)), expr.span);
+                                            self.emit_assign(
+                                                Place::local(tmp),
+                                                Rvalue::Use(Operand::Copy(place)),
+                                                expr.span,
+                                            );
                                             tmp
                                         }
                                     };
@@ -1193,10 +1479,19 @@ impl<'a> MirBuilder<'a> {
                                     // Method wants &self but we have &mut self — reborrow as shared
                                     let deref_place = Place {
                                         local: match &place {
-                                            Place { local, projections } if projections.is_empty() => *local,
+                                            Place { local, projections }
+                                                if projections.is_empty() =>
+                                            {
+                                                *local
+                                            }
                                             _ => {
-                                                let tmp = self.alloc_temp(recv_ty.clone(), expr.span);
-                                                self.emit_assign(Place::local(tmp), Rvalue::Use(Operand::Copy(place)), expr.span);
+                                                let tmp =
+                                                    self.alloc_temp(recv_ty.clone(), expr.span);
+                                                self.emit_assign(
+                                                    Place::local(tmp),
+                                                    Rvalue::Use(Operand::Copy(place)),
+                                                    expr.span,
+                                                );
                                                 tmp
                                             }
                                         },
@@ -1204,18 +1499,34 @@ impl<'a> MirBuilder<'a> {
                                     };
                                     let ref_ty = TyKind::Ref(inner.clone(), Mutability::Immutable);
                                     let tmp = self.alloc_temp(ref_ty, expr.span);
-                                    self.emit_assign(Place::local(tmp), Rvalue::Ref(BorrowKind::Shared, deref_place), expr.span);
+                                    self.emit_assign(
+                                        Place::local(tmp),
+                                        Rvalue::Ref(BorrowKind::Shared, deref_place),
+                                        expr.span,
+                                    );
                                     Operand::Copy(Place::local(tmp))
                                 }
                             }
                             _ => {
                                 // Need to take a reference: &recv or &mut recv
                                 let place = self.lower_place(recv);
-                                let mutbl = if method_wants_mut { Mutability::Mut } else { Mutability::Immutable };
-                                let bk = if method_wants_mut { BorrowKind::Mutable } else { BorrowKind::Shared };
+                                let mutbl = if method_wants_mut {
+                                    Mutability::Mut
+                                } else {
+                                    Mutability::Immutable
+                                };
+                                let bk = if method_wants_mut {
+                                    BorrowKind::Mutable
+                                } else {
+                                    BorrowKind::Shared
+                                };
                                 let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), mutbl);
                                 let tmp = self.alloc_temp(ref_ty, expr.span);
-                                self.emit_assign(Place::local(tmp), Rvalue::Ref(bk, place), expr.span);
+                                self.emit_assign(
+                                    Place::local(tmp),
+                                    Rvalue::Ref(bk, place),
+                                    expr.span,
+                                );
                                 Operand::Copy(Place::local(tmp))
                             }
                         }
@@ -1259,9 +1570,14 @@ impl<'a> MirBuilder<'a> {
                         // Use Shared borrow to avoid borrow checker conflicts on atomics
                         let recv_op = {
                             let place = self.lower_place(recv);
-                            let ref_ty = TyKind::Ref(Box::new(recv_ty.clone()), Mutability::Immutable);
+                            let ref_ty =
+                                TyKind::Ref(Box::new(recv_ty.clone()), Mutability::Immutable);
                             let tmp = self.alloc_temp(ref_ty, expr.span);
-                            self.emit_assign(Place::local(tmp), Rvalue::Ref(BorrowKind::Shared, place), expr.span);
+                            self.emit_assign(
+                                Place::local(tmp),
+                                Rvalue::Ref(BorrowKind::Shared, place),
+                                expr.span,
+                            );
                             Operand::Copy(Place::local(tmp))
                         };
 
@@ -1287,11 +1603,17 @@ impl<'a> MirBuilder<'a> {
                         Operand::Copy(Place::local(dest))
                     } else {
                         // Fallback
-                        Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                        Operand::Constant(Constant {
+                            ty: TyKind::Unit,
+                            value: ConstValue::Unit,
+                        })
                     }
                 } else {
                     // Fallback
-                    Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                    Operand::Constant(Constant {
+                        ty: TyKind::Unit,
+                        value: ConstValue::Unit,
+                    })
                 }
             }
 
@@ -1306,7 +1628,11 @@ impl<'a> MirBuilder<'a> {
                     let scr_tmp = self.alloc_temp(scr_ty.clone(), expr.span);
                     self.emit_assign(Place::local(scr_tmp), Rvalue::Use(scr_op), expr.span);
                     let disc_tmp = self.alloc_temp(TyKind::Int(IntTy::I64), expr.span);
-                    self.emit_assign(Place::local(disc_tmp), Rvalue::Discriminant(Place::local(scr_tmp)), expr.span);
+                    self.emit_assign(
+                        Place::local(disc_tmp),
+                        Rvalue::Discriminant(Place::local(scr_tmp)),
+                        expr.span,
+                    );
                     (Operand::Copy(Place::local(disc_tmp)), Some(scr_tmp))
                 } else {
                     (scr_op, None)
@@ -1339,16 +1665,35 @@ impl<'a> MirBuilder<'a> {
                             let hi_op = self.lower_expr(hi_expr);
                             // ge_tmp = disc >= lo
                             let ge_tmp = self.alloc_temp(TyKind::Bool, *span);
-                            self.emit_assign(Place::local(ge_tmp), Rvalue::BinaryOp(BinOp::Ge, disc_op.clone(), lo_op), *span);
+                            self.emit_assign(
+                                Place::local(ge_tmp),
+                                Rvalue::BinaryOp(BinOp::Ge, disc_op.clone(), lo_op),
+                                *span,
+                            );
                             // le_tmp = disc <= hi
                             let le_tmp = self.alloc_temp(TyKind::Bool, *span);
-                            self.emit_assign(Place::local(le_tmp), Rvalue::BinaryOp(BinOp::Le, disc_op.clone(), hi_op), *span);
+                            self.emit_assign(
+                                Place::local(le_tmp),
+                                Rvalue::BinaryOp(BinOp::Le, disc_op.clone(), hi_op),
+                                *span,
+                            );
                             // in_range = ge && le
                             let in_range = self.alloc_temp(TyKind::Bool, *span);
-                            self.emit_assign(Place::local(in_range), Rvalue::BinaryOp(BinOp::And, Operand::Copy(Place::local(ge_tmp)), Operand::Copy(Place::local(le_tmp))), *span);
+                            self.emit_assign(
+                                Place::local(in_range),
+                                Rvalue::BinaryOp(
+                                    BinOp::And,
+                                    Operand::Copy(Place::local(ge_tmp)),
+                                    Operand::Copy(Place::local(le_tmp)),
+                                ),
+                                *span,
+                            );
                             Operand::Copy(Place::local(in_range))
                         } else {
-                            Operand::Constant(Constant { ty: TyKind::Bool, value: ConstValue::Bool(true) })
+                            Operand::Constant(Constant {
+                                ty: TyKind::Bool,
+                                value: ConstValue::Bool(true),
+                            })
                         };
 
                         // SwitchInt on in_range: 1 → arm_bb, default → next
@@ -1380,7 +1725,8 @@ impl<'a> MirBuilder<'a> {
                                 if let HirPattern::Ident(hir_id, name, _, _, _) = inner_pat {
                                     if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
                                         let field_ty = TyKind::Int(IntTy::I64); // placeholder
-                                        let local = self.alloc_local(field_ty, Some(*name), expr.span);
+                                        let local =
+                                            self.alloc_local(field_ty, Some(*name), expr.span);
                                         self.var_map.insert(def_id, local);
                                         // Load from scrutinee's field (slot 1 + field_idx, since slot 0 is disc)
                                         let src_place = Place {
@@ -1408,13 +1754,16 @@ impl<'a> MirBuilder<'a> {
                                 if let HirPattern::Ident(hir_id, name, _, _, _) = &field_pat.pat {
                                     if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
                                         // Find this field's index in the struct
-                                        let field_idx = field_order.iter()
+                                        let field_idx = field_order
+                                            .iter()
                                             .position(|(fname, _)| *fname == field_pat.name)
                                             .unwrap_or(0);
-                                        let field_ty = field_order.get(field_idx)
+                                        let field_ty = field_order
+                                            .get(field_idx)
                                             .map(|(_, ty)| ty.clone())
                                             .unwrap_or(TyKind::Int(IntTy::I64));
-                                        let local = self.alloc_local(field_ty, Some(*name), expr.span);
+                                        let local =
+                                            self.alloc_local(field_ty, Some(*name), expr.span);
                                         self.var_map.insert(def_id, local);
                                         let src_place = Place {
                                             local: scr_local,
@@ -1481,7 +1830,10 @@ impl<'a> MirBuilder<'a> {
                         } else {
                             non_range_target_bb
                         };
-                        if let Terminator::SwitchInt { ref mut default, .. } = self.blocks[check_bb.0].terminator {
+                        if let Terminator::SwitchInt {
+                            ref mut default, ..
+                        } = self.blocks[check_bb.0].terminator
+                        {
                             let placeholder = *default;
                             self.blocks[placeholder.0].terminator = Terminator::Goto(next);
                         }
@@ -1515,8 +1867,12 @@ impl<'a> MirBuilder<'a> {
                         }
                         HirAsmOperand::Out { reg, expr } => {
                             let place = expr.as_ref().map(|e| {
-                                self.try_lower_to_place(e)
-                                    .unwrap_or_else(|| Place::local(self.alloc_temp(TyKind::Uint(crate::typeck::UintTy::U64), e.span)))
+                                self.try_lower_to_place(e).unwrap_or_else(|| {
+                                    Place::local(self.alloc_temp(
+                                        TyKind::Uint(crate::typeck::UintTy::U64),
+                                        e.span,
+                                    ))
+                                })
                             });
                             mir_operands.push(MirAsmOperand {
                                 kind: MirAsmOperandKind::Out(place),
@@ -1526,7 +1882,11 @@ impl<'a> MirBuilder<'a> {
                                 },
                             });
                         }
-                        HirAsmOperand::InOut { reg, expr, out_expr } => {
+                        HirAsmOperand::InOut {
+                            reg,
+                            expr,
+                            out_expr,
+                        } => {
                             let operand = self.lower_expr(expr);
                             let place = out_expr
                                 .as_ref()
@@ -1550,7 +1910,10 @@ impl<'a> MirBuilder<'a> {
                     },
                     span: expr.span,
                 });
-                Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                Operand::Constant(Constant {
+                    ty: TyKind::Unit,
+                    value: ConstValue::Unit,
+                })
             }
 
             // Catch-all for unhandled cases
@@ -1565,7 +1928,10 @@ impl<'a> MirBuilder<'a> {
 
                 // Get the function signature from typeck
                 let (param_tys, ret_type) = if let Some(def_id) = closure_def_id {
-                    self.typeck.fn_sigs.get(&def_id).cloned()
+                    self.typeck
+                        .fn_sigs
+                        .get(&def_id)
+                        .cloned()
                         .unwrap_or_else(|| (vec![], TyKind::Unit))
                 } else {
                     (vec![], TyKind::Unit)
@@ -1596,7 +1962,9 @@ impl<'a> MirBuilder<'a> {
 
                 // _0 = return place
                 let ret_ty_resolved = if let Some(def_id) = closure_def_id {
-                    self.typeck.fn_sigs.get(&def_id)
+                    self.typeck
+                        .fn_sigs
+                        .get(&def_id)
                         .map(|(_, ret)| ret.clone())
                         .unwrap_or(TyKind::Unit)
                 } else {
@@ -1607,8 +1975,7 @@ impl<'a> MirBuilder<'a> {
                 // Params
                 let arg_count = params.len();
                 for (i, param) in params.iter().enumerate() {
-                    let ty = param_tys.get(i).cloned()
-                        .unwrap_or(TyKind::Int(IntTy::I32));
+                    let ty = param_tys.get(i).cloned().unwrap_or(TyKind::Int(IntTy::I32));
                     let name = match &param.pat {
                         HirPattern::Ident(_, sym, _, _, _) => Some(*sym),
                         _ => None,
@@ -1748,7 +2115,11 @@ impl<'a> MirBuilder<'a> {
                             ),
                             expr.span,
                         );
-                        self.emit_assign(Place::local(counter), Rvalue::Use(Operand::Copy(Place::local(inc_tmp))), expr.span);
+                        self.emit_assign(
+                            Place::local(counter),
+                            Rvalue::Use(Operand::Copy(Place::local(inc_tmp))),
+                            expr.span,
+                        );
 
                         // Back edge
                         self.terminate(Terminator::Goto(loop_header));
@@ -1785,7 +2156,8 @@ impl<'a> MirBuilder<'a> {
                         self.current_block = loop_header;
 
                         // Call next() — result is an Option-like enum (discriminant + value)
-                        let next_result_ty = TyKind::Tuple(vec![TyKind::Int(IntTy::I64), elem_ty.clone()]);
+                        let next_result_ty =
+                            TyKind::Tuple(vec![TyKind::Int(IntTy::I64), elem_ty.clone()]);
                         let next_result = self.alloc_temp(next_result_ty.clone(), expr.span);
 
                         // Emit method call: __iter.next()
@@ -1845,13 +2217,20 @@ impl<'a> MirBuilder<'a> {
                         self.current_block = loop_exit;
                     }
                 }
-                Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
+                Operand::Constant(Constant {
+                    ty: TyKind::Unit,
+                    value: ConstValue::Unit,
+                })
             }
 
             HirExprKind::ArrayRepeat(val, _count) => {
                 let ty = self.get_expr_ty(expr);
                 let n = if let TyKind::Array(_, n) = &ty {
-                    if *n > (1usize << 30) { 0 } else { *n }
+                    if *n > (1usize << 30) {
+                        0
+                    } else {
+                        *n
+                    }
                 } else {
                     0
                 };
@@ -1866,9 +2245,10 @@ impl<'a> MirBuilder<'a> {
                 Operand::Copy(Place::local(tmp))
             }
 
-            HirExprKind::Range(_, _, _) => {
-                Operand::Constant(Constant { ty: TyKind::Unit, value: ConstValue::Unit })
-            }
+            HirExprKind::Range(_, _, _) => Operand::Constant(Constant {
+                ty: TyKind::Unit,
+                value: ConstValue::Unit,
+            }),
 
             HirExprKind::Try(inner) => {
                 // Desugar `expr?` to:
@@ -1937,14 +2317,12 @@ impl<'a> MirBuilder<'a> {
     /// Returns None if the expression is not directly addressable.
     fn try_lower_to_place(&self, expr: &HirExpr) -> Option<Place> {
         match &expr.kind {
-            HirExprKind::Path(path) => {
-                self.resolve_path_to_local(path, expr.id)
-                    .map(|local| Place::local(local))
-            }
-            HirExprKind::QualifiedPath(qpath) => {
-                self.resolve_path_to_local(&qpath.path, expr.id)
-                    .map(|local| Place::local(local))
-            }
+            HirExprKind::Path(path) => self
+                .resolve_path_to_local(path, expr.id)
+                .map(|local| Place::local(local)),
+            HirExprKind::QualifiedPath(qpath) => self
+                .resolve_path_to_local(&qpath.path, expr.id)
+                .map(|local| Place::local(local)),
             HirExprKind::Field(base, field_name) => {
                 let mut place = self.try_lower_to_place(base)?;
                 let base_ty = self.get_expr_ty(base);
@@ -1969,11 +2347,17 @@ impl<'a> MirBuilder<'a> {
                     if let Some((name, ty, _, _)) = self.typeck.static_defs.get(&def_id) {
                         // For assignment to a static, we create a temp that holds the
                         // static address via Projection::Static
-                        let tmp = self.alloc_temp(TyKind::RawPtr(Box::new(ty.clone()), crate::ast::Mutability::Mut), expr.span);
+                        let tmp = self.alloc_temp(
+                            TyKind::RawPtr(Box::new(ty.clone()), crate::ast::Mutability::Mut),
+                            expr.span,
+                        );
                         self.emit_assign(
                             Place::local(tmp),
                             Rvalue::Use(Operand::Constant(Constant {
-                                ty: TyKind::RawPtr(Box::new(ty.clone()), crate::ast::Mutability::Mut),
+                                ty: TyKind::RawPtr(
+                                    Box::new(ty.clone()),
+                                    crate::ast::Mutability::Mut,
+                                ),
                                 value: ConstValue::StaticRef(*name),
                             })),
                             expr.span,
@@ -2057,7 +2441,10 @@ impl<'a> MirBuilder<'a> {
                     crate::typeck::ConstVal::Bool(v) => ConstValue::Bool(*v),
                     crate::typeck::ConstVal::Char(v) => ConstValue::Char(*v),
                 };
-                return Operand::Constant(Constant { ty: ty.clone(), value: val });
+                return Operand::Constant(Constant {
+                    ty: ty.clone(),
+                    value: val,
+                });
             }
             // Check if it resolves to a primitive associated constant (e.g. u32::MAX)
             if let Some(path_str) = self.resolve.intrinsic_fns.get(&def_id).cloned() {
@@ -2119,8 +2506,8 @@ impl<'a> MirBuilder<'a> {
                                 "Ordering::Relaxed" => 0i128,
                                 "Ordering::Release" => 1,
                                 "Ordering::Acquire" => 2,
-                                "Ordering::AcqRel"  => 3,
-                                "Ordering::SeqCst"  => 4,
+                                "Ordering::AcqRel" => 3,
+                                "Ordering::SeqCst" => 4,
                                 _ => 0,
                             };
                             return Operand::Constant(Constant {
@@ -2155,10 +2542,12 @@ impl<'a> MirBuilder<'a> {
                     // Enum variant: look up discriminant
                     let enum_name = path.segments[0].ident;
                     let variant_name = path.segments[1].ident;
-                    if let Some(&idx) = self.resolve.variant_indices.get(&(enum_name, variant_name)) {
+                    if let Some(&idx) = self.resolve.variant_indices.get(&(enum_name, variant_name))
+                    {
                         // Check if this is a data enum (has variants with fields)
                         if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
-                            let max_fields = variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+                            let max_fields =
+                                variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
                             if max_fields > 0 {
                                 // Data enum unit variant: emit Aggregate with disc + zero padding
                                 let tmp = self.alloc_temp(ty.clone(), expr.span);
@@ -2174,7 +2563,10 @@ impl<'a> MirBuilder<'a> {
                                 }
                                 self.emit_assign(
                                     Place::local(tmp),
-                                    Rvalue::Aggregate(AggregateKind::Adt(enum_def_id, idx), operands),
+                                    Rvalue::Aggregate(
+                                        AggregateKind::Adt(enum_def_id, idx),
+                                        operands,
+                                    ),
                                     expr.span,
                                 );
                                 return Operand::Copy(Place::local(tmp));
@@ -2186,10 +2578,16 @@ impl<'a> MirBuilder<'a> {
                             value: ConstValue::Int(idx as i128),
                         })
                     } else {
-                        Operand::Constant(Constant { ty, value: ConstValue::Unit })
+                        Operand::Constant(Constant {
+                            ty,
+                            value: ConstValue::Unit,
+                        })
                     }
                 }
-                _ => Operand::Constant(Constant { ty, value: ConstValue::Unit }),
+                _ => Operand::Constant(Constant {
+                    ty,
+                    value: ConstValue::Unit,
+                }),
             }
         }
     }
@@ -2242,7 +2640,10 @@ impl<'a> MirBuilder<'a> {
             | TyKind::FnPtr(_, _)
             | TyKind::DynTrait(_) => 8,
             TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _)
-                if matches!(inner.as_ref(), TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_)) =>
+                if matches!(
+                    inner.as_ref(),
+                    TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_)
+                ) =>
             {
                 16
             }
@@ -2253,7 +2654,8 @@ impl<'a> MirBuilder<'a> {
             TyKind::Slice(_) | TyKind::Str => 16,
             TyKind::Projection(_, _, _) => 8,
             TyKind::Tuple(tys) => tys.iter().map(|ty| self.estimate_ty_size(ty)).sum(),
-            TyKind::Adt(def_id, _) => self.typeck
+            TyKind::Adt(def_id, _) => self
+                .typeck
                 .struct_defs
                 .get(def_id)
                 .map(|fields| fields.iter().map(|(_, ty)| self.estimate_ty_size(ty)).sum())
@@ -2282,23 +2684,25 @@ impl<'a> MirBuilder<'a> {
             HirPattern::Path(path) if path.segments.len() == 2 => {
                 let enum_name = path.segments[0].ident;
                 let variant_name = path.segments[1].ident;
-                self.resolve.variant_indices.get(&(enum_name, variant_name))
+                self.resolve
+                    .variant_indices
+                    .get(&(enum_name, variant_name))
                     .map(|&idx| idx as u128)
             }
             HirPattern::TupleStruct(path, _, _) if path.segments.len() == 2 => {
                 let enum_name = path.segments[0].ident;
                 let variant_name = path.segments[1].ident;
-                self.resolve.variant_indices.get(&(enum_name, variant_name))
+                self.resolve
+                    .variant_indices
+                    .get(&(enum_name, variant_name))
                     .map(|&idx| idx as u128)
             }
-            HirPattern::Literal(lit, _) => {
-                match lit {
-                    Literal::Int(v) => Some(*v as u128),
-                    Literal::Bool(b) => Some(*b as u128),
-                    Literal::Char(c) => Some(*c as u128),
-                    _ => None,
-                }
-            }
+            HirPattern::Literal(lit, _) => match lit {
+                Literal::Int(v) => Some(*v as u128),
+                Literal::Bool(b) => Some(*b as u128),
+                Literal::Char(c) => Some(*c as u128),
+                _ => None,
+            },
             HirPattern::Struct(_, _, _, _) => None, // Struct patterns always match (like wildcard)
             HirPattern::Ident(_, _, _, _, _) => None, // Ident patterns are catch-all bindings
             HirPattern::Wildcard(_) => None,
@@ -2316,75 +2720,233 @@ impl<'a> MirBuilder<'a> {
     fn primitive_assoc_const_value(path: &str) -> Option<(ConstValue, TyKind)> {
         use crate::typeck::{FloatTy, IntTy, UintTy};
         match path {
-            "u8::MAX"  => Some((ConstValue::Uint(u8::MAX as u128), TyKind::Uint(UintTy::U8))),
-            "u16::MAX" => Some((ConstValue::Uint(u16::MAX as u128), TyKind::Uint(UintTy::U16))),
-            "u32::MAX" => Some((ConstValue::Uint(u32::MAX as u128), TyKind::Uint(UintTy::U32))),
-            "u64::MAX" => Some((ConstValue::Uint(u64::MAX as u128), TyKind::Uint(UintTy::U64))),
+            "u8::MAX" => Some((ConstValue::Uint(u8::MAX as u128), TyKind::Uint(UintTy::U8))),
+            "u16::MAX" => Some((
+                ConstValue::Uint(u16::MAX as u128),
+                TyKind::Uint(UintTy::U16),
+            )),
+            "u32::MAX" => Some((
+                ConstValue::Uint(u32::MAX as u128),
+                TyKind::Uint(UintTy::U32),
+            )),
+            "u64::MAX" => Some((
+                ConstValue::Uint(u64::MAX as u128),
+                TyKind::Uint(UintTy::U64),
+            )),
             "u128::MAX" => Some((ConstValue::Uint(u128::MAX), TyKind::Uint(UintTy::U128))),
-            "usize::MAX" => Some((ConstValue::Uint(usize::MAX as u128), TyKind::Uint(UintTy::Usize))),
-            "i8::MAX"  => Some((ConstValue::Int(i8::MAX as i128), TyKind::Int(IntTy::I8))),
+            "usize::MAX" => Some((
+                ConstValue::Uint(usize::MAX as u128),
+                TyKind::Uint(UintTy::Usize),
+            )),
+            "i8::MAX" => Some((ConstValue::Int(i8::MAX as i128), TyKind::Int(IntTy::I8))),
             "i16::MAX" => Some((ConstValue::Int(i16::MAX as i128), TyKind::Int(IntTy::I16))),
             "i32::MAX" => Some((ConstValue::Int(i32::MAX as i128), TyKind::Int(IntTy::I32))),
             "i64::MAX" => Some((ConstValue::Int(i64::MAX as i128), TyKind::Int(IntTy::I64))),
             "i128::MAX" => Some((ConstValue::Int(i128::MAX), TyKind::Int(IntTy::I128))),
-            "isize::MAX" => Some((ConstValue::Int(isize::MAX as i128), TyKind::Int(IntTy::Isize))),
-            "i8::MIN"  => Some((ConstValue::Int(i8::MIN as i128), TyKind::Int(IntTy::I8))),
+            "isize::MAX" => Some((
+                ConstValue::Int(isize::MAX as i128),
+                TyKind::Int(IntTy::Isize),
+            )),
+            "i8::MIN" => Some((ConstValue::Int(i8::MIN as i128), TyKind::Int(IntTy::I8))),
             "i16::MIN" => Some((ConstValue::Int(i16::MIN as i128), TyKind::Int(IntTy::I16))),
             "i32::MIN" => Some((ConstValue::Int(i32::MIN as i128), TyKind::Int(IntTy::I32))),
             "i64::MIN" => Some((ConstValue::Int(i64::MIN as i128), TyKind::Int(IntTy::I64))),
             "i128::MIN" => Some((ConstValue::Int(i128::MIN), TyKind::Int(IntTy::I128))),
-            "isize::MIN" => Some((ConstValue::Int(isize::MIN as i128), TyKind::Int(IntTy::Isize))),
-            "f32::MAX" => Some((ConstValue::Float(f32::MAX as f64), TyKind::Float(FloatTy::F32))),
-            "f32::MIN" => Some((ConstValue::Float(f32::MIN as f64), TyKind::Float(FloatTy::F32))),
-            "f32::MIN_POSITIVE" => Some((ConstValue::Float(f32::MIN_POSITIVE as f64), TyKind::Float(FloatTy::F32))),
-            "f32::INFINITY" => Some((ConstValue::Float(f32::INFINITY as f64), TyKind::Float(FloatTy::F32))),
-            "f32::NEG_INFINITY" => Some((ConstValue::Float(f32::NEG_INFINITY as f64), TyKind::Float(FloatTy::F32))),
-            "f32::NAN" => Some((ConstValue::Float(f32::NAN as f64), TyKind::Float(FloatTy::F32))),
-            "f32::EPSILON" => Some((ConstValue::Float(f32::EPSILON as f64), TyKind::Float(FloatTy::F32))),
+            "isize::MIN" => Some((
+                ConstValue::Int(isize::MIN as i128),
+                TyKind::Int(IntTy::Isize),
+            )),
+            "f32::MAX" => Some((
+                ConstValue::Float(f32::MAX as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "f32::MIN" => Some((
+                ConstValue::Float(f32::MIN as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "f32::MIN_POSITIVE" => Some((
+                ConstValue::Float(f32::MIN_POSITIVE as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "f32::INFINITY" => Some((
+                ConstValue::Float(f32::INFINITY as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "f32::NEG_INFINITY" => Some((
+                ConstValue::Float(f32::NEG_INFINITY as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "f32::NAN" => Some((
+                ConstValue::Float(f32::NAN as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "f32::EPSILON" => Some((
+                ConstValue::Float(f32::EPSILON as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
             "f64::MAX" => Some((ConstValue::Float(f64::MAX), TyKind::Float(FloatTy::F64))),
             "f64::MIN" => Some((ConstValue::Float(f64::MIN), TyKind::Float(FloatTy::F64))),
-            "f64::MIN_POSITIVE" => Some((ConstValue::Float(f64::MIN_POSITIVE), TyKind::Float(FloatTy::F64))),
-            "f64::INFINITY" => Some((ConstValue::Float(f64::INFINITY), TyKind::Float(FloatTy::F64))),
-            "f64::NEG_INFINITY" => Some((ConstValue::Float(f64::NEG_INFINITY), TyKind::Float(FloatTy::F64))),
+            "f64::MIN_POSITIVE" => Some((
+                ConstValue::Float(f64::MIN_POSITIVE),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "f64::INFINITY" => Some((
+                ConstValue::Float(f64::INFINITY),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "f64::NEG_INFINITY" => Some((
+                ConstValue::Float(f64::NEG_INFINITY),
+                TyKind::Float(FloatTy::F64),
+            )),
             "f64::NAN" => Some((ConstValue::Float(f64::NAN), TyKind::Float(FloatTy::F64))),
             "f64::EPSILON" => Some((ConstValue::Float(f64::EPSILON), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::E" => Some((ConstValue::Float(core::f64::consts::E), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_1_PI" => Some((ConstValue::Float(core::f64::consts::FRAC_1_PI), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_1_SQRT_2" => Some((ConstValue::Float(core::f64::consts::FRAC_1_SQRT_2), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_2_PI" => Some((ConstValue::Float(core::f64::consts::FRAC_2_PI), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_2_SQRT_PI" => Some((ConstValue::Float(core::f64::consts::FRAC_2_SQRT_PI), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_PI_2" => Some((ConstValue::Float(core::f64::consts::FRAC_PI_2), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_PI_3" => Some((ConstValue::Float(core::f64::consts::FRAC_PI_3), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_PI_4" => Some((ConstValue::Float(core::f64::consts::FRAC_PI_4), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_PI_6" => Some((ConstValue::Float(core::f64::consts::FRAC_PI_6), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::FRAC_PI_8" => Some((ConstValue::Float(core::f64::consts::FRAC_PI_8), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::LN_2" => Some((ConstValue::Float(core::f64::consts::LN_2), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::LN_10" => Some((ConstValue::Float(core::f64::consts::LN_10), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::LOG2_10" => Some((ConstValue::Float(core::f64::consts::LOG2_10), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::LOG2_E" => Some((ConstValue::Float(core::f64::consts::LOG2_E), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::LOG10_2" => Some((ConstValue::Float(core::f64::consts::LOG10_2), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::LOG10_E" => Some((ConstValue::Float(core::f64::consts::LOG10_E), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::PI" => Some((ConstValue::Float(core::f64::consts::PI), TyKind::Float(FloatTy::F64))),
-            "core::f64::consts::SQRT_2" => Some((ConstValue::Float(core::f64::consts::SQRT_2), TyKind::Float(FloatTy::F64))),
-            "core::f32::consts::E" => Some((ConstValue::Float(core::f32::consts::E as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_1_PI" => Some((ConstValue::Float(core::f32::consts::FRAC_1_PI as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_1_SQRT_2" => Some((ConstValue::Float(core::f32::consts::FRAC_1_SQRT_2 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_2_PI" => Some((ConstValue::Float(core::f32::consts::FRAC_2_PI as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_2_SQRT_PI" => Some((ConstValue::Float(core::f32::consts::FRAC_2_SQRT_PI as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_PI_2" => Some((ConstValue::Float(core::f32::consts::FRAC_PI_2 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_PI_3" => Some((ConstValue::Float(core::f32::consts::FRAC_PI_3 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_PI_4" => Some((ConstValue::Float(core::f32::consts::FRAC_PI_4 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_PI_6" => Some((ConstValue::Float(core::f32::consts::FRAC_PI_6 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::FRAC_PI_8" => Some((ConstValue::Float(core::f32::consts::FRAC_PI_8 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::LN_2" => Some((ConstValue::Float(core::f32::consts::LN_2 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::LN_10" => Some((ConstValue::Float(core::f32::consts::LN_10 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::LOG2_10" => Some((ConstValue::Float(core::f32::consts::LOG2_10 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::LOG2_E" => Some((ConstValue::Float(core::f32::consts::LOG2_E as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::LOG10_2" => Some((ConstValue::Float(core::f32::consts::LOG10_2 as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::LOG10_E" => Some((ConstValue::Float(core::f32::consts::LOG10_E as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::PI" => Some((ConstValue::Float(core::f32::consts::PI as f64), TyKind::Float(FloatTy::F32))),
-            "core::f32::consts::SQRT_2" => Some((ConstValue::Float(core::f32::consts::SQRT_2 as f64), TyKind::Float(FloatTy::F32))),
-            s if s.ends_with("::MIN") && s.starts_with('u') => Some((ConstValue::Uint(0), TyKind::Uint(UintTy::U8))), // all unsigned MIN = 0
+            "core::f64::consts::E" => Some((
+                ConstValue::Float(core::f64::consts::E),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_1_PI" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_1_PI),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_1_SQRT_2" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_1_SQRT_2),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_2_PI" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_2_PI),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_2_SQRT_PI" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_2_SQRT_PI),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_PI_2" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_PI_2),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_PI_3" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_PI_3),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_PI_4" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_PI_4),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_PI_6" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_PI_6),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::FRAC_PI_8" => Some((
+                ConstValue::Float(core::f64::consts::FRAC_PI_8),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::LN_2" => Some((
+                ConstValue::Float(core::f64::consts::LN_2),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::LN_10" => Some((
+                ConstValue::Float(core::f64::consts::LN_10),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::LOG2_10" => Some((
+                ConstValue::Float(core::f64::consts::LOG2_10),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::LOG2_E" => Some((
+                ConstValue::Float(core::f64::consts::LOG2_E),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::LOG10_2" => Some((
+                ConstValue::Float(core::f64::consts::LOG10_2),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::LOG10_E" => Some((
+                ConstValue::Float(core::f64::consts::LOG10_E),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::PI" => Some((
+                ConstValue::Float(core::f64::consts::PI),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f64::consts::SQRT_2" => Some((
+                ConstValue::Float(core::f64::consts::SQRT_2),
+                TyKind::Float(FloatTy::F64),
+            )),
+            "core::f32::consts::E" => Some((
+                ConstValue::Float(core::f32::consts::E as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_1_PI" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_1_PI as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_1_SQRT_2" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_1_SQRT_2 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_2_PI" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_2_PI as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_2_SQRT_PI" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_2_SQRT_PI as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_PI_2" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_PI_2 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_PI_3" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_PI_3 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_PI_4" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_PI_4 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_PI_6" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_PI_6 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::FRAC_PI_8" => Some((
+                ConstValue::Float(core::f32::consts::FRAC_PI_8 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::LN_2" => Some((
+                ConstValue::Float(core::f32::consts::LN_2 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::LN_10" => Some((
+                ConstValue::Float(core::f32::consts::LN_10 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::LOG2_10" => Some((
+                ConstValue::Float(core::f32::consts::LOG2_10 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::LOG2_E" => Some((
+                ConstValue::Float(core::f32::consts::LOG2_E as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::LOG10_2" => Some((
+                ConstValue::Float(core::f32::consts::LOG10_2 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::LOG10_E" => Some((
+                ConstValue::Float(core::f32::consts::LOG10_E as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::PI" => Some((
+                ConstValue::Float(core::f32::consts::PI as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            "core::f32::consts::SQRT_2" => Some((
+                ConstValue::Float(core::f32::consts::SQRT_2 as f64),
+                TyKind::Float(FloatTy::F32),
+            )),
+            s if s.ends_with("::MIN") && s.starts_with('u') => {
+                Some((ConstValue::Uint(0), TyKind::Uint(UintTy::U8)))
+            } // all unsigned MIN = 0
             _ => None,
         }
     }
@@ -2395,16 +2957,40 @@ impl<'a> MirBuilder<'a> {
         };
         let is_primitive = matches!(
             base,
-            "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-                | "f32" | "f64" | "bool" | "char"
+            "u8" | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "f32"
+                | "f64"
+                | "bool"
+                | "char"
         );
         is_primitive
             && matches!(
                 assoc,
-                "from" | "try_from" | "from_le" | "from_be" | "to_le" | "to_be"
-                    | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix"
-                    | "from_u32" | "is_whitespace" | "min" | "max" | "to_string"
+                "from"
+                    | "try_from"
+                    | "from_le"
+                    | "from_be"
+                    | "to_le"
+                    | "to_be"
+                    | "from_le_bytes"
+                    | "from_be_bytes"
+                    | "from_ne_bytes"
+                    | "from_str_radix"
+                    | "from_u32"
+                    | "is_whitespace"
+                    | "min"
+                    | "max"
+                    | "to_string"
             )
     }
 

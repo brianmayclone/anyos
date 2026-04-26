@@ -10,8 +10,8 @@
 //! we emulate the directives directly here. That keeps self-hosted builds
 //! reliable while still respecting the information the scripts carry.
 
-use crate::prelude::*;
 use crate::fs;
+use crate::prelude::*;
 use anyos_std::println;
 
 /// Parsed output from a build script execution.
@@ -91,10 +91,9 @@ pub fn parse_build_script_output(output: &str) -> BuildScriptOutput {
             result.link_search.push(path.to_string());
         } else if let Some(val) = directive.strip_prefix("rustc-env=") {
             if let Some(eq_pos) = val.find('=') {
-                result.env_vars.push((
-                    val[..eq_pos].to_string(),
-                    val[eq_pos + 1..].to_string(),
-                ));
+                result
+                    .env_vars
+                    .push((val[..eq_pos].to_string(), val[eq_pos + 1..].to_string()));
             }
         } else if let Some(val) = directive.strip_prefix("rerun-if-changed=") {
             result.rerun_if_changed.push(val.to_string());
@@ -120,26 +119,62 @@ fn emulate_build_script_output(
     let mut result = BuildScriptOutput::default();
 
     if source.contains("cargo:rerun-if-env-changed=ANYOS_VERSION") {
-        result.rerun_if_env_changed.push(String::from("ANYOS_VERSION"));
+        result
+            .rerun_if_env_changed
+            .push(String::from("ANYOS_VERSION"));
         if let Some(ver) = env_value("ANYOS_VERSION") {
             result.env_vars.push((String::from("ANYOS_VERSION"), ver));
         }
     }
 
     if source.contains("cargo:rustc-link-arg=-T") {
-        if let Some(link_ld) = find_stdlib_linker_script(manifest_dir) {
+        if let Some(link_ld) = find_linker_script(manifest_dir, crate_name) {
             result.link_args.push(format!("-T{}", link_ld));
             result.rerun_if_changed.push(link_ld);
         } else {
             println!(
-                "ccargo: warning: could not resolve libs/stdlib/link.ld for `{}`",
+                "ccargo: warning: could not resolve linker script for `{}`",
                 crate_name
             );
         }
     }
 
+    if source.contains("ANYOS_ASM_OBJECTS") {
+        result
+            .rerun_if_env_changed
+            .push(String::from("ANYOS_ASM_OBJECTS"));
+        if let Some(objects) = env_value("ANYOS_ASM_OBJECTS") {
+            for object in objects.split(',') {
+                let object = object.trim();
+                if object.is_empty() {
+                    continue;
+                }
+                result.link_args.push(object.to_string());
+                result.rerun_if_changed.push(object.to_string());
+            }
+        }
+    }
+
+    if source.contains("ANYOS_AP_TRAMPOLINE") {
+        result
+            .rerun_if_env_changed
+            .push(String::from("ANYOS_AP_TRAMPOLINE"));
+        if let Some(path) = env_value("ANYOS_AP_TRAMPOLINE") {
+            result
+                .env_vars
+                .push((String::from("ANYOS_AP_TRAMPOLINE"), path.clone()));
+            result.rerun_if_changed.push(path);
+        }
+    }
+
     emulate_known_cfg_build_script(source, crate_name, features, &mut result);
-    emulate_known_generated_build_script(source, crate_name, crate_version, target_dir, &mut result);
+    emulate_known_generated_build_script(
+        source,
+        crate_name,
+        crate_version,
+        target_dir,
+        &mut result,
+    );
 
     if result.cfg_flags.is_empty()
         && result.link_args.is_empty()
@@ -182,10 +217,9 @@ fn emulate_known_generated_build_script(
         };
         fs::write_file(&format!("{}/private.rs", out_dir), generated.as_bytes());
         result.env_vars.push((String::from("OUT_DIR"), out_dir));
-        result.env_vars.push((
-            String::from("CARGO_PKG_VERSION_PATCH"),
-            patch.to_string(),
-        ));
+        result
+            .env_vars
+            .push((String::from("CARGO_PKG_VERSION_PATCH"), patch.to_string()));
         push_cfg_once(&mut result.cfg_flags, "if_docsrs_then_no_serde_core");
     }
 }
@@ -218,7 +252,14 @@ fn version_patch(version: &str) -> &str {
     version.rsplit('.').next().unwrap_or("0")
 }
 
-fn find_stdlib_linker_script(manifest_dir: &str) -> Option<String> {
+fn find_linker_script(manifest_dir: &str, crate_name: &str) -> Option<String> {
+    if crate_name == "anyos_kernel" {
+        let candidate = format!("{}/link.ld", manifest_dir);
+        if fs::file_exists(&candidate) {
+            return Some(candidate);
+        }
+    }
+
     let mut current = String::from(manifest_dir);
     loop {
         let candidate = format!("{}/libs/stdlib/link.ld", current);
@@ -249,10 +290,12 @@ fn parent_dir(path: &str) -> String {
 }
 
 fn env_value(key: &str) -> Option<String> {
-    let mut buf = [0u8; 257];
+    let mut buf = [0u8; 4096];
     let len = anyos_std::env::get(key, &mut buf);
     if len == u32::MAX {
         return None;
     }
-    core::str::from_utf8(&buf[..len as usize]).ok().map(String::from)
+    core::str::from_utf8(&buf[..len as usize])
+        .ok()
+        .map(String::from)
 }

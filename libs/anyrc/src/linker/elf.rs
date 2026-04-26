@@ -62,6 +62,7 @@ pub struct ElfSymbol {
 }
 
 pub struct ElfRelocation {
+    pub section: Option<usize>,
     pub offset: u64,
     pub symbol: usize,
     pub rela_type: u32,
@@ -83,7 +84,13 @@ impl ElfSymbol {
 
 impl ElfRelocation {
     pub fn pc32(offset: u64, symbol: usize, addend: i64) -> Self {
-        ElfRelocation { offset, symbol, rela_type: R_X86_64_PC32, addend }
+        ElfRelocation {
+            section: Some(0),
+            offset,
+            symbol,
+            rela_type: R_X86_64_PC32,
+            addend,
+        }
     }
 }
 
@@ -165,7 +172,14 @@ pub fn write_object(obj: &ObjectFile) -> Vec<u8> {
     // Section symbols (local) - one per user section
     for i in 0..obj.sections.len() {
         let name_off = strtab.add("");
-        sym_entries.push((name_off, (STB_LOCAL << 4) | STT_SECTION, 0, (i + 1) as u16, 0, 0));
+        sym_entries.push((
+            name_off,
+            (STB_LOCAL << 4) | STT_SECTION,
+            0,
+            (i + 1) as u16,
+            0,
+            0,
+        ));
     }
 
     let first_global = sym_entries.len() as u32;
@@ -279,7 +293,7 @@ pub fn write_object(obj: &ObjectFile) -> Vec<u8> {
         symtab_offset as u64,
         symtab_size as u64,
         strtab_idx as u32, // sh_link = .strtab index
-        first_global,       // sh_info = first global symbol index
+        first_global,      // sh_info = first global symbol index
         8,
         24, // sizeof(Elf64_Sym)
     );
@@ -293,12 +307,20 @@ pub fn write_object(obj: &ObjectFile) -> Vec<u8> {
         0,
         strtab_offset as u64,
         strtab_size as u64,
-        0, 0, 1, 0,
+        0,
+        0,
+        1,
+        0,
     );
 
     // .rela.text
     // sh_link = .symtab, sh_info = .text section index (1 if .text is first user section)
-    let text_section_idx = obj.sections.iter().position(|s| s.name == ".text").map(|i| i + 1).unwrap_or(1);
+    let text_section_idx = obj
+        .sections
+        .iter()
+        .position(|s| s.name == ".text")
+        .map(|i| i + 1)
+        .unwrap_or(1);
     write_section_header(
         &mut buf,
         rela_name,
@@ -322,7 +344,10 @@ pub fn write_object(obj: &ObjectFile) -> Vec<u8> {
         0,
         shstrtab_offset as u64,
         shstrtab_size as u64,
-        0, 0, 1, 0,
+        0,
+        0,
+        1,
+        0,
     );
 
     // Now go back and fill in the ELF header
@@ -418,7 +443,7 @@ pub fn write_executable_at(code: &[u8], data: &[u8], entry_offset: u64, base_add
     // e_shoff = 0 (no section headers in exe for simplicity)
     buf[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
     buf[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
-    buf[56..58].copy_from_slice(&1u16.to_le_bytes());  // e_phnum
+    buf[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
 
     // Program header (single PT_LOAD, RWX)
     let ph_start = phdr_offset as usize;
@@ -494,7 +519,17 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
         let sh_info = u32::from_le_bytes(data[off + 44..off + 48].try_into().ok()?);
         let sh_addralign = u64::from_le_bytes(data[off + 48..off + 56].try_into().ok()?);
         let sh_entsize = u64::from_le_bytes(data[off + 56..off + 64].try_into().ok()?);
-        shdrs.push(RawShdr { sh_name, sh_type, sh_flags, sh_offset, sh_size, sh_link, sh_info, sh_addralign, sh_entsize });
+        shdrs.push(RawShdr {
+            sh_name,
+            sh_type,
+            sh_flags,
+            sh_offset,
+            sh_size,
+            sh_link,
+            sh_info,
+            sh_addralign,
+            sh_entsize,
+        });
     }
 
     // Get shstrtab
@@ -504,7 +539,11 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
 
     let read_str = |strtab: &[u8], offset: u32| -> String {
         let start = offset as usize;
-        let end = strtab[start..].iter().position(|&b| b == 0).unwrap_or(strtab.len() - start) + start;
+        let end = strtab[start..]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(strtab.len() - start)
+            + start;
         String::from_utf8_lossy(&strtab[start..end]).to_string()
     };
 
@@ -533,13 +572,15 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
 
     // Find symtab
     let mut symbols = Vec::new();
-    let mut raw_sym_to_our: anyos_std::collections::HashMap<usize, usize> = anyos_std::collections::HashMap::new();
+    let mut raw_sym_to_our: anyos_std::collections::HashMap<usize, usize> =
+        anyos_std::collections::HashMap::new();
     let mut raw_syms: Vec<(String, Option<usize>, u64, u64, u8, u8)> = Vec::new();
 
     for shdr in &shdrs {
         if shdr.sh_type == SHT_SYMTAB {
             let strtab_shdr = &shdrs[shdr.sh_link as usize];
-            let sym_strtab = &data[strtab_shdr.sh_offset as usize..(strtab_shdr.sh_offset + strtab_shdr.sh_size) as usize];
+            let sym_strtab = &data[strtab_shdr.sh_offset as usize
+                ..(strtab_shdr.sh_offset + strtab_shdr.sh_size) as usize];
             let count = shdr.sh_size as usize / 24;
             let base = shdr.sh_offset as usize;
             for j in 0..count {
@@ -551,19 +592,31 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
                 let st_size = u64::from_le_bytes(data[off + 16..off + 24].try_into().ok()?);
                 let binding = st_info >> 4;
                 let sym_type = st_info & 0xf;
-                let name = read_str(sym_strtab, st_name);
                 let section = if st_shndx > 0 && (st_shndx as usize) < shdrs.len() {
                     sec_index_map.get(&(st_shndx as usize)).copied()
                 } else {
                     None
                 };
+                let name = if sym_type == STT_SECTION {
+                    section
+                        .and_then(|idx| sections.get(idx))
+                        .map(|sec| sec.name.clone())
+                        .unwrap_or_default()
+                } else {
+                    read_str(sym_strtab, st_name)
+                };
                 raw_syms.push((name, section, st_value, st_size, binding, sym_type));
             }
 
             // Skip null + section symbols, export only named globals
-            for (j, (name, section, offset, size, binding, sym_type)) in raw_syms.iter().enumerate() {
-                if j == 0 { continue; } // null
-                if *sym_type == STT_SECTION { continue; }
+            for (j, (name, section, offset, size, binding, sym_type)) in raw_syms.iter().enumerate()
+            {
+                if j == 0 {
+                    continue;
+                } // null
+                if *sym_type == STT_SECTION && name.is_empty() {
+                    continue;
+                }
                 raw_sym_to_our.insert(j, symbols.len());
                 symbols.push(ElfSymbol {
                     name: name.clone(),
@@ -582,6 +635,7 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
     let mut relocations = Vec::new();
     for shdr in &shdrs {
         if shdr.sh_type == SHT_RELA {
+            let reloc_section = sec_index_map.get(&(shdr.sh_info as usize)).copied();
             let count = shdr.sh_size as usize / 24;
             let base = shdr.sh_offset as usize;
             for j in 0..count {
@@ -594,6 +648,7 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
                 // Map raw sym index to our index
                 let our_sym = raw_sym_to_our.get(&sym_idx).copied().unwrap_or(0);
                 relocations.push(ElfRelocation {
+                    section: reloc_section,
                     offset: r_offset,
                     symbol: our_sym,
                     rela_type,
@@ -603,30 +658,44 @@ pub fn parse_object(data: &[u8]) -> Option<ObjectFile> {
         }
     }
 
-    Some(ObjectFile { sections, symbols, relocations })
+    Some(ObjectFile {
+        sections,
+        symbols,
+        relocations,
+    })
 }
 
 /// Parse section names from an ELF file (for testing).
 pub fn parse_section_names(data: &[u8]) -> Vec<String> {
-    if data.len() < 64 { return vec![]; }
+    if data.len() < 64 {
+        return vec![];
+    }
     let e_shoff = u64::from_le_bytes(data[40..48].try_into().unwrap()) as usize;
     let e_shentsize = u16::from_le_bytes(data[58..60].try_into().unwrap()) as usize;
     let e_shnum = u16::from_le_bytes(data[60..62].try_into().unwrap()) as usize;
     let e_shstrndx = u16::from_le_bytes(data[62..64].try_into().unwrap()) as usize;
 
-    if e_shnum == 0 || e_shoff == 0 { return vec![]; }
+    if e_shnum == 0 || e_shoff == 0 {
+        return vec![];
+    }
 
     // Read shstrtab
     let shstr_off = e_shoff + e_shstrndx * e_shentsize;
-    let shstrtab_offset = u64::from_le_bytes(data[shstr_off + 24..shstr_off + 32].try_into().unwrap()) as usize;
-    let shstrtab_size = u64::from_le_bytes(data[shstr_off + 32..shstr_off + 40].try_into().unwrap()) as usize;
+    let shstrtab_offset =
+        u64::from_le_bytes(data[shstr_off + 24..shstr_off + 32].try_into().unwrap()) as usize;
+    let shstrtab_size =
+        u64::from_le_bytes(data[shstr_off + 32..shstr_off + 40].try_into().unwrap()) as usize;
     let shstrtab = &data[shstrtab_offset..shstrtab_offset + shstrtab_size];
 
     let mut names = Vec::new();
     for i in 0..e_shnum {
         let off = e_shoff + i * e_shentsize;
         let sh_name = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
-        let end = shstrtab[sh_name..].iter().position(|&b| b == 0).unwrap_or(shstrtab.len() - sh_name) + sh_name;
+        let end = shstrtab[sh_name..]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(shstrtab.len() - sh_name)
+            + sh_name;
         let name = String::from_utf8_lossy(&shstrtab[sh_name..end]).to_string();
         if !name.is_empty() {
             names.push(name);

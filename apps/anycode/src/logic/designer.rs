@@ -687,6 +687,7 @@ impl DesignerDocument {
         let name = self.next_control_name(base_name);
         let (width, height) = default_control_size(&kind);
         let text = default_control_text(&kind, &name);
+        let (x, y, width, height) = self.fit_bounds_to_form(x, y, width, height);
         self.controls.push(DesignerControl {
             name: name.clone(),
             kind,
@@ -709,6 +710,7 @@ impl DesignerDocument {
         width: u32,
         height: u32,
     ) -> Result<(), &'static str> {
+        let (x, y, width, height) = self.fit_bounds_to_form(x, y, width, height);
         let Some(control) = self
             .controls
             .iter_mut()
@@ -716,10 +718,10 @@ impl DesignerDocument {
         else {
             return Err("Designer control not found");
         };
-        control.x = clamp_i32(x, MIN_CONTROL_POS, MAX_CONTROL_POS);
-        control.y = clamp_i32(y, MIN_CONTROL_POS, MAX_CONTROL_POS);
-        control.width = clamp_u32(width, MIN_CONTROL_SIZE, MAX_CONTROL_SIZE);
-        control.height = clamp_u32(height, MIN_CONTROL_SIZE, MAX_CONTROL_SIZE);
+        control.x = x;
+        control.y = y;
+        control.width = width;
+        control.height = height;
         Ok(())
     }
 
@@ -764,6 +766,16 @@ impl DesignerDocument {
             }
             index = index.saturating_add(1);
         }
+    }
+
+    fn fit_bounds_to_form(&self, x: i32, y: i32, width: u32, height: u32) -> (i32, i32, u32, u32) {
+        let width = clamp_u32(width, MIN_CONTROL_SIZE, self.width.max(MIN_CONTROL_SIZE));
+        let height = clamp_u32(height, MIN_CONTROL_SIZE, self.height.max(MIN_CONTROL_SIZE));
+        let max_x = self.width.saturating_sub(width) as i32;
+        let max_y = self.height.saturating_sub(height) as i32;
+        let x = clamp_i32(x, 0, max_x.max(0));
+        let y = clamp_i32(y, 0, max_y.max(0));
+        (x, y, width, height)
     }
 }
 

@@ -1,5 +1,5 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType, ExternCrateSpec};
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind, ExternCrateSpec};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,8 +14,7 @@ fn compile_and_run(source: &str) -> i32 {
         crate_name: None,
         ..CompileOptions::default()
     };
-    let exe_bytes = compile(source, "test.rs", &options)
-        .expect("compilation failed");
+    let exe_bytes = compile(source, "test.rs", &options).expect("compilation failed");
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("anyrc_test_{}_{}", std::process::id(), id));
@@ -90,8 +89,8 @@ fn extern_interface_preserves_private_scope_imports() {
         crate_name: Some("provider".to_string()),
         ..CompileOptions::default()
     };
-    let rlib = compile(lib_source, "provider.rs", &lib_options)
-        .expect("provider compilation failed");
+    let rlib =
+        compile(lib_source, "provider.rs", &lib_options).expect("provider compilation failed");
 
     static COUNTER: AtomicU64 = AtomicU64::new(1000);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -121,7 +120,9 @@ fn extern_interface_preserves_private_scope_imports() {
     assert!(
         result.is_ok(),
         "extern interface lost private use imports: {:?}",
-        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+        result
+            .err()
+            .map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
     );
 }
 
@@ -195,7 +196,9 @@ fn resolver_handles_macro_generated_float_type_alias_in_module() {
     assert!(
         result.is_ok(),
         "resolver failed on macro-generated F32 alias: {:?}",
-        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+        result
+            .err()
+            .map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
     );
 }
 
@@ -219,12 +222,16 @@ fn extern_interface_preserves_private_consts_used_in_public_array_lengths() {
         crate_name: Some("provider".to_string()),
         ..CompileOptions::default()
     };
-    let rlib = compile(lib_source, "provider.rs", &lib_options)
-        .expect("provider compilation failed");
+    let rlib =
+        compile(lib_source, "provider.rs", &lib_options).expect("provider compilation failed");
 
     static COUNTER: AtomicU64 = AtomicU64::new(2000);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_iface_const_test_{}_{}", std::process::id(), id));
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_iface_const_test_{}_{}",
+        std::process::id(),
+        id
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let rlib_path = dir.join("libprovider.rlib");
     {
@@ -250,7 +257,9 @@ fn extern_interface_preserves_private_consts_used_in_public_array_lengths() {
     assert!(
         result.is_ok(),
         "extern interface lost private array-length consts: {:?}",
-        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+        result
+            .err()
+            .map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
     );
 }
 
@@ -281,12 +290,16 @@ fn extern_interface_preserves_transitive_private_type_dependencies() {
         crate_name: Some("provider".to_string()),
         ..CompileOptions::default()
     };
-    let rlib = compile(lib_source, "provider.rs", &lib_options)
-        .expect("provider compilation failed");
+    let rlib =
+        compile(lib_source, "provider.rs", &lib_options).expect("provider compilation failed");
 
     static COUNTER: AtomicU64 = AtomicU64::new(2250);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_iface_type_test_{}_{}", std::process::id(), id));
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_iface_type_test_{}_{}",
+        std::process::id(),
+        id
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let rlib_path = dir.join("libprovider.rlib");
     {
@@ -312,7 +325,9 @@ fn extern_interface_preserves_transitive_private_type_dependencies() {
     assert!(
         result.is_ok(),
         "extern interface lost transitive private types: {:?}",
-        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+        result
+            .err()
+            .map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
     );
 }
 
@@ -320,12 +335,14 @@ fn extern_interface_preserves_transitive_private_type_dependencies() {
 fn item_include_splices_source_before_resolve() {
     static COUNTER: AtomicU64 = AtomicU64::new(2500);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_include_test_{}_{}", std::process::id(), id));
+    let dir =
+        std::env::temp_dir().join(format!("anyrc_include_test_{}_{}", std::process::id(), id));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("included.rs"),
         "pub struct Included { pub value: i32 }\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let source = r#"
         mod child {
@@ -350,7 +367,9 @@ fn item_include_splices_source_before_resolve() {
     assert!(
         result.is_ok(),
         "item include was not visible during module resolution: {:?}",
-        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+        result
+            .err()
+            .map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
     );
 }
 
@@ -384,7 +403,11 @@ fn nested_module_can_use_extern_crate_item() {
 
     static COUNTER: AtomicU64 = AtomicU64::new(2000);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_extern_use_test_{}_{}", std::process::id(), id));
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_extern_use_test_{}_{}",
+        std::process::id(),
+        id
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let rlib_path = dir.join("libonce_cell.rlib");
     {
@@ -416,7 +439,9 @@ fn nested_module_can_use_extern_crate_item() {
     assert!(
         result.is_ok(),
         "nested module extern use failed: {:?}",
-        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+        result
+            .err()
+            .map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
     );
 }
 
@@ -450,7 +475,11 @@ fn cfg_if_keeps_extern_use_in_nested_module() {
 
     static COUNTER: AtomicU64 = AtomicU64::new(3000);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("anyrc_cfg_if_extern_use_test_{}_{}", std::process::id(), id));
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_cfg_if_extern_use_test_{}_{}",
+        std::process::id(),
+        id
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let rlib_path = dir.join("libonce_cell.rlib");
     {
@@ -490,7 +519,9 @@ fn cfg_if_keeps_extern_use_in_nested_module() {
     assert!(
         result.is_ok(),
         "cfg_if extern use failed: {:?}",
-        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+        result
+            .err()
+            .map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
     );
 }
 
@@ -514,7 +545,11 @@ fn cfg_all_false_strips_item() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "cfg-disabled item was typechecked: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "cfg-disabled item was typechecked: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -539,7 +574,11 @@ fn cfg_false_strips_impl_block() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "cfg-disabled impl was typechecked: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "cfg-disabled impl was typechecked: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -565,7 +604,11 @@ fn cfg_false_strips_const_and_macro_items() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "cfg-disabled const/macro item was typechecked: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "cfg-disabled const/macro item was typechecked: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -596,7 +639,11 @@ fn cfg_false_strips_statements_inside_const_initializer() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "cfg-disabled const initializer statement was typechecked: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "cfg-disabled const initializer statement was typechecked: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -625,7 +672,11 @@ fn cfg_false_strips_item_macro_call() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "cfg-disabled item macro call was expanded/typechecked: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "cfg-disabled item macro call was expanded/typechecked: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -655,7 +706,11 @@ fn cfg_false_strips_struct_literal_fields() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "cfg-disabled struct literal field was typechecked: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "cfg-disabled struct literal field was typechecked: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -679,7 +734,11 @@ fn block_items_are_visible_before_declaration() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "block item forward reference failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "block item forward reference failed: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -698,7 +757,7 @@ fn compile_emit_obj() {
     assert!(result.is_ok());
     let obj = result.unwrap();
     assert_eq!(&obj[0..4], &[0x7f, b'E', b'L', b'F']);
-    assert_eq!(obj[16], 1);  // ET_REL
+    assert_eq!(obj[16], 1); // ET_REL
 }
 
 #[test]
@@ -721,7 +780,16 @@ fn compile_complex_program() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "compilation failed: {:?}", result.err().unwrap().iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.is_ok(),
+        "compilation failed: {:?}",
+        result
+            .err()
+            .unwrap()
+            .iter()
+            .map(|e| &e.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -763,7 +831,16 @@ fn compile_enum_and_match() {
         ..CompileOptions::default()
     };
     let result = compile(source, "test.rs", &options);
-    assert!(result.is_ok(), "failed: {:?}", result.err().unwrap().iter().map(|e| &e.message).collect::<Vec<_>>());
+    assert!(
+        result.is_ok(),
+        "failed: {:?}",
+        result
+            .err()
+            .unwrap()
+            .iter()
+            .map(|e| &e.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 // ── Runtime tests ──
@@ -829,6 +906,17 @@ fn run_nested_calls() {
         fn main() -> i32 { double(double(5)) }
     "#;
     assert_eq!(compile_and_run(src), 20);
+}
+
+#[test]
+fn run_local_function_item() {
+    let src = r#"
+        fn main() -> i32 {
+            fn add(a: i32, b: i32) -> i32 { a + b }
+            add(19, 23)
+        }
+    "#;
+    assert_eq!(compile_and_run(src), 42);
 }
 
 #[test]

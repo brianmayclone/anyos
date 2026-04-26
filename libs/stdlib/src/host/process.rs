@@ -33,7 +33,9 @@ pub fn mmap(size: usize) -> *mut u8 {
 
 pub fn munmap(addr: *mut u8, size: usize) -> bool {
     let layout = std::alloc::Layout::from_size_align(size, 4096).unwrap();
-    unsafe { std::alloc::dealloc(addr, layout); }
+    unsafe {
+        std::alloc::dealloc(addr, layout);
+    }
     true
 }
 
@@ -90,11 +92,11 @@ pub fn getargs(buf: &mut [u8]) -> usize {
     len
 }
 
-pub fn args(buf: &mut [u8; 256]) -> &str {
+pub fn args(buf: &mut [u8]) -> &str {
     let args: Vec<std::string::String> = std::env::args().skip(1).collect();
     let joined = quote_join_args(&args);
     let bytes = joined.as_bytes();
-    let len = bytes.len().min(255);
+    let len = bytes.len().min(buf.len().saturating_sub(1));
     buf[..len].copy_from_slice(&bytes[..len]);
     core::str::from_utf8(&buf[..len]).unwrap_or("")
 }
