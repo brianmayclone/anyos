@@ -11,14 +11,11 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use crate::memory::address::PhysAddr;
+use crate::memory::user_vmap::{
+    MMAP64_BASE, MMAP_BASE, MMAP_LIMIT,
+};
 use crate::sync::spinlock::Spinlock;
 
-/// Start of the legacy 32-bit-compatible user-space mmap region.
-const MMAP_BASE: u64 = 0x7000_0000;
-/// End (exclusive) of the legacy 32-bit-compatible user-space mmap region.
-const MMAP_LIMIT: u64 = 0xBF00_0000;
-/// Start of the native 64-bit high mmap region.
-const MMAP64_BASE: u64 = 0x0000_0001_0000_0000;
 /// End (exclusive) of the native 64-bit high mmap region.
 const MMAP64_LIMIT: u64 = 0x0000_4000_0000_0000;
 

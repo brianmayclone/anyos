@@ -236,16 +236,15 @@ pub fn sys_sbrk(increment: i32) -> u32 {
             None => return u32::MAX,
         };
 
-        // Prevent heap from growing into the DLIB region (0x0400_0000 - 0x07FF_FFFF).
+        // Prevent heap from growing into the DLIB region.
         // DLLs are demand-paged there; heap writes would corrupt their export tables.
-        const DLIB_REGION_START: u32 = 0x0400_0000;
+        const DLIB_REGION_START: u32 = crate::memory::user_vmap::DLIB_REGION_START as u32;
         if old_brk < DLIB_REGION_START && new_brk >= DLIB_REGION_START {
             return u32::MAX;
         }
 
-        // Prevent heap from growing into the mmap region.
-        // mmap starts at 0x7000_0000.  Leave a 16 MiB guard gap.
-        const HEAP_LIMIT: u32 = 0x6F00_0000;
+        // Prevent heap from growing into the mmap region (16 MiB guard gap).
+        const HEAP_LIMIT: u32 = crate::memory::user_vmap::HEAP_LIMIT as u32;
         if new_brk >= HEAP_LIMIT {
             return u32::MAX;
         }
@@ -489,9 +488,7 @@ fn sys_munmap_impl(addr: u64, size: u64, high: bool) -> u64 {
     use crate::memory::physical;
     use crate::memory::virtual_mem;
 
-    const MMAP_BASE: u64 = 0x7000_0000;
-    const MMAP_LIMIT: u64 = 0xBF00_0000;
-    const MMAP64_BASE: u64 = 0x0000_0001_0000_0000;
+    use crate::memory::user_vmap::{MMAP64_BASE, MMAP_BASE, MMAP_LIMIT};
     const MMAP64_LIMIT: u64 = 0x0000_4000_0000_0000;
     const PAGE_SIZE: u64 = 4096;
 

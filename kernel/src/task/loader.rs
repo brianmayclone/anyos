@@ -4,26 +4,30 @@
 
 use crate::memory::address::VirtAddr;
 use crate::memory::physical;
+use crate::memory::user_vmap::{
+    ASLR_MMAP_MAX_PAGES as VMAP_ASLR_MMAP_MAX_PAGES,
+    ASLR_STACK_MAX_PAGES as VMAP_ASLR_STACK_MAX_PAGES,
+    MMAP_BASE,
+    PROGRAM_LOAD_ADDR as VMAP_PROGRAM_LOAD_ADDR,
+    SIGRETURN_TRAMPOLINE_ADDR as VMAP_SIGRETURN_TRAMPOLINE_ADDR,
+    USER_STACK_PAGES as VMAP_USER_STACK_PAGES,
+    USER_STACK_TOP as VMAP_USER_STACK_TOP,
+};
 use crate::memory::virtual_mem;
 use crate::sync::spinlock::Spinlock;
 
-/// Default load address for flat binaries (128 MiB).
+/// Default load address for flat binaries.
 /// ELF binaries use their own vaddr from program headers.
-const PROGRAM_LOAD_ADDR: u64 = 0x0800_0000;
+const PROGRAM_LOAD_ADDR: u64 = VMAP_PROGRAM_LOAD_ADDR;
 
-/// User stack is allocated below this address (3 GiB).
-/// Stack grows downward.  Placed at the top of the user address space
-/// (like Linux/FreeBSD) so the heap and mmap regions below can grow freely.
-const USER_STACK_TOP: u64 = 0xC000_0000;
+/// User stack is allocated below this address.  Stack grows downward.
+const USER_STACK_TOP: u64 = VMAP_USER_STACK_TOP;
 
 /// Fixed virtual address for the per-process signal return trampoline page.
-/// This is currently only used by the x86 compat signal-return path.
-/// ARM64 keeps the native 64-bit signal path trampoline-free for now.
-pub const SIGRETURN_TRAMPOLINE_ADDR: u64 = 0xC000_0000;
+pub const SIGRETURN_TRAMPOLINE_ADDR: u64 = VMAP_SIGRETURN_TRAMPOLINE_ADDR;
 
 /// Number of pages for the user stack (8 MiB = 2048 pages).
-/// Matches the Linux default of 8 MiB.
-const USER_STACK_PAGES: u64 = 2048;
+const USER_STACK_PAGES: u64 = VMAP_USER_STACK_PAGES;
 
 const PAGE_SIZE: u64 = 4096;
 const PAGE_WRITABLE: u64 = 0x02;
@@ -35,13 +39,10 @@ const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 
 /// Maximum random page offset applied to the stack top (ASLR).
-/// 256 pages = 1 MiB of entropy. The allocated 8 MiB stack region provides
-/// ample headroom, so the bottom of the used region still has plenty of space.
-const ASLR_STACK_MAX_PAGES: u32 = 256;
+const ASLR_STACK_MAX_PAGES: u32 = VMAP_ASLR_STACK_MAX_PAGES;
 
 /// Maximum random page offset applied to the mmap base (ASLR).
-/// 4096 pages = 16 MiB of entropy within the 1.25 GiB mmap region.
-pub const ASLR_MMAP_MAX_PAGES: u32 = 4096;
+pub const ASLR_MMAP_MAX_PAGES: u32 = VMAP_ASLR_MMAP_MAX_PAGES;
 
 #[cfg(target_arch = "aarch64")]
 unsafe fn sync_user_text_range_for_exec(start: u64, len: usize) {
@@ -1315,7 +1316,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // ASLR: randomize mmap base for each new process so mmap allocations
     // land at a different address than the previous run.
     let mmap_rand = random_page_offset(ASLR_MMAP_MAX_PAGES);
-    let mmap_start: u64 = 0x7000_0000u64.wrapping_add(mmap_rand as u64 * 4096);
+    let mmap_start: u64 = MMAP_BASE.wrapping_add(mmap_rand as u64 * 4096);
     crate::task::scheduler::set_thread_mmap_next(tid, mmap_start);
     // Initialize VMA table for this process (gap-finding allocator).
     crate::memory::vma::init_process(pd_phys, mmap_start);

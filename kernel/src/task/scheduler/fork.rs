@@ -118,7 +118,8 @@ pub fn exec_update_thread(
         // ASLR: randomize the mmap base within [0x20000000, 0x20000000 + 16 MiB)
         let mmap_rand =
             crate::task::loader::random_page_offset(crate::task::loader::ASLR_MMAP_MAX_PAGES);
-        thread.mmap_next = 0x7000_0000u64.wrapping_add(mmap_rand as u64 * 4096);
+        thread.mmap_next = crate::memory::user_vmap::MMAP_BASE
+            .wrapping_add(mmap_rand as u64 * 4096);
         thread.fpu_state = crate::task::thread::FxState::new_default();
         thread.user_pages = user_pages;
         thread.context.checksum = thread.context.compute_checksum();
