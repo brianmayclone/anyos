@@ -7,6 +7,13 @@ use anyrc::typeck::TypeChecker;
 use anyrc::mir_build::MirBuilder;
 use anyrc::codegen::regalloc;
 use anyrc::codegen::emit::CodeEmitter;
+use anyrc::ast::Mutability;
+use anyrc::diagnostics::Span;
+use anyrc::mir::{
+    BasicBlock, Constant, ConstValue, Local, LocalDecl, MirBody, Operand, Place, Rvalue,
+    Statement, StatementKind, Terminator,
+};
+use anyrc::typeck::{IntTy, TyKind};
 
 fn compile_fn(src: &str) -> Vec<u8> {
     let (code, _) = compile_fn_with_relocs(src);
@@ -70,4 +77,52 @@ fn codegen_struct_and_field() {
         fn foo() -> i32 { let p = Point { x: 10, y: 20 }; p.x }
     "#);
     assert!(!code.is_empty());
+}
+
+#[test]
+fn regalloc_reuses_non_overlapping_single_block_stack_slots() {
+    let i32_ty = TyKind::Int(IntTy::I32);
+    let local = |name| LocalDecl {
+        ty: i32_ty.clone(),
+        mutability: Mutability::Immutable,
+        name,
+        span: Span::dummy(),
+    };
+    let int = |value| Operand::Constant(Constant {
+        ty: i32_ty.clone(),
+        value: ConstValue::Int(value),
+    });
+
+    let mut interner = Interner::new();
+    let body = MirBody {
+        basic_blocks: vec![BasicBlock {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Assign(Place::local(Local(1)), Rvalue::Use(int(1))),
+                    span: Span::dummy(),
+                },
+                Statement {
+                    kind: StatementKind::Assign(Place::local(Local(2)), Rvalue::Use(int(2))),
+                    span: Span::dummy(),
+                },
+                Statement {
+                    kind: StatementKind::Assign(
+                        Place::local(Local(0)),
+                        Rvalue::Use(Operand::Copy(Place::local(Local(2)))),
+                    ),
+                    span: Span::dummy(),
+                },
+            ],
+            terminator: Terminator::Return,
+        }],
+        locals: vec![local(None), local(None), local(None)],
+        arg_count: 0,
+        name: interner.intern("foo"),
+        span: Span::dummy(),
+        no_mangle: false,
+    };
+
+    let alloc = regalloc::allocate(&body, &regalloc::StructSizes::new());
+    assert_eq!(alloc.frame_size, 16);
+    assert_eq!(alloc.stack_slots[1], alloc.stack_slots[2]);
 }

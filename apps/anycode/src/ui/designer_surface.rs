@@ -8,6 +8,15 @@ const SURFACE_W: u32 = 960;
 const SURFACE_H: u32 = 640;
 const FORM_X: i32 = 42;
 const FORM_Y: i32 = 38;
+const FORM_CONTENT_Y: i32 = FORM_Y + 34;
+const HANDLE_SIZE: i32 = 8;
+
+pub const DESIGNER_DRAG_NONE: u32 = 0;
+pub const DESIGNER_DRAG_MOVE: u32 = 1;
+pub const DESIGNER_DRAG_RESIZE_NW: u32 = 2;
+pub const DESIGNER_DRAG_RESIZE_NE: u32 = 3;
+pub const DESIGNER_DRAG_RESIZE_SW: u32 = 4;
+pub const DESIGNER_DRAG_RESIZE_SE: u32 = 5;
 
 pub struct DesignerSurface {
     pub panel: ui::View,
@@ -41,16 +50,34 @@ impl DesignerSurface {
         toolbox.set_dock(ui::DOCK_FILL);
         toolbox.set_indent_width(14);
         toolbox.set_row_height(22);
+        toolbox.set_draggable(true);
         toolbox_panel.add(&toolbox);
         let toolbox_root = toolbox.add_root("Controls");
         toolbox.set_node_text_color(toolbox_root, tc.text);
         toolbox.set_node_style(toolbox_root, ui::STYLE_BOLD);
         toolbox.set_expanded(toolbox_root, true);
-        designer_toolbox::populate_toolbox_tree(&toolbox, toolbox_root);
+        let toolbox_nodes = designer_toolbox::populate_toolbox_tree(&toolbox, toolbox_root);
+
+        let drag_nodes = toolbox_nodes.clone();
+        toolbox.on_drag_start(move |_| {
+            let selected = toolbox.selected();
+            let hovered = toolbox.hovered();
+            let node = if hovered != u32::MAX {
+                hovered
+            } else {
+                selected
+            };
+            if let Some(control_name) = designer_toolbox::control_name_for_node(&drag_nodes, node) {
+                ui::drag_set_text(&alloc::format!("anycode-control:{}", control_name));
+            } else {
+                ui::drag_set_text("");
+            }
+        });
 
         let canvas = ui::Canvas::new(SURFACE_W, SURFACE_H);
         canvas.set_dock(ui::DOCK_FILL);
         canvas.set_interactive(true);
+        canvas.set_drop_target(true);
         panel.add(&canvas);
 
         let click_path = String::from(file_path);
@@ -58,11 +85,29 @@ impl DesignerSurface {
             crate::queue_designer_click(&click_path, x, y);
         });
 
+        let move_path = String::from(file_path);
+        canvas.on_mouse_move(move |x, y| {
+            crate::queue_designer_mouse_move(&move_path, x, y);
+        });
+
+        let up_path = String::from(file_path);
+        canvas.on_mouse_up(move |x, y, _| {
+            crate::queue_designer_mouse_up(&up_path, x, y);
+        });
+
         let dbl_path = String::from(file_path);
         let dbl_canvas = canvas;
         canvas.on_double_click(move |_| {
             let (x, y, _) = dbl_canvas.get_mouse();
             crate::queue_designer_double_click(&dbl_path, x, y);
+        });
+
+        let drop_path = String::from(file_path);
+        let drop_canvas = canvas;
+        canvas.on_drop(move |_| {
+            let (x, y, _) = drop_canvas.get_mouse();
+            let payload = ui::drag_get_text();
+            crate::queue_designer_drop(&drop_path, x, y, &payload);
         });
 
         let this = Self {
@@ -134,7 +179,7 @@ impl DesignerSurface {
             tc.text_secondary,
             0,
             11,
-            "Designer Preview - click controls to inspect, double-click to open event handler",
+            "Designer Preview - drag controls from Toolbox, move/resize selected components, double-click to open event handler",
         );
     }
 
@@ -151,7 +196,7 @@ impl DesignerSurface {
 pub fn hit_test_doc(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {
     for control in doc.controls.iter().rev() {
         let left = FORM_X + control.x;
-        let top = FORM_Y + 34 + control.y;
+        let top = FORM_CONTENT_Y + control.y;
         let right = left + control.width as i32;
         let bottom = top + control.height as i32;
         if x >= left && x <= right && y >= top && y <= bottom {
@@ -159,6 +204,39 @@ pub fn hit_test_doc(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {
         }
     }
     None
+}
+
+pub fn hit_test_resize_handle(doc: &DesignerDocument, x: i32, y: i32) -> Option<(String, u32)> {
+    for control in doc.controls.iter().rev() {
+        let left = FORM_X + control.x;
+        let top = FORM_CONTENT_Y + control.y;
+        let right = left + control.width as i32;
+        let bottom = top + control.height as i32;
+        let handle = if near_handle(x, y, left, top) {
+            DESIGNER_DRAG_RESIZE_NW
+        } else if near_handle(x, y, right, top) {
+            DESIGNER_DRAG_RESIZE_NE
+        } else if near_handle(x, y, left, bottom) {
+            DESIGNER_DRAG_RESIZE_SW
+        } else if near_handle(x, y, right, bottom) {
+            DESIGNER_DRAG_RESIZE_SE
+        } else {
+            DESIGNER_DRAG_NONE
+        };
+        if handle != DESIGNER_DRAG_NONE {
+            return Some((control.name.clone(), handle));
+        }
+    }
+    None
+}
+
+pub fn canvas_to_form(x: i32, y: i32) -> (i32, i32) {
+    (x - FORM_X, y - FORM_CONTENT_Y)
+}
+
+fn near_handle(x: i32, y: i32, hx: i32, hy: i32) -> bool {
+    let half = HANDLE_SIZE / 2;
+    x >= hx - half && x <= hx + half && y >= hy - half && y <= hy + half
 }
 
 fn draw_grid(canvas: &ui::Canvas, width: u32, height: u32, color: u32) {
@@ -181,7 +259,7 @@ fn draw_control(
     tc: &'static ui::theme::ThemeColors,
 ) {
     let x = FORM_X + control.x;
-    let y = FORM_Y + 34 + control.y;
+    let y = FORM_CONTENT_Y + control.y;
     let selected = selected_control == Some(control.name.as_str());
     let fill = match control.kind.as_str() {
         "Label" => tc.sidebar_bg,

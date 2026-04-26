@@ -1,9 +1,17 @@
+use alloc::string::String;
+use alloc::vec::Vec;
 use libanyui_client as ui;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ToolboxControl {
     pub name: &'static str,
     pub category: &'static str,
+}
+
+#[derive(Clone, Debug)]
+pub struct ToolboxNode {
+    pub node: u32,
+    pub control_name: String,
 }
 
 pub const TOOLBOX_CONTROLS: &[ToolboxControl] = &[
@@ -213,10 +221,11 @@ pub const TOOLBOX_CONTROLS: &[ToolboxControl] = &[
     },
 ];
 
-pub fn populate_toolbox_tree(tree: &ui::TreeView, root: u32) {
+pub fn populate_toolbox_tree(tree: &ui::TreeView, root: u32) -> Vec<ToolboxNode> {
     let tc = ui::theme::colors();
     let mut current_category = "";
     let mut category_node = 0;
+    let mut nodes = Vec::new();
     for item in TOOLBOX_CONTROLS {
         if item.category != current_category {
             current_category = item.category;
@@ -227,7 +236,21 @@ pub fn populate_toolbox_tree(tree: &ui::TreeView, root: u32) {
         let node = tree.add_child(category_node, item.name);
         tree.set_node_text_color(node, tc.text);
         set_control_icon(tree, node, item.name, tc.text_secondary);
+        if item.name != "Pointer" {
+            nodes.push(ToolboxNode {
+                node,
+                control_name: String::from(item.name),
+            });
+        }
     }
+    nodes
+}
+
+pub fn control_name_for_node(nodes: &[ToolboxNode], node: u32) -> Option<&str> {
+    nodes
+        .iter()
+        .find(|entry| entry.node == node)
+        .map(|entry| entry.control_name.as_str())
 }
 
 pub fn set_control_icon(tree: &ui::TreeView, node: u32, control_name: &str, color: u32) {

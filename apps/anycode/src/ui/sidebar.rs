@@ -633,7 +633,11 @@ impl Sidebar {
             let label = format!("{} {}", target.kind.label(), target.name);
             let node = self.tree.add_child(root, &label);
             self.remember_virtual(node);
-            self.set_system_icon(node, icon_for_target_kind(&target.kind), target_color(&target.kind));
+            self.set_system_icon(
+                node,
+                icon_for_target_kind(&target.kind),
+                target_color(&target.kind),
+            );
             self.tree
                 .set_node_text_color(node, target_color(&target.kind));
         }
@@ -709,7 +713,11 @@ impl Sidebar {
             self.remember_virtual(cat_node);
             self.tree.set_node_style(cat_node, STYLE_BOLD);
             self.tree.set_node_text_color(cat_node, tc.text_secondary);
-            self.set_system_icon(cat_node, icon_for_task_category(category), tc.text_secondary);
+            self.set_system_icon(
+                cat_node,
+                icon_for_task_category(category),
+                tc.text_secondary,
+            );
             self.tree.set_expanded(cat_node, false);
             for task in tasks {
                 let node = self.tree.add_child(cat_node, &task.display_label);

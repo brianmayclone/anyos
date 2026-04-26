@@ -222,7 +222,7 @@ impl DesignerControlKind {
         }
     }
 
-    fn from_str(value: &str) -> Self {
+    pub fn from_str(value: &str) -> Self {
         match value {
             "Alert" => Self::Alert,
             "AutoCompleteTextField" => Self::AutoCompleteTextField,
@@ -681,6 +681,48 @@ impl DesignerDocument {
         Ok(())
     }
 
+    pub fn add_control(&mut self, kind_name: &str, x: i32, y: i32) -> Result<String, &'static str> {
+        let kind = DesignerControlKind::from_str(kind_name);
+        let base_name = default_control_base_name(kind.as_str());
+        let name = self.next_control_name(base_name);
+        let (width, height) = default_control_size(&kind);
+        let text = default_control_text(&kind, &name);
+        self.controls.push(DesignerControl {
+            name: name.clone(),
+            kind,
+            text,
+            x: x.max(0),
+            y: y.max(0),
+            width,
+            height,
+            properties: Vec::new(),
+        });
+        self.normalize_layout();
+        Ok(name)
+    }
+
+    pub fn set_control_bounds(
+        &mut self,
+        control_name: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), &'static str> {
+        let Some(control) = self
+            .controls
+            .iter_mut()
+            .find(|control| control.name == control_name)
+        else {
+            return Err("Designer control not found");
+        };
+        control.x = clamp_i32(x, MIN_CONTROL_POS, MAX_CONTROL_POS);
+        control.y = clamp_i32(y, MIN_CONTROL_POS, MAX_CONTROL_POS);
+        control.width = clamp_u32(width, MIN_CONTROL_SIZE, MAX_CONTROL_SIZE);
+        control.height = clamp_u32(height, MIN_CONTROL_SIZE, MAX_CONTROL_SIZE);
+        Ok(())
+    }
+
     pub fn remove_control(&mut self, control_name: &str) -> Result<(), &'static str> {
         let Some(index) = self
             .controls
@@ -707,6 +749,21 @@ impl DesignerDocument {
             .find(|control| control.name == control_name)
             .map(|control| control.property_value(property_name))
             .unwrap_or_default()
+    }
+
+    fn next_control_name(&self, base_name: &str) -> String {
+        let mut index = 1u32;
+        loop {
+            let candidate = format!("{}{}", base_name, index);
+            if !self
+                .controls
+                .iter()
+                .any(|control| control.name == candidate)
+            {
+                return candidate;
+            }
+            index = index.saturating_add(1);
+        }
     }
 }
 
@@ -745,6 +802,7 @@ pub fn regenerate_generated_files(
         doc.codebehind_rs().as_bytes(),
     )
     .map_err(|_| "Could not update codebehind")?;
+    ensure_event_stubs(&format!("{}/events.rs", form_dir), doc)?;
     anyos_std::fs::write_bytes(&format!("{}/mod.rs", form_dir), doc.module_rs().as_bytes())
         .map_err(|_| "Could not update form module")?;
     Ok(())
@@ -848,6 +906,151 @@ pub fn ensure_event_handler(
             .map_err(|_| "Could not update event handler")?;
     }
     Ok(events_path)
+}
+
+fn ensure_event_stubs(events_path: &str, doc: &DesignerDocument) -> Result<(), &'static str> {
+    let mut data = anyos_std::fs::read_to_string(events_path).unwrap_or_default();
+    let mut changed = false;
+    for control in &doc.controls {
+        if !matches!(
+            control.kind.as_str(),
+            "Button" | "IconButton" | "ImageButton" | "LinkLabel" | "PlainButton"
+        ) {
+            continue;
+        }
+        let handler = control.event_name();
+        let signature = format!("pub fn {}()", handler);
+        if data.contains(&signature) {
+            continue;
+        }
+        if !data.ends_with('\n') {
+            data.push('\n');
+        }
+        data.push_str(&format!(
+            "\npub fn {}() {{\n    // TODO: handle event\n}}\n",
+            handler
+        ));
+        changed = true;
+    }
+    if changed {
+        anyos_std::fs::write_bytes(events_path, data.as_bytes())
+            .map_err(|_| "Could not update event handlers")?;
+    }
+    Ok(())
+}
+
+fn default_control_base_name(kind_name: &str) -> &'static str {
+    match kind_name {
+        "Alert" => "alert",
+        "AutoCompleteTextField" => "auto_complete",
+        "Badge" => "badge",
+        "Button" => "button",
+        "Canvas" => "canvas",
+        "Card" => "card",
+        "CheckBox" => "check_box",
+        "ColorWell" => "color_well",
+        "ComboBox" => "combo_box",
+        "DataGrid" => "data_grid",
+        "DatePicker" => "date_picker",
+        "DateTimePicker" => "date_time_picker",
+        "Divider" => "divider",
+        "DropDown" => "drop_down",
+        "Expander" => "expander",
+        "FlowPanel" => "flow_panel",
+        "GroupBox" => "group_box",
+        "IconButton" => "icon_button",
+        "ImageButton" => "image_button",
+        "ImageView" => "image_view",
+        "Label" => "label",
+        "LinkLabel" => "link_label",
+        "ListBox" => "list_box",
+        "NavigationBar" => "navigation_bar",
+        "Panel" => "panel",
+        "PlainButton" => "plain_button",
+        "ProgressBar" => "progress_bar",
+        "RadioButton" => "radio_button",
+        "RadioGroup" => "radio_group",
+        "ScrollView" => "scroll_view",
+        "SearchField" => "search_field",
+        "SegmentedControl" => "segmented",
+        "Slider" => "slider",
+        "Spinner" => "spinner",
+        "SplitView" => "split_view",
+        "StackPanel" => "stack_panel",
+        "StatusIndicator" => "status",
+        "Stepper" => "stepper",
+        "TabBar" => "tab_bar",
+        "TableLayout" => "table_layout",
+        "TableView" => "table_view",
+        "Tag" => "tag",
+        "TextArea" => "text_area",
+        "TextEditor" => "text_editor",
+        "TextField" => "text_field",
+        "TimePicker" => "time_picker",
+        "Toggle" => "toggle",
+        "Toolbar" => "toolbar",
+        "Tooltip" => "tooltip",
+        _ => "control",
+    }
+}
+
+fn default_control_size(kind: &DesignerControlKind) -> (u32, u32) {
+    match kind {
+        DesignerControlKind::Badge
+        | DesignerControlKind::Button
+        | DesignerControlKind::IconButton
+        | DesignerControlKind::ImageButton
+        | DesignerControlKind::PlainButton
+        | DesignerControlKind::Tag => (104, 30),
+        DesignerControlKind::CheckBox
+        | DesignerControlKind::RadioButton
+        | DesignerControlKind::StatusIndicator
+        | DesignerControlKind::Toggle => (132, 26),
+        DesignerControlKind::Label
+        | DesignerControlKind::LinkLabel
+        | DesignerControlKind::Tooltip => (160, 24),
+        DesignerControlKind::TextArea | DesignerControlKind::TextEditor => (240, 96),
+        DesignerControlKind::DataGrid
+        | DesignerControlKind::TableView
+        | DesignerControlKind::TreeView => (260, 150),
+        DesignerControlKind::Canvas
+        | DesignerControlKind::Card
+        | DesignerControlKind::FlowPanel
+        | DesignerControlKind::GroupBox
+        | DesignerControlKind::ImageView
+        | DesignerControlKind::Panel
+        | DesignerControlKind::ScrollView
+        | DesignerControlKind::SplitView
+        | DesignerControlKind::StackPanel
+        | DesignerControlKind::TableLayout => (240, 140),
+        DesignerControlKind::Divider => (180, 1),
+        DesignerControlKind::NavigationBar | DesignerControlKind::Toolbar => (320, 36),
+        DesignerControlKind::ProgressBar | DesignerControlKind::Slider => (180, 24),
+        DesignerControlKind::Spinner => (32, 32),
+        _ => (180, 30),
+    }
+}
+
+fn default_control_text(kind: &DesignerControlKind, name: &str) -> String {
+    match kind {
+        DesignerControlKind::Button
+        | DesignerControlKind::CheckBox
+        | DesignerControlKind::Label
+        | DesignerControlKind::LinkLabel
+        | DesignerControlKind::PlainButton
+        | DesignerControlKind::RadioButton
+        | DesignerControlKind::Tag
+        | DesignerControlKind::Toggle => String::from(kind.as_str()),
+        DesignerControlKind::DropDown
+        | DesignerControlKind::ListBox
+        | DesignerControlKind::RadioGroup
+        | DesignerControlKind::SegmentedControl
+        | DesignerControlKind::TabBar => String::from("Item 1|Item 2"),
+        DesignerControlKind::TextArea
+        | DesignerControlKind::TextEditor
+        | DesignerControlKind::TextField => String::new(),
+        _ => String::from(name),
+    }
 }
 
 fn rust_control_type(kind: &DesignerControlKind) -> &'static str {

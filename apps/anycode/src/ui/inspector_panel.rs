@@ -192,7 +192,6 @@ impl InspectorPanel {
                 .add_child(node, &format!("Event: {}", control.event_name()));
         }
         self.tree.set_expanded(controls, true);
-
     }
 
     pub fn show_designer_control(&self, doc: &DesignerDocument, control_name: &str) {
@@ -247,7 +246,6 @@ impl InspectorPanel {
         self.tree
             .add_child(events, &format!("Default: {}", control.event_name()));
         self.tree.set_expanded(events, true);
-
     }
 
     pub fn update_property_value_from_selection(&self, doc: &DesignerDocument, control_name: &str) {

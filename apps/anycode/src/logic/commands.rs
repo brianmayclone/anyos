@@ -61,7 +61,8 @@ pub fn save_all() {
 pub fn build() {
     let s = app();
     if s.current_project.is_none() {
-        s.status.set_analysis_status("Open a project before building");
+        s.status
+            .set_analysis_status("Open a project before building");
         update_action_state();
         return;
     }
@@ -114,7 +115,8 @@ pub fn build() {
 pub fn run() {
     let s = app();
     if s.current_project.is_none() {
-        s.status.set_analysis_status("Open a project before running");
+        s.status
+            .set_analysis_status("Open a project before running");
         update_action_state();
         return;
     }
@@ -710,15 +712,37 @@ fn refresh_inspector_for_file(file_path: &str) {
     s.inspector_panel.show_file(file_path);
 }
 
-pub fn select_designer_control_at(file_path: &str, x: i32, y: i32) {
+const DESIGNER_MIN_DRAG_SIZE: i32 = 8;
+
+pub fn designer_pointer_down_at(file_path: &str, x: i32, y: i32) {
     let s = app();
     let doc = match designer::load_designer(file_path) {
         Some(doc) => doc,
         None => return,
     };
-    if let Some(control_name) = crate::ui::designer_surface::hit_test_doc(&doc, x, y) {
+    let hit = crate::ui::designer_surface::hit_test_resize_handle(&doc, x, y).or_else(|| {
+        crate::ui::designer_surface::hit_test_doc(&doc, x, y)
+            .map(|name| (name, crate::ui::designer_surface::DESIGNER_DRAG_MOVE))
+    });
+    if let Some((control_name, drag_mode)) = hit {
+        let Some(control) = doc
+            .controls
+            .iter()
+            .find(|control| control.name == control_name)
+        else {
+            return;
+        };
         s.selected_designer_file = String::from(file_path);
         s.selected_designer_control = control_name.clone();
+        s.designer_drag_file = String::from(file_path);
+        s.designer_drag_control = control_name.clone();
+        s.designer_drag_mode = drag_mode;
+        s.designer_drag_start_x = x;
+        s.designer_drag_start_y = y;
+        s.designer_drag_orig_x = control.x;
+        s.designer_drag_orig_y = control.y;
+        s.designer_drag_orig_w = control.width;
+        s.designer_drag_orig_h = control.height;
         s.inspector_panel.show_designer_control(&doc, &control_name);
         s.editor_view
             .select_designer_control(file_path, &control_name);
@@ -727,8 +751,144 @@ pub fn select_designer_control_at(file_path: &str, x: i32, y: i32) {
     } else {
         s.selected_designer_file.clear();
         s.selected_designer_control.clear();
+        s.designer_drag_file.clear();
+        s.designer_drag_control.clear();
+        s.designer_drag_mode = crate::ui::designer_surface::DESIGNER_DRAG_NONE;
         s.inspector_panel.show_designer(&doc);
         s.status.set_analysis_status("Selected form surface");
+    }
+}
+
+pub fn designer_pointer_move_at(file_path: &str, x: i32, y: i32) {
+    update_designer_drag(file_path, x, y, false);
+}
+
+pub fn designer_pointer_up_at(file_path: &str, x: i32, y: i32) {
+    update_designer_drag(file_path, x, y, true);
+    let s = app();
+    s.designer_drag_file.clear();
+    s.designer_drag_control.clear();
+    s.designer_drag_mode = crate::ui::designer_surface::DESIGNER_DRAG_NONE;
+}
+
+pub fn designer_drop_tool_at(file_path: &str, x: i32, y: i32, payload: &str) {
+    let Some(control_kind) = payload.strip_prefix("anycode-control:") else {
+        return;
+    };
+    if control_kind.is_empty() {
+        return;
+    }
+    let s = app();
+    let mut doc = match designer::load_designer(file_path) {
+        Some(doc) => doc,
+        None => return,
+    };
+    let (form_x, form_y) = crate::ui::designer_surface::canvas_to_form(x, y);
+    let control_name = match doc.add_control(control_kind, form_x, form_y) {
+        Ok(name) => name,
+        Err(err) => {
+            s.status.set_analysis_status(err);
+            return;
+        }
+    };
+    if let Err(err) = designer::save_designer(file_path, &doc) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    s.selected_designer_file = String::from(file_path);
+    s.selected_designer_control = control_name.clone();
+    s.editor_view
+        .update_designer_document(file_path, doc.clone(), Some(&control_name));
+    s.inspector_panel.show_designer_control(&doc, &control_name);
+    s.status
+        .set_analysis_status(&format!("Added {}", control_name));
+}
+
+fn update_designer_drag(file_path: &str, x: i32, y: i32, persist: bool) {
+    let s = app();
+    if s.designer_drag_mode == crate::ui::designer_surface::DESIGNER_DRAG_NONE
+        || s.designer_drag_file != file_path
+        || s.designer_drag_control.is_empty()
+    {
+        return;
+    }
+    let control_name = s.designer_drag_control.clone();
+    let drag_mode = s.designer_drag_mode;
+    let start_x = s.designer_drag_start_x;
+    let start_y = s.designer_drag_start_y;
+    let orig_x = s.designer_drag_orig_x;
+    let orig_y = s.designer_drag_orig_y;
+    let orig_w = s.designer_drag_orig_w;
+    let orig_h = s.designer_drag_orig_h;
+
+    let mut doc = match designer::load_designer(file_path) {
+        Some(doc) => doc,
+        None => return,
+    };
+    let dx = x - start_x;
+    let dy = y - start_y;
+    let (new_x, new_y, new_w, new_h) =
+        designer_drag_bounds(drag_mode, orig_x, orig_y, orig_w, orig_h, dx, dy);
+    if let Err(err) = doc.set_control_bounds(&control_name, new_x, new_y, new_w, new_h) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    if persist {
+        if let Err(err) = designer::save_designer(file_path, &doc) {
+            s.status.set_analysis_status(err);
+            return;
+        }
+    }
+    s.editor_view
+        .update_designer_document(file_path, doc.clone(), Some(&control_name));
+    s.inspector_panel.show_designer_control(&doc, &control_name);
+    if persist {
+        s.status
+            .set_analysis_status(&format!("Updated layout for {}", control_name));
+    }
+}
+
+fn designer_drag_bounds(
+    mode: u32,
+    orig_x: i32,
+    orig_y: i32,
+    orig_w: u32,
+    orig_h: u32,
+    dx: i32,
+    dy: i32,
+) -> (i32, i32, u32, u32) {
+    let w = orig_w as i32;
+    let h = orig_h as i32;
+    match mode {
+        crate::ui::designer_surface::DESIGNER_DRAG_MOVE => {
+            (orig_x + dx, orig_y + dy, orig_w, orig_h)
+        }
+        crate::ui::designer_surface::DESIGNER_DRAG_RESIZE_NW => {
+            let adx = dx.min(w - DESIGNER_MIN_DRAG_SIZE);
+            let ady = dy.min(h - DESIGNER_MIN_DRAG_SIZE);
+            (
+                orig_x + adx,
+                orig_y + ady,
+                (w - adx) as u32,
+                (h - ady) as u32,
+            )
+        }
+        crate::ui::designer_surface::DESIGNER_DRAG_RESIZE_NE => {
+            let ady = dy.min(h - DESIGNER_MIN_DRAG_SIZE);
+            let nw = (w + dx).max(DESIGNER_MIN_DRAG_SIZE) as u32;
+            (orig_x, orig_y + ady, nw, (h - ady) as u32)
+        }
+        crate::ui::designer_surface::DESIGNER_DRAG_RESIZE_SW => {
+            let adx = dx.min(w - DESIGNER_MIN_DRAG_SIZE);
+            let nh = (h + dy).max(DESIGNER_MIN_DRAG_SIZE) as u32;
+            (orig_x + adx, orig_y, (w - adx) as u32, nh)
+        }
+        crate::ui::designer_surface::DESIGNER_DRAG_RESIZE_SE => {
+            let nw = (w + dx).max(DESIGNER_MIN_DRAG_SIZE) as u32;
+            let nh = (h + dy).max(DESIGNER_MIN_DRAG_SIZE) as u32;
+            (orig_x, orig_y, nw, nh)
+        }
+        _ => (orig_x, orig_y, orig_w, orig_h),
     }
 }
 
@@ -834,7 +994,8 @@ pub fn delete_selected_designer_control() {
         return;
     }
     s.selected_designer_control.clear();
-    s.editor_view.update_designer_document(&file_path, doc.clone(), None);
+    s.editor_view
+        .update_designer_document(&file_path, doc.clone(), None);
     s.inspector_panel.show_designer(&doc);
     s.status
         .set_analysis_status(&format!("Deleted control {}", control_name));
@@ -1969,7 +2130,10 @@ pub fn update_action_state() {
     set_enabled(s.toolbar_save_id, has_files);
     set_enabled(s.toolbar_save_all_id, has_files);
     set_enabled(s.toolbar_build_id, has_build && !process_running);
-    set_enabled(s.toolbar_run_config_button_id, has_project && !process_running);
+    set_enabled(
+        s.toolbar_run_config_button_id,
+        has_project && !process_running,
+    );
     set_enabled(s.run_config_dropdown_id, has_project && !process_running);
     set_enabled(s.debug_profile_dropdown_id, has_project && !process_running);
     set_enabled(s.toolbar_run_id, has_run && !process_running);
@@ -1979,10 +2143,16 @@ pub fn update_action_state() {
     set_enabled(s.toolbar_debug_step_id, can_step_debug);
     set_enabled(s.toolbar_stop_id, can_stop_debug);
 
-    s.run_panel.btn_build.set_enabled(has_build && !process_running);
+    s.run_panel
+        .btn_build
+        .set_enabled(has_build && !process_running);
     s.run_panel.btn_run.set_enabled(has_run && !process_running);
-    s.run_panel.btn_test.set_enabled(has_tests && !process_running);
-    s.run_panel.btn_debug.set_enabled(has_run && !process_running);
+    s.run_panel
+        .btn_test
+        .set_enabled(has_tests && !process_running);
+    s.run_panel
+        .btn_debug
+        .set_enabled(has_run && !process_running);
     s.run_panel.btn_continue.set_enabled(can_continue_debug);
     s.run_panel.btn_pause.set_enabled(can_pause_debug);
     s.run_panel.btn_step_over.set_enabled(can_step_debug);

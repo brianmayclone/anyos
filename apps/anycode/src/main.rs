@@ -13,10 +13,10 @@
 #![no_std]
 #![no_main]
 
+mod app_state;
 mod logic;
 mod ui;
 mod util;
-mod app_state;
 
 use alloc::format;
 use alloc::string::String;
@@ -286,7 +286,17 @@ fn build_and_run(
             pending_designer_event_x: 0,
             pending_designer_event_y: 0,
             pending_designer_event_kind: 0,
+            pending_designer_event_payload: String::new(),
             designer_event_timer_id: 0,
+            designer_drag_file: String::new(),
+            designer_drag_control: String::new(),
+            designer_drag_mode: 0,
+            designer_drag_start_x: 0,
+            designer_drag_start_y: 0,
+            designer_drag_orig_x: 0,
+            designer_drag_orig_y: 0,
+            designer_drag_orig_w: 0,
+            designer_drag_orig_h: 0,
         });
     }
 
@@ -578,25 +588,38 @@ fn poll_live_check() {
 // ════════════════════════════════════════════════════════════════
 
 pub fn queue_designer_click(file_path: &str, x: i32, y: i32) {
-    queue_designer_event(file_path, x, y, 1);
+    queue_designer_event(file_path, x, y, 1, "");
 }
 
 pub fn queue_designer_double_click(file_path: &str, x: i32, y: i32) {
-    queue_designer_event(file_path, x, y, 2);
+    queue_designer_event(file_path, x, y, 2, "");
 }
 
-fn queue_designer_event(file_path: &str, x: i32, y: i32, kind: u32) {
+pub fn queue_designer_mouse_move(file_path: &str, x: i32, y: i32) {
+    queue_designer_event(file_path, x, y, 3, "");
+}
+
+pub fn queue_designer_mouse_up(file_path: &str, x: i32, y: i32) {
+    queue_designer_event(file_path, x, y, 4, "");
+}
+
+pub fn queue_designer_drop(file_path: &str, x: i32, y: i32, payload: &str) {
+    queue_designer_event(file_path, x, y, 5, payload);
+}
+
+fn queue_designer_event(file_path: &str, x: i32, y: i32, kind: u32, payload: &str) {
     let s = app();
     s.pending_designer_event_file = String::from(file_path);
     s.pending_designer_event_x = x;
     s.pending_designer_event_y = y;
     s.pending_designer_event_kind = kind;
+    s.pending_designer_event_payload = String::from(payload);
     if s.designer_event_timer_id == 0 {
         s.designer_event_timer_id = anyui::set_timer(1, poll_designer_event);
     }
 }
 
-fn take_pending_designer_event() -> Option<(u32, String, i32, i32)> {
+fn take_pending_designer_event() -> Option<(u32, String, i32, i32, String)> {
     let s = app();
     if s.pending_designer_event_kind == 0 {
         if s.designer_event_timer_id != 0 {
@@ -610,25 +633,30 @@ fn take_pending_designer_event() -> Option<(u32, String, i32, i32)> {
     let file_path = s.pending_designer_event_file.clone();
     let x = s.pending_designer_event_x;
     let y = s.pending_designer_event_y;
+    let payload = s.pending_designer_event_payload.clone();
 
     s.pending_designer_event_file.clear();
     s.pending_designer_event_x = 0;
     s.pending_designer_event_y = 0;
     s.pending_designer_event_kind = 0;
+    s.pending_designer_event_payload.clear();
     if s.designer_event_timer_id != 0 {
         anyui::kill_timer(s.designer_event_timer_id);
         s.designer_event_timer_id = 0;
     }
 
-    Some((kind, file_path, x, y))
+    Some((kind, file_path, x, y, payload))
 }
 
 fn poll_designer_event() {
-    if let Some((kind, file_path, x, y)) = take_pending_designer_event() {
-        if kind == 2 {
-            logic::commands::designer_double_click_at(&file_path, x, y);
-        } else {
-            logic::commands::select_designer_control_at(&file_path, x, y);
+    if let Some((kind, file_path, x, y, payload)) = take_pending_designer_event() {
+        match kind {
+            1 => logic::commands::designer_pointer_down_at(&file_path, x, y),
+            2 => logic::commands::designer_double_click_at(&file_path, x, y),
+            3 => logic::commands::designer_pointer_move_at(&file_path, x, y),
+            4 => logic::commands::designer_pointer_up_at(&file_path, x, y),
+            5 => logic::commands::designer_drop_tool_at(&file_path, x, y, &payload),
+            _ => {}
         }
     }
 }

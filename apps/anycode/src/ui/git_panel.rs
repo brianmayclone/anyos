@@ -243,7 +243,8 @@ impl GitPanel {
         self.file_paths.push(String::new());
         self.timeline_tree.clear();
         let tnode = self.timeline_tree.add_root(t("No timeline available"));
-        self.timeline_tree.set_node_text_color(tnode, tc.text_secondary);
+        self.timeline_tree
+            .set_node_text_color(tnode, tc.text_secondary);
     }
 
     /// Show a "no repo" message.
@@ -259,12 +260,15 @@ impl GitPanel {
         self.btn_refresh.set_enabled(false);
         self.tree.clear();
         self.file_paths.clear();
-        let node = self.tree.add_root(t("Initialize this folder or open a Git repository"));
+        let node = self
+            .tree
+            .add_root(t("Initialize this folder or open a Git repository"));
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.file_paths.push(String::new());
         self.timeline_tree.clear();
         let tnode = self.timeline_tree.add_root(t("No timeline available"));
-        self.timeline_tree.set_node_text_color(tnode, tc.text_secondary);
+        self.timeline_tree
+            .set_node_text_color(tnode, tc.text_secondary);
     }
 
     fn update_timeline(&mut self, state: &GitState) {
@@ -273,12 +277,14 @@ impl GitPanel {
         self.timeline_tree.clear();
         if !state.is_repo {
             let node = self.timeline_tree.add_root(t("No timeline available"));
-            self.timeline_tree.set_node_text_color(node, tc.text_secondary);
+            self.timeline_tree
+                .set_node_text_color(node, tc.text_secondary);
             return;
         }
         if state.timeline.is_empty() {
             let node = self.timeline_tree.add_root(t("No commits detected"));
-            self.timeline_tree.set_node_text_color(node, tc.text_secondary);
+            self.timeline_tree
+                .set_node_text_color(node, tc.text_secondary);
             return;
         }
 

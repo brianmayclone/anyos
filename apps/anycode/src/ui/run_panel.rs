@@ -290,7 +290,12 @@ impl RunPanel {
             let cat_node = self.tree.add_root(&label);
             self.tree.set_node_style(cat_node, STYLE_BOLD);
             self.tree.set_node_text_color(cat_node, tc.text);
-            set_node_icon(&self.tree, cat_node, icon_for_task_category(*category), tc.text_secondary);
+            set_node_icon(
+                &self.tree,
+                cat_node,
+                icon_for_task_category(*category),
+                tc.text_secondary,
+            );
             self.task_indices.push(None);
             self.tree.set_expanded(cat_node, true);
 
@@ -319,7 +324,12 @@ impl RunPanel {
                         tc.text_secondary
                     },
                 );
-                set_node_icon(&self.tree, node, icon_for_task_category(task.category), color);
+                set_node_icon(
+                    &self.tree,
+                    node,
+                    icon_for_task_category(task.category),
+                    color,
+                );
                 self.task_indices.push(Some(*task_idx));
             }
         }
@@ -396,7 +406,12 @@ impl RunPanel {
                 frame.line + 1
             );
             let node = self.debug_tree.add_child(frames, &label);
-            set_node_icon(&self.debug_tree, node, "corner-down-right", tc.text_secondary);
+            set_node_icon(
+                &self.debug_tree,
+                node,
+                "corner-down-right",
+                tc.text_secondary,
+            );
         }
 
         let vars = self
@@ -418,7 +433,9 @@ impl RunPanel {
         self.debug_tree.set_node_style(regs, STYLE_BOLD);
         set_node_icon(&self.debug_tree, regs, "cpu", tc.text_secondary);
         for reg in &debug.registers {
-            let node = self.debug_tree.add_child(regs, &format!("{} = {}", reg.name, reg.value));
+            let node = self
+                .debug_tree
+                .add_child(regs, &format!("{} = {}", reg.name, reg.value));
             set_node_icon(&self.debug_tree, node, "binary", tc.text_secondary);
         }
 
