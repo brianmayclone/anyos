@@ -2350,7 +2350,13 @@ fn token_to_string(kind: &TokenKind, interner: &Interner, out: &mut String) {
                 out.push_str(suffix_str);
             }
         }
-        TokenKind::FloatLit(f) => out.push_str(&f.to_string()),
+        TokenKind::FloatLit(f) => {
+            let mut s = f.to_string();
+            if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                s.push_str(".0");
+            }
+            out.push_str(&s);
+        }
         TokenKind::StringLit(s) => push_escaped_string_literal(out, s),
         TokenKind::CharLit(c) => push_escaped_char_literal(out, *c),
         TokenKind::ByteStringLit(_) => out.push_str("b\"...\""),

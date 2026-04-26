@@ -204,6 +204,56 @@ fn extract_cfg(attr: &Attribute, interner: &Interner) -> Option<CfgPred> {
     }
 }
 
+/// Return true if `attr` is a matching `#[cfg_attr(..., target_attr)]`
+/// whose cfg predicate evaluates to true in the current context.
+pub fn cfg_attr_applies_attr(
+    attr: &Attribute,
+    ctx: &CfgContext,
+    interner: &Interner,
+    target_attr: &str,
+) -> bool {
+    if attr.path.segments.len() != 1 {
+        return false;
+    }
+    if interner.resolve(attr.path.segments[0].ident) != "cfg_attr" {
+        return false;
+    }
+
+    let AttrArgs::Delimited(tokens) = &attr.args else {
+        return false;
+    };
+    let Some((pred_tokens, attr_tokens)) = split_cfg_attr_args(tokens) else {
+        return false;
+    };
+
+    parse_cfg_pred(pred_tokens, interner).eval(ctx)
+        && token_trees_contain_ident(attr_tokens, interner, target_attr)
+}
+
+fn split_cfg_attr_args(tokens: &[TokenTree]) -> Option<(&[TokenTree], &[TokenTree])> {
+    for (idx, tt) in tokens.iter().enumerate() {
+        if let TokenTree::Token(token) = tt {
+            if token.kind == TokenKind::Comma {
+                return Some((&tokens[..idx], &tokens[idx + 1..]));
+            }
+        }
+    }
+    None
+}
+
+fn token_trees_contain_ident(tokens: &[TokenTree], interner: &Interner, name: &str) -> bool {
+    tokens.iter().any(|tt| match tt {
+        TokenTree::Token(token) => {
+            if let TokenKind::Ident(sym) = token.kind {
+                interner.resolve(sym) == name
+            } else {
+                false
+            }
+        }
+        TokenTree::Delimited(_, inner) => token_trees_contain_ident(inner, interner, name),
+    })
+}
+
 /// Check if an item should be kept based on its #[cfg(...)] attributes.
 fn should_keep_item_attrs(attrs: &[Attribute], ctx: &CfgContext, interner: &Interner) -> bool {
     for attr in attrs {

@@ -796,6 +796,37 @@ pub fn apply_designer_property() {
         .set_analysis_status(&format!("Updated {}.{}", control_name, property_name));
 }
 
+pub fn delete_selected_designer_control() {
+    let s = app();
+    if s.selected_designer_file.is_empty() || s.selected_designer_control.is_empty() {
+        s.status
+            .set_analysis_status("Select a designer control first");
+        return;
+    }
+    let file_path = s.selected_designer_file.clone();
+    let control_name = s.selected_designer_control.clone();
+    let mut doc = match designer::load_designer(&file_path) {
+        Some(doc) => doc,
+        None => {
+            s.status.set_analysis_status("Could not load designer file");
+            return;
+        }
+    };
+    if let Err(err) = doc.remove_control(&control_name) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    if let Err(err) = designer::save_designer(&file_path, &doc) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    s.selected_designer_control.clear();
+    s.editor_view.update_designer_document(&file_path, doc.clone(), None);
+    s.inspector_panel.show_designer(&doc);
+    s.status
+        .set_analysis_status(&format!("Deleted control {}", control_name));
+}
+
 pub fn toggle_inspector() {
     let s = app();
     s.config.inspector_visible = !s.config.inspector_visible;

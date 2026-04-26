@@ -93,7 +93,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     let mut krate = parser.parse_crate();
 
     // Check crate-level attributes
-    let no_main = krate.attrs.iter().any(|a| {
+    let mut no_main = krate.attrs.iter().any(|a| {
         a.path.segments.len() == 1 && interner.resolve(a.path.segments[0].ident) == "no_main"
     });
     let _no_std = krate.attrs.iter().any(|a| {
@@ -125,6 +125,11 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 
     // 1b. Build cfg context from options
     let cfg_ctx = crate::cfg::CfgContext::from_flags(&options.cfg_flags);
+    no_main = no_main
+        || krate
+            .attrs
+            .iter()
+            .any(|attr| crate::cfg::cfg_attr_applies_attr(attr, &cfg_ctx, &interner, "no_main"));
     let src_dir = if let Some(ref dir) = options.src_dir {
         dir.clone()
     } else {

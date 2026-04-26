@@ -159,6 +159,13 @@ const MEDIA_PROPERTIES: &[&str] = &[
     "Tooltip",
 ];
 
+const MIN_FORM_SIZE: u32 = 160;
+const MAX_FORM_SIZE: u32 = 4096;
+const MIN_CONTROL_SIZE: u32 = 1;
+const MAX_CONTROL_SIZE: u32 = 2048;
+const MIN_CONTROL_POS: i32 = -4096;
+const MAX_CONTROL_POS: i32 = 4096;
+
 impl DesignerControlKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -487,7 +494,19 @@ impl DesignerDocument {
                 }
             }
         }
+        doc.normalize_layout();
         doc
+    }
+
+    pub fn normalize_layout(&mut self) {
+        self.width = clamp_u32(self.width, MIN_FORM_SIZE, MAX_FORM_SIZE);
+        self.height = clamp_u32(self.height, MIN_FORM_SIZE, MAX_FORM_SIZE);
+        for control in &mut self.controls {
+            control.x = clamp_i32(control.x, MIN_CONTROL_POS, MAX_CONTROL_POS);
+            control.y = clamp_i32(control.y, MIN_CONTROL_POS, MAX_CONTROL_POS);
+            control.width = clamp_u32(control.width, MIN_CONTROL_SIZE, MAX_CONTROL_SIZE);
+            control.height = clamp_u32(control.height, MIN_CONTROL_SIZE, MAX_CONTROL_SIZE);
+        }
     }
 
     pub fn to_designer_metadata(&self) -> String {
@@ -629,12 +648,48 @@ impl DesignerDocument {
         };
         match normalized_property(property_name) {
             "text" => control.text = String::from(value),
-            "x" => control.x = parse_i32(value).ok_or("X must be a number")?,
-            "y" => control.y = parse_i32(value).ok_or("Y must be a number")?,
-            "width" => control.width = parse_u32(value).ok_or("Width must be a number")?,
-            "height" => control.height = parse_u32(value).ok_or("Height must be a number")?,
+            "x" => {
+                let x = parse_i32(value).ok_or("X must be a number")?;
+                if !(MIN_CONTROL_POS..=MAX_CONTROL_POS).contains(&x) {
+                    return Err("X is outside the supported designer range");
+                }
+                control.x = x;
+            }
+            "y" => {
+                let y = parse_i32(value).ok_or("Y must be a number")?;
+                if !(MIN_CONTROL_POS..=MAX_CONTROL_POS).contains(&y) {
+                    return Err("Y is outside the supported designer range");
+                }
+                control.y = y;
+            }
+            "width" => {
+                let width = parse_u32(value).ok_or("Width must be a number")?;
+                if !(MIN_CONTROL_SIZE..=MAX_CONTROL_SIZE).contains(&width) {
+                    return Err("Width is outside the supported designer range");
+                }
+                control.width = width;
+            }
+            "height" => {
+                let height = parse_u32(value).ok_or("Height must be a number")?;
+                if !(MIN_CONTROL_SIZE..=MAX_CONTROL_SIZE).contains(&height) {
+                    return Err("Height is outside the supported designer range");
+                }
+                control.height = height;
+            }
             _ => control.set_custom_property(property_name, value),
         }
+        Ok(())
+    }
+
+    pub fn remove_control(&mut self, control_name: &str) -> Result<(), &'static str> {
+        let Some(index) = self
+            .controls
+            .iter()
+            .position(|control| control.name == control_name)
+        else {
+            return Err("Designer control not found");
+        };
+        self.controls.remove(index);
         Ok(())
     }
 
@@ -665,9 +720,11 @@ pub fn load_designer(file_path: &str) -> Option<DesignerDocument> {
 }
 
 pub fn save_designer(file_path: &str, doc: &DesignerDocument) -> Result<(), &'static str> {
-    anyos_std::fs::write_bytes(file_path, doc.to_designer_metadata().as_bytes())
+    let mut normalized = doc.clone();
+    normalized.normalize_layout();
+    anyos_std::fs::write_bytes(file_path, normalized.to_designer_metadata().as_bytes())
         .map_err(|_| "Could not write designer metadata")?;
-    regenerate_generated_files(file_path, doc)
+    regenerate_generated_files(file_path, &normalized)
 }
 
 pub fn regenerate_generated_files(
@@ -1056,10 +1113,30 @@ fn parse_u32(value: &str) -> Option<u32> {
 
 fn parse_i32(value: &str) -> Option<i32> {
     if let Some(rest) = value.strip_prefix('-') {
-        parse_u32(rest).map(|v| -(v as i32))
+        parse_u32(rest).and_then(|v| {
+            if v <= i32::MAX as u32 {
+                Some(-(v as i32))
+            } else {
+                None
+            }
+        })
     } else {
-        parse_u32(value).map(|v| v as i32)
+        parse_u32(value).and_then(|v| {
+            if v <= i32::MAX as u32 {
+                Some(v as i32)
+            } else {
+                None
+            }
+        })
     }
+}
+
+fn clamp_u32(value: u32, min: u32, max: u32) -> u32 {
+    value.max(min).min(max)
+}
+
+fn clamp_i32(value: i32, min: i32, max: i32) -> i32 {
+    value.max(min).min(max)
 }
 
 fn escape(value: &str) -> String {

@@ -299,6 +299,206 @@ fn macro_error_wrapper_inside_result_match_uses_outer_err_binding() {
 }
 
 #[test]
+fn result_variant_constructors_use_expected_payload_types() {
+    assert_type_ok(
+        r#"
+        enum Result<T, E> { Ok(T), Err(E) }
+
+        struct Response {
+            count: usize,
+        }
+
+        fn ok_response() -> Result<Response, &'static str> {
+            Ok(Response { count: 1 })
+        }
+
+        fn err_response() -> Result<Response, &'static str> {
+            Err("failed")
+        }
+    "#,
+    );
+}
+
+#[test]
+fn vec_macro_to_vec_propagates_expected_element_type() {
+    assert_type_ok(
+        r#"
+        enum Option<T> { Some(T), None }
+        struct String {}
+        struct Vec<T> {}
+        impl<T> [T] {
+            fn to_vec(&self) -> Vec<T> { loop {} }
+        }
+        struct Box<T> {}
+        impl<T> Box<T> {
+            fn new(value: T) -> Box<T> { loop {} }
+        }
+
+        enum Expr {
+            Num(f64),
+            Field(Box<Expr>),
+        }
+
+        enum Stmt {
+            Print(Vec<Expr>, Option<String>),
+        }
+
+        fn parse_rule() {
+            let action: Vec<Stmt> = vec![
+                Stmt::Print(
+                    vec![Expr::Field(Box::new(Expr::Num(0.0)))],
+                    None,
+                )
+            ];
+        }
+    "#,
+    );
+}
+
+#[test]
+fn borrowed_slice_to_vec_keeps_receiver_as_ref_slice() {
+    assert_type_ok(
+        r#"
+        struct Vec<T> {}
+        impl<T> [T] {
+            fn to_vec(&self) -> Vec<T> { loop {} }
+        }
+
+        fn copy_slice(line: &[u8]) -> Vec<u8> {
+            line.to_vec()
+        }
+    "#,
+    );
+}
+
+#[test]
+fn vec_into_iter_filter_collect_keeps_owned_item_type() {
+    assert_type_ok(
+        r#"
+        struct Vec<T> {}
+        enum Option<T> { Some(T), None }
+        struct ProgramHeader {
+            ty: u32,
+        }
+
+        fn contains_addr(_: &ProgramHeader, _: u64) -> bool { true }
+        fn program_headers() -> Vec<ProgramHeader> { loop {} }
+
+        fn load_segments() -> Vec<ProgramHeader> {
+            let headers = program_headers()
+                .into_iter()
+                .filter(|ph| ph.ty == 1)
+                .collect::<Vec<_>>();
+            headers
+        }
+
+        fn find_segment(entry: u64) -> Option<ProgramHeader> {
+            program_headers()
+                .into_iter()
+                .find(|ph| ph.ty == 1 && contains_addr(ph, entry))
+        }
+    "#,
+    );
+}
+
+#[test]
+fn vec_into_iter_uses_expected_concrete_into_iter_type() {
+    assert_type_ok(
+        r#"
+        mod alloc {
+            pub mod vec {
+                pub struct IntoIter<T> {}
+            }
+        }
+
+        struct Vec<T> {}
+        struct SocketAddr {}
+
+        fn to_socket_addrs() -> alloc::vec::IntoIter<SocketAddr> {
+            let addrs: Vec<SocketAddr> = Vec {};
+            addrs.into_iter()
+        }
+    "#,
+    );
+}
+
+#[test]
+fn collect_string_from_char_refs_uses_turbofish_target() {
+    assert_type_ok(
+        r#"
+        struct String {}
+        struct Vec<T> {}
+        impl<T> [T] {
+            fn iter(&self) -> Vec<&T> { loop {} }
+        }
+
+        fn pattern_string(pat: &[char]) -> String {
+            pat.iter().collect::<String>()
+        }
+    "#,
+    );
+}
+
+#[test]
+fn slice_split_first_binds_head_and_tail_types() {
+    assert_type_ok(
+        r#"
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn len(&self) -> usize { 0 }
+            fn get_mut(&mut self, idx: usize) -> Option<&mut T> { loop {} }
+        }
+        enum Option<T> { Some(T), None }
+
+        struct Item {
+            children: Vec<Item>,
+        }
+
+        fn resolve<'a>(
+            roots: &'a mut Vec<Item>,
+            path: &[usize],
+        ) -> Option<(&'a mut Vec<Item>, usize)> {
+            match path.split_first() {
+                None => None,
+                Some((&idx, rest)) if rest.is_empty() => {
+                    if idx >= roots.len() {
+                        None
+                    } else {
+                        Some((roots, idx))
+                    }
+                }
+                Some((&idx, rest)) => {
+                    let item = roots.get_mut(idx)?;
+                    resolve(&mut item.children, rest)
+                }
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn box_new_enum_float_argument_uses_expected_inner_type() {
+    assert_type_ok(
+        r#"
+        struct Box<T> {}
+        impl<T> Box<T> {
+            fn new(value: T) -> Box<T> { loop {} }
+        }
+
+        enum Expr {
+            Num(f64),
+            Field(Box<Expr>),
+        }
+
+        fn parse_rule() {
+            let expr: Expr = Expr::Field(Box::new(Expr::Num(0.0)));
+        }
+    "#,
+    );
+}
+
+#[test]
 fn macro_slot_bail_style_result_match_with_continue_typechecks() {
     assert_type_ok(
         r#"

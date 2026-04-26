@@ -189,6 +189,10 @@ pub fn wire_inspector() {
         .inspector_panel
         .btn_apply_property
         .on_click(|_| commands::apply_designer_property());
+    app()
+        .inspector_panel
+        .btn_delete_control
+        .on_click(|_| commands::delete_selected_designer_control());
 }
 
 // ── Menu bar ───────────────────────────────────────────────────

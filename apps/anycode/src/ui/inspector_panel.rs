@@ -11,6 +11,7 @@ pub struct InspectorPanel {
     pub property_dropdown: ui::DropDown,
     pub property_value: ui::TextField,
     pub btn_apply_property: ui::Button,
+    pub btn_delete_control: ui::Button,
     title: ui::Label,
     subtitle: ui::Label,
     tree: ui::TreeView,
@@ -52,7 +53,7 @@ impl InspectorPanel {
 
         let property_editor = ui::View::new();
         property_editor.set_dock(ui::DOCK_BOTTOM);
-        property_editor.set_size(240, 118);
+        property_editor.set_size(240, 150);
         property_editor.set_color(tc.sidebar_bg);
         property_editor.set_visible(false);
         panel.add(&property_editor);
@@ -82,11 +83,18 @@ impl InspectorPanel {
         btn_apply_property.set_color(tc.accent);
         property_editor.add(&btn_apply_property);
 
+        let btn_delete_control = ui::Button::new("Delete Control");
+        btn_delete_control.set_position(12, 98);
+        btn_delete_control.set_size(216, 28);
+        btn_delete_control.set_color(0xff7f1d1d);
+        property_editor.add(&btn_delete_control);
+
         let this = Self {
             panel,
             property_dropdown,
             property_value,
             btn_apply_property,
+            btn_delete_control,
             title,
             subtitle,
             tree,
