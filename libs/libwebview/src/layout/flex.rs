@@ -219,19 +219,8 @@ pub(super) fn measure_max_content(
 
     // Inline <svg> → use rasterised dimensions.
     if dom.tag(node_id) == Some(Tag::Svg) {
-        let key = super::svg_inline_key(node_id);
-        if let Some(info) = images.get_ref(&key) {
-            let w = dom
-                .attr(node_id, "width")
-                .and_then(|s| s.parse::<i32>().ok())
-                .unwrap_or(info.width as i32);
-            return w + pad_border;
-        }
-        let attr_w = dom
-            .attr(node_id, "width")
-            .and_then(|s| s.parse::<i32>().ok())
-            .unwrap_or(100);
-        return attr_w + pad_border;
+        let (w, _) = super::svg_intrinsic_dimensions(dom, images, node_id);
+        return w + pad_border;
     }
 
     // Flex container → sum of children's max-content widths + gaps.

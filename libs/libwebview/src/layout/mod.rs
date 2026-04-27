@@ -688,6 +688,81 @@ pub(crate) fn svg_inline_key(node_id: NodeId) -> String {
     s
 }
 
+fn parse_svg_viewbox_size(value: &str) -> Option<(i32, i32)> {
+    let mut parts = [0i32; 4];
+    let mut count = 0usize;
+    for part in value
+        .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
+        .filter(|part| !part.is_empty())
+    {
+        if count >= 4 {
+            break;
+        }
+        let mut int_part = 0i32;
+        let mut saw_digit = false;
+        for b in part.as_bytes() {
+            if b.is_ascii_digit() {
+                saw_digit = true;
+                int_part = int_part
+                    .saturating_mul(10)
+                    .saturating_add((b - b'0') as i32);
+            } else if *b == b'.' {
+                break;
+            } else if saw_digit {
+                break;
+            }
+        }
+        if !saw_digit {
+            return None;
+        }
+        parts[count] = int_part;
+        count += 1;
+    }
+    if count == 4 && parts[2] > 0 && parts[3] > 0 {
+        Some((parts[2], parts[3]))
+    } else {
+        None
+    }
+}
+
+pub(super) fn svg_intrinsic_dimensions(
+    dom: &Dom,
+    images: &ImageCache,
+    node_id: NodeId,
+) -> (i32, i32) {
+    let key = svg_inline_key(node_id);
+    let natural = images
+        .get_ref(&key)
+        .map(|e| (e.width.min(65535) as i32, e.height.min(65535) as i32));
+    let viewbox = dom
+        .attr(node_id, "viewBox")
+        .or_else(|| dom.attr(node_id, "viewbox"))
+        .and_then(parse_svg_viewbox_size);
+    let attr_w = dom.attr(node_id, "width").and_then(parse_attr_int);
+    let attr_h = dom.attr(node_id, "height").and_then(parse_attr_int);
+    let ratio = viewbox.or(natural);
+
+    let width = attr_w
+        .or(viewbox.map(|(w, _)| w))
+        .or(natural.map(|(w, _)| w));
+    let height = attr_h
+        .or_else(|| {
+            attr_w.and_then(|w| {
+                ratio.and_then(|(rw, rh)| {
+                    if rw > 0 {
+                        Some(((w as i64 * rh as i64) / rw as i64).max(1) as i32)
+                    } else {
+                        None
+                    }
+                })
+            })
+        })
+        .or(viewbox.map(|(_, h)| h))
+        .or(natural.map(|(_, h)| h));
+
+    (width.unwrap_or(100).max(1), height.unwrap_or(100).max(1))
+}
+
 pub(super) fn image_dimensions(
     dom: &Dom,
     node_id: NodeId,

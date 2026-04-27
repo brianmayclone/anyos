@@ -745,19 +745,7 @@ fn collect_inline_fragments(
             // Handle inline <svg> as replaced element.
             if *tag == Tag::Svg {
                 let key = super::svg_inline_key(node_id);
-                let natural = images
-                    .get_ref(&key)
-                    .map(|e| (e.width.min(65535) as i32, e.height.min(65535) as i32));
-                let iw = dom
-                    .attr(node_id, "width")
-                    .and_then(parse_attr_int)
-                    .or(natural.map(|(w, _)| w))
-                    .unwrap_or(100);
-                let ih = dom
-                    .attr(node_id, "height")
-                    .and_then(parse_attr_int)
-                    .or(natural.map(|(_, h)| h))
-                    .unwrap_or(100);
+                let (iw, ih) = super::svg_intrinsic_dimensions(dom, images, node_id);
                 let mut img = build_empty_inline_visual_box(node_id, style);
                 let (margin_top, margin_right, margin_bottom, margin_left) =
                     resolve_margins(style, available_width);

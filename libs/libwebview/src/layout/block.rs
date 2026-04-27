@@ -15,7 +15,7 @@ use super::flex::layout_flex;
 use super::grid::layout_grid;
 use super::{
     edges_from, font_size_px, image_dimensions, is_bold, is_italic, layout_children_ex_with_budget,
-    link_href, list_marker_for, parse_attr_int, BoxType, FormFieldKind, LayoutBox,
+    link_href, list_marker_for, BoxType, FormFieldKind, LayoutBox,
 };
 
 /// Build a block-level layout box for a single DOM node.
@@ -609,19 +609,7 @@ fn build_block_internal(
     // image cache under the synthetic key "__svg_<node_id>__".
     if tag == Some(Tag::Svg) {
         let key = super::svg_inline_key(node_id);
-        let natural = images
-            .get_ref(&key)
-            .map(|e| (e.width.min(65535) as i32, e.height.min(65535) as i32));
-        let w = dom
-            .attr(node_id, "width")
-            .and_then(parse_attr_int)
-            .or(natural.map(|(w, _)| w))
-            .unwrap_or(100);
-        let h = dom
-            .attr(node_id, "height")
-            .and_then(parse_attr_int)
-            .or(natural.map(|(_, h)| h))
-            .unwrap_or(100);
+        let (w, h) = super::svg_intrinsic_dimensions(dom, images, node_id);
         let mut content_w = w.min(available_width.max(1));
         let mut content_h = h.max(1);
         let horizontal_non_content = bx.padding.left + bx.padding.right + horizontal_border;
@@ -642,7 +630,7 @@ fn build_block_internal(
         };
         if let Some(spec_w) = style.width {
             content_w = resolve_specified_width(spec_w);
-            if natural.is_some() && w > 0 {
+            if w > 0 {
                 content_h = ((h as i64 * content_w as i64) / w as i64).max(1) as i32;
             }
         }
