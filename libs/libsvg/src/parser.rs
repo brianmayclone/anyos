@@ -47,6 +47,10 @@ struct Parser {
     in_defs: usize,
     // Gradient being built
     pending_grad: Option<PendingGrad>,
+    // Simple CSS rules from <style> blocks: selector -> declarations.
+    css_rules: Vec<CssRule>,
+    in_style: bool,
+    style_text: String,
 }
 
 struct GroupFrame {
@@ -54,6 +58,15 @@ struct GroupFrame {
     transform: Transform,
     opacity: f32,
     id: Option<String>,
+    view_box: Option<[f32; 4]>,
+    style: Style,
+    is_defs_container: bool,
+    is_symbol: bool,
+}
+
+struct CssRule {
+    selector: String,
+    props: BTreeMap<String, String>,
 }
 
 enum PendingGrad {
@@ -87,6 +100,9 @@ impl Parser {
             view_box: None,
             in_defs: 0,
             pending_grad: None,
+            css_rules: Vec::new(),
+            in_style: false,
+            style_text: String::new(),
         }
     }
 
@@ -99,7 +115,11 @@ impl Parser {
                 Token::Close { tag } => {
                     self.handle_close(tag);
                 }
-                Token::Text(_) => {}
+                Token::Text(text) => {
+                    if self.in_style {
+                        self.style_text.push_str(text);
+                    }
+                }
             }
         }
     }
@@ -108,46 +128,76 @@ impl Parser {
         match tag {
             "svg" => {
                 self.parse_svg_root(attrs);
+                let style = self.resolve_style("svg", attrs);
                 if !self_closing {
                     self.stack.push(GroupFrame {
                         elements: Vec::new(),
                         transform: Transform::identity(),
-                        opacity: 1.0,
+                        opacity: style.opacity,
                         id: None,
+                        view_box: self.view_box,
+                        style,
+                        is_defs_container: false,
+                        is_symbol: false,
                     });
                 }
             }
 
-            "defs" | "symbol" => {
+            "defs" => {
                 self.in_defs += 1;
                 if !self_closing {
+                    let style = self.resolve_style("defs", attrs);
                     self.stack.push(GroupFrame {
                         elements: Vec::new(),
                         transform: Transform::identity(),
-                        opacity: 1.0,
+                        opacity: style.opacity,
                         id: attr_str(attrs, "id"),
+                        view_box: None,
+                        style,
+                        is_defs_container: true,
+                        is_symbol: false,
+                    });
+                }
+            }
+
+            "symbol" => {
+                self.in_defs += 1;
+                if !self_closing {
+                    let style = self.resolve_style("symbol", attrs);
+                    self.stack.push(GroupFrame {
+                        elements: Vec::new(),
+                        transform: Transform::identity(),
+                        opacity: style.opacity,
+                        id: attr_str(attrs, "id"),
+                        view_box: parse_view_box_attr(attrs),
+                        style,
+                        is_defs_container: false,
+                        is_symbol: true,
                     });
                 }
             }
 
             "g" => {
                 let t = parse_transform_attr(attrs);
-                let op = attr_f32(attrs, "opacity").unwrap_or(1.0);
-                // Also check style attribute for opacity
-                let op = if let Some(s) = attr_str(attrs, "style") {
-                    let style_map = parse_style_str(&s);
-                    style_map.get("opacity")
-                        .and_then(|v| v.parse::<f32>().ok())
-                        .unwrap_or(op)
-                } else { op };
+                let style = self.resolve_style("g", attrs);
+                let op = style.opacity;
                 if !self_closing {
                     self.stack.push(GroupFrame {
                         elements: Vec::new(),
                         transform: t,
                         opacity: op,
                         id: attr_str(attrs, "id"),
+                        view_box: None,
+                        style,
+                        is_defs_container: false,
+                        is_symbol: false,
                     });
                 }
+            }
+
+            "style" => {
+                self.in_style = true;
+                self.style_text.clear();
             }
 
             "lineargradient" => {
@@ -225,65 +275,51 @@ impl Parser {
             }
 
             "path" => {
-                if self.in_defs == 0 {
-                    if let Some(el) = self.parse_path(attrs) {
-                        self.push_element(el);
-                    }
+                if let Some(el) = self.parse_path(attrs) {
+                    self.push_element(el);
                 }
             }
 
             "rect" => {
-                if self.in_defs == 0 {
-                    if let Some(el) = self.parse_rect(attrs) {
-                        self.push_element(el);
-                    }
+                if let Some(el) = self.parse_rect(attrs) {
+                    self.push_element(el);
                 }
             }
 
             "circle" => {
-                if self.in_defs == 0 {
-                    if let Some(el) = self.parse_circle(attrs) {
-                        self.push_element(el);
-                    }
+                if let Some(el) = self.parse_circle(attrs) {
+                    self.push_element(el);
                 }
             }
 
             "ellipse" => {
-                if self.in_defs == 0 {
-                    if let Some(el) = self.parse_ellipse(attrs) {
-                        self.push_element(el);
-                    }
+                if let Some(el) = self.parse_ellipse(attrs) {
+                    self.push_element(el);
                 }
             }
 
             "line" => {
-                if self.in_defs == 0 {
-                    if let Some(el) = self.parse_line(attrs) {
-                        self.push_element(el);
-                    }
+                if let Some(el) = self.parse_line(attrs) {
+                    self.push_element(el);
                 }
             }
 
             "polyline" => {
-                if self.in_defs == 0 {
-                    if let Some(el) = self.parse_poly(attrs, false) {
-                        self.push_element(el);
-                    }
+                if let Some(el) = self.parse_poly(attrs, false) {
+                    self.push_element(el);
                 }
             }
 
             "polygon" => {
-                if self.in_defs == 0 {
-                    if let Some(el) = self.parse_poly(attrs, true) {
-                        self.push_element(el);
-                    }
+                if let Some(el) = self.parse_poly(attrs, true) {
+                    self.push_element(el);
                 }
             }
 
             "use" => {
-                // Resolve xlink:href / href — instantiate referenced <symbol>/<g>
-                // For now, we skip use elements referencing external documents
-                let _ = attr_href(attrs);
+                if let Some(el) = self.parse_use(attrs) {
+                    self.push_element(el);
+                }
             }
 
             // Everything else (title, desc, metadata, text, ...) — ignore
@@ -293,24 +329,46 @@ impl Parser {
 
     fn handle_close(&mut self, tag: &str) {
         match tag {
+            "style" => {
+                self.css_rules.extend(parse_css_rules(&self.style_text));
+                self.style_text.clear();
+                self.in_style = false;
+            }
+
             "lineargradient" | "radialgradient" => {
                 self.flush_pending_grad();
             }
 
             "defs" | "symbol" => {
                 self.in_defs = self.in_defs.saturating_sub(1);
-                // pop the defs frame (elements inside are discarded)
-                self.stack.pop();
+                if let Some(frame) = self.stack.pop() {
+                    if frame.is_symbol {
+                        if let Some(id) = frame.id {
+                            self.defs.insert(id, Def::Symbol {
+                                elements: frame.elements,
+                                view_box: frame.view_box,
+                            });
+                        }
+                    }
+                }
             }
 
             "g" => {
                 if let Some(frame) = self.stack.pop() {
+                    if frame.is_defs_container {
+                        return;
+                    }
                     if frame.elements.is_empty() { return; }
                     let group = Element::Group {
-                        elements: frame.elements,
+                        elements: frame.elements.clone(),
                         transform: frame.transform,
                         opacity: frame.opacity,
                     };
+                    if self.in_defs > 0 {
+                        if let Some(id) = frame.id {
+                            self.defs.insert(id, Def::Group(frame.elements));
+                        }
+                    }
                     self.push_element(group);
                 }
             }
@@ -354,6 +412,9 @@ impl Parser {
 
     fn finish(mut self) -> Option<SvgDoc> {
         self.flush_pending_grad();
+        while self.stack.last().map(|f| f.is_defs_container).unwrap_or(false) {
+            self.stack.pop();
+        }
         let elements = if let Some(frame) = self.stack.pop() {
             frame.elements
         } else {
@@ -391,7 +452,7 @@ impl Parser {
         if cmds.is_empty() { return None; }
         Some(Element::Path {
             cmds,
-            style: parse_style_attrs(attrs),
+            style: self.resolve_style("path", attrs),
             transform: parse_transform_attr(attrs),
         })
     }
@@ -405,7 +466,7 @@ impl Parser {
         let ry = attr_f32(attrs, "ry").unwrap_or(rx);
         Some(Element::Rect {
             x, y, w, h, rx, ry,
-            style: parse_style_attrs(attrs),
+            style: self.resolve_style("rect", attrs),
             transform: parse_transform_attr(attrs),
         })
     }
@@ -416,7 +477,7 @@ impl Parser {
             cx: attr_f32(attrs, "cx").unwrap_or(0.0),
             cy: attr_f32(attrs, "cy").unwrap_or(0.0),
             r,
-            style: parse_style_attrs(attrs),
+            style: self.resolve_style("circle", attrs),
             transform: parse_transform_attr(attrs),
         })
     }
@@ -428,7 +489,7 @@ impl Parser {
             cx: attr_f32(attrs, "cx").unwrap_or(0.0),
             cy: attr_f32(attrs, "cy").unwrap_or(0.0),
             rx, ry,
-            style: parse_style_attrs(attrs),
+            style: self.resolve_style("ellipse", attrs),
             transform: parse_transform_attr(attrs),
         })
     }
@@ -439,7 +500,7 @@ impl Parser {
             y1: attr_f32(attrs, "y1").unwrap_or(0.0),
             x2: attr_f32(attrs, "x2").unwrap_or(0.0),
             y2: attr_f32(attrs, "y2").unwrap_or(0.0),
-            style: parse_style_attrs(attrs),
+            style: self.resolve_style("line", attrs),
             transform: parse_transform_attr(attrs),
         })
     }
@@ -454,7 +515,7 @@ impl Parser {
             i += 2;
         }
         if pts.is_empty() { return None; }
-        let style = parse_style_attrs(attrs);
+        let style = self.resolve_style(if closed { "polygon" } else { "polyline" }, attrs);
         let transform = parse_transform_attr(attrs);
         if closed {
             Some(Element::Polygon { pts, style, transform })
@@ -462,6 +523,166 @@ impl Parser {
             Some(Element::Polyline { pts, style, transform })
         }
     }
+
+    fn parse_use(&self, attrs: &[Attr]) -> Option<Element> {
+        let href = attr_href(attrs)?;
+        let mut elements = match self.defs.get(&href) {
+            Some(Def::Group(elements)) => elements.clone(),
+            Some(Def::Symbol { elements, .. }) => elements.clone(),
+            _ => return None,
+        };
+        let x = attr_f32(attrs, "x").unwrap_or(0.0);
+        let y = attr_f32(attrs, "y").unwrap_or(0.0);
+        let transform = Transform([1.0, 0.0, 0.0, 1.0, x, y]).concat(&parse_transform_attr(attrs));
+        let style = self.resolve_style("use", attrs);
+        if has_style_signal(attrs) {
+            apply_style_to_elements(&mut elements, &style);
+        }
+        Some(Element::Group {
+            elements,
+            transform,
+            opacity: style.opacity,
+        })
+    }
+
+    fn current_style(&self) -> Style {
+        self.stack
+            .last()
+            .map(|frame| frame.style.clone())
+            .unwrap_or_default()
+    }
+
+    fn resolve_style(&self, tag: &str, attrs: &[Attr]) -> Style {
+        let mut style = self.current_style();
+        self.apply_css_rules(tag, attrs, &mut style);
+        apply_presentation_attrs(attrs, &mut style);
+        if let Some(style_str) = attr_str(attrs, "style") {
+            let props = parse_style_str(&style_str);
+            apply_style_props(&props, &mut style);
+        }
+        style
+    }
+
+    fn apply_css_rules(&self, tag: &str, attrs: &[Attr], style: &mut Style) {
+        for rule in &self.css_rules {
+            if selector_matches(&rule.selector, tag, attrs) {
+                apply_style_props(&rule.props, style);
+            }
+        }
+    }
+}
+
+fn parse_view_box_attr(attrs: &[Attr]) -> Option<[f32; 4]> {
+    let vb = attr_str(attrs, "viewbox").or_else(|| attr_str(attrs, "viewBox"))?;
+    let fs = parse_floats(&vb);
+    if fs.len() >= 4 {
+        Some([fs[0], fs[1], fs[2], fs[3]])
+    } else {
+        None
+    }
+}
+
+fn has_style_signal(attrs: &[Attr]) -> bool {
+    attrs.iter().any(|a| matches!(
+        a.key.as_str(),
+        "style" | "class" | "fill" | "stroke" | "opacity" | "fill-opacity" | "stroke-opacity"
+    ))
+}
+
+fn apply_style_to_elements(elements: &mut [Element], style: &Style) {
+    for el in elements {
+        match el {
+            Element::Path { style: s, .. }
+            | Element::Rect { style: s, .. }
+            | Element::Circle { style: s, .. }
+            | Element::Ellipse { style: s, .. }
+            | Element::Line { style: s, .. }
+            | Element::Polyline { style: s, .. }
+            | Element::Polygon { style: s, .. } => {
+                *s = style.clone();
+            }
+            Element::Group { elements, opacity, .. } => {
+                *opacity *= style.opacity;
+                apply_style_to_elements(elements, style);
+            }
+        }
+    }
+}
+
+fn parse_css_rules(css: &str) -> Vec<CssRule> {
+    let mut rules = Vec::new();
+    let css = strip_css_comments(css);
+    let mut rest = css.as_str();
+    while let Some(open) = rest.find('{') {
+        let selectors = rest[..open].trim();
+        let after_open = &rest[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            break;
+        };
+        let body = &after_open[..close];
+        let props = parse_style_str(body);
+        if !props.is_empty() {
+            for selector in selectors.split(',') {
+                let selector = selector.trim();
+                if selector_is_supported(selector) {
+                    rules.push(CssRule {
+                        selector: selector.to_ascii_lowercase(),
+                        props: props.clone(),
+                    });
+                }
+            }
+        }
+        rest = &after_open[close + 1..];
+    }
+    rules
+}
+
+fn strip_css_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(start) = rest.find("/*") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find("*/") {
+            rest = &after[end + 2..];
+        } else {
+            return out;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn selector_is_supported(selector: &str) -> bool {
+    !selector.is_empty()
+        && !selector.contains(' ')
+        && !selector.contains('>')
+        && !selector.contains(':')
+        && !selector.contains('[')
+}
+
+fn selector_matches(selector: &str, tag: &str, attrs: &[Attr]) -> bool {
+    if let Some(id) = selector.strip_prefix('#') {
+        return attr_str(attrs, "id")
+            .map(|v| v.eq_ignore_ascii_case(id))
+            .unwrap_or(false);
+    }
+    if let Some(class) = selector.strip_prefix('.') {
+        return has_class(attrs, class);
+    }
+    if let Some(dot) = selector.find('.') {
+        return &selector[..dot] == tag && has_class(attrs, &selector[dot + 1..]);
+    }
+    selector == tag
+}
+
+fn has_class(attrs: &[Attr], wanted: &str) -> bool {
+    let Some(classes) = attr_str(attrs, "class") else {
+        return false;
+    };
+    classes
+        .split_ascii_whitespace()
+        .any(|class| class.eq_ignore_ascii_case(wanted))
 }
 
 // ── Attribute helpers ────────────────────────────────────────────────
@@ -831,5 +1052,6 @@ fn inherit_stops(defs: &BTreeMap<String, Def>, href: Option<&str>) -> Vec<Gradie
     href.and_then(|id| defs.get(id)).map(|def| match def {
         Def::LinearGradient(g) => g.stops.clone(),
         Def::RadialGradient(g) => g.stops.clone(),
+        Def::Group(_) | Def::Symbol { .. } => Vec::new(),
     }).unwrap_or_default()
 }

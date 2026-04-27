@@ -240,8 +240,17 @@ impl<'a> PathTokens<'a> {
         // Parse number
         let start = self.pos;
         if matches!(b, b'-' | b'+') { self.pos += 1; }
-        while self.pos < self.data.len() && (self.data[self.pos].is_ascii_digit() || self.data[self.pos] == b'.') {
-            self.pos += 1;
+        let mut seen_dot = false;
+        while self.pos < self.data.len() {
+            let b = self.data[self.pos];
+            if b.is_ascii_digit() {
+                self.pos += 1;
+            } else if b == b'.' && !seen_dot {
+                seen_dot = true;
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
         if self.pos < self.data.len() && matches!(self.data[self.pos], b'e'|b'E') {
             self.pos += 1;
@@ -364,8 +373,8 @@ pub fn flatten(cmds: &[PathCmd], xform: &Transform, scale: f32) -> Vec<Vec<(f32,
 
 #[inline]
 fn apply_and_scale(xform: &Transform, x: f32, y: f32, scale: f32) -> (f32, f32) {
-    let (tx, ty) = xform.apply(x, y);
-    (tx * scale, ty * scale)
+    let _ = scale;
+    xform.apply(x, y)
 }
 
 // ── Cubic bezier flattening ──────────────────────────────────────────

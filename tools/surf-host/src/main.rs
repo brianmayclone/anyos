@@ -44,7 +44,15 @@ struct Args {
     y_range: Option<(u32, u32)>, // (start, end) in pixels
     minifb: bool,
     js_enabled: bool,
+    load_web_fonts: bool,
     remote_listen: Option<String>,
+    image_backend: ImageBackend,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageBackend {
+    Host,
+    Anyos,
 }
 
 fn parse_args() -> Args {
@@ -61,6 +69,9 @@ fn parse_args() -> Args {
         eprintln!("  --height <px>             Viewport height (default: 768)");
         eprintln!("  --minifb                  Use the legacy minifb window instead of egui");
         eprintln!("  --no-js                   Disable JavaScript execution");
+        eprintln!("  --no-web-fonts            Skip @font-face downloads");
+        eprintln!("  --anyos-image-path        Decode images/SVGs through libimage/libsvg only");
+        eprintln!("  --libimage-only           Alias for --anyos-image-path");
         eprintln!("  --remote-listen <addr>    Listen for text commands (default: 127.0.0.1:8787)");
         eprintln!();
         eprintln!("Remote commands: open <url>, reload, scroll <y>, screenshot <path>, fullpage <path>, status");
@@ -84,7 +95,9 @@ fn parse_args() -> Args {
         y_range: None,
         minifb: false,
         js_enabled: true,
+        load_web_fonts: true,
         remote_listen: Some(String::from("127.0.0.1:8787")),
+        image_backend: ImageBackend::Host,
     };
 
     while i < args.len() {
@@ -130,6 +143,16 @@ fn parse_args() -> Args {
             }
             "--no-js" => {
                 a.js_enabled = false;
+                i += 1;
+                continue;
+            }
+            "--no-web-fonts" => {
+                a.load_web_fonts = false;
+                i += 1;
+                continue;
+            }
+            "--anyos-image-path" | "--libimage-only" => {
+                a.image_backend = ImageBackend::Anyos;
                 i += 1;
                 continue;
             }
@@ -276,17 +299,26 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
 
 /// Load a URL: fetch HTML, load resources, run JS.  Returns (html, base_url).
 /// This is the common pipeline used both at startup and during navigation.
-fn load_page(wv: &mut libwebview::WebView, url: &str, js_enabled: bool) -> PendingImages {
-    load_page_inner(wv, url, js_enabled, 0)
+fn load_page(
+    wv: &mut libwebview::WebView,
+    url: &str,
+    js_enabled: bool,
+    image_backend: ImageBackend,
+    load_web_fonts: bool,
+) -> PendingImages {
+    load_page_inner(wv, url, js_enabled, image_backend, load_web_fonts, 0)
 }
 
 fn load_page_inner(
     wv: &mut libwebview::WebView,
     url: &str,
     js_enabled: bool,
+    image_backend: ImageBackend,
+    load_web_fonts: bool,
     redirect_depth: u8,
 ) -> PendingImages {
     eprintln!("[surf-host] loading: {}", url);
+    eprintln!("[surf-host] image backend: {:?}", image_backend);
     let (html, base_url) = fetch_page(url);
     eprintln!("[surf-host] got {} bytes HTML", html.len());
 
@@ -295,8 +327,8 @@ fn load_page_inner(
     wv.clear_stylesheets();
     wv.set_url(&base_url);
     wv.set_html_no_js(&html);
-    load_resources(wv, &base_url); // CSS, fonts, SVGs (sync) + initial relayout
-    let pending = start_image_loading(wv, &base_url); // images (async, parallel threads)
+    load_resources(wv, &base_url, image_backend, load_web_fonts); // CSS, fonts, SVGs (sync) + initial relayout
+    let pending = start_image_loading(wv, &base_url, image_backend); // images (async, parallel threads)
     if js_enabled {
         run_javascript(wv, &base_url);
         run_js_timers(wv, 5000);
@@ -308,7 +340,14 @@ fn load_page_inner(
                     if nav.replace { "replace" } else { "navigate" },
                     abs
                 );
-                return load_page_inner(wv, &abs, js_enabled, redirect_depth + 1);
+                return load_page_inner(
+                    wv,
+                    &abs,
+                    js_enabled,
+                    image_backend,
+                    load_web_fonts,
+                    redirect_depth + 1,
+                );
             }
         }
     }
@@ -548,6 +587,8 @@ struct BrowserHostApp {
     focused_control: Option<(u32, String)>,
     remote_rx: Option<mpsc::Receiver<RemoteRequest>>,
     js_enabled: bool,
+    load_web_fonts: bool,
+    image_backend: ImageBackend,
     screenshot_count: u32,
     status: String,
     needs_redraw: bool,
@@ -560,6 +601,8 @@ impl BrowserHostApp {
         current_url: String,
         remote_rx: Option<mpsc::Receiver<RemoteRequest>>,
         js_enabled: bool,
+        load_web_fonts: bool,
+        image_backend: ImageBackend,
     ) -> Self {
         let width = wv.viewport_width().max(1) as u32;
         let height = wv.viewport_height().max(1);
@@ -574,6 +617,8 @@ impl BrowserHostApp {
             focused_control: None,
             remote_rx,
             js_enabled,
+            load_web_fonts,
+            image_backend,
             screenshot_count: 0,
             status: String::from("ready"),
             needs_redraw: true,
@@ -590,7 +635,13 @@ impl BrowserHostApp {
         self.current_url = abs.clone();
         self.url_input = abs.clone();
         self.focused_control = None;
-        self.pending = load_page(&mut self.wv, &abs, self.js_enabled);
+        self.pending = load_page(
+            &mut self.wv,
+            &abs,
+            self.js_enabled,
+            self.image_backend,
+            self.load_web_fonts,
+        );
         self.scroll_y = 0;
         self.needs_redraw = true;
         self.status = format!("loaded {}", abs);
@@ -946,6 +997,8 @@ fn run_egui_browser(
     height: u32,
     remote_listen: Option<String>,
     js_enabled: bool,
+    load_web_fonts: bool,
+    image_backend: ImageBackend,
 ) {
     let remote_rx = remote_listen.as_deref().and_then(start_remote_listener);
     let native_options = eframe::NativeOptions {
@@ -956,7 +1009,15 @@ fn run_egui_browser(
         hardware_acceleration: eframe::HardwareAcceleration::Off,
         ..Default::default()
     };
-    let app = BrowserHostApp::new(wv, pending, current_url, remote_rx, js_enabled);
+    let app = BrowserHostApp::new(
+        wv,
+        pending,
+        current_url,
+        remote_rx,
+        js_enabled,
+        load_web_fonts,
+        image_backend,
+    );
     let _ = eframe::run_native(
         "surf-host",
         native_options,
@@ -982,7 +1043,13 @@ fn main() {
     register_system_fonts(&mut wv);
 
     // Load the initial page (CSS+fonts+SVGs sync, images async in parallel)
-    let mut pending = load_page(&mut wv, &args.url, args.js_enabled);
+    let mut pending = load_page(
+        &mut wv,
+        &args.url,
+        args.js_enabled,
+        args.image_backend,
+        args.load_web_fonts,
+    );
     let mut current_url = args.url.clone();
 
     // For screenshot mode: wait for all images before capturing
@@ -1082,6 +1149,8 @@ fn main() {
             height,
             args.remote_listen.clone(),
             args.js_enabled,
+            args.load_web_fonts,
+            args.image_backend,
         );
         return;
     }
@@ -1150,7 +1219,13 @@ fn main() {
                 eprintln!("[nav] navigating to: {}", abs);
                 current_url = abs.clone();
                 focused_control = None;
-                pending = load_page(&mut wv, &abs, args.js_enabled);
+                pending = load_page(
+                    &mut wv,
+                    &abs,
+                    args.js_enabled,
+                    args.image_backend,
+                    args.load_web_fonts,
+                );
                 scroll_y = 0;
                 window.set_title(&format!("surf-host — {}", abs));
                 needs_redraw = true;
@@ -2318,7 +2393,12 @@ fn debug_dump_named_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom)
 
 /// Load all external resources by walking the parsed DOM tree.
 /// This mirrors the logic in apps/surf/src/resources.rs.
-fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
+fn load_resources(
+    wv: &mut libwebview::WebView,
+    base_url: &str,
+    image_backend: ImageBackend,
+    load_web_fonts: bool,
+) {
     // 1. Stylesheets: <link rel="stylesheet" href="...">
     let css_links = {
         let dom = match wv.dom() {
@@ -2407,21 +2487,23 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
                     }
                 }
 
-                // @font-face rules from this stylesheet
-                let font_faces: Vec<_> = wv
-                    .last_stylesheet_font_faces()
-                    .iter()
-                    .map(|ff| (ff.family.clone(), ff.src_url.clone()))
-                    .collect();
-                for (family, src) in &font_faces {
-                    if src.is_empty() {
-                        continue;
-                    }
-                    let font_url = resolve_url(base_url, src);
-                    eprintln!("[surf-host] fetching font: {}", font_url);
-                    if let Some(font_data) = fetch_resource(&font_url) {
-                        if let Some(font_id) = libfont_client::load_data(&font_data) {
-                            wv.register_web_font(&family, font_id);
+                if load_web_fonts {
+                    // @font-face rules from this stylesheet
+                    let font_faces: Vec<_> = wv
+                        .last_stylesheet_font_faces()
+                        .iter()
+                        .map(|ff| (ff.family.clone(), ff.src_url.clone()))
+                        .collect();
+                    for (family, src) in &font_faces {
+                        if src.is_empty() {
+                            continue;
+                        }
+                        let font_url = resolve_url(base_url, src);
+                        eprintln!("[surf-host] fetching font: {}", font_url);
+                        if let Some(font_data) = fetch_resource(&font_url) {
+                            if let Some(font_id) = libfont_client::load_data(&font_data) {
+                                wv.register_web_font(&family, font_id);
+                            }
                         }
                     }
                 }
@@ -2442,7 +2524,7 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
     }
 
     // 2. @font-face from inline <style> blocks
-    {
+    if load_web_fonts {
         let font_faces: Vec<_> = wv
             .all_font_faces()
             .iter()
@@ -2536,7 +2618,7 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
             );
         }
 
-        if let Some((pixels, w, h)) = decode_svg(svg_markup.as_bytes()) {
+        if let Some((pixels, w, h)) = decode_svg(svg_markup.as_bytes(), image_backend) {
             // Key format: __svg_<node_id>__ — must match svg_inline_key() in layout/mod.rs
             let key = format!("__svg_{}__", node_id);
             eprintln!(
@@ -2644,7 +2726,11 @@ impl PendingImages {
 
 /// Collect image URLs from DOM and spawn parallel fetch+decode threads.
 /// Returns a `PendingImages` handle to poll or drain results.
-fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImages {
+fn start_image_loading(
+    wv: &libwebview::WebView,
+    base_url: &str,
+    image_backend: ImageBackend,
+) -> PendingImages {
     let img_infos = {
         let dom = match wv.dom() {
             Some(d) => d,
@@ -2722,7 +2808,7 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
         let tx = tx.clone();
         std::thread::spawn(move || {
             if let Some(img_data) = fetch_resource(&img_url) {
-                if let Some((pixels, w, h)) = decode_image_scaled(&img_data, tw, th) {
+                if let Some((pixels, w, h)) = decode_image_scaled(&img_data, tw, th, image_backend) {
                     eprintln!("[surf-host]   image ready {}x{}: {}", w, h, src_attr);
                     let _ = tx.send(ImageLoadResult {
                         src_attr,
@@ -2924,9 +3010,13 @@ fn decode_image_scaled(
     data: &[u8],
     target_w: Option<u32>,
     target_h: Option<u32>,
+    image_backend: ImageBackend,
 ) -> Option<(Vec<u32>, u32, u32)> {
     if is_svg(data) {
-        return decode_svg(data);
+        return decode_svg(data, image_backend);
+    }
+    if image_backend == ImageBackend::Anyos {
+        return decode_image_scaled_libimage(data, target_w, target_h);
     }
     let img = match image::load_from_memory(data) {
         Ok(img) => img,
@@ -3054,7 +3144,10 @@ fn is_svg(data: &[u8]) -> bool {
     }
 }
 
-fn decode_svg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
+fn decode_svg(data: &[u8], image_backend: ImageBackend) -> Option<(Vec<u32>, u32, u32)> {
+    if image_backend == ImageBackend::Anyos {
+        return decode_svg_libsvg(data);
+    }
     let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
     let size = tree.size();
     let fallback_w = size.width() as u32;
@@ -3095,6 +3188,58 @@ fn decode_svg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
         })
         .collect();
     Some((pixels, rw, rh))
+}
+
+fn decode_svg_libsvg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
+    let (w, h) = svg_intrinsic_raster_size(data).or_else(|| {
+        let mut out_w = 0.0f32;
+        let mut out_h = 0.0f32;
+        let rc = libsvg::svg_probe(
+            data.as_ptr(),
+            data.len() as u32,
+            &mut out_w,
+            &mut out_h,
+        );
+        if rc == 0 {
+            Some((out_w.max(1.0) as u32, out_h.max(1.0) as u32))
+        } else {
+            None
+        }
+    }).unwrap_or((256, 256));
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let (rw, rh) = cap_svg_raster_size(w, h);
+    let mut pixels = vec![0u32; (rw as usize).checked_mul(rh as usize)?];
+    let bg = parse_svg_root_background(data).unwrap_or(0x00000000);
+    let rc = libsvg::svg_render_to_size(
+        data.as_ptr(),
+        data.len() as u32,
+        pixels.as_mut_ptr(),
+        rw,
+        rh,
+        bg,
+    );
+    if rc == 0 {
+        Some((pixels, rw, rh))
+    } else {
+        None
+    }
+}
+
+fn cap_svg_raster_size(w: u32, h: u32) -> (u32, u32) {
+    const MAX_SVG_DIM: u32 = 1024;
+    if w == 0 || h == 0 {
+        return (1, 1);
+    }
+    if w <= MAX_SVG_DIM && h <= MAX_SVG_DIM {
+        return (w, h);
+    }
+    let max_dim = w.max(h) as u64;
+    (
+        ((w as u64 * MAX_SVG_DIM as u64) / max_dim).max(1) as u32,
+        ((h as u64 * MAX_SVG_DIM as u64) / max_dim).max(1) as u32,
+    )
 }
 
 fn apply_svg_inherited_color(svg: String, color: Option<u32>) -> String {

@@ -294,6 +294,7 @@ impl TabState {
 pub(crate) fn navigate(url_str: &str) {
     let st = crate::state();
     crate::surf_log!("[surf] navigating to: {}", url_str);
+    crate::resize_active_webview_now();
 
     // Handle file:// URLs locally — no network needed.
     if url_str.starts_with("file://") {

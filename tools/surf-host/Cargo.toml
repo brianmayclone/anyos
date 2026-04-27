@@ -15,6 +15,7 @@ anyos_std = { path = "../../libs/stdlib", features = ["host"] }
 libjs = { path = "../../libs/libjs", features = ["host"] }
 
 libimage = { path = "../../libs/libimage", features = ["host"] }
+libsvg = { path = "../../libs/libsvg", features = ["host"] }
 
 # Host-native dependencies
 minifb = "0.28"

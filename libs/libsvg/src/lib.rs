@@ -20,12 +20,14 @@
 //! Loaded via dl_open("/Libraries/libsvg.so"), symbols resolved via dl_sym.
 //! State is per-process via .bss statics; heap via SYS_SBRK.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(feature = "host"), no_std)]
+#![cfg_attr(not(feature = "host"), no_main)]
 
 extern crate alloc;
 
+#[cfg(not(feature = "host"))]
 libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
+#[cfg(not(feature = "host"))]
 pub(crate) mod syscall;
 pub mod types;
 pub mod xml;
@@ -138,6 +140,7 @@ pub extern "C" fn _dll_start() -> ! {
 
 // ── Panic handler ────────────────────────────────────────────────────
 
+#[cfg(not(feature = "host"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     syscall::write(2, b"PANIC [libsvg]: ");

@@ -260,6 +260,11 @@ pub struct RadialGradient {
 pub enum Def {
     LinearGradient(LinearGradient),
     RadialGradient(RadialGradient),
+    Group(Vec<Element>),
+    Symbol {
+        elements: Vec<Element>,
+        view_box: Option<[f32; 4]>,
+    },
 }
 
 // ── SVG Document elements ────────────────────────────────────────────
@@ -347,8 +352,17 @@ pub fn parse_floats(s: &str) -> Vec<f32> {
         if pos < bytes.len() && matches!(bytes[pos], b'+' | b'-') {
             pos += 1;
         }
-        while pos < bytes.len() && (bytes[pos].is_ascii_digit() || bytes[pos] == b'.') {
-            pos += 1;
+        let mut seen_dot = false;
+        while pos < bytes.len() {
+            let b = bytes[pos];
+            if b.is_ascii_digit() {
+                pos += 1;
+            } else if b == b'.' && !seen_dot {
+                seen_dot = true;
+                pos += 1;
+            } else {
+                break;
+            }
         }
         // optional exponent
         if pos < bytes.len() && matches!(bytes[pos], b'e' | b'E') {

@@ -113,12 +113,12 @@ impl<'a> RenderCtx<'a> {
                 let pts = path::rect_to_poly(*x, *y, *w, *h, *rx, *ry);
                 let polys: Vec<Vec<(f32,f32)>> = pts.iter().map(|(px,py)| {
                     let (tx,ty) = xform.apply(*px, *py);
-                    vec![(tx * self.scale, ty * self.scale)]
+                    vec![(tx, ty)]
                 }).collect::<Vec<_>>();
                 // Build as a single polygon
                 let scaled: Vec<(f32,f32)> = pts.iter().map(|(px,py)| {
                     let (tx,ty) = xform.apply(*px, *py);
-                    (tx * self.scale, ty * self.scale)
+                    (tx, ty)
                 }).collect();
                 let polys = vec![scaled];
                 let bounds = poly_bounds(&polys);
@@ -152,8 +152,8 @@ impl<'a> RenderCtx<'a> {
                 if !style.display { return; }
                 let xform = transform.concat(parent_xform);
                 let effective_op = style.opacity * parent_opacity;
-                let (ax, ay) = { let p = xform.apply(*x1, *y1); (p.0 * self.scale, p.1 * self.scale) };
-                let (bx, by) = { let p = xform.apply(*x2, *y2); (p.0 * self.scale, p.1 * self.scale) };
+                let (ax, ay) = xform.apply(*x1, *y1);
+                let (bx, by) = xform.apply(*x2, *y2);
                 let polys = vec![vec![(ax, ay), (bx, by)]];
                 let bounds = poly_bounds(&polys);
                 self.stroke_polys(&polys, style, bounds, effective_op);
@@ -165,7 +165,7 @@ impl<'a> RenderCtx<'a> {
                 let effective_op = style.opacity * parent_opacity;
                 let scaled: Vec<(f32,f32)> = pts.iter().map(|(px,py)| {
                     let (tx,ty) = xform.apply(*px, *py);
-                    (tx * self.scale, ty * self.scale)
+                    (tx, ty)
                 }).collect();
                 let polys = vec![scaled];
                 let bounds = poly_bounds(&polys);
@@ -178,7 +178,7 @@ impl<'a> RenderCtx<'a> {
                 let effective_op = style.opacity * parent_opacity;
                 let mut scaled: Vec<(f32,f32)> = pts.iter().map(|(px,py)| {
                     let (tx,ty) = xform.apply(*px, *py);
-                    (tx * self.scale, ty * self.scale)
+                    (tx, ty)
                 }).collect();
                 // Close polygon
                 if let (Some(first), Some(last)) = (scaled.first().copied(), scaled.last().copied()) {
@@ -220,6 +220,7 @@ impl<'a> RenderCtx<'a> {
 
         for y in y_min..=y_max {
             let mut crossings: Vec<f32> = Vec::new();
+            let mut winding_crossings: Vec<(f32, i32)> = Vec::new();
             let yf = y as f32 + 0.5; // sample at pixel centre
 
             for poly in polys {
@@ -230,31 +231,48 @@ impl<'a> RenderCtx<'a> {
                     if (y0 <= yf && y1 > yf) || (y1 <= yf && y0 > yf) {
                         let x = x0 + (yf - y0) * (x1 - x0) / (y1 - y0);
                         crossings.push(x);
+                        let winding = if y1 > y0 { 1 } else { -1 };
+                        winding_crossings.push((x, winding));
                     }
                 }
             }
 
-            if crossings.is_empty() { continue; }
-
-            // Sort crossings
-            crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-
-            // Fill spans
             match fill_rule {
                 FillRule::NonZero => {
-                    // Treat odd number of crossings as fill spans
-                    let mut i = 0;
-                    while i + 1 < crossings.len() {
-                        let x0 = (types::libm_ceil(crossings[i]) as i32).max(0);
-                        let x1 = (types::libm_floor(crossings[i + 1]) as i32).min(w - 1);
-                        if x0 <= x1 {
-                            self.fill_span(y as u32, x0 as u32, x1 as u32,
-                                           style, bounds, total_alpha);
+                    if winding_crossings.is_empty() { continue; }
+                    winding_crossings.sort_by(|a, b| {
+                        a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal)
+                    });
+
+                    let mut winding = 0;
+                    let mut span_start: Option<f32> = None;
+
+                    for (x, delta) in winding_crossings {
+                        let before = winding;
+                        winding += delta;
+
+                        if before == 0 && winding != 0 {
+                            span_start = Some(x);
+                        } else if before != 0 && winding == 0 {
+                            if let Some(start) = span_start.take() {
+                                let x0 = types::libm_ceil(start) as i32;
+                                let x1 = types::libm_floor(x) as i32;
+                                let x0 = x0.max(0);
+                                let x1 = x1.min(w - 1);
+                                if x0 <= x1 {
+                                    self.fill_span(y as u32, x0 as u32, x1 as u32,
+                                                   style, bounds, total_alpha);
+                                }
+                            }
                         }
-                        i += 2;
                     }
                 }
                 FillRule::EvenOdd => {
+                    if crossings.is_empty() { continue; }
+                    crossings.sort_by(|a, b| {
+                        a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
+                    });
+
                     let mut i = 0;
                     while i + 1 < crossings.len() {
                         let x0 = types::libm_ceil(crossings[i]) as i32;
@@ -343,6 +361,7 @@ impl<'a> RenderCtx<'a> {
                 match self.defs.get(id.as_str()) {
                     Some(Def::LinearGradient(g)) => gradient::eval_linear(g, x, y, bounds),
                     Some(Def::RadialGradient(g)) => gradient::eval_radial(g, x, y, bounds),
+                    Some(Def::Group(_)) | Some(Def::Symbol { .. }) => 0xFF808080,
                     None => 0xFF808080,
                 }
             }

@@ -1428,14 +1428,18 @@ pub(crate) fn decode_svg(data: &[u8], src: &str, tab_idx: usize) {
 pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
     let (rw, rh) = svg_intrinsic_raster_size(data).unwrap_or_else(|| match libsvg_client::probe(data) {
         Some((w, h)) => {
-            let w = (w as u32).max(1).min(4096);
-            let h = (h as u32).max(1).min(4096);
-            (w, h)
+            let w = (w as u32).max(1);
+            let h = (h as u32).max(1);
+            cap_svg_raster_size(w, h)
         }
         None => (256, 256),
     });
+    let (rw, rh) = cap_svg_raster_size(rw, rh);
 
-    let mut pixels = vec![0u32; (rw * rh) as usize];
+    let Some(pixel_count) = (rw as usize).checked_mul(rh as usize) else {
+        return;
+    };
+    let mut pixels = vec![0u32; pixel_count];
     let background = parse_svg_root_background(data).unwrap_or(0x00000000);
     if libsvg_client::render_to_size(data, &mut pixels, rw, rh, background) {
         let st = crate::state();
@@ -1443,6 +1447,21 @@ pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
             st.tabs[tab_idx].webview.add_image(src, pixels, rw, rh);
         }
     }
+}
+
+fn cap_svg_raster_size(w: u32, h: u32) -> (u32, u32) {
+    const MAX_SVG_DIM: u32 = 1024;
+    if w == 0 || h == 0 {
+        return (1, 1);
+    }
+    if w <= MAX_SVG_DIM && h <= MAX_SVG_DIM {
+        return (w, h);
+    }
+    let max_dim = w.max(h) as u64;
+    (
+        ((w as u64 * MAX_SVG_DIM as u64) / max_dim).max(1) as u32,
+        ((h as u64 * MAX_SVG_DIM as u64) / max_dim).max(1) as u32,
+    )
 }
 
 fn parse_svg_root_background(data: &[u8]) -> Option<u32> {

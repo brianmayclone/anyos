@@ -265,6 +265,9 @@ struct AppState {
     config: config::SurfConfig,
     /// Bookmark store (hierarchical folders and bookmarks).
     bookmarks: config::BookmarkStore,
+    /// Startup URL delayed until the first dock layout has produced a real
+    /// content viewport.
+    pending_start_url: Option<String>,
 }
 
 static mut STATE: Option<AppState> = None;
@@ -745,6 +748,22 @@ fn schedule_active_webview_resize(delay_ms: u32) {
         resize_active_webview_now();
         ensure_anim_timer();
     });
+}
+
+fn run_pending_start_navigation() {
+    resize_active_webview_now();
+
+    let start_url = {
+        let st = state();
+        st.pending_start_url.take()
+    };
+    if let Some(url) = start_url {
+        let st = state();
+        st.tabs[st.active_tab].url_text = url.clone();
+        st.url_field.set_text(&url);
+        crate::surf_log!("[surf] startup navigation after initial viewport resize");
+        tab::navigate(&url);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1934,8 +1953,12 @@ fn main() {
     let mut args_buf = [0u8; 256];
     let raw_args = anyos_std::process::args(&mut args_buf);
     let arg_url = raw_args.trim();
-    let start_url = if arg_url.is_empty() {
-        None
+    let pending_start_url = if arg_url.is_empty() {
+        if surf_config.homepage.is_empty() {
+            None
+        } else {
+            Some(surf_config.homepage.clone())
+        }
     } else {
         Some(String::from(arg_url))
     };
@@ -2110,6 +2133,7 @@ fn main() {
             last_theme_light: ui_lib::theme::is_light(),
             config: surf_config,
             bookmarks: surf_bookmarks,
+            pending_start_url,
         });
     }
 
@@ -2268,25 +2292,12 @@ fn main() {
     // Start the CSS animation tick timer.
     start_anim_timer();
 
-    // Navigate to the initial URL (command line argument or configured homepage).
-    if let Some(url) = start_url {
-        let st = state();
-        st.tabs[st.active_tab].url_text = url.clone();
-        st.url_field.set_text(&url);
-        tab::navigate(&url);
-    } else {
-        let st = state();
-        if !st.config.homepage.is_empty() {
-            let url = st.config.homepage.clone();
-            st.tabs[st.active_tab].url_text = url.clone();
-            st.url_field.set_text(&url);
-            tab::navigate(&url);
-        }
-    }
-
     // One-shot timer: after the first layout pass, resize the WebView to the
-    // actual content_view dimensions (dock sizes aren't computed until run()).
+    // actual content_view dimensions (dock sizes aren't computed until run()),
+    // then start the initial navigation so CSS media queries and early JS see
+    // the same viewport that surf-host starts with.
     schedule_active_webview_resize(50);
+    ui_lib::set_timer(75, run_pending_start_navigation);
 
     crate::surf_log!("[surf] entering event loop");
     ui_lib::run();
