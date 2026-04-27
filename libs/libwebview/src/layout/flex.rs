@@ -223,7 +223,6 @@ pub(super) fn measure_max_content(
         return w + pad_border;
     }
 
-    // Flex container → sum of children's max-content widths + gaps.
     let children: Vec<usize> = dom.get(node_id).children.iter().copied().collect();
     let is_flex = matches!(st.display, Display::Flex | Display::InlineFlex);
     let is_row = is_flex
@@ -232,6 +231,30 @@ pub(super) fn measure_max_content(
             crate::style::FlexDirection::Row | crate::style::FlexDirection::RowReverse
         );
 
+    // Inline formatting context → max-content is the unwrapped line width.
+    if !is_flex && children_form_inline_run(dom, styles, &children) {
+        let mut total = 0i32;
+        for &cid in &children {
+            let cst = &styles[cid];
+            if cst.display == Display::None {
+                continue;
+            }
+            if matches!(cst.position, Position::Absolute | Position::Fixed) {
+                continue;
+            }
+            if let crate::dom::NodeType::Text(ref text) = dom.nodes[cid].node_type {
+                if text.trim().is_empty() {
+                    continue;
+                }
+            }
+            total += measure_max_content(dom, styles, pseudo, cid, images, viewport_w)
+                + cst.margin_left
+                + cst.margin_right;
+        }
+        return total + pad_border;
+    }
+
+    // Flex container → sum of children's max-content widths + gaps.
     if is_row {
         let gap = st.column_gap;
         let mut total = 0i32;
@@ -274,6 +297,37 @@ pub(super) fn measure_max_content(
         }
     }
     max_w + pad_border
+}
+
+fn children_form_inline_run(dom: &Dom, styles: &[ComputedStyle], children: &[NodeId]) -> bool {
+    let mut saw_inline = false;
+    for &cid in children {
+        let st = &styles[cid];
+        if st.display == Display::None {
+            continue;
+        }
+        if matches!(st.position, Position::Absolute | Position::Fixed) {
+            continue;
+        }
+        match &dom.get(cid).node_type {
+            NodeType::Text(text) => {
+                if !text.trim().is_empty() {
+                    saw_inline = true;
+                }
+            }
+            NodeType::Element { .. } => match st.display {
+                Display::Inline
+                | Display::InlineBlock
+                | Display::InlineFlex
+                | Display::InlineGrid
+                | Display::Contents => {
+                    saw_inline = true;
+                }
+                _ => return false,
+            },
+        }
+    }
+    saw_inline
 }
 
 /// Lay out children as a flex container and return the total height consumed.
