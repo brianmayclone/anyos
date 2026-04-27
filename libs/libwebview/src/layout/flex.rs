@@ -712,13 +712,18 @@ pub fn layout_flex(
         // Distribute free space along main axis.
         let total_gaps = gap * (count as i32 - 1).max(0);
         let free_space = if main_size > 0 {
-            main_size - line.total_main - total_gaps
+            // `line.total_main` is accumulated with inter-item gaps during line
+            // construction, so do not subtract `total_gaps` a second time here.
+            main_size - line.total_main
         } else {
             0
         };
 
         let total_grow: i32 = items[line.start..line.end].iter().map(|it| it.grow).sum();
-        let total_shrink: i32 = items[line.start..line.end].iter().map(|it| it.shrink).sum();
+        let total_scaled_shrink: i64 = items[line.start..line.end]
+            .iter()
+            .map(|it| it.main_base.max(0) as i64 * it.shrink.max(0) as i64)
+            .sum();
 
         // CSS Flexbox interop quirk: when no item has explicit grow but some
         // items contain percentage-sized descendants (and thus need a "definite
@@ -743,9 +748,9 @@ pub fn layout_flex(
                 base + auto_grow_each
             } else if free_space > 0 && total_grow > 0 {
                 base + (free_space as i64 * items[i].grow as i64 / total_grow as i64) as i32
-            } else if free_space < 0 && total_shrink > 0 {
-                (base + (free_space as i64 * items[i].shrink as i64 / total_shrink as i64) as i32)
-                    .max(0)
+            } else if free_space < 0 && total_scaled_shrink > 0 {
+                let scaled = base.max(0) as i64 * items[i].shrink.max(0) as i64;
+                (base + (free_space as i64 * scaled / total_scaled_shrink) as i32).max(0)
             } else {
                 base
             };

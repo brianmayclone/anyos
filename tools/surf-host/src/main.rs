@@ -408,6 +408,47 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
     }
     eprintln!("[surf-host] debug image bounds end");
 
+    eprintln!("[surf-host] debug inline svg bounds begin");
+    for (node_id, node) in dom.nodes.iter().enumerate() {
+        if !matches!(
+            &node.node_type,
+            libwebview::dom::NodeType::Element {
+                tag: libwebview::dom::Tag::Svg,
+                ..
+            }
+        ) {
+            continue;
+        }
+        let key = format!("__svg_{}__", node_id);
+        let cache_info = wv
+            .images
+            .get_ref(&key)
+            .map(|entry| {
+                let mid = (entry.pixels.len() / 2).min(entry.pixels.len().saturating_sub(1));
+                let last = entry.pixels.len().saturating_sub(1);
+                let mut sample = String::new();
+                for idx in [0usize, mid, last] {
+                    if let Some(&px) = entry.pixels.get(idx) {
+                        if !sample.is_empty() {
+                            sample.push(',');
+                        }
+                        sample.push_str(&format!("{:08X}", px));
+                    }
+                }
+                format!(" cache={}x{} sample=[{}]", entry.width, entry.height, sample)
+            })
+            .unwrap_or_else(|| String::from(" cache=missing"));
+        let class_attr = dom.attr(node_id, "class").unwrap_or("");
+        eprintln!(
+            "[surf-host]   svg node={} bounds={:?} class={:?}{}",
+            node_id,
+            wv.node_bounds(node_id),
+            class_attr,
+            cache_info
+        );
+    }
+    eprintln!("[surf-host] debug inline svg bounds end");
+
     fn dump_subtree(
         wv: &libwebview::WebView,
         dom: &libwebview::dom::Dom,
@@ -442,6 +483,7 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
 
     for (root, label, max_depth) in [
         (76usize, "topnavi", 5usize),
+        (361usize, "page-header", 5usize),
         (371usize, "header-scroll", 3usize),
         (421usize, "teaser-scroll", 3usize),
     ] {
@@ -910,15 +952,17 @@ fn main() {
     // For screenshot mode: wait for all images before capturing
     if args.screenshot.is_some() {
         let mut results = pending.drain();
-        results.sort_by(|a, b| b.priority_y.cmp(&a.priority_y));
+        results.sort_by(|a, b| b.node_id.cmp(&a.node_id));
         wv.relayout();
         let debug_heise = std::env::var("SURF_DEBUG_HEISE").ok().as_deref() == Some("1");
         let mut added_images = 0usize;
         let mut skipped_images = 0usize;
         for r in results {
-            let priority_y =
-                image_priority_for_src(&wv, &args.url, &r.src_attr).unwrap_or(r.priority_y);
-            if priority_y > (height as i32).saturating_add(512) {
+            let priority_y = wv
+                .node_bounds(r.node_id)
+                .map(|(_, y, _, _)| y)
+                .unwrap_or(r.priority_y);
+            if priority_y != i32::MAX && priority_y > (height as i32).saturating_add(512) {
                 skipped_images += 1;
                 continue;
             }
@@ -2265,6 +2309,7 @@ struct ImageLoadResult {
     pixels: Vec<u32>,
     width: u32,
     height: u32,
+    node_id: usize,
     priority_y: i32,
 }
 
@@ -2355,7 +2400,7 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
                     dom.attr(i, "height")
                         .and_then(|s| s.trim().trim_end_matches("px").parse().ok())
                 });
-                infos.push((abs_url, src, target_w, target_h, priority_y));
+                infos.push((abs_url, src, target_w, target_h, i, priority_y));
             }
         }
         for (i, _) in dom.nodes.iter().enumerate() {
@@ -2374,7 +2419,7 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
             }
             let abs_url = resolve_url(base_url, bg_src);
             let priority_y = wv.node_bounds(i).map(|(_, y, _, _)| y).unwrap_or(i32::MAX);
-            infos.push((abs_url, bg_src.clone(), None, None, priority_y));
+            infos.push((abs_url, bg_src.clone(), None, None, i, priority_y));
         }
         infos
     };
@@ -2389,7 +2434,7 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
     );
     let (tx, rx) = mpsc::channel();
 
-    for (img_url, src_attr, tw, th, priority_y) in img_infos {
+    for (img_url, src_attr, tw, th, node_id, priority_y) in img_infos {
         let tx = tx.clone();
         std::thread::spawn(move || {
             if let Some(img_data) = fetch_resource(&img_url) {
@@ -2400,6 +2445,7 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
                         pixels,
                         width: w,
                         height: h,
+                        node_id,
                         priority_y,
                     });
                 }
@@ -2412,38 +2458,6 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
         receiver: rx,
         done: false,
     }
-}
-
-fn image_priority_for_src(wv: &libwebview::WebView, base_url: &str, src: &str) -> Option<i32> {
-    let dom = wv.dom()?;
-    let mut best_y: Option<i32> = None;
-    for (i, node) in dom.nodes.iter().enumerate() {
-        let is_image_like = matches!(&node.node_type, NodeType::Element { tag: Tag::Img, .. })
-            || dom.has_tag_name(i, "a-img");
-        if is_image_like {
-            if let Some(candidate) = dom.image_url(i) {
-                if image_src_matches(base_url, &candidate, src) {
-                    let y = wv.node_bounds(i).map(|(_, y, _, _)| y).unwrap_or(0);
-                    best_y = Some(best_y.map_or(y, |best| best.min(y)));
-                }
-            }
-        }
-
-        let Some(style) = wv.resolved_style_ref(i) else {
-            continue;
-        };
-        if let libwebview::style::BackgroundImageVal::Url(bg_src) = &style.background_image {
-            if image_src_matches(base_url, bg_src, src) {
-                let y = wv.node_bounds(i).map(|(_, y, _, _)| y).unwrap_or(0);
-                best_y = Some(best_y.map_or(y, |best| best.min(y)));
-            }
-        }
-    }
-    best_y
-}
-
-fn image_src_matches(base_url: &str, a: &str, b: &str) -> bool {
-    a == b || resolve_url(base_url, a) == resolve_url(base_url, b)
 }
 
 // ── JavaScript execution ────────────────────────────────────────────────────
