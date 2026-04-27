@@ -169,26 +169,16 @@ fn ua_style_and_flags(tag: Tag) -> (ComputedStyle, u32) {
         Tag::Input | Tag::Button | Tag::Select | Tag::Textarea => {
             s.display = Display::Inline;
         }
-        Tag::Table => {
-            s.border_width = 1;
-        }
+        Tag::Table => {}
         Tag::Tr => {
             s.display = Display::TableRow;
         }
         Tag::Td => {
             s.display = Display::TableCell;
-            s.padding_top = 4;
-            s.padding_right = 4;
-            s.padding_bottom = 4;
-            s.padding_left = 4;
         }
         Tag::Th => {
             s.display = Display::TableCell;
             s.font_weight = FontWeight::Bold;
-            s.padding_top = 4;
-            s.padding_right = 4;
-            s.padding_bottom = 4;
-            s.padding_left = 4;
             flags |= SET_FONT_WEIGHT;
         }
         Tag::Head
@@ -1932,6 +1922,8 @@ fn resolve_styles_prepared_impl(
                     | Tag::Summary
                     | Tag::Dialog
                     | Tag::Search
+                    | Tag::Td
+                    | Tag::Th
             );
             if supports_align {
                 for a in attrs {

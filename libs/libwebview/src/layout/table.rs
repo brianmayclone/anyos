@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
     resolve_inset, resolve_margins, ComputedStyle, Display, PseudoStyles, TextAlignVal,
-    VerticalAlign,
+    VerticalAlign, Visibility,
 };
 use crate::ImageCache;
 
@@ -52,6 +52,7 @@ pub fn layout_table(
     bx.font_size = font_size_px(style);
     bx.bold = is_bold(style);
     bx.text_align = style.text_align;
+    bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
     let (margin_top, margin_right, margin_bottom, margin_left) =
         resolve_margins(style, available_width);
     bx.margin = edges_from(margin_top, margin_right, margin_bottom, margin_left);
@@ -88,14 +89,19 @@ pub fn layout_table(
     let table_border = parse_int_attr(dom, node_id, "border").unwrap_or(0);
 
     // Resolve table width.
-    let has_explicit_table_width =
-        style.width.is_some() || style.width_pct.is_some() || style.width_calc.is_some();
+    let table_attr_width = parse_width_attr(dom, node_id, available_width);
+    let has_explicit_table_width = style.width.is_some()
+        || style.width_pct.is_some()
+        || style.width_calc.is_some()
+        || table_attr_width.is_some();
     let table_width = if let Some(w) = style.width {
         w
     } else if let Some(pct) = style.width_pct {
         (available_width as i64 * pct as i64 / 10000) as i32
     } else if let Some((px100, pct100)) = style.width_calc {
         px100 / 100 + (available_width as i64 * pct100 as i64 / 10000) as i32
+    } else if let Some(w) = table_attr_width {
+        w
     } else {
         // Tables without explicit width use available width.
         available_width - bx.margin.left - bx.margin.right
@@ -282,7 +288,7 @@ pub fn layout_table(
         } else if let Some(pct) = cell_style.width_pct {
             Some((content_width as i64 * pct as i64 / 10000) as i32)
         } else {
-            parse_int_attr(dom, cell_id, "width")
+            parse_width_attr(dom, cell_id, content_width)
         };
 
         if table_layout_fixed {
@@ -636,6 +642,7 @@ fn layout_cell(
     bx.font_size = font_size_px(style);
     bx.bold = is_bold(style);
     bx.text_align = style.text_align;
+    bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
     bx.width = cell_width;
     bx.padding = Edges {
         top: style.padding_top.max(cellpadding),
@@ -760,6 +767,16 @@ fn parse_int_attr(dom: &Dom, node_id: NodeId, attr_name: &str) -> Option<i32> {
     let val = dom.attr(node_id, attr_name)?;
     let s = val.trim().trim_end_matches("px");
     parse_simple_int(s)
+}
+
+fn parse_width_attr(dom: &Dom, node_id: NodeId, containing_width: i32) -> Option<i32> {
+    let val = dom.attr(node_id, "width")?;
+    let s = val.trim();
+    if let Some(percent) = s.strip_suffix('%') {
+        let pct = parse_simple_int(percent.trim())?;
+        return Some((containing_width.max(0) as i64 * pct as i64 / 100) as i32);
+    }
+    parse_simple_int(s.trim_end_matches("px"))
 }
 
 fn parse_simple_int(s: &str) -> Option<i32> {

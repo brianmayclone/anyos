@@ -200,7 +200,13 @@ pub(super) fn fill_rounded_rect_buf(
         return;
     }
 
-    let [rtl, rtr, rbr, rbl] = radii;
+    let max_radius = (w.min(h) / 2).max(0);
+    let [rtl, rtr, rbr, rbl] = [
+        radii[0].max(0).min(max_radius),
+        radii[1].max(0).min(max_radius),
+        radii[2].max(0).min(max_radius),
+        radii[3].max(0).min(max_radius),
+    ];
 
     unsafe {
         for row in y0..y1 {

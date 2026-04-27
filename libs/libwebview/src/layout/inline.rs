@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
     resolve_inset, resolve_margins, BoxSizing, ComputedStyle, Display, Position, PseudoStyles,
-    TextAlignVal, TextDeco, TextTransform, VerticalAlign, WhiteSpace,
+    TextAlignVal, TextDeco, TextTransform, VerticalAlign, Visibility, WhiteSpace,
 };
 use crate::ImageCache;
 
@@ -51,6 +51,7 @@ fn is_inside_pre(dom: &Dom, node_id: NodeId) -> bool {
 
 fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> LayoutBox {
     let mut bx = LayoutBox::new(Some(node_id), BoxType::Inline);
+    bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
     bx.color = style.color;
     bx.bg_color = if style.background_color_is_current {
         style.color
@@ -592,6 +593,11 @@ fn collect_inline_fragments(
                     frag.layout_box.custom_font_id = custom_font_id;
                 }
             }
+            if matches!(style.visibility, Visibility::Hidden | Visibility::Collapse) {
+                for frag in &mut out[start_idx..] {
+                    frag.layout_box.visibility_hidden = true;
+                }
+            }
         }
         NodeType::Element { tag, .. } => {
             let fragment_start = out.len();
@@ -599,6 +605,8 @@ fn collect_inline_fragments(
             if *tag == Tag::Br {
                 let mut brk = LayoutBox::new(Some(node_id), BoxType::Inline);
                 brk.font_size = font_size_px(style);
+                brk.visibility_hidden =
+                    matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
                 out.push(InlineFragment {
                     width: 0,
                     height: 0,
@@ -1221,6 +1229,7 @@ fn collect_inline_fragments(
                 Display::InlineBlock | Display::InlineFlex | Display::InlineGrid
             ) {
                 use super::block::build_block;
+                let (_mt, mr, _mb, ml) = resolve_margins(style, available_width);
                 // Shrink-to-fit: if no explicit width, use max-content so the box is only as
                 // wide as its content (CSS §10.3.9 "Inline replaced elements, block-level
                 // replaced elements in normal flow, and inline-block elements").
@@ -1233,8 +1242,21 @@ fn collect_inline_fragments(
                     .min(available_width)
                     .max(1)
                 };
-                let mut block_box =
-                    build_block(dom, styles, pseudo, node_id, stf_w, images, viewport_w, 0);
+                let layout_width = if style.width.is_some() || style.width_pct.is_some() {
+                    stf_w
+                } else {
+                    stf_w.saturating_add(ml.max(0)).saturating_add(mr.max(0))
+                };
+                let mut block_box = build_block(
+                    dom,
+                    styles,
+                    pseudo,
+                    node_id,
+                    layout_width,
+                    images,
+                    viewport_w,
+                    0,
+                );
                 block_box.box_type = BoxType::InlineBlock;
                 block_box.x = block_box.margin.left;
                 block_box.y = block_box.margin.top;
