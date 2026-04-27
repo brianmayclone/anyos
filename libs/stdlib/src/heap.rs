@@ -85,9 +85,13 @@ const MMAP_THRESHOLD: usize = 64 * 1024;
 const MMAP_ARENA_CHUNK: usize = 256 * 1024;
 
 /// Start of the mmap virtual address region.
-const MMAP_REGION_START: u64 = 0x7000_0000;
-/// End of the mmap virtual address region.
-const MMAP_REGION_END: u64 = 0xBF00_0000;
+///
+/// SYS_MMAP now uses the kernel's high-VA allocator (above 4 GiB) so the
+/// returned pointers all live in the upper canonical-low half. The lower
+/// bound below is the kernel's MMAP64_BASE constant.
+const MMAP_REGION_START: u64 = 0x0000_0001_0000_0000;
+/// End of the mmap virtual address region (kernel MMAP64_LIMIT).
+const MMAP_REGION_END: u64 = 0x0000_4000_0000_0000;
 
 /// Initialize the heap allocator. Must be called before any allocation.
 pub fn init() {

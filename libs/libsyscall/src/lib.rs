@@ -350,9 +350,13 @@ pub fn sbrk(increment: u32) -> u64 {
 }
 
 /// Map anonymous pages. Returns address or `u64::MAX` on failure.
+///
+/// SYS_MMAP now uses the u64 ABI on the SYSCALL fast path: the kernel
+/// returns the full virtual address (in the upper canonical-low half,
+/// well above 4 GiB) or u64::MAX on error.
 pub fn mmap(size: u32) -> u64 {
     let ret = syscall1(SYS_MMAP, size as u64);
-    if ret == u32::MAX as u64 { u64::MAX } else { ret }
+    if ret == u64::MAX { u64::MAX } else { ret }
 }
 
 /// Unmap pages previously mapped with `mmap`. Returns 0 on success.

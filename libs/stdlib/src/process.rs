@@ -88,9 +88,12 @@ pub fn sbrk(increment: i32) -> usize {
 /// Returns a pointer to the mapped region, or null on failure.
 /// The memory is zeroed and page-aligned.
 /// Use `munmap` to free it when no longer needed.
+///
+/// The kernel returns a full 64-bit virtual address (above 4 GiB on
+/// 64-bit user space) and signals failure as u64::MAX.
 pub fn mmap(size: usize) -> *mut u8 {
-    let result = syscall1(SYS_MMAP, size as u64);
-    if result == u32::MAX {
+    let result = syscall1_u64(SYS_MMAP, size as u64);
+    if result == u64::MAX {
         core::ptr::null_mut()
     } else {
         result as *mut u8
@@ -116,7 +119,7 @@ pub fn mmap_large(size: usize) -> *mut u8 {
 /// `size` is the original size passed to `mmap`.
 /// Returns true on success.
 pub fn munmap(addr: *mut u8, size: usize) -> bool {
-    syscall2(SYS_MUNMAP, addr as u64, size as u64) == 0
+    syscall2_u64(SYS_MUNMAP, addr as u64, size as u64) == 0
 }
 
 /// Unmap pages returned by [`mmap_large`].
