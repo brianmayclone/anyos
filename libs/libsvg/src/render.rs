@@ -111,11 +111,6 @@ impl<'a> RenderCtx<'a> {
                 let xform = transform.concat(parent_xform);
                 let effective_op = style.opacity * parent_opacity;
                 let pts = path::rect_to_poly(*x, *y, *w, *h, *rx, *ry);
-                let polys: Vec<Vec<(f32,f32)>> = pts.iter().map(|(px,py)| {
-                    let (tx,ty) = xform.apply(*px, *py);
-                    vec![(tx, ty)]
-                }).collect::<Vec<_>>();
-                // Build as a single polygon
                 let scaled: Vec<(f32,f32)> = pts.iter().map(|(px,py)| {
                     let (tx,ty) = xform.apply(*px, *py);
                     (tx, ty)
@@ -217,92 +212,92 @@ impl<'a> RenderCtx<'a> {
         let y_max = y_max.min(h - 1);
 
         let fill_rule = style.fill_rule;
+        const AA_SAMPLES: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
+        const AA_WEIGHT: f32 = 1.0 / AA_SAMPLES.len() as f32;
 
         for y in y_min..=y_max {
-            let mut crossings: Vec<f32> = Vec::new();
-            let mut winding_crossings: Vec<(f32, i32)> = Vec::new();
-            let yf = y as f32 + 0.5; // sample at pixel centre
+            let mut coverage = vec![0.0_f32; w as usize];
 
-            for poly in polys {
-                if poly.len() < 2 { continue; }
-                for i in 0..poly.len() - 1 {
-                    let (x0, y0) = poly[i];
-                    let (x1, y1) = poly[i + 1];
-                    if (y0 <= yf && y1 > yf) || (y1 <= yf && y0 > yf) {
-                        let x = x0 + (yf - y0) * (x1 - x0) / (y1 - y0);
-                        crossings.push(x);
-                        let winding = if y1 > y0 { 1 } else { -1 };
-                        winding_crossings.push((x, winding));
+            for sample_y in AA_SAMPLES {
+                let mut crossings: Vec<f32> = Vec::new();
+                let mut winding_crossings: Vec<(f32, i32)> = Vec::new();
+                let yf = y as f32 + sample_y;
+
+                for poly in polys {
+                    if poly.len() < 2 { continue; }
+                    for i in 0..poly.len() - 1 {
+                        let (x0, y0) = poly[i];
+                        let (x1, y1) = poly[i + 1];
+                        if (y0 <= yf && y1 > yf) || (y1 <= yf && y0 > yf) {
+                            let x = x0 + (yf - y0) * (x1 - x0) / (y1 - y0);
+                            crossings.push(x);
+                            let winding = if y1 > y0 { 1 } else { -1 };
+                            winding_crossings.push((x, winding));
+                        }
                     }
                 }
-            }
 
-            match fill_rule {
-                FillRule::NonZero => {
-                    if winding_crossings.is_empty() { continue; }
-                    winding_crossings.sort_by(|a, b| {
-                        a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal)
-                    });
+                match fill_rule {
+                    FillRule::NonZero => {
+                        if winding_crossings.is_empty() { continue; }
+                        winding_crossings.sort_by(|a, b| {
+                            a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal)
+                        });
 
-                    let mut winding = 0;
-                    let mut span_start: Option<f32> = None;
+                        let mut winding = 0;
+                        let mut span_start: Option<f32> = None;
 
-                    for (x, delta) in winding_crossings {
-                        let before = winding;
-                        winding += delta;
+                        for (x, delta) in winding_crossings {
+                            let before = winding;
+                            winding += delta;
 
-                        if before == 0 && winding != 0 {
-                            span_start = Some(x);
-                        } else if before != 0 && winding == 0 {
-                            if let Some(start) = span_start.take() {
-                                let x0 = types::libm_ceil(start) as i32;
-                                let x1 = types::libm_floor(x) as i32;
-                                let x0 = x0.max(0);
-                                let x1 = x1.min(w - 1);
-                                if x0 <= x1 {
-                                    self.fill_span(y as u32, x0 as u32, x1 as u32,
-                                                   style, bounds, total_alpha);
+                            if before == 0 && winding != 0 {
+                                span_start = Some(x);
+                            } else if before != 0 && winding == 0 {
+                                if let Some(start) = span_start.take() {
+                                    add_span_coverage(&mut coverage, start, x, AA_WEIGHT);
                                 }
                             }
                         }
                     }
-                }
-                FillRule::EvenOdd => {
-                    if crossings.is_empty() { continue; }
-                    crossings.sort_by(|a, b| {
-                        a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
-                    });
+                    FillRule::EvenOdd => {
+                        if crossings.is_empty() { continue; }
+                        crossings.sort_by(|a, b| {
+                            a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
+                        });
 
-                    let mut i = 0;
-                    while i + 1 < crossings.len() {
-                        let x0 = types::libm_ceil(crossings[i]) as i32;
-                        let x1 = types::libm_floor(crossings[i + 1]) as i32;
-                        let x0 = x0.max(0);
-                        let x1 = x1.min(w - 1);
-                        if x0 <= x1 {
-                            self.fill_span(y as u32, x0 as u32, x1 as u32,
-                                           style, bounds, total_alpha);
+                        let mut i = 0;
+                        while i + 1 < crossings.len() {
+                            add_span_coverage(&mut coverage, crossings[i], crossings[i + 1], AA_WEIGHT);
+                            i += 2;
                         }
-                        i += 2;
                     }
                 }
             }
+
+            self.fill_coverage_row(y as u32, &coverage, style, bounds, total_alpha);
         }
     }
 
-    /// Fill a horizontal pixel span with the style's fill paint.
-    fn fill_span(
+    fn fill_coverage_row(
         &mut self,
-        y: u32, x_start: u32, x_end: u32,
-        style: &Style, bounds: Bounds, alpha: f32,
+        y: u32,
+        coverage: &[f32],
+        style: &Style,
+        bounds: Bounds,
+        alpha: f32,
     ) {
         let row_off = (y * self.width) as usize;
-        for x in x_start..=x_end {
+        for (x, &coverage) in coverage.iter().enumerate() {
+            let coverage = clamp01(coverage);
+            if coverage < 1.0 / 255.0 {
+                continue;
+            }
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
             let color = self.resolve_paint(&style.fill, px, py, bounds);
-            let color = apply_alpha(color, alpha);
-            let idx = row_off + x as usize;
+            let color = apply_alpha(color, alpha * coverage);
+            let idx = row_off + x;
             if idx < self.pixels.len() {
                 self.pixels[idx] = alpha_blend(self.pixels[idx], color);
             }
@@ -316,7 +311,7 @@ impl<'a> RenderCtx<'a> {
         &mut self,
         polys: &[Vec<(f32, f32)>],
         style: &Style,
-        bounds: Bounds,
+        _bounds: Bounds,
         opacity: f32,
     ) {
         let sw = style.stroke_width * self.scale;
@@ -366,6 +361,27 @@ impl<'a> RenderCtx<'a> {
                 }
             }
         }
+    }
+}
+
+fn add_span_coverage(coverage: &mut [f32], mut start: f32, mut end: f32, weight: f32) {
+    if coverage.is_empty() {
+        return;
+    }
+    if end < start {
+        core::mem::swap(&mut start, &mut end);
+    }
+    if end <= 0.0 || start >= coverage.len() as f32 {
+        return;
+    }
+
+    let x0 = (types::libm_floor(start) as i32).max(0);
+    let x1 = (types::libm_ceil(end) as i32).min(coverage.len() as i32);
+    for x in x0..x1 {
+        let left = (x as f32).max(start);
+        let right = ((x + 1) as f32).min(end);
+        let amount = (right - left).max(0.0).min(1.0) * weight;
+        coverage[x as usize] += amount;
     }
 }
 

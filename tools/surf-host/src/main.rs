@@ -55,6 +55,151 @@ enum ImageBackend {
     Anyos,
 }
 
+#[derive(Clone, Debug)]
+struct HostCookie {
+    name: String,
+    value: String,
+    domain: String,
+    path: String,
+    secure: bool,
+}
+
+#[derive(Default)]
+struct HostCookieJar {
+    cookies: Vec<HostCookie>,
+}
+
+struct HostUrlParts {
+    scheme: String,
+    host: String,
+    path: String,
+}
+
+impl HostCookieJar {
+    fn store_from_document_cookie(&mut self, cookie: &str, request_url: &str) {
+        let Some(parts) = parse_host_url(request_url) else {
+            return;
+        };
+        self.store(cookie, &parts.host, &parts.path);
+    }
+
+    fn store(&mut self, header: &str, request_host: &str, request_path: &str) {
+        let mut parts = header.split(';');
+        let Some(first) = parts.next() else {
+            return;
+        };
+        let Some((name, value)) = first.split_once('=') else {
+            return;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let mut domain = request_host.to_ascii_lowercase();
+        let mut path = default_cookie_path(request_path);
+        let mut secure = false;
+
+        for attr in parts {
+            let attr = attr.trim();
+            if attr.eq_ignore_ascii_case("secure") {
+                secure = true;
+                continue;
+            }
+            if let Some((key, val)) = attr.split_once('=') {
+                let key = key.trim();
+                let val = val.trim().trim_matches('"');
+                if key.eq_ignore_ascii_case("domain") {
+                    domain = val.trim_start_matches('.').to_ascii_lowercase();
+                } else if key.eq_ignore_ascii_case("path") && val.starts_with('/') {
+                    path = val.to_string();
+                }
+            }
+        }
+
+        if let Some(existing) = self.cookies.iter_mut().find(|c| {
+            c.name == name && c.domain == domain && c.path == path
+        }) {
+            existing.value = value.trim().to_string();
+            existing.secure = secure;
+            return;
+        }
+
+        self.cookies.push(HostCookie {
+            name: name.to_string(),
+            value: value.trim().to_string(),
+            domain,
+            path,
+            secure,
+        });
+    }
+
+    fn cookie_header_for_url(&self, url: &str) -> Option<String> {
+        let parts = parse_host_url(url)?;
+        let is_secure = parts.scheme == "https";
+        let mut out = String::new();
+        for cookie in &self.cookies {
+            if cookie.secure && !is_secure {
+                continue;
+            }
+            if !domain_matches(&parts.host, &cookie.domain) {
+                continue;
+            }
+            if !parts.path.starts_with(&cookie.path) {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push_str("; ");
+            }
+            out.push_str(&cookie.name);
+            out.push('=');
+            out.push_str(&cookie.value);
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+}
+
+fn parse_host_url(url: &str) -> Option<HostUrlParts> {
+    let (scheme, rest) = url.split_once("://")?;
+    let host_end = rest
+        .find(|ch| ch == '/' || ch == '?' || ch == '#')
+        .unwrap_or(rest.len());
+    let host_port = &rest[..host_end];
+    let host = host_port.split('@').last()?.split(':').next()?.to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    let tail = &rest[host_end..];
+    let path = if tail.starts_with('/') {
+        let end = tail.find(|ch| ch == '?' || ch == '#').unwrap_or(tail.len());
+        tail[..end].to_string()
+    } else {
+        String::from("/")
+    };
+    Some(HostUrlParts {
+        scheme: scheme.to_ascii_lowercase(),
+        host,
+        path,
+    })
+}
+
+fn default_cookie_path(request_path: &str) -> String {
+    if !request_path.starts_with('/') {
+        return String::from("/");
+    }
+    match request_path.rfind('/') {
+        Some(0) | None => String::from("/"),
+        Some(idx) => request_path[..idx].to_string(),
+    }
+}
+
+fn domain_matches(host: &str, domain: &str) -> bool {
+    host == domain || host.ends_with(&format!(".{}", domain))
+}
+
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-?") {
@@ -305,8 +450,9 @@ fn load_page(
     js_enabled: bool,
     image_backend: ImageBackend,
     load_web_fonts: bool,
+    cookies: &mut HostCookieJar,
 ) -> PendingImages {
-    load_page_inner(wv, url, js_enabled, image_backend, load_web_fonts, 0)
+    load_page_inner(wv, url, js_enabled, image_backend, load_web_fonts, cookies, 0)
 }
 
 fn load_page_inner(
@@ -315,23 +461,27 @@ fn load_page_inner(
     js_enabled: bool,
     image_backend: ImageBackend,
     load_web_fonts: bool,
+    cookies: &mut HostCookieJar,
     redirect_depth: u8,
 ) -> PendingImages {
     eprintln!("[surf-host] loading: {}", url);
     eprintln!("[surf-host] image backend: {:?}", image_backend);
-    let (html, base_url) = fetch_page(url);
+    let (html, base_url) = fetch_page(url, cookies);
     eprintln!("[surf-host] got {} bytes HTML", html.len());
 
     // Clear old page state including stylesheets so no styles bleed across pages.
     wv.clear();
     wv.clear_stylesheets();
     wv.set_url(&base_url);
+    if let Some(cookie_hdr) = cookies.cookie_header_for_url(&base_url) {
+        wv.js_runtime().set_cookies(&cookie_hdr);
+    }
     wv.set_html_no_js(&html);
     load_resources(wv, &base_url, image_backend, load_web_fonts); // CSS, fonts, SVGs (sync) + initial relayout
     let pending = start_image_loading(wv, &base_url, image_backend); // images (async, parallel threads)
     if js_enabled {
-        run_javascript(wv, &base_url);
-        run_js_timers(wv, 5000);
+        run_javascript(wv, &base_url, cookies);
+        run_js_timers(wv, &base_url, cookies, 5000);
         if redirect_depth < 3 {
             if let Some(nav) = wv.take_pending_navigation_requests().pop() {
                 let abs = resolve_url(&base_url, &nav.url);
@@ -346,6 +496,7 @@ fn load_page_inner(
                     js_enabled,
                     image_backend,
                     load_web_fonts,
+                    cookies,
                     redirect_depth + 1,
                 );
             }
@@ -579,6 +730,7 @@ struct RemoteRequest {
 struct BrowserHostApp {
     wv: libwebview::WebView,
     pending: PendingImages,
+    cookies: HostCookieJar,
     current_url: String,
     url_input: String,
     framebuffer: Vec<u32>,
@@ -598,6 +750,7 @@ impl BrowserHostApp {
     fn new(
         wv: libwebview::WebView,
         pending: PendingImages,
+        cookies: HostCookieJar,
         current_url: String,
         remote_rx: Option<mpsc::Receiver<RemoteRequest>>,
         js_enabled: bool,
@@ -609,6 +762,7 @@ impl BrowserHostApp {
         Self {
             wv,
             pending,
+            cookies,
             current_url: current_url.clone(),
             url_input: current_url,
             framebuffer: vec![0xFFFFFFFFu32; (width * height) as usize],
@@ -641,6 +795,7 @@ impl BrowserHostApp {
             self.js_enabled,
             self.image_backend,
             self.load_web_fonts,
+            &mut self.cookies,
         );
         self.scroll_y = 0;
         self.needs_redraw = true;
@@ -723,6 +878,7 @@ impl BrowserHostApp {
         }
         if self.wv.has_timers() {
             self.wv.run_timers(16);
+            apply_host_js_mutations(&mut self.wv, &self.current_url, &mut self.cookies);
             if let Some(nav) = self.wv.take_pending_navigation_requests().pop() {
                 let abs = resolve_url(&self.current_url, &nav.url);
                 eprintln!(
@@ -992,6 +1148,7 @@ fn parse_remote_command(line: &str) -> Option<RemoteCommand> {
 fn run_egui_browser(
     wv: libwebview::WebView,
     pending: PendingImages,
+    cookies: HostCookieJar,
     current_url: String,
     width: u32,
     height: u32,
@@ -1012,6 +1169,7 @@ fn run_egui_browser(
     let app = BrowserHostApp::new(
         wv,
         pending,
+        cookies,
         current_url,
         remote_rx,
         js_enabled,
@@ -1043,12 +1201,14 @@ fn main() {
     register_system_fonts(&mut wv);
 
     // Load the initial page (CSS+fonts+SVGs sync, images async in parallel)
+    let mut cookies = HostCookieJar::default();
     let mut pending = load_page(
         &mut wv,
         &args.url,
         args.js_enabled,
         args.image_backend,
         args.load_web_fonts,
+        &mut cookies,
     );
     let mut current_url = args.url.clone();
 
@@ -1144,6 +1304,7 @@ fn main() {
         run_egui_browser(
             wv,
             pending,
+            cookies,
             current_url,
             width,
             height,
@@ -1225,6 +1386,7 @@ fn main() {
                     args.js_enabled,
                     args.image_backend,
                     args.load_web_fonts,
+                    &mut cookies,
                 );
                 scroll_y = 0;
                 window.set_title(&format!("surf-host — {}", abs));
@@ -1748,7 +1910,7 @@ fn url_cache_key(url: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn fetch_page(url: &str) -> (String, String) {
+fn fetch_page(url: &str, cookies: &HostCookieJar) -> (String, String) {
     if url == "about:blank" {
         (
             String::from("<!doctype html><title>Surf Host</title><style>body{font:16px sans-serif;padding:32px;color:#202124} input{font:inherit;padding:8px;width:24em}</style><h1>Surf Host</h1><p>Enter a URL in the toolbar to start browsing.</p>"),
@@ -1770,10 +1932,13 @@ fn fetch_page(url: &str) -> (String, String) {
         let data_path = dir.join(format!("{}.html", key));
         let url_path = dir.join(format!("{}.url", key));
 
-        match ureq::get(&full_url)
-            .set("User-Agent", SURF_HOST_USER_AGENT)
-            .call()
-        {
+        let mut request = ureq::get(&full_url).set("User-Agent", SURF_HOST_USER_AGENT);
+        if let Some(cookie_hdr) = cookies.cookie_header_for_url(&full_url) {
+            eprintln!("[surf-host] sending cookies: {} bytes", cookie_hdr.len());
+            request = request.set("Cookie", &cookie_hdr);
+        }
+
+        match request.call() {
             Ok(response) => {
                 let final_url = response.get_url().to_string();
                 let content_type = response.header("Content-Type").map(str::to_string);
@@ -2913,7 +3078,27 @@ fn register_http_handler(wv: &mut libwebview::WebView) {
 
 /// Collect all script entries from the DOM, fetch external scripts,
 /// and execute them all in document order.
-fn run_javascript(wv: &mut libwebview::WebView, base_url: &str) {
+fn apply_host_js_mutations(
+    wv: &mut libwebview::WebView,
+    base_url: &str,
+    cookies: &mut HostCookieJar,
+) {
+    let mutations = wv.js_runtime().take_mutations();
+    for mutation in mutations {
+        if let libwebview::js::DomMutation::SetCookie { value } = mutation {
+            cookies.store_from_document_cookie(&value, base_url);
+            if let Some(cookie_hdr) = cookies.cookie_header_for_url(base_url) {
+                wv.js_runtime().set_cookies(&cookie_hdr);
+            }
+        }
+    }
+}
+
+fn run_javascript(
+    wv: &mut libwebview::WebView,
+    base_url: &str,
+    cookies: &mut HostCookieJar,
+) {
     // Register synchronous HTTP handler so fetch()/XHR work inside JS.
     register_http_handler(wv);
 
@@ -2963,6 +3148,7 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str) {
 
     // Execute all scripts.
     wv.execute_js(&scripts);
+    apply_host_js_mutations(wv, base_url, cookies);
 
     // Print console output.
     for line in wv.js_console() {
@@ -2972,7 +3158,12 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str) {
 
 /// Run JS timers for `total_ms` milliseconds in 50ms steps.
 /// This lets setTimeout(fn, 0) and short-delay timers fire.
-fn run_js_timers(wv: &mut libwebview::WebView, total_ms: u64) {
+fn run_js_timers(
+    wv: &mut libwebview::WebView,
+    base_url: &str,
+    cookies: &mut HostCookieJar,
+    total_ms: u64,
+) {
     if !wv.has_timers() {
         return;
     }
@@ -2985,6 +3176,7 @@ fn run_js_timers(wv: &mut libwebview::WebView, total_ms: u64) {
     let mut elapsed = 0u64;
     while elapsed < total_ms && wv.has_timers() {
         wv.run_timers(step);
+        apply_host_js_mutations(wv, base_url, cookies);
         elapsed += step;
         // Print console output from timer callbacks
         for line in wv.js_console() {

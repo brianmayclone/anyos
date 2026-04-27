@@ -152,6 +152,14 @@ fn location_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     queue_navigation(vm, arg_string(args, 0), true)
 }
 
+fn location_reload(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let href = vm
+        .current_this
+        .get_property("href")
+        .to_js_string();
+    queue_navigation(vm, href, true)
+}
+
 fn location_property_hook(_data: *mut u8, key: &str, value: &libjs::JsValue) {
     if key != "href" {
         return;
@@ -254,7 +262,7 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     );
     loc.set_property(
         String::from("reload"),
-        native_fn("reload", |_, _| JsValue::Undefined),
+        native_fn("reload", location_reload),
     );
     if let JsValue::Object(o) = &loc {
         let mut borrowed = o.borrow_mut();

@@ -795,7 +795,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     // object whose children are the template's DOM children.  This allows
     // `template.content.cloneNode(true)` to work as specified in the HTML
     // Living Standard (§4.12.3).
-    if is_template {
+    if is_template && include_siblings {
         let content_obj = make_template_content(vm, node_id);
         if let JsValue::Object(ref obj_rc) = result {
             obj_rc
@@ -830,7 +830,10 @@ fn make_template_content(vm: &mut Vm, template_node_id: i64) -> JsValue {
     // Build children array from the template's DOM children (elements only,
     // matching `read_child_ids` semantics).
     let child_ids = read_child_ids(vm, template_node_id);
-    let children: Vec<JsValue> = child_ids.iter().map(|&id| make_element(vm, id)).collect();
+    let children: Vec<JsValue> = child_ids
+        .iter()
+        .map(|&id| make_element_impl(vm, id, false))
+        .collect();
     let child_count = children.len();
 
     let first = children.first().cloned().unwrap_or(JsValue::Null);

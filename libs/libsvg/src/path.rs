@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 use alloc::vec;
-use crate::types::{PathCmd, Transform, libm_sqrt, libm_sin, libm_cos, libm_atan2, libm_ceil, libm_acos};
+use crate::types::{PathCmd, Transform, libm_sqrt, libm_sin, libm_cos, libm_ceil, libm_acos};
 
 // ── Path-D parser ────────────────────────────────────────────────────
 
@@ -26,8 +26,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
     let mut sy = 0.0_f32;
     let mut last_ctrl_x = 0.0_f32; // last bezier control point (for smooth curves)
     let mut last_ctrl_y = 0.0_f32;
-    let mut last_cmd = b'M';
-
     while let Some(cmd) = iter.next_cmd() {
         match cmd {
             b'M' | b'm' => {
@@ -45,7 +43,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     }
                     cx = nx; cy = ny;
                     last_ctrl_x = cx; last_ctrl_y = cy;
-                    last_cmd = cmd;
                 }
             }
 
@@ -53,7 +50,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                 cmds.push(PathCmd::ClosePath);
                 cx = sx; cy = sy;
                 last_ctrl_x = cx; last_ctrl_y = cy;
-                last_cmd = cmd;
             }
 
             b'L' | b'l' => {
@@ -63,7 +59,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     cmds.push(PathCmd::LineTo(nx, ny));
                     cx = nx; cy = ny;
                     last_ctrl_x = cx; last_ctrl_y = cy;
-                    last_cmd = cmd;
                 }
             }
 
@@ -74,7 +69,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     cmds.push(PathCmd::LineTo(nx, cy));
                     cx = nx;
                     last_ctrl_x = cx; last_ctrl_y = cy;
-                    last_cmd = cmd;
                 }
             }
 
@@ -85,7 +79,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     cmds.push(PathCmd::LineTo(cx, ny));
                     cy = ny;
                     last_ctrl_x = cx; last_ctrl_y = cy;
-                    last_cmd = cmd;
                 }
             }
 
@@ -100,7 +93,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     cmds.push(PathCmd::CubicTo(c1x, c1y, c2x, c2y, ex, ey));
                     last_ctrl_x = c2x; last_ctrl_y = c2y;
                     cx = ex; cy = ey;
-                    last_cmd = cmd;
                 }
             }
 
@@ -118,7 +110,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     cmds.push(PathCmd::CubicTo(c1x, c1y, c2x, c2y, ex, ey));
                     last_ctrl_x = c2x; last_ctrl_y = c2y;
                     cx = ex; cy = ey;
-                    last_cmd = cmd;
                 }
             }
 
@@ -133,7 +124,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     cmds.push(PathCmd::QuadTo(qx, qy, ex, ey));
                     last_ctrl_x = qx; last_ctrl_y = qy;
                     cx = ex; cy = ey;
-                    last_cmd = cmd;
                 }
             }
 
@@ -147,7 +137,6 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     cmds.push(PathCmd::QuadTo(qx, qy, ex, ey));
                     last_ctrl_x = qx; last_ctrl_y = qy;
                     cx = ex; cy = ey;
-                    last_cmd = cmd;
                 }
             }
 
@@ -168,13 +157,11 @@ pub fn parse_path_d(d: &str) -> Vec<PathCmd> {
                     });
                     last_ctrl_x = ex; last_ctrl_y = ey;
                     cx = ex; cy = ey;
-                    last_cmd = cmd;
                 }
             }
 
             _ => {
                 // Unknown command — skip
-                last_cmd = cmd;
             }
         }
     }
@@ -372,8 +359,7 @@ pub fn flatten(cmds: &[PathCmd], xform: &Transform, scale: f32) -> Vec<Vec<(f32,
 }
 
 #[inline]
-fn apply_and_scale(xform: &Transform, x: f32, y: f32, scale: f32) -> (f32, f32) {
-    let _ = scale;
+fn apply_and_scale(xform: &Transform, x: f32, y: f32, _scale: f32) -> (f32, f32) {
     xform.apply(x, y)
 }
 

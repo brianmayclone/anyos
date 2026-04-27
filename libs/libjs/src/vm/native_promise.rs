@@ -281,25 +281,13 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
         if state == "fulfilled" {
             if on_fulfilled.is_function() {
-                // Run callback immediately for already-settled promises
-                // (React and most code expects synchronous .then on resolved promises)
-                let result = vm.call_value(&on_fulfilled, &[value], JsValue::Undefined);
-                if let Some(exc) = vm.last_exception.take() {
-                    settle_promise(vm, &new_promise, "rejected", &exc);
-                } else {
-                    settle_chained_result(vm, &new_promise, result);
-                }
+                enqueue_promise_reaction(vm, on_fulfilled, value, new_promise.clone(), true);
             } else {
                 settle_promise(vm, &new_promise, "fulfilled", &value);
             }
         } else if state == "rejected" {
             if on_rejected.is_function() {
-                let result = vm.call_value(&on_rejected, &[value], JsValue::Undefined);
-                if let Some(exc) = vm.last_exception.take() {
-                    settle_promise(vm, &new_promise, "rejected", &exc);
-                } else {
-                    settle_chained_result(vm, &new_promise, result);
-                }
+                enqueue_promise_reaction(vm, on_rejected, value, new_promise.clone(), false);
             } else {
                 settle_promise(vm, &new_promise, "rejected", &value);
             }

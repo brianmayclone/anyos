@@ -1497,14 +1497,18 @@ fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
     if haystack.len() < needle.len() {
         return false;
     }
-    eq_ignore_ascii_case(&haystack[..needle.len()], needle)
+    haystack
+        .get(..needle.len())
+        .is_some_and(|prefix| eq_ignore_ascii_case(prefix, needle))
 }
 
 fn ends_with_ignore_case(haystack: &str, needle: &str) -> bool {
     if haystack.len() < needle.len() {
         return false;
     }
-    eq_ignore_ascii_case(&haystack[haystack.len() - needle.len()..], needle)
+    haystack
+        .get(haystack.len() - needle.len()..)
+        .is_some_and(|suffix| eq_ignore_ascii_case(suffix, needle))
 }
 
 fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
@@ -1514,8 +1518,14 @@ fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
     if haystack.len() < needle.len() {
         return false;
     }
-    for i in 0..=(haystack.len() - needle.len()) {
-        if eq_ignore_ascii_case(&haystack[i..i + needle.len()], needle) {
+    for (i, _) in haystack.char_indices() {
+        if i + needle.len() > haystack.len() {
+            break;
+        }
+        if haystack
+            .get(i..i + needle.len())
+            .is_some_and(|part| eq_ignore_ascii_case(part, needle))
+        {
             return true;
         }
     }

@@ -1016,7 +1016,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             }
 
             match http::fetch(&url, &mut CookieJar::new(), pool) {
-                Ok(resp) => {
+                Ok(resp) if resp.status >= 200 && resp.status < 400 => {
                     cache.put(key, resp.body.clone(), resp.headers.clone());
                     let decoded_raster = if crate::resources::is_svg(&src, &resp.headers) {
                         None
@@ -1041,7 +1041,35 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                         generation,
                     });
                 }
-                _ => {}
+                Ok(resp) => {
+                    surf_net_log!(
+                        "image fetch HTTP failure: status={} bytes={} src={}",
+                        resp.status,
+                        resp.body.len(),
+                        src
+                    );
+                    enqueue_result(FetchResult::ImageDone {
+                        tab_index,
+                        src,
+                        body: Vec::new(),
+                        headers: resp.headers,
+                        decoded_raster: None,
+                        priority,
+                        generation,
+                    });
+                }
+                Err(e) => {
+                    surf_net_log!("image fetch failed: {} ({})", src, fetch_error_msg(e));
+                    enqueue_result(FetchResult::ImageDone {
+                        tab_index,
+                        src,
+                        body: Vec::new(),
+                        headers: String::new(),
+                        decoded_raster: None,
+                        priority,
+                        generation,
+                    });
+                }
             }
         }
 
@@ -1057,7 +1085,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             }
 
             match http::fetch(&url, &mut CookieJar::new(), pool) {
-                Ok(resp) => {
+                Ok(resp) if resp.status >= 200 && resp.status < 400 => {
                     enqueue_result(FetchResult::FontDone {
                         tab_index,
                         family,
@@ -1066,7 +1094,31 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                         generation,
                     });
                 }
-                _ => {}
+                Ok(resp) => {
+                    surf_net_log!(
+                        "font fetch HTTP failure: status={} bytes={} family={}",
+                        resp.status,
+                        resp.body.len(),
+                        family
+                    );
+                    enqueue_result(FetchResult::FontDone {
+                        tab_index,
+                        family,
+                        body: Vec::new(),
+                        display,
+                        generation,
+                    });
+                }
+                Err(e) => {
+                    surf_net_log!("font fetch failed: {} ({})", family, fetch_error_msg(e));
+                    enqueue_result(FetchResult::FontDone {
+                        tab_index,
+                        family,
+                        body: Vec::new(),
+                        display,
+                        generation,
+                    });
+                }
             }
         }
 

@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Christian Moeller
 // SPDX-License-Identifier: MIT
 
-//! PNG decoder (non-interlaced, 8-bit RGB/RGBA/Grayscale).
+//! PNG decoder (non-interlaced RGB/RGBA/Grayscale and indexed-color PNGs).
 
 use crate::types::*;
 use crate::deflate;
@@ -15,6 +15,7 @@ fn read_u32_be(data: &[u8], off: usize) -> u32 {
 /// Color types we support.
 const CT_GRAY: u8 = 0;
 const CT_RGB: u8 = 2;
+const CT_PALETTE: u8 = 3;
 const CT_RGBA: u8 = 6;
 
 /// Bytes per pixel for supported color types.
@@ -24,6 +25,16 @@ fn bpp(color_type: u8) -> usize {
         CT_RGB => 3,
         CT_RGBA => 4,
         _ => 0,
+    }
+}
+
+fn raw_row_bytes(width: usize, bit_depth: u8, color_type: u8) -> Option<usize> {
+    match color_type {
+        CT_GRAY | CT_RGB | CT_RGBA if bit_depth == 8 => Some(width.checked_mul(bpp(color_type))?),
+        CT_PALETTE if matches!(bit_depth, 1 | 2 | 4 | 8) => {
+            Some((width.checked_mul(bit_depth as usize)? + 7) / 8)
+        }
+        _ => None,
     }
 }
 
@@ -47,11 +58,8 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return None;
     }
-    if bit_depth != 8 {
-        return None; // Only 8-bit supported
-    }
-    let pixel_bytes = bpp(color_type);
-    if pixel_bytes == 0 {
+    let row_bytes = raw_row_bytes(width as usize, bit_depth, color_type)?;
+    if color_type != CT_PALETTE && bpp(color_type) == 0 {
         return None;
     }
 
@@ -67,7 +75,7 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
     }
 
     // Scratch: 32K deflate window + decompressed scanlines + IDAT compressed data
-    let decompressed_size = (width as usize * pixel_bytes + 1) * height as usize;
+    let decompressed_size = (row_bytes + 1) * height as usize;
     let scratch = 32768 + decompressed_size + idat_total.max(1024);
 
     Some(ImageInfo {
@@ -87,8 +95,11 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
     // Parse IHDR
     let width = read_u32_be(data, 16) as usize;
     let height = read_u32_be(data, 20) as usize;
+    let bit_depth = data[24];
     let color_type = data[25];
-    let pixel_bytes = bpp(color_type);
+    let Some(row_bytes) = raw_row_bytes(width, bit_depth, color_type) else {
+        return ERR_UNSUPPORTED;
+    };
 
     if out.len() < width * height {
         return ERR_BUFFER_TOO_SMALL;
@@ -97,13 +108,33 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
     // Collect all IDAT chunks
     let mut idat_total = 0usize;
     let mut pos = 8;
+    let mut palette = [0xFF000000u32; 256];
+    let mut palette_len = 0usize;
 
     // First pass: count IDAT data size
     while pos + 12 <= data.len() {
         let chunk_len = read_u32_be(data, pos) as usize;
+        if pos + 12 + chunk_len > data.len() {
+            return ERR_INVALID_DATA;
+        }
         let chunk_type = &data[pos + 4..pos + 8];
         if chunk_type == b"IDAT" {
             idat_total += chunk_len;
+        } else if chunk_type == b"PLTE" {
+            palette_len = (chunk_len / 3).min(256);
+            let chunk = &data[pos + 8..pos + 8 + chunk_len];
+            for i in 0..palette_len {
+                let r = chunk[i * 3] as u32;
+                let g = chunk[i * 3 + 1] as u32;
+                let b = chunk[i * 3 + 2] as u32;
+                palette[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
+        } else if chunk_type == b"tRNS" && color_type == CT_PALETTE {
+            let chunk = &data[pos + 8..pos + 8 + chunk_len];
+            let count = chunk.len().min(palette_len);
+            for i in 0..count {
+                palette[i] = (palette[i] & 0x00FF_FFFF) | ((chunk[i] as u32) << 24);
+            }
         }
         pos += 12 + chunk_len; // length + type + data + crc
     }
@@ -111,11 +142,14 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
     if idat_total == 0 {
         return ERR_INVALID_DATA;
     }
+    if color_type == CT_PALETTE && palette_len == 0 {
+        return ERR_UNSUPPORTED;
+    }
 
     // We need scratch for: deflate window (32K) + decompressed data + row buffer
-    let scanline_size = width * pixel_bytes + 1; // +1 for filter byte
+    let scanline_size = row_bytes + 1; // +1 for filter byte
     let decompressed_size = scanline_size * height;
-    let needed = 32768 + decompressed_size + width * pixel_bytes;
+    let needed = 32768 + decompressed_size + row_bytes;
     if scratch.len() < needed {
         return ERR_SCRATCH_TOO_SMALL;
     }
@@ -134,6 +168,9 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
     let mut idat_off = 0usize;
     while pos + 12 <= data.len() {
         let chunk_len = read_u32_be(data, pos) as usize;
+        if pos + 12 + chunk_len > data.len() {
+            return ERR_INVALID_DATA;
+        }
         let chunk_type = &data[pos + 4..pos + 8];
         if chunk_type == b"IDAT" {
             let src = &data[pos + 8..pos + 8 + chunk_len];
@@ -182,11 +219,91 @@ pub fn decode(data: &[u8], out: &mut [u32], scratch: &mut [u8]) -> i32 {
         return ERR_INVALID_DATA;
     }
 
+    if color_type == CT_PALETTE {
+        let decomp = unsafe {
+            core::slice::from_raw_parts_mut(scratch_ptr.add(decomp_area_start), decompressed_len)
+        };
+        return reconstruct_indexed(decomp, width, height, bit_depth, &palette, palette_len, out);
+    }
+
     // Reconstruct filtered scanlines
     let decomp = unsafe {
         core::slice::from_raw_parts(scratch_ptr.add(decomp_area_start) as *const u8, decompressed_len)
     };
-    reconstruct_and_convert(decomp, width, height, pixel_bytes, color_type, out)
+    reconstruct_and_convert(decomp, width, height, color_type, out)
+}
+
+fn reconstruct_indexed(
+    scanlines: &mut [u8],
+    width: usize,
+    height: usize,
+    bit_depth: u8,
+    palette: &[u32; 256],
+    palette_len: usize,
+    out: &mut [u32],
+) -> i32 {
+    let row_bytes = match raw_row_bytes(width, bit_depth, CT_PALETTE) {
+        Some(v) => v,
+        None => return ERR_UNSUPPORTED,
+    };
+    let scanline_size = row_bytes + 1;
+
+    for y in 0..height {
+        let row_start = y * scanline_size;
+        if row_start + scanline_size > scanlines.len() {
+            return ERR_INVALID_DATA;
+        }
+        let filter = scanlines[row_start];
+        let prev_start = if y > 0 { Some((y - 1) * scanline_size) } else { None };
+
+        for x in 0..row_bytes {
+            let idx = row_start + 1 + x;
+            let raw = scanlines[idx];
+            let left = if x > 0 { scanlines[idx - 1] } else { 0 };
+            let above = prev_start.map(|p| scanlines[p + 1 + x]).unwrap_or(0);
+            let upper_left = if x > 0 {
+                prev_start.map(|p| scanlines[p + x]).unwrap_or(0)
+            } else {
+                0
+            };
+            scanlines[idx] = match filter {
+                0 => raw,
+                1 => raw.wrapping_add(left),
+                2 => raw.wrapping_add(above),
+                3 => raw.wrapping_add(((left as u16 + above as u16) / 2) as u8),
+                4 => raw.wrapping_add(paeth(left, above, upper_left)),
+                _ => return ERR_INVALID_DATA,
+            };
+        }
+
+        let row = &scanlines[row_start + 1..row_start + 1 + row_bytes];
+        for x in 0..width {
+            let palette_index = match bit_depth {
+                8 => row[x] as usize,
+                4 => {
+                    let b = row[x / 2];
+                    if x & 1 == 0 { (b >> 4) as usize } else { (b & 0x0F) as usize }
+                }
+                2 => {
+                    let b = row[x / 4];
+                    let shift = 6 - ((x & 3) * 2);
+                    ((b >> shift) & 0x03) as usize
+                }
+                1 => {
+                    let b = row[x / 8];
+                    let shift = 7 - (x & 7);
+                    ((b >> shift) & 0x01) as usize
+                }
+                _ => return ERR_UNSUPPORTED,
+            };
+            if palette_index >= palette_len {
+                return ERR_INVALID_DATA;
+            }
+            out[y * width + x] = palette[palette_index];
+        }
+    }
+
+    ERR_OK
 }
 
 /// Apply PNG filter reconstruction and convert to ARGB8888.
@@ -196,7 +313,6 @@ fn reconstruct_and_convert(
     scanlines: &[u8],
     width: usize,
     height: usize,
-    pixel_bytes: usize,
     color_type: u8,
     out: &mut [u32],
 ) -> i32 {

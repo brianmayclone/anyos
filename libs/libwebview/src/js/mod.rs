@@ -710,12 +710,14 @@ impl JsRuntime {
         // paths before the VM step limit gets a chance to abort. Until those
         // paths are fully iterative, prefer running small progressive-enhancement
         // scripts over risking the whole browser process.
-        const MAX_SCRIPTS: usize = 32;
-        const MAX_SCRIPT_BYTES: usize = 128 * 1024;
+        const MAX_SCRIPTS: usize = 48;
+        const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
 
         // Per-script step limit to keep pages responsive.
-        // Raised to 20 M to allow React's initial render tree to complete.
-        self.engine.set_step_limit(20_000_000);
+        // Google Search's gate script currently needs more than 20 M VM steps
+        // before it can set its cookie and reload into the real results page.
+        const SCRIPT_STEP_LIMIT: u64 = 100_000_000;
+        self.engine.set_step_limit(SCRIPT_STEP_LIMIT);
 
         // Set up DOM bridge via userdata.
         anyos_std::println!(
@@ -815,7 +817,7 @@ impl JsRuntime {
             );
             self.engine.vm().steps = 0;
             self.engine.vm().last_exception = None;
-            self.engine.set_step_limit(20_000_000);
+            self.engine.set_step_limit(SCRIPT_STEP_LIMIT);
             // Clear any leftover call frames from aborted scripts (e.g. step-limit abort).
             self.engine.vm().frames.clear();
             self.engine.vm().stack.clear();
@@ -1044,6 +1046,13 @@ impl JsRuntime {
             "getSelection",
             "scrollTo",
             "scrollBy",
+            "atob",
+            "btoa",
+            "fetch",
+            "XMLHttpRequest",
+            "Headers",
+            "Request",
+            "Response",
             "confirm",
             "prompt",
             "getCookie",
@@ -1328,6 +1337,18 @@ impl JsRuntime {
     /// Returns a map from virtual_id → real NodeId for newly created elements.
     pub fn apply_mutations(&mut self, dom: &mut Dom) -> BTreeMap<i64, usize> {
         let mutations = core::mem::take(&mut self.mutations);
+        let host_side_effects: Vec<DomMutation> = mutations
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    DomMutation::SetCookie { .. }
+                        | DomMutation::FormSubmit { .. }
+                        | DomMutation::FormReset { .. }
+                )
+            })
+            .cloned()
+            .collect();
         let mut id_map: BTreeMap<i64, usize> = BTreeMap::new();
 
         for m in &mutations {
@@ -1484,6 +1505,7 @@ impl JsRuntime {
                 }
             }
         }
+        self.mutations.extend(host_side_effects);
         id_map
     }
 

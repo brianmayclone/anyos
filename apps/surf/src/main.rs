@@ -496,12 +496,41 @@ fn execute_script_batch(tab_index: usize, scripts: Vec<String>, label: &str) {
     for line in st.tabs[tab_index].webview.js_console() {
         crate::surf_log!("[surf-js] {}", line);
     }
+    apply_js_host_mutations(tab_index);
     connect_pending_ws(tab_index);
     if drain_js_navigation_for_tab(tab_index) {
         return;
     }
     if changed {
         request_image_refresh(tab_index);
+    }
+}
+
+fn apply_js_host_mutations(tab_index: usize) {
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return;
+    }
+    let Some(url) = st.tabs[tab_index].current_url.clone() else {
+        return;
+    };
+    let mutations = st.tabs[tab_index].webview.js_runtime().take_mutations();
+    for mutation in mutations {
+        match mutation {
+            libwebview::js::DomMutation::SetCookie { value } => {
+                st.cookies
+                    .store_from_document_cookie(&value, &url.host, &url.path);
+                let is_secure = url.scheme == "https";
+                if let Some(cookie_hdr) = st.cookies.cookie_header(&url.host, &url.path, is_secure)
+                {
+                    st.tabs[tab_index]
+                        .webview
+                        .js_runtime()
+                        .set_cookies(&cookie_hdr);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -649,7 +678,11 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
     for line in st.tabs[tab_index].webview.js_console() {
         crate::surf_log!("[surf-js] {}", line);
     }
+    apply_js_host_mutations(tab_index);
     connect_pending_ws(tab_index);
+    if drain_js_navigation_for_tab(tab_index) {
+        return;
+    }
     if changed {
         request_image_refresh(tab_index);
     }
@@ -1718,7 +1751,9 @@ fn handle_image_done(
         generation
     );
 
-    if let Some(decoded_raster) = decoded_raster {
+    if body.is_empty() && decoded_raster.is_none() {
+        crate::surf_log!("[surf] image unavailable: tab={} src={}", tab_index, src);
+    } else if let Some(decoded_raster) = decoded_raster {
         if let Some(black_ratio_ppm) = decoded_raster.suspicious_black_ppm {
             crate::surf_log!(
                 "[surf] WARN suspicious worker image decode: src={} format={} {}x{} black_ratio_ppm={} tab={}",

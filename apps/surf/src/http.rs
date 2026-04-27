@@ -83,6 +83,16 @@ impl CookieJar {
         }
     }
 
+    /// Store a cookie written by JavaScript via `document.cookie`.
+    pub fn store_from_document_cookie(
+        &mut self,
+        cookie: &str,
+        request_host: &str,
+        request_path: &str,
+    ) {
+        self.parse_set_cookie(cookie, request_host, request_path);
+    }
+
     fn parse_set_cookie(&mut self, header: &str, request_host: &str, request_path: &str) {
         // Format: name=value; Path=/; Domain=.example.com; Secure; HttpOnly
         let mut parts = header.splitn(2, ';');
