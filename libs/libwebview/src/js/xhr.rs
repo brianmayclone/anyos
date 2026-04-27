@@ -252,10 +252,7 @@ fn xhr_remove_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             .into_iter()
             .filter(|entry| !entry.strict_eq(&callback))
             .collect();
-        {
-            let mut borrowed = arr.borrow_mut();
-            *borrowed = libjs::value::JsArray::from_vec(kept);
-        }
+        set_this_prop(vm, &key, JsValue::new_array(kept));
     }
     JsValue::Undefined
 }

@@ -591,6 +591,44 @@ pub fn string_substring(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::String(result)
 }
 
+pub fn string_substr(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let s = match this_string_checked(vm) {
+        Some(s) => s,
+        None => return JsValue::Undefined,
+    };
+    let chars = chars_vec(&s);
+    let len = chars.len();
+
+    let raw_start = match args.first() {
+        Some(v) => match arg_to_number_checked(vm, v) {
+            Some(n) => n,
+            None => return JsValue::Undefined,
+        },
+        None => 0.0,
+    };
+    let start = if raw_start.is_nan() {
+        0
+    } else if raw_start < 0.0 {
+        let from_end = len as f64 + raw_start;
+        if from_end <= 0.0 { 0 } else { from_end as usize }
+    } else {
+        (raw_start as usize).min(len)
+    };
+
+    let count = match args.get(1) {
+        Some(JsValue::Undefined) | None => len.saturating_sub(start),
+        Some(v) => match arg_to_number_checked(vm, v) {
+            Some(n) if n.is_nan() || n <= 0.0 => 0,
+            Some(n) if !n.is_finite() => len.saturating_sub(start),
+            Some(n) => (n as usize).min(len.saturating_sub(start)),
+            None => return JsValue::Undefined,
+        },
+    };
+    let end = start.saturating_add(count).min(len);
+    let result: String = chars[start..end].iter().collect();
+    JsValue::String(result)
+}
+
 pub fn string_to_lower_case(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let s = match this_string_checked(vm) {
         Some(s) => s,

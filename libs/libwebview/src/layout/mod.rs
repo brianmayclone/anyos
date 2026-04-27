@@ -2767,7 +2767,7 @@ fn measure_min_content(
 /// Compute shrink-to-fit width for a float element.
 /// Per CSS spec, the float's width = min(max-content, max(min-content, available)).
 /// We approximate this as max-content width capped at max_width.
-fn shrink_to_fit_width(
+pub(super) fn shrink_to_fit_width(
     dom: &Dom,
     styles: &[ComputedStyle],
     pseudo: &PseudoStyles,

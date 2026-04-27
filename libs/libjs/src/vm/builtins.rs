@@ -315,6 +315,10 @@ impl Vm {
                 native_fn_with_length("substring", native_string::string_substring, 2),
             );
             p.set_hidden(
+                String::from("substr"),
+                native_fn_with_length("substr", native_string::string_substr, 2),
+            );
+            p.set_hidden(
                 String::from("toLowerCase"),
                 native_fn("toLowerCase", native_string::string_to_lower_case),
             );

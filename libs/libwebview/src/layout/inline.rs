@@ -790,6 +790,14 @@ fn collect_inline_fragments(
                         h.max(0)
                     }
                 };
+                let parent_definite_size = dom
+                    .get(node_id)
+                    .parent
+                    .and_then(|pid| styles.get(pid))
+                    .and_then(|parent_style| match (parent_style.width, parent_style.height) {
+                        (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
+                        _ => None,
+                    });
                 let mut content_w = iw.min(available_width.max(1));
                 let mut content_h = ih.max(1);
                 let specified_w = style
@@ -853,7 +861,16 @@ fn collect_inline_fragments(
                             content_w = ((iw as i64 * content_h as i64) / ih as i64).max(1) as i32;
                         }
                     }
-                    (None, None) => {}
+                    (None, None) => {
+                        if dom.attr(node_id, "width").is_none()
+                            && dom.attr(node_id, "height").is_none()
+                        {
+                            if let Some((parent_w, parent_h)) = parent_definite_size {
+                                content_w = parent_w.max(1);
+                                content_h = parent_h.max(1);
+                            }
+                        }
+                    }
                 }
                 if let Some(max_h) = resolved_max_h {
                     if content_h > max_h.max(0) {

@@ -276,12 +276,34 @@ pub fn layout_grid(
     // ── 7. Measure each item at its column span width ─────────────────────
     for item in &mut items {
         let col_w = span_width(&col_widths, item.placed_col, item.span_cols, col_gap);
+        let item_style = &styles[item.node_id];
+        let effective_justify = item_style.justify_self.unwrap_or(justify_items);
+        let use_fit_content_width = effective_justify != AlignItems::Stretch
+            && item_style.width.is_none()
+            && item_style.width_pct.is_none()
+            && item_style.width_calc.is_none()
+            && !item_style.width_max_content
+            && !item_style.width_min_content
+            && !item_style.width_fit_content;
+        let item_avail = if use_fit_content_width {
+            super::shrink_to_fit_width(
+                dom,
+                styles,
+                pseudo,
+                item.node_id,
+                col_w,
+                images,
+                viewport_w,
+            )
+        } else {
+            col_w
+        };
         let mut bx = build_block(
             dom,
             styles,
             pseudo,
             item.node_id,
-            col_w,
+            item_avail,
             images,
             viewport_w,
             0,
