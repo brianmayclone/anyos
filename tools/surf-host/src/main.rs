@@ -2360,6 +2360,14 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         "ikrT4e",
         "om7nvf",
         "A8SBwf",
+        "collection-module",
+        "module-content",
+        "unit-wrapper",
+        "unit-copy-wrapper",
+        "unit-image-wrapper",
+        "unit-image",
+        "headline",
+        "subhead",
     ];
 
     for (node_id, _) in dom.nodes.iter().enumerate() {

@@ -3,7 +3,10 @@ fn parse_calc_value(s: &str) -> CssValue {
     let lower = s.to_ascii_lowercase();
     let inner = if lower.starts_with("calc(") {
         let without_prefix = &s[5..];
-        without_prefix.trim_end_matches(')').trim()
+        without_prefix
+            .strip_suffix(')')
+            .unwrap_or(without_prefix)
+            .trim()
     } else {
         s
     };
@@ -149,7 +152,7 @@ fn parse_calc_operand(s: &str) -> (i32, i32) {
 
     if lower.starts_with("calc(") || (lower.starts_with('(') && lower.ends_with(')')) {
         let inner = if lower.starts_with("calc(") {
-            &lower[5..lower.len() - 1]
+            lower[5..].strip_suffix(')').unwrap_or(&lower[5..])
         } else {
             &lower[1..lower.len() - 1]
         };

@@ -2887,7 +2887,11 @@ pub fn apply_declaration(
 ) {
     match decl.property {
         Property::Display => {
-            if let CssValue::Keyword(ref kw) = decl.value {
+            if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.display = parent.display;
+                }
+            } else if let CssValue::Keyword(ref kw) = decl.value {
                 style.display = match kw.as_str() {
                     "block" => Display::Block,
                     "inline" => Display::Inline,
@@ -6083,7 +6087,16 @@ mod declaration_tests {
             &Property::Width,
             "calc(956px + 2 * 20px)",
         );
-        assert_eq!(resolved, CssValue::Length(996, Unit::Px));
+        assert!(matches!(resolved, CssValue::Length(996, Unit::Px)));
+    }
+
+    #[test]
+    fn calc_preserves_nested_function_parentheses() {
+        let resolved = crate::css::parse_value(
+            &Property::Width,
+            "calc(100% - 0px - env(safe-area-inset-left) - env(safe-area-inset-right))",
+        );
+        assert!(matches!(resolved, CssValue::Percentage(10000)));
     }
 
     #[test]

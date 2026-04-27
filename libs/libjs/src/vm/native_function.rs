@@ -109,6 +109,7 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
             let bound_args = func_rc.borrow().bound_args.clone();
 
             let effective_this = this_bind.unwrap_or_else(|| this_val.clone());
+            let saved_current_this = vm.current_this.clone();
             vm.current_this = effective_this.clone();
 
             let effective_args: Vec<JsValue>;
@@ -120,7 +121,11 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
             };
 
             match kind {
-                FnKind::Native(native) => native(vm, args),
+                FnKind::Native(native) => {
+                    let result = native(vm, args);
+                    vm.current_this = saved_current_this;
+                    result
+                }
                 FnKind::Bytecode(chunk) => {
                     let captured_with_scopes = match &func {
                         JsValue::Function(f) => f.borrow().with_scopes.clone(),
@@ -149,7 +154,8 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
                         self_ref: func.clone(),
                     };
                     vm.frames.push(frame);
-                    vm.run()
+                    vm.current_this = saved_current_this;
+                    JsValue::Empty
                 }
             }
         }

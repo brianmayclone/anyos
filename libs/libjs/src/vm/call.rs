@@ -428,6 +428,7 @@ impl Vm {
                 } else {
                     effective_this
                 };
+                let saved_current_this = self.current_this.clone();
                 self.current_this = effective_this.clone();
 
                 // Prepend bound arguments (from Function.prototype.bind) to call args
@@ -454,8 +455,11 @@ impl Vm {
                                 self.control_flow_restored = true;
                             }
                         } else {
-                            self.stack.push(result);
+                            if !matches!(result, JsValue::Empty) {
+                                self.stack.push(result);
+                            }
                         }
+                        self.current_this = saved_current_this;
                     }
                     FnKind::Bytecode(chunk) => {
                         let mut locals = Vm::make_locals(&chunk);
@@ -493,6 +497,7 @@ impl Vm {
                                     }
                                 }
                             }
+                            self.current_this = saved_current_this;
                             return;
                         }
 
@@ -517,6 +522,7 @@ impl Vm {
                             self_ref: callee.clone(),
                         };
                         self.frames.push(frame);
+                        self.current_this = saved_current_this;
                     }
                 }
             }

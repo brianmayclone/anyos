@@ -105,6 +105,20 @@ fn arrow_function_body() {
     assert_eq!(eval_str("const f = x => { return x * 2; }; f(5)"), "10");
 }
 
+#[test]
+fn function_call_can_dispatch_bytecode_without_reentrant_run() {
+    assert_eq!(
+        eval_str(
+            r#"
+        function add(a) { return this.base + a; }
+        let call = Function.prototype.call;
+        call.call(add, { base: 10 }, 7)
+    "#
+        ),
+        "17"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // §14.6 — Classes
 // ═══════════════════════════════════════════════════════════

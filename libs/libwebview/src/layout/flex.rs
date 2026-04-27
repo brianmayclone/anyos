@@ -37,6 +37,23 @@ struct FlexLine {
     cross_size: i32, // resolved cross size of this line
 }
 
+fn push_flex_item_nodes(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, out: &mut Vec<NodeId>) {
+    let st = &styles[node_id];
+    if st.display == Display::None {
+        return;
+    }
+    if matches!(st.position, Position::Absolute | Position::Fixed) {
+        return;
+    }
+    if st.display == Display::Contents && dom.tag(node_id) != Some(Tag::Svg) {
+        for &child in &dom.get(node_id).children {
+            push_flex_item_nodes(dom, styles, child, out);
+        }
+        return;
+    }
+    out.push(node_id);
+}
+
 fn round_div_i64(num: i64, den: i64) -> i32 {
     if den == 0 {
         return 0;
@@ -448,14 +465,13 @@ pub fn layout_flex(
     // Per spec §4: each in-flow child becomes a flex item.
     // Skip hidden inputs (they generate no box).
     let mut items: Vec<FlexItem> = Vec::new();
+    let mut flex_item_nodes = Vec::new();
     for &cid in child_ids {
+        push_flex_item_nodes(dom, styles, cid, &mut flex_item_nodes);
+    }
+
+    for cid in flex_item_nodes {
         let st = &styles[cid];
-        if st.display == Display::None {
-            continue;
-        }
-        if matches!(st.position, Position::Absolute | Position::Fixed) {
-            continue;
-        }
         // CSS Flexbox §4: text nodes containing only whitespace do NOT generate
         // anonymous flex items (they are treated as `display: none`).
         if let NodeType::Text(ref s) = dom.get(cid).node_type {
