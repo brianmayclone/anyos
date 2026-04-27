@@ -1436,18 +1436,129 @@ fn fetch_page(url: &str) -> (String, String) {
         } else {
             format!("https://{}", url)
         };
+        let dir = disk_cache_dir();
+        let key = url_cache_key(&full_url);
+        let data_path = dir.join(format!("{}.html", key));
+        let url_path = dir.join(format!("{}.url", key));
+
         match ureq::get(&full_url).call() {
             Ok(response) => {
                 let final_url = response.get_url().to_string();
-                let body = response.into_string().unwrap_or_default();
+                let content_type = response.header("Content-Type").map(str::to_string);
+                let mut bytes = Vec::new();
+                let _ = response.into_reader().read_to_end(&mut bytes);
+                let body = decode_html_bytes(&bytes, content_type.as_deref());
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(&data_path, &bytes);
+                let _ = std::fs::write(&url_path, final_url.as_bytes());
                 (body, final_url)
             }
             Err(e) => {
                 eprintln!("[surf-host] fetch error: {}", e);
+                if let Ok(bytes) = std::fs::read(&data_path) {
+                    let final_url = std::fs::read_to_string(&url_path).unwrap_or_else(|_| full_url.clone());
+                    return (decode_html_bytes(&bytes, None), final_url);
+                }
                 (format!("<h1>Error</h1><p>{}</p>", e), full_url)
             }
         }
     }
+}
+
+fn decode_html_bytes(bytes: &[u8], content_type: Option<&str>) -> String {
+    let charset = content_type
+        .and_then(extract_charset_from_content_type)
+        .or_else(|| extract_charset_from_meta(bytes));
+
+    match charset.as_deref() {
+        Some("windows-1252") | Some("cp1252") | Some("iso-8859-1") | Some("latin1")
+        | Some("latin-1") => decode_windows_1252(bytes),
+        _ => match String::from_utf8(bytes.to_vec()) {
+            Ok(text) => text,
+            Err(_) => decode_windows_1252(bytes),
+        },
+    }
+}
+
+fn extract_charset_from_content_type(content_type: &str) -> Option<String> {
+    for part in content_type.split(';') {
+        let part = part.trim();
+        if let Some((name, value)) = part.split_once('=') {
+            if name.trim().eq_ignore_ascii_case("charset") {
+                return Some(normalize_charset(value));
+            }
+        }
+    }
+    None
+}
+
+fn extract_charset_from_meta(bytes: &[u8]) -> Option<String> {
+    let head_len = bytes.len().min(4096);
+    let head = String::from_utf8_lossy(&bytes[..head_len]).to_ascii_lowercase();
+    let idx = head.find("charset")?;
+    let after = &head[idx + "charset".len()..];
+    let after = after.trim_start();
+    let after = after.strip_prefix('=').unwrap_or(after).trim_start();
+    let after = after.strip_prefix('"').or_else(|| after.strip_prefix('\'')).unwrap_or(after);
+    let mut end = 0usize;
+    for ch in after.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            end += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        None
+    } else {
+        Some(normalize_charset(&after[..end]))
+    }
+}
+
+fn normalize_charset(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_ascii_lowercase()
+}
+
+fn decode_windows_1252(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        let ch = match b {
+            0x80 => '\u{20AC}',
+            0x82 => '\u{201A}',
+            0x83 => '\u{0192}',
+            0x84 => '\u{201E}',
+            0x85 => '\u{2026}',
+            0x86 => '\u{2020}',
+            0x87 => '\u{2021}',
+            0x88 => '\u{02C6}',
+            0x89 => '\u{2030}',
+            0x8A => '\u{0160}',
+            0x8B => '\u{2039}',
+            0x8C => '\u{0152}',
+            0x8E => '\u{017D}',
+            0x91 => '\u{2018}',
+            0x92 => '\u{2019}',
+            0x93 => '\u{201C}',
+            0x94 => '\u{201D}',
+            0x95 => '\u{2022}',
+            0x96 => '\u{2013}',
+            0x97 => '\u{2014}',
+            0x98 => '\u{02DC}',
+            0x99 => '\u{2122}',
+            0x9A => '\u{0161}',
+            0x9B => '\u{203A}',
+            0x9C => '\u{0153}',
+            0x9E => '\u{017E}',
+            0x9F => '\u{0178}',
+            _ => b as char,
+        };
+        out.push(ch);
+    }
+    out
 }
 
 fn fetch_resource(url: &str) -> Option<Vec<u8>> {
@@ -1578,17 +1689,22 @@ fn debug_dump_boxes(
         let (tag, class_attr) = if let Some(node_id) = bx.node_id {
             let node = dom.get(node_id);
             let tag = match &node.node_type {
-                NodeType::Element { .. } => String::from("Element"),
+                NodeType::Element { tag, .. } => String::from(tag.tag_name()),
                 NodeType::Text(_) => String::from("#text"),
-                _ => String::from("?"),
             };
             let class_attr = dom.attr(node_id, "class").unwrap_or("");
             (tag, class_attr.to_string())
         } else {
             (String::from("-"), String::new())
         };
+        let text_align = match bx.text_align {
+            libwebview::style::TextAlignVal::Left => "left",
+            libwebview::style::TextAlignVal::Center => "center",
+            libwebview::style::TextAlignVal::Right => "right",
+            libwebview::style::TextAlignVal::Justify => "justify",
+        };
         eprintln!(
-            "[surf-host] box depth={} node={:?} tag={} class={:?} rel=({}, {}) abs=({}, {}) size=({}, {}) margin=({}, {}, {}, {}) bg=0x{:08x}",
+            "[surf-host] box depth={} node={:?} tag={} class={:?} rel=({}, {}) abs=({}, {}) size=({}, {}) margin=({}, {}, {}, {}) text_align={} bg=0x{:08x}",
             depth,
             bx.node_id,
             tag,
@@ -1603,6 +1719,7 @@ fn debug_dump_boxes(
             bx.margin.right,
             bx.margin.bottom,
             bx.margin.left,
+            text_align,
             bx.bg_color
         );
     }

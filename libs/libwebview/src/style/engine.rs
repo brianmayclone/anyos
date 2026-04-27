@@ -1807,18 +1807,42 @@ fn resolve_styles_prepared_impl(
         // currentColor-dependent properties see the same baseline that later
         // inheritance will preserve.
         if let Some(parent) = parent_style {
-            style.font_size = parent.font_size;
-            style.color = parent.color;
-            style.font_weight = parent.font_weight;
-            style.font_style = parent.font_style;
-            style.direction = parent.direction;
-            style.text_align = parent.text_align;
-            style.white_space = parent.white_space;
-            style.text_transform = parent.text_transform;
-            style.letter_spacing = parent.letter_spacing;
-            style.word_spacing = parent.word_spacing;
-            style.word_break = parent.word_break;
-            style.overflow_wrap = parent.overflow_wrap;
+            if set_flags & SET_FONT_SIZE == 0 {
+                style.font_size = parent.font_size;
+            }
+            if set_flags & SET_COLOR == 0 {
+                style.color = parent.color;
+            }
+            if set_flags & SET_FONT_WEIGHT == 0 {
+                style.font_weight = parent.font_weight;
+            }
+            if set_flags & SET_FONT_STYLE == 0 {
+                style.font_style = parent.font_style;
+            }
+            if set_flags & SET_DIRECTION == 0 {
+                style.direction = parent.direction;
+            }
+            if set_flags & SET_TEXT_ALIGN == 0 {
+                style.text_align = parent.text_align;
+            }
+            if set_flags & SET_WHITE_SPACE == 0 {
+                style.white_space = parent.white_space;
+            }
+            if set_flags & SET_TEXT_TRANSFORM == 0 {
+                style.text_transform = parent.text_transform;
+            }
+            if set_flags & SET_LETTER_SPACING == 0 {
+                style.letter_spacing = parent.letter_spacing;
+            }
+            if set_flags & SET_WORD_SPACING == 0 {
+                style.word_spacing = parent.word_spacing;
+            }
+            if set_flags & SET_WORD_BREAK == 0 {
+                style.word_break = parent.word_break;
+            }
+            if set_flags & SET_OVERFLOW_WRAP == 0 {
+                style.overflow_wrap = parent.overflow_wrap;
+            }
         }
 
         // UA override: [hidden] → display:none (per HTML spec).
@@ -6364,5 +6388,34 @@ mod layout_regression_tests {
         assert_eq!(style.margin_left, -10);
         assert_eq!(style.padding_left, 20);
         assert_eq!(style.padding_bottom, 20);
+    }
+
+    #[test]
+    fn early_inheritance_seed_preserves_explicit_ua_styles() {
+        let dom = crate::html::parse(r#"<center><div id="child">x</div></center><h1>Title</h1>"#);
+        let stylesheet = crate::css::parse_stylesheet("center { background: #eee; }");
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 800, 600, &mut inline_style_cache);
+
+        let child_id = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { tag: Tag::Div, attrs }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "child")
+                )
+            })
+            .expect("child div");
+        let h1_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::H1, .. }))
+            .expect("h1");
+
+        assert!(matches!(styles[child_id].text_align, TextAlignVal::Center));
+        assert_eq!(styles[h1_id].font_size, 32);
+        assert!(matches!(styles[h1_id].font_weight, FontWeight::Bold));
     }
 }
