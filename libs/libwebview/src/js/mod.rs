@@ -692,11 +692,13 @@ impl JsRuntime {
             total_bytes
         );
 
-        // Cap large pages: limit total number of scripts.
-        // Script size limit raised to 4 MiB to support modern bundlers (Vite, webpack)
-        // that produce single bundles larger than 256 KiB (e.g. React apps at ~400+ KiB).
+        // Cap large pages: limit total number of scripts. Very large modern
+        // bundles can still exhaust the Rust stack in parser/compiler/runtime
+        // paths before the VM step limit gets a chance to abort. Until those
+        // paths are fully iterative, prefer running small progressive-enhancement
+        // scripts over risking the whole browser process.
         const MAX_SCRIPTS: usize = 32;
-        const MAX_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
+        const MAX_SCRIPT_BYTES: usize = 128 * 1024;
 
         // Per-script step limit to keep pages responsive.
         // Raised to 20 M to allow React's initial render tree to complete.
@@ -2679,6 +2681,40 @@ mod tests {
             "websocket constructor smoke test failed"
         );
         assert_eq!(runtime.pending_ws_connects.len(), 1);
+    }
+
+    #[test]
+    fn browser_window_properties_are_global_names() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        let script = r#"
+            window.google = { marker: 42 };
+            globalThis.__window_to_global_ok = google.marker === 42;
+            bareAssignmentFromScript = 'visible-on-window';
+            globalThis.__global_to_window_ok = window.bareAssignmentFromScript === 'visible-on-window';
+        "#;
+
+        runtime.execute_script_sources(&dom, "https://www.google.de/", &[script.to_string()]);
+
+        assert!(
+            runtime.engine.vm().last_exception.is_none(),
+            "unexpected JS exception: {:?}",
+            runtime.engine.vm().last_exception
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__window_to_global_ok"),
+                JsValue::Bool(true)
+            ),
+            "window property was not readable as a global name"
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__global_to_window_ok"),
+                JsValue::Bool(true)
+            ),
+            "global assignment was not mirrored to window"
+        );
     }
 }
 

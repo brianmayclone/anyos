@@ -1396,6 +1396,36 @@ impl Parser {
         let left = self.parse_conditional_expr();
 
         if let Some(op) = self.assignment_op() {
+            if matches!(left, Expr::Undefined) {
+                let token = self
+                    .tokens
+                    .get(self.pos)
+                    .map(|t| {
+                        alloc::format!(
+                            "{:?} at token {} line {} bytes {}..{}",
+                            t.kind,
+                            self.pos,
+                            t.span.line,
+                            t.span.start,
+                            t.span.end
+                        )
+                    })
+                    .unwrap_or_else(|| String::from("Eof"));
+                let previous = self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|t| alloc::format!(" previous={:?}", t.kind))
+                    .unwrap_or_default();
+                let next = self
+                    .tokens
+                    .get(self.pos + 1)
+                    .map(|t| alloc::format!(" next={:?}", t.kind))
+                    .unwrap_or_default();
+                self.syntax_error(&alloc::format!(
+                    "invalid assignment target before {}{}{}",
+                    token, previous, next
+                ));
+            }
             self.pos += 1;
             let right = self.parse_assignment_expr();
             Expr::Assign {
@@ -2079,6 +2109,13 @@ impl Parser {
             TokenKind::Ident(s) => {
                 self.pos += 1;
                 Expr::Ident(s)
+            }
+            TokenKind::Of => {
+                // `of` is only special in the `for (... of ...)` grammar.
+                // Real-world minified scripts (Google's homepage does this)
+                // also use it as a plain binding/expression name.
+                self.pos += 1;
+                Expr::Ident(String::from("of"))
             }
             TokenKind::LParen => {
                 self.pos += 1;

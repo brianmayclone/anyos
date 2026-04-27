@@ -876,19 +876,19 @@ impl WebView {
 
         let viewport_h = self.viewport_height.max(1) as i32;
         let budget_multiplier = if dom.nodes.len() > 7000 {
-            1
+            4
         } else if dom.nodes.len() > 4000 {
-            1
+            4
         } else {
-            2
+            3
         };
-        self.deferred_layout_budget_px = (viewport_h * budget_multiplier).max(1024);
+        self.deferred_layout_budget_px = (viewport_h * budget_multiplier).max(4096);
         self.deferred_style_node_budget = if dom.nodes.len() > 7000 {
-            220
+            4096
         } else if dom.nodes.len() > 4000 {
-            320
+            3072
         } else {
-            512
+            2048
         }
         .min(dom.nodes.len());
         self.deferred_budget_last_expand_ms = anyos_std::sys::uptime_ms() as u64;
@@ -1044,7 +1044,6 @@ impl WebView {
             );
             self.clear_deferred_layout_state();
             self.relayout();
-            return self.pending_tiles;
         }
 
         // The display list is stored in the renderer — no layout_root needed
@@ -3766,14 +3765,12 @@ impl WebView {
         // resolved styles so layout uses the interpolated values.
         self.apply_animation_overrides_to_styles(d, &mut styles);
 
-        if style_budget.is_some() {
-            self.resolved_styles_cache.clear();
-            self.resolved_pseudo_styles = style::PseudoStyles::empty(0);
-            self.resolved_styles_viewport_width = -1;
-            self.resolved_styles_viewport_height = 0;
-        } else {
-            self.update_resolved_style_cache(&styles, &pseudo_styles);
-        }
+        // Keep the computed styles that were actually resolved, even for a
+        // budgeted first pass. The cache is intentionally smaller than the DOM
+        // in that state, so it will not be reused as a full-layout cache, but
+        // callers such as image discovery and host debugging can still inspect
+        // above-the-fold nodes.
+        self.update_resolved_style_cache(&styles, &pseudo_styles);
 
         #[cfg(feature = "debug_surf")]
         debug_surf!(

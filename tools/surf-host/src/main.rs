@@ -435,7 +435,10 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
                         sample.push_str(&format!("{:08X}", px));
                     }
                 }
-                format!(" cache={}x{} sample=[{}]", entry.width, entry.height, sample)
+                format!(
+                    " cache={}x{} sample=[{}]",
+                    entry.width, entry.height, sample
+                )
             })
             .unwrap_or_else(|| String::from(" cache=missing"));
         let class_attr = dom.attr(node_id, "class").unwrap_or("");
@@ -1971,6 +1974,105 @@ fn debug_dump_pre_text(dom: &libwebview::dom::Dom) {
     }
 }
 
+fn debug_dump_dom_elements(dom: &libwebview::dom::Dom) {
+    for (node_id, node) in dom.nodes.iter().enumerate() {
+        let NodeType::Element { tag, .. } = &node.node_type else {
+            continue;
+        };
+        eprintln!(
+            "[surf-host] dom node={} parent={:?} tag={} id={:?} class={:?} children={}",
+            node_id,
+            node.parent,
+            tag.tag_name(),
+            dom.attr(node_id, "id").unwrap_or(""),
+            dom.attr(node_id, "class").unwrap_or(""),
+            node.children.len()
+        );
+    }
+}
+
+fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom) {
+    fn position_name(position: libwebview::style::Position) -> &'static str {
+        match position {
+            libwebview::style::Position::Static => "static",
+            libwebview::style::Position::Relative => "relative",
+            libwebview::style::Position::Absolute => "absolute",
+            libwebview::style::Position::Fixed => "fixed",
+            libwebview::style::Position::Sticky => "sticky",
+        }
+    }
+
+    fn visibility_name(visibility: libwebview::style::Visibility) -> &'static str {
+        match visibility {
+            libwebview::style::Visibility::Visible => "visible",
+            libwebview::style::Visibility::Hidden => "hidden",
+            libwebview::style::Visibility::Collapse => "collapse",
+        }
+    }
+
+    const INTERESTING_CLASSES: &[&str] = &[
+        "skip-link",
+        "page-content",
+        "main-content",
+        "block",
+        "block__layout-wrapper",
+        "layout",
+        "stage-teaser",
+        "teaser__image",
+        "page-footer",
+    ];
+
+    for (node_id, _) in dom.nodes.iter().enumerate() {
+        let Some(tag) = dom.tag(node_id) else {
+            continue;
+        };
+        let id_attr = dom.attr(node_id, "id").unwrap_or("");
+        let class_attr = dom.attr(node_id, "class").unwrap_or("");
+        let is_interesting_id = matches!(
+            id_attr,
+            "app" | "main" | "superbannerWrapper" | "skyWrapper" | "billboardWrapper"
+        );
+        let is_interesting_class = class_attr
+            .split_ascii_whitespace()
+            .any(|class| INTERESTING_CLASSES.contains(&class));
+        if !is_interesting_id && !is_interesting_class {
+            continue;
+        }
+        let Some(style) = wv.resolved_style_ref(node_id) else {
+            continue;
+        };
+        eprintln!(
+            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) width={:?} height={:?} min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) padding=({},{},{},{}) z={} opacity={:.3}",
+            node_id,
+            tag.tag_name(),
+            id_attr,
+            class_attr,
+            wv.node_bounds(node_id),
+            style.display,
+            position_name(style.position),
+            visibility_name(style.visibility),
+            style.overflow_x,
+            style.overflow_y,
+            style.width,
+            style.height,
+            style.min_width,
+            style.min_height,
+            style.max_width,
+            style.max_height,
+            style.margin_top,
+            style.margin_right,
+            style.margin_bottom,
+            style.margin_left,
+            style.padding_top,
+            style.padding_right,
+            style.padding_bottom,
+            style.padding_left,
+            style.z_index,
+            style.opacity
+        );
+    }
+}
+
 fn debug_dump_table_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom) {
     for (node_id, _) in dom.nodes.iter().enumerate() {
         let Some(tag) = dom.tag(node_id) else {
@@ -2098,7 +2200,10 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
                         sheet.layer_order.len(),
                         sheet.imports.len()
                     );
-                    fn selector_has_class(sel: &libwebview::css::Selector, class_name: &str) -> bool {
+                    fn selector_has_class(
+                        sel: &libwebview::css::Selector,
+                        class_name: &str,
+                    ) -> bool {
                         match sel {
                             libwebview::css::Selector::Simple(simple)
                             | libwebview::css::Selector::Descendant(_, simple)
@@ -2125,7 +2230,10 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
                                 })
                         })
                         .count();
-                    eprintln!("[surf-host] matching responsive media buckets={}", matching_media);
+                    eprintln!(
+                        "[surf-host] matching responsive media buckets={}",
+                        matching_media
+                    );
                 }
                 wv.add_parsed_stylesheet(sheet);
 
@@ -2290,6 +2398,16 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
             debug_dump_pre_text(dom);
         }
     }
+    if std::env::var_os("SURF_DEBUG_DOM_ELEMENTS").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_dom_elements(dom);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_INTERESTING_STYLES").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_interesting_styles(wv, dom);
+        }
+    }
     if std::env::var_os("SURF_DEBUG_TABLE_STYLES").is_some() {
         if let Some(dom) = wv.dom() {
             debug_dump_table_styles(wv, dom);
@@ -2448,7 +2566,20 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
                         node_id,
                         priority_y,
                     });
+                } else if std::env::var_os("SURF_DEBUG_IMAGES").is_some() && priority_y < 1500 {
+                    eprintln!(
+                        "[surf-host]   image decode failed node={} y={} bytes={} src={}",
+                        node_id,
+                        priority_y,
+                        img_data.len(),
+                        src_attr
+                    );
                 }
+            } else if std::env::var_os("SURF_DEBUG_IMAGES").is_some() && priority_y < 1500 {
+                eprintln!(
+                    "[surf-host]   image fetch failed node={} y={} src={}",
+                    node_id, priority_y, src_attr
+                );
             }
         });
     }
@@ -2630,7 +2761,10 @@ fn decode_image_scaled(
     if is_svg(data) {
         return decode_svg(data);
     }
-    let img = image::load_from_memory(data).ok()?;
+    let img = match image::load_from_memory(data) {
+        Ok(img) => img,
+        Err(_) => return decode_image_scaled_libimage(data, target_w, target_h),
+    };
     let (orig_w, orig_h) = image::GenericImageView::dimensions(&img);
 
     let (final_w, final_h) = compute_decode_size(orig_w, orig_h, target_w, target_h);
@@ -2655,6 +2789,55 @@ fn decode_image_scaled(
         })
         .collect();
     Some((pixels, w, h))
+}
+
+fn decode_image_scaled_libimage(
+    data: &[u8],
+    target_w: Option<u32>,
+    target_h: Option<u32>,
+) -> Option<(Vec<u32>, u32, u32)> {
+    let info = libimage::jpeg::probe(data)
+        .or_else(|| libimage::png::probe(data))
+        .or_else(|| libimage::webp::probe(data))?;
+    let pixel_count = (info.width as usize).checked_mul(info.height as usize)?;
+    let mut pixels = vec![0u32; pixel_count];
+    let mut scratch = vec![0u8; info.scratch_needed as usize];
+
+    let rc = match info.format {
+        libimage::types::FMT_JPEG => libimage::jpeg::decode(data, &mut pixels, &mut scratch),
+        libimage::types::FMT_PNG => libimage::png::decode(data, &mut pixels, &mut scratch),
+        libimage::types::FMT_WEBP => libimage::webp::decode(data, &mut pixels, &mut scratch),
+        _ => return None,
+    };
+    if rc != libimage::types::ERR_OK {
+        return None;
+    }
+
+    let (final_w, final_h) = compute_decode_size(info.width, info.height, target_w, target_h);
+    if final_w == info.width && final_h == info.height {
+        return Some((pixels, info.width, info.height));
+    }
+    Some((
+        resize_argb_nearest(&pixels, info.width, info.height, final_w, final_h),
+        final_w,
+        final_h,
+    ))
+}
+
+fn resize_argb_nearest(src: &[u32], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u32> {
+    let mut dst = vec![0u32; (dst_w as usize).saturating_mul(dst_h as usize)];
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return dst;
+    }
+    for y in 0..dst_h {
+        let sy = ((y as u64) * (src_h as u64) / (dst_h as u64)).min((src_h - 1) as u64) as usize;
+        for x in 0..dst_w {
+            let sx =
+                ((x as u64) * (src_w as u64) / (dst_w as u64)).min((src_w - 1) as u64) as usize;
+            dst[y as usize * dst_w as usize + x as usize] = src[sy * src_w as usize + sx];
+        }
+    }
+    dst
 }
 
 /// Compute decode target size.  Downscales if source is >2x the target.

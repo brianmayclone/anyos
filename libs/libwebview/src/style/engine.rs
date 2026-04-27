@@ -1514,6 +1514,43 @@ fn has_class(class_str: &str, needle: &str) -> bool {
     false
 }
 
+fn has_skip_link_class(class_str: &str) -> bool {
+    for tok in class_str.split(|c: char| c == ' ' || c == '\t' || c == '\n') {
+        if eq_ignore_ascii_case(tok, "skip-link")
+            || eq_ignore_ascii_case(tok, "skiplink")
+            || eq_ignore_ascii_case(tok, "skip-to-content")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_unfocused_skip_link(
+    tag: Tag,
+    attrs: &[crate::dom::Attr],
+    node_id: NodeId,
+    selector_state: &SelectorState,
+) -> bool {
+    if tag != Tag::A || selector_state.focused_node == Some(node_id) {
+        return false;
+    }
+
+    let mut has_skip_class = false;
+    let mut has_fragment_href = false;
+    for attr in attrs {
+        if eq_ignore_ascii_case(&attr.name, "class") && has_skip_link_class(&attr.value) {
+            has_skip_class = true;
+        } else if eq_ignore_ascii_case(&attr.name, "href")
+            && attr.value.trim_start().starts_with('#')
+        {
+            has_fragment_href = true;
+        }
+    }
+
+    has_skip_class && has_fragment_href
+}
+
 #[derive(Clone)]
 struct ActiveContainer {
     node_id: NodeId,
@@ -2019,6 +2056,36 @@ fn resolve_styles_prepared_impl(
                         break;
                     }
                 }
+            }
+        }
+
+        // HTML <dialog> elements are not rendered unless the `open` attribute is
+        // present. Many sites keep modal templates in the DOM and rely on this
+        // behavior; painting them breaks the page under a full-screen backdrop.
+        if let NodeType::Element { tag, attrs, .. } = &node.node_type {
+            if *tag == Tag::Dialog
+                && attrs
+                    .iter()
+                    .all(|a| !eq_ignore_ascii_case(&a.name, "open"))
+            {
+                style.display = Display::None;
+            }
+
+            if is_unfocused_skip_link(*tag, attrs, id, selector_state) {
+                style.position = Position::Absolute;
+                style.left_offset = Some(-10000);
+                style.top = Some(0);
+                style.width = Some(1);
+                style.height = Some(1);
+                style.min_width = 0;
+                style.min_height = 0;
+                style.padding_top = 0;
+                style.padding_right = 0;
+                style.padding_bottom = 0;
+                style.padding_left = 0;
+                style.overflow_x = OverflowVal::Hidden;
+                style.overflow_y = OverflowVal::Hidden;
+                style.clip_rect = Some([0, 0, 0, 0]);
             }
         }
 
@@ -6570,6 +6637,64 @@ mod layout_regression_tests {
         assert!(matches!(styles[child_id].text_align, TextAlignVal::Center));
         assert_eq!(styles[h1_id].font_size, 32);
         assert!(matches!(styles[h1_id].font_weight, FontWeight::Bold));
+    }
+
+    #[test]
+    fn dialog_without_open_is_not_rendered() {
+        let dom = crate::html::parse(r#"<dialog class="modal-dialog">Modal</dialog>"#);
+        let stylesheet = crate::css::parse_stylesheet("dialog { display: block; }");
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 800, 600, &mut inline_style_cache);
+        let dialog_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Dialog, .. }))
+            .expect("dialog node");
+
+        assert!(matches!(styles[dialog_id].display, Display::None));
+    }
+
+    #[test]
+    fn skip_link_is_offscreen_until_focused() {
+        let dom =
+            crate::html::parse(r##"<a class="skip-link" href="#main">Weiter zum Hauptinhalt</a>"##);
+        let stylesheet = crate::css::parse_stylesheet(
+            ".skip-link { display: flex; position: absolute; padding: 24px; }",
+        );
+        let prepared = PreparedStylesheets::prepare(&[&stylesheet], 800, 600);
+        let link_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::A, .. }))
+            .expect("skip link node");
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles_prepared_with_state(
+            &dom,
+            &prepared,
+            800,
+            600,
+            &mut inline_style_cache,
+            &SelectorState::default(),
+        );
+
+        assert_eq!(styles[link_id].left_offset, Some(-10000));
+        assert_eq!(styles[link_id].width, Some(1));
+        assert_eq!(styles[link_id].height, Some(1));
+
+        let mut focused = SelectorState::default();
+        focused.focused_node = Some(link_id);
+        inline_style_cache.clear();
+        let (focused_styles, _) = resolve_styles_prepared_with_state(
+            &dom,
+            &prepared,
+            800,
+            600,
+            &mut inline_style_cache,
+            &focused,
+        );
+
+        assert_ne!(focused_styles[link_id].left_offset, Some(-10000));
+        assert_eq!(focused_styles[link_id].padding_left, 24);
     }
 
     #[test]

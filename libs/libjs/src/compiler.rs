@@ -4459,7 +4459,10 @@ impl Compiler {
             }
             _ => {
                 // ES2023 §13.15.1: Invalid assignment target — emit SyntaxError.
-                self.emit_throw_syntax_error("Invalid left-hand side in assignment");
+                self.emit_throw_syntax_error(&alloc::format!(
+                    "Invalid left-hand side in assignment: {}",
+                    crate::ast::expr_summary(left, 0)
+                ));
             }
         }
     }

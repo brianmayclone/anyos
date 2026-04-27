@@ -911,7 +911,7 @@ fn pick_srcset_candidate(srcset: &str) -> Option<String> {
     let mut best_url: Option<&str> = None;
     let mut best_score: i32 = -1;
 
-    for candidate in srcset.split(',') {
+    for candidate in split_srcset_candidates(srcset) {
         let candidate = candidate.trim();
         if candidate.is_empty() {
             continue;
@@ -939,6 +939,27 @@ fn pick_srcset_candidate(srcset: &str) -> Option<String> {
     }
 
     best_url.map(String::from)
+}
+
+fn split_srcset_candidates(srcset: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    let mut start = 0usize;
+    let bytes = srcset.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b',' && bytes.get(i + 1).is_some_and(|b| b.is_ascii_whitespace()) {
+            candidates.push(&srcset[start..i]);
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    candidates.push(&srcset[start..]);
+    candidates
 }
 
 fn supports_image_mime(mime: &str) -> bool {
@@ -1402,5 +1423,37 @@ impl FloatApprox for f64 {
         } else {
             self
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn srcset_candidates_allow_commas_inside_urls() {
+        let srcset = "https://images.bild.de/article/hash,fc63157?w=320 320w, https://images.bild.de/article/hash,abc123?w=992 992w";
+
+        assert_eq!(
+            pick_srcset_candidate(srcset).as_deref(),
+            Some("https://images.bild.de/article/hash,abc123?w=992")
+        );
+    }
+
+    #[test]
+    fn image_url_prefers_srcset_with_comma_url_over_src() {
+        let dom = crate::html::parse(
+            r#"<img src="/fallback.jpg" srcset="https://images.bild.de/a/b,c?w=320 320w, https://images.bild.de/a/d,e?w=992 992w">"#,
+        );
+        let img_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Img, .. }))
+            .expect("img node");
+
+        assert_eq!(
+            dom.image_url(img_id).as_deref(),
+            Some("https://images.bild.de/a/d,e?w=992")
+        );
     }
 }

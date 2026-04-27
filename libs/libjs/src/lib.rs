@@ -184,6 +184,52 @@ mod tests {
              var f = function e(n) { return n <= 1 ? 1 : n * e(n - 1); }; \
              [outer, typeof e, f(4)].join(',')",
         );
-        assert_eq!(result.to_string(), "undefined,undefined,24");
+        assert_eq!(result.to_js_string(), "undefined,undefined,24");
+    }
+
+    #[test]
+    fn assignment_branches_inside_conditional_expression_execute() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var a = null, b = 0; \
+             a === null || a === void 0 ? b = 1 : b = 2; \
+             b",
+        );
+        assert_eq!(result.to_number(), 1.0);
+    }
+
+    #[test]
+    fn google_style_void_conditional_assignment_execute() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var a=null,b; \
+             a===null||a===void 0?b=null:b=7; \
+             b===null",
+        );
+        assert!(result.to_boolean());
+    }
+
+    #[test]
+    fn google_style_optional_chain_lowering_assignment_rhs_executes() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var document = { querySelector: function() { return null; } }; \
+             var _ = {}; \
+             _.Ye=function(a,b){ \
+               b=b===void 0?document:b; \
+               var c,d; \
+               b=(d=(c=b).querySelector)==null?void 0:d.call(c,a+'[nonce]'); \
+               return b==null?'':b.nonce||b.getAttribute('nonce')||''; \
+             }; \
+             _.Ye('script') === ''",
+        );
+        assert!(result.to_boolean());
+    }
+
+    #[test]
+    fn contextual_of_can_be_assigned_as_identifier() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval("of=function(a){return a+1}; of(4)");
+        assert_eq!(result.to_number(), 5.0);
     }
 }

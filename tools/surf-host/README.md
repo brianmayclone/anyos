@@ -203,3 +203,19 @@ Arial, Helvetica, Inter oder Source Sans Pro zurueck.
 Das ist die aktuelle Hosttest-Strategie fuer reale Webseiten ohne JavaScript:
 lesbarer Text ueber robuste Fallbacks zuerst, vollstaendiger WOFF2-Support
 spaeter mit eigener Validierung.
+
+### Reale Seiten als Smoke-Test
+
+Fuer CSS/Layout-Regressionen rendert `scripts/test-surf-sites.sh` die aktuellen
+Zielseiten als Host-Screenshots. Bild ist dabei bewusst enthalten, weil die
+Seite moderne CSS-Bundles, grosse DOMs, `<dialog>`-Templates und `srcset`-URLs
+mit Kommas nutzt:
+
+```bash
+scripts/test-surf-sites.sh
+SURF_TEST_VIEWPORT=1365x900 scripts/test-surf-sites.sh
+SURF_SITE_OUT_DIR=/tmp/surf-sites scripts/test-surf-sites.sh
+```
+
+Die Ausgaben landen standardmaessig in `/tmp/surf-sites`:
+`google.png`, `heise.png`, `bild.png` plus die jeweiligen Logs.

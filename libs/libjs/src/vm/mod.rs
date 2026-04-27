@@ -607,6 +607,32 @@ impl Vm {
         self.globals.borrow().get(name)
     }
 
+    fn browser_window_global_get(&self, name: &str) -> Option<JsValue> {
+        if matches!(name, "window" | "self" | "globalThis") {
+            return None;
+        }
+        let window = self.globals.borrow().get("window");
+        if let JsValue::Object(window_obj) = window {
+            let obj = window_obj.borrow();
+            if obj.has(name) {
+                return Some(obj.get(name));
+            }
+        }
+        None
+    }
+
+    fn browser_window_global_set(&mut self, name: &str, value: &JsValue) {
+        if matches!(name, "window" | "self" | "globalThis") {
+            return;
+        }
+        let window = self.globals.borrow().get("window");
+        if let JsValue::Object(window_obj) = window {
+            window_obj
+                .borrow_mut()
+                .set(String::from(name), value.clone());
+        }
+    }
+
     fn active_with_scope_get(&self, frame_idx: usize, name: &str) -> Option<JsValue> {
         let frame = self.frames.get(frame_idx)?;
         for scope in frame.with_scopes[frame.captured_with_scope_len..].iter().rev() {
@@ -907,6 +933,8 @@ impl Vm {
                     } else if self.globals.borrow().has(&name) {
                         let val = self.globals.borrow().get(&name);
                         self.stack.push(val);
+                    } else if let Some(val) = self.browser_window_global_get(&name) {
+                        self.stack.push(val);
                     } else {
                         if name == "e" {
                             let chunk = &self.frames[frame_idx].chunk;
@@ -937,6 +965,8 @@ impl Vm {
                         self.stack.push(val);
                     } else if self.globals.borrow().has(&name) {
                         let val = self.globals.borrow().get(&name);
+                        self.stack.push(val);
+                    } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
                     } else {
                         if name == "e" {
@@ -1011,6 +1041,8 @@ impl Vm {
                         self.stack.push(val);
                     } else if name == "globalThis" {
                         self.stack.push(JsValue::Object(self.globals.clone()));
+                    } else if let Some(val) = self.browser_window_global_get(&name) {
+                        self.stack.push(val);
                     } else {
                         let val = self.globals.borrow().get(&name);
                         self.stack.push(val);
@@ -1023,6 +1055,8 @@ impl Vm {
                     } else if let Some(val) = self.active_with_scope_get(frame_idx, &name) {
                         self.stack.push(val);
                     } else if let Some(val) = self.captured_with_scope_get(frame_idx, &name) {
+                        self.stack.push(val);
+                    } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
                     } else {
                         let val = self.globals.borrow().get(&name);
@@ -1062,6 +1096,7 @@ impl Vm {
                             return JsValue::Undefined;
                         }
                     } else {
+                        self.browser_window_global_set(&name, &val);
                         self.globals.borrow_mut().set(name, val);
                     }
                 }
@@ -1093,6 +1128,7 @@ impl Vm {
                             return JsValue::Undefined;
                         }
                     } else {
+                        self.browser_window_global_set(&name, &val);
                         self.globals.borrow_mut().set(name, val);
                     }
                 }
@@ -1202,6 +1238,7 @@ impl Vm {
                             return JsValue::Undefined;
                         }
                     } else {
+                        self.browser_window_global_set(&name, &val);
                         self.globals.borrow_mut().set(name, val);
                     }
                 }
