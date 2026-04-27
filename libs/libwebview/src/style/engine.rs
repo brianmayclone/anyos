@@ -4307,6 +4307,34 @@ pub fn apply_declaration(
                 let mut ty = 0i32;
                 let mut tx_pct = 0i32;
                 let mut ty_pct = 0i32;
+                if !s.contains('(') {
+                    let parts: Vec<&str> = s.split_whitespace().collect();
+                    let looks_like_translate = parts.iter().any(|part| {
+                        let p = part.trim();
+                        p == "0"
+                            || p.ends_with('%')
+                            || p.ends_with("px")
+                            || p.ends_with("em")
+                            || p.ends_with("rem")
+                    });
+                    if looks_like_translate {
+                        if let Some(x) = parts.first() {
+                            let (px, pct) = parse_transform_translate_component(x, parent_fs);
+                            tx = px;
+                            tx_pct = pct;
+                        }
+                        if let Some(y) = parts.get(1) {
+                            let (px, pct) = parse_transform_translate_component(y, parent_fs);
+                            ty = px;
+                            ty_pct = pct;
+                        }
+                        style.transform_tx = tx;
+                        style.transform_ty = ty;
+                        style.transform_tx_pct = tx_pct;
+                        style.transform_ty_pct = ty_pct;
+                        return;
+                    }
+                }
                 let mut pos = 0usize;
                 let bytes = s.as_bytes();
                 while pos < bytes.len() {
@@ -4348,7 +4376,11 @@ pub fn apply_declaration(
                                 ty_pct += pct;
                             }
                             "translate" => {
-                                let parts: Vec<&str> = args.split(',').collect();
+                                let parts: Vec<&str> = if args.contains(',') {
+                                    args.split(',').collect()
+                                } else {
+                                    args.split_whitespace().collect()
+                                };
                                 if !parts.is_empty() {
                                     let (px, pct) = parse_transform_translate_component(
                                         parts[0].trim(),

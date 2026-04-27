@@ -56,8 +56,8 @@ fn decode_libimage(data: &[u8]) -> Result<(u32, u32, Vec<u32>), i32> {
 }
 
 fn decode_image(data: &[u8]) -> Result<(u32, u32, Vec<u32>), String> {
-    let img =
-        image::load_from_memory_with_format(data, image::ImageFormat::Jpeg).map_err(|e| e.to_string())?;
+    let img = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
+        .map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let w = rgba.width();
     let h = rgba.height();
@@ -158,7 +158,10 @@ fn main() {
     println!("\n=== JPEG corpus summary ===");
     println!("Total:                    {}", s.total);
     println!("libimage decoded ok:      {}", s.libimage_ok);
-    println!("  invalid/unsupported:    {}", s.libimage_invalid_or_unsupported);
+    println!(
+        "  invalid/unsupported:    {}",
+        s.libimage_invalid_or_unsupported
+    );
     println!("  other error:            {}", s.libimage_other_err);
     println!("image crate decoded ok:   {}", s.image_crate_ok);
     println!("Both ok, pixels match:    {}", s.both_ok_pixel_match);

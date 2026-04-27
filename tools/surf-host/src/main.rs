@@ -116,9 +116,11 @@ impl HostCookieJar {
             }
         }
 
-        if let Some(existing) = self.cookies.iter_mut().find(|c| {
-            c.name == name && c.domain == domain && c.path == path
-        }) {
+        if let Some(existing) = self
+            .cookies
+            .iter_mut()
+            .find(|c| c.name == name && c.domain == domain && c.path == path)
+        {
             existing.value = value.trim().to_string();
             existing.secure = secure;
             return;
@@ -168,7 +170,12 @@ fn parse_host_url(url: &str) -> Option<HostUrlParts> {
         .find(|ch| ch == '/' || ch == '?' || ch == '#')
         .unwrap_or(rest.len());
     let host_port = &rest[..host_end];
-    let host = host_port.split('@').last()?.split(':').next()?.to_ascii_lowercase();
+    let host = host_port
+        .split('@')
+        .last()?
+        .split(':')
+        .next()?
+        .to_ascii_lowercase();
     if host.is_empty() {
         return None;
     }
@@ -452,7 +459,15 @@ fn load_page(
     load_web_fonts: bool,
     cookies: &mut HostCookieJar,
 ) -> PendingImages {
-    load_page_inner(wv, url, js_enabled, image_backend, load_web_fonts, cookies, 0)
+    load_page_inner(
+        wv,
+        url,
+        js_enabled,
+        image_backend,
+        load_web_fonts,
+        cookies,
+        0,
+    )
 }
 
 fn load_page_inner(
@@ -2085,7 +2100,10 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
     }
 
     // Network fetch
-    match ureq::get(url).set("User-Agent", SURF_HOST_USER_AGENT).call() {
+    match ureq::get(url)
+        .set("User-Agent", SURF_HOST_USER_AGENT)
+        .call()
+    {
         Ok(resp) => {
             let mut buf = Vec::new();
             resp.into_reader().read_to_end(&mut buf).ok()?;
@@ -2981,7 +2999,8 @@ fn start_image_loading(
         let tx = tx.clone();
         std::thread::spawn(move || {
             if let Some(img_data) = fetch_resource(&img_url) {
-                if let Some((pixels, w, h)) = decode_image_scaled(&img_data, tw, th, image_backend) {
+                if let Some((pixels, w, h)) = decode_image_scaled(&img_data, tw, th, image_backend)
+                {
                     eprintln!("[surf-host]   image ready {}x{}: {}", w, h, src_attr);
                     let _ = tx.send(ImageLoadResult {
                         src_attr,
@@ -3050,7 +3069,9 @@ fn register_http_handler(wv: &mut libwebview::WebView) {
                 .set("Content-Type", "application/x-www-form-urlencoded")
                 .send_string(&body)
         } else {
-            ureq::get(&url).set("User-Agent", SURF_HOST_USER_AGENT).call()
+            ureq::get(&url)
+                .set("User-Agent", SURF_HOST_USER_AGENT)
+                .call()
         };
 
         match result {
@@ -3102,11 +3123,7 @@ fn apply_host_js_mutations(
     }
 }
 
-fn run_javascript(
-    wv: &mut libwebview::WebView,
-    base_url: &str,
-    cookies: &mut HostCookieJar,
-) {
+fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut HostCookieJar) {
     // Register synchronous HTTP handler so fetch()/XHR work inside JS.
     register_http_handler(wv);
 
@@ -3391,21 +3408,18 @@ fn decode_svg(data: &[u8], image_backend: ImageBackend) -> Option<(Vec<u32>, u32
 }
 
 fn decode_svg_libsvg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
-    let (w, h) = svg_intrinsic_raster_size(data).or_else(|| {
-        let mut out_w = 0.0f32;
-        let mut out_h = 0.0f32;
-        let rc = libsvg::svg_probe(
-            data.as_ptr(),
-            data.len() as u32,
-            &mut out_w,
-            &mut out_h,
-        );
-        if rc == 0 {
-            Some((out_w.max(1.0) as u32, out_h.max(1.0) as u32))
-        } else {
-            None
-        }
-    }).unwrap_or((256, 256));
+    let (w, h) = svg_intrinsic_raster_size(data)
+        .or_else(|| {
+            let mut out_w = 0.0f32;
+            let mut out_h = 0.0f32;
+            let rc = libsvg::svg_probe(data.as_ptr(), data.len() as u32, &mut out_w, &mut out_h);
+            if rc == 0 {
+                Some((out_w.max(1.0) as u32, out_h.max(1.0) as u32))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((256, 256));
     if w == 0 || h == 0 {
         return None;
     }
@@ -3448,7 +3462,9 @@ fn apply_svg_inherited_color(svg: String, color: Option<u32>) -> String {
     };
     let rgb = color & 0x00FF_FFFF;
     let hex = format!("#{:06x}", rgb);
-    let mut out = svg.replace("currentColor", &hex).replace("currentcolor", &hex);
+    let mut out = svg
+        .replace("currentColor", &hex)
+        .replace("currentcolor", &hex);
     out = inject_svg_root_color(&out, &hex);
     inject_default_svg_fill(&out, &hex)
 }
@@ -3654,8 +3670,8 @@ fn extract_svg_fragment_by_id(sprite: &str, id: &str) -> Option<String> {
     let tag_end = tag_start + sprite[tag_start..].find('>')?;
     let open_tag = &sprite[tag_start..=tag_end];
     let tag_name = svg_tag_name(open_tag)?;
-    let view_box = extract_attr_value(open_tag, "viewBox")
-        .or_else(|| extract_attr_value(open_tag, "viewbox"));
+    let view_box =
+        extract_attr_value(open_tag, "viewBox").or_else(|| extract_attr_value(open_tag, "viewbox"));
 
     if open_tag.trim_end().ends_with("/>") {
         return Some(open_tag.to_string());

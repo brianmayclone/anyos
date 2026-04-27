@@ -462,6 +462,18 @@ impl LayoutBox {
 // Shared helpers (pub(super) for sub-modules)
 // ---------------------------------------------------------------------------
 
+pub(super) fn apply_transform_translation(bx: &mut LayoutBox, style: &ComputedStyle) {
+    if style.transform_tx == 0
+        && style.transform_ty == 0
+        && style.transform_tx_pct == 0
+        && style.transform_ty_pct == 0
+    {
+        return;
+    }
+    bx.x += style.transform_tx + (bx.width as i64 * style.transform_tx_pct as i64 / 10000) as i32;
+    bx.y += style.transform_ty + (bx.height as i64 * style.transform_ty_pct as i64 / 10000) as i32;
+}
+
 pub(crate) fn resolve_font_id(custom_font_id: u32, bold: bool, italic: bool) -> u32 {
     if crate::is_synthetic_condensed_font_id(custom_font_id) {
         if bold {
@@ -2435,6 +2447,7 @@ pub(super) fn layout_children_ex_with_budget(
             }
         }
 
+        apply_transform_translation(&mut abs_box, abs_style);
         abs_box.is_out_of_flow = true;
         abs_box.static_position_x = Some(static_x);
         abs_box.static_position_y = Some(static_y);

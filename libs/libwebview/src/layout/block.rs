@@ -14,8 +14,8 @@ use crate::ImageCache;
 use super::flex::layout_flex;
 use super::grid::layout_grid;
 use super::{
-    edges_from, font_size_px, image_dimensions, is_bold, is_italic, layout_children_ex_with_budget,
-    link_href, list_marker_for, BoxType, FormFieldKind, LayoutBox,
+    apply_transform_translation, edges_from, font_size_px, image_dimensions, is_bold, is_italic,
+    layout_children_ex_with_budget, link_href, list_marker_for, BoxType, FormFieldKind, LayoutBox,
 };
 
 /// Build a block-level layout box for a single DOM node.
@@ -1242,14 +1242,7 @@ fn build_block_internal(
     }
 
     // Apply CSS transform: translate offsets.
-    if style.transform_tx != 0
-        || style.transform_ty != 0
-        || style.transform_tx_pct != 0
-        || style.transform_ty_pct != 0
-    {
-        bx.x += style.transform_tx + (bx.width as i64 * style.transform_tx_pct as i64 / 10000) as i32;
-        bx.y += style.transform_ty + (bx.height as i64 * style.transform_ty_pct as i64 / 10000) as i32;
-    }
+    apply_transform_translation(&mut bx, style);
 
     // Apply CSS transform: scale and rotate.
     bx.transform_tx_pct = style.transform_tx_pct;
@@ -1373,6 +1366,7 @@ fn append_out_of_flow_children(
             }
         }
 
+        apply_transform_translation(&mut abs_box, abs_style);
         abs_box.is_fixed = abs_style.position == Position::Fixed;
         abs_box.is_out_of_flow = true;
         abs_box.static_position_x = Some(static_x);

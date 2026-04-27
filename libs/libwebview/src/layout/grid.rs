@@ -31,7 +31,7 @@ use crate::style::{
 use crate::ImageCache;
 
 use super::block::build_block;
-use super::LayoutBox;
+use super::{apply_transform_translation, LayoutBox};
 
 // ────────────────────────────────────────────────────────────
 // Public entry-point
@@ -697,6 +697,7 @@ fn layout_grid_abs_children(
             }
         }
 
+        apply_transform_translation(&mut abs_box, st);
         abs_box.is_out_of_flow = true;
         parent.children.push(abs_box);
     }
