@@ -40,6 +40,8 @@ use crate::style::{apply_timing, TimingFunction, TransitionDef};
 static mut MUTATION_TARGET: *mut Vec<DomMutation> = core::ptr::null_mut();
 /// Points to the current DomBridge.virtual_nodes during JS execution.
 static mut VIRTUAL_NODES_TARGET: *mut Vec<VirtualNode> = core::ptr::null_mut();
+/// Points to the current DomBridge.pending_navigation_requests during JS execution.
+static mut NAVIGATION_TARGET: *mut Vec<PendingNavigationRequest> = core::ptr::null_mut();
 
 /// Hook called by JsObject::set() on DOM element objects.
 /// Records DOM mutations when JS writes to properties like
@@ -152,6 +154,8 @@ struct DomBridge {
     virtual_nodes: Vec<VirtualNode>,
     /// Pending HTTP requests from XHR / fetch.
     pending_http_requests: Vec<PendingHttpRequest>,
+    /// Pending page navigations requested by JavaScript.
+    pending_navigation_requests: Vec<PendingNavigationRequest>,
     /// Pending timers (setTimeout / setInterval).
     timers: Vec<PendingTimer>,
     /// Next timer ID.
@@ -310,6 +314,13 @@ pub struct PendingHttpRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+}
+
+/// A page navigation requested by JavaScript.
+#[derive(Clone)]
+pub struct PendingNavigationRequest {
+    pub url: String,
+    pub replace: bool,
 }
 
 /// An event listener registered from JavaScript.
@@ -542,6 +553,7 @@ pub struct JsRuntime {
     pub virtual_nodes: Vec<VirtualNode>,
     pub event_listeners: Vec<EventListener>,
     pub pending_http_requests: Vec<PendingHttpRequest>,
+    pub pending_navigation_requests: Vec<PendingNavigationRequest>,
     pub timers: Vec<PendingTimer>,
     next_timer_id: u32,
     /// Cookie string for the current page (e.g. `"name=value; n2=v2"`).
@@ -578,6 +590,7 @@ impl JsRuntime {
             virtual_nodes: Vec::new(),
             event_listeners: Vec::new(),
             pending_http_requests: Vec::new(),
+            pending_navigation_requests: Vec::new(),
             timers: Vec::new(),
             next_timer_id: 1,
             cookies: String::new(),
@@ -719,6 +732,7 @@ impl JsRuntime {
             next_virtual_id: -1,
             virtual_nodes: Vec::new(),
             pending_http_requests: Vec::new(),
+            pending_navigation_requests: Vec::new(),
             timers: Vec::new(),
             next_timer_id: self.next_timer_id,
             propagation_stopped: false,
@@ -771,6 +785,8 @@ impl JsRuntime {
         unsafe {
             MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
             VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+            NAVIGATION_TARGET =
+                &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
         }
         anyos_std::println!(
             "[js] setup mutation interception done: mutation_target=true virtual_nodes_target=true"
@@ -898,12 +914,14 @@ impl JsRuntime {
         unsafe {
             MUTATION_TARGET = core::ptr::null_mut();
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+            NAVIGATION_TARGET = core::ptr::null_mut();
         }
 
         self.mutations = bridge.mutations;
         self.virtual_nodes = bridge.virtual_nodes;
         self.event_listeners = bridge.event_listeners;
         self.pending_http_requests = bridge.pending_http_requests;
+        self.pending_navigation_requests = bridge.pending_navigation_requests;
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
         self.pending_ws_connects.extend(bridge.pending_ws_connects);
@@ -1104,6 +1122,7 @@ impl JsRuntime {
             next_virtual_id: -1,
             virtual_nodes: Vec::new(),
             pending_http_requests: Vec::new(),
+            pending_navigation_requests: Vec::new(),
             timers: Vec::new(),
             next_timer_id: self.next_timer_id,
             propagation_stopped: false,
@@ -1120,11 +1139,14 @@ impl JsRuntime {
         unsafe {
             MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
             VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+            NAVIGATION_TARGET =
+                &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
         }
         let result = self.engine.eval(source);
         unsafe {
             MUTATION_TARGET = core::ptr::null_mut();
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+            NAVIGATION_TARGET = core::ptr::null_mut();
         }
 
         for msg in self.engine.console_output() {
@@ -1136,6 +1158,8 @@ impl JsRuntime {
         self.apply_remove_listeners(&bridge.remove_listeners);
         self.pending_http_requests
             .extend(bridge.pending_http_requests);
+        self.pending_navigation_requests
+            .extend(bridge.pending_navigation_requests);
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
@@ -1158,6 +1182,7 @@ impl JsRuntime {
         self.mutations.clear();
         self.event_listeners.clear();
         self.pending_http_requests.clear();
+        self.pending_navigation_requests.clear();
         self.timers.clear();
         self.next_timer_id = 1;
         self.cookies.clear();
@@ -1181,6 +1206,10 @@ impl JsRuntime {
 
     pub fn take_pending_http_requests(&mut self) -> Vec<PendingHttpRequest> {
         core::mem::take(&mut self.pending_http_requests)
+    }
+
+    pub fn take_pending_navigation_requests(&mut self) -> Vec<PendingNavigationRequest> {
+        core::mem::take(&mut self.pending_navigation_requests)
     }
 
     pub fn take_timers(&mut self) -> Vec<PendingTimer> {
@@ -1522,6 +1551,7 @@ impl JsRuntime {
             next_virtual_id: -1,
             virtual_nodes: Vec::new(),
             pending_http_requests: Vec::new(),
+            pending_navigation_requests: Vec::new(),
             timers: Vec::new(),
             next_timer_id: self.next_timer_id,
             propagation_stopped: false,
@@ -1537,6 +1567,8 @@ impl JsRuntime {
         unsafe {
             MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
             VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+            NAVIGATION_TARGET =
+                &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
         }
 
         // ── Phase 1: CAPTURE (eventPhase = 1) ───────────────────────────────
@@ -1638,6 +1670,7 @@ impl JsRuntime {
         unsafe {
             MUTATION_TARGET = core::ptr::null_mut();
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+            NAVIGATION_TARGET = core::ptr::null_mut();
         }
 
         // Drain microtask queue after event dispatch (ECMAScript spec:
@@ -1654,6 +1687,8 @@ impl JsRuntime {
         self.apply_remove_listeners(&bridge.remove_listeners);
         self.pending_http_requests
             .extend(bridge.pending_http_requests);
+        self.pending_navigation_requests
+            .extend(bridge.pending_navigation_requests);
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
@@ -1687,6 +1722,7 @@ impl JsRuntime {
                     next_virtual_id: -1,
                     virtual_nodes: Vec::new(),
                     pending_http_requests: Vec::new(),
+                    pending_navigation_requests: Vec::new(),
                     timers: Vec::new(),
                     next_timer_id: self.next_timer_id,
                     propagation_stopped: false,
@@ -1702,6 +1738,8 @@ impl JsRuntime {
                 unsafe {
                     MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
                     VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+                    NAVIGATION_TARGET =
+                        &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
                 }
 
                 // Timer callbacks get a generous step budget for React initial renders.
@@ -1727,6 +1765,7 @@ impl JsRuntime {
                 unsafe {
                     MUTATION_TARGET = core::ptr::null_mut();
                     VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+                    NAVIGATION_TARGET = core::ptr::null_mut();
                 }
                 for msg in self.engine.console_output() {
                     self.console.push(msg.clone());
@@ -1741,6 +1780,8 @@ impl JsRuntime {
                 self.event_listeners.extend(bridge.event_listeners);
                 self.pending_http_requests
                     .extend(bridge.pending_http_requests);
+                self.pending_navigation_requests
+                    .extend(bridge.pending_navigation_requests);
                 self.next_timer_id = bridge.next_timer_id;
                 // New timers created during callback.
                 keep.extend(bridge.timers);

@@ -392,7 +392,14 @@ pub(crate) fn start_anim_timer() {
             );
             process_fetched_results(net_results);
         }
-        let changed = st.tabs[st.active_tab].webview.tick(16);
+        let active_tab = st.active_tab;
+        let changed = st.tabs[active_tab].webview.tick(16);
+        if drain_js_navigation_for_tab(active_tab) {
+            unsafe {
+                IDLE_TICKS = 0;
+            }
+            return;
+        }
         if changed {
             unsafe {
                 IDLE_TICKS = 0;
@@ -487,8 +494,44 @@ fn execute_script_batch(tab_index: usize, scripts: Vec<String>, label: &str) {
         crate::surf_log!("[surf-js] {}", line);
     }
     connect_pending_ws(tab_index);
+    if drain_js_navigation_for_tab(tab_index) {
+        return;
+    }
     if changed {
         request_image_refresh(tab_index);
+    }
+}
+
+fn drain_js_navigation_for_tab(tab_index: usize) -> bool {
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return false;
+    }
+    let Some(nav) = st.tabs[tab_index]
+        .webview
+        .take_pending_navigation_requests()
+        .pop()
+    else {
+        return false;
+    };
+    let url = nav.url;
+    let replace = nav.replace;
+    let target = if let Some(ref base) = st.tabs[tab_index].current_url {
+        let resolved = http::resolve_url(base, &url);
+        ui::format_url(&resolved)
+    } else {
+        url
+    };
+    crate::surf_log!(
+        "[surf-js] {} to {}",
+        if replace { "replace" } else { "navigate" },
+        target
+    );
+    if tab_index == st.active_tab {
+        tab::navigate(&target);
+        true
+    } else {
+        false
     }
 }
 

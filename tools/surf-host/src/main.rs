@@ -29,6 +29,9 @@ use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{mpsc, Arc, Mutex};
 
+const SURF_HOST_USER_AGENT: &str =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36";
+
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
 struct Args {
@@ -274,6 +277,15 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
 /// Load a URL: fetch HTML, load resources, run JS.  Returns (html, base_url).
 /// This is the common pipeline used both at startup and during navigation.
 fn load_page(wv: &mut libwebview::WebView, url: &str, js_enabled: bool) -> PendingImages {
+    load_page_inner(wv, url, js_enabled, 0)
+}
+
+fn load_page_inner(
+    wv: &mut libwebview::WebView,
+    url: &str,
+    js_enabled: bool,
+    redirect_depth: u8,
+) -> PendingImages {
     eprintln!("[surf-host] loading: {}", url);
     let (html, base_url) = fetch_page(url);
     eprintln!("[surf-host] got {} bytes HTML", html.len());
@@ -288,6 +300,17 @@ fn load_page(wv: &mut libwebview::WebView, url: &str, js_enabled: bool) -> Pendi
     if js_enabled {
         run_javascript(wv, &base_url);
         run_js_timers(wv, 5000);
+        if redirect_depth < 3 {
+            if let Some(nav) = wv.take_pending_navigation_requests().pop() {
+                let abs = resolve_url(&base_url, &nav.url);
+                eprintln!(
+                    "[js-nav] {} to {}",
+                    if nav.replace { "replace" } else { "navigate" },
+                    abs
+                );
+                return load_page_inner(wv, &abs, js_enabled, redirect_depth + 1);
+            }
+        }
     }
     pending
 }
@@ -649,6 +672,16 @@ impl BrowserHostApp {
         }
         if self.wv.has_timers() {
             self.wv.run_timers(16);
+            if let Some(nav) = self.wv.take_pending_navigation_requests().pop() {
+                let abs = resolve_url(&self.current_url, &nav.url);
+                eprintln!(
+                    "[js-nav] {} to {}",
+                    if nav.replace { "replace" } else { "navigate" },
+                    abs
+                );
+                self.navigate(&abs);
+                return;
+            }
             self.wv.tick(16);
             self.wv.relayout();
             self.needs_redraw = true;
@@ -1658,11 +1691,14 @@ fn fetch_page(url: &str) -> (String, String) {
             format!("https://{}", url)
         };
         let dir = disk_cache_dir();
-        let key = url_cache_key(&full_url);
+        let key = url_cache_key(&format!("{}\n{}", full_url, SURF_HOST_USER_AGENT));
         let data_path = dir.join(format!("{}.html", key));
         let url_path = dir.join(format!("{}.url", key));
 
-        match ureq::get(&full_url).call() {
+        match ureq::get(&full_url)
+            .set("User-Agent", SURF_HOST_USER_AGENT)
+            .call()
+        {
             Ok(response) => {
                 let final_url = response.get_url().to_string();
                 let content_type = response.header("Content-Type").map(str::to_string);
@@ -1809,7 +1845,7 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
     }
 
     // Network fetch
-    match ureq::get(url).call() {
+    match ureq::get(url).set("User-Agent", SURF_HOST_USER_AGENT).call() {
         Ok(resp) => {
             let mut buf = Vec::new();
             resp.into_reader().read_to_end(&mut buf).ok()?;
@@ -2621,10 +2657,11 @@ fn register_http_handler(wv: &mut libwebview::WebView) {
         eprintln!("[js-http] {} {}", method, url);
         let result = if method == "POST" {
             ureq::post(&url)
+                .set("User-Agent", SURF_HOST_USER_AGENT)
                 .set("Content-Type", "application/x-www-form-urlencoded")
                 .send_string(&body)
         } else {
-            ureq::get(&url).call()
+            ureq::get(&url).set("User-Agent", SURF_HOST_USER_AGENT).call()
         };
 
         match result {

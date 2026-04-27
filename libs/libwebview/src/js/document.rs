@@ -15,7 +15,10 @@ use crate::dom::{Dom, NodeType, Tag};
 use super::element;
 use super::element::refresh_element_children_metadata;
 use super::selector;
-use super::{arg_string, dom_property_hook, get_bridge, make_array, DomMutation, VirtualNode};
+use super::{
+    arg_string, dom_property_hook, get_bridge, make_array, DomMutation, PendingNavigationRequest,
+    VirtualNode,
+};
 
 // ═══════════════════════════════════════════════════════════
 // URL parsing helper
@@ -129,6 +132,45 @@ fn doc_property_hook(_data: *mut u8, key: &str, value: &libjs::JsValue) {
     });
 }
 
+fn queue_navigation(vm: &mut Vm, url: String, replace: bool) -> JsValue {
+    if url.is_empty() || url == "undefined" {
+        return JsValue::Undefined;
+    }
+    if let Some(bridge) = get_bridge(vm) {
+        bridge
+            .pending_navigation_requests
+            .push(PendingNavigationRequest { url, replace });
+    }
+    JsValue::Undefined
+}
+
+fn location_assign(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    queue_navigation(vm, arg_string(args, 0), false)
+}
+
+fn location_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    queue_navigation(vm, arg_string(args, 0), true)
+}
+
+fn location_property_hook(_data: *mut u8, key: &str, value: &libjs::JsValue) {
+    if key != "href" {
+        return;
+    }
+    let pending = unsafe {
+        if super::NAVIGATION_TARGET.is_null() {
+            return;
+        }
+        &mut *super::NAVIGATION_TARGET
+    };
+    let url = value.to_js_string();
+    if !url.is_empty() && url != "undefined" {
+        pending.push(PendingNavigationRequest {
+            url,
+            replace: false,
+        });
+    }
+}
+
 /// Create the native `document` host object.
 ///
 /// * `url`     — the current page URL (used to populate `document.location`).
@@ -204,16 +246,21 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     loc.set_property(String::from("origin"), JsValue::String(origin));
     loc.set_property(
         String::from("assign"),
-        native_fn("assign", |_, _| JsValue::Undefined),
+        native_fn("assign", location_assign),
     );
     loc.set_property(
         String::from("replace"),
-        native_fn("replace", |_, _| JsValue::Undefined),
+        native_fn("replace", location_replace),
     );
     loc.set_property(
         String::from("reload"),
         native_fn("reload", |_, _| JsValue::Undefined),
     );
+    if let JsValue::Object(o) = &loc {
+        let mut borrowed = o.borrow_mut();
+        borrowed.set_hook = Some(location_property_hook);
+        borrowed.set_hook_data = core::ptr::null_mut();
+    }
     obj.set(String::from("location"), loc);
 
     // implementation sub-object.

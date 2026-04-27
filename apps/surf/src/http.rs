@@ -1347,7 +1347,7 @@ fn build_request_with_method(
         req.push(':');
         push_u32(&mut req, url.port as u32);
     }
-    req.push_str("\r\nUser-Agent: Surf/1.0 (anyOS)");
+    req.push_str("\r\nUser-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Surf/1.0");
     req.push_str("\r\nAccept: text/html,application/xhtml+xml,image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.8");
     req.push_str("\r\nAccept-Encoding: gzip, deflate");
     req.push_str("\r\nConnection: keep-alive");

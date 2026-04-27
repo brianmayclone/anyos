@@ -751,6 +751,11 @@ impl WebView {
         self.js_runtime.take_pending_http_requests()
     }
 
+    /// Take pending JavaScript-initiated page navigations.
+    pub fn take_pending_navigation_requests(&mut self) -> Vec<js::PendingNavigationRequest> {
+        self.js_runtime.take_pending_navigation_requests()
+    }
+
     /// Check if there are active JS timers.
     pub fn has_timers(&self) -> bool {
         !self.js_runtime.timers.is_empty()

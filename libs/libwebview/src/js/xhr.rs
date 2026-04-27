@@ -244,12 +244,18 @@ fn xhr_remove_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     let key = alloc::format!("__listeners_{}", event);
     if let JsValue::Array(arr) = get_this_prop(vm, &key) {
-        let dense = arr.borrow().to_dense_vec();
+        let dense = {
+            let borrowed = arr.borrow();
+            borrowed.to_dense_vec()
+        };
         let kept: Vec<JsValue> = dense
             .into_iter()
             .filter(|entry| !entry.strict_eq(&callback))
             .collect();
-        *arr.borrow_mut() = libjs::value::JsArray::from_vec(kept);
+        {
+            let mut borrowed = arr.borrow_mut();
+            *borrowed = libjs::value::JsArray::from_vec(kept);
+        }
     }
     JsValue::Undefined
 }
