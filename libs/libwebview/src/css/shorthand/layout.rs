@@ -20,6 +20,28 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
     if parts.is_empty() {
         return decls;
     }
+    if parts.len() == 1 {
+        if let Some(dim) = try_parse_dimension(parts[0]) {
+            if matches!(dim, CssValue::Length(_, _) | CssValue::Percentage(_)) {
+                decls.push(Declaration {
+                    property: Property::FlexGrow,
+                    value: CssValue::Number(100),
+                    important: false,
+                });
+                decls.push(Declaration {
+                    property: Property::FlexShrink,
+                    value: CssValue::Number(100),
+                    important: false,
+                });
+                decls.push(Declaration {
+                    property: Property::FlexBasis,
+                    value: dim,
+                    important: false,
+                });
+                return decls;
+            }
+        }
+    }
     decls.push(Declaration {
         property: Property::FlexGrow,
         value: parse_property_value_ast(&Property::FlexGrow, parts[0]),

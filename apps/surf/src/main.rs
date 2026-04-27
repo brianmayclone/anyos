@@ -1368,13 +1368,15 @@ fn handle_nav_done(
     // hundreds of images block external scripts in the single network worker.
     let pending_stylesheet_count = if let Some(dom) = st.tabs[tab_idx].webview.dom() {
         let css_count = resources::queue_stylesheets(dom, &base_url, tab_idx);
-        if resources::queue_inline_svgs(dom, tab_idx) && css_count == 0 {
-            request_layout_refresh(tab_idx);
-        }
         css_count
     } else {
         0
     };
+    if resources::queue_inline_svgs(&st.tabs[tab_idx].webview, &base_url, tab_idx)
+        && pending_stylesheet_count == 0
+    {
+        request_layout_refresh(tab_idx);
+    }
     // Queue @font-face downloads from inline <style> blocks.
     resources::queue_font_faces(&st.tabs[tab_idx].webview, &base_url, tab_idx);
 
@@ -1717,6 +1719,16 @@ fn handle_image_done(
         );
     } else if resources::is_svg(&src, &headers) {
         resources::decode_svg_no_relayout(&body, &src, tab_index);
+        let base_url = st.tabs[tab_index].current_url.clone();
+        if let Some(base_url) = base_url.as_ref() {
+            resources::reraster_inline_svgs_with_sprite(
+                &st.tabs[tab_index].webview,
+                base_url,
+                tab_index,
+                &src,
+                &body,
+            );
+        }
     } else {
         resources::decode_raster_no_relayout(&body, &src, tab_index);
     }

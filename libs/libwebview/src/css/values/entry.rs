@@ -16,6 +16,9 @@ pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
     if lower.starts_with("var(") {
         return parse_var_value(property, s);
     }
+    if lower.contains("var(") {
+        return CssValue::Keyword(String::from(s));
+    }
     if lower.starts_with("calc(") {
         return parse_calc_value(s);
     }

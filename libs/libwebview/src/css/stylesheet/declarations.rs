@@ -57,6 +57,10 @@ fn parse_property_value_ast(property: &Property, value_str: &str) -> CssValue {
 }
 
 fn lower_property_value_ast(property: &Property, value: &CssValueAst) -> CssValue {
+    if to_ascii_lower(&value.raw).contains("var(") {
+        return CssValue::Keyword(value.raw.clone());
+    }
+
     if value.components.len() == 1 {
         match &value.components[0] {
             CssValueComponentAst::Ident(ident) => {

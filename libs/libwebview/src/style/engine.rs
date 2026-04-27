@@ -1463,6 +1463,25 @@ fn element_has_attr(dom: &Dom, node_id: NodeId, name: &str) -> bool {
     attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, name))
 }
 
+fn element_has_screen_reader_only_class(dom: &Dom, node_id: NodeId) -> bool {
+    let Some(class_attr) = dom.attr(node_id, "class") else {
+        return false;
+    };
+    for class_name in [
+        "sr-only",
+        "visually-hidden",
+        "screen-reader-only",
+        "screenreader-only",
+        "u-hidden-visually",
+        "a11y-hidden",
+    ] {
+        if has_class(class_attr, class_name) {
+            return true;
+        }
+    }
+    false
+}
+
 fn ancestor_has_attr(dom: &Dom, node_id: NodeId, name: &str) -> bool {
     let mut cur = dom.nodes.get(node_id).and_then(|n| n.parent);
     while let Some(pid) = cur {
@@ -1902,6 +1921,13 @@ fn resolve_styles_prepared_impl(
             {
                 style.display = Display::None;
             }
+        }
+
+        // Common accessibility utility classes keep text available to screen
+        // readers while moving it out of visual layout. Treat them as hidden
+        // for the visual renderer so labels and page titles do not leak.
+        if element_has_screen_reader_only_class(dom, id) {
+            style.display = Display::None;
         }
 
         // Heuristic for component-driven collapse UIs: collapsed content is
@@ -3252,7 +3278,9 @@ pub fn apply_declaration(
         }
         // Shorthand padding.
         Property::Padding => {
-            if let CssValue::Percentage(v) = decl.value {
+            if let CssValue::Keyword(ref value) = decl.value {
+                apply_padding_shorthand(style, value, parent_fs, root_fs);
+            } else if let CssValue::Percentage(v) = decl.value {
                 style.padding_top_pct = Some(v);
                 style.padding_right_pct = Some(v);
                 style.padding_bottom_pct = Some(v);
@@ -5047,6 +5075,73 @@ fn split_whitespace_respecting_parens(s: &str) -> Vec<&str> {
     tokens
 }
 
+fn apply_padding_shorthand(
+    style: &mut ComputedStyle,
+    value: &str,
+    parent_fs: i32,
+    root_fs: i32,
+) {
+    let parts = split_whitespace_respecting_parens(value);
+    if parts.is_empty() {
+        return;
+    }
+    let (top, right, bottom, left) = match parts.len() {
+        1 => (parts[0], parts[0], parts[0], parts[0]),
+        2 => (parts[0], parts[1], parts[0], parts[1]),
+        3 => (parts[0], parts[1], parts[2], parts[1]),
+        _ => (parts[0], parts[1], parts[2], parts[3]),
+    };
+    apply_padding_side(
+        &mut style.padding_top,
+        &mut style.padding_top_pct,
+        top,
+        &Property::PaddingTop,
+        parent_fs,
+        root_fs,
+    );
+    apply_padding_side(
+        &mut style.padding_right,
+        &mut style.padding_right_pct,
+        right,
+        &Property::PaddingRight,
+        parent_fs,
+        root_fs,
+    );
+    apply_padding_side(
+        &mut style.padding_bottom,
+        &mut style.padding_bottom_pct,
+        bottom,
+        &Property::PaddingBottom,
+        parent_fs,
+        root_fs,
+    );
+    apply_padding_side(
+        &mut style.padding_left,
+        &mut style.padding_left_pct,
+        left,
+        &Property::PaddingLeft,
+        parent_fs,
+        root_fs,
+    );
+}
+
+fn apply_padding_side(
+    px_slot: &mut i32,
+    pct_slot: &mut Option<i32>,
+    value: &str,
+    property: &Property,
+    parent_fs: i32,
+    root_fs: i32,
+) {
+    let parsed = crate::css::parse_value(property, value);
+    if let CssValue::Percentage(v) = parsed {
+        *pct_slot = Some(v);
+    } else if let Some(px) = resolve_length(&parsed, parent_fs, root_fs) {
+        *px_slot = px;
+        *pct_slot = None;
+    }
+}
+
 /// Extract the minimum pixel value from `minmax(300px, 1fr)` or similar.
 /// Falls back to 0 if the syntax is not recognized.
 fn parse_minmax_min(s: &str) -> i32 {
@@ -5966,6 +6061,19 @@ mod declaration_tests {
         }
         assert_eq!(style.max_width, None);
         assert_eq!(style.max_width_calc, Some((-300, 5000)));
+    }
+
+    #[test]
+    fn calc_with_nested_var_is_resolved_after_custom_property_lookup() {
+        let decls = crate::css::parse_inline_style("width: calc(956px + 2 * var(--container-spacing))");
+        assert_eq!(decls.len(), 1);
+        assert!(matches!(decls[0].value, CssValue::Keyword(_)));
+
+        let resolved = crate::css::parse_value(
+            &Property::Width,
+            "calc(956px + 2 * 20px)",
+        );
+        assert_eq!(resolved, CssValue::Length(996, Unit::Px));
     }
 
     #[test]

@@ -765,13 +765,70 @@ pub(crate) fn inline_svg_key(node_id: usize) -> String {
     s
 }
 
-/// Scan the DOM for `<svg>` nodes whose raw SVG markup has been captured as a
-/// child text node by the HTML parser (see `html.rs` where `svg` is treated as
-/// a raw-text element), rasterise each one with `libsvg_client`, and store the
-/// result in the image cache under the synthetic key `__svg_<node_id>__`.
+/// Scan the DOM for `<svg>` nodes, reconstruct their inner markup, rasterise
+/// each one with `libsvg_client`, and store the result in the image cache under
+/// the synthetic key `__svg_<node_id>__`.
 ///
 /// Called once per page load, immediately after `queue_images()`.
-pub(crate) fn queue_inline_svgs(dom: &libwebview::dom::Dom, tab_index: usize) -> bool {
+pub(crate) fn queue_inline_svgs(
+    webview: &libwebview::WebView,
+    base_url: &crate::http::Url,
+    tab_index: usize,
+) -> bool {
+    let Some(dom) = webview.dom() else {
+        return false;
+    };
+    let mut count = 0u32;
+    let mut sprite_urls = Vec::new();
+
+    for (node_id, node) in dom.nodes.iter().enumerate() {
+        if let libwebview::dom::NodeType::Element {
+            tag: libwebview::dom::Tag::Svg,
+            attrs,
+            ..
+        } = &node.node_type
+        {
+            let inner = match inline_svg_inner_markup(dom, node_id) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let svg = reconstruct_inline_svg(attrs, &inner);
+            let svg = apply_svg_inherited_color(
+                svg,
+                webview.resolved_style_ref(node_id).map(|style| style.color),
+            );
+            collect_external_svg_use_urls(&svg, base_url, &mut sprite_urls);
+
+            let key = inline_svg_key(node_id);
+            decode_svg_no_relayout(svg.as_bytes(), &key, tab_index);
+            count += 1;
+        }
+    }
+
+    queue_svg_sprite_fetches(tab_index, sprite_urls);
+
+    if count > 0 {
+        crate::surf_log!("[surf] rasterised {} inline SVG(s)", count);
+        true
+    } else {
+        false
+    }
+}
+
+pub(crate) fn reraster_inline_svgs_with_sprite(
+    webview: &libwebview::WebView,
+    base_url: &crate::http::Url,
+    tab_index: usize,
+    sprite_url: &str,
+    sprite_body: &[u8],
+) -> bool {
+    let Some(dom) = webview.dom() else {
+        return false;
+    };
+    let Ok(sprite_text) = core::str::from_utf8(sprite_body) else {
+        return false;
+    };
     let mut count = 0u32;
 
     for (node_id, node) in dom.nodes.iter().enumerate() {
@@ -781,80 +838,486 @@ pub(crate) fn queue_inline_svgs(dom: &libwebview::dom::Dom, tab_index: usize) ->
             ..
         } = &node.node_type
         {
-            // The HTML parser stores the raw SVG inner-markup as a single Text child.
-            let inner = node.children.iter().find_map(|&child| {
-                if let libwebview::dom::NodeType::Text(ref s) = dom.nodes[child].node_type {
-                    if !s.is_empty() {
-                        Some(s.as_str())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            });
-
-            let inner = match inner {
-                Some(s) => s,
-                None => continue,
+            let Some(inner) = inline_svg_inner_markup(dom, node_id) else {
+                continue;
             };
-
-            // Reconstruct a self-contained SVG document from attrs + inner markup.
-            let mut svg = String::from("<svg");
-            // Pass through known SVG attributes
-            for attr in attrs {
-                let n = attr.name.as_str();
-                if matches!(
-                    n,
-                    "width"
-                        | "height"
-                        | "viewBox"
-                        | "viewbox"
-                        | "xmlns"
-                        | "version"
-                        | "fill"
-                        | "stroke"
-                        | "class"
-                        | "id"
-                        | "style"
-                        | "preserveAspectRatio"
-                ) {
-                    svg.push(' ');
-                    svg.push_str(n);
-                    svg.push_str("=\"");
-                    // Basic XML attribute escaping
-                    for c in attr.value.chars() {
-                        match c {
-                            '"' => svg.push_str("&quot;"),
-                            '&' => svg.push_str("&amp;"),
-                            '<' => svg.push_str("&lt;"),
-                            '>' => svg.push_str("&gt;"),
-                            c => svg.push(c),
-                        }
-                    }
-                    svg.push('"');
-                }
-            }
-            // Ensure there is an xmlns so libsvg is happy
-            if !attrs.iter().any(|a| a.name == "xmlns") {
-                svg.push_str(" xmlns=\"http://www.w3.org/2000/svg\"");
-            }
-            svg.push('>');
-            svg.push_str(inner);
-            svg.push_str("</svg>");
-
+            let svg = reconstruct_inline_svg(attrs, &inner);
+            let svg = apply_svg_inherited_color(
+                svg,
+                webview.resolved_style_ref(node_id).map(|style| style.color),
+            );
+            let Some(expanded) =
+                expand_svg_uses_from_sprite(&svg, base_url, sprite_url, sprite_text)
+            else {
+                continue;
+            };
             let key = inline_svg_key(node_id);
-            decode_svg_no_relayout(svg.as_bytes(), &key, tab_index);
+            decode_svg_no_relayout(expanded.as_bytes(), &key, tab_index);
             count += 1;
         }
     }
 
     if count > 0 {
-        crate::surf_log!("[surf] rasterised {} inline SVG(s)", count);
+        crate::surf_log!(
+            "[surf] rerasterised {} inline SVG(s) after sprite load {}",
+            count,
+            sprite_url
+        );
         true
     } else {
         false
     }
+}
+
+fn reconstruct_inline_svg(attrs: &[libwebview::dom::Attr], inner: &str) -> String {
+    let mut svg = String::from("<svg");
+    for attr in attrs {
+        let n = attr.name.as_str();
+        if matches!(
+            n,
+            "width"
+                | "height"
+                | "viewBox"
+                | "viewbox"
+                | "xmlns"
+                | "version"
+                | "fill"
+                | "stroke"
+                | "class"
+                | "id"
+                | "style"
+                | "preserveAspectRatio"
+        ) {
+        svg.push(' ');
+        svg.push_str(canonical_svg_attr_name(n));
+        svg.push_str("=\"");
+        svg.push_str(&escape_xml_attr(&attr.value));
+        svg.push('"');
+        }
+    }
+    if !attrs.iter().any(|a| a.name == "xmlns") {
+        svg.push_str(" xmlns=\"http://www.w3.org/2000/svg\"");
+    }
+    svg.push('>');
+    svg.push_str(inner);
+    svg.push_str("</svg>");
+    svg
+}
+
+fn inline_svg_inner_markup(dom: &libwebview::dom::Dom, node_id: usize) -> Option<String> {
+    let node = dom.nodes.get(node_id)?;
+
+    for &child_id in &node.children {
+        if let libwebview::dom::NodeType::Text(ref text) = dom.nodes[child_id].node_type {
+            if !text.trim().is_empty() {
+                return Some(text.clone());
+            }
+        }
+    }
+
+    let mut out = String::new();
+    for &child_id in &node.children {
+        serialize_svg_dom_node(dom, child_id, &mut out);
+    }
+    (!out.trim().is_empty()).then_some(out)
+}
+
+fn serialize_svg_dom_node(dom: &libwebview::dom::Dom, node_id: usize, out: &mut String) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    match &node.node_type {
+        libwebview::dom::NodeType::Text(text) => escape_xml_text_into(text, out),
+        libwebview::dom::NodeType::Element { tag, attrs } => {
+            let name = dom
+                .raw_tag_name(node_id)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| tag.tag_name());
+            out.push('<');
+            out.push_str(name);
+            for attr in attrs {
+                if attr.name == "\0" {
+                    continue;
+                }
+                out.push(' ');
+                out.push_str(canonical_svg_attr_name(&attr.name));
+                out.push_str("=\"");
+                out.push_str(&escape_xml_attr(&attr.value));
+                out.push('"');
+            }
+            out.push('>');
+            for &child_id in &node.children {
+                serialize_svg_dom_node(dom, child_id, out);
+            }
+            out.push_str("</");
+            out.push_str(name);
+            out.push('>');
+        }
+    }
+}
+
+fn escape_xml_text_into(value: &str, out: &mut String) {
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+fn apply_svg_inherited_color(svg: String, color: Option<u32>) -> String {
+    let Some(color) = color else {
+        return svg;
+    };
+    let rgb = color & 0x00FF_FFFF;
+    let hex = alloc::format!("#{:06x}", rgb);
+    let mut out = svg.replace("currentColor", &hex).replace("currentcolor", &hex);
+    out = inject_svg_root_color(&out, &hex);
+    inject_default_svg_fill(&out, &hex)
+}
+
+fn inject_svg_root_color(svg: &str, hex: &str) -> String {
+    let Some(svg_start) = svg.find("<svg") else {
+        return String::from(svg);
+    };
+    let Some(tag_end_rel) = svg[svg_start..].find('>') else {
+        return String::from(svg);
+    };
+    let tag_end = svg_start + tag_end_rel;
+    let tag = &svg[svg_start..tag_end];
+    if tag.contains(" style=") || tag.contains(" color=") || tag.contains("color:") {
+        return String::from(svg);
+    }
+    let mut out = String::with_capacity(svg.len() + hex.len() + 22);
+    out.push_str(&svg[..tag_end]);
+    out.push_str(" style=\"color:");
+    out.push_str(hex);
+    out.push_str("\"");
+    out.push_str(&svg[tag_end..]);
+    out
+}
+
+fn inject_default_svg_fill(svg: &str, hex: &str) -> String {
+    let mut out = String::with_capacity(svg.len() + 32);
+    let mut cursor = 0usize;
+    while let Some(rel_start) = svg[cursor..].find('<') {
+        let start = cursor + rel_start;
+        out.push_str(&svg[cursor..start]);
+        let Some(rel_end) = svg[start..].find('>') else {
+            out.push_str(&svg[start..]);
+            return out;
+        };
+        let end = start + rel_end;
+        let tag = &svg[start..end];
+        if svg_tag_allows_default_fill(tag)
+            && !tag.contains(" fill=")
+            && !tag.contains("fill:")
+            && !tag.contains(" stroke=")
+        {
+            let trimmed_len = tag.trim_end().len();
+            if tag[..trimmed_len].ends_with('/') {
+                out.push_str(&tag[..trimmed_len - 1]);
+                out.push_str(" fill=\"");
+                out.push_str(hex);
+                out.push('"');
+                out.push_str(&tag[trimmed_len - 1..]);
+            } else {
+                out.push_str(tag);
+                out.push_str(" fill=\"");
+                out.push_str(hex);
+                out.push('"');
+            }
+        } else {
+            out.push_str(tag);
+        }
+        out.push('>');
+        cursor = end + 1;
+    }
+    out.push_str(&svg[cursor..]);
+    out
+}
+
+fn svg_tag_allows_default_fill(tag: &str) -> bool {
+    let name = svg_tag_name(tag);
+    matches!(
+        name.as_deref(),
+        Some("path" | "rect" | "circle" | "ellipse" | "polygon" | "polyline")
+    )
+}
+
+fn collect_external_svg_use_urls(
+    svg: &str,
+    base_url: &crate::http::Url,
+    out: &mut Vec<String>,
+) {
+    let mut cursor = 0usize;
+    while let Some(rel_start) = svg[cursor..].find("<use") {
+        let start = cursor + rel_start;
+        let Some(tag_end_rel) = svg[start..].find('>') else {
+            break;
+        };
+        let tag_end = start + tag_end_rel + 1;
+        let use_tag = &svg[start..tag_end];
+        if let Some(sprite_url) = svg_use_sprite_url(use_tag, base_url) {
+            if !out.iter().any(|url| url == &sprite_url) {
+                out.push(sprite_url);
+            }
+        }
+        cursor = tag_end;
+    }
+}
+
+fn queue_svg_sprite_fetches(tab_index: usize, sprite_urls: Vec<String>) {
+    if sprite_urls.is_empty() {
+        return;
+    }
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return;
+    }
+    let generation = st.tabs[tab_index].load_state.generation;
+    let mut queued = 0u32;
+    for src in sprite_urls {
+        if st.tabs[tab_index].webview.has_decoded_image(&src) {
+            continue;
+        }
+        let url = match crate::http::parse_url(&src) {
+            Ok(url) => url,
+            Err(_) => continue,
+        };
+        crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
+            tab_index,
+            src,
+            url,
+            target_width: None,
+            target_height: None,
+            priority: crate::net_worker::ImagePriority::Viewport,
+            generation,
+        });
+        queued += 1;
+    }
+    if queued > 0 {
+        crate::surf_log!("[surf] queued {} external SVG sprite(s)", queued);
+        crate::ensure_net_poll_timer();
+    }
+}
+
+fn svg_use_sprite_url(use_tag: &str, base_url: &crate::http::Url) -> Option<String> {
+    let href = extract_attr_value(use_tag, "href")
+        .or_else(|| extract_attr_value(use_tag, "xlink:href"))?
+        .trim();
+    if href.is_empty() || href.starts_with('#') || href.starts_with("data:") {
+        return None;
+    }
+    let hash = href.rfind('#')?;
+    if hash == 0 || href[hash + 1..].is_empty() {
+        return None;
+    }
+    let url = crate::http::resolve_url(base_url, &href[..hash]);
+    Some(crate::ui::format_url(&url))
+}
+
+fn expand_svg_uses_from_sprite(
+    svg: &str,
+    base_url: &crate::http::Url,
+    sprite_url: &str,
+    sprite_text: &str,
+) -> Option<String> {
+    let mut out = String::with_capacity(svg.len());
+    let mut cursor = 0usize;
+    let mut changed = false;
+
+    while let Some(rel_start) = svg[cursor..].find("<use") {
+        let start = cursor + rel_start;
+        out.push_str(&svg[cursor..start]);
+        let Some(tag_end_rel) = svg[start..].find('>') else {
+            out.push_str(&svg[start..]);
+            return changed.then_some(out);
+        };
+        let tag_end = start + tag_end_rel + 1;
+        let use_tag = &svg[start..tag_end];
+
+        let replacement = extract_attr_value(use_tag, "href")
+            .or_else(|| extract_attr_value(use_tag, "xlink:href"))
+            .and_then(|href| expand_sprite_use(href, base_url, sprite_url, sprite_text));
+
+        if let Some(replacement) = replacement {
+            out.push_str(&replacement);
+            changed = true;
+        } else {
+            out.push_str(use_tag);
+        }
+
+        cursor = tag_end;
+        if !use_tag.trim_end().ends_with("/>") {
+            if let Some(close_rel) = svg[cursor..].find("</use>") {
+                cursor += close_rel + "</use>".len();
+            }
+        }
+    }
+
+    out.push_str(&svg[cursor..]);
+    changed.then_some(out)
+}
+
+fn expand_sprite_use(
+    href: &str,
+    base_url: &crate::http::Url,
+    sprite_url: &str,
+    sprite_text: &str,
+) -> Option<String> {
+    let href = href.trim();
+    if href.is_empty() || href.starts_with('#') || href.starts_with("data:") {
+        return None;
+    }
+    let hash = href.rfind('#')?;
+    let url = crate::http::resolve_url(base_url, &href[..hash]);
+    if crate::ui::format_url(&url) != sprite_url {
+        return None;
+    }
+    let symbol_id = &href[hash + 1..];
+    if symbol_id.is_empty() {
+        return None;
+    }
+    extract_svg_fragment_by_id(sprite_text, symbol_id)
+}
+
+fn extract_svg_fragment_by_id(sprite: &str, id: &str) -> Option<String> {
+    let mut id_dq = String::from("id=\"");
+    id_dq.push_str(id);
+    id_dq.push('"');
+    let mut id_sq = String::from("id='");
+    id_sq.push_str(id);
+    id_sq.push('\'');
+    let mut id_bare = String::from("id=");
+    id_bare.push_str(id);
+
+    let id_pos = [id_dq.as_str(), id_sq.as_str(), id_bare.as_str()]
+        .iter()
+        .filter_map(|needle| sprite.find(needle))
+        .min()?;
+    let tag_start = sprite[..id_pos].rfind('<')?;
+    if sprite[tag_start..].starts_with("</") {
+        return None;
+    }
+    let tag_end = tag_start + sprite[tag_start..].find('>')?;
+    let open_tag = &sprite[tag_start..=tag_end];
+    let tag_name = svg_tag_name(open_tag)?;
+    let view_box = extract_attr_value(open_tag, "viewBox")
+        .or_else(|| extract_attr_value(open_tag, "viewbox"));
+
+    if open_tag.trim_end().ends_with("/>") {
+        return Some(String::from(open_tag));
+    }
+
+    let mut close = String::from("</");
+    close.push_str(tag_name);
+    close.push('>');
+    let inner_start = tag_end + 1;
+    let inner_rel_end = sprite[inner_start..].find(&close)?;
+    let inner = &sprite[inner_start..inner_start + inner_rel_end];
+
+    if tag_name.eq_ignore_ascii_case("symbol") {
+        let mut nested = String::from("<svg");
+        if let Some(vb) = view_box {
+            nested.push_str(" viewBox=\"");
+            nested.push_str(&escape_xml_attr(vb));
+            nested.push('"');
+        }
+        nested.push_str(" width=\"100%\" height=\"100%\" preserveAspectRatio=\"xMidYMid meet\">");
+        nested.push_str(inner);
+        nested.push_str("</svg>");
+        Some(nested)
+    } else {
+        let mut group = String::from("<g>");
+        group.push_str(inner);
+        group.push_str("</g>");
+        Some(group)
+    }
+}
+
+fn svg_tag_name(open_tag: &str) -> Option<&str> {
+    let body = open_tag.strip_prefix('<')?.trim_start();
+    let end = body
+        .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+        .unwrap_or(body.len());
+    (end > 0).then_some(&body[..end])
+}
+
+fn canonical_svg_attr_name(name: &str) -> &str {
+    match name {
+        "attributename" => "attributeName",
+        "attributetype" => "attributeType",
+        "basefrequency" => "baseFrequency",
+        "calcmode" => "calcMode",
+        "clippathunits" => "clipPathUnits",
+        "diffuseconstant" => "diffuseConstant",
+        "edgemode" => "edgeMode",
+        "filterunits" => "filterUnits",
+        "gradienttransform" => "gradientTransform",
+        "gradientunits" => "gradientUnits",
+        "kernelmatrix" => "kernelMatrix",
+        "kernelunitlength" => "kernelUnitLength",
+        "keypoints" => "keyPoints",
+        "keysplines" => "keySplines",
+        "keytimes" => "keyTimes",
+        "lengthadjust" => "lengthAdjust",
+        "limitingconeangle" => "limitingConeAngle",
+        "markerheight" => "markerHeight",
+        "markerunits" => "markerUnits",
+        "markerwidth" => "markerWidth",
+        "maskcontentunits" => "maskContentUnits",
+        "maskunits" => "maskUnits",
+        "numoctaves" => "numOctaves",
+        "pathlength" => "pathLength",
+        "patterncontentunits" => "patternContentUnits",
+        "patterntransform" => "patternTransform",
+        "patternunits" => "patternUnits",
+        "pointsatx" => "pointsAtX",
+        "pointsaty" => "pointsAtY",
+        "pointsatz" => "pointsAtZ",
+        "preservealpha" => "preserveAlpha",
+        "preserveaspectratio" => "preserveAspectRatio",
+        "primitiveunits" => "primitiveUnits",
+        "refx" => "refX",
+        "refy" => "refY",
+        "repeatcount" => "repeatCount",
+        "repeatdur" => "repeatDur",
+        "requiredextensions" => "requiredExtensions",
+        "requiredfeatures" => "requiredFeatures",
+        "specularconstant" => "specularConstant",
+        "specularexponent" => "specularExponent",
+        "spreadmethod" => "spreadMethod",
+        "startoffset" => "startOffset",
+        "stddeviation" => "stdDeviation",
+        "surfacescale" => "surfaceScale",
+        "systemlanguage" => "systemLanguage",
+        "tablevalues" => "tableValues",
+        "targetx" => "targetX",
+        "targety" => "targetY",
+        "textlength" => "textLength",
+        "viewbox" => "viewBox",
+        "viewtarget" => "viewTarget",
+        "xchannelselector" => "xChannelSelector",
+        "ychannelselector" => "yChannelSelector",
+        _ => name,
+    }
+}
+
+fn escape_xml_attr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("&quot;"),
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 // ═══════════════════════════════════════════════════════════

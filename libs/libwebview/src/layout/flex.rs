@@ -94,11 +94,11 @@ fn flex_item_baseline(style: &ComputedStyle, bx: &LayoutBox, is_row: bool) -> i3
     }
 }
 
-/// Check whether a DOM subtree contains a descendant with a percentage main-axis
-/// size (`width: %` for row direction, `height: %` for column).
+/// Check whether a DOM subtree contains a table descendant with a percentage
+/// main-axis size (`width: %` for row direction, `height: %` for column).
 /// Used to detect flex items that need a "definite post-flexing main size"
 /// (CSS Flexbox interop quirk for percentage-sized table descendants).
-fn has_percent_main_descendant(
+fn has_percent_sized_table_descendant(
     dom: &Dom,
     styles: &[ComputedStyle],
     node_id: NodeId,
@@ -113,11 +113,11 @@ fn has_percent_main_descendant(
         } else {
             cst.height_pct.is_some()
         };
-        if has_pct {
+        if has_pct && matches!(dom.tag(cid), Some(Tag::Table)) {
             return true;
         }
         // Recurse into descendants.
-        if has_percent_main_descendant(dom, styles, cid, is_row) {
+        if has_percent_sized_table_descendant(dom, styles, cid, is_row) {
             return true;
         }
     }
@@ -164,8 +164,18 @@ pub(super) fn measure_max_content(
         }
     }
 
-    if let Some(w) = super::intrinsic_form_control_width(dom, styles, node_id, Some(viewport_w)) {
-        return w;
+    let is_rich_button = dom.tag(node_id) == Some(Tag::Button)
+        && dom
+            .get(node_id)
+            .children
+            .iter()
+            .any(|&cid| matches!(dom.get(cid).node_type, NodeType::Element { .. }));
+    if !is_rich_button {
+        if let Some(w) =
+            super::intrinsic_form_control_width(dom, styles, node_id, Some(viewport_w))
+        {
+            return w;
+        }
     }
 
     let pad_border = st.padding_left
@@ -460,9 +470,11 @@ pub fn layout_flex(
             }
         }
         // Detect "needs definite main size" quirk: flex item with auto basis,
-        // auto main-axis size, no explicit grow, but contains a descendant with
-        // a percentage main-axis size. Per CSS Flexbox interop, such items
-        // should be sized so the percentage can resolve (Mozilla bug 1469649).
+        // auto main-axis size, no explicit grow, but contains a table descendant
+        // with a percentage main-axis size. Per CSS Flexbox interop, such items
+        // should be sized so table percentages can resolve (Mozilla bug 1469649).
+        // Keep this table-scoped: common controls such as `.nav_btn { width:100% }`
+        // inside auto-sized flex items must not absorb all remaining free space.
         let needs_definite_main = st.flex_basis.is_none()
             && st.flex_basis_pct.is_none()
             && (if is_row {
@@ -471,7 +483,7 @@ pub fn layout_flex(
                 st.height.is_none() && st.height_pct.is_none() && st.height_calc.is_none()
             })
             && st.flex_grow == 0
-            && has_percent_main_descendant(dom, styles, cid, is_row);
+            && has_percent_sized_table_descendant(dom, styles, cid, is_row);
 
         items.push(FlexItem {
             node_id: cid,
