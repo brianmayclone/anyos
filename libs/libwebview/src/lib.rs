@@ -860,7 +860,10 @@ impl WebView {
     /// Render tiles for the given scroll position (public wrapper).
     /// Returns `true` if there are pending tiles not yet rasterized.
     pub fn render_viewport_at(&mut self, scroll_y: i32) -> bool {
-        self.render_viewport(scroll_y)
+        let pending = self.render_viewport(scroll_y);
+        self.last_render_scroll_y = scroll_y;
+        self.pending_tiles = pending;
+        pending
     }
 
     /// Resize the viewport and re-layout.

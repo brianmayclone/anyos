@@ -497,6 +497,19 @@ pub(crate) fn pump_deferred_images_for_active_tab() {
     pump_deferred_images_for_tab(tab_index);
 }
 
+pub(crate) fn refresh_active_viewport_tiles() {
+    let st = state();
+    let tab_index = st.active_tab;
+    if tab_index >= st.tabs.len() {
+        return;
+    }
+    let scroll_y = st.tabs[tab_index].webview.scroll_view().get_state() as i32;
+    let pending = st.tabs[tab_index].webview.render_viewport_at(scroll_y);
+    if pending {
+        ensure_anim_timer();
+    }
+}
+
 fn execute_script_batch(tab_index: usize, scripts: Vec<String>, label: &str) {
     if scripts.is_empty() {
         return;
@@ -2174,6 +2187,7 @@ fn main() {
         .scroll_view()
         .set_dock(ui_lib::DOCK_FILL);
     initial_tab.webview.scroll_view().on_scroll(|_| {
+        refresh_active_viewport_tiles();
         ensure_anim_timer();
         pump_deferred_images_for_active_tab();
     });
