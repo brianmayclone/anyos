@@ -595,7 +595,7 @@ fn sys_munmap_impl(addr: u64, size: u64, high: bool) -> u64 {
 /// arg1 = tid (u32::MAX = -1 = wait for any child)
 /// arg2 = child_tid_ptr (optional: if non-zero and tid==-1, write actual child TID here)
 /// arg3 = options (bit 0 = WNOHANG)
-pub fn sys_waitpid(tid: u32, child_tid_ptr: u32, options: u32) -> u32 {
+pub fn sys_waitpid(tid: u32, child_tid_ptr: u64, options: u32) -> u32 {
     let wnohang = (options & 1) != 0;
     if tid == u32::MAX {
         // waitpid(-1): wait for any child
@@ -630,7 +630,7 @@ const PERM_NEEDED: u32 = u32::MAX - 2;
 /// sys_spawn - Spawn a new process from a filesystem path.
 /// arg1=path_ptr, arg2=stdout_pipe_id (0=none), arg3=args_ptr (0=none), arg4=stdin_pipe_id (0=none)
 /// Returns TID, u32::MAX on error, or PERM_NEEDED if a permission dialog is required.
-pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32) -> u32 {
+pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32) -> u32 {
     let path = unsafe { read_user_str(path_ptr) };
     let args = if args_ptr != 0 {
         unsafe { read_user_str(args_ptr) }
@@ -746,7 +746,7 @@ pub fn sys_spawn(path_ptr: u32, stdout_pipe: u32, args_ptr: u32, stdin_pipe: u32
 
 /// sys_getargs - Get command-line arguments for the current process.
 /// arg1=buf_ptr, arg2=buf_size. Returns bytes written.
-pub fn sys_getargs(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_getargs(buf_ptr: u64, buf_size: u32) -> u32 {
     if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
         return 0;
     }
@@ -1034,7 +1034,7 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
 /// arg1 = path_ptr (null-terminated), arg2 = args_ptr (null-terminated, 0=none).
 /// On success, never returns (process is replaced).
 /// On failure, returns u32::MAX.
-pub fn sys_exec(path_ptr: u32, args_ptr: u32) -> u32 {
+pub fn sys_exec(path_ptr: u64, args_ptr: u64) -> u32 {
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
     let args_str;
     let args = if args_ptr != 0 {
@@ -1067,9 +1067,9 @@ pub fn sys_exec(path_ptr: u32, args_ptr: u32) -> u32 {
 /// sys_thread_create - Create a new thread within the current process.
 /// arg1=entry_rip, arg2=user_rsp, arg3=name_ptr, arg4=name_len, arg5=priority.
 /// Returns TID of new thread, or 0 on error.
-pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len: u32, priority: u32) -> u32 {
-    let entry = entry_rip as u64;
-    let rsp = user_rsp as u64;
+pub fn sys_thread_create(entry_rip: u64, user_rsp: u64, name_ptr: u64, name_len: u32, priority: u32) -> u32 {
+    let entry = entry_rip;
+    let rsp = user_rsp;
     let mut user_lr = 0u64;
 
     // Basic validation: entry must be in user space, rsp must be in user space and aligned

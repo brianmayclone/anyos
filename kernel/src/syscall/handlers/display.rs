@@ -16,7 +16,7 @@ use core::sync::atomic::Ordering;
 // =========================================================================
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_screen_size(buf_ptr: u32) -> u32 {
+pub fn sys_screen_size(buf_ptr: u64) -> u32 {
     if buf_ptr == 0 { return u32::MAX; }
     match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
         Some((w, h, _pitch, _addr)) => {
@@ -45,7 +45,7 @@ pub fn sys_screen_size(buf_ptr: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_screen_size(buf_ptr: u32) -> u32 {
+pub fn sys_screen_size(buf_ptr: u64) -> u32 {
     if buf_ptr == 0 {
         return u32::MAX;
     }
@@ -128,7 +128,7 @@ pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
 /// sys_list_resolutions - List supported display resolutions.
 /// Writes (width, height) pairs as u32 pairs to buf. Returns number of modes.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_list_resolutions(buf_ptr: u64, buf_len: u32) -> u32 {
     let modes = crate::drivers::gpu::with_gpu(|g| {
         let m = g.supported_modes();
         // Copy to a fixed-size buffer to return outside the lock
@@ -159,7 +159,7 @@ pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_list_resolutions(buf_ptr: u64, buf_len: u32) -> u32 {
     let Some(fb) = crate::drivers::framebuffer::info() else {
         return 0;
     };
@@ -175,7 +175,7 @@ pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
 
 /// sys_gpu_info - Get GPU driver info. Writes driver name to buf. Returns name length.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_gpu_info(buf_ptr: u64, buf_len: u32) -> u32 {
     let name = crate::drivers::gpu::with_gpu(|g| {
         let mut s = alloc::string::String::new();
         s.push_str(g.name());
@@ -200,7 +200,7 @@ pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_gpu_info(buf_ptr: u64, buf_len: u32) -> u32 {
     let name = if crate::drivers::arm::gpu::is_available() {
         "virtio-gpu-mmio"
     } else if crate::drivers::framebuffer::is_available() {
@@ -245,7 +245,7 @@ pub fn sys_gpu_has_hw_cursor() -> u32 {
 /// arg1 = pointer to PCM data buffer, arg2 = length in bytes.
 /// Returns number of bytes written.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_audio_write(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_audio_write(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 {
         return 0;
     }
@@ -256,7 +256,7 @@ pub fn sys_audio_write(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_audio_write(_buf_ptr: u32, _buf_len: u32) -> u32 {
+pub fn sys_audio_write(_buf_ptr: u64, _buf_len: u32) -> u32 {
     0
 }
 
@@ -346,7 +346,7 @@ pub fn sys_cursor_takeover() -> u32 {
 ///
 /// FbMapInfo layout: { fb_vaddr: u32, width: u32, height: u32, pitch: u32 }
 #[cfg(target_arch = "x86_64")]
-pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
+pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -380,6 +380,9 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
 
     // Write FbMapInfo struct to user memory
     if out_info_ptr != 0 {
+        if !super::helpers::is_valid_user_ptr(out_info_ptr, 16) {
+            return u32::MAX;
+        }
         let info = unsafe { &mut *(out_info_ptr as *mut [u32; 4]) };
         info[0] = fb_user_base as u32;
         info[1] = width;
@@ -395,7 +398,7 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
+pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -421,6 +424,9 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
     }
 
     if out_info_ptr != 0 {
+        if !super::helpers::is_valid_user_ptr(out_info_ptr, 16) {
+            return u32::MAX;
+        }
         let info = unsafe { &mut *(out_info_ptr as *mut [u32; 4]) };
         info[0] = fb_user_base as u32;
         info[1] = width;
@@ -439,7 +445,7 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
 /// Command types: 1=UPDATE, 2=FILL_RECT, 3=COPY_RECT, 4=CURSOR_MOVE,
 ///                5=CURSOR_SHOW, 6=DEFINE_CURSOR, 7=FLIP
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
+pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -563,7 +569,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
+pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -665,7 +671,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
 ///   4 = MOUSE_BUTTON: arg0=buttons, arg1=1(down)/0(up)
 ///   5 = MOUSE_SCROLL: arg0=dz(i32)
 #[cfg(target_arch = "x86_64")]
-pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
+pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -775,7 +781,7 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
+pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -862,7 +868,7 @@ pub fn sys_boot_ready() -> u32 {
 /// arg3 = info_ptr (pointer to write [width: u32, height: u32])
 /// Returns: 0 on success, 1 = no GPU, 2 = buffer too small.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
+pub fn sys_capture_screen(buf_ptr: u64, buf_size: u32, info_ptr: u64) -> u32 {
     let (width, height, pitch, fb_phys) = match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
         Some(m) => m,
         None => return 1,
@@ -921,7 +927,7 @@ pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
+pub fn sys_capture_screen(buf_ptr: u64, buf_size: u32, info_ptr: u64) -> u32 {
     let Some(fb) = crate::drivers::framebuffer::info() else {
         return 1;
     };
@@ -1080,7 +1086,7 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
 ///
 /// Returns 0 on success, u32::MAX on failure.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_gpu_register_backbuffer(buf_ptr: u64, buf_size: u32) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -1135,7 +1141,7 @@ pub fn sys_gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_register_backbuffer(_buf_ptr: u32, _buf_size: u32) -> u32 {
+pub fn sys_gpu_register_backbuffer(_buf_ptr: u64, _buf_size: u32) -> u32 {
     u32::MAX
 }
 
@@ -1152,7 +1158,7 @@ pub fn sys_gpu_register_backbuffer(_buf_ptr: u32, _buf_size: u32) -> u32 {
 /// Maps the framebuffer at VA 0x19000000 in the target process (different from VRAM surfaces at 0x18000000).
 /// Returns 0 on success, u32::MAX on failure.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u32) -> u32 {
+pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -1204,7 +1210,7 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u32) -> u32 {
+pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
     if !is_compositor() {
         return u32::MAX;
     }
@@ -1345,7 +1351,7 @@ pub fn sys_gpu_3d_query(_query_type: u32) -> u32 {
 /// For SVGA3D: validates command IDs are in range 1040..1099.
 /// For virgl: passes raw Gallium command words through without validation.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_3d_submit(buf_ptr: u32, word_count: u32) -> u32 {
+pub fn sys_gpu_3d_submit(buf_ptr: u64, word_count: u32) -> u32 {
     if buf_ptr == 0 || word_count == 0 {
         return u32::MAX;
     }
@@ -1405,7 +1411,7 @@ pub fn sys_gpu_3d_submit(buf_ptr: u32, word_count: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_3d_submit(_buf_ptr: u32, _word_count: u32) -> u32 {
+pub fn sys_gpu_3d_submit(_buf_ptr: u64, _word_count: u32) -> u32 {
     u32::MAX
 }
 
@@ -1430,7 +1436,7 @@ pub fn sys_gpu_3d_sync() -> u32 {
 /// arg4: surface width (pixels)
 /// arg5: surface height (pixels)
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, height: u32) -> u32 {
+pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u64, buf_len: u32, width: u32, height: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
         return u32::MAX;
     }
@@ -1446,12 +1452,12 @@ pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, 
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_3d_surface_dma(_sid: u32, _buf_ptr: u32, _buf_len: u32, _width: u32, _height: u32) -> u32 {
+pub fn sys_gpu_3d_surface_dma(_sid: u32, _buf_ptr: u64, _buf_len: u32, _width: u32, _height: u32) -> u32 {
     u32::MAX
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u32, buf_len: u32, width: u32, height: u32) -> u32 {
+pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u64, buf_len: u32, width: u32, height: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
         return u32::MAX;
     }
@@ -1466,7 +1472,7 @@ pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u32, buf_len: u32, width: 
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_3d_surface_dma_read(_sid: u32, _buf_ptr: u32, _buf_len: u32, _width: u32, _height: u32) -> u32 {
+pub fn sys_gpu_3d_surface_dma_read(_sid: u32, _buf_ptr: u64, _buf_len: u32, _width: u32, _height: u32) -> u32 {
     u32::MAX
 }
 
@@ -1474,7 +1480,7 @@ pub fn sys_gpu_3d_surface_dma_read(_sid: u32, _buf_ptr: u32, _buf_len: u32, _wid
 /// Writes driver type name (e.g. "svga3d", "virgl", "none") as null-terminated string to buf.
 /// Returns the string length (excluding null terminator).
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_query_type(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_gpu_query_type(buf_ptr: u64, buf_len: u32) -> u32 {
     let type_name = crate::drivers::gpu::with_gpu(|g| {
         let mut s = alloc::string::String::new();
         s.push_str(g.driver_type_name());
@@ -1499,7 +1505,7 @@ pub fn sys_gpu_query_type(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_query_type(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_gpu_query_type(buf_ptr: u64, buf_len: u32) -> u32 {
     let name = "none";
 
     if buf_ptr != 0 && buf_len > 0 {

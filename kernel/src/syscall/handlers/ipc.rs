@@ -14,7 +14,7 @@ use core::sync::atomic::Ordering;
 
 /// sys_pipe_create - Create a new named pipe. arg1=name_ptr (null-terminated).
 /// Returns pipe_id (always > 0).
-pub fn sys_pipe_create(name_ptr: u32) -> u32 {
+pub fn sys_pipe_create(name_ptr: u64) -> u32 {
     let name = if name_ptr != 0 {
         unsafe { read_user_str(name_ptr) }
     } else {
@@ -24,7 +24,7 @@ pub fn sys_pipe_create(name_ptr: u32) -> u32 {
 }
 
 /// sys_pipe_read - Read from a pipe. Returns bytes read, or u32::MAX if not found.
-pub fn sys_pipe_read(pipe_id: u32, buf_ptr: u32, len: u32) -> u32 {
+pub fn sys_pipe_read(pipe_id: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return 0; }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
     crate::ipc::pipe::read(pipe_id, buf)
@@ -37,14 +37,14 @@ pub fn sys_pipe_close(pipe_id: u32) -> u32 {
 }
 
 /// sys_pipe_write - Write data to a pipe. Returns bytes written.
-pub fn sys_pipe_write(pipe_id: u32, buf_ptr: u32, len: u32) -> u32 {
+pub fn sys_pipe_write(pipe_id: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return 0; }
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
     crate::ipc::pipe::write(pipe_id, buf)
 }
 
 /// sys_pipe_open - Open an existing pipe by name. Returns pipe_id or 0 if not found.
-pub fn sys_pipe_open(name_ptr: u32) -> u32 {
+pub fn sys_pipe_open(name_ptr: u64) -> u32 {
     if name_ptr == 0 { return 0; }
     let name = unsafe { read_user_str(name_ptr) };
     crate::ipc::pipe::open(name)
@@ -56,7 +56,7 @@ pub fn sys_pipe_open(name_ptr: u32) -> u32 {
 ///   [8..72]  name (64 bytes, null-terminated)
 ///   [72..80] padding (zeroed)
 /// Returns total pipe count.
-pub fn sys_pipe_list(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_pipe_list(buf_ptr: u64, buf_size: u32) -> u32 {
     let pipes = crate::ipc::pipe::list();
     let count = pipes.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
@@ -89,7 +89,7 @@ pub fn sys_evt_sys_subscribe(filter: u32) -> u32 {
 }
 
 /// Poll system event. ebx=sub_id, ecx=buf_ptr (20 bytes). Returns 1 if event, 0 if empty.
-pub fn sys_evt_sys_poll(sub_id: u32, buf_ptr: u32) -> u32 {
+pub fn sys_evt_sys_poll(sub_id: u32, buf_ptr: u64) -> u32 {
     if let Some(evt) = event_bus::system_poll(sub_id) {
         if buf_ptr != 0 {
             let mut bytes = [0u8; 20];
@@ -114,7 +114,7 @@ pub fn sys_evt_sys_unsubscribe(sub_id: u32) -> u32 {
 }
 
 /// Create a module channel. ebx=name_ptr, ecx=name_len. Returns channel_id.
-pub fn sys_evt_chan_create(name_ptr: u32, name_len: u32) -> u32 {
+pub fn sys_evt_chan_create(name_ptr: u64, name_len: u32) -> u32 {
     let len = (name_len as usize).min(256);
     let Some(name_bytes) = copy_user_bytes(name_ptr, len, 256) else {
         return 0;
@@ -128,7 +128,7 @@ pub fn sys_evt_chan_subscribe(chan_id: u32, filter: u32) -> u32 {
 }
 
 /// Emit to module channel. ebx=chan_id, ecx=event_ptr (20 bytes). Returns 0.
-pub fn sys_evt_chan_emit(chan_id: u32, event_ptr: u32) -> u32 {
+pub fn sys_evt_chan_emit(chan_id: u32, event_ptr: u64) -> u32 {
     let Some(words) = copy_user_bytes(event_ptr, 20, 20) else {
         return u32::MAX;
     };
@@ -146,7 +146,7 @@ pub fn sys_evt_chan_emit(chan_id: u32, event_ptr: u32) -> u32 {
 }
 
 /// Poll module channel. ebx=chan_id, ecx=sub_id, edx=buf_ptr. Returns 1/0.
-pub fn sys_evt_chan_poll(chan_id: u32, sub_id: u32, buf_ptr: u32) -> u32 {
+pub fn sys_evt_chan_poll(chan_id: u32, sub_id: u32, buf_ptr: u64) -> u32 {
     if let Some(evt) = event_bus::channel_poll(chan_id, sub_id) {
         if buf_ptr != 0 {
             let mut bytes = [0u8; 20];
@@ -177,7 +177,7 @@ pub fn sys_evt_chan_destroy(chan_id: u32) -> u32 {
 }
 
 /// Emit to a specific subscriber (unicast). ebx=chan_id, r10=sub_id, rdx=event_ptr.
-pub fn sys_evt_chan_emit_to(chan_id: u32, sub_id: u32, event_ptr: u32) -> u32 {
+pub fn sys_evt_chan_emit_to(chan_id: u32, sub_id: u32, event_ptr: u64) -> u32 {
     let Some(words) = copy_user_bytes(event_ptr, 20, 20) else {
         return u32::MAX;
     };

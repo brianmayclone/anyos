@@ -13,12 +13,12 @@ use super::helpers::is_valid_user_ptr;
 /// sys_sigaction - Set or query a signal handler.
 /// sig: signal number, handler_addr: new handler address (SIG_DFL=0, SIG_IGN=1, or user addr).
 /// Returns the old handler address.
-pub fn sys_sigaction(sig: u32, handler_addr: u32) -> u32 {
+pub fn sys_sigaction(sig: u32, handler_addr: u64) -> u32 {
     use crate::ipc::signal::{SIGKILL, SIGSTOP};
     if sig == 0 || sig >= 32 || sig == SIGKILL || sig == SIGSTOP {
         return u32::MAX;
     }
-    let old = crate::task::scheduler::current_signal_set_handler(sig, handler_addr as u64);
+    let old = crate::task::scheduler::current_signal_set_handler(sig, handler_addr);
     old as u32
 }
 

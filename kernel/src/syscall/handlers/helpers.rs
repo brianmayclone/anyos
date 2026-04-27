@@ -78,19 +78,19 @@ fn is_user_page_accessible(addr: u64) -> bool {
 ///
 /// Returns `None` if the pointer is invalid, unmapped, or the requested length
 /// exceeds `max_len`. Every crossed page is validated before dereference.
-pub(super) fn copy_user_bytes(ptr: u32, len: usize, max_len: usize) -> Option<Vec<u8>> {
-    if len == 0 || len > max_len || !is_valid_user_ptr(ptr as u64, len as u64) {
+pub(super) fn copy_user_bytes(ptr: u64, len: usize, max_len: usize) -> Option<Vec<u8>> {
+    if len == 0 || len > max_len || !is_valid_user_ptr(ptr, len as u64) {
         return None;
     }
-    if !is_user_page_accessible(ptr as u64) {
+    if !is_user_page_accessible(ptr) {
         return None;
     }
 
-    let p = ptr as *const u8;
+    let p = ptr as usize as *const u8;
     let mut out = Vec::with_capacity(len);
     unsafe {
         for i in 0..len {
-            let addr = ptr as u64 + i as u64;
+            let addr = ptr + i as u64;
             if i > 0 && (addr & 0xFFF) == 0 && !is_user_page_accessible(addr) {
                 return None;
             }
@@ -104,19 +104,19 @@ pub(super) fn copy_user_bytes(ptr: u32, len: usize, max_len: usize) -> Option<Ve
 ///
 /// Returns `false` if the destination is invalid, unmapped, or the requested
 /// length exceeds `max_len`. Every crossed page is validated before write.
-pub(super) fn copy_to_user_bytes(ptr: u32, data: &[u8], max_len: usize) -> bool {
+pub(super) fn copy_to_user_bytes(ptr: u64, data: &[u8], max_len: usize) -> bool {
     let len = data.len();
-    if len == 0 || len > max_len || !is_valid_user_ptr(ptr as u64, len as u64) {
+    if len == 0 || len > max_len || !is_valid_user_ptr(ptr, len as u64) {
         return false;
     }
-    if !is_user_page_accessible(ptr as u64) {
+    if !is_user_page_accessible(ptr) {
         return false;
     }
 
-    let p = ptr as *mut u8;
+    let p = ptr as usize as *mut u8;
     unsafe {
         for (i, &byte) in data.iter().enumerate() {
-            let addr = ptr as u64 + i as u64;
+            let addr = ptr + i as u64;
             if i > 0 && (addr & 0xFFF) == 0 && !is_user_page_accessible(addr) {
                 return false;
             }
@@ -132,17 +132,17 @@ pub(super) fn copy_to_user_bytes(ptr: u32, data: &[u8], max_len: usize) -> bool 
 /// Validates page mapping at the initial pointer and at every 4K page boundary
 /// to prevent kernel page faults from unmapped user pages.
 /// Uses safe UTF-8 validation on untrusted user data.
-pub(super) fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
-    if !is_user_page_accessible(ptr as u64) {
+pub(super) fn read_user_str_safe(ptr: u64) -> Option<&'static str> {
+    if !is_user_page_accessible(ptr) {
         return None;
     }
-    let p = ptr as *const u8;
+    let p = ptr as usize as *const u8;
     let mut len = 0usize;
     unsafe {
         while len < 4096 {
             // Validate each page boundary we cross
-            if len > 0 && ((ptr as u64 + len as u64) & 0xFFF) == 0 {
-                if !is_user_page_accessible(ptr as u64 + len as u64) {
+            if len > 0 && ((ptr + len as u64) & 0xFFF) == 0 {
+                if !is_user_page_accessible(ptr + len as u64) {
                     break;
                 }
             }
@@ -165,16 +165,16 @@ pub(super) fn read_user_str_safe(ptr: u32) -> Option<&'static str> {
 /// Validates page mapping at the initial pointer and at every 4K page boundary
 /// to prevent kernel page faults from unmapped user pages.
 /// Uses safe UTF-8 validation on untrusted user data.
-pub(super) unsafe fn read_user_str(ptr: u32) -> &'static str {
-    if !is_user_page_accessible(ptr as u64) {
+pub(super) unsafe fn read_user_str(ptr: u64) -> &'static str {
+    if !is_user_page_accessible(ptr) {
         return "";
     }
-    let p = ptr as *const u8;
+    let p = ptr as usize as *const u8;
     let mut len = 0usize;
     while len < 4096 {
         // Validate each page boundary we cross
-        if len > 0 && ((ptr as u64 + len as u64) & 0xFFF) == 0 {
-            if !is_user_page_accessible(ptr as u64 + len as u64) {
+        if len > 0 && ((ptr + len as u64) & 0xFFF) == 0 {
+            if !is_user_page_accessible(ptr + len as u64) {
                 break;
             }
         }

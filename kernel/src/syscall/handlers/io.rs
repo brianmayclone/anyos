@@ -10,7 +10,7 @@ const WRITE_COPY_CHUNK: usize = 64 * 1024;
 
 /// sys_write - Write to a file descriptor
 /// fd=1 -> stdout (pipe if configured, else serial), fd=2 -> stderr (same), fd>=3 -> VFS file
-pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
+pub fn sys_write(fd: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
@@ -29,7 +29,7 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                     while total < len as usize {
                         let chunk_len = ((len as usize) - total).min(WRITE_COPY_CHUNK);
                         let Some(buf) = copy_user_bytes(
-                            buf_ptr.wrapping_add(total as u32),
+                            buf_ptr.wrapping_add(total as u64),
                             chunk_len,
                             WRITE_COPY_CHUNK,
                         ) else {
@@ -116,7 +116,7 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
 /// sys_read - Read from a file descriptor (local FD from per-process table).
 /// Dispatches to VFS file read or pipe read based on FdKind.
 /// Falls back to legacy stdin_pipe for fd=0 if not in FD table.
-pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
+pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
@@ -180,7 +180,7 @@ pub fn sys_read(fd: u32, buf_ptr: u32, len: u32) -> u32 {
 
 /// sys_open - Open a file. arg1=path_ptr (null-terminated), arg2=flags, arg3=unused
 /// Returns local file descriptor or u32::MAX on error.
-pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
+pub fn sys_open(path_ptr: u64, flags: u32, _arg3: u32) -> u32 {
     let path = match read_user_str_safe(path_ptr) {
         Some(s) => s,
         None => return u32::MAX,
@@ -301,7 +301,7 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
 /// sys_fstat - Get file information by fd.
 /// arg1=fd, arg2=stat_buf_ptr: output [type:u32, size:u32, position:u32, mtime:u32] = 16 bytes
 /// Returns 0 on success, u32::MAX on error.
-pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
+pub fn sys_fstat(fd: u32, buf_ptr: u64) -> u32 {
     if buf_ptr == 0 { return u32::MAX; }
 
     use crate::fs::fd_table::FdKind;
@@ -410,7 +410,7 @@ pub fn sys_ftruncate(fd: u32, _length: u32) -> u32 {
 /// arg1 = user pointer to int[2] (receives [read_fd, write_fd]).
 /// arg2 = flags (O_CLOEXEC = 0x10).
 /// Returns 0 on success, u32::MAX on failure.
-pub fn sys_pipe2(pipefd_ptr: u32, flags: u32) -> u32 {
+pub fn sys_pipe2(pipefd_ptr: u64, flags: u32) -> u32 {
     if pipefd_ptr == 0 || !is_valid_user_ptr(pipefd_ptr as u64, 8) {
         return u32::MAX;
     }

@@ -115,7 +115,7 @@ pub fn sys_debug_get_regs(tid: u32, buf_lo: u32, buf_hi_and_size: u32) -> u32 {
 /// Overwrite the target thread's CpuContext from a user buffer.
 ///
 /// Returns 0 on success, u32::MAX on error.
-pub fn sys_debug_set_regs(tid: u32, buf_ptr: u32, size: u32) -> u32 {
+pub fn sys_debug_set_regs(tid: u32, buf_ptr: u64, size: u32) -> u32 {
     let caller_tid = scheduler::current_tid();
     let buf = buf_ptr as u64;
 
@@ -136,7 +136,7 @@ pub fn sys_debug_set_regs(tid: u32, buf_ptr: u32, size: u32) -> u32 {
 /// Uses CR3-switch pattern for cross-process memory access.
 ///
 /// Returns number of bytes read, or u32::MAX on error.
-pub fn sys_debug_read_mem(tid: u32, addr: u32, size: u32, buf_ptr: u32) -> u32 {
+pub fn sys_debug_read_mem(tid: u32, addr: u32, size: u32, buf_ptr: u64) -> u32 {
     let caller_tid = scheduler::current_tid();
     let target_addr = addr as u64;
     let buf = buf_ptr as u64;
@@ -156,7 +156,7 @@ pub fn sys_debug_read_mem(tid: u32, addr: u32, size: u32, buf_ptr: u32) -> u32 {
 /// Write up to 256 bytes into the target thread's address space.
 ///
 /// Returns number of bytes written, or u32::MAX on error.
-pub fn sys_debug_write_mem(tid: u32, addr: u32, size: u32, buf_ptr: u32) -> u32 {
+pub fn sys_debug_write_mem(tid: u32, addr: u32, size: u32, buf_ptr: u64) -> u32 {
     let caller_tid = scheduler::current_tid();
     let target_addr = addr as u64;
     let buf = buf_ptr as u64;
@@ -217,7 +217,7 @@ pub fn sys_debug_single_step(tid: u32) -> u32 {
 ///
 /// Each entry: (start_addr: u64, end_addr: u64, flags: u64) = 24 bytes.
 /// Returns number of regions written, or u32::MAX on error.
-pub fn sys_debug_get_mem_map(tid: u32, buf_ptr: u32, size: u32) -> u32 {
+pub fn sys_debug_get_mem_map(tid: u32, buf_ptr: u64, size: u32) -> u32 {
     let caller_tid = scheduler::current_tid();
     let buf = buf_ptr as u64;
 
@@ -239,7 +239,7 @@ pub fn sys_debug_get_mem_map(tid: u32, buf_ptr: u32, size: u32) -> u32 {
 ///
 /// Returns the event type (1=breakpoint, 2=single_step, 3=exit),
 /// or 0 if no event pending, or u32::MAX on error.
-pub fn sys_debug_wait_event(tid: u32, buf_ptr: u32, size: u32) -> u32 {
+pub fn sys_debug_wait_event(tid: u32, buf_ptr: u64, size: u32) -> u32 {
     let caller_tid = scheduler::current_tid();
     let buf = buf_ptr as u64;
 
@@ -258,7 +258,7 @@ pub fn sys_debug_wait_event(tid: u32, buf_ptr: u32, size: u32) -> u32 {
 /// fd_count, brk, mmap_next, last_cpu, rip, rsp, cr3.
 ///
 /// Returns number of bytes written, or u32::MAX on error.
-pub fn sys_thread_info_ex(tid: u32, buf_ptr: u32, size: u32) -> u32 {
+pub fn sys_thread_info_ex(tid: u32, buf_ptr: u64, size: u32) -> u32 {
     let buf = buf_ptr as u64;
 
     if !is_valid_user_ptr(buf, size as u64) {

@@ -20,7 +20,7 @@ use super::helpers::is_valid_user_ptr;
 /// Backwards-compatible: if the buffer is too small for 64-byte entries but
 /// fits 32-byte entries, the old 32-byte format is used (no label).
 #[cfg(target_arch = "x86_64")]
-pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_disk_list(buf_ptr: u64, buf_size: u32) -> u32 {
     use crate::drivers::storage::blockdev;
     let devices = blockdev::list_devices();
     let count = devices.len();
@@ -47,7 +47,7 @@ pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_disk_list(buf_ptr: u64, buf_size: u32) -> u32 {
     use crate::drivers::storage::blockdev;
     let devices = blockdev::list_devices();
     let count = devices.len();
@@ -84,7 +84,7 @@ pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
 ///   [24..32] reserved (zeroed)
 /// Returns partition count.
 /// Shared implementation for disk_partitions on both architectures.
-fn disk_partitions_impl(disk_id: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+fn disk_partitions_impl(disk_id: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     use crate::fs::partition;
     use crate::drivers::storage::blockdev;
 
@@ -126,12 +126,12 @@ fn disk_partitions_impl(disk_id: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_disk_partitions(disk_id: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_disk_partitions(disk_id: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     disk_partitions_impl(disk_id, buf_ptr, buf_size)
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_disk_partitions(disk_id: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_disk_partitions(disk_id: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     disk_partitions_impl(disk_id, buf_ptr, buf_size)
 }
 
@@ -143,7 +143,7 @@ pub fn sys_disk_partitions(disk_id: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 ///   arg5: buf_size
 /// Returns sectors read, or u32::MAX on error.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     use crate::drivers::storage::blockdev;
 
     let needed = count as u64 * 512;
@@ -168,7 +168,7 @@ pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_siz
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     use crate::drivers::storage::blockdev;
 
     let needed = count as u64 * 512;
@@ -196,7 +196,7 @@ pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_siz
 ///   arg5: buf_size
 /// Returns sectors written, or u32::MAX on error.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     use crate::drivers::storage::blockdev;
 
     let needed = count as u64 * 512;
@@ -237,7 +237,7 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_si
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     use crate::drivers::storage::blockdev;
 
     let needed = count as u64 * 512;
@@ -273,7 +273,7 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u32, buf_si
 ///
 /// Reads/writes the MBR of the correct disk via blockdev, not the
 /// default storage backend.
-fn partition_create_impl(disk_id: u32, entry_ptr: u32, entry_size: u32) -> u32 {
+fn partition_create_impl(disk_id: u32, entry_ptr: u64, entry_size: u32) -> u32 {
     use crate::drivers::storage::blockdev;
 
     if entry_size < 16 || !is_valid_user_ptr(entry_ptr as u64, entry_size as u64) {
@@ -330,12 +330,12 @@ fn partition_create_impl(disk_id: u32, entry_ptr: u32, entry_size: u32) -> u32 {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_partition_create(disk_id: u32, entry_ptr: u32, entry_size: u32) -> u32 {
+pub fn sys_partition_create(disk_id: u32, entry_ptr: u64, entry_size: u32) -> u32 {
     partition_create_impl(disk_id, entry_ptr, entry_size)
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_partition_create(disk_id: u32, entry_ptr: u32, entry_size: u32) -> u32 {
+pub fn sys_partition_create(disk_id: u32, entry_ptr: u64, entry_size: u32) -> u32 {
     partition_create_impl(disk_id, entry_ptr, entry_size)
 }
 

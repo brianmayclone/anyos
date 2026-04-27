@@ -10,7 +10,7 @@ use super::helpers::{copy_user_bytes, is_valid_user_ptr, read_user_str};
 ///   [32..56] driver name (null-terminated, 24 bytes)
 ///   [56]     driver_type (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor,8=Monitor,9=Bus,10=Unknown)
 ///   [57..64] padding (zeroed)
-pub fn sys_devlist(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_devlist(buf_ptr: u64, buf_size: u32) -> u32 {
     let devices = crate::drivers::hal::list_devices();
     let count = devices.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
@@ -48,7 +48,7 @@ pub fn sys_devlist(buf_ptr: u32, buf_size: u32) -> u32 {
     count as u32
 }
 
-pub fn sys_devopen(path_ptr: u32, _flags: u32) -> u32 {
+pub fn sys_devopen(path_ptr: u64, _flags: u32) -> u32 {
     let path = unsafe { read_user_str(path_ptr) };
     let devices = crate::drivers::hal::list_devices();
     // ENOENT = 2
@@ -57,9 +57,9 @@ pub fn sys_devopen(path_ptr: u32, _flags: u32) -> u32 {
 
 pub fn sys_devclose(_handle: u32) -> u32 { 0 }
 /// Unimplemented — returns -ENOSYS (38).
-pub fn sys_devread(_handle: u32, _buf_ptr: u32, _len: u32) -> u32 { (-38i32) as u32 }
+pub fn sys_devread(_handle: u32, _buf_ptr: u64, _len: u32) -> u32 { (-38i32) as u32 }
 /// Unimplemented — returns -ENOSYS (38).
-pub fn sys_devwrite(_handle: u32, _buf_ptr: u32, _len: u32) -> u32 { (-38i32) as u32 }
+pub fn sys_devwrite(_handle: u32, _buf_ptr: u64, _len: u32) -> u32 { (-38i32) as u32 }
 /// sys_devioctl - Send ioctl to a device by driver type.
 /// handle = DriverType as u32 (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor,8=Monitor)
 pub fn sys_devioctl(dtype: u32, cmd: u32, arg: u32) -> u32 {
@@ -90,7 +90,7 @@ pub fn sys_irqwait(_irq: u32) -> u32 { 0 }
 /// sys_dll_load - Load/map a DLL into the current process.
 /// arg1=path_ptr (null-terminated), arg2=path_len (unused, null-terminated).
 /// Returns base virtual address of the DLL, or 0 on failure.
-pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
+pub fn sys_dll_load(path_ptr: u64, _path_len: u32) -> u32 {
     if path_ptr == 0 { return 0; }
     let path = unsafe { read_user_str(path_ptr) };
     // Try existing loaded DLLs first
@@ -100,7 +100,7 @@ pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
             let phys = crate::memory::virtual_mem::virt_to_phys(crate::memory::address::VirtAddr::new(mapped))
                 .unwrap_or(0);
             let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
-            let user_bytes = copy_user_bytes(mapped as u32, 4, 4);
+            let user_bytes = copy_user_bytes(mapped as u64, 4, 4);
             crate::serial_verbose_println!(
                 "[dll] existing {} -> base={:#x} phys={:#x} pte={:#x} user={}",
                 path,
@@ -124,7 +124,7 @@ pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
                     crate::memory::address::VirtAddr::new(mapped)
                 ).unwrap_or(0);
                 let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
-                let user_bytes = copy_user_bytes(mapped as u32, 4, 4);
+                let user_bytes = copy_user_bytes(mapped as u64, 4, 4);
                 crate::serial_verbose_println!(
                     "[dll] fresh {} -> base={:#x} phys={:#x} pte={:#x} user={}",
                     path,

@@ -6,7 +6,7 @@
 use alloc::string::String;
 use super::helpers::{fs_err, is_valid_user_ptr, read_user_str, resolve_path};
 
-pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_readdir(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
     // Permission check: need PERM_READ on directory
@@ -57,7 +57,7 @@ pub fn sys_readdir(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
     }
 }
 
-pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
+pub fn sys_stat(path_ptr: u64, buf_ptr: u64) -> u32 {
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);
 
@@ -92,7 +92,7 @@ pub fn sys_stat(path_ptr: u32, buf_ptr: u32) -> u32 {
     }
 }
 
-pub fn sys_lstat(path_ptr: u32, buf_ptr: u32) -> u32 {
+pub fn sys_lstat(path_ptr: u64, buf_ptr: u64) -> u32 {
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);
 
@@ -124,7 +124,7 @@ pub fn sys_lstat(path_ptr: u32, buf_ptr: u32) -> u32 {
     }
 }
 
-pub fn sys_symlink(target_ptr: u32, link_path_ptr: u32) -> u32 {
+pub fn sys_symlink(target_ptr: u64, link_path_ptr: u64) -> u32 {
     let target = unsafe { read_user_str(target_ptr) };
     let raw_link = unsafe { read_user_str(link_path_ptr) };
     let link_path = resolve_path(raw_link);
@@ -135,7 +135,7 @@ pub fn sys_symlink(target_ptr: u32, link_path_ptr: u32) -> u32 {
     }
 }
 
-pub fn sys_readlink(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);
 
@@ -161,7 +161,7 @@ pub fn sys_readlink(path_ptr: u32, buf_ptr: u32, buf_size: u32) -> u32 {
     }
 }
 
-pub fn sys_getcwd(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_getcwd(buf_ptr: u64, buf_size: u32) -> u32 {
     if buf_ptr == 0 || buf_size == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
         return u32::MAX;
     }
@@ -178,7 +178,7 @@ pub fn sys_getcwd(buf_ptr: u32, buf_size: u32) -> u32 {
     len as u32
 }
 
-pub fn sys_chdir(path_ptr: u32) -> u32 {
+pub fn sys_chdir(path_ptr: u64) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);
@@ -193,7 +193,7 @@ pub fn sys_chdir(path_ptr: u32) -> u32 {
     }
 }
 
-pub fn sys_mkdir(path_ptr: u32) -> u32 {
+pub fn sys_mkdir(path_ptr: u64) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
@@ -213,7 +213,7 @@ pub fn sys_mkdir(path_ptr: u32) -> u32 {
     }
 }
 
-pub fn sys_unlink(path_ptr: u32) -> u32 {
+pub fn sys_unlink(path_ptr: u64) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
@@ -233,7 +233,7 @@ pub fn sys_unlink(path_ptr: u32) -> u32 {
     }
 }
 
-pub fn sys_truncate(path_ptr: u32) -> u32 {
+pub fn sys_truncate(path_ptr: u64) -> u32 {
     if path_ptr == 0 { return u32::MAX; }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
@@ -250,7 +250,7 @@ pub fn sys_truncate(path_ptr: u32) -> u32 {
     }
 }
 
-pub fn sys_rename(old_ptr: u32, new_ptr: u32) -> u32 {
+pub fn sys_rename(old_ptr: u64, new_ptr: u64) -> u32 {
     if old_ptr == 0 || new_ptr == 0 { return u32::MAX; }
     let old_path = resolve_path(unsafe { read_user_str(old_ptr) });
     let new_path = resolve_path(unsafe { read_user_str(new_ptr) });
@@ -260,7 +260,7 @@ pub fn sys_rename(old_ptr: u32, new_ptr: u32) -> u32 {
     }
 }
 
-pub fn sys_mount(mount_path_ptr: u32, device_path_ptr: u32, fs_type: u32) -> u32 {
+pub fn sys_mount(mount_path_ptr: u64, device_path_ptr: u64, fs_type: u32) -> u32 {
     if mount_path_ptr == 0 { return u32::MAX; }
     let mount_path = resolve_path(unsafe { read_user_str(mount_path_ptr) });
     let device_path = if device_path_ptr != 0 {
@@ -283,7 +283,7 @@ pub fn sys_mount(mount_path_ptr: u32, device_path_ptr: u32, fs_type: u32) -> u32
 /// sys_umount - Unmount a filesystem.
 /// arg1=mount_path_ptr
 /// Returns 0 on success, u32::MAX on failure.
-pub fn sys_umount(mount_path_ptr: u32) -> u32 {
+pub fn sys_umount(mount_path_ptr: u64) -> u32 {
     if mount_path_ptr == 0 { return u32::MAX; }
     let mount_path = resolve_path(unsafe { read_user_str(mount_path_ptr) });
     match crate::fs::vfs::umount_fs(&mount_path) {
@@ -325,7 +325,7 @@ fn push_u32(out: &mut String, mut n: u32) {
 /// Output format: "mount_path\tfs_type\tdev_id\n" for each mount, null-terminated.
 /// `dev_id` is the decimal block-device ID (same ID space as SYS_DISK_LIST). For
 /// pseudo-mounts without a backing block device (smb, fuse, devfs), it is 0.
-pub fn sys_list_mounts(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_list_mounts(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 { return u32::MAX; }
     if !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) { return u32::MAX; }
 
@@ -355,7 +355,7 @@ pub fn sys_list_mounts(buf_ptr: u32, buf_len: u32) -> u32 {
 /// arg2=unused
 /// arg3=buf_ptr (output: 3 x u64 LE: total_bytes, used_bytes, free_bytes = 24 bytes)
 /// Returns 0 on success, u32::MAX on error.
-pub fn sys_statfs(path_ptr: u32, _path_len: u32, buf_ptr: u32) -> u32 {
+pub fn sys_statfs(path_ptr: u64, _path_len: u32, buf_ptr: u64) -> u32 {
     if path_ptr == 0 || buf_ptr == 0 { return u32::MAX; }
     if !is_valid_user_ptr(buf_ptr as u64, 24) { return u32::MAX; }
 

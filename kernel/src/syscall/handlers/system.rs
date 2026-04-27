@@ -12,7 +12,7 @@ use super::helpers::{is_valid_user_ptr, read_user_str};
 
 /// sys_time - Get current date/time.
 /// arg1=buf_ptr: output [year_lo:u8, year_hi:u8, month:u8, day:u8, hour:u8, min:u8, sec:u8, pad:u8]
-pub fn sys_time(buf_ptr: u32) -> u32 {
+pub fn sys_time(buf_ptr: u64) -> u32 {
     #[cfg(target_arch = "x86_64")]
     let (year, month, day, hour, min, sec) = crate::drivers::rtc::read_datetime();
     #[cfg(target_arch = "aarch64")]
@@ -37,7 +37,7 @@ pub fn sys_time(buf_ptr: u32) -> u32 {
 /// sys_set_time - Set system date/time via RTC.
 /// arg1=buf_ptr: input [year_lo:u8, year_hi:u8, month:u8, day:u8, hour:u8, min:u8, sec:u8, pad:u8]
 /// Returns 0 on success, u32::MAX on error.
-pub fn sys_set_time(buf_ptr: u32) -> u32 {
+pub fn sys_set_time(buf_ptr: u64) -> u32 {
     if buf_ptr == 0 {
         return u32::MAX;
     }
@@ -86,7 +86,7 @@ pub fn sys_uptime_ms() -> u32 {
 
 /// sys_dmesg - Read kernel log ring buffer.
 /// arg1=buf_ptr, arg2=buf_size. Returns bytes written.
-pub fn sys_dmesg(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_dmesg(buf_ptr: u64, buf_size: u32) -> u32 {
     if buf_ptr == 0 || buf_size == 0 {
         return 0;
     }
@@ -97,7 +97,7 @@ pub fn sys_dmesg(buf_ptr: u32, buf_size: u32) -> u32 {
 /// sys_sysinfo - Get system information.
 /// arg1=cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load
 /// arg2=buf_ptr, arg3=buf_size
-pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     match cmd {
         0 => {
             // Memory: [total_frames:u32, free_frames:u32, heap_used:u32, heap_total:u32] = 16 bytes
@@ -280,7 +280,7 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
 /// sys_setenv - Set an environment variable.
 /// arg1 = key_ptr (null-terminated), arg2 = val_ptr (null-terminated, or 0 to unset).
 /// Returns 0 on success.
-pub fn sys_setenv(key_ptr: u32, val_ptr: u32) -> u32 {
+pub fn sys_setenv(key_ptr: u64, val_ptr: u64) -> u32 {
     if key_ptr == 0 { return u32::MAX; }
     let key = unsafe { read_user_str(key_ptr) };
     if key.is_empty() { return u32::MAX; }
@@ -302,7 +302,7 @@ pub fn sys_setenv(key_ptr: u32, val_ptr: u32) -> u32 {
 /// sys_getenv - Get an environment variable.
 /// arg1 = key_ptr (null-terminated), arg2 = val_buf_ptr, arg3 = val_buf_size.
 /// Returns length of value (bytes written, excluding null terminator), or u32::MAX if not found.
-pub fn sys_getenv(key_ptr: u32, val_buf_ptr: u32, val_buf_size: u32) -> u32 {
+pub fn sys_getenv(key_ptr: u64, val_buf_ptr: u64, val_buf_size: u32) -> u32 {
     if key_ptr == 0 { return u32::MAX; }
     let key = unsafe { read_user_str(key_ptr) };
     if key.is_empty() { return u32::MAX; }
@@ -337,7 +337,7 @@ pub fn sys_getenv(key_ptr: u32, val_buf_ptr: u32, val_buf_size: u32) -> u32 {
 /// arg1 = buf_ptr, arg2 = buf_size.
 /// Format: "KEY=VALUE\0KEY2=VALUE2\0..." packed entries.
 /// Returns total bytes needed (may exceed buf_size).
-pub fn sys_listenv(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_listenv(buf_ptr: u64, buf_size: u32) -> u32 {
     let pd = match crate::task::scheduler::current_thread_page_directory() {
         Some(pd) => pd.as_u64(),
         None => return 0,
@@ -379,7 +379,7 @@ pub fn sys_kbd_set_layout(layout_id: u32) -> u32 {
 /// arg1 = buf_ptr, arg2 = len (max 256 bytes per call).
 /// Uses the kernel crypto entropy pipeline.
 /// Returns number of bytes written.
-pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
+pub fn sys_random(buf_ptr: u64, len: u32) -> u32 {
     let len = (len as usize).min(256);
     if len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
         return 0;
@@ -393,7 +393,7 @@ pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
 /// SYS_KBD_LIST_LAYOUTS (202): Write layout info entries to a user buffer.
 /// arg1 = buf_ptr (array of LayoutInfo), arg2 = max_entries.
 /// Returns number of entries written.
-pub fn sys_kbd_list_layouts(buf_ptr: u32, max_entries: u32) -> u32 {
+pub fn sys_kbd_list_layouts(buf_ptr: u64, max_entries: u32) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
         use crate::drivers::layout::{LAYOUT_INFOS, LAYOUT_COUNT, LayoutInfo};
@@ -425,7 +425,7 @@ pub fn sys_kbd_list_layouts(buf_ptr: u32, max_entries: u32) -> u32 {
 /// arg1 = tid, arg2 = buf_ptr, arg3 = buf_size.
 /// Copies the raw CrashReport struct into the user buffer.
 /// Returns bytes written, or 0 if no crash report exists for that TID.
-pub fn sys_get_crash_info(tid: u32, buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_get_crash_info(tid: u32, buf_ptr: u64, buf_size: u32) -> u32 {
     use crate::task::crash_info;
 
     if buf_ptr == 0 || buf_size == 0 {
@@ -467,7 +467,7 @@ static HOSTNAME_LEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU
 /// SYS_GET_HOSTNAME - Copy current hostname into user buffer.
 ///   arg1: buf_ptr, arg2: buf_len
 /// Returns bytes written, or u32::MAX on error.
-pub fn sys_get_hostname(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_get_hostname(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 {
         return u32::MAX;
     }
@@ -487,7 +487,7 @@ pub fn sys_get_hostname(buf_ptr: u32, buf_len: u32) -> u32 {
 /// SYS_SET_HOSTNAME - Set the system hostname.
 ///   arg1: name_ptr, arg2: name_len
 /// Returns 0 on success, u32::MAX on error.
-pub fn sys_set_hostname(name_ptr: u32, name_len: u32) -> u32 {
+pub fn sys_set_hostname(name_ptr: u64, name_len: u32) -> u32 {
     if name_ptr == 0 || name_len == 0 || name_len > 63 {
         return u32::MAX;
     }
@@ -718,7 +718,7 @@ pub fn sys_set_serial_verbose(enable: u32) -> u32 {
 /// arg1 = buf_ptr (user pointer), arg2 = len (bytes).
 /// Returns number of bytes written, or u32::MAX on error.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_con_write(buf_ptr: u32, len: u32) -> u32 {
+pub fn sys_con_write(buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 { return 0; }
     if len > 65536 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return u32::MAX; }
     let slice = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
@@ -735,7 +735,7 @@ pub fn sys_con_write(buf_ptr: u32, len: u32) -> u32 {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_con_write(_buf_ptr: u32, _len: u32) -> u32 { u32::MAX }
+pub fn sys_con_write(_buf_ptr: u64, _len: u32) -> u32 { u32::MAX }
 
 /// SYS_CON_READ (291): Read a line from the keyboard with echo to the console.
 /// arg1 = buf_ptr (user buffer), arg2 = buf_len.
@@ -743,7 +743,7 @@ pub fn sys_con_write(_buf_ptr: u32, _len: u32) -> u32 { u32::MAX }
 /// Blocks until Enter is pressed.
 /// Returns number of bytes read (not including null terminator), or u32::MAX on error.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_con_read(buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_con_read(buf_ptr: u64, buf_len: u32) -> u32 {
     let echo = (buf_len & 0x8000_0000) == 0;
     let max_len = (buf_len & 0x7FFF_FFFF) as usize;
     if buf_ptr == 0 || max_len == 0 { return 0; }
@@ -753,7 +753,7 @@ pub fn sys_con_read(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_con_read(_buf_ptr: u32, _buf_len: u32) -> u32 { u32::MAX }
+pub fn sys_con_read(_buf_ptr: u64, _buf_len: u32) -> u32 { u32::MAX }
 
 /// SYS_CON_POLL_KEY (292): Non-blocking keyboard poll for the text console.
 /// Returns the Unicode codepoint of the next pressed key, or 0 if no key pending.

@@ -27,7 +27,7 @@ use crate::drivers::i2c::I2cDevice;
 /// - bytes 4–7: temperature in 0.1 °C units (i32 LE, signed)
 ///
 /// Returns the number of entries written.
-pub fn sys_thermal_read(buf_ptr: u32, max_count: u32) -> u32 {
+pub fn sys_thermal_read(buf_ptr: u64, max_count: u32) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
         if buf_ptr == 0 || max_count == 0 {

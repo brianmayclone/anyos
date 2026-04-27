@@ -16,7 +16,7 @@ pub fn sys_monitor_count() -> u32 {
 /// `buf_ptr`: user pointer to a buffer of at least 128 bytes.
 ///
 /// Returns 0 on success, `u32::MAX` on error.
-pub fn sys_monitor_info(monitor_id: u32, buf_ptr: u32) -> u32 {
+pub fn sys_monitor_info(monitor_id: u32, buf_ptr: u64) -> u32 {
     if buf_ptr == 0 || !is_valid_user_ptr(buf_ptr as u64, 128) {
         return u32::MAX;
     }
@@ -75,7 +75,7 @@ pub fn sys_monitor_info(monitor_id: u32, buf_ptr: u32) -> u32 {
 /// `buf_len`: buffer size in bytes.
 ///
 /// Returns number of bytes written, or 0 on error.
-pub fn sys_monitor_edid(monitor_id: u32, buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_monitor_edid(monitor_id: u32, buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
         return 0;
     }
@@ -107,7 +107,7 @@ pub fn sys_monitor_edid(monitor_id: u32, buf_ptr: u32, buf_len: u32) -> u32 {
 /// `buf_len`: buffer size in bytes.
 ///
 /// Returns number of modes written.
-pub fn sys_monitor_modes(monitor_id: u32, buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_monitor_modes(monitor_id: u32, buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 || !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
         return 0;
     }

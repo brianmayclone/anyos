@@ -13,7 +13,7 @@ use super::helpers::is_valid_user_ptr;
 
 /// sys_net_config - Get or set network configuration.
 /// arg1=cmd (0=get, 1=set), arg2=buf_ptr (24 bytes: ip4+mask4+gw4+dns4+mac6+link1+pad1)
-pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
+pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
     match cmd {
         0 => {
             if buf_ptr == 0 { return u32::MAX; }
@@ -200,7 +200,7 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
 
 /// sys_net_ping - ICMP ping. arg1=ip_ptr(4 bytes), arg2=seq, arg3=timeout_ticks
 /// Returns RTT in ticks, or u32::MAX on timeout.
-pub fn sys_net_ping(ip_ptr: u32, seq: u32, timeout: u32) -> u32 {
+pub fn sys_net_ping(ip_ptr: u64, seq: u32, timeout: u32) -> u32 {
     if ip_ptr == 0 { return u32::MAX; }
     let mut ip_bytes = [0u8; 4];
     unsafe { core::ptr::copy_nonoverlapping(ip_ptr as *const u8, ip_bytes.as_mut_ptr(), 4); }
@@ -213,7 +213,7 @@ pub fn sys_net_ping(ip_ptr: u32, seq: u32, timeout: u32) -> u32 {
 
 /// sys_net_dhcp - DHCP discovery. arg1=buf_ptr (16 bytes: ip+mask+gw+dns)
 /// Returns 0 on success, applies config automatically.
-pub fn sys_net_dhcp(buf_ptr: u32) -> u32 {
+pub fn sys_net_dhcp(buf_ptr: u64) -> u32 {
     match crate::net::dhcp::discover() {
         Ok(result) => {
             crate::net::set_config(result.ip, result.mask, result.gateway, result.dns);
@@ -233,7 +233,7 @@ pub fn sys_net_dhcp(buf_ptr: u32) -> u32 {
 }
 
 /// sys_net_dns - DNS resolve. arg1=hostname_ptr, arg2=result_ptr(4 bytes)
-pub fn sys_net_dns(hostname_ptr: u32, result_ptr: u32) -> u32 {
+pub fn sys_net_dns(hostname_ptr: u64, result_ptr: u64) -> u32 {
     let hostname = unsafe { read_user_str(hostname_ptr) };
     match crate::net::dns::resolve(hostname) {
         Ok(ip) => {
@@ -253,7 +253,7 @@ pub fn sys_net_dns(hostname_ptr: u32, result_ptr: u32) -> u32 {
 /// sys_tcp_connect - Connect to a remote host.
 /// arg1=params_ptr: [ip:4, port:u16, pad:u16, timeout:u32] = 12 bytes
 /// Returns socket_id or u32::MAX on error.
-pub fn sys_tcp_connect(params_ptr: u32) -> u32 {
+pub fn sys_tcp_connect(params_ptr: u64) -> u32 {
     if params_ptr == 0 { return u32::MAX; }
     let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 12) };
     let ip = crate::net::types::Ipv4Addr([params[0], params[1], params[2], params[3]]);
@@ -267,7 +267,7 @@ pub fn sys_tcp_connect(params_ptr: u32) -> u32 {
 /// sys_tcp_send - Send data on TCP connection.
 /// arg1=socket_id, arg2=buf_ptr, arg3=len
 /// Returns bytes sent or u32::MAX on error.
-pub fn sys_tcp_send(socket_id: u32, buf_ptr: u32, len: u32) -> u32 {
+pub fn sys_tcp_send(socket_id: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 { return 0; }
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
     let result = crate::net::tcp::send(socket_id, buf, 1000); // 10s timeout
@@ -280,7 +280,7 @@ pub fn sys_tcp_send(socket_id: u32, buf_ptr: u32, len: u32) -> u32 {
 /// sys_tcp_recv - Receive data from TCP connection.
 /// arg1=socket_id, arg2=buf_ptr, arg3=len
 /// Returns bytes received, 0=EOF, u32::MAX=error.
-pub fn sys_tcp_recv(socket_id: u32, buf_ptr: u32, len: u32) -> u32 {
+pub fn sys_tcp_recv(socket_id: u32, buf_ptr: u64, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 { return u32::MAX; }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
     let result = crate::net::tcp::recv(socket_id, buf, 3000); // 30s timeout
@@ -323,7 +323,7 @@ pub fn sys_tcp_listen(port: u32, backlog: u32) -> u32 {
 /// sys_tcp_accept - Accept a connection from a listening socket.
 /// arg1=listener_id, arg2=result_ptr (12 bytes: [socket_id:u32, ip:[u8;4], port:u16, pad:u16])
 /// Returns 0 on success, u32::MAX on timeout/error.
-pub fn sys_tcp_accept(listener_id: u32, result_ptr: u32) -> u32 {
+pub fn sys_tcp_accept(listener_id: u32, result_ptr: u64) -> u32 {
     if result_ptr == 0 { return u32::MAX; }
     let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
     let timeout_ticks = 30 * pit_hz; // 30 second timeout
@@ -346,7 +346,7 @@ pub fn sys_tcp_accept(listener_id: u32, result_ptr: u32) -> u32 {
 /// sys_tcp_accept_nowait - Non-blocking accept: returns immediately.
 /// arg1=listener_id, arg2=result_ptr (12 bytes, same as sys_tcp_accept)
 /// Returns 0 if a connection was accepted, u32::MAX if none pending.
-pub fn sys_tcp_accept_nowait(listener_id: u32, result_ptr: u32) -> u32 {
+pub fn sys_tcp_accept_nowait(listener_id: u32, result_ptr: u64) -> u32 {
     if result_ptr == 0 { return u32::MAX; }
     // Use a 0-tick timeout so the accept loop returns immediately if nothing is ready.
     let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, 0);
@@ -366,7 +366,7 @@ pub fn sys_tcp_accept_nowait(listener_id: u32, result_ptr: u32) -> u32 {
 /// arg1=buf_ptr, arg2=max_entries. Each entry is 16 bytes:
 ///   [local_ip:4, local_port:u16, remote_ip:4, remote_port:u16, state:u8, owner_tid_lo:u8, recv_buf_hi:u16]
 /// Returns number of entries written.
-pub fn sys_tcp_list(buf_ptr: u32, max_entries: u32) -> u32 {
+pub fn sys_tcp_list(buf_ptr: u64, max_entries: u32) -> u32 {
     if buf_ptr == 0 || max_entries == 0 { return 0; }
     let conns = crate::net::tcp::list_connections();
     let count = conns.len().min(max_entries as usize);
@@ -422,7 +422,7 @@ pub fn sys_udp_unbind(port: u32) -> u32 {
 /// arg1=params_ptr: [dst_ip:4, dst_port:u16, src_port:u16, data_ptr:u32, data_len:u32, flags:u32] = 20 bytes
 /// flags: bit 0 = force broadcast (bypass SO_BROADCAST check).
 /// Returns bytes sent or u32::MAX on error.
-pub fn sys_udp_sendto(params_ptr: u32) -> u32 {
+pub fn sys_udp_sendto(params_ptr: u64) -> u32 {
     if params_ptr == 0 { return u32::MAX; }
     let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 20) };
 
@@ -455,7 +455,7 @@ pub fn sys_udp_sendto(params_ptr: u32) -> u32 {
 /// arg1=port, arg2=buf_ptr, arg3=buf_len.
 /// Writes header [src_ip:4, src_port:u16, payload_len:u16] (8 bytes) then payload.
 /// Returns total bytes written (8 + payload), 0 = no data/timeout, u32::MAX = error.
-pub fn sys_udp_recvfrom(port: u32, buf_ptr: u32, buf_len: u32) -> u32 {
+pub fn sys_udp_recvfrom(port: u32, buf_ptr: u64, buf_len: u32) -> u32 {
     if port == 0 || port > 65535 || buf_ptr == 0 || buf_len < 8 {
         return u32::MAX;
     }
@@ -506,7 +506,7 @@ pub fn sys_udp_set_opt(port: u32, opt: u32, val: u32) -> u32 {
 /// arg1=buf_ptr, arg2=max_entries. Each entry is 8 bytes:
 ///   [port:u16, owner_tid:u16, recv_queue_len:u16, pad:u16]
 /// Returns number of entries written.
-pub fn sys_udp_list(buf_ptr: u32, max_entries: u32) -> u32 {
+pub fn sys_udp_list(buf_ptr: u64, max_entries: u32) -> u32 {
     if buf_ptr == 0 || max_entries == 0 { return 0; }
     let bindings = crate::net::udp::list_bindings();
     let count = bindings.len().min(max_entries as usize);
@@ -548,7 +548,7 @@ pub fn sys_udp_list(buf_ptr: u32, max_entries: u32) -> u32 {
 ///   [96..100] tcp_curr_established (u32)
 ///   [100..104] tcp_conn_errors_lo (u32)
 /// Returns 0 on success.
-pub fn sys_net_stats(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_net_stats(buf_ptr: u64, buf_size: u32) -> u32 {
     if buf_ptr == 0 || buf_size < 104 { return u32::MAX; }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 104) };
 
@@ -612,7 +612,7 @@ pub fn sys_pipe_bytes_available(fd: u32) -> u32 {
 
 /// sys_net_arp - Get ARP table. arg1=buf_ptr, arg2=buf_size
 /// Each entry: [ip:4, mac:6, pad:2] = 12 bytes. Returns entry count.
-pub fn sys_net_arp(buf_ptr: u32, buf_size: u32) -> u32 {
+pub fn sys_net_arp(buf_ptr: u64, buf_size: u32) -> u32 {
     let entries = crate::net::arp::entries();
     if buf_ptr != 0 && buf_size > 0 {
         let max = (buf_size / 12) as usize;
@@ -652,7 +652,7 @@ pub fn sys_net_arp(buf_ptr: u32, buf_size: u32) -> u32 {
 
 /// sys_wifi — WiFi management syscall.
 /// arg1=cmd, arg2=buf_ptr, arg3=buf_len
-pub fn sys_wifi(cmd: u32, buf_ptr: u32, _buf_len: u32) -> u32 {
+pub fn sys_wifi(cmd: u32, buf_ptr: u64, _buf_len: u32) -> u32 {
     match cmd {
         // 0 — is WiFi hardware available?
         0 => {
@@ -773,7 +773,7 @@ pub fn sys_wifi(cmd: u32, buf_ptr: u32, _buf_len: u32) -> u32 {
 
 /// sys_net_ping6 - ICMPv6 ping. arg1=ip6_ptr(16 bytes), arg2=seq, arg3=timeout_ticks
 /// Returns RTT in ticks, or u32::MAX on timeout.
-pub fn sys_net_ping6(ip_ptr: u32, seq: u32, timeout: u32) -> u32 {
+pub fn sys_net_ping6(ip_ptr: u64, seq: u32, timeout: u32) -> u32 {
     if ip_ptr == 0 { return u32::MAX; }
     let mut ip_bytes = [0u8; 16];
     unsafe { core::ptr::copy_nonoverlapping(ip_ptr as *const u8, ip_bytes.as_mut_ptr(), 16); }
@@ -787,7 +787,7 @@ pub fn sys_net_ping6(ip_ptr: u32, seq: u32, timeout: u32) -> u32 {
 /// sys_net_dns6 - DNS AAAA record resolution.
 /// arg1=hostname_ptr, arg2=result_ptr (16 bytes for IPv6 address)
 /// Returns 0 on success, u32::MAX on error.
-pub fn sys_net_dns6(hostname_ptr: u32, result_ptr: u32) -> u32 {
+pub fn sys_net_dns6(hostname_ptr: u64, result_ptr: u64) -> u32 {
     if hostname_ptr == 0 || result_ptr == 0 { return u32::MAX; }
     let hostname = unsafe { read_user_str(hostname_ptr) };
     if hostname.is_empty() { return u32::MAX; }
@@ -805,7 +805,7 @@ pub fn sys_net_dns6(hostname_ptr: u32, result_ptr: u32) -> u32 {
 /// sys_tcp_connect_v6 - TCP connect over IPv6.
 /// arg1=params_ptr: [ip6:16, port:u16, pad:u16, timeout:u32] = 24 bytes
 /// Returns socket ID or u32::MAX on error.
-pub fn sys_tcp_connect_v6(params_ptr: u32) -> u32 {
+pub fn sys_tcp_connect_v6(params_ptr: u64) -> u32 {
     if params_ptr == 0 { return u32::MAX; }
     let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 24) };
     let mut ip6 = [0u8; 16];
