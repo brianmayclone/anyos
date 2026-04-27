@@ -192,17 +192,17 @@ Die Rendering-Pipeline (HTML-Parsing, CSS-Cascade, Layout, Font-Rasterisierung, 
 ### Webfonts und Fallbacks
 
 surf-host laedt `@font-face` Ressourcen aus Stylesheets, registriert aber nur
-Fontdaten, die libfont sicher parsen kann. WOFF und WOFF2 werden derzeit bewusst
-nicht registriert, weil der vorhandene WOFF2-Konverter bei realen Webfonts noch
-unvollstaendige oder kaputte Glyphdaten liefern kann. Ein fehlgeschlagener
-`font_load_data`-Aufruf ist deshalb kein harter Renderfehler: die CSS-Family
-bleibt unregistriert und libwebview faellt auf die naechste Family aus
-`font-family` bzw. auf System-Aliase wie `sans-serif`, `serif`, `monospace`,
-Arial, Helvetica, Inter oder Source Sans Pro zurueck.
+Fontdaten, die libfont sicher parsen kann. Raw TrueType/sfnt und WOFF2 mit
+TrueType-Outlines werden geladen; WOFF 1.0 und WOFF2-Fonts mit noch nicht
+unterstuetzten Outline-Formaten schlagen bewusst geschlossen fehl. Ein
+fehlgeschlagener `font_load_data`-Aufruf ist deshalb kein harter Renderfehler:
+die CSS-Family bleibt unregistriert und libwebview faellt auf die naechste
+Family aus `font-family` bzw. auf System-Aliase wie `sans-serif`, `serif`,
+`monospace`, Arial, Helvetica, Inter oder Source Sans Pro zurueck.
 
 Das ist die aktuelle Hosttest-Strategie fuer reale Webseiten ohne JavaScript:
-lesbarer Text ueber robuste Fallbacks zuerst, vollstaendiger WOFF2-Support
-spaeter mit eigener Validierung.
+echte Webfonts laden, sobald sie sicher dekodierbar sind, und sonst robuste,
+layoutnahe Fallbacks verwenden.
 
 ### Reale Seiten als Smoke-Test
 

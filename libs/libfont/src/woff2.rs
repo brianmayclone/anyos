@@ -87,10 +87,14 @@ static KNOWN_TAGS: [u32; 63] = [
 
 struct Woff2Table {
     tag: u32,
-    orig_length: u32,
     transform_length: u32,
     transform_version: u8,
-    flags: u8,
+}
+
+struct GlyfReconstruction {
+    glyf: Vec<u8>,
+    loca: Vec<u8>,
+    x_mins: Vec<i16>,
 }
 
 /// Read a UIntBase128 variable-length integer (WOFF2 spec §2).
@@ -121,6 +125,10 @@ fn read_u16_be(data: &[u8], off: usize) -> u16 {
     ((data[off] as u16) << 8) | (data[off + 1] as u16)
 }
 
+fn read_i16_be(data: &[u8], off: usize) -> i16 {
+    read_u16_be(data, off) as i16
+}
+
 fn write_u32_be(buf: &mut Vec<u8>, val: u32) {
     buf.push((val >> 24) as u8);
     buf.push((val >> 16) as u8);
@@ -131,6 +139,45 @@ fn write_u32_be(buf: &mut Vec<u8>, val: u32) {
 fn write_u16_be(buf: &mut Vec<u8>, val: u16) {
     buf.push((val >> 8) as u8);
     buf.push(val as u8);
+}
+
+fn write_i16_be(buf: &mut Vec<u8>, val: i16) {
+    write_u16_be(buf, val as u16);
+}
+
+fn read_255_u16(data: &[u8], pos: &mut usize) -> Option<u16> {
+    if *pos >= data.len() {
+        return None;
+    }
+    let code = data[*pos];
+    *pos += 1;
+    match code {
+        253 => {
+            if *pos + 2 > data.len() {
+                return None;
+            }
+            let value = read_u16_be(data, *pos);
+            *pos += 2;
+            Some(value)
+        }
+        254 => {
+            if *pos >= data.len() {
+                return None;
+            }
+            let value = data[*pos] as u16 + 506;
+            *pos += 1;
+            Some(value)
+        }
+        255 => {
+            if *pos >= data.len() {
+                return None;
+            }
+            let value = data[*pos] as u16 + 253;
+            *pos += 1;
+            Some(value)
+        }
+        value => Some(value as u16),
+    }
 }
 
 /// Convert WOFF2 data to a TTF byte vector.
@@ -196,10 +243,8 @@ pub fn convert_to_ttf(data: &[u8]) -> Option<Vec<u8>> {
 
         tables.push(Woff2Table {
             tag,
-            orig_length,
             transform_length,
             transform_version,
-            flags,
         });
     }
 
@@ -233,6 +278,8 @@ pub fn convert_to_ttf(data: &[u8]) -> Option<Vec<u8>> {
     let glyf_idx = tables.iter().position(|t| t.tag == 0x676C7966); // glyf
     let loca_idx = tables.iter().position(|t| t.tag == 0x6C6F6361); // loca
 
+    let mut glyf_reconstruction: Option<GlyfReconstruction> = None;
+
     // If glyf has transform_version 0, reconstruct glyf+loca from transformed format
     if let Some(gi) = glyf_idx {
         if tables[gi].transform_version == 0 {
@@ -253,19 +300,31 @@ pub fn convert_to_ttf(data: &[u8]) -> Option<Vec<u8>> {
                     } else { 0 }
                 } else { 0 };
 
-                // Reconstruct glyf and loca
-                let (new_glyf, new_loca) = reconstruct_glyf_loca(
+                let reconstruction = reconstruct_glyf_loca(
                     &table_data[gi], num_glyphs, loca_format
-                );
-                table_data[gi] = new_glyf;
-                table_data[li] = new_loca;
+                )?;
+                table_data[gi] = reconstruction.glyf.clone();
+                table_data[li] = reconstruction.loca.clone();
+                glyf_reconstruction = Some(reconstruction);
             }
         }
     }
 
-    // For transformed hmtx (transform_version 1), reconstruct
-    // For simplicity, we skip hmtx transform reconstruction and use the data as-is.
-    // Most WOFF2 fonts with hmtx transform have the data already usable.
+    // For transformed hmtx (transform_version 1), reconstruct omitted bearings
+    // from glyf xMin values as defined by the WOFF2 transform.
+    if let Some(hi) = tables.iter().position(|t| t.tag == 0x686D7478) {
+        if tables[hi].transform_version == 1 {
+            let hhea_idx = tables.iter().position(|t| t.tag == 0x68686561)?;
+            let maxp_idx = tables.iter().position(|t| t.tag == 0x6D617870)?;
+            if table_data[hhea_idx].len() < 36 || table_data[maxp_idx].len() < 6 {
+                return None;
+            }
+            let num_h_metrics = read_u16_be(&table_data[hhea_idx], 34) as usize;
+            let num_glyphs = read_u16_be(&table_data[maxp_idx], 4) as usize;
+            let x_mins = glyf_reconstruction.as_ref().map(|g| g.x_mins.as_slice()).unwrap_or(&[]);
+            table_data[hi] = reconstruct_hmtx(&table_data[hi], num_glyphs, num_h_metrics, x_mins)?;
+        }
+    }
 
     // Reconstruct TTF binary
     reconstruct_ttf(flavor, &tables, &table_data)
@@ -276,142 +335,478 @@ pub fn convert_to_ttf(data: &[u8]) -> Option<Vec<u8>> {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Reconstruct glyf and loca tables from WOFF2 transformed format.
-///
-/// The transformed glyf table has a specialized compact encoding.
-/// For simplicity, we handle the common case and fall back to
-/// pass-through for edge cases.
 fn reconstruct_glyf_loca(
     transformed: &[u8],
     num_glyphs: u32,
     loca_format: u16,
-) -> (Vec<u8>, Vec<u8>) {
-    // WOFF2 transformed glyf format (spec §5.1):
-    // - Fixed header (36 bytes)
-    // - nContour stream
-    // - nPoints stream
-    // - Flag stream
-    // - Glyph data stream (x/y coordinates, instructions, composite data)
-
+) -> Option<GlyfReconstruction> {
     if transformed.len() < 36 || num_glyphs == 0 {
-        // Can't parse transform header — return empty tables
-        return build_empty_glyf_loca(num_glyphs, loca_format);
+        let (glyf, loca) = build_empty_glyf_loca(num_glyphs, loca_format);
+        return Some(GlyfReconstruction { glyf, loca, x_mins: vec![0; num_glyphs as usize] });
     }
 
-    // Parse transformed glyf header
-    let _version = read_u32_be(transformed, 0);   // must be 0x00000000
-    let _opt_flags = read_u16_be(transformed, 4);
-    let _n_glyphs = read_u16_be(transformed, 6) as u32;
-    let index_fmt = read_u16_be(transformed, 8);
-    let n_contour_off = read_u32_be(transformed, 10) as usize;
-    let n_points_off = read_u32_be(transformed, 14) as usize;
-    let flag_off = read_u32_be(transformed, 18) as usize;
-    let glyph_off = read_u32_be(transformed, 22) as usize;
-    let composite_off = read_u32_be(transformed, 26) as usize;
-    let bbox_off = read_u32_be(transformed, 30) as usize;
-    let instr_off = read_u32_be(transformed, 34) as usize;
-
-    let _index_fmt = index_fmt; // 0 = short loca, 1 = long loca
-
-    // For a robust but simpler implementation: if the transform data
-    // looks too complex, just pass through the raw data.
-    // This handles the majority of WOFF2 fonts which use simple glyphs.
-
-    // Try a simplified reconstruction: build a glyf table with the
-    // original glyph data offsets and a matching loca table.
-    // The nContour stream tells us how many contours each glyph has.
-
-    let header_size = 36;
-    let total = transformed.len();
-
-    // Validate stream offsets
-    if n_contour_off > total || n_points_off > total || flag_off > total
-        || glyph_off > total || composite_off > total || bbox_off > total
-        || instr_off > total
-    {
-        return build_empty_glyf_loca(num_glyphs, loca_format);
+    let version = read_u32_be(transformed, 0);
+    let transformed_num_glyphs = read_u16_be(transformed, 4) as u32;
+    let index_format = read_u16_be(transformed, 6);
+    if version != 0 || transformed_num_glyphs != num_glyphs {
+        return None;
     }
 
-    // Read nContours for each glyph (i16 per glyph, from offset 36)
-    let n_contour_end = if n_points_off > 0 { n_points_off } else { total };
-    let n_contour_data = &transformed[header_size..(header_size + num_glyphs as usize * 2).min(n_contour_end).min(total)];
+    let n_contour_size = read_u32_be(transformed, 8) as usize;
+    let n_points_size = read_u32_be(transformed, 12) as usize;
+    let flag_size = read_u32_be(transformed, 16) as usize;
+    let glyph_size = read_u32_be(transformed, 20) as usize;
+    let composite_size = read_u32_be(transformed, 24) as usize;
+    let bbox_size = read_u32_be(transformed, 28) as usize;
+    let instruction_size = read_u32_be(transformed, 32) as usize;
+    let mut stream_pos = 36usize;
+    let n_contour_stream = take_stream(transformed, &mut stream_pos, n_contour_size)?;
+    let n_points_stream = take_stream(transformed, &mut stream_pos, n_points_size)?;
+    let flag_stream = take_stream(transformed, &mut stream_pos, flag_size)?;
+    let glyph_stream = take_stream(transformed, &mut stream_pos, glyph_size)?;
+    let composite_stream = take_stream(transformed, &mut stream_pos, composite_size)?;
+    let bbox_stream = take_stream(transformed, &mut stream_pos, bbox_size)?;
+    let instruction_stream = take_stream(transformed, &mut stream_pos, instruction_size)?;
 
+    let _index_format = index_format;
     let mut n_contours = Vec::with_capacity(num_glyphs as usize);
     for i in 0..num_glyphs as usize {
-        if i * 2 + 2 <= n_contour_data.len() {
-            let nc = read_u16_be(n_contour_data, i * 2) as i16;
-            n_contours.push(nc);
-        } else {
-            n_contours.push(0);
+        if i * 2 + 2 > n_contour_stream.len() {
+            return None;
         }
+        n_contours.push(read_i16_be(n_contour_stream, i * 2));
     }
 
-    // For the simplified approach: build glyf with just the raw data
-    // segments that follow the header.  Each glyph's contour data is
-    // reconstructed from the streams.
-    //
-    // This is a complex multi-stream reconstruction.  For robustness,
-    // we output minimal empty glyphs and rely on the font's other tables
-    // (cmap, hmtx) for character metrics.
-
-    let mut glyf = Vec::with_capacity(num_glyphs as usize * 16);
+    let mut n_points_pos = 0usize;
+    let mut flag_pos = 0usize;
+    let mut glyph_pos = 0usize;
+    let mut composite_pos = 0usize;
+    let mut instruction_pos = 0usize;
+    let mut bbox_reader = BboxReader::new(bbox_stream, num_glyphs as usize)?;
+    let mut glyf = Vec::with_capacity(transformed.len());
     let mut offsets = Vec::with_capacity(num_glyphs as usize + 1);
+    let mut x_mins = Vec::with_capacity(num_glyphs as usize);
 
-    for i in 0..num_glyphs as usize {
+    for glyph_id in 0..num_glyphs as usize {
         offsets.push(glyf.len() as u32);
-        let nc = n_contours[i];
+        let nc = n_contours[glyph_id];
         if nc == 0 {
-            // Empty glyph — no data
+            x_mins.push(0);
             continue;
         }
 
+        let explicit_bbox = bbox_reader.bbox_for(glyph_id)?;
+        let start_len = glyf.len();
+
         if nc > 0 {
-            // Simple glyph: write minimal header
-            // numberOfContours (i16), xMin, yMin, xMax, yMax (all i16)
-            write_u16_be(&mut glyf, nc as u16);       // numberOfContours
-            write_u16_be(&mut glyf, 0);                // xMin
-            write_u16_be(&mut glyf, 0);                // yMin
-            write_u16_be(&mut glyf, 0);                // xMax
-            write_u16_be(&mut glyf, 0);                // yMax
-
-            // endPtsOfContour: simple increasing sequence
-            for c in 0..nc as u16 {
-                write_u16_be(&mut glyf, c);
-            }
-
-            // instructionLength = 0
-            write_u16_be(&mut glyf, 0);
-
-            // Flags: one point per contour, all on-curve, x=0, y=0
-            for _ in 0..nc {
-                glyf.push(0x33); // ON_CURVE | X_SHORT | X_SAME | Y_SHORT | Y_SAME
-            }
-
-            // Pad to 4-byte boundary
-            while glyf.len() & 3 != 0 { glyf.push(0); }
+            let bbox = build_simple_glyph(
+                &mut glyf,
+                nc as usize,
+                explicit_bbox,
+                n_points_stream,
+                &mut n_points_pos,
+                flag_stream,
+                &mut flag_pos,
+                glyph_stream,
+                &mut glyph_pos,
+                instruction_stream,
+                &mut instruction_pos,
+            )?;
+            x_mins.push(bbox.0);
         } else {
-            // Composite glyph (nc == -1)
-            // Write minimal composite: just a single component pointing to glyph 0
-            write_u16_be(&mut glyf, 0xFFFF); // -1 = composite
-            write_u16_be(&mut glyf, 0);       // xMin
-            write_u16_be(&mut glyf, 0);       // yMin
-            write_u16_be(&mut glyf, 0);       // xMax
-            write_u16_be(&mut glyf, 0);       // yMax
+            let bbox = build_composite_glyph(
+                &mut glyf,
+                explicit_bbox.unwrap_or((0, 0, 0, 0)),
+                composite_stream,
+                &mut composite_pos,
+                instruction_stream,
+                &mut instruction_pos,
+            )?;
+            x_mins.push(bbox.0);
+        }
 
-            // Component: flags=0x0006 (ARGS_ARE_XY_VALUES), glyphIndex=0, args=0,0
-            write_u16_be(&mut glyf, 0x0006); // flags
-            write_u16_be(&mut glyf, 0);       // glyph index
-            write_u16_be(&mut glyf, 0);       // x offset
-            write_u16_be(&mut glyf, 0);       // y offset
-
+        if glyf.len() > start_len {
             while glyf.len() & 3 != 0 { glyf.push(0); }
         }
     }
     offsets.push(glyf.len() as u32);
 
-    // Build loca table
     let loca = build_loca_table(&offsets, loca_format);
+    Some(GlyfReconstruction { glyf, loca, x_mins })
+}
 
-    (glyf, loca)
+fn take_stream<'a>(data: &'a [u8], pos: &mut usize, len: usize) -> Option<&'a [u8]> {
+    let end = pos.checked_add(len)?;
+    if end > data.len() {
+        return None;
+    }
+    let stream = &data[*pos..end];
+    *pos = end;
+    Some(stream)
+}
+
+struct BboxReader<'a> {
+    bitmap: &'a [u8],
+    values: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> BboxReader<'a> {
+    fn new(data: &'a [u8], num_glyphs: usize) -> Option<Self> {
+        let bitmap_len = ((num_glyphs + 31) / 32).checked_mul(4)?;
+        if bitmap_len > data.len() {
+            return None;
+        }
+        Some(Self { bitmap: &data[..bitmap_len], values: &data[bitmap_len..], pos: 0 })
+    }
+
+    fn bbox_for(&mut self, glyph_id: usize) -> Option<Option<(i16, i16, i16, i16)>> {
+        let byte = *self.bitmap.get(glyph_id / 8).unwrap_or(&0);
+        let has_bbox = (byte & (0x80 >> (glyph_id & 7))) != 0;
+        if !has_bbox {
+            return Some(None);
+        }
+        if self.pos + 8 > self.values.len() {
+            return None;
+        }
+        let bbox = (
+            read_i16_be(self.values, self.pos),
+            read_i16_be(self.values, self.pos + 2),
+            read_i16_be(self.values, self.pos + 4),
+            read_i16_be(self.values, self.pos + 6),
+        );
+        self.pos += 8;
+        Some(Some(bbox))
+    }
+}
+
+fn build_simple_glyph(
+    out: &mut Vec<u8>,
+    contour_count: usize,
+    explicit_bbox: Option<(i16, i16, i16, i16)>,
+    n_points_stream: &[u8],
+    n_points_pos: &mut usize,
+    flag_stream: &[u8],
+    flag_pos: &mut usize,
+    glyph_stream: &[u8],
+    glyph_pos: &mut usize,
+    instruction_stream: &[u8],
+    instruction_pos: &mut usize,
+) -> Option<(i16, i16, i16, i16)> {
+    let mut end_pts = Vec::with_capacity(contour_count);
+    let mut point_count = 0usize;
+    for _ in 0..contour_count {
+        let count = read_255_u16(n_points_stream, n_points_pos)? as usize;
+        if count == 0 {
+            return None;
+        }
+        point_count = point_count.checked_add(count)?;
+        if point_count > u16::MAX as usize + 1 {
+            return None;
+        }
+        end_pts.push((point_count - 1) as u16);
+    }
+
+    let mut flags = Vec::with_capacity(point_count);
+    let mut x_coords = Vec::with_capacity(point_count);
+    let mut y_coords = Vec::with_capacity(point_count);
+    let mut x = 0i16;
+    let mut y = 0i16;
+    for _ in 0..point_count {
+        if *flag_pos >= flag_stream.len() {
+            return None;
+        }
+        let transformed_flag = flag_stream[*flag_pos];
+        *flag_pos += 1;
+        let (dx, dy) = decode_triplet(transformed_flag & 0x7f, glyph_stream, glyph_pos)?;
+        x = x.wrapping_add(dx);
+        y = y.wrapping_add(dy);
+        flags.push(if (transformed_flag & 0x80) != 0 { 0x01 } else { 0x00 });
+        x_coords.push(x);
+        y_coords.push(y);
+    }
+
+    let computed_bbox = compute_bbox(&x_coords, &y_coords);
+    let bbox = explicit_bbox.unwrap_or(computed_bbox);
+    write_i16_be(out, contour_count as i16);
+    write_i16_be(out, bbox.0);
+    write_i16_be(out, bbox.1);
+    write_i16_be(out, bbox.2);
+    write_i16_be(out, bbox.3);
+    for end_pt in end_pts {
+        write_u16_be(out, end_pt);
+    }
+    let instruction_len = read_255_u16(instruction_stream, instruction_pos)? as usize;
+    if *instruction_pos + instruction_len > instruction_stream.len() {
+        return None;
+    }
+    write_u16_be(out, instruction_len as u16);
+    out.extend_from_slice(&instruction_stream[*instruction_pos..*instruction_pos + instruction_len]);
+    *instruction_pos += instruction_len;
+
+    let (ttf_flags, x_bytes, y_bytes) = encode_ttf_points(&flags, &x_coords, &y_coords);
+    out.extend_from_slice(&ttf_flags);
+    out.extend_from_slice(&x_bytes);
+    out.extend_from_slice(&y_bytes);
+    Some(bbox)
+}
+
+fn build_composite_glyph(
+    out: &mut Vec<u8>,
+    bbox: (i16, i16, i16, i16),
+    composite_stream: &[u8],
+    composite_pos: &mut usize,
+    instruction_stream: &[u8],
+    instruction_pos: &mut usize,
+) -> Option<(i16, i16, i16, i16)> {
+    write_i16_be(out, -1);
+    write_i16_be(out, bbox.0);
+    write_i16_be(out, bbox.1);
+    write_i16_be(out, bbox.2);
+    write_i16_be(out, bbox.3);
+
+    let mut have_instructions = false;
+    loop {
+        if *composite_pos + 4 > composite_stream.len() {
+            return None;
+        }
+        let flags = read_u16_be(composite_stream, *composite_pos);
+        let glyph_index = read_u16_be(composite_stream, *composite_pos + 2);
+        *composite_pos += 4;
+        write_u16_be(out, flags);
+        write_u16_be(out, glyph_index);
+
+        let arg_len = if (flags & 0x0001) != 0 { 4 } else { 2 };
+        if *composite_pos + arg_len > composite_stream.len() {
+            return None;
+        }
+        out.extend_from_slice(&composite_stream[*composite_pos..*composite_pos + arg_len]);
+        *composite_pos += arg_len;
+
+        let scale_len = if (flags & 0x0008) != 0 {
+            2
+        } else if (flags & 0x0040) != 0 {
+            4
+        } else if (flags & 0x0080) != 0 {
+            8
+        } else {
+            0
+        };
+        if *composite_pos + scale_len > composite_stream.len() {
+            return None;
+        }
+        out.extend_from_slice(&composite_stream[*composite_pos..*composite_pos + scale_len]);
+        *composite_pos += scale_len;
+
+        have_instructions |= (flags & 0x0100) != 0;
+        if (flags & 0x0020) == 0 {
+            break;
+        }
+    }
+
+    if have_instructions {
+        let instruction_len = read_255_u16(instruction_stream, instruction_pos)? as usize;
+        if *instruction_pos + instruction_len > instruction_stream.len() {
+            return None;
+        }
+        write_u16_be(out, instruction_len as u16);
+        out.extend_from_slice(&instruction_stream[*instruction_pos..*instruction_pos + instruction_len]);
+        *instruction_pos += instruction_len;
+    }
+    Some(bbox)
+}
+
+fn decode_triplet(flag: u8, data: &[u8], pos: &mut usize) -> Option<(i16, i16)> {
+    fn signed(value: i16, positive: bool) -> i16 {
+        if positive { value } else { -value }
+    }
+    fn signed_pair(x: i16, y: i16, code: u8) -> (i16, i16) {
+        match code & 3 {
+            0 => (-x, -y),
+            1 => (x, -y),
+            2 => (-x, y),
+            _ => (x, y),
+        }
+    }
+
+    match flag {
+        0..=9 => {
+            if *pos >= data.len() { return None; }
+            let b = data[*pos] as i16;
+            *pos += 1;
+            Some((0, signed(((flag / 2) as i16 * 256) + b, (flag & 1) != 0)))
+        }
+        10..=19 => {
+            if *pos >= data.len() { return None; }
+            let b = data[*pos] as i16;
+            *pos += 1;
+            Some((signed((((flag - 10) / 2) as i16 * 256) + b, (flag & 1) != 0), 0))
+        }
+        20..=83 => {
+            if *pos >= data.len() { return None; }
+            let b = data[*pos];
+            *pos += 1;
+            let index = flag - 20;
+            let dx = (((index >> 4) as i16) * 16) + ((b >> 4) as i16) + 1;
+            let dy = ((((index >> 2) & 3) as i16) * 16) + ((b & 0x0f) as i16) + 1;
+            Some(signed_pair(dx, dy, index))
+        }
+        84..=119 => {
+            if *pos + 2 > data.len() { return None; }
+            let b0 = data[*pos] as i16;
+            let b1 = data[*pos + 1] as i16;
+            *pos += 2;
+            let index = flag - 84;
+            let dx = (((index / 12) as i16) * 256) + b0 + 1;
+            let dy = ((((index / 4) % 3) as i16) * 256) + b1 + 1;
+            Some(signed_pair(dx, dy, index))
+        }
+        120..=123 => {
+            if *pos + 3 > data.len() { return None; }
+            let b0 = data[*pos] as i16;
+            let b1 = data[*pos + 1] as i16;
+            let b2 = data[*pos + 2] as i16;
+            *pos += 3;
+            let dx = (b0 << 4) | (b1 >> 4);
+            let dy = ((b1 & 0x0f) << 8) | b2;
+            Some(signed_pair(dx, dy, flag - 120))
+        }
+        124..=127 => {
+            if *pos + 4 > data.len() { return None; }
+            let dx = read_u16_be(data, *pos) as i16;
+            let dy = read_u16_be(data, *pos + 2) as i16;
+            *pos += 4;
+            Some(signed_pair(dx, dy, flag - 124))
+        }
+        _ => None,
+    }
+}
+
+fn compute_bbox(xs: &[i16], ys: &[i16]) -> (i16, i16, i16, i16) {
+    if xs.is_empty() || ys.is_empty() {
+        return (0, 0, 0, 0);
+    }
+    let mut x_min = xs[0];
+    let mut y_min = ys[0];
+    let mut x_max = xs[0];
+    let mut y_max = ys[0];
+    for (&x, &y) in xs.iter().zip(ys.iter()).skip(1) {
+        if x < x_min { x_min = x; }
+        if y < y_min { y_min = y; }
+        if x > x_max { x_max = x; }
+        if y > y_max { y_max = y; }
+    }
+    (x_min, y_min, x_max, y_max)
+}
+
+fn encode_ttf_points(on_curve_flags: &[u8], xs: &[i16], ys: &[i16]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let mut flags = Vec::with_capacity(on_curve_flags.len());
+    let mut x_bytes = Vec::new();
+    let mut y_bytes = Vec::new();
+    let mut prev_x = 0i16;
+    let mut prev_y = 0i16;
+
+    for ((&base_flag, &x), &y) in on_curve_flags.iter().zip(xs.iter()).zip(ys.iter()) {
+        let mut flag = base_flag & 0x01;
+        let dx = x.wrapping_sub(prev_x);
+        let dy = y.wrapping_sub(prev_y);
+
+        if dx == 0 {
+            flag |= 0x10;
+        } else if (1..=255).contains(&dx) {
+            flag |= 0x02 | 0x10;
+            x_bytes.push(dx as u8);
+        } else if (-255..=-1).contains(&dx) {
+            flag |= 0x02;
+            x_bytes.push((-dx) as u8);
+        } else {
+            write_i16_be(&mut x_bytes, dx);
+        }
+
+        if dy == 0 {
+            flag |= 0x20;
+        } else if (1..=255).contains(&dy) {
+            flag |= 0x04 | 0x20;
+            y_bytes.push(dy as u8);
+        } else if (-255..=-1).contains(&dy) {
+            flag |= 0x04;
+            y_bytes.push((-dy) as u8);
+        } else {
+            write_i16_be(&mut y_bytes, dy);
+        }
+
+        flags.push(flag);
+        prev_x = x;
+        prev_y = y;
+    }
+
+    (flags, x_bytes, y_bytes)
+}
+
+fn reconstruct_hmtx(
+    transformed: &[u8],
+    num_glyphs: usize,
+    num_h_metrics: usize,
+    x_mins: &[i16],
+) -> Option<Vec<u8>> {
+    if transformed.is_empty() || num_h_metrics == 0 || num_h_metrics > num_glyphs {
+        return None;
+    }
+    let flags = transformed[0];
+    if flags == 0 || (flags & 0xfc) != 0 {
+        return None;
+    }
+    let mut pos = 1usize;
+    let mut out = Vec::with_capacity(num_h_metrics * 4 + (num_glyphs - num_h_metrics) * 2);
+
+    let mut advances = Vec::with_capacity(num_h_metrics);
+    for _ in 0..num_h_metrics {
+        if pos + 2 > transformed.len() {
+            return None;
+        }
+        advances.push(read_u16_be(transformed, pos));
+        pos += 2;
+    }
+
+    let mut proportional_lsbs = Vec::with_capacity(num_h_metrics);
+    if (flags & 0x01) != 0 {
+        for glyph_id in 0..num_h_metrics {
+            proportional_lsbs.push(*x_mins.get(glyph_id).unwrap_or(&0));
+        }
+    } else {
+        for _ in 0..num_h_metrics {
+            if pos + 2 > transformed.len() {
+                return None;
+            }
+            proportional_lsbs.push(read_i16_be(transformed, pos));
+            pos += 2;
+        }
+    }
+
+    let mut mono_lsbs = Vec::with_capacity(num_glyphs - num_h_metrics);
+    if (flags & 0x02) != 0 {
+        for glyph_id in num_h_metrics..num_glyphs {
+            mono_lsbs.push(*x_mins.get(glyph_id).unwrap_or(&0));
+        }
+    } else {
+        for _ in num_h_metrics..num_glyphs {
+            if pos + 2 > transformed.len() {
+                return None;
+            }
+            mono_lsbs.push(read_i16_be(transformed, pos));
+            pos += 2;
+        }
+    }
+
+    for (&advance, &lsb) in advances.iter().zip(proportional_lsbs.iter()) {
+        write_u16_be(&mut out, advance);
+        write_i16_be(&mut out, lsb);
+    }
+    for &lsb in &mono_lsbs {
+        write_i16_be(&mut out, lsb);
+    }
+
+    Some(out)
 }
 
 fn build_empty_glyf_loca(num_glyphs: u32, loca_format: u16) -> (Vec<u8>, Vec<u8>) {
@@ -476,15 +871,12 @@ fn reconstruct_ttf(
     ttf.resize(dir_start + dir_size, 0);
 
     // Write table data and fill directory
-    let data_start = ttf.len();
-    let mut current_offset = data_start as u32;
-
     for (i, (table, data)) in tables.iter().zip(table_data.iter()).enumerate() {
         let dir_entry = dir_start + i * 16;
 
         // Align to 4-byte boundary
         while ttf.len() & 3 != 0 { ttf.push(0); }
-        current_offset = ttf.len() as u32;
+        let current_offset = ttf.len() as u32;
 
         // Write table data
         ttf.extend_from_slice(data);
@@ -493,14 +885,10 @@ fn reconstruct_ttf(
         let checksum = table_checksum(data);
 
         // Fill directory entry: tag(4) checksum(4) offset(4) length(4)
-        let orig_len = table.orig_length;
-        let actual_len = data.len() as u32;
-        let record_len = if orig_len > 0 { orig_len } else { actual_len };
-
         ttf[dir_entry..dir_entry + 4].copy_from_slice(&table.tag.to_be_bytes());
         ttf[dir_entry + 4..dir_entry + 8].copy_from_slice(&checksum.to_be_bytes());
         ttf[dir_entry + 8..dir_entry + 12].copy_from_slice(&current_offset.to_be_bytes());
-        ttf[dir_entry + 12..dir_entry + 16].copy_from_slice(&record_len.to_be_bytes());
+        ttf[dir_entry + 12..dir_entry + 16].copy_from_slice(&(data.len() as u32).to_be_bytes());
     }
 
     // Pad to 4-byte boundary

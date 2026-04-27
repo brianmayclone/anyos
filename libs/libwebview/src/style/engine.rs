@@ -7004,6 +7004,43 @@ mod layout_regression_tests {
     }
 
     #[test]
+    fn body_attribute_rule_custom_properties_inherit_to_children() {
+        let dom = crate::html::parse(
+            r#"
+            <body data-color-brand="bild">
+                <nav><span id="nav-text">STARTSEITE</span></nav>
+            </body>
+            "#,
+        );
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            body[data-color-brand=bild] {
+                --navi-font: Gotham XNarrow, Arial Narrow, sans-serif;
+            }
+            nav span { font-family: var(--navi-font); }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 700, &mut inline_style_cache);
+        let nav_text = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "nav-text")
+                )
+            })
+            .expect("nav text");
+
+        assert_eq!(
+            styles[nav_text].font_family.as_deref(),
+            Some("Gotham XNarrow, Arial Narrow, sans-serif")
+        );
+    }
+
+    #[test]
     fn tailwind_display_fallback_handles_missing_responsive_rules() {
         let dom = crate::html::parse(
             r#"<div id="mobile" class="flex md:hidden"></div><div id="desktop" class="hidden xl:inline"></div>"#,

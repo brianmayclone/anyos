@@ -249,6 +249,132 @@ fn parse_import_prelude(prelude: &str) -> Option<String> {
     None
 }
 
+fn split_font_src_candidates(raw: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0u32;
+    let mut quote = None::<u8>;
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                let part = raw[start..i].trim();
+                if !part.is_empty() {
+                    candidates.push(part);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let part = raw[start..].trim();
+    if !part.is_empty() {
+        candidates.push(part);
+    }
+    candidates
+}
+
+fn extract_font_src_url(raw: &str) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    let start = lower.find("url(")?;
+    let mut i = start + 4;
+    let bytes = raw.as_bytes();
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let quote = if i < bytes.len() && (bytes[i] == b'\'' || bytes[i] == b'"') {
+        let q = bytes[i];
+        i += 1;
+        Some(q)
+    } else {
+        None
+    };
+    let value_start = i;
+    while i < bytes.len() {
+        if let Some(q) = quote {
+            if bytes[i] == q {
+                break;
+            }
+        } else if bytes[i] == b')' || bytes[i].is_ascii_whitespace() {
+            break;
+        }
+        i += 1;
+    }
+    let url = raw[value_start..i].trim();
+    if url.is_empty() {
+        None
+    } else {
+        Some(String::from(url))
+    }
+}
+
+fn font_src_score(candidate: &str, url: &str) -> u8 {
+    let lower = candidate.to_ascii_lowercase();
+    let url_lower = url.to_ascii_lowercase();
+    let has_format = lower.contains("format(");
+    let is_woff2 = lower.contains("format('woff2')")
+        || lower.contains("format(\"woff2\")")
+        || lower.contains("format(woff2)")
+        || url_lower.ends_with(".woff2");
+    let is_truetype = lower.contains("format('truetype')")
+        || lower.contains("format(\"truetype\")")
+        || lower.contains("format(truetype)")
+        || lower.contains("format('opentype')")
+        || lower.contains("format(\"opentype\")")
+        || lower.contains("format(opentype)")
+        || url_lower.ends_with(".ttf")
+        || url_lower.ends_with(".otf");
+    let is_woff = lower.contains("format('woff')")
+        || lower.contains("format(\"woff\")")
+        || lower.contains("format(woff)")
+        || url_lower.ends_with(".woff");
+
+    if is_woff2 {
+        4
+    } else if is_truetype {
+        3
+    } else if !has_format && !is_woff {
+        2
+    } else if is_woff {
+        1
+    } else {
+        0
+    }
+}
+
+fn select_font_src_url(raw: &str) -> String {
+    let mut best_url = String::new();
+    let mut best_score = 0u8;
+    for candidate in split_font_src_candidates(raw) {
+        let Some(url) = extract_font_src_url(candidate) else {
+            continue;
+        };
+        let score = font_src_score(candidate, &url);
+        if best_url.is_empty() || score > best_score {
+            best_score = score;
+            best_url = url;
+        }
+    }
+    best_url
+}
+
 fn parse_font_face_block(block: &str) -> Option<FontFaceRule> {
     let mut family = String::new();
     let mut src_url = String::new();
@@ -268,28 +394,7 @@ fn parse_font_face_block(block: &str) -> Option<FontFaceRule> {
                     .into();
             }
             "src" => {
-                let mut best_url = String::new();
-                let mut best_is_woff2 = true;
-                for component in &decl.value.components {
-                    if let CssValueComponentAst::Function { name, args } = component {
-                        if !name.eq_ignore_ascii_case("url") || args.is_empty() {
-                            continue;
-                        }
-                        let url = args[0]
-                            .raw
-                            .trim()
-                            .trim_matches('"')
-                            .trim_matches('\'');
-                        let is_woff2 = decl.value.raw.contains("format('woff2')")
-                            || decl.value.raw.contains("format(\"woff2\")")
-                            || url.ends_with(".woff2");
-                        if best_url.is_empty() || (best_is_woff2 && !is_woff2) {
-                            best_url = String::from(url);
-                            best_is_woff2 = is_woff2;
-                        }
-                    }
-                }
-                src_url = best_url;
+                src_url = select_font_src_url(&decl.value.raw);
             }
             "font-weight" => {
                 weight = match decl.value.raw.trim() {

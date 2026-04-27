@@ -108,6 +108,8 @@ struct IncrementalRelayoutPlan {
 static mut WEB_FONT_MAP: *const Vec<(String, u32)> = core::ptr::null();
 const SYNTHETIC_AHEM_FONT_ID: u32 = u32::MAX - 1;
 const SYNTHETIC_CONDENSED_FONT_ID: u32 = u32::MAX - 2;
+const SYNTHETIC_NARROW_FONT_ID: u32 = u32::MAX - 3;
+const SYNTHETIC_EXTRA_CONDENSED_FONT_ID: u32 = u32::MAX - 4;
 
 fn font_family_contains_ahem(family: &str) -> bool {
     family
@@ -116,15 +118,29 @@ fn font_family_contains_ahem(family: &str) -> bool {
         .any(|part| part.trim().trim_matches('\'').trim_matches('"').trim() == "ahem")
 }
 
-fn font_family_requests_condensed(family: &str) -> bool {
-    family.to_ascii_lowercase().split(',').any(|part| {
+fn synthetic_condensed_font_for_family(family: &str) -> Option<u32> {
+    let lower = family.to_ascii_lowercase();
+    for part in lower.split(',') {
         let name = part.trim().trim_matches('\'').trim_matches('"').trim();
-        name.contains("condensed")
-            || name.contains("narrow")
+        if name.is_empty() {
+            continue;
+        }
+        if name.contains("extra-condensed")
+            || name.contains("extracondensed")
+            || name.contains("extracond")
             || name.contains("xnarrow")
             || name.contains("x-narrow")
-            || name == "sans-serif-condensed"
-    })
+        {
+            return Some(SYNTHETIC_EXTRA_CONDENSED_FONT_ID);
+        }
+        if name.contains("narrow") {
+            return Some(SYNTHETIC_NARROW_FONT_ID);
+        }
+        if name.contains("condensed") || name == "sans-serif-condensed" {
+            return Some(SYNTHETIC_CONDENSED_FONT_ID);
+        }
+    }
+    None
 }
 
 /// Look up a web font ID by family name (called from renderer/layout).
@@ -133,20 +149,11 @@ fn font_family_requests_condensed(family: &str) -> bool {
 /// Tries each name in order; returns the first registered match.
 pub fn lookup_web_font(family: &str) -> Option<u32> {
     unsafe {
-        if WEB_FONT_MAP.is_null() {
-            if font_family_contains_ahem(family) {
-                return Some(SYNTHETIC_AHEM_FONT_ID);
-            }
-            if font_family_requests_condensed(family) {
-                return Some(SYNTHETIC_CONDENSED_FONT_ID);
-            }
-            return None;
-        }
         if font_family_contains_ahem(family) {
             return Some(SYNTHETIC_AHEM_FONT_ID);
         }
-        if font_family_requests_condensed(family) {
-            return Some(SYNTHETIC_CONDENSED_FONT_ID);
+        if WEB_FONT_MAP.is_null() {
+            return synthetic_condensed_font_for_family(family);
         }
         let map = &*WEB_FONT_MAP;
         // Try the whole string first (fastest path for single-name entries).
@@ -171,8 +178,15 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
             {
                 return Some(id);
             }
+            // If a page asks for a narrow/condensed family that we could not
+            // load (for example unsupported WOFF/CFF data), synthesize that
+            // width before falling through to a later generic `sans-serif`.
+            // This keeps flex/intrinsic sizing close to the author's intent.
+            if let Some(id) = synthetic_condensed_font_for_family(name) {
+                return Some(id);
+            }
         }
-        None
+        synthetic_condensed_font_for_family(family)
     }
 }
 
@@ -195,14 +209,20 @@ pub fn is_ahem_font_id(font_id: u32) -> bool {
 }
 
 pub fn is_synthetic_condensed_font_id(font_id: u32) -> bool {
-    font_id == SYNTHETIC_CONDENSED_FONT_ID
+    matches!(
+        font_id,
+        SYNTHETIC_CONDENSED_FONT_ID
+            | SYNTHETIC_NARROW_FONT_ID
+            | SYNTHETIC_EXTRA_CONDENSED_FONT_ID
+    )
 }
 
 pub fn synthetic_font_width_scale_percent(font_id: u32) -> i32 {
-    if is_synthetic_condensed_font_id(font_id) {
-        76
-    } else {
-        100
+    match font_id {
+        SYNTHETIC_EXTRA_CONDENSED_FONT_ID => 62,
+        SYNTHETIC_NARROW_FONT_ID => 72,
+        SYNTHETIC_CONDENSED_FONT_ID => 76,
+        _ => 100,
     }
 }
 

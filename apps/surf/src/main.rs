@@ -1625,7 +1625,7 @@ fn handle_font_done(
         generation
     );
 
-    // Try loading the font data (supports TTF/OTF and WOFF2 via Brotli decompression).
+    // Try loading the font data (supports TTF/sfnt and WOFF2 TrueType outlines).
     if let Some(font_id) = libfont_client::load_data(&body) {
         st.tabs[tab_index]
             .webview

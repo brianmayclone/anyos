@@ -2132,6 +2132,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             id_attr,
             "app" | "main" | "superbannerWrapper" | "skyWrapper" | "billboardWrapper"
         );
+        let is_body = tag == Tag::Body;
         let is_main_nav_item = tag == Tag::Li
             && dom
                 .get(node_id)
@@ -2146,7 +2147,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         let is_interesting_class = class_attr
             .split_ascii_whitespace()
             .any(|class| INTERESTING_CLASSES.contains(&class));
-        if !is_interesting_id && !is_interesting_class && !is_main_nav_item {
+        if !is_body && !is_interesting_id && !is_interesting_class && !is_main_nav_item {
             continue;
         }
         let Some(style) = wv.resolved_style_ref(node_id) else {
@@ -2163,7 +2164,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             })
             .unwrap_or_else(String::new);
         eprintln!(
-            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} align_content={:?} width={:?} width_pct={:?} width_calc={:?} height={:?} height_pct={:?} height_calc={:?} min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) margin_auto=({},{},{},{}) padding=({},{},{},{}) grid_rows={} grid_cols={} border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
+            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) font_family={:?} flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} align_content={:?} width={:?} width_pct={:?} width_calc={:?} height={:?} height_pct={:?} height_calc={:?} min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) margin_auto=({},{},{},{}) padding=({},{},{},{}) grid_rows={} grid_cols={} border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
             node_id,
             tag.tag_name(),
             id_attr,
@@ -2174,6 +2175,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             visibility_name(style.visibility),
             style.overflow_x,
             style.overflow_y,
+            style.font_family,
             style.flex_grow,
             style.flex_shrink,
             style.flex_basis,
@@ -2429,9 +2431,13 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
 
     if std::env::var_os("SURF_DEBUG_WEBFONTS").is_some() {
         eprintln!(
-            "[surf-host] debug webfonts: Ahem={:?} ahem={:?}",
+            "[surf-host] debug webfonts: Ahem={:?} ahem={:?} Gotham={:?} GothamCond={:?} GothamXNarrow={:?} sans={:?}",
             wv.web_font_id("Ahem"),
-            wv.web_font_id("ahem")
+            wv.web_font_id("ahem"),
+            wv.web_font_id("Gotham"),
+            wv.web_font_id("Gotham Cond"),
+            wv.web_font_id("Gotham XNarrow"),
+            wv.web_font_id("sans-serif")
         );
     }
 
