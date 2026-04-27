@@ -12,7 +12,7 @@ fn expand_border_shorthand(value_str: &str) -> Vec<Declaration> {
         } else if lower == "currentcolor" {
             color_val = Some(CssValue::CurrentColor);
         } else if lower.starts_with("var(") {
-            color_val = Some(parse_var_value(part));
+            color_val = Some(parse_var_value(&Property::BorderColor, part));
         } else if let Some(c) = try_parse_color(part) {
             color_val = Some(CssValue::Color(c));
         } else if let Some(c) = named_color(&lower) {
@@ -67,7 +67,7 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
         return v;
     }
     if lower.starts_with("var(") {
-        let var_val = parse_var_value(s);
+        let var_val = parse_var_value(&Property::BackgroundColor, s);
         let mut v = Vec::new();
         v.push(Declaration { property: Property::BackgroundColor, value: var_val, important: false });
         return v;
@@ -82,7 +82,7 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
     for part in &parts {
         let pl = to_ascii_lower(part);
         if pl.starts_with("var(") {
-            found_var = Some(parse_var_value(part));
+            found_var = Some(parse_var_value(&Property::BackgroundColor, part));
             continue;
         }
         if pl.starts_with("url(")
@@ -204,7 +204,7 @@ fn expand_border_side_shorthand(value_str: &str, width_prop: Property, style_pro
         } else if lower == "currentcolor" {
             decls.push(Declaration { property: color_prop.clone(), value: CssValue::CurrentColor, important: false });
         } else if lower.starts_with("var(") {
-            decls.push(Declaration { property: color_prop.clone(), value: parse_var_value(part), important: false });
+            decls.push(Declaration { property: color_prop.clone(), value: parse_var_value(&color_prop, part), important: false });
         } else if let Some(c) = try_parse_color(part) {
             decls.push(Declaration { property: color_prop.clone(), value: CssValue::Color(c), important: false });
         } else if let Some(c) = named_color(&lower) {
