@@ -571,6 +571,13 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let arg5_64: u64 = regs.rdi;
 
     match syscall_num {
+        SYS_SBRK => {
+            // u64 ABI: brk address can live anywhere in the canonical-low
+            // half (including above 4 GiB once programs are upper-half).
+            let r = handlers::sys_sbrk_u64(arg1_64 as i64);
+            handlers::deliver_pending_signal_default();
+            return r;
+        }
         SYS_MMAP => {
             // SYS_MMAP now returns the full 64-bit virtual address; user
             // space uses libsyscall::mmap() which already plumbs u64.

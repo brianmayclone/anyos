@@ -101,7 +101,7 @@ pub fn init() {
     }
 
     let brk = crate::process::sbrk(0) as u64;
-    if brk == u32::MAX as u64 {
+    if brk == usize::MAX as u64 {
         return;
     }
     unsafe {
