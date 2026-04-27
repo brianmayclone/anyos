@@ -3,7 +3,9 @@
 //! Covers FD-based operations: read, write, open, close, lseek, fstat,
 //! isatty, ftruncate, and POSIX FD duplication (pipe2, dup, dup2, fcntl).
 
-use super::helpers::{copy_user_bytes, fs_err, is_valid_user_ptr, read_user_str_safe, resolve_path};
+use super::helpers::{
+    copy_user_bytes, fs_err, is_valid_user_ptr, read_user_str_safe, resolve_path,
+};
 use crate::fs::permissions::{check_permission, PERM_CREATE};
 
 const WRITE_COPY_CHUNK: usize = 64 * 1024;
@@ -131,15 +133,13 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
         Some(entry) => {
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
             match entry.kind {
-                FdKind::File { global_id } => {
-                    match crate::fs::vfs::read(global_id, buf) {
-                        Ok(n) => {
-                            crate::task::scheduler::record_io_read(n as u64);
-                            n as u32
-                        }
-                        Err(e) => fs_err(e),
+                FdKind::File { global_id } => match crate::fs::vfs::read(global_id, buf) {
+                    Ok(n) => {
+                        crate::task::scheduler::record_io_read(n as u64);
+                        n as u32
                     }
-                }
+                    Err(e) => fs_err(e),
+                },
                 FdKind::PipeRead { pipe_id } => {
                     if entry.flags.nonblock {
                         // O_NONBLOCK: return EAGAIN (-11 as u32) if pipe is empty and open
@@ -167,7 +167,9 @@ pub fn sys_read(fd: u32, buf_ptr: u64, len: u32) -> u32 {
             if fd == 0 {
                 let pipe = crate::task::scheduler::current_thread_stdin_pipe();
                 if pipe != 0 {
-                    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
+                    let buf = unsafe {
+                        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize)
+                    };
                     return crate::ipc::pipe::read(pipe, buf) as u32;
                 }
                 0 // no stdin pipe
@@ -199,14 +201,22 @@ pub fn sys_open(path_ptr: u64, flags: u32, _arg3: u32) -> u32 {
     // VFS permission check
     if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(&resolved) {
         use crate::fs::permissions::*;
-        let needed = if file_flags.write { PERM_READ | PERM_MODIFY } else { PERM_READ };
+        let needed = if file_flags.write {
+            PERM_READ | PERM_MODIFY
+        } else {
+            PERM_READ
+        };
         if !check_permission(uid, gid, mode, needed) {
             return u32::MAX;
         }
     } else if file_flags.create {
         // File doesn't exist, check create permission on parent
         if let Some(parent) = resolved.rfind('/') {
-            let parent_path = if parent == 0 { "/" } else { &resolved[..parent] };
+            let parent_path = if parent == 0 {
+                "/"
+            } else {
+                &resolved[..parent]
+            };
             if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(parent_path) {
                 if !check_permission(uid, gid, mode, PERM_CREATE) {
                     return u32::MAX;
@@ -236,7 +246,12 @@ pub fn sys_open(path_ptr: u64, flags: u32, _arg3: u32) -> u32 {
         crate::task::scheduler::current_fd_set_cloexec(local_fd, true);
     }
 
-    crate::debug_println!("  open({:?}) -> local_fd={} global_id={}", resolved, local_fd, global_id);
+    crate::debug_println!(
+        "  open({:?}) -> local_fd={} global_id={}",
+        resolved,
+        local_fd,
+        global_id
+    );
     local_fd
 }
 
@@ -302,7 +317,9 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
 /// arg1=fd, arg2=stat_buf_ptr: output [type:u32, size:u32, position:u32, mtime:u32] = 16 bytes
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_fstat(fd: u32, buf_ptr: u64) -> u32 {
-    if buf_ptr == 0 { return u32::MAX; }
+    if buf_ptr == 0 {
+        return u32::MAX;
+    }
 
     use crate::fs::fd_table::FdKind;
 
@@ -376,7 +393,11 @@ pub fn sys_isatty(fd: u32) -> u32 {
         },
         None => {
             // fd not in FD table: 0-2 are terminals (via legacy stdout/stdin pipe)
-            if fd <= 2 { 1 } else { 0 }
+            if fd <= 2 {
+                1
+            } else {
+                0
+            }
         }
     }
 }
@@ -460,7 +481,12 @@ pub fn sys_pipe2(pipefd_ptr: u64, flags: u32) -> u32 {
         *ptr.add(1) = write_fd;
     }
 
-    crate::debug_println!("sys_pipe2: pipe_id={}, read_fd={}, write_fd={}", pipe_id, read_fd, write_fd);
+    crate::debug_println!(
+        "sys_pipe2: pipe_id={}, read_fd={}, write_fd={}",
+        pipe_id,
+        read_fd,
+        write_fd
+    );
     0
 }
 
@@ -554,12 +580,16 @@ pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
 
             new_fd
         }
-        F_GETFD => {
-            match crate::task::scheduler::current_fd_get(fd) {
-                Some(e) => if e.flags.cloexec { FD_CLOEXEC } else { 0 },
-                None => u32::MAX,
+        F_GETFD => match crate::task::scheduler::current_fd_get(fd) {
+            Some(e) => {
+                if e.flags.cloexec {
+                    FD_CLOEXEC
+                } else {
+                    0
+                }
             }
-        }
+            None => u32::MAX,
+        },
         F_SETFD => {
             crate::task::scheduler::current_fd_set_cloexec(fd, (arg & FD_CLOEXEC) != 0);
             0
@@ -567,7 +597,13 @@ pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
         F_GETFL => {
             const O_NONBLOCK: u32 = 0x800;
             match crate::task::scheduler::current_fd_get(fd) {
-                Some(e) => if e.flags.nonblock { O_NONBLOCK } else { 0 },
+                Some(e) => {
+                    if e.flags.nonblock {
+                        O_NONBLOCK
+                    } else {
+                        0
+                    }
+                }
                 None => u32::MAX,
             }
         }

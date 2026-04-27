@@ -1,28 +1,28 @@
 //! Network stack coordinator.
 //! Provides global network configuration, packet polling, and sub-module access.
 
-pub mod types;
-pub mod checksum;
-pub mod ethernet;
 pub mod arp;
-pub mod ipv4;
-pub mod ipv6;
-pub mod icmp;
-pub mod icmpv6;
-pub mod ndp;
-pub mod udp;
+pub mod checksum;
 pub mod dhcp;
 pub mod dns;
-pub mod tcp;
+pub mod ethernet;
+pub mod icmp;
+pub mod icmpv6;
 pub mod interfaces;
+pub mod ipv4;
+pub mod ipv6;
+pub mod ndp;
+pub mod tcp;
 pub mod trace;
+pub mod types;
+pub mod udp;
 pub mod wifi;
 
+use crate::sync::spinlock::Spinlock;
 #[allow(unused_imports)]
 use alloc::vec::Vec;
-use types::{Ipv4Addr, Ipv6Addr, MacAddr, NetConfig};
-use crate::sync::spinlock::Spinlock;
 use core::sync::atomic::{AtomicU32, Ordering};
+use types::{Ipv4Addr, Ipv6Addr, MacAddr, NetConfig};
 
 /// Global network configuration protected by a spinlock.
 static NET_CONFIG: Spinlock<NetConfig> = Spinlock::new(NetConfig::new());
@@ -47,7 +47,11 @@ pub fn init() {
     udp::init();
     tcp::init();
 
-    crate::serial_verbose_println!("[OK] Network stack initialized (MAC={}, IPv6 LL={})", mac, link_local);
+    crate::serial_verbose_println!(
+        "[OK] Network stack initialized (MAC={}, IPv6 LL={})",
+        mac,
+        link_local
+    );
 }
 
 /// Get a snapshot of the current network config.

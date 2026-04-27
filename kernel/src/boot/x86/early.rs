@@ -23,7 +23,10 @@ pub(super) fn read_boot_info(boot_info_addr: u64) -> &'static BootInfo {
 
     let boot_mode = unsafe { core::ptr::addr_of!((*boot_info).boot_mode).read_unaligned() };
     set_boot_mode(boot_mode);
-    serial_println!("Boot mode: {}", if boot_mode == 1 { "UEFI" } else { "BIOS" });
+    serial_println!(
+        "Boot mode: {}",
+        if boot_mode == 1 { "UEFI" } else { "BIOS" }
+    );
 
     let kernel_phys_start =
         unsafe { core::ptr::addr_of!((*boot_info).kernel_phys_start).read_unaligned() };

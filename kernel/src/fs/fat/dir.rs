@@ -1,15 +1,16 @@
 //! FAT directory operations: reading, searching, creating, deleting, and updating entries.
 
+use super::bpb::{ATTR_ARCHIVE, ATTR_DIRECTORY, ATTR_LONG_NAME, ATTR_VOLUME_ID};
+use super::datetime::{current_dos_datetime, dos_datetime_to_unix};
+use super::lfn::{
+    lfn_checksum, lfn_extract_chars, lfn_name_matches, lfn_to_string, make_lfn_entries, needs_lfn,
+};
+use super::{FatFs, FatType};
 use crate::fs::file::{DirEntry, FileType};
 use crate::fs::vfs::FsError;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use super::{FatFs, FatType};
-use super::bpb::{ATTR_ARCHIVE, ATTR_DIRECTORY, ATTR_LONG_NAME, ATTR_VOLUME_ID};
-use super::datetime::{current_dos_datetime, dos_datetime_to_unix};
-use super::lfn::{lfn_checksum, lfn_extract_chars, lfn_name_matches, lfn_to_string,
-                  needs_lfn, make_lfn_entries};
 
 /// Information about a found directory entry.
 pub(super) struct FoundEntry {
@@ -43,7 +44,11 @@ impl FatFs {
             Ok(buf)
         } else {
             // Cluster chain (FAT32 root or any subdirectory)
-            let start = if cluster == 0 { self.root_cluster } else { cluster };
+            let start = if cluster == 0 {
+                self.root_cluster
+            } else {
+                cluster
+            };
             let cluster_size = self.sectors_per_cluster * 512;
             let mut result = Vec::new();
             let mut cur = start;
@@ -65,9 +70,15 @@ impl FatFs {
     // =================================================================
 
     pub(crate) fn parse_83_name(&self, raw: &[u8]) -> String {
-        let base_end = raw[0..8].iter().rposition(|&b| b != b' ').map_or(0, |p| p + 1);
+        let base_end = raw[0..8]
+            .iter()
+            .rposition(|&b| b != b' ')
+            .map_or(0, |p| p + 1);
         let base = core::str::from_utf8(&raw[..base_end]).unwrap_or("");
-        let ext_end = raw[8..11].iter().rposition(|&b| b != b' ').map_or(0, |p| p + 1);
+        let ext_end = raw[8..11]
+            .iter()
+            .rposition(|&b| b != b' ')
+            .map_or(0, |p| p + 1);
         let ext = core::str::from_utf8(&raw[8..8 + ext_end]).unwrap_or("");
         let mut name = String::new();
         for c in base.chars() {
@@ -303,13 +314,16 @@ impl FatFs {
             } else {
                 FileType::Regular
             };
-            let file_size = u32::from_le_bytes([buf[i + 28], buf[i + 29], buf[i + 30], buf[i + 31]]);
+            let file_size =
+                u32::from_le_bytes([buf[i + 28], buf[i + 29], buf[i + 30], buf[i + 31]]);
             entries.push(DirEntry {
                 name,
                 file_type,
                 size: file_size,
                 is_symlink: false,
-                uid: 0, gid: 0, mode: 0xFFF,
+                uid: 0,
+                gid: 0,
+                mode: 0xFFF,
             });
 
             i += 32;
@@ -345,7 +359,11 @@ impl FatFs {
             match self.find_entry_in_buf(&dir_data, component) {
                 Some(found) => {
                     if is_last {
-                        let ft = if found.is_dir { FileType::Directory } else { FileType::Regular };
+                        let ft = if found.is_dir {
+                            FileType::Directory
+                        } else {
+                            FileType::Regular
+                        };
                         return Ok((found.cluster, ft, found.size));
                     } else if !found.is_dir {
                         return Err(FsError::NotADirectory);
@@ -374,7 +392,11 @@ impl FatFs {
             match self.find_entry_in_buf(&dir_data, component) {
                 Some(found) => {
                     if is_last {
-                        let ft = if found.is_dir { FileType::Directory } else { FileType::Regular };
+                        let ft = if found.is_dir {
+                            FileType::Directory
+                        } else {
+                            FileType::Regular
+                        };
                         let mtime = dos_datetime_to_unix(found.write_date, found.write_time);
                         return Ok((found.cluster, ft, found.size, mtime));
                     } else if !found.is_dir {
@@ -406,7 +428,16 @@ impl FatFs {
         // Filter to valid 8.3 chars and uppercase
         let base_clean: Vec<u8> = base_str
             .bytes()
-            .filter(|&b| b != b' ' && b != b'.' && b != b'+' && b != b',' && b != b';' && b != b'=' && b != b'[' && b != b']')
+            .filter(|&b| {
+                b != b' '
+                    && b != b'.'
+                    && b != b'+'
+                    && b != b','
+                    && b != b';'
+                    && b != b'='
+                    && b != b'['
+                    && b != b']'
+            })
             .map(|b| b.to_ascii_uppercase())
             .collect();
 
@@ -472,12 +503,19 @@ impl FatFs {
     // Directory entry creation (LFN-aware)
     // =================================================================
 
-    pub(crate) fn fill_dir_entry(&self, entry: &mut [u8], name83: &[u8; 11], attr: u8, first_cluster: u32, size: u32) {
+    pub(crate) fn fill_dir_entry(
+        &self,
+        entry: &mut [u8],
+        name83: &[u8; 11],
+        attr: u8,
+        first_cluster: u32,
+        size: u32,
+    ) {
         let (date, time) = current_dos_datetime();
         entry[0..11].copy_from_slice(name83);
         entry[11] = attr;
-        entry[12] = 0;                   // reserved
-        entry[13] = 0;                   // create_time_tenth
+        entry[12] = 0; // reserved
+        entry[13] = 0; // create_time_tenth
         entry[14..16].copy_from_slice(&time.to_le_bytes()); // create_time
         entry[16..18].copy_from_slice(&date.to_le_bytes()); // create_date
         entry[18..20].copy_from_slice(&date.to_le_bytes()); // last_access_date
@@ -489,7 +527,14 @@ impl FatFs {
     }
 
     /// Create a new directory entry (with LFN entries if needed).
-    pub fn create_entry(&mut self, parent_cluster: u32, name: &str, attr: u8, first_cluster: u32, size: u32) -> Result<(), FsError> {
+    pub fn create_entry(
+        &mut self,
+        parent_cluster: u32,
+        name: &str,
+        attr: u8,
+        first_cluster: u32,
+        size: u32,
+    ) -> Result<(), FsError> {
         let use_lfn = needs_lfn(name);
         let name83 = if use_lfn {
             Self::generate_short_name(name)
@@ -509,15 +554,21 @@ impl FatFs {
             let mut buf = vec![0u8; root_size];
             self.read_sectors(self.first_root_dir_sector, self.root_dir_sectors, &mut buf)?;
 
-            let start_offset = Self::find_consecutive_free(&buf, total_slots)
-                .ok_or(FsError::NoSpace)?;
+            let start_offset =
+                Self::find_consecutive_free(&buf, total_slots).ok_or(FsError::NoSpace)?;
 
             for (idx, lfn_entry) in lfn_entries.iter().enumerate() {
                 let off = start_offset + idx * 32;
                 buf[off..off + 32].copy_from_slice(lfn_entry);
             }
             let entry_off = start_offset + lfn_entries.len() * 32;
-            self.fill_dir_entry(&mut buf[entry_off..entry_off + 32], &name83, attr, first_cluster, size);
+            self.fill_dir_entry(
+                &mut buf[entry_off..entry_off + 32],
+                &name83,
+                attr,
+                first_cluster,
+                size,
+            );
 
             let first_sector_idx = start_offset / 512;
             let last_sector_idx = (entry_off + 31) / 512;
@@ -532,7 +583,11 @@ impl FatFs {
             Ok(())
         } else {
             // Cluster chain (FAT32 root or any subdirectory)
-            let start = if parent_cluster == 0 { self.root_cluster } else { parent_cluster };
+            let start = if parent_cluster == 0 {
+                self.root_cluster
+            } else {
+                parent_cluster
+            };
             let cluster_size = (self.sectors_per_cluster * 512) as usize;
             let mut cur = start;
             loop {
@@ -545,7 +600,13 @@ impl FatFs {
                         cbuf[off..off + 32].copy_from_slice(lfn_entry);
                     }
                     let entry_off = start_offset + lfn_entries.len() * 32;
-                    self.fill_dir_entry(&mut cbuf[entry_off..entry_off + 32], &name83, attr, first_cluster, size);
+                    self.fill_dir_entry(
+                        &mut cbuf[entry_off..entry_off + 32],
+                        &name83,
+                        attr,
+                        first_cluster,
+                        size,
+                    );
                     self.write_cluster(cur, &cbuf)?;
                     return Ok(());
                 }
@@ -561,7 +622,13 @@ impl FatFs {
                             new_buf[off..off + 32].copy_from_slice(lfn_entry);
                         }
                         let entry_off = lfn_entries.len() * 32;
-                        self.fill_dir_entry(&mut new_buf[entry_off..entry_off + 32], &name83, attr, first_cluster, size);
+                        self.fill_dir_entry(
+                            &mut new_buf[entry_off..entry_off + 32],
+                            &name83,
+                            attr,
+                            first_cluster,
+                            size,
+                        );
                         self.write_cluster(new, &new_buf)?;
                         return Ok(());
                     }
@@ -596,7 +663,11 @@ impl FatFs {
                         j += 32;
                     }
                 }
-                let first_sec = if let Some(s) = found.lfn_start { s / 512 } else { found.offset / 512 };
+                let first_sec = if let Some(s) = found.lfn_start {
+                    s / 512
+                } else {
+                    found.offset / 512
+                };
                 let last_sec = found.offset / 512;
                 for sec in first_sec..=last_sec {
                     let sec_start = sec * 512;
@@ -611,7 +682,11 @@ impl FatFs {
             Err(FsError::NotFound)
         } else {
             // Cluster chain (FAT32 root or any subdirectory)
-            let start = if parent_cluster == 0 { self.root_cluster } else { parent_cluster };
+            let start = if parent_cluster == 0 {
+                self.root_cluster
+            } else {
+                parent_cluster
+            };
             let cluster_size = (self.sectors_per_cluster * 512) as usize;
             let mut cur = start;
             loop {
@@ -648,7 +723,13 @@ impl FatFs {
     // =================================================================
 
     /// Update the size, starting cluster, and modification time of an existing directory entry.
-    pub fn update_entry(&self, parent_cluster: u32, name: &str, new_size: u32, new_cluster: u32) -> Result<(), FsError> {
+    pub fn update_entry(
+        &self,
+        parent_cluster: u32,
+        name: &str,
+        new_size: u32,
+        new_cluster: u32,
+    ) -> Result<(), FsError> {
         let (date, time) = current_dos_datetime();
         if parent_cluster == 0 && self.fat_type != FatType::Fat32 {
             // FAT12/16: fixed root directory area
@@ -675,7 +756,11 @@ impl FatFs {
             Err(FsError::NotFound)
         } else {
             // Cluster chain (FAT32 root or any subdirectory)
-            let start = if parent_cluster == 0 { self.root_cluster } else { parent_cluster };
+            let start = if parent_cluster == 0 {
+                self.root_cluster
+            } else {
+                parent_cluster
+            };
             let cluster_size = (self.sectors_per_cluster * 512) as usize;
             let mut cur = start;
             loop {
@@ -687,7 +772,8 @@ impl FatFs {
                     cbuf[i + 22..i + 24].copy_from_slice(&time.to_le_bytes()); // write_time
                     cbuf[i + 24..i + 26].copy_from_slice(&date.to_le_bytes()); // write_date
                     cbuf[i + 26..i + 28].copy_from_slice(&(new_cluster as u16).to_le_bytes());
-                    cbuf[i + 20..i + 22].copy_from_slice(&((new_cluster >> 16) as u16).to_le_bytes());
+                    cbuf[i + 20..i + 22]
+                        .copy_from_slice(&((new_cluster >> 16) as u16).to_le_bytes());
                     cbuf[i + 28..i + 32].copy_from_slice(&new_size.to_le_bytes());
                     self.write_cluster(cur, &cbuf)?;
                     return Ok(());
@@ -728,7 +814,13 @@ impl FatFs {
         let dot_name: [u8; 11] = *b".          ";
         self.fill_dir_entry(&mut buf[0..32], &dot_name, ATTR_DIRECTORY, cluster, 0);
         let dotdot_name: [u8; 11] = *b"..         ";
-        self.fill_dir_entry(&mut buf[32..64], &dotdot_name, ATTR_DIRECTORY, parent_cluster, 0);
+        self.fill_dir_entry(
+            &mut buf[32..64],
+            &dotdot_name,
+            ATTR_DIRECTORY,
+            parent_cluster,
+            0,
+        );
         self.write_cluster(cluster, &buf)?;
 
         self.create_entry(parent_cluster, name, ATTR_DIRECTORY, cluster, 0)?;
@@ -745,10 +837,17 @@ impl FatFs {
     }
 
     /// Rename (move) a file: remove old dir entry (keeping clusters), create new entry.
-    pub fn rename_entry(&mut self, old_parent: u32, old_name: &str, new_parent: u32, new_name: &str) -> Result<(), FsError> {
+    pub fn rename_entry(
+        &mut self,
+        old_parent: u32,
+        old_name: &str,
+        new_parent: u32,
+        new_name: &str,
+    ) -> Result<(), FsError> {
         // Look up old entry to get cluster and size
         let dir_data = self.read_dir_raw(old_parent)?;
-        let found = self.find_entry_in_buf(&dir_data, old_name)
+        let found = self
+            .find_entry_in_buf(&dir_data, old_name)
             .ok_or(FsError::NotFound)?;
         let cluster = found.cluster;
         let size = found.size;
@@ -764,7 +863,8 @@ impl FatFs {
     /// Truncate a file to zero length: free its cluster chain and update the directory entry.
     pub fn truncate_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let dir_data = self.read_dir_raw(parent_cluster)?;
-        let found = self.find_entry_in_buf(&dir_data, name)
+        let found = self
+            .find_entry_in_buf(&dir_data, name)
             .ok_or(FsError::NotFound)?;
 
         if found.cluster >= 2 {

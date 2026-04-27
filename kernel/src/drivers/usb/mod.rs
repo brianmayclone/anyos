@@ -4,16 +4,16 @@
 //! and xHCI (USB 3.x/2.0/1.x, MMIO based).
 //! Class drivers: HID, Mass Storage, Hub, CDC-ACM (serial), CDC-ECM (Ethernet).
 
-pub mod uhci;
-pub mod ehci;
-pub mod xhci;
 pub mod audio;
-pub mod hid;
-pub mod digitizer;
-pub mod storage;
-pub mod hub;
 pub mod cdc_acm;
 pub mod cdc_ecm;
+pub mod digitizer;
+pub mod ehci;
+pub mod hid;
+pub mod hub;
+pub mod storage;
+pub mod uhci;
+pub mod xhci;
 
 use crate::drivers::pci::PciDevice;
 use crate::sync::spinlock::Spinlock;
@@ -83,22 +83,33 @@ static NEXT_ADDRESS: Spinlock<u8> = Spinlock::new(1);
 pub fn alloc_address() -> u8 {
     let mut addr = NEXT_ADDRESS.lock();
     let a = *addr;
-    if a < 127 { *addr = a + 1; }
+    if a < 127 {
+        *addr = a + 1;
+    }
     a
 }
 
 pub fn register_device(dev: UsbDevice) {
     crate::serial_verbose_println!(
         "  USB: device {} — {:04x}:{:04x} class={:02x}:{:02x} proto={:02x} ({}) [{}]",
-        dev.address, dev.vendor_id, dev.product_id,
-        dev.class, dev.subclass, dev.protocol,
-        class_name(dev.class), speed_name(dev.speed),
+        dev.address,
+        dev.vendor_id,
+        dev.product_id,
+        dev.class,
+        dev.subclass,
+        dev.protocol,
+        class_name(dev.class),
+        speed_name(dev.speed),
     );
     for iface in &dev.interfaces {
         crate::serial_verbose_println!(
             "    Interface {}: class={:02x}:{:02x} proto={:02x} ({}) endpoints={}",
-            iface.number, iface.class, iface.subclass, iface.protocol,
-            class_name(iface.class), iface.endpoints.len(),
+            iface.number,
+            iface.class,
+            iface.subclass,
+            iface.protocol,
+            class_name(iface.class),
+            iface.endpoints.len(),
         );
     }
 
@@ -129,11 +140,17 @@ pub fn devices() -> Vec<UsbDevice> {
 /// Remove a device by port and controller type (for hot-unplug).
 pub fn remove_device(port: u8, controller: ControllerType) {
     let mut devs = USB_DEVICES.lock();
-    if let Some(pos) = devs.iter().position(|d| d.port == port && d.controller == controller) {
+    if let Some(pos) = devs
+        .iter()
+        .position(|d| d.port == port && d.controller == controller)
+    {
         let dev = devs.remove(pos);
         crate::serial_verbose_println!(
             "  USB: removed device {} (port {}, {:04x}:{:04x})",
-            dev.address, port, dev.vendor_id, dev.product_id,
+            dev.address,
+            port,
+            dev.vendor_id,
+            dev.product_id,
         );
     }
 }
@@ -184,8 +201,12 @@ pub fn hid_control_transfer(
 ) -> Result<Vec<u8>, &'static str> {
     match controller {
         ControllerType::Uhci => uhci::hid_control_transfer(addr, setup, data_in, data_len),
-        ControllerType::Ehci => ehci::hid_control_transfer(addr, speed, max_packet, setup, data_in, data_len),
-        ControllerType::Xhci => xhci::hid_control_transfer(addr, speed, max_packet, setup, data_in, data_len),
+        ControllerType::Ehci => {
+            ehci::hid_control_transfer(addr, speed, max_packet, setup, data_in, data_len)
+        }
+        ControllerType::Xhci => {
+            xhci::hid_control_transfer(addr, speed, max_packet, setup, data_in, data_len)
+        }
     }
 }
 
@@ -205,9 +226,9 @@ pub fn bulk_transfer(
     len: usize,
 ) -> Result<usize, &'static str> {
     match controller {
-        ControllerType::Uhci => uhci::bulk_transfer(
-            dev_addr, endpoint, max_packet, toggle, data_phys, len,
-        ),
+        ControllerType::Uhci => {
+            uhci::bulk_transfer(dev_addr, endpoint, max_packet, toggle, data_phys, len)
+        }
         ControllerType::Ehci => ehci::bulk_transfer(
             dev_addr, speed, endpoint, max_packet, toggle, data_phys, len,
         ),
@@ -230,9 +251,9 @@ pub fn interrupt_in_transfer(
     buf: &mut [u8],
 ) -> Result<usize, &'static str> {
     match controller {
-        ControllerType::Uhci => uhci::interrupt_in_transfer(
-            dev_addr, speed, endpoint, max_packet, toggle, buf,
-        ),
+        ControllerType::Uhci => {
+            uhci::interrupt_in_transfer(dev_addr, speed, endpoint, max_packet, toggle, buf)
+        }
         // EHCI/xHCI: fall back to no-data for now (not yet implemented)
         _ => Ok(0),
     }
@@ -258,9 +279,9 @@ fn class_name(class: u8) -> &'static str {
 
 fn speed_name(speed: UsbSpeed) -> &'static str {
     match speed {
-        UsbSpeed::Low   => "Low-Speed",
-        UsbSpeed::Full  => "Full-Speed",
-        UsbSpeed::High  => "High-Speed",
+        UsbSpeed::Low => "Low-Speed",
+        UsbSpeed::Full => "Full-Speed",
+        UsbSpeed::High => "High-Speed",
         UsbSpeed::Super => "SuperSpeed",
     }
 }
@@ -442,7 +463,15 @@ pub fn get_string_descriptor(
         w_index: 0x0409,
         w_length: total_len,
     };
-    let data = hid_control_transfer(addr, controller, speed, max_packet, &setup_full, true, total_len)?;
+    let data = hid_control_transfer(
+        addr,
+        controller,
+        speed,
+        max_packet,
+        &setup_full,
+        true,
+        total_len,
+    )?;
     if data.len() < 2 {
         return Err("string descriptor read failed");
     }
@@ -462,17 +491,23 @@ pub fn get_string_descriptor(
 
 // ── HAL integration ─────────────────────────────────────────────────────────
 
+use crate::drivers::hal::{Driver, DriverError, DriverType};
 use alloc::boxed::Box;
-use crate::drivers::hal::{Driver, DriverType, DriverError};
 
 struct UsbHalDriver {
     name: &'static str,
 }
 
 impl Driver for UsbHalDriver {
-    fn name(&self) -> &str { self.name }
-    fn driver_type(&self) -> DriverType { DriverType::Bus }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Bus
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
@@ -491,7 +526,7 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
         0x10 => "OHCI USB Controller",
         0x20 => "EHCI USB Controller",
         0x30 => "xHCI USB Controller",
-        _    => "USB Controller",
+        _ => "USB Controller",
     };
     init(pci);
     Some(Box::new(UsbHalDriver { name }))
@@ -499,7 +534,9 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
 
 /// Create a HAL driver for SMBus controller.
 pub fn smbus_probe(_pci: &PciDevice) -> Option<Box<dyn Driver>> {
-    Some(Box::new(UsbHalDriver { name: "SMBus Controller" }))
+    Some(Box::new(UsbHalDriver {
+        name: "SMBus Controller",
+    }))
 }
 
 // ── Init entry point ─────────────────────────────
@@ -516,14 +553,19 @@ pub fn init(pci: &PciDevice) {
             ehci::init_controller(pci);
         }
         0x10 => {
-            crate::serial_verbose_println!("  USB: OHCI controller detected (prog_if=0x10) — not supported");
+            crate::serial_verbose_println!(
+                "  USB: OHCI controller detected (prog_if=0x10) — not supported"
+            );
         }
         0x30 => {
             crate::serial_verbose_println!("  USB: xHCI controller detected (prog_if=0x30)");
             xhci::init_controller(pci);
         }
         _ => {
-            crate::serial_verbose_println!("  USB: unknown controller type (prog_if={:#04x})", pci.prog_if);
+            crate::serial_verbose_println!(
+                "  USB: unknown controller type (prog_if={:#04x})",
+                pci.prog_if
+            );
         }
     }
 }

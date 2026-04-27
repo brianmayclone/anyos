@@ -13,65 +13,65 @@
 //! - Extended registers at higher offsets
 //! - Slightly different reset sequence
 
-use alloc::boxed::Box;
-use alloc::vec;
-use alloc::vec::Vec;
-use alloc::collections::VecDeque;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::{physical, virtual_mem};
 use crate::sync::spinlock::Spinlock;
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::vec;
+use alloc::vec::Vec;
 
 // ── Register Offsets (E1000-compatible) ─────────────────────────────────────
 
-const REG_CTRL: u32     = 0x0000;
-const REG_STATUS: u32   = 0x0008;
-const REG_EERD: u32     = 0x0012;
-const REG_ICR: u32      = 0x00C0;
-const REG_IMS: u32      = 0x00D0;
-const REG_IMC: u32      = 0x00D8;
-const REG_RCTL: u32     = 0x0100;
-const REG_TCTL: u32     = 0x0400;
-const REG_TIPG: u32     = 0x0410;
-const REG_RDBAL: u32    = 0x2800;
-const REG_RDBAH: u32    = 0x2804;
-const REG_RDLEN: u32    = 0x2808;
-const REG_RDH: u32      = 0x2810;
-const REG_RDT: u32      = 0x2818;
-const REG_RDTR: u32     = 0x2820;
-const REG_TDBAL: u32    = 0x3800;
-const REG_TDBAH: u32    = 0x3804;
-const REG_TDLEN: u32    = 0x3808;
-const REG_TDH: u32      = 0x3810;
-const REG_TDT: u32      = 0x3818;
-const REG_RAL0: u32     = 0x5400;
-const REG_RAH0: u32     = 0x5404;
-const REG_MTA: u32      = 0x5200;
+const REG_CTRL: u32 = 0x0000;
+const REG_STATUS: u32 = 0x0008;
+const REG_EERD: u32 = 0x0012;
+const REG_ICR: u32 = 0x00C0;
+const REG_IMS: u32 = 0x00D0;
+const REG_IMC: u32 = 0x00D8;
+const REG_RCTL: u32 = 0x0100;
+const REG_TCTL: u32 = 0x0400;
+const REG_TIPG: u32 = 0x0410;
+const REG_RDBAL: u32 = 0x2800;
+const REG_RDBAH: u32 = 0x2804;
+const REG_RDLEN: u32 = 0x2808;
+const REG_RDH: u32 = 0x2810;
+const REG_RDT: u32 = 0x2818;
+const REG_RDTR: u32 = 0x2820;
+const REG_TDBAL: u32 = 0x3800;
+const REG_TDBAH: u32 = 0x3804;
+const REG_TDLEN: u32 = 0x3808;
+const REG_TDH: u32 = 0x3810;
+const REG_TDT: u32 = 0x3818;
+const REG_RAL0: u32 = 0x5400;
+const REG_RAH0: u32 = 0x5404;
+const REG_MTA: u32 = 0x5200;
 
 // Control register bits
-const CTRL_SLU: u32     = 1 << 6;   // Set Link Up
-const CTRL_RST: u32     = 1 << 26;  // Device Reset
-const CTRL_PHY_RST: u32 = 1 << 31;  // PHY Reset
+const CTRL_SLU: u32 = 1 << 6; // Set Link Up
+const CTRL_RST: u32 = 1 << 26; // Device Reset
+const CTRL_PHY_RST: u32 = 1 << 31; // PHY Reset
 
 // RX Control bits
-const RCTL_EN: u32      = 1 << 1;   // Receiver Enable
-const RCTL_BAM: u32     = 1 << 15;  // Broadcast Accept Mode
-const RCTL_BSIZE_2048: u32 = 0;     // Buffer Size 2048 bytes
-const RCTL_SECRC: u32   = 1 << 26;  // Strip Ethernet CRC
+const RCTL_EN: u32 = 1 << 1; // Receiver Enable
+const RCTL_BAM: u32 = 1 << 15; // Broadcast Accept Mode
+const RCTL_BSIZE_2048: u32 = 0; // Buffer Size 2048 bytes
+const RCTL_SECRC: u32 = 1 << 26; // Strip Ethernet CRC
 
 // TX Control bits
-const TCTL_EN: u32      = 1 << 1;   // Transmitter Enable
-const TCTL_PSP: u32     = 1 << 3;   // Pad Short Packets
+const TCTL_EN: u32 = 1 << 1; // Transmitter Enable
+const TCTL_PSP: u32 = 1 << 3; // Pad Short Packets
 
 // Interrupt Cause bits
-const ICR_TXDW: u32     = 1 << 0;
-const ICR_LSC: u32      = 1 << 2;
-const ICR_RXT0: u32     = 1 << 7;
+const ICR_TXDW: u32 = 1 << 0;
+const ICR_LSC: u32 = 1 << 2;
+const ICR_RXT0: u32 = 1 << 7;
 
 // TX Descriptor command bits
-const TDESC_CMD_EOP: u8  = 1 << 0;
+const TDESC_CMD_EOP: u8 = 1 << 0;
 const TDESC_CMD_IFCS: u8 = 1 << 1;
-const TDESC_CMD_RS: u8   = 1 << 3;
+const TDESC_CMD_RS: u8 = 1 << 3;
 
 // ── Descriptors ─────────────────────────────────────────────────────────────
 
@@ -138,7 +138,9 @@ unsafe fn wr(base: u64, reg: u32, val: u32) {
 
 pub fn init_and_register(pci: &PciDevice) -> bool {
     let bar0 = (pci.bars[0] & !0xF) as u64;
-    if bar0 == 0 { return false; }
+    if bar0 == 0 {
+        return false;
+    }
 
     // Enable bus mastering + memory space
     let cmd = crate::drivers::pci::pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
@@ -155,7 +157,9 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
     unsafe {
         // Device reset
         wr(mmio, REG_CTRL, rd(mmio, REG_CTRL) | CTRL_RST);
-        for _ in 0..100_000 { core::hint::spin_loop(); }
+        for _ in 0..100_000 {
+            core::hint::spin_loop();
+        }
         // Set link up
         wr(mmio, REG_CTRL, rd(mmio, REG_CTRL) | CTRL_SLU);
 
@@ -167,9 +171,12 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
         let ral = rd(mmio, REG_RAL0);
         let rah = rd(mmio, REG_RAH0);
         let mac = [
-            (ral & 0xFF) as u8, ((ral >> 8) & 0xFF) as u8,
-            ((ral >> 16) & 0xFF) as u8, ((ral >> 24) & 0xFF) as u8,
-            (rah & 0xFF) as u8, ((rah >> 8) & 0xFF) as u8,
+            (ral & 0xFF) as u8,
+            ((ral >> 8) & 0xFF) as u8,
+            ((ral >> 16) & 0xFF) as u8,
+            ((ral >> 24) & 0xFF) as u8,
+            (rah & 0xFF) as u8,
+            ((rah >> 8) & 0xFF) as u8,
         ];
 
         // If MAC is all zeros/FF, try reading from EEPROM
@@ -179,11 +186,20 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
             mac
         };
 
-        crate::serial_println!("  IGC: MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        crate::serial_println!(
+            "  IGC: MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
+        );
 
         // Clear MTA
-        for i in 0..128u32 { wr(mmio, REG_MTA + i * 4, 0); }
+        for i in 0..128u32 {
+            wr(mmio, REG_MTA + i * 4, 0);
+        }
 
         // Allocate RX ring
         let rx_frame = physical::alloc_frame().expect("IGC: RX ring");
@@ -233,7 +249,11 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
         wr(mmio, REG_TIPG, 10 | (8 << 10) | (6 << 20));
 
         // Enable RX
-        wr(mmio, REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC);
+        wr(
+            mmio,
+            REG_RCTL,
+            RCTL_EN | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC,
+        );
 
         // Enable TX
         wr(mmio, REG_TCTL, TCTL_EN | TCTL_PSP | (15 << 4) | (64 << 12));
@@ -244,13 +264,21 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
 
         // Store state
         *IGC_STATE.lock() = Some(IgcState {
-            mmio, mac,
-            rx_descs_phys: rx_phys, rx_descs_virt: rx_phys,
-            rx_bufs_phys: rx_bufs, rx_tail: 0,
-            tx_descs_phys: tx_phys, tx_descs_virt: tx_phys,
-            tx_bufs_phys, tx_bufs_virt, tx_tail: 0,
-            rx_queue: VecDeque::new(), irq,
-            rx_packets: 0, tx_packets: 0,
+            mmio,
+            mac,
+            rx_descs_phys: rx_phys,
+            rx_descs_virt: rx_phys,
+            rx_bufs_phys: rx_bufs,
+            rx_tail: 0,
+            tx_descs_phys: tx_phys,
+            tx_descs_virt: tx_phys,
+            tx_bufs_phys,
+            tx_bufs_virt,
+            tx_tail: 0,
+            rx_queue: VecDeque::new(),
+            irq,
+            rx_packets: 0,
+            tx_packets: 0,
         });
 
         // Register IRQ
@@ -290,12 +318,19 @@ unsafe fn read_mac_eeprom(mmio: u64) -> [u8; 6] {
 // ── TX / RX ─────────────────────────────────────────────────────────────────
 
 fn transmit(data: &[u8]) -> bool {
-    if data.is_empty() || data.len() > 1536 { return false; }
+    if data.is_empty() || data.len() > 1536 {
+        return false;
+    }
     let mut guard = IGC_STATE.lock();
-    let igc = match guard.as_mut() { Some(s) => s, None => return false };
+    let igc = match guard.as_mut() {
+        Some(s) => s,
+        None => return false,
+    };
     let idx = igc.tx_tail as usize;
     let desc = unsafe { &mut *((igc.tx_descs_virt + (idx * 16) as u64) as *mut TxDesc) };
-    if desc.status & 1 == 0 { return false; } // DD not set — busy
+    if desc.status & 1 == 0 {
+        return false;
+    } // DD not set — busy
     unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), igc.tx_bufs_virt[idx] as *mut u8, data.len());
     }
@@ -304,7 +339,9 @@ fn transmit(data: &[u8]) -> bool {
     desc.status = 0;
     igc.tx_tail = ((idx + 1) % NUM_TX_DESC) as u16;
     igc.tx_packets += 1;
-    unsafe { wr(igc.mmio, REG_TDT, igc.tx_tail as u32); }
+    unsafe {
+        wr(igc.mmio, REG_TDT, igc.tx_tail as u32);
+    }
     true
 }
 
@@ -312,20 +349,31 @@ fn process_rx(igc: &mut IgcState) {
     loop {
         let idx = ((igc.rx_tail + 1) % NUM_RX_DESC as u16) as usize;
         let desc = unsafe { &mut *((igc.rx_descs_virt + (idx * 16) as u64) as *mut RxDesc) };
-        if desc.status & 1 == 0 { break; } // DD not set
+        if desc.status & 1 == 0 {
+            break;
+        } // DD not set
         let len = desc.length as usize;
-        if len > 0 && len <= RX_BUF_SIZE && desc.status & 2 != 0 { // EOP
+        if len > 0 && len <= RX_BUF_SIZE && desc.status & 2 != 0 {
+            // EOP
             let mut pkt = vec![0u8; len];
             unsafe {
-                core::ptr::copy_nonoverlapping(igc.rx_bufs_phys[idx] as *const u8, pkt.as_mut_ptr(), len);
+                core::ptr::copy_nonoverlapping(
+                    igc.rx_bufs_phys[idx] as *const u8,
+                    pkt.as_mut_ptr(),
+                    len,
+                );
             }
-            if igc.rx_queue.len() < 1024 { igc.rx_queue.push_back(pkt); }
+            if igc.rx_queue.len() < 1024 {
+                igc.rx_queue.push_back(pkt);
+            }
             igc.rx_packets += 1;
         }
         desc.status = 0;
         igc.rx_tail = idx as u16;
     }
-    unsafe { wr(igc.mmio, REG_RDT, igc.rx_tail as u32); }
+    unsafe {
+        wr(igc.mmio, REG_RDT, igc.rx_tail as u32);
+    }
 }
 
 pub fn recv_packet() -> Option<Vec<u8>> {
@@ -336,7 +384,9 @@ fn igc_irq_handler(_irq: u8) {
     if let Some(mut guard) = IGC_STATE.try_lock() {
         if let Some(igc) = guard.as_mut() {
             let icr = unsafe { rd(igc.mmio, REG_ICR) };
-            if icr & ICR_RXT0 != 0 { process_rx(igc); }
+            if icr & ICR_RXT0 != 0 {
+                process_rx(igc);
+            }
         }
     }
     while let Some(pkt) = recv_packet() {
@@ -348,11 +398,21 @@ fn igc_irq_handler(_irq: u8) {
 
 struct IgcDriver;
 impl super::NetworkDriver for IgcDriver {
-    fn name(&self) -> &str { "Intel I225" }
-    fn transmit(&mut self, data: &[u8]) -> bool { transmit(data) }
-    fn get_mac(&self) -> [u8; 6] { IGC_STATE.lock().as_ref().map(|s| s.mac).unwrap_or([0; 6]) }
+    fn name(&self) -> &str {
+        "Intel I225"
+    }
+    fn transmit(&mut self, data: &[u8]) -> bool {
+        transmit(data)
+    }
+    fn get_mac(&self) -> [u8; 6] {
+        IGC_STATE.lock().as_ref().map(|s| s.mac).unwrap_or([0; 6])
+    }
     fn link_up(&self) -> bool {
-        IGC_STATE.lock().as_ref().map(|s| unsafe { rd(s.mmio, REG_STATUS) & 2 != 0 }).unwrap_or(false)
+        IGC_STATE
+            .lock()
+            .as_ref()
+            .map(|s| unsafe { rd(s.mmio, REG_STATUS) & 2 != 0 })
+            .unwrap_or(false)
     }
 }
 

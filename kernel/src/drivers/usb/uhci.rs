@@ -4,11 +4,11 @@
 //! Frame list (1024 entries) provides 1ms scheduling granularity.
 //! QH/TD structures in identity-mapped DMA memory.
 
-use crate::arch::x86::pit::delay_ms;
-use crate::arch::x86::port::{inw, outw, inl, outl};
-use crate::drivers::pci::{PciDevice, pci_config_read32, pci_config_write32};
-use crate::memory::physical;
 use super::*;
+use crate::arch::x86::pit::delay_ms;
+use crate::arch::x86::port::{inl, inw, outl, outw};
+use crate::drivers::pci::{pci_config_read32, pci_config_write32, PciDevice};
+use crate::memory::physical;
 
 // ── UHCI I/O Registers (offsets from BAR4) ───────
 
@@ -32,12 +32,12 @@ const STS_INT: u16 = 1 << 0;
 const STS_ERR_INT: u16 = 1 << 1;
 
 // PORTSC bits
-const PORT_CCS: u16 = 1 << 0;   // Current Connect Status
-const PORT_CSC: u16 = 1 << 1;   // Connect Status Change
-const PORT_PE: u16 = 1 << 2;    // Port Enabled
-const PORT_PEC: u16 = 1 << 3;   // Port Enable Change
-const PORT_PR: u16 = 1 << 9;    // Port Reset
-const PORT_LSDA: u16 = 1 << 8;  // Low-Speed Device Attached
+const PORT_CCS: u16 = 1 << 0; // Current Connect Status
+const PORT_CSC: u16 = 1 << 1; // Connect Status Change
+const PORT_PE: u16 = 1 << 2; // Port Enabled
+const PORT_PEC: u16 = 1 << 3; // Port Enable Change
+const PORT_PR: u16 = 1 << 9; // Port Reset
+const PORT_LSDA: u16 = 1 << 8; // Low-Speed Device Attached
 
 // TD ctrl_status bits
 const TD_ACTIVE: u32 = 1 << 23;
@@ -104,7 +104,11 @@ fn reg_write32(base: u16, offset: u16, val: u32) {
 // ── Token Builder ───────────────────────────────
 
 fn make_token(pid: u8, dev_addr: u8, endpoint: u8, toggle: u8, max_len: u16) -> u32 {
-    let max_len_field = if max_len == 0 { 0x7FF } else { (max_len - 1) as u32 & 0x7FF };
+    let max_len_field = if max_len == 0 {
+        0x7FF
+    } else {
+        (max_len - 1) as u32 & 0x7FF
+    };
     (max_len_field << 21)
         | ((toggle as u32 & 1) << 19)
         | ((endpoint as u32 & 0xF) << 15)
@@ -180,7 +184,9 @@ fn control_transfer(
             let td = this_td as *mut UhciTd;
             (*td).link_ptr = next as u32 | LP_DEPTH;
             (*td).ctrl_status = TD_ACTIVE | (3 << 27);
-            if data_in { (*td).ctrl_status |= TD_SPD; }
+            if data_in {
+                (*td).ctrl_status |= TD_SPD;
+            }
             (*td).token = make_token(pid, dev_addr, 0, toggle, chunk);
             (*td).buffer_ptr = (data_phys + offset as u64) as u32;
         }
@@ -289,7 +295,9 @@ fn bulk_transfer_inner(
     data_phys: u64,
     len: usize,
 ) -> Result<usize, &'static str> {
-    if len == 0 { return Ok(0); }
+    if len == 0 {
+        return Ok(0);
+    }
     let max_pkt = (max_packet as usize).max(1);
 
     let td_base = ctrl.td_pool_phys;
@@ -323,8 +331,12 @@ fn bulk_transfer_inner(
         };
 
         let mut status = TD_ACTIVE | (3 << 27); // 3 error retries
-        if is_in { status |= TD_SPD; } // short packet detect for IN
-        if i + 1 == num_tds { status |= TD_IOC; } // interrupt on last TD
+        if is_in {
+            status |= TD_SPD;
+        } // short packet detect for IN
+        if i + 1 == num_tds {
+            status |= TD_IOC;
+        } // interrupt on last TD
 
         unsafe {
             let td = this_td as *mut UhciTd;
@@ -448,7 +460,11 @@ fn enumerate_device(ctrl: &UhciController, port: u8, speed: UsbSpeed) {
             return;
         }
         Err(e) => {
-            crate::serial_verbose_println!("  UHCI: port {} — GET_DESCRIPTOR(8) failed: {}", port, e);
+            crate::serial_verbose_println!(
+                "  UHCI: port {} — GET_DESCRIPTOR(8) failed: {}",
+                port,
+                e
+            );
             return;
         }
     }
@@ -489,17 +505,26 @@ fn enumerate_device(ctrl: &UhciController, port: u8, speed: UsbSpeed) {
     match control_transfer(ctrl, new_addr, &setup_full, true, 18) {
         Ok(n) if n >= 18 => {}
         Ok(n) => {
-            crate::serial_verbose_println!("  UHCI: device {} — short descriptor ({} bytes)", new_addr, n);
+            crate::serial_verbose_println!(
+                "  UHCI: device {} — short descriptor ({} bytes)",
+                new_addr,
+                n
+            );
             return;
         }
         Err(e) => {
-            crate::serial_verbose_println!("  UHCI: device {} — GET_DESCRIPTOR(18) failed: {}", new_addr, e);
+            crate::serial_verbose_println!(
+                "  UHCI: device {} — GET_DESCRIPTOR(18) failed: {}",
+                new_addr,
+                e
+            );
             return;
         }
     }
 
     read_transfer_data(ctrl, &mut desc_buf, 18);
-    let dev_desc: DeviceDescriptor = unsafe { core::ptr::read_unaligned(desc_buf.as_ptr() as *const _) };
+    let dev_desc: DeviceDescriptor =
+        unsafe { core::ptr::read_unaligned(desc_buf.as_ptr() as *const _) };
 
     // Step 4: GET_DESCRIPTOR (config, header first)
     let setup_cfg = SetupPacket {
@@ -517,7 +542,10 @@ fn enumerate_device(ctrl: &UhciController, port: u8, speed: UsbSpeed) {
             u16::from_le_bytes([hdr[2], hdr[3]])
         }
         _ => {
-            crate::serial_verbose_println!("  UHCI: device {} — config descriptor header failed", new_addr);
+            crate::serial_verbose_println!(
+                "  UHCI: device {} — config descriptor header failed",
+                new_addr
+            );
             return;
         }
     };
@@ -538,7 +566,10 @@ fn enumerate_device(ctrl: &UhciController, port: u8, speed: UsbSpeed) {
             read_transfer_data(ctrl, &mut config_buf, n);
         }
         _ => {
-            crate::serial_verbose_println!("  UHCI: device {} — full config descriptor failed", new_addr);
+            crate::serial_verbose_println!(
+                "  UHCI: device {} — full config descriptor failed",
+                new_addr
+            );
             return;
         }
     }
@@ -556,7 +587,11 @@ fn enumerate_device(ctrl: &UhciController, port: u8, speed: UsbSpeed) {
     };
 
     if let Err(e) = control_transfer(ctrl, new_addr, &setup_setcfg, false, 0) {
-        crate::serial_verbose_println!("  UHCI: device {} — SET_CONFIGURATION failed: {}", new_addr, e);
+        crate::serial_verbose_println!(
+            "  UHCI: device {} — SET_CONFIGURATION failed: {}",
+            new_addr,
+            e
+        );
         return;
     }
 
@@ -646,11 +681,19 @@ fn scan_ports(ctrl: &UhciController) {
 
         crate::serial_verbose_println!(
             "  UHCI: port {} — device connected ({})",
-            i + 1, if speed == UsbSpeed::Low { "Low-Speed" } else { "Full-Speed" }
+            i + 1,
+            if speed == UsbSpeed::Low {
+                "Low-Speed"
+            } else {
+                "Full-Speed"
+            }
         );
 
         if !reset_port(ctrl.io_base, port_reg) {
-            crate::serial_verbose_println!("  UHCI: port {} — reset failed (port not enabled)", i + 1);
+            crate::serial_verbose_println!(
+                "  UHCI: port {} — reset failed (port not enabled)",
+                i + 1
+            );
             continue;
         }
 
@@ -670,7 +713,11 @@ pub fn init_controller(pci: &PciDevice) {
     }
     let io_base = (bar4 & 0xFFFC) as u16;
 
-    crate::serial_verbose_println!("  UHCI: controller at I/O {:#06x}, IRQ {}", io_base, pci.interrupt_line);
+    crate::serial_verbose_println!(
+        "  UHCI: controller at I/O {:#06x}, IRQ {}",
+        io_base,
+        pci.interrupt_line
+    );
 
     // Enable bus mastering + I/O space
     let cmd = pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
@@ -848,7 +895,10 @@ pub fn poll_ports() {
             }
         } else if !connected && was_connected {
             // Device disconnected
-            crate::serial_verbose_println!("  UHCI: hot-unplug — device removed from port {}", i + 1);
+            crate::serial_verbose_println!(
+                "  UHCI: hot-unplug — device removed from port {}",
+                i + 1
+            );
             ctrl.port_connected[i] = false;
 
             // Clear status change bits
@@ -890,7 +940,9 @@ pub fn interrupt_in_transfer(
     let data_phys = ctrl.data_buf_phys + 128; // offset to avoid collision with control xfers
 
     // Clear any stale data
-    unsafe { core::ptr::write_bytes(data_phys as *mut u8, 0, max_packet as usize); }
+    unsafe {
+        core::ptr::write_bytes(data_phys as *mut u8, 0, max_packet as usize);
+    }
 
     // Clear pending status
     reg_write16(ctrl.io_base, REG_USBSTS, 0xFFFF);
@@ -945,7 +997,11 @@ pub fn interrupt_in_transfer(
 
             // Success — calculate actual length from ActLen field (bits 10:0)
             let act_len_raw = status & 0x7FF;
-            let act_len = if act_len_raw == 0x7FF { 0 } else { (act_len_raw + 1) as usize };
+            let act_len = if act_len_raw == 0x7FF {
+                0
+            } else {
+                (act_len_raw + 1) as usize
+            };
 
             // Toggle data toggle for next transfer
             *toggle ^= 1;

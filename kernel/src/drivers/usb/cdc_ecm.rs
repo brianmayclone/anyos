@@ -109,7 +109,8 @@ fn hex_nibble(b: u8) -> Option<u8> {
 pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     crate::serial_verbose_println!(
         "  CDC-ECM: probing (addr={}, iface={})",
-        dev.address, iface.number
+        dev.address,
+        iface.number
     );
 
     // 1. Parse config_raw for the Ethernet Networking Functional Descriptor
@@ -123,23 +124,30 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
     // 2. Read MAC address string descriptor
     let mac = match super::get_string_descriptor(
-        dev.address, dev.controller, dev.speed, dev.max_packet_size, mac_str_idx,
+        dev.address,
+        dev.controller,
+        dev.speed,
+        dev.max_packet_size,
+        mac_str_idx,
     ) {
-        Ok(s) => {
-            match parse_mac_string(&s) {
-                Some(m) => {
-                    crate::serial_verbose_println!(
-                        "  CDC-ECM: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                        m[0], m[1], m[2], m[3], m[4], m[5]
-                    );
-                    m
-                }
-                None => {
-                    crate::serial_verbose_println!("  CDC-ECM: bad MAC string '{}'", s);
-                    return;
-                }
+        Ok(s) => match parse_mac_string(&s) {
+            Some(m) => {
+                crate::serial_verbose_println!(
+                    "  CDC-ECM: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    m[0],
+                    m[1],
+                    m[2],
+                    m[3],
+                    m[4],
+                    m[5]
+                );
+                m
             }
-        }
+            None => {
+                crate::serial_verbose_println!("  CDC-ECM: bad MAC string '{}'", s);
+                return;
+            }
+        },
         Err(e) => {
             crate::serial_verbose_println!("  CDC-ECM: failed to read MAC string: {}", e);
             return;
@@ -156,18 +164,23 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     };
 
     // 4. Find bulk IN and bulk OUT endpoints on the Data Interface
-    let bulk_in = data_iface.endpoints.iter().find(|ep| {
-        (ep.attributes & 0x03) == 2 && (ep.address & 0x80) != 0
-    });
-    let bulk_out = data_iface.endpoints.iter().find(|ep| {
-        (ep.attributes & 0x03) == 2 && (ep.address & 0x80) == 0
-    });
+    let bulk_in = data_iface
+        .endpoints
+        .iter()
+        .find(|ep| (ep.attributes & 0x03) == 2 && (ep.address & 0x80) != 0);
+    let bulk_out = data_iface
+        .endpoints
+        .iter()
+        .find(|ep| (ep.attributes & 0x03) == 2 && (ep.address & 0x80) == 0);
 
     let (ep_in, ep_out) = match (bulk_in, bulk_out) {
         (Some(i), Some(o)) => {
             crate::serial_verbose_println!(
                 "  CDC-ECM: bulk IN ep={:#04x} (max={}), bulk OUT ep={:#04x} (max={})",
-                i.address, i.max_packet_size, o.address, o.max_packet_size
+                i.address,
+                i.max_packet_size,
+                o.address,
+                o.max_packet_size
             );
             (i, o)
         }
@@ -206,8 +219,13 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         w_length: 0,
     };
     let _ = super::hid_control_transfer(
-        dev.address, dev.controller, dev.speed, dev.max_packet_size,
-        &setup, false, 0,
+        dev.address,
+        dev.controller,
+        dev.speed,
+        dev.max_packet_size,
+        &setup,
+        false,
+        0,
     );
 
     let ecm_dev = CdcEcmDevice {
@@ -229,18 +247,13 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         rx_queue: VecDeque::new(),
     };
 
-    crate::serial_verbose_println!(
-        "  CDC-ECM: registered USB Ethernet (addr={})",
-        dev.address
-    );
+    crate::serial_verbose_println!("  CDC-ECM: registered USB Ethernet (addr={})", dev.address);
 
     CDC_ECM_DEVICES.lock().push(ecm_dev);
 
     // 7. Register as NetworkDriver (if no other driver is registered)
     if !crate::drivers::network::is_available() {
-        crate::drivers::network::register(
-            alloc::boxed::Box::new(CdcEcmNetworkDriver),
-        );
+        crate::drivers::network::register(alloc::boxed::Box::new(CdcEcmNetworkDriver));
     } else {
         crate::serial_verbose_println!("  CDC-ECM: NetworkDriver already registered, skipping");
     }
@@ -261,11 +274,16 @@ fn ecm_transmit(data: &[u8]) -> bool {
         core::ptr::copy_nonoverlapping(data.as_ptr(), dev.tx_bounce_phys as *mut u8, to_send);
     }
     super::bulk_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
-        dev.ep_bulk_out, dev.max_packet_out,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.ep_bulk_out,
+        dev.max_packet_out,
         &mut dev.toggle_out,
-        dev.tx_bounce_phys, to_send,
-    ).is_ok()
+        dev.tx_bounce_phys,
+        to_send,
+    )
+    .is_ok()
 }
 
 /// Receive the next queued Ethernet frame (called from net::poll integration).
@@ -293,10 +311,14 @@ pub fn poll_all() {
     for dev in devs.iter_mut() {
         // Try to receive up to one frame per poll cycle
         match super::bulk_transfer(
-            dev.usb_addr, dev.controller, dev.speed,
-            dev.ep_bulk_in, dev.max_packet_in,
+            dev.usb_addr,
+            dev.controller,
+            dev.speed,
+            dev.ep_bulk_in,
+            dev.max_packet_in,
             &mut dev.toggle_in,
-            dev.rx_bounce_phys, 4096,
+            dev.rx_bounce_phys,
+            4096,
         ) {
             Ok(n) if n > 0 => {
                 let mut frame = alloc::vec![0u8; n];
@@ -319,12 +341,12 @@ pub fn poll_all() {
 /// Disconnect handler for hot-unplug.
 pub fn disconnect(port: u8, controller: ControllerType) {
     let mut devs = CDC_ECM_DEVICES.lock();
-    if let Some(idx) = devs.iter().position(|d| d.port == port && d.controller == controller) {
+    if let Some(idx) = devs
+        .iter()
+        .position(|d| d.port == port && d.controller == controller)
+    {
         let dev = devs.remove(idx);
-        crate::serial_verbose_println!(
-            "  CDC-ECM: USB Ethernet removed (addr={})",
-            dev.usb_addr
-        );
+        crate::serial_verbose_println!("  CDC-ECM: USB Ethernet removed (addr={})", dev.usb_addr);
     }
 }
 
@@ -335,7 +357,9 @@ use crate::drivers::network::NetworkDriver;
 struct CdcEcmNetworkDriver;
 
 impl NetworkDriver for CdcEcmNetworkDriver {
-    fn name(&self) -> &str { "USB CDC-ECM Ethernet" }
+    fn name(&self) -> &str {
+        "USB CDC-ECM Ethernet"
+    }
 
     fn transmit(&mut self, data: &[u8]) -> bool {
         ecm_transmit(data)

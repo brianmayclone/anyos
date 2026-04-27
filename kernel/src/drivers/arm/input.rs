@@ -11,8 +11,8 @@ use crate::memory::physical;
 use crate::memory::FRAME_SIZE;
 use crate::sync::spinlock::Spinlock;
 
-use super::VirtioMmioDevice;
 use super::virtqueue::{VirtQueue, VRING_DESC_F_WRITE};
+use super::VirtioMmioDevice;
 
 // ---------------------------------------------------------------------------
 // VirtIO Input Config Select values (Spec 5.8.2)
@@ -96,7 +96,8 @@ impl MouseRingBuf {
                 buttons: 0,
                 event_type: MouseEventType::Move,
             }; MOUSE_BUF_SIZE],
-            head: 0, tail: 0,
+            head: 0,
+            tail: 0,
         }
     }
     fn push(&mut self, ev: MouseEvent) {
@@ -107,7 +108,9 @@ impl MouseRingBuf {
         }
     }
     fn pop(&mut self) -> Option<MouseEvent> {
-        if self.head == self.tail { return None; }
+        if self.head == self.tail {
+            return None;
+        }
         let ev = self.buf[self.tail];
         self.tail = (self.tail + 1) % MOUSE_BUF_SIZE;
         Some(ev)
@@ -176,7 +179,11 @@ pub fn init(dev: &VirtioMmioDevice) {
         false
     };
 
-    let kind = if is_keyboard { "keyboard" } else { "mouse/pointer" };
+    let kind = if is_keyboard {
+        "keyboard"
+    } else {
+        "mouse/pointer"
+    };
 
     // Set up eventq (queue 0)
     let eventq = match VirtQueue::new(0, 64) {
@@ -200,7 +207,9 @@ pub fn init(dev: &VirtioMmioDevice) {
     };
     let event_buf_phys = event_frame.0;
     let event_buf_virt = phys_to_virt(event_buf_phys);
-    unsafe { ptr::write_bytes(event_buf_virt as *mut u8, 0, FRAME_SIZE); }
+    unsafe {
+        ptr::write_bytes(event_buf_virt as *mut u8, 0, FRAME_SIZE);
+    }
 
     let mut input = VirtioInput {
         base: dev.base(),
@@ -217,7 +226,11 @@ pub fn init(dev: &VirtioMmioDevice) {
     for i in 0..max_events {
         let offset = i as u64 * event_size as u64;
         let phys = event_buf_phys + offset;
-        if input.eventq.push_buf(phys, event_size, VRING_DESC_F_WRITE).is_none() {
+        if input
+            .eventq
+            .push_buf(phys, event_size, VRING_DESC_F_WRITE)
+            .is_none()
+        {
             break;
         }
         input.num_events += 1;
@@ -239,8 +252,12 @@ pub fn init(dev: &VirtioMmioDevice) {
     }
 
     INITIALIZED.store(true, Ordering::Relaxed);
-    crate::serial_verbose_println!("  virtio-input({}): initialized, {} event buffers, IRQ {}",
-        kind, max_events, irq);
+    crate::serial_verbose_println!(
+        "  virtio-input({}): initialized, {} event buffers, IRQ {}",
+        kind,
+        max_events,
+        irq
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -257,8 +274,12 @@ fn input_irq_handler() {
             // Acknowledge interrupt
             let base = dev.base;
             let status = unsafe { ptr::read_volatile((base + 0x060) as *const u32) };
-            if status == 0 { continue; }
-            unsafe { ptr::write_volatile((base + 0x064) as *mut u32, status); }
+            if status == 0 {
+                continue;
+            }
+            unsafe {
+                ptr::write_volatile((base + 0x064) as *mut u32, status);
+            }
 
             // Process completed events
             while let Some((desc_idx, _len)) = dev.eventq.pop_used() {
@@ -266,7 +287,7 @@ fn input_irq_handler() {
                 if event_offset + 8 <= FRAME_SIZE {
                     let event = unsafe {
                         ptr::read_volatile(
-                            (dev.event_buf_virt + event_offset) as *const VirtioInputEvent
+                            (dev.event_buf_virt + event_offset) as *const VirtioInputEvent,
                         )
                     };
                     process_event(&event, dev.is_keyboard);
@@ -278,7 +299,9 @@ fn input_irq_handler() {
             }
 
             // Notify device that we re-posted buffers
-            unsafe { ptr::write_volatile((base + 0x050) as *mut u32, 0); }
+            unsafe {
+                ptr::write_volatile((base + 0x050) as *mut u32, 0);
+            }
         }
     }
 }
@@ -292,9 +315,9 @@ fn process_event(event: &VirtioInputEvent, is_keyboard: bool) {
             } else {
                 // Mouse button (BTN_LEFT=0x110, BTN_RIGHT=0x111, BTN_MIDDLE=0x112)
                 let btn = match event.code {
-                    0x110 => 1u8,  // Left
-                    0x111 => 2u8,  // Right
-                    0x112 => 4u8,  // Middle
+                    0x110 => 1u8, // Left
+                    0x111 => 2u8, // Right
+                    0x112 => 4u8, // Middle
                     _ => 0,
                 };
                 if btn != 0 {
@@ -310,57 +333,57 @@ fn process_event(event: &VirtioInputEvent, is_keyboard: bool) {
                         dy: 0,
                         dz: 0,
                         buttons,
-                        event_type: if down { MouseEventType::ButtonDown } else { MouseEventType::ButtonUp },
+                        event_type: if down {
+                            MouseEventType::ButtonDown
+                        } else {
+                            MouseEventType::ButtonUp
+                        },
                     });
                 }
             }
         }
-        EV_REL => {
-            match event.code {
-                REL_X => {
-                    let dx = event.value as i32;
-                    MOUSE_BUF.lock().push(MouseEvent {
-                        dx,
-                        dy: 0,
-                        dz: 0,
-                        buttons: MOUSE_BUTTONS.load(Ordering::Relaxed) as u8,
-                        event_type: MouseEventType::Move,
-                    });
-                }
-                REL_Y => {
-                    let dy = event.value as i32;
-                    MOUSE_BUF.lock().push(MouseEvent {
-                        dx: 0,
-                        dy,
-                        dz: 0,
-                        buttons: MOUSE_BUTTONS.load(Ordering::Relaxed) as u8,
-                        event_type: MouseEventType::Move,
-                    });
-                }
-                REL_WHEEL => {
-                    let dz = -(event.value as i32);
-                    MOUSE_BUF.lock().push(MouseEvent {
-                        dx: 0,
-                        dy: 0,
-                        dz,
-                        buttons: MOUSE_BUTTONS.load(Ordering::Relaxed) as u8,
-                        event_type: MouseEventType::Scroll,
-                    });
-                }
-                _ => {}
+        EV_REL => match event.code {
+            REL_X => {
+                let dx = event.value as i32;
+                MOUSE_BUF.lock().push(MouseEvent {
+                    dx,
+                    dy: 0,
+                    dz: 0,
+                    buttons: MOUSE_BUTTONS.load(Ordering::Relaxed) as u8,
+                    event_type: MouseEventType::Move,
+                });
             }
-        }
-        EV_ABS => {
-            match event.code {
-                ABS_X => {
-                    ABS_POS_X.store(event.value, Ordering::Relaxed);
-                }
-                ABS_Y => {
-                    ABS_POS_Y.store(event.value, Ordering::Relaxed);
-                }
-                _ => {}
+            REL_Y => {
+                let dy = event.value as i32;
+                MOUSE_BUF.lock().push(MouseEvent {
+                    dx: 0,
+                    dy,
+                    dz: 0,
+                    buttons: MOUSE_BUTTONS.load(Ordering::Relaxed) as u8,
+                    event_type: MouseEventType::Move,
+                });
             }
-        }
+            REL_WHEEL => {
+                let dz = -(event.value as i32);
+                MOUSE_BUF.lock().push(MouseEvent {
+                    dx: 0,
+                    dy: 0,
+                    dz,
+                    buttons: MOUSE_BUTTONS.load(Ordering::Relaxed) as u8,
+                    event_type: MouseEventType::Scroll,
+                });
+            }
+            _ => {}
+        },
+        EV_ABS => match event.code {
+            ABS_X => {
+                ABS_POS_X.store(event.value, Ordering::Relaxed);
+            }
+            ABS_Y => {
+                ABS_POS_Y.store(event.value, Ordering::Relaxed);
+            }
+            _ => {}
+        },
         EV_SYN => {
             let x = ABS_POS_X.load(Ordering::Relaxed);
             let y = ABS_POS_Y.load(Ordering::Relaxed);
@@ -381,26 +404,26 @@ fn process_event(event: &VirtioInputEvent, is_keyboard: bool) {
 fn evdev_key_to_scancode(code: u16) -> Option<(u8, bool)> {
     match code {
         1..=88 => Some((code as u8, false)),
-        96 => Some((0x1C, true)),   // keypad enter
-        97 => Some((0x1D, true)),   // right ctrl
-        98 => Some((0x35, true)),   // keypad /
-        100 => Some((0x38, true)),  // right alt / AltGr
-        102 => Some((0x47, true)),  // home
-        103 => Some((0x48, true)),  // up
-        104 => Some((0x49, true)),  // page up
-        105 => Some((0x4B, true)),  // left
-        106 => Some((0x4D, true)),  // right
-        107 => Some((0x4F, true)),  // end
-        108 => Some((0x50, true)),  // down
-        109 => Some((0x51, true)),  // page down
-        110 => Some((0x52, true)),  // insert
-        111 => Some((0x53, true)),  // delete
-        113 => Some((0x20, true)),  // mute
-        114 => Some((0x2E, true)),  // volume down
-        115 => Some((0x30, true)),  // volume up
-        125 => Some((0x5B, true)),  // left super
-        126 => Some((0x5C, true)),  // right super
-        127 => Some((0x5D, true)),  // menu
+        96 => Some((0x1C, true)),  // keypad enter
+        97 => Some((0x1D, true)),  // right ctrl
+        98 => Some((0x35, true)),  // keypad /
+        100 => Some((0x38, true)), // right alt / AltGr
+        102 => Some((0x47, true)), // home
+        103 => Some((0x48, true)), // up
+        104 => Some((0x49, true)), // page up
+        105 => Some((0x4B, true)), // left
+        106 => Some((0x4D, true)), // right
+        107 => Some((0x4F, true)), // end
+        108 => Some((0x50, true)), // down
+        109 => Some((0x51, true)), // page down
+        110 => Some((0x52, true)), // insert
+        111 => Some((0x53, true)), // delete
+        113 => Some((0x20, true)), // mute
+        114 => Some((0x2E, true)), // volume down
+        115 => Some((0x30, true)), // volume up
+        125 => Some((0x5B, true)), // left super
+        126 => Some((0x5C, true)), // right super
+        127 => Some((0x5D, true)), // menu
         _ => None,
     }
 }
@@ -415,7 +438,11 @@ fn inject_keyboard_event(code: u16, value: u32) {
     if needs_e0 {
         crate::drivers::input::keyboard::handle_scancode(0xE0);
     }
-    let encoded = if value != 0 { scancode } else { scancode | 0x80 };
+    let encoded = if value != 0 {
+        scancode
+    } else {
+        scancode | 0x80
+    };
     crate::drivers::input::keyboard::handle_scancode(encoded);
 }
 

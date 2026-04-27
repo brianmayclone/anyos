@@ -1,9 +1,9 @@
 //! IPv6 packet handling: build and parse IPv6 headers, route outgoing packets.
 //! Performs next-hop resolution via NDP before handing frames to the Ethernet layer.
 
-use alloc::vec::Vec;
-use super::types::{Ipv6Addr, MacAddr};
 use super::ethernet;
+use super::types::{Ipv6Addr, MacAddr};
+use alloc::vec::Vec;
 
 /// IPv6 fixed header length (40 bytes).
 const IPV6_HEADER_LEN: usize = 40;
@@ -27,10 +27,14 @@ pub struct Ipv6Packet<'a> {
 
 /// Parse an IPv6 packet from raw bytes.
 pub fn parse(data: &[u8]) -> Option<Ipv6Packet<'_>> {
-    if data.len() < IPV6_HEADER_LEN { return None; }
+    if data.len() < IPV6_HEADER_LEN {
+        return None;
+    }
 
     let version = data[0] >> 4;
-    if version != 6 { return None; }
+    if version != 6 {
+        return None;
+    }
 
     let payload_len = ((data[4] as u16) << 8) | data[5] as u16;
     let next_header = data[6];
@@ -42,7 +46,9 @@ pub fn parse(data: &[u8]) -> Option<Ipv6Packet<'_>> {
     dst.copy_from_slice(&data[24..40]);
 
     let total_len = IPV6_HEADER_LEN + payload_len as usize;
-    if data.len() < total_len { return None; }
+    if data.len() < total_len {
+        return None;
+    }
 
     let payload = &data[IPV6_HEADER_LEN..total_len];
 
@@ -79,16 +85,24 @@ pub fn send_ipv6(dst: Ipv6Addr, next_header: u8, payload: &[u8]) -> bool {
         || (dst == cfg.ipv6_addr && !cfg.ipv6_addr.is_unspecified());
 
     if is_loopback {
-        let lo_src = if dst.is_loopback() { Ipv6Addr::LOOPBACK } else { dst };
+        let lo_src = if dst.is_loopback() {
+            Ipv6Addr::LOOPBACK
+        } else {
+            dst
+        };
         let packet = build_packet(lo_src, dst, next_header, 64, payload);
         handle_ipv6(&packet);
         return true;
     }
 
     let payload_len = payload.len();
-    if payload_len > 65535 { return false; }
+    if payload_len > 65535 {
+        return false;
+    }
     // MTU check (1500 ethernet - 40 IPv6 header = 1460 max payload)
-    if IPV6_HEADER_LEN + payload_len > 1500 { return false; }
+    if IPV6_HEADER_LEN + payload_len > 1500 {
+        return false;
+    }
 
     let packet = build_packet(src_ip, dst, next_header, 64, payload);
 
@@ -119,7 +133,13 @@ pub fn send_ipv6(dst: Ipv6Addr, next_header: u8, payload: &[u8]) -> bool {
 }
 
 /// Build an IPv6 packet (header + payload).
-fn build_packet(src: Ipv6Addr, dst: Ipv6Addr, next_header: u8, hop_limit: u8, payload: &[u8]) -> Vec<u8> {
+fn build_packet(
+    src: Ipv6Addr,
+    dst: Ipv6Addr,
+    next_header: u8,
+    hop_limit: u8,
+    payload: &[u8],
+) -> Vec<u8> {
     let payload_len = payload.len() as u16;
     let total = IPV6_HEADER_LEN + payload.len();
     let mut packet = Vec::with_capacity(total);
@@ -172,7 +192,9 @@ pub fn handle_ipv6(data: &[u8]) {
         || (!cfg.ipv6_addr.is_unspecified()
             && pkt.dst == cfg.ipv6_addr.solicited_node_multicast());
 
-    if !for_us { return; }
+    if !for_us {
+        return;
+    }
 
     match pkt.next_header {
         PROTO_ICMPV6 => super::icmpv6::handle_icmpv6(&pkt),

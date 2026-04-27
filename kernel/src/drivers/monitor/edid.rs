@@ -196,12 +196,12 @@ fn parse_chromaticity(raw: &[u8]) -> ChromaticityCoords {
     let wy_lo = raw[26] & 0x03;
 
     ChromaticityCoords {
-        red_x:   ((raw[27] as u16) << 2) | rx_lo as u16,
-        red_y:   ((raw[28] as u16) << 2) | ry_lo as u16,
+        red_x: ((raw[27] as u16) << 2) | rx_lo as u16,
+        red_y: ((raw[28] as u16) << 2) | ry_lo as u16,
         green_x: ((raw[29] as u16) << 2) | gx_lo as u16,
         green_y: ((raw[30] as u16) << 2) | gy_lo as u16,
-        blue_x:  ((raw[31] as u16) << 2) | bx_lo as u16,
-        blue_y:  ((raw[32] as u16) << 2) | by_lo as u16,
+        blue_x: ((raw[31] as u16) << 2) | bx_lo as u16,
+        blue_y: ((raw[32] as u16) << 2) | by_lo as u16,
         white_x: ((raw[33] as u16) << 2) | wx_lo as u16,
         white_y: ((raw[34] as u16) << 2) | wy_lo as u16,
     }
@@ -231,16 +231,16 @@ fn parse_detailed_timing(desc: &[u8]) -> DetailedTiming {
     }
 
     let h_active = ((desc[4] as u16 & 0xF0) << 4) | desc[2] as u16;
-    let h_blank  = ((desc[4] as u16 & 0x0F) << 8) | desc[3] as u16;
+    let h_blank = ((desc[4] as u16 & 0x0F) << 8) | desc[3] as u16;
     let v_active = ((desc[7] as u16 & 0xF0) << 4) | desc[5] as u16;
-    let v_blank  = ((desc[7] as u16 & 0x0F) << 8) | desc[6] as u16;
+    let v_blank = ((desc[7] as u16 & 0x0F) << 8) | desc[6] as u16;
 
     let h_sync_offset = ((desc[11] as u16 & 0xC0) << 2) | desc[8] as u16;
-    let h_sync_width  = ((desc[11] as u16 & 0x30) << 4) | desc[9] as u16;
+    let h_sync_width = ((desc[11] as u16 & 0x30) << 4) | desc[9] as u16;
     let v_sync_offset = ((desc[11] & 0x0C) << 2) | ((desc[10] >> 4) & 0x0F);
-    let v_sync_width  = ((desc[11] & 0x03) << 4) | (desc[10] & 0x0F);
+    let v_sync_width = ((desc[11] & 0x03) << 4) | (desc[10] & 0x0F);
 
-    let width_mm  = ((desc[14] as u16 & 0xF0) << 4) | desc[12] as u16;
+    let width_mm = ((desc[14] as u16 & 0xF0) << 4) | desc[12] as u16;
     let height_mm = ((desc[14] as u16 & 0x0F) << 8) | desc[13] as u16;
 
     let interlaced = desc[17] & 0x80 != 0;
@@ -332,25 +332,25 @@ fn extract_descriptor_string(desc: &[u8]) -> [u8; 14] {
 /// Each entry: (bit_index, width, height, refresh).
 static ESTABLISHED_TIMINGS: [(u8, u32, u32, u32); 17] = [
     // Byte 35 (Established Timings I)
-    (0,  720,  400, 70),  // bit 7
-    (1,  720,  400, 88),  // bit 6
-    (2,  640,  480, 60),  // bit 5
-    (3,  640,  480, 67),  // bit 4
-    (4,  640,  480, 72),  // bit 3
-    (5,  640,  480, 75),  // bit 2
-    (6,  800,  600, 56),  // bit 1
-    (7,  800,  600, 60),  // bit 0
+    (0, 720, 400, 70), // bit 7
+    (1, 720, 400, 88), // bit 6
+    (2, 640, 480, 60), // bit 5
+    (3, 640, 480, 67), // bit 4
+    (4, 640, 480, 72), // bit 3
+    (5, 640, 480, 75), // bit 2
+    (6, 800, 600, 56), // bit 1
+    (7, 800, 600, 60), // bit 0
     // Byte 36 (Established Timings II)
-    (8,  800,  600, 72),  // bit 7
-    (9,  800,  600, 75),  // bit 6
-    (10, 832,  624, 75),  // bit 5
+    (8, 800, 600, 72),    // bit 7
+    (9, 800, 600, 75),    // bit 6
+    (10, 832, 624, 75),   // bit 5
     (11, 1024, 768, 87),  // bit 4 (interlaced)
     (12, 1024, 768, 60),  // bit 3
     (13, 1024, 768, 70),  // bit 2
     (14, 1024, 768, 75),  // bit 1
     (15, 1280, 1024, 75), // bit 0
     // Byte 37 (Manufacturer's Timings)
-    (16, 1152, 870, 75),  // bit 7
+    (16, 1152, 870, 75), // bit 7
 ];
 
 // ──────────────────────────────────────────────
@@ -408,9 +408,7 @@ pub fn parse_edid_base(raw: &[u8; 128]) -> ParsedEdid {
     edid.chromaticity = parse_chromaticity(raw);
 
     // Established timings (bytes 35-37)
-    edid.established_modes = ((raw[35] as u32) << 16)
-        | ((raw[36] as u32) << 8)
-        | (raw[37] as u32);
+    edid.established_modes = ((raw[35] as u32) << 16) | ((raw[36] as u32) << 8) | (raw[37] as u32);
 
     // Standard timings (bytes 38-53, 8 × 2 bytes)
     for i in 0..8 {

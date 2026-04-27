@@ -8,42 +8,42 @@
 //! QEMU: `-vga virtio` (virtio-vga with VGA BIOS compat) or `-device virtio-gpu-pci`.
 
 use super::GpuDriver;
+use crate::drivers::pci::PciDevice;
+use crate::drivers::virtio::virtqueue::VirtQueue;
+use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
+use crate::memory::physical;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use crate::drivers::pci::PciDevice;
-use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
-use crate::drivers::virtio::virtqueue::VirtQueue;
-use crate::memory::physical;
 
 // ──────────────────────────────────────────────
 // VirtIO GPU Command Types
 // ──────────────────────────────────────────────
 
-const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32     = 0x0100;
-const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32   = 0x0101;
-const VIRTIO_GPU_CMD_RESOURCE_UNREF: u32       = 0x0102;
-const VIRTIO_GPU_CMD_SET_SCANOUT: u32          = 0x0103;
-const VIRTIO_GPU_CMD_RESOURCE_FLUSH: u32       = 0x0104;
-const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D: u32  = 0x0105;
+const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x0100;
+const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32 = 0x0101;
+const VIRTIO_GPU_CMD_RESOURCE_UNREF: u32 = 0x0102;
+const VIRTIO_GPU_CMD_SET_SCANOUT: u32 = 0x0103;
+const VIRTIO_GPU_CMD_RESOURCE_FLUSH: u32 = 0x0104;
+const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D: u32 = 0x0105;
 const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING: u32 = 0x0106;
 const VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING: u32 = 0x0107;
 
 // 3D (virgl) commands
-const VIRTIO_GPU_CMD_CTX_CREATE: u32           = 0x0200;
-const VIRTIO_GPU_CMD_CTX_DESTROY: u32          = 0x0201;
-const VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE: u32  = 0x0202;
-const VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE: u32  = 0x0203;
-const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D: u32   = 0x0204;
-const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D: u32  = 0x0205;
+const VIRTIO_GPU_CMD_CTX_CREATE: u32 = 0x0200;
+const VIRTIO_GPU_CMD_CTX_DESTROY: u32 = 0x0201;
+const VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE: u32 = 0x0202;
+const VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE: u32 = 0x0203;
+const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D: u32 = 0x0204;
+const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D: u32 = 0x0205;
 const VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D: u32 = 0x0206;
-const VIRTIO_GPU_CMD_SUBMIT_3D: u32            = 0x0207;
+const VIRTIO_GPU_CMD_SUBMIT_3D: u32 = 0x0207;
 
 // EDID query (QEMU 3.1+, requires edid=on in device config)
-const VIRTIO_GPU_CMD_GET_EDID: u32             = 0x010A;
+const VIRTIO_GPU_CMD_GET_EDID: u32 = 0x010A;
 
-const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32        = 0x0300;
-const VIRTIO_GPU_CMD_MOVE_CURSOR: u32          = 0x0301;
+const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
+const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 
 // Feature bits
 const VIRTIO_GPU_F_VIRGL: u64 = 1 << 1;
@@ -52,9 +52,9 @@ const VIRTIO_GPU_F_VIRGL: u64 = 1 << 1;
 // VirtIO GPU Response Types
 // ──────────────────────────────────────────────
 
-const VIRTIO_GPU_RESP_OK_NODATA: u32           = 0x1100;
-const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32     = 0x1101;
-const VIRTIO_GPU_RESP_OK_EDID: u32             = 0x1104;
+const VIRTIO_GPU_RESP_OK_NODATA: u32 = 0x1100;
+const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32 = 0x1101;
+const VIRTIO_GPU_RESP_OK_EDID: u32 = 0x1104;
 
 static LAST_CTRL_CMD_TYPE: AtomicU32 = AtomicU32::new(0);
 static LAST_CURSOR_CMD_TYPE: AtomicU32 = AtomicU32::new(0);
@@ -80,8 +80,8 @@ static LAST_CURSOR_Q_BROKEN: AtomicU32 = AtomicU32::new(0);
 // VirtIO GPU Pixel Formats
 // ──────────────────────────────────────────────
 
-const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM: u32    = 2;
-const VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM: u32    = 1;
+const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM: u32 = 2;
+const VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM: u32 = 1;
 
 // ──────────────────────────────────────────────
 // Command Structures (all repr(C), no padding)
@@ -380,8 +380,8 @@ pub struct VirtioGpu {
     cursor_y: u32,
 
     // Pre-allocated DMA buffers for commands/responses (identity-mapped phys)
-    cmd_buf: u64,   // 1 page (4096 bytes) for command payloads
-    resp_buf: u64,  // 1 page (4096 bytes) for response payloads
+    cmd_buf: u64,  // 1 page (4096 bytes) for command payloads
+    resp_buf: u64, // 1 page (4096 bytes) for response payloads
 
     // Pre-allocated cursor backing store (64x64x4 = 16 KiB = 4 pages).
     // Allocated during init (under kernel CR3 with full identity mapping).
@@ -399,8 +399,8 @@ pub struct VirtioGpu {
 
     // 3D (virgl) state
     virgl_capable: bool,
-    virgl_ctx_id: u32,          // active virgl rendering context (0 = none)
-    cmd_3d_buf: u64,            // 64 KiB DMA buffer for 3D command submission
+    virgl_ctx_id: u32, // active virgl rendering context (0 = none)
+    cmd_3d_buf: u64,   // 64 KiB DMA buffer for 3D command submission
 
     /// IDs of 3D resources that are currently alive (created but not yet destroyed).
     /// Checked by dma_surface_download to reject requests for dead/freed surfaces,
@@ -508,7 +508,9 @@ impl VirtioGpu {
         let result = self.controlq.execute_sync(
             &[(self.cmd_buf, cmd_len as u32)],
             &[(self.resp_buf, resp_len)],
-            || { virtio::mmio_write16(notify_virt, 0); },
+            || {
+                virtio::mmio_write16(notify_virt, 0);
+            },
         );
         self.snapshot_controlq();
 
@@ -560,7 +562,9 @@ impl VirtioGpu {
         let result = self.cursorq.execute_sync(
             &[(cursor_buf, cmd_len as u32)],
             &[(cursor_resp, 24)],
-            || { virtio::mmio_write16(notify_virt, 1); },
+            || {
+                virtio::mmio_write16(notify_virt, 1);
+            },
         );
         self.snapshot_cursorq();
 
@@ -578,12 +582,18 @@ impl VirtioGpu {
     fn cmd_get_display_info(&mut self) -> Option<(u32, u32)> {
         let hdr = GpuCtrlHdr::new(VIRTIO_GPU_CMD_GET_DISPLAY_INFO);
         let cmd_bytes = unsafe {
-            core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<GpuCtrlHdr>())
+            core::slice::from_raw_parts(
+                &hdr as *const _ as *const u8,
+                core::mem::size_of::<GpuCtrlHdr>(),
+            )
         };
 
         let resp_type = self.send_ctrl_cmd(cmd_bytes);
         if resp_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
-            crate::serial_verbose_println!("  VirtIO GPU: GET_DISPLAY_INFO failed (resp={:#x})", resp_type);
+            crate::serial_verbose_println!(
+                "  VirtIO GPU: GET_DISPLAY_INFO failed (resp={:#x})",
+                resp_type
+            );
             return None;
         }
 
@@ -608,7 +618,10 @@ impl VirtioGpu {
     fn query_all_display_infos(&mut self) {
         let hdr = GpuCtrlHdr::new(VIRTIO_GPU_CMD_GET_DISPLAY_INFO);
         let cmd_bytes = unsafe {
-            core::slice::from_raw_parts(&hdr as *const _ as *const u8, core::mem::size_of::<GpuCtrlHdr>())
+            core::slice::from_raw_parts(
+                &hdr as *const _ as *const u8,
+                core::mem::size_of::<GpuCtrlHdr>(),
+            )
         };
         let resp_type = self.send_ctrl_cmd(cmd_bytes);
         if resp_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
@@ -635,7 +648,10 @@ impl VirtioGpu {
             padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<GetEdid>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<GetEdid>(),
+            )
         };
         let resp_type = self.send_ctrl_cmd(bytes);
         if resp_type != VIRTIO_GPU_RESP_OK_EDID {
@@ -650,7 +666,13 @@ impl VirtioGpu {
         Some(edid)
     }
 
-    fn cmd_resource_create_2d(&mut self, resource_id: u32, format: u32, width: u32, height: u32) -> bool {
+    fn cmd_resource_create_2d(
+        &mut self,
+        resource_id: u32,
+        format: u32,
+        width: u32,
+        height: u32,
+    ) -> bool {
         let cmd = ResourceCreate2d {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
             resource_id,
@@ -659,7 +681,10 @@ impl VirtioGpu {
             height,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<ResourceCreate2d>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<ResourceCreate2d>(),
+            )
         };
         let resp = self.send_ctrl_cmd(bytes);
         resp == VIRTIO_GPU_RESP_OK_NODATA
@@ -672,7 +697,10 @@ impl VirtioGpu {
             padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<ResourceUnref>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<ResourceUnref>(),
+            )
         };
         self.send_ctrl_cmd(bytes);
     }
@@ -708,12 +736,18 @@ impl VirtioGpu {
             unsafe {
                 let dst = self.cmd_buf as *mut u8;
                 core::ptr::copy_nonoverlapping(&hdr_single as *const _ as *const u8, dst, hdr_size);
-                core::ptr::copy_nonoverlapping(&entry as *const _ as *const u8, dst.add(hdr_size), entry_size);
+                core::ptr::copy_nonoverlapping(
+                    &entry as *const _ as *const u8,
+                    dst.add(hdr_size),
+                    entry_size,
+                );
             }
 
             let cmd_len = hdr_size + entry_size;
             // Zero response
-            unsafe { core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24); }
+            unsafe {
+                core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24);
+            }
 
             let common_cfg = self.device.common_cfg;
             let notify_addr = self.device.notify_base;
@@ -725,11 +759,15 @@ impl VirtioGpu {
             let result = self.controlq.execute_sync(
                 &[(self.cmd_buf, cmd_len as u32)],
                 &[(self.resp_buf, 24)],
-                || { virtio::mmio_write16(notify_virt, 0); },
+                || {
+                    virtio::mmio_write16(notify_virt, 0);
+                },
             );
 
             let _ = virtio::mmio_read8(self.device.isr_addr);
-            if result.is_none() { return false; }
+            if result.is_none() {
+                return false;
+            }
             let resp = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
             return resp == VIRTIO_GPU_RESP_OK_NODATA;
         }
@@ -755,7 +793,9 @@ impl VirtioGpu {
         }
 
         // Zero response
-        unsafe { core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24); }
+        unsafe {
+            core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24);
+        }
 
         let cmd_len = total;
         let common_cfg = self.device.common_cfg;
@@ -768,16 +808,26 @@ impl VirtioGpu {
         let result = self.controlq.execute_sync(
             &[(self.cmd_buf, cmd_len as u32)],
             &[(self.resp_buf, 24)],
-            || { virtio::mmio_write16(notify_virt, 0); },
+            || {
+                virtio::mmio_write16(notify_virt, 0);
+            },
         );
 
         let _ = virtio::mmio_read8(self.device.isr_addr);
-        if result.is_none() { return false; }
+        if result.is_none() {
+            return false;
+        }
         let resp = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
         resp == VIRTIO_GPU_RESP_OK_NODATA
     }
 
-    fn cmd_set_scanout(&mut self, scanout_id: u32, resource_id: u32, width: u32, height: u32) -> bool {
+    fn cmd_set_scanout(
+        &mut self,
+        scanout_id: u32,
+        resource_id: u32,
+        width: u32,
+        height: u32,
+    ) -> bool {
         let cmd = SetScanout {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_SET_SCANOUT),
             r_x: 0,
@@ -788,13 +838,23 @@ impl VirtioGpu {
             resource_id,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<SetScanout>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<SetScanout>(),
+            )
         };
         let resp = self.send_ctrl_cmd(bytes);
         resp == VIRTIO_GPU_RESP_OK_NODATA
     }
 
-    fn cmd_transfer_to_host_2d(&mut self, resource_id: u32, x: u32, y: u32, w: u32, h: u32) -> bool {
+    fn cmd_transfer_to_host_2d(
+        &mut self,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    ) -> bool {
         // VirtIO GPU TRANSFER_TO_HOST_2D reads the backing store as "tightly packed":
         // row stride = r_width * bpp. For the framebuffer resource, our backing store
         // has stride = resource_width * bpp (pitch). Transfer full-width rows so the
@@ -824,7 +884,10 @@ impl VirtioGpu {
             padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<TransferToHost2d>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<TransferToHost2d>(),
+            )
         };
         let resp = self.send_ctrl_cmd(bytes);
         resp == VIRTIO_GPU_RESP_OK_NODATA
@@ -841,7 +904,10 @@ impl VirtioGpu {
             padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<ResourceFlush>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<ResourceFlush>(),
+            )
         };
         let resp = self.send_ctrl_cmd(bytes);
         resp == VIRTIO_GPU_RESP_OK_NODATA
@@ -854,7 +920,10 @@ impl VirtioGpu {
             padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<ResourceDetachBacking>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<ResourceDetachBacking>(),
+            )
         };
         self.send_ctrl_cmd(bytes);
     }
@@ -872,7 +941,10 @@ impl VirtioGpu {
         let fb_phys = match physical::alloc_contiguous(num_pages) {
             Some(p) => p.as_u64(),
             None => {
-                crate::serial_verbose_println!("  VirtIO GPU: failed to allocate {} pages for framebuffer", num_pages);
+                crate::serial_verbose_println!(
+                    "  VirtIO GPU: failed to allocate {} pages for framebuffer",
+                    num_pages
+                );
                 return false;
             }
         };
@@ -910,8 +982,14 @@ impl VirtioGpu {
 
         self.scanout_resource_id = res_id;
 
-        crate::serial_verbose_println!("  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages)",
-            width, height, res_id, fb_phys, num_pages);
+        crate::serial_verbose_println!(
+            "  VirtIO GPU: display {}x{} resource={} fb={:#x} ({} pages)",
+            width,
+            height,
+            res_id,
+            fb_phys,
+            num_pages
+        );
 
         true
     }
@@ -929,7 +1007,10 @@ impl VirtioGpu {
         cmd.hdr.ctx_id = ctx_id;
         cmd.debug_name[..6].copy_from_slice(b"anyOS\0");
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<CtxCreate>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<CtxCreate>(),
+            )
         };
         self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
     }
@@ -941,7 +1022,10 @@ impl VirtioGpu {
         };
         cmd.hdr.ctx_id = ctx_id;
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<CtxDestroy>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<CtxDestroy>(),
+            )
         };
         self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
     }
@@ -955,7 +1039,10 @@ impl VirtioGpu {
         };
         cmd.hdr.ctx_id = ctx_id;
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<CtxResource>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<CtxResource>(),
+            )
         };
         self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
     }
@@ -969,65 +1056,129 @@ impl VirtioGpu {
         };
         cmd.hdr.ctx_id = ctx_id;
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<CtxResource>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<CtxResource>(),
+            )
         };
         self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
     }
 
     /// Create a 3D resource (texture, buffer, etc.).
     fn cmd_resource_create_3d(
-        &mut self, resource_id: u32, target: u32, format: u32, bind: u32,
-        width: u32, height: u32, depth: u32, array_size: u32,
-        last_level: u32, nr_samples: u32, flags: u32,
+        &mut self,
+        resource_id: u32,
+        target: u32,
+        format: u32,
+        bind: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+        array_size: u32,
+        last_level: u32,
+        nr_samples: u32,
+        flags: u32,
     ) -> bool {
         let cmd = ResourceCreate3d {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_CREATE_3D),
-            resource_id, target, format, bind,
-            width, height, depth, array_size,
-            last_level, nr_samples, flags, padding: 0,
+            resource_id,
+            target,
+            format,
+            bind,
+            width,
+            height,
+            depth,
+            array_size,
+            last_level,
+            nr_samples,
+            flags,
+            padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<ResourceCreate3d>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<ResourceCreate3d>(),
+            )
         };
         self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
     }
 
     /// Transfer data from guest to host for a 3D resource.
     fn cmd_transfer_to_host_3d(
-        &mut self, resource_id: u32,
-        x: u32, y: u32, z: u32, w: u32, h: u32, d: u32,
-        offset: u64, level: u32, stride: u32, layer_stride: u32,
+        &mut self,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        w: u32,
+        h: u32,
+        d: u32,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
         ctx_id: u32,
     ) -> bool {
         let mut cmd = TransferToHost3d {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D),
-            box_x: x, box_y: y, box_z: z,
-            box_w: w, box_h: h, box_d: d,
-            offset, resource_id, level, stride, layer_stride,
+            box_x: x,
+            box_y: y,
+            box_z: z,
+            box_w: w,
+            box_h: h,
+            box_d: d,
+            offset,
+            resource_id,
+            level,
+            stride,
+            layer_stride,
         };
         cmd.hdr.ctx_id = ctx_id;
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<TransferToHost3d>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<TransferToHost3d>(),
+            )
         };
         self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
     }
 
     /// Transfer data from host to guest for a 3D resource.
     fn cmd_transfer_from_host_3d(
-        &mut self, resource_id: u32,
-        x: u32, y: u32, z: u32, w: u32, h: u32, d: u32,
-        offset: u64, level: u32, stride: u32, layer_stride: u32,
+        &mut self,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        w: u32,
+        h: u32,
+        d: u32,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
         ctx_id: u32,
     ) -> bool {
         let mut cmd = TransferFromHost3d {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D),
-            box_x: x, box_y: y, box_z: z,
-            box_w: w, box_h: h, box_d: d,
-            offset, resource_id, level, stride, layer_stride,
+            box_x: x,
+            box_y: y,
+            box_z: z,
+            box_w: w,
+            box_h: h,
+            box_d: d,
+            offset,
+            resource_id,
+            level,
+            stride,
+            layer_stride,
         };
         cmd.hdr.ctx_id = ctx_id;
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<TransferFromHost3d>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<TransferFromHost3d>(),
+            )
         };
         self.send_ctrl_cmd(bytes) == VIRTIO_GPU_RESP_OK_NODATA
     }
@@ -1035,12 +1186,16 @@ impl VirtioGpu {
     /// Submit a virgl command buffer to the host renderer.
     /// `data` contains raw Gallium/virgl command words.
     fn cmd_submit_3d(&mut self, data: &[u8], ctx_id: u32) -> bool {
-        if data.is_empty() || self.cmd_3d_buf == 0 { return false; }
+        if data.is_empty() || self.cmd_3d_buf == 0 {
+            return false;
+        }
 
         // Max payload = 64 KiB buffer minus header
         let hdr_size = core::mem::size_of::<Submit3d>();
         let max_data = 64 * 1024 - hdr_size;
-        if data.len() > max_data { return false; }
+        if data.len() > max_data {
+            return false;
+        }
 
         let mut hdr = Submit3d {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_SUBMIT_3D),
@@ -1059,7 +1214,9 @@ impl VirtioGpu {
         let total_len = (hdr_size + data.len()) as u32;
 
         // Zero response
-        unsafe { core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24); }
+        unsafe {
+            core::ptr::write_bytes(self.resp_buf as *mut u8, 0, 24);
+        }
 
         let common_cfg = self.device.common_cfg;
         let notify_addr = self.device.notify_base;
@@ -1071,11 +1228,15 @@ impl VirtioGpu {
         let result = self.controlq.execute_sync(
             &[(self.cmd_3d_buf, total_len)],
             &[(self.resp_buf, 24)],
-            || { virtio::mmio_write16(notify_virt, 0); },
+            || {
+                virtio::mmio_write16(notify_virt, 0);
+            },
         );
 
         let _ = virtio::mmio_read8(self.device.isr_addr);
-        if result.is_none() { return false; }
+        if result.is_none() {
+            return false;
+        }
         let resp = unsafe { core::ptr::read_volatile(self.resp_buf as *const u32) };
         resp == VIRTIO_GPU_RESP_OK_NODATA
     }
@@ -1091,7 +1252,11 @@ impl GpuDriver for VirtioGpu {
     }
 
     fn driver_type_name(&self) -> &str {
-        if self.virgl_capable { "virgl" } else { "none" }
+        if self.virgl_capable {
+            "virgl"
+        } else {
+            "none"
+        }
     }
 
     fn has_3d(&self) -> bool {
@@ -1099,21 +1264,23 @@ impl GpuDriver for VirtioGpu {
     }
 
     fn sync(&mut self) {
-        if !self.virgl_capable || self.virgl_ctx_id == 0 { return; }
+        if !self.virgl_capable || self.virgl_ctx_id == 0 {
+            return;
+        }
         // Send a virgl NOP command (header only, length=0) and wait for the
         // synchronous response. This stalls until virglrenderer has processed
         // all previously submitted commands, ensuring rendered pixels are
         // committed before TRANSFER_FROM_HOST_3D reads them back.
         // Header: (length=0 << 16) | (obj=0 << 8) | cmd=0 = 0x00000000
         let nop_word: u32 = 0u32;
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&nop_word as *const u32 as *const u8, 4)
-        };
+        let bytes = unsafe { core::slice::from_raw_parts(&nop_word as *const u32 as *const u8, 4) };
         self.cmd_submit_3d(bytes, self.virgl_ctx_id);
     }
 
     fn submit_3d_commands(&mut self, words: &[u32]) -> bool {
-        if !self.virgl_capable { return false; }
+        if !self.virgl_capable {
+            return false;
+        }
 
         // Ensure we have a virgl context
         if self.virgl_ctx_id == 0 {
@@ -1125,14 +1292,15 @@ impl GpuDriver for VirtioGpu {
         }
 
         // Submit raw virgl command words as bytes
-        let bytes = unsafe {
-            core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 4)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 4) };
         self.cmd_submit_3d(bytes, self.virgl_ctx_id)
     }
 
     fn dma_surface_upload(&mut self, sid: u32, data: &[u8], width: u32, height: u32) -> bool {
-        if !self.virgl_capable { return false; }
+        if !self.virgl_capable {
+            return false;
+        }
 
         let ctx_id = self.virgl_ctx_id;
         let row_bytes = (width * 4) as usize;
@@ -1146,7 +1314,9 @@ impl GpuDriver for VirtioGpu {
             let chunk_bytes = (chunk_h as usize) * row_bytes;
             let data_offset = (y as usize) * row_bytes;
 
-            if data_offset + chunk_bytes > data.len() { return false; }
+            if data_offset + chunk_bytes > data.len() {
+                return false;
+            }
 
             unsafe {
                 core::ptr::copy_nonoverlapping(
@@ -1161,8 +1331,18 @@ impl GpuDriver for VirtioGpu {
             }
 
             let ok = self.cmd_transfer_to_host_3d(
-                sid, 0, y, 0, width, chunk_h, 1,
-                0, 0, row_bytes as u32, 0, ctx_id,
+                sid,
+                0,
+                y,
+                0,
+                width,
+                chunk_h,
+                1,
+                0,
+                0,
+                row_bytes as u32,
+                0,
+                ctx_id,
             );
 
             // Detach backing
@@ -1172,11 +1352,16 @@ impl GpuDriver for VirtioGpu {
                 padding: 0,
             };
             let bytes = unsafe {
-                core::slice::from_raw_parts(&detach as *const _ as *const u8, core::mem::size_of::<ResourceDetachBacking>())
+                core::slice::from_raw_parts(
+                    &detach as *const _ as *const u8,
+                    core::mem::size_of::<ResourceDetachBacking>(),
+                )
             };
             self.send_ctrl_cmd(bytes);
 
-            if !ok { return false; }
+            if !ok {
+                return false;
+            }
             y += chunk_h;
         }
 
@@ -1184,7 +1369,9 @@ impl GpuDriver for VirtioGpu {
     }
 
     fn dma_surface_download(&mut self, sid: u32, buf: &mut [u8], width: u32, height: u32) -> bool {
-        if !self.virgl_capable { return false; }
+        if !self.virgl_capable {
+            return false;
+        }
         // Reject downloads for destroyed/unknown surfaces immediately.
         // Without this check a freed surface keeps the loop running forever,
         // consuming CPU while returning all-zero data ("zombie surface").
@@ -1211,15 +1398,27 @@ impl GpuDriver for VirtioGpu {
             let chunk_bytes = (chunk_h as usize) * row_bytes;
             let buf_offset = (y as usize) * row_bytes;
 
-            unsafe { core::ptr::write_bytes(self.cmd_3d_buf as *mut u8, 0, chunk_bytes); }
+            unsafe {
+                core::ptr::write_bytes(self.cmd_3d_buf as *mut u8, 0, chunk_bytes);
+            }
 
             if !self.cmd_attach_backing(sid, self.cmd_3d_buf, num_pages) {
                 return false;
             }
 
             let ok = self.cmd_transfer_from_host_3d(
-                sid, 0, y, 0, width, chunk_h, 1,
-                0, 0, row_bytes as u32, 0, ctx_id,
+                sid,
+                0,
+                y,
+                0,
+                width,
+                chunk_h,
+                1,
+                0,
+                0,
+                row_bytes as u32,
+                0,
+                ctx_id,
             );
 
             if ok {
@@ -1239,22 +1438,38 @@ impl GpuDriver for VirtioGpu {
                 padding: 0,
             };
             let bytes = unsafe {
-                core::slice::from_raw_parts(&detach as *const _ as *const u8, core::mem::size_of::<ResourceDetachBacking>())
+                core::slice::from_raw_parts(
+                    &detach as *const _ as *const u8,
+                    core::mem::size_of::<ResourceDetachBacking>(),
+                )
             };
             self.send_ctrl_cmd(bytes);
 
-            if !ok { return false; }
+            if !ok {
+                return false;
+            }
             y += chunk_h;
         }
 
         true
     }
 
-    fn create_3d_resource(&mut self, target: u32, format: u32, bind: u32,
-        width: u32, height: u32, depth: u32, array_size: u32,
-        last_level: u32, nr_samples: u32, flags: u32) -> Option<u32>
-    {
-        if !self.virgl_capable { return None; }
+    fn create_3d_resource(
+        &mut self,
+        target: u32,
+        format: u32,
+        bind: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+        array_size: u32,
+        last_level: u32,
+        nr_samples: u32,
+        flags: u32,
+    ) -> Option<u32> {
+        if !self.virgl_capable {
+            return None;
+        }
 
         // Ensure virgl context exists
         if self.virgl_ctx_id == 0 {
@@ -1269,9 +1484,19 @@ impl GpuDriver for VirtioGpu {
         let resource_id = self.next_resource_id;
         self.next_resource_id += 1;
 
-        if !self.cmd_resource_create_3d(resource_id, target, format, bind,
-            width, height, depth, array_size, last_level, nr_samples, flags)
-        {
+        if !self.cmd_resource_create_3d(
+            resource_id,
+            target,
+            format,
+            bind,
+            width,
+            height,
+            depth,
+            array_size,
+            last_level,
+            nr_samples,
+            flags,
+        ) {
             return None;
         }
 
@@ -1286,7 +1511,9 @@ impl GpuDriver for VirtioGpu {
     }
 
     fn destroy_3d_resource(&mut self, resource_id: u32) -> bool {
-        if !self.virgl_capable { return false; }
+        if !self.virgl_capable {
+            return false;
+        }
         // Remove from live set — subsequent dma_surface_download calls for this ID will fail fast.
         self.live_3d_resources.retain(|&id| id != resource_id);
         // Detach from virgl context if active
@@ -1381,13 +1608,17 @@ impl GpuDriver for VirtioGpu {
             for row in 0..(h as usize) {
                 let src_off = (sy as usize + row) * pitch_u32 + sx as usize;
                 let dst_off = (dy as usize + row) * pitch_u32 + dx as usize;
-                unsafe { core::ptr::copy(fb.add(src_off), fb.add(dst_off), w as usize); }
+                unsafe {
+                    core::ptr::copy(fb.add(src_off), fb.add(dst_off), w as usize);
+                }
             }
         } else {
             for row in (0..(h as usize)).rev() {
                 let src_off = (sy as usize + row) * pitch_u32 + sx as usize;
                 let dst_off = (dy as usize + row) * pitch_u32 + dx as usize;
-                unsafe { core::ptr::copy(fb.add(src_off), fb.add(dst_off), w as usize); }
+                unsafe {
+                    core::ptr::copy(fb.add(src_off), fb.add(dst_off), w as usize);
+                }
             }
         }
         true
@@ -1433,7 +1664,11 @@ impl GpuDriver for VirtioGpu {
         if !self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h) {
             crate::serial_println!(
                 "[gpu] VirtIO TRANSFER_TO_HOST_2D failed: ({},{} {}x{}) res={}",
-                x, y, w, h, self.scanout_resource_id
+                x,
+                y,
+                w,
+                h,
+                self.scanout_resource_id
             );
         }
     }
@@ -1452,12 +1687,18 @@ impl GpuDriver for VirtioGpu {
         // Only flush — all transfers already done.
         // Retry once on failure (same rationale and drain pattern as transfer_rect).
         if !self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h) {
-            for _ in 0..1_000_000u32 { core::hint::spin_loop(); }
+            for _ in 0..1_000_000u32 {
+                core::hint::spin_loop();
+            }
             while self.controlq.poll_used().is_some() {}
             if !self.cmd_resource_flush(self.scanout_resource_id, x, y, w, h) {
                 crate::serial_println!(
                     "[gpu] VirtIO RESOURCE_FLUSH failed: ({},{} {}x{}) res={}",
-                    x, y, w, h, self.scanout_resource_id
+                    x,
+                    y,
+                    w,
+                    h,
+                    self.scanout_resource_id
                 );
             }
         }
@@ -1489,7 +1730,12 @@ impl GpuDriver for VirtioGpu {
         let cursor_res = self.next_resource_id;
         self.next_resource_id += 1;
 
-        if !self.cmd_resource_create_2d(cursor_res, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, cursor_w, cursor_h) {
+        if !self.cmd_resource_create_2d(
+            cursor_res,
+            VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM,
+            cursor_w,
+            cursor_h,
+        ) {
             return;
         }
 
@@ -1505,7 +1751,11 @@ impl GpuDriver for VirtioGpu {
                 for col in 0..(w.min(cursor_w) as usize) {
                     let src_idx = row * (w as usize) + col;
                     let dst_idx = row * (cursor_w as usize) + col;
-                    let pixel = if src_idx < pixels.len() { pixels[src_idx] } else { 0 };
+                    let pixel = if src_idx < pixels.len() {
+                        pixels[src_idx]
+                    } else {
+                        0
+                    };
                     core::ptr::write_volatile(dst.add(dst_idx), pixel);
                 }
             }
@@ -1527,14 +1777,22 @@ impl GpuDriver for VirtioGpu {
         // Send UPDATE_CURSOR to set the cursor image at the current position
         let cmd = UpdateCursor {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_UPDATE_CURSOR),
-            pos: CursorPos { scanout_id: 0, x: self.cursor_x, y: self.cursor_y, padding: 0 },
+            pos: CursorPos {
+                scanout_id: 0,
+                x: self.cursor_x,
+                y: self.cursor_y,
+                padding: 0,
+            },
             resource_id: cursor_res,
             hot_x: hotx,
             hot_y: hoty,
             padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<UpdateCursor>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<UpdateCursor>(),
+            )
         };
         self.send_cursor_cmd(bytes);
     }
@@ -1544,14 +1802,22 @@ impl GpuDriver for VirtioGpu {
         self.cursor_y = y;
         let cmd = UpdateCursor {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_MOVE_CURSOR),
-            pos: CursorPos { scanout_id: 0, x, y, padding: 0 },
+            pos: CursorPos {
+                scanout_id: 0,
+                x,
+                y,
+                padding: 0,
+            },
             resource_id: self.cursor_resource_id,
             hot_x: self.cursor_hot_x,
             hot_y: self.cursor_hot_y,
             padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<UpdateCursor>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<UpdateCursor>(),
+            )
         };
         self.send_cursor_cmd(bytes);
     }
@@ -1560,14 +1826,22 @@ impl GpuDriver for VirtioGpu {
         let res_id = if visible { self.cursor_resource_id } else { 0 };
         let cmd = UpdateCursor {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_UPDATE_CURSOR),
-            pos: CursorPos { scanout_id: 0, x: 0, y: 0, padding: 0 },
+            pos: CursorPos {
+                scanout_id: 0,
+                x: 0,
+                y: 0,
+                padding: 0,
+            },
             resource_id: res_id,
             hot_x: self.cursor_hot_x,
             hot_y: self.cursor_hot_y,
             padding: 0,
         };
         let bytes = unsafe {
-            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<UpdateCursor>())
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<UpdateCursor>(),
+            )
         };
         self.send_cursor_cmd(bytes);
     }
@@ -1606,8 +1880,12 @@ impl GpuDriver for VirtioGpu {
 /// Initialize and register the VirtIO GPU driver.
 /// Called from HAL factory during PCI probe.
 pub fn init_and_register(pci_dev: &PciDevice) -> bool {
-    crate::serial_verbose_println!("  VirtIO GPU: initializing (PCI {:02x}:{:02x}.{})",
-        pci_dev.bus, pci_dev.device, pci_dev.function);
+    crate::serial_verbose_println!(
+        "  VirtIO GPU: initializing (PCI {:02x}:{:02x}.{})",
+        pci_dev.bus,
+        pci_dev.device,
+        pci_dev.function
+    );
 
     // 1. Find PCI capabilities
     let caps = match virtio::find_capabilities(pci_dev) {
@@ -1655,7 +1933,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // Allocate DMA buffers for commands and responses
     let cmd_buf = match physical::alloc_frame() {
         Some(p) => {
-            unsafe { core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4096); }
+            unsafe {
+                core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4096);
+            }
             p.as_u64()
         }
         None => {
@@ -1666,7 +1946,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     let resp_buf = match physical::alloc_frame() {
         Some(p) => {
-            unsafe { core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4096); }
+            unsafe {
+                core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4096);
+            }
             p.as_u64()
         }
         None => {
@@ -1689,7 +1971,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // identity-maps PD[0..31] (64 MiB), so writing to higher frames page-faults.
     let cursor_buf_phys = match physical::alloc_contiguous(4) {
         Some(p) => {
-            unsafe { core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4 * 4096); }
+            unsafe {
+                core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 4 * 4096);
+            }
             p.as_u64()
         }
         None => {
@@ -1702,7 +1986,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     let cmd_3d_buf = if virgl_capable {
         match physical::alloc_contiguous(16) {
             Some(p) => {
-                unsafe { core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 16 * 4096); }
+                unsafe {
+                    core::ptr::write_bytes(p.as_u64() as *mut u8, 0, 16 * 4096);
+                }
                 p.as_u64()
             }
             None => {
@@ -1710,7 +1996,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
                 0
             }
         }
-    } else { 0 };
+    } else {
+        0
+    };
 
     let mut gpu = VirtioGpu {
         device,
@@ -1750,14 +2038,20 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // Retry up to 5 times with 50ms delays to give the host time to populate EDID.
     let mut native = gpu.cmd_get_display_info().unwrap_or((1024, 768));
     if native == (640, 480) {
-        crate::serial_verbose_println!("  VirtIO GPU: got 640x480 (VGA default), retrying for EDID...");
+        crate::serial_verbose_println!(
+            "  VirtIO GPU: got 640x480 (VGA default), retrying for EDID..."
+        );
         for attempt in 1..=5 {
             crate::arch::x86::pit::delay_ms(50);
             if let Some(res) = gpu.cmd_get_display_info() {
                 if res != (640, 480) {
                     native = res;
-                    crate::serial_verbose_println!("  VirtIO GPU: EDID ready after {}ms: {}x{}",
-                        attempt * 50, res.0, res.1);
+                    crate::serial_verbose_println!(
+                        "  VirtIO GPU: EDID ready after {}ms: {}x{}",
+                        attempt * 50,
+                        res.0,
+                        res.1
+                    );
                     break;
                 }
             }
@@ -1765,8 +2059,11 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     }
     // Enforce minimum 1024x768 — never start with a smaller resolution.
     if native.0 < 1024 || native.1 < 768 {
-        crate::serial_verbose_println!("  VirtIO GPU: {}x{} below minimum, forcing 1024x768",
-            native.0, native.1);
+        crate::serial_verbose_println!(
+            "  VirtIO GPU: {}x{} below minimum, forcing 1024x768",
+            native.0,
+            native.1
+        );
         native = (1024, 768);
     }
     crate::serial_verbose_println!("  VirtIO GPU: native display {}x{}", native.0, native.1);
@@ -1795,19 +2092,18 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     // Update canonical framebuffer info to point at VirtIO's guest RAM buffer.
     // This triggers the boot_console change hook which re-renders the splash
     // logo centered for the new resolution — no manual copy needed.
-    crate::drivers::framebuffer::update(
-        gpu.fb_phys as u64,
-        gpu.pitch,
-        width,
-        height,
-        32,
-    );
+    crate::drivers::framebuffer::update(gpu.fb_phys as u64, gpu.pitch, width, height, 32);
 
     // Initial transfer + flush
     gpu.cmd_transfer_to_host_2d(gpu.scanout_resource_id, 0, 0, width, height);
     gpu.cmd_resource_flush(gpu.scanout_resource_id, 0, 0, width, height);
 
-    crate::serial_verbose_println!("[OK] VirtIO GPU: {}x{} (fb={:#x})", width, height, gpu.fb_phys);
+    crate::serial_verbose_println!(
+        "[OK] VirtIO GPU: {}x{} (fb={:#x})",
+        width,
+        height,
+        gpu.fb_phys
+    );
 
     // Register as the active GPU driver
     super::register(Box::new(gpu));

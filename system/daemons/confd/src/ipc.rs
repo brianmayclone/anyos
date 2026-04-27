@@ -5,8 +5,8 @@ use libdb_client::Database;
 
 use crate::{schema, ConfState, ConfValue, NodeKind, RegistryEntry, Scope};
 
-const MAX_PENDING_REQUEST_BYTES: usize = 32 * 1024;
-const MAX_REQUEST_LINE_BYTES: usize = 8 * 1024;
+const MAX_PENDING_REQUEST_BYTES: usize = 256 * 1024;
+const MAX_REQUEST_LINE_BYTES: usize = 192 * 1024;
 
 pub fn handle_requests(db: &Database, state: &mut ConfState, pipe_id: u32, buf: &mut [u8]) -> bool {
     let n = anyos_std::ipc::pipe_read(pipe_id, buf);
@@ -19,6 +19,11 @@ pub fn handle_requests(db: &Database, state: &mut ConfState, pipe_id: u32, buf: 
         Err(_) => return true,
     };
     if state.pending_request.len().saturating_add(data.len()) > MAX_PENDING_REQUEST_BYTES {
+        anyos_std::println!(
+            "confd: dropping oversized pending request buffer ({} + {} bytes)",
+            state.pending_request.len(),
+            data.len()
+        );
         state.pending_request.clear();
         return true;
     }
@@ -28,6 +33,10 @@ pub fn handle_requests(db: &Database, state: &mut ConfState, pipe_id: u32, buf: 
         let mut line = state.pending_request[..pos].to_string();
         state.pending_request.drain(..=pos);
         if line.len() > MAX_REQUEST_LINE_BYTES {
+            anyos_std::println!(
+                "confd: dropping oversized request line ({} bytes)",
+                line.len()
+            );
             continue;
         }
         if line.ends_with('\r') {
@@ -63,26 +72,88 @@ fn handle_single_request(db: &Database, state: &mut ConfState, line: &str) {
 fn dispatch(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str, cmd: &str) {
     let (verb, rest) = split_first_word(cmd);
     match verb {
-        "HELLO" | "hello" => cmd_hello(state, tid, reply_pipe_name, rest),
+        "HELLO" | "hello" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_hello(state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
         "PING" | "ping" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
             let _ = send_line(reply_pipe_name, tid, "PONG");
+            trace_done(tid, verb);
         }
-        "REGISTER" | "register" => cmd_register(db, state, tid, reply_pipe_name, rest),
-        "MKDIR" | "mkdir" => cmd_mkdir(db, state, tid, reply_pipe_name, rest),
-        "SET" | "set" => cmd_set(db, state, tid, reply_pipe_name, rest),
-        "GET" | "get" => cmd_get(state, tid, reply_pipe_name, rest),
-        "DEL" | "del" => cmd_del(db, state, tid, reply_pipe_name, rest),
-        "LIST" | "list" => cmd_list(state, tid, reply_pipe_name, rest),
+        "REGISTER" | "register" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_register(db, state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
+        "MKDIR" | "mkdir" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_mkdir(db, state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
+        "SET" | "set" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_set(db, state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
+        "GET" | "get" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_get(state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
+        "DEL" | "del" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_del(db, state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
+        "LIST" | "list" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_list(state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
         "LISTCHILDREN" | "listchildren" | "LIST_CHILDREN" | "list_children" => {
-            cmd_list_children(state, tid, reply_pipe_name, rest)
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_list_children(state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
         }
-        "AUDIT" | "audit" => cmd_audit(db, state, tid, reply_pipe_name, rest),
-        "WATCH" | "watch" => cmd_watch(state, tid, reply_pipe_name, rest),
-        "UNWATCH" | "unwatch" => cmd_unwatch(state, tid, reply_pipe_name, rest),
+        "AUDIT" | "audit" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_audit(db, state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
+        "WATCH" | "watch" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_watch(state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
+        "UNWATCH" | "unwatch" => {
+            trace_request(tid, reply_pipe_name, verb, rest);
+            cmd_unwatch(state, tid, reply_pipe_name, rest);
+            trace_done(tid, verb);
+        }
         _ => {
+            trace_request(tid, reply_pipe_name, verb, rest);
             let _ = send_line(reply_pipe_name, tid, "ERR unknown_command");
+            trace_done(tid, verb);
         }
     }
+}
+
+fn trace_request(tid: u32, reply_pipe_name: &str, verb: &str, rest: &str) {
+    let preview_len = rest.len().min(96);
+    anyos_std::println!(
+        "confd: req tid={} reply='{}' verb={} rest_len={} rest='{}'",
+        tid,
+        reply_pipe_name,
+        verb,
+        rest.len(),
+        &rest[..preview_len]
+    );
+}
+
+fn trace_done(tid: u32, verb: &str) {
+    anyos_std::println!("confd: done tid={} verb={}", tid, verb);
 }
 
 fn cmd_hello(state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
@@ -193,7 +264,7 @@ fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &s
     push_u64(&mut resp, entry.updated_at);
     send_line(reply_pipe_name, tid, &resp);
 
-    audit(
+    audit_deferred(
         state,
         db,
         actor_uid,
@@ -264,25 +335,6 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
     }
 
     let original_entries = state.entries.clone();
-    if db.exec("BEGIN").is_err() {
-        send_line(reply_pipe_name, tid, "ERR transaction_unavailable");
-        audit(
-            state,
-            db,
-            actor_uid,
-            owner_uid,
-            &actor_name,
-            tid,
-            "register",
-            scope,
-            namespace,
-            "transaction_unavailable",
-            "",
-            0,
-        );
-        return;
-    }
-    let tx_started = true;
 
     let namespace_root = canonical_path(scope, owner_uid, namespace);
     if !ensure_parent_dirs(
@@ -294,7 +346,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
         namespace,
         &actor_name,
     ) {
-        rollback_register(db, state, original_entries, tx_started);
+        rollback_register(db, state, original_entries, false);
         send_line(reply_pipe_name, tid, "ERR persist_failed");
         audit(
             state,
@@ -323,13 +375,13 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
         now,
     );
     if root_changed {
-        if let Err(err) = schema::persist_entry(db, &root_entry) {
+        if let Err(err) = schema::persist_entry_deferred(db, &root_entry) {
             anyos_std::println!(
                 "confd: REGISTER persist namespace_root '{}' failed: {}",
                 namespace,
                 err
             );
-            rollback_register(db, state, original_entries, tx_started);
+            rollback_register(db, state, original_entries, false);
             send_line(reply_pipe_name, tid, "ERR persist_failed");
             audit(
                 state,
@@ -396,7 +448,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     now_ms(),
                 );
                 if changed {
-                    if let Err(err) = schema::persist_entry(db, &entry) {
+                    if let Err(err) = schema::persist_entry_deferred(db, &entry) {
                         anyos_std::println!(
                             "confd: REGISTER persist dir '{}' failed: {}",
                             full_path,
@@ -451,7 +503,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     &actor_name,
                     now_ms(),
                 );
-                if let Err(err) = schema::persist_entry(db, &entry) {
+                if let Err(err) = schema::persist_entry_deferred(db, &entry) {
                     anyos_std::println!(
                         "confd: REGISTER persist default '{}' failed: {}",
                         full_path,
@@ -511,7 +563,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     &actor_name,
                     now_ms(),
                 );
-                if let Err(err) = schema::persist_entry(db, &entry) {
+                if let Err(err) = schema::persist_entry_deferred(db, &entry) {
                     anyos_std::println!(
                         "confd: REGISTER persist migration set '{}' failed: {}",
                         full_path,
@@ -626,7 +678,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
     }
 
     if persist_failed {
-        rollback_register(db, state, original_entries, tx_started);
+        rollback_register(db, state, original_entries, false);
         send_line(reply_pipe_name, tid, "ERR persist_failed");
         audit(
             state,
@@ -648,7 +700,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
     if applied_version < schema_version {
         applied_version = schema_version;
     }
-    if let Err(err) = schema::persist_schema(
+    if let Err(err) = schema::persist_schema_deferred(
         db,
         scope,
         owner_uid,
@@ -658,14 +710,13 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
         manifest_text,
         now_ms(),
         &actor_name,
-    )
-    {
+    ) {
         anyos_std::println!(
             "confd: REGISTER persist schema '{}' failed: {}",
             namespace,
             err
         );
-        rollback_register(db, state, original_entries, tx_started);
+        rollback_register(db, state, original_entries, false);
         send_line(reply_pipe_name, tid, "ERR persist_failed");
         audit(
             state,
@@ -684,27 +735,6 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
         return;
     }
 
-    if tx_started && db.exec("COMMIT").is_err() {
-        state.entries = original_entries;
-        let _ = db.exec("ROLLBACK");
-        send_line(reply_pipe_name, tid, "ERR persist_failed");
-        audit(
-            state,
-            db,
-            actor_uid,
-            owner_uid,
-            &actor_name,
-            tid,
-            "register",
-            scope,
-            namespace,
-            "persist_failed",
-            "commit",
-            schema_version as u64,
-        );
-        return;
-    }
-
     let mut resp = String::from("OK register ");
     resp.push_str(scope_name(scope));
     resp.push(' ');
@@ -715,7 +745,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
     push_u32(&mut resp, applied_version);
     send_line(reply_pipe_name, tid, &resp);
 
-    audit(
+    audit_deferred(
         state,
         db,
         actor_uid,
@@ -1004,14 +1034,41 @@ fn cmd_list(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
         return;
     };
     let items = state.list_prefix(&canonical_path);
+    anyos_std::println!(
+        "confd: LIST tid={} reply='{}' path='{}' -> {} items",
+        tid,
+        reply_pipe_name,
+        rest,
+        items.len()
+    );
     for entry in &items {
-        send_line(
+        if !send_line(
             reply_pipe_name,
             tid,
             &format_entry_line("ITEM", scope, entry),
-        );
+        ) {
+            anyos_std::println!(
+                "confd: LIST tid={} reply='{}' failed while sending ITEM '{}'",
+                tid,
+                reply_pipe_name,
+                entry.logical_path
+            );
+            return;
+        }
     }
-    send_line(reply_pipe_name, tid, "END");
+    if !send_line(reply_pipe_name, tid, "END") {
+        anyos_std::println!(
+            "confd: LIST tid={} reply='{}' failed while sending END",
+            tid,
+            reply_pipe_name
+        );
+        return;
+    }
+    anyos_std::println!(
+        "confd: LIST tid={} reply='{}' sent END",
+        tid,
+        reply_pipe_name
+    );
 }
 
 fn cmd_list_children(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
@@ -1021,14 +1078,41 @@ fn cmd_list_children(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &
         return;
     };
     let items = state.list_direct_children(&canonical_path);
+    anyos_std::println!(
+        "confd: LISTCHILDREN tid={} reply='{}' path='{}' -> {} items",
+        tid,
+        reply_pipe_name,
+        rest,
+        items.len()
+    );
     for entry in &items {
-        send_line(
+        if !send_line(
             reply_pipe_name,
             tid,
             &format_entry_line("ITEM", scope, entry),
-        );
+        ) {
+            anyos_std::println!(
+                "confd: LISTCHILDREN tid={} reply='{}' failed while sending ITEM '{}'",
+                tid,
+                reply_pipe_name,
+                entry.logical_path
+            );
+            return;
+        }
     }
-    send_line(reply_pipe_name, tid, "END");
+    if !send_line(reply_pipe_name, tid, "END") {
+        anyos_std::println!(
+            "confd: LISTCHILDREN tid={} reply='{}' failed while sending END",
+            tid,
+            reply_pipe_name
+        );
+        return;
+    }
+    anyos_std::println!(
+        "confd: LISTCHILDREN tid={} reply='{}' sent END",
+        tid,
+        reply_pipe_name
+    );
 }
 
 fn cmd_audit(db: &Database, _state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
@@ -1145,7 +1229,14 @@ fn ensure_parent_dirs(
     actor_name: &str,
 ) -> bool {
     let mut current = String::new();
-    for segment in logical_path.split('/') {
+    let mut segments = logical_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .peekable();
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_none() {
+            break;
+        }
         if segment.is_empty() {
             continue;
         }
@@ -1161,7 +1252,7 @@ fn ensure_parent_dirs(
         let (entry, _) = state.upsert_dir(
             scope, owner_uid, &canonical, &current, actor_uid, actor_name, now,
         );
-        if schema::persist_entry(db, &entry).is_err() {
+        if schema::persist_entry_deferred(db, &entry).is_err() {
             return false;
         }
     }
@@ -1179,7 +1270,7 @@ fn delete_registry_subtree(
     let entries = collect_subtree_entries(state, &canonical);
     for entry in entries {
         state.remove_entry(&entry.canonical_path);
-        if schema::delete_entry(db, &entry.canonical_path).is_err() {
+        if schema::delete_entry_deferred(db, &entry.canonical_path).is_err() {
             return false;
         }
     }
@@ -1221,7 +1312,7 @@ fn rename_registry_subtree(
 
     for entry in &entries {
         state.remove_entry(&entry.canonical_path);
-        if schema::delete_entry(db, &entry.canonical_path).is_err() {
+        if schema::delete_entry_deferred(db, &entry.canonical_path).is_err() {
             return false;
         }
     }
@@ -1239,7 +1330,7 @@ fn rename_registry_subtree(
             to_logical_path,
         );
         state.entries.push(moved.clone());
-        if schema::persist_entry(db, &moved).is_err() {
+        if schema::persist_entry_deferred(db, &moved).is_err() {
             return false;
         }
     }
@@ -1292,7 +1383,7 @@ fn copy_registry_subtree(
             to_logical_path,
         );
         state.entries.push(copied.clone());
-        if schema::persist_entry(db, &copied).is_err() {
+        if schema::persist_entry_deferred(db, &copied).is_err() {
             return false;
         }
     }
@@ -1427,6 +1518,39 @@ fn audit(
     let seq = state.next_audit_seq;
     state.next_audit_seq = state.next_audit_seq.saturating_add(1);
     schema::append_audit(
+        db,
+        seq,
+        actor_uid,
+        owner_uid,
+        actor_name,
+        tid,
+        action,
+        scope,
+        logical_path,
+        status,
+        detail,
+        version,
+        now_ms(),
+    );
+}
+
+fn audit_deferred(
+    state: &mut ConfState,
+    db: &Database,
+    actor_uid: u16,
+    owner_uid: u16,
+    actor_name: &str,
+    tid: u32,
+    action: &str,
+    scope: Scope,
+    logical_path: &str,
+    status: &str,
+    detail: &str,
+    version: u64,
+) {
+    let seq = state.next_audit_seq;
+    state.next_audit_seq = state.next_audit_seq.saturating_add(1);
+    schema::append_audit_deferred(
         db,
         seq,
         actor_uid,

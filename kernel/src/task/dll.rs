@@ -128,9 +128,13 @@ const PT_LOAD: u32 = 1;
 #[inline]
 fn dll_temp_virt() -> u64 {
     #[cfg(target_arch = "x86_64")]
-    { 0xFFFF_FFFF_81F1_0000 }
+    {
+        0xFFFF_FFFF_81F1_0000
+    }
     #[cfg(target_arch = "aarch64")]
-    { 0xFFFF_0000_81F1_0000 }
+    {
+        0xFFFF_0000_81F1_0000
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -353,7 +357,14 @@ fn patch_u64_in_page(
 
     if page_offset + 8 > PAGE_SIZE as usize {
         // Cross-page boundary — split write
-        patch_bytes_in_page(va, &value.to_le_bytes(), rw_start_va, ro_pages, data_template_pages, temp_virt);
+        patch_bytes_in_page(
+            va,
+            &value.to_le_bytes(),
+            rw_start_va,
+            ro_pages,
+            data_template_pages,
+            temp_virt,
+        );
         return;
     }
 
@@ -378,7 +389,14 @@ fn patch_u32_in_page(
 
     if page_offset + 4 > PAGE_SIZE as usize {
         // Cross-page boundary — split write
-        patch_bytes_in_page(va, &value.to_le_bytes(), rw_start_va, ro_pages, data_template_pages, temp_virt);
+        patch_bytes_in_page(
+            va,
+            &value.to_le_bytes(),
+            rw_start_va,
+            ro_pages,
+            data_template_pages,
+            temp_virt,
+        );
         return;
     }
 
@@ -456,15 +474,23 @@ fn apply_elf_relocations(
                 R_RELATIVE => {
                     // 64-bit absolute patch
                     patch_u64_in_page(
-                        r_offset, value, rw_start_va,
-                        ro_pages, data_template_pages, temp_virt,
+                        r_offset,
+                        value,
+                        rw_start_va,
+                        ro_pages,
+                        data_template_pages,
+                        temp_virt,
                     );
                 }
                 R_ABS32 | R_ABS32_SIGNED => {
                     // 32-bit absolute patch (text relocations)
                     patch_u32_in_page(
-                        r_offset, value as u32, rw_start_va,
-                        ro_pages, data_template_pages, temp_virt,
+                        r_offset,
+                        value as u32,
+                        rw_start_va,
+                        ro_pages,
+                        data_template_pages,
+                        temp_virt,
                     );
                 }
                 _ => {
@@ -476,8 +502,12 @@ fn apply_elf_relocations(
             match r_type {
                 R_RELATIVE => {
                     patch_u64_in_page(
-                        r_offset, value, rw_start_va,
-                        ro_pages, data_template_pages, temp_virt,
+                        r_offset,
+                        value,
+                        rw_start_va,
+                        ro_pages,
+                        data_template_pages,
+                        temp_virt,
                     );
                 }
                 _ => {
@@ -584,7 +614,10 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     #[cfg(target_arch = "aarch64")]
     let expected_machine = EM_AARCH64;
     if read_u16_le(data, E_MACHINE) != expected_machine {
-        crate::serial_verbose_println!("  dload: wrong architecture (expected {})", expected_machine);
+        crate::serial_verbose_println!(
+            "  dload: wrong architecture (expected {})",
+            expected_machine
+        );
         return None;
     }
 
@@ -667,7 +700,9 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         };
         let aligned_size = (total_vsize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let b = NEXT_DYNAMIC_BASE.fetch_add(aligned_size, Ordering::SeqCst);
-        if b.checked_add(aligned_size).map_or(true, |end| end > DLIB_REGION_END) {
+        if b.checked_add(aligned_size)
+            .map_or(true, |end| end > DLIB_REGION_END)
+        {
             crate::serial_verbose_println!("  dload: address space exhausted");
             return None;
         }
@@ -747,7 +782,10 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     for i in 0..data_page_count as usize {
         let frame = physical::alloc_frame().expect("OOM in .so data template page");
         let file_off = rw_offset as usize + i * PAGE_SIZE as usize;
-        let copy_len = core::cmp::min(PAGE_SIZE as usize, rw_filesz as usize - i * PAGE_SIZE as usize);
+        let copy_len = core::cmp::min(
+            PAGE_SIZE as usize,
+            rw_filesz as usize - i * PAGE_SIZE as usize,
+        );
         with_frame_mut(frame, temp_virt, |dest| unsafe {
             // Zero the page first (handles .dynamic padding and partial pages)
             core::ptr::write_bytes(dest, 0, PAGE_SIZE as usize);
@@ -776,7 +814,9 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
 
     #[cfg(target_arch = "aarch64")]
     for &frame in &ro_pages {
-        unsafe { sync_executable_frame_icache(frame); }
+        unsafe {
+            sync_executable_frame_icache(frame);
+        }
     }
 
     // ── Update NEXT_DYNAMIC_BASE if this fixed-base .so consumed the space ──
@@ -872,7 +912,9 @@ pub fn load_dll(path: &str, expected_base: u64) -> Result<u32, &'static str> {
 
     #[cfg(target_arch = "aarch64")]
     for &frame in &ro_pages {
-        unsafe { sync_executable_frame_icache(frame); }
+        unsafe {
+            sync_executable_frame_icache(frame);
+        }
     }
 
     // Allocate .data template pages (kernel-private, used for per-process copy on demand)
@@ -1037,11 +1079,7 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
                 let dst = VirtAddr::new(TEMP_COPY_DST);
                 with_frame_read(template_phys, src, |src_ptr| {
                     with_frame_mut(new_frame, dst, |dst_ptr| unsafe {
-                        core::ptr::copy_nonoverlapping(
-                        src_ptr,
-                        dst_ptr,
-                        PAGE_SIZE as usize,
-                        );
+                        core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
                     });
                 });
 
@@ -1153,7 +1191,10 @@ fn load_dlib_v3_dynamic(data: &[u8], path: &str) -> Option<u64> {
         match alloc_and_copy_pages(data, data_offset, data_count as usize, temp_virt) {
             Ok(p) => p,
             Err(_) => {
-                crate::serial_verbose_println!("  dload: OOM allocating data template for '{}'", path);
+                crate::serial_verbose_println!(
+                    "  dload: OOM allocating data template for '{}'",
+                    path
+                );
                 return None;
             }
         };
@@ -1260,7 +1301,10 @@ pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
                 name,
                 plan.base_vaddr,
                 phys.as_u64(),
-                bytes[0], bytes[1], bytes[2], bytes[3]
+                bytes[0],
+                bytes[1],
+                bytes[2],
+                bytes[3]
             );
         }
     }

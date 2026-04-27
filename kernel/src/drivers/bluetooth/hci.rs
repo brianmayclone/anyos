@@ -111,11 +111,17 @@ pub fn write_scan_enable(discoverable: bool, connectable: bool) {
 
 /// Process an HCI event packet received from the controller.
 pub fn process_event(data: &[u8]) {
-    if data.len() < 2 { return; }
+    if data.len() < 2 {
+        return;
+    }
 
     let event_code = data[0];
     let param_len = data[1] as usize;
-    let params = if data.len() >= 2 + param_len { &data[2..2 + param_len] } else { &data[2..] };
+    let params = if data.len() >= 2 + param_len {
+        &data[2..2 + param_len]
+    } else {
+        &data[2..]
+    };
 
     match event_code {
         EVT_COMMAND_COMPLETE => {
@@ -130,7 +136,11 @@ pub fn process_event(data: &[u8]) {
                 let status = params[0];
                 let opcode = u16::from_le_bytes([params[2], params[3]]);
                 if status != 0 {
-                    crate::serial_println!("  BT HCI: command {:#06x} status={:#04x}", opcode, status);
+                    crate::serial_println!(
+                        "  BT HCI: command {:#06x} status={:#04x}",
+                        opcode,
+                        status
+                    );
                 }
             }
         }
@@ -149,21 +159,31 @@ pub fn process_event(data: &[u8]) {
                 let handle = u16::from_le_bytes([params[1], params[2]]);
                 let mut addr = BdAddr::default();
                 addr.0.copy_from_slice(&params[3..9]);
-                crate::serial_println!("  BT HCI: Connection {} status={} handle={}",
-                    addr, status, handle);
+                crate::serial_println!(
+                    "  BT HCI: Connection {} status={} handle={}",
+                    addr,
+                    status,
+                    handle
+                );
             }
         }
         EVT_DISCONNECTION_COMPLETE => {
             if params.len() >= 4 {
                 let handle = u16::from_le_bytes([params[1], params[2]]);
                 let reason = params[3];
-                crate::serial_println!("  BT HCI: Disconnected handle={} reason={:#04x}",
-                    handle, reason);
+                crate::serial_println!(
+                    "  BT HCI: Disconnected handle={} reason={:#04x}",
+                    handle,
+                    reason
+                );
             }
         }
         _ => {
-            crate::serial_verbose_println!("  BT HCI: unhandled event {:#04x} (len={})",
-                event_code, param_len);
+            crate::serial_verbose_println!(
+                "  BT HCI: unhandled event {:#04x} (len={})",
+                event_code,
+                param_len
+            );
         }
     }
 }
@@ -189,32 +209,43 @@ fn handle_command_complete(opcode: u16, status: u8, params: &[u8]) {
         }
         _ => {
             if status != 0 {
-                crate::serial_verbose_println!("  BT HCI: cmd {:#06x} failed (status={})",
-                    opcode, status);
+                crate::serial_verbose_println!(
+                    "  BT HCI: cmd {:#06x} failed (status={})",
+                    opcode,
+                    status
+                );
             }
         }
     }
 }
 
 fn handle_inquiry_result(params: &[u8], with_rssi: bool) {
-    if params.is_empty() { return; }
+    if params.is_empty() {
+        return;
+    }
     let num_responses = params[0] as usize;
     let entry_size = if with_rssi { 14 } else { 14 }; // Standard inquiry result entry
 
     for i in 0..num_responses {
         let base = 1 + i * entry_size;
-        if base + 6 > params.len() { break; }
+        if base + 6 > params.len() {
+            break;
+        }
 
         let mut addr = BdAddr::default();
         addr.0.copy_from_slice(&params[base..base + 6]);
 
         let cod = if base + 11 <= params.len() {
             u32::from_le_bytes([params[base + 8], params[base + 9], params[base + 10], 0])
-        } else { 0 };
+        } else {
+            0
+        };
 
         let rssi = if with_rssi && base + 14 <= params.len() {
             params[base + 13] as i8
-        } else { 0 };
+        } else {
+            0
+        };
 
         crate::serial_println!("  BT: found {} (class={:#08x} rssi={})", addr, cod, rssi);
 
@@ -229,7 +260,9 @@ fn handle_inquiry_result(params: &[u8], with_rssi: bool) {
 }
 
 fn handle_extended_inquiry_result(params: &[u8]) {
-    if params.len() < 15 { return; }
+    if params.len() < 15 {
+        return;
+    }
 
     let mut addr = BdAddr::default();
     addr.0.copy_from_slice(&params[1..7]);
@@ -243,7 +276,9 @@ fn handle_extended_inquiry_result(params: &[u8]) {
     let mut pos = 15;
     while pos < params.len() {
         let len = params[pos] as usize;
-        if len == 0 || pos + 1 + len > params.len() { break; }
+        if len == 0 || pos + 1 + len > params.len() {
+            break;
+        }
         let eir_type = params[pos + 1];
         let eir_data = &params[pos + 2..pos + 1 + len];
 
@@ -258,8 +293,13 @@ fn handle_extended_inquiry_result(params: &[u8]) {
     }
 
     let name_str = core::str::from_utf8(&name[..name_len as usize]).unwrap_or("?");
-    crate::serial_println!("  BT: found {} '{}' (class={:#08x} rssi={})",
-        addr, name_str, cod, rssi);
+    crate::serial_println!(
+        "  BT: found {} '{}' (class={:#08x} rssi={})",
+        addr,
+        name_str,
+        cod,
+        rssi
+    );
 
     super::add_discovered(BtDevice {
         addr,

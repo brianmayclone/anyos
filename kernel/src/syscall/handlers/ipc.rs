@@ -25,7 +25,9 @@ pub fn sys_pipe_create(name_ptr: u64) -> u32 {
 
 /// sys_pipe_read - Read from a pipe. Returns bytes read, or u32::MAX if not found.
 pub fn sys_pipe_read(pipe_id: u32, buf_ptr: u64, len: u32) -> u32 {
-    if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return 0; }
+    if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+        return 0;
+    }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
     crate::ipc::pipe::read(pipe_id, buf)
 }
@@ -38,14 +40,18 @@ pub fn sys_pipe_close(pipe_id: u32) -> u32 {
 
 /// sys_pipe_write - Write data to a pipe. Returns bytes written.
 pub fn sys_pipe_write(pipe_id: u32, buf_ptr: u64, len: u32) -> u32 {
-    if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return 0; }
+    if buf_ptr == 0 || len == 0 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+        return 0;
+    }
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
     crate::ipc::pipe::write(pipe_id, buf)
 }
 
 /// sys_pipe_open - Open an existing pipe by name. Returns pipe_id or 0 if not found.
 pub fn sys_pipe_open(name_ptr: u64) -> u32 {
-    if name_ptr == 0 { return 0; }
+    if name_ptr == 0 {
+        return 0;
+    }
     let name = unsafe { read_user_str(name_ptr) };
     crate::ipc::pipe::open(name)
 }
@@ -66,7 +72,9 @@ pub fn sys_pipe_list(buf_ptr: u64, buf_size: u32) -> u32 {
         for (i, pipe) in pipes.iter().enumerate().take(max_entries.min(count)) {
             let offset = i * entry_size;
             // Zero the entry first
-            for b in &mut buf[offset..offset + entry_size] { *b = 0; }
+            for b in &mut buf[offset..offset + entry_size] {
+                *b = 0;
+            }
             // pipe_id [0..4]
             buf[offset..offset + 4].copy_from_slice(&pipe.id.to_le_bytes());
             // buffered [4..8]
@@ -213,7 +221,11 @@ pub fn sys_evt_chan_wait(chan_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
     }
 
     // Compute wake tick. Cap indefinite waits at 60 seconds as safety net.
-    let effective_ms = if timeout_ms == u32::MAX { 60_000 } else { timeout_ms };
+    let effective_ms = if timeout_ms == u32::MAX {
+        60_000
+    } else {
+        timeout_ms
+    };
     let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
     let ticks = (effective_ms as u64 * pit_hz as u64 / 1000) as u32;
     let ticks = if ticks == 0 { 1 } else { ticks };

@@ -4,38 +4,38 @@
 //! are re-exported so that `super::handlers::sys_*` continues to resolve
 //! unchanged from `syscall/mod.rs`.
 
-mod helpers;
-mod process;
-mod io;
-mod filesystem;
-mod net;
-mod ipc;
+mod debug;
 mod device;
+mod disk;
 mod display;
+mod filesystem;
+mod helpers;
+mod io;
+mod ipc;
+#[cfg(target_arch = "x86_64")]
+mod monitor;
+mod net;
+mod platform;
+mod process;
 mod security;
 mod signal;
 mod system;
-mod disk;
-mod debug;
-mod platform;
-#[cfg(target_arch = "x86_64")]
-mod monitor;
 
-pub use process::*;
-pub use io::*;
-pub use filesystem::*;
-pub use net::*;
-pub use ipc::*;
+pub use debug::*;
 pub use device::*;
+pub use disk::*;
 pub use display::*;
+pub use filesystem::*;
+pub use io::*;
+pub use ipc::*;
+#[cfg(target_arch = "x86_64")]
+pub use monitor::*;
+pub use net::*;
+pub use platform::*;
+pub use process::*;
 pub use security::*;
 pub use signal::*;
 pub use system::*;
-pub use disk::*;
-pub use debug::*;
-pub use platform::*;
-#[cfg(target_arch = "x86_64")]
-pub use monitor::*;
 
 // =========================================================================
 // Shared compositor state

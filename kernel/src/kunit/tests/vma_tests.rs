@@ -12,16 +12,46 @@ use crate::memory::vma;
 pub static SUITE: TestSuite = TestSuite {
     name: "memory::vma",
     cases: &[
-        TestCase { name: "init_process",             run: test_init_process },
-        TestCase { name: "alloc_single_region",      run: test_alloc_single },
-        TestCase { name: "alloc_multiple_regions",   run: test_alloc_multiple },
-        TestCase { name: "alloc_alignment",          run: test_alloc_alignment },
-        TestCase { name: "free_region",              run: test_free_region },
-        TestCase { name: "free_partial",             run: test_free_partial },
-        TestCase { name: "clone_for_fork",           run: test_clone_fork },
-        TestCase { name: "destroy_process",          run: test_destroy },
-        TestCase { name: "mmap_hint_readwrite",      run: test_mmap_hint },
-        TestCase { name: "alloc_returns_none_after_fill", run: test_alloc_exhausted },
+        TestCase {
+            name: "init_process",
+            run: test_init_process,
+        },
+        TestCase {
+            name: "alloc_single_region",
+            run: test_alloc_single,
+        },
+        TestCase {
+            name: "alloc_multiple_regions",
+            run: test_alloc_multiple,
+        },
+        TestCase {
+            name: "alloc_alignment",
+            run: test_alloc_alignment,
+        },
+        TestCase {
+            name: "free_region",
+            run: test_free_region,
+        },
+        TestCase {
+            name: "free_partial",
+            run: test_free_partial,
+        },
+        TestCase {
+            name: "clone_for_fork",
+            run: test_clone_fork,
+        },
+        TestCase {
+            name: "destroy_process",
+            run: test_destroy,
+        },
+        TestCase {
+            name: "mmap_hint_readwrite",
+            run: test_mmap_hint,
+        },
+        TestCase {
+            name: "alloc_returns_none_after_fill",
+            run: test_alloc_exhausted,
+        },
     ],
 };
 
@@ -67,7 +97,9 @@ fn test_alloc_multiple(ctx: &mut TestContext) {
     let mut addrs = alloc::vec::Vec::new();
     for _ in 0..8 {
         let a = vma::alloc_region(pd, PAGE);
-        if let Some(addr) = a { addrs.push(addr); }
+        if let Some(addr) = a {
+            addrs.push(addr);
+        }
     }
     ctx.expect_eq(addrs.len(), 8, "8 successful allocs");
 
@@ -109,7 +141,11 @@ fn test_free_region(ctx: &mut TestContext) {
         vma::set_mmap_hint(pd, 0x7000_0000);
         let b = vma::alloc_region(pd, PAGE * 4);
         if let Some(b_addr) = ctx.expect_some(b, "re-alloc after free succeeds") {
-            ctx.expect_eq(b_addr, addr, "re-alloc returns same address after full free");
+            ctx.expect_eq(
+                b_addr,
+                addr,
+                "re-alloc returns same address after full free",
+            );
         }
     }
 
@@ -154,7 +190,11 @@ fn test_clone_fork(ctx: &mut TestContext) {
     // dst's hint must match src's hint (set after the allocs).
     let src_hint = vma::get_mmap_hint(src);
     let dst_hint = vma::get_mmap_hint(dst);
-    ctx.expect_eq(dst_hint, src_hint, "child mmap_hint == parent mmap_hint after fork");
+    ctx.expect_eq(
+        dst_hint,
+        src_hint,
+        "child mmap_hint == parent mmap_hint after fork",
+    );
 
     vma::destroy_process(src);
     vma::destroy_process(dst);
@@ -170,7 +210,11 @@ fn test_destroy(ctx: &mut TestContext) {
 
     // After destroy, mmap_hint returns MMAP_BASE (not found → default).
     let hint = vma::get_mmap_hint(pd);
-    ctx.expect_eq(hint, 0x7000_0000u32, "get_mmap_hint returns MMAP_BASE after destroy");
+    ctx.expect_eq(
+        hint,
+        0x7000_0000u32,
+        "get_mmap_hint returns MMAP_BASE after destroy",
+    );
 }
 
 fn test_mmap_hint(ctx: &mut TestContext) {
@@ -178,7 +222,11 @@ fn test_mmap_hint(ctx: &mut TestContext) {
     vma::init_process(pd, 0x7000_0000);
 
     vma::set_mmap_hint(pd, 0x7500_0000);
-    ctx.expect_eq(vma::get_mmap_hint(pd), 0x7500_0000u32, "set/get mmap_hint round-trip");
+    ctx.expect_eq(
+        vma::get_mmap_hint(pd),
+        0x7500_0000u32,
+        "set/get mmap_hint round-trip",
+    );
 
     vma::set_mmap_hint(pd, 0x7000_0000);
     ctx.expect_eq(vma::get_mmap_hint(pd), 0x7000_0000u32, "reset mmap_hint");

@@ -67,8 +67,8 @@ pub struct OpenFile {
     pub flags: FileFlags,
     pub position: u32,
     pub size: u32,
-    pub fs_id: u32,        // Which filesystem this belongs to
-    pub inode: u32,        // Filesystem-specific identifier (start cluster for FAT)
+    pub fs_id: u32,          // Which filesystem this belongs to
+    pub inode: u32,          // Filesystem-specific identifier (start cluster for FAT)
     pub parent_cluster: u32, // Parent directory cluster (0 = root)
     /// Reference count: how many per-process FD table entries point to this slot.
     /// Slot is freed when refcount drops to 0.

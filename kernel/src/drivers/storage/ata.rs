@@ -99,7 +99,13 @@ fn ata_delay_400ns() {
 
 /// Return the total sector count of the primary master drive (0 if not present).
 pub fn disk_total_sectors() -> u64 {
-    unsafe { if PRIMARY_DRIVE.present { PRIMARY_DRIVE.sectors as u64 } else { 0 } }
+    unsafe {
+        if PRIMARY_DRIVE.present {
+            PRIMARY_DRIVE.sectors as u64
+        } else {
+            0
+        }
+    }
 }
 
 /// Return the model string of the primary master drive.
@@ -201,7 +207,9 @@ pub fn read_sectors(lba: u32, count: u8, buf: &mut [u8]) -> bool {
     }
 
     unsafe {
-        if !wait_bsy() { return false; }
+        if !wait_bsy() {
+            return false;
+        }
 
         outb(ATA_DRIVE_HEAD, 0xE0 | ((lba >> 24) & 0x0F) as u8); // LBA mode, master
         outb(ATA_SECTOR_COUNT, count);
@@ -215,8 +223,12 @@ pub fn read_sectors(lba: u32, count: u8, buf: &mut [u8]) -> bool {
         ata_delay_400ns();
 
         for sector in 0..count as usize {
-            if !wait_bsy() { return false; }
-            if !wait_drq() { return false; }
+            if !wait_bsy() {
+                return false;
+            }
+            if !wait_drq() {
+                return false;
+            }
 
             if inb(ATA_STATUS) & STATUS_ERR != 0 {
                 return false;
@@ -249,7 +261,9 @@ pub fn write_sectors(lba: u32, count: u8, buf: &[u8]) -> bool {
     }
 
     unsafe {
-        if !wait_bsy() { return false; }
+        if !wait_bsy() {
+            return false;
+        }
 
         outb(ATA_DRIVE_HEAD, 0xE0 | ((lba >> 24) & 0x0F) as u8);
         outb(ATA_SECTOR_COUNT, count);
@@ -261,8 +275,12 @@ pub fn write_sectors(lba: u32, count: u8, buf: &[u8]) -> bool {
         ata_delay_400ns();
 
         for sector in 0..count as usize {
-            if !wait_bsy() { return false; }
-            if !wait_drq() { return false; }
+            if !wait_bsy() {
+                return false;
+            }
+            if !wait_drq() {
+                return false;
+            }
 
             let offset = sector * 512;
             for i in (0..512).step_by(2) {

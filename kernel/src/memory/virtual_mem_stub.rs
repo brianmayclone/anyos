@@ -186,7 +186,9 @@ unsafe fn read_entry(table_phys: u64, index: usize) -> u64 {
 /// Write one 64-bit entry to a page table at `table_phys[index]`.
 #[inline]
 unsafe fn write_entry(table_phys: u64, index: usize, value: u64) {
-    phys_to_virt_ptr(table_phys).add(index).write_volatile(value);
+    phys_to_virt_ptr(table_phys)
+        .add(index)
+        .write_volatile(value);
 }
 
 /// Is this descriptor valid (bit 0)?
@@ -227,7 +229,9 @@ fn walk_to_l3(l0_phys: u64, va: u64, allocate: bool) -> Option<u64> {
         desc_addr(entry0)
     } else if allocate {
         let f = alloc_table_frame()?;
-        unsafe { write_entry(l0_phys, i0, f | DESC_VALID | DESC_TABLE); }
+        unsafe {
+            write_entry(l0_phys, i0, f | DESC_VALID | DESC_TABLE);
+        }
         f
     } else {
         return None;
@@ -240,7 +244,9 @@ fn walk_to_l3(l0_phys: u64, va: u64, allocate: bool) -> Option<u64> {
         desc_addr(entry1)
     } else if allocate {
         let f = alloc_table_frame()?;
-        unsafe { write_entry(l1_phys, i1, f | DESC_VALID | DESC_TABLE); }
+        unsafe {
+            write_entry(l1_phys, i1, f | DESC_VALID | DESC_TABLE);
+        }
         f
     } else {
         return None;
@@ -253,7 +259,9 @@ fn walk_to_l3(l0_phys: u64, va: u64, allocate: bool) -> Option<u64> {
         desc_addr(entry2)
     } else if allocate {
         let f = alloc_table_frame()?;
-        unsafe { write_entry(l2_phys, i2, f | DESC_VALID | DESC_TABLE); }
+        unsafe {
+            write_entry(l2_phys, i2, f | DESC_VALID | DESC_TABLE);
+        }
         f
     } else {
         return None;
@@ -348,7 +356,9 @@ pub fn unmap_page(virt: VirtAddr) {
     }
     if let Some(l3_phys) = walk_to_l3(ttbr0, va, false) {
         let idx = l3_index(va);
-        unsafe { write_entry(l3_phys, idx, 0); }
+        unsafe {
+            write_entry(l3_phys, idx, 0);
+        }
         crate::arch::arm64::mmu::flush_tlb_va(va);
     }
 }
@@ -379,27 +389,21 @@ pub fn is_mapped_in_pd(pd_phys: PhysAddr, virt: VirtAddr) -> bool {
 }
 
 /// Map a 4 KiB page in a specific user page directory.
-pub fn map_page_in_pd(
-    pd_phys: PhysAddr,
-    virt: VirtAddr,
-    phys: PhysAddr,
-    flags: u64,
-) -> bool {
+pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
     let va = virt.as_u64();
     let l3_phys = match walk_to_l3(pd_phys.as_u64(), va, true) {
         Some(l3) => l3,
         None => {
-            crate::serial_verbose_println!(
-                "map_page_in_pd: alloc failed for VA {:#018x}",
-                va
-            );
+            crate::serial_verbose_println!("map_page_in_pd: alloc failed for VA {:#018x}", va);
             return false;
         }
     };
 
     let attrs = flags_to_arm64_attrs(flags);
     let desc = (phys.as_u64() & ADDR_MASK) | attrs | DESC_VALID | DESC_PAGE;
-    unsafe { write_entry(l3_phys, l3_index(va), desc); }
+    unsafe {
+        write_entry(l3_phys, l3_index(va), desc);
+    }
     if pd_phys.as_u64() == current_cr3() {
         crate::arch::arm64::mmu::flush_tlb_va(va);
     }
@@ -413,7 +417,9 @@ pub fn unmap_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr) {
         Some(l3) => l3,
         None => return,
     };
-    unsafe { write_entry(l3_phys, l3_index(va), 0); }
+    unsafe {
+        write_entry(l3_phys, l3_index(va), 0);
+    }
 }
 
 /// Map `count` pages starting at `virt_start`, allocating physical frames.
@@ -432,7 +438,9 @@ pub fn map_pages_range_in_pd(
         map_page_in_pd(pd_phys, VirtAddr::new(va), frame, flags);
         if zero {
             let ptr = phys_to_virt_ptr(frame.as_u64()) as *mut u8;
-            unsafe { core::ptr::write_bytes(ptr, 0, FRAME_SIZE); }
+            unsafe {
+                core::ptr::write_bytes(ptr, 0, FRAME_SIZE);
+            }
         }
         mapped += 1;
     }
@@ -478,7 +486,9 @@ pub fn clone_user_page_directory(src_pd: PhysAddr) -> Option<PhysAddr> {
         }
         let src_l1 = desc_addr(e0);
         let dst_l1 = alloc_table_frame()?;
-        unsafe { write_entry(dst_l0, i0, dst_l1 | DESC_VALID | DESC_TABLE); }
+        unsafe {
+            write_entry(dst_l0, i0, dst_l1 | DESC_VALID | DESC_TABLE);
+        }
 
         for i1 in 0..ENTRIES_PER_TABLE {
             let e1 = unsafe { read_entry(src_l1, i1) };
@@ -487,7 +497,9 @@ pub fn clone_user_page_directory(src_pd: PhysAddr) -> Option<PhysAddr> {
             }
             let src_l2 = desc_addr(e1);
             let dst_l2 = alloc_table_frame()?;
-            unsafe { write_entry(dst_l1, i1, dst_l2 | DESC_VALID | DESC_TABLE); }
+            unsafe {
+                write_entry(dst_l1, i1, dst_l2 | DESC_VALID | DESC_TABLE);
+            }
 
             for i2 in 0..ENTRIES_PER_TABLE {
                 let e2 = unsafe { read_entry(src_l2, i2) };
@@ -496,7 +508,9 @@ pub fn clone_user_page_directory(src_pd: PhysAddr) -> Option<PhysAddr> {
                 }
                 let src_l3 = desc_addr(e2);
                 let dst_l3 = alloc_table_frame()?;
-                unsafe { write_entry(dst_l2, i2, dst_l3 | DESC_VALID | DESC_TABLE); }
+                unsafe {
+                    write_entry(dst_l2, i2, dst_l3 | DESC_VALID | DESC_TABLE);
+                }
 
                 for i3 in 0..ENTRIES_PER_TABLE {
                     let e3 = unsafe { read_entry(src_l3, i3) };
@@ -596,7 +610,9 @@ pub fn set_guard_page(virt: VirtAddr) {
         let idx = l3_index(va);
         let entry = unsafe { read_entry(l3_phys, idx) };
         if is_valid(entry) {
-            unsafe { write_entry(l3_phys, idx, entry & !DESC_VALID); }
+            unsafe {
+                write_entry(l3_phys, idx, entry & !DESC_VALID);
+            }
             crate::arch::arm64::mmu::flush_tlb_va(va);
         }
     }
@@ -616,7 +632,9 @@ pub fn restore_guard_page(virt: VirtAddr) {
         let idx = l3_index(va);
         let entry = unsafe { read_entry(l3_phys, idx) };
         if entry != 0 && !is_valid(entry) {
-            unsafe { write_entry(l3_phys, idx, entry | DESC_VALID); }
+            unsafe {
+                write_entry(l3_phys, idx, entry | DESC_VALID);
+            }
             crate::arch::arm64::mmu::flush_tlb_va(va);
         }
     }
@@ -633,11 +651,7 @@ pub fn unguard_page(virt: VirtAddr) {
 }
 
 /// Count the number of mapped pages in a VA range within a page directory.
-pub fn count_mapped_pages_in_pd(
-    pd_phys: PhysAddr,
-    start: VirtAddr,
-    end: VirtAddr,
-) -> usize {
+pub fn count_mapped_pages_in_pd(pd_phys: PhysAddr, start: VirtAddr, end: VirtAddr) -> usize {
     let l0 = pd_phys.as_u64();
     if l0 == 0 {
         return 0;

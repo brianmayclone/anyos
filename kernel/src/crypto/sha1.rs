@@ -6,9 +6,7 @@ pub const SHA1_DIGEST_SIZE: usize = 20;
 pub const SHA1_BLOCK_SIZE: usize = 64;
 
 /// SHA-1 initial hash values (H0..H4).
-const SHA1_H0: [u32; 5] = [
-    0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0,
-];
+const SHA1_H0: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
 
 /// SHA-1 round constants.
 const SHA1_K: [u32; 4] = [0x5A827999, 0x6ED9EBA1, 0x8F1BBCDC, 0xCA62C1D6];
@@ -37,7 +35,8 @@ fn sha1_compress(state: &mut [u32; 5], block: &[u8; 64]) {
             40..=59 => ((b & c) | (b & d) | (c & d), SHA1_K[2]),
             _ => (b ^ c ^ d, SHA1_K[3]),
         };
-        let temp = a.rotate_left(5)
+        let temp = a
+            .rotate_left(5)
             .wrapping_add(f)
             .wrapping_add(e)
             .wrapping_add(k)

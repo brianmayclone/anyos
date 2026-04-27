@@ -95,7 +95,10 @@ pub fn drop_mount(session: SessionId) {
 
 /// Liefert die FUSE-`u64`-ID zu einer VFS-`u32` für die gegebene Session.
 pub fn to_u64(session: SessionId, id: u32) -> Option<u64> {
-    FUSE_INODE_MAPS.lock().get(&session).and_then(|m| m.to_u64(id))
+    FUSE_INODE_MAPS
+        .lock()
+        .get(&session)
+        .and_then(|m| m.to_u64(id))
 }
 
 /// Internt eine FUSE-`u64` und liefert die stabile VFS-`u32`. Existiert

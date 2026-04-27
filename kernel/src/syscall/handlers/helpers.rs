@@ -3,9 +3,9 @@
 //! These are `pub(super)` so they're accessible within the `handlers` module
 //! but not exported outside it.
 
+use crate::memory::address::VirtAddr;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::memory::address::VirtAddr;
 
 /// Make a relative path absolute using the current thread's working directory.
 /// Normalizes `.` and `..` components so e.g. `"."` resolves to the CWD itself.
@@ -31,18 +31,18 @@ pub(super) fn resolve_path(path: &str) -> String {
 pub(super) fn fs_err(e: crate::fs::vfs::FsError) -> u32 {
     use crate::fs::vfs::FsError;
     let errno: i32 = match e {
-        FsError::NotFound => 2,        // ENOENT
-        FsError::PermissionDenied => 13, // EACCES
-        FsError::AlreadyExists => 17,   // EEXIST
-        FsError::NotADirectory => 20,   // ENOTDIR
-        FsError::IsADirectory => 21,    // EISDIR
-        FsError::NoSpace => 28,         // ENOSPC
-        FsError::IoError => 5,          // EIO
-        FsError::InvalidPath => 22,     // EINVAL
-        FsError::TooManyOpenFiles => 24, // EMFILE
-        FsError::BadFd => 9,            // EBADF
+        FsError::NotFound => 2,           // ENOENT
+        FsError::PermissionDenied => 13,  // EACCES
+        FsError::AlreadyExists => 17,     // EEXIST
+        FsError::NotADirectory => 20,     // ENOTDIR
+        FsError::IsADirectory => 21,      // EISDIR
+        FsError::NoSpace => 28,           // ENOSPC
+        FsError::IoError => 5,            // EIO
+        FsError::InvalidPath => 22,       // EINVAL
+        FsError::TooManyOpenFiles => 24,  // EMFILE
+        FsError::BadFd => 9,              // EBADF
         FsError::DirectoryNotEmpty => 39, // ENOTEMPTY
-        FsError::NotSupported => 95,     // ENOTSUP / EOPNOTSUPP
+        FsError::NotSupported => 95,      // ENOTSUP / EOPNOTSUPP
     };
     (-errno) as u32
 }

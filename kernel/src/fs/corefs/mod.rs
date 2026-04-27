@@ -93,9 +93,9 @@ pub fn try_mount_root(
     partition_lba: u32,
     partition_sectors: u64,
 ) -> Option<alloc::boxed::Box<dyn crate::fs::vfs::Filesystem + Send + Sync>> {
-    try_mount_root_typed(device_id, partition_lba, partition_sectors)
-        .map(|d| alloc::boxed::Box::new(d)
-            as alloc::boxed::Box<dyn crate::fs::vfs::Filesystem + Send + Sync>)
+    try_mount_root_typed(device_id, partition_lba, partition_sectors).map(|d| {
+        alloc::boxed::Box::new(d) as alloc::boxed::Box<dyn crate::fs::vfs::Filesystem + Send + Sync>
+    })
 }
 
 /// Same as [`try_mount_root`] but returns the concrete driver type
@@ -154,11 +154,7 @@ pub fn try_auto_mount_corefs(
     ) {
         Ok(()) => true,
         Err(e) => {
-            crate::serial_println!(
-                "[corefs] mount at {} failed: {:?}",
-                mount_path,
-                e
-            );
+            crate::serial_println!("[corefs] mount at {} failed: {:?}", mount_path, e);
             false
         }
     }

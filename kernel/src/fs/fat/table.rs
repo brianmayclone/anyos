@@ -1,8 +1,8 @@
 //! FAT table operations: reading/writing FAT entries, cluster allocation, chain management.
 
-use crate::fs::vfs::FsError;
-use super::{FatFs, FatType};
 use super::bpb::FAT32_MASK;
+use super::{FatFs, FatType};
+use crate::fs::vfs::FsError;
 
 impl FatFs {
     /// Follow the cluster chain: returns the next cluster, or None if end-of-chain.
@@ -99,7 +99,11 @@ impl FatFs {
                     self.fat_cache[fat_offset],
                     self.fat_cache[fat_offset + 1],
                 ]);
-                let val = if cluster & 1 != 0 { raw >> 4 } else { raw & 0x0FFF };
+                let val = if cluster & 1 != 0 {
+                    raw >> 4
+                } else {
+                    raw & 0x0FFF
+                };
                 Ok(val as u32)
             }
             FatType::Fat16 => {
@@ -107,10 +111,10 @@ impl FatFs {
                 if fat_offset + 1 >= self.fat_cache.len() {
                     return Err(FsError::IoError);
                 }
-                Ok(u16::from_le_bytes([
-                    self.fat_cache[fat_offset],
-                    self.fat_cache[fat_offset + 1],
-                ]) as u32)
+                Ok(
+                    u16::from_le_bytes([self.fat_cache[fat_offset], self.fat_cache[fat_offset + 1]])
+                        as u32,
+                )
             }
             FatType::Fat32 => {
                 let fat_offset = (cluster * 4) as usize;

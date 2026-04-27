@@ -1,7 +1,6 @@
 /// Dynamic IRQ handler registration.
 /// Uses AtomicPtr for lock-free access from interrupt context.
 /// Supports shared IRQs: up to 2 handlers per IRQ line (primary + chained).
-
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// IRQ handler function type. Takes the IRQ number as parameter.

@@ -13,8 +13,8 @@ use core::ptr;
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 
+use crate::drivers::arm::virtqueue::{VirtQueue, DEFAULT_QUEUE_SIZE, VRING_DESC_F_WRITE};
 use crate::drivers::arm::VirtioMmioDevice;
-use crate::drivers::arm::virtqueue::{VirtQueue, VRING_DESC_F_WRITE, DEFAULT_QUEUE_SIZE};
 
 const RX_QUEUE_SIZE: usize = DEFAULT_QUEUE_SIZE as usize;
 const RX_BUF_SIZE: usize = 2048;
@@ -37,8 +37,12 @@ pub trait NetworkDriver: Send {
     fn get_mac(&self) -> [u8; 6];
     fn link_up(&self) -> bool;
     fn set_enabled(&mut self, _enabled: bool) {}
-    fn is_enabled(&self) -> bool { true }
-    fn driver_name(&self) -> &str { self.name() }
+    fn is_enabled(&self) -> bool {
+        true
+    }
+    fn driver_name(&self) -> &str {
+        self.name()
+    }
 }
 
 static NET: Spinlock<Option<Box<dyn NetworkDriver>>> = Spinlock::new(None);
@@ -115,7 +119,11 @@ static STATE: Spinlock<Option<VirtioNet>> = Spinlock::new(None);
 impl VirtioNet {
     fn post_rx_buffers(&mut self) -> bool {
         for &buf_phys in &self.rx_bufs_phys {
-            if self.receiveq.push_buf(buf_phys, RX_BUF_SIZE as u32, VRING_DESC_F_WRITE).is_none() {
+            if self
+                .receiveq
+                .push_buf(buf_phys, RX_BUF_SIZE as u32, VRING_DESC_F_WRITE)
+                .is_none()
+            {
                 return false;
             }
         }
@@ -139,7 +147,9 @@ impl VirtioNet {
 
     fn ack_interrupt(&self) -> u32 {
         let status = unsafe { ptr::read_volatile((self.base + 0x060) as *const u32) };
-        unsafe { ptr::write_volatile((self.base + 0x064) as *mut u32, status); }
+        unsafe {
+            ptr::write_volatile((self.base + 0x064) as *mut u32, status);
+        }
         status
     }
 
@@ -166,7 +176,11 @@ impl VirtioNet {
                 }
 
                 let buf_phys = self.rx_bufs_phys[buf_idx];
-                if self.receiveq.push_buf(buf_phys, RX_BUF_SIZE as u32, VRING_DESC_F_WRITE).is_some() {
+                if self
+                    .receiveq
+                    .push_buf(buf_phys, RX_BUF_SIZE as u32, VRING_DESC_F_WRITE)
+                    .is_some()
+                {
                     self.notify_rx();
                 }
             }
@@ -189,7 +203,11 @@ impl VirtioNet {
         }
 
         let total_len = (VIRTIO_NET_HDR_SIZE_TX + data.len()) as u32;
-        if self.transmitq.push_buf(self.tx_buf_phys, total_len, 0).is_none() {
+        if self
+            .transmitq
+            .push_buf(self.tx_buf_phys, total_len, 0)
+            .is_none()
+        {
             return false;
         }
         self.notify_tx();
@@ -201,7 +219,10 @@ impl VirtioNet {
             self.poll_rx();
             let now = crate::arch::hal::timer_current_ticks();
             if now.wrapping_sub(start_tick) >= max_wait_ticks {
-                crate::serial_verbose_println!("  virtio-net(arm64): TX timeout len={}", data.len());
+                crate::serial_verbose_println!(
+                    "  virtio-net(arm64): TX timeout len={}",
+                    data.len()
+                );
                 return false;
             }
         }
@@ -213,7 +234,9 @@ impl VirtioNet {
 struct VirtioNetDriver;
 
 impl NetworkDriver for VirtioNetDriver {
-    fn name(&self) -> &str { "VirtIO Net" }
+    fn name(&self) -> &str {
+        "VirtIO Net"
+    }
 
     fn transmit(&mut self, data: &[u8]) -> bool {
         let mut state = STATE.lock();
@@ -228,7 +251,11 @@ impl NetworkDriver for VirtioNetDriver {
     }
 
     fn link_up(&self) -> bool {
-        STATE.lock().as_ref().map(|net| net.enabled).unwrap_or(false)
+        STATE
+            .lock()
+            .as_ref()
+            .map(|net| net.enabled)
+            .unwrap_or(false)
     }
 
     fn set_enabled(&mut self, enabled: bool) {
@@ -238,10 +265,16 @@ impl NetworkDriver for VirtioNetDriver {
     }
 
     fn is_enabled(&self) -> bool {
-        STATE.lock().as_ref().map(|net| net.enabled).unwrap_or(false)
+        STATE
+            .lock()
+            .as_ref()
+            .map(|net| net.enabled)
+            .unwrap_or(false)
     }
 
-    fn driver_name(&self) -> &str { "virtio-net" }
+    fn driver_name(&self) -> &str {
+        "virtio-net"
+    }
 }
 
 pub fn init_mmio(dev: &VirtioMmioDevice) {
@@ -334,7 +367,13 @@ pub fn init_mmio(dev: &VirtioMmioDevice) {
 
     crate::serial_println!(
         "  virtio-net(arm64): MAC={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, IRQ {}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], dev.irq()
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5],
+        dev.irq()
     );
 }
 

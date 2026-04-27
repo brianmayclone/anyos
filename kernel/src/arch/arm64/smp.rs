@@ -2,8 +2,8 @@
 //!
 //! Uses PSCI CPU_ON to start secondary processors on QEMU virt.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::memory::address::VirtAddr;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 16;
@@ -70,8 +70,8 @@ pub fn start_aps(num_cpus: usize) {
     }
 
     let entry_virt = _ap_entry as *const () as u64;
-    let entry_addr = crate::memory::virtual_mem::virt_to_phys(VirtAddr::new(entry_virt))
-        .unwrap_or(entry_virt);
+    let entry_addr =
+        crate::memory::virtual_mem::virt_to_phys(VirtAddr::new(entry_virt)).unwrap_or(entry_virt);
     let bsp_id = current_cpu_id();
 
     let bsp_mpidr: u64;
@@ -104,7 +104,11 @@ pub fn start_aps(num_cpus: usize) {
                 "  Starting CPU {} (mpidr={:#x}, conduit={})...",
                 cpu,
                 target_mpidr,
-                if super::psci::prefers_hvc() { "hvc" } else { "smc" },
+                if super::psci::prefers_hvc() {
+                    "hvc"
+                } else {
+                    "smc"
+                },
             );
 
             let primary = if super::psci::prefers_hvc() {
@@ -132,7 +136,10 @@ pub fn start_aps(num_cpus: usize) {
         }
     }
 
-    crate::serial_verbose_println!("[OK] SMP: {} CPUs online", ONLINE_CPUS.load(Ordering::Relaxed));
+    crate::serial_verbose_println!(
+        "[OK] SMP: {} CPUs online",
+        ONLINE_CPUS.load(Ordering::Relaxed)
+    );
 }
 
 /// Full AP initialization — called from ap_startup.S as `arm64_ap_init(cpu_id)`.
@@ -155,10 +162,7 @@ pub extern "C" fn arm64_ap_init(cpu_id: usize) {
     super::generic_timer::init();
 
     // 4. Register IRQ handler for the timer
-    super::exceptions::register_irq(
-        30,
-        super::generic_timer::irq_handler_with_schedule,
-    );
+    super::exceptions::register_irq(30, super::generic_timer::irq_handler_with_schedule);
 
     // 5. Syscall support for this AP
     super::syscall::init_cpu(cpu_id);

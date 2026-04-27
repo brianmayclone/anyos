@@ -5,74 +5,74 @@
 //! and MAC address reading from EEPROM/RAL registers.
 //! Supports: 82540EM (8086:100E, QEMU) and 82545EM (8086:100F, VMware).
 
+use crate::drivers::pci::PciDevice;
+use crate::memory::address::{PhysAddr, VirtAddr};
+use crate::memory::{physical, virtual_mem, FRAME_SIZE};
+use crate::sync::spinlock::Spinlock;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use crate::drivers::pci::PciDevice;
-use crate::sync::spinlock::Spinlock;
-use crate::memory::address::{PhysAddr, VirtAddr};
-use crate::memory::{physical, virtual_mem, FRAME_SIZE};
 
 // ──────────────────────────────────────────────
 // E1000 Register Offsets
 // ──────────────────────────────────────────────
 
-const REG_CTRL: u32       = 0x0000; // Device Control
-const REG_STATUS: u32     = 0x0008; // Device Status
-const REG_EERD: u32       = 0x0014; // EEPROM Read
-const REG_ICR: u32        = 0x00C0; // Interrupt Cause Read
-const REG_IMS: u32        = 0x00D0; // Interrupt Mask Set
-const REG_IMC: u32        = 0x00D8; // Interrupt Mask Clear
-const REG_RCTL: u32       = 0x0100; // Receive Control
-const REG_RDBAL: u32      = 0x2800; // RX Descriptor Base Low
-const REG_RDBAH: u32      = 0x2804; // RX Descriptor Base High
-const REG_RDLEN: u32      = 0x2808; // RX Descriptor Length
-const REG_RDH: u32        = 0x2810; // RX Descriptor Head
-const REG_RDT: u32        = 0x2818; // RX Descriptor Tail
-const REG_RDTR: u32       = 0x2820; // RX Delay Timer (microseconds, coalescing)
-const REG_TCTL: u32       = 0x0400; // Transmit Control
-const REG_TDBAL: u32      = 0x3800; // TX Descriptor Base Low
-const REG_TDBAH: u32      = 0x3804; // TX Descriptor Base High
-const REG_TDLEN: u32      = 0x3808; // TX Descriptor Length
-const REG_TDH: u32        = 0x3810; // TX Descriptor Head
-const REG_TDT: u32        = 0x3818; // TX Descriptor Tail
-const REG_RAL0: u32       = 0x5400; // Receive Address Low (MAC bytes 0-3)
-const REG_RAH0: u32       = 0x5404; // Receive Address High (MAC bytes 4-5 + flags)
-const REG_MTA: u32        = 0x5200; // Multicast Table Array (128 u32s)
-const REG_TIPG: u32       = 0x0410; // Transmit IPG
+const REG_CTRL: u32 = 0x0000; // Device Control
+const REG_STATUS: u32 = 0x0008; // Device Status
+const REG_EERD: u32 = 0x0014; // EEPROM Read
+const REG_ICR: u32 = 0x00C0; // Interrupt Cause Read
+const REG_IMS: u32 = 0x00D0; // Interrupt Mask Set
+const REG_IMC: u32 = 0x00D8; // Interrupt Mask Clear
+const REG_RCTL: u32 = 0x0100; // Receive Control
+const REG_RDBAL: u32 = 0x2800; // RX Descriptor Base Low
+const REG_RDBAH: u32 = 0x2804; // RX Descriptor Base High
+const REG_RDLEN: u32 = 0x2808; // RX Descriptor Length
+const REG_RDH: u32 = 0x2810; // RX Descriptor Head
+const REG_RDT: u32 = 0x2818; // RX Descriptor Tail
+const REG_RDTR: u32 = 0x2820; // RX Delay Timer (microseconds, coalescing)
+const REG_TCTL: u32 = 0x0400; // Transmit Control
+const REG_TDBAL: u32 = 0x3800; // TX Descriptor Base Low
+const REG_TDBAH: u32 = 0x3804; // TX Descriptor Base High
+const REG_TDLEN: u32 = 0x3808; // TX Descriptor Length
+const REG_TDH: u32 = 0x3810; // TX Descriptor Head
+const REG_TDT: u32 = 0x3818; // TX Descriptor Tail
+const REG_RAL0: u32 = 0x5400; // Receive Address Low (MAC bytes 0-3)
+const REG_RAH0: u32 = 0x5404; // Receive Address High (MAC bytes 4-5 + flags)
+const REG_MTA: u32 = 0x5200; // Multicast Table Array (128 u32s)
+const REG_TIPG: u32 = 0x0410; // Transmit IPG
 
 // CTRL bits
-const CTRL_SLU: u32       = 1 << 6;  // Set Link Up
-const CTRL_RST: u32       = 1 << 26; // Device Reset
+const CTRL_SLU: u32 = 1 << 6; // Set Link Up
+const CTRL_RST: u32 = 1 << 26; // Device Reset
 
 // RCTL bits
-const RCTL_EN: u32        = 1 << 1;  // Receiver Enable
-const RCTL_BAM: u32       = 1 << 15; // Broadcast Accept Mode
-const RCTL_BSIZE_2048: u32 = 0;      // Buffer size 2048 (bits 16-17 = 00)
-const RCTL_SECRC: u32     = 1 << 26; // Strip Ethernet CRC
+const RCTL_EN: u32 = 1 << 1; // Receiver Enable
+const RCTL_BAM: u32 = 1 << 15; // Broadcast Accept Mode
+const RCTL_BSIZE_2048: u32 = 0; // Buffer size 2048 (bits 16-17 = 00)
+const RCTL_SECRC: u32 = 1 << 26; // Strip Ethernet CRC
 
 // TCTL bits
-const TCTL_EN: u32        = 1 << 1;  // Transmit Enable
-const TCTL_PSP: u32       = 1 << 3;  // Pad Short Packets
-const TCTL_CT_SHIFT: u32  = 4;       // Collision Threshold shift
-const TCTL_COLD_SHIFT: u32 = 12;     // Collision Distance shift
+const TCTL_EN: u32 = 1 << 1; // Transmit Enable
+const TCTL_PSP: u32 = 1 << 3; // Pad Short Packets
+const TCTL_CT_SHIFT: u32 = 4; // Collision Threshold shift
+const TCTL_COLD_SHIFT: u32 = 12; // Collision Distance shift
 
 // ICR / IMS bits
-const ICR_TXDW: u32       = 1 << 0;  // TX Descriptor Written Back
-const ICR_RXT0: u32       = 1 << 7;  // RX Timer Interrupt
-const ICR_LSC: u32        = 1 << 2;  // Link Status Change
+const ICR_TXDW: u32 = 1 << 0; // TX Descriptor Written Back
+const ICR_RXT0: u32 = 1 << 7; // RX Timer Interrupt
+const ICR_LSC: u32 = 1 << 2; // Link Status Change
 
 // TX descriptor command bits
-const TDESC_CMD_EOP: u8   = 1 << 0;  // End of Packet
-const TDESC_CMD_IFCS: u8  = 1 << 1;  // Insert FCS
-const TDESC_CMD_RS: u8    = 1 << 3;  // Report Status
+const TDESC_CMD_EOP: u8 = 1 << 0; // End of Packet
+const TDESC_CMD_IFCS: u8 = 1 << 1; // Insert FCS
+const TDESC_CMD_RS: u8 = 1 << 3; // Report Status
 
 // TX descriptor status bits
-const TDESC_STA_DD: u8    = 1 << 0;  // Descriptor Done
+const TDESC_STA_DD: u8 = 1 << 0; // Descriptor Done
 
 // RX descriptor status bits
-const RDESC_STA_DD: u8    = 1 << 0;  // Descriptor Done
-const RDESC_STA_EOP: u8   = 1 << 1;  // End of Packet
+const RDESC_STA_DD: u8 = 1 << 0; // Descriptor Done
+const RDESC_STA_EOP: u8 = 1 << 1; // End of Packet
 
 // ──────────────────────────────────────────────
 // DMA Descriptors
@@ -91,24 +91,24 @@ const RX_BUFFER_SIZE: usize = 2048;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RxDescriptor {
-    buffer_addr: u64,  // Physical address of receive buffer
-    length: u16,       // Length of received data
-    checksum: u16,     // Packet checksum
-    status: u8,        // Status bits
-    errors: u8,        // Error bits
-    special: u16,      // VLAN tag
+    buffer_addr: u64, // Physical address of receive buffer
+    length: u16,      // Length of received data
+    checksum: u16,    // Packet checksum
+    status: u8,       // Status bits
+    errors: u8,       // Error bits
+    special: u16,     // VLAN tag
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct TxDescriptor {
-    buffer_addr: u64,  // Physical address of transmit buffer
-    length: u16,       // Data length
-    cso: u8,           // Checksum offset
-    cmd: u8,           // Command field
-    status: u8,        // Status bits
-    css: u8,           // Checksum start
-    special: u16,      // Special field
+    buffer_addr: u64, // Physical address of transmit buffer
+    length: u16,      // Data length
+    cso: u8,          // Checksum offset
+    cmd: u8,          // Command field
+    status: u8,       // Status bits
+    css: u8,          // Checksum start
+    special: u16,     // Special field
 }
 
 /// 6-byte MAC address type alias.
@@ -122,18 +122,18 @@ pub type MacBytes = [u8; 6];
 const E1000_MMIO_VIRT: u64 = 0xFFFF_FFFF_D000_0000;
 
 struct E1000 {
-    mmio_base: u64,       // Virtual address of MMIO region
+    mmio_base: u64, // Virtual address of MMIO region
     mac: [u8; 6],
 
     // RX ring
-    rx_descs_phys: u32,   // Physical address of RX descriptor ring (32-bit DMA)
-    rx_descs_virt: u64,   // Virtual address of RX descriptor ring
+    rx_descs_phys: u32, // Physical address of RX descriptor ring (32-bit DMA)
+    rx_descs_virt: u64, // Virtual address of RX descriptor ring
     rx_bufs_phys: [u32; NUM_RX_DESC], // Physical addr of each RX buffer (32-bit DMA)
     rx_tail: u16,
 
     // TX ring
-    tx_descs_phys: u32,   // Physical address of TX descriptor ring (32-bit DMA)
-    tx_descs_virt: u64,   // Virtual address of TX descriptor ring
+    tx_descs_phys: u32, // Physical address of TX descriptor ring (32-bit DMA)
+    tx_descs_virt: u64, // Virtual address of TX descriptor ring
     tx_bufs_phys: [u32; NUM_TX_DESC], // Physical addr of each TX buffer (32-bit DMA)
     tx_bufs_virt: [u64; NUM_TX_DESC], // Virtual addr of each TX buffer (for memcpy)
     tx_tail: u16,
@@ -188,8 +188,12 @@ pub fn init() -> bool {
         }
     };
 
-    crate::serial_verbose_println!("  E1000: found at PCI {:02x}:{:02x}.{}",
-        pci_dev.bus, pci_dev.device, pci_dev.function);
+    crate::serial_verbose_println!(
+        "  E1000: found at PCI {:02x}:{:02x}.{}",
+        pci_dev.bus,
+        pci_dev.device,
+        pci_dev.function
+    );
 
     // Enable bus mastering for DMA
     crate::drivers::pci::enable_bus_master(&pci_dev);
@@ -246,8 +250,15 @@ pub fn init() -> bool {
             ((rah >> 8) & 0xFF) as u8,
         ]
     };
-    crate::serial_verbose_println!("  E1000: MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    crate::serial_verbose_println!(
+        "  E1000: MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
+    );
 
     // --- Clear Multicast Table Array ---
     unsafe {
@@ -320,7 +331,11 @@ pub fn init() -> bool {
     unsafe {
         mmio_write(mmio_virt, REG_RDBAL, rx_descs_phys);
         mmio_write(mmio_virt, REG_RDBAH, 0);
-        mmio_write(mmio_virt, REG_RDLEN, (NUM_RX_DESC * core::mem::size_of::<RxDescriptor>()) as u32);
+        mmio_write(
+            mmio_virt,
+            REG_RDLEN,
+            (NUM_RX_DESC * core::mem::size_of::<RxDescriptor>()) as u32,
+        );
         mmio_write(mmio_virt, REG_RDH, 0);
         mmio_write(mmio_virt, REG_RDT, (NUM_RX_DESC - 1) as u32);
     }
@@ -329,7 +344,11 @@ pub fn init() -> bool {
     unsafe {
         mmio_write(mmio_virt, REG_TDBAL, tx_descs_phys);
         mmio_write(mmio_virt, REG_TDBAH, 0);
-        mmio_write(mmio_virt, REG_TDLEN, (NUM_TX_DESC * core::mem::size_of::<TxDescriptor>()) as u32);
+        mmio_write(
+            mmio_virt,
+            REG_TDLEN,
+            (NUM_TX_DESC * core::mem::size_of::<TxDescriptor>()) as u32,
+        );
         mmio_write(mmio_virt, REG_TDH, 0);
         mmio_write(mmio_virt, REG_TDT, 0);
     }
@@ -342,25 +361,30 @@ pub fn init() -> bool {
 
     // --- Enable RX ---
     unsafe {
-        mmio_write(mmio_virt, REG_RCTL,
-            RCTL_EN | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC);
+        mmio_write(
+            mmio_virt,
+            REG_RCTL,
+            RCTL_EN | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC,
+        );
     }
 
     // --- Enable TX ---
     unsafe {
-        mmio_write(mmio_virt, REG_TCTL,
+        mmio_write(
+            mmio_virt,
+            REG_TCTL,
             TCTL_EN | TCTL_PSP
             | (15 << TCTL_CT_SHIFT)    // Collision Threshold
-            | (64 << TCTL_COLD_SHIFT)  // Collision Distance (full duplex)
+            | (64 << TCTL_COLD_SHIFT), // Collision Distance (full duplex)
         );
     }
 
     // --- Enable interrupts ---
     unsafe {
         mmio_read(mmio_virt, REG_ICR); // Clear any pending
-        // RX interrupt coalescing: delay RX interrupt by 64 microseconds.
-        // Batches multiple incoming packets into a single interrupt, reducing
-        // IRQ overhead by 3-5x under load while adding negligible latency.
+                                       // RX interrupt coalescing: delay RX interrupt by 64 microseconds.
+                                       // Batches multiple incoming packets into a single interrupt, reducing
+                                       // IRQ overhead by 3-5x under load while adding negligible latency.
         mmio_write(mmio_virt, REG_RDTR, 64);
         mmio_write(mmio_virt, REG_IMS, ICR_RXT0 | ICR_LSC | ICR_TXDW);
     }
@@ -404,8 +428,11 @@ pub fn init() -> bool {
     // Check link status
     let link_up = unsafe { mmio_read(mmio_virt, REG_STATUS) & 2 != 0 };
     crate::serial_verbose_println!("  E1000: link {}", if link_up { "UP" } else { "DOWN" });
-    crate::serial_verbose_println!("[OK] E1000 NIC initialized ({} RX + {} TX descriptors)",
-        NUM_RX_DESC, NUM_TX_DESC);
+    crate::serial_verbose_println!(
+        "[OK] E1000 NIC initialized ({} RX + {} TX descriptors)",
+        NUM_RX_DESC,
+        NUM_TX_DESC
+    );
 
     // Register with the generic network subsystem
     super::register(Box::new(E1000NetworkDriver));
@@ -607,7 +634,14 @@ pub fn is_link_up() -> bool {
 pub fn get_stats() -> (u64, u64, u64, u64, u64, u64) {
     let state = E1000_STATE.lock();
     if let Some(e) = state.as_ref() {
-        (e.rx_packets, e.tx_packets, e.rx_bytes, e.tx_bytes, e.rx_errors, e.tx_errors)
+        (
+            e.rx_packets,
+            e.tx_packets,
+            e.rx_bytes,
+            e.tx_bytes,
+            e.rx_errors,
+            e.tx_errors,
+        )
     } else {
         (0, 0, 0, 0, 0, 0)
     }
@@ -662,14 +696,18 @@ fn process_rx_ring(e1000: &mut E1000) {
             e1000.rx_errors += 1;
         }
 
-        unsafe { (*desc_ptr).status = 0; }
+        unsafe {
+            (*desc_ptr).status = 0;
+        }
         new_tail = idx as u16;
     }
 
     // Batch: single MMIO write after processing all descriptors
     if new_tail != e1000.rx_tail {
         e1000.rx_tail = new_tail;
-        unsafe { mmio_write(e1000.mmio_base, REG_RDT, new_tail as u32); }
+        unsafe {
+            mmio_write(e1000.mmio_base, REG_RDT, new_tail as u32);
+        }
     }
 }
 
@@ -688,8 +726,10 @@ fn e1000_irq_handler(_irq: u8) {
 
             if icr & ICR_LSC != 0 {
                 let link = unsafe { mmio_read(e1000.mmio_base, REG_STATUS) & 2 != 0 };
-                crate::serial_verbose_println!("  E1000: link status changed: {}",
-                    if link { "UP" } else { "DOWN" });
+                crate::serial_verbose_println!(
+                    "  E1000: link status changed: {}",
+                    if link { "UP" } else { "DOWN" }
+                );
             }
 
             if icr & ICR_RXT0 != 0 {
@@ -716,14 +756,30 @@ fn e1000_irq_handler(_irq: u8) {
 pub struct E1000NetworkDriver;
 
 impl super::NetworkDriver for E1000NetworkDriver {
-    fn name(&self) -> &str { "Intel E1000" }
-    fn transmit(&mut self, data: &[u8]) -> bool { transmit(data) }
-    fn get_mac(&self) -> [u8; 6] { get_mac().unwrap_or([0; 6]) }
-    fn link_up(&self) -> bool { is_link_up() }
-    fn set_enabled(&mut self, enabled: bool) { set_enabled(enabled); }
-    fn is_enabled(&self) -> bool { is_enabled() }
-    fn get_stats(&self) -> (u64, u64, u64, u64, u64, u64) { get_stats() }
-    fn driver_name(&self) -> &str { "e1000" }
+    fn name(&self) -> &str {
+        "Intel E1000"
+    }
+    fn transmit(&mut self, data: &[u8]) -> bool {
+        transmit(data)
+    }
+    fn get_mac(&self) -> [u8; 6] {
+        get_mac().unwrap_or([0; 6])
+    }
+    fn link_up(&self) -> bool {
+        is_link_up()
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        set_enabled(enabled);
+    }
+    fn is_enabled(&self) -> bool {
+        is_enabled()
+    }
+    fn get_stats(&self) -> (u64, u64, u64, u64, u64, u64) {
+        get_stats()
+    }
+    fn driver_name(&self) -> &str {
+        "e1000"
+    }
 }
 
 /// Probe: return a HAL driver wrapper for the E1000 Ethernet controller.

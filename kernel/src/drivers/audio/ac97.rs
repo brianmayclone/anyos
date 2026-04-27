@@ -9,12 +9,12 @@
 //!
 //! QEMU: `-device AC97 -audiodev coreaudio,id=audio0`
 
-use alloc::boxed::Box;
 use crate::arch::x86::port;
-use crate::memory::physical;
-use crate::sync::spinlock::Spinlock;
 use crate::drivers::pci::PciDevice;
+use crate::memory::physical;
 use crate::serial_verbose_println;
+use crate::sync::spinlock::Spinlock;
+use alloc::boxed::Box;
 
 // ---------------------------------------------------------------------------
 // AC'97 Mixer registers (offsets from NAMBAR / BAR0)
@@ -31,27 +31,27 @@ const NAM_EXT_AUDIO_CTRL: u16 = 0x2A;
 // PCM Out channel is at offset 0x10
 // ---------------------------------------------------------------------------
 const NABM_PO_BDBAR: u16 = 0x10; // Buffer Descriptor list Base Address (32-bit)
-const NABM_PO_CIV: u16 = 0x14;   // Current Index Value (8-bit)
-const NABM_PO_LVI: u16 = 0x15;   // Last Valid Index (8-bit)
-const NABM_PO_SR: u16 = 0x16;    // Status Register (16-bit)
-const NABM_PO_PICB: u16 = 0x18;  // Position In Current Buffer (16-bit, samples remaining)
-const NABM_PO_PIV: u16 = 0x1A;   // Prefetched Index Value (8-bit)
-const NABM_PO_CR: u16 = 0x1B;    // Control Register (8-bit)
+const NABM_PO_CIV: u16 = 0x14; // Current Index Value (8-bit)
+const NABM_PO_LVI: u16 = 0x15; // Last Valid Index (8-bit)
+const NABM_PO_SR: u16 = 0x16; // Status Register (16-bit)
+const NABM_PO_PICB: u16 = 0x18; // Position In Current Buffer (16-bit, samples remaining)
+const NABM_PO_PIV: u16 = 0x1A; // Prefetched Index Value (8-bit)
+const NABM_PO_CR: u16 = 0x1B; // Control Register (8-bit)
 const NABM_GLB_CTRL: u16 = 0x2C; // Global Control (32-bit)
-const NABM_GLB_STS: u16 = 0x30;  // Global Status (32-bit)
+const NABM_GLB_STS: u16 = 0x30; // Global Status (32-bit)
 
 // Control Register bits
-const CR_RPBM: u8 = 0x01;  // Run/Pause Bus Master
-const CR_RR: u8 = 0x02;    // Reset Registers
+const CR_RPBM: u8 = 0x01; // Run/Pause Bus Master
+const CR_RR: u8 = 0x02; // Reset Registers
 const CR_LVBIE: u8 = 0x04; // Last Valid Buffer Interrupt Enable
-const CR_FEIE: u8 = 0x08;  // FIFO Error Interrupt Enable
-const CR_IOCE: u8 = 0x10;  // Interrupt On Completion Enable
+const CR_FEIE: u8 = 0x08; // FIFO Error Interrupt Enable
+const CR_IOCE: u8 = 0x10; // Interrupt On Completion Enable
 
 // Status Register bits
-const SR_DCH: u16 = 0x01;   // DMA Controller Halted
-const SR_CELV: u16 = 0x02;  // Current Equals Last Valid
+const SR_DCH: u16 = 0x01; // DMA Controller Halted
+const SR_CELV: u16 = 0x02; // Current Equals Last Valid
 const SR_LVBCI: u16 = 0x04; // Last Valid Buffer Completion Interrupt
-const SR_BCIS: u16 = 0x08;  // Buffer Completion Interrupt Status
+const SR_BCIS: u16 = 0x08; // Buffer Completion Interrupt Status
 const SR_FIFOE: u16 = 0x10; // FIFO Error
 
 // Global Control bits
@@ -61,8 +61,8 @@ const GC_WARM_RESET: u32 = 0x04;
 
 // BDL constants
 const BDL_ENTRIES: usize = 32;
-const BDL_IOC: u32 = 1 << 31;   // Interrupt On Completion
-const BDL_BUP: u32 = 1 << 30;   // Buffer Underrun Policy (fill with last sample)
+const BDL_IOC: u32 = 1 << 31; // Interrupt On Completion
+const BDL_BUP: u32 = 1 << 30; // Buffer Underrun Policy (fill with last sample)
 
 // Audio buffer size per BDL entry (in bytes)
 // 4096 bytes = 1024 sample frames (at 4 bytes each: L16 + R16)
@@ -80,12 +80,12 @@ struct BdlEntry {
 }
 
 struct Ac97State {
-    nambar: u16,                  // Mixer I/O base (BAR0)
-    nabmbar: u16,                 // Bus Master I/O base (BAR1)
-    bdl_phys: u32,                // BDL physical address
-    bufs_phys: [u32; BDL_ENTRIES],// Audio buffer physical addresses
-    write_idx: u8,                // Next BDL entry to fill
-    volume: u8,                   // 0-100
+    nambar: u16,                   // Mixer I/O base (BAR0)
+    nabmbar: u16,                  // Bus Master I/O base (BAR1)
+    bdl_phys: u32,                 // BDL physical address
+    bufs_phys: [u32; BDL_ENTRIES], // Audio buffer physical addresses
+    write_idx: u8,                 // Next BDL entry to fill
+    volume: u8,                    // 0-100
     playing: bool,
     irq: u8,
 }
@@ -102,14 +102,23 @@ pub fn init_from_pci(pci: &PciDevice) {
 
     // AC'97 uses I/O ports (bit 0 set in BAR)
     if bar0 & 1 == 0 || bar1 & 1 == 0 {
-        serial_verbose_println!("AC97: BARs are not I/O ports (BAR0={:#x}, BAR1={:#x})", bar0, bar1);
+        serial_verbose_println!(
+            "AC97: BARs are not I/O ports (BAR0={:#x}, BAR1={:#x})",
+            bar0,
+            bar1
+        );
         return;
     }
 
     let nambar = (bar0 & 0xFFFC) as u16;
     let nabmbar = (bar1 & 0xFFFC) as u16;
 
-    serial_verbose_println!("AC97: NAMBAR={:#06x}, NABMBAR={:#06x}, IRQ={}", nambar, nabmbar, pci.interrupt_line);
+    serial_verbose_println!(
+        "AC97: NAMBAR={:#06x}, NABMBAR={:#06x}, IRQ={}",
+        nambar,
+        nabmbar,
+        pci.interrupt_line
+    );
 
     // Enable PCI bus mastering
     crate::drivers::pci::enable_bus_master(pci);
@@ -120,7 +129,9 @@ pub fn init_from_pci(pci: &PciDevice) {
     }
     // Wait for codec ready (~100μs, use PIT ticks)
     for _ in 0..1000 {
-        unsafe { port::io_wait(); }
+        unsafe {
+            port::io_wait();
+        }
     }
 
     // Check Global Status for codec ready
@@ -132,29 +143,43 @@ pub fn init_from_pci(pci: &PciDevice) {
             port::outl(nabmbar + NABM_GLB_CTRL, GC_COLD_RESET | GC_WARM_RESET);
         }
         for _ in 0..1000 {
-            unsafe { port::io_wait(); }
+            unsafe {
+                port::io_wait();
+            }
         }
     }
 
     // Reset codec
-    unsafe { port::outw(nambar + NAM_RESET, 0x0001); }
+    unsafe {
+        port::outw(nambar + NAM_RESET, 0x0001);
+    }
     for _ in 0..500 {
-        unsafe { port::io_wait(); }
+        unsafe {
+            port::io_wait();
+        }
     }
 
     // Set master volume: 0x0000 = max volume, unmuted
-    unsafe { port::outw(nambar + NAM_MASTER_VOL, 0x0000); }
+    unsafe {
+        port::outw(nambar + NAM_MASTER_VOL, 0x0000);
+    }
     // Set PCM out volume: 0x0808 = moderate
-    unsafe { port::outw(nambar + NAM_PCM_OUT_VOL, 0x0808); }
+    unsafe {
+        port::outw(nambar + NAM_PCM_OUT_VOL, 0x0808);
+    }
 
     // Enable variable rate audio if supported
     let ext_id = unsafe { port::inw(nambar + NAM_EXT_AUDIO_ID) };
     if ext_id & 0x0001 != 0 {
         // VRA supported — enable it
         let ext_ctrl = unsafe { port::inw(nambar + NAM_EXT_AUDIO_CTRL) };
-        unsafe { port::outw(nambar + NAM_EXT_AUDIO_CTRL, ext_ctrl | 0x0001); }
+        unsafe {
+            port::outw(nambar + NAM_EXT_AUDIO_CTRL, ext_ctrl | 0x0001);
+        }
         // Set sample rate to 48000 Hz
-        unsafe { port::outw(nambar + NAM_PCM_FRONT_DAC_RATE, 48000); }
+        unsafe {
+            port::outw(nambar + NAM_PCM_FRONT_DAC_RATE, 48000);
+        }
         serial_verbose_println!("AC97: VRA enabled, sample rate = 48000 Hz");
     } else {
         serial_verbose_println!("AC97: No VRA, using fixed 48000 Hz");
@@ -206,7 +231,9 @@ pub fn init_from_pci(pci: &PciDevice) {
         port::outb(nabmbar + NABM_PO_CR, CR_RR);
     }
     for _ in 0..100 {
-        unsafe { port::io_wait(); }
+        unsafe {
+            port::io_wait();
+        }
     }
     unsafe {
         port::outb(nabmbar + NABM_PO_CR, 0);
@@ -247,7 +274,10 @@ pub fn init_from_pci(pci: &PciDevice) {
         crate::arch::x86::pic::unmask(irq);
     }
 
-    serial_verbose_println!("[OK] AC'97 initialized (48 kHz, 16-bit stereo, IRQ {})", irq);
+    serial_verbose_println!(
+        "[OK] AC'97 initialized (48 kHz, 16-bit stereo, IRQ {})",
+        irq
+    );
 
     // Register with the generic audio subsystem
     super::register(Box::new(Ac97Driver));
@@ -275,11 +305,7 @@ pub fn write_pcm(data: &[u8]) -> usize {
 
         // Copy PCM data into DMA buffer
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                data[written..].as_ptr(),
-                buf_ptr,
-                chunk,
-            );
+            core::ptr::copy_nonoverlapping(data[written..].as_ptr(), buf_ptr, chunk);
             // If chunk < BUF_SIZE, zero the remainder
             if chunk < BUF_SIZE {
                 core::ptr::write_bytes(buf_ptr.add(chunk), 0, BUF_SIZE - chunk);
@@ -305,7 +331,10 @@ pub fn write_pcm(data: &[u8]) -> usize {
         if !state.playing {
             unsafe {
                 let cr = port::inb(state.nabmbar + NABM_PO_CR);
-                port::outb(state.nabmbar + NABM_PO_CR, cr | CR_RPBM | CR_IOCE | CR_LVBIE);
+                port::outb(
+                    state.nabmbar + NABM_PO_CR,
+                    cr | CR_RPBM | CR_IOCE | CR_LVBIE,
+                );
             }
             state.playing = true;
         }
@@ -379,13 +408,27 @@ pub fn is_playing() -> bool {
 pub struct Ac97Driver;
 
 impl super::AudioDriver for Ac97Driver {
-    fn name(&self) -> &str { "Intel AC'97" }
-    fn write_pcm(&mut self, data: &[u8]) -> usize { write_pcm(data) }
-    fn stop(&mut self) { stop(); }
-    fn set_volume(&mut self, vol: u8) { set_volume(vol); }
-    fn get_volume(&self) -> u8 { get_volume() }
-    fn is_playing(&self) -> bool { is_playing() }
-    fn sample_rate(&self) -> u32 { 48000 }
+    fn name(&self) -> &str {
+        "Intel AC'97"
+    }
+    fn write_pcm(&mut self, data: &[u8]) -> usize {
+        write_pcm(data)
+    }
+    fn stop(&mut self) {
+        stop();
+    }
+    fn set_volume(&mut self, vol: u8) {
+        set_volume(vol);
+    }
+    fn get_volume(&self) -> u8 {
+        get_volume()
+    }
+    fn is_playing(&self) -> bool {
+        is_playing()
+    }
+    fn sample_rate(&self) -> u32 {
+        48000
+    }
 }
 
 /// AC'97 IRQ handler — acknowledges buffer completion interrupts.

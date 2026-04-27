@@ -13,19 +13,43 @@
 //!   caused by out-of-bounds writes that overflow into allocator metadata.
 
 use crate::kunit::{TestCase, TestContext, TestSuite};
-use crate::memory::heap::{validate_heap, heap_stats};
+use crate::memory::heap::{heap_stats, validate_heap};
 
 pub static SUITE: TestSuite = TestSuite {
     name: "heap::stress",
     cases: &[
-        TestCase { name: "small_alloc_flood",        run: test_small_flood },
-        TestCase { name: "varied_size_allocs",        run: test_varied_sizes },
-        TestCase { name: "interleaved_alloc_free",    run: test_interleaved },
-        TestCase { name: "large_single_alloc",        run: test_large_single },
-        TestCase { name: "nested_alloc_in_alloc",     run: test_nested },
-        TestCase { name: "heap_stats_monotone",       run: test_stats_monotone },
-        TestCase { name: "validate_after_each_phase", run: test_validate_phases },
-        TestCase { name: "alloc_after_heavy_use",     run: test_alloc_after_heavy },
+        TestCase {
+            name: "small_alloc_flood",
+            run: test_small_flood,
+        },
+        TestCase {
+            name: "varied_size_allocs",
+            run: test_varied_sizes,
+        },
+        TestCase {
+            name: "interleaved_alloc_free",
+            run: test_interleaved,
+        },
+        TestCase {
+            name: "large_single_alloc",
+            run: test_large_single,
+        },
+        TestCase {
+            name: "nested_alloc_in_alloc",
+            run: test_nested,
+        },
+        TestCase {
+            name: "heap_stats_monotone",
+            run: test_stats_monotone,
+        },
+        TestCase {
+            name: "validate_after_each_phase",
+            run: test_validate_phases,
+        },
+        TestCase {
+            name: "alloc_after_heavy_use",
+            run: test_alloc_after_heavy,
+        },
     ],
 };
 
@@ -45,7 +69,9 @@ fn test_small_flood(ctx: &mut TestContext) {
     // Verify all values are still intact (detects use-after-free / overlap).
     let mut ok = true;
     for (i, b) in v.iter().enumerate() {
-        if **b != i as u64 * 0xDEAD_BEEF { ok = false; }
+        if **b != i as u64 * 0xDEAD_BEEF {
+            ok = false;
+        }
     }
     ctx.expect_true(ok, "all small allocations contain correct values");
 
@@ -114,7 +140,9 @@ fn test_large_single(ctx: &mut TestContext) {
     }
     let mut ok = true;
     for (i, &b) in buf.iter().enumerate() {
-        if b != (i & 0xFF) as u8 { ok = false; }
+        if b != (i & 0xFF) as u8 {
+            ok = false;
+        }
     }
     ctx.expect_true(ok, "64 KiB allocation contents intact");
     validate_heap();
@@ -134,8 +162,12 @@ fn test_nested(ctx: &mut TestContext) {
     let mut ok = true;
     for (i, inner) in outer.iter().enumerate() {
         let expected_len = (i + 1) * 8;
-        if inner.len() != expected_len { ok = false; }
-        if inner.iter().any(|&b| b != i as u8) { ok = false; }
+        if inner.len() != expected_len {
+            ok = false;
+        }
+        if inner.iter().any(|&b| b != i as u8) {
+            ok = false;
+        }
     }
     ctx.expect_true(ok, "nested Vec contents intact after outer realloc");
     validate_heap();
@@ -149,21 +181,25 @@ fn test_stats_monotone(ctx: &mut TestContext) {
     // shrink (the heap does not release pages back to the physical allocator).
     // Used bytes must always be <= committed.
     let (used0, committed0) = heap_stats();
-    ctx.expect_true(used0 > 0,           "used bytes > 0");
-    ctx.expect_true(committed0 > 0,      "committed bytes > 0");
-    ctx.expect_ge(committed0, used0,     "committed >= used");
+    ctx.expect_true(used0 > 0, "used bytes > 0");
+    ctx.expect_true(committed0 > 0, "committed bytes > 0");
+    ctx.expect_ge(committed0, used0, "committed >= used");
 
     // Allocate something.
     let v = alloc::vec![0u8; 4096];
     let (used1, committed1) = heap_stats();
-    ctx.expect_ge(used1, used0,          "used increases after alloc");
-    ctx.expect_ge(committed1, committed0,"committed non-decreasing");
-    ctx.expect_ge(committed1, used1,     "committed >= used after alloc");
+    ctx.expect_ge(used1, used0, "used increases after alloc");
+    ctx.expect_ge(committed1, committed0, "committed non-decreasing");
+    ctx.expect_ge(committed1, used1, "committed >= used after alloc");
 
     drop(v);
     let (used2, committed2) = heap_stats();
-    ctx.expect_ge(committed2, committed0,"committed stays >= original after free");
-    ctx.expect_ge(committed2, used2,     "committed >= used after free");
+    ctx.expect_ge(
+        committed2,
+        committed0,
+        "committed stays >= original after free",
+    );
+    ctx.expect_ge(committed2, used2, "committed >= used after free");
 }
 
 // ── validate_heap after each phase ───────────────────────────────────────────
@@ -204,7 +240,11 @@ fn test_alloc_after_heavy(ctx: &mut TestContext) {
 
     // Should still be able to get a 16 KiB contiguous block.
     let big = alloc::vec![0xABu8; 16384];
-    ctx.expect_eq(big.len(), 16384usize, "can allocate 16 KiB after flood+free");
+    ctx.expect_eq(
+        big.len(),
+        16384usize,
+        "can allocate 16 KiB after flood+free",
+    );
     ctx.expect_true(big[0] == 0xAB && big[16383] == 0xAB, "contents correct");
     validate_heap();
     ctx.expect_true(true, "heap valid after alloc-after-heavy-use");

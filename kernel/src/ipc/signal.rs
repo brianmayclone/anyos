@@ -97,15 +97,32 @@ impl SignalState {
 
     /// Get handler for a signal.
     pub fn get_handler(&self, sig: u32) -> u64 {
-        if sig >= 32 { SIG_DFL } else { self.handlers[sig as usize] }
+        if sig >= 32 {
+            SIG_DFL
+        } else {
+            self.handlers[sig as usize]
+        }
     }
 
     /// Returns true if the default action for this signal is to terminate the process.
     pub fn default_is_terminate(sig: u32) -> bool {
-        matches!(sig,
-            SIGHUP | SIGINT | SIGQUIT | SIGILL | SIGTRAP | SIGABRT |
-            SIGBUS | SIGFPE | SIGKILL | SIGUSR1 | SIGSEGV | SIGUSR2 |
-            SIGPIPE | SIGALRM | SIGTERM
+        matches!(
+            sig,
+            SIGHUP
+                | SIGINT
+                | SIGQUIT
+                | SIGILL
+                | SIGTRAP
+                | SIGABRT
+                | SIGBUS
+                | SIGFPE
+                | SIGKILL
+                | SIGUSR1
+                | SIGSEGV
+                | SIGUSR2
+                | SIGPIPE
+                | SIGALRM
+                | SIGTERM
         )
     }
 

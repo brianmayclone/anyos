@@ -34,7 +34,10 @@ pub fn detect() {
 
     crate::serial_verbose_println!(
         "CPU: impl={:#04x} part={:#05x} variant={} revision={}",
-        implementer, part, variant, revision,
+        implementer,
+        part,
+        variant,
+        revision,
     );
 
     // ID_AA64ISAR0_EL1 fields

@@ -51,7 +51,10 @@ fn init_platform() {
     arch::arm64::gic::init_cpu(arch::hal::cpu_id());
     arch::arm64::exceptions::register_irq(0, halt_ipi_handler);
     arch::arm64::exceptions::register_irq(1, resched_ipi_handler);
-    arch::arm64::exceptions::register_irq(30, arch::arm64::generic_timer::irq_handler_with_schedule);
+    arch::arm64::exceptions::register_irq(
+        30,
+        arch::arm64::generic_timer::irq_handler_with_schedule,
+    );
     arch::arm64::generic_timer::init();
     arch::arm64::syscall::init_bsp();
     serial_println!("[OK] ARM64 platform initialized");

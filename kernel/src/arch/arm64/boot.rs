@@ -40,23 +40,23 @@ pub fn dtb_addr() -> u64 {
 const FDT_MAGIC: u32 = 0xD00DFEED;
 
 const FDT_BEGIN_NODE: u32 = 0x1;
-const FDT_END_NODE: u32   = 0x2;
-const FDT_PROP: u32       = 0x3;
-const FDT_NOP: u32        = 0x4;
-const FDT_END: u32        = 0x9;
+const FDT_END_NODE: u32 = 0x2;
+const FDT_PROP: u32 = 0x3;
+const FDT_NOP: u32 = 0x4;
+const FDT_END: u32 = 0x9;
 
 /// FDT header (big-endian on disk, we byte-swap manually).
 #[repr(C)]
 struct FdtHeader {
-    magic:           u32,
-    totalsize:       u32,
-    off_dt_struct:   u32,
-    off_dt_strings:  u32,
+    magic: u32,
+    totalsize: u32,
+    off_dt_struct: u32,
+    off_dt_strings: u32,
     _off_mem_rsvmap: u32,
-    version:         u32,
-    _last_comp_ver:  u32,
-    _boot_cpuid:     u32,
-    _size_dt_strings:u32,
+    version: u32,
+    _last_comp_ver: u32,
+    _boot_cpuid: u32,
+    _size_dt_strings: u32,
     _size_dt_struct: u32,
 }
 
@@ -98,11 +98,11 @@ fn parse_dtb_memory(dtb_phys: u64) -> Option<(u64, u64)> {
         return None;
     }
 
-    let off_struct  = be32(unsafe { base.add(8) })  as usize;
+    let off_struct = be32(unsafe { base.add(8) }) as usize;
     let off_strings = be32(unsafe { base.add(12) }) as usize;
 
     let strings_base = unsafe { base.add(off_strings) };
-    let mut ptr      = unsafe { base.add(off_struct) };
+    let mut ptr = unsafe { base.add(off_struct) };
 
     // State machine over the structure block
     let mut depth: i32 = 0;
@@ -144,17 +144,21 @@ fn parse_dtb_memory(dtb_phys: u64) -> Option<(u64, u64)> {
                 in_memory_node = false;
             }
             FDT_PROP => {
-                let prop_len    = be32(ptr) as usize; ptr = unsafe { ptr.add(4) };
-                let nameoff     = be32(ptr) as usize; ptr = unsafe { ptr.add(4) };
-                let data_ptr    = ptr;
-                let padded_len  = (prop_len + 3) & !3;
+                let prop_len = be32(ptr) as usize;
+                ptr = unsafe { ptr.add(4) };
+                let nameoff = be32(ptr) as usize;
+                ptr = unsafe { ptr.add(4) };
+                let data_ptr = ptr;
+                let padded_len = (prop_len + 3) & !3;
                 ptr = unsafe { ptr.add(padded_len) };
 
                 if in_memory_node {
                     // Get property name from strings block
                     let name_ptr = unsafe { strings_base.add(nameoff) };
                     let mut nlen = 0usize;
-                    while unsafe { *name_ptr.add(nlen) } != 0 { nlen += 1; }
+                    while unsafe { *name_ptr.add(nlen) } != 0 {
+                        nlen += 1;
+                    }
                     let pname = unsafe { core::slice::from_raw_parts(name_ptr, nlen) };
 
                     if pname == b"reg" && prop_len >= 16 {
@@ -184,7 +188,9 @@ pub fn detect_memory() -> (u64, u64) {
     if let Some((base, size)) = parse_dtb_memory(dtb) {
         crate::serial_println!(
             "  DTB memory: {:#010x} - {:#010x} ({} MiB)",
-            base, base + size, size / (1024 * 1024),
+            base,
+            base + size,
+            size / (1024 * 1024),
         );
         return (base, size);
     }
@@ -194,7 +200,9 @@ pub fn detect_memory() -> (u64, u64) {
     let size: u64 = 512 * 1024 * 1024;
     crate::serial_println!(
         "  Memory (fallback): {:#010x} - {:#010x} ({} MiB)",
-        base, base + size, size / (1024 * 1024),
+        base,
+        base + size,
+        size / (1024 * 1024),
     );
     (base, size)
 }

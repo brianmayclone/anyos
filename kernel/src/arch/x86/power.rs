@@ -12,16 +12,16 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 // ── MSR Constants ───────────────────────────────────────────────────────────
 
 // Intel P-state MSRs
-const MSR_PLATFORM_INFO: u32     = 0xCE;
-const MSR_PERF_STATUS: u32       = 0x198;
-const MSR_PERF_CTL: u32          = 0x199;
-const MSR_MPERF: u32             = 0xE7;
-const MSR_APERF: u32             = 0xE8;
+const MSR_PLATFORM_INFO: u32 = 0xCE;
+const MSR_PERF_STATUS: u32 = 0x198;
+const MSR_PERF_CTL: u32 = 0x199;
+const MSR_MPERF: u32 = 0xE7;
+const MSR_APERF: u32 = 0xE8;
 
 // Intel HWP MSRs
-const MSR_PM_ENABLE: u32         = 0x770;
-const MSR_HWP_CAPABILITIES: u32  = 0x771;
-const MSR_HWP_REQUEST: u32       = 0x774;
+const MSR_PM_ENABLE: u32 = 0x770;
+const MSR_HWP_CAPABILITIES: u32 = 0x771;
+const MSR_HWP_REQUEST: u32 = 0x774;
 
 // AMD P-state MSRs
 const MSR_AMD_PSTATE_STATUS: u32 = 0xC001_0063;
@@ -77,11 +77,21 @@ use core::sync::atomic::AtomicU64;
 
 // ── Public Query API ────────────────────────────────────────────────────────
 
-pub fn has_hwp() -> bool { HAS_HWP.load(Ordering::Relaxed) }
-pub fn has_turbo() -> bool { HAS_TURBO.load(Ordering::Relaxed) }
-pub fn has_aperf() -> bool { HAS_APERF_MPERF.load(Ordering::Relaxed) }
-pub fn max_frequency_mhz() -> u32 { MAX_FREQ_MHZ.load(Ordering::Relaxed) }
-pub fn max_cstate() -> u32 { MAX_CSTATE.load(Ordering::Relaxed) }
+pub fn has_hwp() -> bool {
+    HAS_HWP.load(Ordering::Relaxed)
+}
+pub fn has_turbo() -> bool {
+    HAS_TURBO.load(Ordering::Relaxed)
+}
+pub fn has_aperf() -> bool {
+    HAS_APERF_MPERF.load(Ordering::Relaxed)
+}
+pub fn max_frequency_mhz() -> u32 {
+    MAX_FREQ_MHZ.load(Ordering::Relaxed)
+}
+pub fn max_cstate() -> u32 {
+    MAX_CSTATE.load(Ordering::Relaxed)
+}
 
 /// Read current CPU frequency in MHz.
 /// Uses APERF/MPERF if available, otherwise reads P-state ratio.
@@ -110,9 +120,15 @@ pub fn current_frequency_mhz() -> u32 {
 /// Bit 0 = HWP, bit 1 = Turbo, bit 2 = APERF/MPERF.
 pub fn features_bitfield() -> u32 {
     let mut bits = 0u32;
-    if has_hwp() { bits |= 1; }
-    if has_turbo() { bits |= 2; }
-    if has_aperf() { bits |= 4; }
+    if has_hwp() {
+        bits |= 1;
+    }
+    if has_turbo() {
+        bits |= 2;
+    }
+    if has_aperf() {
+        bits |= 4;
+    }
     bits
 }
 
@@ -146,7 +162,9 @@ pub fn init() {
         let mut max_cs = 0u32;
         for cs in 0..8 {
             let sub_states = (edx5 >> (cs * 4)) & 0xF;
-            if sub_states > 0 { max_cs = cs; }
+            if sub_states > 0 {
+                max_cs = cs;
+            }
         }
         MAX_CSTATE.store(max_cs, Ordering::Relaxed);
     }
@@ -175,7 +193,12 @@ pub fn init() {
     let base_mhz = BASE_FREQ_MHZ.load(Ordering::Relaxed);
     crate::serial_verbose_println!(
         "[OK] CPU Power: HWP={} Turbo={} APERF={} AMD={} max={}MHz base={}MHz C-states=C0..C{}",
-        has_hwp(), has_turbo(), has_aperf(), is_amd, max_mhz, base_mhz,
+        has_hwp(),
+        has_turbo(),
+        has_aperf(),
+        is_amd,
+        max_mhz,
+        base_mhz,
         MAX_CSTATE.load(Ordering::Relaxed)
     );
 }
@@ -201,7 +224,9 @@ pub fn init_ap() {
         // Legacy: set max P-state ratio (only if BSP confirmed MSR is available)
         let max_ratio = MAX_FREQ_MHZ.load(Ordering::Relaxed) as u64 / 100;
         if max_ratio > 0 {
-            unsafe { wrmsr(MSR_PERF_CTL, max_ratio << 8); }
+            unsafe {
+                wrmsr(MSR_PERF_CTL, max_ratio << 8);
+            }
         }
     }
 }
@@ -215,9 +240,9 @@ fn init_intel_hwp() {
 
         // Read capabilities
         let caps = rdmsr(MSR_HWP_CAPABILITIES);
-        let highest = (caps & 0xFF) as u32;           // bits 7:0
-        let _lowest = ((caps >> 8) & 0xFF) as u32;    // bits 15:8
-        let efficient = ((caps >> 16) & 0xFF) as u32;  // bits 23:16
+        let highest = (caps & 0xFF) as u32; // bits 7:0
+        let _lowest = ((caps >> 8) & 0xFF) as u32; // bits 15:8
+        let efficient = ((caps >> 16) & 0xFF) as u32; // bits 23:16
 
         // Set request: min=efficient, max=highest (let HW decide)
         let request = (efficient as u64) | ((highest as u64) << 8);
@@ -229,7 +254,9 @@ fn init_intel_hwp() {
 
         crate::serial_verbose_println!(
             "  HWP: highest={} efficient={} → max={}MHz",
-            highest, efficient, max_mhz
+            highest,
+            efficient,
+            max_mhz
         );
     }
 }
@@ -251,13 +278,20 @@ fn init_intel_legacy_pstate() {
             // Request max performance
             wrmsr(MSR_PERF_CTL, (max_ratio as u64) << 8);
 
-            crate::serial_verbose_println!("  Legacy P-state: ratio={} → max={}MHz", max_ratio, max_mhz);
+            crate::serial_verbose_println!(
+                "  Legacy P-state: ratio={} → max={}MHz",
+                max_ratio,
+                max_mhz
+            );
         } else {
             // Fallback: use TSC frequency
             let tsc_mhz = (crate::arch::x86::pit::tsc_hz() / 1_000_000) as u32;
             MAX_FREQ_MHZ.store(tsc_mhz, Ordering::Relaxed);
             BASE_FREQ_MHZ.store(tsc_mhz, Ordering::Relaxed);
-            crate::serial_verbose_println!("  Legacy P-state: using TSC={}MHz (no PLATFORM_INFO)", tsc_mhz);
+            crate::serial_verbose_println!(
+                "  Legacy P-state: using TSC={}MHz (no PLATFORM_INFO)",
+                tsc_mhz
+            );
         }
     }
 }
@@ -298,9 +332,11 @@ fn init_amd_pstates() {
 /// Decode AMD P-state register to frequency in MHz.
 /// Family 17h+: freq = 200 * CpuFid / CpuDid
 fn amd_pstate_frequency(pstate: u64) -> u32 {
-    let fid = (pstate & 0xFF) as u32;           // bits 7:0
-    let did = ((pstate >> 8) & 0x3F) as u32;    // bits 13:8
-    if did == 0 { return 0; }
+    let fid = (pstate & 0xFF) as u32; // bits 7:0
+    let did = ((pstate >> 8) & 0x3F) as u32; // bits 13:8
+    if did == 0 {
+        return 0;
+    }
     (200 * fid) / did
 }
 

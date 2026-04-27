@@ -55,7 +55,11 @@ impl UserEntry {
     }
 
     fn hash_str(&self) -> &str {
-        let len = self.password_hash.iter().position(|&b| b == 0).unwrap_or(160);
+        let len = self
+            .password_hash
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(160);
         core::str::from_utf8(&self.password_hash[..len]).unwrap_or("")
     }
 }
@@ -253,7 +257,10 @@ pub fn authenticate(username: &str, password: &str) -> Option<(u16, u16)> {
     if let Some(ref username) = upgrade {
         let upgraded = crate::crypto::password::hash_password(password);
         if update_password_hash(username, &upgraded) {
-            crate::serial_verbose_println!("  AUTH: upgraded legacy password hash for '{}'", username);
+            crate::serial_verbose_println!(
+                "  AUTH: upgraded legacy password hash for '{}'",
+                username
+            );
         }
     }
 
@@ -291,7 +298,14 @@ pub fn lookup_username(name: &str) -> Option<UserEntry> {
 }
 
 /// Add a new user to the database. Returns true on success.
-pub fn add_user(username: &str, password: &str, uid: u16, gid: u16, fullname: &str, homedir: &str) -> bool {
+pub fn add_user(
+    username: &str,
+    password: &str,
+    uid: u16,
+    gid: u16,
+    fullname: &str,
+    homedir: &str,
+) -> bool {
     let mut users = USERS.lock();
 
     // Check for duplicate username or uid
@@ -444,7 +458,12 @@ pub fn list_users(buf: &mut [u8]) -> usize {
         if !user.used {
             continue;
         }
-        let line = alloc::format!("{}:{}:{}\n", user.uid, user.username_str(), user.fullname_str());
+        let line = alloc::format!(
+            "{}:{}:{}\n",
+            user.uid,
+            user.username_str(),
+            user.fullname_str()
+        );
         let bytes = line.as_bytes();
         if written + bytes.len() > buf.len() {
             break;
@@ -530,10 +549,17 @@ fn persist_passwd() {
     drop(users);
 
     // Write to VFS
-    if let Ok(fd) = crate::fs::vfs::open("/System/users/passwd", crate::fs::file::FileFlags {
-        read: false, write: true, append: false, create: true, truncate: true,
-        sync: false,
-    }) {
+    if let Ok(fd) = crate::fs::vfs::open(
+        "/System/users/passwd",
+        crate::fs::file::FileFlags {
+            read: false,
+            write: true,
+            append: false,
+            create: true,
+            truncate: true,
+            sync: false,
+        },
+    ) {
         let _ = crate::fs::vfs::write(fd, content.as_bytes());
         let _ = crate::fs::vfs::close(fd);
     }
@@ -566,10 +592,17 @@ fn persist_group() {
     }
     drop(groups);
 
-    if let Ok(fd) = crate::fs::vfs::open("/System/users/group", crate::fs::file::FileFlags {
-        read: false, write: true, append: false, create: true, truncate: true,
-        sync: false,
-    }) {
+    if let Ok(fd) = crate::fs::vfs::open(
+        "/System/users/group",
+        crate::fs::file::FileFlags {
+            read: false,
+            write: true,
+            append: false,
+            create: true,
+            truncate: true,
+            sync: false,
+        },
+    ) {
         let _ = crate::fs::vfs::write(fd, content.as_bytes());
         let _ = crate::fs::vfs::close(fd);
     }
@@ -584,7 +617,9 @@ fn format_u16(val: u16, buf: &mut [u8; 8]) -> &str {
     while n > 0 {
         buf[i] = b'0' + (n % 10) as u8;
         n /= 10;
-        if i == 0 { break; }
+        if i == 0 {
+            break;
+        }
         i -= 1;
     }
     core::str::from_utf8(&buf[i + 1..8]).unwrap_or("0")

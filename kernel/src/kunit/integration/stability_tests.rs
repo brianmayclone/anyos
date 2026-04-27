@@ -18,26 +18,65 @@
 //! | `timer_hz_sane`             | Wrong PIT freq → timeouts fire too early/late  |
 //! | `per_cpu_state_consistent`  | HAS_THREAD/TID mismatch → wrong context switch |
 
+use crate::arch::hal;
 use crate::kunit::{TestCase, TestContext, TestSuite};
 use crate::task::scheduler;
-use crate::arch::hal;
 
 pub static SUITE: TestSuite = TestSuite {
     name: "stability",
     cases: &[
-        TestCase { name: "interrupts_enabled",         run: test_interrupts_enabled },
-        TestCase { name: "tss_rsp0_in_kernel_range",   run: test_tss_rsp0 },
-        TestCase { name: "syscall_msr_rsp_sane",       run: test_syscall_msr_rsp },
-        TestCase { name: "idle_stack_in_kernel_range", run: test_idle_stack },
-        TestCase { name: "heap_not_locked",            run: test_heap_not_locked },
-        TestCase { name: "scheduler_not_locked",       run: test_sched_not_locked },
-        TestCase { name: "thread_table_no_zero_tids",  run: test_no_zero_tids },
-        TestCase { name: "thread_tids_unique",         run: test_tids_unique },
-        TestCase { name: "no_zombie_accumulation",     run: test_no_zombie_accumulation },
-        TestCase { name: "heap_stress_validate",       run: test_heap_stress },
-        TestCase { name: "cpu_count_sane",             run: test_cpu_count },
-        TestCase { name: "timer_hz_sane",              run: test_timer_hz },
-        TestCase { name: "per_cpu_state_consistent",   run: test_per_cpu_consistent },
+        TestCase {
+            name: "interrupts_enabled",
+            run: test_interrupts_enabled,
+        },
+        TestCase {
+            name: "tss_rsp0_in_kernel_range",
+            run: test_tss_rsp0,
+        },
+        TestCase {
+            name: "syscall_msr_rsp_sane",
+            run: test_syscall_msr_rsp,
+        },
+        TestCase {
+            name: "idle_stack_in_kernel_range",
+            run: test_idle_stack,
+        },
+        TestCase {
+            name: "heap_not_locked",
+            run: test_heap_not_locked,
+        },
+        TestCase {
+            name: "scheduler_not_locked",
+            run: test_sched_not_locked,
+        },
+        TestCase {
+            name: "thread_table_no_zero_tids",
+            run: test_no_zero_tids,
+        },
+        TestCase {
+            name: "thread_tids_unique",
+            run: test_tids_unique,
+        },
+        TestCase {
+            name: "no_zombie_accumulation",
+            run: test_no_zombie_accumulation,
+        },
+        TestCase {
+            name: "heap_stress_validate",
+            run: test_heap_stress,
+        },
+        TestCase {
+            name: "cpu_count_sane",
+            run: test_cpu_count,
+        },
+        TestCase {
+            name: "timer_hz_sane",
+            run: test_timer_hz,
+        },
+        TestCase {
+            name: "per_cpu_state_consistent",
+            run: test_per_cpu_consistent,
+        },
     ],
 };
 
@@ -88,7 +127,10 @@ fn test_syscall_msr_rsp(ctx: &mut TestContext) {
         );
     } else {
         // 0 means "not yet set by a context switch" — valid at early integration test time.
-        ctx.expect_true(true, "SYSCALL kernel RSP is 0 (not yet set — OK before first dispatch)");
+        ctx.expect_true(
+            true,
+            "SYSCALL kernel RSP is 0 (not yet set — OK before first dispatch)",
+        );
     }
 
     // The MSR-based read (what SYSCALL entry actually uses via SWAPGS + [gs:0]).
@@ -116,13 +158,17 @@ fn test_idle_stack(ctx: &mut TestContext) {
     // valid TID and a heap-backed kernel stack — i.e. the idle thread was created
     // correctly by scheduler::init(), even though run() hasn't been called yet.
     let threads = scheduler::list_threads();
-    let idle_count = threads.iter().filter(|t| t.name.starts_with("idle")).count();
+    let idle_count = threads
+        .iter()
+        .filter(|t| t.name.starts_with("idle"))
+        .count();
     ctx.expect_true(
         idle_count >= 1,
         "at least one idle thread exists in thread table after scheduler::init()",
     );
     // Every idle thread must have a valid (non-zero) TID.
-    let bad_idle = threads.iter()
+    let bad_idle = threads
+        .iter()
         .filter(|t| t.name.starts_with("idle"))
         .any(|t| t.tid == 0);
     ctx.expect_false(bad_idle, "idle thread TID must be non-zero");
@@ -156,11 +202,16 @@ fn test_no_zero_tids(ctx: &mut TestContext) {
     let threads = scheduler::list_threads();
     let mut found_zero = false;
     for t in &threads {
-        if t.tid == 0 { found_zero = true; }
+        if t.tid == 0 {
+            found_zero = true;
+        }
     }
     ctx.expect_false(found_zero, "no live thread should have TID == 0");
     // At minimum there must be at least one thread (the idle thread).
-    ctx.expect_true(!threads.is_empty(), "thread table must have at least one entry");
+    ctx.expect_true(
+        !threads.is_empty(),
+        "thread table must have at least one entry",
+    );
 }
 
 fn test_tids_unique(ctx: &mut TestContext) {
@@ -196,7 +247,9 @@ fn test_no_zombie_accumulation(ctx: &mut TestContext) {
     for t in &threads {
         match t.state {
             "ready" | "running" | "blocked" | "stopped" => {}
-            _ => { bad_state = true; }
+            _ => {
+                bad_state = true;
+            }
         }
     }
     ctx.expect_false(bad_state, "all thread state strings are valid");
@@ -258,10 +311,7 @@ fn test_heap_stress(ctx: &mut TestContext) {
 fn test_cpu_count(ctx: &mut TestContext) {
     let count = hal::cpu_count();
     ctx.expect_ge(count, 1usize, "at least 1 CPU online");
-    ctx.expect_true(
-        count <= hal::MAX_CPUS,
-        "cpu_count <= MAX_CPUS",
-    );
+    ctx.expect_true(count <= hal::MAX_CPUS, "cpu_count <= MAX_CPUS");
 }
 
 fn test_timer_hz(ctx: &mut TestContext) {

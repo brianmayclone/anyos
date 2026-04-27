@@ -26,11 +26,11 @@
 
 #[cfg(test)]
 mod host_tests {
+    use alloc::boxed::Box;
     use corefs_core::config::CoreFsConfig;
     use corefs_core::platform::Timestamp;
     use corefs_core::storage::block_device::{BlockDevice, MemoryDevice};
     use corefs_core::storage::ondisk::session::{OdfDeviceSession, OdfSessionOptions};
-    use alloc::boxed::Box;
 
     /// Smallest round-trip: format an in-memory device, hydrate a
     /// `PersistedState`, reopen and verify the config matches. This
@@ -43,10 +43,8 @@ mod host_tests {
             capacity_bytes: 4 * 1024 * 1024,
             ..OdfSessionOptions::with_defaults()
         };
-        let dev: Box<dyn BlockDevice> =
-            Box::new(MemoryDevice::new(4 * 1024 * 1024, 4096).unwrap());
-        let session =
-            OdfDeviceSession::format_new_at(dev, &opts, Timestamp::EPOCH).unwrap();
+        let dev: Box<dyn BlockDevice> = Box::new(MemoryDevice::new(4 * 1024 * 1024, 4096).unwrap());
+        let session = OdfDeviceSession::format_new_at(dev, &opts, Timestamp::EPOCH).unwrap();
         // Close out: drop session, salvage the device (test only — we
         // don't have a reopen handle through OdfDeviceSession without
         // keeping the underlying Box, so this validates the happy

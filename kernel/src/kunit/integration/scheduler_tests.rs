@@ -10,20 +10,62 @@ use crate::task::scheduler;
 pub static SUITE: TestSuite = TestSuite {
     name: "scheduler",
     cases: &[
-        TestCase { name: "tick_counters_start_at_zero",  run: test_tick_counters_zero },
-        TestCase { name: "per_cpu_ticks_accessible",     run: test_per_cpu_ticks },
-        TestCase { name: "scheduler_not_locked",         run: test_not_locked },
-        TestCase { name: "cpu0_has_no_active_thread",    run: test_no_active_thread },
-        TestCase { name: "last_syscall_init_state",      run: test_last_syscall },
-        TestCase { name: "stack_bounds_set",             run: test_stack_bounds },
-        TestCase { name: "idle_ticks_not_exceed_total",  run: test_idle_le_total },
-        TestCase { name: "deferred_wake_no_crash",       run: test_deferred_wake_noop },
-        TestCase { name: "pinned_continuation_wakes_on_last_cpu", run: test_pinned_wake_cpu },
-        TestCase { name: "pinned_continuation_not_stolen",        run: test_pinned_not_stolen },
-        TestCase { name: "runqueue_state_invariants",            run: test_runqueue_state_invariants },
-        TestCase { name: "wake_thread_no_duplicate_ready_tid",    run: test_wake_no_duplicate },
-        TestCase { name: "save_incomplete_thread_not_picked",     run: test_save_incomplete_not_picked },
-        TestCase { name: "reaper_keeps_referenced_kernel_stack",  run: test_reaper_keeps_referenced_stack },
+        TestCase {
+            name: "tick_counters_start_at_zero",
+            run: test_tick_counters_zero,
+        },
+        TestCase {
+            name: "per_cpu_ticks_accessible",
+            run: test_per_cpu_ticks,
+        },
+        TestCase {
+            name: "scheduler_not_locked",
+            run: test_not_locked,
+        },
+        TestCase {
+            name: "cpu0_has_no_active_thread",
+            run: test_no_active_thread,
+        },
+        TestCase {
+            name: "last_syscall_init_state",
+            run: test_last_syscall,
+        },
+        TestCase {
+            name: "stack_bounds_set",
+            run: test_stack_bounds,
+        },
+        TestCase {
+            name: "idle_ticks_not_exceed_total",
+            run: test_idle_le_total,
+        },
+        TestCase {
+            name: "deferred_wake_no_crash",
+            run: test_deferred_wake_noop,
+        },
+        TestCase {
+            name: "pinned_continuation_wakes_on_last_cpu",
+            run: test_pinned_wake_cpu,
+        },
+        TestCase {
+            name: "pinned_continuation_not_stolen",
+            run: test_pinned_not_stolen,
+        },
+        TestCase {
+            name: "runqueue_state_invariants",
+            run: test_runqueue_state_invariants,
+        },
+        TestCase {
+            name: "wake_thread_no_duplicate_ready_tid",
+            run: test_wake_no_duplicate,
+        },
+        TestCase {
+            name: "save_incomplete_thread_not_picked",
+            run: test_save_incomplete_not_picked,
+        },
+        TestCase {
+            name: "reaper_keeps_referenced_kernel_stack",
+            run: test_reaper_keeps_referenced_stack,
+        },
     ],
 };
 
@@ -32,29 +74,30 @@ fn test_tick_counters_zero(ctx: &mut TestContext) {
     // fully running and the scheduler has dispatched threads, total ticks
     // should still be 0 or very small (a few PIT IRQs may have fired).
     let total = scheduler::total_sched_ticks();
-    let idle  = scheduler::idle_sched_ticks();
+    let idle = scheduler::idle_sched_ticks();
 
     // They must not be absurdly large (no wrap-around or uninitialized value).
     ctx.expect_true(total < 1_000_000, "total_sched_ticks < 1M (not garbage)");
-    ctx.expect_true(idle  < 1_000_000, "idle_sched_ticks < 1M (not garbage)");
+    ctx.expect_true(idle < 1_000_000, "idle_sched_ticks < 1M (not garbage)");
 }
 
 fn test_per_cpu_ticks(ctx: &mut TestContext) {
     // Per-CPU tick counters must be readable for all valid CPU indices.
     for cpu in 0..8usize {
         let total = scheduler::per_cpu_total_ticks(cpu);
-        let idle  = scheduler::per_cpu_idle_ticks(cpu);
-        ctx.expect_true(
-            total < 1_000_000,
-            "per_cpu_total_ticks not garbage"
-        );
+        let idle = scheduler::per_cpu_idle_ticks(cpu);
+        ctx.expect_true(total < 1_000_000, "per_cpu_total_ticks not garbage");
         ctx.expect_true(
             idle <= total || (total == 0 && idle == 0),
-            "per_cpu_idle <= per_cpu_total"
+            "per_cpu_idle <= per_cpu_total",
         );
     }
     // Out-of-bounds CPU index must return 0 (not panic).
-    ctx.expect_eq(scheduler::per_cpu_total_ticks(255), 0u32, "oob cpu returns 0");
+    ctx.expect_eq(
+        scheduler::per_cpu_total_ticks(255),
+        0u32,
+        "oob cpu returns 0",
+    );
 }
 
 fn test_not_locked(ctx: &mut TestContext) {
@@ -67,13 +110,20 @@ fn test_no_active_thread(ctx: &mut TestContext) {
     // Before the scheduler has dispatched any thread, CPU 0 should report
     // no active thread (the BSP is still running in kernel_main directly).
     let has_thread = scheduler::cpu_has_active_thread(0);
-    ctx.expect_false(has_thread, "CPU 0 has no active thread before scheduler::run()");
+    ctx.expect_false(
+        has_thread,
+        "CPU 0 has no active thread before scheduler::run()",
+    );
 }
 
 fn test_last_syscall(ctx: &mut TestContext) {
     // set_last_syscall / get_last_syscall must round-trip correctly.
     scheduler::set_last_syscall(0, 0xDEAD);
-    ctx.expect_eq(scheduler::get_last_syscall(0), 0xDEADu32, "last_syscall round-trip");
+    ctx.expect_eq(
+        scheduler::get_last_syscall(0),
+        0xDEADu32,
+        "last_syscall round-trip",
+    );
     scheduler::set_last_syscall(0, 0); // restore
 }
 
@@ -96,7 +146,7 @@ fn test_stack_bounds(ctx: &mut TestContext) {
 fn test_idle_le_total(ctx: &mut TestContext) {
     // Invariant: idle ticks can never exceed total ticks.
     let total = scheduler::total_sched_ticks();
-    let idle  = scheduler::idle_sched_ticks();
+    let idle = scheduler::idle_sched_ticks();
     ctx.expect_ge(total, idle, "total_ticks >= idle_ticks");
 }
 

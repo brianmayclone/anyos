@@ -37,14 +37,19 @@ fn diag_putc(c: u8) {
 
 fn diag_puts(s: &[u8]) {
     for &c in s {
-        if c == b'\n' { diag_putc(b'\r'); }
+        if c == b'\n' {
+            diag_putc(b'\r');
+        }
         diag_putc(c);
     }
 }
 
 fn diag_hex(mut n: u64) {
     diag_puts(b"0x");
-    if n == 0 { diag_putc(b'0'); return; }
+    if n == 0 {
+        diag_putc(b'0');
+        return;
+    }
     let mut buf = [0u8; 16];
     let mut i = 0usize;
     while n > 0 {
@@ -60,7 +65,10 @@ fn diag_hex(mut n: u64) {
 }
 
 fn diag_dec(mut n: u32) {
-    if n == 0 { diag_putc(b'0'); return; }
+    if n == 0 {
+        diag_putc(b'0');
+        return;
+    }
     let mut buf = [0u8; 10];
     let mut i = 0usize;
     while n > 0 {
@@ -210,13 +218,18 @@ impl<T> Spinlock<T> {
                 sti();
                 // A few NOPs give the interrupt controller time to deliver a
                 // pending IRQ before we re-disable and retry.
-                for _ in 0..4u32 { core::hint::spin_loop(); }
+                for _ in 0..4u32 {
+                    core::hint::spin_loop();
+                }
                 cli();
             }
         }
 
         self.owner_cpu.store(cpu_id(), Ordering::Relaxed);
-        SpinlockGuard { lock: self, irq_was_enabled: was_enabled }
+        SpinlockGuard {
+            lock: self,
+            irq_was_enabled: was_enabled,
+        }
     }
 
     /// Try to acquire the lock without blocking.
@@ -233,7 +246,10 @@ impl<T> Spinlock<T> {
             .is_ok()
         {
             self.owner_cpu.store(cpu_id(), Ordering::Relaxed);
-            Some(SpinlockGuard { lock: self, irq_was_enabled: was_enabled })
+            Some(SpinlockGuard {
+                lock: self,
+                irq_was_enabled: was_enabled,
+            })
         } else {
             // Failed to acquire — restore interrupt state
             if was_enabled {
@@ -281,7 +297,11 @@ fn spinlock_misalign_panic(addr: usize, align: usize) -> ! {
         let mut val = addr;
         for i in (0..16).rev() {
             let nibble = (val & 0xF) as u8;
-            tmp[i] = if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 };
+            tmp[i] = if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'a' + nibble - 10
+            };
             val >>= 4;
         }
         for &c in &tmp {
@@ -299,7 +319,9 @@ fn spinlock_misalign_panic(addr: usize, align: usize) -> ! {
             dbuf[di] = b'0' + (dval % 10) as u8;
             dval /= 10;
             di += 1;
-            if dval == 0 { break; }
+            if dval == 0 {
+                break;
+            }
         }
         for i in (0..di).rev() {
             crate::drivers::serial::emergency_write_byte(dbuf[i]);

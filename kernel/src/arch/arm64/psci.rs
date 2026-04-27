@@ -71,7 +71,9 @@ fn prop_name<'a>(strings: *const u8, nameoff: usize) -> &'a [u8] {
 fn parse_reg_value(data_ptr: *const u8, len: usize) -> Option<u64> {
     match len {
         4 => Some(be32(data_ptr) as u64),
-        l if l >= 8 => Some(((be32(data_ptr) as u64) << 32) | be32(unsafe { data_ptr.add(4) }) as u64),
+        l if l >= 8 => {
+            Some(((be32(data_ptr) as u64) << 32) | be32(unsafe { data_ptr.add(4) }) as u64)
+        }
         _ => None,
     }
 }
@@ -193,7 +195,10 @@ pub fn prefers_hvc() -> bool {
 
 #[inline]
 pub fn set_prefer_hvc(hvc: bool) {
-    CONDUIT.store(if hvc { CONDUIT_HVC } else { CONDUIT_SMC }, Ordering::Relaxed);
+    CONDUIT.store(
+        if hvc { CONDUIT_HVC } else { CONDUIT_SMC },
+        Ordering::Relaxed,
+    );
 }
 
 pub fn logical_cpu_id_from_mpidr(mpidr: u64) -> usize {

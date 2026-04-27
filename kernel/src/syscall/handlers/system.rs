@@ -52,8 +52,15 @@ pub fn sys_set_time(buf_ptr: u64) -> u32 {
         (year, month, day, hour, min, sec)
     };
     // Basic validation.
-    if month == 0 || month > 12 || day == 0 || day > 31
-        || hour > 23 || min > 59 || sec > 59 || year < 2000 || year > 2099
+    if month == 0
+        || month > 12
+        || day == 0
+        || day > 31
+        || hour > 23
+        || min > 59
+        || sec > 59
+        || year < 2000
+        || year > 2099
     {
         return u32::MAX;
     }
@@ -61,7 +68,12 @@ pub fn sys_set_time(buf_ptr: u64) -> u32 {
     crate::drivers::rtc::set_time(year, month, day, hour, min, sec);
     crate::serial_println!(
         "RTC set: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, month, day, hour, min, sec
+        year,
+        month,
+        day,
+        hour,
+        min,
+        sec
     );
     0
 }
@@ -79,9 +91,13 @@ pub fn sys_tick_hz() -> u32 {
 /// sys_uptime_ms - Get uptime in milliseconds.
 pub fn sys_uptime_ms() -> u32 {
     #[cfg(target_arch = "x86_64")]
-    { crate::arch::x86::pit::real_ms_since_boot() as u32 }
+    {
+        crate::arch::x86::pit::real_ms_since_boot() as u32
+    }
     #[cfg(target_arch = "aarch64")]
-    { crate::arch::hal::timer_current_ticks() } // Already in ms
+    {
+        crate::arch::hal::timer_current_ticks()
+    } // Already in ms
 }
 
 /// sys_dmesg - Read kernel log ring buffer.
@@ -134,8 +150,12 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
                     buf[off..off + 4].copy_from_slice(&t.tid.to_le_bytes());
                     buf[off + 4] = t.priority;
                     buf[off + 5] = match t.state {
-                        "ready" => 0, "running" => 1, "blocked" => 2, "dead" => 3,
-                        "stopped" => 4, _ => 255,
+                        "ready" => 0,
+                        "running" => 1,
+                        "blocked" => 2,
+                        "dead" => 3,
+                        "stopped" => 4,
+                        _ => 255,
                     };
                     buf[off + 6] = t.arch_mode; // reserved (always 0 = 64-bit since 32-bit user removed)
                     buf[off + 7] = if t.pd_shared { 1 } else { 0 };
@@ -207,9 +227,13 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
             //   [96..100]  Current CPU frequency in MHz (u32 LE)
             //   [100..104] Max CPU frequency in MHz (u32 LE)
             //   [104..108] Power features: bit0=HWP, bit1=Turbo, bit2=APERF (u32 LE)
-            if buf_ptr == 0 || buf_size < 96 { return u32::MAX; }
+            if buf_ptr == 0 || buf_size < 96 {
+                return u32::MAX;
+            }
             let actual_size = if buf_size >= 108 { 108usize } else { 96usize };
-            if !is_valid_user_ptr(buf_ptr as u64, actual_size as u64) { return u32::MAX; }
+            if !is_valid_user_ptr(buf_ptr as u64, actual_size as u64) {
+                return u32::MAX;
+            }
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, actual_size) };
             buf.fill(0);
 
@@ -281,9 +305,13 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u64, buf_size: u32) -> u32 {
 /// arg1 = key_ptr (null-terminated), arg2 = val_ptr (null-terminated, or 0 to unset).
 /// Returns 0 on success.
 pub fn sys_setenv(key_ptr: u64, val_ptr: u64) -> u32 {
-    if key_ptr == 0 { return u32::MAX; }
+    if key_ptr == 0 {
+        return u32::MAX;
+    }
     let key = unsafe { read_user_str(key_ptr) };
-    if key.is_empty() { return u32::MAX; }
+    if key.is_empty() {
+        return u32::MAX;
+    }
 
     let pd = match crate::task::scheduler::current_thread_page_directory() {
         Some(pd) => pd.as_u64(),
@@ -303,9 +331,13 @@ pub fn sys_setenv(key_ptr: u64, val_ptr: u64) -> u32 {
 /// arg1 = key_ptr (null-terminated), arg2 = val_buf_ptr, arg3 = val_buf_size.
 /// Returns length of value (bytes written, excluding null terminator), or u32::MAX if not found.
 pub fn sys_getenv(key_ptr: u64, val_buf_ptr: u64, val_buf_size: u32) -> u32 {
-    if key_ptr == 0 { return u32::MAX; }
+    if key_ptr == 0 {
+        return u32::MAX;
+    }
     let key = unsafe { read_user_str(key_ptr) };
-    if key.is_empty() { return u32::MAX; }
+    if key.is_empty() {
+        return u32::MAX;
+    }
 
     let pd = match crate::task::scheduler::current_thread_page_directory() {
         Some(pd) => pd.as_u64(),
@@ -316,7 +348,8 @@ pub fn sys_getenv(key_ptr: u64, val_buf_ptr: u64, val_buf_size: u32) -> u32 {
         Some(val) => {
             let val_bytes = val.as_bytes();
             let copy_len = val_bytes.len().min(val_buf_size as usize);
-            if val_buf_ptr != 0 && val_buf_size > 0
+            if val_buf_ptr != 0
+                && val_buf_size > 0
                 && is_valid_user_ptr(val_buf_ptr as u64, val_buf_size as u64)
             {
                 let buf = unsafe {
@@ -396,7 +429,7 @@ pub fn sys_random(buf_ptr: u64, len: u32) -> u32 {
 pub fn sys_kbd_list_layouts(buf_ptr: u64, max_entries: u32) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
-        use crate::drivers::layout::{LAYOUT_INFOS, LAYOUT_COUNT, LayoutInfo};
+        use crate::drivers::layout::{LayoutInfo, LAYOUT_COUNT, LAYOUT_INFOS};
 
         let count = (max_entries as usize).min(LAYOUT_COUNT);
         let byte_size = count * core::mem::size_of::<LayoutInfo>();
@@ -405,16 +438,17 @@ pub fn sys_kbd_list_layouts(buf_ptr: u64, max_entries: u32) -> u32 {
             return 0;
         }
 
-        let dst = unsafe {
-            core::slice::from_raw_parts_mut(buf_ptr as *mut LayoutInfo, count)
-        };
+        let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut LayoutInfo, count) };
         for i in 0..count {
             dst[i] = LAYOUT_INFOS[i];
         }
         count as u32
     }
     #[cfg(target_arch = "aarch64")]
-    { let _ = (buf_ptr, max_entries); 0 }
+    {
+        let _ = (buf_ptr, max_entries);
+        0
+    }
 }
 
 // =========================================================================
@@ -458,8 +492,11 @@ pub fn sys_get_crash_info(tid: u32, buf_ptr: u64, buf_size: u32) -> u32 {
 
 static HOSTNAME: crate::sync::mutex::Mutex<[u8; 64]> = {
     let mut buf = [0u8; 64];
-    buf[0] = b'a'; buf[1] = b'n'; buf[2] = b'y';
-    buf[3] = b'O'; buf[4] = b'S';
+    buf[0] = b'a';
+    buf[1] = b'n';
+    buf[2] = b'y';
+    buf[3] = b'O';
+    buf[4] = b'S';
     crate::sync::mutex::Mutex::new(buf)
 };
 static HOSTNAME_LEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(5);
@@ -555,7 +592,10 @@ pub fn sys_fsync(fd: u32) -> u32 {
 pub fn sys_shutdown(mode: u32) -> u32 {
     let is_reboot = mode == 1;
     let action = if is_reboot { "reboot" } else { "shutdown" };
-    crate::serial_println!("kernel: {} requested — beginning shutdown sequence...", action);
+    crate::serial_println!(
+        "kernel: {} requested — beginning shutdown sequence...",
+        action
+    );
 
     // ── Phase 1: First filesystem sync ──
     // Sync while processes are still alive so their pending writes are flushed.
@@ -584,7 +624,9 @@ pub fn sys_shutdown(mode: u32) -> u32 {
     let tids = crate::task::scheduler::all_live_tids();
     let mut killed = 0u32;
     for &tid in &tids {
-        if tid == my_tid { continue; }
+        if tid == my_tid {
+            continue;
+        }
         if crate::task::scheduler::kill_thread(tid) == 0 {
             killed += 1;
         }
@@ -705,7 +747,10 @@ fn x86_reboot_sequence() -> ! {
 pub fn sys_set_serial_verbose(enable: u32) -> u32 {
     let enabled = enable != 0;
     crate::drivers::serial::set_verbose(enabled);
-    crate::serial_println!("kernel: serial verbose mode {}", if enabled { "enabled" } else { "disabled" });
+    crate::serial_println!(
+        "kernel: serial verbose mode {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     0
 }
 
@@ -719,8 +764,12 @@ pub fn sys_set_serial_verbose(enable: u32) -> u32 {
 /// Returns number of bytes written, or u32::MAX on error.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_con_write(buf_ptr: u64, len: u32) -> u32 {
-    if buf_ptr == 0 || len == 0 { return 0; }
-    if len > 65536 || !is_valid_user_ptr(buf_ptr as u64, len as u64) { return u32::MAX; }
+    if buf_ptr == 0 || len == 0 {
+        return 0;
+    }
+    if len > 65536 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
+        return u32::MAX;
+    }
     let slice = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
     if let Ok(s) = core::str::from_utf8(slice) {
         crate::drivers::textcon::write_str(s);
@@ -728,14 +777,18 @@ pub fn sys_con_write(buf_ptr: u64, len: u32) -> u32 {
     } else {
         // Write byte-by-byte, skipping non-ASCII
         for &b in slice {
-            if b < 128 { crate::drivers::textcon::write_char(b); }
+            if b < 128 {
+                crate::drivers::textcon::write_char(b);
+            }
         }
         len
     }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_con_write(_buf_ptr: u64, _len: u32) -> u32 { u32::MAX }
+pub fn sys_con_write(_buf_ptr: u64, _len: u32) -> u32 {
+    u32::MAX
+}
 
 /// SYS_CON_READ (291): Read a line from the keyboard with echo to the console.
 /// arg1 = buf_ptr (user buffer), arg2 = buf_len.
@@ -746,14 +799,20 @@ pub fn sys_con_write(_buf_ptr: u64, _len: u32) -> u32 { u32::MAX }
 pub fn sys_con_read(buf_ptr: u64, buf_len: u32) -> u32 {
     let echo = (buf_len & 0x8000_0000) == 0;
     let max_len = (buf_len & 0x7FFF_FFFF) as usize;
-    if buf_ptr == 0 || max_len == 0 { return 0; }
-    if max_len > 4096 || !is_valid_user_ptr(buf_ptr as u64, max_len as u64) { return u32::MAX; }
+    if buf_ptr == 0 || max_len == 0 {
+        return 0;
+    }
+    if max_len > 4096 || !is_valid_user_ptr(buf_ptr as u64, max_len as u64) {
+        return u32::MAX;
+    }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, max_len) };
     crate::drivers::textcon::read_line(buf, echo) as u32
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_con_read(_buf_ptr: u64, _buf_len: u32) -> u32 { u32::MAX }
+pub fn sys_con_read(_buf_ptr: u64, _buf_len: u32) -> u32 {
+    u32::MAX
+}
 
 /// SYS_CON_POLL_KEY (292): Non-blocking keyboard poll for the text console.
 /// Returns the Unicode codepoint of the next pressed key, or 0 if no key pending.
@@ -779,47 +838,70 @@ pub fn sys_con_poll_key() -> u32 {
                             cp
                         }
                     }
-                    Key::Enter     => b'\n' as u32,
+                    Key::Enter => b'\n' as u32,
                     Key::Backspace => b'\x08' as u32,
-                    Key::Tab       => b'\t' as u32,
-                    Key::Escape    => 0x1B,
-                    Key::Up    => if evt.modifiers.shift {
-                        // Shift+Up: scroll viewport back — handled entirely in kernel
-                        crate::drivers::textcon::scroll_viewport(1);
-                        continue; // consume key, return nothing to userspace
-                    } else { 0x10_0041 },
-                    Key::Down  => if evt.modifiers.shift {
-                        // Shift+Down: scroll viewport forward — handled entirely in kernel
-                        crate::drivers::textcon::scroll_viewport(-1);
-                        continue; // consume key, return nothing to userspace
-                    } else { 0x10_0042 },
-                    Key::Left  => if evt.modifiers.shift { 0x1400_0044 } else { 0x10_0044 },
-                    Key::Right => if evt.modifiers.shift { 0x1400_0043 } else { 0x10_0043 },
-                    Key::Space     => b' ' as u32,
+                    Key::Tab => b'\t' as u32,
+                    Key::Escape => 0x1B,
+                    Key::Up => {
+                        if evt.modifiers.shift {
+                            // Shift+Up: scroll viewport back — handled entirely in kernel
+                            crate::drivers::textcon::scroll_viewport(1);
+                            continue; // consume key, return nothing to userspace
+                        } else {
+                            0x10_0041
+                        }
+                    }
+                    Key::Down => {
+                        if evt.modifiers.shift {
+                            // Shift+Down: scroll viewport forward — handled entirely in kernel
+                            crate::drivers::textcon::scroll_viewport(-1);
+                            continue; // consume key, return nothing to userspace
+                        } else {
+                            0x10_0042
+                        }
+                    }
+                    Key::Left => {
+                        if evt.modifiers.shift {
+                            0x1400_0044
+                        } else {
+                            0x10_0044
+                        }
+                    }
+                    Key::Right => {
+                        if evt.modifiers.shift {
+                            0x1400_0043
+                        } else {
+                            0x10_0043
+                        }
+                    }
+                    Key::Space => b' ' as u32,
                     // Navigation keys (encoded as 0x20_00XX)
-                    Key::Home      => 0x20_0048,
-                    Key::End       => 0x20_004B,
-                    Key::PageUp    => 0x20_0049,
-                    Key::PageDown  => 0x20_0051,
-                    Key::Delete    => 0x20_0053,
+                    Key::Home => 0x20_0048,
+                    Key::End => 0x20_004B,
+                    Key::PageUp => 0x20_0049,
+                    Key::PageDown => 0x20_0051,
+                    Key::Delete => 0x20_0053,
                     // Function keys (encoded as 0x30_000N where N=1..12)
-                    Key::F1        => 0x30_0001,
-                    Key::F2        => 0x30_0002,
-                    Key::F3        => 0x30_0003,
-                    Key::F4        => 0x30_0004,
-                    Key::F5        => 0x30_0005,
-                    Key::F6        => 0x30_0006,
-                    Key::F7        => 0x30_0007,
-                    Key::F8        => 0x30_0008,
-                    Key::F9        => 0x30_0009,
-                    Key::F10       => 0x30_000A,
-                    Key::F11       => 0x30_000B,
-                    Key::F12       => 0x30_000C,
+                    Key::F1 => 0x30_0001,
+                    Key::F2 => 0x30_0002,
+                    Key::F3 => 0x30_0003,
+                    Key::F4 => 0x30_0004,
+                    Key::F5 => 0x30_0005,
+                    Key::F6 => 0x30_0006,
+                    Key::F7 => 0x30_0007,
+                    Key::F8 => 0x30_0008,
+                    Key::F9 => 0x30_0009,
+                    Key::F10 => 0x30_000A,
+                    Key::F11 => 0x30_000B,
+                    Key::F12 => 0x30_000C,
                     // Modifier-only keys: skip and poll again
-                    Key::LeftShift | Key::RightShift |
-                    Key::LeftCtrl  | Key::RightCtrl  |
-                    Key::LeftAlt   | Key::RightAlt   |
-                    Key::CapsLock  => continue,
+                    Key::LeftShift
+                    | Key::RightShift
+                    | Key::LeftCtrl
+                    | Key::RightCtrl
+                    | Key::LeftAlt
+                    | Key::RightAlt
+                    | Key::CapsLock => continue,
                     _ => 0,
                 };
                 if ctrl && code < 32 {
@@ -833,7 +915,9 @@ pub fn sys_con_poll_key() -> u32 {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_con_poll_key() -> u32 { 0 }
+pub fn sys_con_poll_key() -> u32 {
+    0
+}
 
 /// SYS_CON_GET_SIZE (293): Return console dimensions as cols<<16 | rows.
 /// Both values are derived from the current framebuffer resolution and font size.
@@ -843,7 +927,9 @@ pub fn sys_con_get_size() -> u32 {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_con_get_size() -> u32 { 0 }
+pub fn sys_con_get_size() -> u32 {
+    0
+}
 
 /// SYS_CON_SET_MODE (294): Set console mode flags.
 /// arg1 = new flags bitmask:
@@ -856,7 +942,9 @@ pub fn sys_con_set_mode(flags: u32) -> u32 {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_con_set_mode(_flags: u32) -> u32 { 0 }
+pub fn sys_con_set_mode(_flags: u32) -> u32 {
+    0
+}
 
 /// SYS_CON_RESIZE (295): Resize the text console to a specific number of columns/rows.
 /// arg1 = (cols << 16) | rows.  Recomputes cell size and repaints the screen.
@@ -869,4 +957,6 @@ pub fn sys_con_resize(packed: u32) -> u32 {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_con_resize(_packed: u32) -> u32 { 0 }
+pub fn sys_con_resize(_packed: u32) -> u32 {
+    0
+}

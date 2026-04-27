@@ -55,7 +55,10 @@ pub(super) fn decode_data_runs(data: &[u8]) -> Vec<DataRun> {
         // Read LCN offset (signed, delta from previous run)
         if offset_bytes == 0 {
             // Sparse run — no LCN
-            runs.push(DataRun { lcn: None, length: count });
+            runs.push(DataRun {
+                lcn: None,
+                length: count,
+            });
         } else {
             let mut offset: i64 = 0;
             for i in 0..offset_bytes {

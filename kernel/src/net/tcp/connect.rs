@@ -3,12 +3,14 @@
 //! Implements `connect()`, `listen()`, `accept()`, `close()`,
 //! `close_listener()`, `shutdown_write()`, and `status()`.
 
-use core::sync::atomic::Ordering;
+use super::send::{
+    send_segment, send_segment_auto, send_segment_v6, send_syn_segment, send_syn_segment_v6,
+};
 use super::tcb::*;
-use super::send::{send_segment, send_syn_segment, send_segment_v6, send_syn_segment_v6, send_segment_auto};
 use super::util::{alloc_ephemeral_port, insert_slot_hash, remove_slot_hash};
-use super::{TCP_CONNECTIONS, TCP_ACTIVE_OPENS, TCP_PASSIVE_OPENS};
+use super::{TCP_ACTIVE_OPENS, TCP_CONNECTIONS, TCP_PASSIVE_OPENS};
 use crate::net::types::{Ipv4Addr, Ipv6Addr};
+use core::sync::atomic::Ordering;
 
 /// Active open: connect to a remote host. Returns socket ID or u32::MAX on error.
 pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
@@ -56,7 +58,12 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
         }
     };
 
-    crate::serial_verbose_println!("TCP: connecting to {}:{} from port {}", remote_ip, remote_port, local_port);
+    crate::serial_verbose_println!(
+        "TCP: connecting to {}:{} from port {}",
+        remote_ip,
+        remote_port,
+        local_port
+    );
     TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
     send_syn_segment(cfg.ip, local_port, remote_ip, remote_port, iss, 0, SYN);
 
@@ -123,7 +130,9 @@ pub fn connect_v6(remote_ip: Ipv6Addr, remote_port: u16, timeout_ticks: u32) -> 
     } else {
         cfg.ipv6_link_local
     };
-    if local_ip6.is_unspecified() { return u32::MAX; }
+    if local_ip6.is_unspecified() {
+        return u32::MAX;
+    }
 
     let local_port = alloc_ephemeral_port();
     let tid = crate::task::scheduler::current_tid();
@@ -201,8 +210,12 @@ pub fn listen(port: u16, _backlog: u16) -> u32 {
     for (i, slot) in table.iter().enumerate() {
         if let Some(tcb) = slot {
             if tcb.local_port == port && tcb.state == TcpState::Listen {
-                crate::serial_verbose_println!("TCP: port {} already listening (slot {} owner_tid={})",
-                    port, i, tcb.owner_tid);
+                crate::serial_verbose_println!(
+                    "TCP: port {} already listening (slot {} owner_tid={})",
+                    port,
+                    i,
+                    tcb.owner_tid
+                );
                 return u32::MAX;
             }
         }
@@ -256,7 +269,8 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
             };
 
             // Verify listener is still valid
-            let listen_valid = table[lid].as_ref()
+            let listen_valid = table[lid]
+                .as_ref()
                 .map(|t| t.state == TcpState::Listen)
                 .unwrap_or(false);
             if !listen_valid {
@@ -268,11 +282,14 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
 
             // Find a ready connection spawned by this listener
             for i in 0..table.len() {
-                let ready = table[i].as_ref().map(|tcb| {
-                    tcb.parent_listener == Some(lid as u16)
-                        && tcb.state == TcpState::Established
-                        && !tcb.accepted
-                }).unwrap_or(false);
+                let ready = table[i]
+                    .as_ref()
+                    .map(|tcb| {
+                        tcb.parent_listener == Some(lid as u16)
+                            && tcb.state == TcpState::Established
+                            && !tcb.accepted
+                    })
+                    .unwrap_or(false);
 
                 if ready {
                     let tcb = match table[i].as_mut() {
@@ -287,7 +304,12 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
                     if let Some(listener) = table[lid].as_mut() {
                         listener.waiting_tid = 0;
                     }
-                    crate::serial_verbose_println!("TCP: accepted socket {} from {}:{}", i, rip, rport);
+                    crate::serial_verbose_println!(
+                        "TCP: accepted socket {} from {}:{}",
+                        i,
+                        rip,
+                        rport
+                    );
                     TCP_PASSIVE_OPENS.fetch_add(1, Ordering::Relaxed);
                     return (i as u32, rip, rport);
                 }
@@ -326,7 +348,8 @@ pub fn close_listener(socket_id: u32) -> u32 {
         None => return u32::MAX,
     };
 
-    let is_listener = table[id].as_ref()
+    let is_listener = table[id]
+        .as_ref()
         .map(|t| t.state == TcpState::Listen)
         .unwrap_or(false);
 
@@ -336,9 +359,10 @@ pub fn close_listener(socket_id: u32) -> u32 {
 
     // Clean up pending connections
     for i in 0..table.len() {
-        let is_pending = table[i].as_ref().map(|tcb| {
-            tcb.parent_listener == Some(id as u16) && !tcb.accepted
-        }).unwrap_or(false);
+        let is_pending = table[i]
+            .as_ref()
+            .map(|tcb| tcb.parent_listener == Some(id as u16) && !tcb.accepted)
+            .unwrap_or(false);
         if is_pending {
             remove_slot_hash(table, i);
             table[i] = None;
@@ -389,7 +413,11 @@ pub fn close(socket_id: u32) -> u32 {
 
         match tcb.state {
             TcpState::Established | TcpState::CloseWait => {
-                tcb.state = if tcb.state == TcpState::Established { TcpState::FinWait1 } else { TcpState::LastAck };
+                tcb.state = if tcb.state == TcpState::Established {
+                    TcpState::FinWait1
+                } else {
+                    TcpState::LastAck
+                };
                 let seq = tcb.snd_nxt;
                 let ack_num = tcb.rcv_nxt;
                 let win = tcb.advertised_window();
@@ -397,9 +425,25 @@ pub fn close(socket_id: u32) -> u32 {
                 tcb.retransmit_count = 0;
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
                 if tcb.is_ipv6 {
-                    Some(CloseInfo::V6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port, seq, ack_num, win))
+                    Some(CloseInfo::V6(
+                        tcb.local_ip6,
+                        tcb.local_port,
+                        tcb.remote_ip6,
+                        tcb.remote_port,
+                        seq,
+                        ack_num,
+                        win,
+                    ))
                 } else {
-                    Some(CloseInfo::V4(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port, seq, ack_num, win))
+                    Some(CloseInfo::V4(
+                        tcb.local_ip,
+                        tcb.local_port,
+                        tcb.remote_ip,
+                        tcb.remote_port,
+                        seq,
+                        ack_num,
+                        win,
+                    ))
                 }
             }
             TcpState::Closed => {
@@ -416,10 +460,12 @@ pub fn close(socket_id: u32) -> u32 {
     };
 
     match send_info {
-        Some(CloseInfo::V4(lip, lp, rip, rp, seq, ack_num, win)) =>
-            { send_segment(lip, lp, rip, rp, seq, ack_num, FIN | ACK, win, &[]); }
-        Some(CloseInfo::V6(lip6, lp, rip6, rp, seq, ack_num, win)) =>
-            { send_segment_v6(lip6, lp, rip6, rp, seq, ack_num, FIN | ACK, win, &[]); }
+        Some(CloseInfo::V4(lip, lp, rip, rp, seq, ack_num, win)) => {
+            send_segment(lip, lp, rip, rp, seq, ack_num, FIN | ACK, win, &[]);
+        }
+        Some(CloseInfo::V6(lip6, lp, rip6, rp, seq, ack_num, win)) => {
+            send_segment_v6(lip6, lp, rip6, rp, seq, ack_num, FIN | ACK, win, &[]);
+        }
         None => {}
     }
 
@@ -471,11 +517,23 @@ pub fn close(socket_id: u32) -> u32 {
                 };
                 let info = table[id].as_ref().map(|tcb| {
                     if tcb.is_ipv6 {
-                        RstInfo::V6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port,
-                                    tcb.snd_nxt, tcb.rcv_nxt)
+                        RstInfo::V6(
+                            tcb.local_ip6,
+                            tcb.local_port,
+                            tcb.remote_ip6,
+                            tcb.remote_port,
+                            tcb.snd_nxt,
+                            tcb.rcv_nxt,
+                        )
                     } else {
-                        RstInfo::V4(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                                    tcb.snd_nxt, tcb.rcv_nxt)
+                        RstInfo::V4(
+                            tcb.local_ip,
+                            tcb.local_port,
+                            tcb.remote_ip,
+                            tcb.remote_port,
+                            tcb.snd_nxt,
+                            tcb.rcv_nxt,
+                        )
                     }
                 });
                 remove_slot_hash(table, id);
@@ -483,10 +541,12 @@ pub fn close(socket_id: u32) -> u32 {
                 info
             };
             match rst_info {
-                Some(RstInfo::V4(lip, lp, rip, rp, sn, rn)) =>
-                    { send_segment(lip, lp, rip, rp, sn, rn, RST, 0, &[]); }
-                Some(RstInfo::V6(lip6, lp, rip6, rp, sn, rn)) =>
-                    { send_segment_v6(lip6, lp, rip6, rp, sn, rn, RST, 0, &[]); }
+                Some(RstInfo::V4(lip, lp, rip, rp, sn, rn)) => {
+                    send_segment(lip, lp, rip, rp, sn, rn, RST, 0, &[]);
+                }
+                Some(RstInfo::V6(lip6, lp, rip6, rp, sn, rn)) => {
+                    send_segment_v6(lip6, lp, rip6, rp, sn, rn, RST, 0, &[]);
+                }
                 None => {}
             }
             return 0;
@@ -546,9 +606,25 @@ pub fn shutdown_write(socket_id: u32) -> u32 {
                 tcb.retransmit_count = 0;
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
                 if tcb.is_ipv6 {
-                    Some(ShutInfo::V6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port, seq, ack_num, win))
+                    Some(ShutInfo::V6(
+                        tcb.local_ip6,
+                        tcb.local_port,
+                        tcb.remote_ip6,
+                        tcb.remote_port,
+                        seq,
+                        ack_num,
+                        win,
+                    ))
                 } else {
-                    Some(ShutInfo::V4(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port, seq, ack_num, win))
+                    Some(ShutInfo::V4(
+                        tcb.local_ip,
+                        tcb.local_port,
+                        tcb.remote_ip,
+                        tcb.remote_port,
+                        seq,
+                        ack_num,
+                        win,
+                    ))
                 }
             }
             _ => None,
@@ -556,10 +632,12 @@ pub fn shutdown_write(socket_id: u32) -> u32 {
     };
 
     match send_info {
-        Some(ShutInfo::V4(lip, lp, rip, rp, seq, ack_num, win)) =>
-            { send_segment(lip, lp, rip, rp, seq, ack_num, FIN | ACK, win, &[]); }
-        Some(ShutInfo::V6(lip6, lp, rip6, rp, seq, ack_num, win)) =>
-            { send_segment_v6(lip6, lp, rip6, rp, seq, ack_num, FIN | ACK, win, &[]); }
+        Some(ShutInfo::V4(lip, lp, rip, rp, seq, ack_num, win)) => {
+            send_segment(lip, lp, rip, rp, seq, ack_num, FIN | ACK, win, &[]);
+        }
+        Some(ShutInfo::V6(lip6, lp, rip6, rp, seq, ack_num, win)) => {
+            send_segment_v6(lip6, lp, rip6, rp, seq, ack_num, FIN | ACK, win, &[]);
+        }
         None => {}
     }
 

@@ -5,9 +5,9 @@
 //! waiting (waitpid), and threading.
 
 #[allow(unused_imports)]
-use alloc::string::String;
-#[allow(unused_imports)]
 use super::helpers::{is_valid_user_ptr, read_user_str, read_user_str_safe, resolve_path};
+#[allow(unused_imports)]
+use alloc::string::String;
 
 #[inline(always)]
 fn mmap_diag_mark(_mark: u8) {}
@@ -92,10 +92,16 @@ pub fn sys_exit(status: u32) -> u32 {
 /// If sig == SIGKILL: force-kill (existing behavior).
 /// Otherwise: set pending signal bit on the target thread.
 pub fn sys_kill(tid: u32, sig: u32) -> u32 {
-    if tid == 0 { return u32::MAX; }
+    if tid == 0 {
+        return u32::MAX;
+    }
 
     // Backward compat: old callers pass sig=0 (only one arg set), treat as SIGKILL
-    let effective_sig = if sig == 0 { crate::ipc::signal::SIGKILL } else { sig };
+    let effective_sig = if sig == 0 {
+        crate::ipc::signal::SIGKILL
+    } else {
+        sig
+    };
 
     if effective_sig == crate::ipc::signal::SIGKILL {
         // Force-kill — existing behavior
@@ -387,7 +393,13 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
         Some(addr) => addr,
         None => {
             crate::serial_verbose_println!("sys_mmap: out of mmap virtual address space");
-            mmap_diag_log(b"!mm-vma-full", tid, aligned_size as u32, pd.as_u64(), u32::MAX);
+            mmap_diag_log(
+                b"!mm-vma-full",
+                tid,
+                aligned_size as u32,
+                pd.as_u64(),
+                u32::MAX,
+            );
             return u64::MAX;
         }
     };
@@ -411,7 +423,13 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
             pd.as_u64()
         );
         crate::memory::vma::free_region64(pd, base, aligned_size);
-        mmap_diag_log(b"!mm-vma-bad", tid, aligned_size as u32, pd.as_u64(), base as u32);
+        mmap_diag_log(
+            b"!mm-vma-bad",
+            tid,
+            aligned_size as u32,
+            pd.as_u64(),
+            base as u32,
+        );
         return u64::MAX;
     }
 
@@ -425,7 +443,8 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
                 while cleanup < addr {
                     let pte = virtual_mem::read_pte(VirtAddr::new(cleanup as u64));
                     if pte & 1 != 0 {
-                        let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
+                        let phys_addr =
+                            crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
                         virtual_mem::unmap_page(VirtAddr::new(cleanup as u64));
                         physical::free_frame(phys_addr);
                     }
@@ -445,7 +464,8 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
                 while cleanup < addr {
                     let pte = virtual_mem::read_pte(VirtAddr::new(cleanup as u64));
                     if pte & 1 != 0 {
-                        let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
+                        let phys_addr =
+                            crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
                         virtual_mem::unmap_page(VirtAddr::new(cleanup as u64));
                         physical::free_frame(phys_addr);
                     }
@@ -459,7 +479,13 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
                     aligned_size,
                     pd.as_u64()
                 );
-                mmap_diag_log(b"!mm-map-fail", tid, aligned_size as u32, pd.as_u64(), addr as u32);
+                mmap_diag_log(
+                    b"!mm-map-fail",
+                    tid,
+                    aligned_size as u32,
+                    pd.as_u64(),
+                    addr as u32,
+                );
                 return u64::MAX;
             }
         } else {
@@ -468,7 +494,8 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
             while cleanup < addr {
                 let pte = virtual_mem::read_pte(VirtAddr::new(cleanup as u64));
                 if pte & 1 != 0 {
-                    let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
+                    let phys_addr =
+                        crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
                     virtual_mem::unmap_page(VirtAddr::new(cleanup as u64));
                     physical::free_frame(phys_addr);
                 }
@@ -476,7 +503,13 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
             }
             crate::memory::vma::free_region64(pd, base, aligned_size);
             crate::serial_verbose_println!("sys_mmap: out of physical memory");
-            mmap_diag_log(b"!mm-phys-oom", tid, aligned_size as u32, pd.as_u64(), addr as u32);
+            mmap_diag_log(
+                b"!mm-phys-oom",
+                tid,
+                aligned_size as u32,
+                pd.as_u64(),
+                addr as u32,
+            );
             return u64::MAX;
         }
         addr += PAGE_SIZE;
@@ -489,7 +522,13 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
         crate::task::scheduler::set_current_thread_mmap_next(base + aligned_size);
     }
     mmap_diag_mark(b'F');
-    mmap_diag_log(b"+mm-ok", tid, aligned_size as u32, pd.as_u64(), base as u32);
+    mmap_diag_log(
+        b"+mm-ok",
+        tid,
+        aligned_size as u32,
+        pd.as_u64(),
+        base as u32,
+    );
 
     // No TLB shootdown needed for mmap: x86-64 does not cache non-present
     // TLB entries (Intel SDM Vol. 3A §4.10.2.1).  When a sibling thread on
@@ -607,7 +646,9 @@ pub fn sys_waitpid(tid: u32, child_tid_ptr: u64, options: u32) -> u32 {
         // Write actual child TID to user pointer (if provided)
         if child_tid_ptr != 0 && child_tid != u32::MAX && child_tid != u32::MAX - 1 {
             if is_valid_user_ptr(child_tid_ptr as u64, 4) {
-                unsafe { *(child_tid_ptr as *mut u32) = child_tid; }
+                unsafe {
+                    *(child_tid_ptr as *mut u32) = child_tid;
+                }
             }
         }
         code
@@ -637,7 +678,13 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
     } else {
         ""
     };
-    crate::debug_println!("sys_spawn: path='{}' pipe={} args_ptr={:#x} stdin_pipe={}", path, stdout_pipe, args_ptr, stdin_pipe);
+    crate::debug_println!(
+        "sys_spawn: path='{}' pipe={} args_ptr={:#x} stdin_pipe={}",
+        path,
+        stdout_pipe,
+        args_ptr,
+        stdin_pipe
+    );
     let raw_name = path.rsplit('/').next().unwrap_or(path);
     // Strip ".app" suffix so process name is clean (e.g. "Calculator" not "Calculator.app")
     let name = if raw_name.ends_with(".app") {
@@ -650,13 +697,13 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
     if path.ends_with(".app") {
         let caller_tid = crate::task::scheduler::current_tid();
         // Allow: Sessionhost, init (tid 1), and the compositor (system services)
-        let is_allowed = caller_tid == 1
-            || super::is_sessionhost(caller_tid)
-            || super::is_compositor();
+        let is_allowed =
+            caller_tid == 1 || super::is_sessionhost(caller_tid) || super::is_compositor();
         if !is_allowed {
             crate::serial_verbose_println!(
                 "sys_spawn: DENIED .app spawn from TID {} (not sessionhost) path='{}'",
-                caller_tid, path
+                caller_tid,
+                path
             );
             return u32::MAX;
         }
@@ -678,7 +725,10 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
             let sensitive_requested = declared & crate::task::capabilities::CAP_SENSITIVE;
 
             // System apps (capabilities=all) bypass the dialog entirely
-            if declared != crate::task::capabilities::CAP_ALL && sensitive_requested != 0 && !live_cd {
+            if declared != crate::task::capabilities::CAP_ALL
+                && sensitive_requested != 0
+                && !live_cd
+            {
                 let uid = crate::task::scheduler::current_thread_uid();
                 let app_id = config.id.as_deref().unwrap_or(name);
 
@@ -687,18 +737,21 @@ pub fn sys_spawn(path_ptr: u64, stdout_pipe: u32, args_ptr: u64, stdin_pipe: u32
                     let app_name = config.name.as_deref().unwrap_or(name);
                     let caps_hex = alloc::format!("{:x}", declared);
                     // Format: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path"
-                    let pending = alloc::format!(
-                        "{}\x1F{}\x1F{}\x1F{}",
-                        app_id, app_name, caps_hex, path
-                    );
+                    let pending =
+                        alloc::format!("{}\x1F{}\x1F{}\x1F{}", app_id, app_name, caps_hex, path);
                     crate::task::scheduler::set_current_perm_pending(pending.as_bytes());
                     crate::serial_verbose_println!(
                         "sys_spawn: PERM_NEEDED for '{}' (app_id={}, caps={:#x})",
-                        path, app_id, declared
+                        path,
+                        app_id,
+                        declared
                     );
                     return PERM_NEEDED;
                 }
-            } else if declared != crate::task::capabilities::CAP_ALL && sensitive_requested == 0 && !live_cd {
+            } else if declared != crate::task::capabilities::CAP_ALL
+                && sensitive_requested == 0
+                && !live_cd
+            {
                 // Only auto-granted caps — auto-create empty permission file
                 let uid = crate::task::scheduler::current_thread_uid();
                 let app_id = config.id.as_deref().unwrap_or(name);
@@ -764,11 +817,11 @@ pub fn sys_getargs(buf_ptr: u64, buf_size: u32) -> u32 {
 /// state. ARM64 fork will use ERET with a separate register save/restore path.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
-    use crate::task::scheduler;
-    use crate::task::loader::{ForkChildRegs, store_pending_fork, fork_child_trampoline};
-    use crate::task::env;
-    use crate::task::dll;
     use crate::memory::virtual_mem;
+    use crate::task::dll;
+    use crate::task::env;
+    use crate::task::loader::{fork_child_trampoline, store_pending_fork, ForkChildRegs};
+    use crate::task::scheduler;
 
     // 1. Capture parent state in a single lock
     let snap = match scheduler::current_thread_fork_snapshot() {
@@ -796,15 +849,15 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     crate::memory::vma::clone_for_fork(snap.pd, child_pd);
 
     // 3. Build child name: "parent_name(fork)"
-    let name_len = snap.name.iter().position(|&b| b == 0).unwrap_or(snap.name.len());
+    let name_len = snap
+        .name
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(snap.name.len());
     let parent_name = core::str::from_utf8(&snap.name[..name_len]).unwrap_or("?");
 
     // 4. Spawn child thread in Blocked state (prevents SMP race)
-    let child_tid = scheduler::spawn_blocked(
-        fork_child_trampoline,
-        snap.priority,
-        parent_name,
-    );
+    let child_tid = scheduler::spawn_blocked(fork_child_trampoline, snap.priority, parent_name);
 
     // 5. Copy thread metadata to child
     scheduler::set_thread_user_info(child_tid, child_pd, snap.brk);
@@ -902,10 +955,13 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     // 9. Wake child — it will run fork_child_trampoline and IRETQ with RAX=0
     scheduler::wake_thread(child_tid);
     let t_fork_total = crate::arch::hal::timer_current_ticks();
-    crate::serial_verbose_println!("sys_fork: T{} → T{} clone={}ms total={}ms",
-        parent_tid, child_tid,
+    crate::serial_verbose_println!(
+        "sys_fork: T{} → T{} clone={}ms total={}ms",
+        parent_tid,
+        child_tid,
         t_fork_cloned.wrapping_sub(t_fork0),
-        t_fork_total.wrapping_sub(t_fork0));
+        t_fork_total.wrapping_sub(t_fork0)
+    );
 
     // Parent returns child TID
     child_tid
@@ -944,7 +1000,11 @@ pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
 
     crate::memory::vma::clone_for_fork(snap.pd, child_pd);
 
-    let name_len = snap.name.iter().position(|&b| b == 0).unwrap_or(snap.name.len());
+    let name_len = snap
+        .name
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(snap.name.len());
     let parent_name = core::str::from_utf8(&snap.name[..name_len]).unwrap_or("?");
 
     let child_tid = scheduler::spawn_blocked(fork_child_trampoline, snap.priority, parent_name);
@@ -1046,14 +1106,20 @@ pub fn sys_exec(path_ptr: u64, args_ptr: u64) -> u32 {
 
     crate::serial_verbose_println!(
         "sys_exec: T{} path='{}' args='{}'",
-        crate::task::scheduler::current_tid(), path, args
+        crate::task::scheduler::current_tid(),
+        path,
+        args
     );
 
     // Read the binary from the filesystem
     let data = match crate::fs::vfs::read_file_to_vec(&path) {
         Ok(d) => d,
         Err(e) => {
-            crate::serial_verbose_println!("sys_exec: read_file_to_vec('{}') failed: {:?}", path, e);
+            crate::serial_verbose_println!(
+                "sys_exec: read_file_to_vec('{}') failed: {:?}",
+                path,
+                e
+            );
             return u32::MAX;
         }
     };
@@ -1067,7 +1133,13 @@ pub fn sys_exec(path_ptr: u64, args_ptr: u64) -> u32 {
 /// sys_thread_create - Create a new thread within the current process.
 /// arg1=entry_rip, arg2=user_rsp, arg3=name_ptr, arg4=name_len, arg5=priority.
 /// Returns TID of new thread, or 0 on error.
-pub fn sys_thread_create(entry_rip: u64, user_rsp: u64, name_ptr: u64, name_len: u32, priority: u32) -> u32 {
+pub fn sys_thread_create(
+    entry_rip: u64,
+    user_rsp: u64,
+    name_ptr: u64,
+    name_len: u32,
+    priority: u32,
+) -> u32 {
     let entry = entry_rip;
     let rsp = user_rsp;
     let mut user_lr = 0u64;
@@ -1113,10 +1185,22 @@ pub fn sys_thread_create(entry_rip: u64, user_rsp: u64, name_ptr: u64, name_len:
     let name = core::str::from_utf8(&name_buf[..len]).unwrap_or("thread");
 
     // Priority: 0 means inherit from parent (handled by scheduler), 1-255 = explicit
-    let pri = if priority > 0 && priority <= 255 { priority as u8 } else { 0 };
+    let pri = if priority > 0 && priority <= 255 {
+        priority as u8
+    } else {
+        0
+    };
 
-    let tid = crate::task::scheduler::create_thread_in_current_process(entry, rsp, user_lr, name, pri);
-    crate::debug_println!("sys_thread_create: entry={:#x} rsp={:#x} name={} pri={} -> TID={}", entry, rsp, name, pri, tid);
+    let tid =
+        crate::task::scheduler::create_thread_in_current_process(entry, rsp, user_lr, name, pri);
+    crate::debug_println!(
+        "sys_thread_create: entry={:#x} rsp={:#x} name={} pri={} -> TID={}",
+        entry,
+        rsp,
+        name,
+        pri,
+        tid
+    );
     tid
 }
 

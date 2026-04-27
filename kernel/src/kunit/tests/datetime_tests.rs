@@ -12,16 +12,46 @@ use crate::kunit::{TestCase, TestContext, TestSuite};
 pub static SUITE: TestSuite = TestSuite {
     name: "fs::fat::datetime",
     cases: &[
-        TestCase { name: "epoch_1980_roundtrip",      run: test_epoch_1980 },
-        TestCase { name: "known_date_2024_01_01",     run: test_known_2024 },
-        TestCase { name: "known_date_2000_02_29",     run: test_leap_2000 },
-        TestCase { name: "known_date_1984_06_15",     run: test_1984 },
-        TestCase { name: "max_dos_date_2107",         run: test_max_date },
-        TestCase { name: "midnight_encoding",         run: test_midnight },
-        TestCase { name: "time_23_59_58",             run: test_max_time },
-        TestCase { name: "roundtrip_various_dates",   run: test_roundtrip_various },
-        TestCase { name: "dos_time_2second_granule",  run: test_2sec_granule },
-        TestCase { name: "unix_to_dos_to_unix",       run: test_unix_roundtrip },
+        TestCase {
+            name: "epoch_1980_roundtrip",
+            run: test_epoch_1980,
+        },
+        TestCase {
+            name: "known_date_2024_01_01",
+            run: test_known_2024,
+        },
+        TestCase {
+            name: "known_date_2000_02_29",
+            run: test_leap_2000,
+        },
+        TestCase {
+            name: "known_date_1984_06_15",
+            run: test_1984,
+        },
+        TestCase {
+            name: "max_dos_date_2107",
+            run: test_max_date,
+        },
+        TestCase {
+            name: "midnight_encoding",
+            run: test_midnight,
+        },
+        TestCase {
+            name: "time_23_59_58",
+            run: test_max_time,
+        },
+        TestCase {
+            name: "roundtrip_various_dates",
+            run: test_roundtrip_various,
+        },
+        TestCase {
+            name: "dos_time_2second_granule",
+            run: test_2sec_granule,
+        },
+        TestCase {
+            name: "unix_to_dos_to_unix",
+            run: test_unix_roundtrip,
+        },
     ],
 };
 
@@ -116,14 +146,14 @@ fn test_max_time(ctx: &mut TestContext) {
 fn test_roundtrip_various(ctx: &mut TestContext) {
     // Spot-check 8 arbitrary dates spread across the DOS range.
     let cases: &[(u16, u16, u16, u16, u16, u16)] = &[
-        (1981,  3, 15,  9,  0,  0),
+        (1981, 3, 15, 9, 0, 0),
         (1990, 12, 31, 23, 59, 58),
-        (1995,  7,  4,  0,  0,  0),
-        (2000,  1,  1,  0,  0,  0),
-        (2005,  8, 20, 14, 30,  0),
-        (2012,  2, 29, 12,  0,  0), // 2012 is a leap year
-        (2023, 11, 15,  7, 45, 20),
-        (2038,  1, 19,  3, 14,  6), // close to Unix 32-bit overflow
+        (1995, 7, 4, 0, 0, 0),
+        (2000, 1, 1, 0, 0, 0),
+        (2005, 8, 20, 14, 30, 0),
+        (2012, 2, 29, 12, 0, 0), // 2012 is a leap year
+        (2023, 11, 15, 7, 45, 20),
+        (2038, 1, 19, 3, 14, 6), // close to Unix 32-bit overflow
     ];
     for &(y, mo, d, h, mi, s) in cases {
         let date = make_date(y, mo, d);
@@ -144,7 +174,11 @@ fn test_2sec_granule(ctx: &mut TestContext) {
     // Manually compute unix with 5s and verify it matches 4s (truncated).
     let time_5 = make_time(10, 30, 5); // 5/2=2, same bits as 4/2=2
     let unix_5s = dos_datetime_to_unix(date, time_5);
-    ctx.expect_eq(unix_even, unix_5s, "odd second truncated to even (2s granule)");
+    ctx.expect_eq(
+        unix_even,
+        unix_5s,
+        "odd second truncated to even (2s granule)",
+    );
 
     let (_, t2) = unix_to_dos_datetime(unix_even);
     ctx.expect_eq(t2, even, "even-second time roundtrips exactly");
@@ -157,6 +191,10 @@ fn test_unix_roundtrip(ctx: &mut TestContext) {
     let (d, t) = unix_to_dos_datetime(unix_in);
     let unix_out = dos_datetime_to_unix(d, t);
     // Difference must be < 2 seconds due to 2-second granule.
-    let diff = if unix_out >= unix_in { unix_out - unix_in } else { unix_in - unix_out };
+    let diff = if unix_out >= unix_in {
+        unix_out - unix_in
+    } else {
+        unix_in - unix_out
+    };
     ctx.expect_true(diff < 2, "unix→dos→unix within 2-second granule");
 }

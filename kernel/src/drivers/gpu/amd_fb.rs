@@ -19,26 +19,26 @@
 //! firmware-initialized video output (i.e., every system with a monitor).
 
 use super::GpuDriver;
-use alloc::boxed::Box;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::PhysAddr;
 use crate::memory::virtual_mem;
+use alloc::boxed::Box;
 
 // ── MMIO Register Offsets ───────────────────────────────────────────────────
 
 // Display Controller registers (DCE 6.x+)
-const CRTC_STATUS: u32          = 0x6E8C;  // CRTC status
-const CRTC_H_TOTAL: u32        = 0x6D00;  // Horizontal total
-const CRTC_V_TOTAL: u32        = 0x6D08;  // Vertical total
-const GRPH_ENABLE: u32         = 0x6800;  // Graphics enable
+const CRTC_STATUS: u32 = 0x6E8C; // CRTC status
+const CRTC_H_TOTAL: u32 = 0x6D00; // Horizontal total
+const CRTC_V_TOTAL: u32 = 0x6D08; // Vertical total
+const GRPH_ENABLE: u32 = 0x6800; // Graphics enable
 const GRPH_PRIMARY_SURFACE: u32 = 0x6810; // Primary surface address
-const GRPH_PITCH: u32          = 0x6820;  // Surface pitch (in pixels)
-const GRPH_SURFACE_SIZE: u32   = 0x6830;  // Surface size (w/h)
-const GRPH_CONTROL: u32        = 0x6804;  // Surface format control
+const GRPH_PITCH: u32 = 0x6820; // Surface pitch (in pixels)
+const GRPH_SURFACE_SIZE: u32 = 0x6830; // Surface size (w/h)
+const GRPH_CONTROL: u32 = 0x6804; // Surface format control
 
 // DCN (Display Core Next) registers for newer GPUs (Navi+)
-const HUBP_SURFACE_ADDR: u32   = 0x15D4;
-const HUBP_SURFACE_PITCH: u32  = 0x15DC;
+const HUBP_SURFACE_ADDR: u32 = 0x15D4;
+const HUBP_SURFACE_PITCH: u32 = 0x15DC;
 
 // ── Driver State ────────────────────────────────────────────────────────────
 
@@ -56,14 +56,14 @@ pub struct AmdFbGpu {
 
 #[derive(Debug, Clone, Copy)]
 enum AmdFamily {
-    PreGcn,    // HD 5000/6000
-    Gcn1,      // HD 7000, R7/R9 200
-    Gcn2,      // R7/R9 300
-    Gcn4,      // RX 400/500 (Polaris)
-    Gcn5,      // Vega
-    Rdna1,     // RX 5000 (Navi 10/14)
-    Rdna2,     // RX 6000 (Navi 21/22/23)
-    Rdna3,     // RX 7000 (Navi 31/32/33)
+    PreGcn, // HD 5000/6000
+    Gcn1,   // HD 7000, R7/R9 200
+    Gcn2,   // R7/R9 300
+    Gcn4,   // RX 400/500 (Polaris)
+    Gcn5,   // Vega
+    Rdna1,  // RX 5000 (Navi 10/14)
+    Rdna2,  // RX 6000 (Navi 21/22/23)
+    Rdna3,  // RX 7000 (Navi 31/32/33)
     Unknown,
 }
 
@@ -98,21 +98,29 @@ fn detect_family(device_id: u16) -> AmdFamily {
 impl AmdFbGpu {
     #[inline]
     unsafe fn rd(&self, reg: u32) -> u32 {
-        if self.mmio_base == 0 { return 0; }
+        if self.mmio_base == 0 {
+            return 0;
+        }
         core::ptr::read_volatile((self.mmio_base + reg as u64) as *const u32)
     }
 
     fn read_display_config(&mut self) {
-        if self.mmio_base == 0 { return; }
+        if self.mmio_base == 0 {
+            return;
+        }
         unsafe {
             // Try DCE-style registers first
             let grph_en = self.rd(GRPH_ENABLE);
             if grph_en & 1 != 0 {
                 let surface = self.rd(GRPH_PRIMARY_SURFACE);
-                if surface != 0 { self.fb_phys_u32 = surface; }
+                if surface != 0 {
+                    self.fb_phys_u32 = surface;
+                }
 
                 let pitch_px = self.rd(GRPH_PITCH);
-                if pitch_px > 0 { self.pitch = pitch_px * 4; } // Convert pixels → bytes
+                if pitch_px > 0 {
+                    self.pitch = pitch_px * 4;
+                } // Convert pixels → bytes
 
                 let size = self.rd(GRPH_SURFACE_SIZE);
                 if size != 0 {
@@ -129,8 +137,12 @@ impl AmdFbGpu {
 }
 
 impl GpuDriver for AmdFbGpu {
-    fn name(&self) -> &str { "AMD Radeon" }
-    fn driver_type_name(&self) -> &str { "amd" }
+    fn name(&self) -> &str {
+        "AMD Radeon"
+    }
+    fn driver_type_name(&self) -> &str {
+        "amd"
+    }
 
     fn set_mode(&mut self, width: u32, height: u32, bpp: u32) -> Option<(u32, u32, u32, u32)> {
         // For firmware-initialized framebuffer, we can adjust pitch/size
@@ -164,37 +176,69 @@ impl GpuDriver for AmdFbGpu {
         (self.width, self.height, self.pitch, self.fb_phys_u32)
     }
 
-    fn has_accel(&self) -> bool { false }
-    fn has_hw_cursor(&self) -> bool { false }
-    fn has_double_buffer(&self) -> bool { false }
+    fn has_accel(&self) -> bool {
+        false
+    }
+    fn has_hw_cursor(&self) -> bool {
+        false
+    }
+    fn has_double_buffer(&self) -> bool {
+        false
+    }
 
-    fn vram_size(&self) -> u32 { self.vram_size }
+    fn vram_size(&self) -> u32 {
+        self.vram_size
+    }
 }
 
 // ── Initialization ──────────────────────────────────────────────────────────
 
 pub fn init_and_register(pci: &PciDevice) -> bool {
     let family = detect_family(pci.device_id);
-    crate::serial_println!("  AMD GPU: device={:#06x} family={:?}", pci.device_id, family);
+    crate::serial_println!(
+        "  AMD GPU: device={:#06x} family={:?}",
+        pci.device_id,
+        family
+    );
 
     // BAR0 = VRAM (framebuffer), BAR2 = MMIO doorbell, BAR5 = MMIO registers
     // Layout varies by generation — try common patterns
     let bar0 = (pci.bars[0] & !0xF) as u64;
-    let bar0_hi = if pci.bars[0] & 0x04 != 0 { (pci.bars[1] as u64) << 32 } else { 0 };
+    let bar0_hi = if pci.bars[0] & 0x04 != 0 {
+        (pci.bars[1] as u64) << 32
+    } else {
+        0
+    };
     let vram_phys = bar0 | bar0_hi;
 
     let bar2 = (pci.bars[2] & !0xF) as u64;
-    let bar2_hi = if pci.bars[2] & 0x04 != 0 { (pci.bars[3] as u64) << 32 } else { 0 };
+    let bar2_hi = if pci.bars[2] & 0x04 != 0 {
+        (pci.bars[3] as u64) << 32
+    } else {
+        0
+    };
     let doorbell_phys = bar2 | bar2_hi;
 
     let bar5 = (pci.bars[4] & !0xF) as u64;
-    let bar5_hi = if pci.bars[4] & 0x04 != 0 { (pci.bars[5] as u64) << 32 } else { 0 };
+    let bar5_hi = if pci.bars[4] & 0x04 != 0 {
+        (pci.bars[5] as u64) << 32
+    } else {
+        0
+    };
     let mmio_phys = bar5 | bar5_hi;
 
     // Use BAR2 as MMIO if BAR5 is 0 (some GPUs use different BAR layouts)
-    let reg_phys = if mmio_phys != 0 { mmio_phys } else { doorbell_phys };
+    let reg_phys = if mmio_phys != 0 {
+        mmio_phys
+    } else {
+        doorbell_phys
+    };
 
-    crate::serial_println!("  AMD GPU: VRAM={:#014x} MMIO={:#014x}", vram_phys, reg_phys);
+    crate::serial_println!(
+        "  AMD GPU: VRAM={:#014x} MMIO={:#014x}",
+        vram_phys,
+        reg_phys
+    );
 
     // Enable memory space + bus mastering
     let cmd = crate::drivers::pci::pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
@@ -206,7 +250,9 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
             Some(v) => v.as_u64(),
             None => 0,
         }
-    } else { 0 };
+    } else {
+        0
+    };
 
     // Get framebuffer info from boot
     let (boot_fb, boot_w, boot_h, boot_pitch) = crate::drivers::framebuffer::info()
@@ -228,8 +274,14 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
     // Try reading actual config from hardware
     gpu.read_display_config();
 
-    crate::serial_println!("[OK] AMD Radeon: {}x{} pitch={} fb={:#x} family={:?}",
-        gpu.width, gpu.height, gpu.pitch, gpu.fb_phys_u32, family);
+    crate::serial_println!(
+        "[OK] AMD Radeon: {}x{} pitch={} fb={:#x} family={:?}",
+        gpu.width,
+        gpu.height,
+        gpu.pitch,
+        gpu.fb_phys_u32,
+        family
+    );
 
     super::register(Box::new(gpu));
     true

@@ -56,7 +56,10 @@ impl BochsVgaGpu {
         let double_buffered = virt_height >= height * 2;
 
         if double_buffered {
-            crate::serial_verbose_println!("  Bochs VGA: double-buffering enabled (virt_height={})", virt_height);
+            crate::serial_verbose_println!(
+                "  Bochs VGA: double-buffering enabled (virt_height={})",
+                virt_height
+            );
         }
 
         BochsVgaGpu {
@@ -111,7 +114,11 @@ impl GpuDriver for BochsVgaGpu {
 
         crate::serial_verbose_println!(
             "  Bochs VGA: mode set to {}x{}x{} (pitch={}, dblbuf={})",
-            actual_w, actual_h, actual_bpp, pitch, self.double_buffered
+            actual_w,
+            actual_h,
+            actual_bpp,
+            pitch,
+            self.double_buffered
         );
 
         Some((actual_w, actual_h, pitch, self.fb_phys))

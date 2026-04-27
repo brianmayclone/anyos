@@ -5,10 +5,10 @@
 //!
 //! Tested with VirtualBox NVMe (`80EE:4E56`) and QEMU NVMe.
 
-use alloc::boxed::Box;
-use crate::drivers::pci::{PciDevice, pci_config_read32, pci_config_write32};
+use crate::drivers::pci::{pci_config_read32, pci_config_write32, PciDevice};
 use crate::memory::address::{PhysAddr, VirtAddr};
-use crate::memory::{virtual_mem, physical};
+use crate::memory::{physical, virtual_mem};
+use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 // ── MMIO virtual base ───────────────────────────────
@@ -18,35 +18,35 @@ const NVME_MMIO_PAGES: usize = 4; // 16 KiB
 
 // ── NVMe Controller Registers ───────────────────────
 
-const REG_CAP: u64     = 0x00;  // Controller Capabilities (64-bit)
-const REG_VS: u64      = 0x08;  // Version
-const REG_INTMS: u64   = 0x0C;  // Interrupt Mask Set
-const REG_CC: u64      = 0x14;  // Controller Configuration
-const REG_CSTS: u64    = 0x1C;  // Controller Status
-const REG_AQA: u64     = 0x24;  // Admin Queue Attributes
-const REG_ASQ: u64     = 0x28;  // Admin Submission Queue Base (64-bit)
-const REG_ACQ: u64     = 0x30;  // Admin Completion Queue Base (64-bit)
+const REG_CAP: u64 = 0x00; // Controller Capabilities (64-bit)
+const REG_VS: u64 = 0x08; // Version
+const REG_INTMS: u64 = 0x0C; // Interrupt Mask Set
+const REG_CC: u64 = 0x14; // Controller Configuration
+const REG_CSTS: u64 = 0x1C; // Controller Status
+const REG_AQA: u64 = 0x24; // Admin Queue Attributes
+const REG_ASQ: u64 = 0x28; // Admin Submission Queue Base (64-bit)
+const REG_ACQ: u64 = 0x30; // Admin Completion Queue Base (64-bit)
 
 // CC register fields
-const CC_EN: u32       = 1 << 0;  // Enable
-const CC_CSS_NVM: u32  = 0 << 4;  // NVM Command Set
-const CC_MPS_4K: u32   = 0 << 7;  // Memory Page Size = 4 KiB (2^(12+0))
-const CC_AMS_RR: u32   = 0 << 11; // Round Robin arbitration
-const CC_IOSQES: u32   = 6 << 16; // I/O SQ entry size = 2^6 = 64 bytes
-const CC_IOCQES: u32   = 4 << 20; // I/O CQ entry size = 2^4 = 16 bytes
+const CC_EN: u32 = 1 << 0; // Enable
+const CC_CSS_NVM: u32 = 0 << 4; // NVM Command Set
+const CC_MPS_4K: u32 = 0 << 7; // Memory Page Size = 4 KiB (2^(12+0))
+const CC_AMS_RR: u32 = 0 << 11; // Round Robin arbitration
+const CC_IOSQES: u32 = 6 << 16; // I/O SQ entry size = 2^6 = 64 bytes
+const CC_IOCQES: u32 = 4 << 20; // I/O CQ entry size = 2^4 = 16 bytes
 
 // CSTS register fields
-const CSTS_RDY: u32    = 1 << 0;  // Ready
+const CSTS_RDY: u32 = 1 << 0; // Ready
 
 // ── NVMe Command Opcodes ────────────────────────────
 
 // Admin commands
-const ADMIN_IDENTIFY: u8           = 0x06;
-const ADMIN_CREATE_IO_CQ: u8      = 0x05;
-const ADMIN_CREATE_IO_SQ: u8      = 0x01;
+const ADMIN_IDENTIFY: u8 = 0x06;
+const ADMIN_CREATE_IO_CQ: u8 = 0x05;
+const ADMIN_CREATE_IO_SQ: u8 = 0x01;
 
 // NVM I/O commands
-const NVM_CMD_READ: u8  = 0x02;
+const NVM_CMD_READ: u8 = 0x02;
 const NVM_CMD_WRITE: u8 = 0x01;
 
 // ── Data Structures ─────────────────────────────────
@@ -74,9 +74,20 @@ struct NvmeCommand {
 impl NvmeCommand {
     const fn zeroed() -> Self {
         Self {
-            opcode: 0, flags: 0, command_id: 0, nsid: 0,
-            reserved: [0; 2], metadata: 0, prp1: 0, prp2: 0,
-            cdw10: 0, cdw11: 0, cdw12: 0, cdw13: 0, cdw14: 0, cdw15: 0,
+            opcode: 0,
+            flags: 0,
+            command_id: 0,
+            nsid: 0,
+            reserved: [0; 2],
+            metadata: 0,
+            prp1: 0,
+            prp2: 0,
+            cdw10: 0,
+            cdw11: 0,
+            cdw12: 0,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0,
         }
     }
 }
@@ -85,12 +96,12 @@ impl NvmeCommand {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct NvmeCompletion {
-    result: u32,       // Command-specific result
+    result: u32, // Command-specific result
     reserved: u32,
-    sq_head: u16,      // SQ head pointer
-    sq_id: u16,        // SQ identifier
-    command_id: u16,   // Command ID
-    status: u16,       // Status field (bit 0 = phase tag, bits 1-15 = status)
+    sq_head: u16,    // SQ head pointer
+    sq_id: u16,      // SQ identifier
+    command_id: u16, // Command ID
+    status: u16,     // Status field (bit 0 = phase tag, bits 1-15 = status)
 }
 
 // ── Controller State ────────────────────────────────
@@ -142,19 +153,31 @@ const NVME_MMIO_SIZE: u64 = 0x10000;
 
 #[inline]
 unsafe fn mmio_read32(base: u64, offset: u64) -> u32 {
-    debug_assert!(offset + 4 <= NVME_MMIO_SIZE, "NVMe MMIO read32 out of bounds: offset={:#x}", offset);
+    debug_assert!(
+        offset + 4 <= NVME_MMIO_SIZE,
+        "NVMe MMIO read32 out of bounds: offset={:#x}",
+        offset
+    );
     core::ptr::read_volatile((base + offset) as *const u32)
 }
 
 #[inline]
 unsafe fn mmio_write32(base: u64, offset: u64, val: u32) {
-    debug_assert!(offset + 4 <= NVME_MMIO_SIZE, "NVMe MMIO write32 out of bounds: offset={:#x}", offset);
+    debug_assert!(
+        offset + 4 <= NVME_MMIO_SIZE,
+        "NVMe MMIO write32 out of bounds: offset={:#x}",
+        offset
+    );
     core::ptr::write_volatile((base + offset) as *mut u32, val);
 }
 
 #[inline]
 unsafe fn mmio_read64(base: u64, offset: u64) -> u64 {
-    debug_assert!(offset + 8 <= NVME_MMIO_SIZE, "NVMe MMIO read64 out of bounds: offset={:#x}", offset);
+    debug_assert!(
+        offset + 8 <= NVME_MMIO_SIZE,
+        "NVMe MMIO read64 out of bounds: offset={:#x}",
+        offset
+    );
     // NVMe spec says 64-bit registers can be read as two 32-bit reads
     let lo = core::ptr::read_volatile((base + offset) as *const u32) as u64;
     let hi = core::ptr::read_volatile((base + offset + 4) as *const u32) as u64;
@@ -163,7 +186,11 @@ unsafe fn mmio_read64(base: u64, offset: u64) -> u64 {
 
 #[inline]
 unsafe fn mmio_write64(base: u64, offset: u64, val: u64) {
-    debug_assert!(offset + 8 <= NVME_MMIO_SIZE, "NVMe MMIO write64 out of bounds: offset={:#x}", offset);
+    debug_assert!(
+        offset + 8 <= NVME_MMIO_SIZE,
+        "NVMe MMIO write64 out of bounds: offset={:#x}",
+        offset
+    );
     core::ptr::write_volatile((base + offset) as *mut u32, val as u32);
     core::ptr::write_volatile((base + offset + 4) as *mut u32, (val >> 32) as u32);
 }
@@ -278,9 +305,9 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         if byte_count > 4096 {
             cmd.prp2 = ctrl.bounce_phys + 4096;
         }
-        cmd.cdw10 = cur_lba as u32;         // Starting LBA (low 32)
+        cmd.cdw10 = cur_lba as u32; // Starting LBA (low 32)
         cmd.cdw11 = (cur_lba >> 32) as u32; // Starting LBA (high 32)
-        cmd.cdw12 = batch - 1;              // Number of logical blocks (0-based)
+        cmd.cdw12 = batch - 1; // Number of logical blocks (0-based)
 
         let ok = unsafe { io_submit(ctrl, &cmd).is_some() };
         if !ok {
@@ -384,19 +411,25 @@ pub fn init_and_register(pci: &PciDevice) {
     let cap = unsafe { mmio_read64(base, REG_CAP) };
     let vs = unsafe { mmio_read32(base, REG_VS) };
     let mqes = (cap & 0xFFFF) as u16 + 1; // Maximum Queue Entries Supported
-    let dstrd = 4 << ((cap >> 32) & 0xF);  // Doorbell Stride (bytes)
+    let dstrd = 4 << ((cap >> 32) & 0xF); // Doorbell Stride (bytes)
     let timeout = ((cap >> 24) & 0xFF) as u32 * 500; // Timeout in ms
 
     crate::serial_verbose_println!(
         "  NVMe: version {}.{}.{}, MQES={}, DSTRD={}, timeout={}ms",
-        (vs >> 16) & 0xFF, (vs >> 8) & 0xFF, vs & 0xFF,
-        mqes, dstrd, timeout
+        (vs >> 16) & 0xFF,
+        (vs >> 8) & 0xFF,
+        vs & 0xFF,
+        mqes,
+        dstrd,
+        timeout
     );
 
     // Disable controller if enabled
     let cc = unsafe { mmio_read32(base, REG_CC) };
     if cc & CC_EN != 0 {
-        unsafe { mmio_write32(base, REG_CC, cc & !CC_EN); }
+        unsafe {
+            mmio_write32(base, REG_CC, cc & !CC_EN);
+        }
         // Wait for not ready
         for _ in 0..1_000_000 {
             if unsafe { mmio_read32(base, REG_CSTS) } & CSTS_RDY == 0 {
@@ -410,12 +443,18 @@ pub fn init_and_register(pci: &PciDevice) {
     // Admin SQ: ADMIN_QUEUE_SIZE * 64 bytes (1 page)
     let asq_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  NVMe: alloc ASQ failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  NVMe: alloc ASQ failed");
+            return;
+        }
     };
     // Admin CQ: ADMIN_QUEUE_SIZE * 16 bytes (1 page)
     let acq_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  NVMe: alloc ACQ failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  NVMe: alloc ACQ failed");
+            return;
+        }
     };
 
     // Identity-map queue pages
@@ -430,7 +469,9 @@ pub fn init_and_register(pci: &PciDevice) {
     }
 
     // Mask all interrupts (we use polled mode)
-    unsafe { mmio_write32(base, REG_INTMS, 0xFFFF_FFFF); }
+    unsafe {
+        mmio_write32(base, REG_INTMS, 0xFFFF_FFFF);
+    }
 
     // Configure admin queues
     let aqa = ((ADMIN_QUEUE_SIZE - 1) as u32) << 16 | (ADMIN_QUEUE_SIZE - 1) as u32;
@@ -442,7 +483,9 @@ pub fn init_and_register(pci: &PciDevice) {
 
     // Enable controller
     let cc_val = CC_EN | CC_CSS_NVM | CC_MPS_4K | CC_AMS_RR | CC_IOSQES | CC_IOCQES;
-    unsafe { mmio_write32(base, REG_CC, cc_val); }
+    unsafe {
+        mmio_write32(base, REG_CC, cc_val);
+    }
 
     // Wait for ready
     for _ in 0..10_000_000 {
@@ -460,11 +503,17 @@ pub fn init_and_register(pci: &PciDevice) {
     // Allocate I/O queues
     let iosq_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  NVMe: alloc IOSQ failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  NVMe: alloc IOSQ failed");
+            return;
+        }
     };
     let iocq_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  NVMe: alloc IOCQ failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  NVMe: alloc IOCQ failed");
+            return;
+        }
     };
     for &phys in &[iosq_phys, iocq_phys] {
         virtual_mem::map_page(VirtAddr::new(phys), PhysAddr::new(phys), 0x03);
@@ -477,7 +526,10 @@ pub fn init_and_register(pci: &PciDevice) {
     // Allocate bounce buffer (identity-mapped)
     let bounce_phys = match physical::alloc_contiguous(BOUNCE_PAGES) {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  NVMe: alloc bounce buffer failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  NVMe: alloc bounce buffer failed");
+            return;
+        }
     };
     for i in 0..BOUNCE_PAGES {
         let p = bounce_phys + (i as u64) * 4096;
@@ -507,10 +559,19 @@ pub fn init_and_register(pci: &PciDevice) {
     // Identify Controller (admin command)
     let identify_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  NVMe: alloc identify failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  NVMe: alloc identify failed");
+            return;
+        }
     };
-    virtual_mem::map_page(VirtAddr::new(identify_phys), PhysAddr::new(identify_phys), 0x03);
-    unsafe { core::ptr::write_bytes(identify_phys as *mut u8, 0, 4096); }
+    virtual_mem::map_page(
+        VirtAddr::new(identify_phys),
+        PhysAddr::new(identify_phys),
+        0x03,
+    );
+    unsafe {
+        core::ptr::write_bytes(identify_phys as *mut u8, 0, 4096);
+    }
 
     let mut cmd = NvmeCommand::zeroed();
     cmd.opcode = ADMIN_IDENTIFY;
@@ -537,7 +598,9 @@ pub fn init_and_register(pci: &PciDevice) {
     crate::serial_verbose_println!("  NVMe: Controller: {}", model);
 
     // Identify Namespace 1 (CNS=0, NSID=1)
-    unsafe { core::ptr::write_bytes(identify_phys as *mut u8, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(identify_phys as *mut u8, 0, 4096);
+    }
     let mut cmd = NvmeCommand::zeroed();
     cmd.opcode = ADMIN_IDENTIFY;
     cmd.command_id = ctrl.next_cmd_id;
@@ -566,7 +629,9 @@ pub fn init_and_register(pci: &PciDevice) {
     let size_mb = nsze * sector_size as u64 / (1024 * 1024);
     crate::serial_verbose_println!(
         "  NVMe: NS1: {} sectors, {} bytes/sector, {} MiB",
-        nsze, sector_size, size_mb
+        nsze,
+        sector_size,
+        size_mb
     );
 
     // Create I/O Completion Queue (QID=1)
@@ -597,10 +662,16 @@ pub fn init_and_register(pci: &PciDevice) {
         return;
     }
 
-    crate::serial_verbose_println!("[OK] NVMe: I/O queues created (SQ={}, CQ={})", IO_QUEUE_SIZE, IO_QUEUE_SIZE);
+    crate::serial_verbose_println!(
+        "[OK] NVMe: I/O queues created (SQ={}, CQ={})",
+        IO_QUEUE_SIZE,
+        IO_QUEUE_SIZE
+    );
 
     // Store controller and switch backend
-    unsafe { CTRL = Some(ctrl); }
+    unsafe {
+        CTRL = Some(ctrl);
+    }
     AVAILABLE.store(true, Ordering::Release);
     super::set_backend_nvme();
     crate::serial_verbose_println!("[OK] NVMe storage backend active");

@@ -15,9 +15,9 @@
 //!   0x28: User Code 64 (L=1, D=0, DPL=3)
 //!   0x30+N*0x10: TSS for CPU N (16 bytes, 2 entries per CPU)
 
+use crate::arch::x86::smp::MAX_CPUS;
 use core::arch::asm;
 use core::mem::size_of;
-use crate::arch::x86::smp::MAX_CPUS;
 
 /// GDT segment selectors (without RPL bits).
 pub const KERNEL_CODE64_SEL: u16 = 0x08;
@@ -35,7 +35,8 @@ pub const TSS_SEL: u16 = 0x30; // CPU 0 TSS selector (backward compat)
 /// Bits 63:48 = SYSRET user CS base (0x18 → 64-bit CS=0x2B, SS=0x23).
 /// The 32-bit-compat SYSRET path that would land at CS=0x1B is unused
 /// because user space is 64-bit only.
-pub const STAR_MSR_VALUE: u64 = ((USER_CODE32_SEL as u64) << 48) | ((KERNEL_CODE64_SEL as u64) << 32);
+pub const STAR_MSR_VALUE: u64 =
+    ((USER_CODE32_SEL as u64) << 48) | ((KERNEL_CODE64_SEL as u64) << 32);
 
 /// Get the TSS selector for a given CPU index.
 pub const fn tss_sel_for(cpu_id: usize) -> u16 {
@@ -137,7 +138,9 @@ fn reload_gdtr() {
 /// Clear the TSS busy bit for a given CPU so `ltr` can be executed.
 pub fn clear_tss_busy_bit_for_cpu(cpu_id: usize) {
     let entry_idx = 6 + 2 * cpu_id;
-    if entry_idx >= GDT_ENTRIES { return; }
+    if entry_idx >= GDT_ENTRIES {
+        return;
+    }
     unsafe {
         let access_ptr = (GDT.as_ptr() as *const u8).add(entry_idx * 8 + 5) as *mut u8;
         let access = core::ptr::read_volatile(access_ptr);
@@ -229,7 +232,7 @@ pub fn init() {
 
         // Reload data segment registers
         asm!(
-            "mov ax, 0x10",  // Kernel data segment
+            "mov ax, 0x10", // Kernel data segment
             "mov ds, ax",
             "mov es, ax",
             "mov fs, ax",

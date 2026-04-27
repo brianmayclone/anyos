@@ -108,10 +108,17 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
     }
 
     let mut caps = VirtioPciCaps {
-        common_bar: 0, common_offset: 0, common_len: 0,
-        notify_bar: 0, notify_offset: 0, notify_off_multiplier: 0,
-        isr_bar: 0, isr_offset: 0,
-        device_bar: 0, device_offset: 0, device_len: 0,
+        common_bar: 0,
+        common_offset: 0,
+        common_len: 0,
+        notify_bar: 0,
+        notify_offset: 0,
+        notify_off_multiplier: 0,
+        isr_bar: 0,
+        isr_offset: 0,
+        device_bar: 0,
+        device_offset: 0,
+        device_len: 0,
     };
 
     let mut found_common = false;
@@ -139,7 +146,8 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
             // offset+12: length (u32)
             let cfg_type = pci::pci_config_read8(pci.bus, pci.device, pci.function, cap_offset + 3);
             let bar = pci::pci_config_read8(pci.bus, pci.device, pci.function, cap_offset + 4);
-            let bar_offset = pci::pci_config_read32(pci.bus, pci.device, pci.function, cap_offset + 8);
+            let bar_offset =
+                pci::pci_config_read32(pci.bus, pci.device, pci.function, cap_offset + 8);
             let length = pci::pci_config_read32(pci.bus, pci.device, pci.function, cap_offset + 12);
 
             match cfg_type {
@@ -148,33 +156,48 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
                     caps.common_offset = bar_offset;
                     caps.common_len = length;
                     found_common = true;
-                    crate::serial_verbose_println!("    COMMON_CFG: BAR{} offset={:#x} len={}", bar, bar_offset, length);
+                    crate::serial_verbose_println!(
+                        "    COMMON_CFG: BAR{} offset={:#x} len={}",
+                        bar,
+                        bar_offset,
+                        length
+                    );
                 }
                 VIRTIO_PCI_CAP_NOTIFY_CFG => {
                     caps.notify_bar = bar;
                     caps.notify_offset = bar_offset;
                     // Notify has an extra u32 at cap_offset+16: notify_off_multiplier
-                    caps.notify_off_multiplier = pci::pci_config_read32(
-                        pci.bus, pci.device, pci.function, cap_offset + 16
-                    );
+                    caps.notify_off_multiplier =
+                        pci::pci_config_read32(pci.bus, pci.device, pci.function, cap_offset + 16);
                     found_notify = true;
                     crate::serial_verbose_println!(
                         "    NOTIFY_CFG: BAR{} offset={:#x} mul={}",
-                        bar, bar_offset, caps.notify_off_multiplier
+                        bar,
+                        bar_offset,
+                        caps.notify_off_multiplier
                     );
                 }
                 VIRTIO_PCI_CAP_ISR_CFG => {
                     caps.isr_bar = bar;
                     caps.isr_offset = bar_offset;
                     found_isr = true;
-                    crate::serial_verbose_println!("    ISR_CFG: BAR{} offset={:#x}", bar, bar_offset);
+                    crate::serial_verbose_println!(
+                        "    ISR_CFG: BAR{} offset={:#x}",
+                        bar,
+                        bar_offset
+                    );
                 }
                 VIRTIO_PCI_CAP_DEVICE_CFG => {
                     caps.device_bar = bar;
                     caps.device_offset = bar_offset;
                     caps.device_len = length;
                     _found_device = true;
-                    crate::serial_verbose_println!("    DEVICE_CFG: BAR{} offset={:#x} len={}", bar, bar_offset, length);
+                    crate::serial_verbose_println!(
+                        "    DEVICE_CFG: BAR{} offset={:#x} len={}",
+                        bar,
+                        bar_offset,
+                        length
+                    );
                 }
                 _ => {}
             }
@@ -186,8 +209,12 @@ pub fn find_capabilities(pci: &PciDevice) -> Option<VirtioPciCaps> {
     if found_common && found_notify && found_isr {
         Some(caps)
     } else {
-        crate::serial_verbose_println!("  VirtIO: missing required capabilities (common={} notify={} isr={})",
-            found_common, found_notify, found_isr);
+        crate::serial_verbose_println!(
+            "  VirtIO: missing required capabilities (common={} notify={} isr={})",
+            found_common,
+            found_notify,
+            found_isr
+        );
         None
     }
 }
@@ -245,8 +272,13 @@ pub fn map_bar(pci: &PciDevice, bar_idx: u8) -> u64 {
         MAPPED_BARS[idx] = virt_base;
     }
 
-    crate::serial_verbose_println!("  VirtIO: BAR{} phys={:#x} mapped to virt={:#x} ({} pages)",
-        bar_idx, phys_base, virt_base, VIRTIO_MMIO_MAX_PAGES);
+    crate::serial_verbose_println!(
+        "  VirtIO: BAR{} phys={:#x} mapped to virt={:#x} ({} pages)",
+        bar_idx,
+        phys_base,
+        virt_base,
+        VIRTIO_MMIO_MAX_PAGES
+    );
 
     virt_base
 }
@@ -276,19 +308,25 @@ pub fn mmio_read32(addr: u64) -> u32 {
 /// Write a u8 to MMIO at the given virtual address.
 #[inline(always)]
 pub fn mmio_write8(addr: u64, val: u8) {
-    unsafe { core::ptr::write_volatile(addr as *mut u8, val); }
+    unsafe {
+        core::ptr::write_volatile(addr as *mut u8, val);
+    }
 }
 
 /// Write a u16 to MMIO at the given virtual address.
 #[inline(always)]
 pub fn mmio_write16(addr: u64, val: u16) {
-    unsafe { core::ptr::write_volatile(addr as *mut u16, val); }
+    unsafe {
+        core::ptr::write_volatile(addr as *mut u16, val);
+    }
 }
 
 /// Write a u32 to MMIO at the given virtual address.
 #[inline(always)]
 pub fn mmio_write32(addr: u64, val: u32) {
-    unsafe { core::ptr::write_volatile(addr as *mut u32, val); }
+    unsafe {
+        core::ptr::write_volatile(addr as *mut u32, val);
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -352,13 +390,19 @@ impl VirtioDevice {
 
     /// Read device feature bits (select which 32-bit block with `select`).
     pub fn read_device_features(&self, select: u32) -> u32 {
-        mmio_write32(self.common_cfg + COMMON_DEVICE_FEATURE_SELECT as u64, select);
+        mmio_write32(
+            self.common_cfg + COMMON_DEVICE_FEATURE_SELECT as u64,
+            select,
+        );
         mmio_read32(self.common_cfg + COMMON_DEVICE_FEATURE as u64)
     }
 
     /// Write driver feature bits (select which 32-bit block with `select`).
     pub fn write_driver_features(&self, select: u32, features: u32) {
-        mmio_write32(self.common_cfg + COMMON_DRIVER_FEATURE_SELECT as u64, select);
+        mmio_write32(
+            self.common_cfg + COMMON_DRIVER_FEATURE_SELECT as u64,
+            select,
+        );
         mmio_write32(self.common_cfg + COMMON_DRIVER_FEATURE as u64, features);
     }
 
@@ -385,11 +429,20 @@ impl VirtioDevice {
     /// Write the physical addresses of the virtqueue structures.
     pub fn write_queue_addresses(&self, desc: u64, avail: u64, used: u64) {
         mmio_write32(self.common_cfg + COMMON_QUEUE_DESC_LO as u64, desc as u32);
-        mmio_write32(self.common_cfg + COMMON_QUEUE_DESC_HI as u64, (desc >> 32) as u32);
+        mmio_write32(
+            self.common_cfg + COMMON_QUEUE_DESC_HI as u64,
+            (desc >> 32) as u32,
+        );
         mmio_write32(self.common_cfg + COMMON_QUEUE_AVAIL_LO as u64, avail as u32);
-        mmio_write32(self.common_cfg + COMMON_QUEUE_AVAIL_HI as u64, (avail >> 32) as u32);
+        mmio_write32(
+            self.common_cfg + COMMON_QUEUE_AVAIL_HI as u64,
+            (avail >> 32) as u32,
+        );
         mmio_write32(self.common_cfg + COMMON_QUEUE_USED_LO as u64, used as u32);
-        mmio_write32(self.common_cfg + COMMON_QUEUE_USED_HI as u64, (used >> 32) as u32);
+        mmio_write32(
+            self.common_cfg + COMMON_QUEUE_USED_HI as u64,
+            (used >> 32) as u32,
+        );
     }
 
     /// Enable the currently selected queue.
@@ -479,7 +532,10 @@ impl VirtioDevice {
 
         let max_size = self.read_queue_size();
         if max_size == 0 {
-            crate::serial_verbose_println!("  VirtIO: queue {} not available (max_size=0)", queue_idx);
+            crate::serial_verbose_println!(
+                "  VirtIO: queue {} not available (max_size=0)",
+                queue_idx
+            );
             return None;
         }
 
@@ -499,7 +555,11 @@ impl VirtioDevice {
         // Enable
         self.enable_queue();
 
-        crate::serial_verbose_println!("  VirtIO: queue {} enabled (size={})", queue_idx, queue_size);
+        crate::serial_verbose_println!(
+            "  VirtIO: queue {} enabled (size={})",
+            queue_idx,
+            queue_size
+        );
 
         Some(vq)
     }

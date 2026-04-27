@@ -20,46 +20,46 @@
 //! This is enough for a working desktop with compositor at native resolution.
 
 use super::GpuDriver;
-use alloc::boxed::Box;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::PhysAddr;
 use crate::memory::virtual_mem;
+use alloc::boxed::Box;
 
 // ── NVIDIA MMIO Register Offsets ────────────────────────────────────────────
 // These are stable across Kepler → Ada architectures for display readback.
 
 // PMC (Power Management Controller)
-const NV_PMC_BOOT_0: u32 = 0x000000;  // Chip revision / architecture ID
+const NV_PMC_BOOT_0: u32 = 0x000000; // Chip revision / architecture ID
 
 // PCRTC (Pixel Clock / CRT Controller) — Head 0
-const NV_PCRTC_START: u32     = 0x600800;  // Scanout start address in VRAM
-const NV_PCRTC_CONFIG: u32    = 0x600804;  // Display config (pixel format)
+const NV_PCRTC_START: u32 = 0x600800; // Scanout start address in VRAM
+const NV_PCRTC_CONFIG: u32 = 0x600804; // Display config (pixel format)
 
 // PDISPLAY (Display Engine) — varies by generation but these are common
 const NV_PDISPLAY_FE_OFFSET: u32 = 0x610000;
 
 // Pre-Kepler (NV50/Fermi) scanout registers
-const NV50_PDISPLAY_CRTC_C: u32  = 0x610B58; // Active display size (Fermi)
-const NV50_PDISPLAY_PITCH: u32   = 0x610B20; // Display pitch
+const NV50_PDISPLAY_CRTC_C: u32 = 0x610B58; // Active display size (Fermi)
+const NV50_PDISPLAY_PITCH: u32 = 0x610B20; // Display pitch
 
 // Kepler+ display registers
-const GK_HEAD_SET_OFFSET: u32    = 0x616300; // Head 0 offset
-const GK_HEAD_SET_SIZE: u32      = 0x616308; // Head 0 size (width/height)
-const GK_HEAD_SET_PITCH: u32     = 0x616310; // Head 0 pitch (storage pitch)
-const GK_HEAD_SET_SURFACE: u32   = 0x616320; // Head 0 surface address
+const GK_HEAD_SET_OFFSET: u32 = 0x616300; // Head 0 offset
+const GK_HEAD_SET_SIZE: u32 = 0x616308; // Head 0 size (width/height)
+const GK_HEAD_SET_PITCH: u32 = 0x616310; // Head 0 pitch (storage pitch)
+const GK_HEAD_SET_SURFACE: u32 = 0x616320; // Head 0 surface address
 
 // ── Architecture Detection ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
 enum NvArch {
-    Fermi,     // GF1xx (GeForce 400/500)
-    Kepler,    // GK1xx (GeForce 600/700)
-    Maxwell,   // GM1xx/GM2xx (GeForce 900)
-    Pascal,    // GP1xx (GeForce 1000)
-    Volta,     // GV1xx (Titan V, Quadro GV100)
-    Turing,    // TU1xx (GeForce RTX 2000)
-    Ampere,    // GA1xx (GeForce RTX 3000)
-    Ada,       // AD1xx (GeForce RTX 4000)
+    Fermi,   // GF1xx (GeForce 400/500)
+    Kepler,  // GK1xx (GeForce 600/700)
+    Maxwell, // GM1xx/GM2xx (GeForce 900)
+    Pascal,  // GP1xx (GeForce 1000)
+    Volta,   // GV1xx (Titan V, Quadro GV100)
+    Turing,  // TU1xx (GeForce RTX 2000)
+    Ampere,  // GA1xx (GeForce RTX 3000)
+    Ada,     // AD1xx (GeForce RTX 4000)
     Unknown,
 }
 
@@ -100,13 +100,17 @@ pub struct NvidiaFbGpu {
 impl NvidiaFbGpu {
     #[inline]
     unsafe fn rd(&self, reg: u32) -> u32 {
-        if self.mmio_base == 0 { return 0; }
+        if self.mmio_base == 0 {
+            return 0;
+        }
         core::ptr::read_volatile((self.mmio_base + reg as u64) as *const u32)
     }
 
     /// Try to read display configuration from GPU registers.
     fn read_display_config(&mut self) {
-        if self.mmio_base == 0 { return; }
+        if self.mmio_base == 0 {
+            return;
+        }
 
         unsafe {
             // Try Kepler+ registers first
@@ -158,8 +162,12 @@ impl NvidiaFbGpu {
 }
 
 impl GpuDriver for NvidiaFbGpu {
-    fn name(&self) -> &str { "NVIDIA GeForce" }
-    fn driver_type_name(&self) -> &str { "nvidia" }
+    fn name(&self) -> &str {
+        "NVIDIA GeForce"
+    }
+    fn driver_type_name(&self) -> &str {
+        "nvidia"
+    }
 
     fn set_mode(&mut self, _width: u32, _height: u32, _bpp: u32) -> Option<(u32, u32, u32, u32)> {
         // NVIDIA modesetting requires programming the display engine (EVO/NVDisplay)
@@ -172,9 +180,15 @@ impl GpuDriver for NvidiaFbGpu {
         (self.width, self.height, self.pitch, self.fb_phys)
     }
 
-    fn has_accel(&self) -> bool { false }
-    fn has_hw_cursor(&self) -> bool { false }
-    fn has_double_buffer(&self) -> bool { false }
+    fn has_accel(&self) -> bool {
+        false
+    }
+    fn has_hw_cursor(&self) -> bool {
+        false
+    }
+    fn has_double_buffer(&self) -> bool {
+        false
+    }
 
     fn vram_size(&self) -> u32 {
         // NVIDIA VRAM size can be read from PMC, but varies by generation.
@@ -187,19 +201,35 @@ impl GpuDriver for NvidiaFbGpu {
 
 pub fn init_and_register(pci: &PciDevice) -> bool {
     let arch = detect_arch(pci.device_id);
-    crate::serial_println!("  NVIDIA GPU: device={:#06x} arch={:?}", pci.device_id, arch);
+    crate::serial_println!(
+        "  NVIDIA GPU: device={:#06x} arch={:?}",
+        pci.device_id,
+        arch
+    );
 
     // BAR0 = MMIO registers (16-32 MiB)
     let bar0 = (pci.bars[0] & !0xF) as u64;
-    let bar0_hi = if pci.bars[0] & 0x04 != 0 { (pci.bars[1] as u64) << 32 } else { 0 };
+    let bar0_hi = if pci.bars[0] & 0x04 != 0 {
+        (pci.bars[1] as u64) << 32
+    } else {
+        0
+    };
     let mmio_phys = bar0 | bar0_hi;
 
     // BAR1 = VRAM aperture (framebuffer, 256 MiB - 16 GiB)
     let bar1 = (pci.bars[2] & !0xF) as u64;
-    let bar1_hi = if pci.bars[2] & 0x04 != 0 { (pci.bars[3] as u64) << 32 } else { 0 };
+    let bar1_hi = if pci.bars[2] & 0x04 != 0 {
+        (pci.bars[3] as u64) << 32
+    } else {
+        0
+    };
     let vram_phys = bar1 | bar1_hi;
 
-    crate::serial_println!("  NVIDIA GPU: MMIO={:#014x} VRAM={:#014x}", mmio_phys, vram_phys);
+    crate::serial_println!(
+        "  NVIDIA GPU: MMIO={:#014x} VRAM={:#014x}",
+        mmio_phys,
+        vram_phys
+    );
 
     // Enable memory space + bus mastering
     let cmd = crate::drivers::pci::pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
@@ -211,7 +241,9 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
             Some(v) => v.as_u64(),
             None => 0,
         }
-    } else { 0 };
+    } else {
+        0
+    };
 
     // Get framebuffer info from boot (UEFI GOP)
     let (boot_fb, boot_w, boot_h, boot_pitch) = crate::drivers::framebuffer::info()
@@ -240,8 +272,14 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
         gpu.fb_phys = boot_fb;
     }
 
-    crate::serial_println!("[OK] NVIDIA GeForce: {}x{} pitch={} fb={:#x} arch={:?}",
-        gpu.width, gpu.height, gpu.pitch, gpu.fb_phys, arch);
+    crate::serial_println!(
+        "[OK] NVIDIA GeForce: {}x{} pitch={} fb={:#x} arch={:?}",
+        gpu.width,
+        gpu.height,
+        gpu.pitch,
+        gpu.fb_phys,
+        arch
+    );
 
     super::register(Box::new(gpu));
     true

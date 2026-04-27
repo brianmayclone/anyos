@@ -4,12 +4,12 @@
 //! Supports high-speed (480 Mbps) devices. Ports that fail high-speed
 //! handshake are released to companion controllers (UHCI/OHCI).
 
+use super::*;
 use crate::arch::x86::pit::delay_ms;
-use crate::drivers::pci::{PciDevice, pci_config_read32, pci_config_write32};
+use crate::drivers::pci::{pci_config_read32, pci_config_write32, PciDevice};
 use crate::memory::address::PhysAddr;
 use crate::memory::physical;
 use crate::memory::virtual_mem;
-use super::*;
 
 // ── EHCI MMIO Virtual Address ──────────────────
 // After AHCI at 0xFFFF_FFFF_D006_0000 (8 pages)
@@ -23,9 +23,9 @@ const EHCI_MAX_PORTS: usize = 15;
 
 // ── Capability Register Offsets ────────────────
 
-const CAP_CAPLENGTH: u32 = 0x00;  // 8-bit
-const CAP_HCSPARAMS: u32 = 0x04;  // 32-bit
-const CAP_HCCPARAMS: u32 = 0x08;  // 32-bit
+const CAP_CAPLENGTH: u32 = 0x00; // 8-bit
+const CAP_HCSPARAMS: u32 = 0x04; // 32-bit
+const CAP_HCCPARAMS: u32 = 0x08; // 32-bit
 
 // ── Operational Register Offsets (from op base) ──
 
@@ -53,19 +53,19 @@ const STS_ERROR: u32 = 1 << 1;
 const STS_INT: u32 = 1 << 0;
 
 // PORTSC bits
-const PORTSC_CCS: u32 = 1 << 0;    // Current Connect Status
-const PORTSC_CSC: u32 = 1 << 1;    // Connect Status Change
-const PORTSC_PE: u32 = 1 << 2;     // Port Enabled
-const PORTSC_PEC: u32 = 1 << 3;    // Port Enable Change
-const PORTSC_OCA: u32 = 1 << 4;    // Over-current Active
-const PORTSC_PR: u32 = 1 << 8;     // Port Reset
+const PORTSC_CCS: u32 = 1 << 0; // Current Connect Status
+const PORTSC_CSC: u32 = 1 << 1; // Connect Status Change
+const PORTSC_PE: u32 = 1 << 2; // Port Enabled
+const PORTSC_PEC: u32 = 1 << 3; // Port Enable Change
+const PORTSC_OCA: u32 = 1 << 4; // Over-current Active
+const PORTSC_PR: u32 = 1 << 8; // Port Reset
 const PORTSC_LINE_STATUS: u32 = 3 << 10; // Line status (bits 11:10)
-const PORTSC_PP: u32 = 1 << 12;    // Port Power
-const PORTSC_PO: u32 = 1 << 13;    // Port Owner (1=companion)
+const PORTSC_PP: u32 = 1 << 12; // Port Power
+const PORTSC_PO: u32 = 1 << 13; // Port Owner (1=companion)
 
 // QH/qTD link pointer bits
 const QH_TYPE_QH: u32 = 1 << 1;
-const LP_T: u32 = 1;  // Terminate
+const LP_T: u32 = 1; // Terminate
 
 // qTD token bits
 const QTD_ACTIVE: u32 = 1 << 7;
@@ -74,17 +74,17 @@ const QTD_PID_OUT: u32 = 0 << 8;
 const QTD_PID_IN: u32 = 1 << 8;
 const QTD_PID_SETUP: u32 = 2 << 8;
 const QTD_ERR_MASK: u32 = 0x7C; // bits 6-2: error flags
-const QTD_DT: u32 = 1 << 31;    // Data Toggle
+const QTD_DT: u32 = 1 << 31; // Data Toggle
 
 // ── DMA Structures ─────────────────────────────
 
 /// EHCI Queue Head (48 bytes, aligned to 32).
 #[repr(C)]
 struct EhciQh {
-    horiz_link: u32,         // next QH pointer
-    characteristics: u32,    // endpoint characteristics
-    capabilities: u32,       // endpoint capabilities (split transaction)
-    current_qtd: u32,        // current qTD pointer
+    horiz_link: u32,      // next QH pointer
+    characteristics: u32, // endpoint characteristics
+    capabilities: u32,    // endpoint capabilities (split transaction)
+    current_qtd: u32,     // current qTD pointer
     // Overlay area (mirrors qTD)
     next_qtd: u32,
     alt_next_qtd: u32,
@@ -106,12 +106,12 @@ struct EhciQtd {
 // ── Controller State ───────────────────────────
 
 struct EhciController {
-    mmio_base: u64,       // virtual MMIO base
-    op_base: u64,         // operational registers base (mmio_base + CAPLENGTH)
+    mmio_base: u64, // virtual MMIO base
+    op_base: u64,   // operational registers base (mmio_base + CAPLENGTH)
     n_ports: u8,
-    async_qh_phys: u64,  // async schedule head QH (physical)
-    td_pool_phys: u64,    // qTD pool (physical)
-    data_buf_phys: u64,   // data buffer (physical)
+    async_qh_phys: u64,                     // async schedule head QH (physical)
+    td_pool_phys: u64,                      // qTD pool (physical)
+    data_buf_phys: u64,                     // data buffer (physical)
     port_connected: [bool; EHCI_MAX_PORTS], // per-port connection state
 }
 
@@ -138,9 +138,9 @@ fn make_qh_chars(dev_addr: u8, endpoint: u8, speed: UsbSpeed, max_packet: u16) -
         UsbSpeed::Full => 0u32,
         UsbSpeed::Low => 1u32,
     };
-    let rl = 15u32;   // Nak Count Reload
-    let dtc = 1u32;   // Data Toggle Control (from qTD)
-    let h = 1u32;     // Head of Reclamation List
+    let rl = 15u32; // Nak Count Reload
+    let dtc = 1u32; // Data Toggle Control (from qTD)
+    let h = 1u32; // Head of Reclamation List
 
     (rl << 28)
         | (max_packet as u32 & 0x7FF) << 16
@@ -155,8 +155,8 @@ fn make_qh_caps(speed: UsbSpeed) -> u32 {
     // For high-speed, mult=1 (one transaction per microframe)
     // For full/low-speed through transaction translator, set hub/port
     match speed {
-        UsbSpeed::High => 1 << 30,  // mult=1
-        _ => 1 << 30,               // mult=1 (simplified — no TT support yet)
+        UsbSpeed::High => 1 << 30, // mult=1
+        _ => 1 << 30,              // mult=1 (simplified — no TT support yet)
     }
 }
 
@@ -164,11 +164,7 @@ fn make_qh_caps(speed: UsbSpeed) -> u32 {
 
 fn make_qtd_token(pid: u32, toggle: u8, bytes: u16) -> u32 {
     let cerr = 3u32; // Error counter = 3
-    QTD_ACTIVE
-        | ((toggle as u32 & 1) << 31)
-        | ((bytes as u32 & 0x7FFF) << 16)
-        | (cerr << 10)
-        | pid
+    QTD_ACTIVE | ((toggle as u32 & 1) << 31) | ((bytes as u32 & 0x7FFF) << 16) | (cerr << 10) | pid
 }
 
 // ── Control Transfer ───────────────────────────
@@ -272,7 +268,9 @@ fn control_transfer(
         (*qh).next_qtd = setup_qtd as u32;
         (*qh).alt_next_qtd = LP_T;
         (*qh).token = 0; // clear overlay
-        for b in &mut (*qh).buffer { *b = 0; }
+        for b in &mut (*qh).buffer {
+            *b = 0;
+        }
     }
 
     // Enable async schedule
@@ -352,7 +350,9 @@ fn bulk_transfer_inner(
     data_phys: u64,
     len: usize,
 ) -> Result<usize, &'static str> {
-    if len == 0 { return Ok(0); }
+    if len == 0 {
+        return Ok(0);
+    }
     let max_pkt = (max_packet as usize).max(1);
 
     let qh_phys = ctrl.async_qh_phys;
@@ -382,7 +382,9 @@ fn bulk_transfer_inner(
         };
 
         let mut token = make_qtd_token(pid, *toggle, chunk as u16);
-        if i + 1 == num_tds { token |= QTD_IOC; }
+        if i + 1 == num_tds {
+            token |= QTD_IOC;
+        }
 
         unsafe {
             let qtd = this_qtd as *mut EhciQtd;
@@ -410,7 +412,9 @@ fn bulk_transfer_inner(
         (*qh).next_qtd = td_base as u32;
         (*qh).alt_next_qtd = LP_T;
         (*qh).token = 0; // clear overlay
-        for b in &mut (*qh).buffer { *b = 0; }
+        for b in &mut (*qh).buffer {
+            *b = 0;
+        }
     }
 
     // Ensure async schedule is enabled
@@ -501,7 +505,9 @@ pub fn bulk_transfer(
 ) -> Result<usize, &'static str> {
     let guard = EHCI_CTRL.lock();
     let ctrl = guard.as_ref().ok_or("EHCI not initialized")?;
-    bulk_transfer_inner(ctrl, dev_addr, speed, endpoint, max_packet, toggle, data_phys, len)
+    bulk_transfer_inner(
+        ctrl, dev_addr, speed, endpoint, max_packet, toggle, data_phys, len,
+    )
 }
 
 // ── Device Enumeration ─────────────────────────
@@ -528,7 +534,11 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
             return;
         }
         Err(e) => {
-            crate::serial_verbose_println!("  EHCI: port {} — GET_DESCRIPTOR(8) failed: {}", port, e);
+            crate::serial_verbose_println!(
+                "  EHCI: port {} — GET_DESCRIPTOR(8) failed: {}",
+                port,
+                e
+            );
             return;
         }
     }
@@ -566,17 +576,26 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
     match control_transfer(ctrl, new_addr, speed, max_packet, &setup_full, true, 18) {
         Ok(n) if n >= 18 => {}
         Ok(n) => {
-            crate::serial_verbose_println!("  EHCI: device {} — short descriptor ({} bytes)", new_addr, n);
+            crate::serial_verbose_println!(
+                "  EHCI: device {} — short descriptor ({} bytes)",
+                new_addr,
+                n
+            );
             return;
         }
         Err(e) => {
-            crate::serial_verbose_println!("  EHCI: device {} — GET_DESCRIPTOR(18) failed: {}", new_addr, e);
+            crate::serial_verbose_println!(
+                "  EHCI: device {} — GET_DESCRIPTOR(18) failed: {}",
+                new_addr,
+                e
+            );
             return;
         }
     }
 
     read_transfer_data(ctrl, &mut desc_buf, 18);
-    let dev_desc: DeviceDescriptor = unsafe { core::ptr::read_unaligned(desc_buf.as_ptr() as *const _) };
+    let dev_desc: DeviceDescriptor =
+        unsafe { core::ptr::read_unaligned(desc_buf.as_ptr() as *const _) };
 
     // Step 4: GET_DESCRIPTOR (config header)
     let setup_cfg = SetupPacket {
@@ -594,7 +613,10 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
             u16::from_le_bytes([hdr[2], hdr[3]])
         }
         _ => {
-            crate::serial_verbose_println!("  EHCI: device {} — config descriptor header failed", new_addr);
+            crate::serial_verbose_println!(
+                "  EHCI: device {} — config descriptor header failed",
+                new_addr
+            );
             return;
         }
     };
@@ -610,12 +632,23 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
     };
 
     let mut config_buf = [0u8; 256];
-    match control_transfer(ctrl, new_addr, speed, max_packet, &setup_cfg_full, true, config_len) {
+    match control_transfer(
+        ctrl,
+        new_addr,
+        speed,
+        max_packet,
+        &setup_cfg_full,
+        true,
+        config_len,
+    ) {
         Ok(n) if n >= 9 => {
             read_transfer_data(ctrl, &mut config_buf, n);
         }
         _ => {
-            crate::serial_verbose_println!("  EHCI: device {} — full config descriptor failed", new_addr);
+            crate::serial_verbose_println!(
+                "  EHCI: device {} — full config descriptor failed",
+                new_addr
+            );
             return;
         }
     }
@@ -633,7 +666,11 @@ fn enumerate_device(ctrl: &EhciController, port: u8, speed: UsbSpeed) {
     };
 
     if let Err(e) = control_transfer(ctrl, new_addr, speed, max_packet, &setup_setcfg, false, 0) {
-        crate::serial_verbose_println!("  EHCI: device {} — SET_CONFIGURATION failed: {}", new_addr, e);
+        crate::serial_verbose_println!(
+            "  EHCI: device {} — SET_CONFIGURATION failed: {}",
+            new_addr,
+            e
+        );
         return;
     }
 
@@ -727,10 +764,7 @@ fn scan_ports(ctrl: &EhciController) {
         crate::serial_verbose_println!("  EHCI: port {} — device connected, resetting...", i + 1);
 
         if let Some(speed) = reset_port(ctrl, i) {
-            crate::serial_verbose_println!(
-                "  EHCI: port {} — enabled (High-Speed)",
-                i + 1
-            );
+            crate::serial_verbose_println!("  EHCI: port {} — enabled (High-Speed)", i + 1);
             delay_ms(10);
             enumerate_device(ctrl, i + 1, speed);
         }
@@ -749,7 +783,8 @@ pub fn init_controller(pci: &PciDevice) {
 
     crate::serial_verbose_println!(
         "  EHCI: controller at phys {:#010x}, IRQ {}",
-        phys_base, pci.interrupt_line
+        phys_base,
+        pci.interrupt_line
     );
 
     // Map MMIO pages
@@ -770,10 +805,7 @@ pub fn init_controller(pci: &PciDevice) {
     let hcsparams = mmio_read32(mmio_base, CAP_HCSPARAMS);
     let n_ports = ((hcsparams & 0x0F) as u8).min(EHCI_MAX_PORTS as u8);
 
-    crate::serial_verbose_println!(
-        "  EHCI: CAPLENGTH={}, {} port(s)",
-        caplength, n_ports
-    );
+    crate::serial_verbose_println!("  EHCI: CAPLENGTH={}, {} port(s)", caplength, n_ports);
 
     // Enable bus mastering + memory space
     let cmd = pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
@@ -787,8 +819,11 @@ pub fn init_controller(pci: &PciDevice) {
         if legsup & (1 << 16) != 0 {
             // BIOS owns it — request ownership
             pci_config_write32(
-                pci.bus, pci.device, pci.function, eecp,
-                legsup | (1 << 24) // Set OS ownership
+                pci.bus,
+                pci.device,
+                pci.function,
+                eecp,
+                legsup | (1 << 24), // Set OS ownership
             );
             // Wait for BIOS to release
             for _ in 0..100 {
@@ -963,7 +998,10 @@ pub fn poll_ports() {
             }
         } else if !connected && was_connected {
             // Device disconnected
-            crate::serial_verbose_println!("  EHCI: hot-unplug — device removed from port {}", i + 1);
+            crate::serial_verbose_println!(
+                "  EHCI: hot-unplug — device removed from port {}",
+                i + 1
+            );
             ctrl.port_connected[i] = false;
 
             // Clear status change bits

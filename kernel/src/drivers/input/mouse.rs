@@ -40,7 +40,11 @@ pub(crate) static MOUSE_BUFFER: Spinlock<VecDeque<MouseEvent>> = Spinlock::new(V
 static MOUSE_STATE: Spinlock<MouseState> = Spinlock::new(MouseState {
     cycle: 0,
     bytes: [0; 4],
-    buttons: MouseButtons { left: false, right: false, middle: false },
+    buttons: MouseButtons {
+        left: false,
+        right: false,
+        middle: false,
+    },
     has_scroll: false,
 });
 
@@ -69,9 +73,13 @@ fn mouse_wait_output() {
 
 fn mouse_write(data: u8) {
     mouse_wait_input();
-    unsafe { outb(0x64, 0xD4); }
+    unsafe {
+        outb(0x64, 0xD4);
+    }
     mouse_wait_input();
-    unsafe { outb(0x60, data); }
+    unsafe {
+        outb(0x60, data);
+    }
 }
 
 fn mouse_read() -> u8 {
@@ -83,13 +91,17 @@ fn mouse_read() -> u8 {
 pub fn init() {
     // Enable auxiliary mouse device
     mouse_wait_input();
-    unsafe { outb(0x64, 0xA8); }
+    unsafe {
+        outb(0x64, 0xA8);
+    }
 
     // Read controller config — but do NOT enable IRQ12 yet.
     // IRQ12 must stay disabled during init so ACK bytes from mouse commands
     // don't leak into the IRQ handler's packet state machine.
     mouse_wait_input();
-    unsafe { outb(0x64, 0x20); }
+    unsafe {
+        outb(0x64, 0x20);
+    }
     mouse_wait_output();
     let status = unsafe { inb(0x60) };
 
@@ -99,15 +111,22 @@ pub fn init() {
 
     // Enable IntelliMouse scroll wheel: magic sequence
     // Set sample rate to 200, then 100, then 80, then read device ID
-    mouse_write(0xF3); mouse_read(); // Set sample rate
-    mouse_write(200);  mouse_read();
-    mouse_write(0xF3); mouse_read();
-    mouse_write(100);  mouse_read();
-    mouse_write(0xF3); mouse_read();
-    mouse_write(80);   mouse_read();
+    mouse_write(0xF3);
+    mouse_read(); // Set sample rate
+    mouse_write(200);
+    mouse_read();
+    mouse_write(0xF3);
+    mouse_read();
+    mouse_write(100);
+    mouse_read();
+    mouse_write(0xF3);
+    mouse_read();
+    mouse_write(80);
+    mouse_read();
 
     // Read device ID — 0x03 means IntelliMouse (4-byte packets with scroll)
-    mouse_write(0xF2); mouse_read(); // ACK
+    mouse_write(0xF2);
+    mouse_read(); // ACK
     let device_id = mouse_read();
     let has_scroll = device_id == 0x03;
 
@@ -122,7 +141,9 @@ pub fn init() {
     // Flush any stale bytes from the controller buffer
     for _ in 0..16 {
         if unsafe { inb(0x64) } & 0x01 != 0 {
-            unsafe { inb(0x60); } // discard
+            unsafe {
+                inb(0x60);
+            } // discard
         } else {
             break;
         }
@@ -131,9 +152,13 @@ pub fn init() {
     // NOW enable IRQ12 in the controller config — all init commands are done,
     // no more ACK bytes can leak into the IRQ handler.
     mouse_wait_input();
-    unsafe { outb(0x64, 0x60); }
+    unsafe {
+        outb(0x64, 0x60);
+    }
     mouse_wait_input();
-    unsafe { outb(0x60, status | 0x02); } // Enable IRQ12
+    unsafe {
+        outb(0x60, status | 0x02);
+    } // Enable IRQ12
 
     if has_scroll {
         crate::serial_verbose_println!("[OK] PS/2 mouse initialized (IntelliMouse, scroll wheel)");
@@ -355,7 +380,10 @@ pub fn irq_handler(_irq: u8) {
     static IRQ12_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     let cnt = IRQ12_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     if cnt == 0 {
-        crate::serial_println!("[mouse] first IRQ12, vmmouse_active={}", super::vmmouse::is_active());
+        crate::serial_println!(
+            "[mouse] first IRQ12, vmmouse_active={}",
+            super::vmmouse::is_active()
+        );
     }
 
     // Try vmmouse first — if the backdoor has data, it handles the IRQ and

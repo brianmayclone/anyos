@@ -5,10 +5,10 @@
 //! subsystems can query boot/runtime mode without depending on the old
 //! monolithic `main.rs`.
 
-#[cfg(target_arch = "x86_64")]
-mod x86;
 #[cfg(target_arch = "aarch64")]
 mod arm64;
+#[cfg(target_arch = "x86_64")]
+mod x86;
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 

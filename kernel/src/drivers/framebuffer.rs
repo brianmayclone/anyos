@@ -48,7 +48,11 @@ pub fn init(boot_info: &BootInfo) {
 
     crate::serial_verbose_println!(
         "[OK] Framebuffer: {}x{}x{} at {:#010x}, pitch={}",
-        width, height, bpp, addr, pitch
+        width,
+        height,
+        bpp,
+        addr,
+        pitch
     );
 }
 
@@ -74,7 +78,9 @@ pub fn update(addr: u64, pitch: u32, width: u32, height: u32, bpp: u8) {
 /// Only one hook is supported (boot_console). Called during early boot,
 /// before interrupts — no synchronization needed.
 pub fn register_change_hook(hook: fn(u64, u32, u32, u32)) {
-    unsafe { ON_CHANGE = Some(hook); }
+    unsafe {
+        ON_CHANGE = Some(hook);
+    }
 }
 
 /// Get framebuffer info (returns None if not initialized or no VESA mode)

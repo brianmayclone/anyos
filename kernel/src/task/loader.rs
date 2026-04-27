@@ -6,12 +6,10 @@ use crate::memory::address::VirtAddr;
 use crate::memory::physical;
 use crate::memory::user_vmap::{
     ASLR_MMAP_MAX_PAGES as VMAP_ASLR_MMAP_MAX_PAGES,
-    ASLR_STACK_MAX_PAGES as VMAP_ASLR_STACK_MAX_PAGES,
-    MMAP_BASE,
+    ASLR_STACK_MAX_PAGES as VMAP_ASLR_STACK_MAX_PAGES, MMAP_BASE,
     PROGRAM_LOAD_ADDR as VMAP_PROGRAM_LOAD_ADDR,
     SIGRETURN_TRAMPOLINE_ADDR as VMAP_SIGRETURN_TRAMPOLINE_ADDR,
-    USER_STACK_PAGES as VMAP_USER_STACK_PAGES,
-    USER_STACK_TOP as VMAP_USER_STACK_TOP,
+    USER_STACK_PAGES as VMAP_USER_STACK_PAGES, USER_STACK_TOP as VMAP_USER_STACK_TOP,
 };
 use crate::memory::virtual_mem;
 use crate::sync::spinlock::Spinlock;
@@ -109,7 +107,11 @@ fn hw_entropy() -> Option<u64> {
                 options(nostack, nomem),
             );
         }
-        if ok != 0 { Some(raw) } else { None }
+        if ok != 0 {
+            Some(raw)
+        } else {
+            None
+        }
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -121,7 +123,11 @@ fn hw_entropy() -> Option<u64> {
             // RNDR: random number; returns 0 on failure (FEAT_RNG required)
             core::arch::asm!("mrs {}, s3_3_c2_c4_0", out(reg) val, options(nomem, nostack));
         }
-        if val != 0 { Some(val) } else { None }
+        if val != 0 {
+            Some(val)
+        } else {
+            None
+        }
     }
 }
 
@@ -170,19 +176,20 @@ struct PendingSlot {
 
 impl PendingSlot {
     const fn empty() -> Self {
-        PendingSlot { tid: 0, entry: 0, user_stack: 0, user_lr: 0, used: false }
+        PendingSlot {
+            tid: 0,
+            entry: 0,
+            user_stack: 0,
+            user_lr: 0,
+            used: false,
+        }
     }
 }
 
 static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING_PROGRAMS]> =
     Spinlock::new([PendingSlot::empty(); MAX_PENDING_PROGRAMS]);
 
-fn try_store_pending_program(
-    tid: u32,
-    entry: u64,
-    user_stack: u64,
-    user_lr: u64,
-) -> bool {
+fn try_store_pending_program(tid: u32, entry: u64, user_stack: u64, user_lr: u64) -> bool {
     let mut slots = PENDING_PROGRAMS.lock();
     let Some(slot) = slots.iter_mut().find(|s| !s.used) else {
         return false;
@@ -195,10 +202,7 @@ fn try_store_pending_program(
     true
 }
 
-fn take_pending_program(
-    tid: u32,
-    trampoline_name: &str,
-) -> (u64, u64, u64) {
+fn take_pending_program(tid: u32, trampoline_name: &str) -> (u64, u64, u64) {
     let mut spins = 0usize;
     loop {
         {
@@ -318,9 +322,25 @@ impl ForkPendingSlot {
             tid: 0,
             used: false,
             regs: ForkChildRegs {
-                rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
-                r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
-                rip: 0, cs: 0, rflags: 0, rsp: 0, ss: 0,
+                rbx: 0,
+                rcx: 0,
+                rdx: 0,
+                rsi: 0,
+                rdi: 0,
+                rbp: 0,
+                r8: 0,
+                r9: 0,
+                r10: 0,
+                r11: 0,
+                r12: 0,
+                r13: 0,
+                r14: 0,
+                r15: 0,
+                rip: 0,
+                cs: 0,
+                rflags: 0,
+                rsp: 0,
+                ss: 0,
             },
         }
     }
@@ -344,84 +364,148 @@ impl ForkPendingSlot {
 }
 
 #[cfg(target_arch = "x86_64")]
-static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING_FORKS]> =
-    Spinlock::new([
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-    ]);
+static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING_FORKS]> = Spinlock::new([
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+]);
 
 #[cfg(target_arch = "aarch64")]
-static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING_FORKS]> =
-    Spinlock::new([
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
-    ]);
+static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING_FORKS]> = Spinlock::new([
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+    ForkPendingSlot::empty(),
+]);
 
 /// Store the parent's register state for a fork() child to pick up.
 #[cfg(target_arch = "x86_64")]
 pub fn store_pending_fork(tid: u32, regs: ForkChildRegs) {
     let mut slots = PENDING_FORKS.lock();
-    let slot = slots.iter_mut().find(|s| !s.used)
+    let slot = slots
+        .iter_mut()
+        .find(|s| !s.used)
         .expect("Too many pending forks");
     slot.tid = tid;
     slot.regs = regs;
@@ -432,7 +516,9 @@ pub fn store_pending_fork(tid: u32, regs: ForkChildRegs) {
 #[cfg(target_arch = "aarch64")]
 pub fn store_pending_fork(tid: u32, regs: ForkChildRegs) {
     let mut slots = PENDING_FORKS.lock();
-    let slot = slots.iter_mut().find(|s| !s.used)
+    let slot = slots
+        .iter_mut()
+        .find(|s| !s.used)
         .expect("Too many pending forks");
     slot.tid = tid;
     slot.regs = regs;
@@ -449,23 +535,39 @@ pub extern "C" fn fork_child_trampoline() {
     // Retrieve saved register state
     let regs = {
         let mut slots = PENDING_FORKS.lock();
-        let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
+        let slot = slots
+            .iter_mut()
+            .find(|s| s.used && s.tid == tid)
             .expect("No pending fork state for child trampoline");
         // Copy regs out and free slot
         let r = ForkChildRegs {
-            rbx: slot.regs.rbx, rcx: slot.regs.rcx, rdx: slot.regs.rdx,
-            rsi: slot.regs.rsi, rdi: slot.regs.rdi, rbp: slot.regs.rbp,
-            r8: slot.regs.r8, r9: slot.regs.r9, r10: slot.regs.r10,
-            r11: slot.regs.r11, r12: slot.regs.r12, r13: slot.regs.r13,
-            r14: slot.regs.r14, r15: slot.regs.r15,
-            rip: slot.regs.rip, cs: slot.regs.cs,
-            rflags: slot.regs.rflags, rsp: slot.regs.rsp, ss: slot.regs.ss,
+            rbx: slot.regs.rbx,
+            rcx: slot.regs.rcx,
+            rdx: slot.regs.rdx,
+            rsi: slot.regs.rsi,
+            rdi: slot.regs.rdi,
+            rbp: slot.regs.rbp,
+            r8: slot.regs.r8,
+            r9: slot.regs.r9,
+            r10: slot.regs.r10,
+            r11: slot.regs.r11,
+            r12: slot.regs.r12,
+            r13: slot.regs.r13,
+            r14: slot.regs.r14,
+            r15: slot.regs.r15,
+            rip: slot.regs.rip,
+            cs: slot.regs.cs,
+            rflags: slot.regs.rflags,
+            rsp: slot.regs.rsp,
+            ss: slot.regs.ss,
         };
         slot.used = false;
         r
     };
 
-    unsafe { fork_return_to_user(&regs); }
+    unsafe {
+        fork_return_to_user(&regs);
+    }
 }
 
 /// Trampoline for fork() child threads on AArch64.
@@ -475,7 +577,9 @@ pub extern "C" fn fork_child_trampoline() {
 
     let regs = {
         let mut slots = PENDING_FORKS.lock();
-        let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
+        let slot = slots
+            .iter_mut()
+            .find(|s| s.used && s.tid == tid)
             .expect("No pending fork state for child trampoline");
         let r = ForkChildRegs {
             x: slot.regs.x,
@@ -488,7 +592,9 @@ pub extern "C" fn fork_child_trampoline() {
         r
     };
 
-    unsafe { arm64_fork_return_to_user(&regs); }
+    unsafe {
+        arm64_fork_return_to_user(&regs);
+    }
 }
 
 /// Restore all user-mode registers from a ForkChildRegs struct and IRETQ.
@@ -601,7 +707,10 @@ struct ElfLoadResult {
 
 /// Load an ELF64 binary into a user PML4.
 /// Returns the entry point and the brk (end of last segment, page-aligned).
-fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<ElfLoadResult, &'static str> {
+fn load_elf64(
+    data: &[u8],
+    pd_phys: crate::memory::address::PhysAddr,
+) -> Result<ElfLoadResult, &'static str> {
     if data.len() < 64 {
         return Err("ELF64 file too small");
     }
@@ -612,8 +721,6 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
     let ph_off = hdr.e_phoff as usize;
     let ph_size = hdr.e_phentsize as usize;
     let ph_num = hdr.e_phnum as usize;
-
-
 
     let mut max_vaddr_end: u64 = 0;
     let mut total_pages: u32 = 0;
@@ -656,7 +763,10 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
 
         // Allocate pages for this segment
         let page_start = vaddr & !0xFFF;
-        let seg_total = match vaddr.checked_add(memsz).and_then(|v| v.checked_add(PAGE_SIZE - 1)) {
+        let seg_total = match vaddr
+            .checked_add(memsz)
+            .and_then(|v| v.checked_add(PAGE_SIZE - 1))
+        {
             Some(v) => v,
             None => return Err("ELF64 segment vaddr+memsz overflow"),
         };
@@ -669,16 +779,20 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         //   PF_X | PF_W (rare)   → RWX (e.g. JIT buffers): writable, executable
         let seg_flags = phdr.p_flags;
         let is_writable = (seg_flags & PF_W) != 0;
-        let is_exec     = (seg_flags & PF_X) != 0;
+        let is_exec = (seg_flags & PF_X) != 0;
         let pte_flags: u64 = PAGE_USER
             | if is_writable { PAGE_WRITABLE } else { 0 }
-            | if !is_exec { virtual_mem::page_nx_flag() } else { 0 };
+            | if !is_exec {
+                virtual_mem::page_nx_flag()
+            } else {
+                0
+            };
 
         for p in 0..num_pages {
             let page_virt = VirtAddr::new(page_start + p * PAGE_SIZE);
             if !virtual_mem::is_mapped_in_pd(pd_phys, page_virt) {
-                let phys = physical::alloc_frame()
-                    .ok_or("Failed to allocate frame for ELF64 segment")?;
+                let phys =
+                    physical::alloc_frame().ok_or("Failed to allocate frame for ELF64 segment")?;
                 if !virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, pte_flags) {
                     physical::free_frame(phys);
                     return Err("Failed to map frame for ELF64 segment");
@@ -739,19 +853,22 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
 
             // Zero all allocated pages first
             let page_start = (vaddr & !0xFFF) as usize;
-            let page_end = match (vaddr as usize).checked_add(memsz).and_then(|v| v.checked_add(0xFFF)) {
+            let page_end = match (vaddr as usize)
+                .checked_add(memsz)
+                .and_then(|v| v.checked_add(0xFFF))
+            {
                 Some(v) => v & !0xFFF,
                 None => continue,
             };
             core::ptr::write_bytes(page_start as *mut u8, 0, page_end - page_start);
 
             // Copy file data over the zeroed pages
-            if filesz > 0 && offset.checked_add(filesz).map_or(false, |end| end <= data.len()) {
-                core::ptr::copy_nonoverlapping(
-                    data.as_ptr().add(offset),
-                    vaddr as *mut u8,
-                    filesz,
-                );
+            if filesz > 0
+                && offset
+                    .checked_add(filesz)
+                    .map_or(false, |end| end <= data.len())
+            {
+                core::ptr::copy_nonoverlapping(data.as_ptr().add(offset), vaddr as *mut u8, filesz);
             }
 
             #[cfg(target_arch = "aarch64")]
@@ -780,9 +897,12 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
         return Err("ELF64 entry point outside valid user address range");
     }
 
-    Ok(ElfLoadResult { entry, brk, pages_mapped: total_pages })
+    Ok(ElfLoadResult {
+        entry,
+        brk,
+        pages_mapped: total_pages,
+    })
 }
-
 
 /// Check if data starts with ELF magic bytes.
 fn is_elf(data: &[u8]) -> bool {
@@ -1010,9 +1130,7 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     crate::task::dll::map_all_dlls_into(new_pd);
 
     // Update thread metadata (PD, brk, FPU reset, mmap reset)
-    crate::task::scheduler::exec_update_thread(
-        tid, new_pd, result.brk, result.user_pages,
-    );
+    crate::task::scheduler::exec_update_thread(tid, new_pd, result.brk, result.user_pages);
 
     // Set new args (clear old args first)
     crate::task::scheduler::set_thread_args(tid, args);
@@ -1042,13 +1160,21 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     // stack_top already includes ABI alignment (-8) and ASLR offset.
     let user_stack = result.stack_top;
 
-    crate::serial_verbose_println!("exec: T{} -> (elf64, {} pages, entry={:#x})",
-        tid, result.user_pages, result.entry);
+    crate::serial_verbose_println!(
+        "exec: T{} -> (elf64, {} pages, entry={:#x})",
+        tid,
+        result.user_pages,
+        result.entry
+    );
 
     #[cfg(target_arch = "x86_64")]
-    unsafe { jump_to_user_mode(result.entry, user_stack); }
+    unsafe {
+        jump_to_user_mode(result.entry, user_stack);
+    }
     #[cfg(target_arch = "aarch64")]
-    unsafe { jump_to_user_mode(result.entry, user_stack, 0); }
+    unsafe {
+        jump_to_user_mode(result.entry, user_stack, 0);
+    }
 }
 
 /// Load a flat binary from the filesystem and run it in Ring 3.
@@ -1101,7 +1227,9 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         bundle_cwd = if let Some(ref cfg) = config {
             match cfg.working_dir.as_deref() {
                 Some("home") => Some(alloc::string::String::from("/")),
-                Some(explicit) if explicit != "bundle" => Some(alloc::string::String::from(explicit)),
+                Some(explicit) if explicit != "bundle" => {
+                    Some(alloc::string::String::from(explicit))
+                }
                 _ => Some(alloc::string::String::from(path)), // "bundle" or unset
             }
         } else {
@@ -1140,7 +1268,12 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
     // Permission check: caller must have read permission on the binary
     if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(actual_path) {
-        if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_READ) {
+        if !crate::fs::permissions::check_permission(
+            uid,
+            gid,
+            mode,
+            crate::fs::permissions::PERM_READ,
+        ) {
             return Err("Permission denied");
         }
     }
@@ -1149,7 +1282,11 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     let data = match crate::fs::vfs::read_file_to_vec(actual_path) {
         Ok(d) => d,
         Err(e) => {
-            crate::serial_verbose_println!("  load_and_run: read_file_to_vec('{}') failed: {:?}", actual_path, e);
+            crate::serial_verbose_println!(
+                "  load_and_run: read_file_to_vec('{}') failed: {:?}",
+                actual_path,
+                e
+            );
             return Err("Failed to read program file");
         }
     };
@@ -1159,8 +1296,8 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     }
 
     // Create per-process PML4 (clones kernel mappings, empty user space)
-    let pd_phys = virtual_mem::create_user_page_directory()
-        .ok_or("Failed to create user page directory")?;
+    let pd_phys =
+        virtual_mem::create_user_page_directory().ok_or("Failed to create user page directory")?;
 
     let (entry_point, brk);
     let mut total_user_pages: u32 = 0;
@@ -1231,7 +1368,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         entry_point = elf_result.entry;
         brk = elf_result.brk;
         total_user_pages += elf_result.pages_mapped + stack_mapped;
-
     } else if class == ELFCLASS32 {
         return Err("ELF32 binaries are no longer supported (32-bit user space removed)");
     } else if is_elf(&data) {
@@ -1306,7 +1442,6 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         entry_point = PROGRAM_LOAD_ADDR;
         brk = PROGRAM_LOAD_ADDR + code_pages * PAGE_SIZE;
         total_user_pages += code_mapped + stack_mapped;
-
     }
 
     // Spawn in Blocked state — the thread cannot be picked up by any CPU
@@ -1366,7 +1501,8 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             // cannot be stored.  Grant all declared capabilities directly.
             declared
         } else if crate::task::scheduler::current_thread_capabilities()
-                    == crate::task::capabilities::CAP_ALL {
+            == crate::task::capabilities::CAP_ALL
+        {
             // Parent is fully privileged (compositor, sessionhost, etc.) —
             // grant all declared caps directly without requiring stored
             // permissions.  The trust boundary is the parent process.
@@ -1378,8 +1514,8 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             let auto = CAP_AUTO_GRANTED;
             let uid = crate::task::scheduler::current_thread_uid();
             let app_id = bundle_app_id.as_deref().unwrap_or(name);
-            let granted_sensitive = crate::task::permissions::read_stored_perms(uid, app_id)
-                .unwrap_or(0);
+            let granted_sensitive =
+                crate::task::permissions::read_stored_perms(uid, app_id).unwrap_or(0);
             auto | (declared & granted_sensitive)
         }
     } else {
@@ -1390,8 +1526,9 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
         } else if actual_path == "/System/permdialog" {
             // Kernel allowlist: PermissionDialog needs MANAGE_PERMS + FILESYSTEM
             // regardless of parent's caps, so it can write permission files.
-            parent_caps | crate::task::capabilities::CAP_MANAGE_PERMS
-                        | crate::task::capabilities::CAP_FILESYSTEM
+            parent_caps
+                | crate::task::capabilities::CAP_MANAGE_PERMS
+                | crate::task::capabilities::CAP_FILESYSTEM
         } else {
             // Non-.app binary: inherit parent's full capabilities
             parent_caps
@@ -1408,8 +1545,14 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     crate::task::scheduler::set_thread_identity(tid, parent_uid, parent_gid);
 
     let fmt = if is_elf(&data) { "elf64" } else { "flat" };
-    crate::serial_verbose_println!("spawn: '{}' -> T{} ({}, {} pages, entry={:#x})",
-        path, tid, fmt, total_user_pages, entry_point);
+    crate::serial_verbose_println!(
+        "spawn: '{}' -> T{} ({}, {} pages, entry={:#x})",
+        path,
+        tid,
+        fmt,
+        total_user_pages,
+        entry_point
+    );
 
     // All setup complete (CR3, pending data, args, CWD, caps). Now make the thread runnable.
     crate::task::scheduler::wake_thread(tid);
@@ -1422,19 +1565,29 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 pub(crate) extern "C" fn user_thread_trampoline() {
     enable_irqs_before_user_entry();
     #[cfg(target_arch = "x86_64")]
-    crate::serial_verbose_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
+    crate::serial_verbose_println!(
+        "  [TRAMPOLINE] entered, tid={}",
+        crate::task::scheduler::current_tid()
+    );
     let tid = crate::task::scheduler::current_tid();
-    let (entry, user_stack, user_lr) =
-        take_pending_program(tid, "trampoline");
+    let (entry, user_stack, user_lr) = take_pending_program(tid, "trampoline");
 
     #[cfg(target_arch = "x86_64")]
-    crate::serial_verbose_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x}",
-        tid, entry, user_stack);
+    crate::serial_verbose_println!(
+        "  [TRAMPOLINE] tid={} entry={:#x} stack={:#x}",
+        tid,
+        entry,
+        user_stack
+    );
     let _ = user_lr;
     #[cfg(target_arch = "x86_64")]
-    unsafe { jump_to_user_mode(entry, user_stack); }
+    unsafe {
+        jump_to_user_mode(entry, user_stack);
+    }
     #[cfg(target_arch = "aarch64")]
-    unsafe { jump_to_user_mode(entry, user_stack, user_lr); }
+    unsafe {
+        jump_to_user_mode(entry, user_stack, user_lr);
+    }
 }
 
 /// Store a pending entry point and user stack for a new intra-process thread.
@@ -1448,14 +1601,17 @@ pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64, user_lr: u64)
 pub extern "C" fn thread_create_trampoline() {
     enable_irqs_before_user_entry();
     let tid = crate::task::scheduler::current_tid();
-    let (entry, user_stack, user_lr) =
-        take_pending_program(tid, "thread_create trampoline");
+    let (entry, user_stack, user_lr) = take_pending_program(tid, "thread_create trampoline");
 
     let _ = user_lr;
     #[cfg(target_arch = "x86_64")]
-    unsafe { jump_to_user_mode(entry, user_stack); }
+    unsafe {
+        jump_to_user_mode(entry, user_stack);
+    }
     #[cfg(target_arch = "aarch64")]
-    unsafe { jump_to_user_mode(entry, user_stack, user_lr); }
+    unsafe {
+        jump_to_user_mode(entry, user_stack, user_lr);
+    }
 }
 
 /// Transition to Ring 3 (user mode) for 64-bit programs.
@@ -1578,4 +1734,3 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64, user_lr: u64) -> ! {
         options(noreturn)
     );
 }
-

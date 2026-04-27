@@ -35,7 +35,6 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u64) {
     }
 }
 
-
 /// Get the current thread's page directory.
 pub fn current_thread_page_directory() -> Option<PhysAddr> {
     let guard = SCHEDULER.lock();

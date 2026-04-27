@@ -7,8 +7,8 @@
 //! - 0x1002 (transitional) / 0x1045 (modern) — virtio-balloon
 
 use crate::drivers::pci::PciDevice;
-use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::drivers::virtio::virtqueue::VirtQueue;
+use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 
@@ -56,7 +56,9 @@ pub fn inflate(count: usize) -> usize {
     for i in 0..batch {
         if let Some(frame) = physical::alloc_frame() {
             let pfn = (frame.as_u64() / BALLOON_PAGE_SIZE) as u32;
-            unsafe { pfn_buf.add(i).write_volatile(pfn); }
+            unsafe {
+                pfn_buf.add(i).write_volatile(pfn);
+            }
             inflated += 1;
         } else {
             break;
@@ -69,11 +71,9 @@ pub fn inflate(count: usize) -> usize {
 
     // Send PFN array to the inflate queue.
     let readable = [(dev.pfn_buf_phys, (inflated * 4) as u32)];
-    let result = dev.inflateq.execute_sync(
-        &readable,
-        &[],
-        || dev.vdev.notify_queue(0),
-    );
+    let result = dev
+        .inflateq
+        .execute_sync(&readable, &[], || dev.vdev.notify_queue(0));
 
     if result.is_some() {
         dev.inflated_pages += inflated;
@@ -99,8 +99,11 @@ pub fn is_available() -> bool {
 
 /// Probe and initialize a VirtIO Balloon device from the PCI bus.
 pub fn probe(pci: &PciDevice) -> Option<alloc::boxed::Box<dyn crate::drivers::hal::Driver>> {
-    crate::serial_verbose_println!("VirtIO Balloon: probing PCI {:04x}:{:04x}",
-        pci.vendor_id, pci.device_id);
+    crate::serial_verbose_println!(
+        "VirtIO Balloon: probing PCI {:04x}:{:04x}",
+        pci.vendor_id,
+        pci.device_id
+    );
 
     // 1. Find VirtIO PCI capabilities.
     let caps = virtio::find_capabilities(pci)?;
@@ -124,7 +127,9 @@ pub fn probe(pci: &PciDevice) -> Option<alloc::boxed::Box<dyn crate::drivers::ha
 
     // 6. Allocate PFN buffer (1 page = room for 1024 PFNs = 4 MiB per batch).
     let pfn_buf_phys = physical::alloc_contiguous(1)?.as_u64();
-    unsafe { core::ptr::write_bytes(pfn_buf_phys as *mut u8, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(pfn_buf_phys as *mut u8, 0, 4096);
+    }
 
     // 7. Store globally.
     *DEVICE.lock() = Some(BalloonDevice {

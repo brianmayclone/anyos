@@ -9,8 +9,8 @@
 //! This module handles device detection, endpoint discovery, and raw
 //! packet send/receive over USB.
 
+use crate::drivers::usb::{ControllerType, SetupPacket, UsbDevice, UsbInterface, UsbSpeed};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use crate::drivers::usb::{UsbDevice, UsbInterface, SetupPacket, ControllerType, UsbSpeed};
 
 /// Whether a Bluetooth USB adapter has been detected and attached.
 static ATTACHED: AtomicBool = AtomicBool::new(false);
@@ -43,8 +43,8 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         let is_in = ep.address & 0x80 != 0;
         let transfer_type = ep.attributes & 0x03;
         match (transfer_type, is_in) {
-            (3, true) if int_in.is_none() => int_in = Some(ep.address),     // Interrupt IN
-            (2, true) if bulk_in.is_none() => bulk_in = Some(ep.address),   // Bulk IN
+            (3, true) if int_in.is_none() => int_in = Some(ep.address), // Interrupt IN
+            (2, true) if bulk_in.is_none() => bulk_in = Some(ep.address), // Bulk IN
             (2, false) if bulk_out.is_none() => bulk_out = Some(ep.address), // Bulk OUT
             _ => {}
         }
@@ -68,7 +68,10 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
     crate::serial_println!(
         "[BT] USB adapter detected (addr={}, int_ep={:#04x}, bulk_in={:#04x}, bulk_out={:#04x})",
-        dev.address, int_ep, bulk_in.unwrap_or(0), bulk_out.unwrap_or(0),
+        dev.address,
+        int_ep,
+        bulk_in.unwrap_or(0),
+        bulk_out.unwrap_or(0),
     );
 
     // Initialize the controller
@@ -79,7 +82,9 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 /// HCI commands use: bmRequestType=0x20 (class, host-to-device),
 /// bRequest=0x00, wIndex=interface.
 pub fn send_command(cmd: &[u8]) {
-    if !ATTACHED.load(Ordering::Acquire) { return; }
+    if !ATTACHED.load(Ordering::Acquire) {
+        return;
+    }
 
     let address = BT_ADDRESS.load(Ordering::Acquire);
     let controller = BT_CONTROLLER.load(Ordering::Acquire);
@@ -89,7 +94,7 @@ pub fn send_command(cmd: &[u8]) {
         bm_request_type: 0x20, // Class, Host-to-Device, Interface
         b_request: 0x00,       // HCI command
         w_value: 0,
-        w_index: 0,            // Interface 0
+        w_index: 0, // Interface 0
         w_length: cmd.len() as u16,
     };
 
@@ -102,8 +107,13 @@ pub fn send_command(cmd: &[u8]) {
     };
 
     let _ = crate::drivers::usb::hid_control_transfer(
-        address, controller_type, UsbSpeed::Full, max_packet as u16,
-        &setup, true, cmd.len() as u16,
+        address,
+        controller_type,
+        UsbSpeed::Full,
+        max_packet as u16,
+        &setup,
+        true,
+        cmd.len() as u16,
     );
 }
 

@@ -13,7 +13,12 @@ pub struct Rect {
 impl Rect {
     /// Create a rectangle from origin and dimensions.
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Rect { x, y, width, height }
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// X coordinate of the right edge (exclusive).
@@ -96,7 +101,12 @@ impl Rect {
             }
             // Bottom strip
             if inter.bottom() < self.bottom() {
-                result[count] = Rect::new(self.x, inter.bottom(), self.width, (self.bottom() - inter.bottom()) as u32);
+                result[count] = Rect::new(
+                    self.x,
+                    inter.bottom(),
+                    self.width,
+                    (self.bottom() - inter.bottom()) as u32,
+                );
                 count += 1;
             }
             // Left strip (middle height only)
@@ -106,7 +116,12 @@ impl Rect {
             }
             // Right strip (middle height only)
             if inter.right() < self.right() {
-                result[count] = Rect::new(inter.right(), inter.y, (self.right() - inter.right()) as u32, inter.height);
+                result[count] = Rect::new(
+                    inter.right(),
+                    inter.y,
+                    (self.right() - inter.right()) as u32,
+                    inter.height,
+                );
                 count += 1;
             }
         } else {

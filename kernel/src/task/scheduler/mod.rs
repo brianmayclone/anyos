@@ -371,8 +371,7 @@ fn sched_diag_dump_sleep_switch(diag: SleepSwitchDiag) {
     let w2 = unsafe { *((cur_rsp + 16) as *const u64) };
     let w3 = unsafe { *((cur_rsp + 24) as *const u64) };
 
-    let cur_rsp_in_old_stack =
-        cur_rsp >= diag.old_stack_bottom && cur_rsp <= diag.old_stack_top;
+    let cur_rsp_in_old_stack = cur_rsp >= diag.old_stack_bottom && cur_rsp <= diag.old_stack_top;
     let old_stack_bounds_valid =
         diag.old_stack_bottom >= KERNEL_ADDR_MIN && diag.old_stack_bottom < diag.old_stack_top;
     let new_rsp_kernel = diag.new_rsp >= KERNEL_ADDR_MIN;
@@ -384,13 +383,14 @@ fn sched_diag_dump_sleep_switch(diag: SleepSwitchDiag) {
     } else {
         0
     };
-    let severity = if !old_stack_bounds_valid || !cur_rsp_in_old_stack || !new_rsp_kernel || !new_rip_kernel {
-        "RED"
-    } else if old_stack_margin < 4096 {
-        "YELLOW"
-    } else {
-        "GREEN"
-    };
+    let severity =
+        if !old_stack_bounds_valid || !cur_rsp_in_old_stack || !new_rsp_kernel || !new_rip_kernel {
+            "RED"
+        } else if old_stack_margin < 4096 {
+            "YELLOW"
+        } else {
+            "GREEN"
+        };
 
     sched_diag_puts("+slp-sw[");
     sched_diag_puts(severity);

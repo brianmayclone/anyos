@@ -6,9 +6,9 @@
 //!
 //! Format: 16-bit signed LE stereo, 48 kHz (4 bytes per sample frame).
 
+use crate::sync::spinlock::Spinlock;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::sync::spinlock::Spinlock;
 
 /// Maximum number of simultaneous mixer channels.
 const MAX_CHANNELS: usize = 16;
@@ -55,7 +55,9 @@ impl MixerChannel {
         }
         let free = CHANNEL_BUF_SIZE - self.available;
         let to_write = data.len().min(free);
-        if to_write == 0 { return 0; }
+        if to_write == 0 {
+            return 0;
+        }
 
         let write_pos = (self.read_pos + self.available) % CHANNEL_BUF_SIZE;
         // Copy in up to two chunks (wrap around ring buffer)
@@ -72,7 +74,9 @@ impl MixerChannel {
     /// Read `n` bytes from the channel buffer. Returns actual bytes read.
     fn read(&mut self, out: &mut [u8], n: usize) -> usize {
         let to_read = n.min(self.available).min(out.len());
-        if to_read == 0 { return 0; }
+        if to_read == 0 {
+            return 0;
+        }
 
         let first = to_read.min(CHANNEL_BUF_SIZE - self.read_pos);
         out[..first].copy_from_slice(&self.buf[self.read_pos..self.read_pos + first]);
@@ -100,10 +104,22 @@ impl AudioMixer {
         // const fn can't allocate, channels/mix_buf initialized lazily
         AudioMixer {
             channels: [
-                MixerChannel::new(), MixerChannel::new(), MixerChannel::new(), MixerChannel::new(),
-                MixerChannel::new(), MixerChannel::new(), MixerChannel::new(), MixerChannel::new(),
-                MixerChannel::new(), MixerChannel::new(), MixerChannel::new(), MixerChannel::new(),
-                MixerChannel::new(), MixerChannel::new(), MixerChannel::new(), MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
+                MixerChannel::new(),
             ],
             master_volume: 100,
             mix_buf: Vec::new(),
@@ -145,9 +161,13 @@ impl AudioMixer {
 
     /// Write PCM data into a specific channel. Returns bytes accepted.
     pub fn write_channel(&mut self, channel_id: u8, data: &[u8]) -> usize {
-        if (channel_id as usize) >= MAX_CHANNELS { return 0; }
+        if (channel_id as usize) >= MAX_CHANNELS {
+            return 0;
+        }
         let ch = &mut self.channels[channel_id as usize];
-        if !ch.active { return 0; }
+        if !ch.active {
+            return 0;
+        }
         ch.write(data)
     }
 
@@ -172,7 +192,9 @@ impl AudioMixer {
     /// Returns a slice of mixed 16-bit stereo PCM, or empty if no channels have data.
     pub fn mix(&mut self, output: &mut [u8]) -> usize {
         let frames = output.len() / 4; // 4 bytes per frame (L16 + R16)
-        if frames == 0 { return 0; }
+        if frames == 0 {
+            return 0;
+        }
         let samples = frames * 2; // L + R per frame
 
         // Ensure mix buffer is allocated
@@ -181,33 +203,38 @@ impl AudioMixer {
         }
 
         // Zero mix buffer
-        for s in &mut self.mix_buf[..samples] { *s = 0; }
+        for s in &mut self.mix_buf[..samples] {
+            *s = 0;
+        }
 
         let mut any_data = false;
         let read_bytes = frames * 4;
         let mut tmp = vec![0u8; read_bytes];
 
         for ch in &mut self.channels {
-            if !ch.active || ch.available == 0 { continue; }
+            if !ch.active || ch.available == 0 {
+                continue;
+            }
 
             let got = ch.read(&mut tmp, read_bytes);
-            if got == 0 { continue; }
+            if got == 0 {
+                continue;
+            }
             any_data = true;
 
             let ch_vol = ch.volume as i32;
             let sample_count = got / 2; // 16-bit samples
 
             for s in 0..sample_count {
-                let sample = i16::from_le_bytes([
-                    tmp[s * 2],
-                    tmp[s * 2 + 1],
-                ]) as i32;
+                let sample = i16::from_le_bytes([tmp[s * 2], tmp[s * 2 + 1]]) as i32;
                 // Apply per-channel volume
                 self.mix_buf[s] += (sample * ch_vol) / 100;
             }
         }
 
-        if !any_data { return 0; }
+        if !any_data {
+            return 0;
+        }
 
         // Apply master volume and clip to i16 range
         let master = self.master_volume as i32;
@@ -233,7 +260,6 @@ impl AudioMixer {
         self.channels.iter().filter(|ch| ch.active).count() as u8
     }
 }
-
 
 // ── Global mixer instance ───────────────────────────────────────────────────
 

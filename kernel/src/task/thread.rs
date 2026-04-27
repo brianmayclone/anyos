@@ -45,18 +45,27 @@ impl PageAlignedStack {
         // Over-allocate by PAGE_SIZE so we can align the usable region upward even
         // in the worst case (raw pointer just 1 byte past a page boundary).
         let raw_size = size + PAGE_SIZE;
-        let raw_layout = Layout::from_size_align(raw_size, 1)
-            .expect("kernel stack raw layout invalid");
+        let raw_layout =
+            Layout::from_size_align(raw_size, 1).expect("kernel stack raw layout invalid");
         let raw_ptr = unsafe { alloc_zeroed(raw_layout) };
         assert!(!raw_ptr.is_null(), "kernel stack allocation failed");
         // Round up to the next page boundary.
         let aligned = (raw_ptr as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let ptr = aligned as *mut u8;
-        PageAlignedStack { raw_ptr, raw_layout, ptr, size }
+        PageAlignedStack {
+            raw_ptr,
+            raw_layout,
+            ptr,
+            size,
+        }
     }
 
-    fn as_ptr(&self) -> *mut u8 { self.ptr }
-    fn len(&self) -> usize { self.size }
+    fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+    fn len(&self) -> usize {
+        self.size
+    }
 }
 
 impl Drop for PageAlignedStack {
@@ -70,7 +79,9 @@ impl Drop for PageAlignedStack {
         // safe to call unconditionally here.
         let virt = crate::memory::address::VirtAddr::new(self.ptr as u64);
         crate::memory::virtual_mem::restore_guard_page(virt);
-        unsafe { dealloc(self.raw_ptr, self.raw_layout); }
+        unsafe {
+            dealloc(self.raw_ptr, self.raw_layout);
+        }
     }
 }
 
@@ -110,7 +121,9 @@ pub struct FxState {
 impl FxState {
     /// Create a new FxState with default values (all exceptions masked).
     pub fn new_default() -> Self {
-        let mut s = FxState { data: [0u8; FPU_STATE_SIZE] };
+        let mut s = FxState {
+            data: [0u8; FPU_STATE_SIZE],
+        };
         // FCW (x87 control word) at offset 0: 0x037F = all x87 exceptions masked
         s.data[0] = 0x7F;
         s.data[1] = 0x03;
@@ -213,7 +226,6 @@ pub struct Thread {
     pub parent_tid: u32,
 
     // ---- Debug / trace state (anyTrace) ----
-
     /// TID of the debugger thread attached to this thread (0 = not attached).
     pub debug_attached_by: u32,
     /// True if this thread has been suspended by its debugger.
@@ -288,8 +300,10 @@ impl Thread {
             context.rsp = stack_top - 8;
             context.rbp = stack_top;
             context.rflags = 0x202; // IF (interrupts enabled) + reserved bit 1
-            // Use the current page directory (all kernel threads share same address space)
-            unsafe { core::arch::asm!("mov {}, cr3", out(reg) context.cr3); }
+                                    // Use the current page directory (all kernel threads share same address space)
+            unsafe {
+                core::arch::asm!("mov {}, cr3", out(reg) context.cr3);
+            }
         }
         #[cfg(target_arch = "aarch64")]
         {
@@ -308,7 +322,9 @@ impl Thread {
             context.set_flags(0x0);
             // Use the current page table base (kernel TTBR0_EL1)
             let ttbr0: u64;
-            unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+            }
             context.set_page_table(ttbr0);
         }
         // Recompute checksum after modifying fields above
@@ -409,12 +425,19 @@ impl Thread {
         let size = core::mem::size_of::<Self>();
         crate::serial_verbose_println!(
             "  Thread layout: size={}, context@+{:#x}({}B), fpu@+{:#x}({}B), name@+{:#x}(32B)",
-            size, ctx_off, core::mem::size_of::<CpuContext>(), fpu_off, FPU_STATE_SIZE, name_off,
+            size,
+            ctx_off,
+            core::mem::size_of::<CpuContext>(),
+            fpu_off,
+            FPU_STATE_SIZE,
+            name_off,
         );
         // Check if xsave/fxsave area could overwrite context
         let fpu_end = fpu_off + FPU_STATE_SIZE;
         if (fpu_off < ctx_off + core::mem::size_of::<CpuContext>()) && (fpu_end > ctx_off) {
-            crate::serial_verbose_println!("  WARNING: fpu_state and context OVERLAP in Thread layout!");
+            crate::serial_verbose_println!(
+                "  WARNING: fpu_state and context OVERLAP in Thread layout!"
+            );
         }
         let gap = if fpu_off > ctx_off + core::mem::size_of::<CpuContext>() {
             fpu_off - (ctx_off + core::mem::size_of::<CpuContext>())
@@ -428,7 +451,6 @@ impl Thread {
         }
     }
 }
-
 
 /// Trampoline for kernel threads: called when a kernel thread's entry function
 /// returns via `ret`. Without this, the thread would jump to address 0.

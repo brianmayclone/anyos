@@ -18,11 +18,11 @@
 //! pre-configured mode.
 
 use super::GpuDriver;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::virtual_mem;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 // ── MMIO Register Offsets (Intel Gen 5+) ────────────────────────────────────
 
@@ -30,25 +30,25 @@ use crate::memory::virtual_mem;
 const GTTMMADR_OFFSET: usize = 0;
 
 // Pipe A registers (primary display)
-const PIPE_A_CONF: u32     = 0x70008;  // Pipe configuration
-const PIPE_A_STATUS: u32   = 0x70024;  // Pipe status
-const HTOTAL_A: u32        = 0x60000;  // Horizontal total
-const VTOTAL_A: u32        = 0x6000C;  // Vertical total
-const DSPCNTR_A: u32       = 0x70180;  // Display/Sprite control
-const DSPADDR_A: u32       = 0x70184;  // Display base address
-const DSPSTRIDE_A: u32     = 0x70188;  // Display stride (pitch)
-const DSPSURF_A: u32       = 0x7019C;  // Display surface address (Gen4+)
-const DSPSIZE_A: u32       = 0x70190;  // Display size (height-1 << 16 | width-1)
-const DSPOFFSET_A: u32     = 0x701A4;  // Display offset
+const PIPE_A_CONF: u32 = 0x70008; // Pipe configuration
+const PIPE_A_STATUS: u32 = 0x70024; // Pipe status
+const HTOTAL_A: u32 = 0x60000; // Horizontal total
+const VTOTAL_A: u32 = 0x6000C; // Vertical total
+const DSPCNTR_A: u32 = 0x70180; // Display/Sprite control
+const DSPADDR_A: u32 = 0x70184; // Display base address
+const DSPSTRIDE_A: u32 = 0x70188; // Display stride (pitch)
+const DSPSURF_A: u32 = 0x7019C; // Display surface address (Gen4+)
+const DSPSIZE_A: u32 = 0x70190; // Display size (height-1 << 16 | width-1)
+const DSPOFFSET_A: u32 = 0x701A4; // Display offset
 
 // Display/Sprite control bits
-const DSPCNTR_ENABLE: u32      = 1 << 31;
+const DSPCNTR_ENABLE: u32 = 1 << 31;
 const DSPCNTR_FORMAT_XRGB8888: u32 = 0x06 << 26; // BGRX 8888
 const DSPCNTR_FORMAT_BGRX8888: u32 = 0x06 << 26;
 
 // VBE DISPI registers (for Bochs-compat mode on some Intel devices in QEMU)
 const VBE_INDEX: u16 = 0x01CE;
-const VBE_DATA: u16  = 0x01CF;
+const VBE_DATA: u16 = 0x01CF;
 
 // ── Driver State ────────────────────────────────────────────────────────────
 
@@ -67,13 +67,17 @@ pub struct IntelFbGpu {
 impl IntelFbGpu {
     #[inline]
     unsafe fn rd(&self, reg: u32) -> u32 {
-        if self.mmio_base == 0 { return 0; }
+        if self.mmio_base == 0 {
+            return 0;
+        }
         core::ptr::read_volatile((self.mmio_base + reg as u64) as *const u32)
     }
 
     #[inline]
     unsafe fn wr(&self, reg: u32, val: u32) {
-        if self.mmio_base == 0 { return; }
+        if self.mmio_base == 0 {
+            return;
+        }
         core::ptr::write_volatile((self.mmio_base + reg as u64) as *mut u32, val);
     }
 
@@ -113,23 +117,34 @@ impl IntelFbGpu {
 }
 
 impl GpuDriver for IntelFbGpu {
-    fn name(&self) -> &str { "Intel HD Graphics" }
+    fn name(&self) -> &str {
+        "Intel HD Graphics"
+    }
 
-    fn driver_type_name(&self) -> &str { "intel" }
+    fn driver_type_name(&self) -> &str {
+        "intel"
+    }
 
     fn set_mode(&mut self, width: u32, height: u32, bpp: u32) -> Option<(u32, u32, u32, u32)> {
         // Try VBE DISPI if available (Bochs-compat mode)
         if self.has_vbe {
-            use crate::arch::x86::port::{outw, inw};
+            use crate::arch::x86::port::{inw, outw};
             unsafe {
-                outw(VBE_INDEX, 0x04); outw(VBE_DATA, 0x00); // Disable
-                outw(VBE_INDEX, 0x01); outw(VBE_DATA, width as u16);  // XRES
-                outw(VBE_INDEX, 0x02); outw(VBE_DATA, height as u16); // YRES
-                outw(VBE_INDEX, 0x03); outw(VBE_DATA, bpp as u16);    // BPP
-                outw(VBE_INDEX, 0x04); outw(VBE_DATA, 0x41);          // Enable + LFB
-                // Read back
-                outw(VBE_INDEX, 0x01); let w = inw(VBE_DATA) as u32;
-                outw(VBE_INDEX, 0x02); let h = inw(VBE_DATA) as u32;
+                outw(VBE_INDEX, 0x04);
+                outw(VBE_DATA, 0x00); // Disable
+                outw(VBE_INDEX, 0x01);
+                outw(VBE_DATA, width as u16); // XRES
+                outw(VBE_INDEX, 0x02);
+                outw(VBE_DATA, height as u16); // YRES
+                outw(VBE_INDEX, 0x03);
+                outw(VBE_DATA, bpp as u16); // BPP
+                outw(VBE_INDEX, 0x04);
+                outw(VBE_DATA, 0x41); // Enable + LFB
+                                      // Read back
+                outw(VBE_INDEX, 0x01);
+                let w = inw(VBE_DATA) as u32;
+                outw(VBE_INDEX, 0x02);
+                let h = inw(VBE_DATA) as u32;
                 self.width = w;
                 self.height = h;
                 self.pitch = w * (bpp / 8);
@@ -167,9 +182,15 @@ impl GpuDriver for IntelFbGpu {
         &super::COMMON_MODES
     }
 
-    fn has_accel(&self) -> bool { false }
-    fn has_hw_cursor(&self) -> bool { false }
-    fn has_double_buffer(&self) -> bool { false }
+    fn has_accel(&self) -> bool {
+        false
+    }
+    fn has_hw_cursor(&self) -> bool {
+        false
+    }
+    fn has_double_buffer(&self) -> bool {
+        false
+    }
 
     fn vram_size(&self) -> u32 {
         // Estimate based on resolution (aperture size is usually 256 MiB+)
@@ -193,16 +214,14 @@ fn detect_gen(device_id: u16) -> u8 {
         // Gen 8 (Broadwell)
         0x1612 | 0x1616 | 0x161E | 0x1622 | 0x1626 | 0x162B => 8,
         // Gen 9 (Skylake/Kaby Lake/Coffee Lake)
-        0x1912 | 0x1916 | 0x191B | 0x191E | 0x1902 |
-        0x5912 | 0x5916 | 0x591B | 0x591E |
-        0x3E90 | 0x3E91 | 0x3E92 | 0x3E93 | 0x3E94 | 0x3E96 | 0x3E98 |
-        0x3EA0 | 0x3EA5 | 0x3EA6 | 0x3EA7 | 0x3EA8 => 9,
+        0x1912 | 0x1916 | 0x191B | 0x191E | 0x1902 | 0x5912 | 0x5916 | 0x591B | 0x591E | 0x3E90
+        | 0x3E91 | 0x3E92 | 0x3E93 | 0x3E94 | 0x3E96 | 0x3E98 | 0x3EA0 | 0x3EA5 | 0x3EA6
+        | 0x3EA7 | 0x3EA8 => 9,
         // Gen 11 (Ice Lake)
         0x8A52 | 0x8A5A | 0x8A56 | 0x8A51 | 0x8A50 => 11,
         // Gen 12 (Tiger Lake / Alder Lake / Raptor Lake)
-        0x9A49 | 0x9A40 | 0x9A60 | 0x9A68 | 0x9A78 |
-        0x4680 | 0x4682 | 0x4688 | 0x468A | 0x4690 | 0x4692 | 0x4693 |
-        0xA780 | 0xA782 | 0xA788 | 0xA78B => 12,
+        0x9A49 | 0x9A40 | 0x9A60 | 0x9A68 | 0x9A78 | 0x4680 | 0x4682 | 0x4688 | 0x468A | 0x4690
+        | 0x4692 | 0x4693 | 0xA780 | 0xA782 | 0xA788 | 0xA78B => 12,
         _ => 9, // Default to Gen 9 for unknown IDs
     }
 }
@@ -213,12 +232,20 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
 
     // Get GTTMMADR (BAR0) — MMIO register space
     let bar0 = (pci.bars[0] & !0xF) as u64;
-    let bar0_hi = if pci.bars[0] & 0x04 != 0 { (pci.bars[1] as u64) << 32 } else { 0 };
+    let bar0_hi = if pci.bars[0] & 0x04 != 0 {
+        (pci.bars[1] as u64) << 32
+    } else {
+        0
+    };
     let mmio_phys = bar0 | bar0_hi;
 
     // Get Graphics Aperture (BAR2) — framebuffer
     let bar2 = (pci.bars[2] & !0xF) as u64;
-    let bar2_hi = if pci.bars[2] & 0x04 != 0 { (pci.bars[3] as u64) << 32 } else { 0 };
+    let bar2_hi = if pci.bars[2] & 0x04 != 0 {
+        (pci.bars[3] as u64) << 32
+    } else {
+        0
+    };
     let fb_phys = bar2 | bar2_hi;
 
     crate::serial_println!("  Intel GPU: MMIO={:#014x} FB={:#014x}", mmio_phys, fb_phys);
@@ -234,7 +261,9 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
             Some(v) => v.as_u64(),
             None => 0,
         }
-    } else { 0 };
+    } else {
+        0
+    };
 
     // Get current framebuffer info from boot (UEFI/GOP or VBE)
     let (boot_fb, boot_w, boot_h, boot_pitch) = crate::drivers::framebuffer::info()
@@ -258,8 +287,14 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
         gpu.read_pipe_config();
     }
 
-    crate::serial_println!("[OK] Intel HD Graphics: {}x{} pitch={} fb={:#x} gen={}",
-        gpu.width, gpu.height, gpu.pitch, gpu.fb_phys, gen);
+    crate::serial_println!(
+        "[OK] Intel HD Graphics: {}x{} pitch={} fb={:#x} gen={}",
+        gpu.width,
+        gpu.height,
+        gpu.pitch,
+        gpu.fb_phys,
+        gen
+    );
 
     super::register(Box::new(gpu));
     true

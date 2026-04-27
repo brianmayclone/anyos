@@ -13,19 +13,58 @@ use alloc::vec::Vec;
 pub static SUITE: TestSuite = TestSuite {
     name: "alloc",
     cases: &[
-        TestCase { name: "vec_push_and_index",    run: test_vec_push_and_index },
-        TestCase { name: "vec_pop",               run: test_vec_pop },
-        TestCase { name: "vec_grow_large",        run: test_vec_grow_large },
-        TestCase { name: "vec_dedup",             run: test_vec_dedup },
-        TestCase { name: "box_alloc_and_deref",   run: test_box_alloc_and_deref },
-        TestCase { name: "box_large_value",       run: test_box_large_value },
-        TestCase { name: "string_push",           run: test_string_push },
-        TestCase { name: "string_to_string",      run: test_string_to_string },
-        TestCase { name: "btreemap_insert_get",   run: test_btreemap_insert_get },
-        TestCase { name: "btreemap_remove",       run: test_btreemap_remove },
-        TestCase { name: "btreemap_ordering",     run: test_btreemap_ordering },
-        TestCase { name: "nested_alloc",          run: test_nested_alloc },
-        TestCase { name: "alloc_zero_sized",      run: test_alloc_zero_sized },
+        TestCase {
+            name: "vec_push_and_index",
+            run: test_vec_push_and_index,
+        },
+        TestCase {
+            name: "vec_pop",
+            run: test_vec_pop,
+        },
+        TestCase {
+            name: "vec_grow_large",
+            run: test_vec_grow_large,
+        },
+        TestCase {
+            name: "vec_dedup",
+            run: test_vec_dedup,
+        },
+        TestCase {
+            name: "box_alloc_and_deref",
+            run: test_box_alloc_and_deref,
+        },
+        TestCase {
+            name: "box_large_value",
+            run: test_box_large_value,
+        },
+        TestCase {
+            name: "string_push",
+            run: test_string_push,
+        },
+        TestCase {
+            name: "string_to_string",
+            run: test_string_to_string,
+        },
+        TestCase {
+            name: "btreemap_insert_get",
+            run: test_btreemap_insert_get,
+        },
+        TestCase {
+            name: "btreemap_remove",
+            run: test_btreemap_remove,
+        },
+        TestCase {
+            name: "btreemap_ordering",
+            run: test_btreemap_ordering,
+        },
+        TestCase {
+            name: "nested_alloc",
+            run: test_nested_alloc,
+        },
+        TestCase {
+            name: "alloc_zero_sized",
+            run: test_alloc_zero_sized,
+        },
     ],
 };
 
@@ -141,7 +180,7 @@ fn test_btreemap_insert_get(ctx: &mut TestContext) {
 fn test_btreemap_remove(ctx: &mut TestContext) {
     let mut map: BTreeMap<&str, i32> = BTreeMap::new();
     map.insert("alpha", 1);
-    map.insert("beta",  2);
+    map.insert("beta", 2);
     map.insert("gamma", 3);
 
     let removed = map.remove("beta");
@@ -158,7 +197,11 @@ fn test_btreemap_ordering(ctx: &mut TestContext) {
     }
     // BTreeMap iterates in key order.
     let keys: Vec<u32> = map.keys().copied().collect();
-    ctx.expect_eq(keys, alloc::vec![1u32, 2, 3, 4, 5], "btreemap sorted iteration");
+    ctx.expect_eq(
+        keys,
+        alloc::vec![1u32, 2, 3, 4, 5],
+        "btreemap sorted iteration",
+    );
 }
 
 // ── Edge cases ───────────────────────────────────────────────────────────────

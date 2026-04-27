@@ -4,11 +4,11 @@
 //! ISO 9660 uses 2048-byte logical blocks. The Primary Volume Descriptor
 //! is at LBA 16 and contains the root directory record.
 
+use crate::fs::file::{DirEntry, FileType};
+use crate::fs::vfs::FsError;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::fs::file::{DirEntry, FileType};
-use crate::fs::vfs::FsError;
 
 /// ISO 9660 logical block size.
 const ISO_BLOCK_SIZE: usize = 2048;
@@ -85,13 +85,13 @@ impl Iso9660Fs {
         let root_size = u32::from_le_bytes([rr[10], rr[11], rr[12], rr[13]]);
 
         // Volume identifier (32 bytes at offset 40, space-padded ASCII)
-        let vol_id = core::str::from_utf8(&pvd[40..72])
-            .unwrap_or("")
-            .trim();
+        let vol_id = core::str::from_utf8(&pvd[40..72]).unwrap_or("").trim();
 
         crate::serial_verbose_println!(
             "[OK] ISO 9660: '{}', {} blocks, root at LBA {}",
-            vol_id, total_blocks, root_lba
+            vol_id,
+            total_blocks,
+            root_lba
         );
 
         Ok(Iso9660Fs {
@@ -208,12 +208,22 @@ impl Iso9660Fs {
     /// Look up a path and return (inode=LBA, file_type, size).
     pub fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
         let (lba, size, is_dir) = self.resolve_path(path)?;
-        let file_type = if is_dir { FileType::Directory } else { FileType::Regular };
+        let file_type = if is_dir {
+            FileType::Directory
+        } else {
+            FileType::Regular
+        };
         Ok((lba, file_type, size))
     }
 
     /// Read bytes from a file at a given offset. inode = extent LBA.
-    pub fn read_file(&self, extent_lba: u32, offset: u32, buf: &mut [u8], file_size: u32) -> Result<usize, FsError> {
+    pub fn read_file(
+        &self,
+        extent_lba: u32,
+        offset: u32,
+        buf: &mut [u8],
+        file_size: u32,
+    ) -> Result<usize, FsError> {
         if offset >= file_size {
             return Ok(0);
         }
@@ -249,7 +259,11 @@ impl Iso9660Fs {
             let blocks_left = (to_read - bytes_read) / ISO_BLOCK_SIZE;
             let batch = blocks_left.min(ISO_READ_BATCH_BLOCKS);
             let batch_bytes = batch * ISO_BLOCK_SIZE;
-            if !read_cd_blocks(extent_lba + cur_block as u32, batch as u32, &mut buf[bytes_read..bytes_read + batch_bytes]) {
+            if !read_cd_blocks(
+                extent_lba + cur_block as u32,
+                batch as u32,
+                &mut buf[bytes_read..bytes_read + batch_bytes],
+            ) {
                 if bytes_read > 0 {
                     return Ok(bytes_read);
                 }
@@ -290,7 +304,9 @@ impl Iso9660Fs {
                 },
                 size: r.data_length,
                 is_symlink: false,
-                uid: 0, gid: 0, mode: 0xFFF,
+                uid: 0,
+                gid: 0,
+                mode: 0xFFF,
             })
             .collect())
     }

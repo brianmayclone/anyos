@@ -5,12 +5,12 @@
 //!
 //! PCI device-to-driver mappings are in [`super::pci_drivers`].
 
+#[cfg(target_arch = "x86_64")]
+use crate::drivers::pci::PciDevice;
+use crate::sync::spinlock::Spinlock;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::sync::spinlock::Spinlock;
-#[cfg(target_arch = "x86_64")]
-use crate::drivers::pci::PciDevice;
 
 // ──────────────────────────────────────────────
 // Driver trait + types
@@ -158,7 +158,11 @@ pub fn register_device(path: &str, driver: Box<dyn Driver>, pci: Option<PciDevic
     drop(hal);
 
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_DEVICE_ATTACHED, driver_type, 0, 0, 0,
+        crate::ipc::event_bus::EVT_DEVICE_ATTACHED,
+        driver_type,
+        0,
+        0,
+        0,
     ));
 }
 
@@ -177,7 +181,11 @@ pub fn register_device(path: &str, driver: Box<dyn Driver>, _pci: Option<u64>) {
     drop(hal);
 
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_DEVICE_ATTACHED, driver_type, 0, 0, 0,
+        crate::ipc::event_bus::EVT_DEVICE_ATTACHED,
+        driver_type,
+        0,
+        0,
+        0,
     ));
 }
 
@@ -218,7 +226,11 @@ pub fn device_ioctl(path: &str, cmd: u32, arg: u32) -> Result<u32, DriverError> 
 pub fn device_ioctl_by_type(dtype: DriverType, cmd: u32, arg: u32) -> Result<u32, DriverError> {
     let mut hal = HAL.lock();
     if let Some(registry) = hal.as_mut() {
-        if let Some(dev) = registry.devices.iter_mut().find(|d| d.driver.driver_type() == dtype) {
+        if let Some(dev) = registry
+            .devices
+            .iter_mut()
+            .find(|d| d.driver.driver_type() == dtype)
+        {
             return dev.driver.ioctl(cmd, arg);
         }
     }
@@ -231,7 +243,11 @@ pub fn list_devices() -> Vec<(String, String, DriverType)> {
     let mut result = Vec::new();
     if let Some(registry) = hal.as_ref() {
         for dev in &registry.devices {
-            result.push((dev.path.clone(), String::from(dev.driver.name()), dev.driver.driver_type()));
+            result.push((
+                dev.path.clone(),
+                String::from(dev.driver.name()),
+                dev.driver.driver_type(),
+            ));
         }
     }
     result
@@ -241,7 +257,11 @@ pub fn list_devices() -> Vec<(String, String, DriverType)> {
 pub fn count_by_type(dtype: DriverType) -> usize {
     let hal = HAL.lock();
     if let Some(registry) = hal.as_ref() {
-        registry.devices.iter().filter(|d| d.driver.driver_type() == dtype).count()
+        registry
+            .devices
+            .iter()
+            .filter(|d| d.driver.driver_type() == dtype)
+            .count()
     } else {
         0
     }
@@ -308,13 +328,16 @@ pub fn make_device_path(dtype: DriverType, index: usize) -> String {
 /// Skips bridges (class 0x06) since they don't need a user-facing driver.
 #[cfg(target_arch = "x86_64")]
 pub fn probe_and_bind_all() {
-    use crate::drivers::pci_drivers::{PCI_DRIVER_TABLE, matches_pci};
+    use crate::drivers::pci_drivers::{matches_pci, PCI_DRIVER_TABLE};
 
     let pci_devices = crate::drivers::pci::devices();
     let mut bound = 0u32;
     let mut type_counters = [0usize; 11]; // indexed by DriverType discriminant (11 variants)
 
-    crate::serial_verbose_println!("  HAL: Probing {} PCI device(s) for drivers...", pci_devices.len());
+    crate::serial_verbose_println!(
+        "  HAL: Probing {} PCI device(s) for drivers...",
+        pci_devices.len()
+    );
 
     for pci_dev in &pci_devices {
         // Skip bridges — they don't need a user-facing driver
@@ -349,7 +372,8 @@ pub fn probe_and_bind_all() {
                 if let Err(e) = driver.init() {
                     crate::serial_verbose_println!(
                         "  HAL: WARN - driver '{}' init failed: {:?}",
-                        driver.name(), e
+                        driver.name(),
+                        e
                     );
                 }
 
@@ -359,9 +383,13 @@ pub fn probe_and_bind_all() {
         } else {
             crate::debug_println!(
                 "  HAL: no driver for PCI {:02x}:{:02x}.{} ({:04x}:{:04x} class {:02x}:{:02x})",
-                pci_dev.bus, pci_dev.device, pci_dev.function,
-                pci_dev.vendor_id, pci_dev.device_id,
-                pci_dev.class_code, pci_dev.subclass
+                pci_dev.bus,
+                pci_dev.device,
+                pci_dev.function,
+                pci_dev.vendor_id,
+                pci_dev.device_id,
+                pci_dev.class_code,
+                pci_dev.subclass
             );
         }
     }
@@ -376,9 +404,15 @@ pub fn probe_and_bind_all() {
 struct Ps2KeyboardDriver;
 
 impl Driver for Ps2KeyboardDriver {
-    fn name(&self) -> &str { "PS/2 Keyboard" }
-    fn driver_type(&self) -> DriverType { DriverType::Input }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        "PS/2 Keyboard"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Input
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
@@ -393,9 +427,15 @@ impl Driver for Ps2KeyboardDriver {
 struct Ps2MouseDriver;
 
 impl Driver for Ps2MouseDriver {
-    fn name(&self) -> &str { "PS/2 Mouse" }
-    fn driver_type(&self) -> DriverType { DriverType::Input }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        "PS/2 Mouse"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Input
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
@@ -410,9 +450,15 @@ impl Driver for Ps2MouseDriver {
 struct SerialDriver;
 
 impl Driver for SerialDriver {
-    fn name(&self) -> &str { "Serial Port (COM1)" }
-    fn driver_type(&self) -> DriverType { DriverType::Char }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        "Serial Port (COM1)"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Char
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
@@ -433,9 +479,15 @@ struct AtapiDriver;
 
 #[cfg(target_arch = "x86_64")]
 impl Driver for AtapiDriver {
-    fn name(&self) -> &str { "ATAPI CD/DVD-ROM" }
-    fn driver_type(&self) -> DriverType { DriverType::Block }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        "ATAPI CD/DVD-ROM"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Block
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
         let lba = offset / 2048;
         let blocks = (buf.len() + 2047) / 2048;

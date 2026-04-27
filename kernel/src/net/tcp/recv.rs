@@ -3,8 +3,8 @@
 //! Implements `recv()`, `recv_available()`, and `accept_data_deferred()`
 //! with proper OOO segment buffering and delayed ACK support.
 
-use super::tcb::*;
 use super::send::send_segment;
+use super::tcb::*;
 use super::util::is_seq_gt;
 use super::TCP_CONNECTIONS;
 
@@ -46,9 +46,13 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
             tcb.ack_seg_count = 0;
             tcb.last_ack_tick = crate::arch::hal::timer_current_ticks();
             Some(DeferredSend {
-                local_ip: tcb.local_ip, local_port: tcb.local_port,
-                remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
-                seq: tcb.snd_nxt, ack_num: tcb.rcv_nxt, flags: ACK,
+                local_ip: tcb.local_ip,
+                local_port: tcb.local_port,
+                remote_ip: tcb.remote_ip,
+                remote_port: tcb.remote_port,
+                seq: tcb.snd_nxt,
+                ack_num: tcb.rcv_nxt,
+                flags: ACK,
                 window: tcb.advertised_window(),
             })
         } else {
@@ -60,17 +64,25 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
 
         // Send duplicate ACK immediately (fast retransmit signal to sender)
         Some(DeferredSend {
-            local_ip: tcb.local_ip, local_port: tcb.local_port,
-            remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
-            seq: tcb.snd_nxt, ack_num: tcb.rcv_nxt, flags: ACK,
+            local_ip: tcb.local_ip,
+            local_port: tcb.local_port,
+            remote_ip: tcb.remote_ip,
+            remote_port: tcb.remote_port,
+            seq: tcb.snd_nxt,
+            ack_num: tcb.rcv_nxt,
+            flags: ACK,
             window: win,
         })
     } else {
         // ── Duplicate / overlapping — ACK immediately ──
         Some(DeferredSend {
-            local_ip: tcb.local_ip, local_port: tcb.local_port,
-            remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
-            seq: tcb.snd_nxt, ack_num: tcb.rcv_nxt, flags: ACK,
+            local_ip: tcb.local_ip,
+            local_port: tcb.local_port,
+            remote_ip: tcb.remote_ip,
+            remote_port: tcb.remote_port,
+            seq: tcb.snd_nxt,
+            ack_num: tcb.rcv_nxt,
+            flags: ACK,
             window: win,
         })
     }
@@ -100,18 +112,26 @@ fn insert_ooo(tcb: &mut Tcb, seq: u32, data: &[u8]) {
     }
 
     // Find insertion point to keep sorted by seq
-    let pos = tcb.ooo_buf.iter().position(|s| is_seq_gt(s.seq, seq))
+    let pos = tcb
+        .ooo_buf
+        .iter()
+        .position(|s| is_seq_gt(s.seq, seq))
         .unwrap_or(tcb.ooo_buf.len());
 
-    tcb.ooo_buf.insert(pos, OooSegment {
-        seq,
-        data: data.to_vec(),
-    });
+    tcb.ooo_buf.insert(
+        pos,
+        OooSegment {
+            seq,
+            data: data.to_vec(),
+        },
+    );
 
     // Merge adjacent/overlapping segments (single pass since buffer is sorted)
     let mut i = 0;
     while i + 1 < tcb.ooo_buf.len() {
-        let a_end = tcb.ooo_buf[i].seq.wrapping_add(tcb.ooo_buf[i].data.len() as u32);
+        let a_end = tcb.ooo_buf[i]
+            .seq
+            .wrapping_add(tcb.ooo_buf[i].data.len() as u32);
         let b_seq = tcb.ooo_buf[i + 1].seq;
 
         // If segment i reaches into or past segment i+1, merge them
@@ -224,9 +244,13 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
                     && new_window.saturating_sub(old_window) >= mss_scaled
                 {
                     Some(DeferredSend {
-                        local_ip: tcb.local_ip, local_port: tcb.local_port,
-                        remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
-                        seq: tcb.snd_nxt, ack_num: tcb.rcv_nxt, flags: ACK,
+                        local_ip: tcb.local_ip,
+                        local_port: tcb.local_port,
+                        remote_ip: tcb.remote_ip,
+                        remote_port: tcb.remote_port,
+                        seq: tcb.snd_nxt,
+                        ack_num: tcb.rcv_nxt,
+                        flags: ACK,
                         window: new_window,
                     })
                 } else {
@@ -239,9 +263,15 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
                 // Send window update outside the lock
                 if let Some(ref wu) = window_update {
                     send_segment(
-                        wu.local_ip, wu.local_port,
-                        wu.remote_ip, wu.remote_port,
-                        wu.seq, wu.ack_num, wu.flags, wu.window, &[],
+                        wu.local_ip,
+                        wu.local_port,
+                        wu.remote_ip,
+                        wu.remote_port,
+                        wu.seq,
+                        wu.ack_num,
+                        wu.flags,
+                        wu.window,
+                        &[],
                     );
                 }
 

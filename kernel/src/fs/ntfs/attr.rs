@@ -78,7 +78,10 @@ pub(super) fn parse_attributes(record: &[u8], attr_offset: u16) -> alloc::vec::V
         }
 
         let attr_type = u32::from_le_bytes([
-            record[offset], record[offset + 1], record[offset + 2], record[offset + 3],
+            record[offset],
+            record[offset + 1],
+            record[offset + 2],
+            record[offset + 3],
         ]);
 
         if attr_type == types::END_MARKER || attr_type == 0 {
@@ -90,7 +93,10 @@ pub(super) fn parse_attributes(record: &[u8], attr_offset: u16) -> alloc::vec::V
         }
 
         let length = u32::from_le_bytes([
-            record[offset + 4], record[offset + 5], record[offset + 6], record[offset + 7],
+            record[offset + 4],
+            record[offset + 5],
+            record[offset + 6],
+            record[offset + 7],
         ]);
 
         if length < 16 || length as usize > record.len() - offset {
@@ -125,35 +131,55 @@ pub(super) fn parse_attributes(record: &[u8], attr_offset: u16) -> alloc::vec::V
             }
             let nr = NonResidentData {
                 lowest_vcn: u64::from_le_bytes([
-                    record[offset + 16], record[offset + 17],
-                    record[offset + 18], record[offset + 19],
-                    record[offset + 20], record[offset + 21],
-                    record[offset + 22], record[offset + 23],
+                    record[offset + 16],
+                    record[offset + 17],
+                    record[offset + 18],
+                    record[offset + 19],
+                    record[offset + 20],
+                    record[offset + 21],
+                    record[offset + 22],
+                    record[offset + 23],
                 ]),
                 highest_vcn: u64::from_le_bytes([
-                    record[offset + 24], record[offset + 25],
-                    record[offset + 26], record[offset + 27],
-                    record[offset + 28], record[offset + 29],
-                    record[offset + 30], record[offset + 31],
+                    record[offset + 24],
+                    record[offset + 25],
+                    record[offset + 26],
+                    record[offset + 27],
+                    record[offset + 28],
+                    record[offset + 29],
+                    record[offset + 30],
+                    record[offset + 31],
                 ]),
                 data_runs_offset: u16::from_le_bytes([record[offset + 32], record[offset + 33]]),
                 allocated_size: u64::from_le_bytes([
-                    record[offset + 40], record[offset + 41],
-                    record[offset + 42], record[offset + 43],
-                    record[offset + 44], record[offset + 45],
-                    record[offset + 46], record[offset + 47],
+                    record[offset + 40],
+                    record[offset + 41],
+                    record[offset + 42],
+                    record[offset + 43],
+                    record[offset + 44],
+                    record[offset + 45],
+                    record[offset + 46],
+                    record[offset + 47],
                 ]),
                 real_size: u64::from_le_bytes([
-                    record[offset + 48], record[offset + 49],
-                    record[offset + 50], record[offset + 51],
-                    record[offset + 52], record[offset + 53],
-                    record[offset + 54], record[offset + 55],
+                    record[offset + 48],
+                    record[offset + 49],
+                    record[offset + 50],
+                    record[offset + 51],
+                    record[offset + 52],
+                    record[offset + 53],
+                    record[offset + 54],
+                    record[offset + 55],
                 ]),
                 initialized_size: u64::from_le_bytes([
-                    record[offset + 56], record[offset + 57],
-                    record[offset + 58], record[offset + 59],
-                    record[offset + 60], record[offset + 61],
-                    record[offset + 62], record[offset + 63],
+                    record[offset + 56],
+                    record[offset + 57],
+                    record[offset + 58],
+                    record[offset + 59],
+                    record[offset + 60],
+                    record[offset + 61],
+                    record[offset + 62],
+                    record[offset + 63],
                 ]),
             };
             (None, Some(nr))
@@ -163,8 +189,10 @@ pub(super) fn parse_attributes(record: &[u8], attr_offset: u16) -> alloc::vec::V
             }
             let res = ResidentData {
                 data_length: u32::from_le_bytes([
-                    record[offset + 16], record[offset + 17],
-                    record[offset + 18], record[offset + 19],
+                    record[offset + 16],
+                    record[offset + 17],
+                    record[offset + 18],
+                    record[offset + 19],
                 ]),
                 data_offset: u16::from_le_bytes([record[offset + 20], record[offset + 21]]),
             };

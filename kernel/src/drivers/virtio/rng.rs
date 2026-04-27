@@ -8,8 +8,8 @@
 //! - 0x1005 (transitional) / 0x1044 (modern) — virtio-rng
 
 use crate::drivers::pci::PciDevice;
-use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::drivers::virtio::virtqueue::VirtQueue;
+use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 
@@ -49,11 +49,9 @@ pub fn fill_random(buf: &mut [u8]) -> usize {
 
     // Post a writable buffer for the device to fill with random bytes.
     let writable = [(dev.buf_phys, request_len as u32)];
-    let result = dev.requestq.execute_sync(
-        &[],
-        &writable,
-        || dev.vdev.notify_queue(0),
-    );
+    let result = dev
+        .requestq
+        .execute_sync(&[], &writable, || dev.vdev.notify_queue(0));
 
     match result {
         Some(bytes_written) => {
@@ -80,8 +78,11 @@ pub fn is_available() -> bool {
 
 /// Probe and initialize a VirtIO RNG device from the PCI bus.
 pub fn probe(pci: &PciDevice) -> Option<alloc::boxed::Box<dyn crate::drivers::hal::Driver>> {
-    crate::serial_verbose_println!("VirtIO RNG: probing PCI {:04x}:{:04x}",
-        pci.vendor_id, pci.device_id);
+    crate::serial_verbose_println!(
+        "VirtIO RNG: probing PCI {:04x}:{:04x}",
+        pci.vendor_id,
+        pci.device_id
+    );
 
     // 1. Find VirtIO PCI capabilities.
     let caps = virtio::find_capabilities(pci)?;

@@ -32,11 +32,9 @@
 //!   RX: 24-byte descriptor prepended to the received 802.11 frame, arrives on
 //!       bulk IN.  We strip the descriptor and dispatch the frame.
 
-use alloc::vec::Vec;
+use super::super::usb::{ControllerType, SetupPacket, UsbDevice, UsbInterface, UsbSpeed};
 use crate::sync::spinlock::Spinlock;
-use super::super::usb::{
-    ControllerType, SetupPacket, UsbDevice, UsbInterface, UsbSpeed,
-};
+use alloc::vec::Vec;
 
 // ── Supported USB IDs ─────────────────────────────────────────────────────────
 
@@ -118,20 +116,20 @@ const MAX_RX_QUEUE: usize = 64;
 // ── Driver instance ───────────────────────────────────────────────────────────
 
 pub struct Rtl8188euDriver {
-    usb_addr:       u8,
-    controller:     ControllerType,
-    speed:          UsbSpeed,
-    bulk_in_ep:     u8,
-    bulk_out_ep:    u8,
-    max_packet_in:  u16,
+    usb_addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    bulk_in_ep: u8,
+    bulk_out_ep: u8,
+    max_packet_in: u16,
     max_packet_out: u16,
-    mac:            [u8; 6],
-    tx_toggle:      u8,
-    rx_toggle:      u8,
+    mac: [u8; 6],
+    tx_toggle: u8,
+    rx_toggle: u8,
     /// Physical address of TX DMA bounce buffer (2 pages).
-    tx_buf_phys:    u64,
+    tx_buf_phys: u64,
     /// Physical address of RX DMA bounce buffer (2 pages).
-    rx_buf_phys:    u64,
+    rx_buf_phys: u64,
 }
 
 /// Global driver instance (only one RTL8188EU at a time).
@@ -140,15 +138,20 @@ static DRIVER: Spinlock<Option<Rtl8188euDriver>> = Spinlock::new(None);
 // ── Register access ───────────────────────────────────────────────────────────
 
 /// Write a 16-bit value to a register at `addr`.
-fn reg_write16(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pkt: u16,
-               addr: u16, value: u16)
-{
+fn reg_write16(
+    dev_addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    max_pkt: u16,
+    addr: u16,
+    value: u16,
+) {
     let setup = SetupPacket {
         bm_request_type: BM_WRITE,
-        b_request:       VENDOR_WRITE,
-        w_value:         value,
-        w_index:         addr,
-        w_length:        2,
+        b_request: VENDOR_WRITE,
+        w_value: value,
+        w_index: addr,
+        w_length: 2,
     };
     let _ = super::super::usb::hid_control_transfer(
         dev_addr, controller, speed, max_pkt, &setup, false, 0,
@@ -156,15 +159,20 @@ fn reg_write16(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pk
 }
 
 /// Write a single byte to a register at `addr`.
-fn reg_write8(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pkt: u16,
-              addr: u16, value: u8)
-{
+fn reg_write8(
+    dev_addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    max_pkt: u16,
+    addr: u16,
+    value: u8,
+) {
     let setup = SetupPacket {
         bm_request_type: BM_WRITE,
-        b_request:       VENDOR_WRITE,
-        w_value:         value as u16,
-        w_index:         addr,
-        w_length:        1,
+        b_request: VENDOR_WRITE,
+        w_value: value as u16,
+        w_index: addr,
+        w_length: 1,
     };
     let _ = super::super::usb::hid_control_transfer(
         dev_addr, controller, speed, max_pkt, &setup, false, 0,
@@ -172,27 +180,38 @@ fn reg_write8(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pkt
 }
 
 /// Read `len` bytes from register `addr`. Returns data or empty vec on error.
-fn reg_read(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pkt: u16,
-            addr: u16, len: u16) -> Vec<u8>
-{
+fn reg_read(
+    dev_addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    max_pkt: u16,
+    addr: u16,
+    len: u16,
+) -> Vec<u8> {
     let setup = SetupPacket {
         bm_request_type: BM_READ,
-        b_request:       VENDOR_WRITE,
-        w_value:         0,
-        w_index:         addr,
-        w_length:        len,
+        b_request: VENDOR_WRITE,
+        w_value: 0,
+        w_index: addr,
+        w_length: len,
     };
-    super::super::usb::hid_control_transfer(
-        dev_addr, controller, speed, max_pkt, &setup, true, len,
-    ).unwrap_or_default()
+    super::super::usb::hid_control_transfer(dev_addr, controller, speed, max_pkt, &setup, true, len)
+        .unwrap_or_default()
 }
 
 // ── Hardware initialisation ───────────────────────────────────────────────────
 
 /// Attempt to upload firmware from the VFS.
 /// Returns true if firmware was uploaded successfully.
-fn upload_firmware(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pkt: u16) -> bool {
-    crate::serial_verbose_println!("[rtl8188eu] Attempting firmware load from /System/Drivers/wifi/rtl8188eu.bin");
+fn upload_firmware(
+    dev_addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    max_pkt: u16,
+) -> bool {
+    crate::serial_verbose_println!(
+        "[rtl8188eu] Attempting firmware load from /System/Drivers/wifi/rtl8188eu.bin"
+    );
 
     // Try to open the firmware file via VFS
     let fw_data = crate::fs::vfs::read_file_to_vec("/System/Drivers/wifi/rtl8188eu.bin");
@@ -244,8 +263,14 @@ fn upload_firmware(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, ma
         // bulk-write path (bm_request_type=0x40, w_index=addr, data payload).
         let _ = reg_addr; // address is encoded per-byte below
         for i in 0..chunk_len {
-            reg_write8(dev_addr, controller, speed, max_pkt,
-                       FW_REG_BASE + (offset + i) as u16, fw[offset + i]);
+            reg_write8(
+                dev_addr,
+                controller,
+                speed,
+                max_pkt,
+                FW_REG_BASE + (offset + i) as u16,
+                fw[offset + i],
+            );
         }
 
         offset += chunk_len;
@@ -281,11 +306,22 @@ fn read_mac(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pkt: 
 }
 
 /// Configure the AP's BSSID into hardware for frame filtering.
-fn set_bssid(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pkt: u16,
-             bssid: &[u8; 6])
-{
+fn set_bssid(
+    dev_addr: u8,
+    controller: ControllerType,
+    speed: UsbSpeed,
+    max_pkt: u16,
+    bssid: &[u8; 6],
+) {
     for i in 0..6 {
-        reg_write8(dev_addr, controller, speed, max_pkt, REG_BSSID + i as u16, bssid[i]);
+        reg_write8(
+            dev_addr,
+            controller,
+            speed,
+            max_pkt,
+            REG_BSSID + i as u16,
+            bssid[i],
+        );
     }
 }
 
@@ -294,9 +330,13 @@ fn set_bssid(dev_addr: u8, controller: ControllerType, speed: UsbSpeed, max_pkt:
 /// A full channel-change sequence involves PHY/RF register writes via
 /// indirect access registers.  For now we log the channel change; a
 /// production driver would perform the complete RF programming sequence.
-fn set_channel(_dev_addr: u8, _controller: ControllerType, _speed: UsbSpeed, _max_pkt: u16,
-               channel: u8)
-{
+fn set_channel(
+    _dev_addr: u8,
+    _controller: ControllerType,
+    _speed: UsbSpeed,
+    _max_pkt: u16,
+    channel: u8,
+) {
     crate::serial_verbose_println!("[rtl8188eu] Set channel {}", channel);
     // In a full implementation this would write to:
     //   REG_FPGA0_RFMOD  (0x800)
@@ -353,8 +393,10 @@ fn do_scan(drv: &mut Rtl8188euDriver) {
         }
     }
 
-    crate::serial_verbose_println!("[rtl8188eu] Scan complete ({} BSS found)",
-        crate::net::wifi::get_scan_results().len());
+    crate::serial_verbose_println!(
+        "[rtl8188eu] Scan complete ({} BSS found)",
+        crate::net::wifi::get_scan_results().len()
+    );
 }
 
 // ── TX / RX ───────────────────────────────────────────────────────────────────
@@ -400,7 +442,8 @@ fn rtl_transmit_inner(drv: &mut Rtl8188euDriver, data: &[u8]) -> bool {
         &mut drv.tx_toggle,
         drv.tx_buf_phys,
         total,
-    ).is_ok()
+    )
+    .is_ok()
 }
 
 /// Parse an incoming bulk IN buffer and dispatch frames.
@@ -424,11 +467,7 @@ fn rtl_poll_rx_inner(drv: &mut Rtl8188euDriver) {
     // Copy from DMA buffer
     let mut raw = alloc::vec![0u8; rx_len];
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            drv.rx_buf_phys as *const u8,
-            raw.as_mut_ptr(),
-            rx_len,
-        );
+        core::ptr::copy_nonoverlapping(drv.rx_buf_phys as *const u8, raw.as_mut_ptr(), rx_len);
     }
 
     // Parse RX descriptor (24 bytes)
@@ -464,7 +503,7 @@ fn dispatch_rx_frame(frame: &[u8], drv: &mut Rtl8188euDriver) {
     // bits[1:0] = protocol version (must be 0)
     // bits[3:2] = type: 00=management, 01=control, 10=data
     // bits[7:4] = subtype
-    let frame_type    = (fc_byte0 >> 2) & 0x03;
+    let frame_type = (fc_byte0 >> 2) & 0x03;
     let frame_subtype = (fc_byte0 >> 4) & 0x0F;
 
     // Collect frames to transmit after the handler returns.
@@ -579,7 +618,9 @@ fn maybe_start_auth(frame: &[u8], drv: &mut Rtl8188euDriver) {
     while offset + 1 < frame.len() {
         let tag = frame[offset];
         let tlen = frame[offset + 1] as usize;
-        if offset + 2 + tlen > frame.len() { break; }
+        if offset + 2 + tlen > frame.len() {
+            break;
+        }
         let td = &frame[offset + 2..offset + 2 + tlen];
         match tag {
             0 => {
@@ -588,7 +629,9 @@ fn maybe_start_auth(frame: &[u8], drv: &mut Rtl8188euDriver) {
                 beacon_ssid[..clen].copy_from_slice(&td[..clen]);
                 beacon_ssid_len = clen;
             }
-            3 if tlen >= 1 => { beacon_channel = td[0]; }
+            3 if tlen >= 1 => {
+                beacon_channel = td[0];
+            }
             _ => {}
         }
         offset += 2 + tlen;
@@ -616,8 +659,12 @@ fn maybe_start_auth(frame: &[u8], drv: &mut Rtl8188euDriver) {
 
     crate::serial_verbose_println!(
         "[rtl8188eu] Auth request sent to {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} ch={}",
-        beacon_bssid[0], beacon_bssid[1], beacon_bssid[2],
-        beacon_bssid[3], beacon_bssid[4], beacon_bssid[5],
+        beacon_bssid[0],
+        beacon_bssid[1],
+        beacon_bssid[2],
+        beacon_bssid[3],
+        beacon_bssid[4],
+        beacon_bssid[5],
         beacon_channel
     );
 }
@@ -657,8 +704,12 @@ fn decap_data_frame(frame: &[u8]) -> Option<Vec<u8>> {
 
     // LLC/SNAP: must be AA AA 03 00 00 00 <EtherType>
     let llc = &frame[header_len..header_len + 8];
-    if llc[0] != 0xAA || llc[1] != 0xAA || llc[2] != 0x03
-        || llc[3] != 0x00 || llc[4] != 0x00 || llc[5] != 0x00
+    if llc[0] != 0xAA
+        || llc[1] != 0xAA
+        || llc[2] != 0x03
+        || llc[3] != 0x00
+        || llc[4] != 0x00
+        || llc[5] != 0x00
     {
         // Not a standard Ethernet encapsulation; drop
         return None;
@@ -673,7 +724,11 @@ fn decap_data_frame(frame: &[u8]) -> Option<Vec<u8>> {
     // Source address: depends on DS bits
     //   From DS=1: Address 3 is the original SA
     //   From DS=0: Address 2 is the SA
-    let sa = if from_ds { &frame[16..22] } else { &frame[10..16] };
+    let sa = if from_ds {
+        &frame[16..22]
+    } else {
+        &frame[10..16]
+    };
 
     let mut eth = Vec::with_capacity(14 + payload.len());
     eth.extend_from_slice(da);
@@ -690,37 +745,51 @@ fn decap_data_frame(frame: &[u8]) -> Option<Vec<u8>> {
 /// Returns without doing anything if the VID/PID is not a supported RTL8188EU.
 pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     // Check VID/PID
-    if !SUPPORTED_IDS.iter().any(|&(vid, pid)| vid == dev.vendor_id && pid == dev.product_id) {
+    if !SUPPORTED_IDS
+        .iter()
+        .any(|&(vid, pid)| vid == dev.vendor_id && pid == dev.product_id)
+    {
         return;
     }
 
     crate::serial_verbose_println!(
         "[rtl8188eu] Detected {:04x}:{:04x} (addr={})",
-        dev.vendor_id, dev.product_id, dev.address
+        dev.vendor_id,
+        dev.product_id,
+        dev.address
     );
 
     // Find bulk IN and bulk OUT endpoints on this interface
-    let bulk_in = iface.endpoints.iter().find(|ep| {
-        (ep.attributes & 0x03) == 2 && (ep.address & 0x80) != 0
-    });
-    let bulk_out = iface.endpoints.iter().find(|ep| {
-        (ep.attributes & 0x03) == 2 && (ep.address & 0x80) == 0
-    });
+    let bulk_in = iface
+        .endpoints
+        .iter()
+        .find(|ep| (ep.attributes & 0x03) == 2 && (ep.address & 0x80) != 0);
+    let bulk_out = iface
+        .endpoints
+        .iter()
+        .find(|ep| (ep.attributes & 0x03) == 2 && (ep.address & 0x80) == 0);
 
     let (ep_in, ep_out) = match (bulk_in, bulk_out) {
         (Some(i), Some(o)) => {
             crate::serial_verbose_println!(
                 "[rtl8188eu] bulk IN ep={:#04x} (max={}), bulk OUT ep={:#04x} (max={})",
-                i.address, i.max_packet_size, o.address, o.max_packet_size
+                i.address,
+                i.max_packet_size,
+                o.address,
+                o.max_packet_size
             );
             (i, o)
         }
         _ => {
             // Try finding endpoints across all interfaces
-            let i = dev.interfaces.iter()
+            let i = dev
+                .interfaces
+                .iter()
                 .flat_map(|i| i.endpoints.iter())
                 .find(|ep| (ep.attributes & 0x03) == 2 && (ep.address & 0x80) != 0);
-            let o = dev.interfaces.iter()
+            let o = dev
+                .interfaces
+                .iter()
                 .flat_map(|i| i.endpoints.iter())
                 .find(|ep| (ep.attributes & 0x03) == 2 && (ep.address & 0x80) == 0);
             match (i, o) {
@@ -763,30 +832,33 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let mac = read_mac(dev.address, dev.controller, dev.speed, dev.max_packet_size);
     crate::serial_verbose_println!(
         "[rtl8188eu] MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
     );
 
     let drv = Rtl8188euDriver {
-        usb_addr:       dev.address,
-        controller:     dev.controller,
-        speed:          dev.speed,
-        bulk_in_ep:     ep_in.address,
-        bulk_out_ep:    ep_out.address,
-        max_packet_in:  ep_in.max_packet_size,
+        usb_addr: dev.address,
+        controller: dev.controller,
+        speed: dev.speed,
+        bulk_in_ep: ep_in.address,
+        bulk_out_ep: ep_out.address,
+        max_packet_in: ep_in.max_packet_size,
         max_packet_out: ep_out.max_packet_size,
         mac,
-        tx_toggle:      0,
-        rx_toggle:      0,
-        tx_buf_phys:    tx_phys,
-        rx_buf_phys:    rx_phys,
+        tx_toggle: 0,
+        rx_toggle: 0,
+        tx_buf_phys: tx_phys,
+        rx_buf_phys: rx_phys,
     };
 
     *DRIVER.lock() = Some(drv);
 
     // Register as WiFi NetworkDriver
-    crate::drivers::network::register_wifi(
-        alloc::boxed::Box::new(Rtl8188euNetworkDriver),
-    );
+    crate::drivers::network::register_wifi(alloc::boxed::Box::new(Rtl8188euNetworkDriver));
 
     // Start initial scan
     crate::net::wifi::start_scan();
@@ -815,7 +887,11 @@ pub fn poll_rx() {
 /// Called from net::poll_rx() to feed the TCP/IP stack.
 pub fn recv_packet() -> Option<Vec<u8>> {
     let mut q = RX_QUEUE.lock();
-    if q.is_empty() { None } else { Some(q.remove(0)) }
+    if q.is_empty() {
+        None
+    } else {
+        Some(q.remove(0))
+    }
 }
 
 // ── NetworkDriver trait impl ──────────────────────────────────────────────────

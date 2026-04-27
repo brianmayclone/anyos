@@ -15,15 +15,42 @@ use core::sync::atomic::Ordering;
 pub static SUITE: TestSuite = TestSuite {
     name: "memory",
     cases: &[
-        TestCase { name: "heap_committed_nonzero",       run: test_heap_committed_nonzero },
-        TestCase { name: "heap_stats_nonzero",           run: test_heap_stats_nonzero },
-        TestCase { name: "heap_alloc_changes_stats",     run: test_heap_alloc_changes_stats },
-        TestCase { name: "heap_free_restores_stats",     run: test_heap_free_restores_stats },
-        TestCase { name: "heap_validate_passes",         run: test_heap_validate_passes },
-        TestCase { name: "physical_alloc_frame",         run: test_physical_alloc_frame },
-        TestCase { name: "physical_free_frame_count",    run: test_physical_free_frame_count },
-        TestCase { name: "physical_alloc_free_roundtrip",run: test_physical_alloc_free_roundtrip },
-        TestCase { name: "physical_multiple_frames",     run: test_physical_multiple_frames },
+        TestCase {
+            name: "heap_committed_nonzero",
+            run: test_heap_committed_nonzero,
+        },
+        TestCase {
+            name: "heap_stats_nonzero",
+            run: test_heap_stats_nonzero,
+        },
+        TestCase {
+            name: "heap_alloc_changes_stats",
+            run: test_heap_alloc_changes_stats,
+        },
+        TestCase {
+            name: "heap_free_restores_stats",
+            run: test_heap_free_restores_stats,
+        },
+        TestCase {
+            name: "heap_validate_passes",
+            run: test_heap_validate_passes,
+        },
+        TestCase {
+            name: "physical_alloc_frame",
+            run: test_physical_alloc_frame,
+        },
+        TestCase {
+            name: "physical_free_frame_count",
+            run: test_physical_free_frame_count,
+        },
+        TestCase {
+            name: "physical_alloc_free_roundtrip",
+            run: test_physical_alloc_free_roundtrip,
+        },
+        TestCase {
+            name: "physical_multiple_frames",
+            run: test_physical_multiple_frames,
+        },
     ],
 };
 
@@ -52,7 +79,11 @@ fn test_heap_alloc_changes_stats(ctx: &mut TestContext) {
     let v: Vec<u8> = alloc::vec![0xAAu8; 65536];
     let (used_after, _) = heap_stats();
 
-    ctx.expect_ge(used_after, used_before, "used bytes did not decrease after alloc");
+    ctx.expect_ge(
+        used_after,
+        used_before,
+        "used bytes did not decrease after alloc",
+    );
     // Hint: if the allocator is accurate, used_after > used_before.
     // We allow equal in case of per-CPU cache absorption, but log it.
     if used_after == used_before {
@@ -126,7 +157,7 @@ fn test_physical_alloc_free_roundtrip(ctx: &mut TestContext) {
         ctx.expect_eq(
             free_before.saturating_sub(free_during),
             1usize,
-            "alloc decreases free count by 1"
+            "alloc decreases free count by 1",
         );
 
         free_frame(addr);
@@ -155,9 +186,7 @@ fn test_physical_multiple_frames(ctx: &mut TestContext) {
 
     if all_some {
         // All frame addresses must be distinct.
-        let addrs: alloc::vec::Vec<u64> = frames.iter()
-            .map(|f| f.unwrap().as_u64())
-            .collect();
+        let addrs: alloc::vec::Vec<u64> = frames.iter().map(|f| f.unwrap().as_u64()).collect();
 
         for i in 0..N {
             // Alignment.

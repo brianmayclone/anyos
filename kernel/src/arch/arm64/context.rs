@@ -9,36 +9,36 @@
 #[derive(Debug, Clone, Copy)]
 pub struct CpuContext {
     /// General-purpose registers X0-X30 (X30 = LR).
-    pub x: [u64; 31],       // offset 0   (248 bytes)
+    pub x: [u64; 31], // offset 0   (248 bytes)
     /// Callee-saved SIMD/FP lanes D8-D15.
     ///
     /// Under the AArch64 PCS, V8-V15 are callee-saved, but only their low
     /// 64-bit D lanes must survive a call. `context_switch()` is an external
     /// function from the compiler's point of view, so failing to preserve
     /// these breaks kernel continuations that block and later resume.
-    pub d: [u64; 8],        // offset 248 (64 bytes)
+    pub d: [u64; 8], // offset 248 (64 bytes)
     /// Stack Pointer (SP_EL0 for user threads, SP_EL1 for kernel).
-    pub sp: u64,             // offset 312
+    pub sp: u64, // offset 312
     /// Program Counter (saved ELR_EL1).
-    pub pc: u64,             // offset 320
+    pub pc: u64, // offset 320
     /// Saved processor state (SPSR_EL1).
-    pub pstate: u64,         // offset 328
+    pub pstate: u64, // offset 328
     /// User page table base (TTBR0_EL1).
-    pub ttbr0: u64,          // offset 336
+    pub ttbr0: u64, // offset 336
     /// Thread pointer (TPIDR_EL0, used for TLS).
-    pub tpidr: u64,          // offset 344
+    pub tpidr: u64, // offset 344
     /// Set to 1 by context_switch.S after saving all registers.
     /// Set to 0 by schedule_inner before releasing the lock.
     /// pick_next skips threads with save_complete == 0 to prevent
     /// another CPU from restoring a partially-saved context.
-    pub save_complete: u64,  // offset 352
+    pub save_complete: u64, // offset 352
     /// Magic canary written by context_switch.S after saving.
     /// Verified before loading. If wrong, the CpuContext memory was
     /// externally overwritten (heap corruption, buffer overflow, etc.).
-    pub canary: u64,         // offset 360
+    pub canary: u64, // offset 360
     /// XOR checksum of register fields. Excludes save_complete and canary.
     /// Computed after save, verified before load.
-    pub checksum: u64,       // offset 368
+    pub checksum: u64, // offset 368
 }
 
 /// Magic value for the CpuContext integrity canary.
@@ -71,21 +71,45 @@ impl CpuContext {
     // ── Platform-agnostic accessors ────────────────────────────────────
 
     /// Get the program counter (RIP on x86, PC on ARM64).
-    #[inline] pub fn get_pc(&self) -> u64 { self.pc }
+    #[inline]
+    pub fn get_pc(&self) -> u64 {
+        self.pc
+    }
     /// Set the program counter.
-    #[inline] pub fn set_pc(&mut self, val: u64) { self.pc = val; }
+    #[inline]
+    pub fn set_pc(&mut self, val: u64) {
+        self.pc = val;
+    }
     /// Get the stack pointer (RSP on x86, SP on ARM64).
-    #[inline] pub fn get_sp(&self) -> u64 { self.sp }
+    #[inline]
+    pub fn get_sp(&self) -> u64 {
+        self.sp
+    }
     /// Set the stack pointer.
-    #[inline] pub fn set_sp(&mut self, val: u64) { self.sp = val; }
+    #[inline]
+    pub fn set_sp(&mut self, val: u64) {
+        self.sp = val;
+    }
     /// Get the page table base (CR3 on x86, TTBR0 on ARM64).
-    #[inline] pub fn get_page_table(&self) -> u64 { self.ttbr0 }
+    #[inline]
+    pub fn get_page_table(&self) -> u64 {
+        self.ttbr0
+    }
     /// Set the page table base.
-    #[inline] pub fn set_page_table(&mut self, val: u64) { self.ttbr0 = val; }
+    #[inline]
+    pub fn set_page_table(&mut self, val: u64) {
+        self.ttbr0 = val;
+    }
     /// Get the processor flags (RFLAGS on x86, PSTATE on ARM64).
-    #[inline] pub fn get_flags(&self) -> u64 { self.pstate }
+    #[inline]
+    pub fn get_flags(&self) -> u64 {
+        self.pstate
+    }
     /// Set the processor flags.
-    #[inline] pub fn set_flags(&mut self, val: u64) { self.pstate = val; }
+    #[inline]
+    pub fn set_flags(&mut self, val: u64) {
+        self.pstate = val;
+    }
 
     // ── Checksum/integrity ─────────────────────────────────────────────
 

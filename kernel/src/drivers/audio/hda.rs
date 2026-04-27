@@ -10,53 +10,53 @@
 //! VirtualBox: uses ICH6 HDA (8086:2668) or ICH9 (8086:293E)
 //! QEMU: `-device intel-hda -device hda-output`
 
-use alloc::boxed::Box;
+use crate::drivers::pci::PciDevice;
 use crate::memory::address::PhysAddr;
 use crate::memory::{physical, virtual_mem};
-use crate::drivers::pci::PciDevice;
 use crate::serial_verbose_println;
 use crate::sync::spinlock::Spinlock;
+use alloc::boxed::Box;
 
 // No hardcoded MMIO address — uses dynamic virtual_mem::map_mmio() allocator.
 
 // ── HDA Controller Registers (offsets from BAR0) ────────────────────────────
 
-const REG_GCAP: u32     = 0x00; // Global Capabilities (16-bit)
-const REG_GCTL: u32     = 0x08; // Global Control (32-bit)
-const REG_WAKEEN: u32   = 0x0C; // Wake Enable (16-bit)
+const REG_GCAP: u32 = 0x00; // Global Capabilities (16-bit)
+const REG_GCTL: u32 = 0x08; // Global Control (32-bit)
+const REG_WAKEEN: u32 = 0x0C; // Wake Enable (16-bit)
 const REG_STATESTS: u32 = 0x0E; // State Change Status (16-bit)
-const REG_INTCTL: u32   = 0x20; // Interrupt Control (32-bit)
-const REG_INTSTS: u32   = 0x24; // Interrupt Status (32-bit)
+const REG_INTCTL: u32 = 0x20; // Interrupt Control (32-bit)
+const REG_INTSTS: u32 = 0x24; // Interrupt Status (32-bit)
 
 // CORB registers
 const REG_CORBLBASE: u32 = 0x40; // CORB Lower Base Address (32-bit)
 const REG_CORBUBASE: u32 = 0x44; // CORB Upper Base Address (32-bit)
-const REG_CORBWP: u32    = 0x48; // CORB Write Pointer (16-bit)
-const REG_CORBRP: u32    = 0x4A; // CORB Read Pointer (16-bit)
-const REG_CORBCTL: u32   = 0x4C; // CORB Control (8-bit)
-const REG_CORBSIZE: u32  = 0x4E; // CORB Size (8-bit)
+const REG_CORBWP: u32 = 0x48; // CORB Write Pointer (16-bit)
+const REG_CORBRP: u32 = 0x4A; // CORB Read Pointer (16-bit)
+const REG_CORBCTL: u32 = 0x4C; // CORB Control (8-bit)
+const REG_CORBSIZE: u32 = 0x4E; // CORB Size (8-bit)
 
 // RIRB registers
 const REG_RIRBLBASE: u32 = 0x50; // RIRB Lower Base Address (32-bit)
 const REG_RIRBUBASE: u32 = 0x54; // RIRB Upper Base Address (32-bit)
-const REG_RIRBWP: u32    = 0x58; // RIRB Write Pointer (16-bit)
-const REG_RINTCNT: u32   = 0x5A; // Response Interrupt Count (16-bit)
-const REG_RIRBCTL: u32   = 0x5C; // RIRB Control (8-bit)
-const REG_RIRBSTS: u32   = 0x5D; // RIRB Status (8-bit)
-const REG_RIRBSIZE: u32  = 0x5E; // RIRB Size (8-bit)
+const REG_RIRBWP: u32 = 0x58; // RIRB Write Pointer (16-bit)
+const REG_RINTCNT: u32 = 0x5A; // Response Interrupt Count (16-bit)
+const REG_RIRBCTL: u32 = 0x5C; // RIRB Control (8-bit)
+const REG_RIRBSTS: u32 = 0x5D; // RIRB Status (8-bit)
+const REG_RIRBSIZE: u32 = 0x5E; // RIRB Size (8-bit)
 
 // Stream Descriptor registers (output stream 0)
 // Base offset depends on GCAP: input streams come first, then output streams.
 // We compute the actual offset dynamically.
-const SD_SIZE: u32      = 0x20; // Size of each stream descriptor block
-const SD_CTL: u32       = 0x00; // Stream Control (24-bit: offset+0..+2)
-const SD_STS: u32       = 0x03; // Stream Status (8-bit)
-const SD_LPIB: u32      = 0x04; // Link Position In Buffer (32-bit)
-const SD_CBL: u32       = 0x08; // Cyclic Buffer Length (32-bit)
-const SD_LVI: u32       = 0x0C; // Last Valid Index (16-bit)
-const SD_FMT: u32       = 0x12; // Stream Format (16-bit)
-const SD_BDLPL: u32     = 0x18; // BDL Pointer Lower (32-bit)
-const SD_BDLPU: u32     = 0x1C; // BDL Pointer Upper (32-bit)
+const SD_SIZE: u32 = 0x20; // Size of each stream descriptor block
+const SD_CTL: u32 = 0x00; // Stream Control (24-bit: offset+0..+2)
+const SD_STS: u32 = 0x03; // Stream Status (8-bit)
+const SD_LPIB: u32 = 0x04; // Link Position In Buffer (32-bit)
+const SD_CBL: u32 = 0x08; // Cyclic Buffer Length (32-bit)
+const SD_LVI: u32 = 0x0C; // Last Valid Index (16-bit)
+const SD_FMT: u32 = 0x12; // Stream Format (16-bit)
+const SD_BDLPL: u32 = 0x18; // BDL Pointer Lower (32-bit)
+const SD_BDLPU: u32 = 0x1C; // BDL Pointer Upper (32-bit)
 
 // GCTL bits
 const GCTL_CRST: u32 = 1 << 0; // Controller Reset
@@ -68,9 +68,9 @@ const CORBCTL_RUN: u8 = 1 << 1; // CORB DMA Engine Run
 const RIRBCTL_RUN: u8 = 1 << 1; // RIRB DMA Engine Run
 
 // Stream CTL bits
-const SD_CTL_RUN: u32  = 1 << 1;  // Stream Run
-const SD_CTL_IOCE: u32 = 1 << 2;  // Interrupt On Completion Enable
-const SD_CTL_SRST: u32 = 1 << 0;  // Stream Reset
+const SD_CTL_RUN: u32 = 1 << 1; // Stream Run
+const SD_CTL_IOCE: u32 = 1 << 2; // Interrupt On Completion Enable
+const SD_CTL_SRST: u32 = 1 << 0; // Stream Reset
 
 // Stream STS bits
 const SD_STS_BCIS: u8 = 1 << 2; // Buffer Completion Interrupt Status
@@ -81,28 +81,28 @@ const SD_STS_BCIS: u8 = 1 << 2; // Buffer Completion Interrupt Status
 const FMT_48KHZ_16BIT_STEREO: u16 = 0x0011;
 
 // Codec verbs
-const VERB_GET_PARAM: u32      = 0xF0000; // + param_id
-const VERB_SET_STREAM: u32     = 0x70600; // + (stream_id << 4) | channel
-const VERB_SET_FORMAT: u32     = 0x20000; // + format
-const VERB_SET_AMP_GAIN: u32   = 0x30000; // + amp gain/mute bits
+const VERB_GET_PARAM: u32 = 0xF0000; // + param_id
+const VERB_SET_STREAM: u32 = 0x70600; // + (stream_id << 4) | channel
+const VERB_SET_FORMAT: u32 = 0x20000; // + format
+const VERB_SET_AMP_GAIN: u32 = 0x30000; // + amp gain/mute bits
 const VERB_SET_PIN_WIDGET: u32 = 0x70700; // + pin widget control
-const VERB_SET_POWER: u32      = 0x70500; // + power state
-const VERB_SET_EAPD: u32       = 0x70C00; // + EAPD/BTL Enable
-const VERB_GET_CONN_LIST: u32  = 0xF0200; // Get Connection List Length
+const VERB_SET_POWER: u32 = 0x70500; // + power state
+const VERB_SET_EAPD: u32 = 0x70C00; // + EAPD/BTL Enable
+const VERB_GET_CONN_LIST: u32 = 0xF0200; // Get Connection List Length
 
 // Codec parameters
-const PARAM_VENDOR_ID: u32        = 0x00;
-const PARAM_NODE_COUNT: u32       = 0x04;
-const PARAM_FN_GROUP_TYPE: u32    = 0x05;
+const PARAM_VENDOR_ID: u32 = 0x00;
+const PARAM_NODE_COUNT: u32 = 0x04;
+const PARAM_FN_GROUP_TYPE: u32 = 0x05;
 const PARAM_AUDIO_WIDGET_CAP: u32 = 0x09;
-const PARAM_CONN_LIST_LEN: u32    = 0x0E;
+const PARAM_CONN_LIST_LEN: u32 = 0x0E;
 
 // Widget types (from Audio Widget Capabilities parameter, bits [23:20])
 const WIDGET_TYPE_AUDIO_OUTPUT: u32 = 0x0;
-const WIDGET_TYPE_AUDIO_INPUT: u32  = 0x1;
-const WIDGET_TYPE_AUDIO_MIXER: u32  = 0x2;
+const WIDGET_TYPE_AUDIO_INPUT: u32 = 0x1;
+const WIDGET_TYPE_AUDIO_MIXER: u32 = 0x2;
 const WIDGET_TYPE_AUDIO_SELECTOR: u32 = 0x3;
-const WIDGET_TYPE_PIN_COMPLEX: u32  = 0x4;
+const WIDGET_TYPE_PIN_COMPLEX: u32 = 0x4;
 
 // BDL constants
 const BDL_ENTRIES: usize = 32;
@@ -120,23 +120,23 @@ struct BdlEntry {
 }
 
 struct HdaState {
-    mmio: u64,                      // MMIO virtual base (BAR0 registers)
-    corb_virt: u64,                 // CORB virtual address (CPU access)
-    rirb_virt: u64,                 // RIRB virtual address (CPU access)
-    corb_phys: u64,                 // CORB physical address (for DMA)
-    rirb_phys: u64,                 // RIRB physical address (for DMA)
-    corb_wp: u16,                   // Current CORB write pointer
-    rirb_rp: u16,                   // Current RIRB read pointer
-    out_stream_base: u32,           // MMIO offset of output stream 0
-    bdl_virt: u64,                  // BDL virtual address (CPU access)
-    bdl_phys: u64,                  // BDL physical address (for DMA)
-    bufs_phys: [u64; BDL_ENTRIES],  // PCM buffer physical addresses
-    write_idx: u8,                  // Next BDL entry to fill
-    volume: u8,                     // 0-100
+    mmio: u64,                     // MMIO virtual base (BAR0 registers)
+    corb_virt: u64,                // CORB virtual address (CPU access)
+    rirb_virt: u64,                // RIRB virtual address (CPU access)
+    corb_phys: u64,                // CORB physical address (for DMA)
+    rirb_phys: u64,                // RIRB physical address (for DMA)
+    corb_wp: u16,                  // Current CORB write pointer
+    rirb_rp: u16,                  // Current RIRB read pointer
+    out_stream_base: u32,          // MMIO offset of output stream 0
+    bdl_virt: u64,                 // BDL virtual address (CPU access)
+    bdl_phys: u64,                 // BDL physical address (for DMA)
+    bufs_phys: [u64; BDL_ENTRIES], // PCM buffer physical addresses
+    write_idx: u8,                 // Next BDL entry to fill
+    volume: u8,                    // 0-100
     playing: bool,
-    codec_addr: u8,                 // Detected codec address (usually 0)
-    dac_nid: u16,                   // DAC widget NID
-    pin_nid: u16,                   // Output pin widget NID
+    codec_addr: u8, // Detected codec address (usually 0)
+    dac_nid: u16,   // DAC widget NID
+    pin_nid: u16,   // Output pin widget NID
     irq: u8,
 }
 
@@ -241,7 +241,11 @@ pub fn init_from_pci(pci: &PciDevice) {
         return;
     }
 
-    serial_verbose_println!("HDA: BAR0 phys = {:#010x}, IRQ = {}", bar0, pci.interrupt_line);
+    serial_verbose_println!(
+        "HDA: BAR0 phys = {:#010x}, IRQ = {}",
+        bar0,
+        pci.interrupt_line
+    );
 
     // Enable bus mastering
     crate::drivers::pci::enable_bus_master(pci);
@@ -259,9 +263,13 @@ pub fn init_from_pci(pci: &PciDevice) {
     serial_verbose_println!("HDA: GCAP = {:#06x}", gcap);
 
     // Parse GCAP: number of input/output/bidirectional streams
-    let num_iss = ((gcap >> 8) & 0x0F) as u32;  // Input streams
-    let num_oss = ((gcap >> 12) & 0x0F) as u32;  // Output streams
-    serial_verbose_println!("HDA: {} input stream(s), {} output stream(s)", num_iss, num_oss);
+    let num_iss = ((gcap >> 8) & 0x0F) as u32; // Input streams
+    let num_oss = ((gcap >> 12) & 0x0F) as u32; // Output streams
+    serial_verbose_println!(
+        "HDA: {} input stream(s), {} output stream(s)",
+        num_iss,
+        num_oss
+    );
 
     if num_oss == 0 {
         serial_verbose_println!("HDA: No output streams available");
@@ -322,11 +330,17 @@ pub fn init_from_pci(pci: &PciDevice) {
     // RIRB: 256 entries × 8 bytes = 2 KiB (fits in one 4 KiB frame)
     let corb_frame = match physical::alloc_frame() {
         Some(f) => f,
-        None => { serial_verbose_println!("HDA: Failed to alloc CORB"); return; }
+        None => {
+            serial_verbose_println!("HDA: Failed to alloc CORB");
+            return;
+        }
     };
     let rirb_frame = match physical::alloc_frame() {
         Some(f) => f,
-        None => { serial_verbose_println!("HDA: Failed to alloc RIRB"); return; }
+        None => {
+            serial_verbose_println!("HDA: Failed to alloc RIRB");
+            return;
+        }
     };
     let corb_phys = corb_frame.as_u64();
     let rirb_phys = rirb_frame.as_u64();
@@ -334,11 +348,17 @@ pub fn init_from_pci(pci: &PciDevice) {
     // Map CORB + RIRB into virtual space for CPU access (dynamic allocation)
     let corb_virt = match virtual_mem::map_mmio(corb_frame, 1) {
         Some(v) => v.as_u64(),
-        None => { serial_verbose_println!("HDA: Failed to map CORB"); return; }
+        None => {
+            serial_verbose_println!("HDA: Failed to map CORB");
+            return;
+        }
     };
     let rirb_virt = match virtual_mem::map_mmio(rirb_frame, 1) {
         Some(v) => v.as_u64(),
-        None => { serial_verbose_println!("HDA: Failed to map RIRB"); return; }
+        None => {
+            serial_verbose_println!("HDA: Failed to map RIRB");
+            return;
+        }
     };
 
     // Zero CORB and RIRB
@@ -351,7 +371,9 @@ pub fn init_from_pci(pci: &PciDevice) {
     unsafe {
         // Stop CORB
         mmio_write8(mmio, REG_CORBCTL, 0);
-        for _ in 0..1000 { core::hint::spin_loop(); }
+        for _ in 0..1000 {
+            core::hint::spin_loop();
+        }
 
         // Set CORB size to 256 entries (size = 0x02)
         mmio_write8(mmio, REG_CORBSIZE, 0x02);
@@ -363,12 +385,16 @@ pub fn init_from_pci(pci: &PciDevice) {
         // Reset CORB read pointer
         mmio_write16(mmio, REG_CORBRP, 1 << 15); // Set reset bit
         for _ in 0..10_000 {
-            if mmio_read16(mmio, REG_CORBRP) & (1 << 15) != 0 { break; }
+            if mmio_read16(mmio, REG_CORBRP) & (1 << 15) != 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
         mmio_write16(mmio, REG_CORBRP, 0); // Clear reset bit
         for _ in 0..10_000 {
-            if mmio_read16(mmio, REG_CORBRP) & (1 << 15) == 0 { break; }
+            if mmio_read16(mmio, REG_CORBRP) & (1 << 15) == 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
 
@@ -383,7 +409,9 @@ pub fn init_from_pci(pci: &PciDevice) {
     unsafe {
         // Stop RIRB
         mmio_write8(mmio, REG_RIRBCTL, 0);
-        for _ in 0..1000 { core::hint::spin_loop(); }
+        for _ in 0..1000 {
+            core::hint::spin_loop();
+        }
 
         // Set RIRB size to 256 entries
         mmio_write8(mmio, REG_RIRBSIZE, 0x02);
@@ -435,17 +463,21 @@ pub fn init_from_pci(pci: &PciDevice) {
     }
 
     // Get root node count to find function groups
-    let node_count = codec_command(&mut state, 0, VERB_GET_PARAM | PARAM_NODE_COUNT)
-        .unwrap_or(0);
+    let node_count = codec_command(&mut state, 0, VERB_GET_PARAM | PARAM_NODE_COUNT).unwrap_or(0);
     let start_nid = ((node_count >> 16) & 0xFF) as u16;
     let num_nodes = (node_count & 0xFF) as u16;
 
-    serial_verbose_println!("HDA: Root has {} sub-node(s) starting at NID {}", num_nodes, start_nid);
+    serial_verbose_println!(
+        "HDA: Root has {} sub-node(s) starting at NID {}",
+        num_nodes,
+        start_nid
+    );
 
     // Find Audio Function Group
     let mut afg_nid: u16 = 0;
     for nid in start_nid..start_nid + num_nodes {
-        if let Some(fg_type) = codec_command(&mut state, nid, VERB_GET_PARAM | PARAM_FN_GROUP_TYPE) {
+        if let Some(fg_type) = codec_command(&mut state, nid, VERB_GET_PARAM | PARAM_FN_GROUP_TYPE)
+        {
             if fg_type & 0xFF == 0x01 {
                 // Audio Function Group
                 afg_nid = nid;
@@ -464,19 +496,24 @@ pub fn init_from_pci(pci: &PciDevice) {
     codec_command(&mut state, afg_nid, VERB_SET_POWER | 0x00); // D0
 
     // Get widget count under the AFG
-    let widget_count = codec_command(&mut state, afg_nid, VERB_GET_PARAM | PARAM_NODE_COUNT)
-        .unwrap_or(0);
+    let widget_count =
+        codec_command(&mut state, afg_nid, VERB_GET_PARAM | PARAM_NODE_COUNT).unwrap_or(0);
     let w_start = ((widget_count >> 16) & 0xFF) as u16;
     let w_num = (widget_count & 0xFF) as u16;
 
-    serial_verbose_println!("HDA: AFG has {} widget(s) starting at NID {}", w_num, w_start);
+    serial_verbose_println!(
+        "HDA: AFG has {} widget(s) starting at NID {}",
+        w_num,
+        w_start
+    );
 
     // Find DAC (Audio Output) and output Pin widgets
     let mut dac_nid: u16 = 0;
     let mut pin_nid: u16 = 0;
 
     for nid in w_start..w_start + w_num {
-        if let Some(wcap) = codec_command(&mut state, nid, VERB_GET_PARAM | PARAM_AUDIO_WIDGET_CAP) {
+        if let Some(wcap) = codec_command(&mut state, nid, VERB_GET_PARAM | PARAM_AUDIO_WIDGET_CAP)
+        {
             let wtype = (wcap >> 20) & 0xF;
             match wtype {
                 WIDGET_TYPE_AUDIO_OUTPUT => {
@@ -508,7 +545,11 @@ pub fn init_from_pci(pci: &PciDevice) {
 
     // ── Configure DAC ──
     // Set converter format: 48kHz, 16-bit, stereo
-    codec_command(&mut state, dac_nid, VERB_SET_FORMAT | FMT_48KHZ_16BIT_STEREO as u32);
+    codec_command(
+        &mut state,
+        dac_nid,
+        VERB_SET_FORMAT | FMT_48KHZ_16BIT_STEREO as u32,
+    );
 
     // Set stream/channel: stream 1, channel 0
     codec_command(&mut state, dac_nid, VERB_SET_STREAM | (1 << 4) | 0);
@@ -538,17 +579,25 @@ pub fn init_from_pci(pci: &PciDevice) {
     // ── Allocate BDL + PCM buffers ──
     let bdl_frame = match physical::alloc_frame() {
         Some(f) => f,
-        None => { serial_verbose_println!("HDA: Failed to alloc BDL"); return; }
+        None => {
+            serial_verbose_println!("HDA: Failed to alloc BDL");
+            return;
+        }
     };
     state.bdl_phys = bdl_frame.as_u64();
 
     // Map BDL for CPU access (dynamic allocation)
     let bdl_virt = match virtual_mem::map_mmio(bdl_frame, 1) {
         Some(v) => v.as_u64(),
-        None => { serial_verbose_println!("HDA: Failed to map BDL"); return; }
+        None => {
+            serial_verbose_println!("HDA: Failed to map BDL");
+            return;
+        }
     };
     state.bdl_virt = bdl_virt;
-    unsafe { core::ptr::write_bytes(bdl_virt as *mut u8, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(bdl_virt as *mut u8, 0, 4096);
+    }
 
     // Allocate PCM buffers
     for i in 0..BDL_ENTRIES {
@@ -560,7 +609,9 @@ pub fn init_from_pci(pci: &PciDevice) {
             }
         };
         state.bufs_phys[i] = buf_frame.as_u64();
-        unsafe { core::ptr::write_bytes(buf_frame.as_u64() as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(buf_frame.as_u64() as *mut u8, 0, 4096);
+        }
     }
 
     // Set up BDL entries
@@ -581,13 +632,17 @@ pub fn init_from_pci(pci: &PciDevice) {
         let ctl = mmio_read32(mmio, sd + SD_CTL) & 0xFF;
         mmio_write32(mmio, sd + SD_CTL, ctl | SD_CTL_SRST);
         for _ in 0..10_000 {
-            if mmio_read32(mmio, sd + SD_CTL) & SD_CTL_SRST != 0 { break; }
+            if mmio_read32(mmio, sd + SD_CTL) & SD_CTL_SRST != 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
         // Clear reset
         mmio_write32(mmio, sd + SD_CTL, ctl & !SD_CTL_SRST);
         for _ in 0..10_000 {
-            if mmio_read32(mmio, sd + SD_CTL) & SD_CTL_SRST == 0 { break; }
+            if mmio_read32(mmio, sd + SD_CTL) & SD_CTL_SRST == 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
 
@@ -628,7 +683,10 @@ pub fn init_from_pci(pci: &PciDevice) {
         crate::arch::x86::pic::unmask(irq);
     }
 
-    serial_verbose_println!("[OK] Intel HDA initialized (48 kHz, 16-bit stereo, IRQ {})", irq);
+    serial_verbose_println!(
+        "[OK] Intel HDA initialized (48 kHz, 16-bit stereo, IRQ {})",
+        irq
+    );
 
     // Store state and register with generic audio subsystem
     {
@@ -661,11 +719,7 @@ pub fn write_pcm(data: &[u8]) -> usize {
 
         // Copy PCM data
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                data[written..].as_ptr(),
-                buf_virt as *mut u8,
-                chunk,
-            );
+            core::ptr::copy_nonoverlapping(data[written..].as_ptr(), buf_virt as *mut u8, chunk);
             if chunk < BUF_SIZE {
                 core::ptr::write_bytes((buf_virt as *mut u8).add(chunk), 0, BUF_SIZE - chunk);
             }
@@ -679,7 +733,11 @@ pub fn write_pcm(data: &[u8]) -> usize {
 
         // Update LVI
         unsafe {
-            mmio_write16(state.mmio, state.out_stream_base + SD_LVI, state.write_idx as u16);
+            mmio_write16(
+                state.mmio,
+                state.out_stream_base + SD_LVI,
+                state.write_idx as u16,
+            );
         }
 
         state.write_idx = ((state.write_idx as usize + 1) % BDL_ENTRIES) as u8;
@@ -771,13 +829,27 @@ pub fn is_playing() -> bool {
 pub struct HdaDriver;
 
 impl super::AudioDriver for HdaDriver {
-    fn name(&self) -> &str { "Intel HDA" }
-    fn write_pcm(&mut self, data: &[u8]) -> usize { write_pcm(data) }
-    fn stop(&mut self) { stop(); }
-    fn set_volume(&mut self, vol: u8) { set_volume(vol); }
-    fn get_volume(&self) -> u8 { get_volume() }
-    fn is_playing(&self) -> bool { is_playing() }
-    fn sample_rate(&self) -> u32 { 48000 }
+    fn name(&self) -> &str {
+        "Intel HDA"
+    }
+    fn write_pcm(&mut self, data: &[u8]) -> usize {
+        write_pcm(data)
+    }
+    fn stop(&mut self) {
+        stop();
+    }
+    fn set_volume(&mut self, vol: u8) {
+        set_volume(vol);
+    }
+    fn get_volume(&self) -> u8 {
+        get_volume()
+    }
+    fn is_playing(&self) -> bool {
+        is_playing()
+    }
+    fn sample_rate(&self) -> u32 {
+        48000
+    }
 }
 
 // ── IRQ handler ─────────────────────────────────────────────────────────────

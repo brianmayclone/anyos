@@ -50,7 +50,9 @@ pub fn init() {
 
 /// Set the foreground and background color for subsequent text output.
 pub fn set_color(fg: Color, bg: Color) {
-    unsafe { ATTR = color_code(fg, bg); }
+    unsafe {
+        ATTR = color_code(fg, bg);
+    }
 }
 
 /// Clear the entire VGA text screen and reset cursor to top-left.
@@ -58,7 +60,9 @@ pub fn clear() {
     let buffer = VGA_BUFFER as *mut u16;
     let blank = 0x0F00 | b' ' as u16; // White on black, space
     for i in 0..(VGA_WIDTH * VGA_HEIGHT) {
-        unsafe { buffer.add(i).write_volatile(blank); }
+        unsafe {
+            buffer.add(i).write_volatile(blank);
+        }
     }
     unsafe {
         COL = 0;
@@ -85,7 +89,9 @@ fn scroll() {
     let blank = (unsafe { ATTR } as u16) << 8 | b' ' as u16;
     for col in 0..VGA_WIDTH {
         let offset = (VGA_HEIGHT - 1) * VGA_WIDTH + col;
-        unsafe { buffer.add(offset).write_volatile(blank); }
+        unsafe {
+            buffer.add(offset).write_volatile(blank);
+        }
     }
 }
 

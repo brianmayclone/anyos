@@ -45,7 +45,9 @@ fn uart_putc(c: u8) {
 #[inline]
 fn uart_puts(s: &[u8]) {
     for &c in s {
-        if c == b'\n' { uart_putc(b'\r'); }
+        if c == b'\n' {
+            uart_putc(b'\r');
+        }
         uart_putc(c);
     }
 }
@@ -103,7 +105,10 @@ fn dump_iretq_frame(rip: u64, saved_rsp: u64) {
     if opcodes[0] != 0x48 || opcodes[1] != 0xCF {
         return;
     }
-    crate::serial_println!("  >>> IRETQ fault detected! Dumping return frame at RSP={:#018x}:", saved_rsp);
+    crate::serial_println!(
+        "  >>> IRETQ fault detected! Dumping return frame at RSP={:#018x}:",
+        saved_rsp
+    );
     // Validate saved_rsp is in kernel higher-half and aligned
     if saved_rsp < 0xFFFF_FFFF_8000_0000 || saved_rsp & 0x7 != 0 {
         crate::serial_println!("  >>> Invalid RSP for IRETQ frame (not kernel-aligned)");
@@ -111,11 +116,11 @@ fn dump_iretq_frame(rip: u64, saved_rsp: u64) {
     }
     let p = saved_rsp as *const u64;
     unsafe {
-        let ret_rip    = *p;
-        let ret_cs     = *p.add(1);
+        let ret_rip = *p;
+        let ret_cs = *p.add(1);
         let ret_rflags = *p.add(2);
-        let ret_rsp    = *p.add(3);
-        let ret_ss     = *p.add(4);
+        let ret_rsp = *p.add(3);
+        let ret_ss = *p.add(4);
         crate::serial_println!("    Return RIP:    {:#018x}", ret_rip);
         crate::serial_println!("    Return CS:     {:#018x}", ret_cs);
         crate::serial_println!("    Return RFLAGS: {:#018x}", ret_rflags);
@@ -150,13 +155,13 @@ const KERNEL_CODE_SEG: u16 = 0x08;
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct IdtEntry {
-    offset_low: u16,     // Handler address bits 0-15
-    selector: u16,       // Kernel code segment selector
-    ist: u8,             // IST index (bits 0-2), zero (bits 3-7)
-    type_attr: u8,       // Gate type and attributes
-    offset_mid: u16,     // Handler address bits 16-31
-    offset_high: u32,    // Handler address bits 32-63
-    _reserved: u32,      // Must be zero
+    offset_low: u16,  // Handler address bits 0-15
+    selector: u16,    // Kernel code segment selector
+    ist: u8,          // IST index (bits 0-2), zero (bits 3-7)
+    type_attr: u8,    // Gate type and attributes
+    offset_mid: u16,  // Handler address bits 16-31
+    offset_high: u32, // Handler address bits 32-63
+    _reserved: u32,   // Must be zero
 }
 
 #[repr(C, packed)]
@@ -179,14 +184,20 @@ static mut IDT_DESC: IdtDescriptor = IdtDescriptor { size: 0, offset: 0 };
 
 // Gate type attributes (interpreted as 64-bit gates in long mode)
 const GATE_INTERRUPT: u8 = 0x8E; // Present, DPL=0, 64-bit interrupt gate
-const GATE_TRAP: u8 = 0x8F;      // Present, DPL=0, 64-bit trap gate
+const GATE_TRAP: u8 = 0x8F; // Present, DPL=0, 64-bit trap gate
 const GATE_TRAP_DPL3: u8 = 0xEF; // Present, DPL=3, 64-bit trap gate (for syscalls)
 
 fn set_gate(num: usize, handler: unsafe extern "C" fn(), selector: u16, type_attr: u8) {
     set_gate_ist(num, handler, selector, type_attr, 0);
 }
 
-fn set_gate_ist(num: usize, handler: unsafe extern "C" fn(), selector: u16, type_attr: u8, ist: u8) {
+fn set_gate_ist(
+    num: usize,
+    handler: unsafe extern "C" fn(),
+    selector: u16,
+    type_attr: u8,
+    ist: u8,
+) {
     let handler = handler as *const () as u64;
     unsafe {
         IDT[num] = IdtEntry {
@@ -203,46 +214,112 @@ fn set_gate_ist(num: usize, handler: unsafe extern "C" fn(), selector: u16, type
 
 // External ISR/IRQ stubs from interrupts.asm
 extern "C" {
-    fn isr0();  fn isr1();  fn isr2();  fn isr3();
-    fn isr4();  fn isr5();  fn isr6();  fn isr7();
-    fn isr8();  fn isr9();  fn isr10(); fn isr11();
-    fn isr12(); fn isr13(); fn isr14(); fn isr15();
-    fn isr16(); fn isr17(); fn isr18(); fn isr19();
-    fn isr20(); fn isr21(); fn isr22(); fn isr23();
-    fn isr24(); fn isr25(); fn isr26(); fn isr27();
-    fn isr28(); fn isr29(); fn isr30(); fn isr31();
+    fn isr0();
+    fn isr1();
+    fn isr2();
+    fn isr3();
+    fn isr4();
+    fn isr5();
+    fn isr6();
+    fn isr7();
+    fn isr8();
+    fn isr9();
+    fn isr10();
+    fn isr11();
+    fn isr12();
+    fn isr13();
+    fn isr14();
+    fn isr15();
+    fn isr16();
+    fn isr17();
+    fn isr18();
+    fn isr19();
+    fn isr20();
+    fn isr21();
+    fn isr22();
+    fn isr23();
+    fn isr24();
+    fn isr25();
+    fn isr26();
+    fn isr27();
+    fn isr28();
+    fn isr29();
+    fn isr30();
+    fn isr31();
 
-    fn irq0();  fn irq1();  fn irq2();  fn irq3();
-    fn irq4();  fn irq5();  fn irq6();  fn irq7();
-    fn irq8();  fn irq9();  fn irq10(); fn irq11();
-    fn irq12(); fn irq13(); fn irq14(); fn irq15();
+    fn irq0();
+    fn irq1();
+    fn irq2();
+    fn irq3();
+    fn irq4();
+    fn irq5();
+    fn irq6();
+    fn irq7();
+    fn irq8();
+    fn irq9();
+    fn irq10();
+    fn irq11();
+    fn irq12();
+    fn irq13();
+    fn irq14();
+    fn irq15();
     // LAPIC / APIC vectors
-    fn irq16(); fn irq17(); fn irq18(); fn irq19();
-    fn irq20(); fn irq21(); fn irq22(); fn irq23();
+    fn irq16();
+    fn irq17();
+    fn irq18();
+    fn irq19();
+    fn irq20();
+    fn irq21();
+    fn irq22();
+    fn irq23();
     // PCI MSI slots (vectors 56-87)
-    fn irq24(); fn irq25(); fn irq26(); fn irq27();
-    fn irq28(); fn irq29(); fn irq30(); fn irq31();
-    fn irq32(); fn irq33(); fn irq34(); fn irq35();
-    fn irq36(); fn irq37(); fn irq38(); fn irq39();
-    fn irq40(); fn irq41(); fn irq42(); fn irq43();
-    fn irq44(); fn irq45(); fn irq46(); fn irq47();
-    fn irq48(); fn irq49(); fn irq50(); fn irq51();
-    fn irq52(); fn irq53(); fn irq54(); fn irq55();
+    fn irq24();
+    fn irq25();
+    fn irq26();
+    fn irq27();
+    fn irq28();
+    fn irq29();
+    fn irq30();
+    fn irq31();
+    fn irq32();
+    fn irq33();
+    fn irq34();
+    fn irq35();
+    fn irq36();
+    fn irq37();
+    fn irq38();
+    fn irq39();
+    fn irq40();
+    fn irq41();
+    fn irq42();
+    fn irq43();
+    fn irq44();
+    fn irq45();
+    fn irq46();
+    fn irq47();
+    fn irq48();
+    fn irq49();
+    fn irq50();
+    fn irq51();
+    fn irq52();
+    fn irq53();
+    fn irq54();
+    fn irq55();
 }
 
 /// Populate the IDT with exception, IRQ, and syscall gates, then load via `lidt`.
 pub fn init() {
     // CPU Exceptions (ISR 0-31)
-    set_gate(0,  isr0 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(1,  isr1 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(2,  isr2 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(3,  isr3 , KERNEL_CODE_SEG, GATE_TRAP);
-    set_gate(4,  isr4 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(5,  isr5 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(6,  isr6 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(7,  isr7 , KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(0, isr0, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(1, isr1, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(2, isr2, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(3, isr3, KERNEL_CODE_SEG, GATE_TRAP);
+    set_gate(4, isr4, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(5, isr5, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(6, isr6, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(7, isr7, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate_ist(8, isr8, KERNEL_CODE_SEG, GATE_INTERRUPT, 1); // #DF uses IST1
-    set_gate(9,  isr9 , KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(9, isr9, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(10, isr10, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(11, isr11, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(12, isr12, KERNEL_CODE_SEG, GATE_INTERRUPT);
@@ -267,16 +344,16 @@ pub fn init() {
     set_gate(31, isr31, KERNEL_CODE_SEG, GATE_INTERRUPT);
 
     // Hardware IRQs (remapped to INT 32-47)
-    set_gate(32, irq0 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(33, irq1 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(34, irq2 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(35, irq3 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(36, irq4 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(37, irq5 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(38, irq6 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(39, irq7 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(40, irq8 , KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(41, irq9 , KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(32, irq0, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(33, irq1, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(34, irq2, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(35, irq3, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(36, irq4, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(37, irq5, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(38, irq6, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(39, irq7, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(40, irq8, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(41, irq9, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(42, irq10, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(43, irq11, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(44, irq12, KERNEL_CODE_SEG, GATE_INTERRUPT);
@@ -293,7 +370,7 @@ pub fn init() {
     set_gate(53, irq21, KERNEL_CODE_SEG, GATE_INTERRUPT); // IPI: Halt
     set_gate(54, irq22, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(55, irq23, KERNEL_CODE_SEG, GATE_INTERRUPT); // Spurious / MSI
-    // PCI MSI slots (vectors 56-87)
+                                                          // PCI MSI slots (vectors 56-87)
     set_gate(56, irq24, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(57, irq25, KERNEL_CODE_SEG, GATE_INTERRUPT);
     set_gate(58, irq26, KERNEL_CODE_SEG, GATE_INTERRUPT);
@@ -432,7 +509,9 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             // Log CR2 for page faults to help diagnose the corruption
             if frame.int_no == 14 {
                 let cr2: u64;
-                unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2); }
+                unsafe {
+                    core::arch::asm!("mov {}, cr2", out(reg) cr2);
+                }
                 crate::serial_println!("  CR2={:#018x} (faulting address)", cr2);
             }
             FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
@@ -448,7 +527,10 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         crate::serial_println!("  TID:    {}", tid);
         {
             let name_buf = crate::task::scheduler::debug_current_thread_name();
-            let name_len = name_buf.iter().position(|&b| b == 0).unwrap_or(name_buf.len());
+            let name_len = name_buf
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(name_buf.len());
             let name = core::str::from_utf8(&name_buf[..name_len]).unwrap_or("<invalid>");
             crate::serial_println!("  Name:   \"{}\"", name);
         }
@@ -460,11 +542,20 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         crate::serial_println!("  RSI:    {:#018x}  RDI: {:#018x}", frame.rsi, frame.rdi);
         crate::serial_println!("  R8:     {:#018x}  R9:  {:#018x}", frame.r8, frame.r9);
         crate::serial_println!("  R10:    {:#018x}  R11: {:#018x}", frame.r10, frame.r11);
-        crate::serial_println!("  CS:     {:#06x}  SS:  {:#06x}  RFLAGS: {:#018x}", frame.cs, frame.ss, frame.rflags);
+        crate::serial_println!(
+            "  CS:     {:#06x}  SS:  {:#06x}  RFLAGS: {:#018x}",
+            frame.cs,
+            frame.ss,
+            frame.rflags
+        );
         {
             let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
             let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
-            crate::serial_println!("  LastSC: {} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
+            crate::serial_println!(
+                "  LastSC: {} ({})",
+                last_sc,
+                crate::syscall::table::syscall_name(last_sc)
+            );
             if last_sc == crate::syscall::SYS_GPU_COMMAND {
                 let (driver_data, driver_vtable) = crate::drivers::gpu::last_driver_ptrs();
                 let (virtio_ctrl, virtio_cursor) =
@@ -483,11 +574,19 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
                     crate::drivers::gpu::virtio_gpu::VirtioGpu::queue_debug_info();
                 crate::serial_println!(
                     "  GPU:    ctrlq qsz={} avail={} used={} free={} broken={}",
-                    controlq.0, controlq.1, controlq.2, controlq.3, controlq.4 as u8
+                    controlq.0,
+                    controlq.1,
+                    controlq.2,
+                    controlq.3,
+                    controlq.4 as u8
                 );
                 crate::serial_println!(
                     "  GPU:    cursq qsz={} avail={} used={} free={} broken={}",
-                    cursorq.0, cursorq.1, cursorq.2, cursorq.3, cursorq.4 as u8
+                    cursorq.0,
+                    cursorq.1,
+                    cursorq.2,
+                    cursorq.3,
+                    cursorq.4 as u8
                 );
                 if virtio_ctrl == 0x105 {
                     let (res, x, y, w, h, offset) =
@@ -507,7 +606,9 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         if signal == 139 && frame.int_no == 14 {
             // Page fault — show CR2 (faulting address)
             let cr2: u64;
-            unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2); }
+            unsafe {
+                core::arch::asm!("mov {}, cr2", out(reg) cr2);
+            }
             let reason = match frame.err_code & 0x7 {
                 0b000 => "read from non-present page",
                 0b001 => "read protection violation",
@@ -527,10 +628,13 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         if frame.cs == 0x08 {
             let cpu = crate::arch::x86::smp::current_cpu_id() as usize;
             let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu);
-            let in_bounds = stack_bottom != 0 && frame.rsp >= stack_bottom && frame.rsp <= stack_top;
+            let in_bounds =
+                stack_bottom != 0 && frame.rsp >= stack_bottom && frame.rsp <= stack_top;
             crate::serial_println!(
                 "  KStack: [{:#018x}..{:#018x}] rsp_in_bounds={}",
-                stack_bottom, stack_top, in_bounds as u8
+                stack_bottom,
+                stack_top,
+                in_bounds as u8
             );
             if stack_bottom != 0 {
                 let used = stack_top.saturating_sub(frame.rsp);
@@ -544,7 +648,9 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         let mut depth = 0;
         while bp > 0x1000 && bp < 0x0000_8000_0000_0000 && bp & 7 == 0 && depth < 16 {
             let ret_addr = unsafe { *((bp + 8) as *const u64) };
-            if ret_addr == 0 || ret_addr >= 0x0000_8000_0000_0000 { break; }
+            if ret_addr == 0 || ret_addr >= 0x0000_8000_0000_0000 {
+                break;
+            }
             crate::serial_println!("    #{}: {:#018x}", depth, ret_addr);
             bp = unsafe { *(bp as *const u64) };
             depth += 1;
@@ -563,16 +669,22 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         let cpu = crate::arch::x86::smp::current_cpu_id() as u32;
         let mut recovery_state_dirty = false;
         if crate::task::scheduler::is_scheduler_locked_by_cpu(cpu) {
-            unsafe { crate::task::scheduler::force_unlock_scheduler(); }
+            unsafe {
+                crate::task::scheduler::force_unlock_scheduler();
+            }
             recovery_state_dirty = true;
         }
         if crate::memory::physical::is_allocator_locked_by_cpu(cpu) {
-            unsafe { crate::memory::physical::force_unlock_allocator(); }
+            unsafe {
+                crate::memory::physical::force_unlock_allocator();
+            }
             crate::serial_println!("  RECOVERED: force-released physical allocator lock");
             recovery_state_dirty = true;
         }
         if crate::task::dll::is_dll_locked_by_cpu(cpu) {
-            unsafe { crate::task::dll::force_unlock_dlls(); }
+            unsafe {
+                crate::task::dll::force_unlock_dlls();
+            }
             crate::serial_println!("  RECOVERED: force-released LOADED_DLLS lock");
             recovery_state_dirty = true;
         }
@@ -580,7 +692,9 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         // leaves the GPU Mutex held. Without release, every subsequent GPU call
         // from any thread blocks forever (yielding Mutex → schedule loop).
         if crate::drivers::gpu::is_gpu_locked() {
-            unsafe { crate::drivers::gpu::force_unlock_gpu(); }
+            unsafe {
+                crate::drivers::gpu::force_unlock_gpu();
+            }
             crate::serial_println!("  RECOVERED: force-released GPU mutex");
             recovery_state_dirty = true;
         }
@@ -603,7 +717,9 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
                     }
                     unreachable!();
                 }
-                for _ in 0..64 { core::hint::spin_loop(); }
+                for _ in 0..64 {
+                    core::hint::spin_loop();
+                }
             }
         }
         // Clean path failed — use manual fallback: kill thread, repair state,
@@ -643,7 +759,10 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
         unsafe {
             use crate::arch::x86::port::{inb, outb};
             let msg = b"\r\n!!! FATAL: ISR entered with corrupt RSP frame=";
-            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             // Print frame address in hex
             let mut n = frame_addr;
             let mut buf = [0u8; 16];
@@ -653,21 +772,32 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
                 n >>= 4;
                 i += 1;
-                if n == 0 || i >= 16 { break; }
+                if n == 0 || i >= 16 {
+                    break;
+                }
             }
             let prefix = b"0x";
-            for &c in prefix { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in prefix {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             while i > 0 {
                 i -= 1;
                 while inb(0x3FD) & 0x20 == 0 {}
                 outb(0x3F8, buf[i]);
             }
             let msg2 = b" - halting CPU\r\n";
-            for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg2 {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             // Print TSS.RSP0 for this CPU
             let rsp0 = crate::arch::x86::tss::get_kernel_stack_for_cpu(0);
             let msg3 = b"  TSS.RSP0=";
-            for &c in msg3 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg3 {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             n = rsp0;
             i = 0;
             loop {
@@ -675,18 +805,28 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
                 n >>= 4;
                 i += 1;
-                if n == 0 || i >= 16 { break; }
+                if n == 0 || i >= 16 {
+                    break;
+                }
             }
-            for &c in prefix { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in prefix {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             while i > 0 {
                 i -= 1;
                 while inb(0x3FD) & 0x20 == 0 {}
                 outb(0x3F8, buf[i]);
             }
             let nl = b"\r\n";
-            for &c in nl { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in nl {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             // Halt this CPU cleanly — let other CPUs continue
-            loop { core::arch::asm!("cli; hlt"); }
+            loop {
+                core::arch::asm!("cli; hlt");
+            }
         }
     }
 
@@ -702,19 +842,30 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
         let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
         let tid = crate::task::scheduler::debug_current_tid();
         uart_puts(b"\n!!! GARBLED InterruptFrame detected!\n");
-        uart_puts(b"  CS="); uart_put_hex(frame.cs);
-        uart_puts(b" SS="); uart_put_hex(frame.ss);
-        uart_puts(b" RIP="); uart_put_hex(frame.rip);
-        uart_puts(b" int="); uart_put_dec(frame.int_no as u32);
+        uart_puts(b"  CS=");
+        uart_put_hex(frame.cs);
+        uart_puts(b" SS=");
+        uart_put_hex(frame.ss);
+        uart_puts(b" RIP=");
+        uart_put_hex(frame.rip);
+        uart_puts(b" int=");
+        uart_put_dec(frame.int_no as u32);
         uart_putc(b'\n');
-        uart_puts(b"  frame_addr="); uart_put_hex(frame as *const InterruptFrame as u64);
-        uart_puts(b" TSS.RSP0="); uart_put_hex(tss_rsp0);
-        uart_puts(b" PERCPU.krsp="); uart_put_hex(percpu_krsp);
+        uart_puts(b"  frame_addr=");
+        uart_put_hex(frame as *const InterruptFrame as u64);
+        uart_puts(b" TSS.RSP0=");
+        uart_put_hex(tss_rsp0);
+        uart_puts(b" PERCPU.krsp=");
+        uart_put_hex(percpu_krsp);
         uart_putc(b'\n');
-        uart_puts(b"  stack=["); uart_put_hex(stack_bottom);
-        uart_puts(b".."); uart_put_hex(stack_top);
-        uart_puts(b"] cpu="); uart_put_dec(cpu_id as u32);
-        uart_puts(b" tid="); uart_put_dec(tid);
+        uart_puts(b"  stack=[");
+        uart_put_hex(stack_bottom);
+        uart_puts(b"..");
+        uart_put_hex(stack_top);
+        uart_puts(b"] cpu=");
+        uart_put_dec(cpu_id as u32);
+        uart_puts(b" tid=");
+        uart_put_dec(tid);
         uart_putc(b'\n');
         // Check if frame is inside or outside expected stack bounds
         let frame_u64 = frame as *const InterruptFrame as u64;
@@ -746,33 +897,57 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
         0 => {
             let dbg_tid = crate::task::scheduler::debug_current_tid();
             if is_user_mode {
-                crate::serial_println!("EXCEPTION: Division by zero at RIP={:#018x} CS={:#x} (TID={})", frame.rip, frame.cs, dbg_tid);
+                crate::serial_println!(
+                    "EXCEPTION: Division by zero at RIP={:#018x} CS={:#x} (TID={})",
+                    frame.rip,
+                    frame.cs,
+                    dbg_tid
+                );
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::crash_info::store_crash(dbg_tid, 136, frame);
                 crate::task::scheduler::exit_current(136);
             }
-            if try_kill_faulting_thread(136, frame) { return; }
+            if try_kill_faulting_thread(136, frame) {
+                return;
+            }
             // Fatal kernel fault — enter panic mode to halt other CPUs
             crate::drivers::serial::enter_panic_mode();
-            crate::serial_println!("EXCEPTION: Division by zero at RIP={:#018x} CS={:#x} (TID={})", frame.rip, frame.cs, dbg_tid);
+            crate::serial_println!(
+                "EXCEPTION: Division by zero at RIP={:#018x} CS={:#x} (TID={})",
+                frame.rip,
+                frame.cs,
+                dbg_tid
+            );
             crate::serial_println!(
                 "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                frame.rax, frame.rbx, frame.rcx, frame.rdx
+                frame.rax,
+                frame.rbx,
+                frame.rcx,
+                frame.rdx
             );
             crate::serial_println!(
                 "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
-                frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                frame.rsi,
+                frame.rdi,
+                frame.rbp,
+                frame.rsp
             );
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "Division by Zero (#DE)");
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
         }
         1 => {
             // #DB Debug Exception — check if hardware watchpoint (DR0) fired.
             // We use DR0 to watch TSS.RSP0 for corruption: ANY write to that
             // address (including wild pointers) triggers this handler.
             let dr6: u64;
-            unsafe { core::arch::asm!("mov {}, dr6", out(reg) dr6, options(nostack, nomem)); }
+            unsafe {
+                core::arch::asm!("mov {}, dr6", out(reg) dr6, options(nostack, nomem));
+            }
 
             if dr6 & 1 != 0 {
                 // DR0 watchpoint hit — something wrote to TSS.RSP0.
@@ -794,29 +969,38 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     );
                     crate::serial_println!(
                         "    RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                        frame.rax, frame.rbx, frame.rcx, frame.rdx
+                        frame.rax,
+                        frame.rbx,
+                        frame.rcx,
+                        frame.rdx
                     );
                     crate::serial_println!(
                         "    RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
-                        frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                        frame.rsi,
+                        frame.rdi,
+                        frame.rbp,
+                        frame.rsp
                     );
                     crate::serial_println!(
                         "    R8={:#018x} R9={:#018x} R10={:#018x} R11={:#018x}",
-                        frame.r8, frame.r9, frame.r10, frame.r11
+                        frame.r8,
+                        frame.r9,
+                        frame.r10,
+                        frame.r11
                     );
                     // Immediately repair TSS.RSP0 from per-CPU stack top
                     let (_, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
                     if stack_top >= 0xFFFF_FFFF_8000_0000 {
                         crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu_id, stack_top);
                         crate::arch::x86::syscall_msr::set_kernel_rsp(cpu_id, stack_top);
-                        crate::serial_println!(
-                            "    REPAIRED RSP0={:#018x}", stack_top
-                        );
+                        crate::serial_println!("    REPAIRED RSP0={:#018x}", stack_top);
                     }
                 }
 
                 // Clear DR6 to acknowledge the breakpoint
-                unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+                unsafe {
+                    core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack));
+                }
                 return;
             }
 
@@ -831,8 +1015,8 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     let tid = crate::task::scheduler::debug_current_tid();
 
                     // Check if the new RIP value is corrupt (not in kernel text range)
-                    let is_bad = written_val < 0xFFFF_FFFF_8010_0000
-                              || written_val >= 0xFFFF_FFFF_C000_0000;
+                    let is_bad =
+                        written_val < 0xFFFF_FFFF_8010_0000 || written_val >= 0xFFFF_FFFF_C000_0000;
 
                     if is_bad {
                         crate::serial_println!(
@@ -841,21 +1025,32 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                         );
                         crate::serial_println!(
                             "    RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                            frame.rax, frame.rbx, frame.rcx, frame.rdx
+                            frame.rax,
+                            frame.rbx,
+                            frame.rcx,
+                            frame.rdx
                         );
                         crate::serial_println!(
                             "    RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
-                            frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                            frame.rsi,
+                            frame.rdi,
+                            frame.rbp,
+                            frame.rsp
                         );
                         crate::serial_println!(
                             "    R8={:#018x} R9={:#018x} R10={:#018x} R11={:#018x}",
-                            frame.r8, frame.r9, frame.r10, frame.r11
+                            frame.r8,
+                            frame.r9,
+                            frame.r10,
+                            frame.r11
                         );
                     }
                 }
 
                 // Clear DR6 to acknowledge
-                unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+                unsafe {
+                    core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack));
+                }
                 return;
             }
 
@@ -865,7 +1060,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     // Single-step completed on a debug-attached thread.
                     // Suspend the thread and notify the debugger.
                     let tid = crate::task::scheduler::debug_current_tid();
-                    unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+                    unsafe {
+                        core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack));
+                    }
                     crate::task::scheduler::debug_auto_suspend(
                         tid,
                         crate::task::scheduler::DEBUG_EVENT_SINGLE_STEP,
@@ -878,7 +1075,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 return;
             }
             // Clear DR6 and continue (single-step or breakpoint)
-            unsafe { core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack)); }
+            unsafe {
+                core::arch::asm!("xor {tmp}, {tmp}; mov dr6, {tmp}", tmp = out(reg) _, options(nostack));
+            }
             return;
         }
         3 => {
@@ -893,7 +1092,9 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                     // Adjust the saved RIP in the interrupt frame so the thread resumes
                     // at the breakpoint address (after the debugger restores the original byte).
                     let frame_mut = frame as *const InterruptFrame as *mut InterruptFrame;
-                    unsafe { (*frame_mut).rip = bp_addr; }
+                    unsafe {
+                        (*frame_mut).rip = bp_addr;
+                    }
                     crate::task::scheduler::debug_auto_suspend(
                         tid,
                         crate::task::scheduler::DEBUG_EVENT_BREAKPOINT,
@@ -904,7 +1105,11 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 }
                 // Not debug-attached — kill the thread (unexpected INT3)
                 let dbg_tid = crate::task::scheduler::debug_current_tid();
-                crate::serial_println!("EXCEPTION: Breakpoint (INT3) at RIP={:#018x} (TID={})", frame.rip, dbg_tid);
+                crate::serial_println!(
+                    "EXCEPTION: Breakpoint (INT3) at RIP={:#018x} (TID={})",
+                    frame.rip,
+                    dbg_tid
+                );
                 crate::task::scheduler::exit_current(133);
                 return;
             }
@@ -914,37 +1119,65 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
         6 => {
             let dbg_tid = crate::task::scheduler::debug_current_tid();
             if is_user_mode {
-                crate::serial_println!("EXCEPTION: Invalid opcode at RIP={:#018x} CS={:#x} (TID={})", frame.rip, frame.cs, dbg_tid);
+                crate::serial_println!(
+                    "EXCEPTION: Invalid opcode at RIP={:#018x} CS={:#x} (TID={})",
+                    frame.rip,
+                    frame.cs,
+                    dbg_tid
+                );
                 crate::serial_println!("  User RSP={:#018x}", frame.rsp);
                 crate::serial_println!("  User process fault — terminating thread");
                 crate::task::crash_info::store_crash(dbg_tid, 132, frame);
                 crate::task::scheduler::exit_current(132);
             }
-            if try_kill_faulting_thread(132, frame) { return; }
+            if try_kill_faulting_thread(132, frame) {
+                return;
+            }
             // Fatal kernel fault — enter panic mode to halt other CPUs
             crate::drivers::serial::enter_panic_mode();
-            crate::serial_println!("EXCEPTION: Invalid opcode at RIP={:#018x} CS={:#x} (debug_tid={})", frame.rip, frame.cs, dbg_tid);
+            crate::serial_println!(
+                "EXCEPTION: Invalid opcode at RIP={:#018x} CS={:#x} (debug_tid={})",
+                frame.rip,
+                frame.cs,
+                dbg_tid
+            );
             crate::serial_println!(
                 "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                frame.rax, frame.rbx, frame.rcx, frame.rdx
+                frame.rax,
+                frame.rbx,
+                frame.rcx,
+                frame.rdx
             );
             crate::serial_println!(
                 "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
-                frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                frame.rsi,
+                frame.rdi,
+                frame.rbp,
+                frame.rsp
             );
             crate::serial_println!(
                 "  R8={:#018x}  R9={:#018x}  R10={:#018x} R11={:#018x}",
-                frame.r8, frame.r9, frame.r10, frame.r11
+                frame.r8,
+                frame.r9,
+                frame.r10,
+                frame.r11
             );
             crate::serial_println!(
                 "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
-                frame.r12, frame.r13, frame.r14, frame.r15
+                frame.r12,
+                frame.r13,
+                frame.r14,
+                frame.r15
             );
             // Last syscall diagnostics
             {
                 let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
                 let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
-                crate::serial_println!("  LastSC={} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
+                crate::serial_println!(
+                    "  LastSC={} ({})",
+                    last_sc,
+                    crate::syscall::table::syscall_name(last_sc)
+                );
             }
             // Stack location diagnostics
             {
@@ -952,13 +1185,20 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
                 let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
                 crate::serial_println!("  Frame addr={:#018x} CPU={}", frame_addr, cpu_id);
-                crate::serial_println!("  Expected stack=[{:#018x}..{:#018x}]", stack_bottom, stack_top);
+                crate::serial_println!(
+                    "  Expected stack=[{:#018x}..{:#018x}]",
+                    stack_bottom,
+                    stack_top
+                );
                 if stack_bottom != 0 && (frame_addr < stack_bottom || frame_addr > stack_top) {
                     crate::serial_println!("  CRITICAL: Frame is OUTSIDE kernel stack bounds!");
                 }
             }
             // Dump stack (only if RSP is aligned and in kernel range)
-            if frame.rsp >= 0xFFFF_FFFF_8000_0000 && frame.rsp < 0xFFFF_FFFF_F000_0000 && frame.rsp & 7 == 0 {
+            if frame.rsp >= 0xFFFF_FFFF_8000_0000
+                && frame.rsp < 0xFFFF_FFFF_F000_0000
+                && frame.rsp & 7 == 0
+            {
                 let stack_ptr = frame.rsp as *const u64;
                 crate::serial_println!("  Stack dump (from RSP):");
                 for i in 0..16 {
@@ -970,8 +1210,12 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             crate::serial_println!("  RBP chain:");
             let mut bp = frame.rbp;
             for _ in 0..8 {
-                if bp < 0xFFFF_FFFF_8000_0000 || bp > 0xFFFF_FFFF_D100_0000 { break; }
-                if bp & 7 != 0 { break; } // Misaligned — corrupt frame pointer
+                if bp < 0xFFFF_FFFF_8000_0000 || bp > 0xFFFF_FFFF_D100_0000 {
+                    break;
+                }
+                if bp & 7 != 0 {
+                    break;
+                } // Misaligned — corrupt frame pointer
                 let ret_addr = unsafe { *((bp + 8) as *const u64) };
                 let prev_bp = unsafe { *(bp as *const u64) };
                 crate::serial_println!("    RBP={:#018x} RET={:#018x}", bp, ret_addr);
@@ -979,7 +1223,11 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             }
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "Invalid Opcode (#UD)");
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
         }
         7 => {
             // #NM — Device Not Available (CR0.TS set)
@@ -990,10 +1238,18 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             }
             // Kernel never uses FPU (soft-float) — #NM in kernel is a bug
             crate::drivers::serial::enter_panic_mode();
-            crate::serial_println!("EXCEPTION: #NM Device Not Available at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
+            crate::serial_println!(
+                "EXCEPTION: #NM Device Not Available at RIP={:#018x} CS={:#x}",
+                frame.rip,
+                frame.cs
+            );
             crate::serial_println!("  FATAL: unexpected #NM in kernel — halting");
             crate::drivers::rsod::show_exception(frame, "Device Not Available (#NM)");
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
         }
         8 => {
             crate::drivers::serial::enter_panic_mode();
@@ -1002,49 +1258,81 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             let percpu_krsp = crate::arch::x86::syscall_msr::get_kernel_rsp(cpu_id);
             crate::serial_println!(
                 "EXCEPTION: Double fault! CPU={} TSS.RSP0={:#018x} PERCPU.krsp={:#018x}",
-                cpu_id, tss_rsp0, percpu_krsp,
+                cpu_id,
+                tss_rsp0,
+                percpu_krsp,
             );
             crate::serial_println!(
                 "  frame.RSP={:#018x} frame.RIP={:#018x} frame.CS={:#06x}",
-                frame.rsp, frame.rip, frame.cs,
+                frame.rsp,
+                frame.rip,
+                frame.cs,
             );
             crate::serial_println!("  FATAL: unrecoverable — halting");
             crate::drivers::rsod::show_exception(frame, "Double Fault (#DF)");
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
         }
         13 => {
             if is_user_mode {
                 crate::serial_println!(
                     "EXCEPTION: General Protection Fault err={:#x} RIP={:#018x} CS={:#x}",
-                    frame.err_code, frame.rip, frame.cs
+                    frame.err_code,
+                    frame.rip,
+                    frame.cs
                 );
                 crate::serial_println!(
                     "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                    frame.rax, frame.rbx, frame.rcx, frame.rdx
+                    frame.rax,
+                    frame.rbx,
+                    frame.rcx,
+                    frame.rdx
                 );
                 crate::serial_println!(
                     "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
-                    frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                    frame.rsi,
+                    frame.rdi,
+                    frame.rbp,
+                    frame.rsp
                 );
                 crate::serial_println!(
                     "  R8={:#018x} R9={:#018x} R10={:#018x} R11={:#018x}",
-                    frame.r8, frame.r9, frame.r10, frame.r11
+                    frame.r8,
+                    frame.r9,
+                    frame.r10,
+                    frame.r11
                 );
                 crate::serial_println!(
                     "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
-                    frame.r12, frame.r13, frame.r14, frame.r15
+                    frame.r12,
+                    frame.r13,
+                    frame.r14,
+                    frame.r15
                 );
                 // Print DS/ES captured by ISR stub BEFORE overwrite
                 let (saved_ds, saved_es) = unsafe { (SAVED_FAULT_DS, SAVED_FAULT_ES) };
-                crate::serial_println!("  DS={:#06x}  ES={:#06x} (at fault time)", saved_ds, saved_es);
+                crate::serial_println!(
+                    "  DS={:#06x}  ES={:#06x} (at fault time)",
+                    saved_ds,
+                    saved_es
+                );
                 if saved_ds == 0 {
                     crate::serial_println!("  !!! DS is NULL — this is the cause of the #GP(0)!");
-                    crate::serial_println!("  DS was not restored to 0x23 before returning to user mode.");
+                    crate::serial_println!(
+                        "  DS was not restored to 0x23 before returning to user mode."
+                    );
                 }
                 {
                     let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
                     let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
-                    crate::serial_println!("  LastSC: {} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
+                    crate::serial_println!(
+                        "  LastSC: {} ({})",
+                        last_sc,
+                        crate::syscall::table::syscall_name(last_sc)
+                    );
                 }
                 dump_iretq_frame(frame.rip, frame.rsp);
                 crate::serial_println!("  User process fault — terminating thread");
@@ -1052,28 +1340,46 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 crate::task::crash_info::store_crash(gpf_tid, 139, frame);
                 crate::task::scheduler::exit_current(139);
             }
-            if try_kill_faulting_thread(139, frame) { return; }
+            if try_kill_faulting_thread(139, frame) {
+                return;
+            }
             crate::drivers::serial::enter_panic_mode();
             crate::serial_println!(
                 "EXCEPTION: General Protection Fault err={:#x} RIP={:#018x} CS={:#x}",
-                frame.err_code, frame.rip, frame.cs
+                frame.err_code,
+                frame.rip,
+                frame.cs
             );
             crate::serial_println!(
                 "  RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                frame.rax, frame.rbx, frame.rcx, frame.rdx
+                frame.rax,
+                frame.rbx,
+                frame.rcx,
+                frame.rdx
             );
             crate::serial_println!(
                 "  RSI={:#018x} RDI={:#018x} RBP={:#018x} RSP={:#018x}",
-                frame.rsi, frame.rdi, frame.rbp, frame.rsp
+                frame.rsi,
+                frame.rdi,
+                frame.rbp,
+                frame.rsp
             );
             {
                 let (saved_ds, saved_es) = unsafe { (SAVED_FAULT_DS, SAVED_FAULT_ES) };
-                crate::serial_println!("  DS={:#06x}  ES={:#06x} (at fault time)", saved_ds, saved_es);
+                crate::serial_println!(
+                    "  DS={:#06x}  ES={:#06x} (at fault time)",
+                    saved_ds,
+                    saved_es
+                );
             }
             {
                 let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
                 let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
-                crate::serial_println!("  LastSC={} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
+                crate::serial_println!(
+                    "  LastSC={} ({})",
+                    last_sc,
+                    crate::syscall::table::syscall_name(last_sc)
+                );
             }
             // Stack location diagnostics
             {
@@ -1081,8 +1387,17 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
                 let tid = crate::task::scheduler::debug_current_tid();
                 let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
-                crate::serial_println!("  Frame addr={:#018x} CPU={} TID={}", frame_addr, cpu_id, tid);
-                crate::serial_println!("  Expected stack=[{:#018x}..{:#018x}]", stack_bottom, stack_top);
+                crate::serial_println!(
+                    "  Frame addr={:#018x} CPU={} TID={}",
+                    frame_addr,
+                    cpu_id,
+                    tid
+                );
+                crate::serial_println!(
+                    "  Expected stack=[{:#018x}..{:#018x}]",
+                    stack_bottom,
+                    stack_top
+                );
                 if stack_bottom != 0 && (frame_addr < stack_bottom || frame_addr > stack_top) {
                     crate::serial_println!("  CRITICAL: Frame is OUTSIDE kernel stack bounds!");
                 }
@@ -1090,11 +1405,17 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             dump_iretq_frame(frame.rip, frame.rsp);
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "General Protection Fault (#GP)");
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
         }
         14 => {
             let cr2: u64;
-            unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2); }
+            unsafe {
+                core::arch::asm!("mov {}, cr2", out(reg) cr2);
+            }
 
             // Demand paging: if page not present and address is in committed heap range,
             // allocate a frame and map it transparently, then retry the instruction.
@@ -1128,47 +1449,71 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             if is_user_mode {
                 let tid = crate::task::scheduler::current_tid();
                 // Detect stack guard page hit (stack overflow)
-                let is_stack_area = crate::memory::user_vmap::fault_diag::STACK_RANGE.contains(&cr2);
+                let is_stack_area =
+                    crate::memory::user_vmap::fault_diag::STACK_RANGE.contains(&cr2);
                 if is_stack_area && err_not_present {
                     crate::serial_println!(
                         "USER STACK OVERFLOW! TID={} addr={:#018x} RIP={:#018x} — killing thread",
-                        tid, cr2, frame.rip
+                        tid,
+                        cr2,
+                        frame.rip
                     );
                 } else {
                     crate::serial_println!(
                         "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x} TID={}",
-                        cr2, frame.rip, frame.err_code, tid
+                        cr2,
+                        frame.rip,
+                        frame.err_code,
+                        tid
                     );
                 }
                 crate::serial_println!(
                     "  CS={:#x} RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                    frame.cs, frame.rax, frame.rbx, frame.rcx, frame.rdx
+                    frame.cs,
+                    frame.rax,
+                    frame.rbx,
+                    frame.rcx,
+                    frame.rdx
                 );
                 crate::serial_println!(
                     "  RSI={:#018x} RDI={:#018x} RBP={:#018x} R8={:#018x}",
-                    frame.rsi, frame.rdi, frame.rbp, frame.r8
+                    frame.rsi,
+                    frame.rdi,
+                    frame.rbp,
+                    frame.r8
                 );
                 crate::serial_println!("  User RSP={:#018x} SS={:#x}", frame.rsp, frame.ss);
                 crate::serial_println!("  User process fault — terminating thread (TID={})", tid);
                 crate::task::crash_info::store_crash(tid, 139, frame);
                 crate::task::scheduler::exit_current(139);
             }
-            if try_kill_faulting_thread(139, frame) { return; }
+            if try_kill_faulting_thread(139, frame) {
+                return;
+            }
 
             // Detect kernel stack guard-page overflow before general diagnostics.
             if err_not_present {
                 let page_va = crate::memory::address::VirtAddr::new(cr2 & !0xFFF);
                 if crate::memory::virtual_mem::read_pte(page_va)
-                    & crate::memory::virtual_mem::PTE_GUARD != 0
+                    & crate::memory::virtual_mem::PTE_GUARD
+                    != 0
                 {
                     crate::drivers::serial::enter_panic_mode();
                     crate::serial_println!(
                         "KERNEL STACK OVERFLOW! guard page hit at {:#018x} RIP={:#018x} TID={}",
-                        cr2, frame.rip,
+                        cr2,
+                        frame.rip,
                         crate::task::scheduler::debug_current_tid()
                     );
-                    crate::drivers::rsod::show_exception(frame, "Kernel Stack Overflow (guard page)");
-                    loop { unsafe { core::arch::asm!("cli; hlt"); } }
+                    crate::drivers::rsod::show_exception(
+                        frame,
+                        "Kernel Stack Overflow (guard page)",
+                    );
+                    loop {
+                        unsafe {
+                            core::arch::asm!("cli; hlt");
+                        }
+                    }
                 }
             }
 
@@ -1177,31 +1522,52 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             crate::drivers::serial::enter_panic_mode();
             crate::serial_println!(
                 "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x}",
-                cr2, frame.rip, frame.err_code
+                cr2,
+                frame.rip,
+                frame.err_code
             );
             crate::serial_println!(
                 "  CS={:#x} RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
-                frame.cs, frame.rax, frame.rbx, frame.rcx, frame.rdx
+                frame.cs,
+                frame.rax,
+                frame.rbx,
+                frame.rcx,
+                frame.rdx
             );
             crate::serial_println!(
                 "  RSI={:#018x} RDI={:#018x} RBP={:#018x}",
-                frame.rsi, frame.rdi, frame.rbp
+                frame.rsi,
+                frame.rdi,
+                frame.rbp
             );
             crate::serial_println!(
                 "  R8={:#018x}  R9={:#018x}  R10={:#018x} R11={:#018x}",
-                frame.r8, frame.r9, frame.r10, frame.r11
+                frame.r8,
+                frame.r9,
+                frame.r10,
+                frame.r11
             );
             crate::serial_println!(
                 "  R12={:#018x} R13={:#018x} R14={:#018x} R15={:#018x}",
-                frame.r12, frame.r13, frame.r14, frame.r15
+                frame.r12,
+                frame.r13,
+                frame.r14,
+                frame.r15
             );
 
             // Corruption diagnostics: detect if the interrupt frame is corrupt
             let valid_cs = matches!(frame.cs, 0x08 | 0x1B | 0x23 | 0x2B);
             if !valid_cs {
-                crate::serial_println!("  WARNING: CS={:#018x} is NOT a valid segment selector!", frame.cs);
-                crate::serial_println!("  This indicates the kernel stack was corrupted when the CPU");
-                crate::serial_println!("  pushed the exception frame (stack overflow into adjacent heap?)");
+                crate::serial_println!(
+                    "  WARNING: CS={:#018x} is NOT a valid segment selector!",
+                    frame.cs
+                );
+                crate::serial_println!(
+                    "  This indicates the kernel stack was corrupted when the CPU"
+                );
+                crate::serial_println!(
+                    "  pushed the exception frame (stack overflow into adjacent heap?)"
+                );
             }
 
             // Stack location diagnostics
@@ -1210,8 +1576,17 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
                 let tid = crate::task::scheduler::debug_current_tid();
                 let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu_id);
-                crate::serial_println!("  Frame addr={:#018x} CPU={} TID={}", frame_addr, cpu_id, tid);
-                crate::serial_println!("  Expected stack=[{:#018x}..{:#018x}]", stack_bottom, stack_top);
+                crate::serial_println!(
+                    "  Frame addr={:#018x} CPU={} TID={}",
+                    frame_addr,
+                    cpu_id,
+                    tid
+                );
+                crate::serial_println!(
+                    "  Expected stack=[{:#018x}..{:#018x}]",
+                    stack_bottom,
+                    stack_top
+                );
                 if stack_bottom != 0 {
                     if frame_addr < stack_bottom || frame_addr > stack_top {
                         crate::serial_println!("  CRITICAL: Frame is OUTSIDE kernel stack bounds!");
@@ -1220,8 +1595,12 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                         let used = stack_top - frame_addr;
                         let total = stack_top - stack_bottom;
                         let pct = if total > 0 { used * 100 / total } else { 0 };
-                        crate::serial_println!("  Stack usage: {} / {} bytes ({}%)",
-                            used, total, pct);
+                        crate::serial_println!(
+                            "  Stack usage: {} / {} bytes ({}%)",
+                            used,
+                            total,
+                            pct
+                        );
                     }
                 }
             }
@@ -1231,34 +1610,60 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             // is not set up in the current CR3, e.g. during early boot or CR3 corruption).
             {
                 let cr3_val: u64;
-                unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_val); }
+                unsafe {
+                    core::arch::asm!("mov {}, cr3", out(reg) cr3_val);
+                }
                 let pml4i = ((cr2 >> 39) & 0x1FF) as usize;
                 let pdpti = ((cr2 >> 30) & 0x1FF) as usize;
-                let pdi   = ((cr2 >> 21) & 0x1FF) as usize;
-                let pti   = ((cr2 >> 12) & 0x1FF) as usize;
-                crate::serial_println!("  CR3={:#018x} PML4[{}] PDPT[{}] PD[{}] PT[{}]",
-                    cr3_val, pml4i, pdpti, pdi, pti);
+                let pdi = ((cr2 >> 21) & 0x1FF) as usize;
+                let pti = ((cr2 >> 12) & 0x1FF) as usize;
+                crate::serial_println!(
+                    "  CR3={:#018x} PML4[{}] PDPT[{}] PD[{}] PT[{}]",
+                    cr3_val,
+                    pml4i,
+                    pdpti,
+                    pdi,
+                    pti
+                );
             }
             dump_iretq_frame(frame.rip, frame.rsp);
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "Page Fault (#PF)");
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
         }
         16 => {
             // #MF — x87 Floating-Point Exception
             if is_user_mode {
-                crate::serial_println!("EXCEPTION: #MF x87 FP Exception at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
+                crate::serial_println!(
+                    "EXCEPTION: #MF x87 FP Exception at RIP={:#018x} CS={:#x}",
+                    frame.rip,
+                    frame.cs
+                );
                 crate::serial_println!("  User process fault — terminating thread");
                 let mf_tid = crate::task::scheduler::debug_current_tid();
                 crate::task::crash_info::store_crash(mf_tid, 136, frame);
                 crate::task::scheduler::exit_current(136);
             }
-            if try_kill_faulting_thread(136, frame) { return; }
+            if try_kill_faulting_thread(136, frame) {
+                return;
+            }
             crate::drivers::serial::enter_panic_mode();
-            crate::serial_println!("EXCEPTION: #MF x87 FP Exception at RIP={:#018x} CS={:#x}", frame.rip, frame.cs);
+            crate::serial_println!(
+                "EXCEPTION: #MF x87 FP Exception at RIP={:#018x} CS={:#x}",
+                frame.rip,
+                frame.cs
+            );
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "x87 FP Exception (#MF)");
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
         }
         19 => {
             // #XM — SIMD Floating-Point Exception
@@ -1271,31 +1676,47 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             if is_user_mode {
                 crate::serial_println!(
                     "EXCEPTION: #XM SIMD FP Exception at RIP={:#018x} CS={:#x} MXCSR={:#010x}",
-                    frame.rip, frame.cs, mxcsr
+                    frame.rip,
+                    frame.cs,
+                    mxcsr
                 );
                 crate::serial_println!("  User process fault — terminating thread");
                 let xm_tid = crate::task::scheduler::debug_current_tid();
                 crate::task::crash_info::store_crash(xm_tid, 136, frame);
                 crate::task::scheduler::exit_current(136);
             }
-            if try_kill_faulting_thread(136, frame) { return; }
+            if try_kill_faulting_thread(136, frame) {
+                return;
+            }
             crate::drivers::serial::enter_panic_mode();
             crate::serial_println!(
                 "EXCEPTION: #XM SIMD FP Exception at RIP={:#018x} CS={:#x} MXCSR={:#010x}",
-                frame.rip, frame.cs, mxcsr
+                frame.rip,
+                frame.cs,
+                mxcsr
             );
             crate::serial_println!("  FATAL: unrecoverable kernel fault — halting");
             crate::drivers::rsod::show_exception(frame, "SIMD FP Exception (#XM)");
-            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+            loop {
+                unsafe {
+                    core::arch::asm!("cli; hlt");
+                }
+            }
         }
         _ => {
-            crate::serial_println!("Unhandled exception #{} at RIP={:#018x}", frame.int_no, frame.rip);
+            crate::serial_println!(
+                "Unhandled exception #{} at RIP={:#018x}",
+                frame.int_no,
+                frame.rip
+            );
             if is_user_mode {
                 let def_tid = crate::task::scheduler::debug_current_tid();
                 crate::task::crash_info::store_crash(def_tid, (128 + frame.int_no) as u32, frame);
                 crate::task::scheduler::exit_current((128 + frame.int_no) as u32);
             }
-            if try_kill_faulting_thread((128 + frame.int_no) as u32, frame) { return; }
+            if try_kill_faulting_thread((128 + frame.int_no) as u32, frame) {
+                return;
+            }
         }
     }
 }
@@ -1347,7 +1768,8 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
                 // Check 2: RSP0 must be within the current thread's stack bounds.
                 // If RSP0 points to a different thread's freed stack, the next
                 // ring 3→0 transition pushes the frame to wrong memory → garbled.
-                let rsp0_bounds_bad = stack_bottom != 0 && stack_top != 0
+                let rsp0_bounds_bad = stack_bottom != 0
+                    && stack_top != 0
                     && (tss_rsp0 < stack_bottom || tss_rsp0 > stack_top);
                 if rsp0_range_bad || rsp0_bounds_bad {
                     let tid = crate::task::scheduler::debug_current_tid();
@@ -1472,7 +1894,10 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
                     );
                     crate::serial_println!(
                         "  TSS.RSP0={:#018x} PERCPU[{}].krsp={:#018x} delta={}",
-                        tss_rsp0, cpu_id, percpu_krsp, bottom.wrapping_sub(frame.rsp),
+                        tss_rsp0,
+                        cpu_id,
+                        percpu_krsp,
+                        bottom.wrapping_sub(frame.rsp),
                     );
                     stack_overflow = true;
                     crate::task::scheduler::try_exit_current(139);

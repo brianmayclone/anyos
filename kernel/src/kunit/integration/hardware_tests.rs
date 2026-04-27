@@ -8,8 +8,8 @@
 //! All tests use `integration::current_ctx()` to access boot-phase results
 //! (ACPI processor/IOAPIC counts, LAPIC address, …) without re-running init.
 
-use crate::kunit::{TestCase, TestContext, TestSuite};
 use crate::kunit::integration::current_ctx;
+use crate::kunit::{TestCase, TestContext, TestSuite};
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::x86::{apic, cpuid, irq, pit};
@@ -18,26 +18,74 @@ pub static SUITE: TestSuite = TestSuite {
     name: "hardware",
     cases: &[
         // ── ACPI ──────────────────────────────────────────────────────────────
-        TestCase { name: "acpi_present",                  run: test_acpi_present },
-        TestCase { name: "acpi_lapic_address_valid",      run: test_lapic_address },
-        TestCase { name: "acpi_processor_count",          run: test_processor_count },
-        TestCase { name: "acpi_ioapic_present",           run: test_ioapic_present },
+        TestCase {
+            name: "acpi_present",
+            run: test_acpi_present,
+        },
+        TestCase {
+            name: "acpi_lapic_address_valid",
+            run: test_lapic_address,
+        },
+        TestCase {
+            name: "acpi_processor_count",
+            run: test_processor_count,
+        },
+        TestCase {
+            name: "acpi_ioapic_present",
+            run: test_ioapic_present,
+        },
         // ── LAPIC / APIC ──────────────────────────────────────────────────────
-        TestCase { name: "apic_initialized",              run: test_apic_initialized },
-        TestCase { name: "apic_lapic_id_readable",        run: test_lapic_id },
+        TestCase {
+            name: "apic_initialized",
+            run: test_apic_initialized,
+        },
+        TestCase {
+            name: "apic_lapic_id_readable",
+            run: test_lapic_id,
+        },
         // ── IRQ table ─────────────────────────────────────────────────────────
-        TestCase { name: "irq_register_dispatch",         run: test_irq_register_dispatch },
-        TestCase { name: "irq_unregistered_returns_false",run: test_irq_unregistered },
-        TestCase { name: "irq_chain_register",            run: test_irq_chain },
+        TestCase {
+            name: "irq_register_dispatch",
+            run: test_irq_register_dispatch,
+        },
+        TestCase {
+            name: "irq_unregistered_returns_false",
+            run: test_irq_unregistered,
+        },
+        TestCase {
+            name: "irq_chain_register",
+            run: test_irq_chain,
+        },
         // ── PIT / TSC ─────────────────────────────────────────────────────────
-        TestCase { name: "pit_tick_hz_correct",           run: test_pit_tick_hz },
-        TestCase { name: "pit_tsc_calibrated",            run: test_tsc_calibrated },
-        TestCase { name: "pit_ticks_advancing",           run: test_ticks_advancing },
-        TestCase { name: "pit_rdtsc_advancing",           run: test_rdtsc_advancing },
+        TestCase {
+            name: "pit_tick_hz_correct",
+            run: test_pit_tick_hz,
+        },
+        TestCase {
+            name: "pit_tsc_calibrated",
+            run: test_tsc_calibrated,
+        },
+        TestCase {
+            name: "pit_ticks_advancing",
+            run: test_ticks_advancing,
+        },
+        TestCase {
+            name: "pit_rdtsc_advancing",
+            run: test_rdtsc_advancing,
+        },
         // ── CPUID ─────────────────────────────────────────────────────────────
-        TestCase { name: "cpuid_sse2_present",            run: test_sse2_present },
-        TestCase { name: "cpuid_vendor_nonzero",          run: test_vendor_nonzero },
-        TestCase { name: "cpuid_fpu_present",             run: test_fpu_present },
+        TestCase {
+            name: "cpuid_sse2_present",
+            run: test_sse2_present,
+        },
+        TestCase {
+            name: "cpuid_vendor_nonzero",
+            run: test_vendor_nonzero,
+        },
+        TestCase {
+            name: "cpuid_fpu_present",
+            run: test_fpu_present,
+        },
     ],
 };
 
@@ -57,7 +105,10 @@ fn test_acpi_present(ctx: &mut TestContext) {
 
 fn test_lapic_address(ctx: &mut TestContext) {
     let c = current_ctx();
-    if !c.acpi_present { ctx.expect_true(true, "skipped (no ACPI)"); return; }
+    if !c.acpi_present {
+        ctx.expect_true(true, "skipped (no ACPI)");
+        return;
+    }
 
     // LAPIC is always mapped in the 0xFEC0_0000 – 0xFEFF_FFFF range on x86.
     ctx.expect_ge(c.lapic_address, 0xFEC0_0000u32, "LAPIC addr >= 0xFEC00000");
@@ -66,17 +117,27 @@ fn test_lapic_address(ctx: &mut TestContext) {
 
 fn test_processor_count(ctx: &mut TestContext) {
     let c = current_ctx();
-    if !c.acpi_present { ctx.expect_true(true, "skipped (no ACPI)"); return; }
+    if !c.acpi_present {
+        ctx.expect_true(true, "skipped (no ACPI)");
+        return;
+    }
 
     // QEMU exposes at least 1 processor; -smp cpus=N exposes N.
-    ctx.expect_ge(c.processor_count, 1usize, "at least 1 processor in ACPI MADT");
+    ctx.expect_ge(
+        c.processor_count,
+        1usize,
+        "at least 1 processor in ACPI MADT",
+    );
     // Sanity upper bound (QEMU max is typically 255).
     ctx.expect_true(c.processor_count <= 256, "processor count <= 256");
 }
 
 fn test_ioapic_present(ctx: &mut TestContext) {
     let c = current_ctx();
-    if !c.acpi_present { ctx.expect_true(true, "skipped (no ACPI)"); return; }
+    if !c.acpi_present {
+        ctx.expect_true(true, "skipped (no ACPI)");
+        return;
+    }
 
     ctx.expect_ge(c.ioapic_count, 1usize, "at least 1 I/O APIC in ACPI MADT");
 }
@@ -88,7 +149,10 @@ fn test_apic_initialized(ctx: &mut TestContext) {
     {
         let c = current_ctx();
         if c.acpi_present {
-            ctx.expect_true(apic::is_initialized(), "LAPIC initialized after ACPI boot path");
+            ctx.expect_true(
+                apic::is_initialized(),
+                "LAPIC initialized after ACPI boot path",
+            );
         } else {
             ctx.expect_true(true, "skipped (no ACPI, using legacy PIC)");
         }
@@ -119,8 +183,7 @@ fn test_irq_register_dispatch(ctx: &mut TestContext) {
     #[cfg(target_arch = "x86_64")]
     {
         // Use IRQ slot 31 (highest, unused in normal operation) as a scratch slot.
-        static FIRED: core::sync::atomic::AtomicBool =
-            core::sync::atomic::AtomicBool::new(false);
+        static FIRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
         fn handler(_irq: u8) {
             FIRED.store(true, core::sync::atomic::Ordering::Relaxed);
@@ -130,10 +193,13 @@ fn test_irq_register_dispatch(ctx: &mut TestContext) {
         let dispatched = irq::dispatch_irq(31);
         irq::unregister_irq(31);
 
-        ctx.expect_true(dispatched, "dispatch_irq returns true when handler registered");
+        ctx.expect_true(
+            dispatched,
+            "dispatch_irq returns true when handler registered",
+        );
         ctx.expect_true(
             FIRED.load(core::sync::atomic::Ordering::Relaxed),
-            "handler was called by dispatch_irq"
+            "handler was called by dispatch_irq",
         );
     }
     #[cfg(not(target_arch = "x86_64"))]
@@ -155,8 +221,7 @@ fn test_irq_unregistered(ctx: &mut TestContext) {
 fn test_irq_chain(ctx: &mut TestContext) {
     #[cfg(target_arch = "x86_64")]
     {
-        static COUNT: core::sync::atomic::AtomicU32 =
-            core::sync::atomic::AtomicU32::new(0);
+        static COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
         fn primary(_irq: u8) {
             COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -173,7 +238,11 @@ fn test_irq_chain(ctx: &mut TestContext) {
 
         let val = COUNT.load(core::sync::atomic::Ordering::Relaxed);
         // Both primary (1) and chain (10) must have fired.
-        ctx.expect_eq(val, 11u32, "primary + chain handler both called (sum == 11)");
+        ctx.expect_eq(
+            val,
+            11u32,
+            "primary + chain handler both called (sum == 11)",
+        );
     }
     #[cfg(not(target_arch = "x86_64"))]
     ctx.expect_true(true, "skipped (non-x86)");
@@ -245,7 +314,7 @@ fn test_sse2_present(ctx: &mut TestContext) {
         // Our boot.asm checks for SSE2 before jumping to Rust; if we reach
         // here SSE2 must be present.
         ctx.expect_true(f.sse2, "SSE2 present (required for boot)");
-        ctx.expect_true(f.sse,  "SSE present");
+        ctx.expect_true(f.sse, "SSE present");
         ctx.expect_true(f.fxsr, "FXSR present (required for FPU save/restore)");
     }
     #[cfg(not(target_arch = "x86_64"))]
@@ -268,7 +337,7 @@ fn test_fpu_present(ctx: &mut TestContext) {
     #[cfg(target_arch = "x86_64")]
     {
         let f = cpuid::features();
-        ctx.expect_true(f.fpu,  "x87 FPU present");
+        ctx.expect_true(f.fpu, "x87 FPU present");
         ctx.expect_true(f.sse3, "SSE3 present (expected in QEMU default CPU)");
     }
     #[cfg(not(target_arch = "x86_64"))]

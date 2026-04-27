@@ -3,10 +3,10 @@
 //! Reads file data by resolving data runs from the unnamed $DATA attribute
 //! of an MFT record.
 
+use super::runlist::DataRun;
+use crate::fs::vfs::FsError;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::fs::vfs::FsError;
-use super::runlist::DataRun;
 
 /// Pre-computed plan for reading an NTFS file's data.
 ///
@@ -32,9 +32,7 @@ impl NtfsReadPlan {
             return Ok(Vec::new());
         }
 
-        let total_bytes: usize = self.runs.iter()
-            .map(|(_, sc)| *sc as usize * 512)
-            .sum();
+        let total_bytes: usize = self.runs.iter().map(|(_, sc)| *sc as usize * 512).sum();
         let mut buf = vec![0u8; total_bytes];
         let mut offset = 0usize;
 
@@ -114,11 +112,7 @@ pub(super) fn read_from_runs(
                 let read_bytes = sector_count * 512;
                 let mut tmp = vec![0u8; read_bytes];
 
-                if !super::storage_read_sectors(
-                    read_lba as u32,
-                    sector_count as u32,
-                    &mut tmp,
-                ) {
+                if !super::storage_read_sectors(read_lba as u32, sector_count as u32, &mut tmp) {
                     return Err(FsError::IoError);
                 }
 

@@ -4,8 +4,8 @@
 //! Enhanced Configuration Access Mechanism (ECAM) for the full 4 KiB PCIe
 //! config space (via MCFG ACPI table).
 
+use crate::drivers::pci::{pci_config_read16, pci_config_read32, pci_config_write32, PciDevice};
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use crate::drivers::pci::{PciDevice, pci_config_read16, pci_config_read32, pci_config_write32};
 
 // ── PCI Capability IDs ──────────────────────────────────────────────────────
 
@@ -15,11 +15,11 @@ const PCI_CAP_PCIE: u8 = 0x10;
 
 // ── MSI Register Offsets (relative to capability pointer) ───────────────────
 
-const MSI_CONTROL: u8 = 0x02;       // Message Control (16-bit)
-const MSI_ADDR_LO: u8 = 0x04;       // Message Address (lower 32 bits)
-const MSI_ADDR_HI: u8 = 0x08;       // Message Address (upper 32 bits, 64-bit only)
-const MSI_DATA_32: u8 = 0x08;       // Message Data (32-bit addressing)
-const MSI_DATA_64: u8 = 0x0C;       // Message Data (64-bit addressing)
+const MSI_CONTROL: u8 = 0x02; // Message Control (16-bit)
+const MSI_ADDR_LO: u8 = 0x04; // Message Address (lower 32 bits)
+const MSI_ADDR_HI: u8 = 0x08; // Message Address (upper 32 bits, 64-bit only)
+const MSI_DATA_32: u8 = 0x08; // Message Data (32-bit addressing)
+const MSI_DATA_64: u8 = 0x0C; // Message Data (64-bit addressing)
 
 // MSI Control register bits
 const MSI_CTRL_ENABLE: u16 = 1 << 0;
@@ -28,9 +28,9 @@ const MSI_CTRL_PERVECTOR_MASK: u16 = 1 << 8;
 
 // ── MSI-X Register Offsets ──────────────────────────────────────────────────
 
-const MSIX_CONTROL: u8 = 0x02;      // Message Control (16-bit)
+const MSIX_CONTROL: u8 = 0x02; // Message Control (16-bit)
 const MSIX_TABLE_OFFSET: u8 = 0x04; // Table Offset + BIR
-const MSIX_PBA_OFFSET: u8 = 0x08;   // PBA Offset + BIR
+const MSIX_PBA_OFFSET: u8 = 0x08; // PBA Offset + BIR
 
 // MSI-X Control bits
 const MSIX_CTRL_ENABLE: u16 = 1 << 15;
@@ -71,8 +71,10 @@ const MSI_VECTOR_COUNT: usize = (MSI_VECTOR_MAX - MSI_VECTOR_BASE + 1) as usize;
 
 /// Bitmap tracking allocated MSI vectors (4 × 64 = 256 bits, more than enough).
 static MSI_ALLOC_BITMAP: [AtomicU64; 4] = [
-    AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 
 /// Handler table for MSI vectors. Index = vector - MSI_VECTOR_BASE.
@@ -101,7 +103,9 @@ pub fn alloc_vector() -> Option<u8> {
 
 /// Free a previously allocated MSI vector.
 pub fn free_vector(vector: u8) {
-    if vector < MSI_VECTOR_BASE || vector > MSI_VECTOR_MAX { return; }
+    if vector < MSI_VECTOR_BASE || vector > MSI_VECTOR_MAX {
+        return;
+    }
     let i = (vector - MSI_VECTOR_BASE) as usize;
     let word = i / 64;
     let bit = i % 64;
@@ -111,7 +115,9 @@ pub fn free_vector(vector: u8) {
 
 /// Register an IRQ handler for an MSI vector.
 pub fn register_msi_handler(vector: u8, handler: fn(u8)) {
-    if vector < MSI_VECTOR_BASE || vector > MSI_VECTOR_MAX { return; }
+    if vector < MSI_VECTOR_BASE || vector > MSI_VECTOR_MAX {
+        return;
+    }
     let i = (vector - MSI_VECTOR_BASE) as usize;
     if i < MSI_HANDLERS.len() {
         MSI_HANDLERS[i].store(handler as u64, Ordering::Release);
@@ -121,9 +127,13 @@ pub fn register_msi_handler(vector: u8, handler: fn(u8)) {
 /// Dispatch an MSI interrupt. Called from the IDT handler for vectors >= MSI_VECTOR_BASE.
 /// Returns true if a handler was found.
 pub fn dispatch_msi(vector: u8) -> bool {
-    if vector < MSI_VECTOR_BASE { return false; }
+    if vector < MSI_VECTOR_BASE {
+        return false;
+    }
     let i = (vector - MSI_VECTOR_BASE) as usize;
-    if i >= MSI_HANDLERS.len() { return false; }
+    if i >= MSI_HANDLERS.len() {
+        return false;
+    }
     let handler_ptr = MSI_HANDLERS[i].load(Ordering::Acquire);
     if handler_ptr != 0 {
         let func: fn(u8) = unsafe { core::mem::transmute(handler_ptr) };
@@ -177,7 +187,8 @@ pub fn find_msi_cap(dev: &PciDevice) -> Option<MsiCapability> {
     while cap_ptr != 0 {
         let cap_id = pci_config_read8(dev.bus, dev.device, dev.function, cap_ptr);
         if cap_id == PCI_CAP_MSI {
-            let control = pci_config_read16(dev.bus, dev.device, dev.function, cap_ptr + MSI_CONTROL);
+            let control =
+                pci_config_read16(dev.bus, dev.device, dev.function, cap_ptr + MSI_CONTROL);
             let is_64bit = control & MSI_CTRL_64BIT != 0;
             let per_vector_mask = control & MSI_CTRL_PERVECTOR_MASK != 0;
             let mmc = ((control >> 1) & 0x07) as u8; // Multiple Message Capable
@@ -211,14 +222,21 @@ pub fn find_msix_cap(dev: &PciDevice) -> Option<MsixCapability> {
     while cap_ptr != 0 {
         let cap_id = pci_config_read8(dev.bus, dev.device, dev.function, cap_ptr);
         if cap_id == PCI_CAP_MSIX {
-            let control = pci_config_read16(dev.bus, dev.device, dev.function, cap_ptr + MSIX_CONTROL);
+            let control =
+                pci_config_read16(dev.bus, dev.device, dev.function, cap_ptr + MSIX_CONTROL);
             let table_size = (control & 0x07FF) + 1;
 
-            let table_raw = pci_config_read32(dev.bus, dev.device, dev.function, cap_ptr + MSIX_TABLE_OFFSET);
+            let table_raw = pci_config_read32(
+                dev.bus,
+                dev.device,
+                dev.function,
+                cap_ptr + MSIX_TABLE_OFFSET,
+            );
             let table_bir = (table_raw & 0x07) as u8;
             let table_offset = table_raw & !0x07;
 
-            let pba_raw = pci_config_read32(dev.bus, dev.device, dev.function, cap_ptr + MSIX_PBA_OFFSET);
+            let pba_raw =
+                pci_config_read32(dev.bus, dev.device, dev.function, cap_ptr + MSIX_PBA_OFFSET);
             let pba_bir = (pba_raw & 0x07) as u8;
             let pba_offset = pba_raw & !0x07;
 
@@ -249,27 +267,47 @@ pub fn enable_msi(dev: &PciDevice) -> Option<u8> {
     let data = msi_data(vector);
 
     // Write message address
-    pci_config_write32(dev.bus, dev.device, dev.function,
-        cap.offset + MSI_ADDR_LO, addr);
+    pci_config_write32(
+        dev.bus,
+        dev.device,
+        dev.function,
+        cap.offset + MSI_ADDR_LO,
+        addr,
+    );
 
     if cap.is_64bit {
         // Upper address = 0 (LAPIC is in low 4 GiB)
-        pci_config_write32(dev.bus, dev.device, dev.function,
-            cap.offset + MSI_ADDR_HI, 0);
+        pci_config_write32(
+            dev.bus,
+            dev.device,
+            dev.function,
+            cap.offset + MSI_ADDR_HI,
+            0,
+        );
         // Write message data
-        pci_config_write32(dev.bus, dev.device, dev.function,
-            cap.offset + MSI_DATA_64, data);
+        pci_config_write32(
+            dev.bus,
+            dev.device,
+            dev.function,
+            cap.offset + MSI_DATA_64,
+            data,
+        );
     } else {
-        pci_config_write32(dev.bus, dev.device, dev.function,
-            cap.offset + MSI_DATA_32, data);
+        pci_config_write32(
+            dev.bus,
+            dev.device,
+            dev.function,
+            cap.offset + MSI_DATA_32,
+            data,
+        );
     }
 
     // Enable MSI: set enable bit, request 1 vector (MME = 000)
-    let mut control = pci_config_read16(dev.bus, dev.device, dev.function,
-        cap.offset + MSI_CONTROL);
+    let mut control =
+        pci_config_read16(dev.bus, dev.device, dev.function, cap.offset + MSI_CONTROL);
     control |= MSI_CTRL_ENABLE;
     control &= !(0x07 << 4); // Clear MME (Multiple Message Enable) = 1 vector
-    // Write control as part of a 32-bit write (cap_id + next + control)
+                             // Write control as part of a 32-bit write (cap_id + next + control)
     let cap_header = pci_config_read32(dev.bus, dev.device, dev.function, cap.offset);
     let new_header = (cap_header & 0x0000_FFFF) | ((control as u32) << 16);
     pci_config_write32(dev.bus, dev.device, dev.function, cap.offset, new_header);
@@ -277,11 +315,23 @@ pub fn enable_msi(dev: &PciDevice) -> Option<u8> {
     // Disable legacy INTx (PCI Command register bit 10)
     let cmd = pci_config_read16(dev.bus, dev.device, dev.function, 0x04);
     let new_cmd = cmd | (1 << 10); // Set Interrupt Disable bit
-    pci_config_write32(dev.bus, dev.device, dev.function, 0x04,
-        (pci_config_read32(dev.bus, dev.device, dev.function, 0x04) & 0xFFFF_0000) | new_cmd as u32);
+    pci_config_write32(
+        dev.bus,
+        dev.device,
+        dev.function,
+        0x04,
+        (pci_config_read32(dev.bus, dev.device, dev.function, 0x04) & 0xFFFF_0000) | new_cmd as u32,
+    );
 
-    crate::serial_println!("  PCI MSI: {}:{}.{} → vector {} (addr={:#010x} data={:#06x})",
-        dev.bus, dev.device, dev.function, vector, addr, data);
+    crate::serial_println!(
+        "  PCI MSI: {}:{}.{} → vector {} (addr={:#010x} data={:#06x})",
+        dev.bus,
+        dev.device,
+        dev.function,
+        vector,
+        addr,
+        data
+    );
 
     Some(vector)
 }
@@ -313,7 +363,10 @@ const ECAM_MAP_VIRT: u64 = 0xFFFF_FFFF_E000_0000;
 /// Set the ECAM base address (called from ACPI MCFG parsing).
 pub fn set_ecam_base(phys_base: u64, start_bus: u8, end_bus: u8) {
     ECAM_BASE.store(phys_base, Ordering::Release);
-    ECAM_BUS_RANGE.store((start_bus as u64) | ((end_bus as u64) << 8), Ordering::Release);
+    ECAM_BUS_RANGE.store(
+        (start_bus as u64) | ((end_bus as u64) << 8),
+        Ordering::Release,
+    );
 
     // Map the ECAM region: each bus needs 256 KiB (32 devices × 8 functions × 4 KiB)
     let bus_count = (end_bus as u64 - start_bus as u64 + 1) as usize;
@@ -337,8 +390,13 @@ pub fn set_ecam_base(phys_base: u64, start_bus: u8, end_bus: u8) {
     }
 
     ECAM_VIRT_BASE.store(ECAM_MAP_VIRT, Ordering::Release);
-    crate::serial_println!("  PCIe ECAM: phys={:#014x} buses {}-{} ({} pages mapped)",
-        phys_base, start_bus, end_bus, pages_to_map);
+    crate::serial_println!(
+        "  PCIe ECAM: phys={:#014x} buses {}-{} ({} pages mapped)",
+        phys_base,
+        start_bus,
+        end_bus,
+        pages_to_map
+    );
 }
 
 /// Read from PCIe extended config space (offsets 0-4095) via ECAM.
@@ -374,7 +432,9 @@ pub fn pcie_config_write32(bus: u8, device: u8, function: u8, offset: u16, value
     }
 
     let virt_base = ECAM_VIRT_BASE.load(Ordering::Acquire);
-    if virt_base == 0 { return; }
+    if virt_base == 0 {
+        return;
+    }
 
     let bus_range = ECAM_BUS_RANGE.load(Ordering::Acquire);
     let start_bus = (bus_range & 0xFF) as u8;
@@ -385,7 +445,9 @@ pub fn pcie_config_write32(bus: u8, device: u8, function: u8, offset: u16, value
         + (function as u64) * 4096
         + (offset as u64);
 
-    unsafe { core::ptr::write_volatile(addr as *mut u32, value); }
+    unsafe {
+        core::ptr::write_volatile(addr as *mut u32, value);
+    }
 }
 
 /// Check if ECAM is available.

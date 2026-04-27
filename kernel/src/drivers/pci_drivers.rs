@@ -16,9 +16,9 @@
 //!
 //! When multiple entries match, the highest specificity wins.
 
-use alloc::boxed::Box;
-use crate::drivers::pci::PciDevice;
 use super::hal::Driver;
+use crate::drivers::pci::PciDevice;
+use alloc::boxed::Box;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // PCI Match Engine
@@ -84,277 +84,422 @@ pub(super) fn matches_pci(rule: &PciMatch, dev: &PciDevice) -> bool {
 
 pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     // ── Vendor/Device matches (specificity 2) ──
-
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1234, device: 0x1111 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1234,
+            device: 0x1111,
+        },
         factory: |pci| crate::drivers::gpu::bochs_probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x80EE, device: 0xBEEF },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x80EE,
+            device: 0xBEEF,
+        },
         factory: |pci| crate::drivers::gpu::vbox_probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x15AD, device: 0x0405 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x15AD,
+            device: 0x0405,
+        },
         factory: |pci| crate::drivers::gpu::vmware_svga::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1050 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1050,
+        },
         factory: |pci| crate::drivers::gpu::virtio_gpu::probe(pci),
         specificity: 2,
     },
     // VirtIO Serial/Console (transitional + modern)
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1003 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1003,
+        },
         factory: |pci| crate::drivers::virtio::serial::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1043 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1043,
+        },
         factory: |pci| crate::drivers::virtio::serial::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x100E },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x100E,
+        },
         factory: |pci| crate::drivers::network::e1000::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x100F },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x100F,
+        },
         factory: |pci| crate::drivers::network::e1000::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1000, device: 0x0030 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1000,
+            device: 0x0030,
+        },
         factory: |pci| crate::drivers::storage::lsi_scsi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x80EE, device: 0x4E56 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x80EE,
+            device: 0x4E56,
+        },
         factory: |pci| crate::drivers::storage::nvme::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x80EE, device: 0xCAFE },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x80EE,
+            device: 0xCAFE,
+        },
         factory: |pci| crate::drivers::vmmdev::probe(pci),
         specificity: 2,
     },
     // VirtIO RNG (transitional + modern)
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1005 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1005,
+        },
         factory: |pci| crate::drivers::virtio::rng::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1044 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1044,
+        },
         factory: |pci| crate::drivers::virtio::rng::probe(pci),
         specificity: 2,
     },
     // VirtIO Net (transitional + modern)
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1000 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1000,
+        },
         factory: |pci| crate::drivers::network::virtio_net::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1041 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1041,
+        },
         factory: |pci| crate::drivers::network::virtio_net::probe(pci),
         specificity: 2,
     },
     // VirtIO Balloon (transitional + modern)
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1002 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1002,
+        },
         factory: |pci| crate::drivers::virtio::balloon::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x1AF4, device: 0x1045 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1045,
+        },
         factory: |pci| crate::drivers::virtio::balloon::probe(pci),
         specificity: 2,
     },
     // Intel i6300ESB Watchdog Timer
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x25AB },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x25AB,
+        },
         factory: |pci| crate::drivers::watchdog::probe(pci),
         specificity: 2,
     },
-
     // ── Realtek RTL8125 2.5 Gigabit Ethernet (gaming boards since 2020) ──
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8125 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x10EC,
+            device: 0x8125,
+        },
         factory: |pci| crate::drivers::network::rtl8125::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x3000 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x10EC,
+            device: 0x3000,
+        },
         factory: |pci| crate::drivers::network::rtl8125::probe(pci),
         specificity: 2,
     },
-
     // ── Realtek RTL8168/8111 Gigabit Ethernet (most common consumer NIC) ──
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8168 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x10EC,
+            device: 0x8168,
+        },
         factory: |pci| crate::drivers::network::rtl8168::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8136 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x10EC,
+            device: 0x8136,
+        },
         factory: |pci| crate::drivers::network::rtl8168::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8161 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x10EC,
+            device: 0x8161,
+        },
         factory: |pci| crate::drivers::network::rtl8168::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x10EC, device: 0x8167 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x10EC,
+            device: 0x8167,
+        },
         factory: |pci| crate::drivers::network::rtl8168::probe(pci),
         specificity: 2,
     },
-
     // ── Intel I225/I226/I210/I211 Ethernet ──
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15F3 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x15F3,
+        },
         factory: |pci| crate::drivers::network::igc::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15F2 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x15F2,
+        },
         factory: |pci| crate::drivers::network::igc::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x1533 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x1533,
+        },
         factory: |pci| crate::drivers::network::igc::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x1539 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x1539,
+        },
         factory: |pci| crate::drivers::network::igc::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15B7 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x15B7,
+        },
         factory: |pci| crate::drivers::network::igc::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15B8 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x15B8,
+        },
         factory: |pci| crate::drivers::network::igc::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x15F9 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x15F9,
+        },
         factory: |pci| crate::drivers::network::igc::probe(pci),
         specificity: 2,
     },
-
     // ── Intel WiFi (AX200, AX201, AX210, AX211, BE200, AC 9260/9560, AC 8265) ──
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x2723 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x2723,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x2725 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x2725,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x06F0 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x06F0,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0xA0F0 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0xA0F0,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x51F0 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x51F0,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x54F0 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x54F0,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x272B },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x272B,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x2526 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x2526,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x9DF0 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x9DF0,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0xA370 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0xA370,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x8086, device: 0x24FD },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x8086,
+            device: 0x24FD,
+        },
         factory: |pci| crate::drivers::network::iwl_wifi::probe(pci),
         specificity: 2,
     },
-
     // ── Qualcomm Atheros WiFi (QCA6174, QCA9377, QCA6390, WCN6855) ──
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x168C, device: 0x003E },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x168C,
+            device: 0x003E,
+        },
         factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x168C, device: 0x0042 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x168C,
+            device: 0x0042,
+        },
         factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x168C, device: 0x0046 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x168C,
+            device: 0x0046,
+        },
         factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x17CB, device: 0x1101 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x17CB,
+            device: 0x1101,
+        },
         factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
         specificity: 2,
     },
     PciDriverEntry {
-        match_rule: PciMatch::VendorDevice { vendor: 0x17CB, device: 0x1103 },
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x17CB,
+            device: 0x1103,
+        },
         factory: |pci| crate::drivers::network::ath_wifi::probe(pci),
         specificity: 2,
     },
-
     // ── Class-based matches (specificity 1) ──
-
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x01, subclass: 0x01 },
+        match_rule: PciMatch::Class {
+            class: 0x01,
+            subclass: 0x01,
+        },
         factory: |pci| crate::drivers::storage::ide_probe(pci),
         specificity: 1,
     },
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x01, subclass: 0x06 },
+        match_rule: PciMatch::Class {
+            class: 0x01,
+            subclass: 0x06,
+        },
         factory: |pci| crate::drivers::storage::ahci::probe(pci),
         specificity: 1,
     },
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x01, subclass: 0x08 },
+        match_rule: PciMatch::Class {
+            class: 0x01,
+            subclass: 0x08,
+        },
         factory: |pci| crate::drivers::storage::nvme::probe(pci),
         specificity: 1,
     },
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x02, subclass: 0x00 },
+        match_rule: PciMatch::Class {
+            class: 0x02,
+            subclass: 0x00,
+        },
         factory: |pci| {
             // Try specific drivers by vendor before falling back to E1000
             match pci.vendor_id {
@@ -369,7 +514,10 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
     },
     // WiFi controllers (PCI class 02:80 = Network controller: Other)
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x02, subclass: 0x80 },
+        match_rule: PciMatch::Class {
+            class: 0x02,
+            subclass: 0x80,
+        },
         factory: |pci| {
             match pci.vendor_id {
                 0x8086 => crate::drivers::network::iwl_wifi::probe(pci),
@@ -380,7 +528,10 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         specificity: 1,
     },
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x03, subclass: 0x00 },
+        match_rule: PciMatch::Class {
+            class: 0x03,
+            subclass: 0x00,
+        },
         factory: |pci| {
             // Try vendor-specific GPU drivers before generic VGA
             match pci.vendor_id {
@@ -393,28 +544,43 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         specificity: 1,
     },
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x04, subclass: 0x01 },
+        match_rule: PciMatch::Class {
+            class: 0x04,
+            subclass: 0x01,
+        },
         factory: |pci| crate::drivers::audio::ac97::probe(pci),
         specificity: 1,
     },
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x04, subclass: 0x03 },
+        match_rule: PciMatch::Class {
+            class: 0x04,
+            subclass: 0x03,
+        },
         factory: |pci| crate::drivers::audio::hda::probe(pci),
         specificity: 1,
     },
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x0C, subclass: 0x03 },
+        match_rule: PciMatch::Class {
+            class: 0x0C,
+            subclass: 0x03,
+        },
         factory: |pci| crate::drivers::usb::probe(pci),
         specificity: 1,
     },
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x0C, subclass: 0x05 },
+        match_rule: PciMatch::Class {
+            class: 0x0C,
+            subclass: 0x05,
+        },
         factory: |pci| crate::drivers::usb::smbus_probe(pci),
         specificity: 1,
     },
     // SD Host Controller (class 08:05) — SD/SDHC/SDXC card readers
     PciDriverEntry {
-        match_rule: PciMatch::Class { class: 0x08, subclass: 0x05 },
+        match_rule: PciMatch::Class {
+            class: 0x08,
+            subclass: 0x05,
+        },
         factory: |pci| crate::drivers::storage::sdhci::probe(pci),
         specificity: 1,
     },

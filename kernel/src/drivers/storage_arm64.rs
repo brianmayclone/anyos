@@ -3,8 +3,8 @@
 //! Reuses the generic block-device registry while routing I/O into the ARM64
 //! VirtIO-BLK transport.
 
-use alloc::vec::Vec;
 use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
 
 #[path = "storage/blockdev.rs"]
 pub mod blockdev;
@@ -22,7 +22,11 @@ pub fn register_device_io(
     read_fn: fn(u8, u32, u32, &mut [u8]) -> bool,
     write_fn: fn(u8, u32, u32, &[u8]) -> bool,
 ) {
-    IO_OVERRIDES.lock().push(DeviceIoHandler { disk_id, read_fn, write_fn });
+    IO_OVERRIDES.lock().push(DeviceIoHandler {
+        disk_id,
+        read_fn,
+        write_fn,
+    });
 }
 
 pub fn unregister_device_io(disk_id: u8) {

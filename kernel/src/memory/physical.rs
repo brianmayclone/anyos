@@ -65,7 +65,7 @@ impl FrameAllocator {
 }
 
 static ALLOCATOR: Spinlock<FrameAllocator> = Spinlock::new(FrameAllocator {
-    bitmap:    [0; BITMAP_SIZE], // Zero-init → lives in BSS
+    bitmap: [0; BITMAP_SIZE], // Zero-init → lives in BSS
     total_frames: 0,
     address_frames: 0,
     free_frames: 0,
@@ -108,7 +108,11 @@ pub fn init(boot_info: &BootInfo) {
     for entry in memory_map {
         if entry.entry_type == E820_TYPE_USABLE {
             let end = entry.base_addr + entry.length;
-            let capped = if end > max_usable_addr { max_usable_addr - entry.base_addr } else { entry.length };
+            let capped = if end > max_usable_addr {
+                max_usable_addr - entry.base_addr
+            } else {
+                entry.length
+            };
             total_usable_bytes += capped;
         }
     }
@@ -161,9 +165,7 @@ pub fn init(boot_info: &BootInfo) {
     // - Kernel region (including BSS which is not in the flat binary)
     //   _kernel_end from linker script is a virtual address; convert to physical
     let kernel_start = PhysAddr::new(boot_info.kernel_phys_start as u64).frame_align_down();
-    let linker_kernel_end_phys = unsafe {
-        (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE
-    };
+    let linker_kernel_end_phys = unsafe { (&_kernel_end as *const u8 as u64) - KERNEL_VIRT_BASE };
     // Use the larger of BootInfo's kernel_phys_end and the linker's _kernel_end
     let kernel_end_phys = if linker_kernel_end_phys > boot_info.kernel_phys_end as u64 {
         linker_kernel_end_phys
@@ -188,11 +190,14 @@ pub fn init(boot_info: &BootInfo) {
 
     crate::serial_verbose_println!(
         "Reserving kernel region: {:#010x} - {:#010x} (includes BSS + stack)",
-        kern_start_val, kern_end_val
+        kern_start_val,
+        kern_end_val
     );
     crate::serial_verbose_println!(
         "Physical memory: {} MiB total, {} frames free ({} MiB)",
-        total_mib, free_frames, free_mib
+        total_mib,
+        free_frames,
+        free_mib
     );
 }
 
@@ -422,4 +427,3 @@ pub fn init_arm64(ram_base: u64, ram_size: u64) {
         kernel_end_phys
     );
 }
-

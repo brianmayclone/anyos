@@ -7,8 +7,8 @@
 
 use alloc::boxed::Box;
 
+use crate::drivers::hal::{Driver, DriverError, DriverType};
 use crate::drivers::pci::PciDevice;
-use crate::drivers::hal::{Driver, DriverType, DriverError};
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::virtual_mem;
 use crate::sync::spinlock::Spinlock;
@@ -50,8 +50,14 @@ pub fn pet() {
         if wdt.enabled {
             // Unlock + write to reload register to restart the countdown.
             unsafe {
-                core::ptr::write_volatile((wdt.mmio_base + ESB_RELOAD_REG) as *mut u32, ESB_UNLOCK1);
-                core::ptr::write_volatile((wdt.mmio_base + ESB_RELOAD_REG) as *mut u32, ESB_UNLOCK2);
+                core::ptr::write_volatile(
+                    (wdt.mmio_base + ESB_RELOAD_REG) as *mut u32,
+                    ESB_UNLOCK1,
+                );
+                core::ptr::write_volatile(
+                    (wdt.mmio_base + ESB_RELOAD_REG) as *mut u32,
+                    ESB_UNLOCK2,
+                );
             }
         }
     }
@@ -67,9 +73,15 @@ pub fn is_enabled() -> bool {
 struct WatchdogDriver;
 
 impl Driver for WatchdogDriver {
-    fn name(&self) -> &str { "i6300ESB Watchdog" }
-    fn driver_type(&self) -> DriverType { DriverType::Char }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        "i6300ESB Watchdog"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Char
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
@@ -86,8 +98,11 @@ impl Driver for WatchdogDriver {
 
 /// Probe and initialize the i6300ESB watchdog timer.
 pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
-    crate::serial_verbose_println!("Watchdog: probing i6300ESB PCI {:04x}:{:04x}",
-        pci.vendor_id, pci.device_id);
+    crate::serial_verbose_println!(
+        "Watchdog: probing i6300ESB PCI {:04x}:{:04x}",
+        pci.vendor_id,
+        pci.device_id
+    );
 
     // Get BAR0 (MMIO).
     let bar0 = pci.bars[0] & 0xFFFFFFF0;
@@ -114,16 +129,28 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
 
     // Set timeout values (Timer1 and Timer2 form a two-stage timeout).
     unsafe {
-        core::ptr::write_volatile((mmio_base + ESB_TIMER1_REG) as *mut u32, DEFAULT_TIMEOUT_TICKS);
-        core::ptr::write_volatile((mmio_base + ESB_TIMER2_REG) as *mut u32, DEFAULT_TIMEOUT_TICKS);
+        core::ptr::write_volatile(
+            (mmio_base + ESB_TIMER1_REG) as *mut u32,
+            DEFAULT_TIMEOUT_TICKS,
+        );
+        core::ptr::write_volatile(
+            (mmio_base + ESB_TIMER2_REG) as *mut u32,
+            DEFAULT_TIMEOUT_TICKS,
+        );
     }
 
     // Enable the watchdog via PCI config space: set bit 1 (timer enable) in config register.
     let config = crate::drivers::pci::pci_config_read32(
-        pci.bus, pci.device, pci.function, ESB_CONFIG_REG as u8
+        pci.bus,
+        pci.device,
+        pci.function,
+        ESB_CONFIG_REG as u8,
     );
     crate::drivers::pci::pci_config_write32(
-        pci.bus, pci.device, pci.function, ESB_CONFIG_REG as u8,
+        pci.bus,
+        pci.device,
+        pci.function,
+        ESB_CONFIG_REG as u8,
         config | 0x02, // Enable timer
     );
 

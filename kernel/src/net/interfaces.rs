@@ -3,10 +3,10 @@
 //! Supports DHCP and static IPv4 configuration per interface.  The parsed
 //! configuration is cached in memory so userspace can query it via syscall.
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use super::types::{Ipv4Addr, Ipv6Addr};
 use crate::sync::spinlock::Spinlock;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 const INTERFACES_PATH: &str = "/System/etc/network/interfaces";
 const MAX_INTERFACES: usize = 8;
@@ -89,18 +89,21 @@ pub fn load_interfaces() {
     // Ensure a loopback interface `lo` is always present.
     let has_lo = configs.iter().any(|c| c.name.as_str() == "lo");
     if !has_lo {
-        configs.insert(0, IfaceConfig {
-            name: String::from("lo"),
-            method: IfaceMethod::Loopback,
-            address: Ipv4Addr([127, 0, 0, 1]),
-            netmask: Ipv4Addr([255, 0, 0, 0]),
-            gateway: Ipv4Addr::ZERO,
-            dns: Ipv4Addr::ZERO,
-            ipv6_address: Ipv6Addr::LOOPBACK,
-            ipv6_prefix_len: 128,
-            ipv6_gateway: Ipv6Addr::UNSPECIFIED,
-            ipv6_dns: Ipv6Addr::UNSPECIFIED,
-        });
+        configs.insert(
+            0,
+            IfaceConfig {
+                name: String::from("lo"),
+                method: IfaceMethod::Loopback,
+                address: Ipv4Addr([127, 0, 0, 1]),
+                netmask: Ipv4Addr([255, 0, 0, 0]),
+                gateway: Ipv4Addr::ZERO,
+                dns: Ipv4Addr::ZERO,
+                ipv6_address: Ipv6Addr::LOOPBACK,
+                ipv6_prefix_len: 128,
+                ipv6_gateway: Ipv6Addr::UNSPECIFIED,
+                ipv6_dns: Ipv6Addr::UNSPECIFIED,
+            },
+        );
     }
 
     let count = configs.len();
@@ -108,7 +111,11 @@ pub fn load_interfaces() {
         let mut table = IFACE_CONFIGS.lock();
         *table = configs;
     }
-    crate::serial_verbose_println!("[OK] Loaded {} interface configs from {}", count, INTERFACES_PATH);
+    crate::serial_verbose_println!(
+        "[OK] Loaded {} interface configs from {}",
+        count,
+        INTERFACES_PATH
+    );
 }
 
 /// Parse the interfaces config text into a list of interface configurations.
@@ -326,7 +333,11 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
             gateway,
             dns,
             ipv6_address: Ipv6Addr(ipv6_addr_bytes),
-            ipv6_prefix_len: if ipv6_prefix_len > 0 { ipv6_prefix_len } else { 64 },
+            ipv6_prefix_len: if ipv6_prefix_len > 0 {
+                ipv6_prefix_len
+            } else {
+                64
+            },
             ipv6_gateway: Ipv6Addr(ipv6_gw_bytes),
             ipv6_dns: Ipv6Addr(ipv6_dns_bytes),
         });
@@ -361,7 +372,12 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
                 push_ip_line(&mut text, "  gateway ", cfg.gateway);
                 push_ip_line(&mut text, "  dns ", cfg.dns);
                 if !cfg.ipv6_address.is_unspecified() {
-                    push_ipv6_addr_line(&mut text, "  ipv6_address ", cfg.ipv6_address, cfg.ipv6_prefix_len);
+                    push_ipv6_addr_line(
+                        &mut text,
+                        "  ipv6_address ",
+                        cfg.ipv6_address,
+                        cfg.ipv6_prefix_len,
+                    );
                     if !cfg.ipv6_gateway.is_unspecified() {
                         push_ipv6_line(&mut text, "  ipv6_gateway ", cfg.ipv6_gateway);
                     }
@@ -396,19 +412,35 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
         }
         if cfg.method == IfaceMethod::Static {
             super::set_config(cfg.address, cfg.netmask, cfg.gateway, cfg.dns);
-            crate::serial_verbose_println!("[NET] Applied static config for {}: {}", cfg.name, cfg.address);
+            crate::serial_verbose_println!(
+                "[NET] Applied static config for {}: {}",
+                cfg.name,
+                cfg.address
+            );
             // Apply IPv6 static config if present
             if !cfg.ipv6_address.is_unspecified() {
-                super::set_config_v6(cfg.ipv6_address, cfg.ipv6_prefix_len,
-                                     cfg.ipv6_gateway, cfg.ipv6_dns);
-                crate::serial_verbose_println!("[NET] Applied IPv6 static config for {}: {}", cfg.name, cfg.ipv6_address);
+                super::set_config_v6(
+                    cfg.ipv6_address,
+                    cfg.ipv6_prefix_len,
+                    cfg.ipv6_gateway,
+                    cfg.ipv6_dns,
+                );
+                crate::serial_verbose_println!(
+                    "[NET] Applied IPv6 static config for {}: {}",
+                    cfg.name,
+                    cfg.ipv6_address
+                );
             }
         }
         // DHCP is handled by the dhcp binary at boot; no immediate action here
         break;
     }
 
-    if write_ok { 0 } else { u32::MAX }
+    if write_ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Helper: append "  <prefix><ip>\n" to a string.
@@ -437,8 +469,8 @@ fn push_ipv6_addr_line(text: &mut String, prefix: &str, ip: Ipv6Addr, prefix_len
 
 /// Write bytes to a file, creating/truncating as needed.
 fn write_file(path: &str, data: &[u8]) -> bool {
-    use crate::fs::vfs;
     use crate::fs::file::FileFlags;
+    use crate::fs::vfs;
     let fd = match vfs::open(path, FileFlags::CREATE_WRITE) {
         Ok(f) => f,
         Err(_) => return false,

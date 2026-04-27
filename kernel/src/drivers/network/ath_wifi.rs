@@ -13,21 +13,21 @@
 //! Like Intel WiFi, these use firmware-driven architecture with host-loaded
 //! firmware blobs (ath10k/ or ath11k/ firmware directory).
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::PhysAddr;
 use crate::memory::{physical, virtual_mem};
 use crate::sync::spinlock::Spinlock;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 // ── Register Offsets ────────────────────────────────────────────────────────
 
-const SOC_GLOBAL_RESET: u32     = 0x0008;
-const SOC_CORE_CTRL: u32       = 0x0000;
-const PCIE_INTR_ENABLE: u32    = 0x0008;
-const PCIE_INTR_CLR: u32       = 0x0014;
-const PCIE_INTR_CAUSE: u32     = 0x000C;
-const SOC_CHIP_ID: u32         = 0x00EC;
+const SOC_GLOBAL_RESET: u32 = 0x0008;
+const SOC_CORE_CTRL: u32 = 0x0000;
+const PCIE_INTR_ENABLE: u32 = 0x0008;
+const PCIE_INTR_CLR: u32 = 0x0014;
+const PCIE_INTR_CAUSE: u32 = 0x000C;
+const SOC_CHIP_ID: u32 = 0x00EC;
 
 // ── Driver State ────────────────────────────────────────────────────────────
 
@@ -44,7 +44,9 @@ static ATH_STATE: Spinlock<Option<AthState>> = Spinlock::new(None);
 
 pub fn init_and_register(pci: &PciDevice) -> bool {
     let bar0 = (pci.bars[0] & !0xF) as u64;
-    if bar0 == 0 { return false; }
+    if bar0 == 0 {
+        return false;
+    }
 
     let cmd = crate::drivers::pci::pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
     crate::drivers::pci::pci_config_write32(pci.bus, pci.device, pci.function, 0x04, cmd | 0x07);
@@ -58,7 +60,11 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
 
     unsafe {
         let chip_id = core::ptr::read_volatile((mmio + SOC_CHIP_ID as u64) as *const u32);
-        crate::serial_println!("  Atheros WiFi: device={:#06x} chip_id={:#010x}", pci.device_id, chip_id);
+        crate::serial_println!(
+            "  Atheros WiFi: device={:#06x} chip_id={:#010x}",
+            pci.device_id,
+            chip_id
+        );
 
         // Disable interrupts
         core::ptr::write_volatile((mmio + PCIE_INTR_ENABLE as u64) as *mut u32, 0);
@@ -77,13 +83,21 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
         };
 
         *ATH_STATE.lock() = Some(AthState {
-            mmio, irq, device_id: pci.device_id, chip_id, mac, fw_loaded: false,
+            mmio,
+            irq,
+            device_id: pci.device_id,
+            chip_id,
+            mac,
+            fw_loaded: false,
         });
 
         // Try MSI
         let _ = crate::drivers::pci_msi::enable_msi(pci);
 
-        crate::serial_println!("[OK] Qualcomm {} WiFi (firmware loading required)", chip_name);
+        crate::serial_println!(
+            "[OK] Qualcomm {} WiFi (firmware loading required)",
+            chip_name
+        );
     }
 
     super::register_wifi(Box::new(AthWifiDriver));
@@ -92,14 +106,24 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
 
 struct AthWifiDriver;
 impl super::NetworkDriver for AthWifiDriver {
-    fn name(&self) -> &str { "Qualcomm Atheros WiFi" }
-    fn transmit(&mut self, _data: &[u8]) -> bool { false }
+    fn name(&self) -> &str {
+        "Qualcomm Atheros WiFi"
+    }
+    fn transmit(&mut self, _data: &[u8]) -> bool {
+        false
+    }
     fn get_mac(&self) -> [u8; 6] {
         ATH_STATE.lock().as_ref().map(|s| s.mac).unwrap_or([0; 6])
     }
-    fn link_up(&self) -> bool { crate::net::wifi::is_connected() }
+    fn link_up(&self) -> bool {
+        crate::net::wifi::is_connected()
+    }
 }
 
 pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
-    if init_and_register(pci) { super::create_hal_driver("Qualcomm Atheros WiFi") } else { None }
+    if init_and_register(pci) {
+        super::create_hal_driver("Qualcomm Atheros WiFi")
+    } else {
+        None
+    }
 }

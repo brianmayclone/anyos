@@ -17,17 +17,17 @@ mod drivers;
 mod fs;
 mod graphics;
 mod ipc;
-pub mod random;
-pub mod time;
 #[cfg(feature = "kunit")]
 mod kunit;
 mod memory;
 mod net;
 mod panic;
+pub mod random;
 pub mod sched_diag;
 mod sync;
 mod syscall;
 mod task;
+pub mod time;
 
 pub use boot::{boot_mode, GPU_ACCEL, GPU_HW_CURSOR, NOGUI, SETUP_MODE};
 

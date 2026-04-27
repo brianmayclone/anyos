@@ -73,10 +73,18 @@ pub unsafe fn free_list_alloc(free_list: *mut *mut FreeBlock, size: usize) -> *m
                 let new_free = (curr as *mut u8).add(size) as *mut FreeBlock;
                 (*new_free).size = remaining;
                 (*new_free).next = (*curr).next;
-                if prev.is_null() { *free_list = new_free; } else { (*prev).next = new_free; }
+                if prev.is_null() {
+                    *free_list = new_free;
+                } else {
+                    (*prev).next = new_free;
+                }
             } else {
                 // Use entire block
-                if prev.is_null() { *free_list = (*curr).next; } else { (*prev).next = (*curr).next; }
+                if prev.is_null() {
+                    *free_list = (*curr).next;
+                } else {
+                    (*prev).next = (*curr).next;
+                }
             }
             return curr as *mut u8;
         }
@@ -96,7 +104,9 @@ pub unsafe fn free_list_alloc(free_list: *mut *mut FreeBlock, size: usize) -> *m
 /// `ptr` must point to a previously allocated block of `size` bytes.
 #[inline]
 pub unsafe fn free_list_dealloc(free_list: *mut *mut FreeBlock, ptr: *mut u8, size: usize) {
-    if ptr.is_null() { return; }
+    if ptr.is_null() {
+        return;
+    }
 
     let block = ptr as *mut FreeBlock;
     (*block).size = size;
@@ -110,7 +120,11 @@ pub unsafe fn free_list_dealloc(free_list: *mut *mut FreeBlock, ptr: *mut u8, si
     }
 
     (*block).next = curr;
-    if prev.is_null() { *free_list = block; } else { (*prev).next = block; }
+    if prev.is_null() {
+        *free_list = block;
+    } else {
+        (*prev).next = block;
+    }
 
     // Coalesce with next
     if !curr.is_null() && (block as *mut u8).add((*block).size) == curr as *mut u8 {
@@ -155,8 +169,8 @@ macro_rules! dll_allocator {
     ($sbrk:path, $mmap:path, $munmap:path) => {
         mod _dll_heap {
             use core::alloc::{GlobalAlloc, Layout};
-            use core::sync::atomic::{AtomicBool, Ordering};
             use core::ptr;
+            use core::sync::atomic::{AtomicBool, Ordering};
 
             struct DllFreeListAlloc;
 
@@ -167,9 +181,13 @@ macro_rules! dll_allocator {
             const MMAP_THRESHOLD: usize = 64 * 1024;
 
             /// Start of the mmap virtual address region.
-            const MMAP_REGION_START: u64 = 0x7000_0000;
+            ///
+            /// SYS_MMAP now returns full 64-bit addresses from the high mmap
+            /// region. DLL allocators must accept the same range as stdlib,
+            /// otherwise large DLL-local allocations are treated as failures.
+            const MMAP_REGION_START: u64 = 0x0000_0001_0000_0000;
             /// End of the mmap virtual address region.
-            const MMAP_REGION_END: u64 = 0xBF00_0000;
+            const MMAP_REGION_END: u64 = 0x0000_4000_0000_0000;
 
             /// Round `size` up to the next page boundary (4 KiB).
             #[inline]
@@ -190,7 +208,9 @@ macro_rules! dll_allocator {
                 let mapped_size = page_align(size) as u32;
                 let mmap_fn: fn(u32) -> u64 = $mmap;
                 let addr = mmap_fn(mapped_size);
-                if $crate::is_syscall_error_u64(addr) { return ptr::null_mut(); }
+                if $crate::is_syscall_error_u64(addr) {
+                    return ptr::null_mut();
+                }
                 if addr < MMAP_REGION_START || addr >= MMAP_REGION_END {
                     let munmap_fn: fn(u64, u32) -> u64 = $munmap;
                     munmap_fn(addr, mapped_size);
@@ -252,7 +272,9 @@ macro_rules! dll_allocator {
                 }
 
                 unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                    if ptr.is_null() { return; }
+                    if ptr.is_null() {
+                        return;
+                    }
 
                     let size = $crate::block_size(layout);
 
@@ -266,11 +288,7 @@ macro_rules! dll_allocator {
 
                     // sbrk allocations go back to the free list.
                     lock();
-                    $crate::free_list_dealloc(
-                        &mut FREE_LIST,
-                        ptr,
-                        size,
-                    );
+                    $crate::free_list_dealloc(&mut FREE_LIST, ptr, size);
                     unlock();
                 }
             }

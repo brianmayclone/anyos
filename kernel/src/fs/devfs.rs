@@ -104,7 +104,9 @@ impl DevFs {
                 file_type: FileType::Device,
                 size: 0,
                 is_symlink: false,
-                uid: 0, gid: 0, mode: 0xFFF,
+                uid: 0,
+                gid: 0,
+                mode: 0xFFF,
             })
             .collect()
     }
@@ -113,12 +115,8 @@ impl DevFs {
     pub fn read(&self, name: &str, buf: &mut [u8]) -> Option<usize> {
         let dev = self.devices.iter().find(|d| d.name == name)?;
         match &dev.backend {
-            DeviceBackend::Callback { read_fn, .. } => {
-                read_fn.map(|f| f(buf))
-            }
-            DeviceBackend::Hal { path } => {
-                crate::drivers::hal::device_read(path, 0, buf).ok()
-            }
+            DeviceBackend::Callback { read_fn, .. } => read_fn.map(|f| f(buf)),
+            DeviceBackend::Hal { path } => crate::drivers::hal::device_read(path, 0, buf).ok(),
             DeviceBackend::Fuse => crate::fs::fuse::devfs_read(buf),
         }
     }
@@ -127,12 +125,8 @@ impl DevFs {
     pub fn write(&self, name: &str, buf: &[u8]) -> Option<usize> {
         let dev = self.devices.iter().find(|d| d.name == name)?;
         match &dev.backend {
-            DeviceBackend::Callback { write_fn, .. } => {
-                write_fn.map(|f| f(buf))
-            }
-            DeviceBackend::Hal { path } => {
-                crate::drivers::hal::device_write(path, 0, buf).ok()
-            }
+            DeviceBackend::Callback { write_fn, .. } => write_fn.map(|f| f(buf)),
+            DeviceBackend::Hal { path } => crate::drivers::hal::device_write(path, 0, buf).ok(),
             DeviceBackend::Fuse => crate::fs::fuse::devfs_write(buf),
         }
     }

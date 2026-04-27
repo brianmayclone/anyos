@@ -87,18 +87,25 @@ pub fn output_lock_acquire() -> (u64, bool) {
             // Probable deadlock — print via direct UART (bypasses this lock)
             unsafe {
                 let msg = b"\r\n!!! SER_LOCK TIMEOUT cpu=";
-                for &c in msg { uart_direct_write_byte(c); }
+                for &c in msg {
+                    uart_direct_write_byte(c);
+                }
                 uart_direct_write_byte(b'0' + cpu);
                 let msg2 = b" owner=";
-                for &c in msg2 { uart_direct_write_byte(c); }
+                for &c in msg2 {
+                    uart_direct_write_byte(c);
+                }
                 let owner = OUTPUT_LOCK_CPU.load(Ordering::Relaxed);
                 if owner == 0xFF {
                     let m = b"NONE";
-                    for &c in m { uart_direct_write_byte(c); }
+                    for &c in m {
+                        uart_direct_write_byte(c);
+                    }
                 } else {
                     uart_direct_write_byte(b'0' + owner);
                 }
-                uart_direct_write_byte(b'\r'); uart_direct_write_byte(b'\n');
+                uart_direct_write_byte(b'\r');
+                uart_direct_write_byte(b'\n');
             }
         }
     }
@@ -182,7 +189,9 @@ static LOG_TOTAL_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
 fn log_push_byte(byte: u8) {
     let pos = LOG_WRITE_POS.load(Ordering::Relaxed) & (LOG_BUF_SIZE - 1);
-    unsafe { *LOG_BUF.as_mut_ptr().add(pos) = byte; }
+    unsafe {
+        *LOG_BUF.as_mut_ptr().add(pos) = byte;
+    }
     LOG_WRITE_POS.store((pos + 1) & (LOG_BUF_SIZE - 1), Ordering::Relaxed);
     LOG_TOTAL_WRITTEN.fetch_add(1, Ordering::Relaxed);
 }
@@ -227,7 +236,9 @@ fn tx_push(byte: u8) -> bool {
     if next == TX_TAIL.load(Ordering::Acquire) & (TX_BUF_SIZE - 1) {
         return false; // full — drop
     }
-    unsafe { *TX_BUF.as_mut_ptr().add(head) = byte; }
+    unsafe {
+        *TX_BUF.as_mut_ptr().add(head) = byte;
+    }
     TX_HEAD.store(next, Ordering::Release);
     true
 }
@@ -266,7 +277,9 @@ fn try_drain(max: usize) {
             break;
         }
         match tx_pop() {
-            Some(b) => unsafe { outb(COM1, b); },
+            Some(b) => unsafe {
+                outb(COM1, b);
+            },
             None => {
                 // Buffer empty — disable THRE interrupt until new data arrives
                 unsafe {
@@ -412,7 +425,9 @@ pub fn write_byte(byte: u8) {
             while !is_transmit_empty() {
                 core::hint::spin_loop();
             }
-            unsafe { outb(COM1, byte); }
+            unsafe {
+                outb(COM1, byte);
+            }
         }
     }
 

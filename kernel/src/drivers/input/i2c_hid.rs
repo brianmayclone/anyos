@@ -15,9 +15,9 @@
 //! 3. HID report parsing (absolute X/Y, multitouch contacts, buttons)
 //! 4. Event injection into the compositor input system
 
+use crate::sync::spinlock::Spinlock;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::sync::spinlock::Spinlock;
 
 // ── I2C-HID Protocol Constants ──────────────────────────────────────────────
 
@@ -157,8 +157,12 @@ fn send_command(dev: &I2cHidDevice, opcode: u8, report_id: u8) {
 /// Initialize an I2C-HID device at the given address.
 /// Called during ACPI device enumeration.
 pub fn probe_device(i2c_addr: u8, desc_register: u16, irq: u8) -> bool {
-    crate::serial_println!("  I2C-HID: probing addr={:#04x} desc_reg={:#06x} irq={}",
-        i2c_addr, desc_register, irq);
+    crate::serial_println!(
+        "  I2C-HID: probing addr={:#04x} desc_reg={:#06x} irq={}",
+        i2c_addr,
+        desc_register,
+        irq
+    );
 
     // Read HID descriptor
     let mut desc_buf = [0u8; 30];
@@ -167,7 +171,8 @@ pub fn probe_device(i2c_addr: u8, desc_register: u16, irq: u8) -> bool {
         return false;
     }
 
-    let hid_desc: I2cHidDescriptor = unsafe { core::ptr::read_unaligned(desc_buf.as_ptr() as *const _) };
+    let hid_desc: I2cHidDescriptor =
+        unsafe { core::ptr::read_unaligned(desc_buf.as_ptr() as *const _) };
 
     // Copy fields out of packed struct to avoid unaligned references
     let desc_len = { hid_desc.desc_length };
@@ -178,28 +183,60 @@ pub fn probe_device(i2c_addr: u8, desc_register: u16, irq: u8) -> bool {
     let rd_length = { hid_desc.report_desc_length };
 
     if desc_len < 30 || bcd_ver == 0 {
-        crate::serial_println!("  I2C-HID: invalid descriptor (len={}, ver={:#06x})",
-            desc_len, bcd_ver);
+        crate::serial_println!(
+            "  I2C-HID: invalid descriptor (len={}, ver={:#06x})",
+            desc_len,
+            bcd_ver
+        );
         return false;
     }
 
-    crate::serial_println!("  I2C-HID: VID={:#06x} PID={:#06x} ver={:#06x} report_desc_len={}",
-        vid, pid, ver, rd_length);
+    crate::serial_println!(
+        "  I2C-HID: VID={:#06x} PID={:#06x} ver={:#06x} report_desc_len={}",
+        vid,
+        pid,
+        ver,
+        rd_length
+    );
 
     // Reset device
-    send_command(&I2cHidDevice {
-        i2c_addr, irq, hid_desc, layout: TouchpadLayout::default(),
-        screen_w: 1920, screen_h: 1080, last_x: 0, last_y: 0, last_touching: false,
-    }, CMD_RESET, 0);
+    send_command(
+        &I2cHidDevice {
+            i2c_addr,
+            irq,
+            hid_desc,
+            layout: TouchpadLayout::default(),
+            screen_w: 1920,
+            screen_h: 1080,
+            last_x: 0,
+            last_y: 0,
+            last_touching: false,
+        },
+        CMD_RESET,
+        0,
+    );
 
     // Small delay for reset
-    for _ in 0..100_000 { core::hint::spin_loop(); }
+    for _ in 0..100_000 {
+        core::hint::spin_loop();
+    }
 
     // Power on
-    send_command(&I2cHidDevice {
-        i2c_addr, irq, hid_desc, layout: TouchpadLayout::default(),
-        screen_w: 1920, screen_h: 1080, last_x: 0, last_y: 0, last_touching: false,
-    }, CMD_SET_POWER, POWER_ON);
+    send_command(
+        &I2cHidDevice {
+            i2c_addr,
+            irq,
+            hid_desc,
+            layout: TouchpadLayout::default(),
+            screen_w: 1920,
+            screen_h: 1080,
+            last_x: 0,
+            last_y: 0,
+            last_touching: false,
+        },
+        CMD_SET_POWER,
+        POWER_ON,
+    );
 
     // Read HID report descriptor
     let rd_len = rd_length as usize;
@@ -223,13 +260,24 @@ pub fn probe_device(i2c_addr: u8, desc_register: u16, irq: u8) -> bool {
         .unwrap_or((1920, 1080));
 
     let dev = I2cHidDevice {
-        i2c_addr, irq, hid_desc, layout,
-        screen_w, screen_h,
-        last_x: 0, last_y: 0, last_touching: false,
+        i2c_addr,
+        irq,
+        hid_desc,
+        layout,
+        screen_w,
+        screen_h,
+        last_x: 0,
+        last_y: 0,
+        last_touching: false,
     };
 
-    crate::serial_println!("[OK] I2C-HID Touchpad: addr={:#04x} ({}x{}, max_contacts={})",
-        i2c_addr, dev.layout.x_max, dev.layout.y_max, dev.layout.max_contacts);
+    crate::serial_println!(
+        "[OK] I2C-HID Touchpad: addr={:#04x} ({}x{}, max_contacts={})",
+        i2c_addr,
+        dev.layout.x_max,
+        dev.layout.y_max,
+        dev.layout.max_contacts
+    );
 
     DEVICES.lock().push(dev);
     true
@@ -251,10 +299,18 @@ fn parse_touchpad_descriptor(desc: &[u8]) -> TouchpadLayout {
     let mut i = 0;
     while i < desc.len() {
         let prefix = desc[i];
-        let bsize = match prefix & 0x03 { 0 => 0, 1 => 1, 2 => 2, 3 => 4, _ => 0 };
+        let bsize = match prefix & 0x03 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3 => 4,
+            _ => 0,
+        };
         let btype = (prefix >> 2) & 0x03;
         let btag = (prefix >> 4) & 0x0F;
-        if i + 1 + bsize > desc.len() { break; }
+        if i + 1 + bsize > desc.len() {
+            break;
+        }
 
         let data = match bsize {
             1 => desc[i + 1] as u32,
@@ -270,43 +326,56 @@ fn parse_touchpad_descriptor(desc: &[u8]) -> TouchpadLayout {
             (1, 7) => report_size = data as u8,
             (1, 9) => report_count = data as u8,
             (2, 0) => usage = data as u8,
-            (0, 10) => { // Collection
-                if usage_page == 0x0D { in_digitizer = true; }
+            (0, 10) => {
+                // Collection
+                if usage_page == 0x0D {
+                    in_digitizer = true;
+                }
             }
-            (0, 8) => { // Input
-                if in_digitizer && data & 0x02 != 0 { // Variable
+            (0, 8) => {
+                // Input
+                if in_digitizer && data & 0x02 != 0 {
+                    // Variable
                     // Map fields based on usage page + usage
-                    if usage_page == 0x01 { // Generic Desktop
+                    if usage_page == 0x01 {
+                        // Generic Desktop
                         match usage {
-                            0x30 => { // X
+                            0x30 => {
+                                // X
                                 layout.x_bit_offset = bit_offset;
                                 layout.x_bit_size = report_size;
                                 layout.x_max = logical_max;
                             }
-                            0x31 => { // Y
+                            0x31 => {
+                                // Y
                                 layout.y_bit_offset = bit_offset;
                                 layout.y_bit_size = report_size;
                                 layout.y_max = logical_max;
                             }
                             _ => {}
                         }
-                    } else if usage_page == 0x0D { // Digitizer
+                    } else if usage_page == 0x0D {
+                        // Digitizer
                         match usage {
-                            0x42 => layout.tip_bit_offset = bit_offset,          // Tip Switch
-                            0x47 => layout.button_bit_offset = bit_offset,       // Confidence / Button
-                            0x30 => { // Tip Pressure
+                            0x42 => layout.tip_bit_offset = bit_offset, // Tip Switch
+                            0x47 => layout.button_bit_offset = bit_offset, // Confidence / Button
+                            0x30 => {
+                                // Tip Pressure
                                 layout.pressure_bit_offset = bit_offset;
                                 layout.pressure_bit_size = report_size;
                             }
-                            0x51 => { // Contact Identifier
+                            0x51 => {
+                                // Contact Identifier
                                 layout.contact_id_bit_offset = bit_offset;
                                 layout.contact_id_bit_size = report_size;
                             }
-                            0x54 => { // Contact Count
+                            0x54 => {
+                                // Contact Count
                                 layout.contact_count_bit_offset = bit_offset;
                                 contact_count_found = true;
                             }
-                            0x55 => { // Contact Count Maximum
+                            0x55 => {
+                                // Contact Count Maximum
                                 layout.max_contacts = data as u8;
                             }
                             _ => {}
@@ -322,7 +391,9 @@ fn parse_touchpad_descriptor(desc: &[u8]) -> TouchpadLayout {
     }
 
     layout.report_size_bytes = (bit_offset + 7) / 8;
-    if layout.max_contacts == 0 { layout.max_contacts = 1; }
+    if layout.max_contacts == 0 {
+        layout.max_contacts = 1;
+    }
     layout
 }
 
@@ -330,10 +401,14 @@ fn parse_touchpad_descriptor(desc: &[u8]) -> TouchpadLayout {
 
 /// Extract a field value from a raw HID report.
 fn extract_field(report: &[u8], bit_offset: u16, bit_size: u8) -> u32 {
-    if bit_size == 0 { return 0; }
+    if bit_size == 0 {
+        return 0;
+    }
     let byte_off = (bit_offset / 8) as usize;
     let bit_in_byte = bit_offset % 8;
-    if byte_off >= report.len() { return 0; }
+    if byte_off >= report.len() {
+        return 0;
+    }
 
     let mut raw: u32 = 0;
     for b in 0..4usize {
@@ -352,11 +427,15 @@ pub fn handle_input_report(i2c_addr: u8, report: &[u8]) {
         None => return,
     };
 
-    if report.len() < 2 { return; }
+    if report.len() < 2 {
+        return;
+    }
 
     // First 2 bytes = report length (I2C-HID framing)
     let report_len = u16::from_le_bytes([report[0], report[1]]) as usize;
-    if report_len < 3 || report_len > report.len() { return; }
+    if report_len < 3 || report_len > report.len() {
+        return;
+    }
     let data = &report[2..report_len]; // Skip length prefix
 
     let layout = &dev.layout;
@@ -380,7 +459,9 @@ pub fn handle_input_report(i2c_addr: u8, report: &[u8]) {
             if dx != 0 || dy != 0 {
                 // Inject as absolute position update (cursor tracks finger delta)
                 let buttons = crate::drivers::input::mouse::MouseButtons {
-                    left: button, right: false, middle: false,
+                    left: button,
+                    right: false,
+                    middle: false,
                 };
                 crate::drivers::input::mouse::inject_absolute(screen_x, screen_y, buttons);
             }
@@ -392,13 +473,17 @@ pub fn handle_input_report(i2c_addr: u8, report: &[u8]) {
     // Tap detection: finger down → up quickly = left click
     if button && !dev.last_touching {
         let buttons = crate::drivers::input::mouse::MouseButtons {
-            left: true, right: false, middle: false,
+            left: true,
+            right: false,
+            middle: false,
         };
         crate::drivers::input::mouse::inject_absolute(dev.last_x, dev.last_y, buttons);
     } else if !touching && dev.last_touching {
         // Release
         let buttons = crate::drivers::input::mouse::MouseButtons {
-            left: false, right: false, middle: false,
+            left: false,
+            right: false,
+            middle: false,
         };
         crate::drivers::input::mouse::inject_absolute(dev.last_x, dev.last_y, buttons);
     }

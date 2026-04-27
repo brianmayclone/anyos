@@ -50,8 +50,7 @@ pub fn wall_clock_unix_secs() -> u64 {
         let ms_now = crate::arch::x86::pit::real_ms_since_boot();
         if !INITIALISED.load(Ordering::Acquire) {
             let t = crate::drivers::rtc::read_time();
-            let unix =
-                ymd_hms_to_unix(t.year, t.month, t.day, t.hours, t.minutes, t.seconds);
+            let unix = ymd_hms_to_unix(t.year, t.month, t.day, t.hours, t.minutes, t.seconds);
             // Races sind harmlos: letzter Schreiber gewinnt, beide sehen die
             // gleiche RTC-Sekunde (±1).
             BOOT_UNIX_SECS.store(unix, Ordering::Relaxed);

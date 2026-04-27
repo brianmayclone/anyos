@@ -16,9 +16,9 @@
 //!
 //! Dynamic channels (CID 0x0040+): allocated per connection.
 
-use alloc::vec::Vec;
-use crate::sync::spinlock::Spinlock;
 use super::BdAddr;
+use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
 
 // ── L2CAP Header ────────────────────────────────────────────────────────────
 
@@ -36,8 +36,8 @@ const L2CAP_INFO_REQ: u8 = 0x0A;
 const L2CAP_INFO_RSP: u8 = 0x0B;
 
 /// Well-known Protocol/Service Multiplexer (PSM) values.
-pub const PSM_SDP: u16 = 0x0001;     // Service Discovery Protocol
-pub const PSM_HID_CONTROL: u16 = 0x0011;  // HID Control Channel
+pub const PSM_SDP: u16 = 0x0001; // Service Discovery Protocol
+pub const PSM_HID_CONTROL: u16 = 0x0011; // HID Control Channel
 pub const PSM_HID_INTERRUPT: u16 = 0x0013; // HID Interrupt Channel
 
 /// Default L2CAP MTU.
@@ -82,7 +82,8 @@ struct L2capChannel {
 static CHANNELS: Spinlock<Vec<L2capChannel>> = Spinlock::new(Vec::new());
 
 /// Next CID to allocate.
-static NEXT_CID: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(FIRST_DYNAMIC_CID);
+static NEXT_CID: core::sync::atomic::AtomicU16 =
+    core::sync::atomic::AtomicU16::new(FIRST_DYNAMIC_CID);
 
 /// Allocate a local CID.
 fn alloc_cid() -> u16 {
@@ -128,14 +129,20 @@ pub fn connect(handle: u16, psm: u16) -> u16 {
     req[11] = (local_cid >> 8) as u8;
 
     send_acl(handle, &req);
-    crate::serial_println!("  L2CAP: connect request PSM={:#06x} local_cid={}", psm, local_cid);
+    crate::serial_println!(
+        "  L2CAP: connect request PSM={:#06x} local_cid={}",
+        psm,
+        local_cid
+    );
 
     local_cid
 }
 
 /// Process incoming L2CAP data on a connection.
 pub fn process_acl(handle: u16, data: &[u8]) {
-    if data.len() < 4 { return; }
+    if data.len() < 4 {
+        return;
+    }
 
     let _l2cap_len = u16::from_le_bytes([data[0], data[1]]);
     let cid = u16::from_le_bytes([data[2], data[3]]);
@@ -146,14 +153,19 @@ pub fn process_acl(handle: u16, data: &[u8]) {
     } else {
         // Data on a dynamic channel — route to the channel's receive buffer
         let mut channels = CHANNELS.lock();
-        if let Some(ch) = channels.iter_mut().find(|c| c.local_cid == cid && c.handle == handle) {
+        if let Some(ch) = channels
+            .iter_mut()
+            .find(|c| c.local_cid == cid && c.handle == handle)
+        {
             ch.rx_buf.extend_from_slice(payload);
         }
     }
 }
 
 fn process_signaling(handle: u16, data: &[u8]) {
-    if data.len() < 4 { return; }
+    if data.len() < 4 {
+        return;
+    }
 
     let code = data[0];
     let _identifier = data[1];
@@ -166,8 +178,12 @@ fn process_signaling(handle: u16, data: &[u8]) {
                 let dest_cid = u16::from_le_bytes([params[0], params[1]]);
                 let source_cid = u16::from_le_bytes([params[2], params[3]]);
                 let result = u16::from_le_bytes([params[4], params[5]]);
-                crate::serial_println!("  L2CAP: connect response dest={} src={} result={}",
-                    dest_cid, source_cid, result);
+                crate::serial_println!(
+                    "  L2CAP: connect response dest={} src={} result={}",
+                    dest_cid,
+                    source_cid,
+                    result
+                );
 
                 if result == 0 {
                     // Success — update channel and send config request
@@ -187,8 +203,11 @@ fn process_signaling(handle: u16, data: &[u8]) {
                     let mut channels = CHANNELS.lock();
                     if let Some(ch) = channels.iter_mut().find(|c| c.local_cid == source_cid) {
                         ch.state = ChannelState::Open;
-                        crate::serial_println!("  L2CAP: channel {} open (PSM={:#06x})",
-                            source_cid, ch.psm);
+                        crate::serial_println!(
+                            "  L2CAP: channel {} open (PSM={:#06x})",
+                            source_cid,
+                            ch.psm
+                        );
                     }
                 }
             }
@@ -199,11 +218,14 @@ fn process_signaling(handle: u16, data: &[u8]) {
                 let source_cid = u16::from_le_bytes([params[2], params[3]]);
                 // Send disconnect response
                 let mut rsp = [0u8; 12];
-                rsp[0] = 4; rsp[1] = 0; // L2CAP length
-                rsp[2] = 1; rsp[3] = 0; // CID = signaling
+                rsp[0] = 4;
+                rsp[1] = 0; // L2CAP length
+                rsp[2] = 1;
+                rsp[3] = 0; // CID = signaling
                 rsp[4] = L2CAP_DISCONNECT_RSP;
                 rsp[5] = data[1]; // Same identifier
-                rsp[6] = 4; rsp[7] = 0; // Param length
+                rsp[6] = 4;
+                rsp[7] = 0; // Param length
                 rsp[8] = (dest_cid & 0xFF) as u8;
                 rsp[9] = (dest_cid >> 8) as u8;
                 rsp[10] = (source_cid & 0xFF) as u8;

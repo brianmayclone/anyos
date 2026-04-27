@@ -68,7 +68,11 @@ fn hw_random_u64() -> Option<u64> {
                 ok = out(reg_byte) ok,
             );
         }
-        if ok != 0 { Some(val) } else { None }
+        if ok != 0 {
+            Some(val)
+        } else {
+            None
+        }
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -76,7 +80,11 @@ fn hw_random_u64() -> Option<u64> {
         unsafe {
             core::arch::asm!("mrs {}, s3_3_c2_c4_0", out(reg) val, options(nomem, nostack));
         }
-        if val != 0 { Some(val) } else { None }
+        if val != 0 {
+            Some(val)
+        } else {
+            None
+        }
     }
 }
 

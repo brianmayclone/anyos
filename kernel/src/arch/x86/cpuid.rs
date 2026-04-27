@@ -195,7 +195,9 @@ pub fn detect() {
     }
 
     // Store and mark detected
-    unsafe { FEATURES = f; }
+    unsafe {
+        FEATURES = f;
+    }
     DETECTED.store(true, Ordering::Release);
     HAS_MWAIT.store(f.mwait, Ordering::Release);
 
@@ -212,27 +214,44 @@ pub fn detect() {
 
     // Log results
     crate::serial_verbose_println!("[OK] CPUID features detected:");
-    crate::serial_verbose_println!("  FPU={} SSE={} SSE2={} FXSR={}", f.fpu, f.sse, f.sse2, f.fxsr);
+    crate::serial_verbose_println!(
+        "  FPU={} SSE={} SSE2={} FXSR={}",
+        f.fpu,
+        f.sse,
+        f.sse2,
+        f.fxsr
+    );
     crate::serial_verbose_println!(
         "  SSE3={} SSSE3={} SSE4.1={} SSE4.2={}",
-        f.sse3, f.ssse3, f.sse4_1, f.sse4_2
+        f.sse3,
+        f.ssse3,
+        f.sse4_1,
+        f.sse4_2
     );
     crate::serial_verbose_println!(
         "  AVX={} AVX2={} AES-NI={} XSAVE={}",
-        f.avx, f.avx2, f.aes_ni, f.xsave
+        f.avx,
+        f.avx2,
+        f.aes_ni,
+        f.xsave
     );
     crate::serial_verbose_println!(
         "  NX={} SYSCALL={} PCID={} RDRAND={} MWAIT={}",
-        f.nx, f.syscall, f.pcid, f.rdrand, f.mwait
+        f.nx,
+        f.syscall,
+        f.pcid,
+        f.rdrand,
+        f.mwait
     );
     crate::serial_verbose_println!(
         "  ERMS={} FSGSBASE={} BMI1={} BMI2={} SMEP={}",
-        f.erms, f.fsgsbase, f.bmi1, f.bmi2, f.smep
+        f.erms,
+        f.fsgsbase,
+        f.bmi1,
+        f.bmi2,
+        f.smep
     );
-    crate::serial_verbose_println!(
-        "  VMX(VT-x)={} SVM(AMD-V)={}",
-        f.vmx, f.svm
-    );
+    crate::serial_verbose_println!("  VMX(VT-x)={} SVM(AMD-V)={}", f.vmx, f.svm);
 
     // Assert mandatory features for x86_64
     assert!(f.fpu, "CPU lacks FPU support (mandatory for x86_64)");
@@ -280,13 +299,21 @@ pub fn hypervisor_tsc_hz() -> Option<u64> {
         hv_vendor[8..12].copy_from_slice(&hdx.to_le_bytes());
 
         let hv_str = core::str::from_utf8(&hv_vendor).unwrap_or("???");
-        crate::serial_verbose_println!("  Hypervisor: \"{}\" (max leaf {:#x})", hv_str, max_hv_leaf);
+        crate::serial_verbose_println!(
+            "  Hypervisor: \"{}\" (max leaf {:#x})",
+            hv_str,
+            max_hv_leaf
+        );
 
         // VirtualBox: leaf 0x40000010 → EAX = TSC freq in kHz
         if &hv_vendor == b"VBoxVBoxVBox" && max_hv_leaf >= 0x40000010 {
             let (tsc_khz, apic_khz, _, _) = cpuid(0x40000010, 0);
             if tsc_khz > 0 {
-                crate::serial_verbose_println!("  VBox CPUID: TSC={}kHz, APIC={}kHz", tsc_khz, apic_khz);
+                crate::serial_verbose_println!(
+                    "  VBox CPUID: TSC={}kHz, APIC={}kHz",
+                    tsc_khz,
+                    apic_khz
+                );
                 return Some(tsc_khz as u64 * 1000);
             }
         }
@@ -326,8 +353,13 @@ pub fn hypervisor_tsc_hz() -> Option<u64> {
         let (denom, numer, crystal_hz, _) = cpuid(0x15, 0);
         if denom > 0 && numer > 0 && crystal_hz > 0 {
             let tsc_hz = crystal_hz as u64 * numer as u64 / denom as u64;
-            crate::serial_verbose_println!("  CPUID 0x15: crystal={}Hz, ratio={}/{}, TSC={}Hz",
-                crystal_hz, numer, denom, tsc_hz);
+            crate::serial_verbose_println!(
+                "  CPUID 0x15: crystal={}Hz, ratio={}/{}, TSC={}Hz",
+                crystal_hz,
+                numer,
+                denom,
+                tsc_hz
+            );
             return Some(tsc_hz);
         }
     }

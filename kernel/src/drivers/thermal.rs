@@ -13,9 +13,9 @@
 //!
 //! All temperatures are reported in units of 0.1 °C (e.g. 450 = 45.0 °C).
 
-use alloc::vec::Vec;
-use crate::sync::spinlock::Spinlock;
 use crate::drivers::pci::PciDevice;
+use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
 
 // ── MSR Addresses ─────────────────────────────────────────────────────────────
 
@@ -110,7 +110,10 @@ pub fn init(pci_devices: &[PciDevice]) {
     for addr in 0x48u8..=0x4F {
         if crate::drivers::smbus::quick_write(addr) {
             sources.push(ThermalSource::Lm75(addr));
-            crate::serial_verbose_println!("  Thermal: LM75/TMP75 detected at SMBus addr {:#04x}", addr);
+            crate::serial_verbose_println!(
+                "  Thermal: LM75/TMP75 detected at SMBus addr {:#04x}",
+                addr
+            );
         }
     }
 
@@ -129,7 +132,10 @@ pub fn read_all() -> Vec<ThermalReading> {
     let mut readings = Vec::with_capacity(sources.len());
     for source in &sources {
         if let Some(temp) = read_source(source) {
-            readings.push(ThermalReading { source: *source, temp_c_x10: temp });
+            readings.push(ThermalReading {
+                source: *source,
+                temp_c_x10: temp,
+            });
         }
     }
     readings
@@ -150,7 +156,7 @@ pub fn read_cpu_temp_standalone() -> Option<i32> {
     // Try Intel first
     match cpu_vendor() {
         CpuVendor::Intel => read_source(&ThermalSource::IntelCpu(0)),
-        CpuVendor::Amd   => read_source(&ThermalSource::AmdCpu(0)),
+        CpuVendor::Amd => read_source(&ThermalSource::AmdCpu(0)),
         CpuVendor::Unknown => None,
     }
 }

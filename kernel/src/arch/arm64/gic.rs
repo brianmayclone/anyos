@@ -107,17 +107,17 @@ pub fn init_cpu(cpu: usize) {
     unsafe {
         // Wake up redistributor
         let waker_offset = 0x14; // GICR_WAKER
-        let waker = core::ptr::read_volatile(
-            (GICR_BASE + cpu * GICR_STRIDE + waker_offset) as *const u32
-        );
+        let waker =
+            core::ptr::read_volatile((GICR_BASE + cpu * GICR_STRIDE + waker_offset) as *const u32);
         core::ptr::write_volatile(
             (GICR_BASE + cpu * GICR_STRIDE + waker_offset) as *mut u32,
-            waker & !(1 << 1) // Clear ProcessorSleep
+            waker & !(1 << 1), // Clear ProcessorSleep
         );
         // Wait for ChildrenAsleep to clear
-        while core::ptr::read_volatile(
-            (GICR_BASE + cpu * GICR_STRIDE + waker_offset) as *const u32
-        ) & (1 << 2) != 0 {
+        while core::ptr::read_volatile((GICR_BASE + cpu * GICR_STRIDE + waker_offset) as *const u32)
+            & (1 << 2)
+            != 0
+        {
             core::hint::spin_loop();
         }
 
@@ -171,7 +171,8 @@ pub fn eoi_current() {
     unsafe {
         core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) intid, options(nostack));
     }
-    if intid < 1020 { // Valid interrupt (not spurious)
+    if intid < 1020 {
+        // Valid interrupt (not spurious)
         eoi(intid as u32);
     }
 }
@@ -188,7 +189,9 @@ pub fn acknowledge() -> u32 {
 /// Enable a specific PPI/SGI at the redistributor (interrupts 0-31).
 pub fn enable_ppi(cpu: usize, ppi_id: u32) {
     if ppi_id < 32 {
-        unsafe { gicr_write(cpu, GICR_SGI_ISENABLER0, 1 << ppi_id); }
+        unsafe {
+            gicr_write(cpu, GICR_SGI_ISENABLER0, 1 << ppi_id);
+        }
     }
 }
 

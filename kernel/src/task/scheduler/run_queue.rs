@@ -109,7 +109,10 @@ impl RunQueue {
                 let bit = word.trailing_zeros() as usize;
                 let p = word_idx * 64 + bit;
                 word &= word - 1;
-                count += self.levels[p].iter().filter(|&&queued| queued == tid).count();
+                count += self.levels[p]
+                    .iter()
+                    .filter(|&&queued| queued == tid)
+                    .count();
             }
         }
         count

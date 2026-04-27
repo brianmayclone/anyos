@@ -50,10 +50,14 @@ static NEXT_PCID: AtomicU16 = AtomicU16::new(1);
 
 /// Allocate a PCID for a new user process. Returns 0 if PCID is disabled.
 pub fn allocate_pcid() -> u16 {
-    if !PCID_ACTIVE.load(Ordering::Relaxed) { return 0; }
+    if !PCID_ACTIVE.load(Ordering::Relaxed) {
+        return 0;
+    }
     loop {
         let pcid = NEXT_PCID.fetch_add(1, Ordering::Relaxed);
-        if pcid > 0 && pcid < 4096 { return pcid; }
+        if pcid > 0 && pcid < 4096 {
+            return pcid;
+        }
         // Wrapped — reset to 1 (PCID 0 reserved for kernel)
         NEXT_PCID.store(1, Ordering::Relaxed);
     }
@@ -76,7 +80,9 @@ pub fn enable_pcid() {
     #[cfg(not(target_arch = "x86_64"))]
     return;
     #[cfg(target_arch = "x86_64")]
-    if !crate::arch::x86::cpuid::features().pcid { return; }
+    if !crate::arch::x86::cpuid::features().pcid {
+        return;
+    }
     // CR4.PCIDE can only be set when CR3[11:0] = 0 (PCID 0).
     // Our kernel PML4 is page-aligned, so bits 0-11 are already 0.
     // APs use the kernel CR3 (set in trampoline), which also has PCID 0.
@@ -87,7 +93,9 @@ pub fn enable_pcid() {
         PCID_NOFLUSH_MASK = 1u64 << 63;
     }
     PCID_ACTIVE.store(true, Ordering::Release);
-    crate::serial_verbose_println!("[OK] PCID enabled (CR4.PCIDE=1) — TLB preserved across context switches");
+    crate::serial_verbose_println!(
+        "[OK] PCID enabled (CR4.PCIDE=1) — TLB preserved across context switches"
+    );
 }
 
 /// Page table entry flag: page is present in physical memory.
@@ -124,9 +132,17 @@ pub const PAGE_NX: u64 = 1u64 << 63;
 #[inline]
 pub fn page_nx_flag() -> u64 {
     #[cfg(target_arch = "x86_64")]
-    { if crate::arch::x86::cpuid::features().nx { PAGE_NX } else { 0 } }
+    {
+        if crate::arch::x86::cpuid::features().nx {
+            PAGE_NX
+        } else {
+            0
+        }
+    }
     #[cfg(not(target_arch = "x86_64"))]
-    { PAGE_NX } // ARM64: NX always supported
+    {
+        PAGE_NX
+    } // ARM64: NX always supported
 }
 
 /// Number of entries in a page table (512 for x86-64).
@@ -177,9 +193,7 @@ fn recursive_pt_base(vaddr: VirtAddr) -> u64 {
     let pml4i = vaddr.pml4_index() as u64;
     let pdpti = vaddr.pdpt_index() as u64;
     let pdi = vaddr.pd_index() as u64;
-    sign_extend(
-        (RECURSIVE_INDEX as u64) << 39 | pml4i << 30 | pdpti << 21 | pdi << 12,
-    )
+    sign_extend((RECURSIVE_INDEX as u64) << 39 | pml4i << 30 | pdpti << 21 | pdi << 12)
 }
 
 /// Compute virtual address to access the page directory (level 2) entry for `vaddr`.
@@ -187,10 +201,7 @@ fn recursive_pd_base(vaddr: VirtAddr) -> u64 {
     let pml4i = vaddr.pml4_index() as u64;
     let pdpti = vaddr.pdpt_index() as u64;
     sign_extend(
-        (RECURSIVE_INDEX as u64) << 39
-            | (RECURSIVE_INDEX as u64) << 30
-            | pml4i << 21
-            | pdpti << 12,
+        (RECURSIVE_INDEX as u64) << 39 | (RECURSIVE_INDEX as u64) << 30 | pml4i << 21 | pdpti << 12,
     )
 }
 
@@ -221,10 +232,7 @@ pub fn debug_recursive_pd(vaddr: u64) -> u64 {
     let pml4i = ((vaddr >> 39) & 0x1FF) as u64;
     let pdpti = ((vaddr >> 30) & 0x1FF) as u64;
     sign_extend(
-        (RECURSIVE_INDEX as u64) << 39
-            | (RECURSIVE_INDEX as u64) << 30
-            | pml4i << 21
-            | pdpti << 12,
+        (RECURSIVE_INDEX as u64) << 39 | (RECURSIVE_INDEX as u64) << 30 | pml4i << 21 | pdpti << 12,
     )
 }
 
@@ -233,9 +241,7 @@ pub fn debug_recursive_pt(vaddr: u64) -> u64 {
     let pml4i = ((vaddr >> 39) & 0x1FF) as u64;
     let pdpti = ((vaddr >> 30) & 0x1FF) as u64;
     let pdi = ((vaddr >> 21) & 0x1FF) as u64;
-    sign_extend(
-        (RECURSIVE_INDEX as u64) << 39 | pml4i << 30 | pdpti << 21 | pdi << 12,
-    )
+    sign_extend((RECURSIVE_INDEX as u64) << 39 | pml4i << 30 | pdpti << 21 | pdi << 12)
 }
 
 // PML4 physical address (set during init, used for kernel_cr3)
@@ -259,14 +265,16 @@ pub fn init(boot_info: &BootInfo) {
 
     // Zero the PML4
     for i in 0..ENTRIES_PER_TABLE {
-        unsafe { pml4.add(i).write_volatile(0); }
+        unsafe {
+            pml4.add(i).write_volatile(0);
+        }
     }
 
     // Identity-map first 128 MiB using 4K pages
     // Covers bootloader area, kernel, boot page tables, and DMA buffers
     for mb in 0..64u64 {
         let base = mb * 0x0020_0000; // 2 MiB per iteration
-        // Each 2 MiB range needs: PDPT entry, PD entry, PT with 512 entries
+                                     // Each 2 MiB range needs: PDPT entry, PD entry, PT with 512 entries
 
         // Ensure PDPT exists for PML4[0]
         let pdpt_phys = ensure_table_entry(pml4, 0, PAGE_PRESENT | PAGE_WRITABLE)
@@ -288,7 +296,8 @@ pub fn init(boot_info: &BootInfo) {
         for pte in 0..ENTRIES_PER_TABLE {
             let phys = base + (pte as u64) * FRAME_SIZE as u64;
             unsafe {
-                pt.add(pte).write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
+                pt.add(pte)
+                    .write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
             }
         }
     }
@@ -316,7 +325,8 @@ pub fn init(boot_info: &BootInfo) {
             for pte in 0..ENTRIES_PER_TABLE {
                 let phys = mb * 0x0020_0000 + (pte as u64) * FRAME_SIZE as u64;
                 unsafe {
-                    pt.add(pte).write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
+                    pt.add(pte)
+                        .write_volatile(phys | PAGE_PRESENT | PAGE_WRITABLE);
                 }
             }
 
@@ -328,9 +338,12 @@ pub fn init(boot_info: &BootInfo) {
     }
 
     // Identity-map framebuffer region
-    let fb_addr = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr).read_unaligned() } as u64;
-    let fb_pitch = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_pitch).read_unaligned() } as u64;
-    let fb_height = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_height).read_unaligned() } as u64;
+    let fb_addr =
+        unsafe { core::ptr::addr_of!((*boot_info).framebuffer_addr).read_unaligned() } as u64;
+    let fb_pitch =
+        unsafe { core::ptr::addr_of!((*boot_info).framebuffer_pitch).read_unaligned() } as u64;
+    let fb_height =
+        unsafe { core::ptr::addr_of!((*boot_info).framebuffer_height).read_unaligned() } as u64;
 
     if fb_addr != 0 && fb_pitch != 0 && fb_height != 0 {
         // Map the full visible framebuffer. 4K-ish framebuffers exceed 16 MiB.
@@ -343,8 +356,9 @@ pub fn init(boot_info: &BootInfo) {
         while addr < fb_end {
             let virt = VirtAddr::new(addr);
             // Ensure all 4 levels exist
-            let pdpt_phys = ensure_table_entry(pml4, virt.pml4_index(), PAGE_PRESENT | PAGE_WRITABLE)
-                .expect("OOM: failed to allocate FB PDPT during init");
+            let pdpt_phys =
+                ensure_table_entry(pml4, virt.pml4_index(), PAGE_PRESENT | PAGE_WRITABLE)
+                    .expect("OOM: failed to allocate FB PDPT during init");
             let pdpt = pdpt_phys as *mut u64;
             let pd_phys = ensure_table_entry(pdpt, virt.pdpt_index(), PAGE_PRESENT | PAGE_WRITABLE)
                 .expect("OOM: failed to allocate FB PD during init");
@@ -356,7 +370,8 @@ pub fn init(boot_info: &BootInfo) {
             unsafe {
                 // PAGE_PWT selects PAT1 = Write-Combining (programmed in pat::init).
                 // Without WC, every pixel write goes directly to the bus (~100x slower).
-                pt.add(virt.pt_index()).write_volatile(addr | PAGE_PRESENT | PAGE_WRITABLE | PAGE_PWT);
+                pt.add(virt.pt_index())
+                    .write_volatile(addr | PAGE_PRESENT | PAGE_WRITABLE | PAGE_PWT);
             }
 
             addr += FRAME_SIZE as u64;
@@ -364,7 +379,9 @@ pub fn init(boot_info: &BootInfo) {
 
         crate::serial_verbose_println!(
             "Framebuffer mapped: {:#010x}-{:#010x} ({} pages, WC)",
-            fb_start, fb_end, (fb_end - fb_start) / FRAME_SIZE as u64
+            fb_start,
+            fb_end,
+            (fb_end - fb_start) / FRAME_SIZE as u64
         );
     }
 
@@ -375,7 +392,9 @@ pub fn init(boot_info: &BootInfo) {
     }
 
     // Store PML4 physical address
-    unsafe { PML4_PHYS = pml4_phys.as_u64(); }
+    unsafe {
+        PML4_PHYS = pml4_phys.as_u64();
+    }
 
     // Switch CR3 to new PML4
     unsafe {
@@ -386,7 +405,10 @@ pub fn init(boot_info: &BootInfo) {
         );
     }
 
-    crate::serial_verbose_println!("4-level paging enabled (identity + higher-half at {:#018x})", KERNEL_VIRT_BASE);
+    crate::serial_verbose_println!(
+        "4-level paging enabled (identity + higher-half at {:#018x})",
+        KERNEL_VIRT_BASE
+    );
 
     // Enable PCID after paging is fully set up (CR3 already has PCID 0 = page-aligned)
     enable_pcid();
@@ -430,7 +452,9 @@ fn lock_page_table_mutation() -> u64 {
         // deadlocks and KVM PLE stalls).
         if was_enabled {
             crate::arch::hal::restore_interrupt_state(saved);
-            for _ in 0..4u32 { core::hint::spin_loop(); }
+            for _ in 0..4u32 {
+                core::hint::spin_loop();
+            }
             crate::arch::hal::save_and_disable_interrupts();
         }
     }
@@ -466,7 +490,9 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
                     return false;
                 }
             };
-            pml4_ptr.add(pml4i).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
+            pml4_ptr.add(pml4i).write_volatile(
+                new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER),
+            );
             let pdpt_base = recursive_pdpt_base(virt) as *mut u8;
             asm!("invlpg [{}]", in(reg) pdpt_base, options(nostack, preserves_flags));
             core::ptr::write_bytes(pdpt_base, 0, FRAME_SIZE);
@@ -486,7 +512,9 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
                     return false;
                 }
             };
-            pdpt_ptr.add(pdpti).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
+            pdpt_ptr.add(pdpti).write_volatile(
+                new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER),
+            );
             let pd_base = recursive_pd_base(virt) as *mut u8;
             asm!("invlpg [{}]", in(reg) pd_base, options(nostack, preserves_flags));
             core::ptr::write_bytes(pd_base, 0, FRAME_SIZE);
@@ -506,7 +534,9 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
                     return false;
                 }
             };
-            pd_ptr.add(pdi).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
+            pd_ptr.add(pdi).write_volatile(
+                new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER),
+            );
             let pt_base = recursive_pt_base(virt) as *mut u8;
             asm!("invlpg [{}]", in(reg) pt_base, options(nostack, preserves_flags));
             core::ptr::write_bytes(pt_base, 0, FRAME_SIZE);
@@ -517,7 +547,9 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
 
         // Set the PTE
         let pt_ptr = recursive_pt_base(virt) as *mut u64;
-        pt_ptr.add(pti).write_volatile(phys.as_u64() | flags | PAGE_PRESENT);
+        pt_ptr
+            .add(pti)
+            .write_volatile(phys.as_u64() | flags | PAGE_PRESENT);
 
         // Invalidate TLB for the mapped page
         asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
@@ -778,11 +810,17 @@ pub fn set_guard_page(virt: VirtAddr) {
     unsafe {
         // All intermediate levels must be present
         let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
-        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 { return; }
+        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 {
+            return;
+        }
         let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
-        if pdpt_ptr.add(pdpti).read_volatile() & PAGE_PRESENT == 0 { return; }
+        if pdpt_ptr.add(pdpti).read_volatile() & PAGE_PRESENT == 0 {
+            return;
+        }
         let pd_ptr = recursive_pd_base(virt) as *const u64;
-        if pd_ptr.add(pdi).read_volatile() & PAGE_PRESENT == 0 { return; }
+        if pd_ptr.add(pdi).read_volatile() & PAGE_PRESENT == 0 {
+            return;
+        }
 
         let pt_ptr = recursive_pt_base(virt) as *mut u64;
         let pte = pt_ptr.add(pti).read_volatile();
@@ -812,11 +850,17 @@ pub fn restore_guard_page(virt: VirtAddr) {
 
     unsafe {
         let pml4_ptr = RECURSIVE_PML4_BASE as *const u64;
-        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 { return; }
+        if pml4_ptr.add(pml4i).read_volatile() & PAGE_PRESENT == 0 {
+            return;
+        }
         let pdpt_ptr = recursive_pdpt_base(virt) as *const u64;
-        if pdpt_ptr.add(pdpti).read_volatile() & PAGE_PRESENT == 0 { return; }
+        if pdpt_ptr.add(pdpti).read_volatile() & PAGE_PRESENT == 0 {
+            return;
+        }
         let pd_ptr = recursive_pd_base(virt) as *const u64;
-        if pd_ptr.add(pdi).read_volatile() & PAGE_PRESENT == 0 { return; }
+        if pd_ptr.add(pdi).read_volatile() & PAGE_PRESENT == 0 {
+            return;
+        }
 
         let pt_ptr = recursive_pt_base(virt) as *mut u64;
         let pte = pt_ptr.add(pti).read_volatile();
@@ -842,7 +886,9 @@ pub fn kernel_cr3() -> u64 {
 /// Get the current page table root physical address (CR3).
 pub fn current_cr3() -> u64 {
     let cr3: u64;
-    unsafe { asm!("mov {}, cr3", out(reg) cr3); }
+    unsafe {
+        asm!("mov {}, cr3", out(reg) cr3);
+    }
     cr3
 }
 
@@ -850,7 +896,8 @@ pub fn current_cr3() -> u64 {
 /// used by `create_user_page_directory`.  Two CPUs calling fork/exec concurrently
 /// would otherwise map the same virtual addresses to different physical frames,
 /// then one CPU unmaps while the other is still writing → SIGSEGV (CR2 ≈ 0xBFF0_xxxx).
-static CREATE_USER_PD_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CREATE_USER_PD_LOCK: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// Create a new PML4 for a user process.
 /// Clones all kernel-space PML4 entries (256-511) from the current PML4.
@@ -860,28 +907,34 @@ static CREATE_USER_PD_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic:
 pub fn create_user_page_directory() -> Option<PhysAddr> {
     let new_pml4_phys = physical::alloc_frame()?;
     let new_pdpt_phys = physical::alloc_frame()?; // PDPT for PML4[0]
-    let new_pd_phys = physical::alloc_frame()?;   // PD for PML4[0]→PDPT[0]
+    let new_pd_phys = physical::alloc_frame()?; // PD for PML4[0]→PDPT[0]
 
     // Temp virtual addresses to write into the new page tables.
     // MUST be outside the heap range (HEAP_START + 512 MiB max) to avoid
     // clobbering heap page mappings when unmapping these temp pages.
     let temp_pml4 = VirtAddr::new(0xFFFF_FFFF_BFF0_0000);
     let temp_pdpt = VirtAddr::new(0xFFFF_FFFF_BFF0_1000);
-    let temp_pd   = VirtAddr::new(0xFFFF_FFFF_BFF0_2000);
+    let temp_pd = VirtAddr::new(0xFFFF_FFFF_BFF0_2000);
 
     // Serialize access to the three fixed temp virtual addresses above.
     // Two CPUs entering here concurrently (e.g. concurrent fork + exec) would
     // both map the SAME virtual addresses to DIFFERENT physical frames, then
     // one would unmap while the other is still writing → page fault.
-    while CREATE_USER_PD_LOCK.compare_exchange_weak(
-        false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed,
-    ).is_err() {
+    while CREATE_USER_PD_LOCK
+        .compare_exchange_weak(
+            false,
+            true,
+            core::sync::atomic::Ordering::Acquire,
+            core::sync::atomic::Ordering::Relaxed,
+        )
+        .is_err()
+    {
         core::hint::spin_loop();
     }
 
     map_page(temp_pml4, new_pml4_phys, PAGE_WRITABLE);
     map_page(temp_pdpt, new_pdpt_phys, PAGE_WRITABLE);
-    map_page(temp_pd,   new_pd_phys,   PAGE_WRITABLE);
+    map_page(temp_pd, new_pd_phys, PAGE_WRITABLE);
 
     let new_pml4 = temp_pml4.as_u64() as *mut u64;
     let new_pdpt_ptr = temp_pdpt.as_u64() as *mut u64;
@@ -900,18 +953,17 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
         // Entries [32+] left empty for DLLs (0x04000000+) and user programs.
         let kernel_pd = recursive_pd_base(VirtAddr::new(0)) as *const u64;
         for i in 0..32 {
-            new_pd_ptr.add(i).write_volatile(kernel_pd.add(i).read_volatile());
+            new_pd_ptr
+                .add(i)
+                .write_volatile(kernel_pd.add(i).read_volatile());
         }
 
         // Wire PDPT[0] → new PD (PAGE_USER so user program pages in PD[64+] work)
-        new_pdpt_ptr.write_volatile(
-            new_pd_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER,
-        );
+        new_pdpt_ptr
+            .write_volatile(new_pd_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
 
         // Wire PML4[0] → new PDPT (PAGE_USER for same reason)
-        new_pml4.write_volatile(
-            new_pdpt_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER,
-        );
+        new_pml4.write_volatile(new_pdpt_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
 
         // Clear remaining user-space entries (1-255)
         for i in 1..256 {
@@ -924,11 +976,14 @@ pub fn create_user_page_directory() -> Option<PhysAddr> {
             if i == RECURSIVE_INDEX {
                 continue;
             }
-            new_pml4.add(i).write_volatile(cur_pml4.add(i).read_volatile());
+            new_pml4
+                .add(i)
+                .write_volatile(cur_pml4.add(i).read_volatile());
         }
 
         // PML4[510]: recursive mapping points to the NEW PML4 itself
-        new_pml4.add(RECURSIVE_INDEX)
+        new_pml4
+            .add(RECURSIVE_INDEX)
             .write_volatile(new_pml4_phys.as_u64() | PAGE_PRESENT | PAGE_WRITABLE);
     }
 
@@ -974,9 +1029,10 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
     let temp_dst = VirtAddr::new(base + 0x1000);
 
     // Acquire per-CPU clone temp lock
-    while CLONE_TEMP_LOCKS[cpu].compare_exchange_weak(
-        false, true, Ordering::Acquire, Ordering::Relaxed
-    ).is_err() {
+    while CLONE_TEMP_LOCKS[cpu]
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         core::hint::spin_loop();
     }
 
@@ -1440,8 +1496,7 @@ pub fn destroy_user_page_directory(pml4_phys: PhysAddr) {
 /// Returns `false` if the address is not in the committed heap range (real fault).
 pub fn handle_heap_demand_page(vaddr: u64) -> bool {
     let heap_start = 0xFFFF_FFFF_8200_0000u64;
-    let committed = crate::memory::heap::HEAP_COMMITTED
-        .load(core::sync::atomic::Ordering::Acquire);
+    let committed = crate::memory::heap::HEAP_COMMITTED.load(core::sync::atomic::Ordering::Acquire);
     let heap_end = heap_start + committed as u64;
 
     if vaddr < heap_start || vaddr >= heap_end {
@@ -1463,9 +1518,10 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
     // the lock, both would allocate frames and the second map_page overwrites
     // the first's PTE, leaking a frame and zeroing live data.
     // ISR 14 runs with IF=0, so this spin won't be interrupted.
-    while DEMAND_PAGE_LOCK.compare_exchange_weak(
-        false, true, Ordering::Acquire, Ordering::Relaxed
-    ).is_err() {
+    while DEMAND_PAGE_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         core::hint::spin_loop();
     }
 

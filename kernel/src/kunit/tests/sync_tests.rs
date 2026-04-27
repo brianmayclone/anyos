@@ -10,14 +10,38 @@ use crate::sync::spinlock::Spinlock;
 pub static SUITE: TestSuite = TestSuite {
     name: "sync",
     cases: &[
-        TestCase { name: "spinlock_basic_lock_unlock",  run: test_basic_lock_unlock },
-        TestCase { name: "spinlock_data_access",        run: test_data_access },
-        TestCase { name: "spinlock_mutation",           run: test_mutation },
-        TestCase { name: "spinlock_bool_value",         run: test_bool_value },
-        TestCase { name: "spinlock_option_value",       run: test_option_value },
-        TestCase { name: "spinlock_counter_increment",  run: test_counter_increment },
-        TestCase { name: "spinlock_independent_locks",  run: test_independent_locks },
-        TestCase { name: "spinlock_array_data",         run: test_array_data },
+        TestCase {
+            name: "spinlock_basic_lock_unlock",
+            run: test_basic_lock_unlock,
+        },
+        TestCase {
+            name: "spinlock_data_access",
+            run: test_data_access,
+        },
+        TestCase {
+            name: "spinlock_mutation",
+            run: test_mutation,
+        },
+        TestCase {
+            name: "spinlock_bool_value",
+            run: test_bool_value,
+        },
+        TestCase {
+            name: "spinlock_option_value",
+            run: test_option_value,
+        },
+        TestCase {
+            name: "spinlock_counter_increment",
+            run: test_counter_increment,
+        },
+        TestCase {
+            name: "spinlock_independent_locks",
+            run: test_independent_locks,
+        },
+        TestCase {
+            name: "spinlock_array_data",
+            run: test_array_data,
+        },
     ],
 };
 

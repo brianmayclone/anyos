@@ -45,6 +45,9 @@ use corefs_core::platform::Timestamp;
 use corefs_core::services::journal::JournalRuntimeState;
 use corefs_core::storage::block_device::BlockDevice;
 use corefs_core::storage::block_store::{AllocatorPolicy, BlockStore};
+use corefs_core::storage::ondisk::journal::Journal;
+use corefs_core::storage::ondisk::journal_capture::JournalCapture;
+use corefs_core::storage::ondisk::journaled::recover_pending_transactions;
 use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
 #[cfg(test)]
 use corefs_core::storage::ondisk::native::save_state_native;
@@ -53,9 +56,6 @@ use corefs_core::storage::ondisk::native::{
     save_state_native_incremental, save_state_native_incremental_dirty_with_slots,
     InodeSlotMapping, InodeSlotWarning,
 };
-use corefs_core::storage::ondisk::journal::Journal;
-use corefs_core::storage::ondisk::journal_capture::JournalCapture;
-use corefs_core::storage::ondisk::journaled::recover_pending_transactions;
 use corefs_core::storage::ondisk::volume::read_sb_with_fallbacks;
 use corefs_core::storage::persisted_state::PersistedState;
 
@@ -70,11 +70,7 @@ use super::block_device::BlockDeviceAdapter;
 /// too so `[corefs]` log readers can tell lost-write / torn-write /
 /// cross-overwrite apart.
 fn log_slot_warning(w: &InodeSlotWarning) {
-    crate::serial_println!(
-        "[corefs] WARN inode slot {} skipped: {}",
-        w.slot,
-        w.reason
-    );
+    crate::serial_println!("[corefs] WARN inode slot {} skipped: {}", w.slot, w.reason);
     if let Some(d) = &w.diagnostic {
         let kind = classify_attr_pattern(&d.first_bytes, d.magic_found, d.magic_expected);
         crate::serial_println!(
@@ -93,27 +89,87 @@ fn log_slot_warning(w: &InodeSlotWarning) {
              {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
              {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
              {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}",
-            b[0],  b[1],  b[2],  b[3],  b[4],  b[5],  b[6],  b[7],
-            b[8],  b[9],  b[10], b[11], b[12], b[13], b[14], b[15],
-            b[16], b[17], b[18], b[19], b[20], b[21], b[22], b[23],
-            b[24], b[25], b[26], b[27], b[28], b[29], b[30], b[31],
+            b[0],
+            b[1],
+            b[2],
+            b[3],
+            b[4],
+            b[5],
+            b[6],
+            b[7],
+            b[8],
+            b[9],
+            b[10],
+            b[11],
+            b[12],
+            b[13],
+            b[14],
+            b[15],
+            b[16],
+            b[17],
+            b[18],
+            b[19],
+            b[20],
+            b[21],
+            b[22],
+            b[23],
+            b[24],
+            b[25],
+            b[26],
+            b[27],
+            b[28],
+            b[29],
+            b[30],
+            b[31],
         );
         crate::serial_println!(
             "          {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
              {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
              {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
              {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}",
-            b[32], b[33], b[34], b[35], b[36], b[37], b[38], b[39],
-            b[40], b[41], b[42], b[43], b[44], b[45], b[46], b[47],
-            b[48], b[49], b[50], b[51], b[52], b[53], b[54], b[55],
-            b[56], b[57], b[58], b[59], b[60], b[61], b[62], b[63],
+            b[32],
+            b[33],
+            b[34],
+            b[35],
+            b[36],
+            b[37],
+            b[38],
+            b[39],
+            b[40],
+            b[41],
+            b[42],
+            b[43],
+            b[44],
+            b[45],
+            b[46],
+            b[47],
+            b[48],
+            b[49],
+            b[50],
+            b[51],
+            b[52],
+            b[53],
+            b[54],
+            b[55],
+            b[56],
+            b[57],
+            b[58],
+            b[59],
+            b[60],
+            b[61],
+            b[62],
+            b[63],
         );
     }
 }
 
 /// Characterise the on-disk pattern so the log line tells at-a-glance
 /// which crash-failure class this is.
-fn classify_attr_pattern(first_bytes: &[u8; 64], magic_found: u32, magic_expected: u32) -> &'static str {
+fn classify_attr_pattern(
+    first_bytes: &[u8; 64],
+    magic_found: u32,
+    magic_expected: u32,
+) -> &'static str {
     if first_bytes.iter().all(|&b| b == 0) {
         return "all-zeros (lost write)";
     }
@@ -965,9 +1021,8 @@ fn compute_next_id(state: &PersistedState) -> u64 {
 fn highest_allocated_data_block(bytes: &[u8], total_blocks: u64) -> u64 {
     let secondary_sb = total_blocks.saturating_sub(1);
     let tertiary_sb = total_blocks / 2;
-    let is_reserved_metadata = |idx: u64| -> bool {
-        idx >= total_blocks || idx == secondary_sb || idx == tertiary_sb
-    };
+    let is_reserved_metadata =
+        |idx: u64| -> bool { idx >= total_blocks || idx == secondary_sb || idx == tertiary_sb };
 
     let mut highest: u64 = 0;
     'scan: for byte_idx in (0..bytes.len()).rev() {
@@ -1041,7 +1096,11 @@ fn compute_first_data_block(
     crate::serial_println!(
         "[corefs] compute_first_data_block: total_blocks={} data_start={} \
          bitmap_highest={} data_extent_highest={} -> next_device_block={}",
-        geom.total_blocks, data_start, bitmap_highest, data_extent_highest, result
+        geom.total_blocks,
+        data_start,
+        bitmap_highest,
+        data_extent_highest,
+        result
     );
     Ok(result)
 }
@@ -1107,7 +1166,10 @@ impl Filesystem for CoreFsDriver {
             .map_err(|e| {
                 crate::serial_println!(
                     "[corefs] read failed inode={} offset={} len={}: {:?}",
-                    inode, offset, buf.len(), e
+                    inode,
+                    offset,
+                    buf.len(),
+                    e
                 );
                 FsError::IoError
             })?;
@@ -1137,7 +1199,11 @@ impl Filesystem for CoreFsDriver {
                 .map_err(|e| {
                     crate::serial_println!(
                         "[corefs] write failed inode={} id={:?} offset={} len={}: {:?}",
-                        inode, id, offset, buf.len(), e
+                        inode,
+                        id,
+                        offset,
+                        buf.len(),
+                        e
                     );
                     FsError::IoError
                 })?;
@@ -1181,15 +1247,31 @@ impl Filesystem for CoreFsDriver {
             FsError::NotFound
         })?;
         let parent = inner.inode_by_id(parent_id).ok_or_else(|| {
-            crate::serial_println!("[corefs] readdir: parent inode not found id={:?}", parent_id);
+            crate::serial_println!(
+                "[corefs] readdir: parent inode not found id={:?}",
+                parent_id
+            );
             FsError::NotFound
         })?;
         if !matches!(parent.kind, InodeKind::Directory) {
-            crate::serial_println!("[corefs] readdir: not a directory path='{}' kind={:?}", parent.path, parent.kind);
+            crate::serial_println!(
+                "[corefs] readdir: not a directory path='{}' kind={:?}",
+                parent.path,
+                parent.kind
+            );
             return Err(FsError::NotADirectory);
         }
-        let child_count = inner.indexes.children_by_parent.get(&parent_id.0).map(|c| c.len()).unwrap_or(0);
-        crate::serial_println!("[corefs] readdir path='{}' children={}", parent.path, child_count);
+        let child_count = inner
+            .indexes
+            .children_by_parent
+            .get(&parent_id.0)
+            .map(|c| c.len())
+            .unwrap_or(0);
+        crate::serial_println!(
+            "[corefs] readdir path='{}' children={}",
+            parent.path,
+            child_count
+        );
         let mut entries: Vec<DirEntry> = Vec::new();
         if let Some(children) = inner.indexes.children_by_parent.get(&parent_id.0) {
             for child_id in children {
@@ -1232,17 +1314,23 @@ impl Filesystem for CoreFsDriver {
         }
 
         // Resolve parent path.
-        let parent_id = inner
-            .inode_id_for_vfs(parent_inode)
-            .ok_or_else(|| {
-                crate::serial_println!("[corefs] create: no parent_id for vfs inode={} name='{}'", parent_inode, name);
-                FsError::NotFound
-            })?;
+        let parent_id = inner.inode_id_for_vfs(parent_inode).ok_or_else(|| {
+            crate::serial_println!(
+                "[corefs] create: no parent_id for vfs inode={} name='{}'",
+                parent_inode,
+                name
+            );
+            FsError::NotFound
+        })?;
         let parent_path = inner
             .inode_by_id(parent_id)
             .map(|i| i.path.clone())
             .ok_or_else(|| {
-                crate::serial_println!("[corefs] create: parent inode not found id={:?} name='{}'", parent_id, name);
+                crate::serial_println!(
+                    "[corefs] create: parent inode not found id={:?} name='{}'",
+                    parent_id,
+                    name
+                );
                 FsError::NotFound
             })?;
         let new_path = join_path(&parent_path, name);
@@ -1577,10 +1665,10 @@ mod tests {
         //   57336, secondary SB at 114671.
         let total_blocks: u64 = 114672;
         let data_start: u64 = 327;
-        let mut set_bits: Vec<u64> = (0..data_start).collect();        // metadata
-        set_bits.extend(data_start..27823);                             // user data
-        set_bits.push(total_blocks / 2);                                // tertiary SB
-        set_bits.push(total_blocks - 1);                                // secondary SB
+        let mut set_bits: Vec<u64> = (0..data_start).collect(); // metadata
+        set_bits.extend(data_start..27823); // user data
+        set_bits.push(total_blocks / 2); // tertiary SB
+        set_bits.push(total_blocks - 1); // secondary SB
         let bitmap_bytes = (total_blocks as usize).div_ceil(8);
         let buf = make_bitmap(bitmap_bytes, &set_bits);
         // Highest real data block is 27822, so tail must be 27823.

@@ -208,7 +208,9 @@ impl VirtQueue {
 
     /// Write the available ring's `idx` field.
     fn set_avail_idx(&self, val: u16) {
-        unsafe { ptr::write_volatile(&mut (*(self.avail_virt as *mut VringAvail)).idx, val); }
+        unsafe {
+            ptr::write_volatile(&mut (*(self.avail_virt as *mut VringAvail)).idx, val);
+        }
     }
 
     /// Write an entry into the available ring.
@@ -266,7 +268,9 @@ impl VirtQueue {
 
         for (i, &(phys, len, flags)) in bufs.iter().enumerate() {
             let idx = self.alloc_desc()?;
-            if i == 0 { head = idx; }
+            if i == 0 {
+                head = idx;
+            }
 
             let d = self.desc_mut(idx);
             d.addr = phys;

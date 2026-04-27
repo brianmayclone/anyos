@@ -79,7 +79,8 @@ fn run_suites(suites: &[&TestSuite]) -> (u32, u32, u32, u32) {
             } else {
                 crate::serial_println!(
                     "    [FAIL] {} — {} assertion(s) failed",
-                    case.name, ctx.failed
+                    case.name,
+                    ctx.failed
                 );
                 cases_fail += 1;
             }
@@ -88,13 +89,17 @@ fn run_suites(suites: &[&TestSuite]) -> (u32, u32, u32, u32) {
         if cases_fail == 0 {
             crate::serial_println!(
                 "  [OK]   {} — {}/{} tests passed",
-                suite.name, cases_pass, cases_pass
+                suite.name,
+                cases_pass,
+                cases_pass
             );
             suites_pass += 1;
         } else {
             crate::serial_println!(
                 "  [FAIL] {} — {}/{} tests failed",
-                suite.name, cases_fail, cases_pass + cases_fail
+                suite.name,
+                cases_fail,
+                cases_pass + cases_fail
             );
             suites_fail += 1;
         }
@@ -110,12 +115,18 @@ fn print_summary(kind: &str, total_pass: u32, total_fail: u32, sp: u32, sf: u32)
     if total_fail == 0 {
         crate::serial_println!(
             "  KUnit {}: ALL PASS — {} suite(s), {} assertion(s)",
-            kind, sp + sf, total
+            kind,
+            sp + sf,
+            total
         );
     } else {
         crate::serial_println!(
             "  KUnit {}: FAIL — {}/{} assertions failed, {}/{} suites failed",
-            kind, total_fail, total, sf, sp + sf
+            kind,
+            total_fail,
+            total,
+            sf,
+            sp + sf
         );
     }
     crate::serial_println!("============================================================");

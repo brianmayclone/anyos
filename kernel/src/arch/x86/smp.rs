@@ -1,10 +1,9 @@
+use crate::arch::x86::acpi::ProcessorInfo;
 /// SMP (Symmetric Multi-Processing) — AP startup and per-CPU management.
 ///
 /// Starts Application Processors (APs) using the INIT-SIPI-SIPI sequence.
 /// Each AP gets its own stack, GDT, TSS, and enters the scheduler loop.
-
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use crate::arch::x86::acpi::ProcessorInfo;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 /// Maximum number of CPUs supported
 pub const MAX_CPUS: usize = 16;
@@ -59,7 +58,7 @@ const AP_TRAMPOLINE_PHYS: u32 = 0x8000;
 ///   0x7F1C: u32 — cpu_id assigned to the AP
 const AP_COMM_BASE: u64 = 0x7F00;
 const AP_COMM_STACK: u64 = AP_COMM_BASE;
-const AP_COMM_CR3: u64   = AP_COMM_BASE + 8;
+const AP_COMM_CR3: u64 = AP_COMM_BASE + 8;
 const AP_COMM_ENTRY: u64 = AP_COMM_BASE + 16;
 const AP_COMM_READY: u64 = AP_COMM_BASE + 24;
 const AP_COMM_CPUID: u64 = AP_COMM_BASE + 28;
@@ -84,7 +83,9 @@ pub fn init_bsp() {
     let has_rdpid = crate::arch::x86::cpuid::features().rdpid;
     HAS_RDPID.store(has_rdpid, Ordering::Release);
     if has_rdpid {
-        unsafe { write_tsc_aux(0); }
+        unsafe {
+            write_tsc_aux(0);
+        }
         crate::serial_verbose_println!("  SMP: RDPID available — fast cpu_id path enabled");
     }
 }
@@ -163,10 +164,15 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
         let start = crate::arch::x86::pit::get_ticks();
         let ready = loop {
             let flag = unsafe { core::ptr::read_volatile(AP_COMM_READY as *const u8) };
-            if flag != 0 { break true; }
+            if flag != 0 {
+                break true;
+            }
             let elapsed = crate::arch::x86::pit::get_ticks().wrapping_sub(start);
             if elapsed > 500 {
-                crate::serial_verbose_println!("  SMP: Timeout after {} ticks waiting for AP", elapsed);
+                crate::serial_verbose_println!(
+                    "  SMP: Timeout after {} ticks waiting for AP",
+                    elapsed
+                );
                 break false;
             }
             core::hint::spin_loop();
@@ -184,15 +190,25 @@ pub fn start_aps(processors: &[ProcessorInfo]) {
             // may already be calling current_cpu_id() → reading CPU_DATA.
             AP_STARTED.fetch_add(1, Ordering::SeqCst);
             CPU_COUNT.store(cpu_id + 1, Ordering::SeqCst);
-            crate::serial_verbose_println!("  SMP: AP (APIC_ID={}) started as CPU#{}", proc_info.apic_id, cpu_id);
+            crate::serial_verbose_println!(
+                "  SMP: AP (APIC_ID={}) started as CPU#{}",
+                proc_info.apic_id,
+                cpu_id
+            );
             cpu_id += 1;
         } else {
-            crate::serial_verbose_println!("  SMP: AP (APIC_ID={}) failed to start", proc_info.apic_id);
+            crate::serial_verbose_println!(
+                "  SMP: AP (APIC_ID={}) failed to start",
+                proc_info.apic_id
+            );
         }
     }
 
-    crate::serial_verbose_println!("  SMP: {} CPU(s) online ({} APs)",
-        cpu_count(), AP_STARTED.load(Ordering::SeqCst));
+    crate::serial_verbose_println!(
+        "  SMP: {} CPU(s) online ({} APs)",
+        cpu_count(),
+        AP_STARTED.load(Ordering::SeqCst)
+    );
 }
 
 /// AP entry point — called by trampoline after switching to long mode.
@@ -227,7 +243,10 @@ extern "C" fn ap_entry() -> ! {
     crate::arch::x86::apic::init_ap();
     crate::debug_println!("  [SMP] AP#{}: LAPIC initialized", cpu_id);
 
-    crate::serial_verbose_println!("  SMP: AP#{} entry point reached, LAPIC+TSS initialized", cpu_id);
+    crate::serial_verbose_println!(
+        "  SMP: AP#{} entry point reached, LAPIC+TSS initialized",
+        cpu_id
+    );
 
     // Configure SYSCALL/SYSRET MSRs for this AP
     crate::arch::x86::syscall_msr::init_ap(cpu_id);
@@ -254,7 +273,11 @@ extern "C" fn ap_entry() -> ! {
     // CPU_DATA (BSP hasn't written it yet), causing the fallback to
     // return 0 and making us act as CPU 0 (wrong per-CPU data, TSS, etc.).
     let lapic_id = crate::arch::x86::apic::lapic_id();
-    crate::debug_println!("  [SMP] AP#{}: registering in CPU_DATA (lapic_id={})", cpu_id, lapic_id);
+    crate::debug_println!(
+        "  [SMP] AP#{}: registering in CPU_DATA (lapic_id={})",
+        cpu_id,
+        lapic_id
+    );
     unsafe {
         CPU_DATA[cpu_id] = PerCpu {
             cpu_id: cpu_id as u8,
@@ -266,7 +289,9 @@ extern "C" fn ap_entry() -> ! {
     }
     // Write IA32_TSC_AUX for RDPID on this AP
     if HAS_RDPID.load(Ordering::Acquire) {
-        unsafe { write_tsc_aux(cpu_id as u32); }
+        unsafe {
+            write_tsc_aux(cpu_id as u32);
+        }
     }
     crate::debug_println!("  [SMP] AP#{}: CPU_DATA set", cpu_id);
 
@@ -279,7 +304,10 @@ extern "C" fn ap_entry() -> ! {
     // this AP until after register_ap_idle + stack switch + sti.
     // Release fence: CPU_DATA, LAPIC_TO_CPU, TSS, GDT, IDT must be
     // globally visible before the BSP observes the ready flag.
-    crate::debug_println!("  [SMP] AP#{}: signaling BSP ready (before idle registration)", cpu_id);
+    crate::debug_println!(
+        "  [SMP] AP#{}: signaling BSP ready (before idle registration)",
+        cpu_id
+    );
     core::sync::atomic::fence(Ordering::SeqCst);
     unsafe {
         core::ptr::write_volatile(AP_COMM_READY as *mut u8, 1);
@@ -299,15 +327,25 @@ extern "C" fn ap_entry() -> ! {
     // interrupt + scheduler + serial formatting under load.
     let idle_kstack = crate::task::scheduler::idle_stack_top(cpu_id);
     if idle_kstack >= 0xFFFF_FFFF_8000_0000 {
-        crate::debug_println!("  [SMP] AP#{}: switching to idle kstack {:#018x}", cpu_id, idle_kstack);
-        unsafe { core::arch::asm!("mov rsp, {}", in(reg) idle_kstack); }
+        crate::debug_println!(
+            "  [SMP] AP#{}: switching to idle kstack {:#018x}",
+            cpu_id,
+            idle_kstack
+        );
+        unsafe {
+            core::arch::asm!("mov rsp, {}", in(reg) idle_kstack);
+        }
     }
 
     // Enter idle loop — the LAPIC timer will trigger scheduling
     crate::debug_println!("  [SMP] AP#{}: entering idle loop (sti + hlt)", cpu_id);
-    unsafe { core::arch::asm!("sti"); }
+    unsafe {
+        core::arch::asm!("sti");
+    }
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }
 
@@ -356,7 +394,9 @@ pub fn current_cpu_id() -> u8 {
         unsafe {
             core::arch::asm!(".byte 0xF3, 0x48, 0x0F, 0xC7, 0xF8", out("rax") id, options(nostack, nomem, preserves_flags));
         }
-        if (id as usize) < MAX_CPUS { return id as u8; }
+        if (id as usize) < MAX_CPUS {
+            return id as u8;
+        }
     }
 
     if !crate::arch::x86::apic::is_initialized() {
@@ -479,7 +519,11 @@ fn tlb_shootdown_ipi_handler(_irq: u8) {
         }
     }
     let _ = TLB_ACK_COUNT.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-        if count == 0 { None } else { Some(count - 1) }
+        if count == 0 {
+            None
+        } else {
+            Some(count - 1)
+        }
     });
 }
 
@@ -583,9 +627,13 @@ pub fn register_halt_ipi() {
 /// IRQ 21 handler: halt this CPU permanently.
 /// Triggered by `halt_other_cpus()` via IPI during panic/fatal exception.
 fn halt_ipi_handler(_irq: u8) {
-    unsafe { core::arch::asm!("cli"); }
+    unsafe {
+        core::arch::asm!("cli");
+    }
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }
 

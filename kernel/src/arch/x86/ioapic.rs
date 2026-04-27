@@ -3,32 +3,31 @@
 /// The I/O APIC replaces the legacy 8259 PIC for interrupt routing.
 /// It has a redirection table with one entry per interrupt input pin,
 /// mapping each to a destination LAPIC and vector.
-
 use crate::arch::x86::acpi::{IoApicInfo, IsoInfo};
 
 /// Virtual address where I/O APIC MMIO is mapped
 const IOAPIC_VIRT_BASE: u64 = 0xFFFF_FFFF_D011_0000;
 
 // I/O APIC registers (accessed indirectly via IOREGSEL/IOWIN)
-const IOAPIC_REGSEL: u32 = 0x00;  // Register select
-const IOAPIC_IOWIN: u32  = 0x10;  // I/O window (data)
+const IOAPIC_REGSEL: u32 = 0x00; // Register select
+const IOAPIC_IOWIN: u32 = 0x10; // I/O window (data)
 
 // Register indices
-const IOAPICID: u32   = 0x00;
-const IOAPICVER: u32  = 0x01;
-const IOREDTBL: u32   = 0x10;  // Redirection table base (entries at 0x10 + 2*n)
+const IOAPICID: u32 = 0x00;
+const IOAPICVER: u32 = 0x01;
+const IOREDTBL: u32 = 0x10; // Redirection table base (entries at 0x10 + 2*n)
 
 // Redirection entry flags
-const REDIR_MASKED: u64    = 1 << 16;
-const REDIR_LEVEL: u64     = 1 << 15;   // Level-triggered
-const REDIR_ACTIVELOW: u64 = 1 << 13;   // Active-low polarity
+const REDIR_MASKED: u64 = 1 << 16;
+const REDIR_LEVEL: u64 = 1 << 15; // Level-triggered
+const REDIR_ACTIVELOW: u64 = 1 << 13; // Active-low polarity
 
 /// Maximum number of redirection entries reported by the I/O APIC.
 static mut IOAPIC_MAX_ENTRIES: u32 = 0;
 
 /// ISO overrides: for each ISA IRQ (0-15), store the actual GSI it maps to.
 /// Default: GSI = IRQ (no override).
-static mut IRQ_TO_GSI: [u32; 16] = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
+static mut IRQ_TO_GSI: [u32; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 /// Initialize the I/O APIC.
 pub fn init(io_apic_info: &[IoApicInfo], isos: &[IsoInfo]) {
@@ -52,10 +51,17 @@ pub fn init(io_apic_info: &[IoApicInfo], isos: &[IsoInfo]) {
     // Read version and max redirection entries
     let version = read_reg(IOAPICVER);
     let max_entries = ((version >> 16) & 0xFF) + 1;
-    unsafe { IOAPIC_MAX_ENTRIES = max_entries; }
+    unsafe {
+        IOAPIC_MAX_ENTRIES = max_entries;
+    }
 
-    crate::serial_verbose_println!("  IOAPIC: id={} at {:#010x} (virt {:#010x}), {} entries",
-        info.id, info.address, IOAPIC_VIRT_BASE, max_entries);
+    crate::serial_verbose_println!(
+        "  IOAPIC: id={} at {:#010x} (virt {:#010x}), {} entries",
+        info.id,
+        info.address,
+        IOAPIC_VIRT_BASE,
+        max_entries
+    );
 
     // Mask all entries initially
     for i in 0..max_entries {
@@ -65,7 +71,9 @@ pub fn init(io_apic_info: &[IoApicInfo], isos: &[IsoInfo]) {
     // Store ISO overrides in the lookup table
     for iso in isos {
         if (iso.source as usize) < 16 {
-            unsafe { IRQ_TO_GSI[iso.source as usize] = iso.gsi; }
+            unsafe {
+                IRQ_TO_GSI[iso.source as usize] = iso.gsi;
+            }
         }
     }
 
@@ -89,7 +97,9 @@ fn setup_irq_routing(isos: &[IsoInfo]) {
 
     // Map each ISA IRQ
     for irq in 0..16u8 {
-        if irq == 2 { continue; } // Skip cascade (doesn't exist in APIC mode)
+        if irq == 2 {
+            continue;
+        } // Skip cascade (doesn't exist in APIC mode)
 
         let (gsi, flags) = if has_override[irq as usize] {
             overrides[irq as usize]
@@ -142,7 +152,9 @@ pub fn unmask_irq(irq: u8) {
 /// Enable (unmask) a specific GSI on the I/O APIC.
 pub fn unmask(gsi: u32) {
     let max = unsafe { IOAPIC_MAX_ENTRIES };
-    if gsi >= max { return; }
+    if gsi >= max {
+        return;
+    }
 
     let entry = read_redir(gsi);
     write_redir(gsi, entry & !REDIR_MASKED);
@@ -161,7 +173,9 @@ pub fn mask_irq(irq: u8) {
 /// Disable (mask) a specific GSI/IRQ on the I/O APIC.
 pub fn mask(gsi: u32) {
     let max = unsafe { IOAPIC_MAX_ENTRIES };
-    if gsi >= max { return; }
+    if gsi >= max {
+        return;
+    }
 
     let entry = read_redir(gsi);
     write_redir(gsi, entry | REDIR_MASKED);
@@ -170,7 +184,9 @@ pub fn mask(gsi: u32) {
 /// Set the destination LAPIC for a GSI.
 pub fn set_destination(gsi: u32, lapic_id: u8) {
     let max = unsafe { IOAPIC_MAX_ENTRIES };
-    if gsi >= max { return; }
+    if gsi >= max {
+        return;
+    }
 
     let entry = read_redir(gsi);
     // Clear destination bits (56-63) and set new destination

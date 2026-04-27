@@ -4,7 +4,7 @@
 //! No heap required -- renders directly to framebuffer memory. Falls back
 //! to a bitmap text console for panic/error output on a dark red background.
 
-use crate::graphics::font::{FONT_WIDTH, FONT_HEIGHT};
+use crate::graphics::font::{FONT_HEIGHT, FONT_WIDTH};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 static FB_ADDR: AtomicU64 = AtomicU64::new(0);
@@ -68,7 +68,9 @@ fn put_pixel(x: u32, y: u32, color: u32) {
     let addr = FB_ADDR.load(Ordering::Relaxed);
     let pitch = FB_PITCH.load(Ordering::Relaxed);
     let ptr = (addr + y as u64 * pitch as u64 + x as u64 * 4) as *mut u32;
-    unsafe { ptr.write_volatile(color); }
+    unsafe {
+        ptr.write_volatile(color);
+    }
 }
 
 #[inline]
@@ -104,7 +106,9 @@ fn clear_screen(color: u32) {
     for y in 0..height {
         let row = (addr + y as u64 * pitch as u64) as *mut u32;
         for x in 0..width {
-            unsafe { row.add(x as usize).write_volatile(color); }
+            unsafe {
+                row.add(x as usize).write_volatile(color);
+            }
         }
     }
 }
@@ -138,17 +142,29 @@ pub fn show_splash() {
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
 
     // Center the logo
-    let start_x = if fb_w > logo_w { (fb_w - logo_w) / 2 } else { 0 };
-    let start_y = if fb_h > logo_h { (fb_h - logo_h) / 2 } else { 0 };
+    let start_x = if fb_w > logo_w {
+        (fb_w - logo_w) / 2
+    } else {
+        0
+    };
+    let start_y = if fb_h > logo_h {
+        (fb_h - logo_h) / 2
+    } else {
+        0
+    };
 
     // Blit logo pixels with alpha blending against a solid black background.
     for ly in 0..logo_h {
         let screen_y = start_y + ly;
-        if screen_y >= fb_h { break; }
+        if screen_y >= fb_h {
+            break;
+        }
 
         for lx in 0..logo_w {
             let screen_x = start_x + lx;
-            if screen_x >= fb_w { break; }
+            if screen_x >= fb_w {
+                break;
+            }
 
             let idx = data_offset + ((ly * logo_w + lx) * 4) as usize;
             let r = BOOT_LOGO[idx] as u32;
@@ -188,16 +204,20 @@ pub fn show_splash() {
 // around the circle, with the leading dot brightest. Rotates once per
 // second (12 steps). Driven by TSC timing — safe to call from IRQ context.
 
-const SPINNER_RING_RADIUS: i32 = 18;  // distance from center to each dot
-const SPINNER_DOT_RADIUS: i32 = 2;    // radius of each dot
-const SPINNER_NUM_DOTS: usize = 12;   // positions around the ring
-const SPINNER_TAIL_LEN: usize = 5;    // number of visible trailing dots
+const SPINNER_RING_RADIUS: i32 = 18; // distance from center to each dot
+const SPINNER_DOT_RADIUS: i32 = 2; // radius of each dot
+const SPINNER_NUM_DOTS: usize = 12; // positions around the ring
+const SPINNER_TAIL_LEN: usize = 5; // number of visible trailing dots
 const SPINNER_Y_BELOW_LOGO: u32 = 40; // pixels below the logo bottom
 
 /// Fixed-point cos*1024 for 12 equally spaced positions (clockwise from top).
-const FCOS12: [i32; 12] = [0, 512, 887, 1024, 887, 512, 0, -512, -887, -1024, -887, -512];
+const FCOS12: [i32; 12] = [
+    0, 512, 887, 1024, 887, 512, 0, -512, -887, -1024, -887, -512,
+];
 /// Fixed-point sin*1024 (top = negative Y on screen).
-const FSIN12: [i32; 12] = [-1024, -887, -512, 0, 512, 887, 1024, 887, 512, 0, -512, -887];
+const FSIN12: [i32; 12] = [
+    -1024, -887, -512, 0, 512, 887, 1024, 887, 512, 0, -512, -887,
+];
 
 /// Brightness for each tail dot (index 0 = leading/brightest).
 const TAIL_BRIGHT: [u32; SPINNER_TAIL_LEN] = [255, 190, 130, 70, 30];
@@ -207,7 +227,9 @@ const TAIL_BRIGHT: [u32; SPINNER_TAIL_LEN] = [255, 190, 130, 70, 30];
 /// hasn't changed since last call.
 #[cfg(target_arch = "x86_64")]
 pub fn tick_spinner() {
-    if !SPINNER_ACTIVE.load(Ordering::Relaxed) { return; }
+    if !SPINNER_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
     if ERROR_MODE.load(Ordering::Relaxed) {
         SPINNER_ACTIVE.store(false, Ordering::Relaxed);
         return;
@@ -222,11 +244,15 @@ pub fn tick_spinner() {
         // Before TSC calibration: assume ~1 GHz (works for 0.5–4 GHz)
         1_000_000_000u64 / SPINNER_NUM_DOTS as u64
     };
-    if step_cycles == 0 { return; }
+    if step_cycles == 0 {
+        return;
+    }
     let phase = ((tsc / step_cycles) % SPINNER_NUM_DOTS as u64) as u32;
 
     let prev = SPINNER_LAST_PHASE.swap(phase, Ordering::Relaxed);
-    if phase == prev { return; }
+    if phase == prev {
+        return;
+    }
 
     draw_spinner(phase);
     let clear_r = (SPINNER_RING_RADIUS + SPINNER_DOT_RADIUS + 2) as u32;
@@ -242,7 +268,9 @@ pub fn tick_spinner() {
 
 #[cfg(target_arch = "aarch64")]
 pub fn tick_spinner() {
-    if !SPINNER_ACTIVE.load(Ordering::Relaxed) { return; }
+    if !SPINNER_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
     if ERROR_MODE.load(Ordering::Relaxed) {
         SPINNER_ACTIVE.store(false, Ordering::Relaxed);
         return;
@@ -253,7 +281,9 @@ pub fn tick_spinner() {
     let phase = (tick / step_ticks) % SPINNER_NUM_DOTS as u32;
 
     let prev = SPINNER_LAST_PHASE.swap(phase, Ordering::Relaxed);
-    if phase == prev { return; }
+    if phase == prev {
+        return;
+    }
 
     draw_spinner(phase);
     let clear_r = (SPINNER_RING_RADIUS + SPINNER_DOT_RADIUS + 2) as u32;
@@ -269,7 +299,9 @@ pub fn tick_spinner() {
 
 /// Stop the spinner animation (called when compositor takes over).
 pub fn stop_spinner() {
-    if !SPINNER_ACTIVE.load(Ordering::Relaxed) { return; }
+    if !SPINNER_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
     SPINNER_ACTIVE.store(false, Ordering::Relaxed);
 
     // Erase spinner area
@@ -278,7 +310,14 @@ pub fn stop_spinner() {
     let fb_w = FB_WIDTH.load(Ordering::Relaxed);
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
     let clear_r = SPINNER_RING_RADIUS + SPINNER_DOT_RADIUS + 2;
-    clear_rect(cx - clear_r, cy - clear_r, clear_r * 2 + 1, clear_r * 2 + 1, fb_w, fb_h);
+    clear_rect(
+        cx - clear_r,
+        cy - clear_r,
+        clear_r * 2 + 1,
+        clear_r * 2 + 1,
+        fb_w,
+        fb_h,
+    );
     flush_region(
         (cx - clear_r).max(0) as u32,
         (cy - clear_r).max(0) as u32,
@@ -290,14 +329,23 @@ pub fn stop_spinner() {
 fn draw_spinner(phase: u32) {
     let cx = SPINNER_CX.load(Ordering::Relaxed) as i32;
     let cy = SPINNER_CY.load(Ordering::Relaxed) as i32;
-    if cx == 0 && cy == 0 { return; }
+    if cx == 0 && cy == 0 {
+        return;
+    }
 
     let fb_w = FB_WIDTH.load(Ordering::Relaxed);
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
 
     // Clear spinner bounding box
     let clear_r = SPINNER_RING_RADIUS + SPINNER_DOT_RADIUS + 2;
-    clear_rect(cx - clear_r, cy - clear_r, clear_r * 2 + 1, clear_r * 2 + 1, fb_w, fb_h);
+    clear_rect(
+        cx - clear_r,
+        cy - clear_r,
+        clear_r * 2 + 1,
+        clear_r * 2 + 1,
+        fb_w,
+        fb_h,
+    );
 
     // Draw tail dots (back-to-front so leading dot is on top)
     for t in (0..SPINNER_TAIL_LEN).rev() {
@@ -317,12 +365,16 @@ fn clear_rect(x: i32, y: i32, w: i32, h: i32, fb_w: u32, fb_h: u32) {
     let pitch = FB_PITCH.load(Ordering::Relaxed);
     for dy in 0..h {
         let py = y + dy;
-        if py < 0 || py as u32 >= fb_h { continue; }
+        if py < 0 || py as u32 >= fb_h {
+            continue;
+        }
         let row = (addr + py as u64 * pitch as u64) as *mut u32;
         for dx in 0..w {
             let px = x + dx;
             if px >= 0 && (px as u32) < fb_w {
-                unsafe { row.add(px as usize).write_volatile(BG_COLOR); }
+                unsafe {
+                    row.add(px as usize).write_volatile(BG_COLOR);
+                }
             }
         }
     }
@@ -345,7 +397,9 @@ fn draw_filled_circle(cx: i32, cy: i32, r: i32, color: u32, fb_w: u32, fb_h: u32
 
 /// Switch to error mode — clear screen and start showing text.
 pub fn enter_error_mode() {
-    if !is_ready() { return; }
+    if !is_ready() {
+        return;
+    }
     ERROR_MODE.store(true, Ordering::Relaxed);
     clear_screen(0xFF1A0000); // very dark red
     CURSOR_X.store(8, Ordering::Relaxed);
@@ -355,10 +409,14 @@ pub fn enter_error_mode() {
 /// Draw a character at (cx, cy) using the bitmap font for error text.
 fn draw_char_1x(cx: u32, cy: u32, ch: u8, color: u32) {
     let c = ch as u32;
-    if c < 32 || c > 126 { return; }
+    if c < 32 || c > 126 {
+        return;
+    }
     let idx = (c - 32) as usize;
     let glyph_offset = idx * FONT_HEIGHT as usize;
-    if glyph_offset + FONT_HEIGHT as usize > FONT_DATA.len() { return; }
+    if glyph_offset + FONT_HEIGHT as usize > FONT_DATA.len() {
+        return;
+    }
 
     let fb_w = FB_WIDTH.load(Ordering::Relaxed);
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
@@ -379,7 +437,9 @@ fn draw_char_1x(cx: u32, cy: u32, ch: u8, color: u32) {
 
 /// Write text in error mode.
 pub fn error_write_str(s: &str) {
-    if !is_ready() || !ERROR_MODE.load(Ordering::Relaxed) { return; }
+    if !is_ready() || !ERROR_MODE.load(Ordering::Relaxed) {
+        return;
+    }
     let width = FB_WIDTH.load(Ordering::Relaxed);
     let height = FB_HEIGHT.load(Ordering::Relaxed);
     let mut cx = CURSOR_X.load(Ordering::Relaxed);
@@ -390,9 +450,13 @@ pub fn error_write_str(s: &str) {
             b'\n' => {
                 cx = 8;
                 cy += FONT_HEIGHT;
-                if cy + FONT_HEIGHT > height { cy = 8; }
+                if cy + FONT_HEIGHT > height {
+                    cy = 8;
+                }
             }
-            b'\r' => { cx = 8; }
+            b'\r' => {
+                cx = 8;
+            }
             _ => {
                 if cx + FONT_WIDTH <= width {
                     draw_char_1x(cx, cy, byte, 0xFFFF4444);
@@ -401,7 +465,9 @@ pub fn error_write_str(s: &str) {
                 if cx + FONT_WIDTH > width {
                     cx = 8;
                     cy += FONT_HEIGHT;
-                    if cy + FONT_HEIGHT > height { cy = 8; }
+                    if cy + FONT_HEIGHT > height {
+                        cy = 8;
+                    }
                 }
             }
         }

@@ -33,10 +33,10 @@ pub fn sys_sigprocmask(how: u32, set: u32) -> u32 {
     // SIGKILL and SIGSTOP can never be blocked
     let sanitized = set & !((1 << SIGKILL) | (1 << SIGSTOP));
     let new_mask = match how {
-        0 => old_mask | sanitized,          // SIG_BLOCK
-        1 => old_mask & !sanitized,         // SIG_UNBLOCK
-        2 => sanitized,                     // SIG_SETMASK
-        _ => return old_mask,               // Invalid how — just return old mask
+        0 => old_mask | sanitized,  // SIG_BLOCK
+        1 => old_mask & !sanitized, // SIG_UNBLOCK
+        2 => sanitized,             // SIG_SETMASK
+        _ => return old_mask,       // Invalid how — just return old mask
     };
     crate::task::scheduler::current_signal_set_blocked(new_mask);
     old_mask
@@ -101,8 +101,11 @@ pub fn deliver_pending_signal_default() {
 
     if handler == SIG_DFL {
         if SignalState::default_is_terminate(sig) {
-            crate::serial_verbose_println!("Signal {}: default terminate for T{} (64-bit)",
-                sig, crate::task::scheduler::current_tid());
+            crate::serial_verbose_println!(
+                "Signal {}: default terminate for T{} (64-bit)",
+                sig,
+                crate::task::scheduler::current_tid()
+            );
             super::sys_exit(128 + sig);
         }
         if SignalState::default_is_stop(sig) {
@@ -120,8 +123,11 @@ pub fn deliver_pending_signal_default() {
     // User handler for 64-bit path — not implemented yet.
     // For now, treat as SIG_DFL.
     if SignalState::default_is_terminate(sig) {
-        crate::serial_verbose_println!("Signal {}: no 64-bit trampoline, terminate T{}",
-            sig, crate::task::scheduler::current_tid());
+        crate::serial_verbose_println!(
+            "Signal {}: no 64-bit trampoline, terminate T{}",
+            sig,
+            crate::task::scheduler::current_tid()
+        );
         super::sys_exit(128 + sig);
     }
 }

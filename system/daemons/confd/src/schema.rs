@@ -89,10 +89,14 @@ pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
             _ => continue,
         };
         let value = match result.get_int(row, 5).unwrap_or(0) {
-            1 => Some(ConfValue::String(result.get_text(row, 6).unwrap_or_default())),
+            1 => Some(ConfValue::String(
+                result.get_text(row, 6).unwrap_or_default(),
+            )),
             2 => Some(ConfValue::Int(result.get_int(row, 7).unwrap_or(0))),
             3 => Some(ConfValue::Bool(result.get_int(row, 8).unwrap_or(0) != 0)),
-            4 => Some(ConfValue::ExternalRef(result.get_text(row, 6).unwrap_or_default())),
+            4 => Some(ConfValue::ExternalRef(
+                result.get_text(row, 6).unwrap_or_default(),
+            )),
             _ => None,
         };
         let version = result.get_int(row, 9).unwrap_or(0).max(0) as u64;
@@ -129,16 +133,31 @@ pub fn load_next_audit_seq(db: &Database) -> u64 {
 }
 
 pub fn persist_entry(db: &Database, entry: &RegistryEntry) -> Result<(), String> {
-    delete_entry(db, &entry.canonical_path)?;
+    persist_entry_deferred(db, entry)?;
+    let _ = db.flush();
+    Ok(())
+}
+
+pub fn persist_entry_deferred(db: &Database, entry: &RegistryEntry) -> Result<(), String> {
+    delete_entry_deferred(db, &entry.canonical_path)?;
 
     let (value_type, value_text, value_int, value_bool) = match &entry.value {
-        Some(ConfValue::String(s)) => (1, format!("'{}'", escape_sql(s)), String::from("0"), String::from("0")),
+        Some(ConfValue::String(s)) => (
+            1,
+            format!("'{}'", escape_sql(s)),
+            String::from("0"),
+            String::from("0"),
+        ),
         Some(ConfValue::Int(v)) => (2, String::from("''"), format!("{}", *v), String::from("0")),
         Some(ConfValue::Bool(v)) => (
             3,
             String::from("''"),
             String::from("0"),
-            if *v { String::from("1") } else { String::from("0") },
+            if *v {
+                String::from("1")
+            } else {
+                String::from("0")
+            },
         ),
         Some(ConfValue::ExternalRef(path)) => (
             4,
@@ -166,21 +185,58 @@ pub fn persist_entry(db: &Database, entry: &RegistryEntry) -> Result<(), String>
         escape_sql(&entry.writer_name),
     );
     db.exec(&sql)?;
-    let _ = db.flush();
     Ok(())
 }
 
 pub fn delete_entry(db: &Database, canonical_path: &str) -> Result<(), String> {
+    delete_entry_deferred(db, canonical_path)?;
+    let _ = db.flush();
+    Ok(())
+}
+
+pub fn delete_entry_deferred(db: &Database, canonical_path: &str) -> Result<(), String> {
     let sql = format!(
         "DELETE FROM registry WHERE canonical_path = '{}'",
         escape_sql(canonical_path)
     );
     db.exec(&sql)?;
-    let _ = db.flush();
     Ok(())
 }
 
 pub fn append_audit(
+    db: &Database,
+    seq: u64,
+    actor_uid: u16,
+    owner_uid: u16,
+    actor_name: &str,
+    tid: u32,
+    action: &str,
+    scope: Scope,
+    logical_path: &str,
+    status: &str,
+    detail: &str,
+    version: u64,
+    at_ms: u64,
+) {
+    append_audit_deferred(
+        db,
+        seq,
+        actor_uid,
+        owner_uid,
+        actor_name,
+        tid,
+        action,
+        scope,
+        logical_path,
+        status,
+        detail,
+        version,
+        at_ms,
+    );
+    let _ = db.flush();
+}
+
+pub fn append_audit_deferred(
     db: &Database,
     seq: u64,
     actor_uid: u16,
@@ -211,7 +267,6 @@ pub fn append_audit(
         at_ms as i64,
     );
     let _ = db.exec(&sql);
-    let _ = db.flush();
 }
 
 pub fn query_audit(
@@ -291,7 +346,7 @@ pub fn load_schema_versions(
     (schema_version, applied_version)
 }
 
-pub fn persist_schema(
+pub fn persist_schema_deferred(
     db: &Database,
     scope: Scope,
     owner_uid: u16,
@@ -322,7 +377,6 @@ pub fn persist_schema(
         escape_sql(writer_name),
     );
     db.exec(&insert_sql)?;
-    let _ = db.flush();
     Ok(())
 }
 

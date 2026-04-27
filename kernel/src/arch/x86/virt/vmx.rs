@@ -6,7 +6,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{
-    alloc_page_zeroed, free_page, rdmsr, wrmsr, read_cr0, read_cr3, read_cr4, write_cr4,
+    alloc_page_zeroed, free_page, rdmsr, read_cr0, read_cr3, read_cr4, write_cr4, wrmsr,
     CpuidEntry, GuestFpuState, GuestGprs, GuestSregs, MemoryRegion, VcpuMpState, VmExitInfo,
 };
 use crate::sync::spinlock::Spinlock;
@@ -274,8 +274,8 @@ unsafe fn vmread(field: u32) -> u64 {
 #[inline]
 unsafe fn adjust_control(value: u32, msr: u32) -> u32 {
     let cap = rdmsr(msr);
-    let allowed_0 = cap as u32;          // bits that MUST be 1
-    let allowed_1 = (cap >> 32) as u32;  // bits that CAN be 1
+    let allowed_0 = cap as u32; // bits that MUST be 1
+    let allowed_1 = (cap >> 32) as u32; // bits that CAN be 1
     (value | allowed_0) & allowed_1
 }
 
@@ -389,7 +389,9 @@ pub fn destroy_vm(vm_id: u32) -> bool {
                 // Free vCPU resources
                 for vcpu_opt in vm.vcpus.iter_mut() {
                     if let Some(vcpu) = vcpu_opt.take() {
-                        unsafe { vmclear(vcpu.vmcs_phys); }
+                        unsafe {
+                            vmclear(vcpu.vmcs_phys);
+                        }
                         free_page(vcpu.vmcs_phys);
                         if vcpu.msr_bitmap_phys != 0 {
                             free_page(vcpu.msr_bitmap_phys);
@@ -437,7 +439,9 @@ pub fn set_memory(vm_id: u32, slot: u32, gpa: u64, size: u64, hpa: u64) -> bool 
 
     // Flush stale EPT-derived TLB entries.  Must be done after any EPT
     // mapping change so all CPUs see the new translation.
-    unsafe { super::ept::invept_all_context(); }
+    unsafe {
+        super::ept::invept_all_context();
+    }
 
     true
 }
@@ -448,7 +452,9 @@ pub fn map_page_in_ept(vm_id: u32, gpa: u64, hpa: u64) {
     let mut vms = VMS.lock();
     if let Some(vm) = find_vm_mut(&mut vms, vm_id) {
         super::ept::ept_map_range(vm.ept_root, gpa, hpa, 0x1000, true, true);
-        unsafe { super::ept::invept_all_context(); }
+        unsafe {
+            super::ept::invept_all_context();
+        }
     }
 }
 
@@ -474,8 +480,8 @@ pub fn set_cpuid(vm_id: u32, entries: &[CpuidEntry]) -> bool {
 /// Clearing = passthrough (no VM-exit on RDMSR for that MSR).
 unsafe fn msr_bitmap_clear_rdmsr(bitmap_phys: u64, msr: u32) {
     debug_assert!(msr <= 0x1FFF);
-    let byte = (msr / 8) as usize;    // byte index in the 1K RDMSR-low block
-    let bit  = (msr % 8) as u8;
+    let byte = (msr / 8) as usize; // byte index in the 1K RDMSR-low block
+    let bit = (msr % 8) as u8;
     let ptr = super::phys_to_virt(bitmap_phys) as *mut u8;
     *ptr.add(byte) &= !(1 << bit);
 }
@@ -486,7 +492,7 @@ unsafe fn msr_bitmap_clear_rdmsr_high(bitmap_phys: u64, msr_low: u32) {
     debug_assert!(msr_low <= 0x1FFF);
     // High RDMSR block starts at byte 1024.
     let byte = 1024 + (msr_low / 8) as usize;
-    let bit  = (msr_low % 8) as u8;
+    let bit = (msr_low % 8) as u8;
     let ptr = super::phys_to_virt(bitmap_phys) as *mut u8;
     *ptr.add(byte) &= !(1 << bit);
 }
@@ -532,14 +538,14 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         //   Bytes 3072–4095: WRMSR intercepts for MSR 0xC000_0000–0xC000_1FFF
         //
         // Bit index within each range = MSR low 13 bits.
-        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x10);        // IA32_TSC
-        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x1B);        // IA32_APIC_BASE (read-only view)
-        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x8B);        // IA32_BIOS_SIGN_ID
-        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0xFE);        // IA32_MTRRCAP
-        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x174);       // IA32_SYSENTER_CS
-        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x175);       // IA32_SYSENTER_ESP
-        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x176);       // IA32_SYSENTER_EIP
-        // IA32_TSC_AUX (0xC0000103) — C000 range read
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x10); // IA32_TSC
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x1B); // IA32_APIC_BASE (read-only view)
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x8B); // IA32_BIOS_SIGN_ID
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0xFE); // IA32_MTRRCAP
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x174); // IA32_SYSENTER_CS
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x175); // IA32_SYSENTER_ESP
+        msr_bitmap_clear_rdmsr(msr_bitmap_phys, 0x176); // IA32_SYSENTER_EIP
+                                                        // IA32_TSC_AUX (0xC0000103) — C000 range read
         msr_bitmap_clear_rdmsr_high(msr_bitmap_phys, 0x103);
 
         // Write revision ID
@@ -551,7 +557,11 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         let vpid = {
             let raw = NEXT_VPID.fetch_add(1, Ordering::Relaxed);
             let v = (raw & 0xFFFF) as u16;
-            if v == 0 { 1 } else { v }
+            if v == 0 {
+                1
+            } else {
+                v
+            }
         };
 
         // VMCLEAR then VMPTRLD
@@ -583,15 +593,23 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64, vpid: u16) {
     let use_true_ctls = (vmx_basic >> 55) & 1 != 0;
 
     // Pin-based controls: external-interrupt exiting
-    let pin_msr = if use_true_ctls { IA32_VMX_TRUE_PINBASED_CTLS } else { IA32_VMX_PINBASED_CTLS };
+    let pin_msr = if use_true_ctls {
+        IA32_VMX_TRUE_PINBASED_CTLS
+    } else {
+        IA32_VMX_PINBASED_CTLS
+    };
     let pin_based = adjust_control(
-        1 << 0,  // External-interrupt exiting
+        1 << 0, // External-interrupt exiting
         pin_msr,
     );
     vmwrite(PIN_BASED_VM_EXEC_CONTROL, pin_based as u64);
 
     // Primary proc-based controls
-    let proc_msr = if use_true_ctls { IA32_VMX_TRUE_PROCBASED_CTLS } else { IA32_VMX_PROCBASED_CTLS };
+    let proc_msr = if use_true_ctls {
+        IA32_VMX_TRUE_PROCBASED_CTLS
+    } else {
+        IA32_VMX_PROCBASED_CTLS
+    };
     let primary = adjust_control(
         (1 << 7)   // HLT exiting
         | (1 << 24) // Unconditional I/O exiting
@@ -617,7 +635,11 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64, vpid: u16) {
     vmwrite(VIRTUAL_PROCESSOR_ID, vpid as u64);
 
     // VM-exit controls
-    let exit_msr = if use_true_ctls { IA32_VMX_TRUE_EXIT_CTLS } else { IA32_VMX_EXIT_CTLS };
+    let exit_msr = if use_true_ctls {
+        IA32_VMX_TRUE_EXIT_CTLS
+    } else {
+        IA32_VMX_EXIT_CTLS
+    };
     let exit_ctls = adjust_control(
         (1 << 9)   // Host address-space size (64-bit host)
         | (1 << 20) // Save IA32_EFER
@@ -627,7 +649,11 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64, vpid: u16) {
     vmwrite(VM_EXIT_CONTROLS, exit_ctls as u64);
 
     // VM-entry controls
-    let entry_msr = if use_true_ctls { IA32_VMX_TRUE_ENTRY_CTLS } else { IA32_VMX_ENTRY_CTLS };
+    let entry_msr = if use_true_ctls {
+        IA32_VMX_TRUE_ENTRY_CTLS
+    } else {
+        IA32_VMX_ENTRY_CTLS
+    };
     let entry_ctls = adjust_control(
         1 << 15, // Load IA32_EFER
         entry_msr,
@@ -741,8 +767,12 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64, vpid: u16) {
     let mut idtr: [u8; 10] = [0; 10];
     core::arch::asm!("sgdt [{}]", in(reg) gdtr.as_mut_ptr(), options(nostack));
     core::arch::asm!("sidt [{}]", in(reg) idtr.as_mut_ptr(), options(nostack));
-    let gdt_base = u64::from_le_bytes([gdtr[2], gdtr[3], gdtr[4], gdtr[5], gdtr[6], gdtr[7], gdtr[8], gdtr[9]]);
-    let idt_base = u64::from_le_bytes([idtr[2], idtr[3], idtr[4], idtr[5], idtr[6], idtr[7], idtr[8], idtr[9]]);
+    let gdt_base = u64::from_le_bytes([
+        gdtr[2], gdtr[3], gdtr[4], gdtr[5], gdtr[6], gdtr[7], gdtr[8], gdtr[9],
+    ]);
+    let idt_base = u64::from_le_bytes([
+        idtr[2], idtr[3], idtr[4], idtr[5], idtr[6], idtr[7], idtr[8], idtr[9],
+    ]);
     vmwrite(HOST_GDTR_BASE, gdt_base);
     vmwrite(HOST_IDTR_BASE, idt_base);
     vmwrite(HOST_TR_BASE, host_tss_base(gdt_base, tr));
@@ -788,13 +818,11 @@ core::arch::global_asm!(
     "push r13",
     "push r14",
     "push r15",
-    "push rdi",          // save GuestGprs pointer for vmexit stub
-
+    "push rdi", // save GuestGprs pointer for vmexit stub
     // Set HOST_RSP to current RSP (after all pushes, pointing at GuestGprs ptr)
-    "mov rax, 0x6C14",  // HOST_RSP field encoding
-    "mov rdx, rsp",     // current RSP after all pushes
+    "mov rax, 0x6C14", // HOST_RSP field encoding
+    "mov rdx, rsp",    // current RSP after all pushes
     "vmwrite rax, rdx",
-
     // Load guest GPRs from struct
     "mov rax, [rdi + 0x00]",
     "mov rbx, [rdi + 0x08]",
@@ -810,22 +838,18 @@ core::arch::global_asm!(
     "mov r13, [rdi + 0x60]",
     "mov r14, [rdi + 0x68]",
     "mov r15, [rdi + 0x70]",
-
     // Check launched flag (sil) before clobbering rsi/rdi
     "test sil, sil",
-
     // Load guest rsi and rdi last
     "mov rsi, [rdi + 0x20]",
     "mov rdi, [rdi + 0x28]",
-
     // VMLAUNCH or VMRESUME
     "jnz 2f",
     "vmlaunch",
-    "jmp 3f",           // VM-entry failed
+    "jmp 3f", // VM-entry failed
     "2:",
     "vmresume",
-    "jmp 3f",           // VM-entry failed
-
+    "jmp 3f", // VM-entry failed
     // VM-exit handler — HOST_RIP points here
     ".global vmx_vmexit_stub",
     "vmx_vmexit_stub:",
@@ -833,8 +857,7 @@ core::arch::global_asm!(
     // RSP = HOST_RSP (set to point at the pushed rdi on the stack).
     // Guest GPRs are in physical registers, need to save them.
     // rdi was guest rdi; the GuestGprs pointer is at [rsp].
-    "xchg rdi, [rsp]",  // rdi = GuestGprs ptr, [rsp] = guest rdi
-
+    "xchg rdi, [rsp]", // rdi = GuestGprs ptr, [rsp] = guest rdi
     // Save all guest GPRs to struct
     "mov [rdi + 0x00], rax",
     "mov [rdi + 0x08], rbx",
@@ -853,7 +876,6 @@ core::arch::global_asm!(
     "mov [rdi + 0x60], r13",
     "mov [rdi + 0x68], r14",
     "mov [rdi + 0x70], r15",
-
     // Restore host callee-saved registers
     "pop r15",
     "pop r14",
@@ -861,14 +883,12 @@ core::arch::global_asm!(
     "pop r12",
     "pop rbp",
     "pop rbx",
-
     // Return 0 (success — VM-exit handled)
     "xor eax, eax",
     "ret",
-
     // VM-entry failure path
     "3:",
-    "pop rdi",   // discard GuestGprs pointer
+    "pop rdi", // discard GuestGprs pointer
     "pop r15",
     "pop r14",
     "pop r13",
@@ -938,45 +958,44 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
             // Read guest linear address (valid for EPT violations where bit 7 of
             // qualification = GLA_VALID).
-            let guest_virt = if hw_reason == EXIT_REASON_EPT_VIOLATION
-                && (qualification & (1 << 7)) != 0
-            {
-                vmread(0x640A) // GUEST_LINEAR_ADDRESS VMCS field
-            } else {
-                0
-            };
+            let guest_virt =
+                if hw_reason == EXIT_REASON_EPT_VIOLATION && (qualification & (1 << 7)) != 0 {
+                    vmread(0x640A) // GUEST_LINEAR_ADDRESS VMCS field
+                } else {
+                    0
+                };
 
             // Map raw VMX exit code → portable exit_reason::* value.
             let reason = match hw_reason {
                 EXIT_REASON_EXTERNAL_INTERRUPT => super::exit_reason::EXTERNAL_INTERRUPT,
-                EXIT_REASON_TRIPLE_FAULT       => super::exit_reason::TRIPLE_FAULT,
-                EXIT_REASON_INIT_SIGNAL        => super::exit_reason::INIT_SIGNAL,
-                EXIT_REASON_SIPI               => super::exit_reason::SIPI,
-                EXIT_REASON_HLT                => super::exit_reason::HLT,
-                EXIT_REASON_CPUID              => super::exit_reason::CPUID,
-                EXIT_REASON_INVD               => super::exit_reason::INVD,
-                EXIT_REASON_INVLPG             => super::exit_reason::INVLPG,
-                EXIT_REASON_RDPMC              => super::exit_reason::RDPMC,
-                EXIT_REASON_RDTSC              => super::exit_reason::RDTSC,
-                EXIT_REASON_RSM                => super::exit_reason::RSM,
-                EXIT_REASON_VMCALL             => super::exit_reason::VMCALL,
-                EXIT_REASON_CR_ACCESS          => super::exit_reason::CR_ACCESS,
-                EXIT_REASON_DR_ACCESS          => super::exit_reason::DR_ACCESS,
-                EXIT_REASON_IO_INSTRUCTION     => super::exit_reason::IO_INSTRUCTION,
-                EXIT_REASON_RDMSR              => super::exit_reason::RDMSR,
-                EXIT_REASON_WRMSR              => super::exit_reason::WRMSR,
+                EXIT_REASON_TRIPLE_FAULT => super::exit_reason::TRIPLE_FAULT,
+                EXIT_REASON_INIT_SIGNAL => super::exit_reason::INIT_SIGNAL,
+                EXIT_REASON_SIPI => super::exit_reason::SIPI,
+                EXIT_REASON_HLT => super::exit_reason::HLT,
+                EXIT_REASON_CPUID => super::exit_reason::CPUID,
+                EXIT_REASON_INVD => super::exit_reason::INVD,
+                EXIT_REASON_INVLPG => super::exit_reason::INVLPG,
+                EXIT_REASON_RDPMC => super::exit_reason::RDPMC,
+                EXIT_REASON_RDTSC => super::exit_reason::RDTSC,
+                EXIT_REASON_RSM => super::exit_reason::RSM,
+                EXIT_REASON_VMCALL => super::exit_reason::VMCALL,
+                EXIT_REASON_CR_ACCESS => super::exit_reason::CR_ACCESS,
+                EXIT_REASON_DR_ACCESS => super::exit_reason::DR_ACCESS,
+                EXIT_REASON_IO_INSTRUCTION => super::exit_reason::IO_INSTRUCTION,
+                EXIT_REASON_RDMSR => super::exit_reason::RDMSR,
+                EXIT_REASON_WRMSR => super::exit_reason::WRMSR,
                 EXIT_REASON_INVALID_GUEST_STATE => super::exit_reason::INVALID_GUEST_STATE,
-                EXIT_REASON_PAUSE              => super::exit_reason::PAUSE,
-                EXIT_REASON_EPT_VIOLATION      => super::exit_reason::EPT_VIOLATION,
-                EXIT_REASON_EPT_MISCONFIG      => super::exit_reason::EPT_MISCONFIG,
-                EXIT_REASON_RDTSCP             => super::exit_reason::RDTSCP,
-                EXIT_REASON_PREEMPTION_TIMER   => super::exit_reason::PREEMPTION_TIMER,
-                EXIT_REASON_WBINVD             => super::exit_reason::WBINVD,
-                EXIT_REASON_XSETBV             => super::exit_reason::XSETBV,
-                EXIT_REASON_RDRAND             => super::exit_reason::RDRAND,
-                EXIT_REASON_INVPCID            => super::exit_reason::INVPCID,
-                EXIT_REASON_RDSEED             => super::exit_reason::RDSEED,
-                _                              => hw_reason, // pass unknown reasons through
+                EXIT_REASON_PAUSE => super::exit_reason::PAUSE,
+                EXIT_REASON_EPT_VIOLATION => super::exit_reason::EPT_VIOLATION,
+                EXIT_REASON_EPT_MISCONFIG => super::exit_reason::EPT_MISCONFIG,
+                EXIT_REASON_RDTSCP => super::exit_reason::RDTSCP,
+                EXIT_REASON_PREEMPTION_TIMER => super::exit_reason::PREEMPTION_TIMER,
+                EXIT_REASON_WBINVD => super::exit_reason::WBINVD,
+                EXIT_REASON_XSETBV => super::exit_reason::XSETBV,
+                EXIT_REASON_RDRAND => super::exit_reason::RDRAND,
+                EXIT_REASON_INVPCID => super::exit_reason::INVPCID,
+                EXIT_REASON_RDSEED => super::exit_reason::RDSEED,
+                _ => hw_reason, // pass unknown reasons through
             };
 
             // Handle CPUID exits internally — advance RIP, fill regs, return synthetic reason.
@@ -1037,30 +1056,30 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
                 EXIT_REASON_WRMSR => {
                     info.msr_index = vcpu.guest_gprs.rcx as u32;
                     info.is_read = 0;
-                    info.io_data = (vcpu.guest_gprs.rdx << 32)
-                        | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
+                    info.io_data =
+                        (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
                 }
                 EXIT_REASON_CR_ACCESS => {
                     // Qualification: bits 3:0 = CR#, bit 4 = direction (0=write,1=read),
                     //   bits 11:8 = source/dest general-purpose register.
-                    info.cr_number  = (qualification & 0xF) as u8;
+                    info.cr_number = (qualification & 0xF) as u8;
                     info.cr_is_read = ((qualification >> 4) & 1) as u8;
                 }
                 EXIT_REASON_DR_ACCESS => {
                     // Qualification: bits 2:0 = DR#, bit 4 = direction.
-                    info.dr_number  = (qualification & 0x7) as u8;
+                    info.dr_number = (qualification & 0x7) as u8;
                     info.dr_is_read = ((qualification >> 4) & 1) as u8;
                 }
                 EXIT_REASON_VMCALL => {
                     // Hypercall: convention = rax=call#, rbx=arg1, rcx=arg2, rdx=arg3
-                    info.io_data  = vcpu.guest_gprs.rax;  // call number
-                    info.io_data2 = vcpu.guest_gprs.rbx;  // first arg
+                    info.io_data = vcpu.guest_gprs.rax; // call number
+                    info.io_data2 = vcpu.guest_gprs.rbx; // first arg
                 }
                 EXIT_REASON_XSETBV => {
                     // ECX = XCR index, EDX:EAX = new value
                     info.msr_index = vcpu.guest_gprs.rcx as u32;
-                    info.io_data = (vcpu.guest_gprs.rdx << 32)
-                        | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
+                    info.io_data =
+                        (vcpu.guest_gprs.rdx << 32) | (vcpu.guest_gprs.rax & 0xFFFF_FFFF);
                 }
                 EXIT_REASON_SIPI => {
                     // Qualification bits 7:0 = SIPI vector
@@ -1160,8 +1179,14 @@ pub fn get_regs(vm_id: u32, vcpu_id: u32) -> Option<GuestGprs> {
 /// Set guest general-purpose registers.
 pub fn set_regs(vm_id: u32, vcpu_id: u32, gprs: &GuestGprs) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.guest_gprs = *gprs;
     true
 }
@@ -1225,8 +1250,14 @@ pub fn get_sregs(vm_id: u32, vcpu_id: u32) -> Option<GuestSregs> {
 /// Set guest segment/control registers.
 pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
 
     unsafe {
         vmptrld(vcpu.vmcs_phys);
@@ -1282,8 +1313,14 @@ pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
 /// Inject an external interrupt into the guest.
 pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
     let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
+    let vm = match find_vm(&vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+        Some(v) => v,
+        None => return false,
+    };
 
     unsafe {
         vmptrld(vcpu.vmcs_phys);
@@ -1296,8 +1333,14 @@ pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
 /// Inject an exception into the guest.
 pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -> bool {
     let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
+    let vm = match find_vm(&vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+        Some(v) => v,
+        None => return false,
+    };
 
     unsafe {
         vmptrld(vcpu.vmcs_phys);
@@ -1315,8 +1358,14 @@ pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -
 /// Inject an NMI into the guest.
 pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
     let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
+    let vm = match find_vm(&vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+        Some(v) => v,
+        None => return false,
+    };
 
     unsafe {
         vmptrld(vcpu.vmcs_phys);
@@ -1329,8 +1378,14 @@ pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
 /// Pause a vCPU — prevents the next vcpu_run from entering the guest.
 pub fn vcpu_pause(vm_id: u32, vcpu_id: u32) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.paused = true;
     true
 }
@@ -1338,8 +1393,14 @@ pub fn vcpu_pause(vm_id: u32, vcpu_id: u32) -> bool {
 /// Resume a paused vCPU.
 pub fn vcpu_resume(vm_id: u32, vcpu_id: u32) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.paused = false;
     // Also wake a halted vCPU when resumed (e.g. after injecting an interrupt).
     if vcpu.mp_state == VcpuMpState::Halted {
@@ -1359,8 +1420,14 @@ pub fn get_fpu(vm_id: u32, vcpu_id: u32) -> Option<GuestFpuState> {
 /// Set guest FPU state.
 pub fn set_fpu(vm_id: u32, vcpu_id: u32, fpu: &GuestFpuState) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.guest_fpu = *fpu;
     true
 }
@@ -1376,8 +1443,14 @@ pub fn get_mp_state(vm_id: u32, vcpu_id: u32) -> Option<VcpuMpState> {
 /// Set vCPU multi-processor state.
 pub fn set_mp_state(vm_id: u32, vcpu_id: u32, state: VcpuMpState) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.mp_state = state;
     true
 }
@@ -1418,13 +1491,17 @@ pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
         // PML4
         let pml4_idx = ((gva >> 39) & 0x1FF) as usize;
         let pml4e = walk_gpa(cr3, pml4_idx)?;
-        if pml4e & 1 == 0 { return None; }  // not present
+        if pml4e & 1 == 0 {
+            return None;
+        } // not present
 
         // PDPT
         let pdpt_gpa = pml4e & 0x000F_FFFF_FFFF_F000;
         let pdpt_idx = ((gva >> 30) & 0x1FF) as usize;
         let pdpte = walk_gpa(pdpt_gpa, pdpt_idx)?;
-        if pdpte & 1 == 0 { return None; }
+        if pdpte & 1 == 0 {
+            return None;
+        }
         if pdpte & (1 << 7) != 0 {
             // 1GB page
             return Some((pdpte & 0x000F_FFFC_0000_0000) | (gva & 0x3FFF_FFFF));
@@ -1434,7 +1511,9 @@ pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
         let pd_gpa = pdpte & 0x000F_FFFF_FFFF_F000;
         let pd_idx = ((gva >> 21) & 0x1FF) as usize;
         let pde = walk_gpa(pd_gpa, pd_idx)?;
-        if pde & 1 == 0 { return None; }
+        if pde & 1 == 0 {
+            return None;
+        }
         if pde & (1 << 7) != 0 {
             // 2MB page
             return Some((pde & 0x000F_FFFF_FFE0_0000) | (gva & 0x1F_FFFF));
@@ -1444,7 +1523,9 @@ pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
         let pt_gpa = pde & 0x000F_FFFF_FFFF_F000;
         let pt_idx = ((gva >> 12) & 0x1FF) as usize;
         let pte = walk_gpa(pt_gpa, pt_idx)?;
-        if pte & 1 == 0 { return None; }
+        if pte & 1 == 0 {
+            return None;
+        }
 
         // PA = PTE[51:12] | GVA[11:0]
         let _ = cr4; // silence unused warning; could check LA57 in future
@@ -1464,7 +1545,9 @@ pub fn get_dirty_log(vm_id: u32, slot: u32, bitmap: &mut [u64]) -> Option<u32> {
     let mut vms = VMS.lock();
     let vm = find_vm_mut(&mut vms, vm_id)?;
     let slot_idx = slot as usize;
-    if slot_idx >= 32 || vm.dirty_log_phys == 0 { return None; }
+    if slot_idx >= 32 || vm.dirty_log_phys == 0 {
+        return None;
+    }
 
     // Each slot gets 64 u64 words (= 512 bytes) within the dirty-log page.
     // Offset of this slot's words = slot_idx × 64 × 8 bytes.
@@ -1493,12 +1576,10 @@ pub fn get_dirty_log(vm_id: u32, slot: u32, bitmap: &mut [u64]) -> Option<u32> {
 
 // ── Internal dirty-tracking helper ───────────────────────────────────────
 
-fn mark_dirty_page(
-    dirty_log_phys: u64,
-    regions: &[Option<MemoryRegion>; 32],
-    gpa: u64,
-) {
-    if dirty_log_phys == 0 { return; }
+fn mark_dirty_page(dirty_log_phys: u64, regions: &[Option<MemoryRegion>; 32], gpa: u64) {
+    if dirty_log_phys == 0 {
+        return;
+    }
     const WORDS_PER_SLOT: usize = 64;
 
     for (slot_idx, region_opt) in regions.iter().enumerate() {
@@ -1506,13 +1587,15 @@ fn mark_dirty_page(
             if gpa >= r.guest_phys && gpa < r.guest_phys + r.size {
                 let page_offset = ((gpa - r.guest_phys) >> 12) as usize;
                 let word = page_offset / 64;
-                let bit  = page_offset % 64;
+                let bit = page_offset % 64;
                 if word < WORDS_PER_SLOT {
                     let base = super::phys_to_virt(dirty_log_phys) as *mut u64;
-                    let idx  = slot_idx * WORDS_PER_SLOT + word;
+                    let idx = slot_idx * WORDS_PER_SLOT + word;
                     // Bounds-check: one allocated page = 512 u64 words total.
                     if idx < 512 {
-                        unsafe { *base.add(idx) |= 1u64 << bit; }
+                        unsafe {
+                            *base.add(idx) |= 1u64 << bit;
+                        }
                     }
                 }
                 return;
@@ -1524,13 +1607,11 @@ fn mark_dirty_page(
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 fn find_vm(vms: &[Option<VmxVm>; MAX_VMS], vm_id: u32) -> Option<&VmxVm> {
-    vms.iter().find_map(|slot| {
-        slot.as_ref().filter(|vm| vm.id == vm_id)
-    })
+    vms.iter()
+        .find_map(|slot| slot.as_ref().filter(|vm| vm.id == vm_id))
 }
 
 fn find_vm_mut(vms: &mut [Option<VmxVm>; MAX_VMS], vm_id: u32) -> Option<&mut VmxVm> {
-    vms.iter_mut().find_map(|slot| {
-        slot.as_mut().filter(|vm| vm.id == vm_id)
-    })
+    vms.iter_mut()
+        .find_map(|slot| slot.as_mut().filter(|vm| vm.id == vm_id))
 }

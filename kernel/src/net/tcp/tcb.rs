@@ -3,9 +3,9 @@
 //! Contains the per-connection state, TCP segment representation,
 //! out-of-order buffer entry, and protocol constants.
 
+use crate::net::types::{IpAddr, Ipv4Addr, Ipv6Addr};
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use crate::net::types::{Ipv4Addr, Ipv6Addr, IpAddr};
 
 // ── TCP header flags ─────────────────────────────────────────────────
 pub(crate) const FIN: u8 = 0x01;
@@ -50,16 +50,16 @@ pub(crate) const MAX_SEND_BUF: usize = MAX_IN_FLIGHT;
 /// TCP connection state machine states per RFC 793.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpState {
-    Closed,       // 0
-    SynSent,      // 1
-    Established,  // 2
-    FinWait1,     // 3
-    FinWait2,     // 4
-    TimeWait,     // 5
-    CloseWait,    // 6
-    LastAck,      // 7
-    Listen,       // 8
-    SynReceived,  // 9
+    Closed,      // 0
+    SynSent,     // 1
+    Established, // 2
+    FinWait1,    // 3
+    FinWait2,    // 4
+    TimeWait,    // 5
+    CloseWait,   // 6
+    LastAck,     // 7
+    Listen,      // 8
+    SynReceived, // 9
 }
 
 // ── Out-of-order segment ────────────────────────────────────────────
@@ -135,18 +135,18 @@ pub(crate) struct Tcb {
     pub remote_ip6: Ipv6Addr,
 
     // ── Send sequence variables ──
-    pub snd_iss: u32,     // initial send sequence number
-    pub snd_una: u32,     // oldest unacknowledged
-    pub snd_nxt: u32,     // next to send
-    pub snd_wnd: u32,     // send window (scaled by snd_wnd_shift)
+    pub snd_iss: u32, // initial send sequence number
+    pub snd_una: u32, // oldest unacknowledged
+    pub snd_nxt: u32, // next to send
+    pub snd_wnd: u32, // send window (scaled by snd_wnd_shift)
 
     // ── Receive sequence variables ──
-    pub rcv_irs: u32,     // initial receive sequence number
-    pub rcv_nxt: u32,     // next expected
+    pub rcv_irs: u32, // initial receive sequence number
+    pub rcv_nxt: u32, // next expected
 
     // ── TCP Window Scaling (RFC 7323) ──
-    pub snd_wnd_shift: u8,   // peer's scale factor
-    pub rcv_wnd_shift: u8,   // our scale factor
+    pub snd_wnd_shift: u8, // peer's scale factor
+    pub rcv_wnd_shift: u8, // our scale factor
 
     // ── Receive buffer ──
     pub recv_buf: VecDeque<u8>,
@@ -228,7 +228,12 @@ impl Tcb {
     }
 
     /// Create a new IPv6 TCB.
-    pub fn new_v6(local_ip6: Ipv6Addr, local_port: u16, remote_ip6: Ipv6Addr, remote_port: u16) -> Self {
+    pub fn new_v6(
+        local_ip6: Ipv6Addr,
+        local_port: u16,
+        remote_ip6: Ipv6Addr,
+        remote_port: u16,
+    ) -> Self {
         let mut tcb = Self::new(Ipv4Addr::ZERO, local_port, Ipv4Addr::ZERO, remote_port);
         tcb.is_ipv6 = true;
         tcb.local_ip6 = local_ip6;
@@ -255,10 +260,14 @@ pub(crate) fn parse_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) -> Option<TcpSeg
 
     let src_port = ((data[0] as u16) << 8) | data[1] as u16;
     let dst_port = ((data[2] as u16) << 8) | data[3] as u16;
-    let seq = ((data[4] as u32) << 24) | ((data[5] as u32) << 16)
-        | ((data[6] as u32) << 8) | data[7] as u32;
-    let ack = ((data[8] as u32) << 24) | ((data[9] as u32) << 16)
-        | ((data[10] as u32) << 8) | data[11] as u32;
+    let seq = ((data[4] as u32) << 24)
+        | ((data[5] as u32) << 16)
+        | ((data[6] as u32) << 8)
+        | data[7] as u32;
+    let ack = ((data[8] as u32) << 24)
+        | ((data[9] as u32) << 16)
+        | ((data[10] as u32) << 8)
+        | data[11] as u32;
     let data_offset = ((data[12] >> 4) as usize) * 4;
     let flags = data[13] & 0x3F;
     let window = ((data[14] as u16) << 8) | data[15] as u16;
@@ -275,23 +284,36 @@ pub(crate) fn parse_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) -> Option<TcpSeg
         let mut i = 0;
         while i < opts.len() {
             match opts[i] {
-                0 => break,        // End of Options
-                1 => { i += 1; }   // NOP
-                2 => {             // MSS (Kind=2, Len=4)
+                0 => break, // End of Options
+                1 => {
+                    i += 1;
+                } // NOP
+                2 => {
+                    // MSS (Kind=2, Len=4)
                     if i + 4 <= opts.len() && opts[i + 1] == 4 {
                         peer_mss = Some(((opts[i + 2] as u16) << 8) | opts[i + 3] as u16);
                     }
-                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 { opts[i + 1] as usize } else { break };
+                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 {
+                        opts[i + 1] as usize
+                    } else {
+                        break;
+                    };
                     i += skip;
                 }
-                3 => {             // Window Scale (Kind=3, Len=3)
+                3 => {
+                    // Window Scale (Kind=3, Len=3)
                     if i + 3 <= opts.len() && opts[i + 1] == 3 {
                         wscale = Some(opts[i + 2].min(14)); // RFC 7323: max shift is 14
                     }
-                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 { opts[i + 1] as usize } else { break };
+                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 {
+                        opts[i + 1] as usize
+                    } else {
+                        break;
+                    };
                     i += skip;
                 }
-                _ => {             // Unknown option — skip using length field
+                _ => {
+                    // Unknown option — skip using length field
                     if i + 1 < opts.len() && opts[i + 1] >= 2 {
                         i += opts[i + 1] as usize;
                     } else {
@@ -332,10 +354,14 @@ pub(crate) fn parse_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) -> Option<Tcp
 
     let src_port = ((data[0] as u16) << 8) | data[1] as u16;
     let dst_port = ((data[2] as u16) << 8) | data[3] as u16;
-    let seq = ((data[4] as u32) << 24) | ((data[5] as u32) << 16)
-        | ((data[6] as u32) << 8) | data[7] as u32;
-    let ack = ((data[8] as u32) << 24) | ((data[9] as u32) << 16)
-        | ((data[10] as u32) << 8) | data[11] as u32;
+    let seq = ((data[4] as u32) << 24)
+        | ((data[5] as u32) << 16)
+        | ((data[6] as u32) << 8)
+        | data[7] as u32;
+    let ack = ((data[8] as u32) << 24)
+        | ((data[9] as u32) << 16)
+        | ((data[10] as u32) << 8)
+        | data[11] as u32;
     let data_offset = ((data[12] >> 4) as usize) * 4;
     let flags = data[13] & 0x3F;
     let window = ((data[14] as u16) << 8) | data[15] as u16;
@@ -353,19 +379,29 @@ pub(crate) fn parse_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) -> Option<Tcp
         while i < opts.len() {
             match opts[i] {
                 0 => break,
-                1 => { i += 1; }
+                1 => {
+                    i += 1;
+                }
                 2 => {
                     if i + 4 <= opts.len() && opts[i + 1] == 4 {
                         peer_mss = Some(((opts[i + 2] as u16) << 8) | opts[i + 3] as u16);
                     }
-                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 { opts[i + 1] as usize } else { break };
+                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 {
+                        opts[i + 1] as usize
+                    } else {
+                        break;
+                    };
                     i += skip;
                 }
                 3 => {
                     if i + 3 <= opts.len() && opts[i + 1] == 3 {
                         wscale = Some(opts[i + 2].min(14));
                     }
-                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 { opts[i + 1] as usize } else { break };
+                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 {
+                        opts[i + 1] as usize
+                    } else {
+                        break;
+                    };
                     i += skip;
                 }
                 _ => {

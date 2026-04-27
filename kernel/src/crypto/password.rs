@@ -61,7 +61,9 @@ pub fn needs_rehash(stored: &str) -> bool {
     }
 }
 
-fn parse_pbkdf2_sha256(stored: &str) -> Option<(u32, [u8; PASSWORD_SALT_LEN], [u8; PASSWORD_HASH_LEN])> {
+fn parse_pbkdf2_sha256(
+    stored: &str,
+) -> Option<(u32, [u8; PASSWORD_SALT_LEN], [u8; PASSWORD_HASH_LEN])> {
     let mut parts = stored.split('$');
     let scheme = parts.next()?;
     let iter_str = parts.next()?;

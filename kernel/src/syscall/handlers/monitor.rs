@@ -88,11 +88,7 @@ pub fn sys_monitor_edid(monitor_id: u32, buf_ptr: u64, buf_len: u32) -> u32 {
         return 0;
     }
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            info.edid_raw.as_ptr(),
-            buf_ptr as *mut u8,
-            copy_len,
-        );
+        core::ptr::copy_nonoverlapping(info.edid_raw.as_ptr(), buf_ptr as *mut u8, copy_len);
     }
     copy_len as u32
 }
@@ -139,35 +135,35 @@ pub fn sys_monitor_modes(monitor_id: u32, buf_ptr: u64, buf_len: u32) -> u32 {
 /// Size: 100 bytes.
 #[repr(C, packed)]
 struct MonitorInfoFlat {
-    id: u32,                     // 0
-    gpu_output: u32,             // 4
-    manufacturer: [u8; 4],       // 8
-    model_name: [u8; 14],        // 12
-    serial_string: [u8; 14],     // 26
-    serial_number: u32,          // 40
-    product_code: u16,           // 44
-    manufacture_year: u16,       // 46
-    manufacture_week: u8,        // 48
-    _pad0: u8,                   // 49
-    width_mm: u16,               // 50
-    height_mm: u16,              // 52
-    gamma: u16,                  // 54
-    native_width: u32,           // 56
-    native_height: u32,          // 60
-    native_refresh_100: u32,     // 64
-    color_depth: u8,             // 68
-    is_digital: u8,              // 69
-    has_edid: u8,                // 70
-    _pad1: u8,                   // 71
-    mode_count: u32,             // 72
+    id: u32,                 // 0
+    gpu_output: u32,         // 4
+    manufacturer: [u8; 4],   // 8
+    model_name: [u8; 14],    // 12
+    serial_string: [u8; 14], // 26
+    serial_number: u32,      // 40
+    product_code: u16,       // 44
+    manufacture_year: u16,   // 46
+    manufacture_week: u8,    // 48
+    _pad0: u8,               // 49
+    width_mm: u16,           // 50
+    height_mm: u16,          // 52
+    gamma: u16,              // 54
+    native_width: u32,       // 56
+    native_height: u32,      // 60
+    native_refresh_100: u32, // 64
+    color_depth: u8,         // 68
+    is_digital: u8,          // 69
+    has_edid: u8,            // 70
+    _pad1: u8,               // 71
+    mode_count: u32,         // 72
     // Chromaticity (CIE 1931 xy, 10-bit fixed-point)
-    red_x: u16,                  // 76
-    red_y: u16,                  // 78
-    green_x: u16,                // 80
-    green_y: u16,                // 82
-    blue_x: u16,                 // 84
-    blue_y: u16,                 // 86
-    white_x: u16,                // 88
-    white_y: u16,                // 90
-    // Total: 92 bytes
+    red_x: u16,   // 76
+    red_y: u16,   // 78
+    green_x: u16, // 80
+    green_y: u16, // 82
+    blue_x: u16,  // 84
+    blue_y: u16,  // 86
+    white_x: u16, // 88
+    white_y: u16, // 90
+                  // Total: 92 bytes
 }

@@ -5,8 +5,8 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::{
-    alloc_page_zeroed, free_page, rdmsr, wrmsr,
-    CpuidEntry, GuestFpuState, GuestGprs, GuestSregs, MemoryRegion, VcpuMpState, VmExitInfo,
+    alloc_page_zeroed, free_page, rdmsr, wrmsr, CpuidEntry, GuestFpuState, GuestGprs, GuestSregs,
+    MemoryRegion, VcpuMpState, VmExitInfo,
 };
 use crate::sync::spinlock::Spinlock;
 
@@ -30,29 +30,29 @@ pub const VMEXIT_NPF: u64 = 0x400;
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct VmcbControl {
-    intercept_cr_reads: u16,     // 0x000
-    intercept_cr_writes: u16,    // 0x002
-    intercept_dr_reads: u16,     // 0x004
-    intercept_dr_writes: u16,    // 0x006
-    intercept_exceptions: u32,   // 0x008
-    intercepts: u64,             // 0x00C — misc intercepts (CPUID, HLT, I/O, MSR, etc.)
+    intercept_cr_reads: u16,   // 0x000
+    intercept_cr_writes: u16,  // 0x002
+    intercept_dr_reads: u16,   // 0x004
+    intercept_dr_writes: u16,  // 0x006
+    intercept_exceptions: u32, // 0x008
+    intercepts: u64,           // 0x00C — misc intercepts (CPUID, HLT, I/O, MSR, etc.)
     _reserved1: [u8; 0x040 - 0x014],
-    iopm_base_pa: u64,           // 0x040
-    msrpm_base_pa: u64,          // 0x048
-    tsc_offset: u64,             // 0x050
-    guest_asid: u32,             // 0x058
-    tlb_control: u8,             // 0x05C
+    iopm_base_pa: u64,  // 0x040
+    msrpm_base_pa: u64, // 0x048
+    tsc_offset: u64,    // 0x050
+    guest_asid: u32,    // 0x058
+    tlb_control: u8,    // 0x05C
     _reserved2: [u8; 0x060 - 0x05D],
-    vintr: u64,                  // 0x060
-    interrupt_shadow: u64,       // 0x068
-    exit_code: u64,              // 0x070
-    exit_info1: u64,             // 0x078
-    exit_info2: u64,             // 0x080
-    exit_int_info: u64,          // 0x088
-    np_enable: u64,              // 0x090 — bit 0 enables NPT
+    vintr: u64,            // 0x060
+    interrupt_shadow: u64, // 0x068
+    exit_code: u64,        // 0x070
+    exit_info1: u64,       // 0x078
+    exit_info2: u64,       // 0x080
+    exit_int_info: u64,    // 0x088
+    np_enable: u64,        // 0x090 — bit 0 enables NPT
     _reserved3: [u8; 0x0A8 - 0x098],
-    event_inj: u64,              // 0x0A8 — EVENTINJ (event injection)
-    ncr3: u64,                   // 0x0B0 — nested CR3 (NPT root)
+    event_inj: u64, // 0x0A8 — EVENTINJ (event injection)
+    ncr3: u64,      // 0x0B0 — nested CR3 (NPT root)
     _reserved4: [u8; 0x400 - 0x0B8],
 }
 
@@ -70,32 +70,32 @@ struct VmcbSegment {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct VmcbStateSave {
-    es: VmcbSegment,             // 0x400
-    cs: VmcbSegment,             // 0x410
-    ss: VmcbSegment,             // 0x420
-    ds: VmcbSegment,             // 0x430
-    fs: VmcbSegment,             // 0x440
-    gs: VmcbSegment,             // 0x450
-    gdtr: VmcbSegment,           // 0x460
-    ldtr: VmcbSegment,           // 0x470
-    idtr: VmcbSegment,           // 0x480
-    tr: VmcbSegment,             // 0x490
+    es: VmcbSegment,   // 0x400
+    cs: VmcbSegment,   // 0x410
+    ss: VmcbSegment,   // 0x420
+    ds: VmcbSegment,   // 0x430
+    fs: VmcbSegment,   // 0x440
+    gs: VmcbSegment,   // 0x450
+    gdtr: VmcbSegment, // 0x460
+    ldtr: VmcbSegment, // 0x470
+    idtr: VmcbSegment, // 0x480
+    tr: VmcbSegment,   // 0x490
     _reserved1: [u8; 0x4CB - 0x4A0],
-    cpl: u8,                     // 0x4CB
+    cpl: u8, // 0x4CB
     _reserved2: [u8; 0x4D0 - 0x4CC],
-    efer: u64,                   // 0x4D0
+    efer: u64, // 0x4D0
     _reserved3: [u8; 0x548 - 0x4D8],
-    cr4: u64,                    // 0x548
-    cr3: u64,                    // 0x550
-    cr0: u64,                    // 0x558
-    dr7: u64,                    // 0x560
-    dr6: u64,                    // 0x568
-    rflags: u64,                 // 0x570
-    rip: u64,                    // 0x578
+    cr4: u64,    // 0x548
+    cr3: u64,    // 0x550
+    cr0: u64,    // 0x558
+    dr7: u64,    // 0x560
+    dr6: u64,    // 0x568
+    rflags: u64, // 0x570
+    rip: u64,    // 0x578
     _reserved4: [u8; 0x5D8 - 0x580],
-    rsp: u64,                    // 0x5D8
+    rsp: u64, // 0x5D8
     _reserved5: [u8; 0x5F8 - 0x5E0],
-    rax: u64,                    // 0x5F8
+    rax: u64, // 0x5F8
     _reserved6: [u8; 0x1000 - 0x600],
 }
 
@@ -362,12 +362,15 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         let vmcb = &mut *(super::phys_to_virt(vmcb_phys) as *mut Vmcb);
 
         // Control area
-        vmcb.control.intercepts = INTERCEPT_CPUID | INTERCEPT_HLT
-            | INTERCEPT_IOIO_PROT | INTERCEPT_MSR_PROT | INTERCEPT_SHUTDOWN;
+        vmcb.control.intercepts = INTERCEPT_CPUID
+            | INTERCEPT_HLT
+            | INTERCEPT_IOIO_PROT
+            | INTERCEPT_MSR_PROT
+            | INTERCEPT_SHUTDOWN;
         vmcb.control.iopm_base_pa = iopm_phys;
         vmcb.control.msrpm_base_pa = msrpm_phys;
         vmcb.control.guest_asid = 1; // Must be non-zero
-        vmcb.control.np_enable = 1;  // Enable nested paging
+        vmcb.control.np_enable = 1; // Enable nested paging
         vmcb.control.ncr3 = vm.npt_root;
 
         // State-save area: real mode defaults
@@ -375,15 +378,60 @@ pub fn create_vcpu(vm_id: u32, vcpu_id: u32) -> bool {
         vmcb.state.cs.base = 0xFFFF_0000;
         vmcb.state.cs.limit = 0xFFFF;
         vmcb.state.cs.attrib = 0x009B;
-        vmcb.state.ds = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0x0093 };
-        vmcb.state.es = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0x0093 };
-        vmcb.state.fs = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0x0093 };
-        vmcb.state.gs = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0x0093 };
-        vmcb.state.ss = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0x0093 };
-        vmcb.state.tr = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0x008B };
-        vmcb.state.ldtr = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0x0082 };
-        vmcb.state.gdtr = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0 };
-        vmcb.state.idtr = VmcbSegment { selector: 0, base: 0, limit: 0xFFFF, attrib: 0 };
+        vmcb.state.ds = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0x0093,
+        };
+        vmcb.state.es = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0x0093,
+        };
+        vmcb.state.fs = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0x0093,
+        };
+        vmcb.state.gs = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0x0093,
+        };
+        vmcb.state.ss = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0x0093,
+        };
+        vmcb.state.tr = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0x008B,
+        };
+        vmcb.state.ldtr = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0x0082,
+        };
+        vmcb.state.gdtr = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0,
+        };
+        vmcb.state.idtr = VmcbSegment {
+            selector: 0,
+            base: 0,
+            limit: 0xFFFF,
+            attrib: 0,
+        };
 
         vmcb.state.cr0 = 0x0000_0030; // ET + NE (real mode)
         vmcb.state.cr3 = 0;
@@ -458,8 +506,11 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
         crate::serial_println!(
             "[svm] vmexit: code={:#x} info1={:#x} info2={:#x} rip={:#x} cs.base={:#x}",
-            exit_code, exit_info1, exit_info2,
-            vmcb.state.rip, vmcb.state.cs.base
+            exit_code,
+            exit_info1,
+            exit_info2,
+            vmcb.state.rip,
+            vmcb.state.cs.base
         );
 
         // Handle CPUID internally — fill registers, advance RIP, return synthetic reason.
@@ -474,29 +525,37 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
 
         // Map SVM exit code → portable exit_reason::* value.
         let reason = match exit_code {
-            VMEXIT_CPUID     => super::exit_reason::CPUID,
-            VMEXIT_HLT       => super::exit_reason::HLT,
-            VMEXIT_IOIO      => super::exit_reason::IO_INSTRUCTION,
-            VMEXIT_MSR       => {
+            VMEXIT_CPUID => super::exit_reason::CPUID,
+            VMEXIT_HLT => super::exit_reason::HLT,
+            VMEXIT_IOIO => super::exit_reason::IO_INSTRUCTION,
+            VMEXIT_MSR => {
                 // exit_info1: 0=RDMSR, 1=WRMSR
-                if exit_info1 == 0 { super::exit_reason::RDMSR } else { super::exit_reason::WRMSR }
+                if exit_info1 == 0 {
+                    super::exit_reason::RDMSR
+                } else {
+                    super::exit_reason::WRMSR
+                }
             }
-            VMEXIT_SHUTDOWN  => super::exit_reason::SHUTDOWN,
-            VMEXIT_NPF       => super::exit_reason::EPT_VIOLATION,
+            VMEXIT_SHUTDOWN => super::exit_reason::SHUTDOWN,
+            VMEXIT_NPF => super::exit_reason::EPT_VIOLATION,
             // SVM-specific intercepts mapped to portable codes
-            0x6E             => super::exit_reason::VMCALL,  // VMMCALL
-            0x14             => super::exit_reason::CR_ACCESS, // CR write
-            0x15             => super::exit_reason::CR_ACCESS, // CR read (varies by CR#)
-            0x1C             => super::exit_reason::DR_ACCESS, // DR write
-            0x1D             => super::exit_reason::DR_ACCESS, // DR read
-            0x6F             => super::exit_reason::INVD,
-            0x65             => super::exit_reason::PAUSE,
-            0x73             => super::exit_reason::XSETBV,
-            0x7E             => super::exit_reason::SMI,
-            _                => exit_code as u32,
+            0x6E => super::exit_reason::VMCALL,    // VMMCALL
+            0x14 => super::exit_reason::CR_ACCESS, // CR write
+            0x15 => super::exit_reason::CR_ACCESS, // CR read (varies by CR#)
+            0x1C => super::exit_reason::DR_ACCESS, // DR write
+            0x1D => super::exit_reason::DR_ACCESS, // DR read
+            0x6F => super::exit_reason::INVD,
+            0x65 => super::exit_reason::PAUSE,
+            0x73 => super::exit_reason::XSETBV,
+            0x7E => super::exit_reason::SMI,
+            _ => exit_code as u32,
         };
 
-        let guest_phys = if exit_code == VMEXIT_NPF { exit_info2 } else { 0 };
+        let guest_phys = if exit_code == VMEXIT_NPF {
+            exit_info2
+        } else {
+            0
+        };
 
         let mut info = VmExitInfo {
             reason,
@@ -625,7 +684,11 @@ unsafe fn svm_vmrun(vmcb_phys: u64, gprs: *mut GuestGprs) {
 }
 
 /// Handle CPUID exit by emulating the instruction.
-unsafe fn handle_cpuid_exit(cpuid_table: &[Option<CpuidEntry>], vcpu: &mut SvmVcpu, vmcb_phys: u64) {
+unsafe fn handle_cpuid_exit(
+    cpuid_table: &[Option<CpuidEntry>],
+    vcpu: &mut SvmVcpu,
+    vmcb_phys: u64,
+) {
     let vmcb = &mut *(super::phys_to_virt(vmcb_phys) as *mut Vmcb);
     let leaf = vmcb.state.rax as u32;
     let subleaf = vcpu.guest_gprs.rcx as u32;
@@ -649,8 +712,8 @@ unsafe fn handle_cpuid_exit(cpuid_table: &[Option<CpuidEntry>], vcpu: &mut SvmVc
         match leaf {
             // Leaf 1: mask VMX capability and set hypervisor-present.
             1 => {
-                ecx &= !(1 << 5);  // clear VMX (ECX bit 5)
-                ecx |=  1 << 31;   // set Hypervisor Present (ECX bit 31)
+                ecx &= !(1 << 5); // clear VMX (ECX bit 5)
+                ecx |= 1 << 31; // set Hypervisor Present (ECX bit 31)
             }
             // Leaf 0x8000_0001: mask SVM capability (ECX bit 2).
             0x8000_0001 => {
@@ -683,8 +746,14 @@ pub fn get_regs(vm_id: u32, vcpu_id: u32) -> Option<GuestGprs> {
 
 pub fn set_regs(vm_id: u32, vcpu_id: u32, gprs: &GuestGprs) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.guest_gprs = *gprs;
     unsafe {
         let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
@@ -750,19 +819,65 @@ pub fn get_sregs(vm_id: u32, vcpu_id: u32) -> Option<GuestSregs> {
 
 pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
 
     unsafe {
         let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
-        vmcb.state.cs = VmcbSegment { selector: sregs.cs_selector, base: sregs.cs_base, limit: sregs.cs_limit, attrib: sregs.cs_ar as u16 };
-        vmcb.state.ds = VmcbSegment { selector: sregs.ds_selector, base: sregs.ds_base, limit: sregs.ds_limit, attrib: sregs.ds_ar as u16 };
-        vmcb.state.es = VmcbSegment { selector: sregs.es_selector, base: sregs.es_base, limit: sregs.es_limit, attrib: sregs.es_ar as u16 };
-        vmcb.state.fs = VmcbSegment { selector: sregs.fs_selector, base: sregs.fs_base, limit: sregs.fs_limit, attrib: sregs.fs_ar as u16 };
-        vmcb.state.gs = VmcbSegment { selector: sregs.gs_selector, base: sregs.gs_base, limit: sregs.gs_limit, attrib: sregs.gs_ar as u16 };
-        vmcb.state.ss = VmcbSegment { selector: sregs.ss_selector, base: sregs.ss_base, limit: sregs.ss_limit, attrib: sregs.ss_ar as u16 };
-        vmcb.state.tr = VmcbSegment { selector: sregs.tr_selector, base: sregs.tr_base, limit: sregs.tr_limit, attrib: sregs.tr_ar as u16 };
-        vmcb.state.ldtr = VmcbSegment { selector: sregs.ldtr_selector, base: sregs.ldtr_base, limit: sregs.ldtr_limit, attrib: sregs.ldtr_ar as u16 };
+        vmcb.state.cs = VmcbSegment {
+            selector: sregs.cs_selector,
+            base: sregs.cs_base,
+            limit: sregs.cs_limit,
+            attrib: sregs.cs_ar as u16,
+        };
+        vmcb.state.ds = VmcbSegment {
+            selector: sregs.ds_selector,
+            base: sregs.ds_base,
+            limit: sregs.ds_limit,
+            attrib: sregs.ds_ar as u16,
+        };
+        vmcb.state.es = VmcbSegment {
+            selector: sregs.es_selector,
+            base: sregs.es_base,
+            limit: sregs.es_limit,
+            attrib: sregs.es_ar as u16,
+        };
+        vmcb.state.fs = VmcbSegment {
+            selector: sregs.fs_selector,
+            base: sregs.fs_base,
+            limit: sregs.fs_limit,
+            attrib: sregs.fs_ar as u16,
+        };
+        vmcb.state.gs = VmcbSegment {
+            selector: sregs.gs_selector,
+            base: sregs.gs_base,
+            limit: sregs.gs_limit,
+            attrib: sregs.gs_ar as u16,
+        };
+        vmcb.state.ss = VmcbSegment {
+            selector: sregs.ss_selector,
+            base: sregs.ss_base,
+            limit: sregs.ss_limit,
+            attrib: sregs.ss_ar as u16,
+        };
+        vmcb.state.tr = VmcbSegment {
+            selector: sregs.tr_selector,
+            base: sregs.tr_base,
+            limit: sregs.tr_limit,
+            attrib: sregs.tr_ar as u16,
+        };
+        vmcb.state.ldtr = VmcbSegment {
+            selector: sregs.ldtr_selector,
+            base: sregs.ldtr_base,
+            limit: sregs.ldtr_limit,
+            attrib: sregs.ldtr_ar as u16,
+        };
         vmcb.state.gdtr.base = sregs.gdtr_base;
         vmcb.state.gdtr.limit = sregs.gdtr_limit;
         vmcb.state.idtr.base = sregs.idtr_base;
@@ -781,8 +896,14 @@ pub fn set_sregs(vm_id: u32, vcpu_id: u32, sregs: &GuestSregs) -> bool {
 
 pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
     let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
+    let vm = match find_vm(&vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+        Some(v) => v,
+        None => return false,
+    };
 
     unsafe {
         let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
@@ -793,15 +914,19 @@ pub fn inject_irq(vm_id: u32, vcpu_id: u32, vector: u8) -> bool {
 
 pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -> bool {
     let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
+    let vm = match find_vm(&vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+        Some(v) => v,
+        None => return false,
+    };
 
     unsafe {
         let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
         let has_error = matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17);
-        let mut info: u64 = (vector as u64)
-            | (3 << 8)
-            | (1u64 << 31);
+        let mut info: u64 = (vector as u64) | (3 << 8) | (1u64 << 31);
         if has_error {
             info |= (1u64 << 11) | ((error_code as u64) << 32);
         }
@@ -812,8 +937,14 @@ pub fn inject_exception(vm_id: u32, vcpu_id: u32, vector: u8, error_code: u32) -
 
 pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
     let vms = VMS.lock();
-    let vm = match find_vm(&vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() { Some(v) => v, None => return false };
+    let vm = match find_vm(&vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_ref() {
+        Some(v) => v,
+        None => return false,
+    };
 
     unsafe {
         let vmcb = &mut *(super::phys_to_virt(vcpu.vmcb_phys) as *mut Vmcb);
@@ -826,8 +957,14 @@ pub fn inject_nmi(vm_id: u32, vcpu_id: u32) -> bool {
 /// Pause a vCPU.
 pub fn vcpu_pause(vm_id: u32, vcpu_id: u32) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.paused = true;
     true
 }
@@ -835,8 +972,14 @@ pub fn vcpu_pause(vm_id: u32, vcpu_id: u32) -> bool {
 /// Resume a paused vCPU.
 pub fn vcpu_resume(vm_id: u32, vcpu_id: u32) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.paused = false;
     if vcpu.mp_state == VcpuMpState::Halted {
         vcpu.mp_state = VcpuMpState::Runnable;
@@ -855,8 +998,14 @@ pub fn get_fpu(vm_id: u32, vcpu_id: u32) -> Option<GuestFpuState> {
 /// Set guest FPU state.
 pub fn set_fpu(vm_id: u32, vcpu_id: u32, fpu: &GuestFpuState) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.guest_fpu = *fpu;
     true
 }
@@ -872,8 +1021,14 @@ pub fn get_mp_state(vm_id: u32, vcpu_id: u32) -> Option<VcpuMpState> {
 /// Set vCPU multi-processor state.
 pub fn set_mp_state(vm_id: u32, vcpu_id: u32, state: VcpuMpState) -> bool {
     let mut vms = VMS.lock();
-    let vm = match find_vm_mut(&mut vms, vm_id) { Some(v) => v, None => return false };
-    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() { Some(v) => v, None => return false };
+    let vm = match find_vm_mut(&mut vms, vm_id) {
+        Some(v) => v,
+        None => return false,
+    };
+    let vcpu = match vm.vcpus[vcpu_id as usize].as_mut() {
+        Some(v) => v,
+        None => return false,
+    };
     vcpu.mp_state = state;
     true
 }
@@ -889,11 +1044,13 @@ pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
 
     unsafe {
         let vmcb = &*(super::phys_to_virt(vcpu.vmcb_phys) as *const Vmcb);
-        let cr3  = vmcb.state.cr3 & !0xFFF;
+        let cr3 = vmcb.state.cr3 & !0xFFF;
         let efer = vmcb.state.efer;
 
         // Long mode only.
-        if efer & 0x500 != 0x500 { return None; }
+        if efer & 0x500 != 0x500 {
+            return None;
+        }
 
         let walk_gpa = |table_gpa: u64, idx: usize| -> Option<u64> {
             let hpa = super::ept::npt_translate(vm.npt_root, table_gpa)?;
@@ -903,12 +1060,16 @@ pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
 
         let pml4_idx = ((gva >> 39) & 0x1FF) as usize;
         let pml4e = walk_gpa(cr3, pml4_idx)?;
-        if pml4e & 1 == 0 { return None; }
+        if pml4e & 1 == 0 {
+            return None;
+        }
 
         let pdpt_gpa = pml4e & 0x000F_FFFF_FFFF_F000;
         let pdpt_idx = ((gva >> 30) & 0x1FF) as usize;
         let pdpte = walk_gpa(pdpt_gpa, pdpt_idx)?;
-        if pdpte & 1 == 0 { return None; }
+        if pdpte & 1 == 0 {
+            return None;
+        }
         if pdpte & (1 << 7) != 0 {
             return Some((pdpte & 0x000F_FFFC_0000_0000) | (gva & 0x3FFF_FFFF));
         }
@@ -916,7 +1077,9 @@ pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
         let pd_gpa = pdpte & 0x000F_FFFF_FFFF_F000;
         let pd_idx = ((gva >> 21) & 0x1FF) as usize;
         let pde = walk_gpa(pd_gpa, pd_idx)?;
-        if pde & 1 == 0 { return None; }
+        if pde & 1 == 0 {
+            return None;
+        }
         if pde & (1 << 7) != 0 {
             return Some((pde & 0x000F_FFFF_FFE0_0000) | (gva & 0x1F_FFFF));
         }
@@ -924,7 +1087,9 @@ pub fn translate_gva(vm_id: u32, vcpu_id: u32, gva: u64) -> Option<u64> {
         let pt_gpa = pde & 0x000F_FFFF_FFFF_F000;
         let pt_idx = ((gva >> 12) & 0x1FF) as usize;
         let pte = walk_gpa(pt_gpa, pt_idx)?;
-        if pte & 1 == 0 { return None; }
+        if pte & 1 == 0 {
+            return None;
+        }
         Some((pte & 0x000F_FFFF_FFFF_F000) | (gva & 0xFFF))
     }
 }
@@ -934,7 +1099,9 @@ pub fn get_dirty_log(vm_id: u32, slot: u32, bitmap: &mut [u64]) -> Option<u32> {
     let mut vms = VMS.lock();
     let vm = find_vm_mut(&mut vms, vm_id)?;
     let slot_idx = slot as usize;
-    if slot_idx >= 32 || vm.dirty_log_phys == 0 { return None; }
+    if slot_idx >= 32 || vm.dirty_log_phys == 0 {
+        return None;
+    }
 
     const WORDS_PER_SLOT: usize = 64;
     let base = super::phys_to_virt(vm.dirty_log_phys) as *mut u64;
@@ -956,12 +1123,10 @@ pub fn get_dirty_log(vm_id: u32, slot: u32, bitmap: &mut [u64]) -> Option<u32> {
 
 // ── Internal dirty-tracking helper ───────────────────────────────────────
 
-fn mark_dirty_page(
-    dirty_log_phys: u64,
-    regions: &[Option<MemoryRegion>; 32],
-    gpa: u64,
-) {
-    if dirty_log_phys == 0 { return; }
+fn mark_dirty_page(dirty_log_phys: u64, regions: &[Option<MemoryRegion>; 32], gpa: u64) {
+    if dirty_log_phys == 0 {
+        return;
+    }
     const WORDS_PER_SLOT: usize = 64;
 
     for (slot_idx, region_opt) in regions.iter().enumerate() {
@@ -969,12 +1134,14 @@ fn mark_dirty_page(
             if gpa >= r.guest_phys && gpa < r.guest_phys + r.size {
                 let page_offset = ((gpa - r.guest_phys) >> 12) as usize;
                 let word = page_offset / 64;
-                let bit  = page_offset % 64;
+                let bit = page_offset % 64;
                 if word < WORDS_PER_SLOT {
                     let base = super::phys_to_virt(dirty_log_phys) as *mut u64;
-                    let idx  = slot_idx * WORDS_PER_SLOT + word;
+                    let idx = slot_idx * WORDS_PER_SLOT + word;
                     if idx < 512 {
-                        unsafe { *base.add(idx) |= 1u64 << bit; }
+                        unsafe {
+                            *base.add(idx) |= 1u64 << bit;
+                        }
                     }
                 }
                 return;
@@ -986,9 +1153,11 @@ fn mark_dirty_page(
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 fn find_vm(vms: &[Option<SvmVm>; MAX_VMS], vm_id: u32) -> Option<&SvmVm> {
-    vms.iter().find_map(|slot| slot.as_ref().filter(|vm| vm.id == vm_id))
+    vms.iter()
+        .find_map(|slot| slot.as_ref().filter(|vm| vm.id == vm_id))
 }
 
 fn find_vm_mut(vms: &mut [Option<SvmVm>; MAX_VMS], vm_id: u32) -> Option<&mut SvmVm> {
-    vms.iter_mut().find_map(|slot| slot.as_mut().filter(|vm| vm.id == vm_id))
+    vms.iter_mut()
+        .find_map(|slot| slot.as_mut().filter(|vm| vm.id == vm_id))
 }

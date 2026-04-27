@@ -3,8 +3,8 @@
 //! Provides VMX and SVM backends for the anyOS userspace VM daemon.
 //! Feature detection at boot, per-CPU initialization, and VM/vCPU lifecycle.
 
-pub mod ept;
 pub mod avm;
+pub mod ept;
 pub mod svm;
 pub mod syscalls;
 pub mod vmx;
@@ -359,18 +359,24 @@ impl Default for GuestFpuState {
         // FPU control word = 0x037F (all exceptions masked, 64-bit precision)
         // MXCSR = 0x1F80 (all SSE exceptions masked, round-nearest)
         let mut d = [0u8; 512];
-        d[0] = 0x7F; d[1] = 0x03; // FCW
-        d[24] = 0x80; d[25] = 0x1F; // MXCSR low word
-        d[28] = 0xFF; d[29] = 0xFF; // MXCSR_MASK (all bits valid)
+        d[0] = 0x7F;
+        d[1] = 0x03; // FCW
+        d[24] = 0x80;
+        d[25] = 0x1F; // MXCSR low word
+        d[28] = 0xFF;
+        d[29] = 0xFF; // MXCSR_MASK (all bits valid)
         Self { data: d }
     }
 }
 
 impl core::fmt::Debug for GuestFpuState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "GuestFpuState {{ fcw: {:#06x}, mxcsr: {:#010x} }}",
+        write!(
+            f,
+            "GuestFpuState {{ fcw: {:#06x}, mxcsr: {:#010x} }}",
             u16::from_le_bytes([self.data[0], self.data[1]]),
-            u32::from_le_bytes([self.data[24], self.data[25], self.data[26], self.data[27]]))
+            u32::from_le_bytes([self.data[24], self.data[25], self.data[26], self.data[27]])
+        )
     }
 }
 
@@ -450,7 +456,7 @@ struct VPageEntry {
 
 static VPAGE_TABLE: crate::sync::spinlock::Spinlock<[VPageEntry; VPAGE_TABLE_SIZE]> =
     crate::sync::spinlock::Spinlock::new(
-        [const { VPageEntry { phys: 0, virt: 0 } }; VPAGE_TABLE_SIZE]
+        [const { VPageEntry { phys: 0, virt: 0 } }; VPAGE_TABLE_SIZE],
     );
 
 fn vpage_insert(phys: u64, virt: u64) {

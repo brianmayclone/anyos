@@ -20,9 +20,9 @@ use alloc::vec::Vec;
 /// HID device type — determines report format.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum HidType {
-    Keyboard,   // boot protocol=1, 8-byte reports
-    Mouse,      // boot protocol=2, 3-4 byte relative reports
-    Tablet,     // protocol=0 (QEMU usb-tablet), 6-byte absolute reports
+    Keyboard, // boot protocol=1, 8-byte reports
+    Mouse,    // boot protocol=2, 3-4 byte relative reports
+    Tablet,   // protocol=0 (QEMU usb-tablet), 6-byte absolute reports
 }
 
 struct HidDevice {
@@ -30,10 +30,10 @@ struct HidDevice {
     controller: ControllerType,
     speed: UsbSpeed,
     hid_type: HidType,
-    int_endpoint: u8,     // interrupt IN endpoint address (e.g. 0x81)
-    int_max_packet: u16,  // max packet size for interrupt endpoint
-    data_toggle: u8,      // DATA0/DATA1 toggle for interrupt transfers
-    prev_keys: [u8; 6],   // keyboard only — tracks pressed keys for delta detection
+    int_endpoint: u8,    // interrupt IN endpoint address (e.g. 0x81)
+    int_max_packet: u16, // max packet size for interrupt endpoint
+    data_toggle: u8,     // DATA0/DATA1 toggle for interrupt transfers
+    prev_keys: [u8; 6],  // keyboard only — tracks pressed keys for delta detection
 }
 
 static HID_DEVICES: Spinlock<Vec<HidDevice>> = Spinlock::new(Vec::new());
@@ -42,9 +42,11 @@ static HID_DEVICES: Spinlock<Vec<HidDevice>> = Spinlock::new(Vec::new());
 /// Accepts boot protocol keyboards/mice (subclass=1) and tablets (subclass=0).
 pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     // Find interrupt IN endpoint — required for all HID devices
-    let int_ep = match iface.endpoints.iter().find(|ep| {
-        (ep.attributes & 0x03) == 3 && (ep.address & 0x80) != 0
-    }) {
+    let int_ep = match iface
+        .endpoints
+        .iter()
+        .find(|ep| (ep.attributes & 0x03) == 3 && (ep.address & 0x80) != 0)
+    {
         Some(ep) => ep,
         None => {
             crate::serial_verbose_println!("  USB HID: no interrupt IN endpoint, skipping");
@@ -56,10 +58,13 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     let hid_type = match (iface.subclass, iface.protocol) {
         (1, 1) => HidType::Keyboard,
         (1, 2) => HidType::Mouse,
-        (_, 0) => HidType::Tablet,   // usb-tablet: subclass=0, protocol=0
+        (_, 0) => HidType::Tablet, // usb-tablet: subclass=0, protocol=0
         _ => {
-            crate::serial_verbose_println!("  USB HID: unknown sub={} proto={}, skipping",
-                iface.subclass, iface.protocol);
+            crate::serial_verbose_println!(
+                "  USB HID: unknown sub={} proto={}, skipping",
+                iface.subclass,
+                iface.protocol
+            );
             return;
         }
     };
@@ -74,28 +79,38 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     if iface.subclass == 1 {
         let set_protocol = SetupPacket {
             bm_request_type: 0x21,
-            b_request: 0x0B,  // SET_PROTOCOL
-            w_value: 0,       // 0 = Boot Protocol
+            b_request: 0x0B, // SET_PROTOCOL
+            w_value: 0,      // 0 = Boot Protocol
             w_index: iface.number as u16,
             w_length: 0,
         };
         let _ = super::hid_control_transfer(
-            dev.address, dev.controller, dev.speed, dev.max_packet_size,
-            &set_protocol, false, 0,
+            dev.address,
+            dev.controller,
+            dev.speed,
+            dev.max_packet_size,
+            &set_protocol,
+            false,
+            0,
         );
     }
 
     // Set idle rate to 0 (report only on change) — reduces USB traffic
     let set_idle = SetupPacket {
         bm_request_type: 0x21,
-        b_request: 0x0A,  // SET_IDLE
-        w_value: 0,        // duration=0 (indefinite), report_id=0
+        b_request: 0x0A, // SET_IDLE
+        w_value: 0,      // duration=0 (indefinite), report_id=0
         w_index: iface.number as u16,
         w_length: 0,
     };
     let _ = super::hid_control_transfer(
-        dev.address, dev.controller, dev.speed, dev.max_packet_size,
-        &set_idle, false, 0,
+        dev.address,
+        dev.controller,
+        dev.speed,
+        dev.max_packet_size,
+        &set_idle,
+        false,
+        0,
     );
 
     let hid_dev = HidDevice {
@@ -112,7 +127,10 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     HID_DEVICES.lock().push(hid_dev);
     crate::serial_println!(
         "[USB-HID] registered {} (addr={}, ep={:#04x}, {:?})",
-        type_name, dev.address, int_ep.address, dev.controller,
+        type_name,
+        dev.address,
+        int_ep.address,
+        dev.controller,
     );
 }
 
@@ -125,10 +143,30 @@ struct PollDebug {
 }
 
 static POLL_DEBUG: Spinlock<[PollDebug; 4]> = Spinlock::new([
-    PollDebug { ok_count: 0, nak_count: 0, err_count: 0, logged: false },
-    PollDebug { ok_count: 0, nak_count: 0, err_count: 0, logged: false },
-    PollDebug { ok_count: 0, nak_count: 0, err_count: 0, logged: false },
-    PollDebug { ok_count: 0, nak_count: 0, err_count: 0, logged: false },
+    PollDebug {
+        ok_count: 0,
+        nak_count: 0,
+        err_count: 0,
+        logged: false,
+    },
+    PollDebug {
+        ok_count: 0,
+        nak_count: 0,
+        err_count: 0,
+        logged: false,
+    },
+    PollDebug {
+        ok_count: 0,
+        nak_count: 0,
+        err_count: 0,
+        logged: false,
+    },
+    PollDebug {
+        ok_count: 0,
+        nak_count: 0,
+        err_count: 0,
+        logged: false,
+    },
 ]);
 
 /// Poll all registered HID devices via interrupt IN transfers.
@@ -140,9 +178,13 @@ pub fn poll_all() {
         let max = (dev.int_max_packet as usize).min(buf.len());
 
         match super::interrupt_in_transfer(
-            dev.address, dev.controller, dev.speed,
-            dev.int_endpoint, dev.int_max_packet,
-            &mut dev.data_toggle, &mut buf[..max],
+            dev.address,
+            dev.controller,
+            dev.speed,
+            dev.int_endpoint,
+            dev.int_max_packet,
+            &mut dev.data_toggle,
+            &mut buf[..max],
         ) {
             Ok(n) if n >= 3 => {
                 // Debug: log first successful data for each device
@@ -150,8 +192,13 @@ pub fn poll_all() {
                     let mut dbg = POLL_DEBUG.lock();
                     dbg[idx].ok_count += 1;
                     if dbg[idx].ok_count <= 2 {
-                        crate::serial_println!("[USB-HID] dev {} ({:?}) data: n={} {:02x?}",
-                            dev.address, dev.hid_type, n, &buf[..n.min(8)]);
+                        crate::serial_println!(
+                            "[USB-HID] dev {} ({:?}) data: n={} {:02x?}",
+                            dev.address,
+                            dev.hid_type,
+                            n,
+                            &buf[..n.min(8)]
+                        );
                     }
                 }
                 match dev.hid_type {
@@ -176,8 +223,13 @@ pub fn poll_all() {
                     dbg[idx].nak_count += 1;
                     if dbg[idx].nak_count == 500 && !dbg[idx].logged {
                         dbg[idx].logged = true;
-                        crate::serial_println!("[USB-HID] dev {} ({:?}) 500 NAKs, {} ok, {} err",
-                            dev.address, dev.hid_type, dbg[idx].ok_count, dbg[idx].err_count);
+                        crate::serial_println!(
+                            "[USB-HID] dev {} ({:?}) 500 NAKs, {} ok, {} err",
+                            dev.address,
+                            dev.hid_type,
+                            dbg[idx].ok_count,
+                            dbg[idx].err_count
+                        );
                     }
                 }
             }
@@ -186,8 +238,12 @@ pub fn poll_all() {
                     let mut dbg = POLL_DEBUG.lock();
                     dbg[idx].err_count += 1;
                     if dbg[idx].err_count <= 3 {
-                        crate::serial_println!("[USB-HID] dev {} ({:?}) int xfer err: {}",
-                            dev.address, dev.hid_type, _e);
+                        crate::serial_println!(
+                            "[USB-HID] dev {} ({:?}) int xfer err: {}",
+                            dev.address,
+                            dev.hid_type,
+                            _e
+                        );
                     }
                 }
             }
@@ -213,12 +269,12 @@ const MOD_RIGHT_GUI: u8 = 1 << 7;
 /// Third element: if true, send 0xE0 prefix before the scancode so the keyboard
 /// driver distinguishes Right Alt (AltGr) / Right Ctrl from their left counterparts.
 const MOD_SCANCODES: [(u8, u8, bool); 6] = [
-    (MOD_LEFT_CTRL,   0x1D, false),
-    (MOD_LEFT_SHIFT,  0x2A, false),
-    (MOD_LEFT_ALT,    0x38, false),
-    (MOD_RIGHT_CTRL,  0x1D, true),   // E0 prefix — Right Ctrl
+    (MOD_LEFT_CTRL, 0x1D, false),
+    (MOD_LEFT_SHIFT, 0x2A, false),
+    (MOD_LEFT_ALT, 0x38, false),
+    (MOD_RIGHT_CTRL, 0x1D, true), // E0 prefix — Right Ctrl
     (MOD_RIGHT_SHIFT, 0x36, false),
-    (MOD_RIGHT_ALT,   0x38, true),   // E0 prefix — Right Alt (AltGr)
+    (MOD_RIGHT_ALT, 0x38, true), // E0 prefix — Right Alt (AltGr)
 ];
 
 /// Convert a USB HID usage code to a PS/2 scancode.
@@ -231,124 +287,124 @@ fn hid_usage_to_scancode(usage: u8) -> Option<(u8, bool)> {
         0x00 | 0x01 => None, // No key / Error rollover
 
         // ── Letters (A-Z) ────────────────────────────
-        0x04 => Some((0x1E, false)),  // A
-        0x05 => Some((0x30, false)),  // B
-        0x06 => Some((0x2E, false)),  // C
-        0x07 => Some((0x20, false)),  // D
-        0x08 => Some((0x12, false)),  // E
-        0x09 => Some((0x21, false)),  // F
-        0x0A => Some((0x22, false)),  // G
-        0x0B => Some((0x23, false)),  // H
-        0x0C => Some((0x17, false)),  // I
-        0x0D => Some((0x24, false)),  // J
-        0x0E => Some((0x25, false)),  // K
-        0x0F => Some((0x26, false)),  // L
-        0x10 => Some((0x32, false)),  // M
-        0x11 => Some((0x31, false)),  // N
-        0x12 => Some((0x18, false)),  // O
-        0x13 => Some((0x19, false)),  // P
-        0x14 => Some((0x10, false)),  // Q
-        0x15 => Some((0x13, false)),  // R
-        0x16 => Some((0x1F, false)),  // S
-        0x17 => Some((0x14, false)),  // T
-        0x18 => Some((0x16, false)),  // U
-        0x19 => Some((0x2F, false)),  // V
-        0x1A => Some((0x11, false)),  // W
-        0x1B => Some((0x2D, false)),  // X
-        0x1C => Some((0x15, false)),  // Y
-        0x1D => Some((0x2C, false)),  // Z
+        0x04 => Some((0x1E, false)), // A
+        0x05 => Some((0x30, false)), // B
+        0x06 => Some((0x2E, false)), // C
+        0x07 => Some((0x20, false)), // D
+        0x08 => Some((0x12, false)), // E
+        0x09 => Some((0x21, false)), // F
+        0x0A => Some((0x22, false)), // G
+        0x0B => Some((0x23, false)), // H
+        0x0C => Some((0x17, false)), // I
+        0x0D => Some((0x24, false)), // J
+        0x0E => Some((0x25, false)), // K
+        0x0F => Some((0x26, false)), // L
+        0x10 => Some((0x32, false)), // M
+        0x11 => Some((0x31, false)), // N
+        0x12 => Some((0x18, false)), // O
+        0x13 => Some((0x19, false)), // P
+        0x14 => Some((0x10, false)), // Q
+        0x15 => Some((0x13, false)), // R
+        0x16 => Some((0x1F, false)), // S
+        0x17 => Some((0x14, false)), // T
+        0x18 => Some((0x16, false)), // U
+        0x19 => Some((0x2F, false)), // V
+        0x1A => Some((0x11, false)), // W
+        0x1B => Some((0x2D, false)), // X
+        0x1C => Some((0x15, false)), // Y
+        0x1D => Some((0x2C, false)), // Z
 
         // ── Numbers (1-0) ────────────────────────────
-        0x1E => Some((0x02, false)),  // 1
-        0x1F => Some((0x03, false)),  // 2
-        0x20 => Some((0x04, false)),  // 3
-        0x21 => Some((0x05, false)),  // 4
-        0x22 => Some((0x06, false)),  // 5
-        0x23 => Some((0x07, false)),  // 6
-        0x24 => Some((0x08, false)),  // 7
-        0x25 => Some((0x09, false)),  // 8
-        0x26 => Some((0x0A, false)),  // 9
-        0x27 => Some((0x0B, false)),  // 0
+        0x1E => Some((0x02, false)), // 1
+        0x1F => Some((0x03, false)), // 2
+        0x20 => Some((0x04, false)), // 3
+        0x21 => Some((0x05, false)), // 4
+        0x22 => Some((0x06, false)), // 5
+        0x23 => Some((0x07, false)), // 6
+        0x24 => Some((0x08, false)), // 7
+        0x25 => Some((0x09, false)), // 8
+        0x26 => Some((0x0A, false)), // 9
+        0x27 => Some((0x0B, false)), // 0
 
         // ── Control keys ─────────────────────────────
-        0x28 => Some((0x1C, false)),  // Enter
-        0x29 => Some((0x01, false)),  // Escape
-        0x2A => Some((0x0E, false)),  // Backspace
-        0x2B => Some((0x0F, false)),  // Tab
-        0x2C => Some((0x39, false)),  // Space
+        0x28 => Some((0x1C, false)), // Enter
+        0x29 => Some((0x01, false)), // Escape
+        0x2A => Some((0x0E, false)), // Backspace
+        0x2B => Some((0x0F, false)), // Tab
+        0x2C => Some((0x39, false)), // Space
 
         // ── Symbols ──────────────────────────────────
-        0x2D => Some((0x0C, false)),  // - _
-        0x2E => Some((0x0D, false)),  // = +
-        0x2F => Some((0x1A, false)),  // [ {
-        0x30 => Some((0x1B, false)),  // ] }
-        0x31 => Some((0x2B, false)),  // \ |
-        0x32 => Some((0x2B, false)),  // Non-US # ~ (ISO, same PS/2 scancode as \)
-        0x33 => Some((0x27, false)),  // ; :
-        0x34 => Some((0x28, false)),  // ' "
-        0x35 => Some((0x29, false)),  // ` ~
-        0x36 => Some((0x33, false)),  // , <
-        0x37 => Some((0x34, false)),  // . >
-        0x38 => Some((0x35, false)),  // / ?
+        0x2D => Some((0x0C, false)), // - _
+        0x2E => Some((0x0D, false)), // = +
+        0x2F => Some((0x1A, false)), // [ {
+        0x30 => Some((0x1B, false)), // ] }
+        0x31 => Some((0x2B, false)), // \ |
+        0x32 => Some((0x2B, false)), // Non-US # ~ (ISO, same PS/2 scancode as \)
+        0x33 => Some((0x27, false)), // ; :
+        0x34 => Some((0x28, false)), // ' "
+        0x35 => Some((0x29, false)), // ` ~
+        0x36 => Some((0x33, false)), // , <
+        0x37 => Some((0x34, false)), // . >
+        0x38 => Some((0x35, false)), // / ?
 
         // ── Lock keys ────────────────────────────────
-        0x39 => Some((0x3A, false)),  // Caps Lock
-        0x47 => Some((0x46, false)),  // Scroll Lock
-        0x53 => Some((0x45, false)),  // Num Lock
+        0x39 => Some((0x3A, false)), // Caps Lock
+        0x47 => Some((0x46, false)), // Scroll Lock
+        0x53 => Some((0x45, false)), // Num Lock
 
         // ── Function keys (F1-F12) ───────────────────
-        0x3A => Some((0x3B, false)),  // F1
-        0x3B => Some((0x3C, false)),  // F2
-        0x3C => Some((0x3D, false)),  // F3
-        0x3D => Some((0x3E, false)),  // F4
-        0x3E => Some((0x3F, false)),  // F5
-        0x3F => Some((0x40, false)),  // F6
-        0x40 => Some((0x41, false)),  // F7
-        0x41 => Some((0x42, false)),  // F8
-        0x42 => Some((0x43, false)),  // F9
-        0x43 => Some((0x44, false)),  // F10
-        0x44 => Some((0x57, false)),  // F11
-        0x45 => Some((0x58, false)),  // F12
+        0x3A => Some((0x3B, false)), // F1
+        0x3B => Some((0x3C, false)), // F2
+        0x3C => Some((0x3D, false)), // F3
+        0x3D => Some((0x3E, false)), // F4
+        0x3E => Some((0x3F, false)), // F5
+        0x3F => Some((0x40, false)), // F6
+        0x40 => Some((0x41, false)), // F7
+        0x41 => Some((0x42, false)), // F8
+        0x42 => Some((0x43, false)), // F9
+        0x43 => Some((0x44, false)), // F10
+        0x44 => Some((0x57, false)), // F11
+        0x45 => Some((0x58, false)), // F12
 
         // ── Print Screen / Pause ─────────────────────
-        0x46 => Some((0x37, true)),   // Print Screen (E0 37)
-        0x48 => Some((0x45, true)),   // Pause/Break  (simplified as E0 45)
+        0x46 => Some((0x37, true)), // Print Screen (E0 37)
+        0x48 => Some((0x45, true)), // Pause/Break  (simplified as E0 45)
 
         // ── Navigation cluster (E0-prefixed) ─────────
-        0x49 => Some((0x52, true)),   // Insert    (E0 52)
-        0x4A => Some((0x47, true)),   // Home      (E0 47)
-        0x4B => Some((0x49, true)),   // Page Up   (E0 49)
-        0x4C => Some((0x53, true)),   // Delete    (E0 53)
-        0x4D => Some((0x4F, true)),   // End       (E0 4F)
-        0x4E => Some((0x51, true)),   // Page Down (E0 51)
+        0x49 => Some((0x52, true)), // Insert    (E0 52)
+        0x4A => Some((0x47, true)), // Home      (E0 47)
+        0x4B => Some((0x49, true)), // Page Up   (E0 49)
+        0x4C => Some((0x53, true)), // Delete    (E0 53)
+        0x4D => Some((0x4F, true)), // End       (E0 4F)
+        0x4E => Some((0x51, true)), // Page Down (E0 51)
 
         // ── Arrow keys (E0-prefixed) ─────────────────
-        0x4F => Some((0x4D, true)),   // Right Arrow (E0 4D)
-        0x50 => Some((0x4B, true)),   // Left Arrow  (E0 4B)
-        0x51 => Some((0x50, true)),   // Down Arrow  (E0 50)
-        0x52 => Some((0x48, true)),   // Up Arrow    (E0 48)
+        0x4F => Some((0x4D, true)), // Right Arrow (E0 4D)
+        0x50 => Some((0x4B, true)), // Left Arrow  (E0 4B)
+        0x51 => Some((0x50, true)), // Down Arrow  (E0 50)
+        0x52 => Some((0x48, true)), // Up Arrow    (E0 48)
 
         // ── Keypad ───────────────────────────────────
-        0x54 => Some((0x35, true)),   // Keypad /     (E0 35)
-        0x55 => Some((0x37, false)),  // Keypad *     (37, no E0)
-        0x56 => Some((0x4A, false)),  // Keypad -
-        0x57 => Some((0x4E, false)),  // Keypad +
-        0x58 => Some((0x1C, true)),   // Keypad Enter (E0 1C)
-        0x59 => Some((0x4F, false)),  // Keypad 1 / End
-        0x5A => Some((0x50, false)),  // Keypad 2 / Down
-        0x5B => Some((0x51, false)),  // Keypad 3 / PgDn
-        0x5C => Some((0x4B, false)),  // Keypad 4 / Left
-        0x5D => Some((0x4C, false)),  // Keypad 5
-        0x5E => Some((0x4D, false)),  // Keypad 6 / Right
-        0x5F => Some((0x47, false)),  // Keypad 7 / Home
-        0x60 => Some((0x48, false)),  // Keypad 8 / Up
-        0x61 => Some((0x49, false)),  // Keypad 9 / PgUp
-        0x62 => Some((0x52, false)),  // Keypad 0 / Ins
-        0x63 => Some((0x53, false)),  // Keypad . / Del
+        0x54 => Some((0x35, true)),  // Keypad /     (E0 35)
+        0x55 => Some((0x37, false)), // Keypad *     (37, no E0)
+        0x56 => Some((0x4A, false)), // Keypad -
+        0x57 => Some((0x4E, false)), // Keypad +
+        0x58 => Some((0x1C, true)),  // Keypad Enter (E0 1C)
+        0x59 => Some((0x4F, false)), // Keypad 1 / End
+        0x5A => Some((0x50, false)), // Keypad 2 / Down
+        0x5B => Some((0x51, false)), // Keypad 3 / PgDn
+        0x5C => Some((0x4B, false)), // Keypad 4 / Left
+        0x5D => Some((0x4C, false)), // Keypad 5
+        0x5E => Some((0x4D, false)), // Keypad 6 / Right
+        0x5F => Some((0x47, false)), // Keypad 7 / Home
+        0x60 => Some((0x48, false)), // Keypad 8 / Up
+        0x61 => Some((0x49, false)), // Keypad 9 / PgUp
+        0x62 => Some((0x52, false)), // Keypad 0 / Ins
+        0x63 => Some((0x53, false)), // Keypad . / Del
 
         // ── ISO / International ──────────────────────
-        0x64 => Some((0x56, false)),  // Non-US \ | (ISO key, between LShift and Z)
-        0x65 => Some((0x5D, true)),   // Application / Menu (E0 5D)
+        0x64 => Some((0x56, false)), // Non-US \ | (ISO key, between LShift and Z)
+        0x65 => Some((0x5D, true)),  // Application / Menu (E0 5D)
 
         _ => None,
     }
@@ -409,7 +465,8 @@ fn parse_keyboard_report(report: &[u8; 8], prev_keys: &mut [u8; 6]) {
 }
 
 /// Track previous USB mouse button state for press/release detection.
-static USB_MOUSE_BUTTONS: crate::sync::spinlock::Spinlock<u8> = crate::sync::spinlock::Spinlock::new(0);
+static USB_MOUSE_BUTTONS: crate::sync::spinlock::Spinlock<u8> =
+    crate::sync::spinlock::Spinlock::new(0);
 
 /// Parse a boot mouse report (3-4 bytes) and inject movement/button events
 /// directly into the mouse event buffer, bypassing the PS/2 state machine.
@@ -418,7 +475,7 @@ static USB_MOUSE_BUTTONS: crate::sync::spinlock::Spinlock<u8> = crate::sync::spi
 /// PS/2 mouse init detected IntelliMouse (4-byte packets): USB reports inject
 /// 3 bytes, the state machine expects 4, causing packet misalignment.
 fn parse_mouse_report(report: &[u8], len: usize) {
-    use crate::drivers::input::mouse::{MouseEvent, MouseEventType, MouseButtons, MOUSE_BUFFER};
+    use crate::drivers::input::mouse::{MouseButtons, MouseEvent, MouseEventType, MOUSE_BUFFER};
 
     if len < 3 {
         return;
@@ -428,11 +485,15 @@ fn parse_mouse_report(report: &[u8], len: usize) {
     let dx = report[1] as i8 as i32;
     // USB HID Y is inverted relative to screen coordinates
     let dy = -(report[2] as i8 as i32);
-    let dz = if len >= 4 { -(report[3] as i8 as i32) } else { 0 };
+    let dz = if len >= 4 {
+        -(report[3] as i8 as i32)
+    } else {
+        0
+    };
 
     let new_buttons = MouseButtons {
-        left:   buttons_raw & 0x01 != 0,
-        right:  buttons_raw & 0x02 != 0,
+        left: buttons_raw & 0x01 != 0,
+        right: buttons_raw & 0x02 != 0,
         middle: buttons_raw & 0x04 != 0,
     };
 
@@ -457,7 +518,10 @@ fn parse_mouse_report(report: &[u8], len: usize) {
         let mut buf = MOUSE_BUFFER.lock();
         if buf.len() < 256 {
             buf.push_back(MouseEvent {
-                dx, dy, dz, buttons: new_buttons,
+                dx,
+                dy,
+                dz,
+                buttons: new_buttons,
                 event_type: MouseEventType::Scroll,
             });
         }
@@ -468,15 +532,25 @@ fn parse_mouse_report(report: &[u8], len: usize) {
         let mut buf = MOUSE_BUFFER.lock();
         if buf.len() < 256 {
             buf.push_back(MouseEvent {
-                dx, dy, dz: 0, buttons: new_buttons,
-                event_type: if is_down { MouseEventType::ButtonDown } else { MouseEventType::ButtonUp },
+                dx,
+                dy,
+                dz: 0,
+                buttons: new_buttons,
+                event_type: if is_down {
+                    MouseEventType::ButtonDown
+                } else {
+                    MouseEventType::ButtonUp
+                },
             });
         }
     } else if dx != 0 || dy != 0 {
         let mut buf = MOUSE_BUFFER.lock();
         if buf.len() < 256 {
             buf.push_back(MouseEvent {
-                dx, dy, dz: 0, buttons: new_buttons,
+                dx,
+                dy,
+                dz: 0,
+                buttons: new_buttons,
                 event_type: MouseEventType::Move,
             });
         }
@@ -492,18 +566,24 @@ static USB_TABLET_BUTTONS: Spinlock<u8> = Spinlock::new(0);
 /// Format: [buttons, x_lo, x_hi, y_lo, y_hi, (scroll)]
 /// X/Y range: 0..32767 (0x7FFF), scaled to screen pixels.
 fn parse_tablet_report(report: &[u8], len: usize) {
-    use crate::drivers::input::mouse::{MouseEvent, MouseEventType, MouseButtons, MOUSE_BUFFER};
+    use crate::drivers::input::mouse::{MouseButtons, MouseEvent, MouseEventType, MOUSE_BUFFER};
 
-    if len < 5 { return; }
+    if len < 5 {
+        return;
+    }
 
     let buttons_raw = report[0];
     let raw_x = u16::from_le_bytes([report[1], report[2]]);
     let raw_y = u16::from_le_bytes([report[3], report[4]]);
-    let dz = if len >= 6 { -(report[5] as i8 as i32) } else { 0 };
+    let dz = if len >= 6 {
+        -(report[5] as i8 as i32)
+    } else {
+        0
+    };
 
     let new_buttons = MouseButtons {
-        left:   buttons_raw & 0x01 != 0,
-        right:  buttons_raw & 0x02 != 0,
+        left: buttons_raw & 0x01 != 0,
+        right: buttons_raw & 0x02 != 0,
         middle: buttons_raw & 0x04 != 0,
     };
 
@@ -524,7 +604,10 @@ fn parse_tablet_report(report: &[u8], len: usize) {
         let mut buf = MOUSE_BUFFER.lock();
         if buf.len() < 256 {
             buf.push_back(MouseEvent {
-                dx: x, dy: y, dz, buttons: new_buttons,
+                dx: x,
+                dy: y,
+                dz,
+                buttons: new_buttons,
                 event_type: MouseEventType::Scroll,
             });
         }

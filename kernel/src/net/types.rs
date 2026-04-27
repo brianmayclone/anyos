@@ -24,8 +24,11 @@ impl MacAddr {
 
 impl core::fmt::Display for MacAddr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5])
+        write!(
+            f,
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
     }
 }
 
@@ -37,11 +40,13 @@ impl Ipv6Addr {
     /// The unspecified address (::).
     pub const UNSPECIFIED: Ipv6Addr = Ipv6Addr([0; 16]);
     /// The loopback address (::1).
-    pub const LOOPBACK: Ipv6Addr = Ipv6Addr([0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1]);
+    pub const LOOPBACK: Ipv6Addr = Ipv6Addr([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     /// All-nodes multicast (ff02::1).
-    pub const ALL_NODES: Ipv6Addr = Ipv6Addr([0xff,0x02,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1]);
+    pub const ALL_NODES: Ipv6Addr =
+        Ipv6Addr([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     /// All-routers multicast (ff02::2).
-    pub const ALL_ROUTERS: Ipv6Addr = Ipv6Addr([0xff,0x02,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,2]);
+    pub const ALL_ROUTERS: Ipv6Addr =
+        Ipv6Addr([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
     /// Construct from 16 bytes.
     pub fn new(bytes: [u8; 16]) -> Self {
@@ -136,7 +141,9 @@ impl Ipv6Addr {
             let before = &s[..dc_pos];
             if !before.is_empty() {
                 for part in before.split(':') {
-                    if group_count >= 8 { return None; }
+                    if group_count >= 8 {
+                        return None;
+                    }
                     let val = parse_hex16(part)?;
                     groups[group_count] = [(val >> 8) as u8, (val & 0xff) as u8];
                     group_count += 1;
@@ -151,7 +158,9 @@ impl Ipv6Addr {
             let mut after_count = 0;
             if !after.is_empty() {
                 for part in after.split(':') {
-                    if after_count >= 8 { return None; }
+                    if after_count >= 8 {
+                        return None;
+                    }
                     let val = parse_hex16(part)?;
                     after_groups[after_count] = [(val >> 8) as u8, (val & 0xff) as u8];
                     after_count += 1;
@@ -159,31 +168,41 @@ impl Ipv6Addr {
             }
 
             let total = before_count + after_count;
-            if total > 8 { return None; }
+            if total > 8 {
+                return None;
+            }
 
             // Fill zeros in the middle
             let zeros = 8 - total;
             for _ in 0..zeros {
-                if group_count >= 8 { return None; }
+                if group_count >= 8 {
+                    return None;
+                }
                 groups[group_count] = [0, 0];
                 group_count += 1;
             }
             for j in 0..after_count {
-                if group_count >= 8 { return None; }
+                if group_count >= 8 {
+                    return None;
+                }
                 groups[group_count] = after_groups[j];
                 group_count += 1;
             }
         } else {
             // No :: — must have exactly 8 groups
             for part in s.split(':') {
-                if group_count >= 8 { return None; }
+                if group_count >= 8 {
+                    return None;
+                }
                 let val = parse_hex16(part)?;
                 groups[group_count] = [(val >> 8) as u8, (val & 0xff) as u8];
                 group_count += 1;
             }
         }
 
-        if group_count != 8 { return None; }
+        if group_count != 8 {
+            return None;
+        }
 
         let mut addr = [0u8; 16];
         for g in 0..8 {
@@ -196,7 +215,9 @@ impl Ipv6Addr {
 
 /// Parse a hex string (1-4 chars) into a u16 value.
 fn parse_hex16(s: &str) -> Option<u16> {
-    if s.is_empty() || s.len() > 4 { return None; }
+    if s.is_empty() || s.len() > 4 {
+        return None;
+    }
     let mut val: u16 = 0;
     for b in s.bytes() {
         val = val << 4;
@@ -225,7 +246,9 @@ impl core::fmt::Display for Ipv6Addr {
         let mut cur_len = 0;
         for i in 0..8 {
             if groups[i] == 0 {
-                if cur_len == 0 { cur_start = i; }
+                if cur_len == 0 {
+                    cur_start = i;
+                }
                 cur_len += 1;
                 if cur_len > best_len {
                     best_start = cur_start;
@@ -244,13 +267,17 @@ impl core::fmt::Display for Ipv6Addr {
         let mut i = 0;
         while i < 8 {
             if i == best_start {
-                if i == 0 { write!(f, ":")?; }
+                if i == 0 {
+                    write!(f, ":")?;
+                }
                 write!(f, ":")?;
                 i += best_len;
                 first = i >= 8;
                 continue;
             }
-            if !first { write!(f, ":")?; }
+            if !first {
+                write!(f, ":")?;
+            }
             write!(f, "{:x}", groups[i])?;
             first = false;
             i += 1;
@@ -302,11 +329,15 @@ impl core::fmt::Display for IpAddr {
 }
 
 impl From<Ipv4Addr> for IpAddr {
-    fn from(v4: Ipv4Addr) -> Self { IpAddr::V4(v4) }
+    fn from(v4: Ipv4Addr) -> Self {
+        IpAddr::V4(v4)
+    }
 }
 
 impl From<Ipv6Addr> for IpAddr {
-    fn from(v6: Ipv6Addr) -> Self { IpAddr::V6(v6) }
+    fn from(v6: Ipv6Addr) -> Self {
+        IpAddr::V6(v6)
+    }
 }
 
 /// A 4-byte IPv4 address in network byte order.
@@ -350,11 +381,15 @@ impl Ipv4Addr {
             match b {
                 b'0'..=b'9' => {
                     num = num * 10 + (b - b'0') as u32;
-                    if num > 255 { return None; }
+                    if num > 255 {
+                        return None;
+                    }
                     has_digit = true;
                 }
                 b'.' => {
-                    if !has_digit || idx >= 3 { return None; }
+                    if !has_digit || idx >= 3 {
+                        return None;
+                    }
                     parts[idx] = num as u8;
                     idx += 1;
                     num = 0;
@@ -364,7 +399,9 @@ impl Ipv4Addr {
             }
         }
 
-        if !has_digit || idx != 3 { return None; }
+        if !has_digit || idx != 3 {
+            return None;
+        }
         parts[3] = num as u8;
         Some(Ipv4Addr(parts))
     }

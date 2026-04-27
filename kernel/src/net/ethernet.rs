@@ -1,10 +1,10 @@
 //! Ethernet frame handling: parse incoming frames and build outgoing ones.
 
-use alloc::vec::Vec;
 use super::types::MacAddr;
+use alloc::vec::Vec;
 
 /// EtherType value for ARP frames.
-pub const ETHERTYPE_ARP: u16  = 0x0806;
+pub const ETHERTYPE_ARP: u16 = 0x0806;
 /// EtherType value for IPv4 frames.
 pub const ETHERTYPE_IPV4: u16 = 0x0800;
 /// EtherType value for IPv6 frames.
@@ -31,7 +31,12 @@ pub fn parse(data: &[u8]) -> Option<EthFrame<'_>> {
     let ethertype = ((data[12] as u16) << 8) | (data[13] as u16);
     let payload = &data[ETH_HEADER_LEN..];
 
-    Some(EthFrame { dst, src, ethertype, payload })
+    Some(EthFrame {
+        dst,
+        src,
+        ethertype,
+        payload,
+    })
 }
 
 /// Build an Ethernet frame: dst + src + ethertype + payload.

@@ -3,9 +3,9 @@
 //! Implements the split ring layout: descriptor table, available ring, used ring.
 //! Supports synchronous polled I/O with descriptor chaining for request/response pairs.
 
+use crate::memory::physical;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::memory::physical;
 
 // ──────────────────────────────────────────────
 // Descriptor Flags
@@ -23,10 +23,10 @@ const VIRTQ_DESC_F_WRITE: u16 = 2;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct VirtqDesc {
-    addr: u64,      // Physical address of buffer
-    len: u32,       // Buffer length in bytes
-    flags: u16,     // NEXT, WRITE, INDIRECT
-    next: u16,      // Next descriptor index (if NEXT flag set)
+    addr: u64,  // Physical address of buffer
+    len: u32,   // Buffer length in bytes
+    flags: u16, // NEXT, WRITE, INDIRECT
+    next: u16,  // Next descriptor index (if NEXT flag set)
 }
 
 // ──────────────────────────────────────────────
@@ -72,12 +72,12 @@ impl VirtQueue {
         let qs = queue_size as usize;
 
         // Calculate sizes and layout
-        let desc_size = qs * 16;                      // 16 bytes per descriptor
-        let avail_size = 6 + qs * 2;                  // flags(2) + idx(2) + ring(2*qs) + used_event(2)
-        let used_size = 6 + qs * 8;                   // flags(2) + idx(2) + ring(8*qs) + avail_event(2)
+        let desc_size = qs * 16; // 16 bytes per descriptor
+        let avail_size = 6 + qs * 2; // flags(2) + idx(2) + ring(2*qs) + used_event(2)
+        let used_size = 6 + qs * 8; // flags(2) + idx(2) + ring(8*qs) + avail_event(2)
 
         // Align: desc at 16, avail at 2, used at 4
-        let avail_offset = (desc_size + 15) & !15;    // Align to 16 (overshoot is fine)
+        let avail_offset = (desc_size + 15) & !15; // Align to 16 (overshoot is fine)
         let used_offset_raw = avail_offset + avail_size;
         let used_offset = (used_offset_raw + 3) & !3; // Align to 4
 
@@ -139,11 +139,17 @@ impl VirtQueue {
     }
 
     /// Physical address of the descriptor table (for device config).
-    pub fn desc_phys(&self) -> u64 { self.desc_phys }
+    pub fn desc_phys(&self) -> u64 {
+        self.desc_phys
+    }
     /// Physical address of the available ring (for device config).
-    pub fn avail_phys(&self) -> u64 { self.avail_phys }
+    pub fn avail_phys(&self) -> u64 {
+        self.avail_phys
+    }
     /// Physical address of the used ring (for device config).
-    pub fn used_phys(&self) -> u64 { self.used_phys }
+    pub fn used_phys(&self) -> u64 {
+        self.used_phys
+    }
 
     /// Enable device-to-driver notifications (interrupts) on this queue.
     /// Clears the VIRTQ_AVAIL_F_NO_INTERRUPT flag so the device will
@@ -168,13 +174,17 @@ impl VirtQueue {
 
     /// Write available ring index.
     fn set_avail_idx(&self, val: u16) {
-        unsafe { core::ptr::write_volatile(self.avail.add(1), val); }
+        unsafe {
+            core::ptr::write_volatile(self.avail.add(1), val);
+        }
     }
 
     /// Write to available ring entry at position `pos`.
     fn set_avail_ring(&self, pos: u16, desc_idx: u16) {
         // ring starts at offset 2 (after flags and idx)
-        unsafe { core::ptr::write_volatile(self.avail.add(2 + pos as usize), desc_idx); }
+        unsafe {
+            core::ptr::write_volatile(self.avail.add(2 + pos as usize), desc_idx);
+        }
     }
 
     // ── Internal: used ring access ──
@@ -281,7 +291,11 @@ impl VirtQueue {
                 self.broken = true;
                 return false;
             }
-            desc.flags = if self.num_free > 0 { VIRTQ_DESC_F_NEXT } else { 0 };
+            desc.flags = if self.num_free > 0 {
+                VIRTQ_DESC_F_NEXT
+            } else {
+                0
+            };
             desc.next = self.free_head;
             self.free_head = idx;
             self.num_free += 1;
@@ -326,7 +340,11 @@ impl VirtQueue {
                         if d < self.queue_size as u16 && self.in_use[d as usize] {
                             self.in_use[d as usize] = false;
                             let desc = unsafe { &mut *self.desc.add(d as usize) };
-                            desc.flags = if self.num_free > 0 { VIRTQ_DESC_F_NEXT } else { 0 };
+                            desc.flags = if self.num_free > 0 {
+                                VIRTQ_DESC_F_NEXT
+                            } else {
+                                0
+                            };
                             desc.next = self.free_head;
                             self.free_head = d;
                             self.num_free += 1;
@@ -335,7 +353,9 @@ impl VirtQueue {
                     return None;
                 }
             };
-            if i == 0 { head = idx; }
+            if i == 0 {
+                head = idx;
+            }
             allocated.push(idx);
 
             let desc = unsafe { &mut *self.desc.add(idx as usize) };
@@ -360,7 +380,11 @@ impl VirtQueue {
                         if d < self.queue_size as u16 && self.in_use[d as usize] {
                             self.in_use[d as usize] = false;
                             let desc = unsafe { &mut *self.desc.add(d as usize) };
-                            desc.flags = if self.num_free > 0 { VIRTQ_DESC_F_NEXT } else { 0 };
+                            desc.flags = if self.num_free > 0 {
+                                VIRTQ_DESC_F_NEXT
+                            } else {
+                                0
+                            };
                             desc.next = self.free_head;
                             self.free_head = d;
                             self.num_free += 1;
@@ -369,7 +393,9 @@ impl VirtQueue {
                     return None;
                 }
             };
-            if readable.is_empty() && prev.is_none() { head = idx; }
+            if readable.is_empty() && prev.is_none() {
+                head = idx;
+            }
             allocated.push(idx);
 
             let desc = unsafe { &mut *self.desc.add(idx as usize) };
@@ -486,7 +512,9 @@ impl VirtQueue {
             timeout += 1;
 
             if timeout > 200_000_000 {
-                crate::serial_println!("[VirtQueue] timeout waiting for device response (device hung?)");
+                crate::serial_println!(
+                    "[VirtQueue] timeout waiting for device response (device hung?)"
+                );
                 return None;
             }
         }
@@ -502,5 +530,4 @@ impl VirtQueue {
             self.broken,
         )
     }
-
 }

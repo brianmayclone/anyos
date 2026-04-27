@@ -15,14 +15,14 @@
 //!   - Bit 31 set (`OVERLAY_RAM_BIT`): data lives in RamFS (lower 31 bits = ram inode)
 //!   - Bit 31 clear: data lives in ISO 9660 (inode = LBA as from ISO lookup)
 
-use alloc::collections::BTreeSet;
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
 use crate::fs::file::{DirEntry, FileType};
 use crate::fs::iso9660::Iso9660Fs;
 use crate::fs::ramfs::RamFs;
 use crate::fs::vfs::FsError;
+use alloc::collections::BTreeSet;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// Bit flag: when set in an overlay inode, the data lives in RamFS.
 pub const OVERLAY_RAM_BIT: u32 = 0x8000_0000;
@@ -182,7 +182,12 @@ impl OverlayFs {
     }
 
     /// Rename a file/directory within the overlay.
-    pub fn rename(&mut self, iso: &Iso9660Fs, old_path: &str, new_path: &str) -> Result<(), FsError> {
+    pub fn rename(
+        &mut self,
+        iso: &Iso9660Fs,
+        old_path: &str,
+        new_path: &str,
+    ) -> Result<(), FsError> {
         let old_norm = Self::norm(old_path);
         let new_norm = Self::norm(new_path);
 

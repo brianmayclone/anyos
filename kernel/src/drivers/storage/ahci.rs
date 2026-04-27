@@ -3,10 +3,10 @@
 //! Supports AHCI 1.0+ host controllers (PCI class 01:06, prog IF 01).
 //! Uses DMA transfers via MMIO, replacing legacy ATA PIO when available.
 
-use alloc::boxed::Box;
-use crate::drivers::pci::{PciDevice, pci_config_read32, pci_config_write32};
+use crate::drivers::pci::{pci_config_read32, pci_config_write32, PciDevice};
 use crate::memory::address::{PhysAddr, VirtAddr};
-use crate::memory::{virtual_mem, physical};
+use crate::memory::{physical, virtual_mem};
+use alloc::boxed::Box;
 
 // AHCI MMIO virtual base — after E1000 (0xD000_0000) and VMware SVGA FIFO (0xD002_0000)
 const AHCI_MMIO_VIRT: u64 = 0xFFFF_FFFF_D006_0000;
@@ -95,7 +95,7 @@ struct CmdTable {
 #[repr(C)]
 struct FisRegH2D {
     fis_type: u8,
-    flags: u8,      // bit 7 = C (command)
+    flags: u8, // bit 7 = C (command)
     command: u8,
     features_lo: u8,
     lba0: u8,
@@ -134,7 +134,7 @@ struct AhciController {
     fb_phys: u64,
     ctba_phys: u64,
     bounce_phys: u64,
-    bounce_virt: u64,   // = bounce_phys (identity-mapped)
+    bounce_virt: u64, // = bounce_phys (identity-mapped)
     total_sectors: u64,
     irq: u8,
     /// ATA IDENTIFY model string (byte-swapped, trimmed).
@@ -188,13 +188,21 @@ const AHCI_MMIO_SIZE: u64 = 0x1100;
 
 #[inline(always)]
 unsafe fn mmio_read32(base: u64, offset: u64) -> u32 {
-    debug_assert!(offset + 4 <= AHCI_MMIO_SIZE, "AHCI MMIO read out of bounds: offset={:#x}", offset);
+    debug_assert!(
+        offset + 4 <= AHCI_MMIO_SIZE,
+        "AHCI MMIO read out of bounds: offset={:#x}",
+        offset
+    );
     core::ptr::read_volatile((base + offset) as *const u32)
 }
 
 #[inline(always)]
 unsafe fn mmio_write32(base: u64, offset: u64, val: u32) {
-    debug_assert!(offset + 4 <= AHCI_MMIO_SIZE, "AHCI MMIO write out of bounds: offset={:#x}", offset);
+    debug_assert!(
+        offset + 4 <= AHCI_MMIO_SIZE,
+        "AHCI MMIO write out of bounds: offset={:#x}",
+        offset
+    );
     core::ptr::write_volatile((base + offset) as *mut u32, val);
 }
 
@@ -371,7 +379,9 @@ pub fn process_hotplug() {
     use core::sync::atomic::Ordering;
 
     let pending = HOTPLUG_PENDING.swap(0, Ordering::AcqRel);
-    if pending == 0 { return; }
+    if pending == 0 {
+        return;
+    }
 
     let ahci = match unsafe { AHCI.as_ref() } {
         Some(a) => a,
@@ -379,7 +389,9 @@ pub fn process_hotplug() {
     };
 
     for port in 0..32u32 {
-        if pending & (1 << port) == 0 { continue; }
+        if pending & (1 << port) == 0 {
+            continue;
+        }
 
         let ssts = unsafe { port_read(ahci.mmio_base, port, PORT_SSTS) };
         let det = ssts & 0x0F;
@@ -404,15 +416,22 @@ pub fn process_hotplug() {
                     });
                     super::blockdev::scan_and_register_partitions(disk_id);
                     super::blockdev::auto_mount_removable(disk_id);
-                    crate::serial_println!("  AHCI hot-plug: disk registered (port={}, {} sectors)",
-                        port, sectors);
+                    crate::serial_println!(
+                        "  AHCI hot-plug: disk registered (port={}, {} sectors)",
+                        port,
+                        sectors
+                    );
                 }
             } else if sig == SATA_SIG_ATAPI {
                 crate::serial_println!("  AHCI hot-plug: ATAPI device connected on port {}", port);
             }
         } else {
             // Device disconnected
-            crate::serial_println!("  AHCI hot-plug: device disconnected from port {} (det={})", port, det);
+            crate::serial_println!(
+                "  AHCI hot-plug: device disconnected from port {} (det={})",
+                port,
+                det
+            );
             // Note: full hot-unplug (removing blockdev entries, unmounting) is left
             // for future work — we only log the event for now.
         }
@@ -426,16 +445,11 @@ unsafe fn identify_disk_on_port(ahci: &AhciController, port: u32) -> u64 {
     let identify_buf = ahci.bounce_virt as *mut u8;
     core::ptr::write_bytes(identify_buf, 0, 512);
 
-    let ok = issue_command(
-        ahci,
-        ATA_CMD_IDENTIFY,
-        0, 0,
-        ahci.bounce_phys,
-        512,
-        false,
-    );
+    let ok = issue_command(ahci, ATA_CMD_IDENTIFY, 0, 0, ahci.bounce_phys, 512, false);
 
-    if !ok { return 0; }
+    if !ok {
+        return 0;
+    }
 
     // LBA48 capacity at words 100-103 (offset 200-207)
     let word100 = core::ptr::read_unaligned((ahci.bounce_virt + 200) as *const u64);
@@ -552,7 +566,11 @@ unsafe fn issue_command_once(
             if elapsed >= timeout_ticks {
                 // Timeout reached
                 AHCI_WAITER.store(0, core::sync::atomic::Ordering::Release);
-                crate::serial_println!("AHCI: command timeout (cmd={:#x}, lba={}, slow path)", command, lba);
+                crate::serial_println!(
+                    "AHCI: command timeout (cmd={:#x}, lba={}, slow path)",
+                    command,
+                    lba
+                );
                 return false;
             }
 
@@ -603,7 +621,10 @@ unsafe fn issue_command(
     for retry in 0..AHCI_MAX_RETRIES {
         crate::serial_println!(
             "AHCI: retrying command (cmd={:#x}, lba={}, attempt {}/{})",
-            command, lba, retry + 1, AHCI_MAX_RETRIES
+            command,
+            lba,
+            retry + 1,
+            AHCI_MAX_RETRIES
         );
 
         // Reset the port to clear any stuck state
@@ -618,7 +639,11 @@ unsafe fn issue_command(
         }
     }
 
-    crate::serial_println!("AHCI: command failed after retries (cmd={:#x}, lba={})", command, lba);
+    crate::serial_println!(
+        "AHCI: command failed after retries (cmd={:#x}, lba={})",
+        command,
+        lba
+    );
     false
 }
 
@@ -641,7 +666,10 @@ unsafe fn issue_command_on_port(
         if attempt > 0 {
             crate::serial_println!(
                 "AHCI: retrying port {} command (cmd={:#x}, lba={}, attempt {})",
-                port, command, lba, attempt
+                port,
+                command,
+                lba,
+                attempt
             );
             // Reset port to clear stuck state before retry
             stop_port(mmio_base, port);
@@ -705,7 +733,9 @@ unsafe fn issue_command_on_port(
                 if now.wrapping_sub(start) >= timeout_ticks {
                     crate::serial_println!(
                         "AHCI: port {} command timeout (cmd={:#x}, lba={})",
-                        port, command, lba
+                        port,
+                        command,
+                        lba
                     );
                     break; // timeout — will retry
                 }
@@ -975,7 +1005,10 @@ pub fn init_and_register(pci: &PciDevice) {
 
         crate::serial_verbose_println!(
             "  AHCI: version {}.{:02x}, {} ports, PI={:#06x}",
-            vs_major, vs_minor, num_ports, pi
+            vs_major,
+            vs_minor,
+            num_ports,
+            pi
         );
 
         // Debug marker: write 0xAA to port 0 IE to confirm AHCI init runs.
@@ -1007,12 +1040,17 @@ pub fn init_and_register(pci: &PciDevice) {
             };
             crate::serial_println!(
                 "  AHCI: port {} sig={:#010x} det={} ({})",
-                port, sig, det, desc
+                port,
+                sig,
+                det,
+                desc
             );
             // Debug via I/O port 0x504 (visible in CoreVM log as "unhandled write")
             // Value encodes: high nibble = event, low nibble = port
             // 0xA0+port = port found, 0xB0+port = ATAPI detected
-            unsafe { core::arch::asm!("out dx, al", in("dx") 0x504u16, in("al") (0xA0u8 + port as u8)); }
+            unsafe {
+                core::arch::asm!("out dx, al", in("dx") 0x504u16, in("al") (0xA0u8 + port as u8));
+            }
 
             if sig == SATA_SIG_ATA {
                 if found_port.is_none() {
@@ -1081,13 +1119,21 @@ pub fn init_and_register(pci: &PciDevice) {
         let bounce_phys = match physical::alloc_contiguous(BOUNCE_BUF_FRAMES) {
             Some(f) => f.as_u64(),
             None => {
-                crate::serial_verbose_println!("  AHCI: Failed to allocate bounce buffer ({} frames)", BOUNCE_BUF_FRAMES);
+                crate::serial_verbose_println!(
+                    "  AHCI: Failed to allocate bounce buffer ({} frames)",
+                    BOUNCE_BUF_FRAMES
+                );
                 return;
             }
         };
 
-        crate::serial_println!("  AHCI: DMA alloc: CLB={:#x} FB={:#x} CT={:#x} bounce={:#x}",
-            clb_phys, fb_phys, ctba_phys, bounce_phys);
+        crate::serial_println!(
+            "  AHCI: DMA alloc: CLB={:#x} FB={:#x} CT={:#x} bounce={:#x}",
+            clb_phys,
+            fb_phys,
+            ctba_phys,
+            bounce_phys
+        );
 
         // Zero all DMA structures
         core::ptr::write_bytes(clb_phys as *mut u8, 0, 4096);
@@ -1144,9 +1190,19 @@ pub fn init_and_register(pci: &PciDevice) {
                 // Configure ATAPI port DMA addresses
                 stop_port(mmio_base, atapi_port);
                 port_write(mmio_base, atapi_port, PORT_CLB, atapi_clb_phys as u32);
-                port_write(mmio_base, atapi_port, PORT_CLBU, (atapi_clb_phys >> 32) as u32);
+                port_write(
+                    mmio_base,
+                    atapi_port,
+                    PORT_CLBU,
+                    (atapi_clb_phys >> 32) as u32,
+                );
                 port_write(mmio_base, atapi_port, PORT_FB, atapi_fb_phys as u32);
-                port_write(mmio_base, atapi_port, PORT_FBU, (atapi_fb_phys >> 32) as u32);
+                port_write(
+                    mmio_base,
+                    atapi_port,
+                    PORT_FBU,
+                    (atapi_fb_phys >> 32) as u32,
+                );
                 port_write(mmio_base, atapi_port, PORT_SERR, 0xFFFF_FFFF);
                 port_write(mmio_base, atapi_port, PORT_IS, 0xFFFF_FFFF);
                 start_port(mmio_base, atapi_port);
@@ -1171,7 +1227,11 @@ pub fn init_and_register(pci: &PciDevice) {
             model: [0u8; 40],
             extra_disks: [None, None, None, None, None, None, None],
             extra_disk_count: 0,
-            atapi_port: if atapi_clb_phys != 0 { found_atapi } else { None },
+            atapi_port: if atapi_clb_phys != 0 {
+                found_atapi
+            } else {
+                None
+            },
             atapi_clb_phys,
             atapi_fb_phys,
             atapi_ctba_phys,
@@ -1185,8 +1245,8 @@ pub fn init_and_register(pci: &PciDevice) {
         let identify_ok = issue_command(
             ahci_ref,
             ATA_CMD_IDENTIFY,
-            0,  // LBA = 0
-            1,  // count = 1
+            0, // LBA = 0
+            1, // count = 1
             bounce_phys,
             512,
             false,
@@ -1233,7 +1293,7 @@ pub fn init_and_register(pci: &PciDevice) {
             let port_ie = (1u32 << 0)  // D2H Register FIS Interrupt (command complete)
                         | (1 << 22)    // PhyRdy Change Status (hot-plug)
                         | (1 << 30)    // Task File Error Status
-                        | (1 << 31);   // Host Bus Fatal Error
+                        | (1 << 31); // Host Bus Fatal Error
             port_write(mmio_base, active_port, PORT_IE, port_ie);
 
             // Enable hot-plug interrupts on ALL implemented ports (not just active)
@@ -1252,7 +1312,10 @@ pub fn init_and_register(pci: &PciDevice) {
             if let Some(vec) = msi_vector {
                 crate::drivers::pci_msi::register_msi_handler(vec, ahci_msi_handler);
                 irq = vec; // Store for diagnostics
-                crate::serial_println!("  AHCI: MSI vector {} registered (dedicated interrupt)", vec);
+                crate::serial_println!(
+                    "  AHCI: MSI vector {} registered (dedicated interrupt)",
+                    vec
+                );
             } else if irq > 0 && irq < 32 {
                 // Fallback: legacy IRQ via IOAPIC
                 crate::arch::x86::irq::register_irq_chain(irq, ahci_irq_handler);
@@ -1287,7 +1350,10 @@ pub fn init_and_register(pci: &PciDevice) {
             ) {
                 (Some(clb), Some(fb), Some(ct)) => (clb.as_u64(), fb.as_u64(), ct.as_u64()),
                 _ => {
-                    crate::serial_verbose_println!("  AHCI: Failed to allocate DMA for port {}", extra_port);
+                    crate::serial_verbose_println!(
+                        "  AHCI: Failed to allocate DMA for port {}",
+                        extra_port
+                    );
                     continue;
                 }
             };
@@ -1314,9 +1380,16 @@ pub fn init_and_register(pci: &PciDevice) {
             // IDENTIFY this disk using the extra port's DMA structures
             let mut extra_total_sectors: u64 = 0;
             let id_ok = issue_command_on_port(
-                mmio_base, extra_port, e_clb, e_ct,
+                mmio_base,
+                extra_port,
+                e_clb,
+                e_ct,
                 bounce_phys, // shared bounce buffer (only one port active at a time due to IO_LOCK)
-                ATA_CMD_IDENTIFY, 0, 1, 512, false,
+                ATA_CMD_IDENTIFY,
+                0,
+                1,
+                512,
+                false,
             );
             if id_ok {
                 let identify = bounce_phys as *const u16;
@@ -1324,11 +1397,14 @@ pub fn init_and_register(pci: &PciDevice) {
                 let hi = *identify.add(102) as u64 | ((*identify.add(103) as u64) << 16);
                 extra_total_sectors = lo | (hi << 32);
                 if extra_total_sectors == 0 {
-                    extra_total_sectors = (*identify.add(60) as u64) | ((*identify.add(61) as u64) << 16);
+                    extra_total_sectors =
+                        (*identify.add(60) as u64) | ((*identify.add(61) as u64) << 16);
                 }
                 crate::serial_println!(
                     "  AHCI: port {} disk: {} sectors ({} MiB)",
-                    extra_port, extra_total_sectors, extra_total_sectors / 2048
+                    extra_port,
+                    extra_total_sectors,
+                    extra_total_sectors / 2048
                 );
             }
 
@@ -1365,14 +1441,21 @@ pub fn init_and_register(pci: &PciDevice) {
             // Register in blockdev
             use super::blockdev;
             blockdev::register_device(blockdev::BlockDevice {
-                id: disk_id, disk_id, partition: None,
+                id: disk_id,
+                disk_id,
+                partition: None,
                 part_type: crate::fs::partition::PartitionType::Empty,
-                start_lba: 0, size_sectors: extra_total_sectors,
+                start_lba: 0,
+                size_sectors: extra_total_sectors,
                 label: [0u8; 40],
             });
             blockdev::scan_and_register_partitions(disk_id);
 
-            crate::serial_println!("  AHCI: registered extra disk {} on port {}", disk_id, extra_port);
+            crate::serial_println!(
+                "  AHCI: registered extra disk {} on port {}",
+                disk_id,
+                extra_port
+            );
         }
     }
 }
@@ -1417,9 +1500,13 @@ fn init_secondary_controller(pci: &PciDevice) {
         // Find first SATA disk port
         let mut found_port: Option<u32> = None;
         for port in 0..32u32 {
-            if pi & (1 << port) == 0 { continue; }
+            if pi & (1 << port) == 0 {
+                continue;
+            }
             let ssts = port_read(mmio_base, port, PORT_SSTS);
-            if ssts & 0x0F != 3 { continue; }
+            if ssts & 0x0F != 3 {
+                continue;
+            }
             let sig = port_read(mmio_base, port, PORT_SIG);
             if sig == SATA_SIG_ATA {
                 found_port = Some(port);
@@ -1436,11 +1523,21 @@ fn init_secondary_controller(pci: &PciDevice) {
         };
 
         // Allocate DMA structures
-        let clb_phys = match physical::alloc_frame() { Some(f) => f.as_u64(), None => return };
-        let fb_phys = match physical::alloc_frame() { Some(f) => f.as_u64(), None => return };
-        let ctba_phys = match physical::alloc_frame() { Some(f) => f.as_u64(), None => return };
+        let clb_phys = match physical::alloc_frame() {
+            Some(f) => f.as_u64(),
+            None => return,
+        };
+        let fb_phys = match physical::alloc_frame() {
+            Some(f) => f.as_u64(),
+            None => return,
+        };
+        let ctba_phys = match physical::alloc_frame() {
+            Some(f) => f.as_u64(),
+            None => return,
+        };
         let bounce_phys = match physical::alloc_contiguous(BOUNCE_BUF_FRAMES) {
-            Some(f) => f.as_u64(), None => return,
+            Some(f) => f.as_u64(),
+            None => return,
         };
 
         core::ptr::write_bytes(clb_phys as *mut u8, 0, 4096);
@@ -1464,8 +1561,16 @@ fn init_secondary_controller(pci: &PciDevice) {
         // IDENTIFY
         let mut total_sectors: u64 = 0;
         let id_ok = issue_command_on_port(
-            mmio_base, port, clb_phys, ctba_phys,
-            bounce_phys, ATA_CMD_IDENTIFY, 0, 1, 512, false,
+            mmio_base,
+            port,
+            clb_phys,
+            ctba_phys,
+            bounce_phys,
+            ATA_CMD_IDENTIFY,
+            0,
+            1,
+            512,
+            false,
         );
         if id_ok {
             let identify = bounce_phys as *const u16;
@@ -1477,7 +1582,9 @@ fn init_secondary_controller(pci: &PciDevice) {
             }
             crate::serial_println!(
                 "  AHCI secondary: port {} disk: {} sectors ({} MiB)",
-                port, total_sectors, total_sectors / 2048
+                port,
+                total_sectors,
+                total_sectors / 2048
             );
         }
 
@@ -1498,7 +1605,13 @@ fn init_secondary_controller(pci: &PciDevice) {
         let disk_id = (1 + primary_extra + sec_idx) as u8;
 
         SECONDARY_AHCI[sec_idx] = Some(SecondaryAhci {
-            mmio_base, port, clb_phys, ctba_phys, bounce_phys, total_sectors, disk_id,
+            mmio_base,
+            port,
+            clb_phys,
+            ctba_phys,
+            bounce_phys,
+            total_sectors,
+            disk_id,
         });
         SECONDARY_AHCI_COUNT = sec_idx + 1;
 
@@ -1507,22 +1620,32 @@ fn init_secondary_controller(pci: &PciDevice) {
 
         use super::blockdev;
         blockdev::register_device(blockdev::BlockDevice {
-            id: disk_id, disk_id, partition: None,
+            id: disk_id,
+            disk_id,
+            partition: None,
             part_type: crate::fs::partition::PartitionType::Empty,
-            start_lba: 0, size_sectors: total_sectors,
+            start_lba: 0,
+            size_sectors: total_sectors,
             label: [0u8; 40],
         });
         blockdev::scan_and_register_partitions(disk_id);
 
         crate::serial_println!(
             "  AHCI secondary: registered as disk {} (ABAR={:#010x}, port {})",
-            disk_id, abar_phys, port
+            disk_id,
+            abar_phys,
+            port
         );
     }
 }
 
 fn secondary_ahci_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
-    let sec = match unsafe { SECONDARY_AHCI.iter().flatten().find(|s| s.disk_id == disk_id) } {
+    let sec = match unsafe {
+        SECONDARY_AHCI
+            .iter()
+            .flatten()
+            .find(|s| s.disk_id == disk_id)
+    } {
         Some(s) => s,
         None => return false,
     };
@@ -1537,14 +1660,21 @@ fn secondary_ahci_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> boo
 
         let ok = unsafe {
             issue_command_on_port(
-                sec.mmio_base, sec.port,
-                sec.clb_phys, sec.ctba_phys,
+                sec.mmio_base,
+                sec.port,
+                sec.clb_phys,
+                sec.ctba_phys,
                 sec.bounce_phys,
-                ATA_CMD_READ_DMA_EXT, cur_lba, batch as u16,
-                byte_count as u32, false,
+                ATA_CMD_READ_DMA_EXT,
+                cur_lba,
+                batch as u16,
+                byte_count as u32,
+                false,
             )
         };
-        if !ok { return false; }
+        if !ok {
+            return false;
+        }
 
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -1561,7 +1691,12 @@ fn secondary_ahci_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> boo
 }
 
 fn secondary_ahci_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
-    let sec = match unsafe { SECONDARY_AHCI.iter().flatten().find(|s| s.disk_id == disk_id) } {
+    let sec = match unsafe {
+        SECONDARY_AHCI
+            .iter()
+            .flatten()
+            .find(|s| s.disk_id == disk_id)
+    } {
         Some(s) => s,
         None => return false,
     };
@@ -1584,14 +1719,21 @@ fn secondary_ahci_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
 
         let ok = unsafe {
             issue_command_on_port(
-                sec.mmio_base, sec.port,
-                sec.clb_phys, sec.ctba_phys,
+                sec.mmio_base,
+                sec.port,
+                sec.clb_phys,
+                sec.ctba_phys,
                 sec.bounce_phys,
-                ATA_CMD_WRITE_DMA_EXT, cur_lba, batch as u16,
-                byte_count as u32, true,
+                ATA_CMD_WRITE_DMA_EXT,
+                cur_lba,
+                batch as u16,
+                byte_count as u32,
+                true,
             )
         };
-        if !ok { return false; }
+        if !ok {
+            return false;
+        }
 
         offset += byte_count;
         cur_lba += batch as u64;
@@ -1611,8 +1753,10 @@ fn extra_disk_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
         None => return false,
     };
     // Find the port for this disk_id
-    let port_dma = match ahci.extra_disks.iter().flatten().find(|d| {
-        unsafe { EXTRA_DISK_MAP.iter().any(|&(did, p, _)| did == disk_id && p == d.port) }
+    let port_dma = match ahci.extra_disks.iter().flatten().find(|d| unsafe {
+        EXTRA_DISK_MAP
+            .iter()
+            .any(|&(did, p, _)| did == disk_id && p == d.port)
     }) {
         Some(d) => d,
         None => return false,
@@ -1628,14 +1772,21 @@ fn extra_disk_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
 
         let ok = unsafe {
             issue_command_on_port(
-                ahci.mmio_base, port_dma.port,
-                port_dma.clb_phys, port_dma.ctba_phys,
+                ahci.mmio_base,
+                port_dma.port,
+                port_dma.clb_phys,
+                port_dma.ctba_phys,
                 ahci.bounce_phys,
-                ATA_CMD_READ_DMA_EXT, cur_lba, batch as u16,
-                byte_count as u32, false,
+                ATA_CMD_READ_DMA_EXT,
+                cur_lba,
+                batch as u16,
+                byte_count as u32,
+                false,
             )
         };
-        if !ok { return false; }
+        if !ok {
+            return false;
+        }
 
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -1656,8 +1807,10 @@ fn extra_disk_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
         Some(a) => a,
         None => return false,
     };
-    let port_dma = match ahci.extra_disks.iter().flatten().find(|d| {
-        unsafe { EXTRA_DISK_MAP.iter().any(|&(did, p, _)| did == disk_id && p == d.port) }
+    let port_dma = match ahci.extra_disks.iter().flatten().find(|d| unsafe {
+        EXTRA_DISK_MAP
+            .iter()
+            .any(|&(did, p, _)| did == disk_id && p == d.port)
     }) {
         Some(d) => d,
         None => return false,
@@ -1681,14 +1834,21 @@ fn extra_disk_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
 
         let ok = unsafe {
             issue_command_on_port(
-                ahci.mmio_base, port_dma.port,
-                port_dma.clb_phys, port_dma.ctba_phys,
+                ahci.mmio_base,
+                port_dma.port,
+                port_dma.clb_phys,
+                port_dma.ctba_phys,
                 ahci.bounce_phys,
-                ATA_CMD_WRITE_DMA_EXT, cur_lba, batch as u16,
-                byte_count as u32, true,
+                ATA_CMD_WRITE_DMA_EXT,
+                cur_lba,
+                batch as u16,
+                byte_count as u32,
+                true,
             )
         };
-        if !ok { return false; }
+        if !ok {
+            return false;
+        }
 
         offset += byte_count;
         cur_lba += batch as u64;
@@ -1737,9 +1897,7 @@ pub fn read_cd_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         let batch = remaining.min(MAX_CD_BATCH);
         let byte_count = batch as usize * 2048;
 
-        let ok = unsafe {
-            issue_atapi_read(ahci, atapi_port, cur_lba, batch, byte_count as u32)
-        };
+        let ok = unsafe { issue_atapi_read(ahci, atapi_port, cur_lba, batch, byte_count as u32) };
 
         if !ok {
             return false;
@@ -1802,11 +1960,11 @@ unsafe fn issue_atapi_read(
     *acmd.add(2) = ((lba >> 24) & 0xFF) as u8; // LBA MSB
     *acmd.add(3) = ((lba >> 16) & 0xFF) as u8;
     *acmd.add(4) = ((lba >> 8) & 0xFF) as u8;
-    *acmd.add(5) = (lba & 0xFF) as u8;         // LBA LSB
-    *acmd.add(6) = 0x00;                         // Reserved
-    *acmd.add(7) = ((count >> 8) & 0xFF) as u8;  // Transfer length MSB
-    *acmd.add(8) = (count & 0xFF) as u8;          // Transfer length LSB
-    *acmd.add(9) = 0x00;                          // Control
+    *acmd.add(5) = (lba & 0xFF) as u8; // LBA LSB
+    *acmd.add(6) = 0x00; // Reserved
+    *acmd.add(7) = ((count >> 8) & 0xFF) as u8; // Transfer length MSB
+    *acmd.add(8) = (count & 0xFF) as u8; // Transfer length LSB
+    *acmd.add(9) = 0x00; // Control
 
     // Fill PRDT[0]: data goes into shared bounce buffer
     (*cmd_table).prdt[0].dba = ahci.bounce_phys as u32;
@@ -1838,7 +1996,11 @@ unsafe fn issue_atapi_read(
             }
             let now = crate::arch::hal::timer_current_ticks();
             if now.wrapping_sub(start) >= timeout_ticks {
-                crate::serial_println!("AHCI ATAPI: command timeout (lba={}, count={})", lba, count);
+                crate::serial_println!(
+                    "AHCI ATAPI: command timeout (lba={}, count={})",
+                    lba,
+                    count
+                );
                 return false;
             }
             core::hint::spin_loop();

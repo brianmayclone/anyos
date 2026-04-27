@@ -5,9 +5,9 @@
 //! Each CPU has its own TSS so that interrupt entry from Ring 3 uses
 //! the correct kernel stack for the thread running on that CPU.
 
+use crate::arch::x86::smp::MAX_CPUS;
 use core::arch::asm;
 use core::mem::size_of;
-use crate::arch::x86::smp::MAX_CPUS;
 
 /// Size of each per-CPU IST stack (for Double Fault handler).
 const IST_STACK_SIZE: usize = 8192; // 8 KiB — enough for exception diagnostics
@@ -25,20 +25,20 @@ static mut IST1_STACKS: [IstStack; MAX_CPUS] = {
 #[repr(C, packed)]
 pub struct Tss64 {
     _reserved0: u32,
-    pub rsp0: u64,          // Ring 0 stack pointer
-    pub rsp1: u64,          // Ring 1 stack pointer (unused)
-    pub rsp2: u64,          // Ring 2 stack pointer (unused)
+    pub rsp0: u64, // Ring 0 stack pointer
+    pub rsp1: u64, // Ring 1 stack pointer (unused)
+    pub rsp2: u64, // Ring 2 stack pointer (unused)
     _reserved1: u64,
-    pub ist1: u64,          // Interrupt Stack Table entry 1
-    pub ist2: u64,          // IST 2
-    pub ist3: u64,          // IST 3
-    pub ist4: u64,          // IST 4
-    pub ist5: u64,          // IST 5
-    pub ist6: u64,          // IST 6
-    pub ist7: u64,          // IST 7
+    pub ist1: u64, // Interrupt Stack Table entry 1
+    pub ist2: u64, // IST 2
+    pub ist3: u64, // IST 3
+    pub ist4: u64, // IST 4
+    pub ist5: u64, // IST 5
+    pub ist6: u64, // IST 6
+    pub ist7: u64, // IST 7
     _reserved2: u64,
     _reserved3: u16,
-    pub iomap_base: u16,    // Offset to I/O permission bitmap
+    pub iomap_base: u16, // Offset to I/O permission bitmap
 }
 
 /// Per-CPU TSS array. Each CPU gets its own TSS so RSP0 is independent.
@@ -49,7 +49,13 @@ static mut TSS_ARRAY: [Tss64; MAX_CPUS] = {
         rsp1: 0,
         rsp2: 0,
         _reserved1: 0,
-        ist1: 0, ist2: 0, ist3: 0, ist4: 0, ist5: 0, ist6: 0, ist7: 0,
+        ist1: 0,
+        ist2: 0,
+        ist3: 0,
+        ist4: 0,
+        ist5: 0,
+        ist6: 0,
+        ist7: 0,
         _reserved2: 0,
         _reserved3: 0,
         iomap_base: 0,
@@ -60,12 +66,17 @@ static mut TSS_ARRAY: [Tss64; MAX_CPUS] = {
 /// Initialize the TSS for CPU 0 (BSP), install its descriptor in the GDT, and load TR.
 pub fn init() {
     init_for_cpu(0);
-    crate::serial_verbose_println!("[OK] TSS initialized (CPU 0, selector {:#06x}, 64-bit)", super::gdt::TSS_SEL);
+    crate::serial_verbose_println!(
+        "[OK] TSS initialized (CPU 0, selector {:#06x}, 64-bit)",
+        super::gdt::TSS_SEL
+    );
 }
 
 /// Initialize the TSS for a specific CPU, install the GDT descriptor, and load TR.
 pub fn init_for_cpu(cpu_id: usize) {
-    if cpu_id >= MAX_CPUS { return; }
+    if cpu_id >= MAX_CPUS {
+        return;
+    }
 
     unsafe {
         TSS_ARRAY[cpu_id].iomap_base = size_of::<Tss64>() as u16;
@@ -138,10 +149,16 @@ pub fn set_kernel_stack_for_cpu(cpu_id: usize, rsp0: u64) {
             unsafe {
                 use crate::arch::x86::port::{inb, outb};
                 let msg = b"\r\n!!! BUG: set_kernel_stack_for_cpu rsp0=0 cpu=";
-                for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                for &c in msg {
+                    while inb(0x3FD) & 0x20 == 0 {}
+                    outb(0x3F8, c);
+                }
                 outb(0x3F8, b'0' + cpu_id as u8);
                 let msg2 = b"\r\n";
-                for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                for &c in msg2 {
+                    while inb(0x3FD) & 0x20 == 0 {}
+                    outb(0x3F8, c);
+                }
             }
             return; // Do NOT update TSS with garbage — keep the previous valid RSP0
         }
@@ -163,10 +180,16 @@ pub fn set_kernel_stack_for_cpu(cpu_id: usize, rsp0: u64) {
             if readback != rsp0 {
                 use crate::arch::x86::port::{inb, outb};
                 let msg = b"\r\n!!! TSS WRITE MISMATCH cpu=";
-                for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                for &c in msg {
+                    while inb(0x3FD) & 0x20 == 0 {}
+                    outb(0x3F8, c);
+                }
                 outb(0x3F8, b'0' + cpu_id as u8);
                 let msg2 = b"\r\n";
-                for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                for &c in msg2 {
+                    while inb(0x3FD) & 0x20 == 0 {}
+                    outb(0x3F8, c);
+                }
                 // Retry the write
                 core::ptr::write_unaligned(ptr, rsp0);
             }
@@ -198,7 +221,9 @@ pub fn set_kernel_stack(rsp0: u64) {
 /// Return the virtual address of TSS.RSP0 for a given CPU.
 /// Used to set up hardware watchpoints (DR0) for corruption detection.
 pub fn rsp0_address(cpu_id: usize) -> u64 {
-    if cpu_id >= MAX_CPUS { return 0; }
+    if cpu_id >= MAX_CPUS {
+        return 0;
+    }
     unsafe { rsp0_ptr(cpu_id) as u64 }
 }
 
@@ -207,7 +232,9 @@ pub fn rsp0_address(cpu_id: usize) -> u64 {
 /// DR7 is configured for: local DR0 enable, write-only, 8-byte width.
 pub fn enable_rsp0_watchpoint(cpu_id: usize) {
     let addr = rsp0_address(cpu_id);
-    if addr == 0 { return; }
+    if addr == 0 {
+        return;
+    }
 
     unsafe {
         // DR0 = address to watch
@@ -226,6 +253,7 @@ pub fn enable_rsp0_watchpoint(cpu_id: usize) {
 
     crate::serial_verbose_println!(
         "  TSS.RSP0 watchpoint enabled on CPU{}: DR0={:#018x} (8-byte write)",
-        cpu_id, addr
+        cpu_id,
+        addr
     );
 }

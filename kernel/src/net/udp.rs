@@ -2,12 +2,12 @@
 //! Supports port binding, non-blocking and blocking receive, raw sends for DHCP,
 //! per-port options (broadcast, receive timeout), and multicast/broadcast destinations.
 
+use super::ipv4::Ipv4Packet;
+use super::types::{IpAddr, Ipv4Addr, Ipv6Addr};
+use crate::sync::spinlock::Spinlock;
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use super::types::{Ipv4Addr, Ipv6Addr, IpAddr};
-use super::ipv4::Ipv4Packet;
-use crate::sync::spinlock::Spinlock;
 
 const UDP_HEADER_LEN: usize = 8;
 const MAX_QUEUE_LEN: usize = 128;
@@ -100,8 +100,14 @@ pub fn set_opt(port: u16, opt: u32, val: u32) -> bool {
     if let Some(map) = ports.as_mut() {
         if let Some(cfg) = map.get_mut(&port) {
             match opt {
-                SO_BROADCAST => { cfg.broadcast = val != 0; true }
-                SO_RCVTIMEO => { cfg.timeout_ms = val; true }
+                SO_BROADCAST => {
+                    cfg.broadcast = val != 0;
+                    true
+                }
+                SO_RCVTIMEO => {
+                    cfg.timeout_ms = val;
+                    true
+                }
                 _ => false,
             }
         } else {
@@ -157,15 +163,22 @@ pub fn send_unchecked(dst_ip: Ipv4Addr, src_port: u16, dst_port: u16, data: &[u8
     udp.push((dst_port & 0xFF) as u8);
     udp.push((total_len >> 8) as u8);
     udp.push((total_len & 0xFF) as u8);
-    udp.push(0); udp.push(0); // Checksum (0 = disabled for now)
+    udp.push(0);
+    udp.push(0); // Checksum (0 = disabled for now)
     udp.extend_from_slice(data);
 
     super::ipv4::send_ipv4(dst_ip, super::ipv4::PROTO_UDP, &udp)
 }
 
 /// Send a UDP datagram with raw IP (for DHCP before config)
-pub fn send_raw(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_mac: super::types::MacAddr,
-                src_port: u16, dst_port: u16, data: &[u8]) -> bool {
+pub fn send_raw(
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    dst_mac: super::types::MacAddr,
+    src_port: u16,
+    dst_port: u16,
+    data: &[u8],
+) -> bool {
     let total_len = UDP_HEADER_LEN + data.len();
     let mut udp = Vec::with_capacity(total_len);
 
@@ -175,7 +188,8 @@ pub fn send_raw(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, dst_mac: super::types::MacAd
     udp.push((dst_port & 0xFF) as u8);
     udp.push((total_len >> 8) as u8);
     udp.push((total_len & 0xFF) as u8);
-    udp.push(0); udp.push(0);
+    udp.push(0);
+    udp.push(0);
     udp.extend_from_slice(data);
 
     super::ipv4::send_ipv4_raw(src_ip, dst_ip, dst_mac, super::ipv4::PROTO_UDP, &udp)
@@ -214,15 +228,25 @@ pub fn recv_timeout(port: u16, timeout_ticks: u32) -> Option<UdpDatagram> {
 /// Handle an incoming UDP packet
 pub fn handle_udp(pkt: &Ipv4Packet<'_>) {
     let data = pkt.payload;
-    if data.len() < UDP_HEADER_LEN { return; }
+    if data.len() < UDP_HEADER_LEN {
+        return;
+    }
 
     let src_port = ((data[0] as u16) << 8) | data[1] as u16;
     let dst_port = ((data[2] as u16) << 8) | data[3] as u16;
     let length = ((data[4] as u16) << 8) | data[5] as u16;
 
-    crate::serial_verbose_println!("  UDP: {}:{} -> port {} len={}", pkt.src, src_port, dst_port, length);
+    crate::serial_verbose_println!(
+        "  UDP: {}:{} -> port {} len={}",
+        pkt.src,
+        src_port,
+        dst_port,
+        length
+    );
 
-    if (length as usize) > data.len() { return; }
+    if (length as usize) > data.len() {
+        return;
+    }
 
     let payload = &data[UDP_HEADER_LEN..(length as usize)];
 
@@ -254,7 +278,8 @@ pub fn send_v6(dst_ip: Ipv6Addr, src_port: u16, dst_port: u16, data: &[u8]) -> b
     udp.push((total_len >> 8) as u8);
     udp.push((total_len & 0xFF) as u8);
     // Checksum placeholder — mandatory for IPv6
-    udp.push(0); udp.push(0);
+    udp.push(0);
+    udp.push(0);
     udp.extend_from_slice(data);
 
     // Compute UDP checksum with IPv6 pseudo-header (mandatory per RFC 8200)
@@ -268,8 +293,10 @@ pub fn send_v6(dst_ip: Ipv6Addr, src_port: u16, dst_port: u16, data: &[u8]) -> b
     };
 
     let pseudo_sum = super::checksum::pseudo_header_checksum_v6(
-        src_ip.as_bytes(), dst_ip.as_bytes(),
-        super::ipv6::PROTO_UDP, total_len as u32,
+        src_ip.as_bytes(),
+        dst_ip.as_bytes(),
+        super::ipv6::PROTO_UDP,
+        total_len as u32,
     );
     let mut sum = pseudo_sum;
     let mut i = 0;
@@ -295,13 +322,17 @@ pub fn send_v6(dst_ip: Ipv6Addr, src_port: u16, dst_port: u16, data: &[u8]) -> b
 /// Handle an incoming UDP packet from IPv6.
 pub fn handle_udp_v6(pkt: &super::ipv6::Ipv6Packet<'_>) {
     let data = pkt.payload;
-    if data.len() < UDP_HEADER_LEN { return; }
+    if data.len() < UDP_HEADER_LEN {
+        return;
+    }
 
     let src_port = ((data[0] as u16) << 8) | data[1] as u16;
     let dst_port = ((data[2] as u16) << 8) | data[3] as u16;
     let length = ((data[4] as u16) << 8) | data[5] as u16;
 
-    if (length as usize) > data.len() { return; }
+    if (length as usize) > data.len() {
+        return;
+    }
 
     let payload = &data[UDP_HEADER_LEN..(length as usize)];
 

@@ -4,10 +4,10 @@
 //! with dynamic receive window advertisement, and the high-level `send()`
 //! function with sliding window, batched locking, and send buffer tracking.
 
-use core::sync::atomic::Ordering;
 use super::tcb::*;
-use super::{TCP_CONNECTIONS, TCP_SEGMENTS_SENT, TCP_RESETS_SENT};
+use super::{TCP_CONNECTIONS, TCP_RESETS_SENT, TCP_SEGMENTS_SENT};
 use crate::net::types::{Ipv4Addr, Ipv6Addr};
+use core::sync::atomic::Ordering;
 
 // ── Low-level segment construction ──────────────────────────────────
 
@@ -28,7 +28,9 @@ pub(crate) fn send_segment(
 ) -> bool {
     let tcp_len = TCP_HEADER_LEN + payload.len();
     let mut segment = [0u8; 1536]; // stack buffer, fits MTU
-    if tcp_len > segment.len() { return false; }
+    if tcp_len > segment.len() {
+        return false;
+    }
 
     // Source port
     segment[0] = (local_port >> 8) as u8;
@@ -126,7 +128,12 @@ pub(crate) fn send_syn_segment(
 }
 
 /// Compute TCP checksum and send via IPv4.
-fn tcp_checksum_and_send(local_ip: Ipv4Addr, remote_ip: Ipv4Addr, segment: &mut [u8], flags: u8) -> bool {
+fn tcp_checksum_and_send(
+    local_ip: Ipv4Addr,
+    remote_ip: Ipv4Addr,
+    segment: &mut [u8],
+    flags: u8,
+) -> bool {
     let tcp_len = segment.len();
 
     // Compute checksum with pseudo-header
@@ -180,7 +187,9 @@ pub(crate) fn send_segment_v6(
 ) -> bool {
     let tcp_len = TCP_HEADER_LEN + payload.len();
     let mut segment = [0u8; 1536];
-    if tcp_len > segment.len() { return false; }
+    if tcp_len > segment.len() {
+        return false;
+    }
 
     segment[0] = (local_port >> 8) as u8;
     segment[1] = (local_port & 0xFF) as u8;
@@ -237,17 +246,25 @@ pub(crate) fn send_syn_segment_v6(
     let window: u16 = 65535;
     segment[14] = (window >> 8) as u8;
     segment[15] = (window & 0xFF) as u8;
-    segment[20] = 2; segment[21] = 4;
+    segment[20] = 2;
+    segment[21] = 4;
     segment[22] = (MSS >> 8) as u8;
     segment[23] = (MSS & 0xFF) as u8;
     segment[24] = 1;
-    segment[25] = 3; segment[26] = 3; segment[27] = OUR_WINDOW_SHIFT;
+    segment[25] = 3;
+    segment[26] = 3;
+    segment[27] = OUR_WINDOW_SHIFT;
 
     tcp_checksum_and_send_v6(local_ip, remote_ip, &mut segment[..tcp_len], flags)
 }
 
 /// Compute TCP checksum with IPv6 pseudo-header and send.
-fn tcp_checksum_and_send_v6(local_ip: Ipv6Addr, remote_ip: Ipv6Addr, segment: &mut [u8], flags: u8) -> bool {
+fn tcp_checksum_and_send_v6(
+    local_ip: Ipv6Addr,
+    remote_ip: Ipv6Addr,
+    segment: &mut [u8],
+    flags: u8,
+) -> bool {
     let tcp_len = segment.len();
 
     let pseudo_sum = crate::net::checksum::pseudo_header_checksum_v6(
@@ -284,13 +301,38 @@ fn tcp_checksum_and_send_v6(local_ip: Ipv6Addr, remote_ip: Ipv6Addr, segment: &m
 }
 
 /// Send a TCP segment using the appropriate IP version based on TCB state.
-pub(crate) fn send_segment_auto(tcb: &Tcb, seq: u32, ack_num: u32, flags: u8, window: u16, payload: &[u8]) -> bool {
+pub(crate) fn send_segment_auto(
+    tcb: &Tcb,
+    seq: u32,
+    ack_num: u32,
+    flags: u8,
+    window: u16,
+    payload: &[u8],
+) -> bool {
     if tcb.is_ipv6 {
-        send_segment_v6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port,
-                        seq, ack_num, flags, window, payload)
+        send_segment_v6(
+            tcb.local_ip6,
+            tcb.local_port,
+            tcb.remote_ip6,
+            tcb.remote_port,
+            seq,
+            ack_num,
+            flags,
+            window,
+            payload,
+        )
     } else {
-        send_segment(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                     seq, ack_num, flags, window, payload)
+        send_segment(
+            tcb.local_ip,
+            tcb.local_port,
+            tcb.remote_ip,
+            tcb.remote_port,
+            seq,
+            ack_num,
+            flags,
+            window,
+            payload,
+        )
     }
 }
 
@@ -340,10 +382,18 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
             };
 
             if tcb.reset_received || tcb.state == TcpState::Closed {
-                return if send_offset > 0 { send_offset as u32 } else { u32::MAX };
+                return if send_offset > 0 {
+                    send_offset as u32
+                } else {
+                    u32::MAX
+                };
             }
             if tcb.state != TcpState::Established {
-                return if send_offset > 0 { send_offset as u32 } else { u32::MAX };
+                return if send_offset > 0 {
+                    send_offset as u32
+                } else {
+                    u32::MAX
+                };
             }
 
             // Drain acknowledged bytes from send buffer
@@ -374,7 +424,9 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
                     break; // window full
                 }
                 let remaining_window = window - in_flight;
-                let chunk_end = (send_offset + MSS).min(data.len()).min(send_offset + remaining_window);
+                let chunk_end = (send_offset + MSS)
+                    .min(data.len())
+                    .min(send_offset + remaining_window);
 
                 let seg = BatchSegment {
                     local_ip: tcb.local_ip,
@@ -411,9 +463,17 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
         // ── Send all batched segments outside the lock ──
         for i in 0..batch_count {
             let seg = unsafe { batch[i].assume_init_ref() };
-            send_segment(seg.local_ip, seg.local_port, seg.remote_ip, seg.remote_port,
-                         seg.seq, seg.ack_num, PSH | ACK, seg.window,
-                         &data[seg.data_start..seg.data_end]);
+            send_segment(
+                seg.local_ip,
+                seg.local_port,
+                seg.remote_ip,
+                seg.remote_port,
+                seg.seq,
+                seg.ack_num,
+                PSH | ACK,
+                seg.window,
+                &data[seg.data_start..seg.data_end],
+            );
         }
 
         // All data acknowledged?
@@ -428,7 +488,11 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
         let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout_ticks {
             crate::serial_verbose_println!("TCP: send timeout on socket {}", socket_id);
-            return if ack_offset > 0 { ack_offset as u32 } else { u32::MAX };
+            return if ack_offset > 0 {
+                ack_offset as u32
+            } else {
+                u32::MAX
+            };
         }
 
         // If no segments were sent (window full), sleep briefly.

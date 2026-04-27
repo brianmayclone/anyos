@@ -6,11 +6,11 @@
 
 pub mod edid;
 
+use crate::drivers::hal::{self, Driver, DriverError, DriverType};
+use crate::sync::spinlock::Spinlock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::sync::spinlock::Spinlock;
-use crate::drivers::hal::{self, Driver, DriverType, DriverError};
-use edid::{ParsedEdid, DisplayMode, MAX_MODES};
+use edid::{DisplayMode, ParsedEdid, MAX_MODES};
 
 // ──────────────────────────────────────────────
 // MonitorInfo
@@ -195,11 +195,17 @@ struct MonitorHalDriver {
 }
 
 impl Driver for MonitorHalDriver {
-    fn name(&self) -> &str { "Monitor" }
+    fn name(&self) -> &str {
+        "Monitor"
+    }
 
-    fn driver_type(&self) -> DriverType { DriverType::Monitor }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Monitor
+    }
 
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
 
     fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
         let info = get_monitor(self.monitor_id).ok_or(DriverError::NoDevice)?;
@@ -238,11 +244,7 @@ impl Driver for MonitorHalDriver {
 /// Register a monitor as a HAL device at `/dev/monitorN`.
 fn register_monitor_hal(monitor_id: u32) {
     let path = hal::make_device_path(DriverType::Monitor, monitor_id as usize);
-    hal::register_device(
-        &path,
-        Box::new(MonitorHalDriver { monitor_id }),
-        None,
-    );
+    hal::register_device(&path, Box::new(MonitorHalDriver { monitor_id }), None);
 }
 
 // ──────────────���───────────────────────────────
@@ -280,7 +282,8 @@ pub fn detect_and_register() {
                         v.push((w, h));
                     }
                     v
-                }).unwrap_or_default();
+                })
+                .unwrap_or_default();
 
                 // Find the largest EDID mode that the GPU also supports.
                 let mut best_w = 0u32;
@@ -291,7 +294,9 @@ pub fn detect_and_register() {
                     if m.width < 1024 || m.height < 768 {
                         continue;
                     }
-                    let in_gpu = gpu_modes.iter().any(|&(gw, gh)| gw == m.width && gh == m.height);
+                    let in_gpu = gpu_modes
+                        .iter()
+                        .any(|&(gw, gh)| gw == m.width && gh == m.height);
                     if !in_gpu {
                         continue;
                     }
@@ -307,7 +312,9 @@ pub fn detect_and_register() {
                 if best_w == 0 {
                     for i in 0..info.mode_count {
                         let m = &info.modes[i];
-                        if m.width < 1024 || m.height < 768 { continue; }
+                        if m.width < 1024 || m.height < 768 {
+                            continue;
+                        }
                         let area = m.width as u64 * m.height as u64;
                         if area > best_w as u64 * best_h as u64 {
                             best_w = m.width;
@@ -322,7 +329,8 @@ pub fn detect_and_register() {
                     info.edid.preferred_height = best_h;
                     info.edid.preferred_refresh_100 = best_r;
                     for i in 0..info.mode_count {
-                        let is_best = info.modes[i].width == best_w && info.modes[i].height == best_h;
+                        let is_best =
+                            info.modes[i].width == best_w && info.modes[i].height == best_h;
                         info.modes[i].is_preferred = is_best;
                     }
                 }
@@ -338,7 +346,12 @@ pub fn detect_and_register() {
                 let mfr = core::str::from_utf8(&m.edid.manufacturer[..3]).unwrap_or("???");
                 crate::serial_println!(
                     "[OK] Monitor {}: {} {} ({}x{}, EDID from GPU output {})",
-                    id, mfr, name, m.edid.preferred_width, m.edid.preferred_height, output
+                    id,
+                    mfr,
+                    name,
+                    m.edid.preferred_width,
+                    m.edid.preferred_height,
+                    output
                 );
             }
             continue;
@@ -361,7 +374,9 @@ pub fn detect_and_register() {
                         let mfr = core::str::from_utf8(&m.edid.manufacturer[..3]).unwrap_or("???");
                         crate::serial_println!(
                             "[OK] Monitor {}: {} {} (EDID from bootloader VBE DDC)",
-                            id, mfr, name
+                            id,
+                            mfr,
+                            name
                         );
                     }
                     continue;
@@ -378,7 +393,10 @@ pub fn detect_and_register() {
             found += 1;
             crate::serial_println!(
                 "[OK] Monitor {}: Unknown ({}x{}, GPU output {}, no EDID)",
-                id, w, h, output
+                id,
+                w,
+                h,
+                output
             );
         }
     }
@@ -405,7 +423,10 @@ pub fn detect_and_register() {
             register_monitor_hal(id);
             found += 1;
             crate::serial_println!(
-                "[OK] Monitor {}: fallback ({}x{}, no EDID available)", id, w, h
+                "[OK] Monitor {}: fallback ({}x{}, no EDID available)",
+                id,
+                w,
+                h
             );
         }
     }
@@ -414,6 +435,10 @@ pub fn detect_and_register() {
 
     // Emit system event.
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_MONITOR_DETECTED, found, 0, 0, 0,
+        crate::ipc::event_bus::EVT_MONITOR_DETECTED,
+        found,
+        0,
+        0,
+        0,
     ));
 }

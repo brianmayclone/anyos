@@ -31,7 +31,9 @@ pub fn cpu_id() -> usize {
 #[inline]
 pub fn cpu_id() -> usize {
     let mpidr: u64;
-    unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
+    }
     crate::arch::arm64::psci::logical_cpu_id_from_mpidr(mpidr)
 }
 
@@ -40,40 +42,56 @@ pub fn cpu_id() -> usize {
 #[inline]
 pub fn cpu_count() -> usize {
     let n = crate::arch::x86::smp::cpu_count() as usize;
-    if n == 0 { 1 } else { n }
+    if n == 0 {
+        1
+    } else {
+        n
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn cpu_count() -> usize {
     let n = crate::arch::arm64::smp::cpu_count();
-    if n == 0 { 1 } else { n }
+    if n == 0 {
+        1
+    } else {
+        n
+    }
 }
 
 /// Enable interrupts on the current CPU.
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn enable_interrupts() {
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn enable_interrupts() {
-    unsafe { core::arch::asm!("msr daifclr, #0xf", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("msr daifclr, #0xf", options(nomem, nostack));
+    }
 }
 
 /// Disable interrupts on the current CPU.
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn disable_interrupts() {
-    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn disable_interrupts() {
-    unsafe { core::arch::asm!("msr daifset, #0xf", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+    }
 }
 
 /// Check if interrupts are enabled on the current CPU.
@@ -81,7 +99,9 @@ pub fn disable_interrupts() {
 #[inline]
 pub fn interrupts_enabled() -> bool {
     let rflags: u64;
-    unsafe { core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem)); }
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
+    }
     rflags & 0x200 != 0
 }
 
@@ -89,7 +109,9 @@ pub fn interrupts_enabled() -> bool {
 #[inline]
 pub fn interrupts_enabled() -> bool {
     let daif: u64;
-    unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+    }
     daif & 0x3C0 == 0 // All DAIF bits clear = interrupts enabled
 }
 
@@ -97,13 +119,17 @@ pub fn interrupts_enabled() -> bool {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn halt() {
-    unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("hlt", options(nomem, nostack));
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn halt() {
-    unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("wfi", options(nomem, nostack));
+    }
 }
 
 // =============================================================================
@@ -139,14 +165,18 @@ pub fn save_and_disable_interrupts() -> u64 {
 #[inline]
 pub fn restore_interrupt_state(saved: u64) {
     if saved & 0x200 != 0 {
-        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("sti", options(nomem, nostack));
+        }
     }
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn restore_interrupt_state(saved: u64) {
-    unsafe { core::arch::asm!("msr daif, {}", in(reg) saved, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) saved, options(nomem, nostack));
+    }
 }
 
 // =============================================================================
@@ -167,13 +197,21 @@ pub fn timer_current_ticks() -> u32 {
 #[inline]
 pub fn timer_current_ticks() -> u32 {
     let cnt: u64;
-    unsafe { core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
+    }
     let freq: u64;
-    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+    }
     // Normalize to ~1000 Hz (millisecond ticks) for consistency with x86 PIT
-    if freq == 0 { return 0; }
+    if freq == 0 {
+        return 0;
+    }
     let divisor = freq / 1000;
-    if divisor == 0 { return cnt as u32; }
+    if divisor == 0 {
+        return cnt as u32;
+    }
     (cnt / divisor) as u32
 }
 
@@ -220,18 +258,25 @@ pub fn set_kernel_stack_for_cpu(cpu: usize, stack_top: u64) {
     // if it changes, narrowing the culprit to one of the two callees (or
     // an external agent such as NMI/MCE).
     let rbp_before: u64;
-    unsafe { core::arch::asm!("mov {}, rbp", out(reg) rbp_before, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mov {}, rbp", out(reg) rbp_before, options(nomem, nostack));
+    }
 
     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu, stack_top);
 
     let rbp_mid: u64;
-    unsafe { core::arch::asm!("mov {}, rbp", out(reg) rbp_mid, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mov {}, rbp", out(reg) rbp_mid, options(nomem, nostack));
+    }
     if rbp_before != rbp_mid {
         // Use raw serial — we may be inside the scheduler with the lock held.
         unsafe {
             use crate::arch::x86::port::{inb, outb};
             let msg = b"\r\n!!! RBP CLOBBERED by tss::set_kernel_stack_for_cpu\r\n";
-            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
         }
         panic!(
             "RBP clobbered by tss::set_kernel_stack_for_cpu: before={:#x} after={:#x} cpu={}",
@@ -242,12 +287,17 @@ pub fn set_kernel_stack_for_cpu(cpu: usize, stack_top: u64) {
     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu, stack_top);
 
     let rbp_after: u64;
-    unsafe { core::arch::asm!("mov {}, rbp", out(reg) rbp_after, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mov {}, rbp", out(reg) rbp_after, options(nomem, nostack));
+    }
     if rbp_before != rbp_after {
         unsafe {
             use crate::arch::x86::port::{inb, outb};
             let msg = b"\r\n!!! RBP CLOBBERED by syscall_msr::set_kernel_rsp\r\n";
-            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
         }
         panic!(
             "RBP clobbered by syscall_msr::set_kernel_rsp: before={:#x} after={:#x} cpu={}",
@@ -377,7 +427,9 @@ pub fn current_page_table() -> u64 {
 #[inline]
 pub fn current_page_table() -> u64 {
     let ttbr0: u64;
-    unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
     ttbr0
 }
 
@@ -385,7 +437,9 @@ pub fn current_page_table() -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn switch_page_table(addr: u64) {
-    unsafe { core::arch::asm!("mov cr3, {}", in(reg) addr, options(nostack)); }
+    unsafe {
+        core::arch::asm!("mov cr3, {}", in(reg) addr, options(nostack));
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -405,7 +459,9 @@ pub fn switch_page_table(addr: u64) {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn flush_tlb(vaddr: u64) {
-    unsafe { core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack)); }
+    unsafe {
+        core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack));
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -438,12 +494,7 @@ pub fn flush_tlb_all() {
 #[inline]
 pub fn flush_tlb_all() {
     unsafe {
-        core::arch::asm!(
-            "tlbi vmalle1is",
-            "dsb ish",
-            "isb",
-            options(nostack),
-        );
+        core::arch::asm!("tlbi vmalle1is", "dsb ish", "isb", options(nostack),);
     }
 }
 
@@ -483,7 +534,9 @@ pub fn fpu_set_trap() {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn fpu_clear_trap() {
-    unsafe { core::arch::asm!("clts", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("clts", options(nostack, preserves_flags));
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

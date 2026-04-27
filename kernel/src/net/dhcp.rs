@@ -1,9 +1,9 @@
 //! DHCP client -- obtains IP configuration from a DHCP server.
 //! Implements the 4-step handshake: DISCOVER -> OFFER -> REQUEST -> ACK.
 
+use super::types::{Ipv4Addr, MacAddr};
 use alloc::vec;
 use alloc::vec::Vec;
-use super::types::{Ipv4Addr, MacAddr};
 
 const DHCP_SERVER_PORT: u16 = 67;
 const DHCP_CLIENT_PORT: u16 = 68;
@@ -34,8 +34,12 @@ pub fn discover() -> Result<DhcpResult, &'static str> {
     // --- Send DISCOVER ---
     let discover = build_dhcp_packet(DHCP_DISCOVER, mac, Ipv4Addr::ZERO, Ipv4Addr::ZERO);
     super::udp::send_raw(
-        Ipv4Addr::ZERO, Ipv4Addr::BROADCAST, MacAddr::BROADCAST,
-        DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &discover,
+        Ipv4Addr::ZERO,
+        Ipv4Addr::BROADCAST,
+        MacAddr::BROADCAST,
+        DHCP_CLIENT_PORT,
+        DHCP_SERVER_PORT,
+        &discover,
     );
 
     crate::serial_verbose_println!("  DHCP: DISCOVER sent");
@@ -47,8 +51,12 @@ pub fn discover() -> Result<DhcpResult, &'static str> {
     // --- Send REQUEST ---
     let request = build_dhcp_packet(DHCP_REQUEST, mac, offer.ip, offer.server_ip);
     super::udp::send_raw(
-        Ipv4Addr::ZERO, Ipv4Addr::BROADCAST, MacAddr::BROADCAST,
-        DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &request,
+        Ipv4Addr::ZERO,
+        Ipv4Addr::BROADCAST,
+        MacAddr::BROADCAST,
+        DHCP_CLIENT_PORT,
+        DHCP_SERVER_PORT,
+        &request,
     );
 
     crate::serial_verbose_println!("  DHCP: REQUEST sent for {}", offer.ip);
@@ -83,21 +91,31 @@ fn wait_dhcp_response(expected_type: u8, timeout_ticks: u32) -> Result<DhcpResul
     }
 }
 
-fn build_dhcp_packet(msg_type: u8, mac: MacAddr, requested_ip: Ipv4Addr, server_ip: Ipv4Addr) -> Vec<u8> {
+fn build_dhcp_packet(
+    msg_type: u8,
+    mac: MacAddr,
+    requested_ip: Ipv4Addr,
+    server_ip: Ipv4Addr,
+) -> Vec<u8> {
     let mut pkt = vec![0u8; 300]; // DHCP minimum packet
 
-    pkt[0] = 1;    // Op: BOOTREQUEST
-    pkt[1] = 1;    // HType: Ethernet
-    pkt[2] = 6;    // HLen: MAC length
-    pkt[3] = 0;    // Hops
+    pkt[0] = 1; // Op: BOOTREQUEST
+    pkt[1] = 1; // HType: Ethernet
+    pkt[2] = 6; // HLen: MAC length
+    pkt[3] = 0; // Hops
 
     // XID (transaction ID) - use a simple constant
-    pkt[4] = 0x39; pkt[5] = 0x03; pkt[6] = 0xF3; pkt[7] = 0x26;
+    pkt[4] = 0x39;
+    pkt[5] = 0x03;
+    pkt[6] = 0xF3;
+    pkt[7] = 0x26;
 
     // Secs
-    pkt[8] = 0; pkt[9] = 0;
+    pkt[8] = 0;
+    pkt[9] = 0;
     // Flags: broadcast
-    pkt[10] = 0x80; pkt[11] = 0x00;
+    pkt[10] = 0x80;
+    pkt[11] = 0x00;
 
     // Client MAC
     pkt[28..34].copy_from_slice(&mac.0);
@@ -109,25 +127,31 @@ fn build_dhcp_packet(msg_type: u8, mac: MacAddr, requested_ip: Ipv4Addr, server_
     let mut off = 240;
 
     // Option 53: DHCP Message Type
-    pkt[off] = 53; pkt[off + 1] = 1; pkt[off + 2] = msg_type; off += 3;
+    pkt[off] = 53;
+    pkt[off + 1] = 1;
+    pkt[off + 2] = msg_type;
+    off += 3;
 
     if msg_type == DHCP_REQUEST {
         // Option 50: Requested IP
-        pkt[off] = 50; pkt[off + 1] = 4;
+        pkt[off] = 50;
+        pkt[off + 1] = 4;
         pkt[off + 2..off + 6].copy_from_slice(&requested_ip.0);
         off += 6;
 
         // Option 54: Server Identifier
-        pkt[off] = 54; pkt[off + 1] = 4;
+        pkt[off] = 54;
+        pkt[off + 1] = 4;
         pkt[off + 2..off + 6].copy_from_slice(&server_ip.0);
         off += 6;
     }
 
     // Option 55: Parameter Request List
-    pkt[off] = 55; pkt[off + 1] = 3;
-    pkt[off + 2] = 1;  // Subnet mask
-    pkt[off + 3] = 3;  // Router
-    pkt[off + 4] = 6;  // DNS
+    pkt[off] = 55;
+    pkt[off + 1] = 3;
+    pkt[off + 2] = 1; // Subnet mask
+    pkt[off + 3] = 3; // Router
+    pkt[off + 4] = 6; // DNS
     off += 5;
 
     // End option
@@ -138,13 +162,19 @@ fn build_dhcp_packet(msg_type: u8, mac: MacAddr, requested_ip: Ipv4Addr, server_
 }
 
 fn parse_dhcp_response(data: &[u8], expected_type: u8) -> Option<DhcpResult> {
-    if data.len() < 240 { return None; }
+    if data.len() < 240 {
+        return None;
+    }
 
     // Verify magic cookie
-    if data[236..240] != DHCP_MAGIC { return None; }
+    if data[236..240] != DHCP_MAGIC {
+        return None;
+    }
 
     // Check op is BOOTREPLY
-    if data[0] != 2 { return None; }
+    if data[0] != 2 {
+        return None;
+    }
 
     // Your IP address (yiaddr)
     let ip = Ipv4Addr([data[16], data[17], data[18], data[19]]);
@@ -161,25 +191,50 @@ fn parse_dhcp_response(data: &[u8], expected_type: u8) -> Option<DhcpResult> {
     let mut off = 240;
     while off < data.len() {
         let opt = data[off];
-        if opt == 255 { break; }      // End
-        if opt == 0 { off += 1; continue; } // Pad
-        if off + 1 >= data.len() { break; }
+        if opt == 255 {
+            break;
+        } // End
+        if opt == 0 {
+            off += 1;
+            continue;
+        } // Pad
+        if off + 1 >= data.len() {
+            break;
+        }
         let len = data[off + 1] as usize;
-        if off + 2 + len > data.len() { break; }
+        if off + 2 + len > data.len() {
+            break;
+        }
 
         match opt {
             53 if len >= 1 => msg_type = data[off + 2],
-            1 if len >= 4 => mask = Ipv4Addr([data[off+2], data[off+3], data[off+4], data[off+5]]),
-            3 if len >= 4 => gateway = Ipv4Addr([data[off+2], data[off+3], data[off+4], data[off+5]]),
-            6 if len >= 4 => dns = Ipv4Addr([data[off+2], data[off+3], data[off+4], data[off+5]]),
-            54 if len >= 4 => server_ip = Ipv4Addr([data[off+2], data[off+3], data[off+4], data[off+5]]),
+            1 if len >= 4 => {
+                mask = Ipv4Addr([data[off + 2], data[off + 3], data[off + 4], data[off + 5]])
+            }
+            3 if len >= 4 => {
+                gateway = Ipv4Addr([data[off + 2], data[off + 3], data[off + 4], data[off + 5]])
+            }
+            6 if len >= 4 => {
+                dns = Ipv4Addr([data[off + 2], data[off + 3], data[off + 4], data[off + 5]])
+            }
+            54 if len >= 4 => {
+                server_ip = Ipv4Addr([data[off + 2], data[off + 3], data[off + 4], data[off + 5]])
+            }
             _ => {}
         }
 
         off += 2 + len;
     }
 
-    if msg_type != expected_type { return None; }
+    if msg_type != expected_type {
+        return None;
+    }
 
-    Some(DhcpResult { ip, mask, gateway, dns, server_ip })
+    Some(DhcpResult {
+        ip,
+        mask,
+        gateway,
+        dns,
+        server_ip,
+    })
 }

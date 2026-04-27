@@ -6,10 +6,10 @@
 //! QEMU hw/display/vmware_vga.c.
 
 use super::GpuDriver;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::VirtAddr;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 // ──────────────────────────────────────────────
@@ -38,28 +38,28 @@ const SVGA_REG_BYTES_PER_LINE: u32 = 12;
 const SVGA_ID_2: u32 = 0x9000_0002;
 
 // Capabilities (from VMware svga_reg.h)
-const SVGA_CAP_RECT_FILL: u32          = 1 << 0;
-const SVGA_CAP_RECT_COPY: u32          = 1 << 1;
-const SVGA_CAP_CURSOR: u32             = 1 << 5;
-const SVGA_CAP_CURSOR_BYPASS: u32      = 1 << 6;
-const SVGA_CAP_CURSOR_BYPASS_2: u32    = 1 << 7;
-const SVGA_CAP_8BIT_EMULATION: u32     = 1 << 8;
-const SVGA_CAP_ALPHA_CURSOR: u32       = 1 << 9;
-const SVGA_CAP_3D: u32                 = 1 << 14;
-const SVGA_CAP_EXTENDED_FIFO: u32      = 1 << 15;
-const SVGA_CAP_PITCHLOCK: u32          = 1 << 17;
-const SVGA_CAP_IRQMASK: u32            = 1 << 18;
-const SVGA_CAP_GMR: u32                = 1 << 20;
-const SVGA_CAP_TRACES: u32             = 1 << 21;
-const SVGA_CAP_GMR2: u32               = 1 << 22;
-const SVGA_CAP_SCREEN_OBJECT_2: u32    = 1 << 23;
+const SVGA_CAP_RECT_FILL: u32 = 1 << 0;
+const SVGA_CAP_RECT_COPY: u32 = 1 << 1;
+const SVGA_CAP_CURSOR: u32 = 1 << 5;
+const SVGA_CAP_CURSOR_BYPASS: u32 = 1 << 6;
+const SVGA_CAP_CURSOR_BYPASS_2: u32 = 1 << 7;
+const SVGA_CAP_8BIT_EMULATION: u32 = 1 << 8;
+const SVGA_CAP_ALPHA_CURSOR: u32 = 1 << 9;
+const SVGA_CAP_3D: u32 = 1 << 14;
+const SVGA_CAP_EXTENDED_FIFO: u32 = 1 << 15;
+const SVGA_CAP_PITCHLOCK: u32 = 1 << 17;
+const SVGA_CAP_IRQMASK: u32 = 1 << 18;
+const SVGA_CAP_GMR: u32 = 1 << 20;
+const SVGA_CAP_TRACES: u32 = 1 << 21;
+const SVGA_CAP_GMR2: u32 = 1 << 22;
+const SVGA_CAP_SCREEN_OBJECT_2: u32 = 1 << 23;
 
 // Screen Object flags
-const SVGA_SCREEN_MUST_BE_SET: u32     = 1 << 0;
-const SVGA_SCREEN_IS_PRIMARY: u32      = 1 << 1;
+const SVGA_SCREEN_MUST_BE_SET: u32 = 1 << 0;
+const SVGA_SCREEN_IS_PRIMARY: u32 = 1 << 1;
 
 // Special GMR IDs
-const SVGA_GMR_FRAMEBUFFER: u32        = 0xFFFF_FFFE;
+const SVGA_GMR_FRAMEBUFFER: u32 = 0xFFFF_FFFE;
 
 // FIFO register offsets (in u32 units)
 const SVGA_FIFO_MIN: usize = 0;
@@ -84,13 +84,13 @@ const SVGA_FIFO_FENCE_GOAL: usize = 289;
 const SVGA_FIFO_BUSY: usize = 290;
 
 // FIFO capability flags
-const SVGA_FIFO_CAP_FENCE: u32          = 1 << 0;
+const SVGA_FIFO_CAP_FENCE: u32 = 1 << 0;
 #[allow(dead_code)]
-const SVGA_FIFO_CAP_ACCELFRONT: u32     = 1 << 1;
+const SVGA_FIFO_CAP_ACCELFRONT: u32 = 1 << 1;
 const SVGA_FIFO_CAP_CURSOR_BYPASS_3: u32 = 1 << 4;
-const SVGA_FIFO_CAP_RESERVE: u32        = 1 << 6;
-const SVGA_FIFO_CAP_SCREEN_OBJECT: u32  = 1 << 7;
-const SVGA_FIFO_CAP_GMR2: u32           = 1 << 8;
+const SVGA_FIFO_CAP_RESERVE: u32 = 1 << 6;
+const SVGA_FIFO_CAP_SCREEN_OBJECT: u32 = 1 << 7;
+const SVGA_FIFO_CAP_GMR2: u32 = 1 << 8;
 const SVGA_FIFO_CAP_SCREEN_OBJECT_2: u32 = 1 << 9;
 
 // Cursor I/O registers (guest writes cursor position here for cursor bypass 1/2)
@@ -132,9 +132,9 @@ const SVGA_REG_GMRS_MAX_PAGES: u32 = 46;
 const SVGA_IRQSTATUS_OFFSET: u16 = 0x8;
 
 // IRQ flag bits
-const SVGA_IRQFLAG_ANY_FENCE: u32      = 0x1;
-const SVGA_IRQFLAG_FIFO_PROGRESS: u32  = 0x2;
-const SVGA_IRQFLAG_FENCE_GOAL: u32     = 0x4;
+const SVGA_IRQFLAG_ANY_FENCE: u32 = 0x1;
+const SVGA_IRQFLAG_FIFO_PROGRESS: u32 = 0x2;
+const SVGA_IRQFLAG_FENCE_GOAL: u32 = 0x4;
 
 // FIFO command opcodes
 const SVGA_CMD_UPDATE: u32 = 1;
@@ -154,30 +154,30 @@ const SVGA_CMD_DEFINE_GMR2: u32 = 41;
 const SVGA_CMD_REMAP_GMR2: u32 = 42;
 
 // ── SVGA3D Command opcodes ──────────────────────────────
-const SVGA_3D_CMD_SURFACE_DEFINE: u32     = 1040;
-const SVGA_3D_CMD_SURFACE_DESTROY: u32    = 1041;
-const SVGA_3D_CMD_SURFACE_COPY: u32       = 1042;
+const SVGA_3D_CMD_SURFACE_DEFINE: u32 = 1040;
+const SVGA_3D_CMD_SURFACE_DESTROY: u32 = 1041;
+const SVGA_3D_CMD_SURFACE_COPY: u32 = 1042;
 const SVGA_3D_CMD_SURFACE_STRETCHBLT: u32 = 1043;
-const SVGA_3D_CMD_SURFACE_DMA: u32        = 1044;
-const SVGA_3D_CMD_CONTEXT_DEFINE: u32     = 1045;
-const SVGA_3D_CMD_CONTEXT_DESTROY: u32    = 1046;
-const SVGA_3D_CMD_SETTRANSFORM: u32       = 1047;
-const SVGA_3D_CMD_SETZRANGE: u32          = 1048;
-const SVGA_3D_CMD_SETRENDERSTATE: u32     = 1049;
-const SVGA_3D_CMD_SETRENDERTARGET: u32    = 1050;
-const SVGA_3D_CMD_SETTEXTURESTATE: u32    = 1051;
-const SVGA_3D_CMD_SETVIEWPORT: u32        = 1055;
-const SVGA_3D_CMD_CLEAR: u32              = 1057;
-const SVGA_3D_CMD_PRESENT: u32            = 1058;
-const SVGA_3D_CMD_SHADER_DEFINE: u32      = 1059;
-const SVGA_3D_CMD_SHADER_DESTROY: u32     = 1060;
-const SVGA_3D_CMD_SET_SHADER: u32         = 1061;
-const SVGA_3D_CMD_SET_SHADER_CONST: u32   = 1062;
-const SVGA_3D_CMD_DRAW_PRIMITIVES: u32    = 1063;
-const SVGA_3D_CMD_SETSCISSORRECT: u32     = 1064;
+const SVGA_3D_CMD_SURFACE_DMA: u32 = 1044;
+const SVGA_3D_CMD_CONTEXT_DEFINE: u32 = 1045;
+const SVGA_3D_CMD_CONTEXT_DESTROY: u32 = 1046;
+const SVGA_3D_CMD_SETTRANSFORM: u32 = 1047;
+const SVGA_3D_CMD_SETZRANGE: u32 = 1048;
+const SVGA_3D_CMD_SETRENDERSTATE: u32 = 1049;
+const SVGA_3D_CMD_SETRENDERTARGET: u32 = 1050;
+const SVGA_3D_CMD_SETTEXTURESTATE: u32 = 1051;
+const SVGA_3D_CMD_SETVIEWPORT: u32 = 1055;
+const SVGA_3D_CMD_CLEAR: u32 = 1057;
+const SVGA_3D_CMD_PRESENT: u32 = 1058;
+const SVGA_3D_CMD_SHADER_DEFINE: u32 = 1059;
+const SVGA_3D_CMD_SHADER_DESTROY: u32 = 1060;
+const SVGA_3D_CMD_SET_SHADER: u32 = 1061;
+const SVGA_3D_CMD_SET_SHADER_CONST: u32 = 1062;
+const SVGA_3D_CMD_DRAW_PRIMITIVES: u32 = 1063;
+const SVGA_3D_CMD_SETSCISSORRECT: u32 = 1064;
 const SVGA_3D_CMD_BLIT_SURFACE_TO_SCREEN: u32 = 1069;
 #[allow(dead_code)]
-const SVGA_3D_CMD_PRESENT_READBACK: u32   = 1070;
+const SVGA_3D_CMD_PRESENT_READBACK: u32 = 1070;
 
 // Valid range for SVGA3D commands (used for validation in syscall handler)
 pub const SVGA_3D_CMD_MIN: u32 = 1040;
@@ -251,9 +251,7 @@ fn svga_irq_handler(_irq: u8) {
     }
 
     // Read pending IRQ flags from IRQSTATUS port
-    let irq_status = unsafe {
-        crate::arch::x86::port::inl(io_base + SVGA_IRQSTATUS_OFFSET)
-    };
+    let irq_status = unsafe { crate::arch::x86::port::inl(io_base + SVGA_IRQSTATUS_OFFSET) };
     if irq_status == 0 {
         return; // Not our interrupt (shared IRQ line)
     }
@@ -301,7 +299,9 @@ impl VmwareSvgaGpu {
     }
 
     fn fifo_write_reg(&self, index: usize, value: u32) {
-        unsafe { core::ptr::write_volatile(self.fifo_ptr().add(index), value); }
+        unsafe {
+            core::ptr::write_volatile(self.fifo_ptr().add(index), value);
+        }
     }
 
     /// Check if a FIFO register index is valid (within the FIFO_MIN boundary).
@@ -415,7 +415,11 @@ impl VmwareSvgaGpu {
                 // Wait for space if FIFO is full
                 loop {
                     let stop = self.fifo_read(SVGA_FIFO_STOP);
-                    let next_next = if next_cmd + 4 >= max { min } else { next_cmd + 4 };
+                    let next_next = if next_cmd + 4 >= max {
+                        min
+                    } else {
+                        next_cmd + 4
+                    };
                     if next_next != stop {
                         break;
                     }
@@ -427,7 +431,11 @@ impl VmwareSvgaGpu {
                     let dst = (self.fifo_virt + next_cmd as u64) as *mut u32;
                     core::ptr::write_volatile(dst, word);
                 }
-                next_cmd = if next_cmd + 4 >= max { min } else { next_cmd + 4 };
+                next_cmd = if next_cmd + 4 >= max {
+                    min
+                } else {
+                    next_cmd + 4
+                };
                 // Commit each word individually (no FIFO_CAP_RESERVE)
                 self.fifo_write_reg(SVGA_FIFO_NEXT_CMD, next_cmd);
             }
@@ -459,11 +467,7 @@ impl VmwareSvgaGpu {
         let bytes = (words.len() * 4) as u32;
         let ptr = self.fifo_reserve(bytes);
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                words.as_ptr() as *const u8,
-                ptr,
-                bytes as usize,
-            );
+            core::ptr::copy_nonoverlapping(words.as_ptr() as *const u8, ptr, bytes as usize);
         }
         self.fifo_commit_all();
     }
@@ -513,8 +517,10 @@ impl VmwareSvgaGpu {
         if self.irq_active && self.is_fifo_reg_valid(SVGA_FIFO_FENCE_GOAL) {
             // Set FENCE_GOAL and enable fence IRQ
             self.fifo_write_reg(SVGA_FIFO_FENCE_GOAL, fence_id);
-            self.reg_write(SVGA_REG_IRQMASK,
-                SVGA_IRQFLAG_FENCE_GOAL | SVGA_IRQFLAG_ANY_FENCE);
+            self.reg_write(
+                SVGA_REG_IRQMASK,
+                SVGA_IRQFLAG_FENCE_GOAL | SVGA_IRQFLAG_ANY_FENCE,
+            );
 
             // Clear stale pending flags
             SVGA_IRQ_PENDING.store(0, Ordering::Release);
@@ -569,7 +575,11 @@ impl VmwareSvgaGpu {
         }
         let num_pages = phys_pages.len() as u32;
         if num_pages > self.gmr_max_pages {
-            crate::serial_verbose_println!("  SVGA: GMR too large ({} > {} pages)", num_pages, self.gmr_max_pages);
+            crate::serial_verbose_println!(
+                "  SVGA: GMR too large ({} > {} pages)",
+                num_pages,
+                self.gmr_max_pages
+            );
             return None;
         }
         self.next_gmr_id += 1;
@@ -612,9 +622,10 @@ impl VmwareSvgaGpu {
         let format = (bpp & 0xFF) | ((color_depth & 0xFF) << 8);
         self.fifo_write_cmd(&[
             SVGA_CMD_DEFINE_GMRFB,
-            gmr_id, offset,          // SVGAGuestPtr
-            bytes_per_line,           // bytesPerLine
-            format,                   // SVGAGMRImageFormat
+            gmr_id,
+            offset,         // SVGAGuestPtr
+            bytes_per_line, // bytesPerLine
+            format,         // SVGAGMRImageFormat
         ]);
     }
 
@@ -629,45 +640,55 @@ impl VmwareSvgaGpu {
             // Screen Object v2: full struct with backing store → VRAM
             self.fifo_write_cmd(&[
                 SVGA_CMD_DEFINE_SCREEN,
-                44,                                         // structSize
-                0,                                          // id = 0 (primary)
+                44, // structSize
+                0,  // id = 0 (primary)
                 SVGA_SCREEN_MUST_BE_SET | SVGA_SCREEN_IS_PRIMARY,
                 self.width,
                 self.height,
-                0, 0,                                       // root.x, root.y
-                SVGA_GMR_FRAMEBUFFER,                       // backingStore → BAR1 VRAM
-                0,                                          // offset
-                self.pitch,                                 // bytesPerLine
-                0,                                          // cloneCount
+                0,
+                0,                    // root.x, root.y
+                SVGA_GMR_FRAMEBUFFER, // backingStore → BAR1 VRAM
+                0,                    // offset
+                self.pitch,           // bytesPerLine
+                0,                    // cloneCount
             ]);
         } else {
             // Screen Object v1: truncated struct (no backing store)
             self.fifo_write_cmd(&[
                 SVGA_CMD_DEFINE_SCREEN,
-                28,                                         // structSize
-                0,                                          // id = 0
+                28, // structSize
+                0,  // id = 0
                 SVGA_SCREEN_MUST_BE_SET | SVGA_SCREEN_IS_PRIMARY,
                 self.width,
                 self.height,
-                0, 0,                                       // root.x, root.y
+                0,
+                0, // root.x, root.y
             ]);
         }
         self.sync_fifo();
     }
 
     /// Blit from GMRFB to screen.
-    fn blit_gmrfb_to_screen(&mut self, src_x: i32, src_y: i32,
-                             dst_left: i32, dst_top: i32,
-                             dst_right: i32, dst_bottom: i32) {
+    fn blit_gmrfb_to_screen(
+        &mut self,
+        src_x: i32,
+        src_y: i32,
+        dst_left: i32,
+        dst_top: i32,
+        dst_right: i32,
+        dst_bottom: i32,
+    ) {
         self.fifo_write_cmd(&[
             SVGA_CMD_BLIT_GMRFB_TO_SCREEN,
-            src_x as u32, src_y as u32,     // srcOrigin
-            dst_left as u32, dst_top as u32, // destRect left, top
-            dst_right as u32, dst_bottom as u32, // destRect right, bottom
-            0, // destScreenId
+            src_x as u32,
+            src_y as u32, // srcOrigin
+            dst_left as u32,
+            dst_top as u32, // destRect left, top
+            dst_right as u32,
+            dst_bottom as u32, // destRect right, bottom
+            0,                 // destScreenId
         ]);
     }
-
 }
 
 impl GpuDriver for VmwareSvgaGpu {
@@ -676,7 +697,11 @@ impl GpuDriver for VmwareSvgaGpu {
     }
 
     fn driver_type_name(&self) -> &str {
-        if self.has_3d() { "svga3d" } else { "none" }
+        if self.has_3d() {
+            "svga3d"
+        } else {
+            "none"
+        }
     }
 
     fn set_mode(&mut self, width: u32, height: u32, bpp: u32) -> Option<(u32, u32, u32, u32)> {
@@ -697,7 +722,11 @@ impl GpuDriver for VmwareSvgaGpu {
 
         crate::serial_verbose_println!(
             "  SVGA II: mode set to {}x{}x{} (pitch={}, fb={:#x})",
-            actual_w, actual_h, bpp, pitch, fb
+            actual_w,
+            actual_h,
+            bpp,
+            pitch,
+            fb
         );
 
         // Redefine Screen Object 0 with new dimensions
@@ -742,9 +771,12 @@ impl GpuDriver for VmwareSvgaGpu {
             // Screen Object mode: blit VRAM region → screen
             self.define_gmrfb(SVGA_GMR_FRAMEBUFFER, 0, self.pitch, 32);
             self.blit_gmrfb_to_screen(
-                x as i32, y as i32,
-                x as i32, y as i32,
-                (x + w) as i32, (y + h) as i32,
+                x as i32,
+                y as i32,
+                x as i32,
+                y as i32,
+                (x + w) as i32,
+                (y + h) as i32,
             );
         } else {
             self.fifo_write_cmd(&[SVGA_CMD_UPDATE, x, y, w, h]);
@@ -763,9 +795,12 @@ impl GpuDriver for VmwareSvgaGpu {
                 self.define_gmrfb(SVGA_GMR_FRAMEBUFFER, 0, self.pitch, 32);
             }
             self.blit_gmrfb_to_screen(
-                x as i32, y as i32,
-                x as i32, y as i32,
-                (x + w) as i32, (y + h) as i32,
+                x as i32,
+                y as i32,
+                x as i32,
+                y as i32,
+                (x + w) as i32,
+                (y + h) as i32,
             );
             return;
         }
@@ -860,7 +895,9 @@ impl GpuDriver for VmwareSvgaGpu {
     }
 
     // VMware SVGA II does NOT use double-buffering — it uses FIFO + UPDATE
-    fn has_double_buffer(&self) -> bool { false }
+    fn has_double_buffer(&self) -> bool {
+        false
+    }
 
     fn sync(&mut self) {
         if self.has_fences {
@@ -893,7 +930,12 @@ impl GpuDriver for VmwareSvgaGpu {
                 self.gmr_pages = phys_pages.to_vec();
                 self.back_buffer_gmr = Some(gmr_id);
                 self.back_buffer_offset = sub_page_offset;
-                crate::serial_verbose_println!("  SVGA: GMR {} defined ({} pages, offset={})", gmr_id, phys_pages.len(), sub_page_offset);
+                crate::serial_verbose_println!(
+                    "  SVGA: GMR {} defined ({} pages, offset={})",
+                    gmr_id,
+                    phys_pages.len(),
+                    sub_page_offset
+                );
                 true
             }
             None => false,
@@ -969,15 +1011,29 @@ impl GpuDriver for VmwareSvgaGpu {
             SVGA_3D_CMD_SURFACE_DMA,
             (19 * 4) as u32, // size_bytes: 19 payload u32s
             // guest image: { gmr_id, offset, pitch }
-            gmr_id, 0, pitch,
+            gmr_id,
+            0,
+            pitch,
             // host image: { sid, face, mipmap }
-            sid, 0, 0,
+            sid,
+            0,
+            0,
             // transfer type: WRITE_HOST_VRAM = 1
             1,
             // copy box: { x, y, z, w, h, d, srcx, srcy, srcz }
-            0, 0, 0, width, height, 1, 0, 0, 0,
+            0,
+            0,
+            0,
+            width,
+            height,
+            1,
+            0,
+            0,
+            0,
             // suffix: { suffixSize, maximumOffset, flags }
-            12, max_offset, 0,
+            12,
+            max_offset,
+            0,
         ];
         self.fifo_write_cmd(&cmd_words);
 
@@ -1025,36 +1081,41 @@ impl GpuDriver for VmwareSvgaGpu {
         // Backing store → our pre-allocated staging GMR
         self.fifo_write_cmd(&[
             SVGA_CMD_DEFINE_SCREEN,
-            44,                       // structSize (v2 = 11 fields × 4)
-            READBACK_SCREEN,          // id = 1
-            SVGA_SCREEN_MUST_BE_SET,  // flags (not primary)
-            width,                    // width
-            height,                   // height
-            0x7FFF_0000,              // root.x — far off-screen
-            0,                        // root.y
-            gmr_id,                   // backingStore.ptr.gmrId
-            0,                        // backingStore.ptr.offset
-            pitch,                    // backingStore.bytesPerLine
-            0,                        // cloneCount
+            44,                      // structSize (v2 = 11 fields × 4)
+            READBACK_SCREEN,         // id = 1
+            SVGA_SCREEN_MUST_BE_SET, // flags (not primary)
+            width,                   // width
+            height,                  // height
+            0x7FFF_0000,             // root.x — far off-screen
+            0,                       // root.y
+            gmr_id,                  // backingStore.ptr.gmrId
+            0,                       // backingStore.ptr.offset
+            pitch,                   // backingStore.bytesPerLine
+            0,                       // cloneCount
         ]);
 
         // Step 2: BLIT_SURFACE_TO_SCREEN — render target → screen 1's backing store
         // SVGA3dCmdBlitSurfaceToScreen: srcImage(3), srcRect(4), destScreenId(1), destRect(4) = 12 dwords
         self.fifo_write_cmd(&[
             SVGA_3D_CMD_BLIT_SURFACE_TO_SCREEN,
-            (12 * 4) as u32,          // body = 48 bytes
-            sid, 0, 0,                // srcImage: { sid, face=0, mipmap=0 }
-            0, 0, width, height,      // srcRect: { left=0, top=0, right=w, bottom=h }
-            READBACK_SCREEN,          // destScreenId = 1
-            0, 0, width, height,      // destRect: { left=0, top=0, right=w, bottom=h }
+            (12 * 4) as u32, // body = 48 bytes
+            sid,
+            0,
+            0, // srcImage: { sid, face=0, mipmap=0 }
+            0,
+            0,
+            width,
+            height,          // srcRect: { left=0, top=0, right=w, bottom=h }
+            READBACK_SCREEN, // destScreenId = 1
+            0,
+            0,
+            width,
+            height, // destRect: { left=0, top=0, right=w, bottom=h }
         ]);
         self.sync_fifo();
 
         // Step 3: Destroy the readback screen
-        self.fifo_write_cmd(&[
-            SVGA_CMD_DESTROY_SCREEN,
-            READBACK_SCREEN,
-        ]);
+        self.fifo_write_cmd(&[SVGA_CMD_DESTROY_SCREEN, READBACK_SCREEN]);
         self.sync_fifo();
 
         // Step 4: Copy from staging buffer to user buffer (page-checked)
@@ -1117,10 +1178,14 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     }
 
     // Enable PCI bus mastering + I/O + memory
-    let cmd = crate::drivers::pci::pci_config_read32(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04);
+    let cmd =
+        crate::drivers::pci::pci_config_read32(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04);
     crate::drivers::pci::pci_config_write32(
-        pci_dev.bus, pci_dev.device, pci_dev.function,
-        0x04, cmd | 0x07,
+        pci_dev.bus,
+        pci_dev.device,
+        pci_dev.function,
+        0x04,
+        cmd | 0x07,
     );
 
     let mut gpu = VmwareSvgaGpu {
@@ -1171,20 +1236,20 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     // Log all capability flags
     let cap_flags: &[(u32, &str)] = &[
-        (SVGA_CAP_RECT_FILL,       "RECT_FILL"),
-        (SVGA_CAP_RECT_COPY,       "RECT_COPY"),
-        (SVGA_CAP_CURSOR,          "CURSOR"),
-        (SVGA_CAP_CURSOR_BYPASS,   "CURSOR_BYPASS"),
+        (SVGA_CAP_RECT_FILL, "RECT_FILL"),
+        (SVGA_CAP_RECT_COPY, "RECT_COPY"),
+        (SVGA_CAP_CURSOR, "CURSOR"),
+        (SVGA_CAP_CURSOR_BYPASS, "CURSOR_BYPASS"),
         (SVGA_CAP_CURSOR_BYPASS_2, "CURSOR_BYPASS_2"),
-        (SVGA_CAP_8BIT_EMULATION,  "8BIT_EMULATION"),
-        (SVGA_CAP_ALPHA_CURSOR,    "ALPHA_CURSOR"),
-        (SVGA_CAP_3D,              "3D"),
-        (SVGA_CAP_EXTENDED_FIFO,   "EXTENDED_FIFO"),
-        (SVGA_CAP_PITCHLOCK,       "PITCHLOCK"),
-        (SVGA_CAP_IRQMASK,         "IRQMASK"),
-        (SVGA_CAP_GMR,             "GMR"),
-        (SVGA_CAP_TRACES,          "TRACES"),
-        (SVGA_CAP_GMR2,            "GMR2"),
+        (SVGA_CAP_8BIT_EMULATION, "8BIT_EMULATION"),
+        (SVGA_CAP_ALPHA_CURSOR, "ALPHA_CURSOR"),
+        (SVGA_CAP_3D, "3D"),
+        (SVGA_CAP_EXTENDED_FIFO, "EXTENDED_FIFO"),
+        (SVGA_CAP_PITCHLOCK, "PITCHLOCK"),
+        (SVGA_CAP_IRQMASK, "IRQMASK"),
+        (SVGA_CAP_GMR, "GMR"),
+        (SVGA_CAP_TRACES, "TRACES"),
+        (SVGA_CAP_GMR2, "GMR2"),
         (SVGA_CAP_SCREEN_OBJECT_2, "SCREEN_OBJECT_2"),
     ];
     for &(flag, name) in cap_flags {
@@ -1209,13 +1274,18 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     gpu.pitch = gpu.reg_read(SVGA_REG_BYTES_PER_LINE);
     gpu.fb_phys = gpu.reg_read(SVGA_REG_FB_START);
     gpu.vram_size_bytes = gpu.reg_read(SVGA_REG_VRAM_SIZE);
-    crate::serial_verbose_println!("  SVGA II: VRAM size = {} KiB ({} MiB)", gpu.vram_size_bytes / 1024, gpu.vram_size_bytes / (1024 * 1024));
+    crate::serial_verbose_println!(
+        "  SVGA II: VRAM size = {} KiB ({} MiB)",
+        gpu.vram_size_bytes / 1024,
+        gpu.vram_size_bytes / (1024 * 1024)
+    );
 
     // 6. Query hardware max resolution and build supported mode list
     let max_w = gpu.reg_read(SVGA_REG_MAX_WIDTH);
     let max_h = gpu.reg_read(SVGA_REG_MAX_HEIGHT);
     crate::serial_verbose_println!("  SVGA II: max resolution {}x{}", max_w, max_h);
-    gpu.supported = super::COMMON_MODES.iter()
+    gpu.supported = super::COMMON_MODES
+        .iter()
         .copied()
         .filter(|&(w, h)| w <= max_w && h <= max_h)
         .collect();
@@ -1224,7 +1294,10 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     gpu.fifo_size = gpu.reg_read(SVGA_REG_FIFO_SIZE);
     crate::serial_verbose_println!(
         "  SVGA II: IO={:#x} FB={:#x} FIFO={:#x} (size={}K)",
-        io_base, fb_phys, fifo_phys, gpu.fifo_size / 1024
+        io_base,
+        fb_phys,
+        fifo_phys,
+        gpu.fifo_size / 1024
     );
 
     let pages = (gpu.fifo_size as usize + 4095) / 4096;
@@ -1265,7 +1338,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     match crate::memory::physical::alloc_contiguous(FIFO_BOUNCE_PAGES) {
         Some(p) => {
             let phys = p.as_u64();
-            unsafe { core::ptr::write_bytes(phys as *mut u8, 0, FIFO_BOUNCE_SIZE); }
+            unsafe {
+                core::ptr::write_bytes(phys as *mut u8, 0, FIFO_BOUNCE_SIZE);
+            }
             gpu.bounce_phys = phys;
             gpu.bounce_virt = phys; // identity-mapped
         }
@@ -1276,18 +1351,25 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     }
 
     // 8c. GMR2 support
-    gpu.has_gmr2 = (gpu.capabilities & SVGA_CAP_GMR2 != 0)
-        && (fifo_caps & SVGA_FIFO_CAP_GMR2 != 0);
+    gpu.has_gmr2 = (gpu.capabilities & SVGA_CAP_GMR2 != 0) && (fifo_caps & SVGA_FIFO_CAP_GMR2 != 0);
     if gpu.has_gmr2 {
         gpu.gmr_max_ids = gpu.reg_read(SVGA_REG_GMR_MAX_IDS);
         gpu.gmr_max_pages = gpu.reg_read(SVGA_REG_GMRS_MAX_PAGES);
-        crate::serial_verbose_println!("    - GMR2 (max {} IDs, {} pages)", gpu.gmr_max_ids, gpu.gmr_max_pages);
+        crate::serial_verbose_println!(
+            "    - GMR2 (max {} IDs, {} pages)",
+            gpu.gmr_max_ids,
+            gpu.gmr_max_pages
+        );
     }
 
     // Log SVGA3D hardware version (FIFO is now initialized)
     if gpu.has_3d() {
         let hw_ver = gpu.hw_version_3d();
-        crate::serial_verbose_println!("  SVGA II: 3D hardware version = {:#x} (has_gmr2={})", hw_ver, gpu.has_gmr2);
+        crate::serial_verbose_println!(
+            "  SVGA II: 3D hardware version = {:#x} (has_gmr2={})",
+            hw_ver,
+            gpu.has_gmr2
+        );
     }
 
     // 8c2. Pre-allocate DMA staging buffer (for 3D surface uploads)
@@ -1297,7 +1379,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         match crate::memory::physical::alloc_contiguous(DMA_STAGING_PAGES) {
             Some(p) => {
                 let phys = p.as_u64();
-                unsafe { core::ptr::write_bytes(phys as *mut u8, 0, DMA_STAGING_PAGES * 4096); }
+                unsafe {
+                    core::ptr::write_bytes(phys as *mut u8, 0, DMA_STAGING_PAGES * 4096);
+                }
                 // Define a persistent GMR for the staging buffer
                 let phys_pages: alloc::vec::Vec<u64> = (0..DMA_STAGING_PAGES)
                     .map(|i| phys + (i * 4096) as u64)
@@ -1308,22 +1392,28 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
                         gpu.dma_staging_phys = phys;
                         gpu.dma_staging_pages = DMA_STAGING_PAGES;
                         gpu.dma_staging_gmr = Some(gmr_id);
-                        crate::serial_verbose_println!("    - DMA staging: {} KiB (GMR {})",
-                            DMA_STAGING_PAGES * 4, gmr_id);
+                        crate::serial_verbose_println!(
+                            "    - DMA staging: {} KiB (GMR {})",
+                            DMA_STAGING_PAGES * 4,
+                            gmr_id
+                        );
                     }
                     None => {
                         crate::serial_verbose_println!("    SVGA: DMA staging GMR define failed");
                         // Free the pages
                         for i in 0..DMA_STAGING_PAGES {
                             crate::memory::physical::free_frame(
-                                crate::memory::address::PhysAddr::new(phys + (i * 4096) as u64)
+                                crate::memory::address::PhysAddr::new(phys + (i * 4096) as u64),
                             );
                         }
                     }
                 }
             }
             None => {
-                crate::serial_verbose_println!("    SVGA: DMA staging alloc failed ({} pages)", DMA_STAGING_PAGES);
+                crate::serial_verbose_println!(
+                    "    SVGA: DMA staging alloc failed ({} pages)",
+                    DMA_STAGING_PAGES
+                );
             }
         }
     }
@@ -1332,7 +1422,11 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
     gpu.has_screen_object = (fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT != 0)
         || (fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0);
     if gpu.has_screen_object {
-        let ver = if fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0 { "v2" } else { "v1" };
+        let ver = if fifo_caps & SVGA_FIFO_CAP_SCREEN_OBJECT_2 != 0 {
+            "v2"
+        } else {
+            "v1"
+        };
         crate::serial_verbose_println!("    - SCREEN_OBJECT ({})", ver);
         gpu.define_screen_0();
     }
@@ -1364,8 +1458,10 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         }
 
         // Enable fence-related IRQs
-        gpu.reg_write(SVGA_REG_IRQMASK,
-            SVGA_IRQFLAG_ANY_FENCE | SVGA_IRQFLAG_FENCE_GOAL);
+        gpu.reg_write(
+            SVGA_REG_IRQMASK,
+            SVGA_IRQFLAG_ANY_FENCE | SVGA_IRQFLAG_FENCE_GOAL,
+        );
 
         gpu.irq_active = true;
         SVGA_IRQ_ENABLED.store(true, Ordering::Release);
@@ -1378,7 +1474,10 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
 
     crate::serial_verbose_println!(
         "  SVGA II: initialized {}x{} (pitch={}, fb={:#x})",
-        gpu.width, gpu.height, gpu.pitch, gpu.fb_phys
+        gpu.width,
+        gpu.height,
+        gpu.pitch,
+        gpu.fb_phys
     );
 
     super::register(Box::new(gpu));

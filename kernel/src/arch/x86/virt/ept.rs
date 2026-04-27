@@ -28,7 +28,9 @@ pub fn create_ept_root() -> Option<u64> {
 
 /// Destroy an EPT hierarchy, freeing all pages.
 pub fn destroy_ept(root: u64) {
-    unsafe { free_ept_table(root, 4); }
+    unsafe {
+        free_ept_table(root, 4);
+    }
 }
 
 /// Map a range of guest physical addresses to host physical addresses in EPT.
@@ -45,7 +47,7 @@ pub fn ept_map_range(root: u64, gpa: u64, hpa: u64, size: u64, writable: bool, e
         // Use a 2MB page if everything is aligned and enough space remains.
         if remaining >= PAGE_SIZE_2M
             && (guest & (PAGE_SIZE_2M - 1)) == 0
-            && (host  & (PAGE_SIZE_2M - 1)) == 0
+            && (host & (PAGE_SIZE_2M - 1)) == 0
         {
             ept_map_large_page(root, guest, host, writable, executable);
             offset += PAGE_SIZE_2M;
@@ -86,8 +88,12 @@ fn ept_map_page(root: u64, gpa: u64, hpa: u64, writable: bool, executable: bool)
         // Write leaf (PT) entry.
         let entry = table.add(indices[3]);
         let mut flags = EPT_MEMTYPE_WB | EPT_READ;
-        if writable   { flags |= EPT_WRITE; }
-        if executable { flags |= EPT_EXECUTE; }
+        if writable {
+            flags |= EPT_WRITE;
+        }
+        if executable {
+            flags |= EPT_EXECUTE;
+        }
         *entry = (hpa & ADDR_MASK) | flags;
     }
 }
@@ -120,8 +126,12 @@ fn ept_map_large_page(root: u64, gpa: u64, hpa: u64, writable: bool, executable:
         // Write PD large-page leaf.  Bit 7 = EPT_LARGE_PAGE signals a 2MB leaf.
         let entry = table.add(indices[2]);
         let mut flags = EPT_MEMTYPE_WB | EPT_READ | EPT_LARGE_PAGE;
-        if writable   { flags |= EPT_WRITE; }
-        if executable { flags |= EPT_EXECUTE; }
+        if writable {
+            flags |= EPT_WRITE;
+        }
+        if executable {
+            flags |= EPT_EXECUTE;
+        }
         // 2MB-aligned physical address: bits [51:21].
         *entry = (hpa & 0x000F_FFFF_FFE0_0000) | flags;
     }
@@ -135,16 +145,20 @@ pub fn ept_translate(root: u64, gpa: u64) -> Option<u64> {
     unsafe {
         let pml4_idx = ((gpa >> 39) & 0x1FF) as usize;
         let pdpt_idx = ((gpa >> 30) & 0x1FF) as usize;
-        let pd_idx   = ((gpa >> 21) & 0x1FF) as usize;
-        let pt_idx   = ((gpa >> 12) & 0x1FF) as usize;
+        let pd_idx = ((gpa >> 21) & 0x1FF) as usize;
+        let pt_idx = ((gpa >> 12) & 0x1FF) as usize;
 
         let pml4 = phys_to_virt(root) as *const u64;
         let pml4e = *pml4.add(pml4_idx);
-        if pml4e & EPT_READ == 0 { return None; }
+        if pml4e & EPT_READ == 0 {
+            return None;
+        }
 
         let pdpt = phys_to_virt(pml4e & ADDR_MASK) as *const u64;
         let pdpte = *pdpt.add(pdpt_idx);
-        if pdpte & EPT_READ == 0 { return None; }
+        if pdpte & EPT_READ == 0 {
+            return None;
+        }
         if pdpte & EPT_LARGE_PAGE != 0 {
             // 1GB page (rare — not mapped by our ept_map_range but handle defensively)
             return Some((pdpte & 0x000F_FFFC_0000_0000) | (gpa & 0x3FFF_FFFF));
@@ -152,7 +166,9 @@ pub fn ept_translate(root: u64, gpa: u64) -> Option<u64> {
 
         let pd = phys_to_virt(pdpte & ADDR_MASK) as *const u64;
         let pde = *pd.add(pd_idx);
-        if pde & EPT_READ == 0 { return None; }
+        if pde & EPT_READ == 0 {
+            return None;
+        }
         if pde & EPT_LARGE_PAGE != 0 {
             // 2MB page
             return Some((pde & 0x000F_FFFF_FFE0_0000) | (gpa & 0x1F_FFFF));
@@ -160,7 +176,9 @@ pub fn ept_translate(root: u64, gpa: u64) -> Option<u64> {
 
         let pt = phys_to_virt(pde & ADDR_MASK) as *const u64;
         let pte = *pt.add(pt_idx);
-        if pte & EPT_READ == 0 { return None; }
+        if pte & EPT_READ == 0 {
+            return None;
+        }
         Some((pte & ADDR_MASK) | (gpa & 0xFFF))
     }
 }
@@ -173,16 +191,20 @@ pub fn npt_translate(root: u64, gpa: u64) -> Option<u64> {
     unsafe {
         let pml4_idx = ((gpa >> 39) & 0x1FF) as usize;
         let pdpt_idx = ((gpa >> 30) & 0x1FF) as usize;
-        let pd_idx   = ((gpa >> 21) & 0x1FF) as usize;
-        let pt_idx   = ((gpa >> 12) & 0x1FF) as usize;
+        let pd_idx = ((gpa >> 21) & 0x1FF) as usize;
+        let pt_idx = ((gpa >> 12) & 0x1FF) as usize;
 
         let pml4 = phys_to_virt(root) as *const u64;
         let pml4e = *pml4.add(pml4_idx);
-        if pml4e & NPT_PRESENT == 0 { return None; }
+        if pml4e & NPT_PRESENT == 0 {
+            return None;
+        }
 
         let pdpt = phys_to_virt(pml4e & ADDR_MASK) as *const u64;
         let pdpte = *pdpt.add(pdpt_idx);
-        if pdpte & NPT_PRESENT == 0 { return None; }
+        if pdpte & NPT_PRESENT == 0 {
+            return None;
+        }
         // 1GB page (PS bit in PDPT, same bit position as NPT_LARGE)
         if pdpte & NPT_LARGE != 0 {
             return Some((pdpte & 0x000F_FFFC_0000_0000) | (gpa & 0x3FFF_FFFF));
@@ -190,14 +212,18 @@ pub fn npt_translate(root: u64, gpa: u64) -> Option<u64> {
 
         let pd = phys_to_virt(pdpte & ADDR_MASK) as *const u64;
         let pde = *pd.add(pd_idx);
-        if pde & NPT_PRESENT == 0 { return None; }
+        if pde & NPT_PRESENT == 0 {
+            return None;
+        }
         if pde & NPT_LARGE != 0 {
             return Some((pde & 0x000F_FFFF_FFE0_0000) | (gpa & 0x1F_FFFF));
         }
 
         let pt = phys_to_virt(pde & ADDR_MASK) as *const u64;
         let pte = *pt.add(pt_idx);
-        if pte & NPT_PRESENT == 0 { return None; }
+        if pte & NPT_PRESENT == 0 {
+            return None;
+        }
         Some((pte & ADDR_MASK) | (gpa & 0xFFF))
     }
 }
@@ -236,7 +262,9 @@ pub fn create_npt_root() -> Option<u64> {
 
 /// Destroy an NPT hierarchy.
 pub fn destroy_npt(root: u64) {
-    unsafe { free_npt_table(root, 4); }
+    unsafe {
+        free_npt_table(root, 4);
+    }
 }
 
 /// Map a range in NPT.
@@ -246,12 +274,12 @@ pub fn npt_map_range(root: u64, gpa: u64, hpa: u64, size: u64, writable: bool, _
     let mut offset: u64 = 0;
     while offset < size {
         let guest = gpa + offset;
-        let host  = hpa + offset;
+        let host = hpa + offset;
         let remaining = size - offset;
 
         if remaining >= PAGE_SIZE_2M
             && (guest & (PAGE_SIZE_2M - 1)) == 0
-            && (host  & (PAGE_SIZE_2M - 1)) == 0
+            && (host & (PAGE_SIZE_2M - 1)) == 0
         {
             npt_map_large_page(root, guest, host, writable);
             offset += PAGE_SIZE_2M;
@@ -289,7 +317,9 @@ fn npt_map_page(root: u64, gpa: u64, hpa: u64, writable: bool) {
 
         let entry = table.add(indices[3]);
         let mut flags = NPT_PRESENT | NPT_USER | NPT_ACCESSED | NPT_DIRTY;
-        if writable { flags |= NPT_RW; }
+        if writable {
+            flags |= NPT_RW;
+        }
         *entry = (hpa & ADDR_MASK) | flags;
     }
 }
@@ -320,7 +350,9 @@ fn npt_map_large_page(root: u64, gpa: u64, hpa: u64, writable: bool) {
 
         let entry = table.add(indices[2]);
         let mut flags = NPT_PRESENT | NPT_USER | NPT_LARGE | NPT_ACCESSED | NPT_DIRTY;
-        if writable { flags |= NPT_RW; }
+        if writable {
+            flags |= NPT_RW;
+        }
         // 2MB-aligned physical address.
         *entry = (hpa & 0x000F_FFFF_FFE0_0000) | flags;
     }
@@ -335,7 +367,9 @@ fn npt_map_large_page(root: u64, gpa: u64, hpa: u64, writable: bool) {
 /// child pointer, so we stop recursion at level 2 and only free the PT page
 /// itself (its entries are physical frames owned by the guest, not by us).
 unsafe fn free_ept_table(phys: u64, level: u32) {
-    if phys == 0 { return; }
+    if phys == 0 {
+        return;
+    }
 
     if level > 1 {
         let table = phys_to_virt(phys) as *const u64;
@@ -361,7 +395,9 @@ unsafe fn free_ept_table(phys: u64, level: u32) {
 ///
 /// Large-page PD entries (bit 7 = PS) are leaves and must not be walked.
 unsafe fn free_npt_table(phys: u64, level: u32) {
-    if phys == 0 { return; }
+    if phys == 0 {
+        return;
+    }
 
     if level > 1 {
         let table = phys_to_virt(phys) as *const u64;

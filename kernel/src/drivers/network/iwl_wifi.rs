@@ -30,33 +30,33 @@
 //! Full firmware loading requires the proprietary Intel firmware blobs
 //! (iwlwifi-cc-a0-*.ucode) which must be placed in /System/Drivers/wifi/.
 
-use alloc::boxed::Box;
-use alloc::vec;
-use alloc::vec::Vec;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::{physical, virtual_mem};
 use crate::sync::spinlock::Spinlock;
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
 
 // ── PCIe Register Offsets ───────────────────────────────────────────────────
 
 // Control/Status Registers (CSR)
-const CSR_HW_IF_CONFIG: u32     = 0x000;
-const CSR_INT: u32              = 0x008;  // Interrupt status
-const CSR_INT_MASK: u32         = 0x00C;  // Interrupt mask
-const CSR_FH_INT_STATUS: u32    = 0x010;
-const CSR_GPIO_IN: u32          = 0x018;
-const CSR_RESET: u32            = 0x020;
-const CSR_GP_CNTRL: u32         = 0x024;  // General Purpose Control
-const CSR_HW_REV: u32           = 0x028;
-const CSR_EEPROM_REG: u32       = 0x02C;
-const CSR_EEPROM_GP: u32        = 0x030;
-const CSR_UCODE_DRV_GP1: u32   = 0x054;
-const CSR_UCODE_DRV_GP2: u32   = 0x058;
+const CSR_HW_IF_CONFIG: u32 = 0x000;
+const CSR_INT: u32 = 0x008; // Interrupt status
+const CSR_INT_MASK: u32 = 0x00C; // Interrupt mask
+const CSR_FH_INT_STATUS: u32 = 0x010;
+const CSR_GPIO_IN: u32 = 0x018;
+const CSR_RESET: u32 = 0x020;
+const CSR_GP_CNTRL: u32 = 0x024; // General Purpose Control
+const CSR_HW_REV: u32 = 0x028;
+const CSR_EEPROM_REG: u32 = 0x02C;
+const CSR_EEPROM_GP: u32 = 0x030;
+const CSR_UCODE_DRV_GP1: u32 = 0x054;
+const CSR_UCODE_DRV_GP2: u32 = 0x058;
 const CSR_GIO_CHICKEN_BITS: u32 = 0x100;
-const CSR_ANA_PLL_CFG: u32      = 0x20C;
-const CSR_DBG_HPET_MEM: u32    = 0x240;
-const CSR_HW_REV_WA: u32       = 0x22C;
+const CSR_ANA_PLL_CFG: u32 = 0x20C;
+const CSR_DBG_HPET_MEM: u32 = 0x240;
+const CSR_HW_REV_WA: u32 = 0x22C;
 
 // GP_CNTRL bits
 const CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY: u32 = 1 << 0;
@@ -77,7 +77,7 @@ const SCD_BASE: u32 = 0x0A00;
 
 /// Firmware search paths (tried in order). All under /System/Drivers/wifi/.
 const FW_PATHS: &[&str] = &[
-    "/System/Drivers/wifi/iwlwifi-cc-a0-77.ucode",       // AX200
+    "/System/Drivers/wifi/iwlwifi-cc-a0-77.ucode", // AX200
     "/System/Drivers/wifi/iwlwifi-ty-a0-gf-a0-77.ucode", // AX210/AX211
     "/System/Drivers/wifi/iwlwifi-so-a0-gf-a0-77.ucode", // AX201
     "/System/Drivers/wifi/iwlwifi-9260-th-b0-jf-b0-46.ucode", // AC 9260
@@ -116,7 +116,9 @@ unsafe fn wr(base: u64, reg: u32, val: u32) {
 
 pub fn init_and_register(pci: &PciDevice) -> bool {
     let bar0 = (pci.bars[0] & !0xF) as u64;
-    if bar0 == 0 { return false; }
+    if bar0 == 0 {
+        return false;
+    }
 
     // Enable bus mastering + memory space
     let cmd = crate::drivers::pci::pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
@@ -133,15 +135,22 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
     unsafe {
         // Read hardware revision
         let hw_rev = rd(mmio, CSR_HW_REV);
-        crate::serial_println!("  Intel WiFi: device={:#06x} hw_rev={:#010x}", pci.device_id, hw_rev);
+        crate::serial_println!(
+            "  Intel WiFi: device={:#06x} hw_rev={:#010x}",
+            pci.device_id,
+            hw_rev
+        );
 
         // Set bus mastering and disable interrupts during init
         wr(mmio, CSR_INT_MASK, 0);
         wr(mmio, CSR_INT, 0xFFFFFFFF); // Clear pending
 
         // Request MAC access (wake the device from D3)
-        wr(mmio, CSR_GP_CNTRL,
-            rd(mmio, CSR_GP_CNTRL) | CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
+        wr(
+            mmio,
+            CSR_GP_CNTRL,
+            rd(mmio, CSR_GP_CNTRL) | CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ,
+        );
 
         // Wait for MAC clock ready
         let mut ready = false;
@@ -163,15 +172,23 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
 
         // Read MAC address from EEPROM/OTP
         let mac = read_mac_from_csr(mmio);
-        crate::serial_println!("  Intel WiFi: MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        crate::serial_println!(
+            "  Intel WiFi: MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
+        );
 
         // Allocate DMA rings for TX and RX
         let tfd_frame = physical::alloc_frame().unwrap_or(PhysAddr::new(0));
         let rbd_frame = physical::alloc_frame().unwrap_or(PhysAddr::new(0));
 
         *IWL_STATE.lock() = Some(IwlState {
-            mmio, irq,
+            mmio,
+            irq,
             hw_rev,
             device_id: pci.device_id,
             mac,
@@ -213,8 +230,12 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
             0x24FD => "AC 8265",
             _ => "WiFi",
         };
-        crate::serial_println!("[OK] Intel {} WiFi (IRQ={}, fw={})",
-            chip_name, irq, if fw_ok { "loaded" } else { "missing" });
+        crate::serial_println!(
+            "[OK] Intel {} WiFi (IRQ={}, fw={})",
+            chip_name,
+            irq,
+            if fw_ok { "loaded" } else { "missing" }
+        );
     }
 
     // Register as WiFi driver
@@ -225,12 +246,15 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
 unsafe fn read_mac_from_csr(mmio: u64) -> [u8; 6] {
     // Intel WiFi stores MAC in CSR registers or OTP shadow
     // The exact location varies by generation; this is a simplified read
-    let mac_lo = rd(mmio, 0x0A4);  // NVM shadow register area
+    let mac_lo = rd(mmio, 0x0A4); // NVM shadow register area
     let mac_hi = rd(mmio, 0x0A8);
     [
-        (mac_lo & 0xFF) as u8, ((mac_lo >> 8) & 0xFF) as u8,
-        ((mac_lo >> 16) & 0xFF) as u8, ((mac_lo >> 24) & 0xFF) as u8,
-        (mac_hi & 0xFF) as u8, ((mac_hi >> 8) & 0xFF) as u8,
+        (mac_lo & 0xFF) as u8,
+        ((mac_lo >> 8) & 0xFF) as u8,
+        ((mac_lo >> 16) & 0xFF) as u8,
+        ((mac_lo >> 24) & 0xFF) as u8,
+        (mac_hi & 0xFF) as u8,
+        ((mac_hi >> 8) & 0xFF) as u8,
     ]
 }
 
@@ -249,7 +273,9 @@ fn iwl_irq_handler(_irq: u8) {
         if let Some(ref state) = *guard {
             unsafe {
                 let inta = rd(state.mmio, CSR_INT);
-                if inta == 0 || inta == 0xFFFFFFFF { return; }
+                if inta == 0 || inta == 0xFFFFFFFF {
+                    return;
+                }
                 wr(state.mmio, CSR_INT, inta); // ACK
             }
         }
@@ -261,7 +287,9 @@ fn iwl_irq_handler(_irq: u8) {
 struct IwlWifiDriver;
 
 impl super::NetworkDriver for IwlWifiDriver {
-    fn name(&self) -> &str { "Intel WiFi" }
+    fn name(&self) -> &str {
+        "Intel WiFi"
+    }
     fn transmit(&mut self, _data: &[u8]) -> bool {
         // TODO: implement TX via firmware command queue
         false
@@ -282,4 +310,6 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
     }
 }
 
-pub fn is_available() -> bool { IWL_STATE.lock().is_some() }
+pub fn is_available() -> bool {
+    IWL_STATE.lock().is_some()
+}

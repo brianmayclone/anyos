@@ -77,18 +77,16 @@ impl CrashReport {
     }
 }
 
-static CRASH_REPORTS: Spinlock<[CrashReport; MAX_REPORTS]> = Spinlock::new(
-    [
-        CrashReport::empty(),
-        CrashReport::empty(),
-        CrashReport::empty(),
-        CrashReport::empty(),
-        CrashReport::empty(),
-        CrashReport::empty(),
-        CrashReport::empty(),
-        CrashReport::empty(),
-    ],
-);
+static CRASH_REPORTS: Spinlock<[CrashReport; MAX_REPORTS]> = Spinlock::new([
+    CrashReport::empty(),
+    CrashReport::empty(),
+    CrashReport::empty(),
+    CrashReport::empty(),
+    CrashReport::empty(),
+    CrashReport::empty(),
+    CrashReport::empty(),
+    CrashReport::empty(),
+]);
 
 /// Next write index in the ring buffer.
 static NEXT_IDX: Spinlock<usize> = Spinlock::new(0);
@@ -98,18 +96,16 @@ static NEXT_IDX: Spinlock<usize> = Spinlock::new(0);
 /// Called from `try_kill_faulting_thread()` in idt.rs. Uses lock-free thread name
 /// query to avoid deadlock (scheduler lock may be held during a page fault).
 #[cfg(target_arch = "x86_64")]
-pub fn store_crash(
-    tid: u32,
-    signal: u32,
-    frame: &crate::arch::x86::idt::InterruptFrame,
-) {
+pub fn store_crash(tid: u32, signal: u32, frame: &crate::arch::x86::idt::InterruptFrame) {
     // Get thread name via lock-free path (safe during fault handling)
     let name = crate::task::scheduler::debug_current_thread_name();
 
     // Read CR2 for page faults
     let cr2 = if signal == 139 && frame.int_no == 14 {
         let val: u64;
-        unsafe { core::arch::asm!("mov {}, cr2", out(reg) val); }
+        unsafe {
+            core::arch::asm!("mov {}, cr2", out(reg) val);
+        }
         val
     } else {
         0

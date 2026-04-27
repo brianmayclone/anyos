@@ -15,23 +15,76 @@ pub static SUITE: TestSuite = TestSuite {
     name: "ipc",
     cases: &[
         // MessageQueue
-        TestCase { name: "mq_new_empty",            run: test_mq_new_empty },
-        TestCase { name: "mq_send_receive",          run: test_mq_send_receive },
-        TestCase { name: "mq_ordering_fifo",         run: test_mq_fifo },
-        TestCase { name: "mq_full_rejects",          run: test_mq_full },
-        TestCase { name: "mq_oversized_rejects",     run: test_mq_oversized },
-        TestCase { name: "mq_receive_empty",         run: test_mq_receive_empty },
+        TestCase {
+            name: "mq_new_empty",
+            run: test_mq_new_empty,
+        },
+        TestCase {
+            name: "mq_send_receive",
+            run: test_mq_send_receive,
+        },
+        TestCase {
+            name: "mq_ordering_fifo",
+            run: test_mq_fifo,
+        },
+        TestCase {
+            name: "mq_full_rejects",
+            run: test_mq_full,
+        },
+        TestCase {
+            name: "mq_oversized_rejects",
+            run: test_mq_oversized,
+        },
+        TestCase {
+            name: "mq_receive_empty",
+            run: test_mq_receive_empty,
+        },
         // EventData
-        TestCase { name: "event_data_new",           run: test_event_data_new },
-        TestCase { name: "event_data_type",          run: test_event_data_type },
-        TestCase { name: "event_channel_lifecycle",  run: test_channel_lifecycle },
-        TestCase { name: "event_channel_poll_empty", run: test_channel_poll_empty },
+        TestCase {
+            name: "event_data_new",
+            run: test_event_data_new,
+        },
+        TestCase {
+            name: "event_data_type",
+            run: test_event_data_type,
+        },
+        TestCase {
+            name: "event_channel_lifecycle",
+            run: test_channel_lifecycle,
+        },
+        TestCase {
+            name: "event_channel_poll_empty",
+            run: test_channel_poll_empty,
+        },
         // Named pipe
-        TestCase { name: "pipe_create_open",         run: test_pipe_create },
-        TestCase { name: "pipe_write_read",          run: test_pipe_write_read },
-        TestCase { name: "pipe_partial_read",        run: test_pipe_partial_read },
-        TestCase { name: "pipe_clear",               run: test_pipe_clear },
-        TestCase { name: "pipe_close",               run: test_pipe_close },
+        TestCase {
+            name: "pipe_create_open",
+            run: test_pipe_create,
+        },
+        TestCase {
+            name: "pipe_write_read",
+            run: test_pipe_write_read,
+        },
+        TestCase {
+            name: "pipe_partial_read",
+            run: test_pipe_partial_read,
+        },
+        TestCase {
+            name: "pipe_clear",
+            run: test_pipe_clear,
+        },
+        TestCase {
+            name: "pipe_create_replaces",
+            run: test_pipe_create_replaces,
+        },
+        TestCase {
+            name: "pipe_atomic_backpressure",
+            run: test_pipe_atomic_backpressure,
+        },
+        TestCase {
+            name: "pipe_close",
+            run: test_pipe_close,
+        },
     ],
 };
 
@@ -61,8 +114,8 @@ fn test_mq_send_receive(ctx: &mut TestContext) {
 
     let msg = q.receive();
     if let Some(m) = ctx.expect_some(msg, "receive returns Some") {
-        ctx.expect_eq(m.sender_pid, 1u32,  "sender_pid");
-        ctx.expect_eq(m.msg_type,  42u32,  "msg_type");
+        ctx.expect_eq(m.sender_pid, 1u32, "sender_pid");
+        ctx.expect_eq(m.msg_type, 42u32, "msg_type");
         ctx.expect_eq(m.data.as_slice(), b"hello", "data payload");
     }
     ctx.expect_false(q.has_messages(), "empty after receive");
@@ -99,7 +152,9 @@ fn test_mq_oversized(ctx: &mut TestContext) {
     // MAX_MSG_SIZE = 256
     let big = alloc::vec![0xAAu8; 257];
     let ok = q.send(message_queue::Message {
-        sender_pid: 1, msg_type: 0, data: big,
+        sender_pid: 1,
+        msg_type: 0,
+        data: big,
     });
     ctx.expect_false(ok, "oversized message (>256 bytes) rejected");
     ctx.expect_false(q.has_messages(), "queue still empty after rejection");
@@ -109,7 +164,9 @@ fn test_mq_receive_empty(ctx: &mut TestContext) {
     let q = message_queue::MessageQueue::new();
     ctx.expect_none(q.receive(), "receive on empty queue is None");
     // Must not panic on repeated receives.
-    for _ in 0..3 { let _ = q.receive(); }
+    for _ in 0..3 {
+        let _ = q.receive();
+    }
     ctx.expect_true(true, "repeated receives on empty queue do not panic");
 }
 
@@ -117,7 +174,11 @@ fn test_mq_receive_empty(ctx: &mut TestContext) {
 
 fn test_event_data_new(ctx: &mut TestContext) {
     let e = event_bus::EventData::new(event_bus::EVT_BOOT_COMPLETE, 1, 2, 3, 4);
-    ctx.expect_eq(e.words[0], event_bus::EVT_BOOT_COMPLETE, "words[0] == event_type");
+    ctx.expect_eq(
+        e.words[0],
+        event_bus::EVT_BOOT_COMPLETE,
+        "words[0] == event_type",
+    );
     ctx.expect_eq(e.words[1], 1u32, "words[1] == p1");
     ctx.expect_eq(e.words[2], 2u32, "words[2] == p2");
     ctx.expect_eq(e.words[3], 3u32, "words[3] == p3");
@@ -126,7 +187,11 @@ fn test_event_data_new(ctx: &mut TestContext) {
 
 fn test_event_data_type(ctx: &mut TestContext) {
     let e = event_bus::EventData::new(event_bus::EVT_DEVICE_ATTACHED, 0, 0, 0, 0);
-    ctx.expect_eq(e.event_type(), event_bus::EVT_DEVICE_ATTACHED, "event_type() accessor");
+    ctx.expect_eq(
+        e.event_type(),
+        event_bus::EVT_DEVICE_ATTACHED,
+        "event_type() accessor",
+    );
 
     let custom = event_bus::EventData::new(event_bus::EVT_CUSTOM, 99, 0, 0, 0);
     ctx.expect_eq(custom.event_type(), event_bus::EVT_CUSTOM, "EVT_CUSTOM");
@@ -142,7 +207,7 @@ fn test_channel_lifecycle(ctx: &mut TestContext) {
 
     ctx.expect_false(
         event_bus::channel_has_events(ch, sub),
-        "no events after subscribe"
+        "no events after subscribe",
     );
 
     event_bus::channel_unsubscribe(ch, sub);
@@ -213,6 +278,56 @@ fn test_pipe_clear(ctx: &mut TestContext) {
     let mut buf = [0u8; 64];
     let n = pipe::read(id, &mut buf);
     ctx.expect_eq(n, 0u32, "read returns 0 after clear");
+
+    pipe::close(id);
+}
+
+fn test_pipe_create_replaces(ctx: &mut TestContext) {
+    let old_id = pipe::create("kunit_pipe_replace");
+    pipe::write(old_id, b"stale");
+
+    let new_id = pipe::create("kunit_pipe_replace");
+    ctx.expect_ne(new_id, 0u32, "replacement create returns nonzero id");
+    ctx.expect_ne(new_id, old_id, "replacement create returns a fresh id");
+
+    let opened = pipe::open("kunit_pipe_replace");
+    ctx.expect_eq(opened, new_id, "open returns replacement id");
+
+    let mut buf = [0u8; 16];
+    let stale_read = pipe::read(old_id, &mut buf);
+    ctx.expect_eq(stale_read, u32::MAX, "old id is no longer readable");
+
+    let empty_read = pipe::read(new_id, &mut buf);
+    ctx.expect_eq(empty_read, 0u32, "replacement starts with an empty buffer");
+
+    pipe::close(new_id);
+}
+
+fn test_pipe_atomic_backpressure(ctx: &mut TestContext) {
+    let id = pipe::create("kunit_pipe_backpressure");
+    let chunk = [b'x'; 4096];
+    let mut total = 0usize;
+
+    loop {
+        let written = pipe::write(id, &chunk);
+        if written == 0 {
+            break;
+        }
+        ctx.expect_eq(written as usize, chunk.len(), "small writes stay atomic");
+        total += written as usize;
+        if total > 512 * 1024 {
+            ctx.expect_true(false, "bounded pipe accepted too much data");
+            break;
+        }
+    }
+
+    ctx.expect_true(total >= 64 * 1024, "pipe accepts a useful burst");
+    let mut free_buf = [0u8; 4096];
+    let read = pipe::read(id, &mut free_buf);
+    ctx.expect_eq(read as usize, free_buf.len(), "read frees buffer space");
+
+    let retry = pipe::write(id, b"abc");
+    ctx.expect_eq(retry, 3u32, "small write succeeds after space is freed");
 
     pipe::close(id);
 }

@@ -35,7 +35,6 @@ fn disk_write_sectors(_disk_id: u32, abs_lba: u32, count: u32, buf: &[u8]) -> bo
     crate::drivers::arm::storage::write_sectors(abs_lba, count, buf)
 }
 
-
 // =============================================================================
 // Cluster read cache
 // =============================================================================
@@ -97,7 +96,9 @@ impl ClusterCache {
         for probe in 0..4 {
             let idx = (h + probe) & (CACHE_HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
-            if slot_idx == 0xFFFF { break; } // empty → miss
+            if slot_idx == 0xFFFF {
+                break;
+            } // empty → miss
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].cluster == cluster {
                 let n = buf.len().min(self.slots[si].data.len());
@@ -160,11 +161,18 @@ impl ClusterCache {
         }
         if self.slots.len() < CLUSTER_CACHE_SLOTS {
             let idx = self.slots.len();
-            self.slots.push(CacheEntry { cluster, tick: self.tick, data: data.to_vec() });
+            self.slots.push(CacheEntry {
+                cluster,
+                tick: self.tick,
+                data: data.to_vec(),
+            });
             self.hash_insert(cluster, idx);
         } else {
             // Evict the slot with the smallest (oldest) tick.
-            let lru = self.slots.iter().enumerate()
+            let lru = self
+                .slots
+                .iter()
+                .enumerate()
                 .min_by_key(|(_, s)| s.tick)
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -220,14 +228,18 @@ const ATTR_SYMLINK: u16 = 0x0400;
 /// Convert exFAT 32-bit timestamp to Unix timestamp.
 /// Format: [31:25]=year-1980, [24:21]=month, [20:16]=day, [15:11]=hour, [10:5]=minute, [4:0]=2-seconds
 fn exfat_timestamp_to_unix(ts: u32) -> u32 {
-    if ts == 0 { return 0; }
+    if ts == 0 {
+        return 0;
+    }
     let year = 1980 + ((ts >> 25) & 0x7F) as u32;
     let month = ((ts >> 21) & 0xF) as u32;
     let day = ((ts >> 16) & 0x1F) as u32;
     let hour = ((ts >> 11) & 0x1F) as u32;
     let minute = ((ts >> 5) & 0x3F) as u32;
     let second = ((ts & 0x1F) * 2) as u32;
-    if month < 1 || month > 12 || day < 1 || day > 31 { return 0; }
+    if month < 1 || month > 12 || day < 1 || day > 31 {
+        return 0;
+    }
     // Reuse FAT module's helper
     crate::fs::fat::dos_datetime_to_unix(
         ((year - 1980) as u16) << 9 | (month as u16) << 5 | day as u16,
@@ -251,9 +263,17 @@ fn unix_to_exfat_timestamp(unix: u32) -> u32 {
 #[cfg(target_arch = "x86_64")]
 fn current_exfat_timestamp() -> u32 {
     let rtc = crate::drivers::rtc::read_time();
-    let year = if rtc.year >= 1980 { rtc.year as u32 - 1980 } else { 0 };
-    (year << 25) | ((rtc.month as u32) << 21) | ((rtc.day as u32) << 16)
-        | ((rtc.hours as u32) << 11) | ((rtc.minutes as u32) << 5) | ((rtc.seconds as u32 / 2))
+    let year = if rtc.year >= 1980 {
+        rtc.year as u32 - 1980
+    } else {
+        0
+    };
+    (year << 25)
+        | ((rtc.month as u32) << 21)
+        | ((rtc.day as u32) << 16)
+        | ((rtc.hours as u32) << 11)
+        | ((rtc.minutes as u32) << 5)
+        | (rtc.seconds as u32 / 2)
 }
 
 /// ARM64 stub: returns a fixed timestamp (2024-01-01 00:00:00) until an RTC driver is available.
@@ -270,7 +290,11 @@ pub const CONTIGUOUS_BIT: u32 = 0x8000_0000;
 
 /// Encode (cluster, contiguous) into a u32 inode for VFS storage.
 pub fn encode_inode(cluster: u32, contiguous: bool) -> u32 {
-    if contiguous { cluster | CONTIGUOUS_BIT } else { cluster }
+    if contiguous {
+        cluster | CONTIGUOUS_BIT
+    } else {
+        cluster
+    }
 }
 
 /// Decode a u32 inode back to (cluster, contiguous).
@@ -350,15 +374,17 @@ impl ExFatReadPlan {
         if self.file_size == 0 {
             return Ok(Vec::new());
         }
-        let total_sector_bytes: usize =
-            self.runs.iter().map(|(_, sc)| *sc as usize * 512).sum();
+        let total_sector_bytes: usize = self.runs.iter().map(|(_, sc)| *sc as usize * 512).sum();
         let mut buf = vec![0u8; total_sector_bytes];
         let mut offset = 0usize;
 
         for &(abs_lba, sector_count) in &self.runs {
             let bytes = sector_count as usize * 512;
             if !disk_read_sectors(
-                self.disk_id, abs_lba, sector_count, &mut buf[offset..offset + bytes],
+                self.disk_id,
+                abs_lba,
+                sector_count,
+                &mut buf[offset..offset + bytes],
             ) {
                 return Err(FsError::IoError);
             }
@@ -394,7 +420,11 @@ impl ExFatFs {
     pub fn new(device_id: u32, partition_start_lba: u32) -> Result<Self, FsError> {
         let mut buf = [0u8; 512];
         if !disk_read_sectors(device_id, partition_start_lba, 1, &mut buf) {
-            crate::serial_verbose_println!("  exFAT: Failed to read VBR at LBA {} (disk {})", partition_start_lba, device_id);
+            crate::serial_verbose_println!(
+                "  exFAT: Failed to read VBR at LBA {} (disk {})",
+                partition_start_lba,
+                device_id
+            );
             return Err(FsError::IoError);
         }
 
@@ -410,12 +440,16 @@ impl ExFatFs {
         }
 
         // Parse VBR fields
-        let _volume_length = u64::from_le_bytes(buf[72..80].try_into().map_err(|_| FsError::IoError)?);
+        let _volume_length =
+            u64::from_le_bytes(buf[72..80].try_into().map_err(|_| FsError::IoError)?);
         let fat_offset = u32::from_le_bytes(buf[80..84].try_into().map_err(|_| FsError::IoError)?);
         let fat_length = u32::from_le_bytes(buf[84..88].try_into().map_err(|_| FsError::IoError)?);
-        let cluster_heap_offset = u32::from_le_bytes(buf[88..92].try_into().map_err(|_| FsError::IoError)?);
-        let cluster_count = u32::from_le_bytes(buf[92..96].try_into().map_err(|_| FsError::IoError)?);
-        let root_cluster = u32::from_le_bytes(buf[96..100].try_into().map_err(|_| FsError::IoError)?);
+        let cluster_heap_offset =
+            u32::from_le_bytes(buf[88..92].try_into().map_err(|_| FsError::IoError)?);
+        let cluster_count =
+            u32::from_le_bytes(buf[92..96].try_into().map_err(|_| FsError::IoError)?);
+        let root_cluster =
+            u32::from_le_bytes(buf[96..100].try_into().map_err(|_| FsError::IoError)?);
         let bytes_per_sector_shift = buf[108];
         let sectors_per_cluster_shift = buf[109];
         let _number_of_fats = buf[110];
@@ -431,19 +465,27 @@ impl ExFatFs {
         let cluster_size = 512u32 << sectors_per_cluster_shift;
         crate::serial_verbose_println!(
             "[OK] exFAT filesystem: {} clusters, {} bytes/cluster, root=cluster {}",
-            cluster_count, cluster_size, root_cluster
+            cluster_count,
+            cluster_size,
+            root_cluster
         );
         crate::serial_verbose_println!(
             "  exFAT: FAT at sector +{}, data at sector +{}, {} FATs",
-            fat_offset, cluster_heap_offset, _number_of_fats
+            fat_offset,
+            cluster_heap_offset,
+            _number_of_fats
         );
 
         // Cache the entire FAT table in memory
         let fat_cache_bytes = (fat_length as usize) * 512;
         let mut fat_cache = vec![0u8; fat_cache_bytes];
         let abs_fat_lba = partition_start_lba + fat_offset;
-        crate::debug_println!("  [exFAT] new: caching FAT table abs_lba={} sectors={} ({} KB)",
-            abs_fat_lba, fat_length, fat_cache_bytes / 1024);
+        crate::debug_println!(
+            "  [exFAT] new: caching FAT table abs_lba={} sectors={} ({} KB)",
+            abs_fat_lba,
+            fat_length,
+            fat_cache_bytes / 1024
+        );
         if !disk_read_sectors(device_id, abs_fat_lba, fat_length, &mut fat_cache) {
             crate::serial_verbose_println!("  exFAT: Failed to cache FAT table");
             return Err(FsError::IoError);
@@ -545,7 +587,9 @@ impl ExFatFs {
             }
         }
         // Clear FAT dirty bits
-        for b in &mut self.fat_dirty { *b = 0; }
+        for b in &mut self.fat_dirty {
+            *b = 0;
+        }
 
         // Flush dirty bitmap sectors
         let bm_sectors = (self.bitmap.len() + 511) / 512;
@@ -587,7 +631,9 @@ impl ExFatFs {
             }
         }
         // Clear bitmap dirty bits
-        for b in &mut self.bitmap_dirty { *b = 0; }
+        for b in &mut self.bitmap_dirty {
+            *b = 0;
+        }
 
         // Note: we do NOT call storage::flush() here (AHCI FLUSH CACHE EXT is
         // extremely expensive — 10-100ms). The drive's own write cache handles
@@ -734,33 +780,60 @@ impl ExFatFs {
     fn load_bitmap(&mut self) -> Result<(), FsError> {
         let cs = self.cluster_size() as usize;
         let mut cluster = self.root_cluster;
-        crate::debug_println!("  [exFAT] load_bitmap: start root_cluster={} cluster_size={}", cluster, cs);
+        crate::debug_println!(
+            "  [exFAT] load_bitmap: start root_cluster={} cluster_size={}",
+            cluster,
+            cs
+        );
 
         let mut _iter = 0u32;
         loop {
-            crate::debug_println!("  [exFAT] load_bitmap: reading cluster={} (iteration={})", cluster, _iter);
+            crate::debug_println!(
+                "  [exFAT] load_bitmap: reading cluster={} (iteration={})",
+                cluster,
+                _iter
+            );
             _iter += 1;
             let mut cbuf = vec![0u8; cs];
             self.read_cluster(cluster, &mut cbuf)?;
-            crate::debug_println!("  [exFAT] load_bitmap: cluster={} read OK, scanning {} entries", cluster, cs / 32);
+            crate::debug_println!(
+                "  [exFAT] load_bitmap: cluster={} read OK, scanning {} entries",
+                cluster,
+                cs / 32
+            );
 
             let mut i = 0;
             while i + 32 <= cs {
                 let etype = cbuf[i];
                 if etype == 0x00 {
-                    crate::debug_println!("  [exFAT] load_bitmap: end-of-directory at offset={}", i);
+                    crate::debug_println!(
+                        "  [exFAT] load_bitmap: end-of-directory at offset={}",
+                        i
+                    );
                     break;
                 }
-                crate::debug_println!("  [exFAT] load_bitmap: entry type={:#04x} at offset={}", etype, i);
+                crate::debug_println!(
+                    "  [exFAT] load_bitmap: entry type={:#04x} at offset={}",
+                    etype,
+                    i
+                );
                 // Allocation Bitmap (in-use = 0x81)
                 if etype == 0x81 {
                     let bm_cluster = u32::from_le_bytes(
-                        cbuf[i + 20..i + 24].try_into().map_err(|_| FsError::IoError)?,
+                        cbuf[i + 20..i + 24]
+                            .try_into()
+                            .map_err(|_| FsError::IoError)?,
                     );
                     let bm_size = u64::from_le_bytes(
-                        cbuf[i + 24..i + 32].try_into().map_err(|_| FsError::IoError)?,
+                        cbuf[i + 24..i + 32]
+                            .try_into()
+                            .map_err(|_| FsError::IoError)?,
                     );
-                    crate::debug_println!("  [exFAT] load_bitmap: FOUND bitmap cluster={} size={}", bm_cluster, bm_size);
+                    crate::debug_println!(
+                        "  [exFAT] load_bitmap: FOUND bitmap cluster={} size={}",
+                        bm_cluster,
+                        bm_size
+                    );
                     self.bitmap_cluster = bm_cluster;
                     self.bitmap_contiguous = true;
 
@@ -769,8 +842,12 @@ impl ExFatFs {
                         ((bm_size as u32 + self.cluster_size() - 1) / self.cluster_size()).max(1);
                     let total_sectors = num_clusters * self.sectors_per_cluster();
                     let total_bytes = total_sectors as usize * 512;
-                    crate::debug_println!("  [exFAT] load_bitmap: reading bitmap: {} clusters, {} sectors, {} bytes",
-                        num_clusters, total_sectors, total_bytes);
+                    crate::debug_println!(
+                        "  [exFAT] load_bitmap: reading bitmap: {} clusters, {} sectors, {} bytes",
+                        num_clusters,
+                        total_sectors,
+                        total_bytes
+                    );
                     let mut raw = vec![0u8; total_bytes];
                     let lba = self.cluster_to_lba(bm_cluster);
                     crate::debug_println!("  [exFAT] load_bitmap: bitmap lba={}", lba);
@@ -780,7 +857,8 @@ impl ExFatFs {
 
                     crate::serial_verbose_println!(
                         "  exFAT: allocation bitmap at cluster {}, {} bytes",
-                        bm_cluster, bm_size
+                        bm_cluster,
+                        bm_size
                     );
                     crate::debug_println!("  [exFAT] load_bitmap: done OK");
                     return Ok(());
@@ -790,11 +868,18 @@ impl ExFatFs {
 
             match self.next_cluster(cluster) {
                 Some(next) => {
-                    crate::debug_println!("  [exFAT] load_bitmap: following FAT chain cluster={} -> {}", cluster, next);
+                    crate::debug_println!(
+                        "  [exFAT] load_bitmap: following FAT chain cluster={} -> {}",
+                        cluster,
+                        next
+                    );
                     cluster = next;
                 }
                 None => {
-                    crate::debug_println!("  [exFAT] load_bitmap: end of cluster chain at cluster={}", cluster);
+                    crate::debug_println!(
+                        "  [exFAT] load_bitmap: end of cluster chain at cluster={}",
+                        cluster
+                    );
                     break;
                 }
             }
@@ -838,15 +923,21 @@ impl ExFatFs {
     /// Allocate `n` contiguous clusters if possible, otherwise allocate `n` clusters
     /// linked via FAT chain. Returns the first cluster.
     fn alloc_clusters(&mut self, n: u32) -> Result<u32, FsError> {
-        if n == 0 { return Err(FsError::IoError); }
-        if n == 1 { return self.alloc_cluster(); }
+        if n == 0 {
+            return Err(FsError::IoError);
+        }
+        if n == 1 {
+            return self.alloc_cluster();
+        }
 
         // Try contiguous allocation first
         let count = self.cluster_count;
         let hint = self.alloc_hint;
         'outer: for start in 0..count {
             let base = (hint + start) % count;
-            if base + n > count { continue; }
+            if base + n > count {
+                continue;
+            }
             for k in 0..n {
                 let i = base + k;
                 let byte_idx = i as usize / 8;
@@ -955,7 +1046,11 @@ impl ExFatFs {
     /// Simple ASCII upper-case (sufficient for our OS — no full Unicode upcase table).
     #[inline]
     fn upcase(ch: u16) -> u16 {
-        if ch >= 0x61 && ch <= 0x7A { ch - 0x20 } else { ch }
+        if ch >= 0x61 && ch <= 0x7A {
+            ch - 0x20
+        } else {
+            ch
+        }
     }
 
     /// Read all raw directory data from a cluster chain.
@@ -995,7 +1090,12 @@ impl ExFatFs {
     }
 
     /// Collect the UTF-16 name from an entry set starting at `base_offset` in `buf`.
-    fn collect_name(buf: &[u8], base_offset: usize, secondary_count: u8, name_length: usize) -> Vec<u16> {
+    fn collect_name(
+        buf: &[u8],
+        base_offset: usize,
+        secondary_count: u8,
+        name_length: usize,
+    ) -> Vec<u16> {
         let total = 1 + secondary_count as usize;
         let mut name = Vec::with_capacity(name_length);
         // FileName entries start at index 2 (after File + Stream)
@@ -1128,7 +1228,10 @@ impl ExFatFs {
             let name_length = buf[s + 3] as usize;
             let data_length = match buf[s + 24..s + 32].try_into() {
                 Ok(arr) => u64::from_le_bytes(arr),
-                Err(_) => { i += 32; continue; }
+                Err(_) => {
+                    i += 32;
+                    continue;
+                }
             };
 
             let collected = Self::collect_name(buf, i, secondary_count, name_length);
@@ -1233,9 +1336,22 @@ impl ExFatFs {
             Some(found) => {
                 let is_symlink = found.attributes & ATTR_SYMLINK != 0;
                 let is_dir = found.attributes & ATTR_DIRECTORY != 0;
-                let ft = if is_dir { FileType::Directory } else { FileType::Regular };
+                let ft = if is_dir {
+                    FileType::Directory
+                } else {
+                    FileType::Regular
+                };
                 let inode = encode_inode(found.first_cluster, found.contiguous);
-                Ok((inode, ft, found.data_length as u32, is_symlink, found.uid, found.gid, found.mode, found.mtime))
+                Ok((
+                    inode,
+                    ft,
+                    found.data_length as u32,
+                    is_symlink,
+                    found.uid,
+                    found.gid,
+                    found.mode,
+                    found.mtime,
+                ))
             }
             None => Err(FsError::NotFound),
         }
@@ -1464,8 +1580,7 @@ impl ExFatFs {
 
         if byte_in_first == 0 {
             // Aligned — single batch read
-            let needed_clusters =
-                ((buf.len() as u32 + cs - 1) / cs).max(1);
+            let needed_clusters = ((buf.len() as u32 + cs - 1) / cs).max(1);
             let total_sectors = needed_clusters * spc;
             let total_bytes = total_sectors as usize * 512;
 
@@ -1501,7 +1616,11 @@ impl ExFatFs {
             let lba = self.cluster_to_lba(next_cluster);
 
             if total_bytes <= remaining {
-                self.read_sectors(lba, total_sectors, &mut buf[bytes_read..bytes_read + total_bytes])?;
+                self.read_sectors(
+                    lba,
+                    total_sectors,
+                    &mut buf[bytes_read..bytes_read + total_bytes],
+                )?;
                 bytes_read += total_bytes;
             } else {
                 let mut tmp = vec![0u8; total_bytes];
@@ -1523,7 +1642,11 @@ impl ExFatFs {
         let file_size_u64 = file_size as u64;
 
         if file_size == 0 || start_cluster < 2 {
-            return ExFatReadPlan { runs, file_size: file_size_u64, disk_id: self.device_id };
+            return ExFatReadPlan {
+                runs,
+                file_size: file_size_u64,
+                disk_id: self.device_id,
+            };
         }
 
         if contiguous {
@@ -1531,7 +1654,11 @@ impl ExFatFs {
             let n = ((file_size_u64 + cs - 1) / cs) as u32;
             let lba = self.cluster_to_lba(start_cluster);
             runs.push((lba, n * spc));
-            return ExFatReadPlan { runs, file_size: file_size_u64, disk_id: self.device_id };
+            return ExFatReadPlan {
+                runs,
+                file_size: file_size_u64,
+                disk_id: self.device_id,
+            };
         }
 
         // Follow FAT chain, coalesce contiguous runs
@@ -1555,7 +1682,11 @@ impl ExFatFs {
             }
         }
 
-        ExFatReadPlan { runs, file_size: file_size_u64, disk_id: self.device_id }
+        ExFatReadPlan {
+            runs,
+            file_size: file_size_u64,
+            disk_id: self.device_id,
+        }
     }
 
     // =================================================================
@@ -1811,7 +1942,11 @@ impl ExFatFs {
                     run_start = idx;
                 }
                 let available = max - run_start;
-                return if available >= count { Some(run_start * 32) } else { None };
+                return if available >= count {
+                    Some(run_start * 32)
+                } else {
+                    None
+                };
             }
 
             if etype & 0x80 == 0 {
@@ -1843,7 +1978,16 @@ impl ExFatFs {
         // New entries inherit current thread's uid/gid with full-access mode
         let uid = crate::task::scheduler::current_thread_uid();
         let gid = crate::task::scheduler::current_thread_gid();
-        let entry_set = Self::build_entry_set(name, attr, first_cluster, data_length, false, uid, gid, 0xFFF);
+        let entry_set = Self::build_entry_set(
+            name,
+            attr,
+            first_cluster,
+            data_length,
+            false,
+            uid,
+            gid,
+            0xFFF,
+        );
         let num = entry_set.len() / 32;
         let cs = self.cluster_size() as usize;
         let mut cur = parent_cluster;
@@ -1898,10 +2042,17 @@ impl ExFatFs {
     }
 
     /// Rename (move) a file: remove old entry (keeping clusters), create new entry.
-    pub fn rename_entry(&mut self, old_parent: u32, old_name: &str, new_parent: u32, new_name: &str) -> Result<(), FsError> {
+    pub fn rename_entry(
+        &mut self,
+        old_parent: u32,
+        old_name: &str,
+        new_parent: u32,
+        new_name: &str,
+    ) -> Result<(), FsError> {
         // Find old entry to get metadata
         let raw = self.read_dir_raw(old_parent)?;
-        let found = self.find_entry_in_buf(&raw, old_name)
+        let found = self
+            .find_entry_in_buf(&raw, old_name)
             .ok_or(FsError::NotFound)?;
         let cluster = found.first_cluster;
         let size = found.data_length;
@@ -2018,7 +2169,9 @@ impl ExFatFs {
     /// Truncate a file to zero length.
     pub fn truncate_file(&mut self, parent_cluster: u32, name: &str) -> Result<(), FsError> {
         let raw = self.read_dir_raw(parent_cluster)?;
-        let found = self.find_entry_in_buf(&raw, name).ok_or(FsError::NotFound)?;
+        let found = self
+            .find_entry_in_buf(&raw, name)
+            .ok_or(FsError::NotFound)?;
         if found.first_cluster >= 2 {
             self.free_chain(found.first_cluster, found.contiguous, found.data_length)?;
             self.flush_metadata()?;
@@ -2093,7 +2246,16 @@ impl ExFatFs {
     ) -> Result<(), FsError> {
         let uid = crate::task::scheduler::current_thread_uid();
         let gid = crate::task::scheduler::current_thread_gid();
-        let entry_set = Self::build_entry_set(name, attr, first_cluster, data_length, false, uid, gid, 0xFFF);
+        let entry_set = Self::build_entry_set(
+            name,
+            attr,
+            first_cluster,
+            data_length,
+            false,
+            uid,
+            gid,
+            0xFFF,
+        );
         let num = entry_set.len() / 32;
         let cs = self.cluster_size() as usize;
         let mut cur = parent_cluster;
@@ -2225,8 +2387,7 @@ impl Filesystem for ExFatFsDriver {
             _ => {
                 fs.create_file(parent_cluster, name)?;
                 // create_file returns (), re-lookup the new child's inode.
-                let (child_inode, _, _, _, _, _, _, _) =
-                    fs.lookup_in_dir(parent_cluster, name)?;
+                let (child_inode, _, _, _, _, _, _, _) = fs.lookup_in_dir(parent_cluster, name)?;
                 Ok(child_inode)
             }
         }
@@ -2441,5 +2602,7 @@ pub fn try_mount_root_typed(
     if &buf[3..11] != b"EXFAT   " {
         return None;
     }
-    ExFatFs::new(device_id, partition_lba).ok().map(ExFatFsDriver::new)
+    ExFatFs::new(device_id, partition_lba)
+        .ok()
+        .map(ExFatFsDriver::new)
 }

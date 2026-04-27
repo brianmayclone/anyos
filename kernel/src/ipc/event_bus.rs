@@ -169,9 +169,7 @@ fn djb2_hash(bytes: &[u8]) -> u32 {
 pub fn channel_create(name_bytes: &[u8]) -> u32 {
     let id = djb2_hash(name_bytes);
     let mut bus = MODULE_BUS.lock();
-    bus.entry(id).or_insert(Channel {
-        subs: Vec::new(),
-    });
+    bus.entry(id).or_insert(Channel { subs: Vec::new() });
     id
 }
 

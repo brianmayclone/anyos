@@ -3,15 +3,20 @@
 //! Covers path-based operations: readdir, stat, lstat, symlink, readlink,
 //! getcwd, chdir, mkdir, unlink, truncate, rename, mount, umount.
 
-use alloc::string::String;
 use super::helpers::{fs_err, is_valid_user_ptr, read_user_str, resolve_path};
+use alloc::string::String;
 
 pub fn sys_readdir(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
     // Permission check: need PERM_READ on directory
     if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(&path) {
-        if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_READ) {
+        if !crate::fs::permissions::check_permission(
+            uid,
+            gid,
+            mode,
+            crate::fs::permissions::PERM_READ,
+        ) {
             return 0;
         }
     }
@@ -19,12 +24,15 @@ pub fn sys_readdir(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
     match crate::fs::vfs::read_dir(&path) {
         Ok(entries) => {
             if path.ends_with("/bin") || path.ends_with("/sbin") {
-                crate::serial_println!("[readdir] '{}': {} entries, buf_size={}", path, entries.len(), buf_size);
+                crate::serial_println!(
+                    "[readdir] '{}': {} entries, buf_size={}",
+                    path,
+                    entries.len(),
+                    buf_size
+                );
             }
             let entry_size = 64u32;
-            if buf_ptr != 0 && buf_size > 0
-                && is_valid_user_ptr(buf_ptr as u64, buf_size as u64)
-            {
+            if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
                 let max_entries = (buf_size / entry_size) as usize;
                 let written = entries.len().min(max_entries);
                 let buf = unsafe {
@@ -74,7 +82,11 @@ pub fn sys_stat(path_ptr: u64, buf_ptr: u64) -> u32 {
                 // uid=0.  Substitute the caller's real UID so that ownership
                 // checks (e.g. libgit2) work correctly for non-root users.
                 let caller_uid = crate::task::scheduler::current_thread_uid() as u32;
-                let file_uid = if st.uid == 0 { caller_uid } else { st.uid as u32 };
+                let file_uid = if st.uid == 0 {
+                    caller_uid
+                } else {
+                    st.uid as u32
+                };
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = type_val;
@@ -106,7 +118,11 @@ pub fn sys_lstat(path_ptr: u64, buf_ptr: u64) -> u32 {
                 };
                 let flags: u32 = if st.is_symlink { 1 } else { 0 };
                 let caller_uid = crate::task::scheduler::current_thread_uid() as u32;
-                let file_uid = if st.uid == 0 { caller_uid } else { st.uid as u32 };
+                let file_uid = if st.uid == 0 {
+                    caller_uid
+                } else {
+                    st.uid as u32
+                };
                 unsafe {
                     let buf = buf_ptr as *mut u32;
                     *buf = type_val;
@@ -143,16 +159,14 @@ pub fn sys_readlink(path_ptr: u64, buf_ptr: u64, buf_size: u32) -> u32 {
         Ok(target) => {
             let target_bytes = target.as_bytes();
             let to_copy = target_bytes.len().min(buf_size as usize);
-            if buf_ptr != 0 && to_copy > 0
-                && is_valid_user_ptr(buf_ptr as u64, buf_size as u64)
-            {
-                let buf = unsafe {
-                    core::slice::from_raw_parts_mut(buf_ptr as *mut u8, to_copy)
-                };
+            if buf_ptr != 0 && to_copy > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
+                let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, to_copy) };
                 buf[..to_copy].copy_from_slice(&target_bytes[..to_copy]);
                 // Null-terminate if space
                 if to_copy < buf_size as usize {
-                    unsafe { *((buf_ptr as *mut u8).add(to_copy)) = 0; }
+                    unsafe {
+                        *((buf_ptr as *mut u8).add(to_copy)) = 0;
+                    }
                 }
             }
             to_copy as u32
@@ -179,7 +193,9 @@ pub fn sys_getcwd(buf_ptr: u64, buf_size: u32) -> u32 {
 }
 
 pub fn sys_chdir(path_ptr: u64) -> u32 {
-    if path_ptr == 0 { return u32::MAX; }
+    if path_ptr == 0 {
+        return u32::MAX;
+    }
     let raw_path = unsafe { read_user_str(path_ptr) };
     let path = resolve_path(raw_path);
     // Verify the directory exists
@@ -194,14 +210,25 @@ pub fn sys_chdir(path_ptr: u64) -> u32 {
 }
 
 pub fn sys_mkdir(path_ptr: u64) -> u32 {
-    if path_ptr == 0 { return u32::MAX; }
+    if path_ptr == 0 {
+        return u32::MAX;
+    }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
     // Permission check: need PERM_CREATE on parent directory
     if let Some(parent_end) = path.rfind('/') {
-        let parent = if parent_end == 0 { "/" } else { &path[..parent_end] };
+        let parent = if parent_end == 0 {
+            "/"
+        } else {
+            &path[..parent_end]
+        };
         if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(parent) {
-            if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_CREATE) {
+            if !crate::fs::permissions::check_permission(
+                uid,
+                gid,
+                mode,
+                crate::fs::permissions::PERM_CREATE,
+            ) {
                 return u32::MAX;
             }
         }
@@ -214,14 +241,25 @@ pub fn sys_mkdir(path_ptr: u64) -> u32 {
 }
 
 pub fn sys_unlink(path_ptr: u64) -> u32 {
-    if path_ptr == 0 { return u32::MAX; }
+    if path_ptr == 0 {
+        return u32::MAX;
+    }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
     // Permission check: need PERM_DELETE on parent directory
     if let Some(parent_end) = path.rfind('/') {
-        let parent = if parent_end == 0 { "/" } else { &path[..parent_end] };
+        let parent = if parent_end == 0 {
+            "/"
+        } else {
+            &path[..parent_end]
+        };
         if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(parent) {
-            if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_DELETE) {
+            if !crate::fs::permissions::check_permission(
+                uid,
+                gid,
+                mode,
+                crate::fs::permissions::PERM_DELETE,
+            ) {
                 return u32::MAX;
             }
         }
@@ -234,12 +272,19 @@ pub fn sys_unlink(path_ptr: u64) -> u32 {
 }
 
 pub fn sys_truncate(path_ptr: u64) -> u32 {
-    if path_ptr == 0 { return u32::MAX; }
+    if path_ptr == 0 {
+        return u32::MAX;
+    }
     let path = resolve_path(unsafe { read_user_str(path_ptr) });
 
     // Permission check: need PERM_MODIFY on the file
     if let Ok((uid, gid, mode)) = crate::fs::vfs::get_permissions(&path) {
-        if !crate::fs::permissions::check_permission(uid, gid, mode, crate::fs::permissions::PERM_MODIFY) {
+        if !crate::fs::permissions::check_permission(
+            uid,
+            gid,
+            mode,
+            crate::fs::permissions::PERM_MODIFY,
+        ) {
             return u32::MAX;
         }
     }
@@ -251,7 +296,9 @@ pub fn sys_truncate(path_ptr: u64) -> u32 {
 }
 
 pub fn sys_rename(old_ptr: u64, new_ptr: u64) -> u32 {
-    if old_ptr == 0 || new_ptr == 0 { return u32::MAX; }
+    if old_ptr == 0 || new_ptr == 0 {
+        return u32::MAX;
+    }
     let old_path = resolve_path(unsafe { read_user_str(old_ptr) });
     let new_path = resolve_path(unsafe { read_user_str(new_ptr) });
     match crate::fs::vfs::rename(&old_path, &new_path) {
@@ -261,7 +308,9 @@ pub fn sys_rename(old_ptr: u64, new_ptr: u64) -> u32 {
 }
 
 pub fn sys_mount(mount_path_ptr: u64, device_path_ptr: u64, fs_type: u32) -> u32 {
-    if mount_path_ptr == 0 { return u32::MAX; }
+    if mount_path_ptr == 0 {
+        return u32::MAX;
+    }
     let mount_path = resolve_path(unsafe { read_user_str(mount_path_ptr) });
     let device_path = if device_path_ptr != 0 {
         String::from(unsafe { read_user_str(device_path_ptr) })
@@ -272,7 +321,11 @@ pub fn sys_mount(mount_path_ptr: u64, device_path_ptr: u64, fs_type: u32) -> u32
         Ok(()) => {
             // Emit volume mounted event
             crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-                crate::ipc::event_bus::EVT_VOLUME_MOUNTED, fs_type, 0, 0, 0,
+                crate::ipc::event_bus::EVT_VOLUME_MOUNTED,
+                fs_type,
+                0,
+                0,
+                0,
             ));
             0
         }
@@ -284,13 +337,19 @@ pub fn sys_mount(mount_path_ptr: u64, device_path_ptr: u64, fs_type: u32) -> u32
 /// arg1=mount_path_ptr
 /// Returns 0 on success, u32::MAX on failure.
 pub fn sys_umount(mount_path_ptr: u64) -> u32 {
-    if mount_path_ptr == 0 { return u32::MAX; }
+    if mount_path_ptr == 0 {
+        return u32::MAX;
+    }
     let mount_path = resolve_path(unsafe { read_user_str(mount_path_ptr) });
     match crate::fs::vfs::umount_fs(&mount_path) {
         Ok(()) => {
             // Emit volume unmounted event
             crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-                crate::ipc::event_bus::EVT_VOLUME_UNMOUNTED, 0, 0, 0, 0,
+                crate::ipc::event_bus::EVT_VOLUME_UNMOUNTED,
+                0,
+                0,
+                0,
+                0,
             ));
             0
         }
@@ -326,8 +385,12 @@ fn push_u32(out: &mut String, mut n: u32) {
 /// `dev_id` is the decimal block-device ID (same ID space as SYS_DISK_LIST). For
 /// pseudo-mounts without a backing block device (smb, fuse, devfs), it is 0.
 pub fn sys_list_mounts(buf_ptr: u64, buf_len: u32) -> u32 {
-    if buf_ptr == 0 || buf_len == 0 { return u32::MAX; }
-    if !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) { return u32::MAX; }
+    if buf_ptr == 0 || buf_len == 0 {
+        return u32::MAX;
+    }
+    if !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) {
+        return u32::MAX;
+    }
 
     let mounts = crate::fs::vfs::list_mounts();
     let mut output = String::new();
@@ -356,11 +419,17 @@ pub fn sys_list_mounts(buf_ptr: u64, buf_len: u32) -> u32 {
 /// arg3=buf_ptr (output: 3 x u64 LE: total_bytes, used_bytes, free_bytes = 24 bytes)
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_statfs(path_ptr: u64, _path_len: u32, buf_ptr: u64) -> u32 {
-    if path_ptr == 0 || buf_ptr == 0 { return u32::MAX; }
-    if !is_valid_user_ptr(buf_ptr as u64, 24) { return u32::MAX; }
+    if path_ptr == 0 || buf_ptr == 0 {
+        return u32::MAX;
+    }
+    if !is_valid_user_ptr(buf_ptr as u64, 24) {
+        return u32::MAX;
+    }
 
     let path = unsafe { read_user_str(path_ptr) };
-    if path.is_empty() { return u32::MAX; }
+    if path.is_empty() {
+        return u32::MAX;
+    }
     let path = resolve_path(path);
 
     match crate::fs::vfs::statfs(&path) {

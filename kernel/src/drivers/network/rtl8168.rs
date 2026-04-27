@@ -7,60 +7,60 @@
 //! Uses MMIO registers (BAR2) for control, and descriptor rings for DMA.
 //! Supports basic TX/RX with interrupt-driven receive.
 
-use alloc::boxed::Box;
-use alloc::vec;
-use alloc::vec::Vec;
-use alloc::collections::VecDeque;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::{PhysAddr, VirtAddr};
 use crate::memory::{physical, virtual_mem};
 use crate::sync::spinlock::Spinlock;
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::vec;
+use alloc::vec::Vec;
 
 // ── MMIO Register Offsets ───────────────────────────────────────────────────
 
-const REG_MAC0: u32         = 0x00;   // MAC address bytes 0-3
-const REG_MAC4: u32         = 0x04;   // MAC address bytes 4-5
-const REG_TNPDS_LO: u32    = 0x20;   // TX Normal Priority Desc Start Addr (low)
-const REG_TNPDS_HI: u32    = 0x24;   // TX Normal Priority Desc Start Addr (high)
-const REG_CMD: u32          = 0x37;   // Command register (8-bit)
-const REG_TPPOLL: u32       = 0x38;   // TX Priority Poll (8-bit)
-const REG_IMR: u32          = 0x3C;   // Interrupt Mask Register (16-bit)
-const REG_ISR: u32          = 0x3E;   // Interrupt Status Register (16-bit)
-const REG_TX_CONFIG: u32    = 0x40;   // TX Configuration
-const REG_RX_CONFIG: u32    = 0x44;   // RX Configuration
-const REG_9346CR: u32       = 0x50;   // 93C46 Command Register
-const REG_CONFIG1: u32      = 0x52;   // Configuration Register 1
-const REG_PHYAR: u32        = 0x60;   // PHY Access Register
-const REG_PHY_STATUS: u32   = 0x6C;   // PHY Status
-const REG_RMS: u32          = 0xDA;   // RX Max Size (16-bit)
-const REG_CPCR: u32         = 0xE0;   // C+ Command Register (16-bit)
-const REG_RDSAR_LO: u32     = 0xE4;   // RX Desc Start Addr (low)
-const REG_RDSAR_HI: u32     = 0xE8;   // RX Desc Start Addr (high)
-const REG_MTPS: u32         = 0xEC;   // Max TX Packet Size (8-bit)
+const REG_MAC0: u32 = 0x00; // MAC address bytes 0-3
+const REG_MAC4: u32 = 0x04; // MAC address bytes 4-5
+const REG_TNPDS_LO: u32 = 0x20; // TX Normal Priority Desc Start Addr (low)
+const REG_TNPDS_HI: u32 = 0x24; // TX Normal Priority Desc Start Addr (high)
+const REG_CMD: u32 = 0x37; // Command register (8-bit)
+const REG_TPPOLL: u32 = 0x38; // TX Priority Poll (8-bit)
+const REG_IMR: u32 = 0x3C; // Interrupt Mask Register (16-bit)
+const REG_ISR: u32 = 0x3E; // Interrupt Status Register (16-bit)
+const REG_TX_CONFIG: u32 = 0x40; // TX Configuration
+const REG_RX_CONFIG: u32 = 0x44; // RX Configuration
+const REG_9346CR: u32 = 0x50; // 93C46 Command Register
+const REG_CONFIG1: u32 = 0x52; // Configuration Register 1
+const REG_PHYAR: u32 = 0x60; // PHY Access Register
+const REG_PHY_STATUS: u32 = 0x6C; // PHY Status
+const REG_RMS: u32 = 0xDA; // RX Max Size (16-bit)
+const REG_CPCR: u32 = 0xE0; // C+ Command Register (16-bit)
+const REG_RDSAR_LO: u32 = 0xE4; // RX Desc Start Addr (low)
+const REG_RDSAR_HI: u32 = 0xE8; // RX Desc Start Addr (high)
+const REG_MTPS: u32 = 0xEC; // Max TX Packet Size (8-bit)
 
 // Command register bits
-const CMD_TX_ENABLE: u8     = 1 << 2;
-const CMD_RX_ENABLE: u8     = 1 << 3;
-const CMD_RESET: u8         = 1 << 4;
+const CMD_TX_ENABLE: u8 = 1 << 2;
+const CMD_RX_ENABLE: u8 = 1 << 3;
+const CMD_RESET: u8 = 1 << 4;
 
 // Interrupt bits
-const INT_ROK: u16          = 1 << 0;  // RX OK
-const INT_TOK: u16          = 1 << 2;  // TX OK
-const INT_LINK_CHG: u16     = 1 << 5;  // Link Change
-const INT_RDU: u16          = 1 << 4;  // RX Descriptor Unavailable
+const INT_ROK: u16 = 1 << 0; // RX OK
+const INT_TOK: u16 = 1 << 2; // TX OK
+const INT_LINK_CHG: u16 = 1 << 5; // Link Change
+const INT_RDU: u16 = 1 << 4; // RX Descriptor Unavailable
 
 // TX descriptor command bits
-const TX_OWN: u32           = 1 << 31; // Owned by hardware
-const TX_EOR: u32           = 1 << 30; // End Of Ring
-const TX_FS: u32            = 1 << 29; // First Segment
-const TX_LS: u32            = 1 << 28; // Last Segment
+const TX_OWN: u32 = 1 << 31; // Owned by hardware
+const TX_EOR: u32 = 1 << 30; // End Of Ring
+const TX_FS: u32 = 1 << 29; // First Segment
+const TX_LS: u32 = 1 << 28; // Last Segment
 
 // RX descriptor status bits
-const RX_OWN: u32           = 1 << 31; // Owned by hardware
-const RX_EOR: u32           = 1 << 30; // End Of Ring
+const RX_OWN: u32 = 1 << 31; // Owned by hardware
+const RX_EOR: u32 = 1 << 30; // End Of Ring
 
 // PHY status bits
-const PHY_LINK_STATUS: u32  = 1 << 1;
+const PHY_LINK_STATUS: u32 = 1 << 1;
 
 // ── Descriptor Rings ────────────────────────────────────────────────────────
 
@@ -72,10 +72,10 @@ const RX_BUF_SIZE: usize = 2048;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RtlDescriptor {
-    opts1: u32,       // OWN, EOR, FS, LS, length
-    opts2: u32,       // VLAN, checksum offload
-    addr_lo: u32,     // Buffer physical address (low)
-    addr_hi: u32,     // Buffer physical address (high)
+    opts1: u32,   // OWN, EOR, FS, LS, length
+    opts2: u32,   // VLAN, checksum offload
+    addr_lo: u32, // Buffer physical address (low)
+    addr_hi: u32, // Buffer physical address (high)
 }
 
 // ── Driver State ────────────────────────────────────────────────────────────
@@ -163,7 +163,9 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
         // Software reset
         mmio_write8(mmio_virt, REG_CMD, CMD_RESET);
         for _ in 0..10_000 {
-            if mmio_read8(mmio_virt, REG_CMD) & CMD_RESET == 0 { break; }
+            if mmio_read8(mmio_virt, REG_CMD) & CMD_RESET == 0 {
+                break;
+            }
             core::hint::spin_loop();
         }
 
@@ -182,8 +184,15 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
             ((mac_hi >> 8) & 0xFF) as u8,
         ];
 
-        crate::serial_println!("  RTL8168: MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        crate::serial_println!(
+            "  RTL8168: MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
+        );
 
         // Set RX max packet size
         mmio_write16(mmio_virt, REG_RMS, RX_BUF_SIZE as u16);
@@ -251,7 +260,11 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
         mmio_write8(mmio_virt, REG_CMD, CMD_TX_ENABLE | CMD_RX_ENABLE);
 
         // Enable interrupts: ROK, TOK, Link Change, RDU
-        mmio_write16(mmio_virt, REG_IMR, INT_ROK | INT_TOK | INT_LINK_CHG | INT_RDU);
+        mmio_write16(
+            mmio_virt,
+            REG_IMR,
+            INT_ROK | INT_TOK | INT_LINK_CHG | INT_RDU,
+        );
 
         // Lock config registers
         mmio_write8(mmio_virt, REG_9346CR, 0x00);
@@ -260,15 +273,19 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
         *RTL_STATE.lock() = Some(Rtl8168 {
             mmio_base: mmio_virt,
             mac,
-            rx_descs_phys, rx_descs_virt,
+            rx_descs_phys,
+            rx_descs_virt,
             rx_bufs_phys,
             rx_tail: 0,
-            tx_descs_phys, tx_descs_virt,
-            tx_bufs_phys, tx_bufs_virt,
+            tx_descs_phys,
+            tx_descs_virt,
+            tx_bufs_phys,
+            tx_bufs_virt,
             tx_tail: 0,
             rx_queue: VecDeque::new(),
             irq,
-            rx_packets: 0, tx_packets: 0,
+            rx_packets: 0,
+            tx_packets: 0,
         });
 
         // Register IRQ handler
@@ -295,32 +312,41 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
 // ── TX ──────────────────────────────────────────────────────────────────────
 
 fn transmit(data: &[u8]) -> bool {
-    if data.len() > 1536 || data.is_empty() { return false; }
+    if data.len() > 1536 || data.is_empty() {
+        return false;
+    }
     let mut state = RTL_STATE.lock();
-    let rtl = match state.as_mut() { Some(r) => r, None => return false };
+    let rtl = match state.as_mut() {
+        Some(r) => r,
+        None => return false,
+    };
 
     let idx = rtl.tx_tail as usize;
     let desc = unsafe { &mut *((rtl.tx_descs_virt + (idx * 16) as u64) as *mut RtlDescriptor) };
 
     // Check OWN bit — if set, hardware still owns this descriptor
-    if desc.opts1 & TX_OWN != 0 { return false; }
+    if desc.opts1 & TX_OWN != 0 {
+        return false;
+    }
 
     // Copy data to TX buffer
     let dst = rtl.tx_bufs_virt[idx] as *mut u8;
-    unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len()); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
+    }
 
     // Set descriptor
     let is_last = idx == NUM_TX_DESC - 1;
-    desc.opts1 = TX_OWN | TX_FS | TX_LS
-        | if is_last { TX_EOR } else { 0 }
-        | (data.len() as u32);
+    desc.opts1 = TX_OWN | TX_FS | TX_LS | if is_last { TX_EOR } else { 0 } | (data.len() as u32);
     desc.opts2 = 0;
 
     rtl.tx_tail = ((idx + 1) % NUM_TX_DESC) as u16;
     rtl.tx_packets += 1;
 
     // Notify hardware
-    unsafe { mmio_write8(rtl.mmio_base, REG_TPPOLL, 0x40); } // NPQ poll
+    unsafe {
+        mmio_write8(rtl.mmio_base, REG_TPPOLL, 0x40);
+    } // NPQ poll
 
     true
 }
@@ -332,13 +358,17 @@ fn process_rx(rtl: &mut Rtl8168) {
         let idx = rtl.rx_tail as usize;
         let desc = unsafe { &mut *((rtl.rx_descs_virt + (idx * 16) as u64) as *mut RtlDescriptor) };
 
-        if desc.opts1 & RX_OWN != 0 { break; } // Hardware still owns it
+        if desc.opts1 & RX_OWN != 0 {
+            break;
+        } // Hardware still owns it
 
         let len = (desc.opts1 & 0x3FFF) as usize;
         if len > 0 && len <= RX_BUF_SIZE {
             let src = rtl.rx_bufs_phys[idx] as *const u8;
             let mut pkt = vec![0u8; len];
-            unsafe { core::ptr::copy_nonoverlapping(src, pkt.as_mut_ptr(), len); }
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, pkt.as_mut_ptr(), len);
+            }
             if rtl.rx_queue.len() < 1024 {
                 rtl.rx_queue.push_back(pkt);
             }
@@ -366,9 +396,11 @@ pub fn poll_rx() {
 // ── IRQ Handler ─────────────────────────────────────────────────────────────
 
 fn rtl_irq_handler(_irq: u8) {
-    if let Some(rtl) = RTL_STATE.try_lock().and_then(|mut g| {
-        if g.is_some() { Some(g) } else { None }
-    }) {
+    if let Some(rtl) =
+        RTL_STATE
+            .try_lock()
+            .and_then(|mut g| if g.is_some() { Some(g) } else { None })
+    {
         // We need to use try_lock properly
         drop(rtl);
     }
@@ -376,9 +408,13 @@ fn rtl_irq_handler(_irq: u8) {
     if let Some(mut guard) = RTL_STATE.try_lock() {
         if let Some(rtl) = guard.as_mut() {
             let isr = unsafe { mmio_read16(rtl.mmio_base, REG_ISR) };
-            if isr == 0 { return; }
+            if isr == 0 {
+                return;
+            }
             // Acknowledge all interrupts
-            unsafe { mmio_write16(rtl.mmio_base, REG_ISR, isr); }
+            unsafe {
+                mmio_write16(rtl.mmio_base, REG_ISR, isr);
+            }
 
             if isr & (INT_ROK | INT_RDU) != 0 {
                 process_rx(rtl);
@@ -397,19 +433,27 @@ fn rtl_irq_handler(_irq: u8) {
 pub struct Rtl8168Driver;
 
 impl super::NetworkDriver for Rtl8168Driver {
-    fn name(&self) -> &str { "Realtek RTL8168" }
-    fn transmit(&mut self, data: &[u8]) -> bool { transmit(data) }
+    fn name(&self) -> &str {
+        "Realtek RTL8168"
+    }
+    fn transmit(&mut self, data: &[u8]) -> bool {
+        transmit(data)
+    }
     fn get_mac(&self) -> [u8; 6] {
         RTL_STATE.lock().as_ref().map(|r| r.mac).unwrap_or([0; 6])
     }
     fn link_up(&self) -> bool {
-        RTL_STATE.lock().as_ref().map(|r| {
-            unsafe { mmio_read32(r.mmio_base, REG_PHY_STATUS) & PHY_LINK_STATUS != 0 }
-        }).unwrap_or(false)
+        RTL_STATE
+            .lock()
+            .as_ref()
+            .map(|r| unsafe { mmio_read32(r.mmio_base, REG_PHY_STATUS) & PHY_LINK_STATUS != 0 })
+            .unwrap_or(false)
     }
 }
 
-pub fn is_available() -> bool { RTL_STATE.lock().is_some() }
+pub fn is_available() -> bool {
+    RTL_STATE.lock().is_some()
+}
 
 pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
     if init_and_register(pci) {

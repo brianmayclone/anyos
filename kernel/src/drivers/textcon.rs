@@ -7,13 +7,13 @@
 //!
 //! Used exclusively by `SYS_CON_WRITE` and `SYS_CON_READ`.
 
-use crate::graphics::font::{FONT_WIDTH, FONT_HEIGHT};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use crate::graphics::font::{FONT_HEIGHT, FONT_WIDTH};
 use crate::sync::spinlock::Spinlock;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 // ─── Static state ────────────────────────────────────────────────────────────
 
-static READY: AtomicBool  = AtomicBool::new(false);
+static READY: AtomicBool = AtomicBool::new(false);
 
 /// Cell width in pixels  = fb_width  / CONSOLE_COLS  (computed at init).
 static CELL_W: AtomicU32 = AtomicU32::new(8);
@@ -25,9 +25,13 @@ const CONSOLE_COLS: u32 = 80;
 const CONSOLE_ROWS: u32 = 25;
 
 #[inline(always)]
-fn cell_w() -> u32 { CELL_W.load(Ordering::Relaxed) }
+fn cell_w() -> u32 {
+    CELL_W.load(Ordering::Relaxed)
+}
 #[inline(always)]
-fn cell_h() -> u32 { CELL_H.load(Ordering::Relaxed) }
+fn cell_h() -> u32 {
+    CELL_H.load(Ordering::Relaxed)
+}
 
 // ─── Console mode flags ───────────────────────────────────────────────────────
 /// Bit 0: cursor hidden  Bit 1: auto-scroll disabled
@@ -48,16 +52,16 @@ const SCROLLBACK_ROWS: usize = 200;
 const MAX_VISIBLE_ROWS: usize = 50;
 
 /// Character byte for each cell.  0 = space.
-static mut SCRBUF_CH:  [[u8;  MAX_COLS]; SCROLLBACK_ROWS] = [[b' '; MAX_COLS]; SCROLLBACK_ROWS];
+static mut SCRBUF_CH: [[u8; MAX_COLS]; SCROLLBACK_ROWS] = [[b' '; MAX_COLS]; SCROLLBACK_ROWS];
 /// Foreground color for each cell (ARGB, 0 = COLOR_FG default).
-static mut SCRBUF_FG:  [[u32; MAX_COLS]; SCROLLBACK_ROWS] = [[0u32; MAX_COLS]; SCROLLBACK_ROWS];
+static mut SCRBUF_FG: [[u32; MAX_COLS]; SCROLLBACK_ROWS] = [[0u32; MAX_COLS]; SCROLLBACK_ROWS];
 /// Background color for each cell (ARGB, 0 = COLOR_BG default).
-static mut SCRBUF_BG:  [[u32; MAX_COLS]; SCROLLBACK_ROWS] = [[0u32; MAX_COLS]; SCROLLBACK_ROWS];
+static mut SCRBUF_BG: [[u32; MAX_COLS]; SCROLLBACK_ROWS] = [[0u32; MAX_COLS]; SCROLLBACK_ROWS];
 
 /// Shadow buffer for the live visible screen (up to MAX_VISIBLE_ROWS rows).
-static mut SHADOW_CH:  [[u8;  MAX_COLS]; MAX_VISIBLE_ROWS] = [[b' '; MAX_COLS]; MAX_VISIBLE_ROWS];
-static mut SHADOW_FG:  [[u32; MAX_COLS]; MAX_VISIBLE_ROWS] = [[0u32; MAX_COLS]; MAX_VISIBLE_ROWS];
-static mut SHADOW_BG:  [[u32; MAX_COLS]; MAX_VISIBLE_ROWS] = [[0u32; MAX_COLS]; MAX_VISIBLE_ROWS];
+static mut SHADOW_CH: [[u8; MAX_COLS]; MAX_VISIBLE_ROWS] = [[b' '; MAX_COLS]; MAX_VISIBLE_ROWS];
+static mut SHADOW_FG: [[u32; MAX_COLS]; MAX_VISIBLE_ROWS] = [[0u32; MAX_COLS]; MAX_VISIBLE_ROWS];
+static mut SHADOW_BG: [[u32; MAX_COLS]; MAX_VISIBLE_ROWS] = [[0u32; MAX_COLS]; MAX_VISIBLE_ROWS];
 
 /// Ring-buffer head: index of the *oldest* row in SCRBUF (next slot to overwrite).
 static SCRBUF_HEAD: AtomicU32 = AtomicU32::new(0);
@@ -65,7 +69,7 @@ static SCRBUF_HEAD: AtomicU32 = AtomicU32::new(0);
 static SCRBUF_COUNT: AtomicU32 = AtomicU32::new(0);
 /// How many rows the viewport is scrolled back from the live view.  0 = live.
 static SCROLL_OFFSET: AtomicU32 = AtomicU32::new(0);
-static FB_ADDR:  AtomicU64 = AtomicU64::new(0);
+static FB_ADDR: AtomicU64 = AtomicU64::new(0);
 static FB_PITCH: AtomicU32 = AtomicU32::new(0);
 static FB_WIDTH: AtomicU32 = AtomicU32::new(0);
 static FB_HEIGHT: AtomicU32 = AtomicU32::new(0);
@@ -111,15 +115,25 @@ const ANSI_BRIGHT: [u32; 8] = [
 
 /// Convert a 256-color index to ARGB (compatible with color_256 in Terminal.app).
 fn color_256(idx: u32) -> u32 {
-    if idx < 8 { return ANSI_COLORS[idx as usize]; }
-    if idx < 16 { return ANSI_BRIGHT[(idx - 8) as usize]; }
+    if idx < 8 {
+        return ANSI_COLORS[idx as usize];
+    }
+    if idx < 16 {
+        return ANSI_BRIGHT[(idx - 8) as usize];
+    }
     if idx < 232 {
         // 6×6×6 color cube
         let i = idx - 16;
         let b = i % 6;
         let g = (i / 6) % 6;
         let r = i / 36;
-        fn c(v: u32) -> u32 { if v == 0 { 0 } else { v * 40 + 55 } }
+        fn c(v: u32) -> u32 {
+            if v == 0 {
+                0
+            } else {
+                v * 40 + 55
+            }
+        }
         return 0xFF000000 | (c(r) << 16) | (c(g) << 8) | c(b);
     }
     // 24 grayscale ramp
@@ -149,14 +163,33 @@ struct EscState {
 
 impl EscState {
     const fn new() -> Self {
-        Self { mode: 0, params: [0u8; 64], params_len: 0, cur_fg: 0, cur_bg: 0, attr: 0 }
+        Self {
+            mode: 0,
+            params: [0u8; 64],
+            params_len: 0,
+            cur_fg: 0,
+            cur_bg: 0,
+            attr: 0,
+        }
     }
     fn reset(&mut self) {
         self.mode = 0;
         self.params_len = 0;
     }
-    fn fg(&self) -> u32 { if self.cur_fg != 0 { self.cur_fg } else { COLOR_FG } }
-    fn bg(&self) -> u32 { if self.cur_bg != 0 { self.cur_bg } else { COLOR_BG } }
+    fn fg(&self) -> u32 {
+        if self.cur_fg != 0 {
+            self.cur_fg
+        } else {
+            COLOR_FG
+        }
+    }
+    fn bg(&self) -> u32 {
+        if self.cur_bg != 0 {
+            self.cur_bg
+        } else {
+            COLOR_BG
+        }
+    }
 }
 
 static ESC: Spinlock<EscState> = Spinlock::new(EscState::new());
@@ -182,16 +215,21 @@ pub fn init() {
 
         // Compute cell size so we always get exactly CONSOLE_COLS × CONSOLE_ROWS cells,
         // regardless of framebuffer resolution.  No integer-scale restriction.
-        let cw = (fb.width  / CONSOLE_COLS).max(FONT_WIDTH);
+        let cw = (fb.width / CONSOLE_COLS).max(FONT_WIDTH);
         let ch = (fb.height / CONSOLE_ROWS).max(FONT_HEIGHT);
         CELL_W.store(cw, Ordering::Relaxed);
         CELL_H.store(ch, Ordering::Relaxed);
 
-        let cols = fb.width  / cw;
+        let cols = fb.width / cw;
         let rows = fb.height / ch;
         crate::serial_println!(
             "[OK] textcon: {}x{} fb, cell {}x{}, console {}x{}",
-            fb.width, fb.height, cw, ch, cols, rows
+            fb.width,
+            fb.height,
+            cw,
+            ch,
+            cols,
+            rows
         );
 
         CUR_X.store(0, Ordering::Relaxed);
@@ -211,12 +249,14 @@ pub fn is_ready() -> bool {
 
 #[inline(always)]
 fn put_pixel(x: u32, y: u32, color: u32) {
-    let addr  = FB_ADDR.load(Ordering::Relaxed) as *mut u32;
+    let addr = FB_ADDR.load(Ordering::Relaxed) as *mut u32;
     let pitch = FB_PITCH.load(Ordering::Relaxed) as usize / 4; // pitch in pixels
-    let w     = FB_WIDTH.load(Ordering::Relaxed) as usize;
-    let h     = FB_HEIGHT.load(Ordering::Relaxed) as usize;
+    let w = FB_WIDTH.load(Ordering::Relaxed) as usize;
+    let h = FB_HEIGHT.load(Ordering::Relaxed) as usize;
     if (x as usize) < w && (y as usize) < h {
-        unsafe { *addr.add(y as usize * pitch + x as usize) = color; }
+        unsafe {
+            *addr.add(y as usize * pitch + x as usize) = color;
+        }
     }
 }
 
@@ -234,12 +274,14 @@ fn scroll_up(rows: u32) {
     for _ in 0..rows {
         shadow_scroll_up();
     }
-    let addr  = FB_ADDR.load(Ordering::Relaxed) as *mut u32;
+    let addr = FB_ADDR.load(Ordering::Relaxed) as *mut u32;
     let pitch = FB_PITCH.load(Ordering::Relaxed) as usize / 4;
-    let w     = FB_WIDTH.load(Ordering::Relaxed) as usize;
-    let h     = FB_HEIGHT.load(Ordering::Relaxed) as usize;
-    let dy    = (rows * cell_h()) as usize;
-    if dy >= h { return; }
+    let w = FB_WIDTH.load(Ordering::Relaxed) as usize;
+    let h = FB_HEIGHT.load(Ordering::Relaxed) as usize;
+    let dy = (rows * cell_h()) as usize;
+    if dy >= h {
+        return;
+    }
     let copy_rows = h - dy;
     // memmove rows upward
     for row in 0..copy_rows {
@@ -255,19 +297,23 @@ fn scroll_up(rows: u32) {
     // blank the newly exposed rows at the bottom
     for row in copy_rows..h {
         for col in 0..w {
-            unsafe { *addr.add(row * pitch + col) = COLOR_BG; }
+            unsafe {
+                *addr.add(row * pitch + col) = COLOR_BG;
+            }
         }
     }
 }
 
 fn clear_screen_bg() {
-    let addr  = FB_ADDR.load(Ordering::Relaxed) as *mut u32;
+    let addr = FB_ADDR.load(Ordering::Relaxed) as *mut u32;
     let pitch = FB_PITCH.load(Ordering::Relaxed) as usize / 4;
-    let w     = FB_WIDTH.load(Ordering::Relaxed) as usize;
-    let h     = FB_HEIGHT.load(Ordering::Relaxed) as usize;
+    let w = FB_WIDTH.load(Ordering::Relaxed) as usize;
+    let h = FB_HEIGHT.load(Ordering::Relaxed) as usize;
     for row in 0..h {
         for col in 0..w {
-            unsafe { *addr.add(row * pitch + col) = COLOR_BG; }
+            unsafe {
+                *addr.add(row * pitch + col) = COLOR_BG;
+            }
         }
     }
     // Also reset shadow buffer and scroll state
@@ -291,7 +337,9 @@ fn flush_rect(x: u32, y: u32, w: u32, h: u32) {
 /// If the GPU mutex is held by another thread, the blink simply
 /// skips this cycle — the cursor will update on the next tick.
 fn flush_rect_irq(x: u32, y: u32, w: u32, h: u32) {
-    if crate::drivers::framebuffer::info().is_none() { return; }
+    if crate::drivers::framebuffer::info().is_none() {
+        return;
+    }
     if let Some(mut gpu_guard) = crate::drivers::gpu::try_lock_gpu() {
         if let Some(g) = gpu_guard.as_mut() {
             g.transfer_rect(x, y, w, h);
@@ -308,7 +356,9 @@ fn flush_rect_irq(x: u32, y: u32, w: u32, h: u32) {
 fn vis_rows() -> usize {
     let h = FB_HEIGHT.load(Ordering::Relaxed);
     let ch = cell_h();
-    if ch == 0 { return CONSOLE_ROWS as usize; }
+    if ch == 0 {
+        return CONSOLE_ROWS as usize;
+    }
     (h / ch).min(MAX_VISIBLE_ROWS as u32) as usize
 }
 
@@ -317,7 +367,9 @@ fn vis_rows() -> usize {
 fn vis_cols() -> usize {
     let w = FB_WIDTH.load(Ordering::Relaxed);
     let cw = cell_w();
-    if cw == 0 { return CONSOLE_COLS as usize; }
+    if cw == 0 {
+        return CONSOLE_COLS as usize;
+    }
     (w / cw).min(MAX_COLS as u32) as usize
 }
 
@@ -349,7 +401,9 @@ fn shadow_clear_all() {
 /// Erase a range of cells in the shadow buffer (for EL/ED erase operations).
 /// `row` is the cell row, `col_start..col_end` is the column range.
 fn shadow_erase_cells(row: usize, col_start: usize, col_end: usize) {
-    if row >= MAX_VISIBLE_ROWS { return; }
+    if row >= MAX_VISIBLE_ROWS {
+        return;
+    }
     let end = col_end.min(MAX_COLS);
     unsafe {
         for c in col_start..end {
@@ -366,7 +420,11 @@ fn shadow_erase_from_row(start_row: usize) {
     let cols = vis_cols();
     unsafe {
         for r in start_row..rows.min(MAX_VISIBLE_ROWS) {
-            for c in 0..cols { SHADOW_CH[r][c] = b' '; SHADOW_FG[r][c] = 0; SHADOW_BG[r][c] = 0; }
+            for c in 0..cols {
+                SHADOW_CH[r][c] = b' ';
+                SHADOW_FG[r][c] = 0;
+                SHADOW_BG[r][c] = 0;
+            }
         }
     }
 }
@@ -376,11 +434,17 @@ fn shadow_erase_to_row(end_row: usize, end_col: usize) {
     unsafe {
         for r in 0..end_row.min(MAX_VISIBLE_ROWS) {
             let cols = vis_cols();
-            for c in 0..cols { SHADOW_CH[r][c] = b' '; SHADOW_FG[r][c] = 0; SHADOW_BG[r][c] = 0; }
+            for c in 0..cols {
+                SHADOW_CH[r][c] = b' ';
+                SHADOW_FG[r][c] = 0;
+                SHADOW_BG[r][c] = 0;
+            }
         }
         if end_row < MAX_VISIBLE_ROWS {
             for c in 0..end_col.min(MAX_COLS) {
-                SHADOW_CH[end_row][c] = b' '; SHADOW_FG[end_row][c] = 0; SHADOW_BG[end_row][c] = 0;
+                SHADOW_CH[end_row][c] = b' ';
+                SHADOW_FG[end_row][c] = 0;
+                SHADOW_BG[end_row][c] = 0;
             }
         }
     }
@@ -414,7 +478,11 @@ fn shadow_scroll_up() {
         // Clear last row
         if rows > 0 {
             let last = rows - 1;
-            for c in 0..cols { SHADOW_CH[last][c] = b' '; SHADOW_FG[last][c] = 0; SHADOW_BG[last][c] = 0; }
+            for c in 0..cols {
+                SHADOW_CH[last][c] = b' ';
+                SHADOW_FG[last][c] = 0;
+                SHADOW_BG[last][c] = 0;
+            }
         }
     }
 }
@@ -426,13 +494,17 @@ fn shadow_scroll_up() {
 /// Scroll the viewport up (delta > 0) or down (delta < 0) by `|delta|` rows.
 /// Called from `sys_con_poll_key` when Shift+Up / Shift+Down is pressed.
 pub fn scroll_viewport(delta: i32) {
-    if !is_ready() { return; }
+    if !is_ready() {
+        return;
+    }
     let count = SCRBUF_COUNT.load(Ordering::Relaxed) as i32;
     let rows = vis_rows() as i32;
     let max_offset = (count).min(SCROLLBACK_ROWS as i32 - rows).max(0);
     let cur = SCROLL_OFFSET.load(Ordering::Relaxed) as i32;
     let new_offset = (cur + delta).clamp(0, max_offset);
-    if new_offset == cur { return; }
+    if new_offset == cur {
+        return;
+    }
     SCROLL_OFFSET.store(new_offset as u32, Ordering::Relaxed);
     repaint_viewport();
 }
@@ -461,11 +533,13 @@ fn repaint_viewport() {
             let scr_idx = (head + SCROLLBACK_ROWS - offset + r) % SCROLLBACK_ROWS;
             let cols = vis_cols();
             for col in 0..cols {
-                let (cell_ch, fg, bg) = unsafe {(
-                    SCRBUF_CH[scr_idx][col],
-                    SCRBUF_FG[scr_idx][col],
-                    SCRBUF_BG[scr_idx][col],
-                )};
+                let (cell_ch, fg, bg) = unsafe {
+                    (
+                        SCRBUF_CH[scr_idx][col],
+                        SCRBUF_FG[scr_idx][col],
+                        SCRBUF_BG[scr_idx][col],
+                    )
+                };
                 let fg = if fg != 0 { fg } else { COLOR_FG };
                 let bg = if bg != 0 { bg } else { COLOR_BG };
                 let x_px = col as u32 * cell_w();
@@ -477,11 +551,13 @@ fn repaint_viewport() {
             let cols = vis_cols();
             if shadow_row < rows {
                 for col in 0..cols {
-                    let (cell_ch, fg, bg) = unsafe {(
-                        SHADOW_CH[shadow_row][col],
-                        SHADOW_FG[shadow_row][col],
-                        SHADOW_BG[shadow_row][col],
-                    )};
+                    let (cell_ch, fg, bg) = unsafe {
+                        (
+                            SHADOW_CH[shadow_row][col],
+                            SHADOW_FG[shadow_row][col],
+                            SHADOW_BG[shadow_row][col],
+                        )
+                    };
                     let fg = if fg != 0 { fg } else { COLOR_FG };
                     let bg = if bg != 0 { bg } else { COLOR_BG };
                     let x_px = col as u32 * cell_w();
@@ -490,7 +566,9 @@ fn repaint_viewport() {
                 // blank any cols beyond vis_cols
                 let cw = cell_w();
                 let used_w = cols as u32 * cw;
-                if used_w < fb_w { fill_rect(used_w, y_px, fb_w - used_w, ch, COLOR_BG); }
+                if used_w < fb_w {
+                    fill_rect(used_w, y_px, fb_w - used_w, ch, COLOR_BG);
+                }
             } else {
                 fill_rect(0, y_px, fb_w, ch, COLOR_BG);
             }
@@ -509,16 +587,26 @@ fn draw_glyph_pixels(cx: u32, cy: u32, ch: u8, fg: u32, bg: u32) {
     let cw = cell_w();
     let ch_px = cell_h();
     let c = ch as u32;
-    let idx = if c >= 32 && c <= 126 { (c - 32) as usize } else { 0 };
+    let idx = if c >= 32 && c <= 126 {
+        (c - 32) as usize
+    } else {
+        0
+    };
     let glyph_offset = idx * FONT_HEIGHT as usize;
     for py in 0..ch_px {
         let src_row = (py * FONT_HEIGHT) / ch_px;
         let bits = if glyph_offset + (src_row as usize) < FONT_DATA.len() {
             FONT_DATA[glyph_offset + src_row as usize]
-        } else { 0 };
+        } else {
+            0
+        };
         for px in 0..cw {
             let src_col = (px * FONT_WIDTH) / cw;
-            let color = if bits & (0x80 >> src_col) != 0 { fg } else { bg };
+            let color = if bits & (0x80 >> src_col) != 0 {
+                fg
+            } else {
+                bg
+            };
             put_pixel(cx + px, cy + py, color);
         }
     }
@@ -575,8 +663,14 @@ fn newline_cursor(cx: &mut u32, cy: &mut u32) -> bool {
 fn parse_csi_params(params: &[u8], def1: u32, def2: u32) -> (u32, u32) {
     let s = core::str::from_utf8(params).unwrap_or("");
     let mut it = s.split(';');
-    let p1 = it.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(def1);
-    let p2 = it.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(def2);
+    let p1 = it
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(def1);
+    let p2 = it
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(def2);
     (p1, p2)
 }
 
@@ -616,14 +710,20 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
         b'B' => {
             let n = parse_csi_single(params, 1);
             let cy = CUR_Y.load(Ordering::Relaxed);
-            CUR_Y.store((cy + n * ch).min(fb_h.saturating_sub(ch)), Ordering::Relaxed);
+            CUR_Y.store(
+                (cy + n * ch).min(fb_h.saturating_sub(ch)),
+                Ordering::Relaxed,
+            );
             false
         }
         // CUF — cursor forward (right) N
         b'C' => {
             let n = parse_csi_single(params, 1);
             let cx = CUR_X.load(Ordering::Relaxed);
-            CUR_X.store((cx + n * cw).min(fb_w.saturating_sub(cw)), Ordering::Relaxed);
+            CUR_X.store(
+                (cx + n * cw).min(fb_w.saturating_sub(cw)),
+                Ordering::Relaxed,
+            );
             false
         }
         // CUB — cursor back (left) N
@@ -655,7 +755,9 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
                     // Erase from start to cursor
                     let cx = CUR_X.load(Ordering::Relaxed);
                     let cy = CUR_Y.load(Ordering::Relaxed);
-                    if cy > 0 { fill_rect(0, 0, fb_w, cy, erase_bg); }
+                    if cy > 0 {
+                        fill_rect(0, 0, fb_w, cy, erase_bg);
+                    }
                     fill_rect(0, cy, cx + cw, ch, erase_bg);
                     let row = (cy / ch) as usize;
                     let col = ((cx + cw) / cw) as usize;
@@ -704,7 +806,9 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
                 num_count = 1;
             } else {
                 for part in s.split(';') {
-                    if num_count >= 16 { break; }
+                    if num_count >= 16 {
+                        break;
+                    }
                     nums[num_count] = part.parse::<u32>().unwrap_or(0);
                     num_count += 1;
                 }
@@ -714,16 +818,36 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
             let mut idx = 0usize;
             while idx < num_count {
                 match nums[idx] {
-                    0 => { esc.cur_fg = 0; esc.cur_bg = 0; esc.attr = 0; }
-                    1 => { esc.attr |= ATTR_BOLD; }
-                    4 => { esc.attr |= ATTR_UNDERLINE; }
-                    7 => { esc.attr |= ATTR_REVERSE; }
-                    22 => { esc.attr &= !ATTR_BOLD; }
-                    24 => { esc.attr &= !ATTR_UNDERLINE; }
-                    27 => { esc.attr &= !ATTR_REVERSE; }
+                    0 => {
+                        esc.cur_fg = 0;
+                        esc.cur_bg = 0;
+                        esc.attr = 0;
+                    }
+                    1 => {
+                        esc.attr |= ATTR_BOLD;
+                    }
+                    4 => {
+                        esc.attr |= ATTR_UNDERLINE;
+                    }
+                    7 => {
+                        esc.attr |= ATTR_REVERSE;
+                    }
+                    22 => {
+                        esc.attr &= !ATTR_BOLD;
+                    }
+                    24 => {
+                        esc.attr &= !ATTR_UNDERLINE;
+                    }
+                    27 => {
+                        esc.attr &= !ATTR_REVERSE;
+                    }
                     30..=37 => {
                         let c = (nums[idx] - 30) as usize;
-                        esc.cur_fg = if esc.attr & ATTR_BOLD != 0 { ANSI_BRIGHT[c] } else { ANSI_COLORS[c] };
+                        esc.cur_fg = if esc.attr & ATTR_BOLD != 0 {
+                            ANSI_BRIGHT[c]
+                        } else {
+                            ANSI_COLORS[c]
+                        };
                     }
                     38 => {
                         if idx + 1 < num_count {
@@ -734,12 +858,15 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
                                 let r = nums[idx + 2].min(255) as u8;
                                 let g = nums[idx + 3].min(255) as u8;
                                 let b = nums[idx + 4].min(255) as u8;
-                                esc.cur_fg = 0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+                                esc.cur_fg =
+                                    0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
                                 idx += 4;
                             }
                         }
                     }
-                    39 => { esc.cur_fg = 0; }
+                    39 => {
+                        esc.cur_fg = 0;
+                    }
                     40..=47 => {
                         let c = (nums[idx] - 40) as usize;
                         esc.cur_bg = ANSI_COLORS[c];
@@ -753,12 +880,15 @@ fn execute_csi(params: &[u8], final_byte: u8) -> bool {
                                 let r = nums[idx + 2].min(255) as u8;
                                 let g = nums[idx + 3].min(255) as u8;
                                 let b = nums[idx + 4].min(255) as u8;
-                                esc.cur_bg = 0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+                                esc.cur_bg =
+                                    0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
                                 idx += 4;
                             }
                         }
                     }
-                    49 => { esc.cur_bg = 0; }
+                    49 => {
+                        esc.cur_bg = 0;
+                    }
                     90..=97 => {
                         let c = (nums[idx] - 90) as usize;
                         esc.cur_fg = ANSI_BRIGHT[c];
@@ -795,7 +925,11 @@ fn write_char_raw(ch: u8) -> bool {
         if esc.mode == 0 && ch >= 32 && ch != 127 {
             let cx = CUR_X.load(Ordering::Relaxed);
             let cy = CUR_Y.load(Ordering::Relaxed);
-            let (fg, bg) = if esc.attr & ATTR_REVERSE != 0 { (esc.bg(), esc.fg()) } else { (esc.fg(), esc.bg()) };
+            let (fg, bg) = if esc.attr & ATTR_REVERSE != 0 {
+                (esc.bg(), esc.fg())
+            } else {
+                (esc.fg(), esc.bg())
+            };
             drop(esc);
             draw_glyph(cx, cy, ch, fg, bg);
             advance_cursor();
@@ -821,7 +955,10 @@ fn write_char_raw(ch: u8) -> bool {
                 CUR_Y.store(cy, Ordering::Relaxed);
                 scrolled
             }
-            b'\r' => { CUR_X.store(0, Ordering::Relaxed); false }
+            b'\r' => {
+                CUR_X.store(0, Ordering::Relaxed);
+                false
+            }
             b'\x08' => {
                 let cw = cell_w();
                 let cx = CUR_X.load(Ordering::Relaxed);
@@ -849,8 +986,16 @@ fn write_char_raw(ch: u8) -> bool {
         // ESC seen — next byte decides sequence type
         1 => {
             match ch {
-                b'[' => { esc.mode = 2; esc.params_len = 0; false } // CSI
-                b']' => { esc.mode = 3; esc.params_len = 0; false } // OSC
+                b'[' => {
+                    esc.mode = 2;
+                    esc.params_len = 0;
+                    false
+                } // CSI
+                b']' => {
+                    esc.mode = 3;
+                    esc.params_len = 0;
+                    false
+                } // OSC
                 b'c' => {
                     // RIS — full reset: clear screen, home cursor
                     esc.reset();
@@ -862,7 +1007,10 @@ fn write_char_raw(ch: u8) -> bool {
                     CUR_Y.store(0, Ordering::Relaxed);
                     true
                 }
-                _ => { esc.reset(); false } // unknown: ignore
+                _ => {
+                    esc.reset();
+                    false
+                } // unknown: ignore
             }
         }
 
@@ -898,7 +1046,10 @@ fn write_char_raw(ch: u8) -> bool {
             false
         }
 
-        _ => { esc.reset(); false }
+        _ => {
+            esc.reset();
+            false
+        }
     }
 }
 
@@ -939,8 +1090,12 @@ pub fn write_str(s: &str) {
         let cx = CUR_X.load(Ordering::Relaxed);
         let cy = CUR_Y.load(Ordering::Relaxed);
         let y = cy + ch - 2;
-        for col in 0..cw { put_pixel(cx + col, y, COLOR_BG); }
-        for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_BG); }
+        for col in 0..cw {
+            put_pixel(cx + col, y, COLOR_BG);
+        }
+        for col in 0..cw {
+            put_pixel(cx + col, y + 1, COLOR_BG);
+        }
         CURSOR_VISIBLE.store(false, Ordering::Relaxed);
     }
 
@@ -948,10 +1103,18 @@ pub fn write_str(s: &str) {
         // Expand dirty rect to include current cursor position before writing
         let cx = CUR_X.load(Ordering::Relaxed);
         let cy = CUR_Y.load(Ordering::Relaxed);
-        if cx < dirty_x0 { dirty_x0 = cx; }
-        if cy < dirty_y0 { dirty_y0 = cy; }
-        if cx + cw > dirty_x1 { dirty_x1 = cx + cw; }
-        if cy + ch > dirty_y1 { dirty_y1 = cy + ch; }
+        if cx < dirty_x0 {
+            dirty_x0 = cx;
+        }
+        if cy < dirty_y0 {
+            dirty_y0 = cy;
+        }
+        if cx + cw > dirty_x1 {
+            dirty_x1 = cx + cw;
+        }
+        if cy + ch > dirty_y1 {
+            dirty_y1 = cy + ch;
+        }
 
         if write_char_raw(b) {
             full_flush = true;
@@ -961,15 +1124,23 @@ pub fn write_str(s: &str) {
     // Expand dirty rect to also include new cursor position
     let cx = CUR_X.load(Ordering::Relaxed);
     let cy = CUR_Y.load(Ordering::Relaxed);
-    if cx + cw > dirty_x1 { dirty_x1 = cx + cw; }
-    if cy + ch > dirty_y1 { dirty_y1 = cy + ch; }
+    if cx + cw > dirty_x1 {
+        dirty_x1 = cx + cw;
+    }
+    if cy + ch > dirty_y1 {
+        dirty_y1 = cy + ch;
+    }
 
     // Redraw cursor in memory only if not hidden by mode flags.
     // Also reset blink phase so cursor stays solid for a full period after each write.
     if CON_MODE_FLAGS.load(Ordering::Relaxed) & 0x01 == 0 {
         let y = cy + ch - 2;
-        for col in 0..cw { put_pixel(cx + col, y, COLOR_CURSOR); }
-        for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_CURSOR); }
+        for col in 0..cw {
+            put_pixel(cx + col, y, COLOR_CURSOR);
+        }
+        for col in 0..cw {
+            put_pixel(cx + col, y + 1, COLOR_CURSOR);
+        }
         CURSOR_VISIBLE.store(true, Ordering::Relaxed);
         CURSOR_BLINK_ON.store(true, Ordering::Relaxed);
         BLINK_COUNTER.store(0, Ordering::Relaxed);
@@ -990,7 +1161,9 @@ pub fn write_str(s: &str) {
 /// Return console size as `cols << 16 | rows` (both derived from FB + font).
 /// Returns 0 if not yet initialised.
 pub fn get_size_packed() -> u32 {
-    if !is_ready() { return 0; }
+    if !is_ready() {
+        return 0;
+    }
     let cols = FB_WIDTH.load(Ordering::Relaxed) / cell_w();
     let rows = FB_HEIGHT.load(Ordering::Relaxed) / cell_h();
     (cols << 16) | rows
@@ -1000,8 +1173,12 @@ pub fn get_size_packed() -> u32 {
 /// CELL_W / CELL_H from the current framebuffer dimensions.
 /// Clears the screen and homes the cursor.  Returns new packed size, or 0 if not ready.
 pub fn resize(cols: u32, rows: u32) -> u32 {
-    if !is_ready() { return 0; }
-    if cols == 0 || rows == 0 { return 0; }
+    if !is_ready() {
+        return 0;
+    }
+    if cols == 0 || rows == 0 {
+        return 0;
+    }
     let fb_w = FB_WIDTH.load(Ordering::Relaxed);
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
     let cw = (fb_w / cols).max(FONT_WIDTH);
@@ -1026,7 +1203,9 @@ pub fn resize(cols: u32, rows: u32) -> u32 {
 /// Bit 1 (0x02): 1 = disable auto-scroll, 0 = enable auto-scroll.
 pub fn set_mode(flags: u32) -> u32 {
     let prev = CON_MODE_FLAGS.swap(flags, Ordering::Relaxed);
-    if !is_ready() { return prev; }
+    if !is_ready() {
+        return prev;
+    }
 
     // Any mode change (cursor visibility or scroll enable/disable) clears the
     // scroll-back buffer and resets the viewport — the screen context has changed.
@@ -1047,8 +1226,12 @@ pub fn set_mode(flags: u32) -> u32 {
             let cw = cell_w();
             let ch = cell_h();
             let y = cy + ch - 2;
-            for col in 0..cw { put_pixel(cx + col, y, COLOR_BG); }
-            for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_BG); }
+            for col in 0..cw {
+                put_pixel(cx + col, y, COLOR_BG);
+            }
+            for col in 0..cw {
+                put_pixel(cx + col, y + 1, COLOR_BG);
+            }
             CURSOR_VISIBLE.store(false, Ordering::Relaxed);
             let fb_w = FB_WIDTH.load(Ordering::Relaxed);
             let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
@@ -1067,13 +1250,21 @@ pub fn get_mode() -> u32 {
 /// Toggles the cursor block every BLINK_HALF_PERIOD ticks (500 ms).
 /// No-op if the console is not ready, cursor is mode-hidden, or viewport is scrolled back.
 pub fn tick_blink() {
-    if !is_ready() { return; }
+    if !is_ready() {
+        return;
+    }
     // Don't blink when cursor is mode-hidden (bit 0) or when scrolled back.
-    if CON_MODE_FLAGS.load(Ordering::Relaxed) & 0x01 != 0 { return; }
-    if SCROLL_OFFSET.load(Ordering::Relaxed) > 0 { return; }
+    if CON_MODE_FLAGS.load(Ordering::Relaxed) & 0x01 != 0 {
+        return;
+    }
+    if SCROLL_OFFSET.load(Ordering::Relaxed) > 0 {
+        return;
+    }
 
     let counter = BLINK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-    if counter < BLINK_HALF_PERIOD { return; }
+    if counter < BLINK_HALF_PERIOD {
+        return;
+    }
     BLINK_COUNTER.store(0, Ordering::Relaxed);
 
     let blink_on = !CURSOR_BLINK_ON.load(Ordering::Relaxed);
@@ -1085,13 +1276,19 @@ pub fn tick_blink() {
     let ch = cell_h();
     let fb_w = FB_WIDTH.load(Ordering::Relaxed);
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
-    if cw == 0 || ch == 0 || cx >= fb_w || cy + ch > fb_h { return; }
+    if cw == 0 || ch == 0 || cx >= fb_w || cy + ch > fb_h {
+        return;
+    }
 
     // Draw or erase the cursor underline (bottom 2 pixel rows of the cell).
     let y = cy + ch - 2;
     if blink_on {
-        for col in 0..cw { put_pixel(cx + col, y, COLOR_CURSOR); }
-        for col in 0..cw { put_pixel(cx + col, y + 1, COLOR_CURSOR); }
+        for col in 0..cw {
+            put_pixel(cx + col, y, COLOR_CURSOR);
+        }
+        for col in 0..cw {
+            put_pixel(cx + col, y + 1, COLOR_CURSOR);
+        }
         CURSOR_VISIBLE.store(true, Ordering::Relaxed);
     } else {
         // Restore cell background — read from shadow buffer.
@@ -1099,10 +1296,20 @@ pub fn tick_blink() {
         let row_idx = (cy / ch) as usize;
         let bg = if row_idx < MAX_VISIBLE_ROWS && col_idx < MAX_COLS {
             let raw = unsafe { SHADOW_BG[row_idx][col_idx] };
-            if raw != 0 { raw } else { COLOR_BG }
-        } else { COLOR_BG };
-        for col in 0..cw { put_pixel(cx + col, y, bg); }
-        for col in 0..cw { put_pixel(cx + col, y + 1, bg); }
+            if raw != 0 {
+                raw
+            } else {
+                COLOR_BG
+            }
+        } else {
+            COLOR_BG
+        };
+        for col in 0..cw {
+            put_pixel(cx + col, y, bg);
+        }
+        for col in 0..cw {
+            put_pixel(cx + col, y + 1, bg);
+        }
         CURSOR_VISIBLE.store(false, Ordering::Relaxed);
     }
 
@@ -1143,7 +1350,9 @@ pub fn read_line(buf: &mut [u8], echo: bool) -> usize {
             None => continue,
         };
         // Only handle key-down events
-        if !evt.pressed { continue; }
+        if !evt.pressed {
+            continue;
+        }
 
         use crate::drivers::input::keyboard::Key;
         match evt.key {
@@ -1172,7 +1381,11 @@ pub fn read_line(buf: &mut [u8], echo: bool) -> usize {
                 if len < buf.len().saturating_sub(1) {
                     buf[len] = b' ';
                     len += 1;
-                    if echo { write_char(b' '); } else { write_char(b'*'); }
+                    if echo {
+                        write_char(b' ');
+                    } else {
+                        write_char(b'*');
+                    }
                 }
             }
             _ => {}

@@ -7,26 +7,58 @@
 
 use crate::kunit::{TestCase, TestContext, TestSuite};
 use crate::task::capabilities::{
-    required_cap, parse_capabilities,
-    CAP_ALL, CAP_NETWORK, CAP_AUDIO, CAP_PROCESS,
-    CAP_PIPE, CAP_EVENT, CAP_COMPOSITOR, CAP_SYSTEM,
-    CAP_DLL, CAP_THREAD, CAP_DEVICE, CAP_MANAGE_PERMS, CAP_DEBUG,
+    parse_capabilities, required_cap, CAP_ALL, CAP_AUDIO, CAP_COMPOSITOR, CAP_DEBUG, CAP_DEVICE,
+    CAP_DLL, CAP_EVENT, CAP_MANAGE_PERMS, CAP_NETWORK, CAP_PIPE, CAP_PROCESS, CAP_SYSTEM,
+    CAP_THREAD,
 };
 
 pub static SUITE: TestSuite = TestSuite {
     name: "syscall::safety",
     cases: &[
-        TestCase { name: "required_cap_never_panics_low",      run: test_no_panic_low },
-        TestCase { name: "required_cap_never_panics_high",     run: test_no_panic_high },
-        TestCase { name: "required_cap_extreme_values",        run: test_extreme_values },
-        TestCase { name: "required_cap_returns_valid_cap",     run: test_valid_cap_bits },
-        TestCase { name: "cap_check_deny_partial",             run: test_deny_partial },
-        TestCase { name: "cap_check_deny_none",                run: test_deny_none },
-        TestCase { name: "cap_check_allow_exact",              run: test_allow_exact },
-        TestCase { name: "cap_all_allows_everything",          run: test_cap_all_allows_all },
-        TestCase { name: "parse_caps_no_panic_garbage",        run: test_parse_garbage },
-        TestCase { name: "cap_bits_non_overlapping",           run: test_bits_non_overlapping },
-        TestCase { name: "required_cap_zero_always_passes",    run: test_zero_always_passes },
+        TestCase {
+            name: "required_cap_never_panics_low",
+            run: test_no_panic_low,
+        },
+        TestCase {
+            name: "required_cap_never_panics_high",
+            run: test_no_panic_high,
+        },
+        TestCase {
+            name: "required_cap_extreme_values",
+            run: test_extreme_values,
+        },
+        TestCase {
+            name: "required_cap_returns_valid_cap",
+            run: test_valid_cap_bits,
+        },
+        TestCase {
+            name: "cap_check_deny_partial",
+            run: test_deny_partial,
+        },
+        TestCase {
+            name: "cap_check_deny_none",
+            run: test_deny_none,
+        },
+        TestCase {
+            name: "cap_check_allow_exact",
+            run: test_allow_exact,
+        },
+        TestCase {
+            name: "cap_all_allows_everything",
+            run: test_cap_all_allows_all,
+        },
+        TestCase {
+            name: "parse_caps_no_panic_garbage",
+            run: test_parse_garbage,
+        },
+        TestCase {
+            name: "cap_bits_non_overlapping",
+            run: test_bits_non_overlapping,
+        },
+        TestCase {
+            name: "required_cap_zero_always_passes",
+            run: test_zero_always_passes,
+        },
     ],
 };
 
@@ -41,18 +73,29 @@ fn test_no_panic_low(ctx: &mut TestContext) {
         if cap != 0 && (cap & !CAP_ALL) != 0 {
             all_valid = false;
             crate::serial_println!(
-                "    required_cap({}) returned invalid bits: {:#010x}", n, cap
+                "    required_cap({}) returned invalid bits: {:#010x}",
+                n,
+                cap
             );
         }
     }
-    ctx.expect_true(all_valid, "required_cap(0..512) always returns 0 or subset of CAP_ALL");
+    ctx.expect_true(
+        all_valid,
+        "required_cap(0..512) always returns 0 or subset of CAP_ALL",
+    );
 }
 
 fn test_no_panic_high(ctx: &mut TestContext) {
     // Sparse sample of high syscall numbers — no crash, no undefined bits.
     let high_numbers: &[u32] = &[
-        512, 1000, 0x7FFF, 0xFFFF, 0x0001_0000, 0x00FF_FFFF,
-        0x7FFF_FFFF, 0xFFFF_FFFF,
+        512,
+        1000,
+        0x7FFF,
+        0xFFFF,
+        0x0001_0000,
+        0x00FF_FFFF,
+        0x7FFF_FFFF,
+        0xFFFF_FFFF,
     ];
     let mut all_valid = true;
     for &n in high_numbers {
@@ -67,9 +110,17 @@ fn test_no_panic_high(ctx: &mut TestContext) {
 fn test_extreme_values(ctx: &mut TestContext) {
     // The catch-all `_` arm of required_cap returns 0.
     // Unknown syscalls must not be accidentally granted capabilities.
-    ctx.expect_eq(required_cap(u32::MAX),     0u32, "required_cap(MAX) == 0");
-    ctx.expect_eq(required_cap(0xDEAD_BEEF),  0u32, "required_cap(DEAD_BEEF) == 0");
-    ctx.expect_eq(required_cap(0x1234_5678),  0u32, "required_cap(12345678) == 0");
+    ctx.expect_eq(required_cap(u32::MAX), 0u32, "required_cap(MAX) == 0");
+    ctx.expect_eq(
+        required_cap(0xDEAD_BEEF),
+        0u32,
+        "required_cap(DEAD_BEEF) == 0",
+    );
+    ctx.expect_eq(
+        required_cap(0x1234_5678),
+        0u32,
+        "required_cap(12345678) == 0",
+    );
 }
 
 // ── required_cap returns only valid bits ──────────────────────────────────────
@@ -82,9 +133,15 @@ fn test_valid_cap_bits(ctx: &mut TestContext) {
     let mut bad_count = 0u32;
     for n in 0u32..1000 {
         let cap = required_cap(n);
-        if (cap & !CAP_ALL) != 0 { bad_count += 1; }
+        if (cap & !CAP_ALL) != 0 {
+            bad_count += 1;
+        }
     }
-    ctx.expect_eq(bad_count, 0u32, "no required_cap value has bits outside CAP_ALL");
+    ctx.expect_eq(
+        bad_count,
+        0u32,
+        "no required_cap value has bits outside CAP_ALL",
+    );
 }
 
 // ── Capability check logic ────────────────────────────────────────────────────
@@ -93,7 +150,7 @@ fn test_deny_partial(ctx: &mut TestContext) {
     // (thread_caps & required) == required is the check pattern.
     // A thread with only half the required bits must be denied.
     let required = CAP_NETWORK | CAP_AUDIO;
-    let partial   = CAP_NETWORK; // missing AUDIO
+    let partial = CAP_NETWORK; // missing AUDIO
     ctx.expect_false(
         (partial & required) == required,
         "partial caps denied: CAP_NETWORK only, needs NETWORK|AUDIO",
@@ -108,19 +165,13 @@ fn test_deny_none(ctx: &mut TestContext) {
         "zero caps denied for CAP_PROCESS",
     );
     // Edge case: required==0 must always pass.
-    ctx.expect_true(
-        (0u32 & 0u32) == 0u32,
-        "zero caps passes for required==0",
-    );
+    ctx.expect_true((0u32 & 0u32) == 0u32, "zero caps passes for required==0");
 }
 
 fn test_allow_exact(ctx: &mut TestContext) {
     // A thread with exactly the required caps passes.
     let required = CAP_PIPE | CAP_EVENT;
-    ctx.expect_true(
-        (required & required) == required,
-        "exact match allowed",
-    );
+    ctx.expect_true((required & required) == required, "exact match allowed");
     // A superset also passes.
     ctx.expect_true(
         (CAP_ALL & required) == required,
@@ -131,13 +182,24 @@ fn test_allow_exact(ctx: &mut TestContext) {
 fn test_cap_all_allows_all(ctx: &mut TestContext) {
     // CAP_ALL must satisfy every individual capability requirement.
     let individual_caps: &[u32] = &[
-        CAP_NETWORK, CAP_AUDIO, CAP_PROCESS, CAP_PIPE, CAP_EVENT,
-        CAP_COMPOSITOR, CAP_SYSTEM, CAP_DLL, CAP_THREAD, CAP_DEVICE,
-        CAP_MANAGE_PERMS, CAP_DEBUG,
+        CAP_NETWORK,
+        CAP_AUDIO,
+        CAP_PROCESS,
+        CAP_PIPE,
+        CAP_EVENT,
+        CAP_COMPOSITOR,
+        CAP_SYSTEM,
+        CAP_DLL,
+        CAP_THREAD,
+        CAP_DEVICE,
+        CAP_MANAGE_PERMS,
+        CAP_DEBUG,
     ];
     let mut all_ok = true;
     for &cap in individual_caps {
-        if (CAP_ALL & cap) != cap { all_ok = false; }
+        if (CAP_ALL & cap) != cap {
+            all_ok = false;
+        }
     }
     ctx.expect_true(all_ok, "CAP_ALL satisfies every individual capability");
 }
@@ -162,10 +224,16 @@ fn test_parse_garbage(ctx: &mut TestContext) {
         let cap = parse_capabilities(input);
         if (cap & !CAP_ALL) != 0 {
             all_valid = false;
-            crate::serial_println!("    parse_capabilities(…) returned invalid bits: {:#010x}", cap);
+            crate::serial_println!(
+                "    parse_capabilities(…) returned invalid bits: {:#010x}",
+                cap
+            );
         }
     }
-    ctx.expect_true(all_valid, "parse_capabilities never returns bits outside CAP_ALL");
+    ctx.expect_true(
+        all_valid,
+        "parse_capabilities never returns bits outside CAP_ALL",
+    );
 }
 
 // ── Individual cap bits are distinct ─────────────────────────────────────────
@@ -175,18 +243,18 @@ fn test_bits_non_overlapping(ctx: &mut TestContext) {
     // overlap with any other capability. Overlapping bits cause privilege
     // escalation: granting "audio" accidentally also grants "network".
     let caps: &[(&str, u32)] = &[
-        ("CAP_NETWORK",      CAP_NETWORK),
-        ("CAP_AUDIO",        CAP_AUDIO),
-        ("CAP_PROCESS",      CAP_PROCESS),
-        ("CAP_PIPE",         CAP_PIPE),
-        ("CAP_EVENT",        CAP_EVENT),
-        ("CAP_COMPOSITOR",   CAP_COMPOSITOR),
-        ("CAP_SYSTEM",       CAP_SYSTEM),
-        ("CAP_DLL",          CAP_DLL),
-        ("CAP_THREAD",       CAP_THREAD),
-        ("CAP_DEVICE",       CAP_DEVICE),
+        ("CAP_NETWORK", CAP_NETWORK),
+        ("CAP_AUDIO", CAP_AUDIO),
+        ("CAP_PROCESS", CAP_PROCESS),
+        ("CAP_PIPE", CAP_PIPE),
+        ("CAP_EVENT", CAP_EVENT),
+        ("CAP_COMPOSITOR", CAP_COMPOSITOR),
+        ("CAP_SYSTEM", CAP_SYSTEM),
+        ("CAP_DLL", CAP_DLL),
+        ("CAP_THREAD", CAP_THREAD),
+        ("CAP_DEVICE", CAP_DEVICE),
         ("CAP_MANAGE_PERMS", CAP_MANAGE_PERMS),
-        ("CAP_DEBUG",        CAP_DEBUG),
+        ("CAP_DEBUG", CAP_DEBUG),
     ];
     // Each must be a power of two.
     let mut all_pow2 = true;

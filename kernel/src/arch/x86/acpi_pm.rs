@@ -14,8 +14,8 @@
 //! `0xFFFF_FFFF_D030_0000` (64 pages = 256 KiB) separate from the main ACPI
 //! window used by `crate::arch::x86::acpi` to avoid interference.
 
-use crate::sync::spinlock::Spinlock;
 use crate::arch::x86::port::{inl, inw, outw};
+use crate::sync::spinlock::Spinlock;
 
 // ── Private Virtual Window ────────────────────────────────────────────────────
 
@@ -162,7 +162,9 @@ pub fn init(rsdp_hint: u32) {
         Some(fadt) => {
             crate::serial_verbose_println!(
                 "[OK] ACPI PM: FADT parsed — PM1a_CNT={:#010x} PM_TMR={:#010x} SCI_INT={}",
-                fadt.pm1a_cnt_blk, fadt.pm_tmr_blk, fadt.sci_interrupt
+                fadt.pm1a_cnt_blk,
+                fadt.pm_tmr_blk,
+                fadt.sci_interrupt
             );
             *FADT.lock() = Some(fadt);
         }
@@ -182,9 +184,8 @@ pub fn get_fadt() -> Option<Fadt> {
 fn parse_fadt(rsdp_hint: u32) -> Option<Fadt> {
     let rsdp_virt = find_rsdp_virt(rsdp_hint)?;
 
-    let rsdt_phys = unsafe {
-        core::ptr::addr_of!((*(rsdp_virt as *const Rsdp)).rsdt_address).read_unaligned()
-    };
+    let rsdt_phys =
+        unsafe { core::ptr::addr_of!((*(rsdp_virt as *const Rsdp)).rsdt_address).read_unaligned() };
     crate::serial_verbose_println!("  ACPI PM: RSDP found, RSDT at {:#010x}", rsdt_phys);
     pm_unmap(1);
 
@@ -213,7 +214,9 @@ fn parse_fadt(rsdp_hint: u32) -> Option<Fadt> {
 
     for i in 0..count {
         let table_phys = table_addrs[i];
-        if table_phys == 0 { continue; }
+        if table_phys == 0 {
+            continue;
+        }
 
         let tbl_virt = pm_map(table_phys, 0x1000);
         let tbl = tbl_virt as *const AcpiSdtHeader;
@@ -239,7 +242,8 @@ fn find_rsdp_virt(hint: u32) -> Option<u64> {
 
     if hint != 0 {
         let virt = pm_map(hint, core::mem::size_of::<Rsdp>() as u32);
-        let sig = unsafe { core::ptr::addr_of!((*(virt as *const Rsdp)).signature).read_unaligned() };
+        let sig =
+            unsafe { core::ptr::addr_of!((*(virt as *const Rsdp)).signature).read_unaligned() };
         if sig == RSDP_SIG && validate_rsdp(virt as *const Rsdp) {
             return Some(virt);
         }
@@ -320,40 +324,46 @@ fn parse_fadt_table(virt: u64) -> Option<Fadt> {
 
     // Helper: read a u32 at byte offset from table start
     macro_rules! ru32 {
-        ($off:expr) => { unsafe { (b.add($off) as *const u32).read_unaligned() } }
+        ($off:expr) => {
+            unsafe { (b.add($off) as *const u32).read_unaligned() }
+        };
     }
     macro_rules! ru16 {
-        ($off:expr) => { unsafe { (b.add($off) as *const u16).read_unaligned() } }
+        ($off:expr) => {
+            unsafe { (b.add($off) as *const u16).read_unaligned() }
+        };
     }
     macro_rules! ru8 {
-        ($off:expr) => { unsafe { b.add($off).read() } }
+        ($off:expr) => {
+            unsafe { b.add($off).read() }
+        };
     }
 
     // Read table length from the SDT header (offset 4) for ACPI 2.0+ field bounds check.
-    let table_length   = ru32!(4);
+    let table_length = ru32!(4);
 
-    let dsdt           = ru32!(40);
-    let sci_interrupt  = ru16!(46);
-    let smi_cmd        = ru32!(48);
-    let acpi_enable    = ru8!(52);
-    let acpi_disable   = ru8!(53);
-    let pm1a_evt_blk   = ru32!(56);
-    let pm1b_evt_blk   = ru32!(60);
-    let pm1a_cnt_blk   = ru32!(64);
-    let pm1b_cnt_blk   = ru32!(68);
-    let pm2_cnt_blk    = ru32!(72);
-    let pm_tmr_blk     = ru32!(76);
-    let gpe0_blk       = ru32!(80);
-    let gpe1_blk       = ru32!(84);
-    let pm1_evt_len    = ru8!(88);
-    let pm1_cnt_len    = ru8!(89);
-    let pm_tmr_len     = ru8!(91);
-    let p_lvl2_lat     = ru16!(96);
-    let p_lvl3_lat     = ru16!(98);
-    let duty_offset    = ru8!(104);
-    let duty_width     = ru8!(105);
+    let dsdt = ru32!(40);
+    let sci_interrupt = ru16!(46);
+    let smi_cmd = ru32!(48);
+    let acpi_enable = ru8!(52);
+    let acpi_disable = ru8!(53);
+    let pm1a_evt_blk = ru32!(56);
+    let pm1b_evt_blk = ru32!(60);
+    let pm1a_cnt_blk = ru32!(64);
+    let pm1b_cnt_blk = ru32!(68);
+    let pm2_cnt_blk = ru32!(72);
+    let pm_tmr_blk = ru32!(76);
+    let gpe0_blk = ru32!(80);
+    let gpe1_blk = ru32!(84);
+    let pm1_evt_len = ru8!(88);
+    let pm1_cnt_len = ru8!(89);
+    let pm_tmr_len = ru8!(91);
+    let p_lvl2_lat = ru16!(96);
+    let p_lvl3_lat = ru16!(98);
+    let duty_offset = ru8!(104);
+    let duty_width = ru8!(105);
     let iapc_boot_arch = ru16!(109);
-    let flags          = ru32!(112);
+    let flags = ru32!(112);
 
     // ACPI 2.0+ layout:
     //   [116..128) RESET_REG GAS
@@ -361,15 +371,19 @@ fn parse_fadt_table(virt: u64) -> Option<Fadt> {
     //   [140..148) X_DSDT
     let (reset_reg_addr_space, reset_reg_address, reset_value, x_dsdt) = if table_length >= 148 {
         macro_rules! ru64 {
-            ($off:expr) => { unsafe { (b.add($off) as *const u64).read_unaligned() } }
+            ($off:expr) => {
+                unsafe { (b.add($off) as *const u64).read_unaligned() }
+            };
         }
         let addr_space = ru8!(116);
-        let address    = ru64!(120);
-        let value      = ru8!(128);
-        let x_dsdt     = ru64!(140);
+        let address = ru64!(120);
+        let value = ru8!(128);
+        let x_dsdt = ru64!(140);
         crate::serial_verbose_println!(
             "  ACPI PM: RESET_REG addr_space={} address={:#010x} value={:#04x}",
-            addr_space, address, value
+            addr_space,
+            address,
+            value
         );
         (addr_space, address, value, x_dsdt)
     } else {
@@ -458,7 +472,9 @@ pub fn request_sleep_state(state: SleepState) {
 
     crate::serial_verbose_println!(
         "  ACPI PM: requesting sleep state {:?} — SLP_TYPa={} SLP_TYPb={}",
-        state, slp_typ_a, slp_typ_b
+        state,
+        slp_typ_a,
+        slp_typ_b
     );
 
     let port_a = fadt.pm1a_cnt_blk as u16;
@@ -525,7 +541,10 @@ fn parse_aml_integer(bytes: &[u8], offset: usize) -> Option<(u16, usize)> {
             let b1 = *bytes.get(offset + 2)? as u32;
             let b2 = *bytes.get(offset + 3)? as u32;
             let b3 = *bytes.get(offset + 4)? as u32;
-            Some((((b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) & 0xFFFF) as u16, 5))
+            Some((
+                ((b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) & 0xFFFF) as u16,
+                5,
+            ))
         }
         0x0E => {
             let mut value = 0u64;
@@ -612,7 +631,11 @@ fn sleep_types_for_state(fadt: &Fadt, state: SleepState) -> Option<(u16, u16)> {
         SleepState::S3 => Some((0b001, 0b001)),
         SleepState::S4 => Some((0b010, 0b010)),
         SleepState::S5 => {
-            let dsdt_phys = if fadt.x_dsdt != 0 { fadt.x_dsdt } else { fadt.dsdt as u64 };
+            let dsdt_phys = if fadt.x_dsdt != 0 {
+                fadt.x_dsdt
+            } else {
+                fadt.dsdt as u64
+            };
             parse_s5_sleep_types(dsdt_phys).or(Some((0b101, 0b101)))
         }
     }
@@ -637,7 +660,9 @@ fn enable_acpi_mode(fadt: &Fadt) {
         fadt.smi_cmd,
         fadt.acpi_enable
     );
-    unsafe { crate::arch::x86::port::outb(fadt.smi_cmd as u16, fadt.acpi_enable); }
+    unsafe {
+        crate::arch::x86::port::outb(fadt.smi_cmd as u16, fadt.acpi_enable);
+    }
 
     for _ in 0..1_000_000u32 {
         if unsafe { inw(port) } & 1 != 0 {
@@ -653,11 +678,11 @@ fn enable_acpi_mode(fadt: &Fadt) {
 // ── P-State (Frequency Scaling) ───────────────────────────────────────────────
 
 // Intel SpeedStep MSRs
-const IA32_PERF_CTL:    u32 = 0x199;
+const IA32_PERF_CTL: u32 = 0x199;
 const IA32_PERF_STATUS: u32 = 0x198;
 
 // AMD PowerNow MSRs
-const MSR_AMD_PERF_CTL:    u32 = 0xC001_0062;
+const MSR_AMD_PERF_CTL: u32 = 0xC001_0062;
 const MSR_AMD_PERF_STATUS: u32 = 0xC001_0063;
 
 /// Set the CPU frequency ratio.
@@ -674,11 +699,15 @@ pub fn set_perf_level(ratio: u8) {
             let val = (ratio as u64) << 8;
             // Safety: writing IA32_PERF_CTL adjusts CPU frequency; valid on Intel CPUs
             // with SpeedStep (CPUID 6 EAX bit 5). The power driver already checked this.
-            unsafe { wrmsr(IA32_PERF_CTL, val); }
+            unsafe {
+                wrmsr(IA32_PERF_CTL, val);
+            }
         }
         CpuVendor::Amd => {
             let pstate_idx = (ratio & 0x07) as u64;
-            unsafe { wrmsr(MSR_AMD_PERF_CTL, pstate_idx); }
+            unsafe {
+                wrmsr(MSR_AMD_PERF_CTL, pstate_idx);
+            }
         }
         CpuVendor::Unknown => {
             crate::serial_verbose_println!("  ACPI PM: set_perf_level — unknown CPU vendor");
@@ -736,19 +765,27 @@ pub fn shutdown() {
         for _ in 0..100_000 {
             core::hint::spin_loop();
         }
-        crate::serial_verbose_println!("  ACPI PM: S5 write did not take effect, trying fallback ports");
+        crate::serial_verbose_println!(
+            "  ACPI PM: S5 write did not take effect, trying fallback ports"
+        );
     }
 
     // Fallback: QEMU ACPI shutdown port (also works on many virtio/KVM setups)
     crate::serial_verbose_println!("  ACPI PM: trying port 0x604 (QEMU)");
-    unsafe { outw(0x604, 0x2000); }
+    unsafe {
+        outw(0x604, 0x2000);
+    }
 
     crate::serial_verbose_println!("  ACPI PM: trying port 0x4004 (VirtualBox)");
-    unsafe { outw(0x4004, 0x3400); }
+    unsafe {
+        outw(0x4004, 0x3400);
+    }
 
     // Fallback: Bochs ACPI shutdown
     crate::serial_verbose_println!("  ACPI PM: trying port 0xB004 (Bochs)");
-    unsafe { outw(0xB004, 0x2000); }
+    unsafe {
+        outw(0xB004, 0x2000);
+    }
 
     // Nothing worked; halt indefinitely
     crate::serial_verbose_println!("  ACPI PM: shutdown fallback exhausted, halting");
@@ -782,17 +819,27 @@ pub fn acpi_reboot() -> bool {
         1 => {
             // System I/O space
             let port = fadt.reset_reg_address as u16;
-            crate::serial_println!("kernel: ACPI reboot via I/O port {:#06x} value {:#04x}",
-                port, fadt.reset_value);
-            unsafe { crate::arch::x86::port::outb(port, fadt.reset_value); }
+            crate::serial_println!(
+                "kernel: ACPI reboot via I/O port {:#06x} value {:#04x}",
+                port,
+                fadt.reset_value
+            );
+            unsafe {
+                crate::arch::x86::port::outb(port, fadt.reset_value);
+            }
             true
         }
         0 => {
             // System Memory space
             let addr = fadt.reset_reg_address;
-            crate::serial_println!("kernel: ACPI reboot via MMIO {:#010x} value {:#04x}",
-                addr, fadt.reset_value);
-            unsafe { (addr as *mut u8).write_volatile(fadt.reset_value); }
+            crate::serial_println!(
+                "kernel: ACPI reboot via MMIO {:#010x} value {:#04x}",
+                addr,
+                fadt.reset_value
+            );
+            unsafe {
+                (addr as *mut u8).write_volatile(fadt.reset_value);
+            }
             true
         }
         _ => false,

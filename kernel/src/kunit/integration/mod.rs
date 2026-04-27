@@ -117,7 +117,8 @@ pub fn run_all() {
             } else {
                 crate::serial_println!(
                     "    [FAIL] {} — {} assertion(s) failed",
-                    case.name, test_ctx.failed
+                    case.name,
+                    test_ctx.failed
                 );
                 cases_fail += 1;
             }
@@ -126,13 +127,17 @@ pub fn run_all() {
         if cases_fail == 0 {
             crate::serial_println!(
                 "  [OK]   {} — {}/{} tests passed",
-                suite.name, cases_pass, cases_pass
+                suite.name,
+                cases_pass,
+                cases_pass
             );
             suites_pass += 1;
         } else {
             crate::serial_println!(
                 "  [FAIL] {} — {}/{} tests failed",
-                suite.name, cases_fail, cases_pass + cases_fail
+                suite.name,
+                cases_fail,
+                cases_pass + cases_fail
             );
             suites_fail += 1;
         }
@@ -144,12 +149,16 @@ pub fn run_all() {
     if total_fail == 0 {
         crate::serial_println!(
             "  KUnit integration: ALL PASS — {} suite(s), {} assertion(s)",
-            suites_pass + suites_fail, total
+            suites_pass + suites_fail,
+            total
         );
     } else {
         crate::serial_println!(
             "  KUnit integration: FAIL — {}/{} assertions failed, {}/{} suites failed",
-            total_fail, total, suites_fail, suites_pass + suites_fail
+            total_fail,
+            total,
+            suites_fail,
+            suites_pass + suites_fail
         );
     }
     crate::serial_println!("============================================================");

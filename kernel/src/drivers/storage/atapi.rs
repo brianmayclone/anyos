@@ -109,7 +109,9 @@ fn try_identify_atapi(base: u16, ctrl: u16, slave: bool) -> Option<AtapiDrive> {
         // Select drive
         outb(base + REG_DRIVE_HEAD, drive_sel);
         // 400ns delay (read alternate status 4 times)
-        for _ in 0..4 { inb(ctrl); }
+        for _ in 0..4 {
+            inb(ctrl);
+        }
 
         // Clear registers
         outb(base + 2, 0); // sector count
@@ -191,7 +193,9 @@ fn send_packet_read(drive: &AtapiDrive, packet: &[u8; 12], buf: &mut [u8]) -> bo
         let drive_sel = if drive.slave { 0xB0 } else { 0xA0 };
 
         outb(base + REG_DRIVE_HEAD, drive_sel);
-        for _ in 0..4 { inb(ctrl); }
+        for _ in 0..4 {
+            inb(ctrl);
+        }
 
         wait_bsy(base);
 
@@ -228,7 +232,7 @@ fn send_packet_read(drive: &AtapiDrive, packet: &[u8; 12], buf: &mut [u8]) -> bo
             }
 
             let byte_count = (inb(base + REG_BYTE_COUNT_HI) as usize) << 8
-                           | inb(base + REG_BYTE_COUNT_LO) as usize;
+                | inb(base + REG_BYTE_COUNT_LO) as usize;
 
             let words = byte_count / 2;
             for _ in 0..words {
@@ -265,16 +269,23 @@ pub fn init() {
                 let size_mb = (total_lba as u64 * block_size as u64) / (1024 * 1024);
                 crate::serial_verbose_println!(
                     "[OK] ATAPI {}: '{}', {} blocks x {} bytes ({} MiB)",
-                    name, model_str, total_lba, block_size, size_mb
+                    name,
+                    model_str,
+                    total_lba,
+                    block_size,
+                    size_mb
                 );
             } else {
                 crate::serial_verbose_println!(
                     "[OK] ATAPI {}: '{}' (no media or capacity unavailable)",
-                    name, model_str
+                    name,
+                    model_str
                 );
             }
 
-            unsafe { ATAPI_DRIVE = drive; }
+            unsafe {
+                ATAPI_DRIVE = drive;
+            }
             return;
         }
     }

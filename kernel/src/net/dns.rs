@@ -3,10 +3,10 @@
 //!
 //! Resolution order: hosts file → cache → DNS query.
 
+use super::types::{IpAddr, Ipv4Addr, Ipv6Addr};
+use crate::sync::spinlock::Spinlock;
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::types::{Ipv4Addr, Ipv6Addr, IpAddr};
-use crate::sync::spinlock::Spinlock;
 use core::sync::atomic::{AtomicU16, Ordering};
 
 const DNS_PORT: u16 = 53;
@@ -261,30 +261,40 @@ fn build_query_aaaa(hostname: &str, txid: u16) -> Vec<u8> {
     let mut pkt = Vec::with_capacity(64);
 
     // Transaction ID
-    pkt.push((txid >> 8) as u8); pkt.push((txid & 0xFF) as u8);
+    pkt.push((txid >> 8) as u8);
+    pkt.push((txid & 0xFF) as u8);
     // Flags: standard query, recursion desired
-    pkt.push(0x01); pkt.push(0x00);
+    pkt.push(0x01);
+    pkt.push(0x00);
     // Questions: 1
-    pkt.push(0x00); pkt.push(0x01);
+    pkt.push(0x00);
+    pkt.push(0x01);
     // Answers: 0
-    pkt.push(0x00); pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
     // Authority: 0
-    pkt.push(0x00); pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
     // Additional: 0
-    pkt.push(0x00); pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
 
     for label in hostname.split('.') {
         let bytes = label.as_bytes();
-        if bytes.len() > 63 { continue; }
+        if bytes.len() > 63 {
+            continue;
+        }
         pkt.push(bytes.len() as u8);
         pkt.extend_from_slice(bytes);
     }
     pkt.push(0);
 
     // Type: AAAA (28)
-    pkt.push(0x00); pkt.push(0x1C);
+    pkt.push(0x00);
+    pkt.push(0x1C);
     // Class: IN
-    pkt.push(0x00); pkt.push(0x01);
+    pkt.push(0x00);
+    pkt.push(0x01);
 
     pkt
 }
@@ -316,12 +326,18 @@ fn parse_response_v6(data: &[u8], txid: u16) -> Result<Ipv6Addr, &'static str> {
     let mut off = 12;
     off = skip_name(data, off)?;
     off += 4;
-    if off > data.len() { return Err("DNS: truncated"); }
+    if off > data.len() {
+        return Err("DNS: truncated");
+    }
 
     for _ in 0..answer_count {
-        if off >= data.len() { break; }
+        if off >= data.len() {
+            break;
+        }
         off = skip_name(data, off)?;
-        if off + 10 > data.len() { return Err("DNS: truncated answer"); }
+        if off + 10 > data.len() {
+            return Err("DNS: truncated answer");
+        }
 
         let rtype = ((data[off] as u16) << 8) | data[off + 1] as u16;
         let rdlength = ((data[off + 8] as u16) << 8) | data[off + 9] as u16;
@@ -329,7 +345,9 @@ fn parse_response_v6(data: &[u8], txid: u16) -> Result<Ipv6Addr, &'static str> {
 
         if rtype == 28 && rdlength == 16 {
             // AAAA record
-            if off + 16 > data.len() { return Err("DNS: truncated AAAA record"); }
+            if off + 16 > data.len() {
+                return Err("DNS: truncated AAAA record");
+            }
             let mut addr = [0u8; 16];
             addr.copy_from_slice(&data[off..off + 16]);
             return Ok(Ipv6Addr(addr));
@@ -345,31 +363,41 @@ fn build_query(hostname: &str, txid: u16) -> Vec<u8> {
     let mut pkt = Vec::with_capacity(64);
 
     // Transaction ID
-    pkt.push((txid >> 8) as u8); pkt.push((txid & 0xFF) as u8);
+    pkt.push((txid >> 8) as u8);
+    pkt.push((txid & 0xFF) as u8);
     // Flags: standard query, recursion desired
-    pkt.push(0x01); pkt.push(0x00);
+    pkt.push(0x01);
+    pkt.push(0x00);
     // Questions: 1
-    pkt.push(0x00); pkt.push(0x01);
+    pkt.push(0x00);
+    pkt.push(0x01);
     // Answers: 0
-    pkt.push(0x00); pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
     // Authority: 0
-    pkt.push(0x00); pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
     // Additional: 0
-    pkt.push(0x00); pkt.push(0x00);
+    pkt.push(0x00);
+    pkt.push(0x00);
 
     // Question: encode hostname as DNS labels
     for label in hostname.split('.') {
         let bytes = label.as_bytes();
-        if bytes.len() > 63 { continue; }
+        if bytes.len() > 63 {
+            continue;
+        }
         pkt.push(bytes.len() as u8);
         pkt.extend_from_slice(bytes);
     }
     pkt.push(0); // Root label
 
     // Type: A (host address)
-    pkt.push(0x00); pkt.push(0x01);
+    pkt.push(0x00);
+    pkt.push(0x01);
     // Class: IN (Internet)
-    pkt.push(0x00); pkt.push(0x01);
+    pkt.push(0x00);
+    pkt.push(0x01);
 
     pkt
 }
@@ -406,14 +434,20 @@ fn parse_response(data: &[u8], txid: u16) -> Result<Ipv4Addr, &'static str> {
     off = skip_name(data, off)?;
     // Skip QTYPE + QCLASS
     off += 4;
-    if off > data.len() { return Err("DNS: truncated"); }
+    if off > data.len() {
+        return Err("DNS: truncated");
+    }
 
     // Parse answers
     for _ in 0..answer_count {
-        if off >= data.len() { break; }
+        if off >= data.len() {
+            break;
+        }
         // Skip NAME (may be a pointer)
         off = skip_name(data, off)?;
-        if off + 10 > data.len() { return Err("DNS: truncated answer"); }
+        if off + 10 > data.len() {
+            return Err("DNS: truncated answer");
+        }
 
         let rtype = ((data[off] as u16) << 8) | data[off + 1] as u16;
         let rdlength = ((data[off + 8] as u16) << 8) | data[off + 9] as u16;
@@ -421,8 +455,15 @@ fn parse_response(data: &[u8], txid: u16) -> Result<Ipv4Addr, &'static str> {
 
         if rtype == 1 && rdlength == 4 {
             // A record
-            if off + 4 > data.len() { return Err("DNS: truncated A record"); }
-            return Ok(Ipv4Addr([data[off], data[off+1], data[off+2], data[off+3]]));
+            if off + 4 > data.len() {
+                return Err("DNS: truncated A record");
+            }
+            return Ok(Ipv4Addr([
+                data[off],
+                data[off + 1],
+                data[off + 2],
+                data[off + 3],
+            ]));
         }
 
         off += rdlength as usize;
@@ -435,7 +476,9 @@ fn skip_name(data: &[u8], mut off: usize) -> Result<usize, &'static str> {
     // DNS names can be either labels or pointers (or mix)
     let mut jumps = 0;
     loop {
-        if off >= data.len() { return Err("DNS: name overflow"); }
+        if off >= data.len() {
+            return Err("DNS: name overflow");
+        }
         let b = data[off];
         if b == 0 {
             // End of name
@@ -448,6 +491,8 @@ fn skip_name(data: &[u8], mut off: usize) -> Result<usize, &'static str> {
         // Label: skip length + label bytes
         off += 1 + (b as usize);
         jumps += 1;
-        if jumps > 128 { return Err("DNS: name too long"); }
+        if jumps > 128 {
+            return Err("DNS: name too long");
+        }
     }
 }

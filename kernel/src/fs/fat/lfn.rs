@@ -3,15 +3,17 @@
 //! Handles encoding/decoding of VFAT long filename directory entries,
 //! which store filenames as UTF-16LE across multiple 32-byte entries.
 
+use super::bpb::ATTR_LONG_NAME;
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::bpb::ATTR_LONG_NAME;
 
 /// Compute the VFAT checksum of an 8.3 name (11 bytes).
 pub(crate) fn lfn_checksum(name83: &[u8]) -> u8 {
     let mut sum: u8 = 0;
     for i in 0..11 {
-        sum = ((sum & 1) << 7).wrapping_add(sum >> 1).wrapping_add(name83[i]);
+        sum = ((sum & 1) << 7)
+            .wrapping_add(sum >> 1)
+            .wrapping_add(name83[i]);
     }
     sum
 }

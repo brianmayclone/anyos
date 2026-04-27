@@ -9,15 +9,15 @@ use crate::memory::address::VirtAddr;
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 
+use super::virtqueue::{VirtQueue, DEFAULT_QUEUE_SIZE, VRING_DESC_F_WRITE};
 use super::VirtioMmioDevice;
-use super::virtqueue::{VirtQueue, VRING_DESC_F_WRITE, DEFAULT_QUEUE_SIZE};
 
 // ---------------------------------------------------------------------------
 // VirtIO Block request types
 // ---------------------------------------------------------------------------
 
-const VIRTIO_BLK_T_IN: u32 = 0;   // Read
-const VIRTIO_BLK_T_OUT: u32 = 1;  // Write
+const VIRTIO_BLK_T_IN: u32 = 0; // Read
+const VIRTIO_BLK_T_OUT: u32 = 1; // Write
 
 /// Status byte values returned by the device.
 const VIRTIO_BLK_S_OK: u8 = 0;
@@ -63,11 +63,19 @@ pub fn init(dev: &VirtioMmioDevice) {
     }
 
     // Read device config
-    let capacity = dev.read_config_u64(0);  // offset 0: capacity (u64)
-    let blk_size = if capacity > 0 { dev.read_config_u32(20) } else { 512 }; // offset 20: blk_size
+    let capacity = dev.read_config_u64(0); // offset 0: capacity (u64)
+    let blk_size = if capacity > 0 {
+        dev.read_config_u32(20)
+    } else {
+        512
+    }; // offset 20: blk_size
     let blk_size = if blk_size == 0 { 512 } else { blk_size };
 
-    crate::serial_verbose_println!("  virtio-blk: capacity={} sectors, blk_size={}", capacity, blk_size);
+    crate::serial_verbose_println!(
+        "  virtio-blk: capacity={} sectors, blk_size={}",
+        capacity,
+        blk_size
+    );
 
     // Set up requestq (queue 0)
     let queue = match VirtQueue::new(0, DEFAULT_QUEUE_SIZE) {
@@ -79,8 +87,12 @@ pub fn init(dev: &VirtioMmioDevice) {
     };
 
     let (desc_phys, avail_phys, used_phys) = queue.phys_addrs();
-    crate::serial_verbose_println!("  virtio-blk: queue phys: desc={:#x} avail={:#x} used={:#x}",
-        desc_phys, avail_phys, used_phys);
+    crate::serial_verbose_println!(
+        "  virtio-blk: queue phys: desc={:#x} avail={:#x} used={:#x}",
+        desc_phys,
+        avail_phys,
+        used_phys
+    );
     if !dev.setup_queue_raw(0, DEFAULT_QUEUE_SIZE, desc_phys, avail_phys, used_phys) {
         crate::serial_verbose_println!("  virtio-blk: failed to setup queue");
         return;
@@ -90,7 +102,10 @@ pub fn init(dev: &VirtioMmioDevice) {
 
     // Mark device ready
     dev.driver_ok();
-    crate::serial_verbose_println!("  virtio-blk: status after driver_ok={:#x}", dev.get_status());
+    crate::serial_verbose_println!(
+        "  virtio-blk: status after driver_ok={:#x}",
+        dev.get_status()
+    );
 
     let blk = VirtioBlk {
         base: dev.base(),
@@ -165,13 +180,14 @@ fn do_io(req_type: u32, sector: u64, count: u32, buf: &mut [u8]) -> bool {
     // For the data buffer, we need a physical address.
     // Translate through the active page tables so both kernel buffers and
     // user-space buffers work on ARM64.
-    let buf_phys = match crate::memory::virtual_mem::virt_to_phys(VirtAddr::new(buf.as_ptr() as u64)) {
-        Some(pa) => pa,
-        None => {
-            physical::free_frame(hdr_frame);
-            return false;
-        }
-    };
+    let buf_phys =
+        match crate::memory::virtual_mem::virt_to_phys(VirtAddr::new(buf.as_ptr() as u64)) {
+            Some(pa) => pa,
+            None => {
+                physical::free_frame(hdr_frame);
+                return false;
+            }
+        };
 
     // Build 3-descriptor chain: header(R) → data(R or W) → status(W)
     let data_flags = if req_type == VIRTIO_BLK_T_IN {
@@ -181,9 +197,9 @@ fn do_io(req_type: u32, sector: u64, count: u32, buf: &mut [u8]) -> bool {
     };
 
     let chain = [
-        (hdr_phys, 16u32, 0u16),                         // header (device-readable)
-        (buf_phys, byte_len as u32, data_flags),          // data
-        (status_phys, 1u32, VRING_DESC_F_WRITE),          // status (device-writable)
+        (hdr_phys, 16u32, 0u16),                 // header (device-readable)
+        (buf_phys, byte_len as u32, data_flags), // data
+        (status_phys, 1u32, VRING_DESC_F_WRITE), // status (device-writable)
     ];
 
     let _head = match blk.queue.push_chain(&chain) {

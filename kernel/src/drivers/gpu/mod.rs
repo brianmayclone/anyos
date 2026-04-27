@@ -12,9 +12,9 @@ pub mod vbox_vga;
 pub mod virtio_gpu;
 pub mod vmware_svga;
 
+use crate::sync::mutex::Mutex;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
-use crate::sync::mutex::Mutex;
 
 /// Poisoned flag: set after force_unlock_gpu() to prevent use of potentially
 /// corrupted GPU driver state. Cleared only by a full GPU re-init.
@@ -36,7 +36,10 @@ fn validate_gpu_vtable(driver: &dyn GpuDriver) -> bool {
         unsafe {
             use crate::arch::x86::port::{inb, outb};
             let msg = b"\r\n!!! GPU VTABLE CORRUPT vtable=";
-            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             let mut v = vtable;
             let mut buf = [0u8; 16];
             for i in (0..16).rev() {
@@ -44,9 +47,15 @@ fn validate_gpu_vtable(driver: &dyn GpuDriver) -> bool {
                 buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
                 v >>= 4;
             }
-            for &c in &buf { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in &buf {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             let msg2 = b" -- GPU call SKIPPED\r\n";
-            for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg2 {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
         }
         return false;
     }
@@ -67,7 +76,11 @@ pub fn set_preferred_resolution(width: u32, height: u32) {
 pub fn preferred_resolution() -> Option<(u32, u32)> {
     let w = PREFERRED_WIDTH.load(Ordering::Relaxed);
     let h = PREFERRED_HEIGHT.load(Ordering::Relaxed);
-    if w > 0 && h > 0 { Some((w, h)) } else { None }
+    if w > 0 && h > 0 {
+        Some((w, h))
+    } else {
+        None
+    }
 }
 
 /// Common display resolutions supported by QEMU VGA devices
@@ -92,7 +105,9 @@ pub trait GpuDriver: Send {
     /// Driver type identifier for userspace .drv loading.
     /// Returns "svga3d", "virgl", "none", etc.
     /// libGL uses this to load `/Drivers/{type}.drv`.
-    fn driver_type_name(&self) -> &str { "none" }
+    fn driver_type_name(&self) -> &str {
+        "none"
+    }
 
     /// Set display resolution. Returns (width, height, pitch, fb_phys) on success.
     fn set_mode(&mut self, width: u32, height: u32, bpp: u32) -> Option<(u32, u32, u32, u32)>;
@@ -108,7 +123,9 @@ pub trait GpuDriver: Send {
     // ── 2D Acceleration ──────────────────────────────────
 
     /// Returns true if hardware 2D acceleration is available.
-    fn has_accel(&self) -> bool { false }
+    fn has_accel(&self) -> bool {
+        false
+    }
 
     /// Hardware-accelerated rectangle fill. Returns true if executed.
     fn accel_fill_rect(&mut self, _x: u32, _y: u32, _w: u32, _h: u32, _color: u32) -> bool {
@@ -116,7 +133,15 @@ pub trait GpuDriver: Send {
     }
 
     /// Hardware-accelerated rectangle copy. Returns true if executed.
-    fn accel_copy_rect(&mut self, _sx: u32, _sy: u32, _dx: u32, _dy: u32, _w: u32, _h: u32) -> bool {
+    fn accel_copy_rect(
+        &mut self,
+        _sx: u32,
+        _sy: u32,
+        _dx: u32,
+        _dy: u32,
+        _w: u32,
+        _h: u32,
+    ) -> bool {
         false
     }
 
@@ -139,12 +164,16 @@ pub trait GpuDriver: Send {
     fn sync(&mut self) {}
 
     /// Total VRAM size in bytes (0 if unknown).
-    fn vram_size(&self) -> u32 { 0 }
+    fn vram_size(&self) -> u32 {
+        0
+    }
 
     // ── Hardware Cursor ──────────────────────────────────
 
     /// Returns true if hardware cursor is supported.
-    fn has_hw_cursor(&self) -> bool { false }
+    fn has_hw_cursor(&self) -> bool {
+        false
+    }
 
     /// Define cursor bitmap (ARGB8888 pixels).
     fn define_cursor(&mut self, _w: u32, _h: u32, _hotx: u32, _hoty: u32, _pixels: &[u32]) {}
@@ -162,71 +191,117 @@ pub trait GpuDriver: Send {
     /// instead of reading VRAM. `sub_page_offset` is the byte offset within
     /// the first page where pixel data starts (buf_ptr & 0xFFF).
     /// Returns true if successful.
-    fn register_back_buffer(&mut self, _phys_pages: &[u64], _sub_page_offset: u32) -> bool { false }
+    fn register_back_buffer(&mut self, _phys_pages: &[u64], _sub_page_offset: u32) -> bool {
+        false
+    }
 
     /// Whether DMA back_buffer mode is active (GMR registered).
-    fn has_dma_back_buffer(&self) -> bool { false }
+    fn has_dma_back_buffer(&self) -> bool {
+        false
+    }
 
     // ── Double Buffering ─────────────────────────────────
 
     /// Returns true if hardware double-buffering is available.
-    fn has_double_buffer(&self) -> bool { false }
+    fn has_double_buffer(&self) -> bool {
+        false
+    }
 
     /// Flip front/back buffers (page flip).
     fn flip(&mut self) {}
 
     /// Get the physical address of the current back buffer.
-    fn back_buffer_phys(&self) -> Option<u32> { None }
+    fn back_buffer_phys(&self) -> Option<u32> {
+        None
+    }
 
     // ── 3D Acceleration ──────────────────────────────────
 
     /// Returns true if SVGA3D hardware acceleration is available.
-    fn has_3d(&self) -> bool { false }
+    fn has_3d(&self) -> bool {
+        false
+    }
 
     /// Get the 3D hardware version (0 if no 3D support).
-    fn hw_version_3d(&self) -> u32 { 0 }
+    fn hw_version_3d(&self) -> u32 {
+        0
+    }
 
     /// Submit raw SVGA3D command words to the GPU FIFO.
     /// The buffer must contain correctly formatted 3D command sequences.
-    fn submit_3d_commands(&mut self, _words: &[u32]) -> bool { false }
+    fn submit_3d_commands(&mut self, _words: &[u32]) -> bool {
+        false
+    }
 
     /// Upload data from kernel buffer to a GPU surface via DMA (GMR).
     /// `sid`: target surface ID. `data`: raw bytes to upload.
     /// `width`, `height`: surface dimensions (for DMA copy box).
     /// Returns true on success.
-    fn dma_surface_upload(&mut self, _sid: u32, _data: &[u8], _width: u32, _height: u32) -> bool { false }
+    fn dma_surface_upload(&mut self, _sid: u32, _data: &[u8], _width: u32, _height: u32) -> bool {
+        false
+    }
 
     /// Download data from a GPU surface to a kernel buffer via DMA (GMR).
     /// `sid`: source surface ID. `buf`: destination buffer for pixel data.
     /// `width`, `height`: surface dimensions (for DMA copy box).
     /// Returns true on success.
-    fn dma_surface_download(&mut self, _sid: u32, _buf: &mut [u8], _width: u32, _height: u32) -> bool { false }
+    fn dma_surface_download(
+        &mut self,
+        _sid: u32,
+        _buf: &mut [u8],
+        _width: u32,
+        _height: u32,
+    ) -> bool {
+        false
+    }
 
     /// Create a 3D resource via the control plane (virgl).
     /// Returns the allocated resource ID, or None on failure.
-    fn create_3d_resource(&mut self, _target: u32, _format: u32, _bind: u32,
-        _width: u32, _height: u32, _depth: u32, _array_size: u32,
-        _last_level: u32, _nr_samples: u32, _flags: u32) -> Option<u32> { None }
+    fn create_3d_resource(
+        &mut self,
+        _target: u32,
+        _format: u32,
+        _bind: u32,
+        _width: u32,
+        _height: u32,
+        _depth: u32,
+        _array_size: u32,
+        _last_level: u32,
+        _nr_samples: u32,
+        _flags: u32,
+    ) -> Option<u32> {
+        None
+    }
 
     /// Destroy a 3D resource. Returns true on success.
-    fn destroy_3d_resource(&mut self, _resource_id: u32) -> bool { false }
+    fn destroy_3d_resource(&mut self, _resource_id: u32) -> bool {
+        false
+    }
 
     // ── Monitor / EDID ──
 
     /// Number of display outputs (scanouts) this GPU supports.
-    fn display_count(&self) -> u32 { 1 }
+    fn display_count(&self) -> u32 {
+        1
+    }
 
     /// Read the 128-byte EDID base block for the given output index.
     /// Returns `None` if EDID is not available for this output.
-    fn read_edid(&mut self, _output: u32) -> Option<[u8; 128]> { None }
+    fn read_edid(&mut self, _output: u32) -> Option<[u8; 128]> {
+        None
+    }
 
     /// Read the 128-byte EDID extension block (bytes 128-255) for the given output.
     /// Returns `None` if no extension block is available.
-    fn read_edid_ext(&mut self, _output: u32) -> Option<[u8; 128]> { None }
+    fn read_edid_ext(&mut self, _output: u32) -> Option<[u8; 128]> {
+        None
+    }
 
     /// Query display info for a given output: (width, height, enabled).
     /// Returns `None` if the output index is out of range.
-    fn display_info(&self, _output: u32) -> Option<(u32, u32, bool)> { None }
+    fn display_info(&self, _output: u32) -> Option<(u32, u32, bool)> {
+        None
+    }
 
     /// Re-query display info from hardware (not cached).
     /// Call this after boot has progressed to get up-to-date display dimensions.
@@ -329,7 +404,8 @@ pub unsafe fn force_unlock_gpu() {
 ///
 /// Returns `Some(guard)` only if the mutex is currently free and not poisoned.
 /// Callers **must** handle `None` gracefully — the GPU may be in use by another thread.
-pub fn try_lock_gpu() -> Option<crate::sync::mutex::MutexGuard<'static, Option<Box<dyn GpuDriver>>>> {
+pub fn try_lock_gpu() -> Option<crate::sync::mutex::MutexGuard<'static, Option<Box<dyn GpuDriver>>>>
+{
     if GPU_POISONED.load(Ordering::Relaxed) {
         return None;
     }
@@ -419,20 +495,27 @@ pub fn splash_cursor_position() -> (i32, i32) {
 
 // ── HAL integration ─────────────────────────────────────────────────────────
 
+use crate::drivers::hal::{
+    Driver, DriverError, DriverType, IOCTL_DISPLAY_FLIP, IOCTL_DISPLAY_GET_MODE,
+    IOCTL_DISPLAY_GET_PITCH, IOCTL_DISPLAY_HAS_ACCEL, IOCTL_DISPLAY_HAS_HW_CURSOR,
+    IOCTL_DISPLAY_IS_DBLBUF, IOCTL_DISPLAY_LIST_MODES, IOCTL_DISPLAY_SET_MODE,
+};
 use crate::drivers::pci::PciDevice;
-use crate::drivers::hal::{Driver, DriverType, DriverError,
-    IOCTL_DISPLAY_GET_MODE, IOCTL_DISPLAY_FLIP, IOCTL_DISPLAY_IS_DBLBUF,
-    IOCTL_DISPLAY_GET_PITCH, IOCTL_DISPLAY_SET_MODE, IOCTL_DISPLAY_LIST_MODES,
-    IOCTL_DISPLAY_HAS_ACCEL, IOCTL_DISPLAY_HAS_HW_CURSOR};
 
 struct GpuHalDriver {
     name: &'static str,
 }
 
 impl Driver for GpuHalDriver {
-    fn name(&self) -> &str { self.name }
-    fn driver_type(&self) -> DriverType { DriverType::Display }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Display
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
@@ -440,43 +523,37 @@ impl Driver for GpuHalDriver {
         Err(DriverError::NotSupported)
     }
     fn ioctl(&mut self, cmd: u32, arg: u32) -> Result<u32, DriverError> {
-        if !is_available() { return Err(DriverError::NotSupported); }
+        if !is_available() {
+            return Err(DriverError::NotSupported);
+        }
         match cmd {
-            IOCTL_DISPLAY_GET_MODE => {
-                with_gpu(|g| {
-                    let (w, h, _, _) = g.get_mode();
-                    w | (h << 16)
-                }).ok_or(DriverError::IoError)
-            }
+            IOCTL_DISPLAY_GET_MODE => with_gpu(|g| {
+                let (w, h, _, _) = g.get_mode();
+                w | (h << 16)
+            })
+            .ok_or(DriverError::IoError),
             IOCTL_DISPLAY_FLIP => {
                 with_gpu(|g| g.flip());
                 Ok(0)
             }
-            IOCTL_DISPLAY_IS_DBLBUF => {
-                Ok(with_gpu(|g| g.has_double_buffer() as u32).unwrap_or(0))
-            }
-            IOCTL_DISPLAY_GET_PITCH => {
-                with_gpu(|g| {
-                    let (_, _, pitch, _) = g.get_mode();
-                    pitch
-                }).ok_or(DriverError::IoError)
-            }
+            IOCTL_DISPLAY_IS_DBLBUF => Ok(with_gpu(|g| g.has_double_buffer() as u32).unwrap_or(0)),
+            IOCTL_DISPLAY_GET_PITCH => with_gpu(|g| {
+                let (_, _, pitch, _) = g.get_mode();
+                pitch
+            })
+            .ok_or(DriverError::IoError),
             IOCTL_DISPLAY_SET_MODE => {
                 let w = arg & 0xFFFF;
                 let h = (arg >> 16) & 0xFFFF;
-                with_gpu(|g| {
-                    g.set_mode(w, h, 32).map(|(w, h, _, _)| w | (h << 16))
-                }).flatten().ok_or(DriverError::IoError)
+                with_gpu(|g| g.set_mode(w, h, 32).map(|(w, h, _, _)| w | (h << 16)))
+                    .flatten()
+                    .ok_or(DriverError::IoError)
             }
             IOCTL_DISPLAY_LIST_MODES => {
                 Ok(with_gpu(|g| g.supported_modes().len() as u32).unwrap_or(0))
             }
-            IOCTL_DISPLAY_HAS_ACCEL => {
-                Ok(with_gpu(|g| g.has_accel() as u32).unwrap_or(0))
-            }
-            IOCTL_DISPLAY_HAS_HW_CURSOR => {
-                Ok(with_gpu(|g| g.has_hw_cursor() as u32).unwrap_or(0))
-            }
+            IOCTL_DISPLAY_HAS_ACCEL => Ok(with_gpu(|g| g.has_accel() as u32).unwrap_or(0)),
+            IOCTL_DISPLAY_HAS_HW_CURSOR => Ok(with_gpu(|g| g.has_hw_cursor() as u32).unwrap_or(0)),
             _ => Err(DriverError::NotSupported),
         }
     }

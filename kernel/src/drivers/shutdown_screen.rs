@@ -19,9 +19,13 @@ fn ensure_kernel_cr3() {
     {
         let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
         let current_cr3: u64;
-        unsafe { core::arch::asm!("mov {}, cr3", out(reg) current_cr3); }
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) current_cr3);
+        }
         if current_cr3 != kernel_cr3 {
-            unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
+            unsafe {
+                core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
+            }
         }
     }
 }
@@ -53,21 +57,34 @@ impl ScreenWriter {
         #[cfg(not(target_arch = "x86_64"))]
         let (fb_pitch, fb_width, fb_height) = (fb.pitch, fb.width, fb.height);
 
-        if fb_width == 0 || fb_height == 0 { return None; }
+        if fb_width == 0 || fb_height == 0 {
+            return None;
+        }
 
-        Some(ScreenWriter { fb_addr, fb_pitch, fb_width, fb_height })
+        Some(ScreenWriter {
+            fb_addr,
+            fb_pitch,
+            fb_width,
+            fb_height,
+        })
     }
 
     fn fill_rect(&self, x: u32, y: u32, w: u32, h: u32, color: u32) {
         for dy in 0..h {
             let py = y + dy;
-            if py >= self.fb_height { break; }
+            if py >= self.fb_height {
+                break;
+            }
             let row_base = self.fb_addr + py as u64 * self.fb_pitch as u64;
             for dx in 0..w {
                 let px = x + dx;
-                if px >= self.fb_width { break; }
+                if px >= self.fb_width {
+                    break;
+                }
                 let ptr = (row_base + px as u64 * 4) as *mut u32;
-                unsafe { ptr.write_volatile(color); }
+                unsafe {
+                    ptr.write_volatile(color);
+                }
             }
         }
     }
@@ -78,10 +95,14 @@ impl ScreenWriter {
 
     fn draw_char_2x(&self, x: u32, y: u32, ch: u8, color: u32) {
         let c = ch as u32;
-        if c < 32 || c > 126 { return; }
+        if c < 32 || c > 126 {
+            return;
+        }
         let idx = (c - 32) as usize;
         let glyph_off = idx * FONT_H as usize;
-        if glyph_off + FONT_H as usize > FONT_DATA.len() { return; }
+        if glyph_off + FONT_H as usize > FONT_DATA.len() {
+            return;
+        }
         for row in 0..FONT_H {
             let bits = FONT_DATA[glyph_off + row as usize];
             for col in 0..FONT_W {
@@ -99,10 +120,14 @@ impl ScreenWriter {
 
     fn draw_char_1x(&self, x: u32, y: u32, ch: u8, color: u32) {
         let c = ch as u32;
-        if c < 32 || c > 126 { return; }
+        if c < 32 || c > 126 {
+            return;
+        }
         let idx = (c - 32) as usize;
         let glyph_off = idx * FONT_H as usize;
-        if glyph_off + FONT_H as usize > FONT_DATA.len() { return; }
+        if glyph_off + FONT_H as usize > FONT_DATA.len() {
+            return;
+        }
         for row in 0..FONT_H {
             let bits = FONT_DATA[glyph_off + row as usize];
             for col in 0..FONT_W {
@@ -114,16 +139,22 @@ impl ScreenWriter {
     }
 
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
-        if x >= self.fb_width || y >= self.fb_height { return; }
+        if x >= self.fb_width || y >= self.fb_height {
+            return;
+        }
         let offset = y as u64 * self.fb_pitch as u64 + x as u64 * 4;
         let ptr = (self.fb_addr + offset) as *mut u32;
-        unsafe { ptr.write_volatile(color); }
+        unsafe {
+            ptr.write_volatile(color);
+        }
     }
 
     fn draw_string_2x(&self, x: u32, y: u32, text: &str, color: u32) {
         let mut cx = x;
         for byte in text.bytes() {
-            if cx + FONT_W * 2 > self.fb_width { break; }
+            if cx + FONT_W * 2 > self.fb_width {
+                break;
+            }
             self.draw_char_2x(cx, y, byte, color);
             cx += FONT_W * 2;
         }
@@ -132,7 +163,9 @@ impl ScreenWriter {
     fn draw_string_1x(&self, x: u32, y: u32, text: &str, color: u32) {
         let mut cx = x;
         for byte in text.bytes() {
-            if cx + FONT_W > self.fb_width { break; }
+            if cx + FONT_W > self.fb_width {
+                break;
+            }
             self.draw_char_1x(cx, y, byte, color);
             cx += FONT_W;
         }
@@ -141,14 +174,22 @@ impl ScreenWriter {
     /// Center a string horizontally at the given y coordinate (2x scale).
     fn draw_centered_2x(&self, y: u32, text: &str, color: u32) {
         let text_w = text.len() as u32 * FONT_W * 2;
-        let x = if text_w < self.fb_width { (self.fb_width - text_w) / 2 } else { 0 };
+        let x = if text_w < self.fb_width {
+            (self.fb_width - text_w) / 2
+        } else {
+            0
+        };
         self.draw_string_2x(x, y, text, color);
     }
 
     /// Center a string horizontally at the given y coordinate (1x scale).
     fn draw_centered_1x(&self, y: u32, text: &str, color: u32) {
         let text_w = text.len() as u32 * FONT_W;
-        let x = if text_w < self.fb_width { (self.fb_width - text_w) / 2 } else { 0 };
+        let x = if text_w < self.fb_width {
+            (self.fb_width - text_w) / 2
+        } else {
+            0
+        };
         self.draw_string_1x(x, y, text, color);
     }
 }
@@ -187,7 +228,11 @@ pub fn show(is_reboot: bool) {
     scr.draw_centered_2x(center_y - 40, "anyOS", LOGO_COLOR);
 
     // Status message in 1x scale — centered below logo
-    let msg = if is_reboot { "Restarting..." } else { "Shutting down..." };
+    let msg = if is_reboot {
+        "Restarting..."
+    } else {
+        "Shutting down..."
+    };
     scr.draw_centered_1x(center_y + 10, msg, TEXT_COLOR);
 
     // Flush to GPU so the screen is actually visible (required for VMware SVGA, VirtIO)

@@ -110,7 +110,11 @@ fn auto_apply_native_resolution() {
     if let Some(Some((new_w, new_h, pitch, addr))) =
         drivers::gpu::with_gpu(|gpu| gpu.set_mode(target_w, target_h, 32))
     {
-        serial_println!("[OK] Applied native monitor resolution: {}x{}", new_w, new_h);
+        serial_println!(
+            "[OK] Applied native monitor resolution: {}x{}",
+            new_w,
+            new_h
+        );
         update_display_geometry(new_w, new_h, pitch, addr);
     }
 }

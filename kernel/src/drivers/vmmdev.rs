@@ -24,19 +24,19 @@ const VMMDEV_REQUEST_HEADER_VERSION: u32 = 0x10001;
 
 // ── Request type codes ──────────────────────────────
 
-const VMMDEVREQ_GET_MOUSE_STATUS: u32     = 1;
-const VMMDEVREQ_SET_MOUSE_STATUS: u32     = 2;
-const VMMDEVREQ_GET_HOST_VERSION: u32     = 4;
-const VMMDEVREQ_ACKNOWLEDGE_EVENTS: u32   = 41;
+const VMMDEVREQ_GET_MOUSE_STATUS: u32 = 1;
+const VMMDEVREQ_SET_MOUSE_STATUS: u32 = 2;
+const VMMDEVREQ_GET_HOST_VERSION: u32 = 4;
+const VMMDEVREQ_ACKNOWLEDGE_EVENTS: u32 = 41;
 const VMMDEVREQ_CTL_GUEST_FILTER_MASK: u32 = 42;
-const VMMDEVREQ_REPORT_GUEST_INFO: u32    = 50;
+const VMMDEVREQ_REPORT_GUEST_INFO: u32 = 50;
 
 // ── Mouse feature flags ─────────────────────────────
 
-const VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE: u32     = 0x01;
-const VMMDEV_MOUSE_HOST_WANTS_ABSOLUTE: u32     = 0x04;
+const VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE: u32 = 0x01;
+const VMMDEV_MOUSE_HOST_WANTS_ABSOLUTE: u32 = 0x04;
 const VMMDEV_MOUSE_GUEST_NEEDS_HOST_CURSOR: u32 = 0x10;
-const VMMDEV_MOUSE_NEW_PROTOCOL: u32            = 0x20;
+const VMMDEV_MOUSE_NEW_PROTOCOL: u32 = 0x20;
 
 // ── Event flags ─────────────────────────────────────
 
@@ -196,8 +196,13 @@ pub fn poll_mouse() -> Option<(i32, i32, u32)> {
     if n < 10 || (n % 500 == 0) {
         crate::serial_verbose_println!(
             "[vmmdev] GetMouseStatus #{}: rc={} features={:#06x} pos=({},{}) screen={}x{}",
-            n, resp.header.rc, resp.mouse_features, resp.pointer_x, resp.pointer_y,
-            SCREEN_WIDTH.load(Ordering::Relaxed), SCREEN_HEIGHT.load(Ordering::Relaxed),
+            n,
+            resp.header.rc,
+            resp.mouse_features,
+            resp.pointer_x,
+            resp.pointer_y,
+            SCREEN_WIDTH.load(Ordering::Relaxed),
+            SCREEN_HEIGHT.load(Ordering::Relaxed),
         );
     }
 
@@ -270,11 +275,7 @@ pub fn init_and_register(pci: &PciDevice) {
         }
     };
     // Identity-map the request page (virt = phys) for DMA
-    crate::memory::virtual_mem::map_page(
-        VirtAddr::new(req_phys),
-        PhysAddr::new(req_phys),
-        0x03,
-    );
+    crate::memory::virtual_mem::map_page(VirtAddr::new(req_phys), PhysAddr::new(req_phys), 0x03);
 
     unsafe {
         IO_PORT = io_base;
@@ -319,7 +320,10 @@ pub fn init_and_register(pci: &PciDevice) {
     if ver_resp.header.rc >= 0 {
         crate::serial_verbose_println!(
             "  VMMDev: Host version {}.{}.{} (rev {})",
-            ver_resp.major, ver_resp.minor, ver_resp.build, ver_resp.revision
+            ver_resp.major,
+            ver_resp.minor,
+            ver_resp.build,
+            ver_resp.revision
         );
     }
 
@@ -335,14 +339,16 @@ pub fn init_and_register(pci: &PciDevice) {
             VMMDEVREQ_SET_MOUSE_STATUS,
             core::mem::size_of::<VMMDevReqMouseStatus>() as u32,
         ),
-        mouse_features: VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE
-            | VMMDEV_MOUSE_NEW_PROTOCOL,
+        mouse_features: VMMDEV_MOUSE_GUEST_CAN_ABSOLUTE | VMMDEV_MOUSE_NEW_PROTOCOL,
         pointer_x: 0,
         pointer_y: 0,
     };
     let mouse_resp: VMMDevReqMouseStatus = unsafe { submit_request(&mouse_req) };
     if mouse_resp.header.rc < 0 {
-        crate::serial_verbose_println!("  VMMDev: SetMouseStatus failed (rc={})", mouse_resp.header.rc);
+        crate::serial_verbose_println!(
+            "  VMMDev: SetMouseStatus failed (rc={})",
+            mouse_resp.header.rc
+        );
         ABSOLUTE_AVAILABLE.store(false, Ordering::Relaxed);
     } else {
         ABSOLUTE_AVAILABLE.store(true, Ordering::Relaxed);
@@ -375,15 +381,21 @@ pub fn init_and_register(pci: &PciDevice) {
 
 // ── HAL integration ─────────────────────────────────────────────────────────
 
+use crate::drivers::hal::{Driver, DriverError, DriverType};
 use alloc::boxed::Box;
-use crate::drivers::hal::{Driver, DriverType, DriverError};
 
 struct VMMDevHalDriver;
 
 impl Driver for VMMDevHalDriver {
-    fn name(&self) -> &str { "VMMDev Guest Integration" }
-    fn driver_type(&self) -> DriverType { DriverType::Bus }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        "VMMDev Guest Integration"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Bus
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }

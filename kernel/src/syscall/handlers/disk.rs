@@ -27,11 +27,17 @@ pub fn sys_disk_list(buf_ptr: u64, buf_size: u32) -> u32 {
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
         // Use 64-byte entries if buffer is large enough, else fall back to 32
-        let entry_size = if buf_size as usize / count.max(1) >= 64 { 64usize } else { 32usize };
+        let entry_size = if buf_size as usize / count.max(1) >= 64 {
+            64usize
+        } else {
+            32usize
+        };
         let max_entries = buf_size as usize / entry_size;
         for (i, dev) in devices.iter().enumerate().take(max_entries.min(count)) {
             let off = i * entry_size;
-            for b in &mut buf[off..off + entry_size] { *b = 0; }
+            for b in &mut buf[off..off + entry_size] {
+                *b = 0;
+            }
             buf[off] = dev.id;
             buf[off + 1] = dev.disk_id;
             buf[off + 2] = dev.partition.unwrap_or(0xFF);
@@ -53,11 +59,17 @@ pub fn sys_disk_list(buf_ptr: u64, buf_size: u32) -> u32 {
     let count = devices.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-        let entry_size = if buf_size as usize / count.max(1) >= 64 { 64usize } else { 32usize };
+        let entry_size = if buf_size as usize / count.max(1) >= 64 {
+            64usize
+        } else {
+            32usize
+        };
         let max_entries = buf_size as usize / entry_size;
         for (i, dev) in devices.iter().enumerate().take(max_entries.min(count)) {
             let off = i * entry_size;
-            for b in &mut buf[off..off + entry_size] { *b = 0; }
+            for b in &mut buf[off..off + entry_size] {
+                *b = 0;
+            }
             buf[off] = dev.id;
             buf[off + 1] = dev.disk_id;
             buf[off + 2] = dev.partition.unwrap_or(0xFF);
@@ -85,8 +97,8 @@ pub fn sys_disk_list(buf_ptr: u64, buf_size: u32) -> u32 {
 /// Returns partition count.
 /// Shared implementation for disk_partitions on both architectures.
 fn disk_partitions_impl(disk_id: u32, buf_ptr: u64, buf_size: u32) -> u32 {
-    use crate::fs::partition;
     use crate::drivers::storage::blockdev;
+    use crate::fs::partition;
 
     let whole_disk = match blockdev::find_device(disk_id as u8, None) {
         Some(d) => d,
@@ -107,9 +119,16 @@ fn disk_partitions_impl(disk_id: u32, buf_ptr: u64, buf_size: u32) -> u32 {
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
         let entry_size = 32usize;
         let max_entries = buf_size as usize / entry_size;
-        for (i, part) in table.partitions.iter().enumerate().take(max_entries.min(count)) {
+        for (i, part) in table
+            .partitions
+            .iter()
+            .enumerate()
+            .take(max_entries.min(count))
+        {
             let off = i * entry_size;
-            for b in &mut buf[off..off + entry_size] { *b = 0; }
+            for b in &mut buf[off..off + entry_size] {
+                *b = 0;
+            }
             buf[off] = part.index;
             buf[off + 1] = partition_type_to_id(&part.part_type);
             buf[off + 2] = if part.bootable { 1 } else { 0 };
@@ -185,7 +204,11 @@ pub fn sys_disk_read(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_siz
     };
 
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, needed as usize) };
-    if dev.read_sectors(lba, count, buf) { count } else { u32::MAX }
+    if dev.read_sectors(lba, count, buf) {
+        count
+    } else {
+        u32::MAX
+    }
 }
 
 /// SYS_DISK_WRITE - Write raw sectors to a block device.
@@ -233,7 +256,11 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_si
     };
     // Invalidate any cached copies of these sectors
     crate::fs::blockcache::invalidate(0, abs_lba, count);
-    if ok { count } else { u32::MAX }
+    if ok {
+        count
+    } else {
+        u32::MAX
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -254,7 +281,11 @@ pub fn sys_disk_write(device_id: u32, lba: u32, count: u32, buf_ptr: u64, buf_si
     };
 
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, needed as usize) };
-    if dev.write_sectors(lba, count, buf) { count } else { u32::MAX }
+    if dev.write_sectors(lba, count, buf) {
+        count
+    } else {
+        u32::MAX
+    }
 }
 
 /// SYS_PARTITION_CREATE - Create/update an MBR partition entry.
@@ -304,7 +335,9 @@ fn partition_create_impl(disk_id: u32, entry_ptr: u64, entry_size: u32) -> u32 {
 
     // If no MBR signature exists, initialize a blank MBR.
     if mbr[510] != 0x55 || mbr[511] != 0xAA {
-        for b in &mut mbr[446..510] { *b = 0; } // clear partition table area
+        for b in &mut mbr[446..510] {
+            *b = 0;
+        } // clear partition table area
         mbr[510] = 0x55;
         mbr[511] = 0xAA;
     }
@@ -361,7 +394,9 @@ fn partition_delete_impl(disk_id: u32, index: u32) -> u32 {
     }
 
     let off = 446 + index as usize * 16;
-    for b in &mut mbr[off..off + 16] { *b = 0; }
+    for b in &mut mbr[off..off + 16] {
+        *b = 0;
+    }
 
     if !whole_disk.write_sectors(0, 1, &mbr) {
         return u32::MAX;
@@ -398,7 +433,10 @@ pub fn sys_partition_rescan(disk_id: u32) -> u32 {
 
     // Return count of partitions found
     let devices = blockdev::list_devices();
-    devices.iter().filter(|d| d.disk_id == disk_id as u8 && d.partition.is_some()).count() as u32
+    devices
+        .iter()
+        .filter(|d| d.disk_id == disk_id as u8 && d.partition.is_some())
+        .count() as u32
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -407,7 +445,10 @@ pub fn sys_partition_rescan(disk_id: u32) -> u32 {
     blockdev::remove_partition_devices(disk_id as u8);
     blockdev::scan_and_register_partitions(disk_id as u8);
     let devices = blockdev::list_devices();
-    devices.iter().filter(|d| d.disk_id == disk_id as u8 && d.partition.is_some()).count() as u32
+    devices
+        .iter()
+        .filter(|d| d.disk_id == disk_id as u8 && d.partition.is_some())
+        .count() as u32
 }
 
 /// Maps a `PartitionType` enum variant to its corresponding MBR type byte.
@@ -462,7 +503,11 @@ pub fn sys_disk_eject(disk_id: u32) -> u32 {
 
     // 5. Emit eject event
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_VOLUME_EJECTED, disk_id, 0, 0, 0,
+        crate::ipc::event_bus::EVT_VOLUME_EJECTED,
+        disk_id,
+        0,
+        0,
+        0,
     ));
 
     crate::serial_println!("  Disk {} ejected safely", disk_id);
@@ -482,7 +527,11 @@ pub fn sys_disk_eject(disk_id: u32) -> u32 {
     crate::drivers::storage::blockdev::remove_partition_devices(disk);
     crate::drivers::storage::unregister_device_io(disk);
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_VOLUME_EJECTED, disk_id, 0, 0, 0,
+        crate::ipc::event_bus::EVT_VOLUME_EJECTED,
+        disk_id,
+        0,
+        0,
+        0,
     ));
     crate::serial_println!("  Disk {} ejected safely", disk_id);
     0

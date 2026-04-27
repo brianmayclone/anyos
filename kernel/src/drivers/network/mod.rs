@@ -16,8 +16,8 @@ pub mod rtl8168;
 pub mod rtl8188eu;
 pub mod virtio_net;
 
-use alloc::boxed::Box;
 use crate::sync::spinlock::Spinlock;
+use alloc::boxed::Box;
 
 /// Unified network driver interface.
 pub trait NetworkDriver: Send {
@@ -32,11 +32,17 @@ pub trait NetworkDriver: Send {
     /// Enable the NIC. Default: no-op (always enabled).
     fn set_enabled(&mut self, _enabled: bool) {}
     /// Check if the NIC is enabled. Default: true if registered.
-    fn is_enabled(&self) -> bool { true }
+    fn is_enabled(&self) -> bool {
+        true
+    }
     /// Get NIC statistics: (rx_packets, tx_packets, rx_bytes, tx_bytes, rx_errors, tx_errors).
-    fn get_stats(&self) -> (u64, u64, u64, u64, u64, u64) { (0, 0, 0, 0, 0, 0) }
+    fn get_stats(&self) -> (u64, u64, u64, u64, u64, u64) {
+        (0, 0, 0, 0, 0, 0)
+    }
     /// Get the NIC driver name for display (e.g. "e1000", "virtio-net").
-    fn driver_name(&self) -> &str { self.name() }
+    fn driver_name(&self) -> &str {
+        self.name()
+    }
 }
 
 /// Global network driver instance, set during PCI probe.
@@ -132,21 +138,31 @@ pub fn wifi_available() -> bool {
 
 // ── HAL integration ─────────────────────────────────────────────────────────
 
-use crate::drivers::hal::{Driver, DriverType, DriverError};
+use crate::drivers::hal::{Driver, DriverError, DriverType};
 
 struct NetworkHalDriver {
     name: &'static str,
 }
 
 impl Driver for NetworkHalDriver {
-    fn name(&self) -> &str { self.name }
-    fn driver_type(&self) -> DriverType { DriverType::Network }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Network
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
-        if transmit(buf) { Ok(buf.len()) } else { Err(DriverError::IoError) }
+        if transmit(buf) {
+            Ok(buf.len())
+        } else {
+            Err(DriverError::IoError)
+        }
     }
     fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
         Err(DriverError::NotSupported)

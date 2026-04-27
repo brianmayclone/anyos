@@ -11,8 +11,8 @@ pub mod ac97;
 pub mod hda;
 pub mod mixer;
 
-use alloc::boxed::Box;
 use crate::sync::spinlock::Spinlock;
+use alloc::boxed::Box;
 
 /// Unified audio driver interface.
 pub trait AudioDriver: Send {
@@ -87,31 +87,44 @@ pub fn is_playing() -> bool {
 
 // ── HAL integration ─────────────────────────────────────────────────────────
 
-use crate::drivers::hal::{Driver, DriverType, DriverError,
-    IOCTL_AUDIO_GET_SAMPLE_RATE, IOCTL_AUDIO_SET_VOLUME, IOCTL_AUDIO_GET_VOLUME};
+use crate::drivers::hal::{
+    Driver, DriverError, DriverType, IOCTL_AUDIO_GET_SAMPLE_RATE, IOCTL_AUDIO_GET_VOLUME,
+    IOCTL_AUDIO_SET_VOLUME,
+};
 
 struct AudioHalDriver {
     name: &'static str,
 }
 
 impl Driver for AudioHalDriver {
-    fn name(&self) -> &str { self.name }
-    fn driver_type(&self) -> DriverType { DriverType::Audio }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Audio
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DriverError> {
         Err(DriverError::NotSupported)
     }
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
-        if !is_available() { return Err(DriverError::NotSupported); }
+        if !is_available() {
+            return Err(DriverError::NotSupported);
+        }
         Ok(write_pcm(buf))
     }
     fn ioctl(&mut self, cmd: u32, arg: u32) -> Result<u32, DriverError> {
-        if !is_available() { return Err(DriverError::NotSupported); }
+        if !is_available() {
+            return Err(DriverError::NotSupported);
+        }
         match cmd {
-            IOCTL_AUDIO_GET_SAMPLE_RATE => {
-                Ok(with_audio(|d| d.sample_rate()).unwrap_or(48000))
+            IOCTL_AUDIO_GET_SAMPLE_RATE => Ok(with_audio(|d| d.sample_rate()).unwrap_or(48000)),
+            IOCTL_AUDIO_SET_VOLUME => {
+                set_volume(arg as u8);
+                Ok(0)
             }
-            IOCTL_AUDIO_SET_VOLUME => { set_volume(arg as u8); Ok(0) }
             IOCTL_AUDIO_GET_VOLUME => Ok(get_volume() as u32),
             _ => Err(DriverError::NotSupported),
         }

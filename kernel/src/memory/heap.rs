@@ -491,10 +491,8 @@ unsafe impl GlobalAlloc for LockedHeap {
         // Slow path: global lock. Build a layout that requests the rounded
         // class size so the free-list returns a block large enough for
         // bucket recycling.
-        let alloc_layout = Layout::from_size_align_unchecked(
-            effective_size,
-            layout.align().max(16),
-        );
+        let alloc_layout =
+            Layout::from_size_align_unchecked(effective_size, layout.align().max(16));
         let flags = self.acquire();
         let mut result = alloc_inner(alloc_layout);
         if result.is_null() {
@@ -561,10 +559,8 @@ unsafe impl GlobalAlloc for LockedHeap {
 
         // Fallback: global dealloc with the rounded size so the freed
         // block stays consistent with what alloc handed out.
-        let dealloc_layout = Layout::from_size_align_unchecked(
-            effective_size,
-            layout.align().max(16),
-        );
+        let dealloc_layout =
+            Layout::from_size_align_unchecked(effective_size, layout.align().max(16));
         let flags = self.acquire();
         dealloc_inner(ptr, dealloc_layout);
         self.release(flags);

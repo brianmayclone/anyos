@@ -10,20 +10,20 @@
 //! Events are injected into the compositor's input system as absolute
 //! pointer events with pressure metadata.
 
-use alloc::vec::Vec;
 use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
 
 /// HID Usage Page: Digitizer (0x0D)
 const USAGE_PAGE_DIGITIZER: u16 = 0x0D;
 
 /// Digitizer-specific Usage IDs (Usage Page 0x0D)
-const USAGE_TIP_SWITCH: u8 = 0x42;     // Pen touching surface
-const USAGE_BARREL_SWITCH: u8 = 0x44;  // Side button (right-click)
-const USAGE_ERASER: u8 = 0x45;         // Eraser mode
-const USAGE_IN_RANGE: u8 = 0x32;       // Pen is hovering over tablet
-const USAGE_TIP_PRESSURE: u8 = 0x30;   // Pressure (0..max)
-const USAGE_X_TILT: u8 = 0x3D;         // Tilt angle X
-const USAGE_Y_TILT: u8 = 0x3E;         // Tilt angle Y
+const USAGE_TIP_SWITCH: u8 = 0x42; // Pen touching surface
+const USAGE_BARREL_SWITCH: u8 = 0x44; // Side button (right-click)
+const USAGE_ERASER: u8 = 0x45; // Eraser mode
+const USAGE_IN_RANGE: u8 = 0x32; // Pen is hovering over tablet
+const USAGE_TIP_PRESSURE: u8 = 0x30; // Pressure (0..max)
+const USAGE_X_TILT: u8 = 0x3D; // Tilt angle X
+const USAGE_Y_TILT: u8 = 0x3E; // Tilt angle Y
 
 /// HID Usage Page: Generic Desktop (0x01) — X/Y coordinates
 const USAGE_PAGE_GENERIC_DESKTOP: u16 = 0x01;
@@ -110,7 +110,7 @@ pub fn parse_report_descriptor(desc: &[u8]) -> Option<DigitizerLayout> {
     let mut usage: u8 = 0;
     let mut logical_min: i32 = 0;
     let mut logical_max: i32 = 0;
-    let mut report_size: u8 = 0;  // bits per field
+    let mut report_size: u8 = 0; // bits per field
     let mut report_count: u8 = 0;
     let mut bit_offset: u16 = 0;
     let mut is_digitizer_collection = false;
@@ -128,7 +128,9 @@ pub fn parse_report_descriptor(desc: &[u8]) -> Option<DigitizerLayout> {
         let btype = (prefix >> 2) & 0x03; // 0=Main, 1=Global, 2=Local
         let btag = (prefix >> 4) & 0x0F;
 
-        if i + 1 + bsize > desc.len() { break; }
+        if i + 1 + bsize > desc.len() {
+            break;
+        }
 
         let data = match bsize {
             0 => 0u32,
@@ -140,17 +142,18 @@ pub fn parse_report_descriptor(desc: &[u8]) -> Option<DigitizerLayout> {
 
         match (btype, btag) {
             // Global items
-            (1, 0) => usage_page = data as u16,    // Usage Page
-            (1, 1) => logical_min = data as i32,    // Logical Minimum
-            (1, 2) => logical_max = data as i32,    // Logical Maximum
-            (1, 7) => report_size = data as u8,     // Report Size (bits)
-            (1, 9) => report_count = data as u8,    // Report Count
+            (1, 0) => usage_page = data as u16,  // Usage Page
+            (1, 1) => logical_min = data as i32, // Logical Minimum
+            (1, 2) => logical_max = data as i32, // Logical Maximum
+            (1, 7) => report_size = data as u8,  // Report Size (bits)
+            (1, 9) => report_count = data as u8, // Report Count
 
             // Local items
-            (2, 0) => usage = data as u8,           // Usage
+            (2, 0) => usage = data as u8, // Usage
 
             // Main items
-            (0, 8) => { // Input
+            (0, 8) => {
+                // Input
                 let is_variable = data & 0x02 != 0; // Bit 1 = Variable (vs Array)
                 if is_variable && is_digitizer_collection {
                     // Map each field to our layout
@@ -190,13 +193,14 @@ pub fn parse_report_descriptor(desc: &[u8]) -> Option<DigitizerLayout> {
                 }
                 usage = 0; // Reset local usage after Input
             }
-            (0, 10) => { // Collection
+            (0, 10) => {
+                // Collection
                 if usage_page == USAGE_PAGE_DIGITIZER {
                     is_digitizer_collection = true;
                 }
             }
             (0, 12) => { // End Collection
-                // Don't clear is_digitizer_collection — some descriptors nest
+                 // Don't clear is_digitizer_collection — some descriptors nest
             }
             _ => {}
         }
@@ -216,13 +220,17 @@ pub fn parse_report_descriptor(desc: &[u8]) -> Option<DigitizerLayout> {
 
 /// Extract a field value from a raw HID report.
 fn extract_field(report: &[u8], field: &ReportField) -> i32 {
-    if !field.present { return 0; }
+    if !field.present {
+        return 0;
+    }
 
     let byte_offset = (field.bit_offset / 8) as usize;
     let bit_in_byte = field.bit_offset % 8;
     let bits = field.bit_size as u32;
 
-    if byte_offset >= report.len() { return 0; }
+    if byte_offset >= report.len() {
+        return 0;
+    }
 
     // Read up to 4 bytes starting at byte_offset
     let mut raw: u32 = 0;
@@ -271,10 +279,15 @@ pub fn register(usb_address: u8, layout: DigitizerLayout) {
     crate::serial_println!(
         "[USB-Digitizer] registered addr={} (x:0-{}, y:0-{}, pressure:0-{}, report={}B)",
         usb_address,
-        layout.x.logical_max, layout.y.logical_max,
-        layout.pressure.logical_max, layout.report_size_bytes,
+        layout.x.logical_max,
+        layout.y.logical_max,
+        layout.pressure.logical_max,
+        layout.report_size_bytes,
     );
-    DIGITIZERS.lock().push(DigitizerDevice { usb_address, layout });
+    DIGITIZERS.lock().push(DigitizerDevice {
+        usb_address,
+        layout,
+    });
 }
 
 /// Process an incoming HID report from a digitizer. Produces a DigitizerEvent
@@ -304,7 +317,9 @@ pub fn handle_report(usb_address: u8, report: &[u8]) {
         buf.push(event);
         // Cap event buffer at 64 entries
         let excess = buf.len().saturating_sub(64);
-        if excess > 0 { buf.drain(..excess); }
+        if excess > 0 {
+            buf.drain(..excess);
+        }
     }
 }
 

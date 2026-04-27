@@ -4,10 +4,9 @@
 //! and runs the standard USB enumeration sequence for each.
 
 use super::{
-    ControllerType, SetupPacket, UsbDevice, UsbInterface, UsbSpeed,
-    hid_control_transfer, alloc_address, register_device, parse_config,
-    REQ_GET_DESCRIPTOR, REQ_SET_ADDRESS, REQ_SET_CONFIGURATION,
-    DESC_DEVICE, DESC_CONFIG, DIR_DEVICE_TO_HOST, DIR_HOST_TO_DEVICE,
+    alloc_address, hid_control_transfer, parse_config, register_device, ControllerType,
+    SetupPacket, UsbDevice, UsbInterface, UsbSpeed, DESC_CONFIG, DESC_DEVICE, DIR_DEVICE_TO_HOST,
+    DIR_HOST_TO_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_ADDRESS, REQ_SET_CONFIGURATION,
 };
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
@@ -16,9 +15,9 @@ use alloc::vec::Vec;
 // ── Hub Constants ────────────────────────────────
 
 // bmRequestType values
-const RT_HUB_CLASS_IN: u8 = 0xA0;   // Device-to-host, Class, Device
-const RT_PORT_CLASS_IN: u8 = 0xA3;   // Device-to-host, Class, Other (port)
-const RT_PORT_CLASS_OUT: u8 = 0x23;  // Host-to-device, Class, Other (port)
+const RT_HUB_CLASS_IN: u8 = 0xA0; // Device-to-host, Class, Device
+const RT_PORT_CLASS_IN: u8 = 0xA3; // Device-to-host, Class, Other (port)
+const RT_PORT_CLASS_OUT: u8 = 0x23; // Host-to-device, Class, Other (port)
 
 // Hub class requests
 const HUB_REQ_GET_STATUS: u8 = 0x00;
@@ -74,8 +73,13 @@ fn get_hub_descriptor(hub: &HubDevice) -> Result<(u8, u8), &'static str> {
         w_length: 8,
     };
     let data = hid_control_transfer(
-        hub.usb_addr, hub.controller, hub.speed, hub.max_packet,
-        &setup, true, 8,
+        hub.usb_addr,
+        hub.controller,
+        hub.speed,
+        hub.max_packet,
+        &setup,
+        true,
+        8,
     )?;
     if data.len() < 3 {
         return Err("hub descriptor too short");
@@ -94,8 +98,13 @@ fn get_port_status(hub: &HubDevice, port: u8) -> Result<(u16, u16), &'static str
         w_length: 4,
     };
     let data = hid_control_transfer(
-        hub.usb_addr, hub.controller, hub.speed, hub.max_packet,
-        &setup, true, 4,
+        hub.usb_addr,
+        hub.controller,
+        hub.speed,
+        hub.max_packet,
+        &setup,
+        true,
+        4,
     )?;
     if data.len() < 4 {
         return Err("port status too short");
@@ -114,8 +123,13 @@ fn set_port_feature(hub: &HubDevice, port: u8, feature: u16) -> Result<(), &'sta
         w_length: 0,
     };
     hid_control_transfer(
-        hub.usb_addr, hub.controller, hub.speed, hub.max_packet,
-        &setup, false, 0,
+        hub.usb_addr,
+        hub.controller,
+        hub.speed,
+        hub.max_packet,
+        &setup,
+        false,
+        0,
     )?;
     Ok(())
 }
@@ -129,8 +143,13 @@ fn clear_port_feature(hub: &HubDevice, port: u8, feature: u16) -> Result<(), &'s
         w_length: 0,
     };
     hid_control_transfer(
-        hub.usb_addr, hub.controller, hub.speed, hub.max_packet,
-        &setup, false, 0,
+        hub.usb_addr,
+        hub.controller,
+        hub.speed,
+        hub.max_packet,
+        &setup,
+        false,
+        0,
     )?;
     Ok(())
 }
@@ -179,7 +198,10 @@ fn enumerate_downstream(hub: &HubDevice, hub_port: u8, speed: UsbSpeed) {
     let data8 = match hid_control_transfer(0, controller, speed, 8, &setup_dev8, true, 8) {
         Ok(d) if d.len() >= 8 => d,
         _ => {
-            crate::serial_verbose_println!("  Hub: downstream port {} — GET_DESCRIPTOR(8) failed", hub_port);
+            crate::serial_verbose_println!(
+                "  Hub: downstream port {} — GET_DESCRIPTOR(8) failed",
+                hub_port
+            );
             return;
         }
     };
@@ -212,10 +234,21 @@ fn enumerate_downstream(hub: &HubDevice, hub_port: u8, speed: UsbSpeed) {
         w_index: 0,
         w_length: 18,
     };
-    let dev_data = match hid_control_transfer(new_addr, controller, speed, max_packet, &setup_dev18, true, 18) {
+    let dev_data = match hid_control_transfer(
+        new_addr,
+        controller,
+        speed,
+        max_packet,
+        &setup_dev18,
+        true,
+        18,
+    ) {
         Ok(d) if d.len() >= 18 => d,
         _ => {
-            crate::serial_verbose_println!("  Hub: device {} — full device descriptor failed", new_addr);
+            crate::serial_verbose_println!(
+                "  Hub: device {} — full device descriptor failed",
+                new_addr
+            );
             return;
         }
     };
@@ -235,7 +268,15 @@ fn enumerate_downstream(hub: &HubDevice, hub_port: u8, speed: UsbSpeed) {
         w_index: 0,
         w_length: 9,
     };
-    let cfg_header = match hid_control_transfer(new_addr, controller, speed, max_packet, &setup_cfg9, true, 9) {
+    let cfg_header = match hid_control_transfer(
+        new_addr,
+        controller,
+        speed,
+        max_packet,
+        &setup_cfg9,
+        true,
+        9,
+    ) {
         Ok(d) if d.len() >= 4 => d,
         _ => {
             crate::serial_verbose_println!("  Hub: device {} — config header failed", new_addr);
@@ -252,7 +293,15 @@ fn enumerate_downstream(hub: &HubDevice, hub_port: u8, speed: UsbSpeed) {
         w_index: 0,
         w_length: total_len,
     };
-    let config_data = match hid_control_transfer(new_addr, controller, speed, max_packet, &setup_cfg_full, true, total_len) {
+    let config_data = match hid_control_transfer(
+        new_addr,
+        controller,
+        speed,
+        max_packet,
+        &setup_cfg_full,
+        true,
+        total_len,
+    ) {
         Ok(d) if d.len() >= 9 => d,
         _ => {
             crate::serial_verbose_println!("  Hub: device {} — full config failed", new_addr);
@@ -263,7 +312,11 @@ fn enumerate_downstream(hub: &HubDevice, hub_port: u8, speed: UsbSpeed) {
     let interfaces = parse_config(&config_data[..total_len as usize]);
 
     // Step 6: SET_CONFIGURATION
-    let config_val = if config_data.len() > 5 { config_data[5] } else { 1 };
+    let config_val = if config_data.len() > 5 {
+        config_data[5]
+    } else {
+        1
+    };
     let setup_setcfg = SetupPacket {
         bm_request_type: DIR_HOST_TO_DEVICE,
         b_request: REQ_SET_CONFIGURATION,
@@ -271,18 +324,37 @@ fn enumerate_downstream(hub: &HubDevice, hub_port: u8, speed: UsbSpeed) {
         w_index: 0,
         w_length: 0,
     };
-    if hid_control_transfer(new_addr, controller, speed, max_packet, &setup_setcfg, false, 0).is_err() {
+    if hid_control_transfer(
+        new_addr,
+        controller,
+        speed,
+        max_packet,
+        &setup_setcfg,
+        false,
+        0,
+    )
+    .is_err()
+    {
         crate::serial_verbose_println!("  Hub: device {} — SET_CONFIGURATION failed", new_addr);
         return;
     }
 
     // Determine class
-    let dev_class = if b_device_class != 0 { b_device_class }
-        else { interfaces.first().map(|i| i.class).unwrap_or(0) };
-    let dev_subclass = if b_device_sub_class != 0 { b_device_sub_class }
-        else { interfaces.first().map(|i| i.subclass).unwrap_or(0) };
-    let dev_protocol = if b_device_protocol != 0 { b_device_protocol }
-        else { interfaces.first().map(|i| i.protocol).unwrap_or(0) };
+    let dev_class = if b_device_class != 0 {
+        b_device_class
+    } else {
+        interfaces.first().map(|i| i.class).unwrap_or(0)
+    };
+    let dev_subclass = if b_device_sub_class != 0 {
+        b_device_sub_class
+    } else {
+        interfaces.first().map(|i| i.subclass).unwrap_or(0)
+    };
+    let dev_protocol = if b_device_protocol != 0 {
+        b_device_protocol
+    } else {
+        interfaces.first().map(|i| i.protocol).unwrap_or(0)
+    };
 
     // Encode port as (hub_addr << 4) | hub_port to distinguish from root ports
     let encoded_port = (hub.usb_addr << 4) | (hub_port & 0x0F);
@@ -305,7 +377,11 @@ fn enumerate_downstream(hub: &HubDevice, hub_port: u8, speed: UsbSpeed) {
 
     crate::serial_verbose_println!(
         "  Hub: enumerated device {} on hub {} port {} ({:04x}:{:04x})",
-        new_addr, hub.usb_addr, hub_port, vendor_id, product_id
+        new_addr,
+        hub.usb_addr,
+        hub_port,
+        vendor_id,
+        product_id
     );
 
     register_device(usb_dev);
@@ -325,7 +401,9 @@ pub fn probe(dev: &UsbDevice, _iface: &UsbInterface) {
             return;
         }
     };
-    unsafe { core::ptr::write_bytes(data_phys as *mut u8, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(data_phys as *mut u8, 0, 4096);
+    }
 
     let mut hub = HubDevice {
         usb_addr: dev.address,
@@ -347,7 +425,11 @@ pub fn probe(dev: &UsbDevice, _iface: &UsbInterface) {
         }
     };
     hub.num_ports = num_ports;
-    crate::serial_verbose_println!("  Hub: {} ports, power-on delay {}ms", num_ports, pwr_delay as u32 * 2);
+    crate::serial_verbose_println!(
+        "  Hub: {} ports, power-on delay {}ms",
+        num_ports,
+        pwr_delay as u32 * 2
+    );
 
     // Initialize port state
     for _ in 0..num_ports {
@@ -410,7 +492,11 @@ pub fn poll_all() {
             let was_connected = hub.ports[idx].connected;
 
             if connected && !was_connected {
-                crate::serial_verbose_println!("  Hub: hot-plug on hub {} port {}", hub.usb_addr, p);
+                crate::serial_verbose_println!(
+                    "  Hub: hot-plug on hub {} port {}",
+                    hub.usb_addr,
+                    p
+                );
                 hub.ports[idx].connected = true;
 
                 match reset_hub_port(hub, p) {
@@ -423,7 +509,11 @@ pub fn poll_all() {
                     }
                 }
             } else if !connected && was_connected {
-                crate::serial_verbose_println!("  Hub: hot-unplug on hub {} port {}", hub.usb_addr, p);
+                crate::serial_verbose_println!(
+                    "  Hub: hot-unplug on hub {} port {}",
+                    hub.usb_addr,
+                    p
+                );
                 hub.ports[idx].connected = false;
 
                 let encoded_port = (hub.usb_addr << 4) | (p & 0x0F);
@@ -439,7 +529,10 @@ pub fn poll_all() {
 /// Disconnect handler — remove a hub and cascade disconnect downstream devices.
 pub fn disconnect(port: u8, controller: ControllerType) {
     let mut hubs = HUB_DEVICES.lock();
-    if let Some(idx) = hubs.iter().position(|h| h.port == port && h.controller == controller) {
+    if let Some(idx) = hubs
+        .iter()
+        .position(|h| h.port == port && h.controller == controller)
+    {
         let hub = hubs.remove(idx);
         crate::serial_verbose_println!("  Hub: hub {} removed (port {})", hub.usb_addr, port);
 

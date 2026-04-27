@@ -6,52 +6,52 @@
 //!
 //! Tested with VirtualBox LsiLogic SCSI controller.
 
-use alloc::boxed::Box;
-use crate::drivers::pci::{PciDevice, pci_config_read32, pci_config_write32};
+use crate::drivers::pci::{pci_config_read32, pci_config_write32, PciDevice};
 use crate::memory::address::{PhysAddr, VirtAddr};
-use crate::memory::{virtual_mem, physical};
+use crate::memory::{physical, virtual_mem};
+use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 // ── Register Offsets (from BAR0 I/O base) ─────────────
 
-const REG_DOORBELL: u16        = 0x00;
-const REG_WRITE_SEQUENCE: u16  = 0x04;
-const REG_HOST_DIAG: u16       = 0x08;
+const REG_DOORBELL: u16 = 0x00;
+const REG_WRITE_SEQUENCE: u16 = 0x04;
+const REG_HOST_DIAG: u16 = 0x08;
 const REG_HOST_INT_STATUS: u16 = 0x30;
-const REG_HOST_INT_MASK: u16   = 0x34;
-const REG_REQUEST_FIFO: u16    = 0x40;
-const REG_REPLY_FIFO: u16      = 0x44;
+const REG_HOST_INT_MASK: u16 = 0x34;
+const REG_REQUEST_FIFO: u16 = 0x40;
+const REG_REPLY_FIFO: u16 = 0x44;
 
 // ── Doorbell function codes ───────────────────────────
 
-const MPI_FUNCTION_IOC_INIT: u8         = 0x02;
-const MPI_FUNCTION_IOC_FACTS: u8        = 0x03;
-const MPI_FUNCTION_SCSI_IO_REQUEST: u8  = 0x00;
+const MPI_FUNCTION_IOC_INIT: u8 = 0x02;
+const MPI_FUNCTION_IOC_FACTS: u8 = 0x03;
+const MPI_FUNCTION_SCSI_IO_REQUEST: u8 = 0x00;
 
-const DOORBELL_HANDSHAKE: u32     = 0x42 << 24;
-const DOORBELL_RESET: u32         = 0x40 << 24;
+const DOORBELL_HANDSHAKE: u32 = 0x42 << 24;
+const DOORBELL_RESET: u32 = 0x40 << 24;
 
 // ── IOC States ────────────────────────────────────────
 
-const IOC_STATE_MASK: u32        = 0xF000_0000;
-const IOC_STATE_READY: u32       = 0x1000_0000;
+const IOC_STATE_MASK: u32 = 0xF000_0000;
+const IOC_STATE_READY: u32 = 0x1000_0000;
 const IOC_STATE_OPERATIONAL: u32 = 0x2000_0000;
-const IOC_STATE_FAULT: u32       = 0x4000_0000;
+const IOC_STATE_FAULT: u32 = 0x4000_0000;
 
 // ── Interrupt Status bits ─────────────────────────────
 
-const HIS_DOORBELL_INT: u32     = 0x0000_0001;
-const HIS_REPLY_INT: u32        = 0x0000_0008;
-const HIS_IOP_DOORBELL: u32     = 0x8000_0000;
+const HIS_DOORBELL_INT: u32 = 0x0000_0001;
+const HIS_REPLY_INT: u32 = 0x0000_0008;
+const HIS_IOP_DOORBELL: u32 = 0x8000_0000;
 
 // ── SGE flags ─────────────────────────────────────────
 
-const SGE_FLAGS_READ: u32  = 0xD100_0000; // LAST|END_OF_BUF|SIMPLE|END_OF_LIST|IOC_TO_HOST
+const SGE_FLAGS_READ: u32 = 0xD100_0000; // LAST|END_OF_BUF|SIMPLE|END_OF_LIST|IOC_TO_HOST
 const SGE_FLAGS_WRITE: u32 = 0xD500_0000; // LAST|END_OF_BUF|SIMPLE|HOST_TO_IOC|END_OF_LIST
 
 // ── SCSI Control field direction bits ─────────────────
 
-const MPI_SCSIIO_CONTROL_READ: u32  = 0x0200_0000;
+const MPI_SCSIIO_CONTROL_READ: u32 = 0x0200_0000;
 const MPI_SCSIIO_CONTROL_WRITE: u32 = 0x0100_0000;
 
 // ── Bounce buffer ─────────────────────────────────────
@@ -161,15 +161,13 @@ unsafe fn outl(port: u16, val: u32) {
 /// Send a message via doorbell handshake and read reply.
 /// `msg` is the raw dwords of the message.
 /// Returns reply as a vector of u16 words (up to `reply_words` count).
-unsafe fn doorbell_handshake(
-    io_base: u16,
-    msg_dwords: &[u32],
-    reply_buf: &mut [u16],
-) -> bool {
+unsafe fn doorbell_handshake(io_base: u16, msg_dwords: &[u32], reply_buf: &mut [u16]) -> bool {
     // Wait for doorbell to be idle
     for _ in 0..100_000 {
         let db = inl(io_base + REG_DOORBELL);
-        if db & 0x0800_0000 == 0 { break; } // Doorbell not active
+        if db & 0x0800_0000 == 0 {
+            break;
+        } // Doorbell not active
         core::hint::spin_loop();
     }
 
@@ -337,11 +335,19 @@ unsafe fn scsi_read_write(ctrl: &mut LsiController, lba: u32, count: u16, is_rea
         msg_flags: 0,
         msg_context: ctx,
         lun: [0u8; 8],
-        control: if is_read { MPI_SCSIIO_CONTROL_READ } else { MPI_SCSIIO_CONTROL_WRITE },
+        control: if is_read {
+            MPI_SCSIIO_CONTROL_READ
+        } else {
+            MPI_SCSIIO_CONTROL_WRITE
+        },
         cdb: [0u8; 16],
         data_length: byte_count,
         sense_buf_low_addr: ctrl.sense_buf_phys as u32,
-        sge_flags_length: (if is_read { SGE_FLAGS_READ } else { SGE_FLAGS_WRITE }) | byte_count,
+        sge_flags_length: (if is_read {
+            SGE_FLAGS_READ
+        } else {
+            SGE_FLAGS_WRITE
+        }) | byte_count,
         sge_data_addr: ctrl.bounce_phys as u32,
     };
 
@@ -365,7 +371,10 @@ unsafe fn scsi_read_write(ctrl: &mut LsiController, lba: u32, count: u16, is_rea
             if reply & 0x8000_0000 != 0 {
                 // Address reply — error occurred
                 let reply_addr = reply & 0x7FFF_FFFF;
-                crate::serial_verbose_println!("  LSI: SCSI I/O error (reply addr={:#010x})", reply_addr);
+                crate::serial_verbose_println!(
+                    "  LSI: SCSI I/O error (reply addr={:#010x})",
+                    reply_addr
+                );
                 // Re-post reply buffer
                 outl(ctrl.io_base + REG_REPLY_FIFO, ctrl.reply_buf_phys as u32);
                 return false;
@@ -398,7 +407,9 @@ pub fn init_and_register(pci: &PciDevice) {
     pci_config_write32(pci.bus, pci.device, pci.function, 0x04, cmd | 0x05);
 
     // Step 1: Reset IOC via doorbell
-    unsafe { outl(io_base + REG_DOORBELL, DOORBELL_RESET); }
+    unsafe {
+        outl(io_base + REG_DOORBELL, DOORBELL_RESET);
+    }
 
     // Wait for reset to complete and IOC to become READY
     let mut ready = false;
@@ -413,7 +424,10 @@ pub fn init_and_register(pci: &PciDevice) {
     }
     if !ready {
         let db = unsafe { inl(io_base + REG_DOORBELL) };
-        crate::serial_verbose_println!("  LSI SCSI: IOC not ready after reset (doorbell={:#010x})", db);
+        crate::serial_verbose_println!(
+            "  LSI SCSI: IOC not ready after reset (doorbell={:#010x})",
+            db
+        );
         return;
     }
     crate::serial_verbose_println!("  LSI SCSI: IOC reset OK, state=READY");
@@ -427,27 +441,41 @@ pub fn init_and_register(pci: &PciDevice) {
     // Step 3: Allocate DMA pages (identity-mapped)
     let req_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  LSI SCSI: alloc req frame failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  LSI SCSI: alloc req frame failed");
+            return;
+        }
     };
     let reply_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  LSI SCSI: alloc reply buf failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  LSI SCSI: alloc reply buf failed");
+            return;
+        }
     };
     let sense_phys = match physical::alloc_frame() {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  LSI SCSI: alloc sense buf failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  LSI SCSI: alloc sense buf failed");
+            return;
+        }
     };
 
     // Identity-map all DMA pages
     for &phys in &[req_phys, reply_phys, sense_phys] {
         virtual_mem::map_page(VirtAddr::new(phys), PhysAddr::new(phys), 0x03);
-        unsafe { core::ptr::write_bytes(phys as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(phys as *mut u8, 0, 4096);
+        }
     }
 
     // Allocate bounce buffer
     let bounce_phys = match physical::alloc_contiguous(BOUNCE_PAGES) {
         Some(p) => p.as_u64(),
-        None => { crate::serial_verbose_println!("  LSI SCSI: alloc bounce buffer failed"); return; }
+        None => {
+            crate::serial_verbose_println!("  LSI SCSI: alloc bounce buffer failed");
+            return;
+        }
     };
     for i in 0..BOUNCE_PAGES {
         let p = bounce_phys + (i as u64) * 4096;
@@ -456,7 +484,7 @@ pub fn init_and_register(pci: &PciDevice) {
 
     // Step 4: Send IOC Init via doorbell handshake
     let ioc_init = IocInitRequest {
-        who_init: 0x02,  // HOST_DRIVER
+        who_init: 0x02, // HOST_DRIVER
         reserved1: 0,
         chain_offset: 0,
         function: MPI_FUNCTION_IOC_INIT,
@@ -522,10 +550,15 @@ pub fn init_and_register(pci: &PciDevice) {
     match found_target {
         Some(tid) => {
             ctrl.disk_target = tid;
-            unsafe { CTRL = Some(ctrl); }
+            unsafe {
+                CTRL = Some(ctrl);
+            }
             AVAILABLE.store(true, Ordering::Release);
             super::set_backend_lsi();
-            crate::serial_verbose_println!("[OK] LSI Logic SCSI storage backend active (target={})", tid);
+            crate::serial_verbose_println!(
+                "[OK] LSI Logic SCSI storage backend active (target={})",
+                tid
+            );
         }
         None => {
             crate::serial_verbose_println!("  LSI SCSI: no disk found on any target");
@@ -552,7 +585,7 @@ unsafe fn scsi_test_unit_ready(ctrl: &mut LsiController, target_id: u8) -> bool 
         msg_flags: 0,
         msg_context: ctx,
         lun: [0u8; 8],
-        control: 0, // No data transfer
+        control: 0,     // No data transfer
         cdb: [0u8; 16], // TEST UNIT READY = all zeros
         data_length: 0,
         sense_buf_low_addr: ctrl.sense_buf_phys as u32,

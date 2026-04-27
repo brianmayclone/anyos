@@ -1,11 +1,11 @@
 //! Path handling and symlink resolution helpers for the VFS.
 
-use alloc::format;
+use super::{FsError, FsType, MountPoint, ResolvedEntry};
 use crate::fs::exfat::ExFatFs;
 use crate::fs::file::FileType;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::{FsError, FsType, MountPoint, ResolvedEntry};
 
 /// Maximum depth for symlink resolution (prevents infinite loops).
 pub const MAX_SYMLINK_DEPTH: u32 = 20;
@@ -32,7 +32,11 @@ pub fn is_dev_path(path: &str) -> bool {
 
 /// Extract the device name from a /dev path (strips "/dev/" prefix).
 pub fn dev_name(path: &str) -> &str {
-    if path.len() > 5 { &path[5..] } else { "" }
+    if path.len() > 5 {
+        &path[5..]
+    } else {
+        ""
+    }
 }
 
 /// Finde den Sub-Mount-Point, dessen Pfad ein Präfix von `path` ist (longest match).
@@ -147,7 +151,10 @@ fn resolve_exfat_inner(
         });
     }
 
-    let components: Vec<&str> = path.split('/').filter(|segment| !segment.is_empty()).collect();
+    let components: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     let mut current_cluster = exfat.root_cluster();
 
     for (idx, component) in components.iter().enumerate() {

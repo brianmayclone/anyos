@@ -12,11 +12,11 @@
 //!   VA `0xFFFF_0000_C000_0000` → PA `0x0000_0000` (1 GiB Device block)
 //!   So: `virt_addr = phys_addr + 0xFFFF_0000_C000_0000`
 
-pub mod virtqueue;
 pub mod blk;
-pub mod storage;
 pub mod gpu;
 pub mod input;
+pub mod storage;
+pub mod virtqueue;
 
 use core::ptr;
 
@@ -112,7 +112,9 @@ impl VirtioMmioDevice {
     /// Write a 32-bit MMIO register.
     #[inline]
     pub fn write_reg(&self, offset: usize, val: u32) {
-        unsafe { ptr::write_volatile((self.base + offset) as *mut u32, val); }
+        unsafe {
+            ptr::write_volatile((self.base + offset) as *mut u32, val);
+        }
     }
 
     /// Get the VirtIO device ID.
@@ -212,8 +214,14 @@ impl VirtioMmioDevice {
     /// Set up a virtqueue at the given index.
     ///
     /// Supports both VirtIO MMIO Version 1 (legacy) and Version 2 (modern).
-    pub fn setup_queue_raw(&self, queue_idx: u16, num: u16,
-                           desc_phys: u64, _driver_phys: u64, _device_phys: u64) -> bool {
+    pub fn setup_queue_raw(
+        &self,
+        queue_idx: u16,
+        num: u16,
+        desc_phys: u64,
+        _driver_phys: u64,
+        _device_phys: u64,
+    ) -> bool {
         self.write_reg(VIRTIO_MMIO_QUEUE_SEL, queue_idx as u32);
 
         let max = self.read_reg(VIRTIO_MMIO_QUEUE_NUM_MAX);
@@ -250,7 +258,9 @@ impl VirtioMmioDevice {
     pub fn notify_queue(&self, queue_idx: u16) {
         // DSB ensures all prior stores to Normal memory (virtqueue descriptors,
         // available ring) complete before the Device-nGnRnE MMIO write.
-        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
         self.write_reg(VIRTIO_MMIO_QUEUE_NOTIFY, queue_idx as u32);
     }
 
@@ -285,7 +295,9 @@ impl VirtioMmioDevice {
 
     /// Write a single byte to device config at the given byte offset.
     pub fn write_config_u8(&self, offset: usize, val: u8) {
-        unsafe { ptr::write_volatile((self.base + VIRTIO_MMIO_CONFIG + offset) as *mut u8, val); }
+        unsafe {
+            ptr::write_volatile((self.base + VIRTIO_MMIO_CONFIG + offset) as *mut u8, val);
+        }
     }
 }
 
@@ -318,7 +330,13 @@ pub fn probe_all() -> alloc::vec::Vec<VirtioMmioDevice> {
 
         let irq = VIRTIO_MMIO_IRQ_BASE + slot as u32;
 
-        crate::serial_verbose_println!("    slot {}: id={} version={} base={:#x}", slot, dev_id, version, base);
+        crate::serial_verbose_println!(
+            "    slot {}: id={} version={} base={:#x}",
+            slot,
+            dev_id,
+            version,
+            base
+        );
         devices.push(VirtioMmioDevice { base, dev_id, irq });
     }
 

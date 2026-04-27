@@ -34,7 +34,10 @@ pub struct FdFlags {
 
 impl Default for FdFlags {
     fn default() -> Self {
-        FdFlags { cloexec: false, nonblock: false }
+        FdFlags {
+            cloexec: false,
+            nonblock: false,
+        }
     }
 }
 
@@ -48,7 +51,10 @@ pub struct FdEntry {
 impl FdEntry {
     pub const EMPTY: FdEntry = FdEntry {
         kind: FdKind::None,
-        flags: FdFlags { cloexec: false, nonblock: false },
+        flags: FdFlags {
+            cloexec: false,
+            nonblock: false,
+        },
     };
 }
 
@@ -198,6 +204,8 @@ impl FdTable {
 
     /// Iterate all non-empty entries (for fork refcount incrementing).
     pub fn iter_open(&self) -> impl Iterator<Item = &FdEntry> {
-        self.entries.iter().filter(|e| !matches!(e.kind, FdKind::None))
+        self.entries
+            .iter()
+            .filter(|e| !matches!(e.kind, FdKind::None))
     }
 }

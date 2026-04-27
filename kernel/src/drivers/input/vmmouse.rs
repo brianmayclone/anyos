@@ -24,7 +24,7 @@ const CMD_ABSPOINTER_COMMAND: u32 = 41;
 
 // ABSPOINTER sub-commands (passed as arg to CMD_ABSPOINTER_COMMAND)
 const ABSPOINTER_ENABLE: u32 = 0x4541_4552; // "EAER" — enable vmmouse
-const ABSPOINTER_RELATIVE: u32 = 0xF5;       // disable / back to relative PS/2
+const ABSPOINTER_RELATIVE: u32 = 0xF5; // disable / back to relative PS/2
 const ABSPOINTER_ABSOLUTE: u32 = 0x5342_4152; // "SBAR" — switch to absolute mode
 
 /// Whether vmmouse backdoor is active and should intercept IRQ12.
@@ -141,8 +141,11 @@ pub fn init() -> bool {
     }
 
     VMMOUSE_ACTIVE.store(true, Ordering::Release);
-    crate::serial_verbose_println!("[OK] vmmouse: absolute mouse enabled via VMware backdoor ({}x{})",
-        SCREEN_W.load(Ordering::Relaxed), SCREEN_H.load(Ordering::Relaxed));
+    crate::serial_verbose_println!(
+        "[OK] vmmouse: absolute mouse enabled via VMware backdoor ({}x{})",
+        SCREEN_W.load(Ordering::Relaxed),
+        SCREEN_H.load(Ordering::Relaxed)
+    );
     true
 }
 
@@ -167,12 +170,13 @@ pub fn handle_irq() -> bool {
 
     // Vmmouse has data — read and discard PS/2 byte to clear the IRQ
     // (port 0x60 contains garbage when vmmouse is active)
-    unsafe { crate::arch::x86::port::inb(0x60); }
+    unsafe {
+        crate::arch::x86::port::inb(0x60);
+    }
 
     // First packet is guaranteed (checked above). Drain all pending packets.
     let mut pkt_count = 0u32;
     loop {
-
         // Read the mouse data packet (4 words)
         let data = backdoor(CMD_ABSPOINTER_DATA, 4);
 
@@ -180,8 +184,14 @@ pub fn handle_irq() -> bool {
         static VMM_DBG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         let dbg_cnt = VMM_DBG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         if dbg_cnt < 3 {
-            crate::serial_println!("[vmmouse] pkt#{} flags={:#x} x={} y={} z={}",
-                dbg_cnt, data.eax & 0xFFFF, data.ebx, data.ecx, data.edx);
+            crate::serial_println!(
+                "[vmmouse] pkt#{} flags={:#x} x={} y={} z={}",
+                dbg_cnt,
+                data.eax & 0xFFFF,
+                data.ebx,
+                data.ecx,
+                data.edx
+            );
         }
 
         // data.eax bits [15:0] = button flags:
@@ -219,7 +229,7 @@ pub fn handle_irq() -> bool {
                     super::mouse::MouseEventType::Move
                 },
             };
-            
+
             // Boot splash: update HW cursor directly from IRQ (lag-free)
             crate::drivers::gpu::splash_cursor_move(dx, dy);
 
@@ -267,7 +277,10 @@ pub fn handle_irq() -> bool {
 /// Safe to call from IRQ context — uses atomics, no locks.
 #[inline]
 fn get_screen_size() -> (u32, u32) {
-    (SCREEN_W.load(Ordering::Relaxed), SCREEN_H.load(Ordering::Relaxed))
+    (
+        SCREEN_W.load(Ordering::Relaxed),
+        SCREEN_H.load(Ordering::Relaxed),
+    )
 }
 
 /// Public version — used by USB tablet driver for coordinate scaling.

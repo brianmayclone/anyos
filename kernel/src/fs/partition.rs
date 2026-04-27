@@ -3,8 +3,8 @@
 //! Reads sector 0 of a disk to detect the partition scheme (MBR or GPT),
 //! then parses the partition entries and returns a structured table.
 
-use alloc::vec::Vec;
 use crate::serial_verbose_println;
+use alloc::vec::Vec;
 
 /// Partition table scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,12 +23,12 @@ pub enum PartitionType {
     Fat16Lba,
     Fat32,
     Fat32Lba,
-    NtfsExfat,   // MBR type 0x07 — disambiguated by VBR OEM check
+    NtfsExfat, // MBR type 0x07 — disambiguated by VBR OEM check
     LinuxSwap,
     LinuxNative,
     GptEsp,
     GptBasicData,
-    CoreFs,      // MBR type 0xCF
+    CoreFs, // MBR type 0xCF
     GptLinuxFs,
     Unknown(u8),
 }
@@ -73,16 +73,13 @@ pub struct DiskPartitionTable {
 
 // Well-known GPT type GUIDs (mixed-endian as stored on disk).
 const GUID_EFI_SYSTEM: [u8; 16] = [
-    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11,
-    0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
+    0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
 ];
 const GUID_BASIC_DATA: [u8; 16] = [
-    0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44,
-    0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7,
+    0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7,
 ];
 const GUID_LINUX_FS: [u8; 16] = [
-    0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47,
-    0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
+    0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4,
 ];
 
 fn le16(buf: &[u8], off: usize) -> u16 {
@@ -148,13 +145,19 @@ where
     // Read MBR (LBA 0)
     if !read_sector_fn(0, &mut sector) {
         serial_verbose_println!("[partition] failed to read LBA 0");
-        return DiskPartitionTable { scheme: PartitionScheme::None, partitions: Vec::new() };
+        return DiskPartitionTable {
+            scheme: PartitionScheme::None,
+            partitions: Vec::new(),
+        };
     }
 
     // Check MBR signature
     if sector[510] != 0x55 || sector[511] != 0xAA {
         serial_verbose_println!("[partition] no MBR signature (0x55AA) found");
-        return DiskPartitionTable { scheme: PartitionScheme::None, partitions: Vec::new() };
+        return DiskPartitionTable {
+            scheme: PartitionScheme::None,
+            partitions: Vec::new(),
+        };
     }
 
     // Check for protective MBR (GPT indicator)
@@ -173,7 +176,9 @@ where
         if let Some(table) = parse_gpt(&read_sector_fn) {
             return table;
         }
-        serial_verbose_println!("[partition] GPT indicator found but GPT parsing failed, falling back to MBR");
+        serial_verbose_println!(
+            "[partition] GPT indicator found but GPT parsing failed, falling back to MBR"
+        );
     }
 
     // Parse MBR partition entries
@@ -204,14 +209,21 @@ fn parse_mbr(mbr: &[u8; 512]) -> DiskPartitionTable {
         };
         serial_verbose_println!(
             "[partition] MBR[{}]: type=0x{:02X} start={} size={} {}",
-            i, ptype, start, size,
+            i,
+            ptype,
+            start,
+            size,
             if status == 0x80 { "(bootable)" } else { "" }
         );
         partitions.push(part);
     }
 
     DiskPartitionTable {
-        scheme: if partitions.is_empty() { PartitionScheme::None } else { PartitionScheme::Mbr },
+        scheme: if partitions.is_empty() {
+            PartitionScheme::None
+        } else {
+            PartitionScheme::Mbr
+        },
         partitions,
     }
 }
@@ -240,7 +252,9 @@ where
 
     serial_verbose_println!(
         "[partition] GPT: entries_lba={} count={} entry_size={}",
-        entries_lba, entry_count, entry_size
+        entries_lba,
+        entry_count,
+        entry_size
     );
 
     // Read partition entries
@@ -253,7 +267,10 @@ where
 
     for s in 0..sectors_needed {
         if !read_sector_fn(entries_lba + s as u64, &mut sector) {
-            serial_verbose_println!("[partition] failed to read GPT entry sector {}", entries_lba + s as u64);
+            serial_verbose_println!(
+                "[partition] failed to read GPT entry sector {}",
+                entries_lba + s as u64
+            );
             break;
         }
 
@@ -285,7 +302,11 @@ where
             };
             serial_verbose_println!(
                 "[partition] GPT[{}]: type={:?} start={} end={} size={}",
-                idx, ptype, first_lba, last_lba, last_lba - first_lba + 1
+                idx,
+                ptype,
+                first_lba,
+                last_lba,
+                last_lba - first_lba + 1
             );
             partitions.push(part);
         }
@@ -328,7 +349,8 @@ where
     }
     // Check for FAT16
     let fs_type = &vbr[54..62];
-    if fs_type.starts_with(b"FAT16") || fs_type.starts_with(b"FAT12") || fs_type.starts_with(b"FAT") {
+    if fs_type.starts_with(b"FAT16") || fs_type.starts_with(b"FAT12") || fs_type.starts_with(b"FAT")
+    {
         return PartitionType::Fat16;
     }
 

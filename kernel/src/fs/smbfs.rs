@@ -121,8 +121,7 @@ impl SmbFs {
     pub fn connect(device: &str) -> Result<Self, FsError> {
         // Parse device string: //ip/share
         let stripped = device.trim_start_matches('/');
-        let (ip_str, share_name) = stripped.split_once('/')
-            .ok_or(FsError::InvalidPath)?;
+        let (ip_str, share_name) = stripped.split_once('/').ok_or(FsError::InvalidPath)?;
 
         let ip = parse_ipv4(ip_str).ok_or(FsError::InvalidPath)?;
 
@@ -211,7 +210,11 @@ impl SmbFs {
     }
 
     /// Send an SMB2 message (NetBIOS length prefix + header + payload) and receive response.
-    fn transact(&mut self, header: &[u8; SMB2_HEADER_SIZE], payload: &[u8]) -> Result<Vec<u8>, FsError> {
+    fn transact(
+        &mut self,
+        header: &[u8; SMB2_HEADER_SIZE],
+        payload: &[u8],
+    ) -> Result<Vec<u8>, FsError> {
         let total_len = SMB2_HEADER_SIZE + payload.len();
 
         // Build packet: 4-byte NetBIOS length + header + payload
@@ -239,7 +242,8 @@ impl SmbFs {
             return Err(FsError::IoError);
         }
 
-        let resp_len = ((nb_hdr[1] as usize) << 16) | ((nb_hdr[2] as usize) << 8) | (nb_hdr[3] as usize);
+        let resp_len =
+            ((nb_hdr[1] as usize) << 16) | ((nb_hdr[2] as usize) << 8) | (nb_hdr[3] as usize);
         if resp_len == 0 || resp_len > 1024 * 1024 {
             crate::serial_verbose_println!("[SMBFS] invalid response length: {}", resp_len);
             return Err(FsError::IoError);
@@ -251,7 +255,11 @@ impl SmbFs {
         while received < resp_len {
             let n = tcp::recv(self.socket_id, &mut response[received..], SMB_TIMEOUT);
             if n == u32::MAX || n == 0 {
-                crate::serial_verbose_println!("[SMBFS] recv body failed at {}/{}", received, resp_len);
+                crate::serial_verbose_println!(
+                    "[SMBFS] recv body failed at {}/{}",
+                    received,
+                    resp_len
+                );
                 return Err(FsError::IoError);
             }
             received += n as usize;
@@ -294,9 +302,9 @@ impl SmbFs {
         // Dialects(2)=0x0202
         let mut body = vec![0u8; 36];
         put_u16_le(&mut body[0..2], 36); // StructureSize
-        put_u16_le(&mut body[2..4], 1);  // DialectCount
-        // SecurityMode, Reserved, Capabilities, ClientGuid, ClientStartTime are 0
-        // Append dialect 0x0202 (SMB 2.0.2)
+        put_u16_le(&mut body[2..4], 1); // DialectCount
+                                        // SecurityMode, Reserved, Capabilities, ClientGuid, ClientStartTime are 0
+                                        // Append dialect 0x0202 (SMB 2.0.2)
         body.push(0x02);
         body.push(0x02);
 
@@ -318,8 +326,11 @@ impl SmbFs {
             }
         }
 
-        crate::serial_verbose_println!("[SMBFS] Negotiate OK, max_read={}, max_write={}",
-            self.max_read_size, self.max_write_size);
+        crate::serial_verbose_println!(
+            "[SMBFS] Negotiate OK, max_read={}, max_write={}",
+            self.max_read_size,
+            self.max_write_size
+        );
         Ok(())
     }
 
@@ -333,7 +344,7 @@ impl SmbFs {
         body1[3] = 0; // SecurityMode
         put_u32_le(&mut body1[4..8], 0); // Capabilities
         put_u32_le(&mut body1[8..12], 0); // Channel
-        // SecurityBufferOffset = 88 (header 64 + body 24)
+                                          // SecurityBufferOffset = 88 (header 64 + body 24)
         put_u16_le(&mut body1[12..14], 88);
         put_u16_le(&mut body1[14..16], negotiate_token.len() as u16); // SecurityBufferLength
         put_u64_le(&mut body1[16..24], 0); // PreviousSessionId
@@ -347,12 +358,18 @@ impl SmbFs {
         self.session_id = Self::response_session_id(&resp1);
 
         if status1 != STATUS_MORE_PROCESSING_REQUIRED && status1 != STATUS_SUCCESS {
-            crate::serial_verbose_println!("[SMBFS] Session setup phase 1 failed: 0x{:08X}", status1);
+            crate::serial_verbose_println!(
+                "[SMBFS] Session setup phase 1 failed: 0x{:08X}",
+                status1
+            );
             return Err(FsError::IoError);
         }
 
         if status1 == STATUS_SUCCESS {
-            crate::serial_verbose_println!("[SMBFS] Session setup OK (single phase), session_id={}", self.session_id);
+            crate::serial_verbose_println!(
+                "[SMBFS] Session setup OK (single phase), session_id={}",
+                self.session_id
+            );
             return Ok(());
         }
 
@@ -375,7 +392,10 @@ impl SmbFs {
         self.session_id = Self::response_session_id(&resp2);
 
         if status2 != STATUS_SUCCESS {
-            crate::serial_verbose_println!("[SMBFS] Session setup phase 2 failed: 0x{:08X}", status2);
+            crate::serial_verbose_println!(
+                "[SMBFS] Session setup phase 2 failed: 0x{:08X}",
+                status2
+            );
             return Err(FsError::IoError);
         }
 
@@ -390,7 +410,7 @@ impl SmbFs {
         let mut body = vec![0u8; 8];
         put_u16_le(&mut body[0..2], 9); // StructureSize
         put_u16_le(&mut body[2..4], 0); // Reserved / Flags
-        // PathOffset = 72 (header 64 + body 8)
+                                        // PathOffset = 72 (header 64 + body 8)
         put_u16_le(&mut body[4..6], 72);
         put_u16_le(&mut body[6..8], path_u16.len() as u16); // PathLength
         body.extend_from_slice(&path_u16);
@@ -422,7 +442,10 @@ impl SmbFs {
         // Convert path to UTF-16LE (strip leading /)
         let clean = path.trim_start_matches('/');
         // SMB paths use backslashes
-        let smb_path: String = clean.chars().map(|c| if c == '/' { '\\' } else { c }).collect();
+        let smb_path: String = clean
+            .chars()
+            .map(|c| if c == '/' { '\\' } else { c })
+            .collect();
         let path_u16 = to_utf16le(&smb_path);
 
         // CREATE request body: StructureSize=57, then fields
@@ -438,7 +461,7 @@ impl SmbFs {
         put_u32_le(&mut body[32..36], share_access); // ShareAccess
         put_u32_le(&mut body[36..40], disposition); // CreateDisposition
         put_u32_le(&mut body[40..44], options); // CreateOptions
-        // NameOffset = 120 (header 64 + body 56)
+                                                // NameOffset = 120 (header 64 + body 56)
         put_u16_le(&mut body[44..46], 120);
         put_u16_le(&mut body[46..48], path_u16.len() as u16); // NameLength
         put_u32_le(&mut body[48..52], 0); // CreateContextsOffset
@@ -457,12 +480,16 @@ impl SmbFs {
         if status != STATUS_SUCCESS {
             // Map to VFS errors
             return match status {
-                0xC0000034 => Err(FsError::NotFound),       // STATUS_OBJECT_NAME_NOT_FOUND
-                0xC000003A => Err(FsError::NotFound),       // STATUS_OBJECT_PATH_NOT_FOUND
-                0xC0000035 => Err(FsError::AlreadyExists),  // STATUS_OBJECT_NAME_COLLISION
+                0xC0000034 => Err(FsError::NotFound), // STATUS_OBJECT_NAME_NOT_FOUND
+                0xC000003A => Err(FsError::NotFound), // STATUS_OBJECT_PATH_NOT_FOUND
+                0xC0000035 => Err(FsError::AlreadyExists), // STATUS_OBJECT_NAME_COLLISION
                 0xC0000022 => Err(FsError::PermissionDenied), // STATUS_ACCESS_DENIED
                 _ => {
-                    crate::serial_verbose_println!("[SMBFS] Create failed: 0x{:08X} path='{}'", status, path);
+                    crate::serial_verbose_println!(
+                        "[SMBFS] Create failed: 0x{:08X} path='{}'",
+                        status,
+                        path
+                    );
                     Err(FsError::IoError)
                 }
             };
@@ -491,8 +518,8 @@ impl SmbFs {
     fn smb2_close(&mut self, file_id: &[u8; 16]) -> Result<(), FsError> {
         let mut body = vec![0u8; 24];
         put_u16_le(&mut body[0..2], 24); // StructureSize
-        put_u16_le(&mut body[2..4], 0);  // Flags
-        put_u32_le(&mut body[4..8], 0);  // Reserved
+        put_u16_le(&mut body[2..4], 0); // Flags
+        put_u32_le(&mut body[4..8], 0); // Reserved
         body[8..24].copy_from_slice(file_id);
 
         let hdr = self.build_header(SMB2_CLOSE);
@@ -502,7 +529,12 @@ impl SmbFs {
     }
 
     /// SMB2 READ — read data from a file.
-    fn smb2_read(&mut self, file_id: &[u8; 16], offset: u64, length: u32) -> Result<Vec<u8>, FsError> {
+    fn smb2_read(
+        &mut self,
+        file_id: &[u8; 16],
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, FsError> {
         let read_len = length.min(self.max_read_size);
 
         let mut body = vec![0u8; 48]; // Fixed size before file_id
@@ -517,7 +549,7 @@ impl SmbFs {
         put_u32_le(&mut body[40..44], 0); // RemainingBytes
         put_u16_le(&mut body[44..46], 0); // ReadChannelInfoOffset
         put_u16_le(&mut body[46..48], 0); // ReadChannelInfoLength
-        // Add 1 byte of padding (StructureSize is 49 = odd, so body needs a buffer byte)
+                                          // Add 1 byte of padding (StructureSize is 49 = odd, so body needs a buffer byte)
         body.push(0);
 
         let hdr = self.build_header(SMB2_READ);
@@ -525,7 +557,8 @@ impl SmbFs {
         let status = Self::response_status(&resp);
 
         if status != STATUS_SUCCESS {
-            if status == 0xC0000011 { // STATUS_END_OF_FILE
+            if status == 0xC0000011 {
+                // STATUS_END_OF_FILE
                 return Ok(Vec::new());
             }
             crate::serial_verbose_println!("[SMBFS] Read failed: 0x{:08X}", status);
@@ -558,7 +591,7 @@ impl SmbFs {
 
         let mut body = vec![0u8; 48];
         put_u16_le(&mut body[0..2], 49); // StructureSize
-        // DataOffset = 112 (header 64 + body 48)
+                                         // DataOffset = 112 (header 64 + body 48)
         put_u16_le(&mut body[2..4], 112);
         put_u32_le(&mut body[4..8], write_len as u32); // Length
         put_u64_le(&mut body[8..16], offset); // Offset
@@ -601,9 +634,12 @@ impl SmbFs {
             body[3] = if first { 0x01 } else { 0x00 }; // Flags: SMB2_RESTART_SCANS on first
             put_u32_le(&mut body[4..8], 0); // FileIndex
             body[8..24].copy_from_slice(file_id); // FileId
-            // FileNameOffset = 96 (header 64 + body 32)
+                                                  // FileNameOffset = 96 (header 64 + body 32)
             put_u16_le(&mut body[24..26], 96);
-            put_u16_le(&mut body[26..28], if first { pattern.len() as u16 } else { 0 }); // FileNameLength
+            put_u16_le(
+                &mut body[26..28],
+                if first { pattern.len() as u16 } else { 0 },
+            ); // FileNameLength
             put_u32_le(&mut body[28..32], 65536); // OutputBufferLength
             if first {
                 body.push(0); // padding byte (StructureSize=33)
@@ -701,12 +737,12 @@ impl SmbFs {
         body[2] = 0x01; // InfoType = FILE
         body[3] = 0x0D; // FileInfoClass = FileDispositionInformation
         put_u32_le(&mut body[4..8], 1); // BufferLength
-        // BufferOffset = 96 (header 64 + body 32)
+                                        // BufferOffset = 96 (header 64 + body 32)
         put_u16_le(&mut body[8..10], 96);
         put_u16_le(&mut body[10..12], 0); // Reserved
         put_u32_le(&mut body[12..16], 0); // AdditionalInformation
         body[16..32].copy_from_slice(file_id); // FileId
-        // Disposition info: DeletePending = 1
+                                               // Disposition info: DeletePending = 1
         body.push(1);
 
         let hdr = self.build_header(SMB2_SET_INFO);
@@ -739,7 +775,8 @@ impl SmbFs {
 
     /// Look up a path from an inode.
     fn inode_to_path(&self, inode: u32) -> Option<&str> {
-        self.path_map.iter()
+        self.path_map
+            .iter()
             .find(|h| h.inode == inode)
             .map(|h| h.path.as_str())
     }
@@ -780,8 +817,7 @@ impl SmbFs {
 
     /// Read bytes from a file at the given offset.
     pub fn read_file(&mut self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
-        let path = String::from(self.inode_to_path(inode)
-            .ok_or(FsError::NotFound)?);
+        let path = String::from(self.inode_to_path(inode).ok_or(FsError::NotFound)?);
 
         let (file_id, _eof, _attrs) = self.smb2_create(
             &path,
@@ -801,8 +837,7 @@ impl SmbFs {
 
     /// Write bytes to a file at the given offset.
     pub fn write_file(&mut self, inode: u32, offset: u32, data: &[u8]) -> Result<usize, FsError> {
-        let path = String::from(self.inode_to_path(inode)
-            .ok_or(FsError::NotFound)?);
+        let path = String::from(self.inode_to_path(inode).ok_or(FsError::NotFound)?);
 
         let (file_id, _eof, _attrs) = self.smb2_create(
             &path,
@@ -820,8 +855,7 @@ impl SmbFs {
 
     /// Read directory entries.
     pub fn read_dir(&mut self, inode: u32) -> Result<Vec<DirEntry>, FsError> {
-        let path = String::from(self.inode_to_path(inode)
-            .ok_or(FsError::NotFound)?);
+        let path = String::from(self.inode_to_path(inode).ok_or(FsError::NotFound)?);
 
         let (file_id, _eof, _attrs) = self.smb2_create(
             &path,
@@ -838,9 +872,13 @@ impl SmbFs {
     }
 
     /// Create a new file or directory.
-    pub fn create_entry(&mut self, parent_inode: u32, name: &str, file_type: FileType) -> Result<u32, FsError> {
-        let parent_path = String::from(self.inode_to_path(parent_inode)
-            .ok_or(FsError::NotFound)?);
+    pub fn create_entry(
+        &mut self,
+        parent_inode: u32,
+        name: &str,
+        file_type: FileType,
+    ) -> Result<u32, FsError> {
+        let parent_path = String::from(self.inode_to_path(parent_inode).ok_or(FsError::NotFound)?);
 
         let full_path = if parent_path == "/" || parent_path.is_empty() {
             let mut p = String::from("/");
@@ -874,8 +912,7 @@ impl SmbFs {
 
     /// Delete a file or directory by name under a parent.
     pub fn delete_entry(&mut self, parent_inode: u32, name: &str) -> Result<(), FsError> {
-        let parent_path = String::from(self.inode_to_path(parent_inode)
-            .ok_or(FsError::NotFound)?);
+        let parent_path = String::from(self.inode_to_path(parent_inode).ok_or(FsError::NotFound)?);
 
         let full_path = if parent_path == "/" || parent_path.is_empty() {
             let mut p = String::from("/");
@@ -901,11 +938,12 @@ impl SmbFs {
         // Remove from path map
         self.path_map.retain(|h| {
             let hp = h.path.as_str();
-            hp != full_path && !hp.starts_with(&{
-                let mut prefix = full_path.clone();
-                prefix.push('/');
-                prefix
-            })
+            hp != full_path
+                && !hp.starts_with(&{
+                    let mut prefix = full_path.clone();
+                    prefix.push('/');
+                    prefix
+                })
         });
 
         Ok(())
@@ -943,7 +981,11 @@ fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
         parts[idx] = val as u8;
         idx += 1;
     }
-    if idx == 4 { Some(parts) } else { None }
+    if idx == 4 {
+        Some(parts)
+    } else {
+        None
+    }
 }
 
 /// Convert a UTF-8 string to UTF-16LE bytes.
@@ -1018,7 +1060,11 @@ fn hash_path(path: &str) -> u32 {
         hash = hash.wrapping_mul(33).wrapping_add(b as u32);
     }
     // Ensure non-zero (0 has special meaning in some FS code)
-    if hash == 0 { 1 } else { hash }
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
 }
 
 /// Build NTLMSSP Negotiate message (Type 1) for anonymous authentication.

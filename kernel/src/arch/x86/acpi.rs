@@ -2,7 +2,6 @@
 ///
 /// Searches for the RSDP signature, parses RSDT, and extracts the MADT
 /// (Multiple APIC Description Table) to enumerate processors and APICs.
-
 use alloc::vec::Vec;
 
 /// Information about a processor (Local APIC entry from MADT)
@@ -25,8 +24,8 @@ pub struct IoApicInfo {
 #[derive(Debug, Clone, Copy)]
 pub struct IsoInfo {
     pub bus: u8,
-    pub source: u8,       // ISA IRQ
-    pub gsi: u32,          // Global System Interrupt
+    pub source: u8, // ISA IRQ
+    pub gsi: u32,   // Global System Interrupt
     pub flags: u16,
 }
 
@@ -81,7 +80,7 @@ struct AcpiSdtHeader {
 // MADT entry types
 const MADT_LAPIC: u8 = 0;
 const MADT_IOAPIC: u8 = 1;
-const MADT_ISO: u8 = 2;   // Interrupt Source Override
+const MADT_ISO: u8 = 2; // Interrupt Source Override
 const MADT_LAPIC_NMI: u8 = 4;
 
 /// Virtual address window for temporarily mapping ACPI tables.
@@ -183,12 +182,20 @@ pub fn init(rsdp_hint: u32) -> Option<AcpiInfo> {
 
         if &table_sig == b"APIC" {
             let table_len = unsafe { core::ptr::addr_of!((*table).length).read_unaligned() };
-            crate::serial_verbose_println!("  ACPI: MADT found at phys {:#010x} (len={})", table_phys, table_len);
+            crate::serial_verbose_println!(
+                "  ACPI: MADT found at phys {:#010x} (len={})",
+                table_phys,
+                table_len
+            );
             let madt_virt = acpi_map(table_phys, table_len);
             acpi_info = parse_madt(madt_virt, table_len);
         } else if &table_sig == b"MCFG" {
             let table_len = unsafe { core::ptr::addr_of!((*table).length).read_unaligned() };
-            crate::serial_verbose_println!("  ACPI: MCFG found at phys {:#010x} (len={})", table_phys, table_len);
+            crate::serial_verbose_println!(
+                "  ACPI: MCFG found at phys {:#010x} (len={})",
+                table_phys,
+                table_len
+            );
             let mcfg_virt = acpi_map(table_phys, table_len);
             mcfg_segments = parse_mcfg(mcfg_virt, table_len);
         }
@@ -219,11 +226,18 @@ fn find_rsdp(hint: u32) -> Option<*const Rsdp> {
         let rsdp = rsdp_virt as *const Rsdp;
         let sig = unsafe { core::ptr::addr_of!((*rsdp).signature).read_unaligned() };
         if sig == RSDP_SIGNATURE && validate_rsdp_checksum(rsdp) {
-            crate::serial_verbose_println!("  ACPI: Using RSDP from bootloader at phys {:#010x} (virt {:#018x})", hint, rsdp_virt);
+            crate::serial_verbose_println!(
+                "  ACPI: Using RSDP from bootloader at phys {:#010x} (virt {:#018x})",
+                hint,
+                rsdp_virt
+            );
             // Don't unmap — caller (init) will use rsdp pointer and remap as needed
             return Some(rsdp);
         }
-        crate::serial_verbose_println!("  ACPI: Bootloader RSDP hint {:#010x} invalid, falling back to scan", hint);
+        crate::serial_verbose_println!(
+            "  ACPI: Bootloader RSDP hint {:#010x} invalid, falling back to scan",
+            hint
+        );
         acpi_unmap(1);
     }
 
@@ -300,7 +314,9 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
         let entry_type = unsafe { (off as *const u8).read() };
         let entry_len = unsafe { ((off + 1) as *const u8).read() } as u64;
 
-        if entry_len < 2 { break; }
+        if entry_len < 2 {
+            break;
+        }
 
         match entry_type {
             MADT_LAPIC => {
@@ -310,9 +326,17 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
                     let flags = unsafe { ((off + 4) as *const u32).read_unaligned() };
                     let enabled = flags & 1 != 0;
 
-                    processors.push(ProcessorInfo { acpi_id, apic_id, enabled });
-                    crate::serial_verbose_println!("  ACPI: Processor #{} APIC_ID={} enabled={}",
-                        acpi_id, apic_id, enabled);
+                    processors.push(ProcessorInfo {
+                        acpi_id,
+                        apic_id,
+                        enabled,
+                    });
+                    crate::serial_verbose_println!(
+                        "  ACPI: Processor #{} APIC_ID={} enabled={}",
+                        acpi_id,
+                        apic_id,
+                        enabled
+                    );
                 }
             }
             MADT_IOAPIC => {
@@ -321,9 +345,17 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
                     let address = unsafe { ((off + 4) as *const u32).read_unaligned() };
                     let gsi_base = unsafe { ((off + 8) as *const u32).read_unaligned() };
 
-                    io_apics.push(IoApicInfo { id, address, gsi_base });
-                    crate::serial_verbose_println!("  ACPI: I/O APIC #{} at {:#010x} GSI_base={}",
-                        id, address, gsi_base);
+                    io_apics.push(IoApicInfo {
+                        id,
+                        address,
+                        gsi_base,
+                    });
+                    crate::serial_verbose_println!(
+                        "  ACPI: I/O APIC #{} at {:#010x} GSI_base={}",
+                        id,
+                        address,
+                        gsi_base
+                    );
                 }
             }
             MADT_ISO => {
@@ -333,9 +365,18 @@ fn parse_madt(madt_virt: u64, table_len: u32) -> Option<AcpiInfo> {
                     let gsi = unsafe { ((off + 4) as *const u32).read_unaligned() };
                     let flags = unsafe { ((off + 8) as *const u16).read_unaligned() };
 
-                    isos.push(IsoInfo { bus, source, gsi, flags });
-                    crate::serial_verbose_println!("  ACPI: ISO IRQ{} -> GSI{} flags={:#x}",
-                        source, gsi, flags);
+                    isos.push(IsoInfo {
+                        bus,
+                        source,
+                        gsi,
+                        flags,
+                    });
+                    crate::serial_verbose_println!(
+                        "  ACPI: ISO IRQ{} -> GSI{} flags={:#x}",
+                        source,
+                        gsi,
+                        flags
+                    );
                 }
             }
             MADT_LAPIC_NMI => {
@@ -376,8 +417,13 @@ fn parse_mcfg(mcfg_virt: u64, table_len: u32) -> Vec<McfgSegment> {
         let start_bus = unsafe { *((entry_base + 10) as *const u8) };
         let end_bus = unsafe { *((entry_base + 11) as *const u8) };
 
-        crate::serial_println!("  PCIe ECAM segment {}: base={:#014x} buses {}-{}",
-            segment_group, base_address, start_bus, end_bus);
+        crate::serial_println!(
+            "  PCIe ECAM segment {}: base={:#014x} buses {}-{}",
+            segment_group,
+            base_address,
+            start_bus,
+            end_bus
+        );
 
         segments.push(McfgSegment {
             base_address,

@@ -35,18 +35,15 @@ impl NtfsBpb {
 
         let cluster_size = bytes_per_sector as u32 * sectors_per_cluster as u32;
         let total_sectors = u64::from_le_bytes([
-            buf[0x28], buf[0x29], buf[0x2A], buf[0x2B],
-            buf[0x2C], buf[0x2D], buf[0x2E], buf[0x2F],
+            buf[0x28], buf[0x29], buf[0x2A], buf[0x2B], buf[0x2C], buf[0x2D], buf[0x2E], buf[0x2F],
         ]);
 
         let mft_cluster = u64::from_le_bytes([
-            buf[0x30], buf[0x31], buf[0x32], buf[0x33],
-            buf[0x34], buf[0x35], buf[0x36], buf[0x37],
+            buf[0x30], buf[0x31], buf[0x32], buf[0x33], buf[0x34], buf[0x35], buf[0x36], buf[0x37],
         ]);
 
         let mft_mirror_cluster = u64::from_le_bytes([
-            buf[0x38], buf[0x39], buf[0x3A], buf[0x3B],
-            buf[0x3C], buf[0x3D], buf[0x3E], buf[0x3F],
+            buf[0x38], buf[0x39], buf[0x3A], buf[0x3B], buf[0x3C], buf[0x3D], buf[0x3E], buf[0x3F],
         ]);
 
         // MFT record size: signed byte at 0x40.

@@ -162,7 +162,10 @@ impl FuseSession {
     /// Holt eine bereitliegende Reply (nicht-blockierend).
     pub fn take_reply(&self, unique: Unique) -> Result<Vec<u8>, FuseError> {
         let mut inner = self.inner.lock();
-        inner.replies.remove(&unique).ok_or(FuseError::NoMatchingReply)
+        inner
+            .replies
+            .remove(&unique)
+            .ok_or(FuseError::NoMatchingReply)
     }
 
     /// Markiert die Session als beendet. Folgende Enqueue-Versuche
@@ -416,10 +419,7 @@ pub enum FuseCallError {
 /// serialisiert nur den `Request`-Op (ohne `RequestFrame`-Header), der
 /// Daemon serialisiert nur den `ReplyPayload` (ohne `ReplyFrame`-Header).
 /// Die `unique`-ID-Zuordnung übernimmt der Transport-Layer.
-pub fn fuse_call(
-    session: &FuseSession,
-    req: &ProtoRequest,
-) -> Result<ProtoReply, FuseCallError> {
+pub fn fuse_call(session: &FuseSession, req: &ProtoRequest) -> Result<ProtoReply, FuseCallError> {
     let body = bincode::serde::encode_to_vec(req, bincode::config::legacy())
         .map_err(|_| FuseCallError::EncodeFailed)?;
     let reply_bytes = session
@@ -512,7 +512,11 @@ mod tests {
     fn reply_is_matched_by_unique() {
         let s = FuseSession::new();
         let u = s.enqueue_request(vec![42]).unwrap();
-        s.deliver_reply(PendingReply { unique: u, body: vec![7] }).unwrap();
+        s.deliver_reply(PendingReply {
+            unique: u,
+            body: vec![7],
+        })
+        .unwrap();
         let body = s.take_reply(u).unwrap();
         assert_eq!(body, vec![7]);
     }
@@ -527,7 +531,10 @@ mod tests {
     fn closed_session_rejects_new_requests() {
         let s = FuseSession::new();
         s.close();
-        assert!(matches!(s.enqueue_request(vec![0]), Err(FuseError::SessionClosed)));
+        assert!(matches!(
+            s.enqueue_request(vec![0]),
+            Err(FuseError::SessionClosed)
+        ));
     }
 
     #[test]
@@ -589,7 +596,11 @@ mod tests {
         // Pre-allocate the unique by reserving: we enqueue via the
         // blocking API after first manually depositing a reply for
         // `next_unique=1`. deliver_reply requires session not closed.
-        s.deliver_reply(PendingReply { unique: 1, body: vec![11, 22] }).unwrap();
+        s.deliver_reply(PendingReply {
+            unique: 1,
+            body: vec![11, 22],
+        })
+        .unwrap();
         let body = s.enqueue_and_wait(vec![0xDE]).unwrap();
         assert_eq!(body, vec![11, 22]);
     }
@@ -627,24 +638,33 @@ mod tests {
         s.close();
         // A later deliver_reply should fail cleanly.
         assert!(s
-            .deliver_reply(PendingReply { unique: 1, body: vec![] })
+            .deliver_reply(PendingReply {
+                unique: 1,
+                body: vec![]
+            })
             .is_err());
     }
 
     #[test]
     fn fuse_call_decodes_ok_reply() {
-        use corefs_fuse_proto::{
-            Attr, Reply as PR, ReplyPayload, Request as PQ,
-        };
+        use corefs_fuse_proto::{Attr, Reply as PR, ReplyPayload, Request as PQ};
         let s = FuseSession::new();
         // Pre-deposit a reply for unique=1 (next id), simulating daemon
         // already answered before block.
         let payload = ReplyPayload::Ok(PR::Getattr(Attr {
-            ino: 42, size: 7, blocks: 1, mode: 0o644, nlink: 1,
-            uid: 0, gid: 0, kind: 1, crtime_secs: 1, mtime_secs: 1, ctime_secs: 1,
+            ino: 42,
+            size: 7,
+            blocks: 1,
+            mode: 0o644,
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            kind: 1,
+            crtime_secs: 1,
+            mtime_secs: 1,
+            ctime_secs: 1,
         }));
-        let body =
-            bincode::serde::encode_to_vec(&payload, bincode::config::legacy()).unwrap();
+        let body = bincode::serde::encode_to_vec(&payload, bincode::config::legacy()).unwrap();
         s.deliver_reply(PendingReply { unique: 1, body }).unwrap();
 
         let req = PQ::Getattr { ino: 42 };
@@ -662,9 +682,11 @@ mod tests {
     fn fuse_call_decodes_err_reply_to_remote() {
         use corefs_fuse_proto::{ReplyPayload, Request as PQ};
         let s = FuseSession::new();
-        let payload = ReplyPayload::Err { errno: 2, message: None };
-        let body =
-            bincode::serde::encode_to_vec(&payload, bincode::config::legacy()).unwrap();
+        let payload = ReplyPayload::Err {
+            errno: 2,
+            message: None,
+        };
+        let body = bincode::serde::encode_to_vec(&payload, bincode::config::legacy()).unwrap();
         s.deliver_reply(PendingReply { unique: 1, body }).unwrap();
 
         let req = PQ::Getattr { ino: 99 };

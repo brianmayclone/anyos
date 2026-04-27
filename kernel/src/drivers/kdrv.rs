@@ -8,11 +8,11 @@
 //! The `exec` binary must reside directly in the `.ddv` directory — subdirectory
 //! traversal (`/`, `..`) in the exec field is rejected.
 
+use crate::drivers::hal::{self, Driver, DriverError, DriverType};
+use crate::drivers::pci::PciDevice;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::drivers::hal::{self, Driver, DriverType, DriverError};
-use crate::drivers::pci::PciDevice;
 
 // ──────────────────────────────────────────────
 // KDRV binary format
@@ -30,20 +30,20 @@ const KDRV_ABI_VERSION: u32 = 1;
 /// KDRV header (first 4096 bytes of binary).
 #[repr(C)]
 struct KdrvHeader {
-    magic: [u8; 4],       // "KDRV"
-    version: u32,         // Format version
-    abi_version: u32,     // Kernel ABI compatibility
+    magic: [u8; 4],   // "KDRV"
+    version: u32,     // Format version
+    abi_version: u32, // Kernel ABI compatibility
     _reserved0: u32,
-    exports_offset: u64,  // Byte offset from load base to DriverExports
-    code_pages: u32,      // Number of read-only code pages
-    data_pages: u32,      // Number of read-write data pages
-    bss_pages: u32,       // Number of zeroed read-write BSS pages
+    exports_offset: u64,    // Byte offset from load base to DriverExports
+    code_pages: u32,        // Number of read-only code pages
+    data_pages: u32,        // Number of read-write data pages
+    bss_pages: u32,         // Number of zeroed read-write BSS pages
     _reserved1: [u8; 4056], // Pad to 4096 bytes
 }
 
 /// Virtual address range for loaded external drivers: 0xFFFF_FFFF_B000_0000 — BFE0_0000
 const KDRV_LOAD_BASE: u64 = 0xFFFF_FFFF_B000_0000;
-const KDRV_LOAD_END: u64  = 0xFFFF_FFFF_BFE0_0000;
+const KDRV_LOAD_END: u64 = 0xFFFF_FFFF_BFE0_0000;
 const PAGE_SIZE: u64 = 4096;
 
 /// Next available virtual address for KDRV loading.
@@ -128,16 +128,26 @@ extern "C" fn api_pci_config_write32(bus: u8, dev: u8, func: u8, off: u8, val: u
 }
 extern "C" fn api_pci_enable_bus_master(bus: u8, dev: u8, func: u8) {
     let pci_dev = PciDevice {
-        bus, device: dev, function: func,
-        vendor_id: 0, device_id: 0,
-        class_code: 0, subclass: 0, prog_if: 0, revision_id: 0,
-        header_type: 0, interrupt_line: 0, interrupt_pin: 0,
+        bus,
+        device: dev,
+        function: func,
+        vendor_id: 0,
+        device_id: 0,
+        class_code: 0,
+        subclass: 0,
+        prog_if: 0,
+        revision_id: 0,
+        header_type: 0,
+        interrupt_line: 0,
+        interrupt_pin: 0,
         bars: [0; 6],
     };
     crate::drivers::pci::enable_bus_master(&pci_dev);
 }
 extern "C" fn api_alloc_frame() -> u64 {
-    crate::memory::physical::alloc_frame().map(|f| f.as_u64()).unwrap_or(0)
+    crate::memory::physical::alloc_frame()
+        .map(|f| f.as_u64())
+        .unwrap_or(0)
 }
 extern "C" fn api_free_frame(phys: u64) {
     crate::memory::physical::free_frame(crate::memory::address::PhysAddr::new(phys));
@@ -155,8 +165,8 @@ extern "C" fn api_map_mmio(phys: u64, pages: u32) -> u64 {
     *next += size;
     drop(next);
 
+    use crate::memory::address::{PhysAddr, VirtAddr};
     use crate::memory::virtual_mem::map_page;
-    use crate::memory::address::{VirtAddr, PhysAddr};
     const PG_PRESENT: u64 = 1;
     const PG_WRITABLE: u64 = 1 << 1;
     const PG_PWT: u64 = 1 << 3; // Write-through (uncacheable for MMIO)
@@ -186,7 +196,9 @@ extern "C" fn api_outl(port: u16, val: u32) {
     unsafe { crate::arch::x86::port::outl(port, val) }
 }
 extern "C" fn api_log(msg: *const u8, len: u32) {
-    if msg.is_null() { return; }
+    if msg.is_null() {
+        return;
+    }
     let slice = unsafe { core::slice::from_raw_parts(msg, len as usize) };
     if let Ok(s) = core::str::from_utf8(slice) {
         crate::serial_verbose_println!("  KDRV: {}", s);
@@ -223,8 +235,8 @@ static KERNEL_API: KernelDriverApi = KernelDriverApi {
 /// Located at `exports_offset` bytes from the load base.
 #[repr(C)]
 pub struct DriverExports {
-    pub name: *const u8,        // Null-terminated driver name
-    pub driver_type: u32,       // DriverType discriminant
+    pub name: *const u8,  // Null-terminated driver name
+    pub driver_type: u32, // DriverType discriminant
     pub init: extern "C" fn(api: *const KernelDriverApi, pci: *const PciDeviceC) -> i32,
     pub read: extern "C" fn(offset: u64, buf: *mut u8, len: u64) -> i64,
     pub write: extern "C" fn(offset: u64, buf: *const u8, len: u64) -> i64,
@@ -269,7 +281,9 @@ fn parse_driver_info_conf(bundle_path: &str) -> Option<DriverBundleInfo> {
         if let Some(idx) = line.find('=') {
             let key = line[..idx].trim();
             let val = line[idx + 1..].trim();
-            if val.is_empty() { continue; }
+            if val.is_empty() {
+                continue;
+            }
 
             match key {
                 "exec" => exec = Some(String::from(val)),
@@ -278,9 +292,12 @@ fn parse_driver_info_conf(bundle_path: &str) -> Option<DriverBundleInfo> {
                     // Format: "VVVV:DDDD" (vendor:device in hex)
                     if let Some(colon) = val.find(':') {
                         let vendor = u16::from_str_radix(&val[..colon], 16).ok();
-                        let device = u16::from_str_radix(&val[colon+1..], 16).ok();
+                        let device = u16::from_str_radix(&val[colon + 1..], 16).ok();
                         if let (Some(v), Some(d)) = (vendor, device) {
-                            matches.push(DriverMatchRule::VendorDevice { vendor: v, device: d });
+                            matches.push(DriverMatchRule::VendorDevice {
+                                vendor: v,
+                                device: d,
+                            });
                         }
                     }
                 }
@@ -288,9 +305,12 @@ fn parse_driver_info_conf(bundle_path: &str) -> Option<DriverBundleInfo> {
                     // Format: "CC:SS" (class:subclass in hex)
                     if let Some(colon) = val.find(':') {
                         let class = u8::from_str_radix(&val[..colon], 16).ok();
-                        let subclass = u8::from_str_radix(&val[colon+1..], 16).ok();
+                        let subclass = u8::from_str_radix(&val[colon + 1..], 16).ok();
                         if let (Some(c), Some(s)) = (class, subclass) {
-                            matches.push(DriverMatchRule::Class { class: c, subclass: s });
+                            matches.push(DriverMatchRule::Class {
+                                class: c,
+                                subclass: s,
+                            });
                         }
                     }
                 }
@@ -305,7 +325,8 @@ fn parse_driver_info_conf(bundle_path: &str) -> Option<DriverBundleInfo> {
     if exec_name.contains('/') || exec_name.contains("..") {
         crate::serial_verbose_println!(
             "  KDRV: SECURITY - rejected exec '{}' in {} (path traversal)",
-            exec_name, bundle_path
+            exec_name,
+            bundle_path
         );
         return None;
     }
@@ -366,7 +387,11 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
     };
 
     if data.len() < 4096 {
-        crate::serial_verbose_println!("  KDRV: {} too small ({}B, need >=4096)", binary_path, data.len());
+        crate::serial_verbose_println!(
+            "  KDRV: {} too small ({}B, need >=4096)",
+            binary_path,
+            data.len()
+        );
         return None;
     }
 
@@ -377,13 +402,21 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
         return None;
     }
     if header.version != KDRV_VERSION {
-        crate::serial_verbose_println!("  KDRV: {} version mismatch (got {}, need {})",
-            binary_path, header.version, KDRV_VERSION);
+        crate::serial_verbose_println!(
+            "  KDRV: {} version mismatch (got {}, need {})",
+            binary_path,
+            header.version,
+            KDRV_VERSION
+        );
         return None;
     }
     if header.abi_version != KDRV_ABI_VERSION {
-        crate::serial_verbose_println!("  KDRV: {} ABI mismatch (got {}, need {})",
-            binary_path, header.abi_version, KDRV_ABI_VERSION);
+        crate::serial_verbose_println!(
+            "  KDRV: {} ABI mismatch (got {}, need {})",
+            binary_path,
+            header.abi_version,
+            KDRV_ABI_VERSION
+        );
         return None;
     }
 
@@ -404,26 +437,18 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
     *next_va = load_base + needed;
     drop(next_va);
 
-    use crate::memory::virtual_mem::map_page;
     use crate::memory::address::VirtAddr;
     use crate::memory::physical;
+    use crate::memory::virtual_mem::map_page;
     const PG_PRESENT: u64 = 1;
     const PG_WRITABLE: u64 = 1 << 1;
 
     // Map header page (RO) — contains the header struct
     let header_frame = physical::alloc_frame()?;
-    map_page(
-        VirtAddr::new(load_base),
-        header_frame,
-        PG_PRESENT,
-    );
+    map_page(VirtAddr::new(load_base), header_frame, PG_PRESENT);
     // Copy header data
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            data.as_ptr(),
-            load_base as *mut u8,
-            4096.min(data.len()),
-        );
+        core::ptr::copy_nonoverlapping(data.as_ptr(), load_base as *mut u8, 4096.min(data.len()));
     }
 
     // Map code pages (RO)
@@ -482,7 +507,11 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
             PG_PRESENT | PG_WRITABLE,
         );
         unsafe {
-            core::ptr::write_bytes((bss_start + i * PAGE_SIZE) as *mut u8, 0, PAGE_SIZE as usize);
+            core::ptr::write_bytes(
+                (bss_start + i * PAGE_SIZE) as *mut u8,
+                0,
+                PAGE_SIZE as usize,
+            );
         }
     }
 
@@ -492,7 +521,11 @@ fn load_kdrv(bundle_path: &str, exec_name: &str) -> Option<&'static DriverExport
 
     crate::serial_verbose_println!(
         "  KDRV: loaded {} at {:#x} ({} code + {} data + {} bss pages)",
-        binary_path, load_base, code_pages, data_pages, bss_pages
+        binary_path,
+        load_base,
+        code_pages,
+        data_pages,
+        bss_pages
     );
 
     Some(exports)
@@ -571,15 +604,20 @@ pub fn probe_external_drivers() {
     let all_pci = crate::drivers::pci::devices();
 
     // Filter to unbound devices (excluding bridges)
-    let unbound: Vec<&PciDevice> = all_pci.iter()
+    let unbound: Vec<&PciDevice> = all_pci
+        .iter()
         .filter(|d| d.class_code != 0x06)
-        .filter(|d| !bound_devices.iter().any(|b|
-            b.bus == d.bus && b.device == d.device && b.function == d.function
-        ))
+        .filter(|d| {
+            !bound_devices
+                .iter()
+                .any(|b| b.bus == d.bus && b.device == d.device && b.function == d.function)
+        })
         .collect();
 
     if unbound.is_empty() {
-        crate::serial_verbose_println!("  KDRV: all PCI devices already bound, skipping external probe");
+        crate::serial_verbose_println!(
+            "  KDRV: all PCI devices already bound, skipping external probe"
+        );
         return;
     }
 
@@ -588,7 +626,9 @@ pub fn probe_external_drivers() {
         unbound.len()
     );
 
-    let categories = ["gpu", "storage", "network", "input", "audio", "bus", "system"];
+    let categories = [
+        "gpu", "storage", "network", "input", "audio", "bus", "system",
+    ];
 
     let mut loaded = 0u32;
 
@@ -626,7 +666,9 @@ pub fn probe_external_drivers() {
 
                 crate::serial_verbose_println!(
                     "  KDRV: matched {} for PCI {:04x}:{:04x}",
-                    name, pci_dev.vendor_id, pci_dev.device_id
+                    name,
+                    pci_dev.vendor_id,
+                    pci_dev.device_id
                 );
 
                 // Load the KDRV binary
@@ -641,7 +683,8 @@ pub fn probe_external_drivers() {
                 if ret != 0 {
                     crate::serial_verbose_println!(
                         "  KDRV: {} init() failed (returned {})",
-                        name, ret
+                        name,
+                        ret
                     );
                     continue;
                 }

@@ -7,7 +7,7 @@
 #[allow(unused_imports)]
 use super::helpers::is_valid_user_ptr;
 #[allow(unused_imports)]
-use super::{COMPOSITOR_TID, COMPOSITOR_PD, is_compositor};
+use super::{is_compositor, COMPOSITOR_PD, COMPOSITOR_TID};
 
 use core::sync::atomic::Ordering;
 
@@ -17,7 +17,9 @@ use core::sync::atomic::Ordering;
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_screen_size(buf_ptr: u64) -> u32 {
-    if buf_ptr == 0 { return u32::MAX; }
+    if buf_ptr == 0 {
+        return u32::MAX;
+    }
     match crate::drivers::gpu::with_gpu(|g| g.get_mode()) {
         Some((w, h, _pitch, _addr)) => {
             unsafe {
@@ -102,12 +104,13 @@ pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
             // Update vmmouse screen size for backdoor coordinate scaling
             crate::drivers::input::vmmouse::update_screen_size(width, height);
             // Notify all subscribers about the resolution change
-            crate::ipc::event_bus::system_emit(
-                crate::ipc::event_bus::EventData::new(
-                    crate::ipc::event_bus::EVT_RESOLUTION_CHANGED,
-                    width, height, 0, 0,
-                ),
-            );
+            crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+                crate::ipc::event_bus::EVT_RESOLUTION_CHANGED,
+                width,
+                height,
+                0,
+                0,
+            ));
             0
         }
         _ => u32::MAX,
@@ -228,13 +231,21 @@ pub fn sys_gpu_info(buf_ptr: u64, buf_len: u32) -> u32 {
 /// SYS_GPU_HAS_ACCEL: Query if GPU acceleration is available.
 pub fn sys_gpu_has_accel() -> u32 {
     use core::sync::atomic::Ordering;
-    if crate::GPU_ACCEL.load(Ordering::Relaxed) { 1 } else { 0 }
+    if crate::GPU_ACCEL.load(Ordering::Relaxed) {
+        1
+    } else {
+        0
+    }
 }
 
 /// SYS_GPU_HAS_HW_CURSOR: Query if GPU hardware cursor is available.
 pub fn sys_gpu_has_hw_cursor() -> u32 {
     use core::sync::atomic::Ordering;
-    if crate::GPU_HW_CURSOR.load(Ordering::Relaxed) { 1 } else { 0 }
+    if crate::GPU_HW_CURSOR.load(Ordering::Relaxed) {
+        1
+    } else {
+        0
+    }
 }
 
 // =========================================================================
@@ -249,9 +260,7 @@ pub fn sys_audio_write(buf_ptr: u64, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 {
         return 0;
     }
-    let data = unsafe {
-        core::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize)
-    };
+    let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len as usize) };
     crate::drivers::audio::write_pcm(data) as u32
 }
 
@@ -270,11 +279,29 @@ pub fn sys_audio_write(_buf_ptr: u64, _buf_len: u32) -> u32 {
 #[cfg(target_arch = "x86_64")]
 pub fn sys_audio_ctl(cmd: u32, arg: u32) -> u32 {
     match cmd {
-        0 => { crate::drivers::audio::stop(); 0 }
-        1 => { crate::drivers::audio::set_volume(arg as u8); 0 }
+        0 => {
+            crate::drivers::audio::stop();
+            0
+        }
+        1 => {
+            crate::drivers::audio::set_volume(arg as u8);
+            0
+        }
         2 => crate::drivers::audio::get_volume() as u32,
-        3 => if crate::drivers::audio::is_playing() { 1 } else { 0 },
-        4 => if crate::drivers::audio::is_available() { 1 } else { 0 },
+        3 => {
+            if crate::drivers::audio::is_playing() {
+                1
+            } else {
+                0
+            }
+        }
+        4 => {
+            if crate::drivers::audio::is_available() {
+                1
+            } else {
+                0
+            }
+        }
         _ => u32::MAX,
     }
 }
@@ -295,7 +322,10 @@ pub fn sys_audio_ctl(cmd: u32, _arg: u32) -> u32 {
 /// Returns 0 on success, u32::MAX if already registered.
 pub fn sys_register_compositor() -> u32 {
     let tid = crate::task::scheduler::current_tid();
-    if COMPOSITOR_TID.compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+    if COMPOSITOR_TID
+        .compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
         // Store the compositor's page directory so child threads (render thread)
         // are also recognized as compositor by is_compositor().
         if let Some(pd) = crate::task::scheduler::current_thread_page_directory() {
@@ -392,7 +422,11 @@ pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
 
     crate::serial_verbose_println!(
         "[OK] Framebuffer mapped to compositor at {:#010x} ({}x{}, pitch={}, phys={:#x})",
-        fb_user_base, width, height, pitch, fb_phys
+        fb_user_base,
+        width,
+        height,
+        pitch,
+        fb_phys
     );
     0
 }
@@ -414,9 +448,8 @@ pub fn sys_map_framebuffer(out_info_ptr: u64) -> u32 {
     let pages = fb_map_size / crate::memory::FRAME_SIZE;
 
     for i in 0..pages {
-        let phys_addr = crate::memory::address::PhysAddr::new(
-            fb_phys + (i * crate::memory::FRAME_SIZE) as u64,
-        );
+        let phys_addr =
+            crate::memory::address::PhysAddr::new(fb_phys + (i * crate::memory::FRAME_SIZE) as u64);
         let virt_addr = crate::memory::address::VirtAddr::new(
             fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
         );
@@ -453,15 +486,12 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
         return 0;
     }
 
-
     let count = cmd_count.min(256) as usize; // Cap at 256 commands per call
     let byte_size = count * 36; // 9 u32s * 4 bytes each
     if !is_valid_user_ptr(cmd_buf_ptr as u64, byte_size as u64) {
         return 0;
     }
-    let cmds = unsafe {
-        core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count)
-    };
+    let cmds = unsafe { core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count) };
     let mut last_cmd_type = 0u32;
 
     // Process all commands in a single GPU lock acquisition.
@@ -479,7 +509,8 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
             let cmd_type = cmd[0];
             last_cmd_type = cmd_type;
             let ok = match cmd_type {
-                1 => { // UPDATE(x, y, w, h) — accumulate bbox, defer transfer+flush
+                1 => {
+                    // UPDATE(x, y, w, h) — accumulate bbox, defer transfer+flush
                     let (x, y, w, h) = (cmd[1], cmd[2], cmd[3], cmd[4]);
                     // Only expand bounding box; transfer is batched at the end
                     if w > 0 && h > 0 {
@@ -490,23 +521,28 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
                     }
                     true
                 }
-                2 => { // FILL_RECT(x, y, w, h, color)
+                2 => {
+                    // FILL_RECT(x, y, w, h, color)
                     g.accel_fill_rect(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5])
                 }
-                3 => { // COPY_RECT(sx, sy, dx, dy, w, h)
+                3 => {
+                    // COPY_RECT(sx, sy, dx, dy, w, h)
                     g.accel_copy_rect(cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6])
                 }
-                4 => { // CURSOR_MOVE(x, y)
+                4 => {
+                    // CURSOR_MOVE(x, y)
                     if !crate::drivers::gpu::is_splash_cursor_active() {
                         g.move_cursor(cmd[1], cmd[2]);
                     }
                     true
                 }
-                5 => { // CURSOR_SHOW(visible)
+                5 => {
+                    // CURSOR_SHOW(visible)
                     g.show_cursor(cmd[1] != 0);
                     true
                 }
-                6 => { // DEFINE_CURSOR(w, h, hotx, hoty, pixels_ptr_lo, pixels_ptr_hi, pixel_count)
+                6 => {
+                    // DEFINE_CURSOR(w, h, hotx, hoty, pixels_ptr_lo, pixels_ptr_hi, pixel_count)
                     let w = cmd[1];
                     let h = cmd[2];
                     let hotx = cmd[3];
@@ -518,25 +554,31 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
                     } else if count != (w * h) as usize {
                         false
                     } else if !is_valid_user_ptr(ptr, (count * 4) as u64) {
-                        crate::serial_verbose_println!("GPU DEFINE_CURSOR: invalid pixel ptr {:#x} count={}", ptr, count);
+                        crate::serial_verbose_println!(
+                            "GPU DEFINE_CURSOR: invalid pixel ptr {:#x} count={}",
+                            ptr,
+                            count
+                        );
                         false
                     } else {
-                        let pixels = unsafe {
-                            core::slice::from_raw_parts(ptr as *const u32, count)
-                        };
+                        let pixels =
+                            unsafe { core::slice::from_raw_parts(ptr as *const u32, count) };
                         g.define_cursor(w, h, hotx, hoty, pixels);
                         true
                     }
                 }
-                7 => { // FLIP
+                7 => {
+                    // FLIP
                     g.flip();
                     true
                 }
-                8 => { // SYNC
+                8 => {
+                    // SYNC
                     g.sync();
                     true
                 }
-                9 => { // VRAM_INFO
+                9 => {
+                    // VRAM_INFO
                     true
                 }
                 _ => false,
@@ -629,9 +671,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
                     && count == (w * h) as usize
                     && is_valid_user_ptr(ptr, (count * 4) as u64)
                 {
-                    let pixels = unsafe {
-                        core::slice::from_raw_parts(ptr as *const u32, count)
-                    };
+                    let pixels = unsafe { core::slice::from_raw_parts(ptr as *const u32, count) };
                     crate::drivers::arm::gpu::define_cursor(w, h, hotx, hoty, pixels);
                     executed += 1;
                 }
@@ -684,9 +724,7 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
     if !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
         return 0;
     }
-    let events = unsafe {
-        core::slice::from_raw_parts_mut(buf_ptr as *mut [u32; 5], max)
-    };
+    let events = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut [u32; 5], max) };
     let mut count = 0usize;
 
     // Drain keyboard events
@@ -747,9 +785,7 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
             Some(mouse_evt) => {
                 use crate::drivers::input::mouse::MouseEventType;
                 let (event_type, arg0, arg1, arg2, arg3) = match mouse_evt.event_type {
-                    MouseEventType::Move => {
-                        (3u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0)
-                    }
+                    MouseEventType::Move => (3u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0),
                     MouseEventType::MoveAbsolute => {
                         // event_type 6 = absolute position (pixel coords)
                         (6u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0)
@@ -766,9 +802,7 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
                             | ((mouse_evt.buttons.middle as u32) << 2);
                         (4, btns, 0, mouse_evt.dx as u32, mouse_evt.dy as u32)
                     }
-                    MouseEventType::Scroll => {
-                        (5, mouse_evt.dz as u32, 0, 0, 0)
-                    }
+                    MouseEventType::Scroll => (5, mouse_evt.dz as u32, 0, 0, 0),
                 };
                 events[count] = [event_type, arg0, arg1, arg2, arg3];
                 count += 1;
@@ -838,9 +872,23 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
                 use crate::drivers::arm::input::MouseEventType;
                 events[count] = match mouse_evt.event_type {
                     MouseEventType::Move => [3, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0],
-                    MouseEventType::MoveAbsolute => [6, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0],
-                    MouseEventType::ButtonDown => [4, mouse_evt.buttons as u32, 1, mouse_evt.dx as u32, mouse_evt.dy as u32],
-                    MouseEventType::ButtonUp => [4, mouse_evt.buttons as u32, 0, mouse_evt.dx as u32, mouse_evt.dy as u32],
+                    MouseEventType::MoveAbsolute => {
+                        [6, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0]
+                    }
+                    MouseEventType::ButtonDown => [
+                        4,
+                        mouse_evt.buttons as u32,
+                        1,
+                        mouse_evt.dx as u32,
+                        mouse_evt.dy as u32,
+                    ],
+                    MouseEventType::ButtonUp => [
+                        4,
+                        mouse_evt.buttons as u32,
+                        0,
+                        mouse_evt.dx as u32,
+                        mouse_evt.dy as u32,
+                    ],
                     MouseEventType::Scroll => [5, mouse_evt.dz as u32, 0, 0, 0],
                 };
                 count += 1;
@@ -902,12 +950,8 @@ pub fn sys_capture_screen(buf_ptr: u64, buf_size: u32, info_ptr: u64) -> u32 {
     let already_mapped = crate::memory::virtual_mem::read_pte(first_virt) & 0x01 != 0;
     if !already_mapped {
         for i in 0..fb_pages {
-            let phys = crate::memory::address::PhysAddr::new(
-                fb_phys as u64 + (i * 0x1000) as u64,
-            );
-            let virt = crate::memory::address::VirtAddr::new(
-                fb_map_base + (i * 0x1000) as u64,
-            );
+            let phys = crate::memory::address::PhysAddr::new(fb_phys as u64 + (i * 0x1000) as u64);
+            let virt = crate::memory::address::VirtAddr::new(fb_map_base + (i * 0x1000) as u64);
             crate::memory::virtual_mem::map_page(virt, phys, 0x05);
         }
     }
@@ -1016,18 +1060,19 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
     let flags: u64 = 0x0F | crate::memory::virtual_mem::PTE_VRAM; // 0x20F
 
     for i in 0..pages {
-        let phys = crate::memory::address::PhysAddr::new(
-            fb_phys + vram_offset as u64 + (i * 4096) as u64,
-        );
-        let virt = crate::memory::address::VirtAddr::new(
-            user_va_base + (i * 4096) as u64,
-        );
+        let phys =
+            crate::memory::address::PhysAddr::new(fb_phys + vram_offset as u64 + (i * 4096) as u64);
+        let virt = crate::memory::address::VirtAddr::new(user_va_base + (i * 4096) as u64);
         crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, flags);
     }
 
     crate::serial_verbose_println!(
         "VRAM_MAP: mapped {} pages at VA {:#x} for T{} (fb_phys={:#x}, offset={:#x})",
-        pages, user_va_base, target_tid, fb_phys, vram_offset
+        pages,
+        user_va_base,
+        target_tid,
+        fb_phys,
+        vram_offset
     );
 
     user_va_base as u32
@@ -1062,9 +1107,8 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
     let user_va_base: u64 = 0x1800_0000;
     let pages = map_bytes / 4096;
     for i in 0..pages {
-        let phys = crate::memory::address::PhysAddr::new(
-            fb_phys + map_offset as u64 + (i * 4096) as u64,
-        );
+        let phys =
+            crate::memory::address::PhysAddr::new(fb_phys + map_offset as u64 + (i * 4096) as u64);
         let virt = crate::memory::address::VirtAddr::new(user_va_base + (i * 4096) as u64);
         if !crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, 0x0F) {
             return 0;
@@ -1104,14 +1148,13 @@ pub fn sys_gpu_register_backbuffer(buf_ptr: u64, buf_size: u32) -> u32 {
     // Walk page tables to collect physical addresses for each page
     for i in 0..pages {
         let va = page_base + (i as u64) * 4096;
-        let pte = crate::memory::virtual_mem::read_pte(
-            crate::memory::address::VirtAddr::new(va),
-        );
+        let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(va));
         if pte & 1 == 0 {
             // Page not present — cannot register
             crate::serial_verbose_println!(
                 "GPU_REGISTER_BACKBUFFER: page {} not present (va={:#x})",
-                i, va
+                i,
+                va
             );
             return u32::MAX;
         }
@@ -1121,20 +1164,23 @@ pub fn sys_gpu_register_backbuffer(buf_ptr: u64, buf_size: u32) -> u32 {
 
     // Register with GPU driver (pass sub-page offset so GMR blit aligns correctly)
     let sub_page_offset = (buf_ptr as u32) & 0xFFF;
-    let ok = crate::drivers::gpu::with_gpu(|g| {
-        g.register_back_buffer(&phys_pages, sub_page_offset)
-    });
+    let ok =
+        crate::drivers::gpu::with_gpu(|g| g.register_back_buffer(&phys_pages, sub_page_offset));
 
     match ok {
         Some(true) => {
             crate::serial_verbose_println!(
                 "GPU_REGISTER_BACKBUFFER: registered {} pages (buf={:#x}, size={})",
-                pages, buf_ptr, buf_size
+                pages,
+                buf_ptr,
+                buf_size
             );
             0
         }
         _ => {
-            crate::serial_verbose_println!("GPU_REGISTER_BACKBUFFER: GPU driver rejected registration");
+            crate::serial_verbose_println!(
+                "GPU_REGISTER_BACKBUFFER: GPU driver rejected registration"
+            );
             u32::MAX
         }
     }
@@ -1182,12 +1228,8 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
     // Map framebuffer pages into the target's address space
     // Flags: Present + Writable + User + Write-Through (0x0F)
     for i in 0..pages {
-        let phys = crate::memory::address::PhysAddr::new(
-            fb_phys as u64 + (i * 4096) as u64,
-        );
-        let virt = crate::memory::address::VirtAddr::new(
-            fb_user_base + (i * 4096) as u64,
-        );
+        let phys = crate::memory::address::PhysAddr::new(fb_phys as u64 + (i * 4096) as u64);
+        let virt = crate::memory::address::VirtAddr::new(fb_user_base + (i * 4096) as u64);
         crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, 0x0F);
     }
 
@@ -1204,7 +1246,10 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u64) -> u32 {
 
     crate::serial_verbose_println!(
         "GRANT_FRAMEBUFFER: mapped {} pages at VA {:#x} for T{} (fb_phys={:#x})",
-        pages, fb_user_base, target_tid, fb_phys
+        pages,
+        fb_user_base,
+        target_tid,
+        fb_phys
     );
     0
 }
@@ -1280,15 +1325,15 @@ pub fn sys_revoke_framebuffer(target_tid: u32) -> u32 {
 
     // Unmap pages from the target's address space
     for i in 0..pages {
-        let virt = crate::memory::address::VirtAddr::new(
-            fb_user_base + (i * 4096) as u64,
-        );
+        let virt = crate::memory::address::VirtAddr::new(fb_user_base + (i * 4096) as u64);
         crate::memory::virtual_mem::unmap_page_in_pd(pd_phys, virt);
     }
 
     crate::serial_verbose_println!(
         "REVOKE_FRAMEBUFFER: unmapped {} pages at VA {:#x} for T{}",
-        pages, fb_user_base, target_tid
+        pages,
+        fb_user_base,
+        target_tid
     );
     0
 }
@@ -1330,13 +1375,12 @@ pub fn sys_revoke_framebuffer(target_tid: u32) -> u32 {
 /// query_type: 0 = has_3d, 1 = hw_version
 #[cfg(target_arch = "x86_64")]
 pub fn sys_gpu_3d_query(query_type: u32) -> u32 {
-    crate::drivers::gpu::with_gpu(|g| {
-        match query_type {
-            0 => g.has_3d() as u32,
-            1 => g.hw_version_3d(),
-            _ => 0,
-        }
-    }).unwrap_or(0)
+    crate::drivers::gpu::with_gpu(|g| match query_type {
+        0 => g.has_3d() as u32,
+        1 => g.hw_version_3d(),
+        _ => 0,
+    })
+    .unwrap_or(0)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1365,9 +1409,7 @@ pub fn sys_gpu_3d_submit(buf_ptr: u64, word_count: u32) -> u32 {
         return u32::MAX;
     }
 
-    let words = unsafe {
-        core::slice::from_raw_parts(buf_ptr as *const u32, count)
-    };
+    let words = unsafe { core::slice::from_raw_parts(buf_ptr as *const u32, count) };
 
     // Driver-specific validation: SVGA3D needs command ID checks,
     // virgl passes raw Gallium commands without structure validation.
@@ -1379,7 +1421,7 @@ pub fn sys_gpu_3d_submit(buf_ptr: u64, word_count: u32) -> u32 {
 
     if let Some(ref dt) = driver_type {
         if dt == "svga3d" {
-            use crate::drivers::gpu::vmware_svga::{SVGA_3D_CMD_MIN, SVGA_3D_CMD_MAX};
+            use crate::drivers::gpu::vmware_svga::{SVGA_3D_CMD_MAX, SVGA_3D_CMD_MIN};
             // Validate SVGA3D command buffer structure
             let mut offset = 0;
             while offset < words.len() {
@@ -1406,8 +1448,13 @@ pub fn sys_gpu_3d_submit(buf_ptr: u64, word_count: u32) -> u32 {
 
     // Submit to GPU
     crate::drivers::gpu::with_gpu(|g| {
-        if g.submit_3d_commands(words) { 0u32 } else { u32::MAX }
-    }).unwrap_or(u32::MAX)
+        if g.submit_3d_commands(words) {
+            0u32
+        } else {
+            u32::MAX
+        }
+    })
+    .unwrap_or(u32::MAX)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1421,7 +1468,8 @@ pub fn sys_gpu_3d_sync() -> u32 {
     crate::drivers::gpu::with_gpu(|g| {
         g.sync();
         0u32
-    }).unwrap_or(u32::MAX)
+    })
+    .unwrap_or(u32::MAX)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1436,7 +1484,13 @@ pub fn sys_gpu_3d_sync() -> u32 {
 /// arg4: surface width (pixels)
 /// arg5: surface height (pixels)
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u64, buf_len: u32, width: u32, height: u32) -> u32 {
+pub fn sys_gpu_3d_surface_dma(
+    sid: u32,
+    buf_ptr: u64,
+    buf_len: u32,
+    width: u32,
+    height: u32,
+) -> u32 {
     if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
         return u32::MAX;
     }
@@ -1447,17 +1501,34 @@ pub fn sys_gpu_3d_surface_dma(sid: u32, buf_ptr: u64, buf_len: u32, width: u32, 
     }
     let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
     crate::drivers::gpu::with_gpu(|g| {
-        if g.dma_surface_upload(sid, data, width, height) { 0u32 } else { u32::MAX }
-    }).unwrap_or(u32::MAX)
+        if g.dma_surface_upload(sid, data, width, height) {
+            0u32
+        } else {
+            u32::MAX
+        }
+    })
+    .unwrap_or(u32::MAX)
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_3d_surface_dma(_sid: u32, _buf_ptr: u64, _buf_len: u32, _width: u32, _height: u32) -> u32 {
+pub fn sys_gpu_3d_surface_dma(
+    _sid: u32,
+    _buf_ptr: u64,
+    _buf_len: u32,
+    _width: u32,
+    _height: u32,
+) -> u32 {
     u32::MAX
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u64, buf_len: u32, width: u32, height: u32) -> u32 {
+pub fn sys_gpu_3d_surface_dma_read(
+    sid: u32,
+    buf_ptr: u64,
+    buf_len: u32,
+    width: u32,
+    height: u32,
+) -> u32 {
     if buf_ptr == 0 || buf_len == 0 || width == 0 || height == 0 {
         return u32::MAX;
     }
@@ -1467,12 +1538,23 @@ pub fn sys_gpu_3d_surface_dma_read(sid: u32, buf_ptr: u64, buf_len: u32, width: 
     }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
     crate::drivers::gpu::with_gpu(|g| {
-        if g.dma_surface_download(sid, buf, width, height) { 0u32 } else { u32::MAX }
-    }).unwrap_or(u32::MAX)
+        if g.dma_surface_download(sid, buf, width, height) {
+            0u32
+        } else {
+            u32::MAX
+        }
+    })
+    .unwrap_or(u32::MAX)
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_3d_surface_dma_read(_sid: u32, _buf_ptr: u64, _buf_len: u32, _width: u32, _height: u32) -> u32 {
+pub fn sys_gpu_3d_surface_dma_read(
+    _sid: u32,
+    _buf_ptr: u64,
+    _buf_len: u32,
+    _width: u32,
+    _height: u32,
+) -> u32 {
     u32::MAX
 }
 
@@ -1529,18 +1611,31 @@ pub fn sys_gpu_query_type(buf_ptr: u64, buf_len: u32) -> u32 {
 /// Uses defaults: depth=1, array_size=1, last_level=0, nr_samples=0, flags=0.
 /// Returns the allocated resource ID, or u32::MAX on failure.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_gpu_3d_resource_create(target: u32, format: u32, bind: u32, width: u32, height: u32) -> u32 {
+pub fn sys_gpu_3d_resource_create(
+    target: u32,
+    format: u32,
+    bind: u32,
+    width: u32,
+    height: u32,
+) -> u32 {
     if width == 0 || height == 0 {
         return u32::MAX;
     }
     crate::drivers::gpu::with_gpu(|g| {
         g.create_3d_resource(target, format, bind, width, height, 1, 1, 0, 0, 0)
             .unwrap_or(u32::MAX)
-    }).unwrap_or(u32::MAX)
+    })
+    .unwrap_or(u32::MAX)
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_3d_resource_create(_target: u32, _format: u32, _bind: u32, _width: u32, _height: u32) -> u32 {
+pub fn sys_gpu_3d_resource_create(
+    _target: u32,
+    _format: u32,
+    _bind: u32,
+    _width: u32,
+    _height: u32,
+) -> u32 {
     u32::MAX
 }
 
@@ -1552,8 +1647,13 @@ pub fn sys_gpu_3d_resource_destroy(resource_id: u32) -> u32 {
         return u32::MAX;
     }
     crate::drivers::gpu::with_gpu(|g| {
-        if g.destroy_3d_resource(resource_id) { 0u32 } else { u32::MAX }
-    }).unwrap_or(u32::MAX)
+        if g.destroy_3d_resource(resource_id) {
+            0u32
+        } else {
+            u32::MAX
+        }
+    })
+    .unwrap_or(u32::MAX)
 }
 
 #[cfg(target_arch = "aarch64")]

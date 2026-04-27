@@ -206,41 +206,6 @@ fn service_path(name: &str, field: &str) -> String {
     format!("{}/{}/config/{}", SVC_NAMESPACE, name, field)
 }
 
-fn read_service_string(client: &mut ConfClient, name: &str, field: &str) -> Option<String> {
-    match client
-        .get(RegistryScope::System, &service_path(name, field))
-        .ok()?
-        .value
-    {
-        Some(libconf::ConfValue::String(value)) => Some(value),
-        Some(libconf::ConfValue::ExternalRef(value)) => Some(value),
-        _ => None,
-    }
-}
-
-fn read_service_u32(client: &mut ConfClient, name: &str, field: &str) -> Option<u32> {
-    match client
-        .get(RegistryScope::System, &service_path(name, field))
-        .ok()?
-        .value
-    {
-        Some(libconf::ConfValue::Int(value)) if value >= 0 => Some(value as u32),
-        _ => None,
-    }
-}
-
-fn read_service_bool(client: &mut ConfClient, name: &str, field: &str) -> Option<bool> {
-    match client
-        .get(RegistryScope::System, &service_path(name, field))
-        .ok()?
-        .value
-    {
-        Some(libconf::ConfValue::Bool(value)) => Some(value),
-        Some(libconf::ConfValue::Int(value)) => Some(value != 0),
-        _ => None,
-    }
-}
-
 fn read_config(name: &str) -> Option<ServiceConfig> {
     anyos_std::println!("svc: read_config('{}') begin", name);
     if !register_manifest() {
@@ -253,15 +218,36 @@ fn read_config(name: &str) -> Option<ServiceConfig> {
 }
 
 fn read_config_with_client(client: &mut ConfClient, name: &str) -> Option<ServiceConfig> {
-    let exec = read_service_string(client, name, "exec")?;
+    let config_path = format!("{}/{}/config", SVC_NAMESPACE, name);
+    anyos_std::println!("svc: read_config('{}') list '{}'", name, config_path);
+    let items = match client.list(RegistryScope::System, &config_path) {
+        Ok(items) => items,
+        Err(err) => {
+            anyos_std::println!(
+                "svc: read_config('{}') list '{}' failed: {:?}",
+                name,
+                config_path,
+                err
+            );
+            return None;
+        }
+    };
+    anyos_std::println!(
+        "svc: read_config('{}') list '{}' -> {} items",
+        name,
+        config_path,
+        items.len()
+    );
+
+    let exec = config_string(&items, name, "exec")?;
     anyos_std::println!("svc: read_config('{}') exec='{}'", name, exec);
-    let args = read_service_string(client, name, "args").unwrap_or_default();
-    let enabled = read_service_bool(client, name, "enabled").unwrap_or(true);
-    let removed = read_service_bool(client, name, "removed").unwrap_or(false);
-    let depends = read_service_string(client, name, "depends").unwrap_or_default();
-    let wants = read_service_string(client, name, "wants").unwrap_or_default();
-    let after = read_service_string(client, name, "after").unwrap_or_default();
-    let startup_timeout_ms = read_service_u32(client, name, "startup_timeout_ms").unwrap_or(0);
+    let args = config_string(&items, name, "args").unwrap_or_default();
+    let enabled = config_bool(&items, name, "enabled").unwrap_or(true);
+    let removed = config_bool(&items, name, "removed").unwrap_or(false);
+    let depends = config_string(&items, name, "depends").unwrap_or_default();
+    let wants = config_string(&items, name, "wants").unwrap_or_default();
+    let after = config_string(&items, name, "after").unwrap_or_default();
+    let startup_timeout_ms = config_u32(&items, name, "startup_timeout_ms").unwrap_or(0);
 
     if exec.is_empty() || removed {
         return None;
@@ -276,6 +262,40 @@ fn read_config_with_client(client: &mut ConfClient, name: &str) -> Option<Servic
         after,
         startup_timeout_ms,
     })
+}
+
+fn config_value<'a>(
+    items: &'a [libconf::ConfItem],
+    name: &str,
+    field: &str,
+) -> Option<&'a ConfValue> {
+    let path = service_path(name, field);
+    items
+        .iter()
+        .find(|item| item.path == path)
+        .and_then(|item| item.value.as_ref())
+}
+
+fn config_string(items: &[libconf::ConfItem], name: &str, field: &str) -> Option<String> {
+    match config_value(items, name, field) {
+        Some(ConfValue::String(value)) | Some(ConfValue::ExternalRef(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn config_u32(items: &[libconf::ConfItem], name: &str, field: &str) -> Option<u32> {
+    match config_value(items, name, field) {
+        Some(ConfValue::Int(value)) if *value >= 0 => Some(*value as u32),
+        _ => None,
+    }
+}
+
+fn config_bool(items: &[libconf::ConfItem], name: &str, field: &str) -> Option<bool> {
+    match config_value(items, name, field) {
+        Some(ConfValue::Bool(value)) => Some(*value),
+        Some(ConfValue::Int(value)) => Some(*value != 0),
+        _ => None,
+    }
 }
 
 fn parse_list(value: &str) -> Vec<String> {

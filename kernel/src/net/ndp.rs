@@ -2,12 +2,12 @@
 //! MAC addresses using ICMPv6 Neighbor Solicitation / Advertisement.
 //! Equivalent to ARP for IPv6.
 
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
-use super::types::{Ipv6Addr, MacAddr};
 use super::icmpv6;
 use super::ipv6::Ipv6Packet;
+use super::types::{Ipv6Addr, MacAddr};
 use crate::sync::spinlock::Spinlock;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 /// NDP neighbor cache: maps IPv6 address (as [u8; 16]) to (MAC, tick learned).
 /// Using a Vec of entries since BTreeMap needs Ord on [u8;16].
@@ -45,7 +45,11 @@ pub fn insert(ip: Ipv6Addr, mac: MacAddr) {
     if table.len() >= 256 {
         table.remove(0);
     }
-    table.push(NdpEntry { ip, mac, tick: ticks });
+    table.push(NdpEntry {
+        ip,
+        mac,
+        tick: ticks,
+    });
 }
 
 /// Get all NDP neighbor cache entries.
@@ -62,7 +66,9 @@ pub fn entries() -> Vec<(Ipv6Addr, MacAddr)> {
 fn send_neighbor_solicitation(target: Ipv6Addr) {
     let cfg = super::config();
     let src = cfg.ipv6_link_local;
-    if src.is_unspecified() { return; }
+    if src.is_unspecified() {
+        return;
+    }
 
     // Destination: solicited-node multicast of target
     let dst = target.solicited_node_multicast();
@@ -73,9 +79,13 @@ fn send_neighbor_solicitation(target: Ipv6Addr) {
     // Code: 0
     icmp.push(0);
     // Checksum placeholder
-    icmp.push(0); icmp.push(0);
+    icmp.push(0);
+    icmp.push(0);
     // Reserved (4 bytes)
-    icmp.push(0); icmp.push(0); icmp.push(0); icmp.push(0);
+    icmp.push(0);
+    icmp.push(0);
+    icmp.push(0);
+    icmp.push(0);
     // Target address (16 bytes)
     icmp.extend_from_slice(&target.0);
 
@@ -129,7 +139,9 @@ pub fn resolve(ip: Ipv6Addr, timeout_ticks: u32) -> Option<MacAddr> {
 pub fn handle_neighbor_solicitation(pkt: &Ipv6Packet<'_>) {
     let data = pkt.payload;
     // NS: type(1) + code(1) + checksum(2) + reserved(4) + target(16) = 24 min
-    if data.len() < 24 { return; }
+    if data.len() < 24 {
+        return;
+    }
 
     let mut target = [0u8; 16];
     target.copy_from_slice(&data[8..24]);
@@ -138,17 +150,24 @@ pub fn handle_neighbor_solicitation(pkt: &Ipv6Packet<'_>) {
     let cfg = super::config();
 
     // Check if the target is one of our addresses
-    let is_ours = target_addr == cfg.ipv6_link_local
-        || target_addr == cfg.ipv6_addr;
-    if !is_ours { return; }
+    let is_ours = target_addr == cfg.ipv6_link_local || target_addr == cfg.ipv6_addr;
+    if !is_ours {
+        return;
+    }
 
     // Parse options to learn source MAC
     if data.len() > 24 {
         parse_ndp_options(&data[24..], |opt_type, opt_data| {
             if opt_type == 1 && opt_data.len() >= 6 {
                 // Source Link-Layer Address
-                let mac = MacAddr([opt_data[0], opt_data[1], opt_data[2],
-                                   opt_data[3], opt_data[4], opt_data[5]]);
+                let mac = MacAddr([
+                    opt_data[0],
+                    opt_data[1],
+                    opt_data[2],
+                    opt_data[3],
+                    opt_data[4],
+                    opt_data[5],
+                ]);
                 if !pkt.src.is_unspecified() {
                     insert(pkt.src, mac);
                 }
@@ -169,10 +188,14 @@ pub fn handle_neighbor_solicitation(pkt: &Ipv6Packet<'_>) {
     // Code: 0
     reply.push(0);
     // Checksum placeholder
-    reply.push(0); reply.push(0);
+    reply.push(0);
+    reply.push(0);
     // Flags: Solicited (S=1), Override (O=1)
     // Bits: R(0) S(1) O(1) Reserved(29) → 0x60000000
-    reply.push(0x60); reply.push(0x00); reply.push(0x00); reply.push(0x00);
+    reply.push(0x60);
+    reply.push(0x00);
+    reply.push(0x00);
+    reply.push(0x00);
     // Target address
     reply.extend_from_slice(&target_addr.0);
 
@@ -191,7 +214,9 @@ pub fn handle_neighbor_solicitation(pkt: &Ipv6Packet<'_>) {
 pub fn handle_neighbor_advertisement(pkt: &Ipv6Packet<'_>) {
     let data = pkt.payload;
     // NA: type(1) + code(1) + checksum(2) + flags(4) + target(16) = 24 min
-    if data.len() < 24 { return; }
+    if data.len() < 24 {
+        return;
+    }
 
     let mut target = [0u8; 16];
     target.copy_from_slice(&data[8..24]);
@@ -202,8 +227,14 @@ pub fn handle_neighbor_advertisement(pkt: &Ipv6Packet<'_>) {
         parse_ndp_options(&data[24..], |opt_type, opt_data| {
             if opt_type == 2 && opt_data.len() >= 6 {
                 // Target Link-Layer Address
-                let mac = MacAddr([opt_data[0], opt_data[1], opt_data[2],
-                                   opt_data[3], opt_data[4], opt_data[5]]);
+                let mac = MacAddr([
+                    opt_data[0],
+                    opt_data[1],
+                    opt_data[2],
+                    opt_data[3],
+                    opt_data[4],
+                    opt_data[5],
+                ]);
                 insert(target_addr, mac);
             }
         });
@@ -218,7 +249,9 @@ pub fn handle_router_advertisement(pkt: &Ipv6Packet<'_>) {
     let data = pkt.payload;
     // RA: type(1) + code(1) + checksum(2) + cur_hop_limit(1) + flags(1)
     //   + router_lifetime(2) + reachable_time(4) + retrans_timer(4) = 16 min
-    if data.len() < 16 { return; }
+    if data.len() < 16 {
+        return;
+    }
 
     let router_lifetime = ((data[6] as u16) << 8) | data[7] as u16;
 
@@ -230,8 +263,14 @@ pub fn handle_router_advertisement(pkt: &Ipv6Packet<'_>) {
                 1 => {
                     // Source Link-Layer Address
                     if opt_data.len() >= 6 {
-                        let mac = MacAddr([opt_data[0], opt_data[1], opt_data[2],
-                                           opt_data[3], opt_data[4], opt_data[5]]);
+                        let mac = MacAddr([
+                            opt_data[0],
+                            opt_data[1],
+                            opt_data[2],
+                            opt_data[3],
+                            opt_data[4],
+                            opt_data[5],
+                        ]);
                         insert(router_ip, mac);
                     }
                 }
@@ -267,7 +306,9 @@ fn handle_prefix_info(data: &[u8], _router: &Ipv6Addr) {
     // Prefix Info option data (after type+len bytes already stripped):
     //   prefix_len(1), flags(1), valid_lifetime(4), preferred_lifetime(4),
     //   reserved(4), prefix(16) = 30 bytes
-    if data.len() < 30 { return; }
+    if data.len() < 30 {
+        return;
+    }
 
     let prefix_len = data[0];
     let flags = data[1];
@@ -276,10 +317,14 @@ fn handle_prefix_info(data: &[u8], _router: &Ipv6Addr) {
 
     // A flag (autonomous address-configuration)
     let autonomous = flags & 0x40 != 0;
-    if !autonomous { return; }
+    if !autonomous {
+        return;
+    }
 
     // Only handle /64 prefixes for SLAAC
-    if prefix_len != 64 { return; }
+    if prefix_len != 64 {
+        return;
+    }
 
     let mut prefix = [0u8; 16];
     prefix.copy_from_slice(&data[14..30]);
@@ -322,7 +367,9 @@ fn handle_prefix_info(data: &[u8], _router: &Ipv6Addr) {
 pub fn send_router_solicitation() {
     let cfg = super::config();
     let src = cfg.ipv6_link_local;
-    if src.is_unspecified() { return; }
+    if src.is_unspecified() {
+        return;
+    }
 
     let mut icmp = Vec::with_capacity(16);
     // Type: Router Solicitation (133)
@@ -330,9 +377,13 @@ pub fn send_router_solicitation() {
     // Code: 0
     icmp.push(0);
     // Checksum placeholder
-    icmp.push(0); icmp.push(0);
+    icmp.push(0);
+    icmp.push(0);
     // Reserved (4 bytes)
-    icmp.push(0); icmp.push(0); icmp.push(0); icmp.push(0);
+    icmp.push(0);
+    icmp.push(0);
+    icmp.push(0);
+    icmp.push(0);
 
     // Option: Source Link-Layer Address
     icmp.push(1); // Type
@@ -350,9 +401,13 @@ fn parse_ndp_options(data: &[u8], mut callback: impl FnMut(u8, &[u8])) {
     while off + 2 <= data.len() {
         let opt_type = data[off];
         let opt_len = data[off + 1] as usize; // In units of 8 bytes
-        if opt_len == 0 { break; } // Prevent infinite loop
+        if opt_len == 0 {
+            break;
+        } // Prevent infinite loop
         let opt_total = opt_len * 8;
-        if off + opt_total > data.len() { break; }
+        if off + opt_total > data.len() {
+            break;
+        }
         // Value starts after type(1) + len(1), length is opt_total - 2
         callback(opt_type, &data[off + 2..off + opt_total]);
         off += opt_total;

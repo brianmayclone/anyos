@@ -55,7 +55,9 @@ pub fn init() {
 /// Register an IRQ handler for a specific interrupt ID.
 pub fn register_irq(irq: u32, handler: fn()) {
     if (irq as usize) < 1024 {
-        unsafe { IRQ_HANDLERS[irq as usize] = Some(handler); }
+        unsafe {
+            IRQ_HANDLERS[irq as usize] = Some(handler);
+        }
     }
 }
 
@@ -73,7 +75,8 @@ pub extern "C" fn arm64_irq_handler() {
     if count < 3 {
         crate::serial_verbose_println!("  [IRQ] intid={} count={}", intid, count);
     }
-    if intid < 1020 { // Not spurious
+    if intid < 1020 {
+        // Not spurious
         // EOI FIRST: the handler may context-switch (schedule_tick), which would
         // never return here. Without early EOI the interrupt stays active and
         // blocks all further interrupts of equal/lower priority.
@@ -167,7 +170,7 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
                 0x0C => "permission fault",
                 0x10 => "synchronous external abort",
                 0x20 => "alignment fault",
-                _    => "unknown",
+                _ => "unknown",
             };
             if ec == EC_DATA_ABORT_LOWER && crate::task::dll::handle_dll_demand_page(far) {
                 return;
@@ -175,7 +178,10 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
             crate::serial_verbose_println!(
                 "DATA ABORT ({}{}): FAR={:#018x} ELR={:#018x} ESR={:#018x}",
                 if write_fault { "write " } else { "read " },
-                fault_type, far, elr, esr,
+                fault_type,
+                far,
+                elr,
+                esr,
             );
             handle_fault(ec, far, elr);
         }
@@ -188,14 +194,17 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
                 0x08 => "access flag fault",
                 0x0C => "permission fault",
                 0x10 => "synchronous external abort",
-                _    => "unknown",
+                _ => "unknown",
             };
             if ec == EC_INST_ABORT_LOWER && crate::task::dll::handle_dll_demand_page(far) {
                 return;
             }
             crate::serial_verbose_println!(
                 "INSTRUCTION ABORT ({}): FAR={:#018x} ELR={:#018x} ESR={:#018x}",
-                fault_type, far, elr, esr,
+                fault_type,
+                far,
+                elr,
+                esr,
             );
             handle_fault(ec, far, elr);
         }
@@ -221,7 +230,10 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
         _ => {
             crate::serial_verbose_println!(
                 "UNHANDLED EXCEPTION: EC={:#04x} ISS={:#010x} FAR={:#018x} ELR={:#018x}",
-                ec, iss, far, elr,
+                ec,
+                iss,
+                far,
+                elr,
             );
             handle_fault(ec, far, elr);
         }
@@ -261,13 +273,12 @@ fn handle_fault(ec: u32, far: u64, elr: u64) {
         let last_sc = crate::task::scheduler::get_last_syscall(cpu);
         let sc_name = crate::syscall::table::syscall_name(last_sc);
         let name_raw = crate::task::scheduler::current_thread_name();
-        let name_len = name_raw.iter().position(|&b| b == 0).unwrap_or(name_raw.len());
+        let name_len = name_raw
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(name_raw.len());
         let name = core::str::from_utf8(&name_raw[..name_len]).unwrap_or("?");
-        crate::serial_verbose_println!(
-            "  LastSC: {} ({})",
-            last_sc,
-            sc_name,
-        );
+        crate::serial_verbose_println!("  LastSC: {} ({})", last_sc, sc_name,);
         crate::serial_verbose_println!(
             "  Killing user thread due to fault (CPU={} TID={} '{}' EC={:#04x}, FAR={:#018x}, ELR={:#018x})",
             cpu, tid, name, ec, far, elr,

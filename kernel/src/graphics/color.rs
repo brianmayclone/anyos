@@ -64,16 +64,16 @@ impl Color {
     pub const TRANSPARENT: Color = Color::with_alpha(0, 0, 0, 0);
 
     // macOS-inspired palette
-    pub const MACOS_BG: Color = Color::new(30, 30, 30);           // Dark desktop
-    pub const MACOS_MENUBAR: Color = Color::new(40, 40, 40);      // Menu bar
+    pub const MACOS_BG: Color = Color::new(30, 30, 30); // Dark desktop
+    pub const MACOS_MENUBAR: Color = Color::new(40, 40, 40); // Menu bar
     pub const MACOS_DOCK: Color = Color::with_alpha(180, 50, 50, 50); // Dock
-    pub const MACOS_WINDOW_BG: Color = Color::new(45, 45, 45);    // Window background
-    pub const MACOS_TITLEBAR: Color = Color::new(55, 55, 55);     // Title bar
-    pub const MACOS_TEXT: Color = Color::new(230, 230, 230);       // Primary text
-    pub const MACOS_TEXT_DIM: Color = Color::new(150, 150, 150);   // Secondary text
-    pub const MACOS_ACCENT: Color = Color::new(0, 122, 255);      // Accent blue
-    pub const MACOS_CLOSE: Color = Color::new(255, 95, 86);       // Close button
-    pub const MACOS_MINIMIZE: Color = Color::new(255, 189, 46);   // Minimize button
-    pub const MACOS_MAXIMIZE: Color = Color::new(39, 201, 63);    // Maximize button
-    pub const MACOS_BORDER: Color = Color::new(70, 70, 70);       // Window border
+    pub const MACOS_WINDOW_BG: Color = Color::new(45, 45, 45); // Window background
+    pub const MACOS_TITLEBAR: Color = Color::new(55, 55, 55); // Title bar
+    pub const MACOS_TEXT: Color = Color::new(230, 230, 230); // Primary text
+    pub const MACOS_TEXT_DIM: Color = Color::new(150, 150, 150); // Secondary text
+    pub const MACOS_ACCENT: Color = Color::new(0, 122, 255); // Accent blue
+    pub const MACOS_CLOSE: Color = Color::new(255, 95, 86); // Close button
+    pub const MACOS_MINIMIZE: Color = Color::new(255, 189, 46); // Minimize button
+    pub const MACOS_MAXIMIZE: Color = Color::new(39, 201, 63); // Maximize button
+    pub const MACOS_BORDER: Color = Color::new(70, 70, 70); // Window border
 }

@@ -5,46 +5,45 @@
 /// - Local timer interrupts (replaces PIT for preemptive scheduling)
 /// - Inter-Processor Interrupts (IPI) for SMP coordination
 /// - EOI (End of Interrupt) signaling
-
-use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // LAPIC register offsets
-const LAPIC_ID: u32        = 0x020;
-const LAPIC_VERSION: u32   = 0x030;
-const LAPIC_TPR: u32       = 0x080;  // Task Priority Register
-const LAPIC_EOI: u32       = 0x0B0;  // End of Interrupt
-const LAPIC_SVR: u32       = 0x0F0;  // Spurious Interrupt Vector Register
-const LAPIC_ICR_LOW: u32   = 0x300;  // Interrupt Command Register (low)
-const LAPIC_ICR_HIGH: u32  = 0x310;  // Interrupt Command Register (high)
-const LAPIC_TIMER: u32     = 0x320;  // LVT Timer Register
-const LAPIC_LINT0: u32     = 0x350;  // LVT LINT0
-const LAPIC_LINT1: u32     = 0x360;  // LVT LINT1
+const LAPIC_ID: u32 = 0x020;
+const LAPIC_VERSION: u32 = 0x030;
+const LAPIC_TPR: u32 = 0x080; // Task Priority Register
+const LAPIC_EOI: u32 = 0x0B0; // End of Interrupt
+const LAPIC_SVR: u32 = 0x0F0; // Spurious Interrupt Vector Register
+const LAPIC_ICR_LOW: u32 = 0x300; // Interrupt Command Register (low)
+const LAPIC_ICR_HIGH: u32 = 0x310; // Interrupt Command Register (high)
+const LAPIC_TIMER: u32 = 0x320; // LVT Timer Register
+const LAPIC_LINT0: u32 = 0x350; // LVT LINT0
+const LAPIC_LINT1: u32 = 0x360; // LVT LINT1
 const LAPIC_TIMER_INIT: u32 = 0x380; // Timer Initial Count
 const LAPIC_TIMER_CURRENT: u32 = 0x390; // Timer Current Count
-const LAPIC_TIMER_DIV: u32 = 0x3E0;  // Timer Divide Configuration
+const LAPIC_TIMER_DIV: u32 = 0x3E0; // Timer Divide Configuration
 
 // SVR flags
 const SVR_ENABLE: u32 = 1 << 8;
 
 // Timer modes
 const TIMER_PERIODIC: u32 = 1 << 17;
-const TIMER_MASKED: u32   = 1 << 16;
+const TIMER_MASKED: u32 = 1 << 16;
 
 // ICR delivery modes
-const ICR_INIT: u32    = 5 << 8;
+const ICR_INIT: u32 = 5 << 8;
 const ICR_STARTUP: u32 = 6 << 8;
-const ICR_LEVEL: u32   = 1 << 14;
-const ICR_ASSERT: u32  = 1 << 15;
+const ICR_LEVEL: u32 = 1 << 14;
+const ICR_ASSERT: u32 = 1 << 15;
 const ICR_DEASSERT: u32 = 0;
 
 /// Interrupt vector for the LAPIC periodic timer (INT 48).
-pub const VECTOR_TIMER: u8    = 48;
+pub const VECTOR_TIMER: u8 = 48;
 /// Interrupt vector for spurious interrupts (INT 255).
 pub const VECTOR_SPURIOUS: u8 = 255;
 /// IPI vector used to halt a remote processor (INT 53 = IRQ 21).
 pub const VECTOR_IPI_HALT: u8 = 53;
 /// IPI vector used for TLB shootdown across cores (INT 52 = IRQ 20).
-pub const VECTOR_IPI_TLB: u8  = 52;
+pub const VECTOR_IPI_TLB: u8 = 52;
 /// IPI vector used to request an immediate reschedule on a remote core (INT 54 = IRQ 22).
 pub const VECTOR_IPI_RESCHED: u8 = 54;
 
@@ -87,8 +86,12 @@ pub fn init_bsp(lapic_phys: u32) {
 
     let id = lapic_id();
     let version = unsafe { read(LAPIC_VERSION) } & 0xFF;
-    crate::serial_verbose_println!("  LAPIC: BSP id={} version={:#x} at virt {:#010x}",
-        id, version, LAPIC_VIRT_BASE);
+    crate::serial_verbose_println!(
+        "  LAPIC: BSP id={} version={:#x} at virt {:#010x}",
+        id,
+        version,
+        LAPIC_VIRT_BASE
+    );
 
     LAPIC_INITIALIZED.store(true, Ordering::SeqCst);
 }
@@ -111,10 +114,17 @@ pub fn init_ap() {
         let count = timer_initial_count();
         if count > 0 {
             start_timer_with_count(count);
-            crate::serial_verbose_println!("  LAPIC: AP id={} timer started (count={})", lapic_id(), count);
+            crate::serial_verbose_println!(
+                "  LAPIC: AP id={} timer started (count={})",
+                lapic_id(),
+                count
+            );
         } else {
             write(LAPIC_TIMER, TIMER_MASKED);
-            crate::serial_verbose_println!("  LAPIC: AP id={} timer masked (BSP not yet calibrated)", lapic_id());
+            crate::serial_verbose_println!(
+                "  LAPIC: AP id={} timer masked (BSP not yet calibrated)",
+                lapic_id()
+            );
         }
     }
 
@@ -160,8 +170,12 @@ pub fn calibrate_timer(target_hz: u32) {
         let ticks_per_second = elapsed as u64 * 100;
         let initial_count = (ticks_per_second / target_hz as u64) as u32;
 
-        crate::serial_verbose_println!("  LAPIC timer: {} ticks/10ms, initial_count={} for {}Hz",
-            elapsed, initial_count, target_hz);
+        crate::serial_verbose_println!(
+            "  LAPIC timer: {} ticks/10ms, initial_count={} for {}Hz",
+            elapsed,
+            initial_count,
+            target_hz
+        );
 
         // Store calibrated value for APs
         TIMER_INITIAL_COUNT.store(initial_count, Ordering::SeqCst);
@@ -194,7 +208,9 @@ pub fn lapic_id() -> u8 {
 /// Send End of Interrupt (EOI) to the Local APIC.
 pub fn eoi() {
     if LAPIC_INITIALIZED.load(Ordering::Relaxed) {
-        unsafe { write(LAPIC_EOI, 0); }
+        unsafe {
+            write(LAPIC_EOI, 0);
+        }
     }
 }
 

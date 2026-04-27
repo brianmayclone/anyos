@@ -84,7 +84,11 @@ fn hardware_seed() -> u64 {
         seed = splitmix64(&mut seed);
     }
 
-    if seed == 0 { 1 } else { seed }
+    if seed == 0 {
+        1
+    } else {
+        seed
+    }
 }
 
 /// Stellt sicher, dass `PRNG_STATE` initialisiert ist, und liefert den

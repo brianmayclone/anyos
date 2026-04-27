@@ -22,7 +22,10 @@ fn panic(info: &PanicInfo) -> ! {
     let last_sc = crate::task::scheduler::get_last_syscall(cpu);
     let sc_name = crate::syscall::table::syscall_name(last_sc);
     let name_buf = crate::task::scheduler::current_thread_name();
-    let name_len = name_buf.iter().position(|&b| b == 0).unwrap_or(name_buf.len());
+    let name_len = name_buf
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(name_buf.len());
     let name = core::str::from_utf8(&name_buf[..name_len]).unwrap_or("<invalid>");
 
     crate::serial_println!("--- CPU & Thread ---");
@@ -57,8 +60,8 @@ fn panic(info: &PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     {
         let sp: u64;
-        let fp: u64;  // x29
-        let lr: u64;  // x30
+        let fp: u64; // x29
+        let lr: u64; // x30
         let ttbr1: u64;
         unsafe {
             core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack));
@@ -83,7 +86,13 @@ fn panic(info: &PanicInfo) -> ! {
         let total = crate::memory::physical::total_frames();
         let free_mib = free * crate::memory::FRAME_SIZE / (1024 * 1024);
         let total_mib = total * crate::memory::FRAME_SIZE / (1024 * 1024);
-        crate::serial_println!("  Frames: {}/{} free ({}/{} MiB)", free, total, free_mib, total_mib);
+        crate::serial_println!(
+            "  Frames: {}/{} free ({}/{} MiB)",
+            free,
+            total,
+            free_mib,
+            total_mib
+        );
     }
 
     // ---- Heap ----
@@ -91,14 +100,17 @@ fn panic(info: &PanicInfo) -> ! {
     crate::serial_println!("--- Heap ---");
     if crate::memory::heap::is_heap_locked() {
         // At least show the committed watermark (lock-free atomic read).
-        let committed = crate::memory::heap::HEAP_COMMITTED
-            .load(core::sync::atomic::Ordering::Relaxed);
+        let committed =
+            crate::memory::heap::HEAP_COMMITTED.load(core::sync::atomic::Ordering::Relaxed);
         crate::serial_println!("  (heap lock held — skipping free-list walk)");
         crate::serial_println!("  Committed: {} KiB", committed / 1024);
     } else {
         let (used, committed) = crate::memory::heap::heap_stats();
-        crate::serial_println!("  Used:      {} KiB / {} KiB committed",
-            used / 1024, committed / 1024);
+        crate::serial_println!(
+            "  Used:      {} KiB / {} KiB committed",
+            used / 1024,
+            committed / 1024
+        );
         crate::serial_println!("  Free:      {} KiB", (committed - used) / 1024);
     }
 
@@ -110,9 +122,13 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {
         #[cfg(target_arch = "x86_64")]
-        unsafe { core::arch::asm!("cli; hlt"); }
+        unsafe {
+            core::arch::asm!("cli; hlt");
+        }
         #[cfg(target_arch = "aarch64")]
-        unsafe { core::arch::asm!("wfi"); }
+        unsafe {
+            core::arch::asm!("wfi");
+        }
     }
 }
 
@@ -123,13 +139,17 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
     crate::drivers::serial::enter_panic_mode();
 
     crate::serial_println!("=== ALLOCATION FAILURE ===");
-    crate::serial_println!("  Size:  {} bytes (align {})", layout.size(), layout.align());
+    crate::serial_println!(
+        "  Size:  {} bytes (align {})",
+        layout.size(),
+        layout.align()
+    );
 
     // Show heap stats (lock-free path if heap lock is held — we may be inside
     // the allocator when this fires).
     if crate::memory::heap::is_heap_locked() {
-        let committed = crate::memory::heap::HEAP_COMMITTED
-            .load(core::sync::atomic::Ordering::Relaxed);
+        let committed =
+            crate::memory::heap::HEAP_COMMITTED.load(core::sync::atomic::Ordering::Relaxed);
         crate::serial_println!("  Heap:  (lock held) committed={} KiB", committed / 1024);
     } else {
         let (used, committed) = crate::memory::heap::heap_stats();
@@ -139,9 +159,16 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
     // Show physical memory (same lock-safety check).
     if !crate::memory::physical::is_allocator_locked() {
         let free = crate::memory::physical::free_frame_count();
-        crate::serial_println!("  Phys:  {} frames free ({} MiB)",
-            free, free * crate::memory::FRAME_SIZE / (1024 * 1024));
+        crate::serial_println!(
+            "  Phys:  {} frames free ({} MiB)",
+            free,
+            free * crate::memory::FRAME_SIZE / (1024 * 1024)
+        );
     }
 
-    panic!("Heap allocation failed: size={} align={}", layout.size(), layout.align());
+    panic!(
+        "Heap allocation failed: size={} align={}",
+        layout.size(),
+        layout.align()
+    );
 }

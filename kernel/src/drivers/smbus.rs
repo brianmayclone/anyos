@@ -14,43 +14,43 @@
 //!
 //! AMD FCH: identical register layout; base from BAR or config offset 0x90.
 
-use crate::sync::spinlock::Spinlock;
-use crate::drivers::pci::PciDevice;
 use crate::arch::x86::port::{inb, outb};
+use crate::drivers::pci::PciDevice;
+use crate::sync::spinlock::Spinlock;
 
 // ── Register Offsets ─────────────────────────────────────────────────────────
 
-const SMBHSTSTS:  u16 = 0x00;  // Host Status
-const SMBHSTCNT:  u16 = 0x02;  // Host Control
-const SMBHSTCMD:  u16 = 0x03;  // Host Command
-const SMBHSTADD:  u16 = 0x04;  // Host Address (slave addr | r/w bit)
-const SMBHSTDAT0: u16 = 0x05;  // Data byte 0
-const SMBHSTDAT1: u16 = 0x06;  // Data byte 1 (word reads / block)
-const SMBBLKDAT:  u16 = 0x07;  // Block data port
+const SMBHSTSTS: u16 = 0x00; // Host Status
+const SMBHSTCNT: u16 = 0x02; // Host Control
+const SMBHSTCMD: u16 = 0x03; // Host Command
+const SMBHSTADD: u16 = 0x04; // Host Address (slave addr | r/w bit)
+const SMBHSTDAT0: u16 = 0x05; // Data byte 0
+const SMBHSTDAT1: u16 = 0x06; // Data byte 1 (word reads / block)
+const SMBBLKDAT: u16 = 0x07; // Block data port
 
 // ── Status Bits (SMBHSTSTS) ──────────────────────────────────────────────────
 
-const STS_INUSE:    u8 = 0x40; // Bus In Use (another master active)
-const STS_FAILED:   u8 = 0x10; // Failed
-const STS_BUSERR:   u8 = 0x08; // Bus Error
-const STS_DEVNACK:  u8 = 0x04; // Device NAK
-const STS_INTR:     u8 = 0x02; // Interrupt (transaction complete)
+const STS_INUSE: u8 = 0x40; // Bus In Use (another master active)
+const STS_FAILED: u8 = 0x10; // Failed
+const STS_BUSERR: u8 = 0x08; // Bus Error
+const STS_DEVNACK: u8 = 0x04; // Device NAK
+const STS_INTR: u8 = 0x02; // Interrupt (transaction complete)
 const STS_HOSTBUSY: u8 = 0x01; // Host Busy
 
 const STS_ERROR_BITS: u8 = STS_FAILED | STS_BUSERR | STS_DEVNACK;
 
 // ── Control Bits (SMBHSTCNT) ─────────────────────────────────────────────────
 
-const CNT_START:     u8 = 0x40; // Start transaction
-const CNT_KILL:      u8 = 0x20; // Kill/abort transaction
+const CNT_START: u8 = 0x40; // Start transaction
+const CNT_KILL: u8 = 0x20; // Kill/abort transaction
 const CNT_LAST_BYTE: u8 = 0x10; // Last byte (block reads)
 
 // SMB_CMD protocol field (bits [4:2] of SMBHSTCNT)
-const CMD_QUICK:    u8 = 0x00 << 2; // Quick Command
-const CMD_BYTE:     u8 = 0x01 << 2; // Byte
-const CMD_BYTE_DATA:u8 = 0x02 << 2; // Byte Data
-const CMD_WORD_DATA:u8 = 0x03 << 2; // Word Data
-const CMD_BLOCK:    u8 = 0x05 << 2; // Block Data
+const CMD_QUICK: u8 = 0x00 << 2; // Quick Command
+const CMD_BYTE: u8 = 0x01 << 2; // Byte
+const CMD_BYTE_DATA: u8 = 0x02 << 2; // Byte Data
+const CMD_WORD_DATA: u8 = 0x03 << 2; // Word Data
+const CMD_BLOCK: u8 = 0x05 << 2; // Block Data
 
 // Polling timeout in loop iterations.
 // Keep short (~1 ms) — in VMs the SMBus may not be fully emulated,
@@ -98,22 +98,29 @@ pub fn init(pci_devices: &[PciDevice]) {
             let port = (raw_bar & 0xFFFC) as u16;
             crate::serial_verbose_println!(
                 "  SMBus: Intel ICH/PCH at {:02x}:{:02x}.{} I/O={:#06x}",
-                dev.bus, dev.device, dev.function, port
+                dev.bus,
+                dev.device,
+                dev.function,
+                port
             );
             (port, SmBusVendor::Intel)
         } else if dev.vendor_id == 0x1022 || dev.vendor_id == 0x1002 {
             // AMD/ATI: read from config offset 0x90 (or BAR0)
-            let cfg90 = crate::drivers::pci::pci_config_read32(
-                dev.bus, dev.device, dev.function, 0x90,
-            );
+            let cfg90 =
+                crate::drivers::pci::pci_config_read32(dev.bus, dev.device, dev.function, 0x90);
             let port_cfg = (cfg90 & 0xFFFC) as u16;
             // If config 0x90 looks like a valid I/O port, use it; otherwise fall back to BAR0
-            let port = if port_cfg > 0x100 { port_cfg } else {
+            let port = if port_cfg > 0x100 {
+                port_cfg
+            } else {
                 (dev.bars[0] & 0xFFFC) as u16
             };
             crate::serial_verbose_println!(
                 "  SMBus: AMD FCH at {:02x}:{:02x}.{} I/O={:#06x}",
-                dev.bus, dev.device, dev.function, port
+                dev.bus,
+                dev.device,
+                dev.function,
+                port
             );
             (port, SmBusVendor::Amd)
         } else {
@@ -121,7 +128,11 @@ pub fn init(pci_devices: &[PciDevice]) {
             let port = (dev.bars[4] & 0xFFFC) as u16;
             crate::serial_verbose_println!(
                 "  SMBus: Unknown vendor {:04x} at {:02x}:{:02x}.{} I/O={:#06x}",
-                dev.vendor_id, dev.bus, dev.device, dev.function, port
+                dev.vendor_id,
+                dev.bus,
+                dev.device,
+                dev.function,
+                port
             );
             (port, SmBusVendor::Intel)
         };
@@ -136,7 +147,10 @@ pub fn init(pci_devices: &[PciDevice]) {
 
         let mut guard = SMBUS.lock();
         *guard = Some(SmBusController { base_port, vendor });
-        crate::serial_verbose_println!("[OK] SMBus host controller initialized at {:#06x}", base_port);
+        crate::serial_verbose_println!(
+            "[OK] SMBus host controller initialized at {:#06x}",
+            base_port
+        );
         return;
     }
 
@@ -152,7 +166,9 @@ pub fn read_byte(addr: u8, cmd: u8) -> Option<u8> {
     let ctrl = guard.as_ref()?;
     let base = ctrl.base_port;
 
-    if !wait_for_idle(base) { return None; }
+    if !wait_for_idle(base) {
+        return None;
+    }
     clear_status(base);
 
     // Set up transaction: slave address with read bit, command register, Byte Data protocol.
@@ -163,7 +179,9 @@ pub fn read_byte(addr: u8, cmd: u8) -> Option<u8> {
     }
 
     // Poll until complete or error.
-    if !poll_complete(base) { return None; }
+    if !poll_complete(base) {
+        return None;
+    }
 
     let data = unsafe { inb(base + SMBHSTDAT0) };
     Some(data)
@@ -179,7 +197,9 @@ pub fn write_byte(addr: u8, cmd: u8, value: u8) -> bool {
     };
     let base = ctrl.base_port;
 
-    if !wait_for_idle(base) { return false; }
+    if !wait_for_idle(base) {
+        return false;
+    }
     clear_status(base);
 
     unsafe {
@@ -199,7 +219,9 @@ pub fn read_word(addr: u8, cmd: u8) -> Option<u16> {
     let ctrl = guard.as_ref()?;
     let base = ctrl.base_port;
 
-    if !wait_for_idle(base) { return None; }
+    if !wait_for_idle(base) {
+        return None;
+    }
     clear_status(base);
 
     unsafe {
@@ -208,7 +230,9 @@ pub fn read_word(addr: u8, cmd: u8) -> Option<u16> {
         outb(base + SMBHSTCNT, CMD_WORD_DATA | CNT_START);
     }
 
-    if !poll_complete(base) { return None; }
+    if !poll_complete(base) {
+        return None;
+    }
 
     let lo = unsafe { inb(base + SMBHSTDAT0) } as u16;
     let hi = unsafe { inb(base + SMBHSTDAT1) } as u16;
@@ -223,7 +247,9 @@ pub fn read_block(addr: u8, cmd: u8, buf: &mut [u8]) -> Option<usize> {
     let ctrl = guard.as_ref()?;
     let base = ctrl.base_port;
 
-    if !wait_for_idle(base) { return None; }
+    if !wait_for_idle(base) {
+        return None;
+    }
     clear_status(base);
 
     unsafe {
@@ -251,12 +277,16 @@ pub fn read_block(addr: u8, cmd: u8, buf: &mut [u8]) -> Option<usize> {
             }
             if sts & STS_INTR != 0 {
                 // Clear INTR to acknowledge the byte
-                unsafe { outb(base + SMBHSTSTS, STS_INTR); }
+                unsafe {
+                    outb(base + SMBHSTSTS, STS_INTR);
+                }
                 break;
             }
             if timeout == 0 {
                 // Kill the transaction
-                unsafe { outb(base + SMBHSTCNT, CNT_KILL); }
+                unsafe {
+                    outb(base + SMBHSTCNT, CNT_KILL);
+                }
                 return None;
             }
             timeout -= 1;
@@ -279,7 +309,9 @@ pub fn quick_write(addr: u8) -> bool {
     };
     let base = ctrl.base_port;
 
-    if !wait_for_idle(base) { return false; }
+    if !wait_for_idle(base) {
+        return false;
+    }
     clear_status(base);
 
     unsafe {
@@ -313,7 +345,12 @@ pub(crate) fn wait_for_idle(base: u16) -> bool {
 /// Clear all error and completion status bits in SMBHSTSTS.
 pub(crate) fn clear_status(base: u16) {
     // Writing 1 to each status bit clears it (W1C — write-one-to-clear).
-    unsafe { outb(base + SMBHSTSTS, STS_INUSE | STS_FAILED | STS_BUSERR | STS_DEVNACK | STS_INTR); }
+    unsafe {
+        outb(
+            base + SMBHSTSTS,
+            STS_INUSE | STS_FAILED | STS_BUSERR | STS_DEVNACK | STS_INTR,
+        );
+    }
 }
 
 /// Poll for transaction completion (STS_INTR) or an error condition.
@@ -330,13 +367,17 @@ fn poll_complete(base: u16) -> bool {
         }
         if sts & STS_INTR != 0 {
             // Transaction complete; clear the interrupt bit
-            unsafe { outb(base + SMBHSTSTS, STS_INTR); }
+            unsafe {
+                outb(base + SMBHSTSTS, STS_INTR);
+            }
             return true;
         }
         if timeout == 0 {
             crate::serial_verbose_println!("  SMBus: poll_complete timeout (sts={:#04x})", sts);
             // Abort the transaction
-            unsafe { outb(base + SMBHSTCNT, CNT_KILL); }
+            unsafe {
+                outb(base + SMBHSTCNT, CNT_KILL);
+            }
             clear_status(base);
             return false;
         }

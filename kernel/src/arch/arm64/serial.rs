@@ -10,16 +10,16 @@ use core::sync::atomic::{AtomicBool, Ordering};
 const PL011_BASE: usize = 0xFFFF_0000_C900_0000;
 
 /// PL011 register offsets.
-const UARTDR: usize = 0x000;   // Data Register
-const UARTFR: usize = 0x018;   // Flag Register
+const UARTDR: usize = 0x000; // Data Register
+const UARTFR: usize = 0x018; // Flag Register
 const UARTIBRD: usize = 0x024; // Integer Baud Rate Divisor
 const UARTFBRD: usize = 0x028; // Fractional Baud Rate Divisor
 const UARTLCR_H: usize = 0x02C; // Line Control Register
-const UARTCR: usize = 0x030;   // Control Register
+const UARTCR: usize = 0x030; // Control Register
 const UARTIMSC: usize = 0x038; // Interrupt Mask Set/Clear
 
 /// Flag register bits.
-const FR_TXFF: u32 = 1 << 5;   // Transmit FIFO full
+const FR_TXFF: u32 = 1 << 5; // Transmit FIFO full
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -89,7 +89,8 @@ pub fn write_str(s: &str) {
 pub fn read_byte() -> Option<u8> {
     unsafe {
         let fr = read_reg(UARTFR);
-        if fr & (1 << 4) != 0 { // RXFE: receive FIFO empty
+        if fr & (1 << 4) != 0 {
+            // RXFE: receive FIFO empty
             None
         } else {
             Some(read_reg(UARTDR) as u8)

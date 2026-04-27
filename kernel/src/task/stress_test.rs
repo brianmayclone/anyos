@@ -36,8 +36,15 @@ pub extern "C" fn stress_master() {
             let idle = crate::task::scheduler::idle_sched_ticks();
             crate::serial_verbose_println!(
                 "STRESS: iter={} done={} ticks={}/{} ({}% idle)",
-                iter, completed, idle, total,
-                if total > 0 { idle as u64 * 100 / total as u64 } else { 0 },
+                iter,
+                completed,
+                idle,
+                total,
+                if total > 0 {
+                    idle as u64 * 100 / total as u64
+                } else {
+                    0
+                },
             );
         }
     }

@@ -1,10 +1,10 @@
 //! ARP (Address Resolution Protocol) -- resolves IPv4 addresses to MAC addresses.
 //! Maintains a cache table and supports both request/reply handling.
 
-use alloc::collections::BTreeMap;
-use super::types::{MacAddr, Ipv4Addr};
 use super::ethernet;
+use super::types::{Ipv4Addr, MacAddr};
 use crate::sync::spinlock::Spinlock;
+use alloc::collections::BTreeMap;
 
 const ARP_HW_ETHERNET: u16 = 1;
 const ARP_PROTO_IPV4: u16 = 0x0800;
@@ -27,7 +27,8 @@ pub fn init() {
 /// Look up a MAC for the given IP. Returns None if not cached.
 pub fn lookup(ip: Ipv4Addr) -> Option<MacAddr> {
     let t = table().lock();
-    t.as_ref().and_then(|map| map.get(&ip.to_u32()).map(|(mac, _)| *mac))
+    t.as_ref()
+        .and_then(|map| map.get(&ip.to_u32()).map(|(mac, _)| *mac))
 }
 
 /// Insert an entry into the ARP table
@@ -57,15 +58,18 @@ pub fn request(target_ip: Ipv4Addr) {
     let mut packet = [0u8; 28]; // ARP packet is 28 bytes
 
     // Hardware type: Ethernet
-    packet[0] = 0; packet[1] = 1;
+    packet[0] = 0;
+    packet[1] = 1;
     // Protocol type: IPv4
-    packet[2] = 0x08; packet[3] = 0x00;
+    packet[2] = 0x08;
+    packet[3] = 0x00;
     // Hardware addr len: 6
     packet[4] = 6;
     // Protocol addr len: 4
     packet[5] = 4;
     // Operation: request
-    packet[6] = 0; packet[7] = 1;
+    packet[6] = 0;
+    packet[7] = 1;
     // Sender MAC
     packet[8..14].copy_from_slice(&cfg.mac.0);
     // Sender IP
@@ -114,13 +118,17 @@ pub fn resolve(ip: Ipv4Addr, timeout_ticks: u32) -> Option<MacAddr> {
 
 /// Handle an incoming ARP packet
 pub fn handle_arp(data: &[u8]) {
-    if data.len() < 28 { return; }
+    if data.len() < 28 {
+        return;
+    }
 
     let hw_type = ((data[0] as u16) << 8) | data[1] as u16;
     let proto = ((data[2] as u16) << 8) | data[3] as u16;
     let op = ((data[6] as u16) << 8) | data[7] as u16;
 
-    if hw_type != ARP_HW_ETHERNET || proto != ARP_PROTO_IPV4 { return; }
+    if hw_type != ARP_HW_ETHERNET || proto != ARP_PROTO_IPV4 {
+        return;
+    }
 
     let sender_mac = MacAddr([data[8], data[9], data[10], data[11], data[12], data[13]]);
     let sender_ip = Ipv4Addr([data[14], data[15], data[16], data[17]]);
@@ -136,14 +144,18 @@ pub fn handle_arp(data: &[u8]) {
             // If they're asking for our IP, reply
             if target_ip == cfg.ip {
                 let mut reply = [0u8; 28];
-                reply[0] = 0; reply[1] = 1;   // HW type
-                reply[2] = 0x08; reply[3] = 0; // Proto type
-                reply[4] = 6; reply[5] = 4;    // Lengths
-                reply[6] = 0; reply[7] = 2;    // Op: reply
-                reply[8..14].copy_from_slice(&cfg.mac.0);  // Sender MAC (us)
-                reply[14..18].copy_from_slice(&cfg.ip.0);  // Sender IP (us)
+                reply[0] = 0;
+                reply[1] = 1; // HW type
+                reply[2] = 0x08;
+                reply[3] = 0; // Proto type
+                reply[4] = 6;
+                reply[5] = 4; // Lengths
+                reply[6] = 0;
+                reply[7] = 2; // Op: reply
+                reply[8..14].copy_from_slice(&cfg.mac.0); // Sender MAC (us)
+                reply[14..18].copy_from_slice(&cfg.ip.0); // Sender IP (us)
                 reply[18..24].copy_from_slice(&sender_mac.0); // Target MAC
-                reply[24..28].copy_from_slice(&sender_ip.0);  // Target IP
+                reply[24..28].copy_from_slice(&sender_ip.0); // Target IP
 
                 ethernet::send_frame(sender_mac, ethernet::ETHERTYPE_ARP, &reply);
             }

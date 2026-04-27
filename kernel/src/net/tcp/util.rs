@@ -4,12 +4,12 @@
 //! RST generation, ephemeral port allocation, connection cleanup,
 //! and connection listing for `netstat`.
 
-use alloc::vec::Vec;
+use super::send::send_segment;
+use super::tcb::*;
+use super::{conn_hash_insert, conn_hash_remove, TCP_CONNECTIONS};
 use crate::net::types::Ipv4Addr;
 use crate::sync::spinlock::Spinlock;
-use super::tcb::*;
-use super::send::send_segment;
-use super::{TCP_CONNECTIONS, conn_hash_insert, conn_hash_remove};
+use alloc::vec::Vec;
 
 // ── Sequence number comparison (wrapping-safe) ──────────────────────
 
@@ -67,14 +67,34 @@ pub(crate) fn send_rst(seg: &TcpSegment) {
         return; // Never RST a RST
     }
     if seg.flags & ACK != 0 {
-        send_segment(cfg.ip, seg.dst_port, seg.src_ip, seg.src_port,
-                     seg.ack, 0, RST, 0, &[]);
+        send_segment(
+            cfg.ip,
+            seg.dst_port,
+            seg.src_ip,
+            seg.src_port,
+            seg.ack,
+            0,
+            RST,
+            0,
+            &[],
+        );
     } else {
-        let ack_val = seg.seq.wrapping_add(seg.payload.len() as u32)
+        let ack_val = seg
+            .seq
+            .wrapping_add(seg.payload.len() as u32)
             .wrapping_add(if seg.flags & SYN != 0 { 1 } else { 0 })
             .wrapping_add(if seg.flags & FIN != 0 { 1 } else { 0 });
-        send_segment(cfg.ip, seg.dst_port, seg.src_ip, seg.src_port,
-                     0, ack_val, RST | ACK, 0, &[]);
+        send_segment(
+            cfg.ip,
+            seg.dst_port,
+            seg.src_ip,
+            seg.src_port,
+            0,
+            ack_val,
+            RST | ACK,
+            0,
+            &[],
+        );
     }
 }
 
@@ -97,21 +117,29 @@ pub fn cleanup_for_thread(tid: u32) {
 
         // First pass: close listeners and their pending (unaccepted) connections
         for i in 0..table.len() {
-            let is_owned_listener = table[i].as_ref().map(|tcb| {
-                tcb.owner_tid == tid && tcb.state == TcpState::Listen
-            }).unwrap_or(false);
+            let is_owned_listener = table[i]
+                .as_ref()
+                .map(|tcb| tcb.owner_tid == tid && tcb.state == TcpState::Listen)
+                .unwrap_or(false);
 
             if is_owned_listener {
                 let lid = i as u16;
                 for j in 0..table.len() {
-                    let is_pending = table[j].as_ref().map(|tcb| {
-                        tcb.parent_listener == Some(lid) && !tcb.accepted
-                    }).unwrap_or(false);
+                    let is_pending = table[j]
+                        .as_ref()
+                        .map(|tcb| tcb.parent_listener == Some(lid) && !tcb.accepted)
+                        .unwrap_or(false);
                     if is_pending {
                         if let Some(tcb) = &table[j] {
                             if tcb.state != TcpState::Closed && rst_count < rst_list.len() {
-                                rst_list[rst_count] = (tcb.local_ip, tcb.local_port,
-                                    tcb.remote_ip, tcb.remote_port, tcb.snd_nxt, tcb.rcv_nxt);
+                                rst_list[rst_count] = (
+                                    tcb.local_ip,
+                                    tcb.local_port,
+                                    tcb.remote_ip,
+                                    tcb.remote_port,
+                                    tcb.snd_nxt,
+                                    tcb.rcv_nxt,
+                                );
                                 rst_count += 1;
                             }
                         }
@@ -121,24 +149,39 @@ pub fn cleanup_for_thread(tid: u32) {
                 }
                 remove_slot_hash(table, i);
                 table[i] = None;
-                crate::serial_verbose_println!("TCP: cleanup listener socket {} for TID {}", i, tid);
+                crate::serial_verbose_println!(
+                    "TCP: cleanup listener socket {} for TID {}",
+                    i,
+                    tid
+                );
             }
         }
 
         // Second pass: close active connections owned by this thread
         for i in 0..table.len() {
-            let is_owned = table[i].as_ref().map(|tcb| {
-                tcb.owner_tid == tid
-            }).unwrap_or(false);
+            let is_owned = table[i]
+                .as_ref()
+                .map(|tcb| tcb.owner_tid == tid)
+                .unwrap_or(false);
 
             if is_owned {
                 if let Some(tcb) = &table[i] {
                     match tcb.state {
-                        TcpState::Established | TcpState::SynSent | TcpState::SynReceived
-                        | TcpState::FinWait1 | TcpState::FinWait2 | TcpState::CloseWait => {
+                        TcpState::Established
+                        | TcpState::SynSent
+                        | TcpState::SynReceived
+                        | TcpState::FinWait1
+                        | TcpState::FinWait2
+                        | TcpState::CloseWait => {
                             if rst_count < rst_list.len() {
-                                rst_list[rst_count] = (tcb.local_ip, tcb.local_port,
-                                    tcb.remote_ip, tcb.remote_port, tcb.snd_nxt, tcb.rcv_nxt);
+                                rst_list[rst_count] = (
+                                    tcb.local_ip,
+                                    tcb.local_port,
+                                    tcb.remote_ip,
+                                    tcb.remote_port,
+                                    tcb.snd_nxt,
+                                    tcb.rcv_nxt,
+                                );
                                 rst_count += 1;
                             }
                         }

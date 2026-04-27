@@ -5,12 +5,12 @@
 //! Used as the writable upper layer for OverlayFS when booting from CD-ROM.
 //! All data lives in kernel heap memory and is lost on reboot.
 
+use crate::fs::file::{DirEntry, FileType};
+use crate::fs::vfs::FsError;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::fs::file::{DirEntry, FileType};
-use crate::fs::vfs::FsError;
 
 /// A single node (file or directory) in the RamFS.
 struct RamNode {
@@ -63,7 +63,9 @@ impl RamFs {
             if node.file_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
             }
-            let child = node.children.iter()
+            let child = node
+                .children
+                .iter()
                 .find(|(name, _)| name == component)
                 .ok_or(FsError::NotFound)?;
             current = child.1;
@@ -79,12 +81,21 @@ impl RamFs {
     }
 
     /// Look up a single entry inside a directory inode.
-    pub fn lookup_in_dir(&self, dir_inode: u32, name: &str) -> Result<(u32, FileType, u32), FsError> {
-        let node = self.nodes.get(dir_inode as usize).ok_or(FsError::NotFound)?;
+    pub fn lookup_in_dir(
+        &self,
+        dir_inode: u32,
+        name: &str,
+    ) -> Result<(u32, FileType, u32), FsError> {
+        let node = self
+            .nodes
+            .get(dir_inode as usize)
+            .ok_or(FsError::NotFound)?;
         if node.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
-        let child = node.children.iter()
+        let child = node
+            .children
+            .iter()
             .find(|(n, _)| n == name)
             .ok_or(FsError::NotFound)?;
         let child_node = &self.nodes[child.1 as usize];
@@ -111,7 +122,10 @@ impl RamFs {
     /// Write bytes to a file at the given offset, extending the file if needed.
     /// Returns new size.
     pub fn write_file(&mut self, inode: u32, offset: u32, buf: &[u8]) -> Result<u32, FsError> {
-        let node = self.nodes.get_mut(inode as usize).ok_or(FsError::NotFound)?;
+        let node = self
+            .nodes
+            .get_mut(inode as usize)
+            .ok_or(FsError::NotFound)?;
         if node.file_type == FileType::Directory {
             return Err(FsError::IsADirectory);
         }
@@ -129,7 +143,10 @@ impl RamFs {
     pub fn create_file(&mut self, parent_inode: u32, name: &str) -> Result<u32, FsError> {
         // Check parent is a directory and name doesn't already exist
         {
-            let parent = self.nodes.get(parent_inode as usize).ok_or(FsError::NotFound)?;
+            let parent = self
+                .nodes
+                .get(parent_inode as usize)
+                .ok_or(FsError::NotFound)?;
             if parent.file_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
             }
@@ -146,7 +163,10 @@ impl RamFs {
     /// Create a subdirectory. Returns the new directory's inode.
     pub fn create_dir(&mut self, parent_inode: u32, name: &str) -> Result<u32, FsError> {
         {
-            let parent = self.nodes.get(parent_inode as usize).ok_or(FsError::NotFound)?;
+            let parent = self
+                .nodes
+                .get(parent_inode as usize)
+                .ok_or(FsError::NotFound)?;
             if parent.file_type != FileType::Directory {
                 return Err(FsError::NotADirectory);
             }
@@ -169,13 +189,17 @@ impl RamFs {
         }
         let mut current = 0u32;
         for component in path.split('/') {
-            if component.is_empty() { continue; }
+            if component.is_empty() {
+                continue;
+            }
             let node = &self.nodes[current as usize];
             if let Some(child) = node.children.iter().find(|(n, _)| n == component) {
                 current = child.1;
             } else {
                 let new_inode = self.alloc_node(FileType::Directory);
-                self.nodes[current as usize].children.push((String::from(component), new_inode));
+                self.nodes[current as usize]
+                    .children
+                    .push((String::from(component), new_inode));
                 current = new_inode;
             }
         }
@@ -199,7 +223,9 @@ impl RamFs {
 
         let new_inode = self.alloc_node(FileType::Regular);
         self.nodes[new_inode as usize].data = Vec::from(data);
-        self.nodes[parent_inode as usize].children.push((String::from(filename), new_inode));
+        self.nodes[parent_inode as usize]
+            .children
+            .push((String::from(filename), new_inode));
         Ok(new_inode)
     }
 
@@ -227,11 +253,17 @@ impl RamFs {
 
     /// Delete a file or directory by name from a parent directory.
     pub fn delete(&mut self, parent_inode: u32, name: &str) -> Result<(), FsError> {
-        let parent = self.nodes.get_mut(parent_inode as usize).ok_or(FsError::NotFound)?;
+        let parent = self
+            .nodes
+            .get_mut(parent_inode as usize)
+            .ok_or(FsError::NotFound)?;
         if parent.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
-        let pos = parent.children.iter().position(|(n, _)| n == name)
+        let pos = parent
+            .children
+            .iter()
+            .position(|(n, _)| n == name)
             .ok_or(FsError::NotFound)?;
         // Note: we don't reclaim the inode slot (it stays allocated but unreachable).
         // For a RAM overlay that lives only until reboot, this is acceptable.
@@ -241,7 +273,10 @@ impl RamFs {
 
     /// Truncate a file to zero length.
     pub fn truncate_file(&mut self, inode: u32) -> Result<(), FsError> {
-        let node = self.nodes.get_mut(inode as usize).ok_or(FsError::NotFound)?;
+        let node = self
+            .nodes
+            .get_mut(inode as usize)
+            .ok_or(FsError::NotFound)?;
         if node.file_type == FileType::Directory {
             return Err(FsError::IsADirectory);
         }

@@ -3,12 +3,12 @@
 //! Permission files are stored at `/System/users/perm/{uid}/{app_id}` and contain
 //! a granted capability bitmask. The kernel creates directories as needed.
 
+use crate::fs::file::FileFlags;
+use crate::fs::vfs;
+use crate::task::capabilities::CapSet;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::task::capabilities::CapSet;
-use crate::fs::vfs;
-use crate::fs::file::FileFlags;
 
 /// Build the filesystem path for a given uid and app_id.
 fn perm_path(uid: u16, app_id: &str) -> String {
@@ -23,17 +23,12 @@ fn perm_path(uid: u16, app_id: &str) -> String {
 /// `/System`) is logged so the downstream `write_stored_perms` NotFound
 /// failure has an obvious breadcrumb instead of failing silently.
 fn ensure_perm_dir(uid: u16) {
-    for dir in [
-        "/System/users",
-        "/System/users/perm",
-    ] {
+    for dir in ["/System/users", "/System/users/perm"] {
         match vfs::mkdir(dir) {
             Ok(_) => {}
             Err(crate::fs::vfs::FsError::AlreadyExists) => {}
             Err(e) => {
-                crate::serial_println!(
-                    "PERM: ensure_perm_dir: mkdir('{}') failed: {:?}", dir, e
-                );
+                crate::serial_println!("PERM: ensure_perm_dir: mkdir('{}') failed: {:?}", dir, e);
             }
         }
     }
@@ -42,9 +37,7 @@ fn ensure_perm_dir(uid: u16) {
         Ok(_) => {}
         Err(crate::fs::vfs::FsError::AlreadyExists) => {}
         Err(e) => {
-            crate::serial_println!(
-                "PERM: ensure_perm_dir: mkdir('{}') failed: {:?}", dir, e
-            );
+            crate::serial_println!("PERM: ensure_perm_dir: mkdir('{}') failed: {:?}", dir, e);
         }
     }
 }
@@ -94,20 +87,18 @@ pub fn write_stored_perms(uid: u16, app_id: &str, granted: CapSet) -> bool {
                 (Ok(n), Ok(())) => {
                     crate::serial_println!(
                         "PERM: short write path='{}' wrote={} expected={}",
-                        path, n, content.len()
+                        path,
+                        n,
+                        content.len()
                     );
                     false
                 }
                 (Err(e), _) => {
-                    crate::serial_println!(
-                        "PERM: write failed path='{}' err={:?}", path, e
-                    );
+                    crate::serial_println!("PERM: write failed path='{}' err={:?}", path, e);
                     false
                 }
                 (Ok(_), Err(e)) => {
-                    crate::serial_println!(
-                        "PERM: close failed path='{}' err={:?}", path, e
-                    );
+                    crate::serial_println!("PERM: close failed path='{}' err={:?}", path, e);
                     false
                 }
             }

@@ -6,7 +6,7 @@
 //! Implements: INQUIRY, TEST_UNIT_READY, READ_CAPACITY, READ_10, WRITE_10,
 //! REQUEST_SENSE, START_STOP_UNIT (eject).
 
-use super::{UsbDevice, UsbInterface, ControllerType, UsbSpeed};
+use super::{ControllerType, UsbDevice, UsbInterface, UsbSpeed};
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 use alloc::vec::Vec;
@@ -15,23 +15,23 @@ use alloc::vec::Vec;
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct Cbw {
-    signature: u32,       // 0x43425355
-    tag: u32,             // matches CSW
+    signature: u32, // 0x43425355
+    tag: u32,       // matches CSW
     data_transfer_length: u32,
-    flags: u8,            // bit7: 0=OUT, 1=IN
+    flags: u8, // bit7: 0=OUT, 1=IN
     lun: u8,
-    cb_length: u8,        // 1-16
-    cb: [u8; 16],         // SCSI command block
+    cb_length: u8, // 1-16
+    cb: [u8; 16],  // SCSI command block
 }
 
 /// USB mass storage Command Status Wrapper (13 bytes).
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct Csw {
-    signature: u32,       // 0x53425355
+    signature: u32, // 0x53425355
     tag: u32,
     data_residue: u32,
-    status: u8,           // 0=Passed, 1=Failed, 2=Phase Error
+    status: u8, // 0=Passed, 1=Failed, 2=Phase Error
 }
 
 const CBW_SIGNATURE: u32 = 0x43425355;
@@ -129,12 +129,18 @@ fn send_cbw(dev: &mut UsbStorageDevice, cbw: &Cbw) -> Result<(), &'static str> {
         );
     }
     let sent = super::bulk_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
-        dev.ep_out, dev.max_packet_out,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.ep_out,
+        dev.max_packet_out,
         &mut dev.toggle_out,
-        dev.cbw_csw_phys, 31,
+        dev.cbw_csw_phys,
+        31,
     )?;
-    if sent < 31 { return Err("CBW short write"); }
+    if sent < 31 {
+        return Err("CBW short write");
+    }
     Ok(())
 }
 
@@ -142,16 +148,28 @@ fn recv_csw(dev: &mut UsbStorageDevice, expected_tag: u32) -> Result<Csw, &'stat
     // CSW at cbw_csw_phys + 64 (avoid overlap with CBW)
     let csw_phys = dev.cbw_csw_phys + 64;
     let read = super::bulk_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
-        dev.ep_in, dev.max_packet_in,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.ep_in,
+        dev.max_packet_in,
         &mut dev.toggle_in,
-        csw_phys, 13,
+        csw_phys,
+        13,
     )?;
-    if read < 13 { return Err("CSW short read"); }
+    if read < 13 {
+        return Err("CSW short read");
+    }
     let csw: Csw = unsafe { core::ptr::read_unaligned(csw_phys as *const Csw) };
-    if csw.signature != CSW_SIGNATURE { return Err("CSW bad signature"); }
-    if csw.tag != expected_tag { return Err("CSW tag mismatch"); }
-    if csw.status != 0 { return Err("CSW command failed"); }
+    if csw.signature != CSW_SIGNATURE {
+        return Err("CSW bad signature");
+    }
+    if csw.tag != expected_tag {
+        return Err("CSW tag mismatch");
+    }
+    if csw.status != 0 {
+        return Err("CSW command failed");
+    }
     Ok(csw)
 }
 
@@ -160,10 +178,30 @@ fn recv_csw(dev: &mut UsbStorageDevice, expected_tag: u32) -> Result<Csw, &'stat
 fn scsi_test_unit_ready(dev: &mut UsbStorageDevice) -> Result<(), &'static str> {
     let tag = dev.next_tag();
     let cbw = Cbw {
-        signature: CBW_SIGNATURE, tag,
+        signature: CBW_SIGNATURE,
+        tag,
         data_transfer_length: 0,
-        flags: CBW_FLAG_OUT, lun: 0, cb_length: 6,
-        cb: [SCSI_TEST_UNIT_READY, 0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0],
+        flags: CBW_FLAG_OUT,
+        lun: 0,
+        cb_length: 6,
+        cb: [
+            SCSI_TEST_UNIT_READY,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
     };
     send_cbw(dev, &cbw)?;
     recv_csw(dev, tag)?;
@@ -173,18 +211,25 @@ fn scsi_test_unit_ready(dev: &mut UsbStorageDevice) -> Result<(), &'static str> 
 fn scsi_inquiry(dev: &mut UsbStorageDevice) -> Result<[u8; 36], &'static str> {
     let tag = dev.next_tag();
     let cbw = Cbw {
-        signature: CBW_SIGNATURE, tag,
+        signature: CBW_SIGNATURE,
+        tag,
         data_transfer_length: 36,
-        flags: CBW_FLAG_IN, lun: 0, cb_length: 6,
-        cb: [SCSI_INQUIRY, 0, 0, 0, 36, 0, 0,0,0,0,0,0,0,0,0,0],
+        flags: CBW_FLAG_IN,
+        lun: 0,
+        cb_length: 6,
+        cb: [SCSI_INQUIRY, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     };
     send_cbw(dev, &cbw)?;
     // Data phase: read 36 bytes into bounce buffer
     super::bulk_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
-        dev.ep_in, dev.max_packet_in,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.ep_in,
+        dev.max_packet_in,
         &mut dev.toggle_in,
-        dev.bounce_phys, 36,
+        dev.bounce_phys,
+        36,
     )?;
     let mut result = [0u8; 36];
     unsafe {
@@ -197,17 +242,41 @@ fn scsi_inquiry(dev: &mut UsbStorageDevice) -> Result<[u8; 36], &'static str> {
 fn scsi_read_capacity(dev: &mut UsbStorageDevice) -> Result<(u32, u32), &'static str> {
     let tag = dev.next_tag();
     let cbw = Cbw {
-        signature: CBW_SIGNATURE, tag,
+        signature: CBW_SIGNATURE,
+        tag,
         data_transfer_length: 8,
-        flags: CBW_FLAG_IN, lun: 0, cb_length: 10,
-        cb: [SCSI_READ_CAPACITY, 0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0],
+        flags: CBW_FLAG_IN,
+        lun: 0,
+        cb_length: 10,
+        cb: [
+            SCSI_READ_CAPACITY,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
     };
     send_cbw(dev, &cbw)?;
     super::bulk_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
-        dev.ep_in, dev.max_packet_in,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.ep_in,
+        dev.max_packet_in,
         &mut dev.toggle_in,
-        dev.bounce_phys, 8,
+        dev.bounce_phys,
+        8,
     )?;
     let buf: [u8; 8] = unsafe {
         let mut b = [0u8; 8];
@@ -232,9 +301,13 @@ fn scsi_read_10(dev: &mut UsbStorageDevice, lba: u32, count: u16) -> Result<(), 
     cb[7] = (count >> 8) as u8;
     cb[8] = count as u8;
     let cbw = Cbw {
-        signature: CBW_SIGNATURE, tag,
+        signature: CBW_SIGNATURE,
+        tag,
         data_transfer_length: byte_count,
-        flags: CBW_FLAG_IN, lun: 0, cb_length: 10, cb,
+        flags: CBW_FLAG_IN,
+        lun: 0,
+        cb_length: 10,
+        cb,
     };
     send_cbw(dev, &cbw)?;
 
@@ -244,13 +317,19 @@ fn scsi_read_10(dev: &mut UsbStorageDevice, lba: u32, count: u16) -> Result<(), 
         let remaining = byte_count as usize - received;
         let chunk = remaining.min(dev.max_packet_in as usize);
         let got = super::bulk_transfer(
-            dev.usb_addr, dev.controller, dev.speed,
-            dev.ep_in, dev.max_packet_in,
+            dev.usb_addr,
+            dev.controller,
+            dev.speed,
+            dev.ep_in,
+            dev.max_packet_in,
             &mut dev.toggle_in,
-            dev.bounce_phys + received as u64, chunk,
+            dev.bounce_phys + received as u64,
+            chunk,
         )?;
         received += got;
-        if got < chunk { break; } // short packet
+        if got < chunk {
+            break;
+        } // short packet
     }
 
     recv_csw(dev, tag)?;
@@ -269,9 +348,13 @@ fn scsi_write_10(dev: &mut UsbStorageDevice, lba: u32, count: u16) -> Result<(),
     cb[7] = (count >> 8) as u8;
     cb[8] = count as u8;
     let cbw = Cbw {
-        signature: CBW_SIGNATURE, tag,
+        signature: CBW_SIGNATURE,
+        tag,
         data_transfer_length: byte_count,
-        flags: CBW_FLAG_OUT, lun: 0, cb_length: 10, cb,
+        flags: CBW_FLAG_OUT,
+        lun: 0,
+        cb_length: 10,
+        cb,
     };
     send_cbw(dev, &cbw)?;
 
@@ -281,13 +364,19 @@ fn scsi_write_10(dev: &mut UsbStorageDevice, lba: u32, count: u16) -> Result<(),
         let remaining = byte_count as usize - sent;
         let chunk = remaining.min(dev.max_packet_out as usize);
         let wrote = super::bulk_transfer(
-            dev.usb_addr, dev.controller, dev.speed,
-            dev.ep_out, dev.max_packet_out,
+            dev.usb_addr,
+            dev.controller,
+            dev.speed,
+            dev.ep_out,
+            dev.max_packet_out,
             &mut dev.toggle_out,
-            dev.bounce_phys + sent as u64, chunk,
+            dev.bounce_phys + sent as u64,
+            chunk,
         )?;
         sent += wrote;
-        if wrote < chunk { break; }
+        if wrote < chunk {
+            break;
+        }
     }
 
     recv_csw(dev, tag)?;
@@ -297,17 +386,41 @@ fn scsi_write_10(dev: &mut UsbStorageDevice, lba: u32, count: u16) -> Result<(),
 fn scsi_request_sense(dev: &mut UsbStorageDevice) -> Result<[u8; 18], &'static str> {
     let tag = dev.next_tag();
     let cbw = Cbw {
-        signature: CBW_SIGNATURE, tag,
+        signature: CBW_SIGNATURE,
+        tag,
         data_transfer_length: 18,
-        flags: CBW_FLAG_IN, lun: 0, cb_length: 6,
-        cb: [SCSI_REQUEST_SENSE, 0, 0, 0, 18, 0, 0,0,0,0,0,0,0,0,0,0],
+        flags: CBW_FLAG_IN,
+        lun: 0,
+        cb_length: 6,
+        cb: [
+            SCSI_REQUEST_SENSE,
+            0,
+            0,
+            0,
+            18,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
     };
     send_cbw(dev, &cbw)?;
     super::bulk_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
-        dev.ep_in, dev.max_packet_in,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.ep_in,
+        dev.max_packet_in,
         &mut dev.toggle_in,
-        dev.bounce_phys, 18,
+        dev.bounce_phys,
+        18,
     )?;
     let mut result = [0u8; 18];
     unsafe {
@@ -320,14 +433,38 @@ fn scsi_request_sense(dev: &mut UsbStorageDevice) -> Result<[u8; 18], &'static s
 /// START STOP UNIT — start/stop the drive motor, or eject media.
 /// `start`: 1 = start motor, 0 = stop motor.
 /// `loej`: 1 = load/eject (with start=0 → eject, start=1 → load).
-fn scsi_start_stop_unit(dev: &mut UsbStorageDevice, start: bool, loej: bool) -> Result<(), &'static str> {
+fn scsi_start_stop_unit(
+    dev: &mut UsbStorageDevice,
+    start: bool,
+    loej: bool,
+) -> Result<(), &'static str> {
     let tag = dev.next_tag();
     let byte4 = (start as u8) | ((loej as u8) << 1);
     let cbw = Cbw {
-        signature: CBW_SIGNATURE, tag,
+        signature: CBW_SIGNATURE,
+        tag,
         data_transfer_length: 0,
-        flags: CBW_FLAG_OUT, lun: 0, cb_length: 6,
-        cb: [SCSI_START_STOP_UNIT, 0, 0, 0, byte4, 0, 0,0,0,0,0,0,0,0,0,0],
+        flags: CBW_FLAG_OUT,
+        lun: 0,
+        cb_length: 6,
+        cb: [
+            SCSI_START_STOP_UNIT,
+            0,
+            0,
+            0,
+            byte4,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
     };
     send_cbw(dev, &cbw)?;
     recv_csw(dev, tag)?;
@@ -343,13 +480,17 @@ fn bot_reset(dev: &mut UsbStorageDevice) -> Result<(), &'static str> {
         bm_request_type: 0x21, // Class, Interface, Host-to-Device
         b_request: 0xFF,       // Bulk-Only Mass Storage Reset
         w_value: 0,
-        w_index: 0,            // interface number
+        w_index: 0, // interface number
         w_length: 0,
     };
     let _ = super::hid_control_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
         dev.max_packet_in.max(dev.max_packet_out),
-        &setup, false, 0,
+        &setup,
+        false,
+        0,
     )?;
     Ok(())
 }
@@ -364,9 +505,13 @@ fn clear_halt(dev: &UsbStorageDevice, endpoint: u8) -> Result<(), &'static str> 
         w_length: 0,
     };
     let _ = super::hid_control_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
         dev.max_packet_in.max(dev.max_packet_out),
-        &setup, false, 0,
+        &setup,
+        false,
+        0,
     )?;
     Ok(())
 }
@@ -411,7 +556,9 @@ pub fn usb_storage_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bo
             }
             bot_error_recovery(dev);
         }
-        if !ok { return false; }
+        if !ok {
+            return false;
+        }
         let bytes = batch as usize * bs;
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -472,7 +619,9 @@ pub fn usb_storage_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool 
             }
             bot_error_recovery(dev);
         }
-        if !ok { return false; }
+        if !ok {
+            return false;
+        }
         offset += bytes;
         cur_lba += batch;
         remaining -= batch;
@@ -504,8 +653,10 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
     crate::serial_verbose_println!(
         "  USB Storage: detected (subclass={:#04x} [{}], protocol={:#04x} [{}], addr={})",
-        iface.subclass, subclass_desc,
-        iface.protocol, protocol_desc,
+        iface.subclass,
+        subclass_desc,
+        iface.protocol,
+        protocol_desc,
         dev.address,
     );
 
@@ -524,8 +675,10 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         (Some(i), Some(o)) => {
             crate::serial_verbose_println!(
                 "  USB Storage: bulk IN ep={:#04x} (max={}), bulk OUT ep={:#04x} (max={})",
-                i.address, i.max_packet_size,
-                o.address, o.max_packet_size,
+                i.address,
+                i.max_packet_size,
+                o.address,
+                o.max_packet_size,
             );
             (i, o)
         }
@@ -537,9 +690,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
     // Support SCSI transparent (0x06) and ATAPI (0x02) with Bulk-Only (0x50)
     if (iface.subclass != 0x06 && iface.subclass != 0x02) || iface.protocol != 0x50 {
-        crate::serial_verbose_println!(
-            "  USB Storage: unsupported subclass/protocol combination"
-        );
+        crate::serial_verbose_println!("  USB Storage: unsupported subclass/protocol combination");
         return;
     }
 
@@ -554,7 +705,9 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         }
     };
     // Zero the page
-    unsafe { core::ptr::write_bytes(cbw_csw_phys as *mut u8, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(cbw_csw_phys as *mut u8, 0, 4096);
+    }
 
     // Allocate bounce buffer (16 contiguous pages = 64 KiB)
     let bounce_phys = match physical::alloc_contiguous(BOUNCE_PAGES) {
@@ -564,7 +717,9 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             return;
         }
     };
-    unsafe { core::ptr::write_bytes(bounce_phys as *mut u8, 0, BOUNCE_SIZE); }
+    unsafe {
+        core::ptr::write_bytes(bounce_phys as *mut u8, 0, BOUNCE_SIZE);
+    }
 
     let mut stor_dev = UsbStorageDevice {
         usb_addr: dev.address,
@@ -603,14 +758,20 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
                 let asc = sense[12];
                 let ascq = sense[13];
                 if asc == 0x04 && ascq == 0x01 {
-                    crate::serial_verbose_println!("  USB Storage: CDROM spinning up (attempt {})", attempt + 1);
+                    crate::serial_verbose_println!(
+                        "  USB Storage: CDROM spinning up (attempt {})",
+                        attempt + 1
+                    );
                 } else if asc == 0x3A {
                     crate::serial_verbose_println!("  USB Storage: no medium in CDROM drive");
                     return;
                 }
             }
         } else {
-            crate::serial_verbose_println!("  USB Storage: TEST_UNIT_READY attempt {} failed", attempt + 1);
+            crate::serial_verbose_println!(
+                "  USB Storage: TEST_UNIT_READY attempt {} failed",
+                attempt + 1
+            );
         }
         crate::arch::x86::pit::delay_ms(delay_ms);
     }
@@ -629,7 +790,11 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             if stor_dev.device_type == SCSI_DEVTYPE_CDROM {
                 stor_dev.is_cdrom = true;
             }
-            let type_str = if stor_dev.is_cdrom { "CD/DVD-ROM" } else { "Disk" };
+            let type_str = if stor_dev.is_cdrom {
+                "CD/DVD-ROM"
+            } else {
+                "Disk"
+            };
             crate::serial_verbose_println!("  USB Storage: {} {} [{}]", vendor, product, type_str);
             // Store vendor+product as label (trimmed INQUIRY fields)
             let label_str = alloc::format!("{} {}", vendor, product);
@@ -649,7 +814,9 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             let size_mib = blocks as u64 * block_size as u64 / (1024 * 1024);
             crate::serial_verbose_println!(
                 "  USB Storage: {} sectors x {} bytes = {} MiB",
-                blocks, block_size, size_mib
+                blocks,
+                block_size,
+                size_mib
             );
         }
         Err(e) => {
@@ -697,15 +864,12 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
         crate::serial_verbose_println!(
             "  USB Storage: registered as /dev/cdrom{} (USB CD/DVD-ROM, disk {})",
-            cdrom_idx, disk_id
+            cdrom_idx,
+            disk_id
         );
     } else {
         // Regular disk: read+write I/O override + partition scan
-        crate::drivers::storage::register_device_io(
-            disk_id,
-            usb_storage_read,
-            usb_storage_write,
-        );
+        crate::drivers::storage::register_device_io(disk_id, usb_storage_read, usb_storage_write);
 
         // Store device before partition scanning (read dispatch needs it)
         USB_STORAGE_DEVICES.lock().push(stor_dev);
@@ -716,7 +880,11 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         // Auto-mount partitions under /Volumes/ (for removable media)
         blockdev::auto_mount_removable(disk_id);
 
-        crate::serial_verbose_println!("  USB Storage: registered as disk {} (hd{})", disk_id, disk_id);
+        crate::serial_verbose_println!(
+            "  USB Storage: registered as disk {} (hd{})",
+            disk_id,
+            disk_id
+        );
     }
 }
 
@@ -729,7 +897,9 @@ pub fn first_cdrom_disk_id() -> Option<u8> {
 /// Eject a USB CDROM by disk_id.
 pub fn eject_cdrom(disk_id: u8) -> Result<(), &'static str> {
     let mut devs = USB_STORAGE_DEVICES.lock();
-    let dev = devs.iter_mut().find(|d| d.disk_id == disk_id && d.is_cdrom)
+    let dev = devs
+        .iter_mut()
+        .find(|d| d.disk_id == disk_id && d.is_cdrom)
         .ok_or("CDROM not found")?;
     scsi_start_stop_unit(dev, false, true) // start=0, loej=1 → eject
 }
@@ -737,7 +907,10 @@ pub fn eject_cdrom(disk_id: u8) -> Result<(), &'static str> {
 /// Called when a USB device is disconnected. Cleans up storage state.
 pub fn disconnect(port: u8, controller: ControllerType) {
     let mut devs = USB_STORAGE_DEVICES.lock();
-    if let Some(idx) = devs.iter().position(|d| d.port == port && d.controller == controller) {
+    if let Some(idx) = devs
+        .iter()
+        .position(|d| d.port == port && d.controller == controller)
+    {
         let dev = devs.remove(idx);
         let disk_id = dev.disk_id;
         let is_cdrom = dev.is_cdrom;
@@ -753,26 +926,38 @@ pub fn disconnect(port: u8, controller: ControllerType) {
 
         if is_cdrom {
             crate::serial_verbose_println!(
-                "  USB Storage: /dev/cdrom{} removed (disk {})", cdrom_index, disk_id
+                "  USB Storage: /dev/cdrom{} removed (disk {})",
+                cdrom_index,
+                disk_id
             );
         } else {
-            crate::serial_verbose_println!("  USB Storage: disk {} (hd{}) removed", disk_id, disk_id);
+            crate::serial_verbose_println!(
+                "  USB Storage: disk {} (hd{}) removed",
+                disk_id,
+                disk_id
+            );
         }
     }
 }
 
 // ── HAL CDROM Driver ────────────────────────────
 
-use crate::drivers::hal::{Driver, DriverType, DriverError};
+use crate::drivers::hal::{Driver, DriverError, DriverType};
 
 struct UsbCdromHalDriver {
     disk_id: u8,
 }
 
 impl Driver for UsbCdromHalDriver {
-    fn name(&self) -> &str { "USB CD/DVD-ROM" }
-    fn driver_type(&self) -> DriverType { DriverType::Block }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        "USB CD/DVD-ROM"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Block
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
 
     fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
         let lba = (offset / 2048) as u32;

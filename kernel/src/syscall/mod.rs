@@ -116,7 +116,11 @@ pub fn init() {
 #[inline(always)]
 pub(crate) fn dispatch_inner(
     syscall_num: u32,
-    arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
 ) -> u32 {
     // User space now lives in the upper canonical-low half (above 4 GiB).
     // All args are carried as u64; handlers that accept only u32 scalars
@@ -146,7 +150,10 @@ pub(crate) fn dispatch_inner(
             crate::serial_println!(
                 "DENIED: T{} syscall {}({}) requires cap {:#x}, has {:#x}",
                 crate::task::scheduler::current_tid(),
-                table::syscall_name(syscall_num), syscall_num, required, caps
+                table::syscall_name(syscall_num),
+                syscall_num,
+                required,
+                caps
             );
             return u32::MAX;
         }
@@ -308,7 +315,9 @@ pub(crate) fn dispatch_inner(
         SYS_CAPTURE_SCREEN => handlers::sys_capture_screen(arg1, arg2 as u32, arg3),
 
         // Threading
-        SYS_THREAD_CREATE => handlers::sys_thread_create(arg1, arg2, arg3, arg4 as u32, arg5 as u32),
+        SYS_THREAD_CREATE => {
+            handlers::sys_thread_create(arg1, arg2, arg3, arg4 as u32, arg5 as u32)
+        }
         SYS_SET_PRIORITY => handlers::sys_set_priority(arg1 as u32, arg2 as u32),
         SYS_SET_CRITICAL => handlers::sys_set_critical(),
 
@@ -385,8 +394,12 @@ pub(crate) fn dispatch_inner(
         SYS_DISK_LIST => handlers::sys_disk_list(arg1, arg2 as u32),
         SYS_DISK_PARTITIONS => handlers::sys_disk_partitions(arg1 as u32, arg2, arg3 as u32),
         SYS_DISK_EJECT => handlers::sys_disk_eject(arg1 as u32),
-        SYS_DISK_READ => handlers::sys_disk_read(arg1 as u32, arg2 as u32, arg3 as u32, arg4, arg5 as u32),
-        SYS_DISK_WRITE => handlers::sys_disk_write(arg1 as u32, arg2 as u32, arg3 as u32, arg4, arg5 as u32),
+        SYS_DISK_READ => {
+            handlers::sys_disk_read(arg1 as u32, arg2 as u32, arg3 as u32, arg4, arg5 as u32)
+        }
+        SYS_DISK_WRITE => {
+            handlers::sys_disk_write(arg1 as u32, arg2 as u32, arg3 as u32, arg4, arg5 as u32)
+        }
         SYS_PARTITION_CREATE => handlers::sys_partition_create(arg1 as u32, arg2, arg3 as u32),
         SYS_PARTITION_DELETE => handlers::sys_partition_delete(arg1 as u32, arg2 as u32),
         SYS_PARTITION_RESCAN => handlers::sys_partition_rescan(arg1 as u32),
@@ -395,10 +408,28 @@ pub(crate) fn dispatch_inner(
         SYS_GPU_3D_SUBMIT => handlers::sys_gpu_3d_submit(arg1, arg2 as u32),
         SYS_GPU_3D_QUERY => handlers::sys_gpu_3d_query(arg1 as u32),
         SYS_GPU_3D_SYNC => handlers::sys_gpu_3d_sync(),
-        SYS_GPU_3D_SURFACE_DMA => handlers::sys_gpu_3d_surface_dma(arg1 as u32, arg2, arg3 as u32, arg4 as u32, arg5 as u32),
-        SYS_GPU_3D_SURFACE_DMA_READ => handlers::sys_gpu_3d_surface_dma_read(arg1 as u32, arg2, arg3 as u32, arg4 as u32, arg5 as u32),
+        SYS_GPU_3D_SURFACE_DMA => handlers::sys_gpu_3d_surface_dma(
+            arg1 as u32,
+            arg2,
+            arg3 as u32,
+            arg4 as u32,
+            arg5 as u32,
+        ),
+        SYS_GPU_3D_SURFACE_DMA_READ => handlers::sys_gpu_3d_surface_dma_read(
+            arg1 as u32,
+            arg2,
+            arg3 as u32,
+            arg4 as u32,
+            arg5 as u32,
+        ),
         SYS_GPU_QUERY_TYPE => handlers::sys_gpu_query_type(arg1, arg2 as u32),
-        SYS_GPU_3D_RESOURCE_CREATE => handlers::sys_gpu_3d_resource_create(arg1 as u32, arg2 as u32, arg3 as u32, arg4 as u32, arg5 as u32),
+        SYS_GPU_3D_RESOURCE_CREATE => handlers::sys_gpu_3d_resource_create(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u32,
+            arg4 as u32,
+            arg5 as u32,
+        ),
         SYS_GPU_3D_RESOURCE_DESTROY => handlers::sys_gpu_3d_resource_destroy(arg1 as u32),
 
         // Hostname
@@ -414,12 +445,12 @@ pub(crate) fn dispatch_inner(
         SYS_SET_SERIAL_VERBOSE => handlers::sys_set_serial_verbose(arg1 as u32),
 
         // Text-mode console I/O
-        SYS_CON_WRITE     => handlers::sys_con_write(arg1, arg2 as u32),
-        SYS_CON_READ      => handlers::sys_con_read(arg1, arg2 as u32),
-        SYS_CON_POLL_KEY  => handlers::sys_con_poll_key(),
-        SYS_CON_GET_SIZE  => handlers::sys_con_get_size(),
-        SYS_CON_SET_MODE  => handlers::sys_con_set_mode(arg1 as u32),
-        SYS_CON_RESIZE    => handlers::sys_con_resize(arg1 as u32),
+        SYS_CON_WRITE => handlers::sys_con_write(arg1, arg2 as u32),
+        SYS_CON_READ => handlers::sys_con_read(arg1, arg2 as u32),
+        SYS_CON_POLL_KEY => handlers::sys_con_poll_key(),
+        SYS_CON_GET_SIZE => handlers::sys_con_get_size(),
+        SYS_CON_SET_MODE => handlers::sys_con_set_mode(arg1 as u32),
+        SYS_CON_RESIZE => handlers::sys_con_resize(arg1 as u32),
 
         // Platform / thermal / ACPI / I²C
         #[cfg(target_arch = "x86_64")]
@@ -454,8 +485,12 @@ pub(crate) fn dispatch_inner(
         SYS_DEBUG_RESUME => handlers::sys_debug_resume(arg1 as u32),
         SYS_DEBUG_GET_REGS => handlers::sys_debug_get_regs(arg1 as u32, arg2 as u32, arg3 as u32),
         SYS_DEBUG_SET_REGS => handlers::sys_debug_set_regs(arg1 as u32, arg2, arg3 as u32),
-        SYS_DEBUG_READ_MEM => handlers::sys_debug_read_mem(arg1 as u32, arg2 as u32, arg3 as u32, arg4),
-        SYS_DEBUG_WRITE_MEM => handlers::sys_debug_write_mem(arg1 as u32, arg2 as u32, arg3 as u32, arg4),
+        SYS_DEBUG_READ_MEM => {
+            handlers::sys_debug_read_mem(arg1 as u32, arg2 as u32, arg3 as u32, arg4)
+        }
+        SYS_DEBUG_WRITE_MEM => {
+            handlers::sys_debug_write_mem(arg1 as u32, arg2 as u32, arg3 as u32, arg4)
+        }
         SYS_DEBUG_SET_BREAKPOINT => handlers::sys_debug_set_breakpoint(arg1 as u32, arg2 as u32),
         SYS_DEBUG_CLR_BREAKPOINT => handlers::sys_debug_clr_breakpoint(arg1 as u32, arg2 as u32),
         SYS_DEBUG_SINGLE_STEP => handlers::sys_debug_single_step(arg1 as u32),
@@ -469,47 +504,114 @@ pub(crate) fn dispatch_inner(
         #[cfg(target_arch = "x86_64")]
         SYS_VM_DESTROY => crate::arch::x86::virt::syscalls::sys_vm_destroy(arg1 as u32),
         #[cfg(target_arch = "x86_64")]
-        SYS_VM_SET_MEMORY => crate::arch::x86::virt::syscalls::sys_vm_set_memory(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VM_SET_MEMORY => crate::arch::x86::virt::syscalls::sys_vm_set_memory(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u64,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VM_SET_CPUID => crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(arg1 as u32, arg2 as u64, arg3 as u32),
+        SYS_VM_SET_CPUID => crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(
+            arg1 as u32,
+            arg2 as u64,
+            arg3 as u32,
+        ),
         #[cfg(target_arch = "x86_64")]
         SYS_VM_HW_INFO => crate::arch::x86::virt::syscalls::sys_vm_hw_info(),
         #[cfg(target_arch = "x86_64")]
-        SYS_VM_GET_DIRTY_LOG => crate::arch::x86::virt::syscalls::sys_vm_get_dirty_log(arg1 as u32, arg2 as u64),
+        SYS_VM_GET_DIRTY_LOG => {
+            crate::arch::x86::virt::syscalls::sys_vm_get_dirty_log(arg1 as u32, arg2 as u64)
+        }
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_CREATE => crate::arch::x86::virt::syscalls::sys_vcpu_create(arg1 as u32, arg2 as u32),
+        SYS_VCPU_CREATE => {
+            crate::arch::x86::virt::syscalls::sys_vcpu_create(arg1 as u32, arg2 as u32)
+        }
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_RUN => crate::arch::x86::virt::syscalls::sys_vcpu_run(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VCPU_RUN => {
+            crate::arch::x86::virt::syscalls::sys_vcpu_run(arg1 as u32, arg2 as u32, arg3 as u64)
+        }
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_PAUSE => crate::arch::x86::virt::syscalls::sys_vcpu_pause(arg1 as u32, arg2 as u32),
+        SYS_VCPU_PAUSE => {
+            crate::arch::x86::virt::syscalls::sys_vcpu_pause(arg1 as u32, arg2 as u32)
+        }
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_RESUME => crate::arch::x86::virt::syscalls::sys_vcpu_resume(arg1 as u32, arg2 as u32),
+        SYS_VCPU_RESUME => {
+            crate::arch::x86::virt::syscalls::sys_vcpu_resume(arg1 as u32, arg2 as u32)
+        }
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_GET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_regs(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VCPU_GET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_regs(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u64,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_SET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_regs(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VCPU_SET_REGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_regs(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u64,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_GET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_sregs(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VCPU_GET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_get_sregs(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u64,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_SET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_sregs(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VCPU_SET_SREGS => crate::arch::x86::virt::syscalls::sys_vcpu_set_sregs(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u64,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_GET_FPU => crate::arch::x86::virt::syscalls::sys_vcpu_get_fpu(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VCPU_GET_FPU => crate::arch::x86::virt::syscalls::sys_vcpu_get_fpu(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u64,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_SET_FPU => crate::arch::x86::virt::syscalls::sys_vcpu_set_fpu(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VCPU_SET_FPU => crate::arch::x86::virt::syscalls::sys_vcpu_set_fpu(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u64,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_INJECT_IRQ => crate::arch::x86::virt::syscalls::sys_vcpu_inject_irq(arg1 as u32, arg2 as u32, arg3 as u32),
+        SYS_VCPU_INJECT_IRQ => crate::arch::x86::virt::syscalls::sys_vcpu_inject_irq(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u32,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_INJECT_EXCEPTION => crate::arch::x86::virt::syscalls::sys_vcpu_inject_exception(arg1 as u32, arg2 as u32, arg3 as u32),
+        SYS_VCPU_INJECT_EXCEPTION => crate::arch::x86::virt::syscalls::sys_vcpu_inject_exception(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u32,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_INJECT_NMI => crate::arch::x86::virt::syscalls::sys_vcpu_inject_nmi(arg1 as u32, arg2 as u32),
+        SYS_VCPU_INJECT_NMI => {
+            crate::arch::x86::virt::syscalls::sys_vcpu_inject_nmi(arg1 as u32, arg2 as u32)
+        }
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_GET_MP_STATE => crate::arch::x86::virt::syscalls::sys_vcpu_get_mp_state(arg1 as u32, arg2 as u32),
+        SYS_VCPU_GET_MP_STATE => {
+            crate::arch::x86::virt::syscalls::sys_vcpu_get_mp_state(arg1 as u32, arg2 as u32)
+        }
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_SET_MP_STATE => crate::arch::x86::virt::syscalls::sys_vcpu_set_mp_state(arg1 as u32, arg2 as u32, arg3 as u32),
+        SYS_VCPU_SET_MP_STATE => crate::arch::x86::virt::syscalls::sys_vcpu_set_mp_state(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u32,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_VCPU_TRANSLATE => crate::arch::x86::virt::syscalls::sys_vcpu_translate(arg1 as u32, arg2 as u32, arg3 as u64),
+        SYS_VCPU_TRANSLATE => crate::arch::x86::virt::syscalls::sys_vcpu_translate(
+            arg1 as u32,
+            arg2 as u32,
+            arg3 as u64,
+        ),
         #[cfg(target_arch = "x86_64")]
-        SYS_AVM_IOCTL => crate::arch::x86::virt::avm::sys_avm_ioctl(arg1 as u64, arg2 as u32, arg3 as u64, arg4 as u64) as u32,
+        SYS_AVM_IOCTL => crate::arch::x86::virt::avm::sys_avm_ioctl(
+            arg1 as u64,
+            arg2 as u32,
+            arg3 as u64,
+            arg4 as u64,
+        ) as u32,
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);
@@ -523,8 +625,16 @@ pub(crate) fn dispatch_inner(
         if result == u32::MAX {
             let tid = crate::task::scheduler::current_tid();
             let name = table::syscall_name(syscall_num);
-            crate::debug_println!("ERR [T{}] {}({}) args=({:#x},{:#x},{:#x},{:#x}) -> FAIL",
-                tid, name, syscall_num, arg1 as u32, arg2 as u32, arg3 as u32, arg4 as u32);
+            crate::debug_println!(
+                "ERR [T{}] {}({}) args=({:#x},{:#x},{:#x},{:#x}) -> FAIL",
+                tid,
+                name,
+                syscall_num,
+                arg1 as u32,
+                arg2 as u32,
+                arg3 as u32,
+                arg4 as u32
+            );
         }
     }
 
@@ -635,77 +745,95 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
         }
         SYS_VM_SET_MEMORY => {
             let r = crate::arch::x86::virt::syscalls::sys_vm_set_memory(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VCPU_RUN => {
             let r = crate::arch::x86::virt::syscalls::sys_vcpu_run(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VCPU_GET_REGS => {
             let r = crate::arch::x86::virt::syscalls::sys_vcpu_get_regs(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VCPU_SET_REGS => {
             let r = crate::arch::x86::virt::syscalls::sys_vcpu_set_regs(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VCPU_GET_SREGS => {
             let r = crate::arch::x86::virt::syscalls::sys_vcpu_get_sregs(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VCPU_SET_SREGS => {
             let r = crate::arch::x86::virt::syscalls::sys_vcpu_set_sregs(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VM_SET_CPUID => {
             let r = crate::arch::x86::virt::syscalls::sys_vm_set_cpuid(
-                arg1_64 as u32, arg2_64, arg3_64 as u32,
+                arg1_64 as u32,
+                arg2_64,
+                arg3_64 as u32,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VM_GET_DIRTY_LOG => {
-            let r = crate::arch::x86::virt::syscalls::sys_vm_get_dirty_log(
-                arg1_64 as u32, arg2_64,
-            );
+            let r = crate::arch::x86::virt::syscalls::sys_vm_get_dirty_log(arg1_64 as u32, arg2_64);
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VCPU_GET_FPU => {
             let r = crate::arch::x86::virt::syscalls::sys_vcpu_get_fpu(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VCPU_SET_FPU => {
             let r = crate::arch::x86::virt::syscalls::sys_vcpu_set_fpu(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;
         }
         SYS_VCPU_TRANSLATE => {
             let r = crate::arch::x86::virt::syscalls::sys_vcpu_translate(
-                arg1_64 as u32, arg2_64 as u32, arg3_64,
+                arg1_64 as u32,
+                arg2_64 as u32,
+                arg3_64,
             );
             handlers::deliver_pending_signal_default();
             return r as u64;

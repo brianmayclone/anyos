@@ -35,7 +35,11 @@ pub fn init() {
         core::arch::asm!("isb", options(nostack));
     }
 
-    crate::serial_verbose_println!("[OK] ARM Generic Timer: freq={}Hz, tick={}Hz", freq, TICK_HZ);
+    crate::serial_verbose_println!(
+        "[OK] ARM Generic Timer: freq={}Hz, tick={}Hz",
+        freq,
+        TICK_HZ
+    );
 }
 
 /// Timer IRQ handler — reprogram timer and increment tick count.
@@ -89,7 +93,9 @@ pub fn frequency() -> u32 {
 /// Busy-wait for approximately `us` microseconds using the counter.
 pub fn delay_us(us: u64) {
     let freq = TIMER_FREQ.load(Ordering::Relaxed) as u64;
-    if freq == 0 { return; }
+    if freq == 0 {
+        return;
+    }
     let target = read_counter() + (freq * us / 1_000_000);
     while read_counter() < target {
         core::hint::spin_loop();

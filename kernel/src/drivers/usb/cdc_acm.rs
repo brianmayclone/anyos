@@ -90,9 +90,9 @@ fn set_line_coding(dev: &CdcAcmDevice) -> Result<(), &'static str> {
     // Line coding: 115200 baud, 1 stop bit, no parity, 8 data bits (7 bytes)
     let payload: [u8; 7] = [
         0x00, 0xC2, 0x01, 0x00, // 115200 LE32
-        0x00,                    // 1 stop bit
-        0x00,                    // no parity
-        0x08,                    // 8 data bits
+        0x00, // 1 stop bit
+        0x00, // no parity
+        0x08, // 8 data bits
     ];
     // Copy payload to DMA buffer
     unsafe {
@@ -112,8 +112,13 @@ fn set_line_coding(dev: &CdcAcmDevice) -> Result<(), &'static str> {
         w_length: 0, // Some devices ignore line coding entirely
     };
     let _ = super::hid_control_transfer(
-        dev.usb_addr, dev.controller, dev.speed, dev.max_packet,
-        &setup, false, 0,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.max_packet,
+        &setup,
+        false,
+        0,
     );
     Ok(())
 }
@@ -128,8 +133,13 @@ fn set_control_line_state(dev: &CdcAcmDevice, dtr: bool, rts: bool) -> Result<()
         w_length: 0,
     };
     let _ = super::hid_control_transfer(
-        dev.usb_addr, dev.controller, dev.speed, dev.max_packet,
-        &setup, false, 0,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.max_packet,
+        &setup,
+        false,
+        0,
     );
     Ok(())
 }
@@ -139,7 +149,9 @@ fn set_control_line_state(dev: &CdcAcmDevice, dtr: bool, rts: bool) -> Result<()
 /// Read available data from a CDC-ACM device's RX buffer.
 pub fn read_data(tty_index: u8, buf: &mut [u8]) -> Result<usize, &'static str> {
     let mut devs = CDC_ACM_DEVICES.lock();
-    let dev = devs.iter_mut().find(|d| d.tty_index == tty_index)
+    let dev = devs
+        .iter_mut()
+        .find(|d| d.tty_index == tty_index)
         .ok_or("CDC-ACM device not found")?;
     Ok(dev.rx_ring.read_into(buf))
 }
@@ -147,7 +159,9 @@ pub fn read_data(tty_index: u8, buf: &mut [u8]) -> Result<usize, &'static str> {
 /// Write data to a CDC-ACM device via bulk OUT.
 pub fn write_data(tty_index: u8, data: &[u8]) -> Result<usize, &'static str> {
     let mut devs = CDC_ACM_DEVICES.lock();
-    let dev = devs.iter_mut().find(|d| d.tty_index == tty_index)
+    let dev = devs
+        .iter_mut()
+        .find(|d| d.tty_index == tty_index)
         .ok_or("CDC-ACM device not found")?;
 
     let to_send = data.len().min(4096);
@@ -155,10 +169,14 @@ pub fn write_data(tty_index: u8, data: &[u8]) -> Result<usize, &'static str> {
         core::ptr::copy_nonoverlapping(data.as_ptr(), dev.bounce_phys as *mut u8, to_send);
     }
     super::bulk_transfer(
-        dev.usb_addr, dev.controller, dev.speed,
-        dev.ep_bulk_out, dev.max_packet_out,
+        dev.usb_addr,
+        dev.controller,
+        dev.speed,
+        dev.ep_bulk_out,
+        dev.max_packet_out,
         &mut dev.toggle_out,
-        dev.bounce_phys, to_send,
+        dev.bounce_phys,
+        to_send,
     )
 }
 
@@ -168,7 +186,8 @@ pub fn write_data(tty_index: u8, data: &[u8]) -> Result<usize, &'static str> {
 pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     crate::serial_verbose_println!(
         "  CDC-ACM: probing (addr={}, iface={})",
-        dev.address, iface.number
+        dev.address,
+        iface.number
     );
 
     // Find the companion Data Interface (class 0x0A)
@@ -181,18 +200,23 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     };
 
     // Find bulk IN and bulk OUT endpoints on the Data Interface
-    let bulk_in = data_iface.endpoints.iter().find(|ep| {
-        (ep.attributes & 0x03) == 2 && (ep.address & 0x80) != 0
-    });
-    let bulk_out = data_iface.endpoints.iter().find(|ep| {
-        (ep.attributes & 0x03) == 2 && (ep.address & 0x80) == 0
-    });
+    let bulk_in = data_iface
+        .endpoints
+        .iter()
+        .find(|ep| (ep.attributes & 0x03) == 2 && (ep.address & 0x80) != 0);
+    let bulk_out = data_iface
+        .endpoints
+        .iter()
+        .find(|ep| (ep.attributes & 0x03) == 2 && (ep.address & 0x80) == 0);
 
     let (ep_in, ep_out) = match (bulk_in, bulk_out) {
         (Some(i), Some(o)) => {
             crate::serial_verbose_println!(
                 "  CDC-ACM: bulk IN ep={:#04x} (max={}), bulk OUT ep={:#04x} (max={})",
-                i.address, i.max_packet_size, o.address, o.max_packet_size
+                i.address,
+                i.max_packet_size,
+                o.address,
+                o.max_packet_size
             );
             (i, o)
         }
@@ -210,7 +234,9 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             return;
         }
     };
-    unsafe { core::ptr::write_bytes(bounce_phys as *mut u8, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(bounce_phys as *mut u8, 0, 4096);
+    }
 
     let tty_index = alloc_tty_index();
 
@@ -256,20 +282,22 @@ pub fn poll_all() {
     let mut devs = CDC_ACM_DEVICES.lock();
     for dev in devs.iter_mut() {
         match super::bulk_transfer(
-            dev.usb_addr, dev.controller, dev.speed,
-            dev.ep_bulk_in, dev.max_packet_in,
+            dev.usb_addr,
+            dev.controller,
+            dev.speed,
+            dev.ep_bulk_in,
+            dev.max_packet_in,
             &mut dev.toggle_in,
-            dev.bounce_phys, dev.max_packet_in as usize,
+            dev.bounce_phys,
+            dev.max_packet_in as usize,
         ) {
-            Ok(n) if n > 0 => {
-                unsafe {
-                    let src = dev.bounce_phys as *const u8;
-                    for i in 0..n {
-                        let byte = core::ptr::read_volatile(src.add(i));
-                        dev.rx_ring.push(byte);
-                    }
+            Ok(n) if n > 0 => unsafe {
+                let src = dev.bounce_phys as *const u8;
+                for i in 0..n {
+                    let byte = core::ptr::read_volatile(src.add(i));
+                    dev.rx_ring.push(byte);
                 }
-            }
+            },
             _ => {}
         }
     }
@@ -278,7 +306,10 @@ pub fn poll_all() {
 /// Disconnect handler for hot-unplug.
 pub fn disconnect(port: u8, controller: ControllerType) {
     let mut devs = CDC_ACM_DEVICES.lock();
-    if let Some(idx) = devs.iter().position(|d| d.port == port && d.controller == controller) {
+    if let Some(idx) = devs
+        .iter()
+        .position(|d| d.port == port && d.controller == controller)
+    {
         let dev = devs.remove(idx);
         crate::serial_verbose_println!("  CDC-ACM: /dev/ttyUSB{} removed", dev.tty_index);
     }
@@ -286,16 +317,22 @@ pub fn disconnect(port: u8, controller: ControllerType) {
 
 // ── HAL Integration ──────────────────────────────
 
-use crate::drivers::hal::{Driver, DriverType, DriverError};
+use crate::drivers::hal::{Driver, DriverError, DriverType};
 
 struct CdcAcmHalDriver {
     tty_index: u8,
 }
 
 impl Driver for CdcAcmHalDriver {
-    fn name(&self) -> &str { "USB CDC-ACM Serial" }
-    fn driver_type(&self) -> DriverType { DriverType::Char }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        "USB CDC-ACM Serial"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Char
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
 
     fn read(&self, _offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
         read_data(self.tty_index, buf).map_err(|_| DriverError::IoError)

@@ -1,11 +1,11 @@
 //! ICMP (Internet Control Message Protocol) -- handles echo request/reply (ping).
 //! Responds to incoming pings and provides a blocking `ping()` API with timeout.
 
-use alloc::vec::Vec;
-use super::types::Ipv4Addr;
 use super::checksum;
 use super::ipv4::Ipv4Packet;
+use super::types::Ipv4Addr;
 use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
 
 const ICMP_ECHO_REPLY: u8 = 0;
 const ICMP_ECHO_REQUEST: u8 = 8;
@@ -31,10 +31,12 @@ pub fn init() {
 pub fn send_echo_request(dst: Ipv4Addr, seq: u16, data: &[u8]) -> bool {
     let mut icmp = Vec::with_capacity(8 + data.len());
     icmp.push(ICMP_ECHO_REQUEST); // Type
-    icmp.push(0);                  // Code
-    icmp.push(0); icmp.push(0);    // Checksum (placeholder)
-    icmp.push(0); icmp.push(1);    // Identifier (1)
-    icmp.push((seq >> 8) as u8);   // Sequence (big-endian)
+    icmp.push(0); // Code
+    icmp.push(0);
+    icmp.push(0); // Checksum (placeholder)
+    icmp.push(0);
+    icmp.push(1); // Identifier (1)
+    icmp.push((seq >> 8) as u8); // Sequence (big-endian)
     icmp.push((seq & 0xFF) as u8);
     icmp.extend_from_slice(data);
 
@@ -90,7 +92,9 @@ pub fn ping(target: Ipv4Addr, seq: u16, timeout_ticks: u32) -> Option<(u32, u8)>
 /// Handle an incoming ICMP packet
 pub fn handle_icmp(pkt: &Ipv4Packet<'_>) {
     let data = pkt.payload;
-    if data.len() < 8 { return; }
+    if data.len() < 8 {
+        return;
+    }
 
     let icmp_type = data[0];
     let _code = data[1];
@@ -100,7 +104,8 @@ pub fn handle_icmp(pkt: &Ipv4Packet<'_>) {
             // Build echo reply
             let mut reply = Vec::from(data);
             reply[0] = ICMP_ECHO_REPLY;
-            reply[2] = 0; reply[3] = 0; // Clear checksum
+            reply[2] = 0;
+            reply[3] = 0; // Clear checksum
             let cksum = checksum::internet_checksum(&reply);
             reply[2] = (cksum >> 8) as u8;
             reply[3] = (cksum & 0xFF) as u8;

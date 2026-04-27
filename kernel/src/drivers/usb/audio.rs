@@ -18,11 +18,11 @@
 //!                                    USB Audio Device
 //! ```
 
+use crate::drivers::usb::{ControllerType, SetupPacket, UsbDevice, UsbInterface, UsbSpeed};
+use crate::sync::spinlock::Spinlock;
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::drivers::usb::{UsbDevice, UsbInterface, SetupPacket, ControllerType, UsbSpeed};
-use crate::sync::spinlock::Spinlock;
 
 // ── USB Audio Class Constants ───────────────────────────────────────────────
 
@@ -85,7 +85,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     // Find isochronous OUT endpoint (audio output)
     let isoch_ep = match iface.endpoints.iter().find(|ep| {
         let is_isoch = (ep.attributes & 0x03) == 1; // Isochronous
-        let is_out = (ep.address & 0x80) == 0;       // OUT direction
+        let is_out = (ep.address & 0x80) == 0; // OUT direction
         is_isoch && is_out
     }) {
         Some(ep) => ep,
@@ -115,8 +115,12 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
 
     crate::serial_println!(
         "[USB-Audio] Output device: addr={} ep={:#04x} max_pkt={} ({}Hz {}ch {}bit)",
-        dev.address, isoch_ep.address, isoch_ep.max_packet_size,
-        sample_rate, channels, bits,
+        dev.address,
+        isoch_ep.address,
+        isoch_ep.max_packet_size,
+        sample_rate,
+        channels,
+        bits,
     );
 
     // Select the streaming alternate setting (bandwidth allocation)
@@ -128,8 +132,13 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         w_length: 0,
     };
     let _ = super::hid_control_transfer(
-        dev.address, dev.controller, dev.speed, dev.max_packet_size,
-        &set_iface, false, 0,
+        dev.address,
+        dev.controller,
+        dev.speed,
+        dev.max_packet_size,
+        &set_iface,
+        false,
+        0,
     );
 
     // Set sample rate via class-specific endpoint request (if supported)
@@ -153,8 +162,13 @@ fn set_sample_rate(dev: &UsbAudioDevice, rate: u32) {
     // Note: we'd need to send the 3-byte rate in the data phase.
     // For now, most devices default to 48kHz so this is best-effort.
     let _ = super::hid_control_transfer(
-        dev.address, dev.controller, dev.speed, dev.max_packet,
-        &setup, true, 3,
+        dev.address,
+        dev.controller,
+        dev.speed,
+        dev.max_packet,
+        &setup,
+        true,
+        3,
     );
 }
 
@@ -164,12 +178,17 @@ fn set_sample_rate(dev: &UsbAudioDevice, rate: u32) {
 /// Data must be 16-bit signed LE stereo at the device's sample rate.
 fn write_pcm(data: &[u8]) -> usize {
     let guard = USB_AUDIO.lock();
-    let dev = match guard.as_ref() { Some(d) => d, None => return 0 };
+    let dev = match guard.as_ref() {
+        Some(d) => d,
+        None => return 0,
+    };
 
     // Split data into max_packet-sized chunks and submit as isochronous transfers
     // For now, use bulk-like submission (works for adaptive/async endpoints)
     let max_pkt = dev.isoch_out_max_packet as usize;
-    if max_pkt == 0 { return 0; }
+    if max_pkt == 0 {
+        return 0;
+    }
 
     let mut sent = 0;
     let mut remaining = data;
@@ -192,7 +211,9 @@ fn write_pcm(data: &[u8]) -> usize {
 struct UsbAudioDriver;
 
 impl crate::drivers::audio::AudioDriver for UsbAudioDriver {
-    fn name(&self) -> &str { "USB Audio" }
+    fn name(&self) -> &str {
+        "USB Audio"
+    }
 
     fn write_pcm(&mut self, data: &[u8]) -> usize {
         write_pcm(data)
@@ -210,8 +231,13 @@ impl crate::drivers::audio::AudioDriver for UsbAudioDriver {
                 w_length: 0,
             };
             let _ = super::hid_control_transfer(
-                dev.address, dev.controller, dev.speed, dev.max_packet,
-                &set_iface, false, 0,
+                dev.address,
+                dev.controller,
+                dev.speed,
+                dev.max_packet,
+                &set_iface,
+                false,
+                0,
             );
         }
     }
@@ -227,11 +253,19 @@ impl crate::drivers::audio::AudioDriver for UsbAudioDriver {
     }
 
     fn is_playing(&self) -> bool {
-        USB_AUDIO.lock().as_ref().map(|d| d.playing).unwrap_or(false)
+        USB_AUDIO
+            .lock()
+            .as_ref()
+            .map(|d| d.playing)
+            .unwrap_or(false)
     }
 
     fn sample_rate(&self) -> u32 {
-        USB_AUDIO.lock().as_ref().map(|d| d.sample_rate).unwrap_or(48000)
+        USB_AUDIO
+            .lock()
+            .as_ref()
+            .map(|d| d.sample_rate)
+            .unwrap_or(48000)
     }
 }
 

@@ -3,11 +3,11 @@
 //! Each MFT record is typically 1024 bytes, begins with "FILE" signature,
 //! and contains a fixup array that must be applied before reading attributes.
 
-use alloc::vec;
-use alloc::vec::Vec;
-use crate::fs::vfs::FsError;
 use super::attr::{self, NtfsAttr};
 use super::runlist::{self, DataRun};
+use crate::fs::vfs::FsError;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// Well-known MFT record numbers.
 pub(super) mod records {
@@ -152,8 +152,7 @@ fn apply_fixup(data: &mut [u8], fixup_offset: usize, fixup_count: usize) -> Resu
 /// The low 48 bits are the record number, upper 16 bits are sequence number.
 fn u48_to_u64(bytes: &[u8]) -> u64 {
     u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5], 0, 0,
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], 0, 0,
     ])
 }
 
@@ -179,18 +178,15 @@ impl FileName {
         }
 
         let parent_ref = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]);
 
         let real_size = u64::from_le_bytes([
-            data[0x30], data[0x31], data[0x32], data[0x33],
-            data[0x34], data[0x35], data[0x36], data[0x37],
+            data[0x30], data[0x31], data[0x32], data[0x33], data[0x34], data[0x35], data[0x36],
+            data[0x37],
         ]);
 
-        let flags = u32::from_le_bytes([
-            data[0x38], data[0x39], data[0x3A], data[0x3B],
-        ]);
+        let flags = u32::from_le_bytes([data[0x38], data[0x39], data[0x3A], data[0x3B]]);
 
         let name_length = data[0x40] as usize;
         let namespace = data[0x41];
@@ -201,10 +197,7 @@ impl FileName {
 
         let mut name = alloc::string::String::new();
         for i in 0..name_length {
-            let c = u16::from_le_bytes([
-                data[0x42 + i * 2],
-                data[0x42 + i * 2 + 1],
-            ]);
+            let c = u16::from_le_bytes([data[0x42 + i * 2], data[0x42 + i * 2 + 1]]);
             if c < 128 {
                 name.push(c as u8 as char);
             } else {

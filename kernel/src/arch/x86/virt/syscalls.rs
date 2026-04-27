@@ -4,8 +4,8 @@
 //! appropriate VMX or SVM backend based on detected hardware.
 
 use super::{
-    CpuidEntry, DirtyLogRequest, GuestFpuState, GuestGprs, GuestSregs,
-    TranslateRequest, VcpuMpState, VirtType, VmExitInfo,
+    CpuidEntry, DirtyLogRequest, GuestFpuState, GuestGprs, GuestSregs, TranslateRequest,
+    VcpuMpState, VirtType, VmExitInfo,
 };
 
 /// Create a new VM. Returns VM ID or 0 on failure.
@@ -24,7 +24,11 @@ pub fn sys_vm_destroy(vm_id: u32) -> u32 {
         VirtType::Svm => super::svm::destroy_vm(vm_id),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Set a memory region for a VM.
@@ -63,13 +67,14 @@ pub fn sys_vm_set_memory(vm_id: u32, slot: u32, desc_ptr: u64) -> u32 {
 
         // Translate user virtual address → physical address via recursive mapping.
         let page_hpa = match crate::memory::virtual_mem::virt_to_phys(
-            crate::memory::address::VirtAddr::new(page_uva)
+            crate::memory::address::VirtAddr::new(page_uva),
         ) {
             Some(p) => p & !0xFFF, // page-aligned physical address
             None => {
                 crate::serial_println!(
                     "[virt] sys_vm_set_memory: uva {:#x} not mapped (page {})",
-                    page_uva, i
+                    page_uva,
+                    i
                 );
                 return u32::MAX;
             }
@@ -78,8 +83,12 @@ pub fn sys_vm_set_memory(vm_id: u32, slot: u32, desc_ptr: u64) -> u32 {
         if first {
             // Register the memory region with the backend (uses slot tracking).
             let ok = match super::virt_type() {
-                super::VirtType::Vmx => super::vmx::set_memory(vm_id, slot, page_gpa, PAGE_SIZE, page_hpa),
-                super::VirtType::Svm => super::svm::set_memory(vm_id, slot, page_gpa, PAGE_SIZE, page_hpa),
+                super::VirtType::Vmx => {
+                    super::vmx::set_memory(vm_id, slot, page_gpa, PAGE_SIZE, page_hpa)
+                }
+                super::VirtType::Svm => {
+                    super::svm::set_memory(vm_id, slot, page_gpa, PAGE_SIZE, page_hpa)
+                }
                 super::VirtType::None => false,
             };
             if !ok {
@@ -112,7 +121,11 @@ pub fn sys_vcpu_create(vm_id: u32, vcpu_id: u32) -> u32 {
         VirtType::Svm => super::svm::create_vcpu(vm_id, vcpu_id),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Run a vCPU until a VM-exit occurs. Copies exit info to user pointer.
@@ -147,7 +160,9 @@ pub fn sys_vcpu_get_regs(vm_id: u32, vcpu_id: u32, regs_ptr: u64) -> u32 {
     match gprs {
         Some(g) => {
             if regs_ptr != 0 {
-                unsafe { *(regs_ptr as *mut GuestGprs) = g; }
+                unsafe {
+                    *(regs_ptr as *mut GuestGprs) = g;
+                }
             }
             0
         }
@@ -166,7 +181,11 @@ pub fn sys_vcpu_set_regs(vm_id: u32, vcpu_id: u32, regs_ptr: u64) -> u32 {
         VirtType::Svm => super::svm::set_regs(vm_id, vcpu_id, gprs),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Get guest segment/control registers. Copies to user pointer.
@@ -179,7 +198,9 @@ pub fn sys_vcpu_get_sregs(vm_id: u32, vcpu_id: u32, sregs_ptr: u64) -> u32 {
     match sregs {
         Some(s) => {
             if sregs_ptr != 0 {
-                unsafe { *(sregs_ptr as *mut GuestSregs) = s; }
+                unsafe {
+                    *(sregs_ptr as *mut GuestSregs) = s;
+                }
             }
             0
         }
@@ -198,7 +219,11 @@ pub fn sys_vcpu_set_sregs(vm_id: u32, vcpu_id: u32, sregs_ptr: u64) -> u32 {
         VirtType::Svm => super::svm::set_sregs(vm_id, vcpu_id, sregs),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Inject an external interrupt into a vCPU.
@@ -208,7 +233,11 @@ pub fn sys_vcpu_inject_irq(vm_id: u32, vcpu_id: u32, vector: u32) -> u32 {
         VirtType::Svm => super::svm::inject_irq(vm_id, vcpu_id, vector as u8),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Inject an exception into a vCPU.
@@ -221,7 +250,11 @@ pub fn sys_vcpu_inject_exception(vm_id: u32, vcpu_id: u32, info: u32) -> u32 {
         VirtType::Svm => super::svm::inject_exception(vm_id, vcpu_id, vector, error_code),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Inject an NMI into a vCPU.
@@ -231,7 +264,11 @@ pub fn sys_vcpu_inject_nmi(vm_id: u32, vcpu_id: u32) -> u32 {
         VirtType::Svm => super::svm::inject_nmi(vm_id, vcpu_id),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Set CPUID emulation table for a VM.
@@ -240,23 +277,26 @@ pub fn sys_vm_set_cpuid(vm_id: u32, entries_ptr: u64, count: u32) -> u32 {
     if entries_ptr == 0 || count == 0 {
         return u32::MAX;
     }
-    let entries = unsafe {
-        core::slice::from_raw_parts(entries_ptr as *const CpuidEntry, count as usize)
-    };
+    let entries =
+        unsafe { core::slice::from_raw_parts(entries_ptr as *const CpuidEntry, count as usize) };
     let ok = match super::virt_type() {
         VirtType::Vmx => super::vmx::set_cpuid(vm_id, entries),
         VirtType::Svm => super::svm::set_cpuid(vm_id, entries),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Query hardware virtualization availability.
 /// Returns: 0 = none, 1 = Intel VT-x (VMX), 2 = AMD-V (SVM).
 pub fn sys_vm_hw_info() -> u32 {
     match super::virt_type() {
-        super::VirtType::Vmx  => 1,
-        super::VirtType::Svm  => 2,
+        super::VirtType::Vmx => 1,
+        super::VirtType::Svm => 2,
         super::VirtType::None => 0,
     }
 }
@@ -277,9 +317,7 @@ pub fn sys_vm_get_dirty_log(vm_id: u32, req_ptr: u64) -> u32 {
     if words == 0 {
         return u32::MAX;
     }
-    let bitmap = unsafe {
-        core::slice::from_raw_parts_mut(req.bitmap_ptr as *mut u64, words)
-    };
+    let bitmap = unsafe { core::slice::from_raw_parts_mut(req.bitmap_ptr as *mut u64, words) };
 
     let result = match super::virt_type() {
         VirtType::Vmx => super::vmx::get_dirty_log(vm_id, req.slot, bitmap),
@@ -299,7 +337,11 @@ pub fn sys_vcpu_pause(vm_id: u32, vcpu_id: u32) -> u32 {
         VirtType::Svm => super::svm::vcpu_pause(vm_id, vcpu_id),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Resume a paused vCPU.
@@ -309,7 +351,11 @@ pub fn sys_vcpu_resume(vm_id: u32, vcpu_id: u32) -> u32 {
         VirtType::Svm => super::svm::vcpu_resume(vm_id, vcpu_id),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Get guest FPU/SSE/AVX state. Copies to user pointer (512 bytes, FXSAVE layout).
@@ -322,7 +368,9 @@ pub fn sys_vcpu_get_fpu(vm_id: u32, vcpu_id: u32, fpu_ptr: u64) -> u32 {
     match fpu {
         Some(f) => {
             if fpu_ptr != 0 {
-                unsafe { *(fpu_ptr as *mut GuestFpuState) = f; }
+                unsafe {
+                    *(fpu_ptr as *mut GuestFpuState) = f;
+                }
             }
             0
         }
@@ -332,14 +380,20 @@ pub fn sys_vcpu_get_fpu(vm_id: u32, vcpu_id: u32, fpu_ptr: u64) -> u32 {
 
 /// Set guest FPU/SSE/AVX state from user pointer.
 pub fn sys_vcpu_set_fpu(vm_id: u32, vcpu_id: u32, fpu_ptr: u64) -> u32 {
-    if fpu_ptr == 0 { return u32::MAX; }
+    if fpu_ptr == 0 {
+        return u32::MAX;
+    }
     let fpu = unsafe { &*(fpu_ptr as *const GuestFpuState) };
     let ok = match super::virt_type() {
         VirtType::Vmx => super::vmx::set_fpu(vm_id, vcpu_id, fpu),
         VirtType::Svm => super::svm::set_fpu(vm_id, vcpu_id, fpu),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Get vCPU multi-processor state. Returns VcpuMpState value or u32::MAX on error.
@@ -366,13 +420,19 @@ pub fn sys_vcpu_set_mp_state(vm_id: u32, vcpu_id: u32, state_val: u32) -> u32 {
         VirtType::Svm => super::svm::set_mp_state(vm_id, vcpu_id, state),
         VirtType::None => false,
     };
-    if ok { 0 } else { u32::MAX }
+    if ok {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Translate guest virtual address to guest physical address.
 /// arg3 = ptr to TranslateRequest { gva, out_gpa, out_valid }.
 pub fn sys_vcpu_translate(vm_id: u32, vcpu_id: u32, req_ptr: u64) -> u32 {
-    if req_ptr == 0 { return u32::MAX; }
+    if req_ptr == 0 {
+        return u32::MAX;
+    }
     let req = unsafe { &mut *(req_ptr as *mut TranslateRequest) };
 
     let result = match super::virt_type() {
@@ -390,7 +450,7 @@ pub fn sys_vcpu_translate(vm_id: u32, vcpu_id: u32, req_ptr: u64) -> u32 {
         None => {
             req.out_gpa = 0;
             req.out_valid = 0;
-            0  // Not an error — just not mapped; caller checks out_valid
+            0 // Not an error — just not mapped; caller checks out_valid
         }
     }
 }

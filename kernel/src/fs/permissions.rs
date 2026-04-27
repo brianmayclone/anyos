@@ -5,7 +5,7 @@
 //! - Bits 4-7:  Group   (Read=1, Modify=2, Delete=4, Create=8)
 //! - Bits 8-11: Owner   (Read=1, Modify=2, Delete=4, Create=8)
 
-pub const PERM_READ: u16   = 1;
+pub const PERM_READ: u16 = 1;
 pub const PERM_MODIFY: u16 = 2;
 pub const PERM_DELETE: u16 = 4;
 pub const PERM_CREATE: u16 = 8;

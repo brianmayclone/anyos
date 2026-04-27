@@ -1,11 +1,11 @@
 //! ICMPv6 (Internet Control Message Protocol for IPv6) — echo request/reply
 //! and Neighbor Discovery Protocol messages (RFC 4443, RFC 4861).
 
-use alloc::vec::Vec;
-use super::types::{Ipv6Addr, MacAddr};
 use super::checksum;
 use super::ipv6::Ipv6Packet;
+use super::types::{Ipv6Addr, MacAddr};
 use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
 
 // ── ICMPv6 message types ────────────────────────────────────────────
 
@@ -63,14 +63,18 @@ pub fn send_echo_request(dst: Ipv6Addr, seq: u16, data: &[u8]) -> bool {
         cfg.ipv6_link_local
     };
 
-    if src.is_unspecified() { return false; }
+    if src.is_unspecified() {
+        return false;
+    }
 
     let mut icmp = Vec::with_capacity(8 + data.len());
     icmp.push(ICMPV6_ECHO_REQUEST); // Type
-    icmp.push(0);                    // Code
-    icmp.push(0); icmp.push(0);      // Checksum placeholder
-    icmp.push(0); icmp.push(1);      // Identifier (1)
-    icmp.push((seq >> 8) as u8);     // Sequence (big-endian)
+    icmp.push(0); // Code
+    icmp.push(0);
+    icmp.push(0); // Checksum placeholder
+    icmp.push(0);
+    icmp.push(1); // Identifier (1)
+    icmp.push((seq >> 8) as u8); // Sequence (big-endian)
     icmp.push((seq & 0xFF) as u8);
     icmp.extend_from_slice(data);
 
@@ -115,14 +119,18 @@ pub fn ping6(target: Ipv6Addr, seq: u16, timeout_ticks: u32) -> Option<(u32, u8)
 /// Handle an incoming ICMPv6 packet.
 pub fn handle_icmpv6(pkt: &Ipv6Packet<'_>) {
     let data = pkt.payload;
-    if data.len() < 4 { return; }
+    if data.len() < 4 {
+        return;
+    }
 
     let icmp_type = data[0];
     let _code = data[1];
 
     match icmp_type {
         ICMPV6_ECHO_REQUEST => {
-            if data.len() < 8 { return; }
+            if data.len() < 8 {
+                return;
+            }
             // Build echo reply
             let cfg = super::config();
             let src = if pkt.dst.is_multicast() {
@@ -132,12 +140,15 @@ pub fn handle_icmpv6(pkt: &Ipv6Packet<'_>) {
             };
             let mut reply = Vec::from(data);
             reply[0] = ICMPV6_ECHO_REPLY;
-            reply[2] = 0; reply[3] = 0; // Clear checksum
+            reply[2] = 0;
+            reply[3] = 0; // Clear checksum
             compute_icmpv6_checksum(&mut reply, &src, &pkt.src);
             super::ipv6::send_ipv6(pkt.src, super::ipv6::PROTO_ICMPV6, &reply);
         }
         ICMPV6_ECHO_REPLY => {
-            if data.len() < 8 { return; }
+            if data.len() < 8 {
+                return;
+            }
             let seq = ((data[6] as u16) << 8) | data[7] as u16;
             let tick = crate::arch::hal::timer_current_ticks();
             let mut replies = PING6_REPLIES.lock();
@@ -169,7 +180,9 @@ pub fn handle_icmpv6(pkt: &Ipv6Packet<'_>) {
 /// ICMPv6 checksum is mandatory and includes the IPv6 pseudo-header.
 pub fn compute_icmpv6_checksum(icmp: &mut [u8], src: &Ipv6Addr, dst: &Ipv6Addr) {
     // Clear checksum field
-    if icmp.len() < 4 { return; }
+    if icmp.len() < 4 {
+        return;
+    }
     icmp[2] = 0;
     icmp[3] = 0;
 

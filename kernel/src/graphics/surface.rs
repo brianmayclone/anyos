@@ -48,7 +48,11 @@ impl Surface {
             return None;
         }
         let idx = (y as u32 * self.width + x as u32) as usize;
-        if idx >= self.pixels.len() { None } else { Some(idx) }
+        if idx >= self.pixels.len() {
+            None
+        } else {
+            Some(idx)
+        }
     }
 
     /// Set a pixel with alpha blending. Out-of-bounds coordinates are silently ignored.
@@ -72,7 +76,15 @@ impl Surface {
 
     /// Set a pixel with LCD subpixel rendering. Each RGB channel gets its
     /// own coverage value, producing sharper text on LCD displays.
-    pub fn put_pixel_subpixel(&mut self, x: i32, y: i32, r_cov: u8, g_cov: u8, b_cov: u8, color: Color) {
+    pub fn put_pixel_subpixel(
+        &mut self,
+        x: i32,
+        y: i32,
+        r_cov: u8,
+        g_cov: u8,
+        b_cov: u8,
+        color: Color,
+    ) {
         let idx = match self.pixel_idx(x, y) {
             Some(i) => i,
             None => return,
@@ -113,7 +125,9 @@ impl Surface {
         for y in y0..y1 {
             let row_start = (y * self.width + x0) as usize;
             let row_end = (y * self.width + x1) as usize;
-            if row_end > plen { break; }
+            if row_end > plen {
+                break;
+            }
             if color.a == 255 {
                 for pixel in &mut self.pixels[row_start..row_end] {
                     *pixel = val;
@@ -176,7 +190,9 @@ impl Surface {
             let dst_y = dy0 + row;
             let src_start = (src_y * src.width + sx0) as usize;
             let dst_start = (dst_y * self.width + dx0) as usize;
-            if src_start + copy_w > src_plen || dst_start + copy_w > dst_plen { break; }
+            if src_start + copy_w > src_plen || dst_start + copy_w > dst_plen {
+                break;
+            }
             self.pixels[dst_start..dst_start + copy_w]
                 .copy_from_slice(&src.pixels[src_start..src_start + copy_w]);
         }
@@ -195,7 +211,9 @@ impl Surface {
         let sr_y0 = src_rect.y.max(0) as u32;
         let sr_x1 = (src_rect.right() as u32).min(src.width);
         let sr_y1 = (src_rect.bottom() as u32).min(src.height);
-        if sr_x0 >= sr_x1 || sr_y0 >= sr_y1 { return; }
+        if sr_x0 >= sr_x1 || sr_y0 >= sr_y1 {
+            return;
+        }
 
         let mut copy_x = dx + (sr_x0 as i32 - src_rect.x);
         let mut copy_y = dy + (sr_y0 as i32 - src_rect.y);
@@ -204,11 +222,25 @@ impl Surface {
         let mut copy_w = (sr_x1 - sr_x0) as i32;
         let mut copy_h = (sr_y1 - sr_y0) as i32;
 
-        if copy_x < 0 { src_sx += (-copy_x) as u32; copy_w += copy_x; copy_x = 0; }
-        if copy_y < 0 { src_sy += (-copy_y) as u32; copy_h += copy_y; copy_y = 0; }
-        if copy_x + copy_w > self.width as i32 { copy_w = self.width as i32 - copy_x; }
-        if copy_y + copy_h > self.height as i32 { copy_h = self.height as i32 - copy_y; }
-        if copy_w <= 0 || copy_h <= 0 { return; }
+        if copy_x < 0 {
+            src_sx += (-copy_x) as u32;
+            copy_w += copy_x;
+            copy_x = 0;
+        }
+        if copy_y < 0 {
+            src_sy += (-copy_y) as u32;
+            copy_h += copy_y;
+            copy_y = 0;
+        }
+        if copy_x + copy_w > self.width as i32 {
+            copy_w = self.width as i32 - copy_x;
+        }
+        if copy_y + copy_h > self.height as i32 {
+            copy_h = self.height as i32 - copy_y;
+        }
+        if copy_w <= 0 || copy_h <= 0 {
+            return;
+        }
 
         let cw = copy_w as usize;
         for row in 0..copy_h as u32 {
@@ -216,7 +248,9 @@ impl Surface {
             let dy_row = copy_y as u32 + row;
             let src_start = (sy * src.width + src_sx) as usize;
             let dst_start = (dy_row * self.width + copy_x as u32) as usize;
-            if src_start + cw > src.pixels.len() || dst_start + cw > self.pixels.len() { break; }
+            if src_start + cw > src.pixels.len() || dst_start + cw > self.pixels.len() {
+                break;
+            }
             let src_row = &src.pixels[src_start..src_start + cw];
             let dst_row = &mut self.pixels[dst_start..dst_start + cw];
 
@@ -298,7 +332,9 @@ impl Surface {
             let dy_row = copy_y as u32 + row;
             let src_start = (sy * src.width + src_sx) as usize;
             let dst_start = (dy_row * self.width + copy_x as u32) as usize;
-            if src_start + copy_w > src.pixels.len() || dst_start + copy_w > self.pixels.len() { break; }
+            if src_start + copy_w > src.pixels.len() || dst_start + copy_w > self.pixels.len() {
+                break;
+            }
             self.pixels[dst_start..dst_start + copy_w]
                 .copy_from_slice(&src.pixels[src_start..src_start + copy_w]);
         }

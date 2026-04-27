@@ -26,10 +26,10 @@
 //! CCMP encryption/decryption for data frames uses AES-128-CCM with a
 //! 48-bit PN (packet number) replay counter.
 
-use alloc::vec::Vec;
 use crate::crypto::pbkdf2::pbkdf2_sha1;
 use crate::crypto::wpa2::{compute_mic, derive_ptk, Ptk};
 use crate::sync::spinlock::Spinlock;
+use alloc::vec::Vec;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -199,8 +199,7 @@ pub fn parse_eapol_key(frame: &[u8]) -> Option<EapolKey> {
     let key_info = u16::from_be_bytes([frame[5], frame[6]]);
     let key_length = u16::from_be_bytes([frame[7], frame[8]]);
     let replay_counter = u64::from_be_bytes([
-        frame[9], frame[10], frame[11], frame[12],
-        frame[13], frame[14], frame[15], frame[16],
+        frame[9], frame[10], frame[11], frame[12], frame[13], frame[14], frame[15], frame[16],
     ]);
 
     let mut nonce = [0u8; 32];
@@ -283,13 +282,13 @@ pub fn build_probe_request(our_mac: &[u8; 6]) -> [u8; 64] {
 
     // Frame body: SSID element (wildcard = length 0)
     // Element ID=0 (SSID), Length=0
-    frame[24] = 0;   // Element ID: SSID
-    frame[25] = 0;   // Length: 0 (wildcard)
+    frame[24] = 0; // Element ID: SSID
+    frame[25] = 0; // Length: 0 (wildcard)
 
     // Supported Rates element (Element ID=1)
     // Rates: 1, 2, 5.5, 11, 6, 9, 12, 18 Mbps (basic set)
-    frame[26] = 1;   // Element ID: Supported Rates
-    frame[27] = 8;   // Length
+    frame[26] = 1; // Element ID: Supported Rates
+    frame[27] = 8; // Length
     frame[28] = 0x82; // 1 Mbps   (basic)
     frame[29] = 0x84; // 2 Mbps   (basic)
     frame[30] = 0x8B; // 5.5 Mbps (basic)
@@ -365,9 +364,9 @@ pub fn build_assoc_request(
     frame.extend_from_slice(&FC_ASSOC_REQ);
     frame.push(0x00); // Duration lo
     frame.push(0x00); // Duration hi
-    frame.extend_from_slice(bssid);        // Address 1: AP
-    frame.extend_from_slice(our_mac);      // Address 2: STA
-    frame.extend_from_slice(bssid);        // Address 3: BSSID
+    frame.extend_from_slice(bssid); // Address 1: AP
+    frame.extend_from_slice(our_mac); // Address 2: STA
+    frame.extend_from_slice(bssid); // Address 3: BSSID
     let seq_ctrl = (seq << 4) & 0xFFF0;
     frame.extend_from_slice(&seq_ctrl.to_le_bytes());
 
@@ -381,7 +380,7 @@ pub fn build_assoc_request(
     frame.push(0x00);
 
     // SSID element
-    frame.push(0x00);           // Element ID: SSID
+    frame.push(0x00); // Element ID: SSID
     frame.push(ssid_len as u8); // Length
     frame.extend_from_slice(ssid);
 
@@ -408,13 +407,13 @@ pub fn build_assoc_request(
     frame.push(0x30); // Element ID: RSN
     frame.push(0x14); // Length = 20
     frame.extend_from_slice(&[
-        0x01, 0x00,             // Version: 1
+        0x01, 0x00, // Version: 1
         0x00, 0x0F, 0xAC, 0x04, // Group Cipher: CCMP-128
-        0x01, 0x00,             // Pairwise Suite Count: 1
+        0x01, 0x00, // Pairwise Suite Count: 1
         0x00, 0x0F, 0xAC, 0x04, // Pairwise Cipher: CCMP-128
-        0x01, 0x00,             // AKM Count: 1
+        0x01, 0x00, // AKM Count: 1
         0x00, 0x0F, 0xAC, 0x02, // AKM: PSK
-        0x00, 0x00,             // RSN Capabilities
+        0x00, 0x00, // RSN Capabilities
     ]);
 
     frame
@@ -528,34 +527,45 @@ fn build_eapol_key_frame2(
     let mut frame = Vec::with_capacity(14 + 4 + 99);
 
     // Ethernet header (for the encapsulating Ethernet frame)
-    frame.extend_from_slice(ap_mac);    // Destination
-    frame.extend_from_slice(our_mac);   // Source
-    frame.push(0x88); frame.push(0x8E); // EtherType: 802.1X EAPOL
+    frame.extend_from_slice(ap_mac); // Destination
+    frame.extend_from_slice(our_mac); // Source
+    frame.push(0x88);
+    frame.push(0x8E); // EtherType: 802.1X EAPOL
 
     // 802.1X header
-    frame.push(0x02);  // Version
-    frame.push(0x03);  // Type: EAPOL-Key
-    // Length of the EAPOL Key body (95 bytes: 4 + 91)
+    frame.push(0x02); // Version
+    frame.push(0x03); // Type: EAPOL-Key
+                      // Length of the EAPOL Key body (95 bytes: 4 + 91)
     let body_len: u16 = 95;
     frame.extend_from_slice(&body_len.to_be_bytes());
 
     // EAPOL Key body (95 bytes)
     frame.push(0x02); // Key Descriptor Type: RSN
     frame.extend_from_slice(&key_info.to_be_bytes());
-    frame.push(0x00); frame.push(0x10); // Key Length: 16 (CCMP)
+    frame.push(0x00);
+    frame.push(0x10); // Key Length: 16 (CCMP)
     frame.extend_from_slice(&replay_counter.to_be_bytes());
-    frame.extend_from_slice(snonce);    // 32-byte SNonce
-    // Key IV (16 bytes, zeroed)
-    for _ in 0..16 { frame.push(0x00); }
+    frame.extend_from_slice(snonce); // 32-byte SNonce
+                                     // Key IV (16 bytes, zeroed)
+    for _ in 0..16 {
+        frame.push(0x00);
+    }
     // Key RSC (8 bytes, zeroed)
-    for _ in 0..8 { frame.push(0x00); }
+    for _ in 0..8 {
+        frame.push(0x00);
+    }
     // Reserved (8 bytes, zeroed)
-    for _ in 0..8 { frame.push(0x00); }
+    for _ in 0..8 {
+        frame.push(0x00);
+    }
     // MIC placeholder (16 bytes, zeroed for now)
     let mic_offset = frame.len();
-    for _ in 0..16 { frame.push(0x00); }
+    for _ in 0..16 {
+        frame.push(0x00);
+    }
     // Key Data Length (0 for message 2)
-    frame.push(0x00); frame.push(0x00);
+    frame.push(0x00);
+    frame.push(0x00);
 
     // Compute MIC over the entire EAPOL frame starting at 802.1X header
     // (i.e., from offset 14 where the 802.1X header begins)
@@ -580,7 +590,8 @@ fn build_eapol_key_frame4(
     // Ethernet header
     frame.extend_from_slice(ap_mac);
     frame.extend_from_slice(our_mac);
-    frame.push(0x88); frame.push(0x8E);
+    frame.push(0x88);
+    frame.push(0x8E);
 
     // 802.1X header
     frame.push(0x02);
@@ -591,21 +602,33 @@ fn build_eapol_key_frame4(
     // EAPOL Key body
     frame.push(0x02); // Key Descriptor Type: RSN
     frame.extend_from_slice(&key_info.to_be_bytes());
-    frame.push(0x00); frame.push(0x10); // Key Length: 16
+    frame.push(0x00);
+    frame.push(0x10); // Key Length: 16
     frame.extend_from_slice(&replay_counter.to_be_bytes());
     // Key Nonce: zeroed in message 4
-    for _ in 0..32 { frame.push(0x00); }
+    for _ in 0..32 {
+        frame.push(0x00);
+    }
     // Key IV (16 bytes)
-    for _ in 0..16 { frame.push(0x00); }
+    for _ in 0..16 {
+        frame.push(0x00);
+    }
     // Key RSC (8 bytes)
-    for _ in 0..8 { frame.push(0x00); }
+    for _ in 0..8 {
+        frame.push(0x00);
+    }
     // Reserved (8 bytes)
-    for _ in 0..8 { frame.push(0x00); }
+    for _ in 0..8 {
+        frame.push(0x00);
+    }
     // MIC placeholder
     let mic_offset = frame.len();
-    for _ in 0..16 { frame.push(0x00); }
+    for _ in 0..16 {
+        frame.push(0x00);
+    }
     // Key Data Length: 0
-    frame.push(0x00); frame.push(0x00);
+    frame.push(0x00);
+    frame.push(0x00);
 
     // Compute and insert MIC
     let mic = compute_mic(kck, &frame[14..]);
@@ -711,7 +734,8 @@ pub fn handle_beacon(frame: &[u8]) {
                 };
                 if is_scanning {
                     crate::serial_verbose_println!(
-                        "[wifi] Target SSID found on channel {}", bss.channel
+                        "[wifi] Target SSID found on channel {}",
+                        bss.channel
                     );
                 }
                 break;
@@ -743,7 +767,9 @@ pub fn handle_auth_response(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
     if algo != 0 || seq != 2 || status != 0 {
         crate::serial_verbose_println!(
             "[wifi] Auth response: algo={} seq={} status={} — failed",
-            algo, seq, status
+            algo,
+            seq,
+            status
         );
         return;
     }
@@ -767,7 +793,12 @@ pub fn handle_auth_response(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
     // Transition to Associating
     {
         let mut state = WIFI_STATE.lock();
-        *state = WifiState::Associating { bssid, ssid, ssid_len, channel };
+        *state = WifiState::Associating {
+            bssid,
+            ssid,
+            ssid_len,
+            channel,
+        };
     }
 
     // Get our own MAC from the WiFi driver
@@ -812,7 +843,11 @@ pub fn handle_assoc_response(frame: &[u8], _tx_fn: &mut dyn FnMut(&[u8])) {
     };
 
     let mut state = WIFI_STATE.lock();
-    *state = WifiState::Authenticating { bssid, ssid, ssid_len };
+    *state = WifiState::Authenticating {
+        bssid,
+        ssid,
+        ssid_len,
+    };
 }
 
 /// Handle an EAPOL frame and drive the WPA2 4-way handshake.
@@ -849,12 +884,12 @@ pub fn handle_eapol(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
     let key_info = key.key_info;
 
     // Bit definitions
-    let pairwise    = (key_info >> 3) & 1 != 0;
-    let _install    = (key_info >> 6) & 1 != 0;
-    let key_ack     = (key_info >> 7) & 1 != 0;
-    let key_mic     = (key_info >> 8) & 1 != 0;
-    let _secure     = (key_info >> 9) & 1 != 0;
-    let _enc_kd     = (key_info >> 13) & 1 != 0;
+    let pairwise = (key_info >> 3) & 1 != 0;
+    let _install = (key_info >> 6) & 1 != 0;
+    let key_ack = (key_info >> 7) & 1 != 0;
+    let key_mic = (key_info >> 8) & 1 != 0;
+    let _secure = (key_info >> 9) & 1 != 0;
+    let _enc_kd = (key_info >> 13) & 1 != 0;
 
     // Extract AP MAC from Ethernet source field (frame[6..12])
     let mut ap_mac = [0u8; 6];
@@ -884,10 +919,7 @@ pub fn handle_eapol(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
             }
         };
 
-        let pmk = pbkdf2_sha1(
-            &passphrase[..passphrase_len],
-            &ssid[..ssid_len],
-        );
+        let pmk = pbkdf2_sha1(&passphrase[..passphrase_len], &ssid[..ssid_len]);
 
         // Derive PTK
         let ptk = derive_ptk(&pmk, &key.nonce, &snonce, &ap_mac, &our_mac);
@@ -896,16 +928,9 @@ pub fn handle_eapol(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
         *PTK.lock() = Some(ptk.clone());
 
         // Build and send Message 2
-        let msg2 = build_eapol_key_frame2(
-            key.replay_counter,
-            &snonce,
-            &ptk.kck,
-            &our_mac,
-            &ap_mac,
-        );
+        let msg2 = build_eapol_key_frame2(key.replay_counter, &snonce, &ptk.kck, &our_mac, &ap_mac);
         tx_fn(&msg2);
         crate::serial_verbose_println!("[wifi] EAPOL M2: SNonce sent");
-
     } else if pairwise && key_mic && key_ack {
         // ── Message 3: AP → STA (GTK + install) ──────────────────────────────
         crate::serial_verbose_println!("[wifi] EAPOL M3: received GTK (install key)");
@@ -920,12 +945,7 @@ pub fn handle_eapol(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
         };
 
         // Build and send Message 4 (acknowledgement)
-        let msg4 = build_eapol_key_frame4(
-            key.replay_counter,
-            &ptk.kck,
-            &our_mac,
-            &ap_mac,
-        );
+        let msg4 = build_eapol_key_frame4(key.replay_counter, &ptk.kck, &our_mac, &ap_mac);
         tx_fn(&msg4);
         crate::serial_verbose_println!("[wifi] EAPOL M4: ACK sent");
 
@@ -933,12 +953,17 @@ pub fn handle_eapol(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
         let (bssid, ssid, ssid_len) = {
             let state = WIFI_STATE.lock();
             match &*state {
-                WifiState::Authenticating { bssid, ssid, ssid_len } => {
-                    (*bssid, *ssid, *ssid_len)
-                }
-                WifiState::Connected { bssid, ssid, ssid_len, .. } => {
-                    (*bssid, *ssid, *ssid_len)
-                }
+                WifiState::Authenticating {
+                    bssid,
+                    ssid,
+                    ssid_len,
+                } => (*bssid, *ssid, *ssid_len),
+                WifiState::Connected {
+                    bssid,
+                    ssid,
+                    ssid_len,
+                    ..
+                } => (*bssid, *ssid, *ssid_len),
                 _ => {
                     crate::serial_verbose_println!("[wifi] EAPOL M3: unexpected state");
                     return;
@@ -946,22 +971,26 @@ pub fn handle_eapol(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
             }
         };
         // Look up channel from scan results (separate lock acquisition)
-        let channel = SCAN_RESULTS.lock()
+        let channel = SCAN_RESULTS
+            .lock()
             .iter()
             .find(|b| b.bssid == bssid)
             .map(|b| b.channel)
             .unwrap_or(1);
 
         let mut state = WIFI_STATE.lock();
-        *state = WifiState::Connected { bssid, ssid, ssid_len, channel };
+        *state = WifiState::Connected {
+            bssid,
+            ssid,
+            ssid_len,
+            channel,
+        };
 
         crate::serial_verbose_println!(
             "[wifi] WPA2 handshake complete — connected to {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]
         );
     } else {
-        crate::serial_verbose_println!(
-            "[wifi] EAPOL: unhandled key_info={:#06x}", key_info
-        );
+        crate::serial_verbose_println!("[wifi] EAPOL: unhandled key_info={:#06x}", key_info);
     }
 }

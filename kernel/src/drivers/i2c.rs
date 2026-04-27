@@ -68,7 +68,9 @@ pub fn i2c_read_block(dev: &I2cDevice, reg: u8, buf: &mut [u8]) -> Option<usize>
 /// Returns true on success.
 pub fn write_then_read(addr: u8, tx: &[u8], rx: &mut [u8]) -> bool {
     // Use the SMBus block read with the first tx byte as the command
-    if tx.is_empty() { return false; }
+    if tx.is_empty() {
+        return false;
+    }
     if tx.len() == 1 {
         // Simple register read
         if let Some(n) = smbus::read_block(addr, tx[0], rx) {
@@ -87,14 +89,18 @@ pub fn write_then_read(addr: u8, tx: &[u8], rx: &mut [u8]) -> bool {
 
 /// Write raw bytes to an I²C device.
 pub fn write(addr: u8, data: &[u8]) -> bool {
-    if data.is_empty() { return false; }
+    if data.is_empty() {
+        return false;
+    }
     if data.len() == 2 {
         return smbus::write_byte(addr, data[0], data[1]);
     }
     // For longer writes, write byte-by-byte (limited by SMBus)
     for chunk in data.chunks(2) {
         if chunk.len() == 2 {
-            if !smbus::write_byte(addr, chunk[0], chunk[1]) { return false; }
+            if !smbus::write_byte(addr, chunk[0], chunk[1]) {
+                return false;
+            }
         }
     }
     true

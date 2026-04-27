@@ -29,13 +29,18 @@ pub fn init_filesystem() {
     use crate::fs;
 
     if !super::blk::is_available() {
-        crate::serial_verbose_println!("  [ARM64] No VirtIO block device — skipping filesystem init");
+        crate::serial_verbose_println!(
+            "  [ARM64] No VirtIO block device — skipping filesystem init"
+        );
         return;
     }
 
     let capacity = super::blk::capacity();
-    crate::serial_verbose_println!("  [ARM64] Disk: {} sectors ({} MiB)",
-        capacity, capacity * 512 / 1024 / 1024);
+    crate::serial_verbose_println!(
+        "  [ARM64] Disk: {} sectors ({} MiB)",
+        capacity,
+        capacity * 512 / 1024 / 1024
+    );
 
     // Scan partition table (MBR/GPT) from sector 0
     let mut mbr_buf = [0u8; 512];
@@ -46,7 +51,9 @@ pub fn init_filesystem() {
 
     // Check for MBR signature
     if mbr_buf[510] != 0x55 || mbr_buf[511] != 0xAA {
-        crate::serial_verbose_println!("  [ARM64] No MBR signature found — trying raw FAT at LBA 0");
+        crate::serial_verbose_println!(
+            "  [ARM64] No MBR signature found — trying raw FAT at LBA 0"
+        );
         // No partition table — try mounting entire disk as FAT
         fs::vfs::set_root_partition_lba(0);
         fs::blockcache::init();
@@ -62,17 +69,28 @@ pub fn init_filesystem() {
     for i in 0..4u32 {
         let base = 446 + (i as usize) * 16;
         let part_type = mbr_buf[base + 4];
-        if part_type == 0 { continue; }
+        if part_type == 0 {
+            continue;
+        }
         let start_lba = u32::from_le_bytes([
-            mbr_buf[base + 8], mbr_buf[base + 9],
-            mbr_buf[base + 10], mbr_buf[base + 11],
+            mbr_buf[base + 8],
+            mbr_buf[base + 9],
+            mbr_buf[base + 10],
+            mbr_buf[base + 11],
         ]);
         let size_sectors = u32::from_le_bytes([
-            mbr_buf[base + 12], mbr_buf[base + 13],
-            mbr_buf[base + 14], mbr_buf[base + 15],
+            mbr_buf[base + 12],
+            mbr_buf[base + 13],
+            mbr_buf[base + 14],
+            mbr_buf[base + 15],
         ]);
-        crate::serial_verbose_println!("  [ARM64] Partition {}: type={:#04x} LBA={} size={}",
-            i, part_type, start_lba, size_sectors);
+        crate::serial_verbose_println!(
+            "  [ARM64] Partition {}: type={:#04x} LBA={} size={}",
+            i,
+            part_type,
+            start_lba,
+            size_sectors
+        );
 
         if part_type == 0xEE {
             // GPT protective MBR — need to read GPT partition table
@@ -127,18 +145,24 @@ fn parse_gpt_partitions() -> u32 {
     }
 
     let entries_lba = u64::from_le_bytes([
-        gpt_buf[72], gpt_buf[73], gpt_buf[74], gpt_buf[75],
-        gpt_buf[76], gpt_buf[77], gpt_buf[78], gpt_buf[79],
+        gpt_buf[72],
+        gpt_buf[73],
+        gpt_buf[74],
+        gpt_buf[75],
+        gpt_buf[76],
+        gpt_buf[77],
+        gpt_buf[78],
+        gpt_buf[79],
     ]);
-    let num_entries = u32::from_le_bytes([
-        gpt_buf[80], gpt_buf[81], gpt_buf[82], gpt_buf[83],
-    ]);
-    let entry_size = u32::from_le_bytes([
-        gpt_buf[84], gpt_buf[85], gpt_buf[86], gpt_buf[87],
-    ]);
+    let num_entries = u32::from_le_bytes([gpt_buf[80], gpt_buf[81], gpt_buf[82], gpt_buf[83]]);
+    let entry_size = u32::from_le_bytes([gpt_buf[84], gpt_buf[85], gpt_buf[86], gpt_buf[87]]);
 
-    crate::serial_verbose_println!("  [ARM64] GPT: {} entries at LBA {}, entry_size={}",
-        num_entries, entries_lba, entry_size);
+    crate::serial_verbose_println!(
+        "  [ARM64] GPT: {} entries at LBA {}, entry_size={}",
+        num_entries,
+        entries_lba,
+        entry_size
+    );
 
     // Read partition entries (typically at LBA 2, 128 entries × 128 bytes = 32 sectors)
     let entries_per_sector = 512 / entry_size;
@@ -147,7 +171,11 @@ fn parse_gpt_partitions() -> u32 {
 
     let mut entry_buf = [0u8; 512 * 32]; // max 32 sectors
     let read_len = (sectors_needed as usize) * 512;
-    if !read_sectors(entries_lba as u32, sectors_needed, &mut entry_buf[..read_len]) {
+    if !read_sectors(
+        entries_lba as u32,
+        sectors_needed,
+        &mut entry_buf[..read_len],
+    ) {
         crate::serial_verbose_println!("  [ARM64] Failed to read GPT entries");
         return 0;
     }
@@ -156,7 +184,9 @@ fn parse_gpt_partitions() -> u32 {
     let check = num_entries.min(128) as usize;
     for i in 0..check {
         let offset = i * entry_size as usize;
-        if offset + 48 > read_len { break; }
+        if offset + 48 > read_len {
+            break;
+        }
 
         // Check if type GUID is non-zero (empty partition has all zeros)
         let type_guid = &entry_buf[offset..offset + 16];
@@ -165,21 +195,33 @@ fn parse_gpt_partitions() -> u32 {
         }
 
         let first_lba = u64::from_le_bytes([
-            entry_buf[offset + 32], entry_buf[offset + 33],
-            entry_buf[offset + 34], entry_buf[offset + 35],
-            entry_buf[offset + 36], entry_buf[offset + 37],
-            entry_buf[offset + 38], entry_buf[offset + 39],
+            entry_buf[offset + 32],
+            entry_buf[offset + 33],
+            entry_buf[offset + 34],
+            entry_buf[offset + 35],
+            entry_buf[offset + 36],
+            entry_buf[offset + 37],
+            entry_buf[offset + 38],
+            entry_buf[offset + 39],
         ]);
         let last_lba = u64::from_le_bytes([
-            entry_buf[offset + 40], entry_buf[offset + 41],
-            entry_buf[offset + 42], entry_buf[offset + 43],
-            entry_buf[offset + 44], entry_buf[offset + 45],
-            entry_buf[offset + 46], entry_buf[offset + 47],
+            entry_buf[offset + 40],
+            entry_buf[offset + 41],
+            entry_buf[offset + 42],
+            entry_buf[offset + 43],
+            entry_buf[offset + 44],
+            entry_buf[offset + 45],
+            entry_buf[offset + 46],
+            entry_buf[offset + 47],
         ]);
 
-        crate::serial_verbose_println!("  [ARM64] GPT partition {}: LBA {}-{} ({} MiB)",
-            i, first_lba, last_lba,
-            (last_lba - first_lba + 1) * 512 / 1024 / 1024);
+        crate::serial_verbose_println!(
+            "  [ARM64] GPT partition {}: LBA {}-{} ({} MiB)",
+            i,
+            first_lba,
+            last_lba,
+            (last_lba - first_lba + 1) * 512 / 1024 / 1024
+        );
 
         return first_lba as u32;
     }

@@ -8,35 +8,35 @@
 //! to the host by writing their VRAM offset to I/O port 0x3D0.
 
 use super::GpuDriver;
-use alloc::boxed::Box;
-use alloc::vec;
 use crate::drivers::pci::PciDevice;
 use crate::memory::address::{PhysAddr, VirtAddr};
+use alloc::boxed::Box;
+use alloc::vec;
 
 // ──────────────────────────────────────────────
 // DISPI (Bochs Display Interface) registers
 // ──────────────────────────────────────────────
 
 const VBE_DISPI_IOPORT_INDEX: u16 = 0x01CE;
-const VBE_DISPI_IOPORT_DATA: u16  = 0x01CF;
+const VBE_DISPI_IOPORT_DATA: u16 = 0x01CF;
 
-const VBE_DISPI_INDEX_ID: u16         = 0x00;
-const VBE_DISPI_INDEX_XRES: u16       = 0x01;
-const VBE_DISPI_INDEX_YRES: u16       = 0x02;
-const VBE_DISPI_INDEX_BPP: u16        = 0x03;
-const VBE_DISPI_INDEX_ENABLE: u16     = 0x04;
+const VBE_DISPI_INDEX_ID: u16 = 0x00;
+const VBE_DISPI_INDEX_XRES: u16 = 0x01;
+const VBE_DISPI_INDEX_YRES: u16 = 0x02;
+const VBE_DISPI_INDEX_BPP: u16 = 0x03;
+const VBE_DISPI_INDEX_ENABLE: u16 = 0x04;
 const VBE_DISPI_INDEX_VIRT_WIDTH: u16 = 0x06;
 const VBE_DISPI_INDEX_VIRT_HEIGHT: u16 = 0x07;
-const VBE_DISPI_INDEX_Y_OFFSET: u16   = 0x09;
+const VBE_DISPI_INDEX_Y_OFFSET: u16 = 0x09;
 
-const VBE_DISPI_ENABLED: u16     = 0x01;
+const VBE_DISPI_ENABLED: u16 = 0x01;
 const VBE_DISPI_LFB_ENABLED: u16 = 0x40;
-const VBE_DISPI_NOCLEARMEM: u16  = 0x80;
+const VBE_DISPI_NOCLEARMEM: u16 = 0x80;
 
 // VBox-specific DISPI IDs (capability levels)
 const VBE_DISPI_ID_VBOX_VIDEO: u16 = 0xBE00;
-const VBE_DISPI_ID_HGSMI: u16     = 0xBE01;
-const VBE_DISPI_ID_ANYX: u16      = 0xBE02;
+const VBE_DISPI_ID_HGSMI: u16 = 0xBE01;
+const VBE_DISPI_ID_ANYX: u16 = 0xBE02;
 
 // ──────────────────────────────────────────────
 // HGSMI protocol constants
@@ -49,15 +49,15 @@ const HGSMI_PORT_GUEST: u16 = 0x3D0;
 const HGSMI_CH_VBVA: u8 = 0x02;
 
 /// VBVA command codes (used as channel_info in HGSMI header)
-const VBVA_INFO_SCREEN: u16         = 6;
+const VBVA_INFO_SCREEN: u16 = 6;
 const VBVA_MOUSE_POINTER_SHAPE: u16 = 8;
-const VBVA_INFO_CAPS: u16           = 12;
-const VBVA_CURSOR_POSITION: u16     = 21;
+const VBVA_INFO_CAPS: u16 = 12;
+const VBVA_CURSOR_POSITION: u16 = 21;
 
 /// Mouse pointer shape flags
 const VBOX_MOUSE_POINTER_VISIBLE: u32 = 0x01;
-const VBOX_MOUSE_POINTER_ALPHA: u32   = 0x02;
-const VBOX_MOUSE_POINTER_SHAPE: u32   = 0x04;
+const VBOX_MOUSE_POINTER_ALPHA: u32 = 0x02;
+const VBOX_MOUSE_POINTER_SHAPE: u32 = 0x04;
 
 // VBVA_INFO_SCREEN flags
 const VBVA_SCREEN_F_ACTIVE: u16 = 0x01;
@@ -74,8 +74,8 @@ const VBVACAPS_DISABLE_CURSOR_INTEGRATION: u32 = 0x08;
 /// Kernel virtual base for the HGSMI heap mapping.
 /// Reuses VMware SVGA FIFO address — these devices are mutually exclusive.
 const HGSMI_HEAP_VIRT_BASE: u64 = 0xFFFF_FFFF_D002_0000;
-const HGSMI_HEAP_SIZE: u32 = 65536;     // 64 KiB
-const HGSMI_HEAP_PAGES: usize = 16;     // 64 KiB / 4 KiB
+const HGSMI_HEAP_SIZE: u32 = 65536; // 64 KiB
+const HGSMI_HEAP_PAGES: usize = 16; // 64 KiB / 4 KiB
 
 // ──────────────────────────────────────────────
 // HGSMI data structures (all repr(C, packed))
@@ -85,26 +85,26 @@ const HGSMI_HEAP_PAGES: usize = 16;     // 64 KiB / 4 KiB
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct HgsmiBufferHeader {
-    data_size: u32,      // payload size in bytes (excludes header + tail)
-    flags: u8,           // 0x00 = single (non-fragmented)
-    channel: u8,         // HGSMI_CH_VBVA = 0x02
-    channel_info: u16,   // VBVA command code
-    _reserved: [u8; 8],  // must be zero
+    data_size: u32,     // payload size in bytes (excludes header + tail)
+    flags: u8,          // 0x00 = single (non-fragmented)
+    channel: u8,        // HGSMI_CH_VBVA = 0x02
+    channel_info: u16,  // VBVA command code
+    _reserved: [u8; 8], // must be zero
 }
 
 /// HGSMI buffer tail — 8 bytes, placed after the payload.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct HgsmiBufferTail {
-    _reserved: u32,      // must be zero
-    checksum: u32,       // Jenkins one-at-a-time hash of header + payload
+    _reserved: u32, // must be zero
+    checksum: u32,  // Jenkins one-at-a-time hash of header + payload
 }
 
 /// VBVA_MOUSE_POINTER_SHAPE payload header (followed by pixel data).
 #[repr(C, packed)]
 struct VbvaMousePointerShape {
-    result: i32,         // set by host on completion
-    flags: u32,          // VISIBLE | ALPHA | SHAPE
+    result: i32, // set by host on completion
+    flags: u32,  // VISIBLE | ALPHA | SHAPE
     hot_x: u32,
     hot_y: u32,
     width: u32,
@@ -115,7 +115,7 @@ struct VbvaMousePointerShape {
 /// VBVA_CURSOR_POSITION payload.
 #[repr(C, packed)]
 struct VbvaCursorPosition {
-    report: u32,   // 1 = report position, 0 = query
+    report: u32, // 1 = report position, 0 = query
     x: u32,
     y: u32,
 }
@@ -127,18 +127,18 @@ struct VbvaInfoScreen {
     origin_x: i32,
     origin_y: i32,
     start_offset: u32,
-    line_size: u32,      // pitch in bytes
+    line_size: u32, // pitch in bytes
     width: u32,
     height: u32,
     bpp: u16,
-    flags: u16,          // VBVA_SCREEN_F_ACTIVE
+    flags: u16, // VBVA_SCREEN_F_ACTIVE
 }
 
 /// VBVA_INFO_CAPS payload (matches VBox VBVACAPS).
 #[repr(C, packed)]
 struct VbvaInfoCaps {
-    rc: i32,       // result code, set by host on completion
-    flags: u32,    // capability flags (e.g. VBVACAPS_DISABLE_CURSOR_INTEGRATION)
+    rc: i32,    // result code, set by host on completion
+    flags: u32, // capability flags (e.g. VBVACAPS_DISABLE_CURSOR_INTEGRATION)
 }
 
 // ──────────────────────────────────────────────
@@ -193,9 +193,9 @@ pub struct VBoxVgaGpu {
 
     // HGSMI state
     hgsmi_supported: bool,
-    hgsmi_heap_virt: u64,     // kernel virtual address of HGSMI heap
-    hgsmi_heap_offset: u32,   // offset within VRAM where heap starts
-    hgsmi_alloc_offset: u32,  // bump allocator within heap
+    hgsmi_heap_virt: u64,    // kernel virtual address of HGSMI heap
+    hgsmi_heap_offset: u32,  // offset within VRAM where heap starts
+    hgsmi_alloc_offset: u32, // bump allocator within heap
 
     // Cursor state
     cursor_defined: bool,
@@ -210,7 +210,7 @@ impl VBoxVgaGpu {
         }
 
         let total = 16 + data_size + 8; // header + payload + tail
-        let aligned = (total + 7) & !7;  // 8-byte aligned
+        let aligned = (total + 7) & !7; // 8-byte aligned
 
         if self.hgsmi_alloc_offset + aligned > HGSMI_HEAP_SIZE {
             // Reset — previous commands already processed
@@ -230,19 +230,26 @@ impl VBoxVgaGpu {
         let (virt, vram_off) = match self.hgsmi_alloc(data_size) {
             Some(v) => v,
             None => {
-                crate::serial_verbose_println!("  VBoxVGA: hgsmi_alloc FAILED for cmd={}", channel_info);
+                crate::serial_verbose_println!(
+                    "  VBoxVGA: hgsmi_alloc FAILED for cmd={}",
+                    channel_info
+                );
                 return;
             }
         };
 
         // Debug: log HGSMI submissions for cursor commands
         if channel_info == VBVA_MOUSE_POINTER_SHAPE || channel_info == VBVA_CURSOR_POSITION {
-            static HGSMI_DBG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+            static HGSMI_DBG_COUNT: core::sync::atomic::AtomicU32 =
+                core::sync::atomic::AtomicU32::new(0);
             let n = HGSMI_DBG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             if n < 10 {
                 crate::serial_verbose_println!(
                     "  VBoxVGA: hgsmi_submit cmd={} data_size={} vram_off={:#x} heap_off={}",
-                    channel_info, data_size, vram_off, self.hgsmi_heap_offset,
+                    channel_info,
+                    data_size,
+                    vram_off,
+                    self.hgsmi_heap_offset,
                 );
             }
         }
@@ -287,10 +294,7 @@ impl VBoxVgaGpu {
             checksum,
         };
         unsafe {
-            core::ptr::write_volatile(
-                (virt + 16 + data_size as u64) as *mut HgsmiBufferTail,
-                tail,
-            );
+            core::ptr::write_volatile((virt + 16 + data_size as u64) as *mut HgsmiBufferTail, tail);
         }
 
         // Memory fence to ensure all VRAM writes are visible before port write
@@ -333,7 +337,9 @@ impl VBoxVgaGpu {
     /// flag would suppress the overlay while the compositor skips SW cursor
     /// drawing → no cursor visible at all.
     fn send_info_caps(&mut self) {
-        crate::serial_verbose_println!("  VBoxVGA: send_info_caps flags=0x0 (cursor integration ENABLED)");
+        crate::serial_verbose_println!(
+            "  VBoxVGA: send_info_caps flags=0x0 (cursor integration ENABLED)"
+        );
         let caps = VbvaInfoCaps {
             rc: 0,
             flags: 0, // no DISABLE_CURSOR_INTEGRATION — let VBox show HGSMI-defined cursor overlay
@@ -397,7 +403,11 @@ impl GpuDriver for VBoxVgaGpu {
 
         crate::serial_verbose_println!(
             "  VBoxVGA: mode set to {}x{}x{} (pitch={}, dblbuf={})",
-            actual_w, actual_h, actual_bpp, pitch, self.double_buffered
+            actual_w,
+            actual_h,
+            actual_bpp,
+            pitch,
+            self.double_buffered
         );
 
         Some((actual_w, actual_h, pitch, self.fb_phys))
@@ -454,13 +464,17 @@ impl GpuDriver for VBoxVgaGpu {
             for row in 0..(h as usize) {
                 let src_off = (sy as usize + row) * pitch_u32 + sx as usize;
                 let dst_off = (dy as usize + row) * pitch_u32 + dx as usize;
-                unsafe { core::ptr::copy(fb.add(src_off), fb.add(dst_off), w as usize); }
+                unsafe {
+                    core::ptr::copy(fb.add(src_off), fb.add(dst_off), w as usize);
+                }
             }
         } else {
             for row in (0..(h as usize)).rev() {
                 let src_off = (sy as usize + row) * pitch_u32 + sx as usize;
                 let dst_off = (dy as usize + row) * pitch_u32 + dx as usize;
-                unsafe { core::ptr::copy(fb.add(src_off), fb.add(dst_off), w as usize); }
+                unsafe {
+                    core::ptr::copy(fb.add(src_off), fb.add(dst_off), w as usize);
+                }
             }
         }
         true
@@ -542,9 +556,14 @@ impl GpuDriver for VBoxVgaGpu {
 
         crate::serial_verbose_println!(
             "  VBoxVGA: define_cursor {}x{} hot=({},{}) flags={:#x} and_mask={} px={} total={}",
-            w, h, hotx, hoty,
+            w,
+            h,
+            hotx,
+            hoty,
             VBOX_MOUSE_POINTER_VISIBLE | VBOX_MOUSE_POINTER_ALPHA | VBOX_MOUSE_POINTER_SHAPE,
-            and_mask_size, pixel_bytes, total_payload,
+            and_mask_size,
+            pixel_bytes,
+            total_payload,
         );
         // Dump first 4 ARGB pixels to verify data integrity
         let px_off = shape_size + and_mask_size;
@@ -594,7 +613,11 @@ impl GpuDriver for VBoxVgaGpu {
         if !self.hgsmi_supported {
             return;
         }
-        crate::serial_verbose_println!("  VBoxVGA: show_cursor(visible={}) cursor_defined={}", visible, self.cursor_defined);
+        crate::serial_verbose_println!(
+            "  VBoxVGA: show_cursor(visible={}) cursor_defined={}",
+            visible,
+            self.cursor_defined
+        );
         // define_cursor() already sets VISIBLE; only send when hiding
         if visible && self.cursor_defined {
             return;
@@ -602,7 +625,11 @@ impl GpuDriver for VBoxVgaGpu {
 
         let shape = VbvaMousePointerShape {
             result: 0,
-            flags: if visible { VBOX_MOUSE_POINTER_VISIBLE } else { 0 },
+            flags: if visible {
+                VBOX_MOUSE_POINTER_VISIBLE
+            } else {
+                0
+            },
             hot_x: 0,
             hot_y: 0,
             width: 0,
@@ -697,22 +724,31 @@ pub fn init_and_register(pci_dev: &PciDevice) {
     // Detect VRAM size from BAR0
     let vram_size = detect_bar0_size(pci_dev.bus, pci_dev.device, pci_dev.function);
     if vram_size == 0 {
-        crate::serial_verbose_println!("  VBoxVGA: Could not detect VRAM size, using 16 MiB default");
+        crate::serial_verbose_println!(
+            "  VBoxVGA: Could not detect VRAM size, using 16 MiB default"
+        );
     }
-    let vram_size = if vram_size > 0 { vram_size } else { 16 * 1024 * 1024 };
+    let vram_size = if vram_size > 0 {
+        vram_size
+    } else {
+        16 * 1024 * 1024
+    };
 
     crate::serial_verbose_println!(
         "  VBoxVGA: fb_phys={:#010x}, vram_size={} MiB",
-        fb_phys, vram_size / (1024 * 1024)
+        fb_phys,
+        vram_size / (1024 * 1024)
     );
 
     // Enable PCI memory access + bus mastering
-    let cmd = crate::drivers::pci::pci_config_read32(
-        pci_dev.bus, pci_dev.device, pci_dev.function, 0x04,
-    );
+    let cmd =
+        crate::drivers::pci::pci_config_read32(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04);
     crate::drivers::pci::pci_config_write32(
-        pci_dev.bus, pci_dev.device, pci_dev.function,
-        0x04, cmd | 0x07,
+        pci_dev.bus,
+        pci_dev.device,
+        pci_dev.function,
+        0x04,
+        cmd | 0x07,
     );
 
     // Negotiate VBox HGSMI capability via DISPI ID register
@@ -739,7 +775,10 @@ pub fn init_and_register(pci_dev: &PciDevice) {
                 hgsmi_supported = true;
                 crate::serial_verbose_println!("  VBoxVGA: DISPI ID {:#06x} (VBOX_VIDEO)", id);
             } else {
-                crate::serial_verbose_println!("  VBoxVGA: DISPI ID {:#06x} (standard BGA, no HGSMI)", id);
+                crate::serial_verbose_println!(
+                    "  VBoxVGA: DISPI ID {:#06x} (standard BGA, no HGSMI)",
+                    id
+                );
             }
         }
     }
@@ -751,7 +790,9 @@ pub fn init_and_register(pci_dev: &PciDevice) {
     if hgsmi_supported {
         crate::serial_verbose_println!(
             "  VBoxVGA: Mapping HGSMI heap: phys={:#010x}, virt={:#018x}, {} pages",
-            heap_phys, HGSMI_HEAP_VIRT_BASE, HGSMI_HEAP_PAGES
+            heap_phys,
+            HGSMI_HEAP_VIRT_BASE,
+            HGSMI_HEAP_PAGES
         );
         for i in 0..HGSMI_HEAP_PAGES {
             let virt = VirtAddr::new(HGSMI_HEAP_VIRT_BASE + (i as u64) * 4096);
@@ -779,7 +820,11 @@ pub fn init_and_register(pci_dev: &PciDevice) {
 
     crate::serial_verbose_println!(
         "  VBoxVGA: Current mode {}x{}x{} (pitch={}, dblbuf={})",
-        width, height, bpp, pitch, double_buffered
+        width,
+        height,
+        bpp,
+        pitch,
+        double_buffered
     );
 
     let mut gpu = VBoxVgaGpu {
@@ -791,7 +836,11 @@ pub fn init_and_register(pci_dev: &PciDevice) {
         double_buffered,
         front_page: 0,
         hgsmi_supported,
-        hgsmi_heap_virt: if hgsmi_supported { HGSMI_HEAP_VIRT_BASE } else { 0 },
+        hgsmi_heap_virt: if hgsmi_supported {
+            HGSMI_HEAP_VIRT_BASE
+        } else {
+            0
+        },
         hgsmi_heap_offset: heap_offset,
         hgsmi_alloc_offset: 0,
         cursor_defined: false,

@@ -19,9 +19,13 @@ static RSOD_ACTIVE: AtomicBool = AtomicBool::new(false);
 fn ensure_kernel_cr3() {
     let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
     let current_cr3: u64;
-    unsafe { core::arch::asm!("mov {}, cr3", out(reg) current_cr3); }
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) current_cr3);
+    }
     if current_cr3 != kernel_cr3 {
-        unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3); }
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) kernel_cr3);
+        }
     }
 }
 
@@ -31,10 +35,10 @@ const FONT_W: u32 = 8;
 const FONT_H: u32 = 16;
 
 // Colors
-const BG_COLOR: u32 = 0xFFCC0000;     // Bold red background
-const TEXT_COLOR: u32 = 0xFFFFFFFF;    // White text
-const DIM_COLOR: u32 = 0xFFFFAAAA;     // Dimmed pinkish-white for secondary info
-const HEADER_BG: u32 = 0xFF990000;     // Darker red for header strip
+const BG_COLOR: u32 = 0xFFCC0000; // Bold red background
+const TEXT_COLOR: u32 = 0xFFFFFFFF; // White text
+const DIM_COLOR: u32 = 0xFFFFAAAA; // Dimmed pinkish-white for secondary info
+const HEADER_BG: u32 = 0xFF990000; // Darker red for header strip
 
 // Layout
 const MARGIN_X: u32 = 40;
@@ -96,19 +100,27 @@ impl RsodWriter {
         }
         let offset = y as u64 * self.fb_pitch as u64 + x as u64 * 4;
         let ptr = (self.fb_addr + offset) as *mut u32;
-        unsafe { ptr.write_volatile(color); }
+        unsafe {
+            ptr.write_volatile(color);
+        }
     }
 
     fn fill_rect(&self, x: u32, y: u32, w: u32, h: u32, color: u32) {
         for dy in 0..h {
             let py = y + dy;
-            if py >= self.fb_height { break; }
+            if py >= self.fb_height {
+                break;
+            }
             let row_base = self.fb_addr + py as u64 * self.fb_pitch as u64;
             for dx in 0..w {
                 let px = x + dx;
-                if px >= self.fb_width { break; }
+                if px >= self.fb_width {
+                    break;
+                }
                 let ptr = (row_base + px as u64 * 4) as *mut u32;
-                unsafe { ptr.write_volatile(color); }
+                unsafe {
+                    ptr.write_volatile(color);
+                }
             }
         }
     }
@@ -124,10 +136,14 @@ impl RsodWriter {
     /// Draw a character at 1x scale
     fn draw_char_1x(&self, x: u32, y: u32, ch: u8, color: u32) {
         let c = ch as u32;
-        if c < 32 || c > 126 { return; }
+        if c < 32 || c > 126 {
+            return;
+        }
         let idx = (c - 32) as usize;
         let glyph_off = idx * FONT_H as usize;
-        if glyph_off + FONT_H as usize > FONT_DATA.len() { return; }
+        if glyph_off + FONT_H as usize > FONT_DATA.len() {
+            return;
+        }
 
         for row in 0..FONT_H {
             let bits = FONT_DATA[glyph_off + row as usize];
@@ -142,10 +158,14 @@ impl RsodWriter {
     /// Draw a character at 2x scale (for headers)
     fn draw_char_2x(&self, x: u32, y: u32, ch: u8, color: u32) {
         let c = ch as u32;
-        if c < 32 || c > 126 { return; }
+        if c < 32 || c > 126 {
+            return;
+        }
         let idx = (c - 32) as usize;
         let glyph_off = idx * FONT_H as usize;
-        if glyph_off + FONT_H as usize > FONT_DATA.len() { return; }
+        if glyph_off + FONT_H as usize > FONT_DATA.len() {
+            return;
+        }
 
         for row in 0..FONT_H {
             let bits = FONT_DATA[glyph_off + row as usize];
@@ -166,7 +186,9 @@ impl RsodWriter {
     fn draw_string_2x(&self, x: u32, y: u32, text: &str, color: u32) {
         let mut cx = x;
         for byte in text.bytes() {
-            if cx + FONT_W * 2 > self.fb_width { break; }
+            if cx + FONT_W * 2 > self.fb_width {
+                break;
+            }
             self.draw_char_2x(cx, y, byte, color);
             cx += FONT_W * 2;
         }
@@ -229,7 +251,9 @@ pub fn show_panic(message: &fmt::Arguments) {
     // Hide hardware cursor so it doesn't overlay the crash screen
     // Hide HW cursor (non-blocking to avoid deadlock during panic)
     if let Some(mut g) = crate::drivers::gpu::try_lock_gpu() {
-        if let Some(gpu) = g.as_mut() { gpu.show_cursor(false); }
+        if let Some(gpu) = g.as_mut() {
+            gpu.show_cursor(false);
+        }
     }
 
     w.clear();
@@ -240,7 +264,10 @@ pub fn show_panic(message: &fmt::Arguments) {
 
     // Panic message
     w.set_color(TEXT_COLOR);
-    let _ = write!(w, "Your system encountered a fatal error and has been halted.\n");
+    let _ = write!(
+        w,
+        "Your system encountered a fatal error and has been halted.\n"
+    );
     w.blank_line();
 
     w.set_color(TEXT_COLOR);
@@ -259,7 +286,10 @@ pub fn show_panic(message: &fmt::Arguments) {
 
     // Footer
     w.set_color(DIM_COLOR);
-    let _ = write!(w, "The system has been halted to prevent data corruption.\n");
+    let _ = write!(
+        w,
+        "The system has been halted to prevent data corruption.\n"
+    );
     let _ = write!(w, "Please restart your computer.\n");
 
     // Flush the framebuffer to the display (required for VMware SVGA which
@@ -284,7 +314,9 @@ pub fn show_exception(frame: &InterruptFrame, exception_name: &str) {
 
     // Hide HW cursor (non-blocking to avoid deadlock during panic)
     if let Some(mut g) = crate::drivers::gpu::try_lock_gpu() {
-        if let Some(gpu) = g.as_mut() { gpu.show_cursor(false); }
+        if let Some(gpu) = g.as_mut() {
+            gpu.show_cursor(false);
+        }
     }
 
     w.clear();
@@ -295,23 +327,59 @@ pub fn show_exception(frame: &InterruptFrame, exception_name: &str) {
 
     // Exception type
     w.set_color(TEXT_COLOR);
-    let _ = write!(w, "A fatal {} occurred and the system has been halted.\n", exception_name);
+    let _ = write!(
+        w,
+        "A fatal {} occurred and the system has been halted.\n",
+        exception_name
+    );
     w.blank_line();
 
     // Registers
     w.set_color(TEXT_COLOR);
     let _ = write!(w, "--- Registers ---\n");
     w.set_color(TEXT_COLOR);
-    let _ = write!(w, "RIP = {:#018x}    CS  = {:#06x}    SS  = {:#06x}\n", frame.rip, frame.cs, frame.ss);
-    let _ = write!(w, "RSP = {:#018x}    RBP = {:#018x}    RFLAGS = {:#018x}\n", frame.rsp, frame.rbp, frame.rflags);
-    let _ = write!(w, "RAX = {:#018x}    RBX = {:#018x}    RCX = {:#018x}\n", frame.rax, frame.rbx, frame.rcx);
-    let _ = write!(w, "RDX = {:#018x}    RSI = {:#018x}    RDI = {:#018x}\n", frame.rdx, frame.rsi, frame.rdi);
-    let _ = write!(w, "R8  = {:#018x}    R9  = {:#018x}    R10 = {:#018x}\n", frame.r8, frame.r9, frame.r10);
-    let _ = write!(w, "R11 = {:#018x}    R12 = {:#018x}    R13 = {:#018x}\n", frame.r11, frame.r12, frame.r13);
-    let _ = write!(w, "R14 = {:#018x}    R15 = {:#018x}\n", frame.r14, frame.r15);
+    let _ = write!(
+        w,
+        "RIP = {:#018x}    CS  = {:#06x}    SS  = {:#06x}\n",
+        frame.rip, frame.cs, frame.ss
+    );
+    let _ = write!(
+        w,
+        "RSP = {:#018x}    RBP = {:#018x}    RFLAGS = {:#018x}\n",
+        frame.rsp, frame.rbp, frame.rflags
+    );
+    let _ = write!(
+        w,
+        "RAX = {:#018x}    RBX = {:#018x}    RCX = {:#018x}\n",
+        frame.rax, frame.rbx, frame.rcx
+    );
+    let _ = write!(
+        w,
+        "RDX = {:#018x}    RSI = {:#018x}    RDI = {:#018x}\n",
+        frame.rdx, frame.rsi, frame.rdi
+    );
+    let _ = write!(
+        w,
+        "R8  = {:#018x}    R9  = {:#018x}    R10 = {:#018x}\n",
+        frame.r8, frame.r9, frame.r10
+    );
+    let _ = write!(
+        w,
+        "R11 = {:#018x}    R12 = {:#018x}    R13 = {:#018x}\n",
+        frame.r11, frame.r12, frame.r13
+    );
+    let _ = write!(
+        w,
+        "R14 = {:#018x}    R15 = {:#018x}\n",
+        frame.r14, frame.r15
+    );
 
     // Error code + INT number
-    let _ = write!(w, "INT = {}    ERR = {:#018x}\n", frame.int_no, frame.err_code);
+    let _ = write!(
+        w,
+        "INT = {}    ERR = {:#018x}\n",
+        frame.int_no, frame.err_code
+    );
 
     // CR2 (for page faults), CR3
     let cr2: u64;
@@ -329,7 +397,8 @@ pub fn show_exception(frame: &InterruptFrame, exception_name: &str) {
     w.set_color(DIM_COLOR);
     let stack_ptr = frame.rsp as *const u64;
     // Only dump if the stack pointer looks valid
-    if frame.rsp >= 0xFFFF_FFFF_8000_0000 && frame.rsp < 0xFFFF_FFFF_F000_0000 && frame.rsp & 7 == 0 {
+    if frame.rsp >= 0xFFFF_FFFF_8000_0000 && frame.rsp < 0xFFFF_FFFF_F000_0000 && frame.rsp & 7 == 0
+    {
         for i in 0..8u64 {
             let val = unsafe { stack_ptr.add(i as usize).read_volatile() };
             let _ = write!(w, "  [RSP+{:#04x}] = {:#018x}\n", i * 8, val);
@@ -349,7 +418,9 @@ pub fn show_exception(frame: &InterruptFrame, exception_name: &str) {
         let ret_addr = unsafe { *((bp + 8) as *const u64) };
         let prev_bp = unsafe { *(bp as *const u64) };
         let _ = write!(w, "  #{}: {:#018x}\n", depth, ret_addr);
-        if prev_bp <= bp { break; } // prevent infinite loops
+        if prev_bp <= bp {
+            break;
+        } // prevent infinite loops
         bp = prev_bp;
         depth += 1;
     }
@@ -365,7 +436,10 @@ pub fn show_exception(frame: &InterruptFrame, exception_name: &str) {
     w.blank_line();
 
     w.set_color(DIM_COLOR);
-    let _ = write!(w, "The system has been halted. Please restart your computer.\n");
+    let _ = write!(
+        w,
+        "The system has been halted. Please restart your computer.\n"
+    );
 
     // Flush the framebuffer to the display (required for VMware SVGA).
     flush_display(&w);
@@ -384,9 +458,15 @@ fn write_system_info(w: &mut RsodWriter) {
     let free_mb = (free_frames * 4096) / (1024 * 1024);
     let total_mb = (total_frames * 4096) / (1024 * 1024);
 
-    let _ = write!(w, "Uptime: {}h {}m {}s    CPU: {}/{} (current/total)    ",
-        uptime_hours, uptime_mins % 60, uptime_secs % 60,
-        cpu_id, cpu_count);
+    let _ = write!(
+        w,
+        "Uptime: {}h {}m {}s    CPU: {}/{} (current/total)    ",
+        uptime_hours,
+        uptime_mins % 60,
+        uptime_secs % 60,
+        cpu_id,
+        cpu_count
+    );
     let _ = write!(w, "Memory: {} MiB free / {} MiB total\n", free_mb, total_mb);
 }
 

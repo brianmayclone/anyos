@@ -26,7 +26,9 @@ fn civil_from_days(total_days: u32) -> (u32, u32, u32) {
     let mut year = 1970u32;
     loop {
         let dy = if is_leap_year(year) { 366 } else { 365 };
-        if remaining < dy { break; }
+        if remaining < dy {
+            break;
+        }
         remaining -= dy;
         year += 1;
     }
@@ -40,27 +42,35 @@ fn civil_from_days(total_days: u32) -> (u32, u32, u32) {
             break;
         }
         remaining -= dim;
-        if m == 11 { month = 12; }
+        if m == 11 {
+            month = 12;
+        }
     }
     (year, month, remaining + 1)
 }
 
 /// Convert DOS date+time (FAT format) to Unix timestamp.
 pub fn dos_datetime_to_unix(date: u16, time: u16) -> u32 {
-    if date == 0 && time == 0 { return 0; }
-    let year  = 1980 + ((date >> 9) & 0x7F) as u32;
+    if date == 0 && time == 0 {
+        return 0;
+    }
+    let year = 1980 + ((date >> 9) & 0x7F) as u32;
     let month = ((date >> 5) & 0x0F) as u32;
-    let day   = (date & 0x1F) as u32;
+    let day = (date & 0x1F) as u32;
     let hours = ((time >> 11) & 0x1F) as u32;
-    let mins  = ((time >> 5) & 0x3F) as u32;
-    let secs  = ((time & 0x1F) * 2) as u32;
-    if month < 1 || month > 12 || day < 1 || day > 31 { return 0; }
+    let mins = ((time >> 5) & 0x3F) as u32;
+    let secs = ((time & 0x1F) * 2) as u32;
+    if month < 1 || month > 12 || day < 1 || day > 31 {
+        return 0;
+    }
     days_from_civil(year, month, day) * 86400 + hours * 3600 + mins * 60 + secs
 }
 
 /// Convert Unix timestamp to DOS (date, time) pair.
 pub fn unix_to_dos_datetime(ts: u32) -> (u16, u16) {
-    if ts == 0 { return (0, 0); }
+    if ts == 0 {
+        return (0, 0);
+    }
     let secs_of_day = ts % 86400;
     let total_days = ts / 86400;
     let hours = secs_of_day / 3600;
@@ -77,9 +87,13 @@ pub fn unix_to_dos_datetime(ts: u32) -> (u16, u16) {
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn current_dos_datetime() -> (u16, u16) {
     let rtc = crate::drivers::rtc::read_time();
-    let year = if rtc.year >= 1980 { rtc.year as u32 - 1980 } else { 0 };
+    let year = if rtc.year >= 1980 {
+        rtc.year as u32 - 1980
+    } else {
+        0
+    };
     let date = ((year as u16) << 9) | ((rtc.month as u16) << 5) | (rtc.day as u16);
-    let time = ((rtc.hours as u16) << 11) | ((rtc.minutes as u16) << 5) | ((rtc.seconds as u16 / 2));
+    let time = ((rtc.hours as u16) << 11) | ((rtc.minutes as u16) << 5) | (rtc.seconds as u16 / 2);
     (date, time)
 }
 

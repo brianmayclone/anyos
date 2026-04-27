@@ -9,10 +9,10 @@
 //! Removing a device leaves a `None` slot that can be reclaimed by a
 //! future registration.
 
-use alloc::vec::Vec;
+use crate::fs::partition::PartitionType;
 use crate::serial_verbose_println;
 use crate::sync::spinlock::Spinlock;
-use crate::fs::partition::PartitionType;
+use alloc::vec::Vec;
 
 /// Block device representing a whole disk or a partition on a disk.
 #[derive(Debug, Clone)]
@@ -44,7 +44,10 @@ impl BlockDevice {
         if self.size_sectors > 0 && (relative_lba as u64 + count as u64) > self.size_sectors {
             serial_verbose_println!(
                 "[blockdev] read out of bounds: dev={} rel_lba={} count={} size={}",
-                self.id, relative_lba, count, self.size_sectors
+                self.id,
+                relative_lba,
+                count,
+                self.size_sectors
             );
             return false;
         }
@@ -65,12 +68,18 @@ impl BlockDevice {
             }
             serial_verbose_println!(
                 "[blockdev] read failed: dev={} lba={} count={} attempt={}/{}",
-                self.id, abs_lba, count, attempt + 1, Self::MAX_IO_RETRIES
+                self.id,
+                abs_lba,
+                count,
+                attempt + 1,
+                Self::MAX_IO_RETRIES
             );
         }
         crate::serial_println!(
             "[blockdev] ERROR: read permanently failed: dev={} lba={} count={}",
-            self.id, abs_lba, count
+            self.id,
+            abs_lba,
+            count
         );
         false
     }
@@ -82,7 +91,10 @@ impl BlockDevice {
         if self.size_sectors > 0 && (relative_lba as u64 + count as u64) > self.size_sectors {
             serial_verbose_println!(
                 "[blockdev] write out of bounds: dev={} rel_lba={} count={} size={}",
-                self.id, relative_lba, count, self.size_sectors
+                self.id,
+                relative_lba,
+                count,
+                self.size_sectors
             );
             return false;
         }
@@ -103,12 +115,18 @@ impl BlockDevice {
             }
             serial_verbose_println!(
                 "[blockdev] write failed: dev={} lba={} count={} attempt={}/{}",
-                self.id, abs_lba, count, attempt + 1, Self::MAX_IO_RETRIES
+                self.id,
+                abs_lba,
+                count,
+                attempt + 1,
+                Self::MAX_IO_RETRIES
             );
         }
         crate::serial_println!(
             "[blockdev] ERROR: write permanently failed: dev={} lba={} count={}",
-            self.id, abs_lba, count
+            self.id,
+            abs_lba,
+            count
         );
         false
     }
@@ -148,7 +166,11 @@ static DEVICES: Spinlock<Vec<Option<BlockDevice>>> = Spinlock::new(Vec::new());
 /// an die Storage-Readahead-Infrastruktur, damit Fetches nicht über das
 /// Disk-Ende hinaus gehen.
 pub fn register_device(dev: BlockDevice) -> u8 {
-    let whole_disk_sectors = if dev.partition.is_none() { dev.size_sectors } else { 0 };
+    let whole_disk_sectors = if dev.partition.is_none() {
+        dev.size_sectors
+    } else {
+        0
+    };
     let disk_id = dev.disk_id;
     let mut devs = DEVICES.lock();
     // Look for a free slot
@@ -161,7 +183,11 @@ pub fn register_device(dev: BlockDevice) -> u8 {
                 dev.id = id;
                 serial_verbose_println!(
                     "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
-                    id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
+                    id,
+                    dev.disk_id,
+                    dev.partition,
+                    dev.start_lba,
+                    dev.size_sectors
                 );
                 *slot = Some(dev);
                 assigned = Some(id);
@@ -176,7 +202,11 @@ pub fn register_device(dev: BlockDevice) -> u8 {
                 dev.id = id;
                 serial_verbose_println!(
                     "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
-                    id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
+                    id,
+                    dev.disk_id,
+                    dev.partition,
+                    dev.start_lba,
+                    dev.size_sectors
                 );
                 devs.push(Some(dev));
                 id
@@ -207,7 +237,11 @@ pub fn find_device(disk_id: u8, partition: Option<u8>) -> Option<BlockDevice> {
 
 /// List all registered block devices (skips empty slots).
 pub fn list_devices() -> Vec<BlockDevice> {
-    DEVICES.lock().iter().filter_map(|slot| slot.clone()).collect()
+    DEVICES
+        .lock()
+        .iter()
+        .filter_map(|slot| slot.clone())
+        .collect()
 }
 
 /// Count of registered (non-empty) devices.
@@ -224,7 +258,9 @@ pub fn remove_partition_devices(disk_id: u8) {
             if dev.disk_id == disk_id && dev.partition.is_some() {
                 serial_verbose_println!(
                     "[blockdev] removed: id={} disk={} part={:?}",
-                    dev.id, dev.disk_id, dev.partition
+                    dev.id,
+                    dev.disk_id,
+                    dev.partition
                 );
                 *slot = None;
             }
@@ -258,7 +294,9 @@ pub fn scan_and_register_partitions(disk_id: u8) {
 
     serial_verbose_println!(
         "[blockdev] disk {} partition scheme: {:?}, {} partitions found",
-        disk_id, table.scheme, table.partitions.len()
+        disk_id,
+        table.scheme,
+        table.partitions.len()
     );
 
     // Inherit label from the whole-disk device
@@ -286,7 +324,9 @@ pub fn scan_and_register_partitions(disk_id: u8) {
 pub fn auto_mount_removable(disk_id: u8) {
     let devs = list_devices();
     for dev in &devs {
-        if dev.disk_id != disk_id || dev.partition.is_none() { continue; }
+        if dev.disk_id != disk_id || dev.partition.is_none() {
+            continue;
+        }
         let part_idx = dev.partition.unwrap();
         let mount_path = alloc::format!("/Volumes/disk{}p{}", disk_id, part_idx + 1);
 
@@ -295,11 +335,18 @@ pub fn auto_mount_removable(disk_id: u8) {
         let result = crate::fs::vfs::mount_fs(&mount_path, "", 0); // 0 = auto-detect
         match result {
             Ok(()) => {
-                crate::serial_println!("  [auto-mount] {} → mounted (disk {} part {})",
-                    mount_path, disk_id, part_idx + 1);
+                crate::serial_println!(
+                    "  [auto-mount] {} → mounted (disk {} part {})",
+                    mount_path,
+                    disk_id,
+                    part_idx + 1
+                );
                 crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
                     crate::ipc::event_bus::EVT_VOLUME_MOUNTED,
-                    disk_id as u32, part_idx as u32, 0, 0,
+                    disk_id as u32,
+                    part_idx as u32,
+                    0,
+                    0,
                 ));
             }
             Err(_) => {
@@ -329,14 +376,18 @@ pub fn parse_device_path(path: &str) -> Option<(u8, Option<u8>)> {
             return Some((disk_id, None));
         }
         let part_num: u8 = rest[1..].parse().ok()?;
-        if part_num == 0 { return None; }
+        if part_num == 0 {
+            return None;
+        }
         Some((disk_id, Some(part_num - 1)))
     } else if let Some(rest) = name.strip_prefix("hd") {
         // Legacy form: hd<digit>[p<part>]
         if let Some(p_pos) = rest.find('p') {
             let disk_id: u8 = rest[..p_pos].parse().ok()?;
             let part_num: u8 = rest[p_pos + 1..].parse().ok()?;
-            if part_num == 0 { return None; }
+            if part_num == 0 {
+                return None;
+            }
             Some((disk_id, Some(part_num - 1)))
         } else {
             let disk_id: u8 = rest.parse().ok()?;

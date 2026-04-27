@@ -3,9 +3,9 @@
 //! NTFS directories use B+ trees stored in $INDEX_ROOT (resident) and
 //! $INDEX_ALLOCATION (non-resident) attributes to index file entries.
 
-use alloc::vec::Vec;
-use crate::fs::vfs::FsError;
 use super::mft::{self, FileName};
+use crate::fs::vfs::FsError;
+use alloc::vec::Vec;
 
 /// A directory entry extracted from an NTFS index.
 #[derive(Debug)]
@@ -32,7 +32,8 @@ pub(super) fn parse_index_root(data: &[u8]) -> (Vec<IndexEntry>, bool) {
     }
 
     // Index header starts at offset 0x10
-    let entries_offset = u32::from_le_bytes([data[0x10], data[0x11], data[0x12], data[0x13]]) as usize;
+    let entries_offset =
+        u32::from_le_bytes([data[0x10], data[0x11], data[0x12], data[0x13]]) as usize;
     let total_size = u32::from_le_bytes([data[0x14], data[0x15], data[0x16], data[0x17]]) as usize;
     let flags = u32::from_le_bytes([data[0x1C], data[0x1D], data[0x1E], data[0x1F]]);
     let has_sub_nodes = flags & 0x01 != 0;
@@ -71,12 +72,9 @@ pub(super) fn parse_indx_record(raw: &[u8], record_size: u32) -> Result<Vec<Inde
     apply_indx_fixup(&mut data, fixup_offset, fixup_count)?;
 
     // Index header at 0x18
-    let entries_offset = u32::from_le_bytes([
-        data[0x18], data[0x19], data[0x1A], data[0x1B],
-    ]) as usize;
-    let total_size = u32::from_le_bytes([
-        data[0x1C], data[0x1D], data[0x1E], data[0x1F],
-    ]) as usize;
+    let entries_offset =
+        u32::from_le_bytes([data[0x18], data[0x19], data[0x1A], data[0x1B]]) as usize;
+    let total_size = u32::from_le_bytes([data[0x1C], data[0x1D], data[0x1E], data[0x1F]]) as usize;
 
     let base = 0x18 + entries_offset;
     let end = (0x18 + total_size).min(data.len());
@@ -94,14 +92,23 @@ fn parse_index_entries(data: &[u8], mut offset: usize) -> Vec<IndexEntry> {
         }
 
         let file_ref = u64::from_le_bytes([
-            data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
-            data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
         ]);
 
         let entry_length = u16::from_le_bytes([data[offset + 8], data[offset + 9]]) as usize;
         let stream_length = u16::from_le_bytes([data[offset + 10], data[offset + 11]]) as usize;
         let entry_flags = u32::from_le_bytes([
-            data[offset + 12], data[offset + 13], data[offset + 14], data[offset + 15],
+            data[offset + 12],
+            data[offset + 13],
+            data[offset + 14],
+            data[offset + 15],
         ]);
 
         if entry_length < 16 || entry_length > data.len() - offset {
@@ -143,7 +150,11 @@ fn is_meta_file(name: &str) -> bool {
 }
 
 /// Apply fixup array to an INDX record (same algorithm as FILE records).
-fn apply_indx_fixup(data: &mut [u8], fixup_offset: usize, fixup_count: usize) -> Result<(), FsError> {
+fn apply_indx_fixup(
+    data: &mut [u8],
+    fixup_offset: usize,
+    fixup_count: usize,
+) -> Result<(), FsError> {
     if fixup_count < 2 || fixup_offset + fixup_count * 2 > data.len() {
         return Err(FsError::IoError);
     }

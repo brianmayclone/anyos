@@ -41,7 +41,13 @@ pub fn sys_authenticate(username_ptr: u64, password_ptr: u64) -> u32 {
         Some((uid, gid)) => {
             let tid = crate::task::scheduler::current_tid();
             crate::task::scheduler::set_process_identity(tid, uid, gid);
-            crate::serial_verbose_println!("  AUTH: T{} authenticated as {}(uid={}, gid={})", tid, username, uid, gid);
+            crate::serial_verbose_println!(
+                "  AUTH: T{} authenticated as {}(uid={}, gid={})",
+                tid,
+                username,
+                uid,
+                gid
+            );
             0
         }
         None => {
@@ -141,7 +147,13 @@ pub fn sys_adduser(data_ptr: u64) -> u32 {
         let _ = crate::fs::vfs::set_owner(homedir, uid, gid);
         let _ = crate::fs::vfs::set_mode(homedir, 0xFF0); // owner+group full, others none
 
-        crate::serial_verbose_println!("  ADDUSER: Created user '{}' uid={} gid={} home={}", username, uid, gid, homedir);
+        crate::serial_verbose_println!(
+            "  ADDUSER: Created user '{}' uid={} gid={} home={}",
+            username,
+            uid,
+            gid,
+            homedir
+        );
         uid as u32
     } else {
         u32::MAX
@@ -153,7 +165,11 @@ pub fn sys_deluser(uid: u32) -> u32 {
     if crate::task::scheduler::current_thread_uid() != 0 {
         return u32::MAX;
     }
-    if crate::task::users::remove_user(uid as u16) { 0 } else { u32::MAX }
+    if crate::task::users::remove_user(uid as u16) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// SYS_CHPASSWD: Change a user's password.
@@ -232,7 +248,11 @@ pub fn sys_addgroup(data_ptr: u64) -> u32 {
         None => return u32::MAX,
     };
     let gid = ptrs[1] as u16;
-    if crate::task::users::add_group(name, gid) { 0 } else { u32::MAX }
+    if crate::task::users::add_group(name, gid) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// SYS_DELGROUP: Remove a group by GID. Root only.
@@ -240,7 +260,11 @@ pub fn sys_delgroup(gid: u32) -> u32 {
     if crate::task::scheduler::current_thread_uid() != 0 {
         return u32::MAX;
     }
-    if crate::task::users::remove_group(gid as u16) { 0 } else { u32::MAX }
+    if crate::task::users::remove_group(gid as u16) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// SYS_LISTGROUPS: List all groups into a buffer.
@@ -322,7 +346,12 @@ pub fn sys_perm_store(app_id_ptr: u64, granted: u32, uid_arg: u32) -> u32 {
     };
 
     if crate::task::permissions::write_stored_perms(uid, app_id, granted) {
-        crate::serial_verbose_println!("PERM_STORE: uid={} app='{}' granted={:#x}", uid, app_id, granted);
+        crate::serial_verbose_println!(
+            "PERM_STORE: uid={} app='{}' granted={:#x}",
+            uid,
+            app_id,
+            granted
+        );
         0
     } else {
         u32::MAX
@@ -414,7 +443,10 @@ static SESSIONHOST_TID: AtomicU32 = AtomicU32::new(0);
 /// First caller wins. Returns 0 on success, u32::MAX if already registered.
 pub fn sys_register_sessionhost() -> u32 {
     let tid = crate::task::scheduler::current_tid();
-    if SESSIONHOST_TID.compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+    if SESSIONHOST_TID
+        .compare_exchange(0, tid, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
         crate::serial_verbose_println!("[OK] Sessionhost registered (TID={})", tid);
         0
     } else {

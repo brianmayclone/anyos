@@ -8,8 +8,8 @@
 //! - [`index`]: Directory index ($I30) B+ tree parsing
 //! - [`file`]: File read operations and NtfsReadPlan
 
-mod boot;
 mod attr;
+mod boot;
 
 // ── Storage I/O helpers (cfg-gated for ARM64 compilation) ──
 
@@ -23,21 +23,21 @@ pub(crate) fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> 
 pub(crate) fn storage_read_sectors(abs_lba: u32, count: u32, buf: &mut [u8]) -> bool {
     crate::drivers::arm::storage::read_sectors(abs_lba, count, buf)
 }
-mod runlist;
-mod mft;
-mod index;
 mod file;
+mod index;
+mod mft;
+mod runlist;
 
 pub use file::NtfsReadPlan;
 
-use alloc::vec;
-use alloc::vec::Vec;
-use crate::fs::vfs::FsError;
-use crate::fs::file::{DirEntry, FileType};
+use self::attr::types as at;
 use self::boot::NtfsBpb;
 use self::mft::MftRecord;
-use self::attr::types as at;
 use self::runlist::DataRun;
+use crate::fs::file::{DirEntry, FileType};
+use crate::fs::vfs::FsError;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// In-memory representation of a mounted NTFS filesystem (read-only).
 pub struct NtfsFs {
@@ -69,8 +69,10 @@ impl NtfsFs {
 
         crate::serial_verbose_println!(
             "[OK] NTFS filesystem: {}B/sector, {} sec/cluster, MFT at cluster {}, record_size={}",
-            bpb.bytes_per_sector, bpb.sectors_per_cluster,
-            bpb.mft_cluster, bpb.mft_record_size,
+            bpb.bytes_per_sector,
+            bpb.sectors_per_cluster,
+            bpb.mft_cluster,
+            bpb.mft_record_size,
         );
 
         let mut ntfs = NtfsFs {
@@ -86,16 +88,11 @@ impl NtfsFs {
         };
 
         // Read MFT record 0 ($MFT itself) to get the MFT's own data runs
-        let mft_lba = partition_lba as u64
-            + bpb.mft_cluster * bpb.sectors_per_cluster as u64;
+        let mft_lba = partition_lba as u64 + bpb.mft_cluster * bpb.sectors_per_cluster as u64;
         let record_sectors = (bpb.mft_record_size + 511) / 512;
         let mut mft_buf = vec![0u8; bpb.mft_record_size as usize];
 
-        if !storage_read_sectors(
-            mft_lba as u32,
-            record_sectors,
-            &mut mft_buf,
-        ) {
+        if !storage_read_sectors(mft_lba as u32, record_sectors, &mut mft_buf) {
             crate::serial_verbose_println!("  NTFS: failed to read MFT record 0");
             return Err(FsError::IoError);
         }
@@ -103,11 +100,10 @@ impl NtfsFs {
         let mft_record = MftRecord::parse(&mft_buf, bpb.mft_record_size)?;
 
         // Find the unnamed $DATA attribute of $MFT
-        let data_attr = mft_record.find_attr(at::DATA, None)
-            .ok_or_else(|| {
-                crate::serial_verbose_println!("  NTFS: MFT record 0 has no $DATA attribute");
-                FsError::IoError
-            })?;
+        let data_attr = mft_record.find_attr(at::DATA, None).ok_or_else(|| {
+            crate::serial_verbose_println!("  NTFS: MFT record 0 has no $DATA attribute");
+            FsError::IoError
+        })?;
 
         ntfs.mft_runs = mft_record.get_data_runs(&data_attr);
         if ntfs.mft_runs.is_empty() {
@@ -159,7 +155,10 @@ impl NtfsFs {
     /// List all entries in a directory given its MFT record number.
     pub fn read_dir(&self, dir_record: u64) -> Result<Vec<DirEntry>, FsError> {
         let internal = self.read_dir_internal(dir_record)?;
-        Ok(internal.iter().map(|ie| self.index_entry_to_dir_entry(ie)).collect())
+        Ok(internal
+            .iter()
+            .map(|ie| self.index_entry_to_dir_entry(ie))
+            .collect())
     }
 
     /// Internal: list directory entries with full MFT references.
@@ -210,11 +209,7 @@ impl NtfsFs {
             let sector_count = (run_bytes + 511) / 512;
 
             let mut buf = vec![0u8; run_bytes];
-            if !storage_read_sectors(
-                abs_lba as u32,
-                sector_count as u32,
-                &mut buf,
-            ) {
+            if !storage_read_sectors(abs_lba as u32, sector_count as u32, &mut buf) {
                 continue; // skip unreadable runs
             }
 
@@ -242,7 +237,11 @@ impl NtfsFs {
         let is_dir = ie.file_name.flags & 0x10000000 != 0; // FILE_ATTR_DIRECTORY
         DirEntry {
             name: ie.file_name.name.clone(),
-            file_type: if is_dir { FileType::Directory } else { FileType::Regular },
+            file_type: if is_dir {
+                FileType::Directory
+            } else {
+                FileType::Regular
+            },
             size: ie.file_name.real_size as u32,
             is_symlink: false,
             uid: 0,
@@ -273,15 +272,19 @@ impl NtfsFs {
 
             // Read directory and get internal entries with MFT refs
             let entries = self.read_dir_internal(current_record)?;
-            let found = entries.iter().find(|e| {
-                e.file_name.name.eq_ignore_ascii_case(part)
-            });
+            let found = entries
+                .iter()
+                .find(|e| e.file_name.name.eq_ignore_ascii_case(part));
 
             match found {
                 Some(entry) => {
                     let is_dir = entry.file_name.flags & 0x10000000 != 0;
                     if is_last {
-                        let ft = if is_dir { FileType::Directory } else { FileType::Regular };
+                        let ft = if is_dir {
+                            FileType::Directory
+                        } else {
+                            FileType::Regular
+                        };
                         return Ok((entry.file_ref as u32, ft, entry.file_name.real_size as u32));
                     }
                     if !is_dir {
@@ -321,15 +324,16 @@ impl NtfsFs {
         };
 
         // Get timestamps from $STANDARD_INFORMATION
-        let (created, modified, accessed) = if let Some(si_attr) = record.find_attr(at::STANDARD_INFORMATION, None) {
-            if let Some(data) = record.get_resident_data(&si_attr) {
-                parse_timestamps(data)
+        let (created, modified, accessed) =
+            if let Some(si_attr) = record.find_attr(at::STANDARD_INFORMATION, None) {
+                if let Some(data) = record.get_resident_data(&si_attr) {
+                    parse_timestamps(data)
+                } else {
+                    (0, 0, 0)
+                }
             } else {
                 (0, 0, 0)
-            }
-        } else {
-            (0, 0, 0)
-        };
+            };
 
         Ok((file_type, size, created, modified, accessed))
     }
@@ -339,11 +343,15 @@ impl NtfsFs {
     // =========================================================
 
     /// Read file data starting at the given byte offset.
-    pub fn read_file(&self, mft_record: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    pub fn read_file(
+        &self,
+        mft_record: u32,
+        offset: u32,
+        buf: &mut [u8],
+    ) -> Result<usize, FsError> {
         let record = self.read_mft_record(mft_record as u64)?;
 
-        let data_attr = record.find_attr(at::DATA, None)
-            .ok_or(FsError::NotFound)?;
+        let data_attr = record.find_attr(at::DATA, None).ok_or(FsError::NotFound)?;
 
         if let Some(ref _res) = data_attr.resident {
             // Resident: data is inline in the MFT record
@@ -387,26 +395,31 @@ impl NtfsFs {
     pub fn get_file_read_plan(&self, mft_record: u32, file_size: u32) -> NtfsReadPlan {
         let record = match self.read_mft_record(mft_record as u64) {
             Ok(r) => r,
-            Err(_) => return NtfsReadPlan {
-                runs: Vec::new(),
-                file_size: file_size as u64,
-                sectors_per_cluster: self.sectors_per_cluster,
-                partition_lba: self.partition_lba,
-            },
+            Err(_) => {
+                return NtfsReadPlan {
+                    runs: Vec::new(),
+                    file_size: file_size as u64,
+                    sectors_per_cluster: self.sectors_per_cluster,
+                    partition_lba: self.partition_lba,
+                }
+            }
         };
 
         let data_attr = match record.find_attr(at::DATA, None) {
             Some(a) => a,
-            None => return NtfsReadPlan {
-                runs: Vec::new(),
-                file_size: file_size as u64,
-                sectors_per_cluster: self.sectors_per_cluster,
-                partition_lba: self.partition_lba,
-            },
+            None => {
+                return NtfsReadPlan {
+                    runs: Vec::new(),
+                    file_size: file_size as u64,
+                    sectors_per_cluster: self.sectors_per_cluster,
+                    partition_lba: self.partition_lba,
+                }
+            }
         };
 
         let runs = record.get_data_runs(&data_attr);
-        let real_size = data_attr.non_resident
+        let real_size = data_attr
+            .non_resident
             .as_ref()
             .map(|nr| nr.real_size)
             .unwrap_or(file_size as u64);
@@ -430,16 +443,13 @@ fn parse_timestamps(data: &[u8]) -> (u32, u32, u32) {
     }
 
     let created = filetime_to_unix(u64::from_le_bytes([
-        data[0], data[1], data[2], data[3],
-        data[4], data[5], data[6], data[7],
+        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
     ]));
     let modified = filetime_to_unix(u64::from_le_bytes([
-        data[8], data[9], data[10], data[11],
-        data[12], data[13], data[14], data[15],
+        data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
     ]));
     let accessed = filetime_to_unix(u64::from_le_bytes([
-        data[24], data[25], data[26], data[27],
-        data[28], data[29], data[30], data[31],
+        data[24], data[25], data[26], data[27], data[28], data[29], data[30], data[31],
     ]));
 
     (created, modified, accessed)
@@ -587,5 +597,7 @@ pub fn try_mount_root_typed(
     partition_lba: u32,
     _partition_sectors: u64,
 ) -> Option<NtfsFsDriver> {
-    NtfsFs::new(device_id, partition_lba).ok().map(NtfsFsDriver::new)
+    NtfsFs::new(device_id, partition_lba)
+        .ok()
+        .map(NtfsFsDriver::new)
 }

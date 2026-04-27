@@ -201,25 +201,40 @@ pub fn print_devices() {
     for dev in devices.iter() {
         crate::serial_verbose_println!(
             "  PCI {:02x}:{:02x}.{} - {:04x}:{:04x} - {} (class {:02x}:{:02x})",
-            dev.bus, dev.device, dev.function,
-            dev.vendor_id, dev.device_id,
+            dev.bus,
+            dev.device,
+            dev.function,
+            dev.vendor_id,
+            dev.device_id,
             class_name(dev.class_code, dev.subclass),
-            dev.class_code, dev.subclass
+            dev.class_code,
+            dev.subclass
         );
 
         #[cfg(feature = "debug_verbose")]
         {
             crate::serial_verbose_println!(
                 "    prog_if={:02x} rev={:02x} hdr={:02x} IRQ={} PIN={}",
-                dev.prog_if, dev.revision_id, dev.header_type,
-                dev.interrupt_line, dev.interrupt_pin
+                dev.prog_if,
+                dev.revision_id,
+                dev.header_type,
+                dev.interrupt_line,
+                dev.interrupt_pin
             );
             for (i, bar) in dev.bars.iter().enumerate() {
                 if *bar != 0 {
                     if bar & 1 == 0 {
-                        crate::serial_verbose_println!("    BAR{}: MMIO {:#010x}", i, bar & 0xFFFFFFF0);
+                        crate::serial_verbose_println!(
+                            "    BAR{}: MMIO {:#010x}",
+                            i,
+                            bar & 0xFFFFFFF0
+                        );
                     } else {
-                        crate::serial_verbose_println!("    BAR{}: I/O  {:#06x}", i, bar & 0xFFFFFFFC);
+                        crate::serial_verbose_println!(
+                            "    BAR{}: I/O  {:#06x}",
+                            i,
+                            bar & 0xFFFFFFFC
+                        );
                     }
                 }
             }
@@ -234,7 +249,8 @@ pub fn devices() -> Vec<PciDevice> {
 
 /// Find a PCI device by class and subclass
 pub fn find_by_class(class: u8, subclass: u8) -> Option<PciDevice> {
-    PCI_DEVICES.lock()
+    PCI_DEVICES
+        .lock()
         .iter()
         .find(|d| d.class_code == class && d.subclass == subclass)
         .cloned()
@@ -242,7 +258,8 @@ pub fn find_by_class(class: u8, subclass: u8) -> Option<PciDevice> {
 
 /// Find a PCI device by vendor and device ID
 pub fn find_by_id(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
-    PCI_DEVICES.lock()
+    PCI_DEVICES
+        .lock()
         .iter()
         .find(|d| d.vendor_id == vendor_id && d.device_id == device_id)
         .cloned()

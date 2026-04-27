@@ -63,7 +63,12 @@ pub fn pseudo_header_checksum(src: &[u8; 4], dst: &[u8; 4], protocol: u8, length
 ///   Destination Address (16 bytes)
 ///   Upper-Layer Packet Length (4 bytes, u32)
 ///   zero (3 bytes) + Next Header (1 byte)
-pub fn pseudo_header_checksum_v6(src: &[u8; 16], dst: &[u8; 16], next_header: u8, length: u32) -> u32 {
+pub fn pseudo_header_checksum_v6(
+    src: &[u8; 16],
+    dst: &[u8; 16],
+    next_header: u8,
+    length: u32,
+) -> u32 {
     let mut sum: u32 = 0;
     // Source address (8 x u16 words)
     for i in (0..16).step_by(2) {

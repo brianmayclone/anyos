@@ -15,8 +15,8 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::drivers::pci::PciDevice;
-use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::drivers::virtio::virtqueue::VirtQueue;
+use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 
@@ -268,18 +268,29 @@ fn virtio_net_irq_handler(_irq: u8) {
 pub struct VirtioNetDriver;
 
 impl super::NetworkDriver for VirtioNetDriver {
-    fn name(&self) -> &str { "VirtIO Net" }
-    fn transmit(&mut self, data: &[u8]) -> bool { transmit(data) }
-    fn get_mac(&self) -> [u8; 6] { get_mac().unwrap_or([0; 6]) }
-    fn link_up(&self) -> bool { is_link_up() }
+    fn name(&self) -> &str {
+        "VirtIO Net"
+    }
+    fn transmit(&mut self, data: &[u8]) -> bool {
+        transmit(data)
+    }
+    fn get_mac(&self) -> [u8; 6] {
+        get_mac().unwrap_or([0; 6])
+    }
+    fn link_up(&self) -> bool {
+        is_link_up()
+    }
 }
 
 // ── Probe Function ──────────────────────────────────────────────────────────
 
 /// Probe and initialize a VirtIO Net device from the PCI bus.
 pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
-    crate::serial_verbose_println!("VirtIO Net: probing PCI {:04x}:{:04x}",
-        pci.vendor_id, pci.device_id);
+    crate::serial_verbose_println!(
+        "VirtIO Net: probing PCI {:04x}:{:04x}",
+        pci.vendor_id,
+        pci.device_id
+    );
 
     // 1. Find VirtIO PCI capabilities.
     let caps = virtio::find_capabilities(pci)?;
@@ -312,8 +323,15 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
         [0x52, 0x54, 0x00, 0x12, 0x34, 0x56]
     };
 
-    crate::serial_verbose_println!("VirtIO Net: MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    crate::serial_verbose_println!(
+        "VirtIO Net: MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
+    );
 
     // 6. Set up virtqueues: receiveq (0) and transmitq (1).
     let mut receiveq = vdev.setup_queue(0)?;
@@ -331,7 +349,9 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
     let mut rx_bufs_phys = [0u64; NUM_BUFFERS];
     for i in 0..NUM_BUFFERS {
         let phys = physical::alloc_contiguous(1)?.as_u64();
-        unsafe { core::ptr::write_bytes(phys as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(phys as *mut u8, 0, 4096);
+        }
         rx_bufs_phys[i] = phys;
     }
 
@@ -339,7 +359,9 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
     let mut tx_bufs_phys = [0u64; NUM_TX_BUFFERS];
     for slot in tx_bufs_phys.iter_mut() {
         let phys = physical::alloc_contiguous(1)?.as_u64();
-        unsafe { core::ptr::write_bytes(phys as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(phys as *mut u8, 0, 4096);
+        }
         *slot = phys;
     }
 
@@ -376,7 +398,10 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
     // Register with the network subsystem.
     super::register(Box::new(VirtioNetDriver));
 
-    crate::serial_verbose_println!("VirtIO Net: initialized (IRQ-driven RX, {} buffers)", NUM_BUFFERS);
+    crate::serial_verbose_println!(
+        "VirtIO Net: initialized (IRQ-driven RX, {} buffers)",
+        NUM_BUFFERS
+    );
 
     super::create_hal_driver("VirtIO Net")
 }

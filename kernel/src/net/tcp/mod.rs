@@ -15,18 +15,18 @@
 //! - `timer` — Retransmission, delayed ACK flush, TIME_WAIT cleanup
 //! - `util` — Sequence helpers, RST, port allocation, cleanup, netstat
 
-pub(crate) mod tcb;
-pub(crate) mod send;
-pub(crate) mod recv;
-pub(crate) mod input;
 pub(crate) mod connect;
+pub(crate) mod input;
+pub(crate) mod recv;
+pub(crate) mod send;
+pub(crate) mod tcb;
 pub(crate) mod timer;
 pub(crate) mod util;
 
-use alloc::vec::Vec;
 use crate::sync::spinlock::Spinlock;
-use tcb::{Tcb, MAX_CONNECTIONS};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use tcb::{Tcb, MAX_CONNECTIONS};
 
 // ── Re-exports (public API — must match old tcp.rs signatures) ──────
 
@@ -45,26 +45,45 @@ pub(crate) static mut CONN_HASH: [u16; CONN_HASH_SIZE] = [0xFFFF; CONN_HASH_SIZE
 
 /// Hash a TCP 4-tuple to a hash table index.
 #[inline]
-pub(crate) fn conn_hash_4tuple(local_port: u16, remote_port: u16, remote_ip: &crate::net::types::Ipv4Addr) -> usize {
+pub(crate) fn conn_hash_4tuple(
+    local_port: u16,
+    remote_port: u16,
+    remote_ip: &crate::net::types::Ipv4Addr,
+) -> usize {
     let mut h = local_port as u32;
     h = h.wrapping_mul(2654435761).wrapping_add(remote_port as u32);
     h = h.wrapping_mul(2654435761).wrapping_add(
-        ((remote_ip.0[0] as u32) << 24) | ((remote_ip.0[1] as u32) << 16)
-        | ((remote_ip.0[2] as u32) << 8) | (remote_ip.0[3] as u32)
+        ((remote_ip.0[0] as u32) << 24)
+            | ((remote_ip.0[1] as u32) << 16)
+            | ((remote_ip.0[2] as u32) << 8)
+            | (remote_ip.0[3] as u32),
     );
     (h as usize) & (CONN_HASH_SIZE - 1)
 }
 
 /// Update the hash index when a connection is created or changes slot.
-pub(crate) fn conn_hash_insert(local_port: u16, remote_port: u16, remote_ip: &crate::net::types::Ipv4Addr, slot: usize) {
+pub(crate) fn conn_hash_insert(
+    local_port: u16,
+    remote_port: u16,
+    remote_ip: &crate::net::types::Ipv4Addr,
+    slot: usize,
+) {
     let h = conn_hash_4tuple(local_port, remote_port, remote_ip);
-    unsafe { CONN_HASH[h] = slot as u16; }
+    unsafe {
+        CONN_HASH[h] = slot as u16;
+    }
 }
 
 /// Remove a connection from the hash index.
-pub(crate) fn conn_hash_remove(local_port: u16, remote_port: u16, remote_ip: &crate::net::types::Ipv4Addr) {
+pub(crate) fn conn_hash_remove(
+    local_port: u16,
+    remote_port: u16,
+    remote_ip: &crate::net::types::Ipv4Addr,
+) {
     let h = conn_hash_4tuple(local_port, remote_port, remote_ip);
-    unsafe { CONN_HASH[h] = 0xFFFF; }
+    unsafe {
+        CONN_HASH[h] = 0xFFFF;
+    }
 }
 
 // ── Global TCP statistics ───────────────────────────────────────────
@@ -87,7 +106,10 @@ pub fn init() {
         table.push(None);
     }
     *conns = Some(table);
-    crate::serial_verbose_println!("[OK] TCP initialized ({} slots, OOO buffering, fast retransmit)", MAX_CONNECTIONS);
+    crate::serial_verbose_println!(
+        "[OK] TCP initialized ({} slots, OOO buffering, fast retransmit)",
+        MAX_CONNECTIONS
+    );
 }
 
 // ── Statistics ───────────────────────────────────────────────────────
@@ -108,8 +130,13 @@ pub struct TcpStats {
 pub fn get_stats() -> TcpStats {
     let conns = TCP_CONNECTIONS.lock();
     let established = match conns.as_ref() {
-        Some(table) => table.iter()
-            .filter(|s| s.as_ref().map(|t| t.state == TcpState::Established).unwrap_or(false))
+        Some(table) => table
+            .iter()
+            .filter(|s| {
+                s.as_ref()
+                    .map(|t| t.state == TcpState::Established)
+                    .unwrap_or(false)
+            })
             .count() as u32,
         None => 0,
     };
@@ -130,12 +157,20 @@ pub fn get_stats() -> TcpStats {
 // all callers (syscall handlers, net::poll, etc.) work unchanged.
 
 /// Active open: connect to a remote host (IPv4).
-pub fn connect(remote_ip: crate::net::types::Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
+pub fn connect(
+    remote_ip: crate::net::types::Ipv4Addr,
+    remote_port: u16,
+    timeout_ticks: u32,
+) -> u32 {
     connect::connect(remote_ip, remote_port, timeout_ticks)
 }
 
 /// Active open: connect to a remote host (IPv6).
-pub fn connect_v6(remote_ip: crate::net::types::Ipv6Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
+pub fn connect_v6(
+    remote_ip: crate::net::types::Ipv6Addr,
+    remote_port: u16,
+    timeout_ticks: u32,
+) -> u32 {
     connect::connect_v6(remote_ip, remote_port, timeout_ticks)
 }
 

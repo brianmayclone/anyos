@@ -192,7 +192,11 @@ pub fn init() {
     let time = read_time();
     crate::serial_verbose_println!(
         "[OK] RTC: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        time.year, time.month, time.day,
-        time.hours, time.minutes, time.seconds
+        time.year,
+        time.month,
+        time.day,
+        time.hours,
+        time.minutes,
+        time.seconds
     );
 }

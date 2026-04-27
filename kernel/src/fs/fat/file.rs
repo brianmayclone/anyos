@@ -1,9 +1,9 @@
 //! File read/write operations on FAT filesystems.
 
+use super::FatFs;
 use crate::fs::vfs::FsError;
 use alloc::vec;
 use alloc::vec::Vec;
-use super::FatFs;
 
 /// Pre-computed plan for reading a file's data sectors.
 ///
@@ -30,15 +30,18 @@ impl FileReadPlan {
             return Ok(Vec::new());
         }
         // Total sector bytes may exceed file_size (last cluster is partial).
-        let total_sector_bytes: usize =
-            self.runs.iter().map(|(_, sc)| *sc as usize * 512).sum();
+        let total_sector_bytes: usize = self.runs.iter().map(|(_, sc)| *sc as usize * 512).sum();
         let mut buf = vec![0u8; total_sector_bytes];
         let mut offset = 0usize;
 
         for &(abs_lba, sector_count) in &self.runs {
             let bytes = sector_count as usize * 512;
-            if !FatFs::storage_read_sectors(self.disk_id, abs_lba, sector_count,
-                    &mut buf[offset..offset + bytes]) {
+            if !FatFs::storage_read_sectors(
+                self.disk_id,
+                abs_lba,
+                sector_count,
+                &mut buf[offset..offset + bytes],
+            ) {
                 return Err(FsError::IoError);
             }
             offset += bytes;
@@ -54,7 +57,12 @@ impl FatFs {
     ///
     /// Optimized: batches contiguous clusters into single multi-sector reads
     /// and uses the in-memory FAT cache for O(1) cluster chain lookups.
-    pub fn read_file(&self, start_cluster: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    pub fn read_file(
+        &self,
+        start_cluster: u32,
+        offset: u32,
+        buf: &mut [u8],
+    ) -> Result<usize, FsError> {
         if start_cluster < 2 || buf.is_empty() {
             return Ok(0);
         }
@@ -107,8 +115,11 @@ impl FatFs {
             // Read directly into output buffer when possible (aligned, full run)
             if start_in_run == 0 && to_copy == run_bytes {
                 let total_sectors = run_clusters * spc;
-                self.read_sectors(run_start_lba, total_sectors,
-                    &mut buf[bytes_read..bytes_read + run_bytes])?;
+                self.read_sectors(
+                    run_start_lba,
+                    total_sectors,
+                    &mut buf[bytes_read..bytes_read + run_bytes],
+                )?;
             } else {
                 // Partial run -- read into temp buffer
                 let mut tmp = vec![0u8; run_bytes];
@@ -155,7 +166,11 @@ impl FatFs {
         let mut runs = Vec::new();
 
         if file_size == 0 || start_cluster < 2 {
-            return FileReadPlan { runs, file_size, disk_id: self.device_id };
+            return FileReadPlan {
+                runs,
+                file_size,
+                disk_id: self.device_id,
+            };
         }
 
         let mut cluster = start_cluster;
@@ -183,12 +198,22 @@ impl FatFs {
             }
         }
 
-        FileReadPlan { runs, file_size, disk_id: self.device_id }
+        FileReadPlan {
+            runs,
+            file_size,
+            disk_id: self.device_id,
+        }
     }
 
     /// Write data to a file at the given offset, allocating clusters as needed.
     /// Returns `(first_cluster, new_size)`.
-    pub fn write_file(&mut self, start_cluster: u32, offset: u32, data: &[u8], old_size: u32) -> Result<(u32, u32), FsError> {
+    pub fn write_file(
+        &mut self,
+        start_cluster: u32,
+        offset: u32,
+        data: &[u8],
+        old_size: u32,
+    ) -> Result<(u32, u32), FsError> {
         if data.is_empty() {
             return Ok((start_cluster, old_size));
         }

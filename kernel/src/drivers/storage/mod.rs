@@ -7,17 +7,17 @@
 //! time slice instead of busy-spinning when contended.  Reads are accelerated
 //! by the global block cache (`fs::blockcache`).
 
-pub mod ata;
 pub mod ahci;
+pub mod ata;
 pub mod atapi;
 pub mod blockdev;
-pub mod nvme;
 pub mod lsi_scsi;
+pub mod nvme;
 pub mod sdhci;
 
+use crate::sync::spinlock::Spinlock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use crate::sync::spinlock::Spinlock;
 
 // ── Per-Device I/O Override ──────────────────────────────────────────────────
 // Secondary storage drivers (USB mass storage, etc.) register their own
@@ -26,8 +26,8 @@ use crate::sync::spinlock::Spinlock;
 /// I/O handler override for a specific disk.
 pub(crate) struct DeviceIoHandler {
     pub disk_id: u8,
-    pub read_fn: fn(u8, u32, u32, &mut [u8]) -> bool,  // (disk_id, lba, count, buf)
-    pub write_fn: fn(u8, u32, u32, &[u8]) -> bool,      // (disk_id, lba, count, buf)
+    pub read_fn: fn(u8, u32, u32, &mut [u8]) -> bool, // (disk_id, lba, count, buf)
+    pub write_fn: fn(u8, u32, u32, &[u8]) -> bool,    // (disk_id, lba, count, buf)
 }
 
 pub(crate) static IO_OVERRIDES: Spinlock<Vec<DeviceIoHandler>> = Spinlock::new(Vec::new());
@@ -38,7 +38,11 @@ pub fn register_device_io(
     read_fn: fn(u8, u32, u32, &mut [u8]) -> bool,
     write_fn: fn(u8, u32, u32, &[u8]) -> bool,
 ) {
-    IO_OVERRIDES.lock().push(DeviceIoHandler { disk_id, read_fn, write_fn });
+    IO_OVERRIDES.lock().push(DeviceIoHandler {
+        disk_id,
+        read_fn,
+        write_fn,
+    });
 }
 
 /// Remove a per-device I/O handler (for hot-unplug).
@@ -79,8 +83,8 @@ static LAST_READ_END_LBA: AtomicU32 = AtomicU32::new(0);
 /// Current readahead level (in sectors). Doubles on sequential hits,
 /// resets to minimum on random access. Range: 16..512 sectors (8-256 KiB).
 static READAHEAD_LEVEL: AtomicU32 = AtomicU32::new(64);
-const READAHEAD_MIN: u32 = 16;   //   8 KiB
-const READAHEAD_MAX: u32 = 512;  // 256 KiB
+const READAHEAD_MIN: u32 = 16; //   8 KiB
+const READAHEAD_MAX: u32 = 512; // 256 KiB
 
 /// Reusable readahead buffer pool.
 ///
@@ -103,18 +107,34 @@ struct ReadaheadSlot {
 unsafe impl Sync for ReadaheadSlot {}
 
 static READAHEAD_POOL: [ReadaheadSlot; READAHEAD_POOL_SIZE] = [
-    ReadaheadSlot { in_use: AtomicBool::new(false), buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]) },
-    ReadaheadSlot { in_use: AtomicBool::new(false), buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]) },
-    ReadaheadSlot { in_use: AtomicBool::new(false), buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]) },
-    ReadaheadSlot { in_use: AtomicBool::new(false), buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]) },
+    ReadaheadSlot {
+        in_use: AtomicBool::new(false),
+        buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]),
+    },
+    ReadaheadSlot {
+        in_use: AtomicBool::new(false),
+        buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]),
+    },
+    ReadaheadSlot {
+        in_use: AtomicBool::new(false),
+        buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]),
+    },
+    ReadaheadSlot {
+        in_use: AtomicBool::new(false),
+        buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]),
+    },
 ];
 
 /// RAII handle — drops release the `in_use` flag so the slot is reusable.
-struct ReadaheadLease { index: usize }
+struct ReadaheadLease {
+    index: usize,
+}
 
 impl Drop for ReadaheadLease {
     fn drop(&mut self) {
-        READAHEAD_POOL[self.index].in_use.store(false, Ordering::Release);
+        READAHEAD_POOL[self.index]
+            .in_use
+            .store(false, Ordering::Release);
     }
 }
 
@@ -219,17 +239,23 @@ fn io_lock_release() {
 
 /// Switch the active storage backend to AHCI (called after AHCI init succeeds).
 pub fn set_backend_ahci() {
-    unsafe { BACKEND = StorageBackend::Ahci; }
+    unsafe {
+        BACKEND = StorageBackend::Ahci;
+    }
 }
 
 /// Switch the active storage backend to NVMe (called after NVMe init succeeds).
 pub fn set_backend_nvme() {
-    unsafe { BACKEND = StorageBackend::Nvme; }
+    unsafe {
+        BACKEND = StorageBackend::Nvme;
+    }
 }
 
 /// Switch the active storage backend to LSI Logic SCSI.
 pub fn set_backend_lsi() {
-    unsafe { BACKEND = StorageBackend::LsiScsi; }
+    unsafe {
+        BACKEND = StorageBackend::LsiScsi;
+    }
 }
 
 /// Read `count` sectors starting at `lba` into `buf`.
@@ -250,7 +276,9 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 /// overrides when available. The block cache and adaptive readahead are keyed
 /// by `disk_id` so mounted secondary volumes benefit from the same fast path.
 pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
-    if count == 0 { return true; }
+    if count == 0 {
+        return true;
+    }
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
     // ── Check if block cache is available ──────────────────────────────
@@ -259,7 +287,9 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
     // ── Fast path: try to serve entirely from block cache ──────────────
     let cached = if cache_active {
         crate::fs::blockcache::cached_read(disk_id, lba, count, buf)
-    } else { 0 };
+    } else {
+        0
+    };
     if cached == count {
         return true;
     }
@@ -325,10 +355,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             if ok {
                 let needed = miss_count as usize * 512;
                 let copy_end = needed.min(buf.len() - miss_offset);
-                buf[miss_offset..miss_offset + copy_end]
-                    .copy_from_slice(&big_buf[..copy_end]);
+                buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
                 crate::fs::blockcache::populate(
-                    disk_id, miss_lba, total_fetch, &big_buf[..fetch_bytes],
+                    disk_id,
+                    miss_lba,
+                    total_fetch,
+                    &big_buf[..fetch_bytes],
                 );
                 true
             } else {
@@ -342,8 +374,7 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             if ok {
                 let needed = miss_count as usize * 512;
                 let copy_end = needed.min(buf.len() - miss_offset);
-                buf[miss_offset..miss_offset + copy_end]
-                    .copy_from_slice(&big_buf[..copy_end]);
+                buf[miss_offset..miss_offset + copy_end].copy_from_slice(&big_buf[..copy_end]);
                 crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
                 true
             } else {
@@ -359,8 +390,12 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
             // Populate cache with fetched sectors
             let fetched_bytes = miss_count as usize * 512;
             if buf.len() >= miss_offset + fetched_bytes {
-                crate::fs::blockcache::populate(disk_id, miss_lba, miss_count,
-                    &buf[miss_offset..miss_offset + fetched_bytes]);
+                crate::fs::blockcache::populate(
+                    disk_id,
+                    miss_lba,
+                    miss_count,
+                    &buf[miss_offset..miss_offset + fetched_bytes],
+                );
             }
         }
         ok
@@ -419,7 +454,9 @@ pub fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> bool {
 
 /// Write `count` sectors to a specific physical disk from `buf`.
 pub fn write_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
-    if count == 0 { return true; }
+    if count == 0 {
+        return true;
+    }
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
     let cache_active = crate::fs::blockcache::is_ready();
@@ -490,7 +527,9 @@ pub fn write_sectors_direct(lba: u32, count: u32, buf: &[u8]) -> bool {
 
 /// Write sectors directly to a specific disk, bypassing the block cache.
 pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
-    if count == 0 { return true; }
+    if count == 0 {
+        return true;
+    }
     io_lock_acquire();
     let result = write_sectors_raw_for_disk(disk_id, lba, count, buf);
     io_lock_release();
@@ -501,7 +540,9 @@ pub fn write_sectors_direct_on_disk(disk_id: u8, lba: u32, count: u32, buf: &[u8
 pub fn flush() {
     io_lock_acquire();
     match unsafe { BACKEND } {
-        StorageBackend::Ahci => { ahci::flush(); }
+        StorageBackend::Ahci => {
+            ahci::flush();
+        }
         _ => {} // ATA/NVMe/SCSI: no explicit flush needed or not supported
     }
     io_lock_release();
@@ -509,26 +550,40 @@ pub fn flush() {
 
 // ── HAL integration ─────────────────────────────────────────────────────────
 
+use crate::drivers::hal::{Driver, DriverError, DriverType};
 use alloc::boxed::Box;
-use crate::drivers::hal::{Driver, DriverType, DriverError};
 
 struct StorageHalDriver {
     name: &'static str,
 }
 
 impl Driver for StorageHalDriver {
-    fn name(&self) -> &str { self.name }
-    fn driver_type(&self) -> DriverType { DriverType::Block }
-    fn init(&mut self) -> Result<(), DriverError> { Ok(()) }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Block
+    }
+    fn init(&mut self) -> Result<(), DriverError> {
+        Ok(())
+    }
     fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DriverError> {
         let lba = (offset / 512) as u32;
         let count = ((buf.len() + 511) / 512) as u32;
-        if read_sectors(lba, count, buf) { Ok(count as usize * 512) } else { Err(DriverError::IoError) }
+        if read_sectors(lba, count, buf) {
+            Ok(count as usize * 512)
+        } else {
+            Err(DriverError::IoError)
+        }
     }
     fn write(&self, offset: usize, buf: &[u8]) -> Result<usize, DriverError> {
         let lba = (offset / 512) as u32;
         let count = ((buf.len() + 511) / 512) as u32;
-        if write_sectors(lba, count, buf) { Ok(count as usize * 512) } else { Err(DriverError::IoError) }
+        if write_sectors(lba, count, buf) {
+            Ok(count as usize * 512)
+        } else {
+            Err(DriverError::IoError)
+        }
     }
     fn ioctl(&mut self, _cmd: u32, _arg: u32) -> Result<u32, DriverError> {
         Err(DriverError::NotSupported)

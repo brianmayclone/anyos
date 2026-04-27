@@ -4,9 +4,9 @@
 //! physical address (so all threads in the same process share the same env).
 //! Accessed via SYS_SETENV / SYS_GETENV syscalls.
 
+use crate::sync::spinlock::Spinlock;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::sync::spinlock::Spinlock;
 
 struct EnvEntry {
     key: String,
@@ -29,7 +29,10 @@ pub fn set(pd: u64, key: &str, value: &str) {
     let proc_env = if let Some(pe) = table.iter_mut().find(|pe| pe.pd == pd) {
         pe
     } else {
-        table.push(ProcessEnv { pd, entries: Vec::new() });
+        table.push(ProcessEnv {
+            pd,
+            entries: Vec::new(),
+        });
         table.last_mut().unwrap()
     };
     // Update existing or insert new
@@ -76,7 +79,8 @@ pub fn list(pd: u64, buf: &mut [u8]) -> usize {
                 buf[offset..offset + entry.key.len()].copy_from_slice(entry.key.as_bytes());
                 buf[offset + entry.key.len()] = b'=';
                 let val_start = offset + entry.key.len() + 1;
-                buf[val_start..val_start + entry.value.len()].copy_from_slice(entry.value.as_bytes());
+                buf[val_start..val_start + entry.value.len()]
+                    .copy_from_slice(entry.value.as_bytes());
                 buf[val_start + entry.value.len()] = 0;
             }
             offset += needed;
@@ -91,7 +95,10 @@ pub fn clone_env(src_pd: u64, dst_pd: u64) {
     let entries: Vec<(String, String)> = {
         let table = ENV_TABLE.lock();
         if let Some(pe) = table.iter().find(|pe| pe.pd == src_pd) {
-            pe.entries.iter().map(|e| (e.key.clone(), e.value.clone())).collect()
+            pe.entries
+                .iter()
+                .map(|e| (e.key.clone(), e.value.clone()))
+                .collect()
         } else {
             Vec::new()
         }

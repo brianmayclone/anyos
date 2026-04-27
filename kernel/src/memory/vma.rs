@@ -8,13 +8,11 @@
 //! Replaces the old bump-pointer (`mmap_next`) allocator that could never reuse
 //! freed virtual address space.
 
+use crate::memory::address::PhysAddr;
+use crate::memory::user_vmap::{MMAP64_BASE, MMAP_BASE, MMAP_LIMIT};
+use crate::sync::spinlock::Spinlock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::memory::address::PhysAddr;
-use crate::memory::user_vmap::{
-    MMAP64_BASE, MMAP_BASE, MMAP_LIMIT,
-};
-use crate::sync::spinlock::Spinlock;
 
 /// End (exclusive) of the native 64-bit high mmap region.
 const MMAP64_LIMIT: u64 = 0x0000_4000_0000_0000;
@@ -99,7 +97,14 @@ fn alloc_region_in(pd: PhysAddr, size: u64, high: bool) -> Option<u64> {
 
     // Try from hint first, then wrap around.
     if let Some(addr) = find_gap(&proc.vmas, hint, size, base, limit) {
-        proc.vmas.insert(addr, Vma { start: addr, size, flags: 0x02 | 0x04 });
+        proc.vmas.insert(
+            addr,
+            Vma {
+                start: addr,
+                size,
+                flags: 0x02 | 0x04,
+            },
+        );
         if high {
             proc.mmap64_hint = addr + size;
         } else {
@@ -110,7 +115,14 @@ fn alloc_region_in(pd: PhysAddr, size: u64, high: bool) -> Option<u64> {
     // Wrap-around: search from MMAP_BASE up to the original hint.
     if hint > base {
         if let Some(addr) = find_gap(&proc.vmas, base, size, base, hint.min(limit)) {
-            proc.vmas.insert(addr, Vma { start: addr, size, flags: 0x02 | 0x04 });
+            proc.vmas.insert(
+                addr,
+                Vma {
+                    start: addr,
+                    size,
+                    flags: 0x02 | 0x04,
+                },
+            );
             if high {
                 proc.mmap64_hint = addr + size;
             } else {
@@ -144,7 +156,9 @@ pub fn free_region64(pd: PhysAddr, addr: u64, size: u64) {
     let free_end = addr + size;
 
     // Collect keys of VMAs that overlap [addr, free_end).
-    let overlapping: Vec<u64> = proc.vmas.range(..free_end)
+    let overlapping: Vec<u64> = proc
+        .vmas
+        .range(..free_end)
         .filter(|(_, v)| v.start + v.size > addr)
         .map(|(&k, _)| k)
         .collect();
@@ -158,19 +172,25 @@ pub fn free_region64(pd: PhysAddr, addr: u64, size: u64) {
 
         // Left remainder: [vma.start, addr) survives.
         if vma.start < addr {
-            proc.vmas.insert(vma.start, Vma {
-                start: vma.start,
-                size: addr - vma.start,
-                flags: vma.flags,
-            });
+            proc.vmas.insert(
+                vma.start,
+                Vma {
+                    start: vma.start,
+                    size: addr - vma.start,
+                    flags: vma.flags,
+                },
+            );
         }
         // Right remainder: [free_end, vma_end) survives.
         if vma_end > free_end {
-            proc.vmas.insert(free_end, Vma {
-                start: free_end,
-                size: vma_end - free_end,
-                flags: vma.flags,
-            });
+            proc.vmas.insert(
+                free_end,
+                Vma {
+                    start: free_end,
+                    size: vma_end - free_end,
+                    flags: vma.flags,
+                },
+            );
         }
     }
 }

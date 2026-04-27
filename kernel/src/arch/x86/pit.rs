@@ -148,7 +148,9 @@ unsafe fn calibrate_tsc_pit() -> u64 {
             break;
         }
         if rdtsc() - tsc_start > timeout_cycles {
-            crate::serial_verbose_println!("[WARN] PIT ch2 OUT2 poll timed out — emulation broken?");
+            crate::serial_verbose_println!(
+                "[WARN] PIT ch2 OUT2 poll timed out — emulation broken?"
+            );
             outb(0x61, port61_saved);
             return 0; // Signal failure
         }
@@ -168,7 +170,9 @@ unsafe fn calibrate_tsc_pit() -> u64 {
     let cal_ms = 0xFFFFu64 * 1000 / PIT_FREQUENCY as u64;
     crate::serial_verbose_println!(
         "  PIT ch2: {} TSC cycles in ~{}ms → {} MHz",
-        tsc_delta, cal_ms, tsc_hz_value / 1_000_000,
+        tsc_delta,
+        cal_ms,
+        tsc_hz_value / 1_000_000,
     );
 
     tsc_hz_value

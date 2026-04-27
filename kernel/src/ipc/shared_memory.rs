@@ -72,7 +72,11 @@ pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
         owner_tid,
         crate::task::capabilities::CAP_COMPOSITOR | crate::task::capabilities::CAP_SYSTEM,
     );
-    let max_bytes = if is_system { MAX_SHM_SYSTEM } else { MAX_SHM_NORMAL };
+    let max_bytes = if is_system {
+        MAX_SHM_SYSTEM
+    } else {
+        MAX_SHM_NORMAL
+    };
 
     // Enforce per-process SHM limits to prevent memory exhaustion DoS
     {
@@ -164,11 +168,7 @@ pub fn map_into_current(region_id: u32) -> u64 {
     if regions[idx].needs_zeroing {
         for i in 0..pages {
             unsafe {
-                core::ptr::write_bytes(
-                    (vaddr + (i * FRAME_SIZE) as u64) as *mut u8,
-                    0,
-                    FRAME_SIZE,
-                );
+                core::ptr::write_bytes((vaddr + (i * FRAME_SIZE) as u64) as *mut u8, 0, FRAME_SIZE);
             }
         }
         regions[idx].needs_zeroing = false;
@@ -367,7 +367,9 @@ pub fn collect_sorted_shm_frames() -> Vec<PhysAddr> {
 /// [`collect_sorted_shm_frames`]).
 #[inline]
 pub fn is_shm_frame_sorted(sorted_frames: &[PhysAddr], frame: PhysAddr) -> bool {
-    sorted_frames.binary_search_by_key(&frame.as_u64(), |f| f.as_u64()).is_ok()
+    sorted_frames
+        .binary_search_by_key(&frame.as_u64(), |f| f.as_u64())
+        .is_ok()
 }
 
 /// Lock-free check if the shared memory lock is currently held.

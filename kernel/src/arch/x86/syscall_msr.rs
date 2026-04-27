@@ -38,14 +38,14 @@ pub const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 macro_rules! prepare_gs_for_ring3_asm {
     () => {
         concat!(
-            "mov ecx, 0xC0000101\n",   // IA32_GS_BASE
-            "rdmsr\n",                 // EDX:EAX = current GS.base (PERCPU)
-            "mov ecx, 0xC0000102\n",   // IA32_KERNEL_GS_BASE
-            "wrmsr\n",                 // KERNEL_GS_BASE = PERCPU
+            "mov ecx, 0xC0000101\n", // IA32_GS_BASE
+            "rdmsr\n",               // EDX:EAX = current GS.base (PERCPU)
+            "mov ecx, 0xC0000102\n", // IA32_KERNEL_GS_BASE
+            "wrmsr\n",               // KERNEL_GS_BASE = PERCPU
             "xor eax, eax\n",
             "xor edx, edx\n",
-            "mov ecx, 0xC0000101\n",   // IA32_GS_BASE
-            "wrmsr\n",                 // GS.base = 0 (user)
+            "mov ecx, 0xC0000101\n", // IA32_GS_BASE
+            "wrmsr\n",               // GS.base = 0 (user)
         )
     };
 }
@@ -74,7 +74,7 @@ pub unsafe fn debug_assert_gs_is_kernel() {
 }
 
 // EFER bits
-const EFER_SCE: u64 = 1 << 0;  // Syscall Enable
+const EFER_SCE: u64 = 1 << 0; // Syscall Enable
 const EFER_NXE: u64 = 1 << 11; // No-Execute Enable (must be set for PAGE_NX in PTEs to work)
 
 // SFMASK: bits cleared in RFLAGS on SYSCALL entry
@@ -157,14 +157,17 @@ fn setup_msrs(cpu_id: usize) {
         PERCPU[cpu_id].lapic_id = lapic_id;
 
         // Populate the LAPIC→PERCPU lookup table for the repair path
-        LAPIC_TO_PERCPU[lapic_id as usize] =
-            &PERCPU[cpu_id] as *const SyscallPerCpu as u64;
+        LAPIC_TO_PERCPU[lapic_id as usize] = &PERCPU[cpu_id] as *const SyscallPerCpu as u64;
 
         // Enable SYSCALL/SYSRET and NX (No-Execute) in IA32_EFER.
         // EFER.NXE (bit 11) must be set before any PTE with bit 63 set is loaded;
         // without it the CPU treats bit 63 as reserved and raises #GP.
         let efer = rdmsr(MSR_EFER);
-        let nx_bit = if crate::arch::x86::cpuid::features().nx { EFER_NXE } else { 0 };
+        let nx_bit = if crate::arch::x86::cpuid::features().nx {
+            EFER_NXE
+        } else {
+            0
+        };
         wrmsr(MSR_EFER, efer | EFER_SCE | nx_bit);
 
         // STAR: kernel/user segment selectors
@@ -183,7 +186,8 @@ fn setup_msrs(cpu_id: usize) {
 
     crate::serial_verbose_println!(
         "[OK] SYSCALL/SYSRET configured on CPU{} (LAPIC_ID={})",
-        cpu_id, lapic_id,
+        cpu_id,
+        lapic_id,
     );
 }
 
@@ -224,10 +228,16 @@ pub fn set_kernel_rsp(cpu_id: usize, rsp: u64) {
         unsafe {
             use crate::arch::x86::port::{inb, outb};
             let msg = b"\r\n!!! BUG: set_kernel_rsp bad rsp cpu=";
-            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             outb(0x3F8, b'0' + cpu_id as u8);
             let msg2 = b" rsp=";
-            for &c in msg2 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg2 {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
             // Print hex value of rsp
             let hex = b"0123456789abcdef";
             for i in (0..16).rev() {
@@ -236,7 +246,10 @@ pub fn set_kernel_rsp(cpu_id: usize, rsp: u64) {
                 outb(0x3F8, hex[nibble]);
             }
             let msg3 = b"\r\n";
-            for &c in msg3 { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+            for &c in msg3 {
+                while inb(0x3FD) & 0x20 == 0 {}
+                outb(0x3F8, c);
+            }
         }
         return; // Keep previous valid kernel_rsp
     }
@@ -263,10 +276,8 @@ pub fn set_kernel_rsp(cpu_id: usize, rsp: u64) {
 /// `syscall_fast.asm`, which inspects hardware state rather than a software
 /// shadow and is therefore immune to this ambiguity. Do not re-introduce a
 /// timer-tick MSR refresh without rethinking the invariant end-to-end.
-#[deprecated(
-    note = "Breaks the post-241b1475 GS invariant; see syscall_fast.asm \
-            Phase 1b for the correct leak-recovery mechanism."
-)]
+#[deprecated(note = "Breaks the post-241b1475 GS invariant; see syscall_fast.asm \
+            Phase 1b for the correct leak-recovery mechanism.")]
 #[allow(dead_code)]
 pub fn refresh_kernel_gs_base() {}
 

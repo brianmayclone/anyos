@@ -7,8 +7,8 @@
 //! Character translation is delegated to the [`super::layout`] module, making
 //! this driver device-agnostic — both PS/2 and USB-HID feed scancodes here.
 
-use alloc::collections::VecDeque;
 use crate::sync::spinlock::Spinlock;
+use alloc::collections::VecDeque;
 
 /// Keyboard event
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +32,18 @@ pub enum Key {
     Down,
     Left,
     Right,
-    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
     LeftShift,
     RightShift,
     LeftCtrl,
@@ -84,9 +95,9 @@ const REPEAT_INTERVAL_TICKS: u32 = 30;
 
 /// The currently held-down key (if any) and the tick it was pressed.
 struct RepeatState {
-    event:      Option<KeyEvent>,
-    pressed_at: u32,   // tick when key was first pressed
-    next_repeat: u32,  // tick when next repeat fires
+    event: Option<KeyEvent>,
+    pressed_at: u32,  // tick when key was first pressed
+    next_repeat: u32, // tick when next repeat fires
 }
 
 static REPEAT: Spinlock<RepeatState> = Spinlock::new(RepeatState {
@@ -189,16 +200,16 @@ pub fn handle_scancode(scancode: u8) {
     let mut mods = MODIFIERS.lock();
     if is_e0 {
         match code {
-            0x38 => mods.altgr = pressed,  // E0 0x38 = Right Alt = AltGr
-            0x1D => mods.ctrl = pressed,   // E0 0x1D = Right Ctrl
+            0x38 => mods.altgr = pressed, // E0 0x38 = Right Alt = AltGr
+            0x1D => mods.ctrl = pressed,  // E0 0x1D = Right Ctrl
             _ => {}
         }
     } else {
         match code {
-            0x2A => mods.shift = pressed,  // Left Shift
-            0x36 => mods.shift = pressed,  // Right Shift
-            0x1D => mods.ctrl = pressed,   // Left Ctrl
-            0x38 => mods.alt = pressed,    // Left Alt (not AltGr)
+            0x2A => mods.shift = pressed, // Left Shift
+            0x36 => mods.shift = pressed, // Right Shift
+            0x1D => mods.ctrl = pressed,  // Left Ctrl
+            0x38 => mods.alt = pressed,   // Left Alt (not AltGr)
             0x3A if pressed => mods.caps_lock = !mods.caps_lock,
             _ => {}
         }
@@ -227,17 +238,22 @@ pub fn handle_scancode(scancode: u8) {
         let mut rep = REPEAT.lock();
         if pressed {
             // Only repeat non-modifier keys
-            let is_modifier = matches!(key,
-                Key::LeftShift | Key::RightShift |
-                Key::LeftCtrl  | Key::RightCtrl  |
-                Key::LeftAlt   | Key::RightAlt   |
-                Key::LeftSuper | Key::RightSuper |
-                Key::CapsLock
+            let is_modifier = matches!(
+                key,
+                Key::LeftShift
+                    | Key::RightShift
+                    | Key::LeftCtrl
+                    | Key::RightCtrl
+                    | Key::LeftAlt
+                    | Key::RightAlt
+                    | Key::LeftSuper
+                    | Key::RightSuper
+                    | Key::CapsLock
             );
             if !is_modifier {
                 let now = crate::arch::hal::timer_current_ticks();
-                rep.event       = Some(event);
-                rep.pressed_at  = now;
+                rep.event = Some(event);
+                rep.pressed_at = now;
                 rep.next_repeat = now.wrapping_add(REPEAT_DELAY_TICKS);
             }
         } else {
@@ -275,7 +291,7 @@ pub fn tick() {
     let mut rep = REPEAT.lock();
     let event = match rep.event {
         Some(e) => e,
-        None    => return,
+        None => return,
     };
     let now = crate::arch::hal::timer_current_ticks();
     // Wrapping comparison: handles tick counter wrap-around

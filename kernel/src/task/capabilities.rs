@@ -13,23 +13,23 @@ pub type CapSet = u32;
 // ---- Individual capability bits ----
 
 pub const CAP_FILESYSTEM: CapSet = 1 << 0;
-pub const CAP_NETWORK: CapSet    = 1 << 1;
-pub const CAP_AUDIO: CapSet      = 1 << 2;
-pub const CAP_DISPLAY: CapSet    = 1 << 3;
-pub const CAP_DEVICE: CapSet     = 1 << 4;
-pub const CAP_PROCESS: CapSet    = 1 << 5;
-pub const CAP_PIPE: CapSet       = 1 << 6;
-pub const CAP_SHM: CapSet        = 1 << 7;
-pub const CAP_EVENT: CapSet      = 1 << 8;
+pub const CAP_NETWORK: CapSet = 1 << 1;
+pub const CAP_AUDIO: CapSet = 1 << 2;
+pub const CAP_DISPLAY: CapSet = 1 << 3;
+pub const CAP_DEVICE: CapSet = 1 << 4;
+pub const CAP_PROCESS: CapSet = 1 << 5;
+pub const CAP_PIPE: CapSet = 1 << 6;
+pub const CAP_SHM: CapSet = 1 << 7;
+pub const CAP_EVENT: CapSet = 1 << 8;
 pub const CAP_COMPOSITOR: CapSet = 1 << 9;
-pub const CAP_SYSTEM: CapSet     = 1 << 10;
-pub const CAP_DLL: CapSet        = 1 << 11;
-pub const CAP_THREAD: CapSet     = 1 << 12;
+pub const CAP_SYSTEM: CapSet = 1 << 10;
+pub const CAP_DLL: CapSet = 1 << 11;
+pub const CAP_THREAD: CapSet = 1 << 12;
 pub const CAP_MANAGE_PERMS: CapSet = 1 << 13;
-pub const CAP_DEBUG: CapSet        = 1 << 14;
+pub const CAP_DEBUG: CapSet = 1 << 14;
 /// Hypervisor — create and run VMs via the VT-x / AMD-V interface.
 /// Must be declared explicitly in Info.conf (`capabilities=hypervisor`).
-pub const CAP_HYPERVISOR: CapSet   = 1 << 15;
+pub const CAP_HYPERVISOR: CapSet = 1 << 15;
 
 // ---- Predefined sets ----
 
@@ -37,15 +37,21 @@ pub const CAP_HYPERVISOR: CapSet   = 1 << 15;
 pub const CAP_ALL: CapSet = (1 << 16) - 1; // bits 0..15
 
 /// Default for CLI programs spawned from terminal.
-pub const CAP_DEFAULT: CapSet = CAP_FILESYSTEM | CAP_PROCESS | CAP_PIPE
-                              | CAP_EVENT | CAP_DLL | CAP_THREAD;
+pub const CAP_DEFAULT: CapSet =
+    CAP_FILESYSTEM | CAP_PROCESS | CAP_PIPE | CAP_EVENT | CAP_DLL | CAP_THREAD;
 
 /// Infrastructure capabilities every GUI app needs — granted without user consent.
 pub const CAP_AUTO_GRANTED: CapSet = CAP_DLL | CAP_THREAD | CAP_SHM | CAP_EVENT | CAP_PIPE;
 
 /// Capabilities that require explicit user consent on first launch.
-pub const CAP_SENSITIVE: CapSet = CAP_FILESYSTEM | CAP_NETWORK | CAP_AUDIO | CAP_DISPLAY
-                                | CAP_DEVICE | CAP_PROCESS | CAP_SYSTEM | CAP_COMPOSITOR;
+pub const CAP_SENSITIVE: CapSet = CAP_FILESYSTEM
+    | CAP_NETWORK
+    | CAP_AUDIO
+    | CAP_DISPLAY
+    | CAP_DEVICE
+    | CAP_PROCESS
+    | CAP_SYSTEM
+    | CAP_COMPOSITOR;
 
 /// Parse a comma-separated capability string into a bitmask.
 ///

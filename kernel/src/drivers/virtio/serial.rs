@@ -13,10 +13,10 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use core::cell::UnsafeCell;
 
+use crate::drivers::hal::{self, Driver, DriverError, DriverType};
 use crate::drivers::pci::PciDevice;
-use crate::drivers::hal::{self, Driver, DriverType, DriverError};
-use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::drivers::virtio::virtqueue::VirtQueue;
+use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 
@@ -94,9 +94,13 @@ impl VirtioSerialDriver {
 }
 
 impl Driver for VirtioSerialDriver {
-    fn name(&self) -> &str { "VirtIO Serial" }
+    fn name(&self) -> &str {
+        "VirtIO Serial"
+    }
 
-    fn driver_type(&self) -> DriverType { DriverType::Char }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Char
+    }
 
     fn init(&mut self) -> Result<(), DriverError> {
         self.inner().post_rx_buffer();
@@ -140,19 +144,13 @@ impl Driver for VirtioSerialDriver {
 
         let send_len = buf.len().min(BUF_SIZE);
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                buf.as_ptr(),
-                this.tx_buf_phys as *mut u8,
-                send_len,
-            );
+            core::ptr::copy_nonoverlapping(buf.as_ptr(), this.tx_buf_phys as *mut u8, send_len);
         }
 
         let readable = [(this.tx_buf_phys, send_len as u32)];
-        let result = this.transmitq.execute_sync(
-            &readable,
-            &[],
-            || this.vdev.notify_queue(1),
-        );
+        let result = this
+            .transmitq
+            .execute_sync(&readable, &[], || this.vdev.notify_queue(1));
 
         match result {
             Some(_) => Ok(send_len),
@@ -171,8 +169,11 @@ impl Driver for VirtioSerialDriver {
 ///
 /// Called by the PCI driver table when a matching device is found.
 pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
-    crate::serial_verbose_println!("VirtIO Serial: probing PCI {:04x}:{:04x}",
-        pci.vendor_id, pci.device_id);
+    crate::serial_verbose_println!(
+        "VirtIO Serial: probing PCI {:04x}:{:04x}",
+        pci.vendor_id,
+        pci.device_id
+    );
 
     // 1. Find VirtIO PCI capabilities.
     let caps = virtio::find_capabilities(pci)?;

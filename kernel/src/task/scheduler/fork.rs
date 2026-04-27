@@ -92,12 +92,7 @@ pub fn set_thread_user_pages(tid: u32, val: u32) {
 }
 
 /// Update thread state for exec(): new PD, reset brk/mmap/fpu.
-pub fn exec_update_thread(
-    tid: u32,
-    new_pd: PhysAddr,
-    brk: u64,
-    user_pages: u32,
-) {
+pub fn exec_update_thread(tid: u32, new_pd: PhysAddr, brk: u64, user_pages: u32) {
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() {
         Some(s) => s,
@@ -118,8 +113,8 @@ pub fn exec_update_thread(
         // ASLR: randomize the mmap base within [0x20000000, 0x20000000 + 16 MiB)
         let mmap_rand =
             crate::task::loader::random_page_offset(crate::task::loader::ASLR_MMAP_MAX_PAGES);
-        thread.mmap_next = crate::memory::user_vmap::MMAP_BASE
-            .wrapping_add(mmap_rand as u64 * 4096);
+        thread.mmap_next =
+            crate::memory::user_vmap::MMAP_BASE.wrapping_add(mmap_rand as u64 * 4096);
         thread.fpu_state = crate::task::thread::FxState::new_default();
         thread.user_pages = user_pages;
         thread.context.checksum = thread.context.compute_checksum();

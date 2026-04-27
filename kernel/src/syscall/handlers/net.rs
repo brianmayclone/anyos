@@ -3,9 +3,9 @@
 //! Covers general network config, TCP, UDP, DNS, DHCP, ARP, and
 //! network polling/statistics.
 
-use super::helpers::read_user_str;
 #[allow(unused_imports)]
 use super::helpers::is_valid_user_ptr;
+use super::helpers::read_user_str;
 
 // =========================================================================
 // Networking (SYS_NET_*)
@@ -16,7 +16,9 @@ use super::helpers::is_valid_user_ptr;
 pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
     match cmd {
         0 => {
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             let cfg = crate::net::config();
             let link_up = crate::drivers::network::link_up();
             unsafe {
@@ -32,18 +34,24 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
             0
         }
         1 => {
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             unsafe {
                 let buf = buf_ptr as *const u8;
-                let mut ip = [0u8; 4]; let mut mask = [0u8; 4];
-                let mut gw = [0u8; 4]; let mut dns = [0u8; 4];
+                let mut ip = [0u8; 4];
+                let mut mask = [0u8; 4];
+                let mut gw = [0u8; 4];
+                let mut dns = [0u8; 4];
                 core::ptr::copy_nonoverlapping(buf, ip.as_mut_ptr(), 4);
                 core::ptr::copy_nonoverlapping(buf.add(4), mask.as_mut_ptr(), 4);
                 core::ptr::copy_nonoverlapping(buf.add(8), gw.as_mut_ptr(), 4);
                 core::ptr::copy_nonoverlapping(buf.add(12), dns.as_mut_ptr(), 4);
                 crate::net::set_config(
-                    crate::net::types::Ipv4Addr(ip), crate::net::types::Ipv4Addr(mask),
-                    crate::net::types::Ipv4Addr(gw), crate::net::types::Ipv4Addr(dns),
+                    crate::net::types::Ipv4Addr(ip),
+                    crate::net::types::Ipv4Addr(mask),
+                    crate::net::types::Ipv4Addr(gw),
+                    crate::net::types::Ipv4Addr(dns),
                 );
             }
             0
@@ -60,11 +68,19 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
         }
         4 => {
             // Query enabled state
-            if crate::drivers::network::is_enabled() { 1 } else { 0 }
+            if crate::drivers::network::is_enabled() {
+                1
+            } else {
+                0
+            }
         }
         5 => {
             // Query hardware availability
-            if crate::drivers::network::is_available() { 1 } else { 0 }
+            if crate::drivers::network::is_available() {
+                1
+            } else {
+                0
+            }
         }
         6 => {
             // Reload hosts file from disk
@@ -79,16 +95,22 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
         7 => {
             // Get interface configs. buf_ptr = output buffer, must hold N*128 bytes.
             // Returns number of interfaces written.
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 8 * 128) };
             crate::net::interfaces::serialize_configs(buf)
         }
         8 => {
             // Set interface configs and save to disk.
             // buf_ptr points to: [count:u32, entries: count*128 bytes]
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             let count = unsafe { *(buf_ptr as *const u32) };
-            if count == 0 || count > 8 { return u32::MAX; }
+            if count == 0 || count > 8 {
+                return u32::MAX;
+            }
             let data_ptr = (buf_ptr + 4) as *const u8;
             let data = unsafe { core::slice::from_raw_parts(data_ptr, count as usize * 128) };
             crate::net::interfaces::apply_and_save(data, count)
@@ -96,7 +118,9 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
         9 => {
             // Get NIC driver name. buf_ptr = output buffer (up to 64 bytes).
             // Returns name length, or 0 if no NIC.
-            if buf_ptr == 0 { return 0; }
+            if buf_ptr == 0 {
+                return 0;
+            }
             {
                 if let Some(name) = crate::drivers::network::driver_name() {
                     let bytes = name.as_bytes();
@@ -119,14 +143,17 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
             //   [35..51]: gateway
             //   [51..67]: dns
             //   [67..80]: reserved
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             let cfg = crate::net::config();
             unsafe {
                 let buf = buf_ptr as *mut u8;
                 core::ptr::copy_nonoverlapping(cfg.ipv6_link_local.0.as_ptr(), buf, 16);
                 core::ptr::copy_nonoverlapping(cfg.ipv6_addr.0.as_ptr(), buf.add(16), 16);
                 *buf.add(32) = cfg.ipv6_prefix_len;
-                *buf.add(33) = 0; *buf.add(34) = 0;
+                *buf.add(33) = 0;
+                *buf.add(34) = 0;
                 core::ptr::copy_nonoverlapping(cfg.ipv6_gateway.0.as_ptr(), buf.add(35), 16);
                 core::ptr::copy_nonoverlapping(cfg.ipv6_dns.0.as_ptr(), buf.add(51), 16);
             }
@@ -138,7 +165,9 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
             //   [16]:     prefix length
             //   [17..33]: gateway
             //   [33..49]: dns
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             unsafe {
                 let buf = buf_ptr as *const u8;
                 let mut addr = [0u8; 16];
@@ -149,15 +178,19 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
                 core::ptr::copy_nonoverlapping(buf.add(17), gw.as_mut_ptr(), 16);
                 core::ptr::copy_nonoverlapping(buf.add(33), dns.as_mut_ptr(), 16);
                 crate::net::set_config_v6(
-                    crate::net::types::Ipv6Addr(addr), prefix_len,
-                    crate::net::types::Ipv6Addr(gw), crate::net::types::Ipv6Addr(dns),
+                    crate::net::types::Ipv6Addr(addr),
+                    prefix_len,
+                    crate::net::types::Ipv6Addr(gw),
+                    crate::net::types::Ipv6Addr(dns),
                 );
             }
             0
         }
         12 => {
             // Get NDP neighbor table. Same format as ARP (but 28 bytes per entry: ip6[16]+mac[6]+pad[6]).
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             let entries = crate::net::ndp::entries();
             let count = entries.len().min(32);
             unsafe {
@@ -167,7 +200,9 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
                     core::ptr::copy_nonoverlapping(ip.0.as_ptr(), buf.add(off), 16);
                     core::ptr::copy_nonoverlapping(mac.0.as_ptr(), buf.add(off + 16), 6);
                     // padding
-                    for j in 0..6 { *buf.add(off + 22 + j) = 0; }
+                    for j in 0..6 {
+                        *buf.add(off + 22 + j) = 0;
+                    }
                 }
             }
             count as u32
@@ -185,7 +220,9 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
             0
         }
         17 => {
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             let buf = unsafe {
                 core::slice::from_raw_parts_mut(
                     buf_ptr as *mut u8,
@@ -201,9 +238,13 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u64) -> u32 {
 /// sys_net_ping - ICMP ping. arg1=ip_ptr(4 bytes), arg2=seq, arg3=timeout_ticks
 /// Returns RTT in ticks, or u32::MAX on timeout.
 pub fn sys_net_ping(ip_ptr: u64, seq: u32, timeout: u32) -> u32 {
-    if ip_ptr == 0 { return u32::MAX; }
+    if ip_ptr == 0 {
+        return u32::MAX;
+    }
     let mut ip_bytes = [0u8; 4];
-    unsafe { core::ptr::copy_nonoverlapping(ip_ptr as *const u8, ip_bytes.as_mut_ptr(), 4); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(ip_ptr as *const u8, ip_bytes.as_mut_ptr(), 4);
+    }
     let ip = crate::net::types::Ipv4Addr(ip_bytes);
     match crate::net::icmp::ping(ip, seq as u16, timeout) {
         Some((rtt, _ttl)) => rtt,
@@ -238,7 +279,9 @@ pub fn sys_net_dns(hostname_ptr: u64, result_ptr: u64) -> u32 {
     match crate::net::dns::resolve(hostname) {
         Ok(ip) => {
             if result_ptr != 0 {
-                unsafe { core::ptr::copy_nonoverlapping(ip.0.as_ptr(), result_ptr as *mut u8, 4); }
+                unsafe {
+                    core::ptr::copy_nonoverlapping(ip.0.as_ptr(), result_ptr as *mut u8, 4);
+                }
             }
             0
         }
@@ -254,13 +297,19 @@ pub fn sys_net_dns(hostname_ptr: u64, result_ptr: u64) -> u32 {
 /// arg1=params_ptr: [ip:4, port:u16, pad:u16, timeout:u32] = 12 bytes
 /// Returns socket_id or u32::MAX on error.
 pub fn sys_tcp_connect(params_ptr: u64) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
+    if params_ptr == 0 {
+        return u32::MAX;
+    }
     let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 12) };
     let ip = crate::net::types::Ipv4Addr([params[0], params[1], params[2], params[3]]);
     let port = u16::from_le_bytes([params[4], params[5]]);
     let timeout = u32::from_le_bytes([params[8], params[9], params[10], params[11]]);
     let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
-    let timeout_ticks = if timeout == 0 { pit_hz } else { timeout * pit_hz / 1000 };
+    let timeout_ticks = if timeout == 0 {
+        pit_hz
+    } else {
+        timeout * pit_hz / 1000
+    };
     crate::net::tcp::connect(ip, port, timeout_ticks)
 }
 
@@ -268,7 +317,9 @@ pub fn sys_tcp_connect(params_ptr: u64) -> u32 {
 /// arg1=socket_id, arg2=buf_ptr, arg3=len
 /// Returns bytes sent or u32::MAX on error.
 pub fn sys_tcp_send(socket_id: u32, buf_ptr: u64, len: u32) -> u32 {
-    if buf_ptr == 0 || len == 0 { return 0; }
+    if buf_ptr == 0 || len == 0 {
+        return 0;
+    }
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
     let result = crate::net::tcp::send(socket_id, buf, 1000); // 10s timeout
     if result != u32::MAX && result > 0 {
@@ -281,7 +332,9 @@ pub fn sys_tcp_send(socket_id: u32, buf_ptr: u64, len: u32) -> u32 {
 /// arg1=socket_id, arg2=buf_ptr, arg3=len
 /// Returns bytes received, 0=EOF, u32::MAX=error.
 pub fn sys_tcp_recv(socket_id: u32, buf_ptr: u64, len: u32) -> u32 {
-    if buf_ptr == 0 || len == 0 { return u32::MAX; }
+    if buf_ptr == 0 || len == 0 {
+        return u32::MAX;
+    }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
     let result = crate::net::tcp::recv(socket_id, buf, 3000); // 30s timeout
     if result != u32::MAX && result > 0 {
@@ -316,7 +369,9 @@ pub fn sys_tcp_shutdown_wr(socket_id: u32) -> u32 {
 /// sys_tcp_listen - Listen on a TCP port for incoming connections.
 /// arg1=port, arg2=backlog. Returns listener socket_id or u32::MAX on error.
 pub fn sys_tcp_listen(port: u32, backlog: u32) -> u32 {
-    if port == 0 || port > 65535 { return u32::MAX; }
+    if port == 0 || port > 65535 {
+        return u32::MAX;
+    }
     crate::net::tcp::listen(port as u16, backlog.min(16) as u16)
 }
 
@@ -324,7 +379,9 @@ pub fn sys_tcp_listen(port: u32, backlog: u32) -> u32 {
 /// arg1=listener_id, arg2=result_ptr (12 bytes: [socket_id:u32, ip:[u8;4], port:u16, pad:u16])
 /// Returns 0 on success, u32::MAX on timeout/error.
 pub fn sys_tcp_accept(listener_id: u32, result_ptr: u64) -> u32 {
-    if result_ptr == 0 { return u32::MAX; }
+    if result_ptr == 0 {
+        return u32::MAX;
+    }
     let pit_hz = crate::arch::hal::timer_frequency_hz() as u32;
     let timeout_ticks = 30 * pit_hz; // 30 second timeout
     let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, timeout_ticks);
@@ -347,7 +404,9 @@ pub fn sys_tcp_accept(listener_id: u32, result_ptr: u64) -> u32 {
 /// arg1=listener_id, arg2=result_ptr (12 bytes, same as sys_tcp_accept)
 /// Returns 0 if a connection was accepted, u32::MAX if none pending.
 pub fn sys_tcp_accept_nowait(listener_id: u32, result_ptr: u64) -> u32 {
-    if result_ptr == 0 { return u32::MAX; }
+    if result_ptr == 0 {
+        return u32::MAX;
+    }
     // Use a 0-tick timeout so the accept loop returns immediately if nothing is ready.
     let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, 0);
     if sock_id == u32::MAX {
@@ -367,26 +426,28 @@ pub fn sys_tcp_accept_nowait(listener_id: u32, result_ptr: u64) -> u32 {
 ///   [local_ip:4, local_port:u16, remote_ip:4, remote_port:u16, state:u8, owner_tid_lo:u8, recv_buf_hi:u16]
 /// Returns number of entries written.
 pub fn sys_tcp_list(buf_ptr: u64, max_entries: u32) -> u32 {
-    if buf_ptr == 0 || max_entries == 0 { return 0; }
+    if buf_ptr == 0 || max_entries == 0 {
+        return 0;
+    }
     let conns = crate::net::tcp::list_connections();
     let count = conns.len().min(max_entries as usize);
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * 16) };
 
     for (i, info) in conns.iter().take(count).enumerate() {
         let off = i * 16;
-        buf[off..off+4].copy_from_slice(info.local_ip.as_bytes());
+        buf[off..off + 4].copy_from_slice(info.local_ip.as_bytes());
         let lp = info.local_port.to_be_bytes();
-        buf[off+4] = lp[0];
-        buf[off+5] = lp[1];
-        buf[off+6..off+10].copy_from_slice(info.remote_ip.as_bytes());
+        buf[off + 4] = lp[0];
+        buf[off + 5] = lp[1];
+        buf[off + 6..off + 10].copy_from_slice(info.remote_ip.as_bytes());
         let rp = info.remote_port.to_be_bytes();
-        buf[off+10] = rp[0];
-        buf[off+11] = rp[1];
-        buf[off+12] = info.state as u8;
-        buf[off+13] = (info.owner_tid & 0xFF) as u8;
+        buf[off + 10] = rp[0];
+        buf[off + 11] = rp[1];
+        buf[off + 12] = info.state as u8;
+        buf[off + 13] = (info.owner_tid & 0xFF) as u8;
         let recv_len = (info.recv_buf_len as u16).to_le_bytes();
-        buf[off+14] = recv_len[0];
-        buf[off+15] = recv_len[1];
+        buf[off + 14] = recv_len[0];
+        buf[off + 15] = recv_len[1];
     }
 
     count as u32
@@ -406,14 +467,22 @@ pub fn sys_net_poll() -> u32 {
 /// sys_udp_bind - Bind to a UDP port (creates receive queue).
 /// arg1=port. Returns 0 on success, u32::MAX if already bound or invalid.
 pub fn sys_udp_bind(port: u32) -> u32 {
-    if port == 0 || port > 65535 { return u32::MAX; }
-    if crate::net::udp::bind(port as u16) { 0 } else { u32::MAX }
+    if port == 0 || port > 65535 {
+        return u32::MAX;
+    }
+    if crate::net::udp::bind(port as u16) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// sys_udp_unbind - Unbind a UDP port.
 /// arg1=port. Returns 0.
 pub fn sys_udp_unbind(port: u32) -> u32 {
-    if port > 65535 { return u32::MAX; }
+    if port > 65535 {
+        return u32::MAX;
+    }
     crate::net::udp::unbind(port as u16);
     0
 }
@@ -423,7 +492,9 @@ pub fn sys_udp_unbind(port: u32) -> u32 {
 /// flags: bit 0 = force broadcast (bypass SO_BROADCAST check).
 /// Returns bytes sent or u32::MAX on error.
 pub fn sys_udp_sendto(params_ptr: u64) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
+    if params_ptr == 0 {
+        return u32::MAX;
+    }
     let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 20) };
 
     let dst_ip = crate::net::types::Ipv4Addr([params[0], params[1], params[2], params[3]]);
@@ -433,8 +504,12 @@ pub fn sys_udp_sendto(params_ptr: u64) -> u32 {
     let data_len = u32::from_le_bytes([params[12], params[13], params[14], params[15]]);
     let flags = u32::from_le_bytes([params[16], params[17], params[18], params[19]]);
 
-    if data_ptr == 0 || data_len == 0 { return 0; }
-    if data_len > 1472 { return u32::MAX; } // Max UDP payload (1500 - 20 IP - 8 UDP)
+    if data_ptr == 0 || data_len == 0 {
+        return 0;
+    }
+    if data_len > 1472 {
+        return u32::MAX;
+    } // Max UDP payload (1500 - 20 IP - 8 UDP)
 
     let data = unsafe { core::slice::from_raw_parts(data_ptr as *const u8, data_len as usize) };
 
@@ -448,7 +523,9 @@ pub fn sys_udp_sendto(params_ptr: u64) -> u32 {
     if ok {
         crate::task::scheduler::record_net_tx(data_len as u64);
         data_len
-    } else { u32::MAX }
+    } else {
+        u32::MAX
+    }
 }
 
 /// sys_udp_recvfrom - Receive a UDP datagram on a bound port.
@@ -476,7 +553,8 @@ pub fn sys_udp_recvfrom(port: u32, buf_ptr: u64, buf_len: u32) -> u32 {
         Some(d) => {
             let payload_len = d.data.len().min((buf_len as usize).saturating_sub(8));
             let total = 8 + payload_len;
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+            let buf =
+                unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
 
             // Header: src_ip (4 bytes)
             buf[0..4].copy_from_slice(&d.src_ip.0);
@@ -498,8 +576,14 @@ pub fn sys_udp_recvfrom(port: u32, buf_ptr: u64, buf_len: u32) -> u32 {
 /// arg1=port, arg2=opt (1=SO_BROADCAST, 2=SO_RCVTIMEO), arg3=val.
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_udp_set_opt(port: u32, opt: u32, val: u32) -> u32 {
-    if port == 0 || port > 65535 { return u32::MAX; }
-    if crate::net::udp::set_opt(port as u16, opt, val) { 0 } else { u32::MAX }
+    if port == 0 || port > 65535 {
+        return u32::MAX;
+    }
+    if crate::net::udp::set_opt(port as u16, opt, val) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// sys_udp_list - List all bound UDP ports.
@@ -507,7 +591,9 @@ pub fn sys_udp_set_opt(port: u32, opt: u32, val: u32) -> u32 {
 ///   [port:u16, owner_tid:u16, recv_queue_len:u16, pad:u16]
 /// Returns number of entries written.
 pub fn sys_udp_list(buf_ptr: u64, max_entries: u32) -> u32 {
-    if buf_ptr == 0 || max_entries == 0 { return 0; }
+    if buf_ptr == 0 || max_entries == 0 {
+        return 0;
+    }
     let bindings = crate::net::udp::list_bindings();
     let count = bindings.len().min(max_entries as usize);
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * 8) };
@@ -549,7 +635,9 @@ pub fn sys_udp_list(buf_ptr: u64, max_entries: u32) -> u32 {
 ///   [100..104] tcp_conn_errors_lo (u32)
 /// Returns 0 on success.
 pub fn sys_net_stats(buf_ptr: u64, buf_size: u32) -> u32 {
-    if buf_ptr == 0 || buf_size < 104 { return u32::MAX; }
+    if buf_ptr == 0 || buf_size < 104 {
+        return u32::MAX;
+    }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 104) };
 
     // NIC stats
@@ -656,18 +744,22 @@ pub fn sys_wifi(cmd: u32, buf_ptr: u64, _buf_len: u32) -> u32 {
     match cmd {
         // 0 — is WiFi hardware available?
         0 => {
-            if crate::drivers::network::wifi_available() { 1 } else { 0 }
+            if crate::drivers::network::wifi_available() {
+                1
+            } else {
+                0
+            }
         }
 
         // 1 — get WiFi state code
         1 => {
             use crate::net::wifi::WifiState;
             match crate::net::wifi::get_state() {
-                WifiState::Disconnected    => 0,
-                WifiState::Scanning        => 1,
-                WifiState::Associating {..} => 2,
-                WifiState::Authenticating {..} => 3,
-                WifiState::Connected {..}  => 4,
+                WifiState::Disconnected => 0,
+                WifiState::Scanning => 1,
+                WifiState::Associating { .. } => 2,
+                WifiState::Authenticating { .. } => 3,
+                WifiState::Connected { .. } => 4,
             }
         }
 
@@ -681,14 +773,20 @@ pub fn sys_wifi(cmd: u32, buf_ptr: u64, _buf_len: u32) -> u32 {
 
         // 3 — read scan results
         3 => {
-            if buf_ptr == 0 { return 0; }
+            if buf_ptr == 0 {
+                return 0;
+            }
             let results = crate::net::wifi::get_scan_results();
-            let max = if _buf_len > 0 { (_buf_len as usize / 48).min(results.len()) } else { results.len() };
-            let count = max;
-            if count == 0 { return 0; }
-            let buf = unsafe {
-                core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * 48)
+            let max = if _buf_len > 0 {
+                (_buf_len as usize / 48).min(results.len())
+            } else {
+                results.len()
             };
+            let count = max;
+            if count == 0 {
+                return 0;
+            }
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * 48) };
             for (i, bss) in results.iter().take(count).enumerate() {
                 let off = i * 48;
                 buf[off..off + 6].copy_from_slice(&bss.bssid);
@@ -701,21 +799,29 @@ pub fn sys_wifi(cmd: u32, buf_ptr: u64, _buf_len: u32) -> u32 {
                     crate::net::wifi::WifiSecurity::Wpa2Personal => 1,
                 };
                 // pad [42..48]
-                for b in &mut buf[off + 42..off + 48] { *b = 0; }
+                for b in &mut buf[off + 42..off + 48] {
+                    *b = 0;
+                }
             }
             count as u32
         }
 
         // 4 — connect to a network
         4 => {
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             // buf layout: [ssid_len:1, ssid:32, pw_len:1, pw:64] = 98 bytes
             let raw = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, 98) };
             let ssid_len = raw[0] as usize;
-            if ssid_len > 32 { return u32::MAX; }
+            if ssid_len > 32 {
+                return u32::MAX;
+            }
             let ssid = &raw[1..1 + ssid_len];
             let pw_len = raw[33] as usize;
-            if pw_len > 64 { return u32::MAX; }
+            if pw_len > 64 {
+                return u32::MAX;
+            }
             let pw = &raw[34..34 + pw_len];
             crate::net::wifi::connect(ssid, pw);
             0
@@ -729,32 +835,57 @@ pub fn sys_wifi(cmd: u32, buf_ptr: u64, _buf_len: u32) -> u32 {
 
         // 6 — get connection status (48-byte struct)
         6 => {
-            if buf_ptr == 0 { return u32::MAX; }
+            if buf_ptr == 0 {
+                return u32::MAX;
+            }
             use crate::net::wifi::WifiState;
             let state = crate::net::wifi::get_state();
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 48) };
-            for b in buf.iter_mut() { *b = 0; }
+            for b in buf.iter_mut() {
+                *b = 0;
+            }
             match &state {
                 WifiState::Disconnected => {
-                    buf[0] = 0; buf[1] = 0;
+                    buf[0] = 0;
+                    buf[1] = 0;
                 }
                 WifiState::Scanning => {
-                    buf[0] = 1; buf[1] = 0;
+                    buf[0] = 1;
+                    buf[1] = 0;
                 }
-                WifiState::Associating { bssid, ssid, ssid_len, channel } => {
-                    buf[0] = 2; buf[1] = 0; buf[2] = *channel;
+                WifiState::Associating {
+                    bssid,
+                    ssid,
+                    ssid_len,
+                    channel,
+                } => {
+                    buf[0] = 2;
+                    buf[1] = 0;
+                    buf[2] = *channel;
                     buf[4..10].copy_from_slice(bssid);
                     buf[10..42].copy_from_slice(ssid);
                     buf[42] = *ssid_len as u8;
                 }
-                WifiState::Authenticating { bssid, ssid, ssid_len } => {
-                    buf[0] = 3; buf[1] = 0;
+                WifiState::Authenticating {
+                    bssid,
+                    ssid,
+                    ssid_len,
+                } => {
+                    buf[0] = 3;
+                    buf[1] = 0;
                     buf[4..10].copy_from_slice(bssid);
                     buf[10..42].copy_from_slice(ssid);
                     buf[42] = *ssid_len as u8;
                 }
-                WifiState::Connected { bssid, ssid, ssid_len, channel } => {
-                    buf[0] = 4; buf[1] = 1; buf[2] = *channel;
+                WifiState::Connected {
+                    bssid,
+                    ssid,
+                    ssid_len,
+                    channel,
+                } => {
+                    buf[0] = 4;
+                    buf[1] = 1;
+                    buf[2] = *channel;
                     buf[4..10].copy_from_slice(bssid);
                     buf[10..42].copy_from_slice(ssid);
                     buf[42] = *ssid_len as u8;
@@ -774,9 +905,13 @@ pub fn sys_wifi(cmd: u32, buf_ptr: u64, _buf_len: u32) -> u32 {
 /// sys_net_ping6 - ICMPv6 ping. arg1=ip6_ptr(16 bytes), arg2=seq, arg3=timeout_ticks
 /// Returns RTT in ticks, or u32::MAX on timeout.
 pub fn sys_net_ping6(ip_ptr: u64, seq: u32, timeout: u32) -> u32 {
-    if ip_ptr == 0 { return u32::MAX; }
+    if ip_ptr == 0 {
+        return u32::MAX;
+    }
     let mut ip_bytes = [0u8; 16];
-    unsafe { core::ptr::copy_nonoverlapping(ip_ptr as *const u8, ip_bytes.as_mut_ptr(), 16); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(ip_ptr as *const u8, ip_bytes.as_mut_ptr(), 16);
+    }
     let ip = crate::net::types::Ipv6Addr(ip_bytes);
     match crate::net::icmpv6::ping6(ip, seq as u16, timeout) {
         Some((rtt, _hop_limit)) => rtt,
@@ -788,9 +923,13 @@ pub fn sys_net_ping6(ip_ptr: u64, seq: u32, timeout: u32) -> u32 {
 /// arg1=hostname_ptr, arg2=result_ptr (16 bytes for IPv6 address)
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_net_dns6(hostname_ptr: u64, result_ptr: u64) -> u32 {
-    if hostname_ptr == 0 || result_ptr == 0 { return u32::MAX; }
+    if hostname_ptr == 0 || result_ptr == 0 {
+        return u32::MAX;
+    }
     let hostname = unsafe { read_user_str(hostname_ptr) };
-    if hostname.is_empty() { return u32::MAX; }
+    if hostname.is_empty() {
+        return u32::MAX;
+    }
     match crate::net::dns::resolve_v6(hostname) {
         Ok(addr) => {
             unsafe {
@@ -806,7 +945,9 @@ pub fn sys_net_dns6(hostname_ptr: u64, result_ptr: u64) -> u32 {
 /// arg1=params_ptr: [ip6:16, port:u16, pad:u16, timeout:u32] = 24 bytes
 /// Returns socket ID or u32::MAX on error.
 pub fn sys_tcp_connect_v6(params_ptr: u64) -> u32 {
-    if params_ptr == 0 { return u32::MAX; }
+    if params_ptr == 0 {
+        return u32::MAX;
+    }
     let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 24) };
     let mut ip6 = [0u8; 16];
     ip6.copy_from_slice(&params[0..16]);

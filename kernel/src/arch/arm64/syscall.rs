@@ -18,8 +18,12 @@ use crate::syscall::{SYS_FORK, SYS_MAP_FRAMEBUFFER};
 #[no_mangle]
 pub extern "C" fn arm64_syscall_dispatch(
     nr: u64,
-    arg0: u64, arg1: u64, arg2: u64,
-    arg3: u64, arg4: u64, arg5: u64,
+    arg0: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
 ) -> u64 {
     // Forward to the common syscall dispatcher (5 args max)
     let _ = arg5; // reserved for future use
@@ -31,10 +35,7 @@ pub extern "C" fn arm64_syscall_dispatch(
         return if r == u32::MAX { u64::MAX } else { r as u64 };
     }
 
-    let ret = crate::syscall::dispatch_inner(
-        nr as u32,
-        arg0, arg1, arg2, arg3, arg4,
-    );
+    let ret = crate::syscall::dispatch_inner(nr as u32, arg0, arg1, arg2, arg3, arg4);
     if ret == u32::MAX {
         u64::MAX
     } else {

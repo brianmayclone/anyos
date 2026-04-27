@@ -45,7 +45,10 @@ pub fn dir_cache_insert(hash: u32, cluster: u32) {
     let idx = (hash as usize) & (DIR_CACHE_SIZE - 1);
     let mut cache = DIR_CACHE.lock();
     let _tick = DIR_CACHE_TICK.fetch_add(1, Ordering::Relaxed);
-    cache[idx] = DirCacheEntry { path_hash: hash, cluster };
+    cache[idx] = DirCacheEntry {
+        path_hash: hash,
+        cluster,
+    };
 }
 
 /// Invalidate all directory cache entries (called on mkdir/rmdir/rename).

@@ -43,20 +43,19 @@ pub fn sys_thermal_read(buf_ptr: u64, max_count: u32) -> u32 {
         let readings = crate::drivers::thermal::read_all();
         let count = readings.len().min(max_count as usize);
 
-        let buf = unsafe {
-            core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * entry_size)
-        };
+        let buf =
+            unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count * entry_size) };
 
         for (i, r) in readings[..count].iter().enumerate() {
             let off = i * entry_size;
             use crate::drivers::thermal::ThermalSource;
             let (src_type, src_id) = match r.source {
                 ThermalSource::IntelCpu(id) => (0u8, id as u8),
-                ThermalSource::AmdCpu(id)   => (1u8, id as u8),
-                ThermalSource::Lm75(addr)   => (2u8, addr),
-                ThermalSource::Smbus(addr)  => (3u8, addr),
+                ThermalSource::AmdCpu(id) => (1u8, id as u8),
+                ThermalSource::Lm75(addr) => (2u8, addr),
+                ThermalSource::Smbus(addr) => (3u8, addr),
             };
-            buf[off]     = src_type;
+            buf[off] = src_type;
             buf[off + 1] = src_id;
             buf[off + 2] = 0;
             buf[off + 3] = 0;
@@ -67,7 +66,10 @@ pub fn sys_thermal_read(buf_ptr: u64, max_count: u32) -> u32 {
         count as u32
     }
     #[cfg(not(target_arch = "x86_64"))]
-    { let _ = (buf_ptr, max_count); 0 }
+    {
+        let _ = (buf_ptr, max_count);
+        0
+    }
 }
 
 // ── SYS_THERMAL_CPU (321) ─────────────────────────────────────────────────────
@@ -83,7 +85,9 @@ pub fn sys_thermal_cpu() -> u32 {
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
-    { u32::MAX }
+    {
+        u32::MAX
+    }
 }
 
 // ── SYS_ACPI_SLEEP (322) ─────────────────────────────────────────────────────
@@ -112,7 +116,10 @@ pub fn sys_acpi_sleep(state: u32) -> u32 {
         0
     }
     #[cfg(not(target_arch = "x86_64"))]
-    { let _ = state; u32::MAX }
+    {
+        let _ = state;
+        u32::MAX
+    }
 }
 
 // ── SYS_ACPI_PERF (323) ──────────────────────────────────────────────────────
@@ -137,7 +144,10 @@ pub fn sys_acpi_perf(cmd: u32, arg: u32) -> u32 {
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
-    { let _ = (cmd, arg); u32::MAX }
+    {
+        let _ = (cmd, arg);
+        u32::MAX
+    }
 }
 
 // ── SYS_I2C_READ (324) ───────────────────────────────────────────────────────
@@ -157,7 +167,10 @@ pub fn sys_i2c_read(addr: u32, reg: u32) -> u32 {
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
-    { let _ = (addr, reg); u32::MAX }
+    {
+        let _ = (addr, reg);
+        u32::MAX
+    }
 }
 
 // ── SYS_I2C_WRITE (325) ──────────────────────────────────────────────────────
@@ -178,7 +191,10 @@ pub fn sys_i2c_write(addr: u32, reg: u32, value: u32) -> u32 {
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
-    { let _ = (addr, reg, value); u32::MAX }
+    {
+        let _ = (addr, reg, value);
+        u32::MAX
+    }
 }
 
 // ── SYS_I2C_DETECT (326) ─────────────────────────────────────────────────────
@@ -191,8 +207,15 @@ pub fn sys_i2c_detect(addr: u32) -> u32 {
         if addr > 0x7F {
             return 0;
         }
-        if crate::drivers::i2c::i2c_detect(addr as u8) { 1 } else { 0 }
+        if crate::drivers::i2c::i2c_detect(addr as u8) {
+            1
+        } else {
+            0
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
-    { let _ = addr; 0 }
+    {
+        let _ = addr;
+        0
+    }
 }

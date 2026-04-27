@@ -8,8 +8,8 @@
 //! - Blocking uses `save_complete = 0` before `Blocked` (per save_complete race fix).
 //! - Never hold the lock during `serial_println!` or `schedule()`.
 
-use alloc::collections::VecDeque;
 use crate::sync::spinlock::Spinlock;
+use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Maximum number of concurrent anonymous pipes system-wide.
@@ -325,7 +325,8 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
 /// "empty but more data may arrive" from "empty and at EOF".
 pub fn bytes_available(pipe_id: u32) -> u32 {
     let guard = PIPES.lock();
-    guard.iter()
+    guard
+        .iter()
         .find_map(|slot| {
             slot.as_ref()
                 .filter(|p| p.id == pipe_id)
@@ -341,7 +342,8 @@ pub fn bytes_available(pipe_id: u32) -> u32 {
 /// to report `POLLHUP`.
 pub fn is_write_closed(pipe_id: u32) -> bool {
     let guard = PIPES.lock();
-    guard.iter()
+    guard
+        .iter()
         .find_map(|slot| {
             slot.as_ref()
                 .filter(|p| p.id == pipe_id)
@@ -352,12 +354,20 @@ pub fn is_write_closed(pipe_id: u32) -> bool {
 
 // ---- Internal helpers ----
 
-fn find_pipe<'a>(slots: &'a mut [Option<AnonPipe>; MAX_PIPES], id: u32) -> Option<&'a mut AnonPipe> {
-    slots.iter_mut()
+fn find_pipe<'a>(
+    slots: &'a mut [Option<AnonPipe>; MAX_PIPES],
+    id: u32,
+) -> Option<&'a mut AnonPipe> {
+    slots
+        .iter_mut()
         .find_map(|slot| slot.as_mut().filter(|p| p.id == id))
 }
 
-fn find_pipe_slot<'a>(slots: &'a mut [Option<AnonPipe>; MAX_PIPES], id: u32) -> Option<&'a mut Option<AnonPipe>> {
-    slots.iter_mut()
+fn find_pipe_slot<'a>(
+    slots: &'a mut [Option<AnonPipe>; MAX_PIPES],
+    id: u32,
+) -> Option<&'a mut Option<AnonPipe>> {
+    slots
+        .iter_mut()
         .find(|slot| slot.as_ref().map_or(false, |p| p.id == id))
 }

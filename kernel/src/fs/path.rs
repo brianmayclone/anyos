@@ -27,7 +27,9 @@ pub fn normalize(path: &str) -> String {
         match part {
             "" | "." => {}
             ".." => {
-                if !components.is_empty() { components.pop(); }
+                if !components.is_empty() {
+                    components.pop();
+                }
             }
             other => components.push(other),
         }

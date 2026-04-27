@@ -39,7 +39,12 @@ pub struct TestContext {
 
 impl TestContext {
     pub fn new(suite_name: &'static str, test_name: &'static str) -> Self {
-        Self { suite_name, test_name, passed: 0, failed: 0 }
+        Self {
+            suite_name,
+            test_name,
+            passed: 0,
+            failed: 0,
+        }
     }
 
     /// Assert that `cond` is `true`.
@@ -50,7 +55,9 @@ impl TestContext {
             self.failed += 1;
             crate::serial_println!(
                 "    [FAIL] {}::{} — {} (expected true, got false)",
-                self.suite_name, self.test_name, msg
+                self.suite_name,
+                self.test_name,
+                msg
             );
         }
     }
@@ -63,7 +70,9 @@ impl TestContext {
             self.failed += 1;
             crate::serial_println!(
                 "    [FAIL] {}::{} — {} (expected false, got true)",
-                self.suite_name, self.test_name, msg
+                self.suite_name,
+                self.test_name,
+                msg
             );
         }
     }
@@ -79,7 +88,11 @@ impl TestContext {
             self.failed += 1;
             crate::serial_println!(
                 "    [FAIL] {}::{} — {} (left={:?}, right={:?})",
-                self.suite_name, self.test_name, msg, left, right
+                self.suite_name,
+                self.test_name,
+                msg,
+                left,
+                right
             );
         }
     }
@@ -95,7 +108,10 @@ impl TestContext {
             self.failed += 1;
             crate::serial_println!(
                 "    [FAIL] {}::{} — {} (expected !=, both are {:?})",
-                self.suite_name, self.test_name, msg, left
+                self.suite_name,
+                self.test_name,
+                msg,
+                left
             );
         }
     }
@@ -103,12 +119,17 @@ impl TestContext {
     /// Assert that `value` is `Some(_)` and return the inner value (or `None` on failure).
     pub fn expect_some<T: core::fmt::Debug>(&mut self, value: Option<T>, msg: &str) -> Option<T> {
         match value {
-            Some(v) => { self.passed += 1; Some(v) }
+            Some(v) => {
+                self.passed += 1;
+                Some(v)
+            }
             None => {
                 self.failed += 1;
                 crate::serial_println!(
                     "    [FAIL] {}::{} — {} (expected Some, got None)",
-                    self.suite_name, self.test_name, msg
+                    self.suite_name,
+                    self.test_name,
+                    msg
                 );
                 None
             }
@@ -118,12 +139,17 @@ impl TestContext {
     /// Assert that `value` is `None`.
     pub fn expect_none<T: core::fmt::Debug>(&mut self, value: Option<T>, msg: &str) {
         match value {
-            None => { self.passed += 1; }
+            None => {
+                self.passed += 1;
+            }
             Some(v) => {
                 self.failed += 1;
                 crate::serial_println!(
                     "    [FAIL] {}::{} — {} (expected None, got Some({:?}))",
-                    self.suite_name, self.test_name, msg, v
+                    self.suite_name,
+                    self.test_name,
+                    msg,
+                    v
                 );
             }
         }
@@ -140,7 +166,11 @@ impl TestContext {
             self.failed += 1;
             crate::serial_println!(
                 "    [FAIL] {}::{} — {} ({:?} < {:?})",
-                self.suite_name, self.test_name, msg, left, right
+                self.suite_name,
+                self.test_name,
+                msg,
+                left,
+                right
             );
         }
     }
@@ -156,7 +186,11 @@ impl TestContext {
             self.failed += 1;
             crate::serial_println!(
                 "    [FAIL] {}::{} — {} ({:?} <= {:?})",
-                self.suite_name, self.test_name, msg, left, right
+                self.suite_name,
+                self.test_name,
+                msg,
+                left,
+                right
             );
         }
     }

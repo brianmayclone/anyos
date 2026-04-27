@@ -10,11 +10,11 @@
 //! Translation is device-agnostic: both PS/2 and USB-HID keyboards feed
 //! scancodes through the same [`translate`] function.
 
-mod us;
-mod de;
 mod ch;
+mod de;
 mod fr;
 mod pl;
+mod us;
 
 use crate::sync::spinlock::Spinlock;
 
@@ -23,10 +23,10 @@ use crate::sync::spinlock::Spinlock;
 #[repr(u32)]
 pub enum LayoutId {
     UsQwerty = 0,
-    DeDe     = 1,
-    DeCh     = 2,
-    FrFr     = 3,
-    PlPl     = 4,
+    DeDe = 1,
+    DeCh = 2,
+    FrFr = 3,
+    PlPl = 4,
 }
 
 /// Metadata about a layout, exposed via SYS_KBD_LIST_LAYOUTS.
@@ -41,18 +41,38 @@ pub struct LayoutInfo {
 pub const LAYOUT_COUNT: usize = 5;
 
 pub static LAYOUT_INFOS: [LayoutInfo; LAYOUT_COUNT] = [
-    LayoutInfo { id: 0, code: *b"en-US\0\0\0", label: *b"US\0\0" },
-    LayoutInfo { id: 1, code: *b"de-DE\0\0\0", label: *b"DE\0\0" },
-    LayoutInfo { id: 2, code: *b"de-CH\0\0\0", label: *b"CH\0\0" },
-    LayoutInfo { id: 3, code: *b"fr-FR\0\0\0", label: *b"FR\0\0" },
-    LayoutInfo { id: 4, code: *b"pl-PL\0\0\0", label: *b"PL\0\0" },
+    LayoutInfo {
+        id: 0,
+        code: *b"en-US\0\0\0",
+        label: *b"US\0\0",
+    },
+    LayoutInfo {
+        id: 1,
+        code: *b"de-DE\0\0\0",
+        label: *b"DE\0\0",
+    },
+    LayoutInfo {
+        id: 2,
+        code: *b"de-CH\0\0\0",
+        label: *b"CH\0\0",
+    },
+    LayoutInfo {
+        id: 3,
+        code: *b"fr-FR\0\0\0",
+        label: *b"FR\0\0",
+    },
+    LayoutInfo {
+        id: 4,
+        code: *b"pl-PL\0\0\0",
+        label: *b"PL\0\0",
+    },
 ];
 
 /// A keyboard layout: 4 layers of 128 chars each, indexed by PS/2 scancode.
 pub struct KeyboardLayout {
-    pub normal:      [char; 128],
-    pub shift:       [char; 128],
-    pub altgr:       [char; 128],
+    pub normal: [char; 128],
+    pub shift: [char; 128],
+    pub altgr: [char; 128],
     pub shift_altgr: [char; 128],
 }
 
@@ -81,10 +101,10 @@ pub fn layout_id_from_u32(v: u32) -> Option<LayoutId> {
 fn layout_from_id(id: LayoutId) -> &'static KeyboardLayout {
     match id {
         LayoutId::UsQwerty => &us::LAYOUT_US,
-        LayoutId::DeDe     => &de::LAYOUT_DE,
-        LayoutId::DeCh     => &ch::LAYOUT_CH,
-        LayoutId::FrFr     => &fr::LAYOUT_FR,
-        LayoutId::PlPl     => &pl::LAYOUT_PL,
+        LayoutId::DeDe => &de::LAYOUT_DE,
+        LayoutId::DeCh => &ch::LAYOUT_CH,
+        LayoutId::FrFr => &fr::LAYOUT_FR,
+        LayoutId::PlPl => &pl::LAYOUT_PL,
     }
 }
 

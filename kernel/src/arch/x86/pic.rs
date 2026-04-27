@@ -4,7 +4,7 @@
 //! Superseded by the I/O APIC when ACPI is available, but kept as a
 //! fallback for legacy mode.
 
-use crate::arch::x86::port::{inb, outb, io_wait};
+use crate::arch::x86::port::{inb, io_wait, outb};
 
 const PIC1_CMD: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
@@ -15,8 +15,8 @@ const ICW1_INIT: u8 = 0x10;
 const ICW1_ICW4: u8 = 0x01;
 const ICW4_8086: u8 = 0x01;
 
-const PIC1_OFFSET: u8 = 32;  // IRQ 0-7  -> INT 32-39
-const PIC2_OFFSET: u8 = 40;  // IRQ 8-15 -> INT 40-47
+const PIC1_OFFSET: u8 = 32; // IRQ 0-7  -> INT 32-39
+const PIC2_OFFSET: u8 = 40; // IRQ 8-15 -> INT 40-47
 
 /// Remap both PICs and mask all IRQs. Individual IRQs are unmasked later.
 pub fn init() {

@@ -17,17 +17,17 @@
 
 #[cfg(test)]
 mod char_tests {
-    use super::super::driver::{CoreFsDriver, empty_persisted_state};
     use super::super::block_device::MemSectorIo;
-    use corefs_core::domain::inode::{Inode, InodeId, InodeKind};
-    use corefs_core::domain::metadata::FileMetadata;
-    use corefs_core::platform::Timestamp;
-    use corefs_core::storage::ondisk::native::{load_state_native, save_state_native};
-    use corefs_core::storage::ondisk::volume::{FormatOptions, format_device};
+    use super::super::driver::{empty_persisted_state, CoreFsDriver};
     use crate::fs::corefs::block_device::BlockDeviceAdapter;
     use crate::fs::file::FileType;
     use alloc::boxed::Box;
     use alloc::string::String;
+    use corefs_core::domain::inode::{Inode, InodeId, InodeKind};
+    use corefs_core::domain::metadata::FileMetadata;
+    use corefs_core::platform::Timestamp;
+    use corefs_core::storage::ondisk::native::{load_state_native, save_state_native};
+    use corefs_core::storage::ondisk::volume::{format_device, FormatOptions};
 
     // -----------------------------------------------------------------------
     // Test infrastructure
@@ -112,8 +112,15 @@ mod char_tests {
                     .any(|i| i.id == r.inode && i.path == "/big.bin")
             })
             .expect("block record for /big.bin");
-        assert_eq!(rec.bytes.len(), payload.len(), "1 MiB must survive flush+reload");
-        assert_eq!(rec.bytes, payload, "content must be byte-for-byte identical after flush+reload");
+        assert_eq!(
+            rec.bytes.len(),
+            payload.len(),
+            "1 MiB must survive flush+reload"
+        );
+        assert_eq!(
+            rec.bytes, payload,
+            "content must be byte-for-byte identical after flush+reload"
+        );
     }
 
     /// Characterizes the PRE-REFACTOR failure mode: writing 128 MiB to a
@@ -133,7 +140,10 @@ mod char_tests {
             written += n;
         }
         let (_, _, size) = driver.lookup("/huge.bin").unwrap();
-        assert_eq!(size as usize, target, "reported size must match written bytes");
+        assert_eq!(
+            size as usize, target,
+            "reported size must match written bytes"
+        );
     }
 
     #[test]
@@ -153,9 +163,16 @@ mod char_tests {
         driver.flush().expect("flush");
         let inner = driver.inner.lock();
         let reloaded = load_state_native(&inner.device).expect("reload");
-        let rec = reloaded.block_records.iter().find(|r| {
-            reloaded.active_inodes.iter().any(|i| i.id == r.inode && i.path == "/t.bin")
-        }).expect("block record for /t.bin");
+        let rec = reloaded
+            .block_records
+            .iter()
+            .find(|r| {
+                reloaded
+                    .active_inodes
+                    .iter()
+                    .any(|i| i.id == r.inode && i.path == "/t.bin")
+            })
+            .expect("block record for /t.bin");
         assert_eq!(rec.bytes.len(), 6);
         assert_eq!(&rec.bytes[..], b"AB\x00\x00\x00\x00");
     }
@@ -198,7 +215,10 @@ mod char_tests {
         let inner = driver.inner.lock();
         let reloaded = load_state_native(&inner.device).expect("reload");
         assert!(
-            reloaded.block_records.iter().any(|r| r.bytes == b"small payload"),
+            reloaded
+                .block_records
+                .iter()
+                .any(|r| r.bytes == b"small payload"),
             "small payload must survive flush+reload"
         );
     }

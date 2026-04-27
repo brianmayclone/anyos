@@ -20,7 +20,9 @@ pub fn sys_devlist(buf_ptr: u64, buf_size: u32) -> u32 {
         for (i, (path, name, dtype)) in devices.iter().enumerate().take(max_entries.min(count)) {
             let offset = i * entry_size;
             // Zero the entry first
-            for b in &mut buf[offset..offset + entry_size] { *b = 0; }
+            for b in &mut buf[offset..offset + entry_size] {
+                *b = 0;
+            }
             // Path [0..32]
             let path_bytes = path.as_bytes();
             let plen = path_bytes.len().min(31);
@@ -52,18 +54,28 @@ pub fn sys_devopen(path_ptr: u64, _flags: u32) -> u32 {
     let path = unsafe { read_user_str(path_ptr) };
     let devices = crate::drivers::hal::list_devices();
     // ENOENT = 2
-    if devices.iter().any(|(p, _, _)| p == path) { 0 } else { (-2i32) as u32 }
+    if devices.iter().any(|(p, _, _)| p == path) {
+        0
+    } else {
+        (-2i32) as u32
+    }
 }
 
-pub fn sys_devclose(_handle: u32) -> u32 { 0 }
+pub fn sys_devclose(_handle: u32) -> u32 {
+    0
+}
 /// Unimplemented — returns -ENOSYS (38).
-pub fn sys_devread(_handle: u32, _buf_ptr: u64, _len: u32) -> u32 { (-38i32) as u32 }
+pub fn sys_devread(_handle: u32, _buf_ptr: u64, _len: u32) -> u32 {
+    (-38i32) as u32
+}
 /// Unimplemented — returns -ENOSYS (38).
-pub fn sys_devwrite(_handle: u32, _buf_ptr: u64, _len: u32) -> u32 { (-38i32) as u32 }
+pub fn sys_devwrite(_handle: u32, _buf_ptr: u64, _len: u32) -> u32 {
+    (-38i32) as u32
+}
 /// sys_devioctl - Send ioctl to a device by driver type.
 /// handle = DriverType as u32 (0=Block,1=Char,2=Network,3=Display,4=Input,5=Audio,6=Output,7=Sensor,8=Monitor)
 pub fn sys_devioctl(dtype: u32, cmd: u32, arg: u32) -> u32 {
-    use crate::drivers::hal::{DriverType, device_ioctl_by_type};
+    use crate::drivers::hal::{device_ioctl_by_type, DriverType};
     let driver_type = match dtype {
         0 => DriverType::Block,
         1 => DriverType::Char,
@@ -81,7 +93,9 @@ pub fn sys_devioctl(dtype: u32, cmd: u32, arg: u32) -> u32 {
         Err(_) => (-5i32) as u32, // EIO
     }
 }
-pub fn sys_irqwait(_irq: u32) -> u32 { 0 }
+pub fn sys_irqwait(_irq: u32) -> u32 {
+    0
+}
 
 // =========================================================================
 // DLL (SYS_DLL_LOAD)
@@ -91,15 +105,20 @@ pub fn sys_irqwait(_irq: u32) -> u32 { 0 }
 /// arg1=path_ptr (null-terminated), arg2=path_len (unused, null-terminated).
 /// Returns base virtual address of the DLL, or 0 on failure.
 pub fn sys_dll_load(path_ptr: u64, _path_len: u32) -> u32 {
-    if path_ptr == 0 { return 0; }
+    if path_ptr == 0 {
+        return 0;
+    }
     let path = unsafe { read_user_str(path_ptr) };
     // Try existing loaded DLLs first
     if let Some(base) = crate::task::dll::get_dll_base(path) {
         let mapped = crate::task::dll::ensure_dll_mapped_current(path).unwrap_or(base);
         if path == "/Libraries/libfont.so" {
-            let phys = crate::memory::virtual_mem::virt_to_phys(crate::memory::address::VirtAddr::new(mapped))
-                .unwrap_or(0);
-            let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
+            let phys = crate::memory::virtual_mem::virt_to_phys(
+                crate::memory::address::VirtAddr::new(mapped),
+            )
+            .unwrap_or(0);
+            let pte =
+                crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
             let user_bytes = copy_user_bytes(mapped as u64, 4, 4);
             crate::serial_verbose_println!(
                 "[dll] existing {} -> base={:#x} phys={:#x} pte={:#x} user={}",
@@ -108,7 +127,8 @@ pub fn sys_dll_load(path_ptr: u64, _path_len: u32) -> u32 {
                 phys,
                 pte,
                 match user_bytes {
-                    Some(b) if b.len() == 4 => alloc::format!("{:02x} {:02x} {:02x} {:02x}", b[0], b[1], b[2], b[3]),
+                    Some(b) if b.len() == 4 =>
+                        alloc::format!("{:02x} {:02x} {:02x} {:02x}", b[0], b[1], b[2], b[3]),
                     _ => alloc::format!("(unreadable)"),
                 }
             );
@@ -121,9 +141,12 @@ pub fn sys_dll_load(path_ptr: u64, _path_len: u32) -> u32 {
             let mapped = crate::task::dll::ensure_dll_mapped_current(path).unwrap_or(base);
             if path == "/Libraries/libfont.so" {
                 let phys = crate::memory::virtual_mem::virt_to_phys(
-                    crate::memory::address::VirtAddr::new(mapped)
-                ).unwrap_or(0);
-                let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
+                    crate::memory::address::VirtAddr::new(mapped),
+                )
+                .unwrap_or(0);
+                let pte = crate::memory::virtual_mem::read_pte(
+                    crate::memory::address::VirtAddr::new(mapped),
+                );
                 let user_bytes = copy_user_bytes(mapped as u64, 4, 4);
                 crate::serial_verbose_println!(
                     "[dll] fresh {} -> base={:#x} phys={:#x} pte={:#x} user={}",
@@ -132,7 +155,8 @@ pub fn sys_dll_load(path_ptr: u64, _path_len: u32) -> u32 {
                     phys,
                     pte,
                     match user_bytes {
-                        Some(b) if b.len() == 4 => alloc::format!("{:02x} {:02x} {:02x} {:02x}", b[0], b[1], b[2], b[3]),
+                        Some(b) if b.len() == 4 =>
+                            alloc::format!("{:02x} {:02x} {:02x} {:02x}", b[0], b[1], b[2], b[3]),
                         _ => alloc::format!("(unreadable)"),
                     }
                 );
