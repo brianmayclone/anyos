@@ -75,9 +75,10 @@ fn lower_ast_items(
                     crate::debug_surf!("[css] RULE LIMIT REACHED: {} rules — stopping", rules.len());
                     break;
                 }
-                if let Some(rule) =
-                    lower_qualified_rule_ast(node, layer_stack.last().map(|s| s.as_str()))
-                {
+                for rule in lower_qualified_rule_ast(node, layer_stack.last().map(|s| s.as_str())) {
+                    if rules.len() >= MAX_CSS_RULES {
+                        break;
+                    }
                     rules.push(rule);
                 }
             }

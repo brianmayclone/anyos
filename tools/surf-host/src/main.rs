@@ -40,6 +40,7 @@ struct Args {
     delay_ms: u64,
     y_range: Option<(u32, u32)>, // (start, end) in pixels
     minifb: bool,
+    js_enabled: bool,
     remote_listen: Option<String>,
 }
 
@@ -56,6 +57,7 @@ fn parse_args() -> Args {
         eprintln!("  --width <px>              Viewport width (default: 1024)");
         eprintln!("  --height <px>             Viewport height (default: 768)");
         eprintln!("  --minifb                  Use the legacy minifb window instead of egui");
+        eprintln!("  --no-js                   Disable JavaScript execution");
         eprintln!("  --remote-listen <addr>    Listen for text commands (default: 127.0.0.1:8787)");
         eprintln!();
         eprintln!("Remote commands: open <url>, reload, scroll <y>, screenshot <path>, fullpage <path>, status");
@@ -78,6 +80,7 @@ fn parse_args() -> Args {
         delay_ms: 0,
         y_range: None,
         minifb: false,
+        js_enabled: true,
         remote_listen: Some(String::from("127.0.0.1:8787")),
     };
 
@@ -119,6 +122,11 @@ fn parse_args() -> Args {
             }
             "--minifb" => {
                 a.minifb = true;
+                i += 1;
+                continue;
+            }
+            "--no-js" => {
+                a.js_enabled = false;
                 i += 1;
                 continue;
             }
@@ -220,7 +228,7 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
 
 /// Load a URL: fetch HTML, load resources, run JS.  Returns (html, base_url).
 /// This is the common pipeline used both at startup and during navigation.
-fn load_page(wv: &mut libwebview::WebView, url: &str) -> PendingImages {
+fn load_page(wv: &mut libwebview::WebView, url: &str, js_enabled: bool) -> PendingImages {
     eprintln!("[surf-host] loading: {}", url);
     let (html, base_url) = fetch_page(url);
     eprintln!("[surf-host] got {} bytes HTML", html.len());
@@ -232,8 +240,10 @@ fn load_page(wv: &mut libwebview::WebView, url: &str) -> PendingImages {
     wv.set_html_no_js(&html);
     load_resources(wv, &base_url);         // CSS, fonts, SVGs (sync) + initial relayout
     let pending = start_image_loading(wv, &base_url);  // images (async, parallel threads)
-    run_javascript(wv, &base_url);
-    run_js_timers(wv, 5000);
+    if js_enabled {
+        run_javascript(wv, &base_url);
+        run_js_timers(wv, 5000);
+    }
     pending
 }
 
@@ -398,6 +408,7 @@ struct BrowserHostApp {
     texture: Option<egui::TextureHandle>,
     focused_control: Option<(u32, String)>,
     remote_rx: Option<mpsc::Receiver<RemoteRequest>>,
+    js_enabled: bool,
     screenshot_count: u32,
     status: String,
     needs_redraw: bool,
@@ -409,6 +420,7 @@ impl BrowserHostApp {
         pending: PendingImages,
         current_url: String,
         remote_rx: Option<mpsc::Receiver<RemoteRequest>>,
+        js_enabled: bool,
     ) -> Self {
         let width = wv.viewport_width().max(1) as u32;
         let height = wv.viewport_height().max(1);
@@ -422,6 +434,7 @@ impl BrowserHostApp {
             texture: None,
             focused_control: None,
             remote_rx,
+            js_enabled,
             screenshot_count: 0,
             status: String::from("ready"),
             needs_redraw: true,
@@ -438,7 +451,7 @@ impl BrowserHostApp {
         self.current_url = abs.clone();
         self.url_input = abs.clone();
         self.focused_control = None;
-        self.pending = load_page(&mut self.wv, &abs);
+        self.pending = load_page(&mut self.wv, &abs, self.js_enabled);
         self.scroll_y = 0;
         self.needs_redraw = true;
         self.status = format!("loaded {}", abs);
@@ -761,6 +774,7 @@ fn run_egui_browser(
     width: u32,
     height: u32,
     remote_listen: Option<String>,
+    js_enabled: bool,
 ) {
     let remote_rx = remote_listen.as_deref().and_then(start_remote_listener);
     let native_options = eframe::NativeOptions {
@@ -771,7 +785,7 @@ fn run_egui_browser(
         hardware_acceleration: eframe::HardwareAcceleration::Off,
         ..Default::default()
     };
-    let app = BrowserHostApp::new(wv, pending, current_url, remote_rx);
+    let app = BrowserHostApp::new(wv, pending, current_url, remote_rx, js_enabled);
     let _ = eframe::run_native(
         "surf-host",
         native_options,
@@ -797,7 +811,7 @@ fn main() {
     register_system_fonts(&mut wv);
 
     // Load the initial page (CSS+fonts+SVGs sync, images async in parallel)
-    let mut pending = load_page(&mut wv, &args.url);
+    let mut pending = load_page(&mut wv, &args.url, args.js_enabled);
     let mut current_url = args.url.clone();
 
     // For screenshot mode: wait for all images before capturing
@@ -866,6 +880,7 @@ fn main() {
             width,
             height,
             args.remote_listen.clone(),
+            args.js_enabled,
         );
         return;
     }
@@ -934,7 +949,7 @@ fn main() {
                 eprintln!("[nav] navigating to: {}", abs);
                 current_url = abs.clone();
                 focused_control = None;
-                pending = load_page(&mut wv, &abs);
+                pending = load_page(&mut wv, &abs, args.js_enabled);
                 scroll_y = 0;
                 window.set_title(&format!("surf-host — {}", abs));
                 needs_redraw = true;

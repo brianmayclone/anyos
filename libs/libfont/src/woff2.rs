@@ -211,22 +211,20 @@ pub fn convert_to_ttf(data: &[u8]) -> Option<Vec<u8>> {
     // Decompress all table data with Brotli
     let decompressed = brotli::decompress(compressed_data)?;
 
+    let expected_decompressed_len = tables.iter().try_fold(0usize, |sum, table| {
+        sum.checked_add(table.transform_length as usize)
+    })?;
+    if decompressed.len() < expected_decompressed_len {
+        return None;
+    }
+
     // Split decompressed data into individual tables
     let mut table_data: Vec<Vec<u8>> = Vec::with_capacity(num_tables);
     let mut offset = 0usize;
 
     for table in &tables {
         let len = table.transform_length as usize;
-        if offset + len > decompressed.len() {
-            // Pad with zeros if decompressed data is short
-            let mut td = Vec::with_capacity(len);
-            let avail = decompressed.len().saturating_sub(offset);
-            td.extend_from_slice(&decompressed[offset..offset + avail]);
-            td.resize(len, 0);
-            table_data.push(td);
-        } else {
-            table_data.push(decompressed[offset..offset + len].to_vec());
-        }
+        table_data.push(decompressed[offset..offset + len].to_vec());
         offset += len;
     }
 

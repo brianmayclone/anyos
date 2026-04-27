@@ -166,14 +166,28 @@ Font IDs 0–5 are the system fonts (see table below).
 
 ### `load_data(data) -> Option<u32>`
 
-Load a custom TTF font from raw byte data in memory (no disk I/O).
+Load a custom TrueType/sfnt font from raw byte data in memory (no disk I/O).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| data | `&[u8]` | Raw TTF font file data |
+| data | `&[u8]` | Raw TrueType/sfnt font data |
 | **Returns** | `Option<u32>` | Font ID on success, `None` on failure |
 
 Useful for loading fonts from archives, network responses, or embedded resources.
+
+#### Webfont container fallback
+
+`load_data()` intentionally rejects WOFF and WOFF2 containers for now. The
+in-tree WOFF2 converter is not complete enough for transformed production
+webfonts yet; registering a partially reconstructed face can make normal text
+render as stray lines or missing glyphs. Failing closed is the safer behavior:
+web callers should keep the CSS family unregistered and continue with the next
+family in the `font-family` list, or with the system aliases such as
+`sans-serif`, `serif`, and `monospace`.
+
+The next step is to re-enable WOFF2 only after decompression, table transform
+reconstruction, metrics, and glyph rendering validate against real sites such
+as google.de, heise.de, focus.de, and bild.de.
 
 ---
 

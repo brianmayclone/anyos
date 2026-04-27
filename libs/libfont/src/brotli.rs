@@ -42,6 +42,11 @@ impl<'a> BitReader<'a> {
     #[inline]
     fn read(&mut self, n: u32) -> u32 {
         self.fill();
+        if self.nbits < n {
+            self.bits = 0;
+            self.nbits = 0;
+            return 0;
+        }
         let val = (self.bits & ((1u64 << n) - 1)) as u32;
         self.bits >>= n;
         self.nbits -= n;
@@ -58,12 +63,20 @@ impl<'a> BitReader<'a> {
     #[inline]
     fn peek(&mut self, n: u32) -> u32 {
         self.fill();
+        if self.nbits < n {
+            return 0;
+        }
         (self.bits & ((1u64 << n) - 1)) as u32
     }
 
     /// Drop n bits (after peeking).
     #[inline]
     fn drop_bits(&mut self, n: u32) {
+        if self.nbits < n {
+            self.bits = 0;
+            self.nbits = 0;
+            return;
+        }
         self.bits >>= n;
         self.nbits -= n;
     }

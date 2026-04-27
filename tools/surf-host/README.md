@@ -137,6 +137,7 @@ surf-host [url] [options]
   --delay <ms>              Wartezeit vor Screenshot
   --width <px>              Viewport-Breite (Default: 1024)
   --height <px>             Viewport-Hoehe (Default: 768)
+  --no-js                   JavaScript-Ausfuehrung deaktivieren
   --minifb                  Legacy-minifb-Fenster statt egui
   --remote-listen <addr>    Fernsteuer-Port (Default: 127.0.0.1:8787)
   --no-remote               Fernsteuer-Port deaktivieren
@@ -187,3 +188,18 @@ Folgende Crates haben ein `host` Feature das die anyOS-spezifischen Teile durch 
 | Fenster-System     | anyOS Compositor               | minifb (X11/Wayland)                |
 
 Die Rendering-Pipeline (HTML-Parsing, CSS-Cascade, Layout, Font-Rasterisierung, Display-List, Tile-Compositing) ist **identisch**.
+
+### Webfonts und Fallbacks
+
+surf-host laedt `@font-face` Ressourcen aus Stylesheets, registriert aber nur
+Fontdaten, die libfont sicher parsen kann. WOFF und WOFF2 werden derzeit bewusst
+nicht registriert, weil der vorhandene WOFF2-Konverter bei realen Webfonts noch
+unvollstaendige oder kaputte Glyphdaten liefern kann. Ein fehlgeschlagener
+`font_load_data`-Aufruf ist deshalb kein harter Renderfehler: die CSS-Family
+bleibt unregistriert und libwebview faellt auf die naechste Family aus
+`font-family` bzw. auf System-Aliase wie `sans-serif`, `serif`, `monospace`,
+Arial, Helvetica, Inter oder Source Sans Pro zurueck.
+
+Das ist die aktuelle Hosttest-Strategie fuer reale Webseiten ohne JavaScript:
+lesbarer Text ueber robuste Fallbacks zuerst, vollstaendiger WOFF2-Support
+spaeter mit eigener Validierung.

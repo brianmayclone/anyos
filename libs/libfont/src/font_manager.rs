@@ -642,7 +642,11 @@ pub fn load_font(path: &[u8]) -> u32 {
 
 /// Load a font from raw data in memory.
 ///
-/// Supports TTF/OTF (direct) and WOFF2 (Brotli-decompressed + reconstructed).
+/// Supports raw TrueType/sfnt data.
+///
+/// WOFF and WOFF2 are intentionally rejected until the converter validates real
+/// webfonts reliably. Callers should keep their CSS/system fallback family when
+/// this returns u32::MAX.
 /// Returns font_id or u32::MAX on failure.
 pub fn load_font_data(data: alloc::vec::Vec<u8>) -> u32 {
     let mgr = match ensure_init() {
@@ -652,11 +656,10 @@ pub fn load_font_data(data: alloc::vec::Vec<u8>) -> u32 {
 
     // Detect format by magic bytes
     let ttf_data = if data.len() >= 4 && &data[..4] == b"wOF2" {
-        // WOFF2 → decompress and reconstruct TTF
-        match crate::woff2::convert_to_ttf(&data) {
-            Some(ttf) => ttf,
-            None => return u32::MAX,
-        }
+        // The in-tree WOFF2 converter is still incomplete for common transformed
+        // webfonts. Failing closed keeps pages readable via CSS fallback fonts
+        // instead of registering a corrupt face that renders text as stray lines.
+        return u32::MAX;
     } else if data.len() >= 4 && &data[..4] == b"wOFF" {
         // WOFF 1.0 — not yet supported
         return u32::MAX;

@@ -51,23 +51,15 @@ fn lower_at_rule_ast(
         }
         "container" => {
             if let Some(block) = &node.block {
-                let mut snippet = String::from(node.prelude.trim());
-                snippet.push_str(" {");
-                snippet.push_str(&block.source);
-                snippet.push('}');
-                let mut p = Parser::new(&snippet);
-                let container_query = parse_container_query_prelude(&mut p);
-                if p.peek() == b'{' {
-                    p.pos += 1;
-                    parse_container_block(
-                        &mut p,
-                        layer_stack.last().map(|s| s.as_str()),
-                        layer_order,
-                        anon_layer_counter,
-                        container_query,
-                        rules,
-                        media_rules,
-                    );
+                if let Some(cr) = lower_container_at_rule(
+                    node,
+                    block,
+                    layer_stack.last().map(|s| s.as_str()),
+                    layer_order,
+                    anon_layer_counter,
+                ) {
+                    rules.extend(cr.rules);
+                    media_rules.extend(cr.media_rules);
                 }
             }
         }
@@ -118,12 +110,30 @@ fn lower_media_at_rule(
     layer_order: &mut Vec<String>,
     anon_layer_counter: &mut u32,
 ) -> Option<MediaRule> {
-    let mut snippet = String::from(node.prelude.trim());
-    snippet.push_str(" {");
-    snippet.push_str(&block.source);
-    snippet.push('}');
-    let mut p = Parser::new(&snippet);
-    parse_media_rule(&mut p, current_layer, layer_order, anon_layer_counter)
+    let query = parse_media_query(&node.prelude);
+    let mut rules = Vec::new();
+    let mut nested_media_rules = Vec::new();
+    let mut keyframes = Vec::new();
+    let mut imports = Vec::new();
+    let mut font_faces = Vec::new();
+    let mut layer_stack = Vec::new();
+    if let Some(layer) = current_layer {
+        layer_stack.push(String::from(layer));
+    }
+
+    lower_ast_items(
+        &block.items,
+        &mut layer_stack,
+        layer_order,
+        anon_layer_counter,
+        &mut rules,
+        &mut nested_media_rules,
+        &mut keyframes,
+        &mut imports,
+        &mut font_faces,
+    );
+
+    Some(MediaRule { query, rules })
 }
 
 fn lower_supports_at_rule(
@@ -133,12 +143,76 @@ fn lower_supports_at_rule(
     layer_order: &mut Vec<String>,
     anon_layer_counter: &mut u32,
 ) -> Option<SupportsResult> {
-    let mut snippet = String::from(node.prelude.trim());
-    snippet.push_str(" {");
-    snippet.push_str(&block.source);
-    snippet.push('}');
-    let mut p = Parser::new(&snippet);
-    parse_supports_rule(&mut p, current_layer, layer_order, anon_layer_counter)
+    if !evaluate_supports_condition(&node.prelude) {
+        return None;
+    }
+
+    let mut rules = Vec::new();
+    let mut media_rules = Vec::new();
+    let mut keyframes = Vec::new();
+    let mut imports = Vec::new();
+    let mut font_faces = Vec::new();
+    let mut layer_stack = Vec::new();
+    if let Some(layer) = current_layer {
+        layer_stack.push(String::from(layer));
+    }
+
+    lower_ast_items(
+        &block.items,
+        &mut layer_stack,
+        layer_order,
+        anon_layer_counter,
+        &mut rules,
+        &mut media_rules,
+        &mut keyframes,
+        &mut imports,
+        &mut font_faces,
+    );
+
+    Some(SupportsResult { rules, media_rules })
+}
+
+fn lower_container_at_rule(
+    node: &CssAtRuleNode,
+    block: &CssBlockNode,
+    current_layer: Option<&str>,
+    layer_order: &mut Vec<String>,
+    anon_layer_counter: &mut u32,
+) -> Option<SupportsResult> {
+    let container_query = parse_container_query_text(&node.prelude);
+
+    let mut rules = Vec::new();
+    let mut media_rules = Vec::new();
+    let mut keyframes = Vec::new();
+    let mut imports = Vec::new();
+    let mut font_faces = Vec::new();
+    let mut layer_stack = Vec::new();
+    if let Some(layer) = current_layer {
+        layer_stack.push(String::from(layer));
+    }
+
+    lower_ast_items(
+        &block.items,
+        &mut layer_stack,
+        layer_order,
+        anon_layer_counter,
+        &mut rules,
+        &mut media_rules,
+        &mut keyframes,
+        &mut imports,
+        &mut font_faces,
+    );
+
+    if let Some(query) = container_query {
+        for rule in &mut rules {
+            apply_container_query_to_rule(rule, &query);
+        }
+        for media_rule in &mut media_rules {
+            apply_container_query_to_media_rule(media_rule, &query);
+        }
+    }
+
+    Some(SupportsResult { rules, media_rules })
 }
 
 fn lower_keyframes_at_rule(node: &CssAtRuleNode, block: &CssBlockNode) -> Option<KeyframeSet> {
