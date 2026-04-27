@@ -76,7 +76,14 @@ fn run_dhcp() {
     let ret = net::dhcp(&mut result);
 
     if ret != 0 {
-        println!("DHCP: Failed (error {})", ret);
+        let reason = match ret {
+            1 => "no network interface card detected",
+            2 => "network interface is disabled",
+            3 => "no response from DHCP server (DISCOVER timed out) -- check that a DHCP server is reachable on the LAN",
+            4 => "DHCP server did not confirm lease (no ACK after REQUEST)",
+            _ => "unknown error",
+        };
+        println!("DHCP: Failed -- {}", reason);
         return;
     }
 

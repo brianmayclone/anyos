@@ -749,7 +749,6 @@ fn resize_active_webview_now() {
     if w <= 0 || h <= 0 || st.active_tab >= st.tabs.len() {
         return;
     }
-    crate::surf_log!("[surf] apply resize: {}x{}", w, h);
     st.tabs[st.active_tab].webview.resize(w, h);
 }
 

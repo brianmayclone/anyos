@@ -316,8 +316,15 @@ impl ConfState {
     }
 
     pub fn prune_dead_clients(&mut self) {
-        self.clients.retain(|client| is_tid_alive(client.tid));
-        self.watches.retain(|watch| is_tid_alive(watch.tid));
+        if self.clients.is_empty() && self.watches.is_empty() {
+            return;
+        }
+        let alive = match snapshot_alive_tids() {
+            Some(set) => set,
+            None => return,
+        };
+        self.clients.retain(|client| alive.contains(client.tid));
+        self.watches.retain(|watch| alive.contains(watch.tid));
     }
 }
 
@@ -439,9 +446,16 @@ fn main() {
 
     let mut pipe_buf = [0u8; 4096];
     let mut retry_counter: u32 = 0;
+    let mut prune_counter: u32 = 0;
     loop {
         let active = ipc::handle_requests(&db, &mut state, pipe_id, &mut pipe_buf);
-        state.prune_dead_clients();
+        prune_counter = prune_counter.saturating_add(1);
+        // Idle-Tick = 100ms, also prune alle ~5s. Bei aktivem Verkehr
+        // (20ms) etwas haeufiger, ist aber nicht zeitkritisch.
+        if prune_counter >= 50 {
+            prune_counter = 0;
+            state.prune_dead_clients();
+        }
 
         if !ready_notified {
             retry_counter = retry_counter.saturating_add(1);
@@ -520,25 +534,36 @@ fn notify_failed(lifecycle: &mut Option<ServiceLifecycle>, reason: &str) {
     }
 }
 
-fn is_tid_alive(tid: u32) -> bool {
+pub(crate) struct AliveTids {
+    tids: Vec<u32>,
+}
+
+impl AliveTids {
+    pub fn contains(&self, tid: u32) -> bool {
+        self.tids.iter().any(|t| *t == tid)
+    }
+}
+
+fn snapshot_alive_tids() -> Option<AliveTids> {
     let mut buf = [0u8; THREAD_ENTRY_SIZE * MAX_THREADS];
     let count = anyos_std::sys::sysinfo(1, &mut buf);
     if count == u32::MAX {
-        return false;
+        return None;
     }
-
+    let mut tids = Vec::with_capacity(count as usize);
     for i in 0..count as usize {
         let off = i * THREAD_ENTRY_SIZE;
         if off + THREAD_ENTRY_SIZE > buf.len() {
             break;
         }
-        let entry_tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
-        if entry_tid == tid {
-            let state = buf[off + 5];
-            return state <= 2;
+        let state = buf[off + 5];
+        if state > 2 {
+            continue;
         }
+        let entry_tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        tids.push(entry_tid);
     }
-    false
+    Some(AliveTids { tids })
 }
 
 fn path_matches_prefix(path: &str, prefix: &str) -> bool {

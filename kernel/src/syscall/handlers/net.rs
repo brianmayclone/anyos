@@ -254,7 +254,19 @@ pub fn sys_net_ping(ip_ptr: u64, seq: u32, timeout: u32) -> u32 {
 
 /// sys_net_dhcp - DHCP discovery. arg1=buf_ptr (16 bytes: ip+mask+gw+dns)
 /// Returns 0 on success, applies config automatically.
+/// Error codes:
+///   1 = no NIC hardware available
+///   2 = NIC disabled
+///   3 = DISCOVER timed out (no server responded)
+///   4 = REQUEST timed out (no ACK after OFFER)
+///   u32::MAX = other / unknown error
 pub fn sys_net_dhcp(buf_ptr: u64) -> u32 {
+    if !crate::drivers::network::is_available() {
+        return 1;
+    }
+    if !crate::drivers::network::is_enabled() {
+        return 2;
+    }
     match crate::net::dhcp::discover() {
         Ok(result) => {
             crate::net::set_config(result.ip, result.mask, result.gateway, result.dns);
@@ -269,7 +281,11 @@ pub fn sys_net_dhcp(buf_ptr: u64) -> u32 {
             }
             0
         }
-        Err(_) => u32::MAX,
+        Err(msg) => {
+            if msg.contains("OFFER") { 3 }
+            else if msg.contains("ACK") { 4 }
+            else { u32::MAX }
+        }
     }
 }
 
