@@ -99,10 +99,11 @@ const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
 const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
 const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
-const DEBUG_SKIP_BLOCKING_SLOT0: bool = true;
+const MAX_SCRIPT_SOURCE_BYTES: usize = 200 * 1024;
+const DEBUG_SKIP_BLOCKING_SLOT0: bool = false;
 const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
 const NET_POLL_INTERVAL_MS: u32 = 16;
-const DEBUG_SKIP_BLOCKING_SLOT2: bool = true;
+const DEBUG_SKIP_BLOCKING_SLOT2: bool = false;
 
 fn debug_text_fingerprint(text: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
@@ -122,6 +123,20 @@ fn debug_text_prefix(text: &str, max_chars: usize) -> String {
         }
     }
     out
+}
+
+fn script_within_surf_limit(slot: usize, label: &str, source: &str) -> bool {
+    if source.len() <= MAX_SCRIPT_SOURCE_BYTES {
+        return true;
+    }
+    crate::surf_log!(
+        "[surf] skipping script [{}]: {} bytes exceeds Surf limit {} bytes label={}",
+        slot,
+        source.len(),
+        MAX_SCRIPT_SOURCE_BYTES,
+        label
+    );
+    false
 }
 
 fn phase_name(phase: PageLoadPhase) -> &'static str {
@@ -635,6 +650,9 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
             .cloned()
             .unwrap_or_else(|| String::from("<unknown>"))
     };
+    if !script_within_surf_limit(slot, &script_label, &script) {
+        return;
+    }
     let preview = script_preview(&script);
     log_script_dump(slot, label, &script_label, &script);
     if DEBUG_SKIP_BLOCKING_SLOT0 && label == "blocking/defer" && slot == 0 {
@@ -1446,9 +1464,14 @@ fn handle_nav_done(
         for (slot, entry) in entries.iter().enumerate() {
             match entry {
                 libwebview::js::ScriptEntry::Inline { text, mode } => {
-                    pending.push(Some(text.clone()));
+                    let label = String::from("<inline>");
+                    if script_within_surf_limit(slot, &label, text) {
+                        pending.push(Some(text.clone()));
+                    } else {
+                        pending.push(None);
+                    }
                     modes.push(mode.clone());
-                    labels.push(String::from("<inline>"));
+                    labels.push(label);
                     inline_count += 1;
                     if matches!(mode, libwebview::js::ScriptMode::Async) {
                         async_count += 1;
@@ -1634,6 +1657,9 @@ fn handle_css_done(
     }
 
     if st.tabs[tab_index].load_state.pending_stylesheet_count == 0 {
+        if let Some(base_url) = st.tabs[tab_index].current_url.clone() {
+            resources::queue_background_images(&base_url, tab_index, 8);
+        }
         let schedule = {
             let active = tab_index == st.active_tab;
             if active {
@@ -1854,7 +1880,11 @@ fn handle_script_done(
         label,
         st.tabs[tab_index].load_state.pending_script_count
     );
-    st.tabs[tab_index].pending_scripts[slot] = Some(text);
+    if script_within_surf_limit(slot, &label, &text) {
+        st.tabs[tab_index].pending_scripts[slot] = Some(text);
+    } else {
+        st.tabs[tab_index].pending_scripts[slot] = None;
+    }
 
     let mode = st.tabs[tab_index]
         .pending_script_modes

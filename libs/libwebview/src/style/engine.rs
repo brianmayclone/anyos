@@ -6153,6 +6153,28 @@ mod declaration_tests {
     }
 
     #[test]
+    fn transform_translate_percent_uses_fixed_percent_units() {
+        let decls = crate::css::parse_inline_style("transform: translateX(-50%) translateY(25%)");
+        let mut style = default_style();
+        for decl in &decls {
+            apply_declaration(&mut style, decl, None, 16, 16);
+        }
+        assert_eq!(style.transform_tx_pct, -5000);
+        assert_eq!(style.transform_ty_pct, 2500);
+    }
+
+    #[test]
+    fn individual_translate_percent_uses_fixed_percent_units() {
+        let decls = crate::css::parse_inline_style("translate: -50% 25%");
+        let mut style = default_style();
+        for decl in &decls {
+            apply_declaration(&mut style, decl, None, 16, 16);
+        }
+        assert_eq!(style.transform_tx_pct, -5000);
+        assert_eq!(style.transform_ty_pct, 2500);
+    }
+
+    #[test]
     fn border_radius_accepts_percentage_for_avatar_circles() {
         let decls = crate::css::parse_inline_style("border-radius: 50%");
         let mut style = default_style();
