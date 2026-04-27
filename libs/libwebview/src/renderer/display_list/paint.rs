@@ -552,7 +552,8 @@ impl DisplayList {
         (abs_x + left_inset, abs_y + top_inset, w, h)
     }
 
-    fn background_clip_radii(&self, bx: &LayoutBox) -> [i32; 4] {
+    fn background_clip_radii(&self, bx: &LayoutBox, bg_w: i32, bg_h: i32) -> [i32; 4] {
+        let radii = self.border_radii_for_rect(bx, bg_w, bg_h);
         let inset_x = match bx.background_clip {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_left_width.max(bx.border_right_width).max(0),
@@ -568,10 +569,10 @@ impl DisplayList {
                 .max(0),
         };
         [
-            (bx.border_top_left_radius - inset_x.max(inset_y)).max(0),
-            (bx.border_top_right_radius - inset_x.max(inset_y)).max(0),
-            (bx.border_bottom_right_radius - inset_x.max(inset_y)).max(0),
-            (bx.border_bottom_left_radius - inset_x.max(inset_y)).max(0),
+            (radii[0] - inset_x.max(inset_y)).max(0),
+            (radii[1] - inset_x.max(inset_y)).max(0),
+            (radii[2] - inset_x.max(inset_y)).max(0),
+            (radii[3] - inset_x.max(inset_y)).max(0),
         ]
     }
 

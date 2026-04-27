@@ -50,6 +50,24 @@ impl DisplayList {
         self.cull_y_range = None;
     }
 
+    fn resolve_radius_for_rect(value: i32, w: i32, h: i32) -> i32 {
+        if value < 0 {
+            let pct = (-value) as i64;
+            ((w.min(h).max(0) as i64 * pct) / 10000) as i32
+        } else {
+            value
+        }
+    }
+
+    fn border_radii_for_rect(&self, bx: &LayoutBox, w: i32, h: i32) -> [i32; 4] {
+        [
+            Self::resolve_radius_for_rect(bx.border_top_left_radius, w, h),
+            Self::resolve_radius_for_rect(bx.border_top_right_radius, w, h),
+            Self::resolve_radius_for_rect(bx.border_bottom_right_radius, w, h),
+            Self::resolve_radius_for_rect(bx.border_bottom_left_radius, w, h),
+        ]
+    }
+
     /// Rasterize all commands overlapping `[tile_y_start, tile_y_end)` into `buf`.
     pub fn rasterize_tile(
         &self,
@@ -202,16 +220,8 @@ impl DisplayList {
         };
 
         // Check if we have border-radius.
-        let has_radius = bx.border_top_left_radius > 0
-            || bx.border_top_right_radius > 0
-            || bx.border_bottom_right_radius > 0
-            || bx.border_bottom_left_radius > 0;
-        let radii = [
-            bx.border_top_left_radius,
-            bx.border_top_right_radius,
-            bx.border_bottom_right_radius,
-            bx.border_bottom_left_radius,
-        ];
+        let radii = self.border_radii_for_rect(bx, draw_w, draw_h);
+        let has_radius = radii.iter().any(|&r| r > 0);
 
         // Box shadows (behind the background, outer shadows only).
         for shadow in &bx.box_shadows {
@@ -291,7 +301,7 @@ impl DisplayList {
         }
 
         let (bg_x, bg_y, bg_w, bg_h) = self.background_paint_rect(abs_x, abs_y, bx);
-        let bg_radii = self.background_clip_radii(bx);
+        let bg_radii = self.background_clip_radii(bx, bg_w, bg_h);
         let has_bg_radius = bg_radii.iter().any(|&r| r > 0);
 
         let pushed_bg_clip = if self.should_clip_background(bx) && bg_w > 0 && bg_h > 0 {

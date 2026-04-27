@@ -3096,7 +3096,7 @@ pub fn apply_declaration(
             style.border_left.style = sv;
         }
         Property::BorderRadius => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if let Some(px) = resolve_border_radius(&decl.value, parent_fs, root_fs) {
                 style.border_radius = px;
                 style.border_top_left_radius = px;
                 style.border_top_right_radius = px;
@@ -3818,22 +3818,22 @@ pub fn apply_declaration(
         }
         // Per-corner border radius
         Property::BorderTopLeftRadius => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if let Some(px) = resolve_border_radius(&decl.value, parent_fs, root_fs) {
                 style.border_top_left_radius = px;
             }
         }
         Property::BorderTopRightRadius => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if let Some(px) = resolve_border_radius(&decl.value, parent_fs, root_fs) {
                 style.border_top_right_radius = px;
             }
         }
         Property::BorderBottomRightRadius => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if let Some(px) = resolve_border_radius(&decl.value, parent_fs, root_fs) {
                 style.border_bottom_right_radius = px;
             }
         }
         Property::BorderBottomLeftRadius => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if let Some(px) = resolve_border_radius(&decl.value, parent_fs, root_fs) {
                 style.border_bottom_left_radius = px;
             }
         }
@@ -5685,11 +5685,31 @@ mod declaration_tests {
     }
 
     #[test]
+    fn border_radius_accepts_percentage_for_avatar_circles() {
+        let decls = crate::css::parse_inline_style("border-radius: 50%");
+        let mut style = default_style();
+        for decl in &decls {
+            apply_declaration(&mut style, decl, None, 16, 16);
+        }
+        assert_eq!(style.border_top_left_radius, -5000);
+        assert_eq!(style.border_top_right_radius, -5000);
+        assert_eq!(style.border_bottom_right_radius, -5000);
+        assert_eq!(style.border_bottom_left_radius, -5000);
+    }
+
+    #[test]
     fn invalid_gradient_angle_is_rejected() {
         assert!(parse_background_image_val("linear-gradient(90degree, red, red)").is_none());
         assert!(parse_background_image_val("linear-gradient(100gradian, red, red)").is_none());
         assert!(parse_background_image_val("linear-gradient(1.57radian, red, red)").is_none());
         assert!(parse_background_image_val("linear-gradient(0.25turns, red, red)").is_none());
+    }
+}
+
+fn resolve_border_radius(value: &CssValue, parent_fs: i32, root_fs: i32) -> Option<i32> {
+    match value {
+        CssValue::Length(v, Unit::Percent) | CssValue::Percentage(v) => Some(-(*v).max(0)),
+        _ => resolve_length(value, parent_fs, root_fs),
     }
 }
 

@@ -1001,26 +1001,18 @@ fn svg_intrinsic_raster_size(data: &[u8]) -> Option<(u32, u32)> {
 
     let width = extract_attr_value(svg_tag, "width").and_then(parse_svg_length_px);
     let height = extract_attr_value(svg_tag, "height").and_then(parse_svg_length_px);
-    let ratio = extract_attr_value(svg_tag, "viewBox")
+    let viewbox = extract_attr_value(svg_tag, "viewBox")
         .or_else(|| extract_attr_value(svg_tag, "viewbox"))
-        .and_then(parse_viewbox_ratio);
+        .and_then(parse_viewbox_size);
+    let ratio = viewbox.map(|(w, h)| w as f32 / h as f32);
 
-    let (w, h) = match (width, height, ratio) {
-        (Some(w), Some(h), _) => (w, h),
-        (Some(w), None, Some(r)) if r > 0.0 => (w, (((w as f32) / r) + 0.5) as u32),
-        (None, Some(h), Some(r)) if r > 0.0 => ((((h as f32) * r) + 0.5) as u32, h),
-        (Some(w), None, None) => (w, 150),
-        (None, Some(h), None) => (300, h),
-        (None, None, Some(r)) if r > 0.0 => {
-            let default_w = 300u32;
-            let default_h = 150u32;
-            let default_ratio = default_w as f32 / default_h as f32;
-            if r >= default_ratio {
-                (default_w, (((default_w as f32) / r) + 0.5) as u32)
-            } else {
-                ((((default_h as f32) * r) + 0.5) as u32, default_h)
-            }
-        }
+    let (w, h) = match (width, height, viewbox, ratio) {
+        (Some(w), Some(h), _, _) => (w, h),
+        (Some(w), None, _, Some(r)) if r > 0.0 => (w, (((w as f32) / r) + 0.5) as u32),
+        (None, Some(h), _, Some(r)) if r > 0.0 => ((((h as f32) * r) + 0.5) as u32, h),
+        (Some(w), None, _, None) => (w, 150),
+        (None, Some(h), _, None) => (300, h),
+        (None, None, Some((vw, vh)), _) => (vw, vh),
         _ => return None,
     };
 
@@ -1038,7 +1030,7 @@ fn parse_svg_length_px(value: &str) -> Option<u32> {
     (parsed > 0).then_some(parsed)
 }
 
-fn parse_viewbox_ratio(value: &str) -> Option<f32> {
+fn parse_viewbox_size(value: &str) -> Option<(u32, u32)> {
     let mut nums = [0f32; 4];
     let mut count = 0usize;
     for part in value
@@ -1052,7 +1044,7 @@ fn parse_viewbox_ratio(value: &str) -> Option<f32> {
         count += 1;
     }
     if count == 4 && nums[2] > 0.0 && nums[3] > 0.0 {
-        Some(nums[2] / nums[3])
+        Some(((nums[2] + 0.5) as u32, (nums[3] + 0.5) as u32))
     } else {
         None
     }
