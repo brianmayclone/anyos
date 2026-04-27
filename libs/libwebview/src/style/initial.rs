@@ -157,6 +157,8 @@ pub(super) fn default_style() -> ComputedStyle {
         object_position_y_is_percent: true,
         transform_tx: 0,
         transform_ty: 0,
+        transform_tx_pct: 0,
+        transform_ty_pct: 0,
         transform_origin_x: 5000,
         transform_origin_x_is_percent: true,
         transform_origin_y: 5000,

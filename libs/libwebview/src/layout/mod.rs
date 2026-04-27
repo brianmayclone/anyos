@@ -210,6 +210,9 @@ pub struct LayoutBox {
     /// CSS `clip: rect(top, right, bottom, left)` for absolute elements.
     /// Values are in px relative to the element's own top-left corner.
     pub clip_rect: Option<[i32; 4]>,
+    /// CSS transform translation in percent of the box size (pct * 100).
+    pub transform_tx_pct: i32,
+    pub transform_ty_pct: i32,
     /// CSS transform scale X (×1000 fixed-point, 1000 = 1.0).
     pub transform_sx: i32,
     /// CSS transform scale Y (×1000 fixed-point, 1000 = 1.0).
@@ -424,6 +427,8 @@ impl LayoutBox {
             subtree_bottom: 0,
             subtree_has_viewport_positioned: false,
             clip_rect: None,
+            transform_tx_pct: 0,
+            transform_ty_pct: 0,
             transform_sx: 1000,
             transform_sy: 1000,
             transform_origin_x: 5000,
@@ -2423,7 +2428,7 @@ pub(super) fn layout_children_ex_with_budget(
             }
             if top.is_none() {
                 if let Some(b) = bottom {
-                    abs_box.y = cursor_y - b - abs_box.height - abs_box.margin.bottom;
+                    abs_box.y = content_y + cb_height - b - abs_box.height - abs_box.margin.bottom;
                 } else {
                     abs_box.y = static_y;
                 }

@@ -12,8 +12,7 @@ use alloc::vec::Vec;
 
 use super::initial::default_style;
 use super::lengths::{
-    parse_simple_float, parse_transform_length, resolve_inset, resolve_length, resolve_margins,
-    set_viewport_size,
+    parse_transform_translate_component, resolve_length, set_viewport_size,
 };
 use super::types::*;
 use crate::css::{
@@ -4297,6 +4296,8 @@ pub fn apply_declaration(
             {
                 style.transform_tx = 0;
                 style.transform_ty = 0;
+                style.transform_tx_pct = 0;
+                style.transform_ty_pct = 0;
                 style.transform_sx = 1000;
                 style.transform_sy = 1000;
                 style.transform_rotate = 0;
@@ -4304,6 +4305,8 @@ pub fn apply_declaration(
                 let s = kw.as_str();
                 let mut tx = 0i32;
                 let mut ty = 0i32;
+                let mut tx_pct = 0i32;
+                let mut ty_pct = 0i32;
                 let mut pos = 0usize;
                 let bytes = s.as_bytes();
                 while pos < bytes.len() {
@@ -4333,18 +4336,34 @@ pub fn apply_declaration(
                         } // skip ')'
                         match fname {
                             "translateX" | "translatex" => {
-                                tx += parse_transform_length(args.trim(), parent_fs);
+                                let (px, pct) =
+                                    parse_transform_translate_component(args.trim(), parent_fs);
+                                tx += px;
+                                tx_pct += pct;
                             }
                             "translateY" | "translatey" => {
-                                ty += parse_transform_length(args.trim(), parent_fs);
+                                let (px, pct) =
+                                    parse_transform_translate_component(args.trim(), parent_fs);
+                                ty += px;
+                                ty_pct += pct;
                             }
                             "translate" => {
                                 let parts: Vec<&str> = args.split(',').collect();
                                 if !parts.is_empty() {
-                                    tx += parse_transform_length(parts[0].trim(), parent_fs);
+                                    let (px, pct) = parse_transform_translate_component(
+                                        parts[0].trim(),
+                                        parent_fs,
+                                    );
+                                    tx += px;
+                                    tx_pct += pct;
                                 }
                                 if parts.len() > 1 {
-                                    ty += parse_transform_length(parts[1].trim(), parent_fs);
+                                    let (px, pct) = parse_transform_translate_component(
+                                        parts[1].trim(),
+                                        parent_fs,
+                                    );
+                                    ty += px;
+                                    ty_pct += pct;
                                 }
                             }
                             "scale" => {
@@ -4404,6 +4423,8 @@ pub fn apply_declaration(
                 }
                 style.transform_tx = tx;
                 style.transform_ty = ty;
+                style.transform_tx_pct = tx_pct;
+                style.transform_ty_pct = ty_pct;
             }
         }
         Property::TransformOrigin => {

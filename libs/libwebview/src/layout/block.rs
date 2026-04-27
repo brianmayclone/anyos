@@ -208,6 +208,8 @@ fn build_block_internal(
         || style.opacity < 255
         || style.transform_tx != 0
         || style.transform_ty != 0
+        || style.transform_tx_pct != 0
+        || style.transform_ty_pct != 0
         || style.transform_sx != 1000
         || style.transform_sy != 1000
         || style.transform_rotate != 0;
@@ -1240,12 +1242,18 @@ fn build_block_internal(
     }
 
     // Apply CSS transform: translate offsets.
-    if style.transform_tx != 0 || style.transform_ty != 0 {
-        bx.x += style.transform_tx;
-        bx.y += style.transform_ty;
+    if style.transform_tx != 0
+        || style.transform_ty != 0
+        || style.transform_tx_pct != 0
+        || style.transform_ty_pct != 0
+    {
+        bx.x += style.transform_tx + (bx.width as i64 * style.transform_tx_pct as i64 / 10000) as i32;
+        bx.y += style.transform_ty + (bx.height as i64 * style.transform_ty_pct as i64 / 10000) as i32;
     }
 
     // Apply CSS transform: scale and rotate.
+    bx.transform_tx_pct = style.transform_tx_pct;
+    bx.transform_ty_pct = style.transform_ty_pct;
     bx.transform_sx = style.transform_sx;
     bx.transform_sy = style.transform_sy;
     bx.transform_origin_x = style.transform_origin_x;
@@ -1277,17 +1285,6 @@ fn append_out_of_flow_children(
             continue;
         }
 
-        let mut abs_box = build_block(
-            dom,
-            styles,
-            pseudo,
-            abs_id,
-            available_width,
-            images,
-            viewport_w,
-            0,
-        );
-
         // Absolute descendants are positioned relative to the parent's
         // padding box, whose origin is directly after the border.
         let content_x = parent.border_width;
@@ -1296,6 +1293,11 @@ fn append_out_of_flow_children(
         let content_h =
             (parent.height - parent.padding.top - parent.padding.bottom - parent.border_width * 2)
                 .max(0);
+
+        let mut abs_box = build_block(
+            dom, styles, pseudo, abs_id, available_width, images, viewport_w, content_h,
+        );
+
         let mut static_x = content_x;
         let mut static_y = content_y;
 

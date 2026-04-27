@@ -696,6 +696,8 @@ pub struct ComputedStyle {
     pub object_position_y_is_percent: bool,
     pub transform_tx: i32,
     pub transform_ty: i32,
+    pub transform_tx_pct: i32,
+    pub transform_ty_pct: i32,
     pub transform_origin_x: i32,
     pub transform_origin_x_is_percent: bool,
     pub transform_origin_y: i32,

@@ -107,6 +107,15 @@ pub(super) fn parse_transform_length(s: &str, parent_fs: i32) -> i32 {
     }
 }
 
+pub(super) fn parse_transform_translate_component(s: &str, parent_fs: i32) -> (i32, i32) {
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix('%') {
+        (0, parse_simple_float(num))
+    } else {
+        (parse_transform_length(s, parent_fs), 0)
+    }
+}
+
 pub(super) fn parse_simple_float(s: &str) -> i32 {
     let s = s.trim();
     let neg = s.starts_with('-');
