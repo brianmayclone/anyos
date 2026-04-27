@@ -76,9 +76,9 @@ pub fn sleep_us(us: u32) {
 }
 
 pub fn sbrk(increment: i32) -> usize {
-    let ret = syscall1(SYS_SBRK, increment as i64 as u64);
-    if ret == u32::MAX {
-        u32::MAX as usize
+    let ret = syscall1_u64(SYS_SBRK, increment as i64 as u64);
+    if ret == u64::MAX {
+        usize::MAX
     } else {
         ret as usize
     }

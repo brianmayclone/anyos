@@ -210,82 +210,96 @@ fn busy_wait_us(us: u32) {
     }
 }
 
-/// sys_sbrk - Grow/shrink the process heap
+/// sys_sbrk_u64 - Grow/shrink the process heap (full 64-bit ABI).
 ///
-/// The syscall ABI is still 32-bit (i32 increment, u32 return) because user
-/// space currently lives below 4 GiB. Internally brk is u64 — the cast at
-/// the boundary is lossless as long as that invariant holds.
-pub fn sys_sbrk(increment: i32) -> u32 {
+/// This is the SYS_SBRK entry point used by syscall_dispatch_64. brk
+/// addresses can live anywhere in the canonical-low half (including
+/// above 4 GiB, once programs are relinked into the upper half).
+pub fn sys_sbrk_u64(increment: i64) -> u64 {
     use crate::memory::address::VirtAddr;
     use crate::memory::physical;
+    use crate::memory::user_vmap::{DLIB_REGION_START, HEAP_LIMIT};
     use crate::memory::virtual_mem;
 
-    let old_brk = crate::task::scheduler::current_thread_brk() as u32;
+    let old_brk = crate::task::scheduler::current_thread_brk();
     if old_brk == 0 {
-        return u32::MAX;
+        return u64::MAX;
     }
     if increment == 0 {
         return old_brk;
     }
 
-    let page_size = 4096u32;
+    const PAGE_SIZE: u64 = 4096;
 
     if increment > 0 {
-        let new_brk = match old_brk.checked_add(increment as u32) {
+        let new_brk = match old_brk.checked_add(increment as u64) {
             Some(v) => v,
-            None => return u32::MAX,
+            None => return u64::MAX,
         };
 
         // Prevent heap from growing into the DLIB region.
-        // DLLs are demand-paged there; heap writes would corrupt their export tables.
-        const DLIB_REGION_START: u32 = crate::memory::user_vmap::DLIB_REGION_START as u32;
+        // DLLs are demand-paged there; heap writes would corrupt their
+        // export tables.
         if old_brk < DLIB_REGION_START && new_brk >= DLIB_REGION_START {
-            return u32::MAX;
+            return u64::MAX;
         }
 
-        // Prevent heap from growing into the mmap region (16 MiB guard gap).
-        const HEAP_LIMIT: u32 = crate::memory::user_vmap::HEAP_LIMIT as u32;
+        // Prevent heap from growing into the mmap region (guard gap).
         if new_brk >= HEAP_LIMIT {
-            return u32::MAX;
+            return u64::MAX;
         }
-        let old_page_end = (old_brk + page_size - 1) & !(page_size - 1);
-        let new_page_end = (new_brk + page_size - 1) & !(page_size - 1);
+
+        let old_page_end = (old_brk + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let new_page_end = (new_brk + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
 
         let mut addr = old_page_end;
         let mut pages_mapped = 0u32;
         while addr < new_page_end {
-            // Skip pages already mapped (another thread sharing this PD may have mapped them)
-            if !virtual_mem::is_page_mapped(VirtAddr::new(addr as u64)) {
+            // Skip pages already mapped (another thread sharing this PD
+            // may have mapped them).
+            if !virtual_mem::is_page_mapped(VirtAddr::new(addr)) {
                 if let Some(phys) = physical::alloc_frame() {
                     if !virtual_mem::zero_frame(phys) {
                         physical::free_frame(phys);
-                        return u32::MAX;
+                        return u64::MAX;
                     }
-                    if !virtual_mem::map_page(VirtAddr::new(addr as u64), phys, 0x02 | 0x04) {
+                    if !virtual_mem::map_page(VirtAddr::new(addr), phys, 0x02 | 0x04) {
                         physical::free_frame(phys);
-                        return u32::MAX;
+                        return u64::MAX;
                     }
                     pages_mapped += 1;
                 } else {
-                    return u32::MAX;
+                    return u64::MAX;
                 }
             }
-            addr += page_size;
+            addr += PAGE_SIZE;
         }
 
         if pages_mapped > 0 {
             crate::task::scheduler::adjust_current_user_pages(pages_mapped as i32);
         }
 
-        // set_current_thread_brk also syncs brk across all sibling threads
-        // sharing the same page directory (with cli to prevent timer deadlock).
-        crate::task::scheduler::set_current_thread_brk(new_brk as u64);
+        // set_current_thread_brk also syncs brk across all sibling
+        // threads sharing the same page directory.
+        crate::task::scheduler::set_current_thread_brk(new_brk);
         old_brk
     } else {
-        let decrement = (-increment) as u32;
+        let decrement = (-increment) as u64;
         let new_brk = old_brk.saturating_sub(decrement);
-        crate::task::scheduler::set_current_thread_brk(new_brk as u64);
+        crate::task::scheduler::set_current_thread_brk(new_brk);
         old_brk
+    }
+}
+
+/// sys_sbrk - Legacy u32 ABI (kept for in-kernel call sites that go
+/// through dispatch_inner directly). Truncates to 32 bits — only valid
+/// while user-space brk lives below 4 GiB.
+pub fn sys_sbrk(increment: i32) -> u32 {
+    let r = sys_sbrk_u64(increment as i64);
+    if r == u64::MAX {
+        u32::MAX
+    } else {
+        r as u32
     }
 }
 
