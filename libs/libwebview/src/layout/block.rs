@@ -1282,13 +1282,15 @@ fn append_out_of_flow_children(
         // padding box, whose origin is directly after the border.
         let content_x = parent.border_width;
         let content_y = parent.border_width;
-        let content_w = available_width.max(0);
+        let content_w =
+            (parent.width - parent.padding.left - parent.padding.right - parent.border_width * 2)
+                .max(0);
         let content_h =
             (parent.height - parent.padding.top - parent.padding.bottom - parent.border_width * 2)
                 .max(0);
 
         let mut abs_box = build_block(
-            dom, styles, pseudo, abs_id, available_width, images, viewport_w, content_h,
+            dom, styles, pseudo, abs_id, content_w, images, viewport_w, content_h,
         );
 
         let mut static_x = content_x;
@@ -1331,14 +1333,14 @@ fn append_out_of_flow_children(
         let abs_left = resolve_inset(
             abs_style.left_offset,
             abs_style.left_calc,
-            available_width,
+            content_w,
             true,
         );
         let abs_top = resolve_inset(abs_style.top, abs_style.top_calc, content_h, content_h > 0);
         let abs_right = resolve_inset(
             abs_style.right_offset,
             abs_style.right_calc,
-            available_width,
+            content_w,
             true,
         );
         let abs_bottom = resolve_inset(
@@ -1353,7 +1355,7 @@ fn append_out_of_flow_children(
 
         if abs_left.is_none() {
             if let Some(r) = abs_right {
-                abs_box.x = content_x + available_width - r - abs_box.width - abs_box.margin.right;
+                abs_box.x = content_x + content_w - r - abs_box.width - abs_box.margin.right;
             } else {
                 abs_box.x = static_x;
             }

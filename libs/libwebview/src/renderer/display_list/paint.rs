@@ -446,6 +446,22 @@ impl DisplayList {
             }
             BackgroundImageVal::Url(ref src) => {
                 if !src.is_empty() {
+                    let (img_w, img_h, object_fit) = match bx.background_size {
+                        crate::style::BackgroundSizeVal::Explicit(w, h) => (
+                            if w > 0 { w } else { bg_w },
+                            if h > 0 { h } else { bg_h },
+                            crate::style::ObjectFit::Fill,
+                        ),
+                        crate::style::BackgroundSizeVal::Cover => {
+                            (bg_w, bg_h, crate::style::ObjectFit::Cover)
+                        }
+                        crate::style::BackgroundSizeVal::Contain => {
+                            (bg_w, bg_h, crate::style::ObjectFit::Contain)
+                        }
+                        crate::style::BackgroundSizeVal::Auto => {
+                            (bg_w, bg_h, crate::style::ObjectFit::None)
+                        }
+                    };
                     let img_x = match bx.background_position_x {
                         5000 | 10000 => bg_x,
                         px => bg_x + px,
@@ -458,11 +474,11 @@ impl DisplayList {
                     self.push(
                         img_x,
                         img_y,
-                        bg_w,
-                        bg_h,
+                        img_w,
+                        img_h,
                         DrawKind::Image {
                             src: src.clone(),
-                            object_fit: crate::style::ObjectFit::None,
+                            object_fit,
                             object_position_x: 0,
                             object_position_x_is_percent: false,
                             object_position_y: 0,

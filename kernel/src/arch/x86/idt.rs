@@ -148,6 +148,61 @@ fn dump_iretq_frame(rip: u64, saved_rsp: u64) {
     }
 }
 
+/// Called from the ISR/IRQ assembly stubs after the Rust handler returned but
+/// before `iretq`, when a kernel-mode return frame points outside kernel text.
+/// This catches corruption while the original IRETQ frame is still readable,
+/// instead of letting the CPU jump to low memory and reporting only RIP=0x3.
+#[no_mangle]
+pub extern "C" fn bad_kernel_iret_recovery(frame_rsp: u64, source: u32) -> ! {
+    uart_puts(b"\n!!! BAD KERNEL IRET frame before return (");
+    if source == 0 {
+        uart_puts(b"ISR");
+    } else {
+        uart_puts(b"IRQ");
+    }
+    uart_puts(b")\n");
+
+    let tid = crate::task::scheduler::debug_current_tid();
+    uart_puts(b"  TID=");
+    uart_put_dec(tid);
+    uart_puts(b" user=");
+    uart_put_dec(crate::task::scheduler::debug_is_current_user() as u32);
+    uart_puts(b" frame=");
+    uart_put_hex(frame_rsp);
+    uart_puts(b"\n");
+
+    if frame_rsp >= 0xFFFF_FFFF_8000_0000 && frame_rsp & 7 == 0 {
+        let words = frame_rsp as *const u64;
+        unsafe {
+            let labels: [&[u8]; 5] = [b"RIP", b"CS ", b"RFL", b"RSP", b"SS "];
+            for i in 0..5 {
+                uart_puts(b"  ");
+                uart_puts(labels[i]);
+                uart_puts(b"=");
+                uart_put_hex(core::ptr::read_unaligned(words.add(i)));
+                uart_puts(b"\n");
+            }
+        }
+    } else {
+        uart_puts(b"  frame pointer is not a valid kernel-aligned address\n");
+    }
+
+    // If this was a user thread executing in kernel context, park the CPU via
+    // the same manual fault recovery used by normal syscall/IRQ faults. For
+    // idle or pure kernel contexts, continuing would risk corrupting the
+    // scheduler further, so halt after the exact frame has been printed.
+    if tid != 0 && crate::task::scheduler::debug_is_current_user() {
+        crate::task::scheduler::fault_kill_and_idle(132);
+    }
+
+    uart_puts(b"  unrecoverable kernel/idle IRET corruption; halting CPU\n");
+    unsafe {
+        loop {
+            asm!("cli; hlt", options(nomem, nostack));
+        }
+    }
+}
+
 /// GDT selector for Ring 0 code segment.
 const KERNEL_CODE_SEG: u16 = 0x08;
 

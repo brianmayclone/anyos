@@ -110,10 +110,36 @@ pub(super) fn parse_transform_length(s: &str, parent_fs: i32) -> i32 {
 pub(super) fn parse_transform_translate_component(s: &str, parent_fs: i32) -> (i32, i32) {
     let s = s.trim();
     if let Some(num) = s.strip_suffix('%') {
-        (0, parse_simple_float(num))
+        (0, parse_simple_float_fixed100(num))
     } else {
         (parse_transform_length(s, parent_fs), 0)
     }
+}
+
+fn parse_simple_float_fixed100(s: &str) -> i32 {
+    let s = s.trim();
+    let neg = s.starts_with('-');
+    let s = if neg { &s[1..] } else { s };
+    let mut int_part = 0i32;
+    let mut frac = 0i32;
+    let mut in_frac = false;
+    let mut frac_mul = 10;
+    for &b in s.as_bytes() {
+        if b == b'.' {
+            in_frac = true;
+        } else if b.is_ascii_digit() {
+            if in_frac {
+                if frac_mul <= 100 {
+                    frac += (b - b'0') as i32 * (100 / frac_mul);
+                    frac_mul *= 10;
+                }
+            } else {
+                int_part = int_part * 10 + (b - b'0') as i32;
+            }
+        }
+    }
+    let value = int_part * 100 + frac;
+    if neg { -value } else { value }
 }
 
 pub(super) fn parse_simple_float(s: &str) -> i32 {

@@ -15,6 +15,7 @@
 extern isr_handler
 extern irq_handler
 extern bad_rsp_recovery
+extern bad_kernel_iret_recovery
 
 ; Global variable to save the corrupt RSP for diagnostics.
 ; Defined in Rust (scheduler.rs) as #[no_mangle] pub static.
@@ -24,6 +25,39 @@ extern BAD_RSP_SAVED
 ; Defined in Rust (idt.rs) as #[no_mangle] pub static mut.
 extern SAVED_FAULT_DS
 extern SAVED_FAULT_ES
+
+%macro VALIDATE_KERNEL_IRET 1
+    ; At this point the stack top is the CPU IRETQ frame:
+    ;   [rsp+0]=RIP [rsp+8]=CS [rsp+16]=RFLAGS [rsp+24]=RSP [rsp+32]=SS
+    ; If a same-ring kernel return frame is corrupt, do not let IRETQ jump
+    ; into low identity memory (e.g. RIP=0x3). Hand the exact frame to Rust
+    ; while it is still intact.
+    push rax
+    push rcx
+    mov rcx, [rsp + 24]           ; original CS after two pushes
+    test rcx, 3
+    jnz %%ok                      ; user return gets normal sanitising below
+    mov rax, [rsp + 16]           ; original RIP after two pushes
+    mov rcx, 0xFFFFFFFF80100000
+    cmp rax, rcx
+    jb %%bad
+    mov rcx, 0xFFFFFFFF82000000
+    cmp rax, rcx
+    jae %%bad
+%%ok:
+    pop rcx
+    pop rax
+    jmp %%done
+%%bad:
+    cli
+    lea rdi, [rsp + 16]           ; pointer to original IRETQ frame
+    mov esi, %1                   ; 0=ISR, 1=IRQ
+    call bad_kernel_iret_recovery
+%%halt:
+    hlt
+    jmp %%halt
+%%done:
+%endmacro
 
 ; =============================================================================
 ; ISR stubs - CPU Exceptions (INT 0-31)
@@ -197,6 +231,8 @@ isr_common_stub:
     ; Remove interrupt number and error code from stack
     add rsp, 16
 
+    VALIDATE_KERNEL_IRET 0
+
     ; Restore user data segment and sanitise SS before IRETQ when returning to ring 3.
     ; The entry code sets DS/ES to kernel 0x10; IRETQ does NOT restore DS/ES.
     ; If we leave DS=0x10 (DPL=0), the CPU nulls DS on the CPL 0→3 transition,
@@ -315,6 +351,8 @@ irq_common_stub:
     pop rax
 
     add rsp, 16
+
+    VALIDATE_KERNEL_IRET 1
 
     ; Restore user data segment and sanitise SS before IRETQ (same fix as isr_common_stub).
     test qword [rsp + 8], 3        ; check CS.RPL

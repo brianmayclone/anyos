@@ -1668,14 +1668,41 @@ fn resolve_absolute_alignment_rec(
                         }
                     };
 
+                    let horizontal_cb_size = if is_fixed { viewport_w } else { next_cb_w };
+                    let vertical_cb_size = if is_fixed { viewport_h } else { next_cb_h };
+                    let left = resolve_inset(
+                        style.left_offset,
+                        style.left_calc,
+                        horizontal_cb_size,
+                        true,
+                    );
+                    let right = resolve_inset(
+                        style.right_offset,
+                        style.right_calc,
+                        horizontal_cb_size,
+                        true,
+                    );
+                    let top = resolve_inset(
+                        style.top,
+                        style.top_calc,
+                        vertical_cb_size,
+                        vertical_cb_size > 0,
+                    );
+                    let bottom = resolve_inset(
+                        style.bottom_offset,
+                        style.bottom_calc,
+                        vertical_cb_size,
+                        vertical_cb_size > 0,
+                    );
+
                     let mut width = child.width;
                     let mut ml = child.margin.left;
                     let mut mr = child.margin.right;
                     let desired_abs_x = resolve_axis(
-                        style.left_offset.is_none(),
-                        style.right_offset.is_none(),
-                        style.left_offset.unwrap_or(0),
-                        style.right_offset.unwrap_or(0),
+                        left.is_none(),
+                        right.is_none(),
+                        left.unwrap_or(0),
+                        right.unwrap_or(0),
                         &mut width,
                         &mut ml,
                         &mut mr,
@@ -1683,7 +1710,7 @@ fn resolve_absolute_alignment_rec(
                         style.margin_right_auto,
                         justify,
                         if is_fixed { 0 } else { next_cb_abs_x },
-                        if is_fixed { viewport_w } else { next_cb_w },
+                        horizontal_cb_size,
                         static_start_abs_x,
                         static_size_x,
                         style.width.is_none()
@@ -1698,10 +1725,10 @@ fn resolve_absolute_alignment_rec(
                     let mut mt = child.margin.top;
                     let mut mb = child.margin.bottom;
                     let desired_abs_y = resolve_axis(
-                        style.top.is_none(),
-                        style.bottom_offset.is_none(),
-                        style.top.unwrap_or(0),
-                        style.bottom_offset.unwrap_or(0),
+                        top.is_none(),
+                        bottom.is_none(),
+                        top.unwrap_or(0),
+                        bottom.unwrap_or(0),
                         &mut height,
                         &mut mt,
                         &mut mb,
@@ -1709,7 +1736,7 @@ fn resolve_absolute_alignment_rec(
                         style.margin_bottom_auto,
                         align,
                         if is_fixed { 0 } else { next_cb_abs_y },
-                        if is_fixed { viewport_h } else { next_cb_h },
+                        vertical_cb_size,
                         static_start_abs_y,
                         static_size_y,
                         style.height.is_none()
@@ -1730,8 +1757,9 @@ fn resolve_absolute_alignment_rec(
                     } else {
                         desired_abs_y - abs_y
                     };
-                    child_abs_x = desired_abs_x;
-                    child_abs_y = desired_abs_y;
+                    apply_transform_translation(child, style);
+                    child_abs_x = if is_fixed { child.x } else { abs_x + child.x };
+                    child_abs_y = if is_fixed { child.y } else { abs_y + child.y };
                 }
             }
         }
@@ -2309,10 +2337,12 @@ pub(super) fn layout_children_ex_with_budget(
             && styles[_parent_node].position == Position::Static;
 
         // Containing block size for the absolute element.
+        let parent_content_width =
+            (parent.width - parent.padding.left - parent.padding.right - bw * 2).max(0);
         let cb_width = if is_fixed_pos || uses_initial_abs_cb {
             viewport_w
         } else {
-            available_width
+            parent_content_width
         };
         let cb_height = if is_fixed_pos || uses_initial_abs_cb {
             viewport_h
