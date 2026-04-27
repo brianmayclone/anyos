@@ -86,6 +86,8 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
             continue;
         }
         if pl.starts_with("url(")
+            || pl.starts_with("image-set(")
+            || pl.starts_with("-webkit-image-set(")
             || pl.starts_with("linear-gradient(")
             || pl.starts_with("radial-gradient(")
             || pl.starts_with("conic-gradient(")

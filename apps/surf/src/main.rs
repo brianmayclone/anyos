@@ -1222,7 +1222,7 @@ fn flush_relayout_for_tab(tab_idx: usize) {
     if work == RenderWork::Layout && st.tabs[tab_idx].css_background_scan_pending {
         st.tabs[tab_idx].css_background_scan_pending = false;
         if let Some(base_url) = st.tabs[tab_idx].current_url.clone() {
-            let queued = resources::queue_background_images(&base_url, tab_idx, 8);
+            let queued = resources::queue_background_images(&base_url, tab_idx, 32);
             if queued > 0 {
                 crate::surf_log!(
                     "[surf] queued CSS background images after layout: tab={} count={}",

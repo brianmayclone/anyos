@@ -5928,16 +5928,53 @@ fn tokenize_respecting_parens(s: &str) -> Vec<&str> {
 // Background image parsing (litehtml-inspired)
 // ---------------------------------------------------------------------------
 
-/// Parse `background-image` value: `url(...)` or `linear-gradient(...)`.
+fn extract_css_url_function(s: &str) -> Option<String> {
+    let lower = s.to_ascii_lowercase();
+    let start = lower.find("url(")?;
+    let mut i = start + 4;
+    let bytes = s.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut depth: i32 = 1;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            quote = Some(b);
+            i += 1;
+            continue;
+        }
+        if b == b'(' {
+            depth += 1;
+        } else if b == b')' {
+            depth -= 1;
+            if depth == 0 {
+                let inner = s[start + 4..i].trim();
+                return Some(String::from(inner.trim_matches('"').trim_matches('\'')));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Parse `background-image` value: `url(...)`, `image-set(...)`, or `linear-gradient(...)`.
 fn parse_background_image_val(s: &str) -> Option<BackgroundImageVal> {
-    let lower = s.trim().to_ascii_lowercase();
+    let trimmed = s.trim();
+    let lower = trimmed.to_ascii_lowercase();
     if lower == "none" {
         return Some(BackgroundImageVal::None);
     }
-    if lower.starts_with("url(") {
-        let inner = lower.trim_start_matches("url(").trim_end_matches(')');
-        let inner = inner.trim_matches('"').trim_matches('\'');
-        return Some(BackgroundImageVal::Url(String::from(inner)));
+    if lower.starts_with("url(")
+        || lower.starts_with("image-set(")
+        || lower.starts_with("-webkit-image-set(")
+    {
+        return extract_css_url_function(trimmed).map(BackgroundImageVal::Url);
     }
     if lower.starts_with("linear-gradient(") {
         let inner = lower
@@ -6193,6 +6230,33 @@ mod declaration_tests {
         assert!(parse_background_image_val("linear-gradient(100gradian, red, red)").is_none());
         assert!(parse_background_image_val("linear-gradient(1.57radian, red, red)").is_none());
         assert!(parse_background_image_val("linear-gradient(0.25turns, red, red)").is_none());
+    }
+
+    #[test]
+    fn background_url_preserves_asset_path_case() {
+        let parsed = parse_background_image_val("url('/Images/HeroLarge.PNG')");
+        assert!(matches!(
+            parsed,
+            Some(BackgroundImageVal::Url(ref src)) if src == "/Images/HeroLarge.PNG"
+        ));
+    }
+
+    #[test]
+    fn background_image_set_uses_first_url_candidate() {
+        let parsed =
+            parse_background_image_val("image-set(url('/hero.avif') 1x, url('/hero@2x.avif') 2x)");
+        assert!(matches!(
+            parsed,
+            Some(BackgroundImageVal::Url(ref src)) if src == "/hero.avif"
+        ));
+
+        let parsed = parse_background_image_val(
+            "-webkit-image-set(url(\"/Promo/Hero.JPG\") 1x, url(\"/Promo/Hero_2x.JPG\") 2x)",
+        );
+        assert!(matches!(
+            parsed,
+            Some(BackgroundImageVal::Url(ref src)) if src == "/Promo/Hero.JPG"
+        ));
     }
 }
 

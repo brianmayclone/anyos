@@ -211,9 +211,7 @@ pub fn is_ahem_font_id(font_id: u32) -> bool {
 pub fn is_synthetic_condensed_font_id(font_id: u32) -> bool {
     matches!(
         font_id,
-        SYNTHETIC_CONDENSED_FONT_ID
-            | SYNTHETIC_NARROW_FONT_ID
-            | SYNTHETIC_EXTRA_CONDENSED_FONT_ID
+        SYNTHETIC_CONDENSED_FONT_ID | SYNTHETIC_NARROW_FONT_ID | SYNTHETIC_EXTRA_CONDENSED_FONT_ID
     )
 }
 
