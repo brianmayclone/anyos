@@ -627,7 +627,8 @@ fn sys_munmap_impl(addr: u64, size: u64, high: bool) -> u64 {
     // the whole machine if one CPU misses the ack.
     #[cfg(target_arch = "x86_64")]
     if freed > 0 && crate::task::scheduler::has_live_pd_siblings() {
-        crate::arch::x86::smp::tlb_shootdown_full();
+        let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
+        crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
     }
 
     0

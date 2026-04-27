@@ -90,6 +90,38 @@ pub fn has_live_pd_siblings() -> bool {
     false
 }
 
+/// Return a logical CPU mask for CPUs currently running threads that share the
+/// current thread's page directory. The calling CPU may be present in the mask;
+/// x86 TLB shootdown code skips it because local invalidation already happened.
+pub fn current_pd_active_cpu_mask() -> u32 {
+    let guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    let Some(sched) = guard.as_ref() else {
+        return 0;
+    };
+    let Some(idx) = sched.current_idx(cpu_id) else {
+        return 0;
+    };
+    let Some(pd) = sched.threads[idx].page_directory else {
+        return 0;
+    };
+
+    let mut mask = 0u32;
+    for cpu in 0..crate::arch::hal::MAX_CPUS.min(32) {
+        let Some(tid) = sched.per_cpu[cpu].current_tid else {
+            continue;
+        };
+        let Some(tidx) = sched.find_idx(tid) else {
+            continue;
+        };
+        let thread = &sched.threads[tidx];
+        if thread.state != ThreadState::Terminated && thread.page_directory == Some(pd) {
+            mask |= 1u32 << cpu;
+        }
+    }
+    mask
+}
+
 /// Atomically get all info needed for sys_exit.
 pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CURRENT_EXIT_INFO);

@@ -1138,15 +1138,15 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
         asm!("push {}; popfq", in(reg) rflags, options(nomem));
     }
 
-    // The CR3 reload above flushed this CPU's TLB, but other CPUs may still
-    // cache stale recursive-mapping entries that pointed into the parent's
-    // page tables.  More importantly, the parent may be running concurrently
-    // on another CPU — a full TLB shootdown ensures every CPU sees the
-    // current page table state before we copy frames in Phase B.  Without
-    // this, a concurrent unmap+free in the parent could race with our copy
-    // and the child would inherit a freed frame.
+    // The CR3 reload above flushed this CPU's TLB. Other CPUs only need a
+    // remote flush if they are actively running another thread in this same
+    // address space; CPUs in idle/kernel/other processes cannot use these
+    // user translations and need not be synchronously waited on.
     #[cfg(target_arch = "x86_64")]
-    crate::arch::x86::smp::tlb_shootdown_full();
+    {
+        let cpu_mask = crate::task::scheduler::current_pd_active_cpu_mask();
+        crate::arch::x86::smp::tlb_shootdown_mask(u64::MAX, cpu_mask);
+    }
 
     // Phase B: Copy page contents and map in child PD
     for &(vaddr, parent_phys, pte_flags, shared) in pages_to_copy.iter() {
