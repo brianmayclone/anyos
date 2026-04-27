@@ -55,6 +55,7 @@ impl DisplayList {
                 color: text_color,
                 font_id,
                 font_size,
+                scale_x_percent: 100,
                 text: label_text,
             },
         );
@@ -130,6 +131,7 @@ impl DisplayList {
                     color,
                     font_id: 0,
                     font_size,
+                    scale_x_percent: 100,
                     text: txt,
                 },
             );
@@ -256,6 +258,7 @@ impl DisplayList {
                         color: fg,
                         font_id: 0,
                         font_size,
+                        scale_x_percent: 100,
                         text: String::from(text),
                     },
                 );
@@ -538,6 +541,7 @@ impl DisplayList {
                     color: text_color,
                     font_id: 0,
                     font_size,
+                    scale_x_percent: 100,
                     text: txt.clone(),
                 },
             );

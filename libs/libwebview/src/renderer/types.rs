@@ -125,6 +125,7 @@ pub(super) enum DrawKind {
         color: u32,
         font_id: u32,
         font_size: u16,
+        scale_x_percent: i32,
         text: String,
     },
     /// Blit an image (looked up from ImageCache by src URL at rasterize time).

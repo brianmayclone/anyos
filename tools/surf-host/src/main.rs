@@ -2094,6 +2094,9 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         "stage-teaser",
         "teaser__image",
         "page-footer",
+        "nav-list--main",
+        "nav_btn--type-main",
+        "nav_btn__text",
         "A7sPV",
         "KWUYAe",
         "oMByyf",
@@ -2129,10 +2132,21 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             id_attr,
             "app" | "main" | "superbannerWrapper" | "skyWrapper" | "billboardWrapper"
         );
+        let is_main_nav_item = tag == Tag::Li
+            && dom
+                .get(node_id)
+                .parent
+                .and_then(|parent| dom.attr(parent, "class"))
+                .map(|class_attr| {
+                    class_attr
+                        .split_ascii_whitespace()
+                        .any(|class| class == "nav-list--main")
+                })
+                .unwrap_or(false);
         let is_interesting_class = class_attr
             .split_ascii_whitespace()
             .any(|class| INTERESTING_CLASSES.contains(&class));
-        if !is_interesting_id && !is_interesting_class {
+        if !is_interesting_id && !is_interesting_class && !is_main_nav_item {
             continue;
         }
         let Some(style) = wv.resolved_style_ref(node_id) else {

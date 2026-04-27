@@ -458,7 +458,15 @@ impl LayoutBox {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn resolve_font_id(custom_font_id: u32, bold: bool, italic: bool) -> u32 {
-    if custom_font_id != 0 {
+    if crate::is_synthetic_condensed_font_id(custom_font_id) {
+        if bold {
+            1
+        } else if italic {
+            3
+        } else {
+            0
+        }
+    } else if custom_font_id != 0 {
         custom_font_id
     } else if bold {
         1
@@ -483,7 +491,17 @@ pub(super) fn measure_text(
         return (glyph_count * size, size);
     }
     let (w, h) = libfont_client::measure(font_id, font_size.max(1) as u16, text);
-    (w as i32, h as i32)
+    let mut w = w as i32;
+    let scale = crate::synthetic_font_width_scale_percent(custom_font_id);
+    if scale != 100 {
+        // Fallback for CSS families such as "Arial Narrow",
+        // "sans-serif-condensed" or "Gotham XNarrow" while WOFF2 coverage is
+        // still incomplete.  Real condensed faces are typically 70-85% of the
+        // regular advance width; 76% keeps dense news navigation bars from
+        // overflowing without making ordinary text microscopic.
+        w = w * scale / 100;
+    }
+    (w, h as i32)
 }
 
 pub(super) fn font_size_px(style: &ComputedStyle) -> i32 {

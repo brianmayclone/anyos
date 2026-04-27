@@ -107,12 +107,24 @@ struct IncrementalRelayoutPlan {
 /// Points to the current WebView's web_fonts Vec. Only valid during relayout.
 static mut WEB_FONT_MAP: *const Vec<(String, u32)> = core::ptr::null();
 const SYNTHETIC_AHEM_FONT_ID: u32 = u32::MAX - 1;
+const SYNTHETIC_CONDENSED_FONT_ID: u32 = u32::MAX - 2;
 
 fn font_family_contains_ahem(family: &str) -> bool {
     family
         .to_ascii_lowercase()
         .split(',')
         .any(|part| part.trim().trim_matches('\'').trim_matches('"').trim() == "ahem")
+}
+
+fn font_family_requests_condensed(family: &str) -> bool {
+    family.to_ascii_lowercase().split(',').any(|part| {
+        let name = part.trim().trim_matches('\'').trim_matches('"').trim();
+        name.contains("condensed")
+            || name.contains("narrow")
+            || name.contains("xnarrow")
+            || name.contains("x-narrow")
+            || name == "sans-serif-condensed"
+    })
 }
 
 /// Look up a web font ID by family name (called from renderer/layout).
@@ -125,7 +137,16 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
             if font_family_contains_ahem(family) {
                 return Some(SYNTHETIC_AHEM_FONT_ID);
             }
+            if font_family_requests_condensed(family) {
+                return Some(SYNTHETIC_CONDENSED_FONT_ID);
+            }
             return None;
+        }
+        if font_family_contains_ahem(family) {
+            return Some(SYNTHETIC_AHEM_FONT_ID);
+        }
+        if font_family_requests_condensed(family) {
+            return Some(SYNTHETIC_CONDENSED_FONT_ID);
         }
         let map = &*WEB_FONT_MAP;
         // Try the whole string first (fastest path for single-name entries).
@@ -151,9 +172,6 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
                 return Some(id);
             }
         }
-        if font_family_contains_ahem(family) {
-            return Some(SYNTHETIC_AHEM_FONT_ID);
-        }
         None
     }
 }
@@ -173,6 +191,18 @@ pub fn is_ahem_font_id(font_id: u32) -> bool {
         map.iter().any(|(family, id)| {
             *id == font_id && family.trim_matches('\'').trim_matches('"') == "ahem"
         })
+    }
+}
+
+pub fn is_synthetic_condensed_font_id(font_id: u32) -> bool {
+    font_id == SYNTHETIC_CONDENSED_FONT_ID
+}
+
+pub fn synthetic_font_width_scale_percent(font_id: u32) -> i32 {
+    if is_synthetic_condensed_font_id(font_id) {
+        76
+    } else {
+        100
     }
 }
 

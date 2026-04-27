@@ -29,6 +29,85 @@ fn draw_ahem_string_buf(
     }
 }
 
+fn blend_src_over(dst: u32, src: u32) -> u32 {
+    let sa = (src >> 24) & 0xFF;
+    if sa == 0 {
+        return dst;
+    }
+    if sa == 255 {
+        return src;
+    }
+    let da = (dst >> 24) & 0xFF;
+    let inv = 255 - sa;
+    let out_a = sa + da * inv / 255;
+    let sr = (src >> 16) & 0xFF;
+    let sg = (src >> 8) & 0xFF;
+    let sb = src & 0xFF;
+    let dr = (dst >> 16) & 0xFF;
+    let dg = (dst >> 8) & 0xFF;
+    let db = dst & 0xFF;
+    let out_r = (sr * sa + dr * inv) / 255;
+    let out_g = (sg * sa + dg * inv) / 255;
+    let out_b = (sb * sa + db * inv) / 255;
+    (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b
+}
+
+fn draw_scaled_text_buf(
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    color: u32,
+    font_id: u32,
+    font_size: u16,
+    scale_x_percent: i32,
+    text: &str,
+) {
+    let scale = scale_x_percent.clamp(10, 400);
+    let (measured_w, measured_h) = libfont_client::measure(font_id, font_size, text);
+    let src_w = (measured_w as i32 + 4).max(1) as u32;
+    let src_h = (measured_h.max(font_size as u32) + 4).max(1);
+    let mut tmp = vec![0u32; (src_w as usize).saturating_mul(src_h as usize)];
+    libfont_client::draw_string_buf(
+        tmp.as_mut_ptr(),
+        src_w,
+        src_h,
+        0,
+        0,
+        color,
+        font_id,
+        font_size,
+        text,
+    );
+
+    let dst_w = ((src_w as i32 * scale + 50) / 100).max(1);
+    let stride_usize = stride as usize;
+    let buf_h_i32 = buf_h as i32;
+    for dy in 0..(src_h as i32) {
+        let out_y = y + dy;
+        if out_y < 0 || out_y >= buf_h_i32 {
+            continue;
+        }
+        for dx in 0..dst_w {
+            let out_x = x + dx;
+            if out_x < 0 || out_x >= stride as i32 {
+                continue;
+            }
+            let sx = (dx * 100 / scale).clamp(0, src_w as i32 - 1);
+            let src = tmp[dy as usize * src_w as usize + sx as usize];
+            if (src >> 24) == 0 {
+                continue;
+            }
+            let dst_idx = out_y as usize * stride_usize + out_x as usize;
+            unsafe {
+                let dst = *buf.add(dst_idx);
+                *buf.add(dst_idx) = blend_src_over(dst, src);
+            }
+        }
+    }
+}
+
 fn rasterize_draw_cmd_basic(
     images: &ImageCache,
     cmd: &DrawCmd,
@@ -74,11 +153,25 @@ fn rasterize_draw_cmd_basic(
             color,
             font_id,
             font_size,
+            scale_x_percent,
             text,
         } => {
             if crate::is_ahem_font_id(*font_id) {
                 draw_ahem_string_buf(
                     buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_size, text,
+                );
+            } else if *scale_x_percent != 100 {
+                draw_scaled_text_buf(
+                    buf,
+                    stride,
+                    buf_h,
+                    cmd.src_x,
+                    draw_y,
+                    *color,
+                    *font_id,
+                    *font_size,
+                    *scale_x_percent,
+                    text,
                 );
             } else {
                 libfont_client::draw_string_buf(
@@ -188,11 +281,13 @@ pub(super) fn rasterize_draw_cmd(
                 color,
                 font_id,
                 font_size,
+                scale_x_percent,
                 text,
             } => DrawKind::Text {
                 color: *color,
                 font_id: *font_id,
                 font_size: *font_size,
+                scale_x_percent: *scale_x_percent,
                 text: text.clone(),
             },
             DrawKind::Image {

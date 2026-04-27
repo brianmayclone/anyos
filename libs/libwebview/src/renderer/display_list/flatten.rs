@@ -561,6 +561,7 @@ impl DisplayList {
                         color,
                         font_id: 0,
                         font_size,
+                        scale_x_percent: 100,
                         text: marker.clone(),
                     },
                 );
@@ -575,6 +576,7 @@ impl DisplayList {
                         color,
                         font_id: 0,
                         font_size,
+                        scale_x_percent: 100,
                         text: marker.clone(),
                     },
                 );
@@ -585,6 +587,8 @@ impl DisplayList {
         if let Some(ref text) = bx.text {
             if !text.is_empty() && bx.form_field.is_none() {
                 let font_id = crate::layout::resolve_font_id(bx.custom_font_id, bx.bold, bx.italic);
+                let scale_x_percent =
+                    crate::synthetic_font_width_scale_percent(bx.custom_font_id);
                 let font_size = bx.font_size.max(1) as u16;
                 let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
 
@@ -599,6 +603,7 @@ impl DisplayList {
                             color: ts.color,
                             font_id,
                             font_size,
+                            scale_x_percent,
                             text: text.clone(),
                         },
                     );
@@ -613,6 +618,7 @@ impl DisplayList {
                         color,
                         font_id,
                         font_size,
+                        scale_x_percent,
                         text: text.clone(),
                     },
                 );
