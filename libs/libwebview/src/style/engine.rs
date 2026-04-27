@@ -2496,7 +2496,72 @@ fn lookup_custom_property<'a>(
             break;
         }
     }
-    None
+    fallback_custom_property(name)
+}
+
+fn fallback_custom_property(name: &str) -> Option<&'static str> {
+    match name {
+        "--base" | "--text-black" | "--surface-black" | "--global-black" => Some("#333333"),
+        "--black" => Some("#000000"),
+        "--white" | "--global-white" | "--background-primary" | "--text-on-color-white" => {
+            Some("#ffffff")
+        }
+        "--background" | "--background-light" | "--surface-gray-10" => Some("#eeeeef"),
+        "--surface-gray-20" | "--border-bg" | "--border-medium" => Some("#e0e0e0"),
+        "--surface-gray-30" | "--text-muted" => Some("#666666"),
+        "--surface-brand" | "--text-brand" | "--border-brand" | "--primary" => Some("#ee001c"),
+        "--text-link" => Some("#156fbc"),
+        "--font-weight-bold" => Some("700"),
+        "--font-weight-bolder" => Some("800"),
+        "--font-weight-black" => Some("900"),
+        "--font-letter-spacing" | "--font-letter-spacing-p" | "--font-letter-spacing-caps" => {
+            Some("0")
+        }
+        "--font-family-headline" | "--font-family-inter-tight" | "--website-font"
+        | "--website-paragraph" => Some("Arial"),
+        "--text-xxs" | "--unified-text-xxs" => Some(".555rem"),
+        "--text-xs" | "--unified-text-xs" => Some(".666rem"),
+        "--text-sm" | "--unified-text-sm" => Some(".777rem"),
+        "--text-md" | "--unified-text-md" => Some(".888rem"),
+        "--text-base" | "--unified-text-base" => Some("1rem"),
+        "--text-lg" | "--unified-text-lg" => Some("1.125rem"),
+        "--text-xl" | "--unified-text-xl" => Some("1.222rem"),
+        "--text-xxl" | "--unified-text-xxl" => Some("1.5rem"),
+        "--headline-xxs" | "--unified-headline-xxs" => Some(".888rem"),
+        "--headline-xs" | "--unified-headline-xs" => Some("1rem"),
+        "--headline-sm" | "--unified-headline-sm" | "--headline-lg-mobile" => Some("1.222rem"),
+        "--headline-md" | "--unified-headline-md" => Some("1.555rem"),
+        "--headline-lg" | "--unified-headline-lg" => Some("1.777rem"),
+        "--headline-xl" | "--unified-headline-xl" => Some("2rem"),
+        "--headline-xxl" | "--unified-headline-xxl" => Some("3rem"),
+        "--line-height-default" | "--line-height-text-xs" | "--line-height-text-sm"
+        | "--line-height-text-md" | "--line-height-text-lg" | "--line-height-text-xl"
+        | "--line-height-text-xxl" | "--txt-line-height-xs" | "--txt-line-height-sm"
+        | "--txt-line-height-md" | "--txt-line-height-lg" | "--txt-line-height-xl"
+        | "--unified-line-height-base" | "--unified-line-height-text-xxs"
+        | "--unified-line-height-text-xs" | "--unified-line-height-text-sm"
+        | "--unified-line-height-text-md" | "--unified-line-height-text-lg"
+        | "--unified-line-height-text-xl" | "--unified-line-height-text-xxl" => Some("1.3"),
+        "--line-height-hl-xxs" | "--line-height-hl-xs" | "--line-height-hl-sm"
+        | "--line-height-hl-md" | "--line-height-hl-lg" | "--line-height-hl-xl"
+        | "--line-height-hl-xxl" | "--unified-line-height-hl-xxs"
+        | "--unified-line-height-hl-xs" | "--unified-line-height-hl-sm"
+        | "--unified-line-height-hl-md" | "--unified-line-height-hl-lg"
+        | "--unified-line-height-hl-xl" | "--unified-line-height-hl-xxl" => Some("1.2"),
+        "--spacing-xxs" => Some(".125rem"),
+        "--spacing-xs" => Some(".25rem"),
+        "--spacing-sm" => Some(".5rem"),
+        "--spacing-md" => Some("1rem"),
+        "--spacing-lg" => Some("1.5rem"),
+        "--spacing-xl" => Some("2rem"),
+        "--spacing-xxl" => Some("4rem"),
+        "--grid-spacing" | "--container-spacing" => Some("20px"),
+        "--column-gap" => Some("1.25rem"),
+        "--article-content-width" => Some("800px"),
+        "--full-content-width" | "--container-width" => Some("956px"),
+        "--border-sm" => Some("1px"),
+        _ => None,
+    }
 }
 
 /// Resolve var() references by walking the DOM parent chain.
@@ -2507,29 +2572,75 @@ fn resolve_var_in_decl(
     node_cp: &[(String, String)],
     ancestors_cp: &[Vec<(String, String)>],
 ) -> Declaration {
-    if let CssValue::Var(ref name, ref fallback) = decl.value {
-        // Look up custom property via parent chain walk.
-        if let Some(val) = lookup_custom_property(name, node_cp, dom, node_id, ancestors_cp) {
-            // Re-parse the raw value string as the target property.
-            let resolved = crate::css::parse_value(&decl.property, val);
+    if matches!(decl.value, CssValue::Var(_, _)) {
+        if let Some(value) = resolve_css_var_value(
+            &decl.value,
+            &decl.property,
+            dom,
+            node_id,
+            node_cp,
+            ancestors_cp,
+            0,
+        ) {
             return Declaration {
                 property: decl.property.clone(),
-                value: resolved,
+                value,
                 important: decl.important,
             };
         }
-        // Use fallback if available.
-        if let Some(fb) = fallback {
-            return Declaration {
-                property: decl.property.clone(),
-                value: (**fb).clone(),
-                important: decl.important,
-            };
-        }
-        // No value found — return as-is (will be treated as unknown).
-        return decl.clone();
     }
     decl.clone()
+}
+
+fn resolve_css_var_value(
+    value: &CssValue,
+    property: &Property,
+    dom: &Dom,
+    node_id: NodeId,
+    node_cp: &[(String, String)],
+    ancestors_cp: &[Vec<(String, String)>],
+    depth: usize,
+) -> Option<CssValue> {
+    if depth > 8 {
+        return None;
+    }
+    match value {
+        CssValue::Var(name, fallback) => {
+            if let Some(val) = lookup_custom_property(name, node_cp, dom, node_id, ancestors_cp) {
+                let parsed = crate::css::parse_value(property, val);
+                if matches!(parsed, CssValue::Var(_, _)) {
+                    resolve_css_var_value(
+                        &parsed,
+                        property,
+                        dom,
+                        node_id,
+                        node_cp,
+                        ancestors_cp,
+                        depth + 1,
+                    )
+                } else {
+                    Some(parsed)
+                }
+            } else if let Some(fb) = fallback {
+                if matches!(**fb, CssValue::Var(_, _)) {
+                    resolve_css_var_value(
+                        fb,
+                        property,
+                        dom,
+                        node_id,
+                        node_cp,
+                        ancestors_cp,
+                        depth + 1,
+                    )
+                } else {
+                    Some((**fb).clone())
+                }
+            } else {
+                None
+            }
+        }
+        other => Some(other.clone()),
+    }
 }
 
 /// Check if a declaration has nested var() inside a function value (e.g. rgb(R G B/var(--x,1))).

@@ -25,8 +25,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId};
 use crate::style::{
-    AlignItems, BoxSizing, ComputedStyle, Display, GridArea, GridLine, GridTrackSize, Position,
-    PseudoStyles,
+    AlignContent, AlignItems, BoxSizing, ComputedStyle, Display, GridArea, GridLine,
+    GridTrackSize, JustifyContent, Position, PseudoStyles,
 };
 use crate::ImageCache;
 
@@ -75,6 +75,8 @@ pub fn layout_grid(
         parent_style.row_gap
     };
     let container_align = parent_style.align_items;
+    let align_content = parent_style.align_content;
+    let justify_content = parent_style.justify_content;
     let justify_items = parent_style.justify_items;
 
     // ── 1. Resolve column track sizes ──────────────────────────────────────
@@ -322,7 +324,7 @@ pub fn layout_grid(
     }
 
     // ── 8. Resolve row heights ────────────────────────────────────────────
-    let row_heights = if uses_subgrid_rows {
+    let mut row_heights = if uses_subgrid_rows {
         inherited_subgrid_rows
             .map(|rows| rows.to_vec())
             .unwrap_or_else(|| vec![0; total_rows])
@@ -350,21 +352,47 @@ pub fn layout_grid(
     }
 
     // ── 9. Position every item ────────────────────────────────────────────
-    let mut cursor_y = 0i32;
+    let base_grid_w = tracks_total(&col_widths, col_gap);
+    let available_grid_w = available_width.max(0);
+    let (content_x_offset, extra_col_gap) = distribute_grid_content_inline(
+        justify_content,
+        available_grid_w - base_grid_w,
+        col_widths.len(),
+    );
+
+    let base_grid_h = tracks_total(&row_heights, row_gap);
+    let available_grid_h = definite_grid_content_height(parent_style, parent.height, base_grid_h);
+    expand_fr_rows(
+        &mut row_heights,
+        row_templates,
+        auto_row,
+        available_grid_h,
+        row_gap,
+    );
+    let base_grid_h = tracks_total(&row_heights, row_gap);
+    let (content_y_offset, extra_row_gap) = distribute_grid_content_block(
+        align_content,
+        available_grid_h - base_grid_h,
+        row_heights.len(),
+    );
+    if align_content == AlignContent::Stretch && base_grid_h < available_grid_h {
+        stretch_auto_rows(&mut row_heights, row_templates, auto_row, available_grid_h - base_grid_h);
+    }
+    if justify_content == JustifyContent::FlexStart && base_grid_w < available_grid_w {
+        // Nothing to do; keep the historical behavior for the default.
+    }
+
     let row_offsets: Vec<i32> = {
         let mut offsets = Vec::with_capacity(total_rows);
-        let mut y = 0i32;
+        let mut y = content_y_offset;
         for r in 0..total_rows {
             offsets.push(y);
-            y += row_heights[r] + if r + 1 < total_rows { row_gap } else { 0 };
+            y += row_heights[r] + if r + 1 < total_rows { row_gap + extra_row_gap } else { 0 };
         }
-        y
-        // (we'll use `cursor_y` differently — just store and use offsets)
-        ;
         offsets
     };
     // Recompute total height from row_offsets.
-    cursor_y = if !row_offsets.is_empty() {
+    let cursor_y = if !row_offsets.is_empty() {
         let last_row = total_rows - 1;
         row_offsets[last_row] + row_heights[last_row]
     } else {
@@ -372,10 +400,10 @@ pub fn layout_grid(
     };
 
     for item in &mut items {
-        let x = col_offset(&col_widths, item.placed_col, col_gap);
+        let x = content_x_offset + col_offset(&col_widths, item.placed_col, col_gap + extra_col_gap);
         let y = row_offsets[item.placed_row];
-        let cell_w = span_width(&col_widths, item.placed_col, item.span_cols, col_gap);
-        let cell_h = span_height(&row_heights, item.placed_row, item.span_rows, row_gap);
+        let cell_w = span_width(&col_widths, item.placed_col, item.span_cols, col_gap + extra_col_gap);
+        let cell_h = span_height(&row_heights, item.placed_row, item.span_rows, row_gap + extra_row_gap);
 
         if let Some(mut bx) = item.layout.take() {
             let item_w = bx.width;
@@ -385,9 +413,21 @@ pub fn layout_grid(
             let effective_align = item_style.align_self.unwrap_or(container_align);
 
             // Horizontal alignment (justify-self falling back to justify-items).
-            let x_offset = align_offset(effective_justify, item_w, cell_w);
+            let x_offset = item_axis_offset_with_auto_margins(
+                effective_justify,
+                item_w,
+                cell_w,
+                item_style.margin_left_auto,
+                item_style.margin_right_auto,
+            );
             // Vertical alignment (align-self falling back to align-items).
-            let y_offset = align_offset(effective_align, item_h, cell_h);
+            let y_offset = item_axis_offset_with_auto_margins(
+                effective_align,
+                item_h,
+                cell_h,
+                item_style.margin_top_auto,
+                item_style.margin_bottom_auto,
+            );
 
             // Position the item box at its grid cell offset.
             // Do NOT use translate_box (recursive) — flatten() accumulates
@@ -1200,6 +1240,209 @@ fn span_height(row_heights: &[i32], row: usize, span: usize, row_gap: i32) -> i3
         h += row_heights.get(i).copied().unwrap_or(0);
     }
     h.max(0)
+}
+
+fn tracks_total(tracks: &[i32], gap: i32) -> i32 {
+    tracks.iter().copied().sum::<i32>() + gap * tracks.len().saturating_sub(1) as i32
+}
+
+fn definite_grid_content_height(style: &ComputedStyle, current_height: i32, content_height: i32) -> i32 {
+    let mut h = current_height.max(content_height);
+    if let Some(explicit) = style.height {
+        h = h.max(explicit);
+    } else if (style.height_pct.is_some() || style.height_calc.is_some()) && style.max_height.is_some() {
+        // A grid container with a definite percentage/calc height may be clamped
+        // by max-height after child layout. Use that clamped content height for
+        // align-content before final box sizing, so tracks can be packed within
+        // the same space the container will eventually occupy.
+        h = h.max(style.max_height.unwrap_or(h));
+    }
+    h = h.max(style.min_height);
+    if let Some(max_h) = style.max_height {
+        h = h.min(max_h);
+    }
+    h.max(content_height)
+}
+
+fn distribute_grid_content_block(
+    align: AlignContent,
+    free_space: i32,
+    track_count: usize,
+) -> (i32, i32) {
+    let free = free_space.max(0);
+    match align {
+        AlignContent::FlexEnd => (free, 0),
+        AlignContent::Center => (free / 2, 0),
+        AlignContent::SpaceBetween if track_count > 1 => {
+            (0, free / (track_count.saturating_sub(1) as i32))
+        }
+        AlignContent::SpaceAround if track_count > 0 => {
+            let gap = free / track_count as i32;
+            (gap / 2, gap)
+        }
+        AlignContent::SpaceEvenly if track_count > 0 => {
+            let gap = free / (track_count as i32 + 1);
+            (gap, gap)
+        }
+        _ => (0, 0),
+    }
+}
+
+fn distribute_grid_content_inline(
+    justify: JustifyContent,
+    free_space: i32,
+    track_count: usize,
+) -> (i32, i32) {
+    let free = free_space.max(0);
+    match justify {
+        JustifyContent::FlexEnd => (free, 0),
+        JustifyContent::Center => (free / 2, 0),
+        JustifyContent::SpaceBetween if track_count > 1 => {
+            (0, free / (track_count.saturating_sub(1) as i32))
+        }
+        JustifyContent::SpaceAround if track_count > 0 => {
+            let gap = free / track_count as i32;
+            (gap / 2, gap)
+        }
+        JustifyContent::SpaceEvenly if track_count > 0 => {
+            let gap = free / (track_count as i32 + 1);
+            (gap, gap)
+        }
+        _ => (0, 0),
+    }
+}
+
+fn stretch_auto_rows(
+    row_heights: &mut [i32],
+    templates: &[GridTrackSize],
+    auto_track: &GridTrackSize,
+    free_space: i32,
+) {
+    let free = free_space.max(0);
+    if free == 0 || row_heights.is_empty() {
+        return;
+    }
+    let stretchable: Vec<usize> = (0..row_heights.len())
+        .filter(|&idx| {
+            let track = if idx < templates.len() {
+                &templates[idx]
+            } else {
+                auto_track
+            };
+            matches!(
+                track,
+                GridTrackSize::Auto | GridTrackSize::Minmax { max_px: -1, .. }
+            )
+        })
+        .collect();
+    if stretchable.is_empty() {
+        return;
+    }
+    let share = free / stretchable.len() as i32;
+    let mut remainder = free - share * stretchable.len() as i32;
+    for idx in stretchable {
+        row_heights[idx] += share;
+        if remainder > 0 {
+            row_heights[idx] += 1;
+            remainder -= 1;
+        }
+    }
+}
+
+fn expand_fr_rows(
+    row_heights: &mut [i32],
+    templates: &[GridTrackSize],
+    auto_track: &GridTrackSize,
+    container_height: i32,
+    row_gap: i32,
+) {
+    if row_heights.is_empty() {
+        return;
+    }
+    let total_gap = row_gap * row_heights.len().saturating_sub(1) as i32;
+    let used = row_heights.iter().copied().sum::<i32>() + total_gap;
+    let free = (container_height - used).max(0);
+    if free == 0 {
+        return;
+    }
+
+    let mut fr_total = 0i32;
+    for idx in 0..row_heights.len() {
+        let track = if idx < templates.len() {
+            &templates[idx]
+        } else {
+            auto_track
+        };
+        match track {
+            GridTrackSize::Fr(fr) => fr_total += *fr,
+            GridTrackSize::Minmax {
+                max_px,
+                max_is_fr: true,
+                ..
+            } => fr_total += *max_px,
+            _ => {}
+        }
+    }
+    if fr_total <= 0 {
+        return;
+    }
+
+    let mut distributed = 0i32;
+    for idx in 0..row_heights.len() {
+        let track = if idx < templates.len() {
+            &templates[idx]
+        } else {
+            auto_track
+        };
+        let fr = match track {
+            GridTrackSize::Fr(fr) => *fr,
+            GridTrackSize::Minmax {
+                max_px,
+                max_is_fr: true,
+                ..
+            } => *max_px,
+            _ => 0,
+        };
+        if fr <= 0 {
+            continue;
+        }
+        let share = (free as i64 * fr as i64 / fr_total as i64) as i32;
+        row_heights[idx] += share;
+        distributed += share;
+    }
+
+    let mut remainder = free - distributed;
+    for idx in 0..row_heights.len() {
+        if remainder <= 0 {
+            break;
+        }
+        let track = if idx < templates.len() {
+            &templates[idx]
+        } else {
+            auto_track
+        };
+        if matches!(track, GridTrackSize::Fr(_) | GridTrackSize::Minmax { max_is_fr: true, .. }) {
+            row_heights[idx] += 1;
+            remainder -= 1;
+        }
+    }
+}
+
+fn item_axis_offset_with_auto_margins(
+    align: AlignItems,
+    item_size: i32,
+    cell_size: i32,
+    start_auto: bool,
+    end_auto: bool,
+) -> i32 {
+    let free = (cell_size - item_size).max(0);
+    if start_auto && end_auto {
+        free / 2
+    } else if start_auto {
+        free
+    } else {
+        align_offset(align, item_size, cell_size)
+    }
 }
 
 /// Compute the offset needed to align an item of `item_size` within `cell_size`

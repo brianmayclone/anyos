@@ -33,7 +33,7 @@ fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
             Property::Outline => Property::OutlineColor,
             _ => property.clone(),
         };
-        let var_val = parse_var_value(value_str.trim());
+        let var_val = parse_var_value(&primary, value_str.trim());
         return alloc::vec![Declaration {
             property: primary,
             value: var_val,

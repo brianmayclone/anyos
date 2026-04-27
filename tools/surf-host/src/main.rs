@@ -2072,6 +2072,17 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             libwebview::style::AlignItems::Baseline => "baseline",
         }
     }
+    fn align_content_name(value: libwebview::style::AlignContent) -> &'static str {
+        match value {
+            libwebview::style::AlignContent::FlexStart => "flex-start",
+            libwebview::style::AlignContent::FlexEnd => "flex-end",
+            libwebview::style::AlignContent::Center => "center",
+            libwebview::style::AlignContent::SpaceBetween => "space-between",
+            libwebview::style::AlignContent::SpaceAround => "space-around",
+            libwebview::style::AlignContent::SpaceEvenly => "space-evenly",
+            libwebview::style::AlignContent::Stretch => "stretch",
+        }
+    }
 
     const INTERESTING_CLASSES: &[&str] = &[
         "skip-link",
@@ -2137,7 +2148,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             })
             .unwrap_or_else(String::new);
         eprintln!(
-            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} width={:?} height={:?} height_pct={:?} height_calc={:?} min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) padding=({},{},{},{}) border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
+            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} align_content={:?} width={:?} height={:?} height_pct={:?} height_calc={:?} min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) margin_auto=({},{},{},{}) padding=({},{},{},{}) grid_rows={} grid_cols={} border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
             node_id,
             tag.tag_name(),
             id_attr,
@@ -2155,6 +2166,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             flex_direction_name(style.flex_direction),
             justify_content_name(style.justify_content),
             align_items_name(style.align_items),
+            align_content_name(style.align_content),
             style.width,
             style.height,
             style.height_pct,
@@ -2167,10 +2179,16 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             style.margin_right,
             style.margin_bottom,
             style.margin_left,
+            style.margin_top_auto,
+            style.margin_right_auto,
+            style.margin_bottom_auto,
+            style.margin_left_auto,
             style.padding_top,
             style.padding_right,
             style.padding_bottom,
             style.padding_left,
+            style.grid_template_rows.len(),
+            style.grid_template_columns.len(),
             style.border_width,
             style.border_width,
             style.border_width,

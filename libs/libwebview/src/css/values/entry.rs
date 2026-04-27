@@ -14,7 +14,7 @@ pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
     }
 
     if lower.starts_with("var(") {
-        return parse_var_value(s);
+        return parse_var_value(property, s);
     }
     if lower.starts_with("calc(") {
         return parse_calc_value(s);
@@ -75,7 +75,7 @@ pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
     }
 }
 
-fn parse_var_value(s: &str) -> CssValue {
+fn parse_var_value(property: &Property, s: &str) -> CssValue {
     let inner = s.trim();
     let inner = if inner.starts_with("var(") || inner.starts_with("VAR(") {
         &inner[4..]
@@ -90,7 +90,7 @@ fn parse_var_value(s: &str) -> CssValue {
         let fallback = if fallback_str.is_empty() {
             None
         } else {
-            Some(Box::new(parse_value(&Property::Color, fallback_str)))
+            Some(Box::new(parse_value(property, fallback_str)))
         };
         CssValue::Var(String::from(name), fallback)
     } else {
