@@ -538,12 +538,35 @@ fn tlb_shootdown_ipi_handler(_irq: u8) {
 /// would cause a deadlock.  All callers in this kernel (Thread::new/drop,
 /// unmap_page) run with IF=1 in kernel thread context.
 pub fn tlb_shootdown(va: u64) {
+    let count = cpu_count() as u32;
+    let mut mask = 0u32;
+    for cpu in 0..count.min(32) {
+        mask |= 1u32 << cpu;
+    }
+    tlb_shootdown_mask(va, mask);
+}
+
+/// Send a TLB shootdown IPI to a selected set of CPUs and wait for
+/// acknowledgment. `cpu_mask` uses logical CPU IDs; the current CPU is skipped
+/// because callers have already flushed locally.
+pub fn tlb_shootdown_mask(va: u64, cpu_mask: u32) {
     if !crate::arch::x86::apic::is_initialized() {
         return; // Single-CPU or APIC not yet up
     }
     let count = cpu_count() as u32;
     if count <= 1 {
         return; // Nothing to shoot down
+    }
+
+    let my_cpu = current_cpu_id();
+    let online_mask = if count >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << count) - 1
+    };
+    let target_mask = cpu_mask & online_mask & !(1u32 << my_cpu);
+    if target_mask == 0 {
+        return;
     }
 
     // Serialize concurrent shootdowns.  Without this, two CPUs can corrupt
@@ -555,18 +578,17 @@ pub fn tlb_shootdown(va: u64) {
         core::hint::spin_loop();
     }
 
-    let my_cpu = current_cpu_id();
-    let others = count - 1;
+    let targets = target_mask.count_ones();
 
     TLB_FLUSH_VA.store(va, Ordering::Release);
-    TLB_ACK_COUNT.store(others, Ordering::Release);
+    TLB_ACK_COUNT.store(targets, Ordering::Release);
 
     // Ensure the stores are visible to other CPUs before IPIs arrive
     core::sync::atomic::fence(Ordering::SeqCst);
 
     // Send IPI to every other online CPU
     for i in 0..count as usize {
-        if i as u8 == my_cpu {
+        if (target_mask & (1u32 << i)) == 0 {
             continue;
         }
         let lapic_id = unsafe { CPU_DATA[i].lapic_id };

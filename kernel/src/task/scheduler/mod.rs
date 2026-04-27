@@ -863,11 +863,9 @@ impl Scheduler {
 
     /// Reap terminated threads whose exit code has been consumed or auto-reaped.
     ///
-    /// Returns up to 8 reaped `Box<Thread>` objects so the caller can drop
-    /// them **outside** the SCHEDULER lock.  Dropping `Box<Thread>` calls
-    /// `dealloc` on the ~68 KiB kernel stack; doing that under the lock while
-    /// other CPUs contest the ALLOCATOR (e.g. during a fork storm) causes a
-    /// 100–400 ms SPIN TIMEOUT.
+    /// Returns up to 8 reaped `Box<Thread>` objects so the reaper can drop
+    /// them **outside** the SCHEDULER lock and outside IRQ/scheduler context.
+    /// Dropping `Box<Thread>` calls `dealloc` on the ~68 KiB kernel stack.
     fn reap_terminated(&mut self) -> [Option<Box<Thread>>; 8] {
         let mut reaped: [Option<Box<Thread>>; 8] = Default::default();
         let mut reap_count = 0usize;
@@ -902,6 +900,9 @@ impl Scheduler {
                         .map(|t| current_tick.wrapping_sub(t) > auto_reap_delay_ms)
                         .unwrap_or(false);
                 if consumed || auto_reap {
+                    if reap_count >= 8 {
+                        break;
+                    }
                     let tid = self.threads[i].tid;
                     let stack_bottom = self.threads[i].kernel_stack_bottom();
                     let stack_top = self.threads[i].kernel_stack_top();
@@ -916,8 +917,7 @@ impl Scheduler {
                     self.remove_from_all_queues(tid);
                     // swap_remove RETURNS the Box<Thread> — do NOT let it drop here.
                     // We collect it and drop it after releasing the SCHEDULER lock
-                    // (see schedule_inner) so dealloc doesn't contend the ALLOCATOR
-                    // while we hold the lock.
+                    // in deferred_reaper_thread.
                     let thread = self.threads.swap_remove(i);
                     // Maintain current_idx caches: swap_remove moved the
                     // last element into position i.
@@ -931,10 +931,8 @@ impl Scheduler {
                     }
                     // Invalidate TID→index cache (indices shifted by swap_remove)
                     self.invalidate_tid_cache();
-                    if reap_count < 8 {
-                        reaped[reap_count] = Some(thread);
-                        reap_count += 1;
-                    }
+                    reaped[reap_count] = Some(thread);
+                    reap_count += 1;
                     // Don't increment — check swapped-in element
                 } else {
                     i += 1;
@@ -1389,8 +1387,6 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
         u32,
         u32,
     )> = None;
-    let mut reaped_threads: [Option<Box<Thread>>; 8] = Default::default();
-
     {
         let sched = match guard.as_mut() {
             Some(s) => s,
@@ -1399,8 +1395,6 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 return;
             }
         };
-
-        reaped_threads = sched.reap_terminated();
 
         if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
             for slot in &DEFERRED_WAKE_TIDS {
@@ -1572,7 +1566,6 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
     }
 
     guard.release_no_irq_restore();
-    drop(reaped_threads);
 
     if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
         let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
@@ -1617,6 +1610,17 @@ fn drain_deferred_scheduler_work() {
     }
 }
 
+fn reap_terminated_threads() {
+    let reaped = {
+        let mut guard = SCHEDULER.lock();
+        match guard.as_mut() {
+            Some(sched) => sched.reap_terminated(),
+            None => return,
+        }
+    };
+    drop(reaped);
+}
+
 pub extern "C" fn deferred_reaper_thread() {
     crate::serial_verbose_println!("  deferred_reaper started");
     loop {
@@ -1625,6 +1629,7 @@ pub extern "C" fn deferred_reaper_thread() {
         let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(sleep_ticks);
         sleep_until(wake_at);
         drain_deferred_scheduler_work();
+        reap_terminated_threads();
     }
 }
 
@@ -1720,12 +1725,6 @@ fn schedule_inner(from_timer: bool) {
     let mut corrupt_diag: Option<(&'static str, u32, *const CpuContext)> = None;
     #[cfg(target_arch = "x86_64")]
     let mut sleep_switch_diag: Option<SleepSwitchDiag> = None;
-    // Reaped Box<Thread> objects deferred for drop AFTER lock release.
-    // Dropping Box<Thread> frees the ~68 KiB kernel stack via dealloc; doing
-    // that under the SCHEDULER lock while the ALLOCATOR is contended (fork
-    // storms with concurrent clone_user_page_directory) causes SPIN TIMEOUT.
-    let mut reaped_threads: [Option<Box<Thread>>; 8] = Default::default();
-
     {
         let sched = match guard.as_mut() {
             Some(s) => s,
@@ -1734,14 +1733,6 @@ fn schedule_inner(from_timer: bool) {
                 return;
             }
         };
-
-        // Reap terminated threads (any CPU can do this, not just CPU 0).
-        // Previously restricted to CPU 0, but under high lock contention
-        // (e.g., stress test with serial debug output) CPU 0 may not get
-        // the lock often enough, causing terminated threads to accumulate.
-        if from_timer {
-            reaped_threads = sched.reap_terminated();
-        }
 
         // Drain deferred wakes (IRQ handlers store TIDs here lock-free).
         // Fast path: skip the 256-slot scan when no wakes are pending.
@@ -2295,21 +2286,6 @@ fn schedule_inner(from_timer: bool) {
             }
         }
     }
-
-    // Drop reaped threads NOW — BEFORE context_switch, while interrupts are
-    // disabled and the stack frame is pristine.  Previously the implicit drop
-    // happened at function return (AFTER context_switch + sti), which is
-    // problematic:
-    //   1. context_switch suspends this function; the resume may be on a
-    //      different CPU tick, and the compiler's drop-glue register state
-    //      (base pointer for the array iteration) can be corrupted if a
-    //      callee-saved register spill slot on the stack is overwritten.
-    //   2. After sti, a timer interrupt can fire mid-drop, re-entering
-    //      schedule_inner and pushing a deep stack frame that overlaps
-    //      with the reaped_threads array.
-    // By dropping here (lock released, IF=0), we avoid both issues and
-    // still keep dealloc contention outside the SCHEDULER lock.
-    drop(reaped_threads);
 
     // Context switch with lock released, interrupts still disabled
     if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
