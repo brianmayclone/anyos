@@ -142,7 +142,7 @@ impl DisplayList {
         offset_y: i32,
         sticky_ctx: Option<StickyContext>,
     ) {
-        if bx.visibility_hidden {
+        if bx.visibility_hidden || bx.opacity <= 0 {
             return;
         }
 
