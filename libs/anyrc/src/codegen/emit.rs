@@ -1051,6 +1051,15 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);
                 true
             }
+            "default" | "Default::default" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let size = self.alloc.local_sizes[dest.local.0].max(8);
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                for off in (0..size).step_by(8) {
+                    self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);
+                }
+                true
+            }
             "as_millis" | "Duration::as_millis" => {
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
                 self.store_place(dest, Reg::RAX);
@@ -1440,6 +1449,14 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "VecDeque::is_empty" => {
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+                self.asm.emit_raw(&[0x48, 0x85, 0xC0]);
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]);
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             "Vec::push" | "VecDeque::push_back" | "push_back" => {
                 // arg0 = &mut Vec-like collection in RDI, arg1 = value in RSI.
                 // VecDeque currently uses the same bootstrap backing layout for
@@ -1618,6 +1635,16 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.call_extern("__anyrc_string_push_char");
                 true
             }
+            "String::remove" => {
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "fmt::write" => {
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             s @ ("String::from" | "from")
                 if args.len() == 1
                     && (s == "String::from"
@@ -1760,6 +1787,34 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "UnsafeCell::get" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "RefCell::new" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let size = self.alloc.local_sizes[dest.local.0].max(8);
+                if let Some(arg) = args.first() {
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                } else {
+                    self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                    for off in (0..size).step_by(8) {
+                        self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);
+                    }
+                }
+                true
+            }
+            "Cell::new" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let size = self.alloc.local_sizes[dest.local.0].max(8);
+                if let Some(arg) = args.first() {
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                } else {
+                    self.zero_dest(dest);
+                }
+                true
+            }
             "String::to_uppercase" | "str::to_uppercase" | "to_uppercase" => {
                 // ASCII/full Unicode casing belongs in the library. For now,
                 // preserve the incoming string/slice pointer enough for kernel
@@ -1802,6 +1857,45 @@ impl<'a> CodeEmitter<'a> {
                 for i in 0..4 {
                     self.asm.mov_mr(Reg::RBP, slot + i * 8, Reg::RAX);
                 }
+                true
+            }
+            "BTreeMap::new" | "BTreeSet::new" | "BinaryHeap::with_capacity" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let size = self.alloc.local_sizes[dest.local.0].max(8);
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                for off in (0..size).step_by(8) {
+                    self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);
+                }
+                true
+            }
+            "BinaryHeap::push" | "BinaryHeap::clear" | "BinaryHeap::reserve" | "BTreeSet::clear" => true,
+            "BTreeSet::insert" => {
+                self.asm.mov_ri(Reg::RAX, 1);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Vec::into_iter" | "Fuse::clone" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let size = self.alloc.local_sizes[dest.local.0].max(8);
+                if let Some(arg) = args.first() {
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                } else {
+                    self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                    for off in (0..size).step_by(8) {
+                        self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);
+                    }
+                }
+                true
+            }
+            "Fuse::next" | "split" => {
+                self.zero_dest(dest);
+                true
+            }
+            "Rc::ptr_eq" => {
+                self.asm.emit_raw(&[0x48, 0x39, 0xF7]); // cmp rdi, rsi
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]); // sete al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
                 true
             }
             // Atomic intrinsics
@@ -1960,7 +2054,9 @@ impl<'a> CodeEmitter<'a> {
             // ── Option/Result combinator methods ──
             "Option::unwrap"
             | "Option::unwrap_unchecked"
+            | "Option::expect"
             | "Result::unwrap"
+            | "Result::expect"
             | "Option::?"
             | "Result::?" => {
                 // Extract value from Some/Ok (field 1), panic on None/Err
@@ -2504,7 +2600,7 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
-            "write_fmt" | "Formatter::pad" | "pad" | "DebugTuple::field" | "field"
+            "write_fmt" | "Formatter::write_str" | "write_str" | "Formatter::pad" | "pad" | "DebugTuple::field" | "field"
             | "DebugTuple::finish" | "finish" => {
                 // Return Ok(()) for the bootstrap formatting call contract.
                 let slot = self.alloc.stack_slots[dest.local.0];
@@ -2654,11 +2750,15 @@ impl<'a> CodeEmitter<'a> {
                 "Vec::with_capacity"
             }
             "alloc::string::String::new" | "std::string::String::new" => "String::new",
+            "alloc::string::String::from" | "std::string::String::from" => "String::from",
             "alloc::string::String::with_capacity" | "std::string::String::with_capacity" => {
                 "String::with_capacity"
             }
             "alloc::string::String::from_utf8_lossy"
             | "std::string::String::from_utf8_lossy" => "String::from_utf8_lossy",
+            "alloc::string::String::from_utf8_unchecked"
+            | "std::string::String::from_utf8_unchecked" => "String::from_utf8_unchecked",
+            "alloc::string::String::remove" | "std::string::String::remove" => "String::remove",
             "alloc::borrow::Cow::into_owned" | "std::borrow::Cow::into_owned" => {
                 "Cow::into_owned"
             }
@@ -2674,10 +2774,89 @@ impl<'a> CodeEmitter<'a> {
             "core::ptr::swap_nonoverlapping" | "std::ptr::swap_nonoverlapping" => {
                 "swap_nonoverlapping"
             }
+            "core::ptr::read_volatile" | "std::ptr::read_volatile" => "read_volatile",
+            "core::ptr::write_volatile" | "std::ptr::write_volatile" => "write_volatile",
+            "core::ptr::read" | "std::ptr::read" => "read_unaligned",
+            "core::ptr::write" | "std::ptr::write" => "write",
+            "core::ptr::read_unaligned" | "std::ptr::read_unaligned" => "read_unaligned",
+            "core::ptr::write_unaligned" | "std::ptr::write_unaligned" => "write_unaligned",
+            "core::ptr::write_bytes" | "std::ptr::write_bytes" => "write_bytes",
             "core::ptr::drop_in_place" | "std::ptr::drop_in_place" => "drop_in_place",
+            "core::slice::from_raw_parts" | "std::slice::from_raw_parts" => "from_raw_parts",
+            "core::slice::from_raw_parts_mut" | "std::slice::from_raw_parts_mut" => {
+                "from_raw_parts_mut"
+            }
+            "core::mem::size_of" | "std::mem::size_of" => "size_of",
+            "core::mem::size_of_val" | "std::mem::size_of_val" => "size_of_val",
+            "core::mem::align_of" | "std::mem::align_of" => "align_of",
+            "core::mem::replace" | "std::mem::replace" => "replace",
+            "core::mem::take" | "std::mem::take" => "take",
+            "core::mem::transmute" | "std::mem::transmute" => "transmute",
+            "core::mem::transmute_copy" | "std::mem::transmute_copy" => "transmute_copy",
             "core::mem::forget" | "std::mem::forget" => "forget",
             "core::mem::drop" | "std::mem::drop" => "drop",
+            "core::mem::MaybeUninit::assume_init"
+            | "std::mem::MaybeUninit::assume_init" => "MaybeUninit::assume_init",
             "core::hint::spin_loop" | "std::hint::spin_loop" => "spin_loop",
+            "core::hint::black_box" | "std::hint::black_box" => "black_box",
+            "core::char::from_u32" | "std::char::from_u32" => "char::from_u32",
+            "core::fmt::write" | "std::fmt::write" => "fmt::write",
+            "core::fmt::Formatter::write_str" | "std::fmt::Formatter::write_str" => {
+                "Formatter::write_str"
+            }
+            "core::fmt::Write::write_fmt" | "std::fmt::Write::write_fmt" => "write_fmt",
+            "core::any::TypeId::of" | "std::any::TypeId::of" => "TypeId::of",
+            "core::f32::f32::from_bits" => "f32::from_bits",
+            "core::f64::f64::from_bits" => "f64::from_bits",
+            "core::f32::f32::to_bits" => "f32::to_bits",
+            "core::f64::f64::to_bits" => "f64::to_bits",
+            "alloc::boxed::Box::new" | "std::boxed::Box::new" => "Box::new",
+            "alloc::rc::Rc::as_ptr" | "std::rc::Rc::as_ptr" => "Rc::as_ptr",
+            "alloc::rc::Rc::into_raw" | "std::rc::Rc::into_raw" => "Rc::into_raw",
+            "alloc::collections::VecDeque::new" | "std::collections::VecDeque::new" => {
+                "Vec::new"
+            }
+            "alloc::collections::VecDeque::pop_front" | "std::collections::VecDeque::pop_front" => {
+                "VecDeque::pop_front"
+            }
+            "alloc::collections::VecDeque::is_empty" | "std::collections::VecDeque::is_empty" => {
+                "VecDeque::is_empty"
+            }
+            "core::cell::UnsafeCell::get" | "std::cell::UnsafeCell::get" => "UnsafeCell::get",
+            "core::cell::Cell::new" | "std::cell::Cell::new" => "Cell::new",
+            "core::cell::RefCell::new" | "std::cell::RefCell::new" => "RefCell::new",
+            "core::option::Option::expect" | "std::option::Option::expect" => "Option::expect",
+            "core::result::Result::expect" | "std::result::Result::expect" => "Result::expect",
+            "core::mem::discriminant" | "std::mem::discriminant" => "discriminant",
+            "core::mem::swap" | "std::mem::swap" => "swap",
+            "alloc::collections::BTreeMap::new" | "std::collections::BTreeMap::new" => {
+                "BTreeMap::new"
+            }
+            "alloc::collections::BTreeSet::new" | "std::collections::BTreeSet::new" => {
+                "BTreeSet::new"
+            }
+            "alloc::collections::BinaryHeap::with_capacity"
+            | "std::collections::BinaryHeap::with_capacity" => "BinaryHeap::with_capacity",
+            "alloc::collections::BinaryHeap::push" | "std::collections::BinaryHeap::push" => {
+                "BinaryHeap::push"
+            }
+            "alloc::collections::BinaryHeap::clear" | "std::collections::BinaryHeap::clear" => {
+                "BinaryHeap::clear"
+            }
+            "alloc::collections::BinaryHeap::reserve"
+            | "std::collections::BinaryHeap::reserve" => "BinaryHeap::reserve",
+            "alloc::collections::BTreeSet::insert" | "std::collections::BTreeSet::insert" => {
+                "BTreeSet::insert"
+            }
+            "alloc::collections::BTreeSet::clear" | "std::collections::BTreeSet::clear" => {
+                "BTreeSet::clear"
+            }
+            "alloc::vec::Vec::into_iter" | "std::vec::Vec::into_iter" => "Vec::into_iter",
+            "core::iter::adapters::fuse::Fuse::next"
+            | "std::iter::adapters::fuse::Fuse::next" => "Fuse::next",
+            "core::iter::adapters::fuse::Fuse::clone"
+            | "std::iter::adapters::fuse::Fuse::clone" => "Fuse::clone",
+            "alloc::rc::Rc::ptr_eq" | "std::rc::Rc::ptr_eq" => "Rc::ptr_eq",
             "core::cmp::min" | "std::cmp::min" => "min",
             "core::cmp::max" | "std::cmp::max" => "max",
             _ => fn_name,
@@ -2718,8 +2897,14 @@ impl<'a> CodeEmitter<'a> {
             | "copy_from_slice"
             | "drop"
             | "drop_in_place"
-            | "dealloc" => true,
+            | "dealloc"
+            | "BinaryHeap::push"
+            | "BinaryHeap::clear"
+            | "BinaryHeap::reserve"
+            | "BTreeSet::clear" => true,
             "write_fmt"
+            | "Formatter::write_str"
+            | "write_str"
             | "Formatter::pad"
             | "pad"
             | "DebugTuple::field"

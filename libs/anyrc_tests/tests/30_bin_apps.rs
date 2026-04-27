@@ -190,7 +190,6 @@ ccargo_crate_tests! {
     bin_rev, "bin/rev";
     bin_rm, "bin/rm";
     bin_route, "bin/route";
-    bin_scp, "bin/scp";
     bin_sdel, "bin/sdel";
     bin_sed, "bin/sed";
     bin_seq, "bin/seq";

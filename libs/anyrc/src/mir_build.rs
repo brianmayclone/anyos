@@ -683,6 +683,9 @@ impl<'a> MirBuilder<'a> {
     fn fn_symbol_for_def(&mut self, def_id: DefId, fallback: Symbol) -> Symbol {
         if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(&def_id).cloned() {
             if intrinsic_path.contains("Atomic")
+                || intrinsic_path.starts_with("core::")
+                || intrinsic_path.starts_with("alloc::")
+                || intrinsic_path.starts_with("std::")
                 || intrinsic_path.starts_with("anyos_std::")
                 || Self::is_primitive_assoc_fn_path(&intrinsic_path)
             {
@@ -1057,9 +1060,15 @@ impl<'a> MirBuilder<'a> {
                                 ..
                             })
                         ) {
+                            let sym = if path.segments.len() > 1 {
+                                let full_path = self.hir_path_to_string(path);
+                                self.interner.intern(&full_path)
+                            } else {
+                                last.ident
+                            };
                             Operand::Constant(Constant {
                                 ty: self.get_expr_ty(callee),
-                                value: ConstValue::FnItem(last.ident),
+                                value: ConstValue::FnItem(sym),
                             })
                         } else {
                             lowered
@@ -1075,8 +1084,30 @@ impl<'a> MirBuilder<'a> {
                             ty: self.get_expr_ty(callee),
                             value: ConstValue::FnItem(sym),
                         })
+                    } else if let Some(sym) = self.known_path_call_symbol(&qpath.path) {
+                        Operand::Constant(Constant {
+                            ty: self.get_expr_ty(callee),
+                            value: ConstValue::FnItem(sym),
+                        })
+                    } else if let Some(op) = self.resolved_path_call_operand(&qpath.path, callee) {
+                        op
                     } else {
-                        self.lower_expr(callee)
+                        let lowered = self.lower_expr(callee);
+                        if matches!(
+                            &lowered,
+                            Operand::Constant(Constant {
+                                value: ConstValue::Unit,
+                                ..
+                            })
+                        ) {
+                            let full_path = self.hir_path_to_string(&qpath.path);
+                            Operand::Constant(Constant {
+                                ty: self.get_expr_ty(callee),
+                                value: ConstValue::FnItem(self.interner.intern(&full_path)),
+                            })
+                        } else {
+                            lowered
+                        }
                     }
                 } else {
                     self.lower_expr(callee)
@@ -1232,9 +1263,9 @@ impl<'a> MirBuilder<'a> {
                                                     .iter()
                                                     .find(|(n, _)| n == method_name)
                                                 {
-                                                    // Get the function symbol name from fn_sigs
-                                                    let _ = impl_def_id;
-                                                    vtable_fn_names.push(*method_name);
+                                                    let fn_sym = self
+                                                        .fn_symbol_for_def(*impl_def_id, *method_name);
+                                                    vtable_fn_names.push(fn_sym);
                                                 }
                                             }
 

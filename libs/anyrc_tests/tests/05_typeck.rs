@@ -70,6 +70,31 @@ fn assert_type_error(src: &str, expected_msg: &str) {
 }
 
 #[test]
+fn glob_import_from_parent_typechecks_parent_imports_after_child_module() {
+    assert_type_ok(
+        r#"
+            mod libwebview {
+                mod renderer {
+                    mod types {
+                        pub struct DisplayList;
+                    }
+
+                    mod display_list {
+                        use super::*;
+
+                        impl DisplayList {
+                            fn new() -> Self { DisplayList }
+                        }
+                    }
+
+                    use types::DisplayList;
+                }
+            }
+        "#,
+    );
+}
+
+#[test]
 fn infer_integer_literal() {
     assert_type_ok("fn main() { let x: i32 = 42; }");
 }

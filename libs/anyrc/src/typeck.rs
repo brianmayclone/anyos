@@ -1030,6 +1030,9 @@ impl<'a> TypeChecker<'a> {
 
         self.bootstrap_stdlib_shims();
         self.collect_qualified_type_names(&krate.items, &mut Vec::new());
+        for _ in 0..8 {
+            self.collect_scoped_type_aliases_recursive(&krate.items, &mut Vec::new());
+        }
         self.collect_qualified_const_names(&krate.items, &mut Vec::new());
         self.collect_const_values(&krate.items);
 
@@ -1108,6 +1111,29 @@ impl<'a> TypeChecker<'a> {
             if let HirItemKind::Use(u) = &item.kind {
                 self.collect_module_alias(prefix, u);
                 self.collect_scoped_type_alias(prefix, u);
+            }
+        }
+    }
+
+    fn collect_scoped_type_aliases_recursive(
+        &mut self,
+        items: &[HirItem],
+        prefix: &mut Vec<Symbol>,
+    ) {
+        for item in items {
+            if let HirItemKind::Use(u) = &item.kind {
+                self.collect_module_alias(prefix, u);
+                self.collect_scoped_type_alias(prefix, u);
+            }
+        }
+
+        for item in items {
+            if let HirItemKind::Mod(m) = &item.kind {
+                if let Some(sub_items) = &m.items {
+                    prefix.push(m.name);
+                    self.collect_scoped_type_aliases_recursive(sub_items, prefix);
+                    prefix.pop();
+                }
             }
         }
     }
@@ -1231,15 +1257,20 @@ impl<'a> TypeChecker<'a> {
     fn normalize_use_target(&self, module_prefix: &[Symbol], path: &[Symbol]) -> String {
         let mut parts = Vec::new();
         let mut idx = 0;
+        let mut rooted = false;
         if let Some(first) = path.first() {
             match self.interner.resolve(*first) {
-                "crate" => idx = 1,
+                "crate" => {
+                    rooted = true;
+                    idx = 1;
+                }
                 "self" => {
                     parts.extend(
                         module_prefix
                             .iter()
                             .map(|sym| self.interner.resolve(*sym).to_string()),
                     );
+                    rooted = true;
                     idx = 1;
                 }
                 "super" => {
@@ -1249,6 +1280,7 @@ impl<'a> TypeChecker<'a> {
                             .take(module_prefix.len().saturating_sub(1))
                             .map(|sym| self.interner.resolve(*sym).to_string()),
                     );
+                    rooted = true;
                     idx = 1;
                 }
                 _ => {}
@@ -1259,7 +1291,35 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .map(|sym| self.interner.resolve(*sym).to_string()),
         );
-        self.expand_scoped_alias_target(&parts.join("::"))
+        let target = self.expand_scoped_alias_target(&parts.join("::"));
+        if !rooted && !module_prefix.is_empty() && !Self::is_compiler_known_external_path(&target) {
+            let mut relative_parts = module_prefix
+                .iter()
+                .map(|sym| self.interner.resolve(*sym).to_string())
+                .collect::<Vec<_>>();
+            relative_parts.extend(path.iter().map(|sym| self.interner.resolve(*sym).to_string()));
+            let relative = self.expand_scoped_alias_target(&relative_parts.join("::"));
+            if self.qualified_or_module_path_exists(&relative) {
+                return relative;
+            }
+        }
+        target
+    }
+
+    fn qualified_or_module_path_exists(&self, path: &str) -> bool {
+        self.qualified_type_names.contains_key(path)
+            || self
+                .qualified_type_names
+                .contains_key(&format!("crate::{}", path))
+            || self
+                .qualified_type_names
+                .keys()
+                .any(|known| known.strip_prefix(path).is_some_and(|rest| rest.starts_with("::")))
+            || self.qualified_type_names.keys().any(|known| {
+                known.strip_prefix("crate::")
+                    .and_then(|known| known.strip_prefix(path))
+                    .is_some_and(|rest| rest.starts_with("::"))
+            })
     }
 
     fn expand_scoped_alias_target(&self, target: &str) -> String {
@@ -1427,18 +1487,7 @@ impl<'a> TypeChecker<'a> {
                     return;
                 }
                 let local = self.interner.resolve(local_name).to_string();
-                let target = full_path
-                    .iter()
-                    .filter_map(|sym| {
-                        let part = self.interner.resolve(*sym);
-                        if part == "crate" {
-                            None
-                        } else {
-                            Some(part.to_string())
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("::");
+                let target = self.normalize_use_target(module_prefix, &full_path);
                 if !target.is_empty() {
                     let module_key = self.module_key_from_symbols(module_prefix);
                     self.module_aliases.insert((module_key, local), target);

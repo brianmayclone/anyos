@@ -137,6 +137,139 @@ fn resolve_include_concat_env_out_dir() {
     );
 }
 
+#[test]
+fn include_in_file_module_is_relative_to_source_file() {
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_include_file_module_test_{}_{}",
+        std::process::id(),
+        line!(),
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("renderer/display_list")).unwrap();
+    std::fs::write(
+        dir.join("renderer.rs"),
+        r#"
+            pub mod display_list;
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("renderer/display_list.rs"),
+        r#"
+            pub struct DisplayList;
+            include!("display_list/flatten.rs");
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("renderer/display_list/flatten.rs"),
+        r#"
+            impl DisplayList {
+                pub fn new() -> Self { DisplayList }
+            }
+        "#,
+    )
+    .unwrap();
+
+    let (result, _) = resolve_file_crate(
+        r#"
+            mod renderer;
+            fn main() {
+                renderer::display_list::DisplayList::new();
+            }
+        "#,
+        &dir.to_string_lossy(),
+        &[],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn include_in_file_module_sees_parent_glob_imports() {
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_include_parent_glob_test_{}_{}",
+        std::process::id(),
+        line!(),
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("renderer/display_list")).unwrap();
+    std::fs::write(
+        dir.join("renderer.rs"),
+        r#"
+            mod display_list;
+            mod types;
+            use types::DisplayList;
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("renderer/types.rs"),
+        r#"
+            pub struct DisplayList;
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("renderer/display_list.rs"),
+        r#"
+            use super::*;
+            include!("display_list/flatten.rs");
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("renderer/display_list/flatten.rs"),
+        r#"
+            impl DisplayList {
+                pub fn new() -> Self { DisplayList }
+            }
+        "#,
+    )
+    .unwrap();
+
+    let (result, _) = resolve_file_crate(
+        r#"
+            mod renderer;
+        "#,
+        &dir.to_string_lossy(),
+        &[],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn glob_import_from_parent_sees_parent_imports_after_child_module() {
+    assert_resolves(
+        r#"
+            mod parent {
+                mod types {
+                    pub struct DisplayList;
+                }
+
+                mod child {
+                    use super::*;
+
+                    impl DisplayList {
+                        fn new() -> Self { DisplayList }
+                    }
+                }
+
+                use types::DisplayList;
+            }
+        "#,
+    );
+}
+
 fn resolve_file_crate(
     src: &str,
     src_dir: &str,

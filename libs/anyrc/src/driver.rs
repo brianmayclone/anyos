@@ -8,7 +8,7 @@ use crate::intern::Interner;
 use crate::lexer::TokenKind;
 use crate::linker::elf::{self, ElfRelocation, ElfSymbol, ObjectFile, Section};
 use crate::linker::link;
-use crate::macros::expand_macros;
+use crate::macros::expand_macros_with_base_dir;
 use crate::mir::MirBody;
 use crate::mir_build::MirBuilder;
 use crate::mir_opt::optimize;
@@ -160,7 +160,7 @@ pub fn compile(
     // macro-generated `mod foo;` items whose loaded files contain more macros.
     for _ in 0..16 {
         crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
-        expand_macros(&mut krate, &mut interner);
+        expand_macros_with_base_dir(&mut krate, &mut interner, &src_dir);
         let included_sources = crate::loader::resolve_includes_with_env(
             &mut krate,
             &src_dir,
@@ -1260,6 +1260,9 @@ fn build_runtime_object(target_abi: link::TargetAbi) -> elf::ObjectFile {
             "__anyrc_vec_push" => Some("__anyrc_realloc"),
             "__anyrc_string_push_str" => Some("__anyrc_realloc"),
             "__anyrc_string_push_char" => Some("__anyrc_string_push_str"),
+            "Box::new" | "alloc::boxed::Box::new" | "std::boxed::Box::new" => {
+                Some("__anyrc_alloc")
+            }
             _ => None,
         };
         let Some(target) = target else {
@@ -1871,9 +1874,7 @@ fn item_is_exported(
             })
         }
         crate::hir::HirItemKind::Impl(ib) => {
-            if ib.trait_ref.is_none()
-                && inherent_impl_self_is_private_local(ib, local_names, public_type_names)
-            {
+            if ib.trait_ref.is_none() && !inherent_impl_self_type_is_public(ib, public_type_names) {
                 return false;
             }
             if trait_impl_is_interface_relevant(ib, interner)
@@ -1961,18 +1962,17 @@ fn item_declared_name(item: &crate::hir::HirItem) -> Option<crate::intern::Symbo
     }
 }
 
-fn inherent_impl_self_is_private_local(
+fn inherent_impl_self_type_is_public(
     ib: &crate::hir::HirImplBlock,
-    local_names: &[crate::intern::Symbol],
     public_type_names: &[crate::intern::Symbol],
 ) -> bool {
     let crate::hir::HirTy::Path(path) = &ib.self_ty else {
         return false;
     };
-    let Some(first) = path.segments.first() else {
+    let Some(last) = path.segments.last() else {
         return false;
     };
-    local_names.contains(&first.ident) && !public_type_names.contains(&first.ident)
+    public_type_names.contains(&last.ident)
 }
 
 fn private_const_is_needed(

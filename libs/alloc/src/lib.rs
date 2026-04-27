@@ -111,6 +111,7 @@ pub mod string {
         pub fn as_bytes(&self) -> &[u8];
         pub fn find(&self, pat: &str) -> core::option::Option<usize>;
         pub fn rfind(&self, pat: &str) -> core::option::Option<usize>;
+        pub fn remove(&mut self, idx: usize) -> char;
         pub fn into_bytes(self) -> crate::vec::Vec<u8>;
         pub fn from_utf8(vec: crate::vec::Vec<u8>) -> core::result::Result<String, FromUtf8Error>;
         pub fn from_utf8_lossy(v: &[u8]) -> crate::borrow::Cow<'_, str>;
@@ -140,6 +141,11 @@ pub mod borrow {
         pub fn is_borrowed(&self) -> bool;
         pub fn is_owned(&self) -> bool;
         pub fn into_owned(self) -> <B as ToOwned>::Owned;
+    }
+
+    impl<'a, B: ?Sized + ToOwned + 'a> core::ops::Deref for Cow<'a, B> {
+        type Target = B;
+        fn deref(&self) -> &Self::Target;
     }
 }
 
@@ -219,6 +225,11 @@ pub mod sync {
         pub fn strong_count(_this: &Arc<T>) -> usize {
             1
         }
+    }
+
+    impl<T> core::ops::Deref for Arc<T> {
+        type Target = T;
+        fn deref(&self) -> &Self::Target;
     }
 }
 

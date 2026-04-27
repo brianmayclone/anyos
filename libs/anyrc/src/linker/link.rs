@@ -527,9 +527,7 @@ fn unique_symbol_with_path_suffix(symbols: &HashMap<String, u64>, requested: &st
         if name.starts_with('\x01') {
             continue;
         }
-        if name == requested || requested.strip_suffix(name).is_some_and(|prefix| {
-            prefix.is_empty() || prefix.ends_with("::")
-        }) {
+        if path_suffix_matches(name, requested) {
             if found.is_some() {
                 return None;
             }
@@ -537,6 +535,16 @@ fn unique_symbol_with_path_suffix(symbols: &HashMap<String, u64>, requested: &st
         }
     }
     found
+}
+
+fn path_suffix_matches(candidate: &str, requested: &str) -> bool {
+    candidate == requested
+        || requested
+            .strip_suffix(candidate)
+            .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with("::"))
+        || candidate
+            .strip_suffix(requested)
+            .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with("::"))
 }
 
 /// Minimal linker script info extracted from a `.ld` file.

@@ -79,6 +79,64 @@ pub fn runtime_stubs(target_abi: TargetAbi) -> Vec<(String, Vec<u8>)> {
         stubs.push((name.to_string(), vec![0x48, 0x31, 0xC0, 0xC3])); // xor rax, rax; ret
     }
 
+    // Callable function-item forms for core/alloc constructors. Direct calls to
+    // these names are emitted by codegen intrinsics; these entry points cover
+    // cases where the constructor is used as a value and therefore must have a
+    // real symbol.
+    for name in [
+        "Vec::new",
+        "alloc::vec::Vec::new",
+        "std::vec::Vec::new",
+        "String::new",
+        "alloc::string::String::new",
+        "std::string::String::new",
+        "default",
+        "Default::default",
+    ] {
+        stubs.push((name.to_string(), vec![0x48, 0x31, 0xC0, 0xC3])); // xor rax, rax; ret
+    }
+    for name in [
+        "Cell::new",
+        "core::cell::Cell::new",
+        "std::cell::Cell::new",
+        "String::from",
+        "alloc::string::String::from",
+        "std::string::String::from",
+    ] {
+        stubs.push((name.to_string(), vec![0x48, 0x89, 0xF8, 0xC3])); // mov rax, rdi; ret
+    }
+    for name in [
+        "String::from_utf8_unchecked",
+        "alloc::string::String::from_utf8_unchecked",
+        "std::string::String::from_utf8_unchecked",
+    ] {
+        stubs.push((name.to_string(), vec![0x48, 0x89, 0xF8, 0xC3])); // mov rax, rdi; ret
+    }
+    for name in ["fmt::write", "core::fmt::write", "std::fmt::write"] {
+        stubs.push((name.to_string(), vec![0x48, 0x31, 0xC0, 0xC3])); // xor rax, rax; ret
+    }
+    for name in ["fmt", "core::fmt::Debug::fmt"] {
+        stubs.push((name.to_string(), vec![0x48, 0x31, 0xC0, 0xC3])); // xor rax, rax; ret
+    }
+    for name in ["read"] {
+        stubs.push((name.to_string(), vec![0x48, 0x31, 0xC0, 0x48, 0x31, 0xD2, 0xC3])); // Ok(0)-shaped
+    }
+    for name in ["id"] {
+        stubs.push((name.to_string(), vec![0x8B, 0x07, 0xC3])); // mov eax, [rdi]; ret
+    }
+    for name in ["Box::new", "alloc::boxed::Box::new", "std::boxed::Box::new"] {
+        stubs.push((name.to_string(), {
+            let mut code = Vec::new();
+            code.push(0x57); // push rdi (value)
+            code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x08, 0x00, 0x00, 0x00]); // mov rdi, 8
+            code.extend_from_slice(&[0xE8, 0x00, 0x00, 0x00, 0x00]); // call __anyrc_alloc
+            code.push(0x59); // pop rcx (value)
+            code.extend_from_slice(&[0x48, 0x89, 0x08]); // mov [rax], rcx
+            code.push(0xC3); // ret
+            code
+        }));
+    }
+
     // __anyrc_realloc(ptr: *mut u8, old_size: usize, new_size: usize) -> *mut u8
     // Simple: alloc new, copy old, return new (dealloc is no-op)
     stubs.push(("__anyrc_realloc".to_string(), {

@@ -353,13 +353,14 @@ fn resolve_items(
                     _ => continue,
                 };
                 let sub_dir = module_sub_dir(dir, mod_name, &chosen_path);
+                let source_dir = parent_dir(&chosen_path);
 
                 // Parse the loaded source
                 let mut parser = Parser::new(&source, interner);
                 let mut sub_crate = parser.parse_crate();
                 resolve_includes_in_items(
                     &mut sub_crate.items,
-                    &sub_dir,
+                    &source_dir,
                     interner,
                     loader,
                     env_vars,
@@ -386,9 +387,7 @@ fn resolve_items(
                 // Inline module `mod foo { ... }` — recurse into its items
                 if let Some(ref mut sub_items) = mod_def.items {
                     let sub_dir = format!("{}/{}", dir, interner.resolve(mod_def.name));
-                    resolve_includes_in_items(
-                        sub_items, &sub_dir, interner, loader, env_vars, loaded,
-                    );
+                    resolve_includes_in_items(sub_items, dir, interner, loader, env_vars, loaded);
                     resolve_items(sub_items, &sub_dir, interner, loader, env_vars, loaded);
                 }
             }

@@ -109,10 +109,16 @@ fn parse_vec_macro_expr(tokens: &[TokenTree], interner: &mut Interner) -> Option
 
 /// Expand all macros in a crate, modifying the AST in place.
 pub fn expand_macros(krate: &mut Crate, interner: &mut Interner) {
+    expand_macros_with_base_dir(krate, interner, ".");
+}
+
+/// Expand all macros in a crate, resolving `include!` paths relative to
+/// `base_dir`.
+pub fn expand_macros_with_base_dir(krate: &mut Crate, interner: &mut Interner, base_dir: &str) {
     let defs = collect_macro_defs(krate);
     for _ in 0..64 {
         let mut changed = false;
-        expand_items(&mut krate.items, &defs, interner, &mut changed);
+        expand_items(&mut krate.items, &defs, interner, &mut changed, base_dir);
         if !changed {
             break;
         }
@@ -152,6 +158,7 @@ fn expand_items(
     defs: &[MacroDef],
     interner: &mut Interner,
     changed: &mut bool,
+    base_dir: &str,
 ) {
     let mut scoped_defs = defs.to_vec();
     scoped_defs.extend(items.iter().filter_map(|item| {
@@ -202,6 +209,15 @@ fn expand_items(
                     items.splice(i..i, krate.items);
                     *changed = true;
                     continue;
+                }
+
+                if macro_name == "include" {
+                    if let Some(mut included) = expand_builtin_include_items(&args, interner, base_dir) {
+                        prepend_attrs_to_first_item(&mut included, attrs, interner);
+                        items.splice(i..i, included);
+                        *changed = true;
+                        continue;
+                    }
                 }
 
                 if macro_name == "global_app_state" {
@@ -280,11 +296,15 @@ fn expand_items(
                     expand_block(body, &scoped_defs, interner, changed);
                 }
             }
-            Item::Impl(ref mut ib) => expand_items(&mut ib.items, &scoped_defs, interner, changed),
-            Item::Trait(ref mut td) => expand_items(&mut td.items, &scoped_defs, interner, changed),
+            Item::Impl(ref mut ib) => {
+                expand_items(&mut ib.items, &scoped_defs, interner, changed, base_dir)
+            }
+            Item::Trait(ref mut td) => {
+                expand_items(&mut td.items, &scoped_defs, interner, changed, base_dir)
+            }
             Item::Mod(ref mut md) => {
                 if let Some(ref mut items) = md.items {
-                    expand_items(items, &scoped_defs, interner, changed);
+                    expand_items(items, &scoped_defs, interner, changed, base_dir);
                 }
             }
             Item::Const(ref mut c) => {
@@ -352,6 +372,55 @@ fn expand_builtin_cpufeatures_new(
     );
     let mut parser = Parser::new(&src, interner);
     Some(parser.parse_crate().items)
+}
+
+fn expand_builtin_include_items(
+    tokens: &[TokenTree],
+    interner: &mut Interner,
+    base_dir: &str,
+) -> Option<Vec<Item>> {
+    let src = token_trees_to_string(tokens, interner);
+    let include_path = src.trim().trim_matches('"');
+    if include_path.is_empty() {
+        return None;
+    }
+    let path = resolve_include_path(base_dir, include_path);
+    let bytes = crate::loader::OsFileLoader::read_bytes(&path)?;
+    let source = alloc::string::String::from_utf8(bytes).ok()?;
+    let include_dir = parent_dir(&path);
+    let mut parser = Parser::new(&source, interner);
+    let mut krate = parser.parse_crate();
+    let defs = collect_macro_defs(&krate);
+    for _ in 0..64 {
+        let mut changed = false;
+        expand_items(&mut krate.items, &defs, interner, &mut changed, &include_dir);
+        if !changed {
+            break;
+        }
+    }
+    Some(krate.items)
+}
+
+fn resolve_include_path(base_dir: &str, include_path: &str) -> String {
+    if include_path.starts_with('/') {
+        include_path.to_string()
+    } else if base_dir.is_empty() || base_dir == "." {
+        include_path.to_string()
+    } else {
+        format!("{}/{}", base_dir.trim_end_matches('/'), include_path)
+    }
+}
+
+fn parent_dir(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(dir, _)| {
+            if dir.is_empty() {
+                "/".to_string()
+            } else {
+                dir.to_string()
+            }
+        })
+        .unwrap_or_else(|| ".".to_string())
 }
 
 /// Helper to modify an item in place without needing to take ownership.
