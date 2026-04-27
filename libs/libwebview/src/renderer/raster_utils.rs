@@ -237,6 +237,98 @@ pub(super) fn fill_rounded_rect_buf(
     }
 }
 
+/// Stroke a rounded rectangle border. `widths` = [top, right, bottom, left].
+pub(super) fn fill_rounded_border_buf(
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: u32,
+    radii: [i32; 4],
+    widths: [i32; 4],
+) {
+    if w <= 0 || h <= 0 || buf.is_null() {
+        return;
+    }
+    let s = stride as i32;
+    let bh = buf_h as i32;
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(s);
+    let y1 = (y + h).min(bh);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    let alpha = (color >> 24) & 0xFF;
+    if alpha == 0 {
+        return;
+    }
+
+    let max_radius = (w.min(h) / 2).max(0);
+    let outer = [
+        radii[0].max(0).min(max_radius),
+        radii[1].max(0).min(max_radius),
+        radii[2].max(0).min(max_radius),
+        radii[3].max(0).min(max_radius),
+    ];
+    let top = widths[0].max(0).min(h);
+    let right = widths[1].max(0).min(w);
+    let bottom = widths[2].max(0).min(h);
+    let left = widths[3].max(0).min(w);
+    let inner_w = (w - left - right).max(0);
+    let inner_h = (h - top - bottom).max(0);
+    let inner = [
+        (outer[0] - left.max(top)).max(0),
+        (outer[1] - right.max(top)).max(0),
+        (outer[2] - right.max(bottom)).max(0),
+        (outer[3] - left.max(bottom)).max(0),
+    ];
+
+    unsafe {
+        for row in y0..y1 {
+            let ry = row - y;
+            let offset = row as usize * stride as usize;
+            for col in x0..x1 {
+                let rx = col - x;
+                if !is_inside_rounded_rect(rx, ry, w, h, outer[0], outer[1], outer[2], outer[3]) {
+                    continue;
+                }
+                let inner_rx = rx - left;
+                let inner_ry = ry - top;
+                if inner_w > 0
+                    && inner_h > 0
+                    && inner_rx >= 0
+                    && inner_ry >= 0
+                    && inner_rx < inner_w
+                    && inner_ry < inner_h
+                    && is_inside_rounded_rect(
+                        inner_rx, inner_ry, inner_w, inner_h, inner[0], inner[1], inner[2],
+                        inner[3],
+                    )
+                {
+                    continue;
+                }
+
+                let dst_idx = offset + col as usize;
+                if alpha >= 255 {
+                    *buf.add(dst_idx) = color;
+                } else {
+                    let dst = *buf.add(dst_idx);
+                    let inv_a = 255 - alpha;
+                    let r = (((color >> 16) & 0xFF) * alpha + ((dst >> 16) & 0xFF) * inv_a) / 255;
+                    let g = (((color >> 8) & 0xFF) * alpha + ((dst >> 8) & 0xFF) * inv_a) / 255;
+                    let b = ((color & 0xFF) * alpha + (dst & 0xFF) * inv_a) / 255;
+                    *buf.add(dst_idx) = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    }
+}
+
 /// Check if point (px, py) relative to rect origin is inside a rounded rect.
 #[inline]
 fn is_inside_rounded_rect(

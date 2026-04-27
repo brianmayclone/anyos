@@ -403,9 +403,36 @@ impl DisplayList {
             let (ts, rs, bs, ls) = self.border_styles_for(bx);
             let content_w = (w - bx.border_left_width - bx.border_right_width).max(0);
             let content_h = (h - bx.border_top_width - bx.border_bottom_width).max(0);
+            let solid_rounded = has_radius
+                && matches!(ts, crate::style::BorderStyleVal::Solid)
+                && matches!(rs, crate::style::BorderStyleVal::Solid)
+                && matches!(bs, crate::style::BorderStyleVal::Solid)
+                && matches!(ls, crate::style::BorderStyleVal::Solid)
+                && bx.border_top_color == bx.border_right_color
+                && bx.border_top_color == bx.border_bottom_color
+                && bx.border_top_color == bx.border_left_color
+                && bx.border_top_color != 0
+                && bx.border_top_color != 0x00000000;
 
             if content_w == 0 && content_h == 0 {
                 self.emit_collapsed_border_triangles(abs_x, abs_y, bx, ts, rs, bs, ls);
+            } else if solid_rounded {
+                self.push(
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    DrawKind::RoundedBorder {
+                        color: bx.border_top_color,
+                        radii,
+                        widths: [
+                            bx.border_top_width,
+                            bx.border_right_width,
+                            bx.border_bottom_width,
+                            bx.border_left_width,
+                        ],
+                    },
+                );
             } else {
             // Top border
                 if bx.border_top_width > 0 && bx.border_top_color != 0 {

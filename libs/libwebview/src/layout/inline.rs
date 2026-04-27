@@ -799,7 +799,11 @@ fn collect_inline_fragments(
                         _ => None,
                     });
                 let mut content_w = iw.min(available_width.max(1));
-                let mut content_h = ih.max(1);
+                let mut content_h = if iw > 0 && content_w < iw {
+                    ((ih as i64 * content_w as i64) / iw as i64).max(1) as i32
+                } else {
+                    ih.max(1)
+                };
                 let specified_w = style
                     .width
                     .map(resolve_specified_width)

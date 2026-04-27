@@ -1001,7 +1001,7 @@ pub(super) fn intrinsic_form_control_width(
             }
         }
         Tag::Button => {
-            let text = dom.text_content(node_id);
+            let text = dom.visible_text_content(node_id);
             let label = text.trim();
             let label = if label.is_empty() { "Button" } else { label };
             resolve_form_control_width(
@@ -1357,6 +1357,20 @@ pub fn layout_with_budget(
     let content_width =
         root.width - root.padding.left - root.padding.right - root.margin.left - root.margin.right;
 
+    let body_definite_h = if let Some(h) = style.height {
+        h.max(0)
+    } else if let Some(pct) = style.height_pct {
+        if pct > 0 && viewport_height > 0 {
+            (viewport_height as i64 * pct as i64 / 10000) as i32
+        } else {
+            0
+        }
+    } else if let Some((px100, pct100)) = style.height_calc {
+        px100 / 100 + (viewport_height.max(0) as i64 * pct100 as i64 / 10000) as i32
+    } else {
+        0
+    };
+
     let children = &dom.get(body_id).children;
     let child_ids: Vec<NodeId> = children.iter().copied().collect();
     crate::debug_surf!(
@@ -1373,11 +1387,11 @@ pub fn layout_with_budget(
             pseudo,
             &child_ids,
             content_width,
-            viewport_height,
+            body_definite_h,
             &mut root,
             images,
             viewport_width,
-            None,
+            (body_definite_h > 0).then_some(body_definite_h),
         )
     } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
         grid::layout_grid(
@@ -1397,7 +1411,6 @@ pub fn layout_with_budget(
     } else {
         // Pass body's definite content height (or 0 if auto) so children
         // with `height: %` and `position: absolute; top:0; bottom:0` resolve correctly.
-        let body_definite_h = style.height.unwrap_or(0).max(0);
         layout_children(
             dom,
             styles,
@@ -1415,7 +1428,7 @@ pub fn layout_with_budget(
         )
     };
 
-    root.height = height + root.padding.top + root.padding.bottom;
+    root.height = (height + root.padding.top + root.padding.bottom).max(body_definite_h);
 
     resolve_absolute_alignment(&mut root, styles, viewport_width, viewport_height);
 

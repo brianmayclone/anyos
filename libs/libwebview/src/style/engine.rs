@@ -5354,7 +5354,7 @@ fn parse_time_ms(s: &str) -> u32 {
 /// Comma-separated layers are each parsed into a `TransitionDef`.
 fn parse_transition_shorthand(s: &str) -> Vec<TransitionDef> {
     let mut defs = Vec::new();
-    for layer in s.split(',') {
+    for layer in split_comma_respecting_parens(s) {
         let tokens: Vec<&str> = layer.split_whitespace().collect();
         if tokens.is_empty() {
             continue;
@@ -5400,7 +5400,7 @@ fn parse_transition_shorthand(s: &str) -> Vec<TransitionDef> {
 /// Comma-separated layers each become an `AnimationDef`.
 fn parse_animation_shorthand(s: &str) -> Vec<AnimationDef> {
     let mut defs = Vec::new();
-    for layer in s.split(',') {
+    for layer in split_comma_respecting_parens(s) {
         let tokens: Vec<&str> = layer.split_whitespace().collect();
         if tokens.is_empty() {
             continue;
@@ -5535,7 +5535,7 @@ fn resolve_border_style_val(val: &CssValue) -> BorderStyleVal {
 /// Parse `box-shadow` value: `offset-x offset-y [blur [spread]] color [inset], ...`
 fn parse_box_shadows(s: &str, parent_fs: i32, root_fs: i32) -> Vec<BoxShadowVal> {
     let mut shadows = Vec::new();
-    for layer in s.split(',') {
+    for layer in split_comma_respecting_parens(s) {
         let layer = layer.trim();
         if layer.is_empty() || layer == "none" {
             continue;
@@ -5543,12 +5543,15 @@ fn parse_box_shadows(s: &str, parent_fs: i32, root_fs: i32) -> Vec<BoxShadowVal>
         let mut inset = false;
         let mut lengths: Vec<i32> = Vec::new();
         let mut color: u32 = 0xFF000000;
+        let mut unresolved_var = false;
         // Tokenize respecting parentheses (for rgb()/rgba())
         let tokens = tokenize_respecting_parens(layer);
         for tok in &tokens {
             let lower = tok.to_ascii_lowercase();
             if lower == "inset" {
                 inset = true;
+            } else if lower.contains("var(") {
+                unresolved_var = true;
             } else if let Some(c) = crate::css::try_parse_color_pub(tok) {
                 color = c;
             } else if let Some(c) = crate::css::named_color_pub(&lower) {
@@ -5558,6 +5561,9 @@ fn parse_box_shadows(s: &str, parent_fs: i32, root_fs: i32) -> Vec<BoxShadowVal>
                     lengths.push(px);
                 }
             }
+        }
+        if unresolved_var {
+            continue;
         }
         if lengths.len() >= 2 {
             shadows.push(BoxShadowVal {
@@ -5576,17 +5582,20 @@ fn parse_box_shadows(s: &str, parent_fs: i32, root_fs: i32) -> Vec<BoxShadowVal>
 /// Parse `text-shadow` value: `offset-x offset-y [blur] color, ...`
 fn parse_text_shadows(s: &str, parent_fs: i32, root_fs: i32) -> Vec<TextShadowVal> {
     let mut shadows = Vec::new();
-    for layer in s.split(',') {
+    for layer in split_comma_respecting_parens(s) {
         let layer = layer.trim();
         if layer.is_empty() || layer == "none" {
             continue;
         }
         let mut lengths: Vec<i32> = Vec::new();
         let mut color: u32 = 0xFF000000;
+        let mut unresolved_var = false;
         let tokens = tokenize_respecting_parens(layer);
         for tok in &tokens {
             let lower = tok.to_ascii_lowercase();
-            if let Some(c) = crate::css::try_parse_color_pub(tok) {
+            if lower.contains("var(") {
+                unresolved_var = true;
+            } else if let Some(c) = crate::css::try_parse_color_pub(tok) {
                 color = c;
             } else if let Some(c) = crate::css::named_color_pub(&lower) {
                 color = c;
@@ -5595,6 +5604,9 @@ fn parse_text_shadows(s: &str, parent_fs: i32, root_fs: i32) -> Vec<TextShadowVa
                     lengths.push(px);
                 }
             }
+        }
+        if unresolved_var {
+            continue;
         }
         if lengths.len() >= 2 {
             shadows.push(TextShadowVal {
@@ -6736,6 +6748,40 @@ mod layout_regression_tests {
 
         assert!(matches!(styles[md_id].display, Display::Flex));
         assert!(matches!(styles[xl_id].display, Display::Inline));
+    }
+
+    #[test]
+    fn descendant_display_rule_requires_matching_ancestor() {
+        let dom = crate::html::parse(
+            r#"
+            <div>
+                <div id="closed" class="oMByyf"></div>
+            </div>
+            <div class="KWUYAe">
+                <div id="open" class="oMByyf"></div>
+            </div>
+            "#,
+        );
+        let stylesheet = crate::css::parse_stylesheet(
+            ".oMByyf { display: none; } .KWUYAe .oMByyf { display: block; }",
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 700, &mut inline_style_cache);
+        let find = |id_value: &str| {
+            dom.nodes
+                .iter()
+                .position(|node| {
+                    matches!(
+                        &node.node_type,
+                        NodeType::Element { attrs, .. }
+                            if attrs.iter().any(|a| a.name == "id" && a.value == id_value)
+                    )
+                })
+                .expect("node")
+        };
+
+        assert!(matches!(styles[find("closed")].display, Display::None));
+        assert!(matches!(styles[find("open")].display, Display::Block));
     }
 
     #[test]

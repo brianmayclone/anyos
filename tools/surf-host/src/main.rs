@@ -2045,6 +2045,33 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             libwebview::style::Visibility::Collapse => "collapse",
         }
     }
+    fn flex_direction_name(value: libwebview::style::FlexDirection) -> &'static str {
+        match value {
+            libwebview::style::FlexDirection::Row => "row",
+            libwebview::style::FlexDirection::RowReverse => "row-reverse",
+            libwebview::style::FlexDirection::Column => "column",
+            libwebview::style::FlexDirection::ColumnReverse => "column-reverse",
+        }
+    }
+    fn justify_content_name(value: libwebview::style::JustifyContent) -> &'static str {
+        match value {
+            libwebview::style::JustifyContent::FlexStart => "flex-start",
+            libwebview::style::JustifyContent::FlexEnd => "flex-end",
+            libwebview::style::JustifyContent::Center => "center",
+            libwebview::style::JustifyContent::SpaceBetween => "space-between",
+            libwebview::style::JustifyContent::SpaceAround => "space-around",
+            libwebview::style::JustifyContent::SpaceEvenly => "space-evenly",
+        }
+    }
+    fn align_items_name(value: libwebview::style::AlignItems) -> &'static str {
+        match value {
+            libwebview::style::AlignItems::FlexStart => "flex-start",
+            libwebview::style::AlignItems::FlexEnd => "flex-end",
+            libwebview::style::AlignItems::Center => "center",
+            libwebview::style::AlignItems::Stretch => "stretch",
+            libwebview::style::AlignItems::Baseline => "baseline",
+        }
+    }
 
     const INTERESTING_CLASSES: &[&str] = &[
         "skip-link",
@@ -2056,6 +2083,28 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         "stage-teaser",
         "teaser__image",
         "page-footer",
+        "A7sPV",
+        "KWUYAe",
+        "oMByyf",
+        "UbbAWe",
+        "SDkEP",
+        "RNNXgb",
+        "tbsYnb",
+        "JZzhke",
+        "a4bIc",
+        "fM33ce",
+        "BKRPef",
+        "WC2Die",
+        "plR5qb",
+        "L3eUgb",
+        "LLD4me",
+        "k1zIA",
+        "rSk4se",
+        "LS8OJ",
+        "yr19Zb",
+        "ikrT4e",
+        "om7nvf",
+        "A8SBwf",
     ];
 
     for (node_id, _) in dom.nodes.iter().enumerate() {
@@ -2077,8 +2126,18 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         let Some(style) = wv.resolved_style_ref(node_id) else {
             continue;
         };
+        let shadow_info = style
+            .box_shadows
+            .first()
+            .map(|s| {
+                format!(
+                    " first_shadow=(x:{} y:{} blur:{} spread:{} color=0x{:08x} inset:{})",
+                    s.offset_x, s.offset_y, s.blur, s.spread, s.color, s.inset
+                )
+            })
+            .unwrap_or_else(String::new);
         eprintln!(
-            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) width={:?} height={:?} min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) padding=({},{},{},{}) z={} opacity={:.3}",
+            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} width={:?} height={:?} height_pct={:?} height_calc={:?} min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) padding=({},{},{},{}) border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
             node_id,
             tag.tag_name(),
             id_attr,
@@ -2089,8 +2148,17 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             visibility_name(style.visibility),
             style.overflow_x,
             style.overflow_y,
+            style.flex_grow,
+            style.flex_shrink,
+            style.flex_basis,
+            style.flex_basis_pct,
+            flex_direction_name(style.flex_direction),
+            justify_content_name(style.justify_content),
+            align_items_name(style.align_items),
             style.width,
             style.height,
+            style.height_pct,
+            style.height_calc,
             style.min_width,
             style.min_height,
             style.max_width,
@@ -2103,8 +2171,22 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             style.padding_right,
             style.padding_bottom,
             style.padding_left,
+            style.border_width,
+            style.border_width,
+            style.border_width,
+            style.border_width,
+            style.border_color,
+            style.border_color,
+            style.border_color,
+            style.border_color,
+            style.border_top_left_radius,
+            style.border_top_right_radius,
+            style.border_bottom_right_radius,
+            style.border_bottom_left_radius,
             style.z_index,
-            style.opacity
+            style.opacity,
+            style.box_shadows.len(),
+            shadow_info
         );
     }
 }

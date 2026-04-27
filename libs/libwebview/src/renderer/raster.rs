@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 
 use super::raster_utils::{
     alpha_blend, blit_image_scaled, cos_approx, darken_color, fill_dashed_buf,
-    fill_rounded_rect_buf, fit_contain_size, fit_cover_size, interpolate_gradient_color,
-    lighten_color, resolve_object_position_offset, sin_approx,
+    fill_rounded_border_buf, fill_rounded_rect_buf, fit_contain_size, fit_cover_size,
+    interpolate_gradient_color, lighten_color, resolve_object_position_offset, sin_approx,
 };
 use super::{DrawCmd, DrawKind, ImageCache, MaskLayer};
 use crate::style::{BackgroundImageVal, BackgroundRepeatVal, BackgroundSizeVal};
@@ -45,6 +45,15 @@ fn rasterize_draw_cmd_basic(
         DrawKind::RoundedRect { color, radii } => {
             fill_rounded_rect_buf(
                 buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color, *radii,
+            );
+        }
+        DrawKind::RoundedBorder {
+            color,
+            radii,
+            widths,
+        } => {
+            fill_rounded_border_buf(
+                buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color, *radii, *widths,
             );
         }
         DrawKind::Triangle { color, p0, p1, p2 } => {
@@ -148,6 +157,15 @@ pub(super) fn rasterize_draw_cmd(
             DrawKind::RoundedRect { color, radii } => DrawKind::RoundedRect {
                 color: *color,
                 radii: *radii,
+            },
+            DrawKind::RoundedBorder {
+                color,
+                radii,
+                widths,
+            } => DrawKind::RoundedBorder {
+                color: *color,
+                radii: *radii,
+                widths: *widths,
             },
             DrawKind::Triangle { color, p0, p1, p2 } => DrawKind::Triangle {
                 color: *color,

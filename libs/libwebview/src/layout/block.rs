@@ -611,7 +611,11 @@ fn build_block_internal(
         let key = super::svg_inline_key(node_id);
         let (w, h) = super::svg_intrinsic_dimensions(dom, images, node_id);
         let mut content_w = w.min(available_width.max(1));
-        let mut content_h = h.max(1);
+        let mut content_h = if w > 0 && content_w < w {
+            ((h as i64 * content_w as i64) / w as i64).max(1) as i32
+        } else {
+            h.max(1)
+        };
         let horizontal_non_content = bx.padding.left + bx.padding.right + horizontal_border;
         let vertical_non_content = bx.padding.top + bx.padding.bottom + vertical_border;
         let resolve_specified_width = |value: i32| {
@@ -835,12 +839,10 @@ fn build_block_internal(
         let btn_h = if let Some(h) = style.height { h } else { 45 };
         bx.height = btn_h + bx.padding.top + bx.padding.bottom + vertical_border;
         // Extract button text from children.
-        let children = &dom.get(node_id).children;
-        for &cid in children {
-            if let crate::dom::NodeType::Text(ref t) = dom.get(cid).node_type {
-                bx.text = Some(String::from(t.as_str()));
-                break;
-            }
+        let text = dom.visible_text_content(node_id);
+        let label = text.trim();
+        if !label.is_empty() {
+            bx.text = Some(String::from(label));
         }
         bx.form_field = Some(FormFieldKind::Submit);
         return bx;
@@ -1266,8 +1268,11 @@ fn append_out_of_flow_children(
 ) {
     let child_ids: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
     let parent_style = &styles[node_id];
-    for abs_id in child_ids {
+    for &abs_id in &child_ids {
         let abs_style = &styles[abs_id];
+        if abs_style.display == Display::None {
+            continue;
+        }
         if !matches!(abs_style.position, Position::Absolute | Position::Fixed) {
             continue;
         }
@@ -1372,7 +1377,23 @@ fn append_out_of_flow_children(
         abs_box.static_position_y = Some(static_y);
         abs_box.static_position_width = Some(content_w);
         abs_box.static_position_height = Some(content_h);
-        parent.children.push(abs_box);
+
+        let abs_order = child_ids
+            .iter()
+            .position(|&child_id| child_id == abs_id)
+            .unwrap_or(child_ids.len());
+        let insert_at = parent
+            .children
+            .iter()
+            .position(|child| {
+                child
+                    .node_id
+                    .and_then(|child_id| child_ids.iter().position(|&id| id == child_id))
+                    .map(|child_order| child_order > abs_order)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(parent.children.len());
+        parent.children.insert(insert_at, abs_box);
     }
 }
 

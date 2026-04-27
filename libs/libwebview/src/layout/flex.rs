@@ -964,6 +964,21 @@ pub fn layout_flex(
         // If main_size is 0 (content-sized container), use the actual content size.
         let effective_main = if main_size > 0 { main_size } else { used_main };
         let remaining = effective_main - used_main;
+        let main_auto_margin_count: i32 = (line.start..line.end)
+            .map(|i| {
+                let st = &styles[items[i].node_id];
+                if is_row {
+                    st.margin_left_auto as i32 + st.margin_right_auto as i32
+                } else {
+                    st.margin_top_auto as i32 + st.margin_bottom_auto as i32
+                }
+            })
+            .sum();
+        let main_auto_margin = if remaining > 0 && main_auto_margin_count > 0 {
+            remaining / main_auto_margin_count
+        } else {
+            0
+        };
 
         let mut running_main = 0i32;
 
@@ -975,17 +990,49 @@ pub fn layout_flex(
             let item_main = main_sizes[idx];
 
             let child_box = items[i].layout.as_mut().unwrap();
-            let lead_offset = justify_offset_before_item(justify, idx, count, remaining);
+            let auto_before = if is_row {
+                if styles[item_node].margin_left_auto {
+                    main_auto_margin
+                } else {
+                    0
+                }
+            } else if styles[item_node].margin_top_auto {
+                main_auto_margin
+            } else {
+                0
+            };
+            let auto_after = if is_row {
+                if styles[item_node].margin_right_auto {
+                    main_auto_margin
+                } else {
+                    0
+                }
+            } else if styles[item_node].margin_bottom_auto {
+                main_auto_margin
+            } else {
+                0
+            };
+            let lead_offset = if main_auto_margin_count > 0 {
+                0
+            } else {
+                justify_offset_before_item(justify, idx, count, remaining)
+            };
 
             if is_row {
                 if is_reverse {
-                    let x_pos = effective_main - lead_offset - running_main - item_main;
+                    let x_pos = effective_main
+                        - lead_offset
+                        - running_main
+                        - auto_before
+                        - item_main
+                        - auto_after;
                     child_box.x = bw + parent.padding.left + x_pos + child_box.margin.left;
                 } else {
                     child_box.x = bw
                         + parent.padding.left
                         + lead_offset
                         + running_main
+                        + auto_before
                         + child_box.margin.left;
                 }
 
@@ -1025,10 +1072,16 @@ pub fn layout_flex(
                 child_box.y = cross_cursor + cross_offset + child_box.margin.top;
             } else {
                 if is_reverse {
-                    let y_pos = effective_main - lead_offset - running_main - item_main;
+                    let y_pos = effective_main
+                        - lead_offset
+                        - running_main
+                        - auto_before
+                        - item_main
+                        - auto_after;
                     child_box.y = cross_cursor + y_pos + child_box.margin.top;
                 } else {
-                    child_box.y = cross_cursor + lead_offset + running_main + child_box.margin.top;
+                    child_box.y =
+                        cross_cursor + lead_offset + running_main + auto_before + child_box.margin.top;
                 }
 
                 let item_w = child_box.width + child_box.margin.left + child_box.margin.right;
@@ -1067,7 +1120,7 @@ pub fn layout_flex(
                 child_box.x = bw + parent.padding.left + cross_offset + child_box.margin.left;
             }
 
-            running_main += item_main + gap;
+            running_main += auto_before + item_main + auto_after + gap;
         }
 
         // Move items into parent.

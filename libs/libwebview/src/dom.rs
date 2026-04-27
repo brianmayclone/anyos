@@ -709,6 +709,13 @@ impl Dom {
         out
     }
 
+    /// Recursively collect text that participates in rendered content.
+    pub fn visible_text_content(&self, id: NodeId) -> String {
+        let mut out = String::new();
+        self.collect_visible_text(id, &mut out);
+        out
+    }
+
     /// Find the first `<body>` element in the tree (breadth-first).
     pub fn find_body(&self) -> Option<NodeId> {
         for (i, node) in self.nodes.iter().enumerate() {
@@ -889,6 +896,22 @@ impl Dom {
                 for ci in 0..len {
                     let child = self.nodes[id].children[ci];
                     self.collect_text(child, out);
+                }
+            }
+        }
+    }
+
+    fn collect_visible_text(&self, id: NodeId, out: &mut String) {
+        match &self.nodes[id].node_type {
+            NodeType::Text(s) => out.push_str(s),
+            NodeType::Element { tag, .. } => {
+                if matches!(tag, Tag::Svg | Tag::Style | Tag::Script | Tag::Template) {
+                    return;
+                }
+                let len = self.nodes[id].children.len();
+                for ci in 0..len {
+                    let child = self.nodes[id].children[ci];
+                    self.collect_visible_text(child, out);
                 }
             }
         }

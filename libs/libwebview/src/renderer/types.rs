@@ -100,6 +100,12 @@ pub(super) enum DrawKind {
     Rect { color: u32 },
     /// Fill a rounded rectangle with corner radii.
     RoundedRect { color: u32, radii: [i32; 4] }, // [tl, tr, br, bl]
+    /// Stroke a rounded rectangle border.
+    RoundedBorder {
+        color: u32,
+        radii: [i32; 4],
+        widths: [i32; 4], // [top, right, bottom, left]
+    },
     /// Fill a triangle with local coordinates relative to the draw command rect.
     Triangle {
         color: u32,
