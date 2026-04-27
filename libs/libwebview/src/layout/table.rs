@@ -18,8 +18,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
-    ComputedStyle, Display, PseudoStyles, TextAlignVal, VerticalAlign, resolve_inset,
-    resolve_margins,
+    resolve_inset, resolve_margins, ComputedStyle, Display, PseudoStyles, TextAlignVal,
+    VerticalAlign,
 };
 use crate::ImageCache;
 
@@ -218,15 +218,13 @@ pub fn layout_table(
     }
 
     // Calculate content width available for cells.
-    let content_width = (
-        table_width
-            - table_border_left
-            - table_border_right
-            - bx.padding.left
-            - bx.padding.right
-            - cellspacing_x * (max_cols as i32 + 1)
-    )
-    .max(0);
+    let content_width = (table_width
+        - table_border_left
+        - table_border_right
+        - bx.padding.left
+        - bx.padding.right
+        - cellspacing_x * (max_cols as i32 + 1))
+        .max(0);
 
     // Phase 1: Compute column widths.
     //
@@ -260,8 +258,8 @@ pub fn layout_table(
         }
 
         let cell_style = &styles[cell_id];
-        let cell_padding_h = cell_style.padding_left.max(cellpadding)
-            + cell_style.padding_right.max(cellpadding);
+        let cell_padding_h =
+            cell_style.padding_left.max(cellpadding) + cell_style.padding_right.max(cellpadding);
         let cell_border_h = if is_collapsed {
             let bw = if cell_style.border_top.width > 0 || cell_style.border_left.width > 0 {
                 1i32
@@ -411,7 +409,11 @@ pub fn layout_table(
             styles,
             pseudo,
             cap_id,
-            table_width - table_border_left - table_border_right - bx.padding.left - bx.padding.right,
+            table_width
+                - table_border_left
+                - table_border_right
+                - bx.padding.left
+                - bx.padding.right,
             images,
             viewport_w,
             0,
@@ -490,9 +492,18 @@ pub fn layout_table(
         // Position cells in the row.
         let row_y = cursor_y;
         let row_dx = {
-            let left = resolve_inset(row_style.left_offset, row_style.left_calc, table_width, true);
-            let right =
-                resolve_inset(row_style.right_offset, row_style.right_calc, table_width, true);
+            let left = resolve_inset(
+                row_style.left_offset,
+                row_style.left_calc,
+                table_width,
+                true,
+            );
+            let right = resolve_inset(
+                row_style.right_offset,
+                row_style.right_calc,
+                table_width,
+                true,
+            );
             left.unwrap_or_else(|| right.map(|v| -v).unwrap_or(0))
         };
         let row_dy = {
@@ -511,8 +522,12 @@ pub fn layout_table(
             top.unwrap_or_else(|| bottom.map(|v| -v).unwrap_or(0))
         };
         let section_dx = if let Some(section_style) = section_style {
-            let left =
-                resolve_inset(section_style.left_offset, section_style.left_calc, table_width, true);
+            let left = resolve_inset(
+                section_style.left_offset,
+                section_style.left_calc,
+                table_width,
+                true,
+            );
             let right = resolve_inset(
                 section_style.right_offset,
                 section_style.right_calc,
@@ -692,18 +707,7 @@ fn layout_cell(
 
     let child_ids: Vec<NodeId> = dom.get(cell_id).children.iter().copied().collect();
     let laid_out_height = layout_children(
-        dom,
-        styles,
-        pseudo,
-        &child_ids,
-        inner_w,
-        &mut bx,
-        cell_id,
-        images,
-        viewport_w,
-        0,
-        0,
-        0,
+        dom, styles, pseudo, &child_ids, inner_w, &mut bx, cell_id, images, viewport_w, 0, 0, 0,
         None,
     );
     let content_start_y = bx.border_width + bx.padding.top;

@@ -170,8 +170,9 @@ pub fn is_ahem_font_id(font_id: u32) -> bool {
             return false;
         }
         let map = &*WEB_FONT_MAP;
-        map.iter()
-            .any(|(family, id)| *id == font_id && family.trim_matches('\'').trim_matches('"') == "ahem")
+        map.iter().any(|(family, id)| {
+            *id == font_id && family.trim_matches('\'').trim_matches('"') == "ahem"
+        })
     }
 }
 
@@ -187,7 +188,11 @@ fn resolve_root_background_color(dom: &dom::Dom, styles: &[style::ComputedStyle]
         .and_then(|html_id| styles.get(html_id))
         .map(|s| s.background_color)
         .unwrap_or(0);
-    if html_bg != 0 { html_bg } else { 0xFFFFFFFF }
+    if html_bg != 0 {
+        html_bg
+    } else {
+        0xFFFFFFFF
+    }
 }
 
 fn normalize_document_height(content_height: i32, viewport_height: u32) -> i32 {
@@ -661,7 +666,10 @@ impl WebView {
     /// complete, avoiding a large unstyled render followed by a second full
     /// render moments later.
     pub fn set_html_dom_only(&mut self, html_text: &str) {
-        debug_surf!("[webview] set_html_dom_only: {} bytes input", html_text.len());
+        debug_surf!(
+            "[webview] set_html_dom_only: {} bytes input",
+            html_text.len()
+        );
 
         let parsed_dom = html::parse(html_text);
 
@@ -673,7 +681,8 @@ impl WebView {
         self.last_render_scroll_y = 0;
         self.pending_tiles = false;
         self.clear_deferred_layout_state();
-        self.content_view.set_size(self.viewport_width.max(1) as u32, 1);
+        self.content_view
+            .set_size(self.viewport_width.max(1) as u32, 1);
         self.dom_only_initial_render_pending = true;
 
         self.prime_inline_stylesheets_from_dom(&parsed_dom);
@@ -1202,8 +1211,13 @@ impl WebView {
             let mut enabled_nodes = Vec::new();
             let mut selected_enabled_idx = None;
             for option_id in option_nodes.iter().copied() {
-                if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(option_id).node_type {
-                    if attrs.iter().all(|a| a.name != "data-webview-default-selected") {
+                if let dom::NodeType::Element { ref mut attrs, .. } =
+                    dom.get_mut(option_id).node_type
+                {
+                    if attrs
+                        .iter()
+                        .all(|a| a.name != "data-webview-default-selected")
+                    {
                         attrs.push(dom::Attr {
                             name: String::from("data-webview-default-selected"),
                             value: if attrs.iter().any(|a| a.name == "selected") {
@@ -1232,7 +1246,9 @@ impl WebView {
             let next_node = enabled_nodes[next_idx];
 
             for option_id in option_nodes {
-                if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(option_id).node_type {
+                if let dom::NodeType::Element { ref mut attrs, .. } =
+                    dom.get_mut(option_id).node_type
+                {
                     if option_id == next_node {
                         if attrs.iter().all(|a| a.name != "selected") {
                             attrs.push(dom::Attr {
@@ -1259,7 +1275,10 @@ impl WebView {
                 return false;
             };
             if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(node_id).node_type {
-                if attrs.iter().all(|a| a.name != "data-webview-default-checked") {
+                if attrs
+                    .iter()
+                    .all(|a| a.name != "data-webview-default-checked")
+                {
                     attrs.push(dom::Attr {
                         name: String::from("data-webview-default-checked"),
                         value: if attrs.iter().any(|a| a.name == "checked") {
@@ -1333,8 +1352,13 @@ impl WebView {
                 if !same_form {
                     continue;
                 }
-                if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(other_id).node_type {
-                    if attrs.iter().all(|a| a.name != "data-webview-default-checked") {
+                if let dom::NodeType::Element { ref mut attrs, .. } =
+                    dom.get_mut(other_id).node_type
+                {
+                    if attrs
+                        .iter()
+                        .all(|a| a.name != "data-webview-default-checked")
+                    {
                         attrs.push(dom::Attr {
                             name: String::from("data-webview-default-checked"),
                             value: if attrs.iter().any(|a| a.name == "checked") {
@@ -1351,7 +1375,10 @@ impl WebView {
             }
 
             if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(node_id).node_type {
-                if attrs.iter().all(|a| a.name != "data-webview-default-checked") {
+                if attrs
+                    .iter()
+                    .all(|a| a.name != "data-webview-default-checked")
+                {
                     attrs.push(dom::Attr {
                         name: String::from("data-webview-default-checked"),
                         value: if attrs.iter().any(|a| a.name == "checked") {
@@ -1596,7 +1623,9 @@ impl WebView {
                         .attr(fc.node_id, "data-webview-default-checked")
                         .map(|s| s == "1")
                         .unwrap_or_else(|| dom.attr(fc.node_id, "checked").is_some());
-                    if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(fc.node_id).node_type {
+                    if let dom::NodeType::Element { ref mut attrs, .. } =
+                        dom.get_mut(fc.node_id).node_type
+                    {
                         if checked {
                             if attrs.iter().all(|a| a.name != "checked") {
                                 attrs.push(dom::Attr {
@@ -1611,15 +1640,16 @@ impl WebView {
                     if fc.control_id == 0 {
                         continue;
                     }
-                    ui::Control::from_id(fc.control_id)
-                        .set_state(if checked { 1 } else { 0 });
+                    ui::Control::from_id(fc.control_id).set_state(if checked { 1 } else { 0 });
                 }
                 FormFieldKind::Radio => {
                     let checked = dom
                         .attr(fc.node_id, "data-webview-default-checked")
                         .map(|s| s == "1")
                         .unwrap_or_else(|| dom.attr(fc.node_id, "checked").is_some());
-                    if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(fc.node_id).node_type {
+                    if let dom::NodeType::Element { ref mut attrs, .. } =
+                        dom.get_mut(fc.node_id).node_type
+                    {
                         if checked {
                             if attrs.iter().all(|a| a.name != "checked") {
                                 attrs.push(dom::Attr {
@@ -1634,8 +1664,7 @@ impl WebView {
                     if fc.control_id == 0 {
                         continue;
                     }
-                    ui::Control::from_id(fc.control_id)
-                        .set_state(if checked { 1 } else { 0 });
+                    ui::Control::from_id(fc.control_id).set_state(if checked { 1 } else { 0 });
                 }
                 FormFieldKind::Textarea => {
                     if fc.control_id == 0 {
@@ -1663,7 +1692,9 @@ impl WebView {
                                             value: String::new(),
                                         });
                                     }
-                                } else if let Some(pos) = attrs.iter().position(|a| a.name == "selected") {
+                                } else if let Some(pos) =
+                                    attrs.iter().position(|a| a.name == "selected")
+                                {
                                     attrs.remove(pos);
                                 }
                             }
@@ -1695,7 +1726,8 @@ impl WebView {
                                 .find(|a| a.name == "data-webview-default-value")
                                 .map(|a| a.value.clone())
                                 .unwrap_or_else(|| {
-                                    attrs.iter()
+                                    attrs
+                                        .iter()
                                         .find(|a| a.name == "value")
                                         .map(|a| a.value.clone())
                                         .unwrap_or_default()
@@ -1760,7 +1792,8 @@ impl WebView {
                                 .find(|a| a.name == "data-webview-default-value")
                                 .map(|a| a.value.clone())
                                 .unwrap_or_else(|| {
-                                    attrs.iter()
+                                    attrs
+                                        .iter()
                                         .find(|a| a.name == "value")
                                         .map(|a| a.value.clone())
                                         .unwrap_or_else(|| String::from("#000000"))
@@ -1848,9 +1881,7 @@ impl WebView {
                         if dom.tag(nid) == Some(dom::Tag::Label) {
                             if let Some(for_id) = dom.attr(nid, "for") {
                                 // Find the form control with matching id attribute.
-                                if let Some(target_node) =
-                                    self.find_node_by_id(for_id)
-                                {
+                                if let Some(target_node) = self.find_node_by_id(for_id) {
                                     if let Some(fc) = self
                                         .renderer
                                         .form_controls
@@ -1957,10 +1988,7 @@ impl WebView {
             }
         }
 
-        if doc_x >= abs_x
-            && doc_x < abs_x + bx.width
-            && doc_y >= abs_y
-            && doc_y < abs_y + bx.height
+        if doc_x >= abs_x && doc_x < abs_x + bx.width && doc_y >= abs_y && doc_y < abs_y + bx.height
         {
             return bx.node_id;
         }
@@ -2057,9 +2085,7 @@ impl WebView {
             }
 
             match fc.kind {
-                FormFieldKind::TextInput
-                | FormFieldKind::Password
-                | FormFieldKind::Number => {
+                FormFieldKind::TextInput | FormFieldKind::Password | FormFieldKind::Number => {
                     if fc.control_id == 0 {
                         continue;
                     }
@@ -2115,7 +2141,11 @@ impl WebView {
                     let b = argb & 0xFF;
                     let mut hex = String::from("#");
                     let hex_digit = |n: u32| -> char {
-                        if n < 10 { (b'0' + n as u8) as char } else { (b'a' + (n - 10) as u8) as char }
+                        if n < 10 {
+                            (b'0' + n as u8) as char
+                        } else {
+                            (b'a' + (n - 10) as u8) as char
+                        }
                     };
                     hex.push(hex_digit(r >> 4));
                     hex.push(hex_digit(r & 0xF));
@@ -2297,15 +2327,11 @@ impl WebView {
     }
 
     fn cancel_smooth_scroll(&mut self, node_id: usize) {
-        self.smooth_scrolls.retain(|scroll| scroll.node_id != node_id);
+        self.smooth_scrolls
+            .retain(|scroll| scroll.node_id != node_id);
     }
 
-    fn start_or_update_smooth_scroll(
-        &mut self,
-        node_id: usize,
-        target_top: i32,
-        target_left: i32,
-    ) {
+    fn start_or_update_smooth_scroll(&mut self, node_id: usize, target_top: i32, target_left: i32) {
         let (start_top, start_left) = self.current_scroll_offsets_for_node(node_id);
         if let Some(existing) = self
             .smooth_scrolls
@@ -3224,7 +3250,8 @@ impl WebView {
         }
 
         layout::compute_subtree_bottom(&mut root);
-        self.total_height_val = normalize_document_height(calc_total_height(&root), self.viewport_height);
+        self.total_height_val =
+            normalize_document_height(calc_total_height(&root), self.viewport_height);
         self.layout_root = Some(root);
         self.refresh_render_surface_for_layout(dom, styles);
         true
@@ -3255,7 +3282,8 @@ impl WebView {
         }
 
         layout::compute_subtree_bottom(&mut root);
-        self.total_height_val = normalize_document_height(calc_total_height(&root), self.viewport_height);
+        self.total_height_val =
+            normalize_document_height(calc_total_height(&root), self.viewport_height);
         self.layout_root = Some(root);
         self.refresh_render_surface_for_layout(dom, styles);
         true
@@ -3504,7 +3532,8 @@ impl WebView {
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
         }
-        self.total_height_val = normalize_document_height(calc_total_height(&root), self.viewport_height);
+        self.total_height_val =
+            normalize_document_height(calc_total_height(&root), self.viewport_height);
         self.layout_root = Some(root);
         self.deferred_full_layout_pending = layout_budget.is_some();
         if !self.deferred_full_layout_pending {
@@ -3684,7 +3713,8 @@ impl WebView {
             for sheet in &self.inline_sheets {
                 all_sheets.push(sheet);
             }
-            self.prepared_stylesheets = Some(style::PreparedStylesheets::prepare(&all_sheets, vw, vh));
+            self.prepared_stylesheets =
+                Some(style::PreparedStylesheets::prepare(&all_sheets, vw, vh));
         }
         let prepared = self.prepared_stylesheets.as_ref().unwrap();
         let style_budget = self.style_budget_for_document(d);
@@ -3810,7 +3840,8 @@ impl WebView {
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
         }
-        self.total_height_val = normalize_document_height(calc_total_height(&root), self.viewport_height);
+        self.total_height_val =
+            normalize_document_height(calc_total_height(&root), self.viewport_height);
         self.deferred_full_layout_pending = layout_budget.is_some() || style_budget.is_some();
         if !self.deferred_full_layout_pending {
             self.clear_deferred_layout_state();

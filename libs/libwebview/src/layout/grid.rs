@@ -147,14 +147,20 @@ pub fn layout_grid(
         // (even without items, the explicit grid defines a content area).
         // Then clamp by max-height (parent.height was already set by build_block
         // before layout_grid was called).
-        let template_h: i32 = parent_style.grid_template_rows.iter().map(|t| match t {
-            GridTrackSize::Px(px) => *px,
-            GridTrackSize::Minmax { min_px, .. } => *min_px,
-            _ => 0,
-        }).sum();
+        let template_h: i32 = parent_style
+            .grid_template_rows
+            .iter()
+            .map(|t| match t {
+                GridTrackSize::Px(px) => *px,
+                GridTrackSize::Minmax { min_px, .. } => *min_px,
+                _ => 0,
+            })
+            .sum();
         let row_gap_total = if parent_style.grid_template_rows.len() > 1 {
             row_gap * (parent_style.grid_template_rows.len() as i32 - 1)
-        } else { 0 };
+        } else {
+            0
+        };
         let computed_h = parent_style.height.unwrap_or(template_h + row_gap_total);
         // Clamp by max-height if set (CSS Grid container intrinsic sizing).
         let h = if let Some(max_h) = parent_style.max_height {
@@ -162,7 +168,17 @@ pub fn layout_grid(
         } else {
             computed_h
         };
-        layout_grid_abs_children(dom, styles, pseudo, child_ids, parent, images, viewport_w, available_width, h);
+        layout_grid_abs_children(
+            dom,
+            styles,
+            pseudo,
+            child_ids,
+            parent,
+            images,
+            viewport_w,
+            available_width,
+            h,
+        );
         return 0;
     }
 
@@ -215,9 +231,12 @@ pub fn layout_grid(
 
     // Total column count needed (explicit + implicit).
     let total_cols = if uses_subgrid_cols {
-        inherited_subgrid_cols.map(|cols| cols.len().max(1)).unwrap_or(explicit_cols)
+        inherited_subgrid_cols
+            .map(|cols| cols.len().max(1))
+            .unwrap_or(explicit_cols)
     } else {
-        items.iter()
+        items
+            .iter()
             .map(|it| it.placed_col + it.span_cols)
             .max()
             .unwrap_or(1)
@@ -244,7 +263,8 @@ pub fn layout_grid(
             .map(|rows| rows.len().max(1))
             .unwrap_or(1)
     } else {
-        items.iter()
+        items
+            .iter()
             .map(|it| it.placed_row + it.span_rows)
             .max()
             .unwrap_or(1)
@@ -297,9 +317,11 @@ pub fn layout_grid(
                 bx,
                 images,
                 viewport_w,
-                &col_widths[item.placed_col..(item.placed_col + item.span_cols).min(col_widths.len())],
+                &col_widths
+                    [item.placed_col..(item.placed_col + item.span_cols).min(col_widths.len())],
                 col_gap,
-                &row_heights[item.placed_row..(item.placed_row + item.span_rows).min(row_heights.len())],
+                &row_heights
+                    [item.placed_row..(item.placed_row + item.span_rows).min(row_heights.len())],
                 row_gap,
             );
         }
@@ -357,7 +379,17 @@ pub fn layout_grid(
     }
 
     // ── 6. Handle absolutely-positioned grid children ─────────────────────
-    layout_grid_abs_children(dom, styles, pseudo, child_ids, parent, images, viewport_w, available_width, cursor_y);
+    layout_grid_abs_children(
+        dom,
+        styles,
+        pseudo,
+        child_ids,
+        parent,
+        images,
+        viewport_w,
+        available_width,
+        cursor_y,
+    );
 
     cursor_y
 }
@@ -379,7 +411,10 @@ fn relayout_subgrid_columns_if_needed(
     if !matches!(style.display, Display::Grid | Display::InlineGrid) {
         return;
     }
-    if !matches!(style.grid_template_columns.as_slice(), [GridTrackSize::Subgrid]) {
+    if !matches!(
+        style.grid_template_columns.as_slice(),
+        [GridTrackSize::Subgrid]
+    ) {
         return;
     }
     if inherited_cols.is_empty() {
@@ -455,7 +490,10 @@ fn relayout_subgrid_rows_if_needed(
     if !matches!(style.display, Display::Grid | Display::InlineGrid) {
         return;
     }
-    if !matches!(style.grid_template_rows.as_slice(), [GridTrackSize::Subgrid]) {
+    if !matches!(
+        style.grid_template_rows.as_slice(),
+        [GridTrackSize::Subgrid]
+    ) {
         return;
     }
     if inherited_rows.is_empty() {
@@ -475,12 +513,18 @@ fn relayout_subgrid_rows_if_needed(
         bx,
         images,
         viewport_w,
-        if matches!(style.grid_template_columns.as_slice(), [GridTrackSize::Subgrid]) {
+        if matches!(
+            style.grid_template_columns.as_slice(),
+            [GridTrackSize::Subgrid]
+        ) {
             Some(inherited_cols)
         } else {
             None
         },
-        if matches!(style.grid_template_columns.as_slice(), [GridTrackSize::Subgrid]) {
+        if matches!(
+            style.grid_template_columns.as_slice(),
+            [GridTrackSize::Subgrid]
+        ) {
             Some(inherited_col_gap)
         } else {
             None
@@ -535,7 +579,11 @@ fn layout_grid_abs_children(
 ) {
     let bw = parent.border_width;
     // For width: prefer parent.width if set, else available_width.
-    let parent_w = if parent.width > 0 { parent.width } else { available_width };
+    let parent_w = if parent.width > 0 {
+        parent.width
+    } else {
+        available_width
+    };
     let cb_w = (parent_w - parent.padding.left - parent.padding.right - 2 * bw).max(0);
     let cb_h = grid_content_h.max(0);
     let content_x = bw + parent.padding.left;
@@ -550,8 +598,10 @@ fn layout_grid_abs_children(
             continue;
         }
 
-        let sizing_width = if st.left_offset.is_some() && st.right_offset.is_some()
-            && st.width.is_none() && st.width_pct.is_none()
+        let sizing_width = if st.left_offset.is_some()
+            && st.right_offset.is_some()
+            && st.width.is_none()
+            && st.width_pct.is_none()
         {
             (cb_w - st.left_offset.unwrap_or(0) - st.right_offset.unwrap_or(0)).max(0)
         } else {
@@ -559,7 +609,14 @@ fn layout_grid_abs_children(
         };
 
         let mut abs_box = build_block(
-            dom, styles, pseudo, cid, sizing_width, images, viewport_w, cb_h,
+            dom,
+            styles,
+            pseudo,
+            cid,
+            sizing_width,
+            images,
+            viewport_w,
+            cb_h,
         );
 
         let l = st.left_offset.unwrap_or(0);

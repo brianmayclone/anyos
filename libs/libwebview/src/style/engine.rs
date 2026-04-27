@@ -10,17 +10,17 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use super::initial::default_style;
+use super::lengths::{
+    parse_simple_float, parse_transform_length, resolve_inset, resolve_length, resolve_margins,
+    set_viewport_size,
+};
+use super::types::*;
 use crate::css::{
     AttrOp, ContainerCondition, ContainerQuery, CssValue, Declaration, Property, PseudoClass,
     PseudoElement, Rule, Selector, SimpleSelector, Stylesheet, Unit,
 };
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use super::initial::default_style;
-use super::lengths::{
-    parse_simple_float, parse_transform_length, resolve_length, resolve_inset, resolve_margins,
-    set_viewport_size,
-};
-use super::types::*;
 
 // Bitflags for tracking which inheritable properties were explicitly set.
 const SET_COLOR: u32 = 1 << 0;
@@ -378,15 +378,14 @@ pub struct PreparedStylesheets {
 }
 
 impl PreparedStylesheets {
-    pub fn prepare(
-        stylesheets: &[&Stylesheet],
-        viewport_width: i32,
-        viewport_height: i32,
-    ) -> Self {
+    pub fn prepare(stylesheets: &[&Stylesheet], viewport_width: i32, viewport_height: i32) -> Self {
         let mut global_layer_order: Vec<String> = Vec::new();
         for sheet in stylesheets {
             for layer_name in &sheet.layer_order {
-                if !global_layer_order.iter().any(|existing| existing == layer_name) {
+                if !global_layer_order
+                    .iter()
+                    .any(|existing| existing == layer_name)
+                {
                     global_layer_order.push(layer_name.clone());
                 }
             }
@@ -398,7 +397,9 @@ impl PreparedStylesheets {
             for rule in &sheet.rules {
                 let mut prepared_rule = rule.clone();
                 prepared_rule.layer_index = prepared_rule.layer_name.as_ref().and_then(|name| {
-                    global_layer_order.iter().position(|existing| existing == name)
+                    global_layer_order
+                        .iter()
+                        .position(|existing| existing == name)
                 });
                 rules.push((prepared_rule, order));
                 order += 1;
@@ -409,7 +410,9 @@ impl PreparedStylesheets {
                         let mut prepared_rule = rule.clone();
                         prepared_rule.layer_index =
                             prepared_rule.layer_name.as_ref().and_then(|name| {
-                                global_layer_order.iter().position(|existing| existing == name)
+                                global_layer_order
+                                    .iter()
+                                    .position(|existing| existing == name)
                             });
                         rules.push((prepared_rule, order));
                         order += 1;
@@ -593,7 +596,11 @@ fn sort_matches_for_phase(
         let (rule_a, order_a) = all_rules[a.1];
         let (rule_b, order_b) = all_rules[b.1];
         cascade_layer_key(rule_a.layer_index, important, layer_count)
-            .cmp(&cascade_layer_key(rule_b.layer_index, important, layer_count))
+            .cmp(&cascade_layer_key(
+                rule_b.layer_index,
+                important,
+                layer_count,
+            ))
             .then(a.0.cmp(&b.0))
             .then(order_a.cmp(&order_b))
     });
@@ -752,7 +759,10 @@ fn push_keyed(buckets: &mut BTreeMap<String, Vec<usize>>, key: &str, value: usiz
 }
 
 #[inline]
-fn keyed_bucket<'a>(buckets: &'a BTreeMap<String, Vec<usize>>, key: &str) -> Option<&'a Vec<usize>> {
+fn keyed_bucket<'a>(
+    buckets: &'a BTreeMap<String, Vec<usize>>,
+    key: &str,
+) -> Option<&'a Vec<usize>> {
     let lower = key.to_ascii_lowercase();
     buckets.get(lower.as_str())
 }
@@ -1191,12 +1201,10 @@ fn pseudo_class_matches(
             let tag = dom.tag(node_id);
             if matches!(tag, Some(Tag::Input) | Some(Tag::Textarea)) {
                 if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
-                    !attrs
-                        .iter()
-                        .any(|a| {
-                            eq_ignore_ascii_case(&a.name, "readonly")
-                                || eq_ignore_ascii_case(&a.name, "disabled")
-                        })
+                    !attrs.iter().any(|a| {
+                        eq_ignore_ascii_case(&a.name, "readonly")
+                            || eq_ignore_ascii_case(&a.name, "disabled")
+                    })
                 } else {
                     false
                 }
@@ -1206,14 +1214,20 @@ fn pseudo_class_matches(
         }
         PseudoClass::Valid => {
             let tag = dom.tag(node_id);
-            if !matches!(tag, Some(Tag::Input) | Some(Tag::Select) | Some(Tag::Textarea)) {
+            if !matches!(
+                tag,
+                Some(Tag::Input) | Some(Tag::Select) | Some(Tag::Textarea)
+            ) {
                 return false;
             }
             crate::dom::validate_form_control(dom, node_id).is_valid()
         }
         PseudoClass::Invalid => {
             let tag = dom.tag(node_id);
-            if !matches!(tag, Some(Tag::Input) | Some(Tag::Select) | Some(Tag::Textarea)) {
+            if !matches!(
+                tag,
+                Some(Tag::Input) | Some(Tag::Select) | Some(Tag::Textarea)
+            ) {
                 return false;
             }
             !crate::dom::validate_form_control(dom, node_id).is_valid()
@@ -1276,7 +1290,9 @@ fn pseudo_class_matches(
                         .unwrap_or("text");
                     if input_type == "checkbox" {
                         // Checkbox: indeterminate if has `indeterminate` attribute (set via JS).
-                        attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "indeterminate"))
+                        attrs
+                            .iter()
+                            .any(|a| eq_ignore_ascii_case(&a.name, "indeterminate"))
                     } else if input_type == "radio" {
                         // Radio: indeterminate if no radio in the same name group is checked.
                         let name = attrs
@@ -1286,7 +1302,9 @@ fn pseudo_class_matches(
                             .unwrap_or("");
                         if name.is_empty() {
                             // No name group — check just this one.
-                            !attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "checked"))
+                            !attrs
+                                .iter()
+                                .any(|a| eq_ignore_ascii_case(&a.name, "checked"))
                         } else {
                             // Check all radios with same name in the form.
                             !radio_group_has_checked(dom, node_id, name)
@@ -1300,7 +1318,7 @@ fn pseudo_class_matches(
             } else {
                 false
             }
-        },
+        }
     }
 }
 
@@ -1385,9 +1403,9 @@ fn radio_group_has_checked(dom: &Dom, radio_node: NodeId, name: &str) -> bool {
     while let Some(nid) = stack.pop() {
         if dom.tag(nid) == Some(Tag::Input) {
             if let NodeType::Element { ref attrs, .. } = dom.nodes[nid].node_type {
-                let is_radio = attrs
-                    .iter()
-                    .any(|a| eq_ignore_ascii_case(&a.name, "type") && eq_ignore_ascii_case(&a.value, "radio"));
+                let is_radio = attrs.iter().any(|a| {
+                    eq_ignore_ascii_case(&a.name, "type") && eq_ignore_ascii_case(&a.value, "radio")
+                });
                 if is_radio {
                     let n = attrs
                         .iter()
@@ -1395,7 +1413,10 @@ fn radio_group_has_checked(dom: &Dom, radio_node: NodeId, name: &str) -> bool {
                         .map(|a| a.value.as_str())
                         .unwrap_or("");
                     if n == name {
-                        if attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "checked")) {
+                        if attrs
+                            .iter()
+                            .any(|a| eq_ignore_ascii_case(&a.name, "checked"))
+                        {
                             return true;
                         }
                     }
@@ -1523,8 +1544,10 @@ fn is_ancestor_or_self(dom: &Dom, ancestor: NodeId, node_id: NodeId) -> bool {
 }
 
 fn estimated_content_inline_size(style: &ComputedStyle, available_inline_size: i32) -> i32 {
-    let border_pad =
-        style.padding_left + style.padding_right + style.border_left.width + style.border_right.width;
+    let border_pad = style.padding_left
+        + style.padding_right
+        + style.border_left.width
+        + style.border_right.width;
     let margin = style.margin_left.max(0) + style.margin_right.max(0);
     let base = if let Some(width) = style.width {
         width
@@ -1543,8 +1566,10 @@ fn estimated_content_inline_size(style: &ComputedStyle, available_inline_size: i
 }
 
 fn estimated_content_block_size(style: &ComputedStyle, available_block_size: i32) -> i32 {
-    let border_pad =
-        style.padding_top + style.padding_bottom + style.border_top.width + style.border_bottom.width;
+    let border_pad = style.padding_top
+        + style.padding_bottom
+        + style.border_top.width
+        + style.border_bottom.width;
     let base = if let Some(height) = style.height {
         height
     } else if let Some(pct) = style.height_pct {
@@ -1561,10 +1586,7 @@ fn estimated_content_block_size(style: &ComputedStyle, available_block_size: i32
     }
 }
 
-fn container_query_matches(
-    query: &ContainerQuery,
-    containers: &[ActiveContainer],
-) -> bool {
+fn container_query_matches(query: &ContainerQuery, containers: &[ActiveContainer]) -> bool {
     let container = containers.iter().rev().find(|container| {
         if let Some(ref wanted_name) = query.name {
             container
@@ -1847,7 +1869,10 @@ fn resolve_styles_prepared_impl(
 
         // UA override: [hidden] → display:none (per HTML spec).
         if let NodeType::Element { attrs, .. } = &node.node_type {
-            if attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "hidden")) {
+            if attrs
+                .iter()
+                .any(|a| eq_ignore_ascii_case(&a.name, "hidden"))
+            {
                 style.display = Display::None;
             }
         }
@@ -1966,8 +1991,7 @@ fn resolve_styles_prepared_impl(
                     if eq_ignore_ascii_case(&a.name, "style") {
                         // Look up cached declarations for this node, or parse and cache.
                         if inline_style_cache[id].is_none() {
-                            inline_style_cache[id] =
-                                Some(crate::css::parse_inline_style(&a.value));
+                            inline_style_cache[id] = Some(crate::css::parse_inline_style(&a.value));
                         }
                         let inline_decls = inline_style_cache[id].as_ref().unwrap();
                         apply_decls_two_pass(
@@ -2033,7 +2057,10 @@ fn resolve_styles_prepared_impl(
 
         styles.push(style);
 
-        if matches!(styles[id].container_type, ContainerTypeVal::InlineSize | ContainerTypeVal::Size) {
+        if matches!(
+            styles[id].container_type,
+            ContainerTypeVal::InlineSize | ContainerTypeVal::Size
+        ) {
             active_containers.push(ActiveContainer {
                 node_id: id,
                 names: styles[id].container_names.clone(),
@@ -2159,7 +2186,10 @@ fn resolve_styles_prepared_impl(
                 pseudo.after[id] = None;
             }
         }
-        if matches!(styles[id].container_type, ContainerTypeVal::InlineSize | ContainerTypeVal::Size) {
+        if matches!(
+            styles[id].container_type,
+            ContainerTypeVal::InlineSize | ContainerTypeVal::Size
+        ) {
             let available_inline_size = pseudo_active_containers
                 .last()
                 .map(|container| container.inline_size)
@@ -2584,29 +2614,27 @@ pub fn apply_declaration(
                 style.color = c;
             }
         }
-        Property::BackgroundColor | Property::Background => {
-            match decl.value {
-                CssValue::Color(c) => {
-                    style.background_color = c;
-                    style.background_color_is_current = false;
-                }
-                CssValue::None => {
-                    style.background_color = 0x00000000;
-                    style.background_color_is_current = false;
-                }
-                CssValue::CurrentColor => {
-                    style.background_color_is_current = true;
-                    style.background_color = style.color;
-                }
-                CssValue::Inherit => {
-                    if let Some(parent) = parent_style {
-                        style.background_color = parent.background_color;
-                        style.background_color_is_current = parent.background_color_is_current;
-                    }
-                }
-                _ => {}
+        Property::BackgroundColor | Property::Background => match decl.value {
+            CssValue::Color(c) => {
+                style.background_color = c;
+                style.background_color_is_current = false;
             }
-        }
+            CssValue::None => {
+                style.background_color = 0x00000000;
+                style.background_color_is_current = false;
+            }
+            CssValue::CurrentColor => {
+                style.background_color_is_current = true;
+                style.background_color = style.color;
+            }
+            CssValue::Inherit => {
+                if let Some(parent) = parent_style {
+                    style.background_color = parent.background_color;
+                    style.background_color_is_current = parent.background_color_is_current;
+                }
+            }
+            _ => {}
+        },
         Property::AccentColor => match decl.value {
             CssValue::Color(c) => {
                 style.accent_color = c;
@@ -3164,7 +3192,11 @@ pub fn apply_declaration(
                     style.top_calc = parent.top_calc;
                 }
             } else if let CssValue::Calc(px, pct) = decl.value {
-                style.top = if pct == 0 { Some(px / 100) } else { Option::None };
+                style.top = if pct == 0 {
+                    Some(px / 100)
+                } else {
+                    Option::None
+                };
                 style.top_calc = Some((px, pct));
             } else if let CssValue::Percentage(v) = decl.value {
                 style.top = Option::None;
@@ -3184,7 +3216,11 @@ pub fn apply_declaration(
                     style.right_calc = parent.right_calc;
                 }
             } else if let CssValue::Calc(px, pct) = decl.value {
-                style.right_offset = if pct == 0 { Some(px / 100) } else { Option::None };
+                style.right_offset = if pct == 0 {
+                    Some(px / 100)
+                } else {
+                    Option::None
+                };
                 style.right_calc = Some((px, pct));
             } else if let CssValue::Percentage(v) = decl.value {
                 style.right_offset = Option::None;
@@ -3204,7 +3240,11 @@ pub fn apply_declaration(
                     style.bottom_calc = parent.bottom_calc;
                 }
             } else if let CssValue::Calc(px, pct) = decl.value {
-                style.bottom_offset = if pct == 0 { Some(px / 100) } else { Option::None };
+                style.bottom_offset = if pct == 0 {
+                    Some(px / 100)
+                } else {
+                    Option::None
+                };
                 style.bottom_calc = Some((px, pct));
             } else if let CssValue::Percentage(v) = decl.value {
                 style.bottom_offset = Option::None;
@@ -3224,7 +3264,11 @@ pub fn apply_declaration(
                     style.left_calc = parent.left_calc;
                 }
             } else if let CssValue::Calc(px, pct) = decl.value {
-                style.left_offset = if pct == 0 { Some(px / 100) } else { Option::None };
+                style.left_offset = if pct == 0 {
+                    Some(px / 100)
+                } else {
+                    Option::None
+                };
                 style.left_calc = Some((px, pct));
             } else if let CssValue::Percentage(v) = decl.value {
                 style.left_offset = Option::None;
@@ -4145,7 +4189,9 @@ pub fn apply_declaration(
                             style.aspect_ratio = w * 100 / h;
                         }
                     }
-                } else if let Some(v) = try_parse_simple_float(kw.trim().trim_start_matches("auto").trim()) {
+                } else if let Some(v) =
+                    try_parse_simple_float(kw.trim().trim_start_matches("auto").trim())
+                {
                     style.aspect_ratio = v;
                 }
             } else if let CssValue::Number(v) = decl.value {
@@ -4307,10 +4353,7 @@ pub fn apply_declaration(
                 }
             }
         }
-        Property::BorderStyle
-        | Property::Flex
-        | Property::Cursor
-        | Property::Outline => {}
+        Property::BorderStyle | Property::Flex | Property::Cursor | Property::Outline => {}
         Property::Gap => {
             // gap: <row-gap> <column-gap>?
             // Single value → both row and column gap
@@ -4963,9 +5006,7 @@ fn parse_self_alignment_kw(kw: &str) -> Option<Option<AlignItems>> {
         .trim();
     match kw {
         "auto" => Some(None),
-        "flex-start" | "start" | "self-start" | "left" => {
-            Some(Some(AlignItems::FlexStart))
-        }
+        "flex-start" | "start" | "self-start" | "left" => Some(Some(AlignItems::FlexStart)),
         "flex-end" | "end" | "self-end" | "right" | "last baseline" => {
             Some(Some(AlignItems::FlexEnd))
         }
@@ -5004,9 +5045,7 @@ fn parse_align_content_kw(kw: &str) -> Option<AlignContent> {
         .unwrap_or(kw)
         .trim();
     match kw {
-        "flex-start" | "start" | "baseline" | "first baseline" => {
-            Some(AlignContent::FlexStart)
-        }
+        "flex-start" | "start" | "baseline" | "first baseline" => Some(AlignContent::FlexStart),
         "flex-end" | "end" | "last baseline" => Some(AlignContent::FlexEnd),
         "center" | "anchor-center" => Some(AlignContent::Center),
         "space-between" => Some(AlignContent::SpaceBetween),
@@ -5558,7 +5597,12 @@ fn parse_linear_gradient(inner: &str) -> Option<BackgroundImageVal> {
 
 fn parse_gradient_angle(s: &str) -> Option<i32> {
     if s.ends_with("deg") {
-        return s.trim_end_matches("deg").trim().parse::<f32>().ok().map(|a| a as i32);
+        return s
+            .trim_end_matches("deg")
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|a| a as i32);
     }
     if s.ends_with("grad") {
         return s
@@ -5705,7 +5749,10 @@ fn parse_position_component(
                 }
             }
             if let Some(dim) = crate::css::try_parse_dimension_pub(s) {
-                if matches!(dim, CssValue::Length(_, Unit::Percent) | CssValue::Percentage(_)) {
+                if matches!(
+                    dim,
+                    CssValue::Length(_, Unit::Percent) | CssValue::Percentage(_)
+                ) {
                     match dim {
                         CssValue::Length(v, Unit::Percent) | CssValue::Percentage(v) => {
                             return (v, true);

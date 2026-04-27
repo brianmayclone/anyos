@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
-    BoxSizing, ComputedStyle, Display, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
-    VerticalAlign, WhiteSpace, resolve_inset, resolve_margins,
+    resolve_inset, resolve_margins, BoxSizing, ComputedStyle, Display, Position, PseudoStyles,
+    TextAlignVal, TextDeco, TextTransform, VerticalAlign, WhiteSpace,
 };
 use crate::ImageCache;
 
@@ -478,7 +478,16 @@ fn collect_inline_fragments(
                 | Display::InlineFlex
                 | Display::InlineGrid
         ) {
-            super::block::build_block(dom, styles, pseudo, node_id, available_width, images, viewport_w, 0)
+            super::block::build_block(
+                dom,
+                styles,
+                pseudo,
+                node_id,
+                available_width,
+                images,
+                viewport_w,
+                0,
+            )
         } else {
             let mut bx = LayoutBox::new(Some(node_id), BoxType::Inline);
             bx.width = 0;
@@ -527,10 +536,9 @@ fn collect_inline_fragments(
                 .and_then(|family| crate::lookup_web_font(family))
                 .unwrap_or(0);
             let start_idx = out.len();
-            let preserve_pre_ws =
-                style.white_space == WhiteSpace::Pre
-                    || style.white_space == WhiteSpace::PreWrap
-                    || is_inside_pre(dom, node_id);
+            let preserve_pre_ws = style.white_space == WhiteSpace::Pre
+                || style.white_space == WhiteSpace::PreWrap
+                || is_inside_pre(dom, node_id);
             if preserve_pre_ws {
                 emit_preformatted_fragments(
                     &transformed,
@@ -615,7 +623,8 @@ fn collect_inline_fragments(
                 img.y = img.margin.top;
                 let horizontal_border = img.border_left_width + img.border_right_width;
                 let vertical_border = img.border_top_width + img.border_bottom_width;
-                let horizontal_non_content = img.padding.left + img.padding.right + horizontal_border;
+                let horizontal_non_content =
+                    img.padding.left + img.padding.right + horizontal_border;
                 let vertical_non_content = img.padding.top + img.padding.bottom + vertical_border;
                 let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
                 let resolve_specified_width = |w: i32| {
@@ -639,25 +648,28 @@ fn collect_inline_fragments(
                     .map(resolve_specified_width)
                     .or_else(|| {
                         style.width_pct.map(|pct| {
-                            let border_box = (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
+                            let border_box =
+                                (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
                             resolve_specified_width(border_box)
                         })
                     })
                     .or_else(|| {
                         style.width_calc.map(|(px100, pct100)| {
-                            let border_box =
-                                px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            let border_box = px100 / 100
+                                + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
                             resolve_specified_width(border_box)
                         })
                     });
-                let specified_h = style
-                    .height
-                    .map(resolve_specified_height)
-                    .or_else(|| style.height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
-                let resolved_max_h = style
-                    .max_height
-                    .map(resolve_specified_height)
-                    .or_else(|| style.max_height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
+                let specified_h = style.height.map(resolve_specified_height).or_else(|| {
+                    style
+                        .height_calc
+                        .map(|(px100, _)| resolve_specified_height(px100 / 100))
+                });
+                let resolved_max_h = style.max_height.map(resolve_specified_height).or_else(|| {
+                    style
+                        .max_height_calc
+                        .map(|(px100, _)| resolve_specified_height(px100 / 100))
+                });
                 let resolved_max_w = style
                     .max_width
                     .map(|value| {
@@ -670,8 +682,8 @@ fn collect_inline_fragments(
                     })
                     .or_else(|| {
                         style.max_width_calc.map(|(px100, pct100)| {
-                            let border_box =
-                                px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            let border_box = px100 / 100
+                                + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
                             resolve_specified_width(border_box)
                         })
                     });
@@ -758,7 +770,8 @@ fn collect_inline_fragments(
                 img.y = img.margin.top;
                 let horizontal_border = img.border_left_width + img.border_right_width;
                 let vertical_border = img.border_top_width + img.border_bottom_width;
-                let horizontal_non_content = img.padding.left + img.padding.right + horizontal_border;
+                let horizontal_non_content =
+                    img.padding.left + img.padding.right + horizontal_border;
                 let vertical_non_content = img.padding.top + img.padding.bottom + vertical_border;
                 let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
                 let resolve_specified_width = |w: i32| {
@@ -782,25 +795,28 @@ fn collect_inline_fragments(
                     .map(resolve_specified_width)
                     .or_else(|| {
                         style.width_pct.map(|pct| {
-                            let border_box = (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
+                            let border_box =
+                                (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
                             resolve_specified_width(border_box)
                         })
                     })
                     .or_else(|| {
                         style.width_calc.map(|(px100, pct100)| {
-                            let border_box =
-                                px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            let border_box = px100 / 100
+                                + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
                             resolve_specified_width(border_box)
                         })
                     });
-                let specified_h = style
-                    .height
-                    .map(resolve_specified_height)
-                    .or_else(|| style.height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
-                let resolved_max_h = style
-                    .max_height
-                    .map(resolve_specified_height)
-                    .or_else(|| style.max_height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
+                let specified_h = style.height.map(resolve_specified_height).or_else(|| {
+                    style
+                        .height_calc
+                        .map(|(px100, _)| resolve_specified_height(px100 / 100))
+                });
+                let resolved_max_h = style.max_height.map(resolve_specified_height).or_else(|| {
+                    style
+                        .max_height_calc
+                        .map(|(px100, _)| resolve_specified_height(px100 / 100))
+                });
                 let resolved_max_w = style
                     .max_width
                     .map(|value| {
@@ -813,8 +829,8 @@ fn collect_inline_fragments(
                     })
                     .or_else(|| {
                         style.max_width_calc.map(|(px100, pct100)| {
-                            let border_box =
-                                px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            let border_box = px100 / 100
+                                + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
                             resolve_specified_width(border_box)
                         })
                     });
@@ -1212,7 +1228,10 @@ fn collect_inline_fragments(
             }
 
             // Handle display: inline-block / inline-flex / inline-grid — lay out as block, emit as inline fragment.
-            if matches!(style.display, Display::InlineBlock | Display::InlineFlex | Display::InlineGrid) {
+            if matches!(
+                style.display,
+                Display::InlineBlock | Display::InlineFlex | Display::InlineGrid
+            ) {
                 use super::block::build_block;
                 // Shrink-to-fit: if no explicit width, use max-content so the box is only as
                 // wide as its content (CSS §10.3.9 "Inline replaced elements, block-level
@@ -1362,15 +1381,12 @@ fn collect_inline_fragments(
                     + continuation.padding.right
                     + continuation.border_left_width
                     + continuation.border_right_width;
-                let continuation_h = style
-                    .line_height
-                    .max(font_size_px(style))
-                    .max(
-                        continuation.padding.top
-                            + continuation.padding.bottom
-                            + continuation.border_top_width
-                            + continuation.border_bottom_width,
-                    );
+                let continuation_h = style.line_height.max(font_size_px(style)).max(
+                    continuation.padding.top
+                        + continuation.padding.bottom
+                        + continuation.border_top_width
+                        + continuation.border_bottom_width,
+                );
                 continuation.width = continuation_w.max(0);
                 continuation.height = continuation_h.max(0);
                 out.push(InlineFragment {
@@ -1426,15 +1442,20 @@ fn collect_inline_fragments(
 
             if style.position == Position::Relative {
                 let dx = {
-                    let left = resolve_inset(style.left_offset, style.left_calc, available_width, true);
+                    let left =
+                        resolve_inset(style.left_offset, style.left_calc, available_width, true);
                     let right =
                         resolve_inset(style.right_offset, style.right_calc, available_width, true);
                     left.unwrap_or_else(|| right.map(|v| -v).unwrap_or(0))
                 };
                 let dy = {
                     let top = resolve_inset(style.top, style.top_calc, available_width, true);
-                    let bottom =
-                        resolve_inset(style.bottom_offset, style.bottom_calc, available_width, true);
+                    let bottom = resolve_inset(
+                        style.bottom_offset,
+                        style.bottom_calc,
+                        available_width,
+                        true,
+                    );
                     top.unwrap_or_else(|| bottom.map(|v| -v).unwrap_or(0))
                 };
                 if dx != 0 || dy != 0 {
@@ -2105,7 +2126,10 @@ fn emit_word_fragments(
 }
 
 fn trim_trailing_collapsible_spaces(line: &mut LayoutBox) -> i32 {
-    while matches!(line.children.last().and_then(|child| child.text.as_deref()), Some(" ")) {
+    while matches!(
+        line.children.last().and_then(|child| child.text.as_deref()),
+        Some(" ")
+    ) {
         line.children.pop();
     }
 

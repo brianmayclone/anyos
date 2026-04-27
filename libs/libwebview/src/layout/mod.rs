@@ -21,9 +21,9 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    AlignItems, ClearVal, ComputedStyle, Direction, Display, FlexDirection, FloatVal, FontStyleVal, FontWeight,
-    InlineAxisAlignment, ListStyle, ListStylePosition, OverflowVal, Position, PseudoStyles,
-    TextAlignVal, TextDeco, TextTransform, resolve_inset,
+    resolve_inset, AlignItems, ClearVal, ComputedStyle, Direction, Display, FlexDirection,
+    FloatVal, FontStyleVal, FontWeight, InlineAxisAlignment, ListStyle, ListStylePosition,
+    OverflowVal, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
 };
 use crate::ImageCache;
 
@@ -830,6 +830,125 @@ pub(super) fn size_attr_width(dom: &Dom, node_id: NodeId, default: i32) -> i32 {
     default
 }
 
+fn resolve_form_control_width(
+    style: &ComputedStyle,
+    fallback: i32,
+    containing_width: Option<i32>,
+) -> i32 {
+    if let Some(w) = style.width {
+        return w.max(1);
+    }
+    if let (Some(pct), Some(parent_w)) = (style.width_pct, containing_width) {
+        return ((parent_w.max(0) as i64 * pct as i64) / 10000).max(1) as i32;
+    }
+    if let (Some((px100, pct100)), Some(parent_w)) = (style.width_calc, containing_width) {
+        return (px100 / 100 + (parent_w.max(0) as i64 * pct100 as i64 / 10000) as i32).max(1);
+    }
+    fallback.max(1)
+}
+
+pub(super) fn intrinsic_form_control_width(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    node_id: NodeId,
+    containing_width: Option<i32>,
+) -> Option<i32> {
+    let style = styles.get(node_id)?;
+    let pad_border = style.padding_left
+        + style.padding_right
+        + style.border_width * 2
+        + style.border_left.width
+        + style.border_right.width;
+    let custom_font_id = style
+        .font_family
+        .as_ref()
+        .and_then(|family| crate::lookup_web_font(family))
+        .unwrap_or(0);
+    let measured_label_width = |label: &str| {
+        let (w, _) = measure_text(
+            label,
+            font_size_px(style),
+            custom_font_id,
+            is_bold(style),
+            is_italic(style),
+        );
+        w
+    };
+    let width = match dom.tag(node_id)? {
+        Tag::Input => {
+            let input_type = dom.attr(node_id, "type").unwrap_or("text");
+            let mut lower_buf = [0u8; 16];
+            match ascii_lower_str(input_type, &mut lower_buf) {
+                "hidden" => return Some(0),
+                "checkbox" | "radio" => resolve_form_control_width(style, 20, containing_width),
+                "submit" | "button" => {
+                    let label = dom.attr(node_id, "value").unwrap_or("Submit");
+                    resolve_form_control_width(
+                        style,
+                        (measured_label_width(label) + 24).max(60),
+                        containing_width,
+                    )
+                }
+                "reset" => {
+                    let label = dom.attr(node_id, "value").unwrap_or("Reset");
+                    resolve_form_control_width(
+                        style,
+                        (measured_label_width(label) + 24).max(60),
+                        containing_width,
+                    )
+                }
+                "password" => resolve_form_control_width(
+                    style,
+                    size_attr_width(dom, node_id, 200),
+                    containing_width,
+                ),
+                "range" => resolve_form_control_width(style, 200, containing_width),
+                "number" => resolve_form_control_width(
+                    style,
+                    size_attr_width(dom, node_id, 150),
+                    containing_width,
+                ),
+                "color" => resolve_form_control_width(style, 44, containing_width),
+                "file" => resolve_form_control_width(
+                    style,
+                    (measured_label_width("Choose File") + 24).max(120),
+                    containing_width,
+                ),
+                "date" => resolve_form_control_width(style, 160, containing_width),
+                "time" => resolve_form_control_width(style, 120, containing_width),
+                "datetime-local" => resolve_form_control_width(style, 230, containing_width),
+                "month" | "week" => resolve_form_control_width(style, 140, containing_width),
+                _ => resolve_form_control_width(
+                    style,
+                    size_attr_width(dom, node_id, 200),
+                    containing_width,
+                ),
+            }
+        }
+        Tag::Button => {
+            let text = dom.text_content(node_id);
+            let label = text.trim();
+            let label = if label.is_empty() { "Button" } else { label };
+            resolve_form_control_width(
+                style,
+                (measured_label_width(label) + 24).max(60),
+                containing_width,
+            )
+        }
+        Tag::Textarea => {
+            let cols = dom
+                .attr(node_id, "cols")
+                .and_then(parse_attr_int)
+                .unwrap_or(20)
+                .max(1);
+            resolve_form_control_width(style, (cols * 8).max(120), containing_width)
+        }
+        Tag::Select => resolve_form_control_width(style, 160, containing_width),
+        _ => return None,
+    };
+    Some(width + pad_border)
+}
+
 // ---------------------------------------------------------------------------
 // CSS Counter resolution
 // ---------------------------------------------------------------------------
@@ -1160,11 +1279,8 @@ pub fn layout_with_budget(
         crate::style::resolve_margins(style, viewport_width);
     root.margin = edges_from(margin_top, margin_right, margin_bottom, margin_left);
 
-    let content_width = root.width
-        - root.padding.left
-        - root.padding.right
-        - root.margin.left
-        - root.margin.right;
+    let content_width =
+        root.width - root.padding.left - root.padding.right - root.margin.left - root.margin.right;
 
     let children = &dom.get(body_id).children;
     let child_ids: Vec<NodeId> = children.iter().copied().collect();
@@ -1257,16 +1373,17 @@ fn resolve_inline_alignment(
     direction: Direction,
 ) -> AlignItems {
     match keyword.or(fallback_keyword) {
-        Some(InlineAxisAlignment::Start) | Some(InlineAxisAlignment::FirstBaseline) => match direction {
-            Direction::Ltr => AlignItems::FlexStart,
-            Direction::Rtl => AlignItems::FlexEnd,
-        },
-        Some(InlineAxisAlignment::End) | Some(InlineAxisAlignment::LastBaseline) => {
+        Some(InlineAxisAlignment::Start) | Some(InlineAxisAlignment::FirstBaseline) => {
             match direction {
-                Direction::Ltr => AlignItems::FlexEnd,
-                Direction::Rtl => AlignItems::FlexStart,
+                Direction::Ltr => AlignItems::FlexStart,
+                Direction::Rtl => AlignItems::FlexEnd,
             }
         }
+        Some(InlineAxisAlignment::End) | Some(InlineAxisAlignment::LastBaseline) => match direction
+        {
+            Direction::Ltr => AlignItems::FlexEnd,
+            Direction::Rtl => AlignItems::FlexStart,
+        },
         Some(InlineAxisAlignment::Left) => AlignItems::FlexStart,
         Some(InlineAxisAlignment::Right) => AlignItems::FlexEnd,
         Some(InlineAxisAlignment::Center) => AlignItems::Center,
@@ -1299,16 +1416,7 @@ fn resolve_absolute_alignment(
         (0, 0, viewport_w.max(0), viewport_h.max(0))
     };
     resolve_absolute_alignment_rec(
-        root,
-        styles,
-        0,
-        0,
-        cb_x,
-        cb_y,
-        cb_w,
-        cb_h,
-        viewport_w,
-        viewport_h,
+        root, styles, 0, 0, cb_x, cb_y, cb_w, cb_h, viewport_w, viewport_h,
     );
 }
 
@@ -1345,8 +1453,16 @@ fn resolve_absolute_alignment_rec(
     let parent_border_w = bx.width;
     let parent_border_h = bx.height;
     for child in &mut bx.children {
-        let mut child_abs_x = if child.is_fixed { child.x } else { abs_x + child.x };
-        let mut child_abs_y = if child.is_fixed { child.y } else { abs_y + child.y };
+        let mut child_abs_x = if child.is_fixed {
+            child.x
+        } else {
+            abs_x + child.x
+        };
+        let mut child_abs_y = if child.is_fixed {
+            child.y
+        } else {
+            abs_y + child.y
+        };
         let static_start_abs_x = child
             .static_position_x
             .map(|x| abs_x + x)
@@ -1403,7 +1519,8 @@ fn resolve_absolute_alignment_rec(
                             if allow_stretch && normal_start_align == AlignItems::Stretch {
                                 *size = (available - *margin_start - *margin_end).max(0);
                             }
-                            let remaining = (available - *size - *margin_start - *margin_end).max(0);
+                            let remaining =
+                                (available - *size - *margin_start - *margin_end).max(0);
                             if auto_margin_start && auto_margin_end {
                                 *margin_start = remaining / 2;
                                 *margin_end = remaining - *margin_start;
@@ -1446,7 +1563,9 @@ fn resolve_absolute_alignment_rec(
                         if is_fixed { viewport_w } else { next_cb_w },
                         static_start_abs_x,
                         static_size_x,
-                        style.width.is_none() && style.width_pct.is_none() && style.width_calc.is_none(),
+                        style.width.is_none()
+                            && style.width_pct.is_none()
+                            && style.width_calc.is_none(),
                     );
                     child.width = width;
                     child.margin.left = ml;
@@ -1470,7 +1589,9 @@ fn resolve_absolute_alignment_rec(
                         if is_fixed { viewport_h } else { next_cb_h },
                         static_start_abs_y,
                         static_size_y,
-                        style.height.is_none() && style.height_pct.is_none() && style.height_calc.is_none(),
+                        style.height.is_none()
+                            && style.height_pct.is_none()
+                            && style.height_calc.is_none(),
                     );
                     child.height = height;
                     child.margin.top = mt;
@@ -1710,7 +1831,16 @@ pub(super) fn layout_children_ex_with_budget(
                 let mut placed = if is_table_element(dom, cid) {
                     table::layout_table(dom, styles, pseudo, cid, stf_width, images, viewport_w)
                 } else {
-                    build_block(dom, styles, pseudo, cid, stf_width, images, viewport_w, parent_height)
+                    build_block(
+                        dom,
+                        styles,
+                        pseudo,
+                        cid,
+                        stf_width,
+                        images,
+                        viewport_w,
+                        parent_height,
+                    )
                 };
 
                 let total_w = placed.width + placed.margin.left + placed.margin.right;
@@ -1790,21 +1920,21 @@ pub(super) fn layout_children_ex_with_budget(
                 && !child_style.width_fit_content
                 && (has_explicit_self_alignment || is_widget_like);
             let child_avail = if use_fit_content_width {
-                shrink_to_fit_width(dom, styles, pseudo, cid, effective_avail, images, viewport_w)
+                shrink_to_fit_width(
+                    dom,
+                    styles,
+                    pseudo,
+                    cid,
+                    effective_avail,
+                    images,
+                    viewport_w,
+                )
             } else {
                 effective_avail
             };
 
             let child_box = if is_table_element(dom, cid) {
-                table::layout_table(
-                    dom,
-                    styles,
-                    pseudo,
-                    cid,
-                    child_avail,
-                    images,
-                    viewport_w,
-                )
+                table::layout_table(dom, styles, pseudo, cid, child_avail, images, viewport_w)
             } else {
                 let child_margin_top = child_style.margin_top;
                 let collapsed = if prev_margin_bottom > child_margin_top {
@@ -1868,8 +1998,7 @@ pub(super) fn layout_children_ex_with_budget(
                 && !child_style.width_fit_content;
 
             if stretch_self {
-                placed.width =
-                    (effective_avail - placed.margin.left - placed.margin.right).max(0);
+                placed.width = (effective_avail - placed.margin.left - placed.margin.right).max(0);
             }
 
             let total_child_w = placed.width + placed.margin.left + placed.margin.right;
@@ -1878,25 +2007,23 @@ pub(super) fn layout_children_ex_with_budget(
                 AlignItems::FlexEnd => (effective_avail - total_child_w).max(0),
                 _ => 0,
             };
-            placed.x = bw + parent.padding.left + li + placed.margin.left + justify_offset + relative_x;
+            placed.x =
+                bw + parent.padding.left + li + placed.margin.left + justify_offset + relative_x;
 
             // Keep legacy `text-align` fallback when self-alignment remains at start.
             let parent_align = parent_style.text_align;
             if justify == AlignItems::Stretch || justify == AlignItems::FlexStart {
                 if parent_align == TextAlignVal::Center {
                     if total_child_w < effective_avail {
-                        placed.x =
-                            bw + parent.padding.left
-                                + li
-                                + (effective_avail - total_child_w) / 2
-                                + relative_x;
+                        placed.x = bw
+                            + parent.padding.left
+                            + li
+                            + (effective_avail - total_child_w) / 2
+                            + relative_x;
                     }
                 } else if parent_align == TextAlignVal::Right {
                     if total_child_w < effective_avail {
-                        placed.x = bw + parent.padding.left
-                            + li
-                            + effective_avail
-                            - total_child_w
+                        placed.x = bw + parent.padding.left + li + effective_avail - total_child_w
                             + relative_x;
                     }
                 }
@@ -2130,10 +2257,18 @@ pub(super) fn layout_children_ex_with_budget(
             // The renderer honours `is_fixed = true` by ignoring accumulated parent offsets.
             let top = resolve_inset(abs_style.top, abs_style.top_calc, viewport_h, true);
             let left = resolve_inset(abs_style.left_offset, abs_style.left_calc, viewport_w, true);
-            let right =
-                resolve_inset(abs_style.right_offset, abs_style.right_calc, viewport_w, true);
-            let bottom =
-                resolve_inset(abs_style.bottom_offset, abs_style.bottom_calc, viewport_h, true);
+            let right = resolve_inset(
+                abs_style.right_offset,
+                abs_style.right_calc,
+                viewport_w,
+                true,
+            );
+            let bottom = resolve_inset(
+                abs_style.bottom_offset,
+                abs_style.bottom_calc,
+                viewport_h,
+                true,
+            );
 
             abs_box.x = left.unwrap_or(0) + abs_box.margin.left;
             abs_box.y = top.unwrap_or(0) + abs_box.margin.top;
@@ -2156,8 +2291,12 @@ pub(super) fn layout_children_ex_with_budget(
             let top = resolve_inset(abs_style.top, abs_style.top_calc, cb_height, cb_height > 0);
             let left = resolve_inset(abs_style.left_offset, abs_style.left_calc, cb_width, true);
             let right = resolve_inset(abs_style.right_offset, abs_style.right_calc, cb_width, true);
-            let bottom =
-                resolve_inset(abs_style.bottom_offset, abs_style.bottom_calc, cb_height, cb_height > 0);
+            let bottom = resolve_inset(
+                abs_style.bottom_offset,
+                abs_style.bottom_calc,
+                cb_height,
+                cb_height > 0,
+            );
             let (content_x, content_y) = if uses_initial_abs_cb {
                 (0, 0)
             } else {
@@ -2232,11 +2371,7 @@ pub(super) fn layout_children_ex_with_budget(
                 s.display,
                 Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
             );
-        has_overflow_bfc
-            || has_display_bfc
-            || has_float_bfc
-            || has_pos_bfc
-            || has_align_content_bfc
+        has_overflow_bfc || has_display_bfc || has_float_bfc || has_pos_bfc || has_align_content_bfc
     } else {
         false
     };
@@ -2301,7 +2436,10 @@ fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
     // CSS §9.7: If `float` has a value other than `none`, the computed `display`
     // is forced to block-level (`inline`/`inline-block` → `block`).
     if style.float != crate::style::FloatVal::None
-        && !matches!(style.position, crate::style::Position::Absolute | crate::style::Position::Fixed)
+        && !matches!(
+            style.position,
+            crate::style::Position::Absolute | crate::style::Position::Fixed
+        )
     {
         return true;
     }
@@ -2502,6 +2640,10 @@ fn measure_min_content(
         return 0;
     }
 
+    if let Some(w) = intrinsic_form_control_width(dom, styles, node_id, Some(viewport_w)) {
+        return w;
+    }
+
     let pad_border = st.padding_left
         + st.padding_right
         + st.border_width * 2
@@ -2653,7 +2795,10 @@ fn measure_abs_auto_width(
 
     let children: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
     let is_row_flex = matches!(style.display, Display::Flex | Display::InlineFlex)
-        && matches!(style.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+        && matches!(
+            style.flex_direction,
+            FlexDirection::Row | FlexDirection::RowReverse
+        );
     let mut content_w = 0;
     let mut count = 0;
 

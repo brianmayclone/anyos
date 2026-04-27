@@ -679,11 +679,9 @@ impl Dom {
             }
         }
 
-        if let Some(srcset) = first_non_empty_attr(
-            self,
-            id,
-            &["srcset", "data-srcset", "data-lazy-srcset"],
-        ) {
+        if let Some(srcset) =
+            first_non_empty_attr(self, id, &["srcset", "data-srcset", "data-lazy-srcset"])
+        {
             if let Some(candidate) = pick_srcset_candidate(srcset) {
                 return Some(candidate);
             }
@@ -996,7 +994,11 @@ fn parse_positive_int(s: &str) -> Option<i32> {
         }
         value = value.saturating_mul(10).saturating_add((b - b'0') as i32);
     }
-    if value > 0 { Some(value) } else { None }
+    if value > 0 {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn parse_density_score(s: &str) -> Option<i32> {
@@ -1165,12 +1167,18 @@ pub fn validate_form_control(dom: &Dom, node_id: NodeId) -> ValidationResult {
         if is_textarea && !is_readonly {
             let text = dom.text_content(node_id);
             let len = text.len();
-            if let Some(ml) = dom.attr(node_id, "maxlength").and_then(|s| s.parse::<usize>().ok()) {
+            if let Some(ml) = dom
+                .attr(node_id, "maxlength")
+                .and_then(|s| s.parse::<usize>().ok())
+            {
                 if len > ml {
                     r.too_long = true;
                 }
             }
-            if let Some(ml) = dom.attr(node_id, "minlength").and_then(|s| s.parse::<usize>().ok()) {
+            if let Some(ml) = dom
+                .attr(node_id, "minlength")
+                .and_then(|s| s.parse::<usize>().ok())
+            {
                 if len > 0 && len < ml {
                     r.too_short = true;
                 }
@@ -1217,12 +1225,18 @@ pub fn validate_form_control(dom: &Dom, node_id: NodeId) -> ValidationResult {
     // ── tooLong / tooShort (§4.10.21.4.5–6) ──
     if !is_readonly {
         let char_len = value.len(); // Simplified: byte length (close enough for ASCII).
-        if let Some(ml) = dom.attr(node_id, "maxlength").and_then(|s| s.parse::<usize>().ok()) {
+        if let Some(ml) = dom
+            .attr(node_id, "maxlength")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
             if char_len > ml {
                 r.too_long = true;
             }
         }
-        if let Some(ml) = dom.attr(node_id, "minlength").and_then(|s| s.parse::<usize>().ok()) {
+        if let Some(ml) = dom
+            .attr(node_id, "minlength")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
             if char_len > 0 && char_len < ml {
                 r.too_short = true;
             }
@@ -1279,7 +1293,9 @@ pub fn validate_form_control(dom: &Dom, node_id: NodeId) -> ValidationResult {
                             .unwrap_or(0.0);
                         let diff = v - min_v;
                         let remainder = diff - (diff / step).floor_approx() * step;
-                        if remainder.abs_approx() > 1e-10 && (step - remainder.abs_approx()).abs_approx() > 1e-10 {
+                        if remainder.abs_approx() > 1e-10
+                            && (step - remainder.abs_approx()).abs_approx() > 1e-10
+                        {
                             r.step_mismatch = true;
                         }
                     }
@@ -1332,7 +1348,24 @@ fn simple_pattern_match(value: &str, pattern: &str) -> bool {
     let pb = pattern.as_bytes();
 
     // Fast path: literal string match (no regex metacharacters).
-    let has_meta = pb.iter().any(|&b| matches!(b, b'.' | b'*' | b'+' | b'?' | b'[' | b']' | b'(' | b')' | b'|' | b'{' | b'}' | b'\\' | b'^' | b'$'));
+    let has_meta = pb.iter().any(|&b| {
+        matches!(
+            b,
+            b'.' | b'*'
+                | b'+'
+                | b'?'
+                | b'['
+                | b']'
+                | b'('
+                | b')'
+                | b'|'
+                | b'{'
+                | b'}'
+                | b'\\'
+                | b'^'
+                | b'$'
+        )
+    });
     if !has_meta {
         return value == pattern;
     }
@@ -1356,10 +1389,18 @@ impl FloatApprox for f64 {
             self as i64 as f64
         } else {
             let i = self as i64 as f64;
-            if i > self { i - 1.0 } else { i }
+            if i > self {
+                i - 1.0
+            } else {
+                i
+            }
         }
     }
     fn abs_approx(self) -> f64 {
-        if self < 0.0 { -self } else { self }
+        if self < 0.0 {
+            -self
+        } else {
+            self
+        }
     }
 }

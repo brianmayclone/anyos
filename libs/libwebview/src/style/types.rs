@@ -79,7 +79,11 @@ impl FilterVal {
 #[derive(Clone, PartialEq)]
 pub enum ClipPathVal {
     None,
-    Circle { radius: i32, cx: i32, cy: i32 },
+    Circle {
+        radius: i32,
+        cx: i32,
+        cy: i32,
+    },
     Inset {
         top: i32,
         right: i32,
@@ -131,8 +135,12 @@ pub enum GridTrackSize {
         max_px: i32,
         max_is_fr: bool,
     },
-    AutoFill { min_px: i32 },
-    AutoFit { min_px: i32 },
+    AutoFill {
+        min_px: i32,
+    },
+    AutoFit {
+        min_px: i32,
+    },
     Subgrid,
 }
 

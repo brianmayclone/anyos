@@ -1,12 +1,12 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::{DrawCmd, DrawKind, ImageCache, MaskLayer};
 use super::raster_utils::{
-    alpha_blend, blit_image_scaled, cos_approx, darken_color, fit_contain_size,
-    fill_dashed_buf, fill_rounded_rect_buf, fit_cover_size, interpolate_gradient_color,
+    alpha_blend, blit_image_scaled, cos_approx, darken_color, fill_dashed_buf,
+    fill_rounded_rect_buf, fit_contain_size, fit_cover_size, interpolate_gradient_color,
     lighten_color, resolve_object_position_offset, sin_approx,
 };
+use super::{DrawCmd, DrawKind, ImageCache, MaskLayer};
 use crate::style::{BackgroundImageVal, BackgroundRepeatVal, BackgroundSizeVal};
 
 fn draw_ahem_string_buf(
@@ -43,20 +43,12 @@ fn rasterize_draw_cmd_basic(
             fill_rect_buf(buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color);
         }
         DrawKind::RoundedRect { color, radii } => {
-            fill_rounded_rect_buf(buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color, *radii);
+            fill_rounded_rect_buf(
+                buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color, *radii,
+            );
         }
         DrawKind::Triangle { color, p0, p1, p2 } => {
-            fill_triangle_buf(
-                buf,
-                stride,
-                buf_h,
-                cmd.src_x,
-                draw_y,
-                *color,
-                *p0,
-                *p1,
-                *p2,
-            );
+            fill_triangle_buf(buf, stride, buf_h, cmd.src_x, draw_y, *color, *p0, *p1, *p2);
         }
         DrawKind::DashedLine {
             color,
@@ -65,7 +57,8 @@ fn rasterize_draw_cmd_basic(
             vertical,
         } => {
             fill_dashed_buf(
-                buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color, *dash_len, *gap_len, *vertical,
+                buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color, *dash_len, *gap_len,
+                *vertical,
             );
         }
         DrawKind::Text {
@@ -75,7 +68,9 @@ fn rasterize_draw_cmd_basic(
             text,
         } => {
             if crate::is_ahem_font_id(*font_id) {
-                draw_ahem_string_buf(buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_size, text);
+                draw_ahem_string_buf(
+                    buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_size, text,
+                );
             } else {
                 libfont_client::draw_string_buf(
                     buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_id, *font_size, text,
@@ -348,7 +343,8 @@ fn combined_mask_alpha(images: &ImageCache, doc_x: i32, doc_y: i32, masks: &[Mas
     let mut alpha = 255u32;
     for mask in masks {
         let (clip_x, clip_y, clip_w, clip_h) = mask.clip_rect;
-        if doc_x < clip_x || doc_y < clip_y || doc_x >= clip_x + clip_w || doc_y >= clip_y + clip_h {
+        if doc_x < clip_x || doc_y < clip_y || doc_x >= clip_x + clip_w || doc_y >= clip_y + clip_h
+        {
             return 0;
         }
         alpha = alpha * sample_mask_alpha(images, mask, doc_x, doc_y) / 255;
@@ -369,8 +365,7 @@ fn sample_mask_alpha(images: &ImageCache, mask: &MaskLayer, doc_x: i32, doc_y: i
             if !entry.has_pixels() {
                 return 0;
             }
-            let (mx, my, mw, mh) =
-                resolve_mask_image_rect(mask, Some((entry.width, entry.height)));
+            let (mx, my, mw, mh) = resolve_mask_image_rect(mask, Some((entry.width, entry.height)));
             if mw <= 0 || mh <= 0 {
                 return 0;
             }
@@ -452,14 +447,22 @@ fn resolve_mask_image_rect(
     };
     let free_x = (ow - mw).max(0);
     let free_y = (oh - mh).max(0);
-    let px = ox + resolve_object_position_offset(free_x, mask.position_x, mask.position_x_is_percent);
-    let py = oy + resolve_object_position_offset(free_y, mask.position_y, mask.position_y_is_percent);
+    let px =
+        ox + resolve_object_position_offset(free_x, mask.position_x, mask.position_x_is_percent);
+    let py =
+        oy + resolve_object_position_offset(free_y, mask.position_y, mask.position_y_is_percent);
     (px, py, mw, mh)
 }
 
 fn mask_repeats_at(repeat: BackgroundRepeatVal, rel_x: i32, rel_y: i32, w: i32, h: i32) -> bool {
-    let repeat_x = matches!(repeat, BackgroundRepeatVal::Repeat | BackgroundRepeatVal::RepeatX);
-    let repeat_y = matches!(repeat, BackgroundRepeatVal::Repeat | BackgroundRepeatVal::RepeatY);
+    let repeat_x = matches!(
+        repeat,
+        BackgroundRepeatVal::Repeat | BackgroundRepeatVal::RepeatX
+    );
+    let repeat_y = matches!(
+        repeat,
+        BackgroundRepeatVal::Repeat | BackgroundRepeatVal::RepeatY
+    );
     (repeat_x || (rel_x >= 0 && rel_x < w)) && (repeat_y || (rel_y >= 0 && rel_y < h))
 }
 
@@ -478,8 +481,16 @@ fn gradient_position(angle_deg: &i32, x: i32, y: i32, w: i32, h: i32) -> i32 {
     let angle = (*angle_deg as f32).to_radians();
     let dir_x = cos_approx(angle);
     let dir_y = -sin_approx(angle);
-    let nx = if w > 1 { x as f32 / (w - 1) as f32 } else { 0.0 };
-    let ny = if h > 1 { y as f32 / (h - 1) as f32 } else { 0.0 };
+    let nx = if w > 1 {
+        x as f32 / (w - 1) as f32
+    } else {
+        0.0
+    };
+    let ny = if h > 1 {
+        y as f32 / (h - 1) as f32
+    } else {
+        0.0
+    };
     let proj = (nx - 0.5) * dir_x + (ny - 0.5) * dir_y;
     (((proj + 0.70710677) / 1.41421354) * 10000.0) as i32
 }
@@ -515,13 +526,21 @@ fn src_over(src: u32, dst: u32) -> u32 {
 #[inline]
 fn floor_f32(v: f32) -> i32 {
     let i = v as i32;
-    if v < i as f32 { i - 1 } else { i }
+    if v < i as f32 {
+        i - 1
+    } else {
+        i
+    }
 }
 
 #[inline]
 fn ceil_f32(v: f32) -> i32 {
     let i = v as i32;
-    if v > i as f32 { i + 1 } else { i }
+    if v > i as f32 {
+        i + 1
+    } else {
+        i
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

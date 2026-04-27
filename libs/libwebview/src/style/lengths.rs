@@ -129,5 +129,9 @@ pub(super) fn parse_simple_float(s: &str) -> i32 {
             }
         }
     }
-    if neg { -int_part } else { int_part }
+    if neg {
+        -int_part
+    } else {
+        int_part
+    }
 }

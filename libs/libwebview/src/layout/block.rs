@@ -5,18 +5,17 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    AlignContent, BoxSizing, ComputedStyle, Direction, Display, FontStyleVal, FontWeight,
-    ListStylePosition, OverflowVal, Position, PseudoStyles, TextDeco, Visibility, resolve_inset,
-    resolve_margins,
+    resolve_inset, resolve_margins, AlignContent, BoxSizing, ComputedStyle, Direction, Display,
+    FontStyleVal, FontWeight, ListStylePosition, OverflowVal, Position, PseudoStyles, TextDeco,
+    Visibility,
 };
 use crate::ImageCache;
 
 use super::flex::layout_flex;
 use super::grid::layout_grid;
 use super::{
-    edges_from, font_size_px, image_dimensions, is_bold, is_italic,
-    layout_children_ex_with_budget, link_href, list_marker_for, parse_attr_int, BoxType,
-    FormFieldKind, LayoutBox,
+    edges_from, font_size_px, image_dimensions, is_bold, is_italic, layout_children_ex_with_budget,
+    link_href, list_marker_for, parse_attr_int, BoxType, FormFieldKind, LayoutBox,
 };
 
 /// Build a block-level layout box for a single DOM node.
@@ -368,7 +367,10 @@ fn build_block_internal(
     let resolve_min_max_calc = |calc: (i32, i32)| -> i32 {
         calc.0 / 100 + (available_width as i64 * calc.1 as i64 / 10000) as i32
     };
-    if let Some(mw) = style.max_width.or_else(|| style.max_width_calc.map(resolve_min_max_calc)) {
+    if let Some(mw) = style
+        .max_width
+        .or_else(|| style.max_width_calc.map(resolve_min_max_calc))
+    {
         let max = resolve_min_max(mw);
         let max_outer = if is_border_box {
             max
@@ -518,21 +520,19 @@ fn build_block_internal(
                     None
                 }
             });
-        let resolved_max_h = style
-            .max_height
-            .map(resolve_specified_height)
-            .or_else(|| {
-                if parent_height > 0 {
-                    style.max_height_calc.map(|(px100, pct100)| {
-                        let border_box =
-                            px100 / 100 + (parent_height as i64 * pct100 as i64 / 10000) as i32;
-                        resolve_specified_height(border_box)
-                    })
-                } else {
-                    style.max_height_calc
-                        .map(|(px100, _)| resolve_specified_height(px100 / 100))
-                }
-            });
+        let resolved_max_h = style.max_height.map(resolve_specified_height).or_else(|| {
+            if parent_height > 0 {
+                style.max_height_calc.map(|(px100, pct100)| {
+                    let border_box =
+                        px100 / 100 + (parent_height as i64 * pct100 as i64 / 10000) as i32;
+                    resolve_specified_height(border_box)
+                })
+            } else {
+                style
+                    .max_height_calc
+                    .map(|(px100, _)| resolve_specified_height(px100 / 100))
+            }
+        });
         let resolved_max_w = style
             .max_width
             .map(|value| {
@@ -545,8 +545,8 @@ fn build_block_internal(
             })
             .or_else(|| {
                 style.max_width_calc.map(|(px100, pct100)| {
-                    let border_box =
-                        px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                    let border_box = px100 / 100
+                        + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
                     resolve_specified_width(border_box)
                 })
             });
@@ -559,15 +559,15 @@ fn build_block_internal(
             (Some(w), None) => {
                 content_w = w.max(1);
                 if natural_w > 0 {
-                    content_h = ((natural_h as i64 * content_w as i64) / natural_w as i64)
-                        .max(1) as i32;
+                    content_h =
+                        ((natural_h as i64 * content_w as i64) / natural_w as i64).max(1) as i32;
                 }
             }
             (None, Some(h)) => {
                 content_h = h.max(1);
                 if natural_h > 0 {
-                    content_w = ((natural_w as i64 * content_h as i64) / natural_h as i64)
-                        .max(1) as i32;
+                    content_w =
+                        ((natural_w as i64 * content_h as i64) / natural_h as i64).max(1) as i32;
                 }
             }
             (None, None) => {}
@@ -577,8 +577,8 @@ fn build_block_internal(
             if content_h > max_h.max(0) {
                 content_h = max_h.max(0);
                 if natural_h > 0 {
-                    content_w = ((natural_w as i64 * content_h as i64) / natural_h as i64)
-                        .max(1) as i32;
+                    content_w =
+                        ((natural_w as i64 * content_h as i64) / natural_h as i64).max(1) as i32;
                 }
             }
         }
@@ -586,8 +586,8 @@ fn build_block_internal(
             if content_w > max_w.max(0) {
                 content_w = max_w.max(0);
                 if natural_w > 0 {
-                    content_h = ((natural_h as i64 * content_w as i64) / natural_w as i64)
-                        .max(1) as i32;
+                    content_h =
+                        ((natural_h as i64 * content_w as i64) / natural_w as i64).max(1) as i32;
                 }
             }
         }
@@ -649,10 +649,11 @@ fn build_block_internal(
         if let Some(spec_h) = style.height {
             content_h = resolve_specified_height(spec_h);
         }
-        let resolved_max_h = style
-            .max_height
-            .map(resolve_specified_height)
-            .or_else(|| style.max_height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
+        let resolved_max_h = style.max_height.map(resolve_specified_height).or_else(|| {
+            style
+                .max_height_calc
+                .map(|(px100, _)| resolve_specified_height(px100 / 100))
+        });
         let resolved_max_w = style
             .max_width
             .map(|value| {
@@ -665,8 +666,8 @@ fn build_block_internal(
             })
             .or_else(|| {
                 style.max_width_calc.map(|(px100, pct100)| {
-                    let border_box =
-                        px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                    let border_box = px100 / 100
+                        + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
                     resolve_specified_width(border_box)
                 })
             });
@@ -730,14 +731,20 @@ fn build_block_internal(
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
                 bx.form_field = Some(FormFieldKind::Submit);
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
-                bx.text = bx.form_value.clone().or_else(|| Some(String::from("Submit")));
+                bx.text = bx
+                    .form_value
+                    .clone()
+                    .or_else(|| Some(String::from("Submit")));
             }
             "reset" => {
                 let input_h = if let Some(h) = style.height { h } else { 30 };
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
                 bx.form_field = Some(FormFieldKind::Reset);
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
-                bx.text = bx.form_value.clone().or_else(|| Some(String::from("Reset")));
+                bx.text = bx
+                    .form_value
+                    .clone()
+                    .or_else(|| Some(String::from("Reset")));
             }
             "password" => {
                 let input_h = if let Some(h) = style.height { h } else { 28 };
@@ -888,7 +895,10 @@ fn build_block_internal(
         None
     };
     let definite_parent_content_h = explicit_outer_height_hint.map(|mut outer_h| {
-        if let Some(mh) = style.max_height.or_else(|| style.max_height_calc.map(resolve_height_calc)) {
+        if let Some(mh) = style
+            .max_height
+            .or_else(|| style.max_height_calc.map(resolve_height_calc))
+        {
             let max_outer = if is_border_box {
                 mh
             } else {
@@ -973,17 +983,7 @@ fn build_block_internal(
         fh
     } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
         layout_grid(
-            dom,
-            styles,
-            pseudo,
-            &children,
-            inner_w,
-            &mut bx,
-            images,
-            viewport_w,
-            None,
-            None,
-            None,
+            dom, styles, pseudo, &children, inner_w, &mut bx, images, viewport_w, None, None, None,
             None,
         )
     } else {
@@ -1116,7 +1116,11 @@ fn build_block_internal(
         let t = style.top.unwrap_or(0);
         let b = style.bottom_offset.unwrap_or(0);
         let h = (parent_height - t - b).max(0);
-        if h > 0 { Some(h) } else { None }
+        if h > 0 {
+            Some(h)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -1142,7 +1146,10 @@ fn build_block_internal(
     }
 
     // Apply min-height / max-height.
-    if let Some(mh) = style.max_height.or_else(|| style.max_height_calc.map(resolve_height_calc)) {
+    if let Some(mh) = style
+        .max_height
+        .or_else(|| style.max_height_calc.map(resolve_height_calc))
+    {
         let max_h = if is_border_box {
             mh
         } else {
@@ -1182,38 +1189,21 @@ fn build_block_internal(
         Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
     ) {
         append_out_of_flow_children(
-            dom,
-            styles,
-            pseudo,
-            node_id,
-            inner_w,
-            &mut bx,
-            images,
-            viewport_w,
+            dom, styles, pseudo, node_id, inner_w, &mut bx, images, viewport_w,
         );
     }
 
     // Apply position:relative offset (does not affect child layout).
     if style.position == Position::Relative {
         let top = resolve_inset(style.top, style.top_calc, parent_height, parent_height > 0);
-        let left = resolve_inset(
-            style.left_offset,
-            style.left_calc,
-            available_width,
-            true,
-        );
+        let left = resolve_inset(style.left_offset, style.left_calc, available_width, true);
         let bottom = resolve_inset(
             style.bottom_offset,
             style.bottom_calc,
             parent_height,
             parent_height > 0,
         );
-        let right = resolve_inset(
-            style.right_offset,
-            style.right_calc,
-            available_width,
-            true,
-        );
+        let right = resolve_inset(style.right_offset, style.right_calc, available_width, true);
         let dy = top.unwrap_or_else(|| bottom.map(|v| -v).unwrap_or(0));
         let dx = left.unwrap_or_else(|| right.map(|v| -v).unwrap_or(0));
         bx.y += dy;
@@ -1319,7 +1309,12 @@ fn append_out_of_flow_children(
             _ => {}
         }
 
-        let abs_left = resolve_inset(abs_style.left_offset, abs_style.left_calc, available_width, true);
+        let abs_left = resolve_inset(
+            abs_style.left_offset,
+            abs_style.left_calc,
+            available_width,
+            true,
+        );
         let abs_top = resolve_inset(abs_style.top, abs_style.top_calc, content_h, content_h > 0);
         let abs_right = resolve_inset(
             abs_style.right_offset,
@@ -1556,12 +1551,7 @@ pub(super) fn build_pseudo_element_box(
         );
         let (pmargin_top, pmargin_right, pmargin_bottom, pmargin_left) =
             resolve_margins(ps, available_w);
-        pb.margin = super::edges_from(
-            pmargin_top,
-            pmargin_right,
-            pmargin_bottom,
-            pmargin_left,
-        );
+        pb.margin = super::edges_from(pmargin_top, pmargin_right, pmargin_bottom, pmargin_left);
         pb.background_image = ps.background_image.clone();
         pb.mask_image = ps.mask_image.clone();
         pb.background_size = ps.background_size;
@@ -1641,8 +1631,7 @@ pub(super) fn build_pseudo_element_box(
             tb.x = pb.padding.left + pb.border_left_width;
             tb.y = pb.padding.top + pb.border_top_width;
             // Estimate text width/height
-            let (tw, th) =
-                super::measure_text(content_text, fs, tb.custom_font_id, bold, italic);
+            let (tw, th) = super::measure_text(content_text, fs, tb.custom_font_id, bold, italic);
             tb.width = tw.min(inner_for_text);
             tb.height = th.max(fs + 2);
             pb.height = pb

@@ -813,7 +813,10 @@ fn in_pre(dom: &Dom, stack: &[NodeId]) -> bool {
 }
 
 fn strip_initial_pre_newline(dom: &Dom, parent: NodeId, text: String) -> String {
-    if !matches!(&dom.get(parent).node_type, NodeType::Element { tag: Tag::Pre, .. }) {
+    if !matches!(
+        &dom.get(parent).node_type,
+        NodeType::Element { tag: Tag::Pre, .. }
+    ) {
         return text;
     }
     if !dom.get(parent).children.is_empty() {
@@ -1164,8 +1167,9 @@ pub fn parse(html: &str) -> Dom {
                 if processed.is_empty() {
                     continue;
                 }
-                let is_ws =
-                    processed.bytes().all(|b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r');
+                let is_ws = processed
+                    .bytes()
+                    .all(|b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r');
 
                 // While still in implicit "in head" mode, whitespace-only text
                 // that would land in body is dropped — per HTML5 §13.2.6.4
