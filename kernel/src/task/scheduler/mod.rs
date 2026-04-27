@@ -1364,26 +1364,6 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
         PER_CPU_IN_SCHEDULER[cpu_id].store(true, Ordering::Release);
     }
 
-    if cpu_id == 0 {
-        let pds = DEFERRED_PD_DESTROY.lock().drain();
-        for entry in pds.iter().flatten() {
-            let (pd, tid) = *entry;
-            if tid != 0 {
-                let old_ttbr0 = crate::arch::hal::current_page_table();
-                crate::arch::hal::switch_page_table(pd.as_u64());
-                crate::ipc::shared_memory::cleanup_process(tid);
-                crate::arch::hal::switch_page_table(old_ttbr0);
-            }
-            crate::memory::virtual_mem::destroy_user_page_directory(pd);
-            crate::memory::vma::destroy_process(pd);
-        }
-
-        let deferred_cleanup = DEFERRED_THREAD_CLEANUP.lock().drain();
-        for entry in deferred_cleanup.iter().flatten() {
-            process_deferred_thread_cleanup(*entry);
-        }
-    }
-
     TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
     PER_CPU_TOTAL[cpu_id].fetch_add(1, Ordering::Relaxed);
 
@@ -1615,6 +1595,39 @@ pub fn schedule() {
     schedule_inner(false);
 }
 
+fn drain_deferred_scheduler_work() {
+    let pds = DEFERRED_PD_DESTROY.lock().drain();
+    for entry in pds.iter().flatten() {
+        let (pd, tid) = *entry;
+        if tid != 0 {
+            let rflags = crate::arch::hal::save_and_disable_interrupts();
+            let old_table = crate::arch::hal::current_page_table();
+            crate::arch::hal::switch_page_table(pd.as_u64());
+            crate::ipc::shared_memory::cleanup_process(tid);
+            crate::arch::hal::switch_page_table(old_table);
+            crate::arch::hal::restore_interrupt_state(rflags);
+        }
+        crate::memory::virtual_mem::destroy_user_page_directory(pd);
+        crate::memory::vma::destroy_process(pd);
+    }
+
+    let deferred_cleanup = DEFERRED_THREAD_CLEANUP.lock().drain();
+    for entry in deferred_cleanup.iter().flatten() {
+        process_deferred_thread_cleanup(*entry);
+    }
+}
+
+pub extern "C" fn deferred_reaper_thread() {
+    crate::serial_verbose_println!("  deferred_reaper started");
+    loop {
+        let hz = crate::arch::hal::timer_frequency_hz().max(1) as u32;
+        let sleep_ticks = (hz / 100).max(1);
+        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(sleep_ticks);
+        sleep_until(wake_at);
+        drain_deferred_scheduler_work();
+    }
+}
+
 fn schedule_inner(from_timer: bool) {
     // Read CPU ID and set in-scheduler flag atomically w.r.t. timer interrupts.
     // For from_timer=true, IF is already 0 (inside IRQ handler) — no race.
@@ -1647,41 +1660,6 @@ fn schedule_inner(from_timer: bool) {
     // Interrupts stay disabled until the lock is held (the spin loop below
     // is safe: the lock holder is on a *different* CPU and doesn't need our
     // timer to release it).
-
-    // Drain deferred PD destruction queue BEFORE acquiring the scheduler lock.
-    // destroy_user_page_directory is slow (page-table walk + hundreds of
-    // free_frame calls); running it under the scheduler lock causes SPIN TIMEOUT
-    // on other CPUs waiting for the lock.
-    //
-    // Only CPU 0 drains, once per timer tick, to ensure that threads which were
-    // running on another CPU at kill time have had at least one tick to
-    // context-switch away before we touch their page tables.
-    if from_timer && cpu_id_early == 0 {
-        let pds = DEFERRED_PD_DESTROY.lock().drain();
-        for entry in pds.iter().flatten() {
-            let (pd, tid) = *entry;
-            if tid != 0 {
-                // Thread was still running on another CPU at kill time.
-                // cleanup_process hasn't run yet; do it now with the correct CR3.
-                {
-                    let rflags = crate::arch::hal::save_and_disable_interrupts();
-                    let old_cr3 = crate::arch::hal::current_page_table();
-                    crate::arch::hal::switch_page_table(pd.as_u64());
-                    crate::ipc::shared_memory::cleanup_process(tid);
-                    crate::arch::hal::switch_page_table(old_cr3);
-                    crate::arch::hal::restore_interrupt_state(rflags);
-                }
-            }
-            // tid == 0: cleanup_process already ran in kill_thread — just destroy.
-            crate::memory::virtual_mem::destroy_user_page_directory(pd);
-            crate::memory::vma::destroy_process(pd);
-        }
-
-        let deferred_cleanup = DEFERRED_THREAD_CLEANUP.lock().drain();
-        for entry in deferred_cleanup.iter().flatten() {
-            process_deferred_thread_cleanup(*entry);
-        }
-    }
 
     // Tick counters (timer path only)
     if from_timer {

@@ -5,7 +5,10 @@
 //! waiting (waitpid), and threading.
 
 #[allow(unused_imports)]
-use super::helpers::{is_valid_user_ptr, read_user_str, read_user_str_safe, resolve_path};
+use super::helpers::{
+    copy_user_bytes, is_user_range_accessible, is_valid_user_ptr, read_user_str,
+    read_user_str_safe, resolve_path,
+};
 #[allow(unused_imports)]
 use alloc::string::String;
 
@@ -1144,8 +1147,9 @@ pub fn sys_thread_create(
     let rsp = user_rsp;
     let mut user_lr = 0u64;
 
-    // Basic validation: entry must be in user space, rsp must be in user space and aligned
-    if entry == 0 || entry >= 0x0000_8000_0000_0000 {
+    // Basic validation: entry must be mapped user memory, rsp must point
+    // at a mapped user stack slot and obey the platform ABI alignment.
+    if entry == 0 || !is_user_range_accessible(entry, 1) {
         return 0;
     }
     #[cfg(target_arch = "x86_64")]
@@ -1156,16 +1160,27 @@ pub fn sys_thread_create(
         return 0;
     }
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !is_user_range_accessible(rsp, 8) {
+            return 0;
+        }
+        let return_pc = unsafe { core::ptr::read_unaligned(rsp as *const u64) };
+        if return_pc == 0 || !is_user_range_accessible(return_pc, 1) {
+            return 0;
+        }
+    }
+
     #[cfg(target_arch = "aarch64")]
     {
         let lr_ptr = rsp.wrapping_sub(8);
-        if !is_valid_user_ptr(lr_ptr, 8) {
+        if !is_user_range_accessible(lr_ptr, 8) {
             return 0;
         }
         unsafe {
             user_lr = core::ptr::read_unaligned(lr_ptr as *const u64);
         }
-        if user_lr == 0 || user_lr >= 0x0000_8000_0000_0000 {
+        if user_lr == 0 || !is_user_range_accessible(user_lr, 1) {
             return 0;
         }
     }
@@ -1174,12 +1189,8 @@ pub fn sys_thread_create(
     let mut name_buf = [0u8; 32];
     let len = (name_len as usize).min(31);
     if name_ptr != 0 && len > 0 {
-        let src = name_ptr as *const u8;
-        // Validate pointer range is fully in user space
-        if is_valid_user_ptr(src as u64, len as u64) {
-            unsafe {
-                core::ptr::copy_nonoverlapping(src, name_buf.as_mut_ptr(), len);
-            }
+        if let Some(bytes) = copy_user_bytes(name_ptr, len, 31) {
+            name_buf[..bytes.len()].copy_from_slice(&bytes);
         }
     }
     let name = core::str::from_utf8(&name_buf[..len]).unwrap_or("thread");

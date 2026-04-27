@@ -640,6 +640,23 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
                 let used = stack_top.saturating_sub(frame.rsp);
                 let total = stack_top.saturating_sub(stack_bottom);
                 crate::serial_println!("  KStack used: {} / {}", used, total);
+                if in_bounds {
+                    let dump_start = frame.rsp;
+                    let dump_end = dump_start.saturating_add(12 * 8);
+                    if dump_end <= stack_top {
+                        crate::serial_println!("  KStack qwords @RSP:");
+                        let words = dump_start as *const u64;
+                        unsafe {
+                            for i in 0..12 {
+                                crate::serial_println!(
+                                    "    +{:#04x}: {:#018x}",
+                                    i * 8,
+                                    core::ptr::read_unaligned(words.add(i))
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
         // User-space stack trace (walk RBP chain)

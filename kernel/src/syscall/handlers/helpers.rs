@@ -74,6 +74,28 @@ fn is_user_page_accessible(addr: u64) -> bool {
     crate::memory::virtual_mem::virt_to_phys(VirtAddr(addr)).is_some()
 }
 
+/// Check that a user-space range is valid and currently mapped in the active
+/// address space. The first page and every crossed 4 KiB page boundary are
+/// probed before callers dereference user memory.
+pub(super) fn is_user_range_accessible(ptr: u64, len: u64) -> bool {
+    if len == 0 || !is_valid_user_ptr(ptr, len) || !is_user_page_accessible(ptr) {
+        return false;
+    }
+
+    let last = ptr + len - 1;
+    let mut page = (ptr & !0xFFF).saturating_add(0x1000);
+    while page <= last {
+        if !is_user_page_accessible(page) {
+            return false;
+        }
+        page = page.saturating_add(0x1000);
+        if page == 0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Copy a bounded byte slice from user memory into kernel-owned storage.
 ///
 /// Returns `None` if the pointer is invalid, unmapped, or the requested length
