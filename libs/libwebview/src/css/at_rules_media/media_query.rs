@@ -2,36 +2,42 @@ fn parse_media_query(text: &str) -> MediaQuery {
     let mut conditions = Vec::new();
     let trimmed = text.trim();
     let mut media_type = MediaType::All;
-    let mut negated = false;
+    let mut query_negated = false;
     for part in split_and(trimmed) {
         let p = part.trim();
         if p.is_empty() {
             continue;
         }
         let lower = p.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("not ") {
+            query_negated = true;
+            if let Some(mt) = match rest.trim() {
+                "screen" => Some(MediaType::Screen),
+                "print" => Some(MediaType::Print),
+                "all" => Some(MediaType::All),
+                _ => None,
+            } {
+                media_type = mt;
+                continue;
+            }
+        }
         if lower == "not" {
-            negated = true;
+            query_negated = true;
             continue;
         }
         if lower == "only" {
             continue;
         }
         if lower == "screen" {
-            let mt = MediaType::Screen;
-            media_type = if negated { MediaType::Not(Box::new(mt)) } else { mt };
-            negated = false;
+            media_type = MediaType::Screen;
             continue;
         }
         if lower == "print" {
-            let mt = MediaType::Print;
-            media_type = if negated { MediaType::Not(Box::new(mt)) } else { mt };
-            negated = false;
+            media_type = MediaType::Print;
             continue;
         }
         if lower == "all" {
-            let mt = MediaType::All;
-            media_type = if negated { MediaType::Not(Box::new(mt)) } else { mt };
-            negated = false;
+            media_type = MediaType::All;
             continue;
         }
         if p.starts_with('(') && p.ends_with(')') {
@@ -41,7 +47,11 @@ fn parse_media_query(text: &str) -> MediaQuery {
             }
         }
     }
-    MediaQuery { conditions, media_type }
+    MediaQuery {
+        conditions,
+        media_type,
+        negated: query_negated,
+    }
 }
 
 fn split_and(s: &str) -> Vec<&str> {
@@ -120,19 +130,15 @@ fn parse_media_condition(inner: &str) -> Option<MediaCondition> {
 }
 
 pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_height: i32) -> bool {
-    match &query.media_type {
-        MediaType::All => {}
-        MediaType::Screen => {}
-        MediaType::Print => return false,
-        MediaType::Not(inner) => match inner.as_ref() {
-            MediaType::Print => {}
-            MediaType::Screen => return false,
-            MediaType::All => return false,
-            MediaType::Not(_) => {}
-        },
-    }
+    let media_ok = match &query.media_type {
+        MediaType::All => true,
+        MediaType::Screen => true,
+        MediaType::Print => false,
+        MediaType::Not(inner) => !matches_media_type(inner),
+    };
+    let mut ok = media_ok;
     for cond in &query.conditions {
-        let ok = match cond {
+        let cond_ok = match cond {
             MediaCondition::MinWidth(w) => viewport_width >= *w,
             MediaCondition::MaxWidth(w) => viewport_width <= *w,
             MediaCondition::MinHeight(h) => viewport_height >= *h,
@@ -141,9 +147,42 @@ pub fn evaluate_media_query(query: &MediaQuery, viewport_width: i32, viewport_he
             MediaCondition::Known(v) => *v,
             MediaCondition::Unsupported => false,
         };
-        if !ok {
-            return false;
+        if !cond_ok {
+            ok = false;
+            break;
         }
     }
-    true
+    if query.negated { !ok } else { ok }
+}
+
+fn matches_media_type(media_type: &MediaType) -> bool {
+    match media_type {
+        MediaType::All => true,
+        MediaType::Screen => true,
+        MediaType::Print => false,
+        MediaType::Not(inner) => !matches_media_type(inner),
+    }
+}
+
+#[cfg(test)]
+mod media_query_tests {
+    use super::*;
+
+    #[test]
+    fn evaluates_tailwind_breakpoint_queries() {
+        let min = parse_media_query("(min-width: 1280px)");
+        assert!(evaluate_media_query(&min, 1365, 700));
+        assert!(!evaluate_media_query(&min, 1024, 700));
+
+        let range = parse_media_query("(width >= 48rem)");
+        assert!(evaluate_media_query(&range, 768, 700));
+        assert!(!evaluate_media_query(&range, 767, 700));
+    }
+
+    #[test]
+    fn not_all_media_type_disables_max_breakpoint_above_threshold() {
+        let query = parse_media_query("not all and (min-width: 768px)");
+        assert!(evaluate_media_query(&query, 640, 700));
+        assert!(!evaluate_media_query(&query, 1365, 700));
+    }
 }

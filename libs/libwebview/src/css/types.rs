@@ -70,6 +70,7 @@ pub enum ContainerCondition {
 pub struct MediaQuery {
     pub conditions: Vec<MediaCondition>,
     pub media_type: MediaType,
+    pub negated: bool,
 }
 
 #[derive(Clone, PartialEq)]

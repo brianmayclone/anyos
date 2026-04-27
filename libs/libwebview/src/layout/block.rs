@@ -628,14 +628,45 @@ fn build_block_internal(
                 value.max(0)
             }
         };
-        if let Some(spec_w) = style.width {
-            content_w = resolve_specified_width(spec_w);
-            if w > 0 {
-                content_h = ((h as i64 * content_w as i64) / w as i64).max(1) as i32;
+        let specified_w = style
+            .width
+            .map(resolve_specified_width)
+            .or_else(|| {
+                style.width_pct.map(|pct| {
+                    let border_box = (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
+                    resolve_specified_width(border_box)
+                })
+            })
+            .or_else(|| {
+                style.width_calc.map(|(px100, pct100)| {
+                    let border_box = px100 / 100
+                        + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                    resolve_specified_width(border_box)
+                })
+            });
+        let specified_h = style.height.map(resolve_specified_height).or_else(|| {
+            style
+                .height_calc
+                .map(|(px100, _)| resolve_specified_height(px100 / 100))
+        });
+        match (specified_w, specified_h) {
+            (Some(spec_w), Some(spec_h)) => {
+                content_w = spec_w.max(1);
+                content_h = spec_h.max(1);
             }
-        }
-        if let Some(spec_h) = style.height {
-            content_h = resolve_specified_height(spec_h);
+            (Some(spec_w), None) => {
+                content_w = spec_w.max(1);
+                if w > 0 {
+                    content_h = ((h as i64 * content_w as i64) / w as i64).max(1) as i32;
+                }
+            }
+            (None, Some(spec_h)) => {
+                content_h = spec_h.max(1);
+                if h > 0 {
+                    content_w = ((w as i64 * content_h as i64) / h as i64).max(1) as i32;
+                }
+            }
+            (None, None) => {}
         }
         let resolved_max_h = style.max_height.map(resolve_specified_height).or_else(|| {
             style

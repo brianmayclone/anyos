@@ -21,13 +21,13 @@
 // Force-link libfont so its #[no_mangle] symbols are available to libfont_client.
 extern crate libfont;
 
-use std::io::Read;
-use std::sync::{Arc, Mutex, mpsc};
+use eframe::egui;
+use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::net::{TcpListener, TcpStream};
-use eframe::egui;
-use minifb::{Key, KeyRepeat, Window, WindowOptions, MouseMode, MouseButton};
+use std::sync::{mpsc, Arc, Mutex};
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -176,11 +176,22 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
         "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
     ];
-    let serif_names = &["serif", "georgia", "times new roman", "times",
-        "palatino", "palatino linotype", "book antiqua",
-        "linux libertine o", "linux libertine", "charter"][..];
+    let serif_names = &[
+        "serif",
+        "georgia",
+        "times new roman",
+        "times",
+        "palatino",
+        "palatino linotype",
+        "book antiqua",
+        "linux libertine o",
+        "linux libertine",
+        "charter",
+    ][..];
     for path in &serif_paths {
-        if try_load(path, serif_names) { break; }
+        if try_load(path, serif_names) {
+            break;
+        }
     }
 
     // Bold serif
@@ -189,7 +200,9 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
         "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
     ];
     for path in &serif_bold_paths {
-        if try_load(path, &["serif-bold"]) { break; }
+        if try_load(path, &["serif-bold"]) {
+            break;
+        }
     }
 
     // Sans-serif: register aliases that might not match the default font_id=0
@@ -199,14 +212,33 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     ];
-    let sans_names = &["sans-serif", "arial", "helvetica", "helvetica neue",
-        "verdana", "tahoma", "trebuchet ms", "system-ui",
-        "-apple-system", "blinkmacsystemfont", "segoe ui",
-        "roboto", "lato", "open sans", "source sans pro",
-        "noto sans", "ubuntu", "cantarell", "fira sans",
-        "droid sans", "liberation sans"][..];
+    let sans_names = &[
+        "sans-serif",
+        "arial",
+        "helvetica",
+        "helvetica neue",
+        "verdana",
+        "tahoma",
+        "trebuchet ms",
+        "system-ui",
+        "-apple-system",
+        "blinkmacsystemfont",
+        "segoe ui",
+        "roboto",
+        "lato",
+        "open sans",
+        "source sans pro",
+        "noto sans",
+        "ubuntu",
+        "cantarell",
+        "fira sans",
+        "droid sans",
+        "liberation sans",
+    ][..];
     for path in &sans_paths {
-        if try_load(path, sans_names) { break; }
+        if try_load(path, sans_names) {
+            break;
+        }
     }
 
     // Monospace fonts
@@ -215,12 +247,25 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
     ];
-    let mono_names = &["monospace", "courier new", "courier", "consolas",
-        "monaco", "lucida console", "source code pro",
-        "fira mono", "fira code", "ubuntu mono",
-        "droid sans mono", "anonymous pro", "liberation mono"][..];
+    let mono_names = &[
+        "monospace",
+        "courier new",
+        "courier",
+        "consolas",
+        "monaco",
+        "lucida console",
+        "source code pro",
+        "fira mono",
+        "fira code",
+        "ubuntu mono",
+        "droid sans mono",
+        "anonymous pro",
+        "liberation mono",
+    ][..];
     for path in &mono_paths {
-        if try_load(path, mono_names) { break; }
+        if try_load(path, mono_names) {
+            break;
+        }
     }
 }
 
@@ -238,8 +283,8 @@ fn load_page(wv: &mut libwebview::WebView, url: &str, js_enabled: bool) -> Pendi
     wv.clear_stylesheets();
     wv.set_url(&base_url);
     wv.set_html_no_js(&html);
-    load_resources(wv, &base_url);         // CSS, fonts, SVGs (sync) + initial relayout
-    let pending = start_image_loading(wv, &base_url);  // images (async, parallel threads)
+    load_resources(wv, &base_url); // CSS, fonts, SVGs (sync) + initial relayout
+    let pending = start_image_loading(wv, &base_url); // images (async, parallel threads)
     if js_enabled {
         run_javascript(wv, &base_url);
         run_js_timers(wv, 5000);
@@ -251,7 +296,9 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
     if std::env::var("SURF_DEBUG_HEISE").ok().as_deref() != Some("1") {
         return;
     }
-    let Some(dom) = wv.dom() else { return; };
+    let Some(dom) = wv.dom() else {
+        return;
+    };
     eprintln!("[surf-host] debug module bounds begin");
     for (i, _) in dom.nodes.iter().enumerate() {
         let module_name = dom.attr(i, "data-module-name");
@@ -261,11 +308,22 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
         if module_name.is_none()
             && component.is_none()
             && collapse_target.is_none()
-            && !matches!(id_attr, Some("HEI_D_Top" | "HEI_D_Right" | "HEI_M_Incontent-1" | "HEI_D_Stage" | "topnavimodule"))
+            && !matches!(
+                id_attr,
+                Some(
+                    "HEI_D_Top"
+                        | "HEI_D_Right"
+                        | "HEI_M_Incontent-1"
+                        | "HEI_D_Stage"
+                        | "topnavimodule"
+                )
+            )
         {
             continue;
         }
-        let Some((x, y, w, h)) = wv.node_bounds(i) else { continue; };
+        let Some((x, y, w, h)) = wv.node_bounds(i) else {
+            continue;
+        };
         if y > 2200 || h <= 0 {
             continue;
         }
@@ -284,7 +342,13 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
     }
     eprintln!("[surf-host] debug module bounds end");
     eprintln!("[surf-host] debug image bounds begin");
-    let mut rows: Vec<(i32, usize, Option<&str>, Option<(i32, i32, i32, i32)>, String)> = Vec::new();
+    let mut rows: Vec<(
+        i32,
+        usize,
+        Option<&str>,
+        Option<(i32, i32, i32, i32)>,
+        String,
+    )> = Vec::new();
     for (i, _) in dom.nodes.iter().enumerate() {
         if !(dom.tag(i) == Some(libwebview::dom::Tag::Img) || dom.has_tag_name(i, "a-img")) {
             continue;
@@ -314,18 +378,29 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
                 )
             })
             .unwrap_or_default();
-        let cache_info = wv.images.get_ref(&src).map(|entry| {
-            let mut sample = String::new();
-            for &idx in &[0usize, entry.pixels.len() / 2, entry.pixels.len().saturating_sub(1)] {
-                if let Some(&px) = entry.pixels.get(idx) {
-                    if !sample.is_empty() {
-                        sample.push(',');
+        let cache_info = wv
+            .images
+            .get_ref(&src)
+            .map(|entry| {
+                let mut sample = String::new();
+                for &idx in &[
+                    0usize,
+                    entry.pixels.len() / 2,
+                    entry.pixels.len().saturating_sub(1),
+                ] {
+                    if let Some(&px) = entry.pixels.get(idx) {
+                        if !sample.is_empty() {
+                            sample.push(',');
+                        }
+                        sample.push_str(&format!("{:08X}", px));
                     }
-                    sample.push_str(&format!("{:08X}", px));
                 }
-            }
-            format!(" cache={}x{} sample=[{}]", entry.width, entry.height, sample)
-        }).unwrap_or_else(|| String::from(" cache=missing"));
+                format!(
+                    " cache={}x{} sample=[{}]",
+                    entry.width, entry.height, sample
+                )
+            })
+            .unwrap_or_else(|| String::from(" cache=missing"));
         eprintln!(
             "[surf-host]   node={} raw={:?} bounds={:?} src={}{}{}",
             node_id, raw, bounds, src, cache_info, style_info
@@ -349,19 +424,16 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
         let id_attr = dom.attr(node_id, "id").unwrap_or("");
         let class_attr = dom.attr(node_id, "class").unwrap_or("");
         let component = dom.attr(node_id, "data-component").unwrap_or("");
+        let display = wv
+            .resolved_style_ref(node_id)
+            .map(|style| format!("{:?}", style.display))
+            .unwrap_or_else(|| String::from("?"));
         let text = dom.text_content(node_id).replace('\n', " ");
         let text = text.trim();
         let text = if text.len() > 80 { &text[..80] } else { text };
         eprintln!(
-            "[surf-host] {}node={} tag={} bounds={:?} id={:?} class={:?} component={:?} text={:?}",
-            indent,
-            node_id,
-            tag,
-            bounds,
-            id_attr,
-            class_attr,
-            component,
-            text
+            "[surf-host] {}node={} tag={} display={} bounds={:?} id={:?} class={:?} component={:?} text={:?}",
+            indent, node_id, tag, display, bounds, id_attr, class_attr, component, text
         );
         for &child_id in &dom.nodes[node_id].children {
             dump_subtree(wv, dom, child_id, depth + 1, max_depth);
@@ -379,7 +451,6 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
             eprintln!("[surf-host] debug subtree end: {}", label);
         }
     }
-
 }
 
 // ── egui host shell ─────────────────────────────────────────────────────────
@@ -468,7 +539,9 @@ impl BrowserHostApp {
     }
 
     fn process_remote(&mut self, ctx: &egui::Context) {
-        let Some(rx) = self.remote_rx.take() else { return; };
+        let Some(rx) = self.remote_rx.take() else {
+            return;
+        };
         while let Ok(mut req) = rx.try_recv() {
             let response = match req.command {
                 RemoteCommand::Open(url) => {
@@ -548,7 +621,13 @@ impl BrowserHostApp {
             self.framebuffer.resize(width * height, 0xFFFFFFFF);
         }
         self.framebuffer.fill(0xFFFFFFFF);
-        extract_pixels(&self.wv, &mut self.framebuffer, width, height, self.scroll_y);
+        extract_pixels(
+            &self.wv,
+            &mut self.framebuffer,
+            width,
+            height,
+            self.scroll_y,
+        );
         draw_form_control_texts(
             &mut self.framebuffer,
             &self.wv,
@@ -599,7 +678,10 @@ impl BrowserHostApp {
     fn handle_browser_click(&mut self, pos: egui::Pos2, origin: egui::Pos2) {
         let mx = (pos.x - origin.x).round() as i32;
         let my = (pos.y - origin.y).round() as i32;
-        if let Some(ctrl_id) = self.wv.hit_test_form_control_viewport(mx, my, self.scroll_y) {
+        if let Some(ctrl_id) = self
+            .wv
+            .hit_test_form_control_viewport(mx, my, self.scroll_y)
+        {
             let text = self.wv.get_form_control_text(ctrl_id);
             self.focused_control = Some((ctrl_id, text));
             self.needs_redraw = true;
@@ -687,9 +769,12 @@ impl eframe::App for BrowserHostApp {
             let available = ui.available_size();
             let new_w = available.x.max(1.0).round() as u32;
             let new_h = available.y.max(1.0).round() as u32;
-            if new_w != self.wv.viewport_width().max(1) as u32 || new_h != self.wv.viewport_height().max(1) {
+            if new_w != self.wv.viewport_width().max(1) as u32
+                || new_h != self.wv.viewport_height().max(1)
+            {
                 self.wv.resize(new_w, new_h);
-                self.framebuffer.resize((new_w * new_h) as usize, 0xFFFFFFFF);
+                self.framebuffer
+                    .resize((new_w * new_h) as usize, 0xFFFFFFFF);
                 self.needs_redraw = true;
             }
 
@@ -735,12 +820,20 @@ fn start_remote_listener(addr: &str) -> Option<mpsc::Receiver<RemoteRequest>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue; };
+            let Ok(mut stream) = stream else {
+                continue;
+            };
             let mut line = String::new();
             let _ = std::io::Read::read_to_string(&mut stream, &mut line);
             match parse_remote_command(line.trim()) {
                 Some(command) => {
-                    if tx.send(RemoteRequest { command, reply: stream }).is_err() {
+                    if tx
+                        .send(RemoteRequest {
+                            command,
+                            reply: stream,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -816,8 +909,33 @@ fn main() {
 
     // For screenshot mode: wait for all images before capturing
     if args.screenshot.is_some() {
-        for r in pending.drain() {
+        let mut results = pending.drain();
+        results.sort_by(|a, b| b.priority_y.cmp(&a.priority_y));
+        wv.relayout();
+        let debug_heise = std::env::var("SURF_DEBUG_HEISE").ok().as_deref() == Some("1");
+        let mut added_images = 0usize;
+        let mut skipped_images = 0usize;
+        for r in results {
+            let priority_y =
+                image_priority_for_src(&wv, &args.url, &r.src_attr).unwrap_or(r.priority_y);
+            if priority_y > (height as i32).saturating_add(512) {
+                skipped_images += 1;
+                continue;
+            }
+            if debug_heise && added_images < 8 {
+                eprintln!(
+                    "[surf-host] screenshot add image y={} {}x{} src={}",
+                    priority_y, r.width, r.height, r.src_attr
+                );
+            }
             wv.add_image(&r.src_attr, r.pixels, r.width, r.height);
+            added_images += 1;
+        }
+        if debug_heise {
+            eprintln!(
+                "[surf-host] screenshot image add summary: added={} skipped={}",
+                added_images, skipped_images
+            );
         }
         wv.relayout();
         let mut pending_tiles = true;
@@ -834,7 +952,10 @@ fn main() {
     // ── Screenshot-only mode ─────────────────────────────────────────────
     if let Some(ref path) = args.screenshot {
         if args.delay_ms > 0 {
-            eprintln!("[surf-host] waiting {}ms before screenshot (running timers)...", args.delay_ms);
+            eprintln!(
+                "[surf-host] waiting {}ms before screenshot (running timers)...",
+                args.delay_ms
+            );
             // Run timers in steps during the wait period so setTimeout/setInterval
             // callbacks fire (e.g. boot sequences, animations).
             let step = 50u64;
@@ -1003,7 +1124,9 @@ fn main() {
             for c in new_chars {
                 if c == '\r' || c == '\n' {
                     // Enter: submit the form that contains the focused control.
-                    let node_id = wv.form_controls().iter()
+                    let node_id = wv
+                        .form_controls()
+                        .iter()
                         .find(|fc| fc.control_id == ctrl_id)
                         .map(|fc| fc.node_id)
                         .unwrap_or(0);
@@ -1016,7 +1139,11 @@ fn main() {
                             } else {
                                 resolve_url(&current_url, &action)
                             };
-                            if query.is_empty() { base } else { format!("{}?{}", base, query) }
+                            if query.is_empty() {
+                                base
+                            } else {
+                                format!("{}?{}", base, query)
+                            }
                         } else {
                             resolve_url(&current_url, &action)
                         };
@@ -1072,7 +1199,11 @@ fn main() {
                             resolve_url(&current_url, &action)
                         };
                         let nav_url = if method == "GET" {
-                            if query.is_empty() { base } else { format!("{}?{}", base, query) }
+                            if query.is_empty() {
+                                base
+                            } else {
+                                format!("{}?{}", base, query)
+                            }
                         } else {
                             base
                         };
@@ -1145,7 +1276,11 @@ fn main() {
             extract_pixels(&wv, &mut framebuffer, fb_w, fb_h, scroll_y);
             // Draw form control text (typed content) on top of tiles.
             draw_form_control_texts(
-                &mut framebuffer, &wv, fb_w, fb_h, scroll_y,
+                &mut framebuffer,
+                &wv,
+                fb_w,
+                fb_h,
+                scroll_y,
                 focused_control.as_ref().map(|(id, _)| *id),
             );
             // Draw focus outline.
@@ -1174,7 +1309,9 @@ fn draw_focus_outline(
 ) {
     // Find the form control position.
     for fc in wv.form_controls() {
-        if fc.control_id != ctrl_id { continue; }
+        if fc.control_id != ctrl_id {
+            continue;
+        }
         let vx = fc.doc_x;
         let vy = fc.doc_y - scroll_y;
         let vw = fc.doc_w;
@@ -1229,7 +1366,9 @@ fn draw_form_control_texts(
     focused_ctrl: Option<u32>,
 ) {
     for fc in wv.form_controls() {
-        if fc.control_id == 0 { continue; }
+        if fc.control_id == 0 {
+            continue;
+        }
         match fc.kind {
             libwebview::FormFieldKind::TextInput
             | libwebview::FormFieldKind::Password
@@ -1237,11 +1376,15 @@ fn draw_form_control_texts(
             _ => continue,
         }
         let text = wv.get_form_control_text(fc.control_id);
-        if text.is_empty() { continue; }
+        if text.is_empty() {
+            continue;
+        }
 
         let vx = fc.doc_x;
         let vy = fc.doc_y - scroll_y;
-        if vy + fc.doc_h < 0 || vy >= fb_h as i32 { continue; }
+        if vy + fc.doc_h < 0 || vy >= fb_h as i32 {
+            continue;
+        }
 
         // Draw text inside the box with 4px padding.
         let text_x = vx + 4;
@@ -1254,9 +1397,15 @@ fn draw_form_control_texts(
 
         if !display_text.is_empty() {
             libfont_client::draw_string_buf(
-                fb.as_mut_ptr(), fb_w as u32, fb_h as u32,
-                text_x, text_y, 0xFF000000,
-                0, font_size, &display_text,
+                fb.as_mut_ptr(),
+                fb_w as u32,
+                fb_h as u32,
+                text_x,
+                text_y,
+                0xFF000000,
+                0,
+                font_size,
+                &display_text,
             );
         }
 
@@ -1310,10 +1459,14 @@ fn url_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-            | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
-            _ => { out.push('%'); out.push_str(&format!("{:02X}", b)); }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", b));
+            }
         }
     }
     out
@@ -1344,17 +1497,30 @@ fn save_screenshot(fb: &[u32], width: u32, height: u32, path: &str) {
 fn parse_y_range(s: &str) -> Option<(u32, u32)> {
     let s = s.trim();
     let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 2 { return None; }
+    if parts.len() != 2 {
+        return None;
+    }
     let start: u32 = parts[0].trim().trim_end_matches("px").parse().ok()?;
     let end: u32 = parts[1].trim().trim_end_matches("px").parse().ok()?;
-    if end <= start { return None; }
+    if end <= start {
+        return None;
+    }
     Some((start, end))
 }
 
 /// Save a screenshot of a specific Y range of the document.
-fn save_range_screenshot(wv: &mut libwebview::WebView, width: u32, y_start: u32, y_end: u32, path: &str) {
+fn save_range_screenshot(
+    wv: &mut libwebview::WebView,
+    width: u32,
+    y_start: u32,
+    y_end: u32,
+    path: &str,
+) {
     let range_h = y_end - y_start;
-    eprintln!("[surf-host] range: y={}..{} ({}px)", y_start, y_end, range_h);
+    eprintln!(
+        "[surf-host] range: y={}..{} ({}px)",
+        y_start, y_end, range_h
+    );
 
     // Ensure tiles exist for the requested range
     let viewport_h = wv.viewport_height().max(256);
@@ -1369,7 +1535,13 @@ fn save_range_screenshot(wv: &mut libwebview::WebView, width: u32, y_start: u32,
 
     // Render into a buffer sized to the range, scrolled to y_start
     let mut fb = vec![0xFFFFFFFFu32; (width * range_h) as usize];
-    extract_pixels(wv, &mut fb, width as usize, range_h as usize, y_start as i32);
+    extract_pixels(
+        wv,
+        &mut fb,
+        width as usize,
+        range_h as usize,
+        y_start as i32,
+    );
     save_screenshot(&fb, width, range_h, path);
 }
 
@@ -1378,7 +1550,10 @@ fn save_range_screenshot(wv: &mut libwebview::WebView, width: u32, y_start: u32,
 fn save_fullpage_screenshot(wv: &mut libwebview::WebView, width: u32, path: &str) {
     let doc_h = wv.total_height().max(1) as u32;
     let viewport_h = wv.viewport_height();
-    eprintln!("[surf-host] full-page: {}x{} (viewport {})", width, doc_h, viewport_h);
+    eprintln!(
+        "[surf-host] full-page: {}x{} (viewport {})",
+        width, doc_h, viewport_h
+    );
 
     // Render all tile rows by scrolling through the entire document.
     // render_viewport creates tiles incrementally (max 2 per call),
@@ -1426,9 +1601,8 @@ fn fetch_page(url: &str) -> (String, String) {
         )
     } else if url.starts_with("file://") {
         let path = &url[7..];
-        let html = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            format!("<h1>Error</h1><p>Failed to read {}: {}</p>", path, e)
-        });
+        let html = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| format!("<h1>Error</h1><p>Failed to read {}: {}</p>", path, e));
         (html, url.to_string())
     } else {
         let full_url = if url.starts_with("http://") || url.starts_with("https://") {
@@ -1456,7 +1630,8 @@ fn fetch_page(url: &str) -> (String, String) {
             Err(e) => {
                 eprintln!("[surf-host] fetch error: {}", e);
                 if let Ok(bytes) = std::fs::read(&data_path) {
-                    let final_url = std::fs::read_to_string(&url_path).unwrap_or_else(|_| full_url.clone());
+                    let final_url =
+                        std::fs::read_to_string(&url_path).unwrap_or_else(|_| full_url.clone());
                     return (decode_html_bytes(&bytes, None), final_url);
                 }
                 (format!("<h1>Error</h1><p>{}</p>", e), full_url)
@@ -1499,7 +1674,10 @@ fn extract_charset_from_meta(bytes: &[u8]) -> Option<String> {
     let after = &head[idx + "charset".len()..];
     let after = after.trim_start();
     let after = after.strip_prefix('=').unwrap_or(after).trim_start();
-    let after = after.strip_prefix('"').or_else(|| after.strip_prefix('\'')).unwrap_or(after);
+    let after = after
+        .strip_prefix('"')
+        .or_else(|| after.strip_prefix('\''))
+        .unwrap_or(after);
     let mut end = 0usize;
     for ch in after.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
@@ -1605,7 +1783,11 @@ pub fn resolve_url(base: &str, relative: &str) -> String {
         return relative.to_string();
     }
     if relative.starts_with("//") {
-        let scheme = if base.starts_with("https") { "https:" } else { "http:" };
+        let scheme = if base.starts_with("https") {
+            "https:"
+        } else {
+            "http:"
+        };
         return format!("{}{}", scheme, relative);
     }
     if relative.starts_with('#') {
@@ -1639,7 +1821,11 @@ pub fn resolve_url(base: &str, relative: &str) -> String {
     }
     if let Some(last_slash) = base.rfind('/') {
         // Ensure we only go up to the directory part (after the host)
-        let after_proto = if let Some(idx) = base.find("://") { idx + 3 } else { 0 };
+        let after_proto = if let Some(idx) = base.find("://") {
+            idx + 3
+        } else {
+            0
+        };
         if last_slash > after_proto {
             format!("{}/{}", &base[..last_slash], relative)
         } else {
@@ -1743,11 +1929,15 @@ fn debug_dump_pre_text(dom: &libwebview::dom::Dom) {
 
 fn debug_dump_table_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom) {
     for (node_id, _) in dom.nodes.iter().enumerate() {
-        let Some(tag) = dom.tag(node_id) else { continue; };
+        let Some(tag) = dom.tag(node_id) else {
+            continue;
+        };
         if !matches!(tag, Tag::Table | Tag::Td | Tag::Tr | Tag::Tbody) {
             continue;
         }
-        let Some(style) = wv.resolved_style_ref(node_id) else { continue; };
+        let Some(style) = wv.resolved_style_ref(node_id) else {
+            continue;
+        };
         let bounds = wv.node_bounds(node_id);
         let tag_name = dom
             .raw_tag_name(node_id)
@@ -1783,11 +1973,15 @@ fn debug_dump_table_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom)
 
 fn debug_dump_named_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom) {
     for (node_id, _) in dom.nodes.iter().enumerate() {
-        let Some(id_attr) = dom.attr(node_id, "id") else { continue; };
+        let Some(id_attr) = dom.attr(node_id, "id") else {
+            continue;
+        };
         if !matches!(id_attr, "wrapper" | "div1" | "div2" | "reference" | "inner") {
             continue;
         }
-        let Some(style) = wv.resolved_style_ref(node_id) else { continue; };
+        let Some(style) = wv.resolved_style_ref(node_id) else {
+            continue;
+        };
         let bg_image = match &style.background_image {
             libwebview::style::BackgroundImageVal::None => "none",
             libwebview::style::BackgroundImageVal::Url(_) => "url",
@@ -1826,12 +2020,17 @@ fn debug_dump_named_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom)
 fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
     // 1. Stylesheets: <link rel="stylesheet" href="...">
     let css_links = {
-        let dom = match wv.dom() { Some(d) => d, None => return };
+        let dom = match wv.dom() {
+            Some(d) => d,
+            None => return,
+        };
         let mut links = Vec::new();
         for (i, node) in dom.nodes.iter().enumerate() {
             if let NodeType::Element { tag: Tag::Link, .. } = &node.node_type {
                 let rel = dom.attr(i, "rel").unwrap_or("");
-                if !rel.eq_ignore_ascii_case("stylesheet") { continue; }
+                if !rel.eq_ignore_ascii_case("stylesheet") {
+                    continue;
+                }
                 if let Some(href) = dom.attr(i, "href") {
                     if !href.is_empty() {
                         links.push((resolve_url(base_url, href), String::from(href)));
@@ -1846,10 +2045,49 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
         eprintln!("[surf-host] fetching CSS: {}", css_url);
         if let Some(css_body) = fetch_resource(css_url) {
             if let Ok(css_text) = String::from_utf8(css_body) {
-                wv.add_stylesheet(&css_text);
+                let sheet = libwebview::css::parse_stylesheet(&css_text);
+                if std::env::var("SURF_DEBUG_HEISE").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "[surf-host] parsed CSS: rules={} media={} layers={} imports={}",
+                        sheet.rules.len(),
+                        sheet.media_rules.len(),
+                        sheet.layer_order.len(),
+                        sheet.imports.len()
+                    );
+                    fn selector_has_class(sel: &libwebview::css::Selector, class_name: &str) -> bool {
+                        match sel {
+                            libwebview::css::Selector::Simple(simple)
+                            | libwebview::css::Selector::Descendant(_, simple)
+                            | libwebview::css::Selector::Child(_, simple)
+                            | libwebview::css::Selector::AdjacentSibling(_, simple)
+                            | libwebview::css::Selector::GeneralSibling(_, simple) => {
+                                simple.classes.iter().any(|cls| cls == class_name)
+                            }
+                            libwebview::css::Selector::Universal => false,
+                        }
+                    }
+                    let matching_media = sheet
+                        .media_rules
+                        .iter()
+                        .filter(|mr| {
+                            libwebview::css::evaluate_media_query(&mr.query, 1365, 200)
+                                && mr.rules.iter().any(|rule| {
+                                    rule.selectors.iter().any(|sel| {
+                                        selector_has_class(sel, "xl:inline")
+                                            || selector_has_class(sel, "md:hidden")
+                                            || selector_has_class(sel, r"xl\:inline")
+                                            || selector_has_class(sel, r"md\:hidden")
+                                    })
+                                })
+                        })
+                        .count();
+                    eprintln!("[surf-host] matching responsive media buckets={}", matching_media);
+                }
+                wv.add_parsed_stylesheet(sheet);
 
                 // @import URLs from this stylesheet
-                let imports: Vec<String> = wv.last_stylesheet_imports()
+                let imports: Vec<String> = wv
+                    .last_stylesheet_imports()
                     .iter()
                     .map(|u| resolve_url(base_url, u))
                     .collect();
@@ -1863,12 +2101,15 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
                 }
 
                 // @font-face rules from this stylesheet
-                let font_faces: Vec<_> = wv.last_stylesheet_font_faces()
+                let font_faces: Vec<_> = wv
+                    .last_stylesheet_font_faces()
                     .iter()
                     .map(|ff| (ff.family.clone(), ff.src_url.clone()))
                     .collect();
                 for (family, src) in &font_faces {
-                    if src.is_empty() { continue; }
+                    if src.is_empty() {
+                        continue;
+                    }
                     let font_url = resolve_url(base_url, src);
                     eprintln!("[surf-host] fetching font: {}", font_url);
                     if let Some(font_data) = fetch_resource(&font_url) {
@@ -1891,13 +2132,18 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
 
     // 2. @font-face from inline <style> blocks
     {
-        let font_faces: Vec<_> = wv.all_font_faces()
+        let font_faces: Vec<_> = wv
+            .all_font_faces()
             .iter()
             .map(|ff| (ff.family.clone(), ff.src_url.clone()))
             .collect();
         for (family, src) in &font_faces {
-            if src.is_empty() { continue; }
-            if wv.web_font_id(&family).is_some() { continue; } // already loaded
+            if src.is_empty() {
+                continue;
+            }
+            if wv.web_font_id(&family).is_some() {
+                continue;
+            } // already loaded
             let font_url = resolve_url(base_url, src);
             eprintln!("[surf-host] fetching inline font: {}", font_url);
             if let Some(font_data) = fetch_resource(&font_url) {
@@ -1912,10 +2158,20 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
 
     // 4. Inline SVGs: <svg>...</svg> — rasterise via resvg and cache under __svg_N__
     let svg_nodes: Vec<(usize, String, Vec<(String, String)>)> = {
-        let dom = match wv.dom() { Some(d) => d, None => { wv.relayout(); return; } };
+        let dom = match wv.dom() {
+            Some(d) => d,
+            None => {
+                wv.relayout();
+                return;
+            }
+        };
         let mut svgs = Vec::new();
         for (i, node) in dom.nodes.iter().enumerate() {
-            if let NodeType::Element { tag: Tag::Svg, attrs } = &node.node_type {
+            if let NodeType::Element {
+                tag: Tag::Svg,
+                attrs,
+            } = &node.node_type
+            {
                 // Inner SVG content is stored as a text child by the HTML parser.
                 let mut inner = String::new();
                 for &child_id in &node.children {
@@ -1924,8 +2180,11 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
                         break;
                     }
                 }
-                if inner.is_empty() { continue; }
-                let attr_list: Vec<(String, String)> = attrs.iter()
+                if inner.is_empty() {
+                    continue;
+                }
+                let attr_list: Vec<(String, String)> = attrs
+                    .iter()
                     .map(|a| (a.name.clone(), a.value.clone()))
                     .collect();
                 svgs.push((i, inner, attr_list));
@@ -1943,7 +2202,11 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
             svg_markup.push_str("=\"");
             // Escape attribute value quotes.
             for ch in value.chars() {
-                if ch == '"' { svg_markup.push_str("&quot;"); } else { svg_markup.push(ch); }
+                if ch == '"' {
+                    svg_markup.push_str("&quot;");
+                } else {
+                    svg_markup.push(ch);
+                }
             }
             svg_markup.push('"');
         }
@@ -1958,7 +2221,10 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
         if let Some((pixels, w, h)) = decode_svg(svg_markup.as_bytes()) {
             // Key format: __svg_<node_id>__ — must match svg_inline_key() in layout/mod.rs
             let key = format!("__svg_{}__", node_id);
-            eprintln!("[surf-host] rasterized inline SVG node={} {}x{}", node_id, w, h);
+            eprintln!(
+                "[surf-host] rasterized inline SVG node={} {}x{}",
+                node_id, w, h
+            );
             wv.add_image(&key, pixels, w, h);
         }
     }
@@ -1999,6 +2265,7 @@ struct ImageLoadResult {
     pixels: Vec<u32>,
     width: u32,
     height: u32,
+    priority_y: i32,
 }
 
 struct PendingImages {
@@ -2009,7 +2276,10 @@ struct PendingImages {
 impl PendingImages {
     fn empty() -> Self {
         let (_tx, rx) = mpsc::channel();
-        PendingImages { receiver: rx, done: true }
+        PendingImages {
+            receiver: rx,
+            done: true,
+        }
     }
 
     /// Non-blocking: returns any images that have finished loading.
@@ -2019,7 +2289,10 @@ impl PendingImages {
             match self.receiver.try_recv() {
                 Ok(r) => results.push(r),
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => { self.done = true; break; }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.done = true;
+                    break;
+                }
             }
         }
         results
@@ -2044,42 +2317,51 @@ impl PendingImages {
 /// Returns a `PendingImages` handle to poll or drain results.
 fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImages {
     let img_infos = {
-        let dom = match wv.dom() { Some(d) => d, None => return PendingImages::empty() };
+        let dom = match wv.dom() {
+            Some(d) => d,
+            None => return PendingImages::empty(),
+        };
         let mut infos = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (i, node) in dom.nodes.iter().enumerate() {
-            let is_image_like = matches!(
-                &node.node_type,
-                NodeType::Element { tag: Tag::Img, .. }
-            ) || dom.has_tag_name(i, "a-img");
+            let is_image_like = matches!(&node.node_type, NodeType::Element { tag: Tag::Img, .. })
+                || dom.has_tag_name(i, "a-img");
             if !is_image_like {
                 continue;
             }
 
             if let Some(src) = dom.image_url(i) {
-                if src.is_empty() || src.starts_with("data:") { continue; }
-                if !seen.insert(src.to_string()) { continue; }
+                if src.is_empty() || src.starts_with("data:") {
+                    continue;
+                }
+                if !seen.insert(src.to_string()) {
+                    continue;
+                }
                 let abs_url = resolve_url(base_url, &src);
-                let bounds_hint = wv
-                    .node_bounds(i)
-                    .and_then(|(_, _, w, h)| {
-                        if w > 0 && h > 0 {
-                            Some((w as u32, h as u32))
-                        } else {
-                            None
-                        }
-                    });
-                let target_w: Option<u32> = bounds_hint
-                    .map(|(w, _)| w)
-                    .or_else(|| dom.attr(i, "width").and_then(|s| s.trim().trim_end_matches("px").parse().ok()));
-                let target_h: Option<u32> = bounds_hint
-                    .map(|(_, h)| h)
-                    .or_else(|| dom.attr(i, "height").and_then(|s| s.trim().trim_end_matches("px").parse().ok()));
-                infos.push((abs_url, src, target_w, target_h));
+                let bounds = wv.node_bounds(i);
+                let priority_y = bounds.map(|(_, y, _, _)| y).unwrap_or(i32::MAX);
+                let bounds_hint = bounds.and_then(|(_, _, w, h)| {
+                    if w > 0 && h > 0 {
+                        Some((w as u32, h as u32))
+                    } else {
+                        None
+                    }
+                });
+                let target_w: Option<u32> = bounds_hint.map(|(w, _)| w).or_else(|| {
+                    dom.attr(i, "width")
+                        .and_then(|s| s.trim().trim_end_matches("px").parse().ok())
+                });
+                let target_h: Option<u32> = bounds_hint.map(|(_, h)| h).or_else(|| {
+                    dom.attr(i, "height")
+                        .and_then(|s| s.trim().trim_end_matches("px").parse().ok())
+                });
+                infos.push((abs_url, src, target_w, target_h, priority_y));
             }
         }
         for (i, _) in dom.nodes.iter().enumerate() {
-            let Some(style) = wv.resolved_style_ref(i) else { continue; };
+            let Some(style) = wv.resolved_style_ref(i) else {
+                continue;
+            };
             let bg_src = match &style.background_image {
                 libwebview::style::BackgroundImageVal::Url(src) if !src.is_empty() => src,
                 _ => continue,
@@ -2091,7 +2373,8 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
                 continue;
             }
             let abs_url = resolve_url(base_url, bg_src);
-            infos.push((abs_url, bg_src.clone(), None, None));
+            let priority_y = wv.node_bounds(i).map(|(_, y, _, _)| y).unwrap_or(i32::MAX);
+            infos.push((abs_url, bg_src.clone(), None, None, priority_y));
         }
         infos
     };
@@ -2100,10 +2383,13 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
         return PendingImages::empty();
     }
 
-    eprintln!("[surf-host] loading {} images in parallel...", img_infos.len());
+    eprintln!(
+        "[surf-host] loading {} images in parallel...",
+        img_infos.len()
+    );
     let (tx, rx) = mpsc::channel();
 
-    for (img_url, src_attr, tw, th) in img_infos {
+    for (img_url, src_attr, tw, th, priority_y) in img_infos {
         let tx = tx.clone();
         std::thread::spawn(move || {
             if let Some(img_data) = fetch_resource(&img_url) {
@@ -2114,6 +2400,7 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
                         pixels,
                         width: w,
                         height: h,
+                        priority_y,
                     });
                 }
             }
@@ -2121,7 +2408,42 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
     }
     drop(tx); // Close sender so receiver knows when all threads finish
 
-    PendingImages { receiver: rx, done: false }
+    PendingImages {
+        receiver: rx,
+        done: false,
+    }
+}
+
+fn image_priority_for_src(wv: &libwebview::WebView, base_url: &str, src: &str) -> Option<i32> {
+    let dom = wv.dom()?;
+    let mut best_y: Option<i32> = None;
+    for (i, node) in dom.nodes.iter().enumerate() {
+        let is_image_like = matches!(&node.node_type, NodeType::Element { tag: Tag::Img, .. })
+            || dom.has_tag_name(i, "a-img");
+        if is_image_like {
+            if let Some(candidate) = dom.image_url(i) {
+                if image_src_matches(base_url, &candidate, src) {
+                    let y = wv.node_bounds(i).map(|(_, y, _, _)| y).unwrap_or(0);
+                    best_y = Some(best_y.map_or(y, |best| best.min(y)));
+                }
+            }
+        }
+
+        let Some(style) = wv.resolved_style_ref(i) else {
+            continue;
+        };
+        if let libwebview::style::BackgroundImageVal::Url(bg_src) = &style.background_image {
+            if image_src_matches(base_url, bg_src, src) {
+                let y = wv.node_bounds(i).map(|(_, y, _, _)| y).unwrap_or(0);
+                best_y = Some(best_y.map_or(y, |best| best.min(y)));
+            }
+        }
+    }
+    best_y
+}
+
+fn image_src_matches(base_url: &str, a: &str, b: &str) -> bool {
+    a == b || resolve_url(base_url, a) == resolve_url(base_url, b)
 }
 
 // ── JavaScript execution ────────────────────────────────────────────────────
@@ -2129,10 +2451,10 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
 /// Register a synchronous HTTP handler so that fetch()/XHR inside JS
 /// can make real HTTP requests via ureq.
 fn register_http_handler(wv: &mut libwebview::WebView) {
-    use libjs::JsValue;
     use libjs::value::JsObject;
-    use std::rc::Rc;
+    use libjs::JsValue;
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn native_http_handler(_vm: &mut libjs::Vm, args: &[JsValue]) -> JsValue {
         let method = args.get(0).map(|v| v.to_js_string()).unwrap_or_default();
@@ -2143,7 +2465,10 @@ fn register_http_handler(wv: &mut libwebview::WebView) {
         if url.is_empty() {
             let mut obj = JsObject::new();
             obj.set(String::from("status"), JsValue::Number(0.0));
-            obj.set(String::from("statusText"), JsValue::String(String::from("Empty URL")));
+            obj.set(
+                String::from("statusText"),
+                JsValue::String(String::from("Empty URL")),
+            );
             obj.set(String::from("body"), JsValue::String(String::new()));
             return JsValue::Object(Rc::new(RefCell::new(obj)));
         }
@@ -2172,7 +2497,10 @@ fn register_http_handler(wv: &mut libwebview::WebView) {
                 eprintln!("[js-http] error: {}", e);
                 let mut obj = JsObject::new();
                 obj.set(String::from("status"), JsValue::Number(0.0));
-                obj.set(String::from("statusText"), JsValue::String(format!("{}", e)));
+                obj.set(
+                    String::from("statusText"),
+                    JsValue::String(format!("{}", e)),
+                );
                 obj.set(String::from("body"), JsValue::String(String::new()));
                 JsValue::Object(Rc::new(RefCell::new(obj)))
             }
@@ -2180,7 +2508,9 @@ fn register_http_handler(wv: &mut libwebview::WebView) {
     }
 
     let handler = libjs::vm::native_fn("__http_handler", native_http_handler);
-    wv.js_runtime().engine().set_global("__http_handler", handler);
+    wv.js_runtime()
+        .engine()
+        .set_global("__http_handler", handler);
 }
 
 /// Collect all script entries from the DOM, fetch external scripts,
@@ -2206,7 +2536,10 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str) {
                 scripts.push(text.clone());
                 inline_count += 1;
             }
-            libwebview::js::ScriptEntry::External { src: src_url, mode: _ } => {
+            libwebview::js::ScriptEntry::External {
+                src: src_url,
+                mode: _,
+            } => {
                 let full_url = resolve_url(base_url, src_url);
                 eprintln!("[js] fetching script: {}", full_url);
                 if let Some(data) = fetch_resource(&full_url) {
@@ -2223,8 +2556,12 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str) {
         }
     }
 
-    eprintln!("[js] {} scripts total ({} inline, {} external)",
-        scripts.len(), inline_count, external_count);
+    eprintln!(
+        "[js] {} scripts total ({} inline, {} external)",
+        scripts.len(),
+        inline_count,
+        external_count
+    );
 
     // Execute all scripts.
     wv.execute_js(&scripts);
@@ -2238,8 +2575,14 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str) {
 /// Run JS timers for `total_ms` milliseconds in 50ms steps.
 /// This lets setTimeout(fn, 0) and short-delay timers fire.
 fn run_js_timers(wv: &mut libwebview::WebView, total_ms: u64) {
-    if !wv.has_timers() { return; }
-    eprintln!("[js] running timers for {}ms ({} timers pending)...", total_ms, wv.timer_count());
+    if !wv.has_timers() {
+        return;
+    }
+    eprintln!(
+        "[js] running timers for {}ms ({} timers pending)...",
+        total_ms,
+        wv.timer_count()
+    );
     let step = 50u64;
     let mut elapsed = 0u64;
     while elapsed < total_ms && wv.has_timers() {
@@ -2250,8 +2593,11 @@ fn run_js_timers(wv: &mut libwebview::WebView, total_ms: u64) {
             eprintln!("[js:console] {}", line);
         }
     }
-    eprintln!("[js] timer loop done ({} ms elapsed, timers remaining: {})",
-        elapsed, wv.has_timers());
+    eprintln!(
+        "[js] timer loop done ({} ms elapsed, timers remaining: {})",
+        elapsed,
+        wv.has_timers()
+    );
 }
 
 // ── Image decoding ───────────────────────────────────────────────────────────
@@ -2262,7 +2608,11 @@ const MAX_DECODE_DIM: u32 = 2048;
 /// Decode an image, optionally downscaling to target dimensions.
 /// If target dimensions are specified and the source is >2x larger,
 /// the image is resized before storing — saving significant memory.
-fn decode_image_scaled(data: &[u8], target_w: Option<u32>, target_h: Option<u32>) -> Option<(Vec<u32>, u32, u32)> {
+fn decode_image_scaled(
+    data: &[u8],
+    target_w: Option<u32>,
+    target_h: Option<u32>,
+) -> Option<(Vec<u32>, u32, u32)> {
     if is_svg(data) {
         return decode_svg(data);
     }
@@ -2273,7 +2623,9 @@ fn decode_image_scaled(data: &[u8], target_w: Option<u32>, target_h: Option<u32>
 
     let rgba = if final_w != orig_w || final_h != orig_h {
         image::imageops::resize(
-            &img.to_rgba8(), final_w, final_h,
+            &img.to_rgba8(),
+            final_w,
+            final_h,
             image::imageops::FilterType::Triangle,
         )
     } else {
@@ -2293,7 +2645,12 @@ fn decode_image_scaled(data: &[u8], target_w: Option<u32>, target_h: Option<u32>
 
 /// Compute decode target size.  Downscales if source is >2x the target.
 /// Caps at MAX_DECODE_DIM when no target hint is available.
-fn compute_decode_size(orig_w: u32, orig_h: u32, target_w: Option<u32>, target_h: Option<u32>) -> (u32, u32) {
+fn compute_decode_size(
+    orig_w: u32,
+    orig_h: u32,
+    target_w: Option<u32>,
+    target_h: Option<u32>,
+) -> (u32, u32) {
     let (tw, th) = match (target_w, target_h) {
         (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
         (Some(w), None) if w > 0 && orig_w > 0 => {
@@ -2339,7 +2696,9 @@ fn decode_svg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
     let fallback_w = size.width() as u32;
     let fallback_h = size.height() as u32;
     let (w, h) = svg_intrinsic_raster_size(data).unwrap_or((fallback_w, fallback_h));
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
     let (rw, rh) = if w > 1024 || h > 1024 {
         let scale = 1024.0 / (w.max(h) as f32);
         ((w as f32 * scale) as u32, (h as f32 * scale) as u32)
@@ -2365,7 +2724,10 @@ fn decode_svg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
         .pixels()
         .iter()
         .map(|p| {
-            ((p.alpha() as u32) << 24) | ((p.red() as u32) << 16) | ((p.green() as u32) << 8) | (p.blue() as u32)
+            ((p.alpha() as u32) << 24)
+                | ((p.red() as u32) << 16)
+                | ((p.green() as u32) << 8)
+                | (p.blue() as u32)
         })
         .collect();
     Some((pixels, rw, rh))
@@ -2481,24 +2843,39 @@ fn extract_pixels(
     // Tile canvases have positions set by the renderer (pos_y = row * 256).
     // We composite each canvas at its actual position, adjusted by scroll.
     for canvas_id in wv.tile_canvas_ids() {
-        if let Some((pixels, cw, ch, _px, py)) = libanyui_client::host_get_canvas_pixels(canvas_id) {
+        if let Some((pixels, cw, ch, _px, py)) = libanyui_client::host_get_canvas_pixels(canvas_id)
+        {
             let cw = cw as usize;
             let ch = ch as usize;
-            if cw == 0 || ch == 0 || pixels.len() < cw * ch { continue; }
+            if cw == 0 || ch == 0 || pixels.len() < cw * ch {
+                continue;
+            }
 
             // Canvas position in document coordinates, adjusted by scroll
             let canvas_top = py - scroll_y;
             let canvas_bottom = canvas_top + ch as i32;
 
             // Skip if entirely outside viewport
-            if canvas_bottom <= 0 || canvas_top >= height as i32 { continue; }
+            if canvas_bottom <= 0 || canvas_top >= height as i32 {
+                continue;
+            }
 
-            let src_start = if canvas_top < 0 { (-canvas_top) as usize } else { 0 };
-            let dst_start = if canvas_top > 0 { canvas_top as usize } else { 0 };
+            let src_start = if canvas_top < 0 {
+                (-canvas_top) as usize
+            } else {
+                0
+            };
+            let dst_start = if canvas_top > 0 {
+                canvas_top as usize
+            } else {
+                0
+            };
 
             for row in src_start..ch {
                 let dst_y = dst_start + row - src_start;
-                if dst_y >= height { break; }
+                if dst_y >= height {
+                    break;
+                }
                 let copy_w = cw.min(width);
                 let src_off = row * cw;
                 let dst_off = dst_y * width;

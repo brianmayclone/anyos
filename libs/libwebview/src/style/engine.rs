@@ -1976,6 +1976,10 @@ fn resolve_styles_prepared_impl(
                 &active_containers,
             );
 
+            if let NodeType::Element { attrs, .. } = &node.node_type {
+                apply_tailwind_display_fallback(&mut style, attrs, viewport_width);
+            }
+
             // Phase 3: Apply inline styles (highest specificity).
             // Uses a cache to avoid re-parsing style="..." on every relayout.
             if let NodeType::Element { attrs, .. } = &node.node_type {
@@ -2296,6 +2300,96 @@ fn apply_author_rules(
     }
 
     set_flags
+}
+
+fn apply_tailwind_display_fallback(
+    style: &mut ComputedStyle,
+    attrs: &[crate::dom::Attr],
+    viewport_width: i32,
+) {
+    let Some(class_attr) = attrs.iter().find(|a| eq_ignore_ascii_case(&a.name, "class")) else {
+        return;
+    };
+
+    let mut base_display = None;
+    let mut sm_display = None;
+    let mut md_display = None;
+    let mut lg_display = None;
+    let mut xl_display = None;
+    let mut xxl_display = None;
+    let mut max_sm_display = None;
+    let mut max_md_display = None;
+    let mut max_lg_display = None;
+    let mut max_xl_display = None;
+
+    for class_name in class_attr.value.split_ascii_whitespace() {
+        let mut matched_prefix = None;
+        let mut utility = class_name;
+        if let Some((prefix, rest)) = class_name.split_once(':') {
+            matched_prefix = Some(prefix);
+            utility = rest.rsplit(':').next().unwrap_or(rest);
+        }
+        let Some(display) = tailwind_display_utility(utility) else {
+            continue;
+        };
+        match matched_prefix {
+            Some("sm") => sm_display = Some(display),
+            Some("md") => md_display = Some(display),
+            Some("lg") => lg_display = Some(display),
+            Some("xl") => xl_display = Some(display),
+            Some("2xl") => xxl_display = Some(display),
+            Some("max-sm") => max_sm_display = Some(display),
+            Some("max-md") => max_md_display = Some(display),
+            Some("max-lg") => max_lg_display = Some(display),
+            Some("max-xl") => max_xl_display = Some(display),
+            None => base_display = Some(display),
+            _ => {}
+        }
+    }
+
+    let mut display = base_display;
+    if viewport_width >= 640 {
+        display = sm_display.or(display);
+    } else {
+        display = max_sm_display.or(display);
+    }
+    if viewport_width >= 768 {
+        display = md_display.or(display);
+    } else {
+        display = max_md_display.or(display);
+    }
+    if viewport_width >= 1024 {
+        display = lg_display.or(display);
+    } else {
+        display = max_lg_display.or(display);
+    }
+    if viewport_width >= 1280 {
+        display = xl_display.or(display);
+    } else {
+        display = max_xl_display.or(display);
+    }
+    if viewport_width >= 1536 {
+        display = xxl_display.or(display);
+    }
+    if let Some(display) = display {
+        style.display = display;
+    }
+}
+
+fn tailwind_display_utility(class_name: &str) -> Option<Display> {
+    match class_name {
+        "hidden" => Some(Display::None),
+        "block" => Some(Display::Block),
+        "inline" => Some(Display::Inline),
+        "inline-block" => Some(Display::InlineBlock),
+        "flex" => Some(Display::Flex),
+        "inline-flex" => Some(Display::InlineFlex),
+        "grid" => Some(Display::Grid),
+        "inline-grid" => Some(Display::InlineGrid),
+        "flow-root" => Some(Display::FlowRoot),
+        "contents" => Some(Display::Contents),
+        _ => None,
+    }
 }
 
 /// Store a custom property in a node's custom property list.
@@ -6476,5 +6570,71 @@ mod layout_regression_tests {
         assert!(matches!(styles[child_id].text_align, TextAlignVal::Center));
         assert_eq!(styles[h1_id].font_size, 32);
         assert!(matches!(styles[h1_id].font_weight, FontWeight::Bold));
+    }
+
+    #[test]
+    fn responsive_escaped_tailwind_classes_override_base_display() {
+        let dom = crate::html::parse(
+            r#"<div id="md" class="hidden md:flex"></div><div id="xl" class="hidden xl:inline"></div>"#,
+        );
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            .hidden { display: none; }
+            @media (min-width: 768px) { .md\:flex { display: flex; } }
+            @media (min-width: 1280px) { .xl\:inline { display: inline; } }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 700, &mut inline_style_cache);
+        let md_id = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "md")
+                )
+            })
+            .expect("md node");
+        let xl_id = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "xl")
+                )
+            })
+            .expect("xl node");
+
+        assert!(matches!(styles[md_id].display, Display::Flex));
+        assert!(matches!(styles[xl_id].display, Display::Inline));
+    }
+
+    #[test]
+    fn tailwind_display_fallback_handles_missing_responsive_rules() {
+        let dom = crate::html::parse(
+            r#"<div id="mobile" class="flex md:hidden"></div><div id="desktop" class="hidden xl:inline"></div>"#,
+        );
+        let stylesheet = crate::css::parse_stylesheet("");
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 700, &mut inline_style_cache);
+        let find = |id_value: &str| {
+            dom.nodes
+                .iter()
+                .position(|node| {
+                    matches!(
+                        &node.node_type,
+                        NodeType::Element { attrs, .. }
+                            if attrs.iter().any(|a| a.name == "id" && a.value == id_value)
+                    )
+                })
+                .expect("node")
+        };
+
+        assert!(matches!(styles[find("mobile")].display, Display::None));
+        assert!(matches!(styles[find("desktop")].display, Display::Inline));
     }
 }

@@ -217,10 +217,35 @@ pub(super) fn measure_max_content(
         return pad_border;
     }
 
-    // Inline <svg> → use rasterised dimensions.
+    // Inline <svg> → use rasterised dimensions, but honor definite CSS sizing
+    // before using it as a flex max-content contribution. A common pattern is
+    // `height: 24px; width: auto`, where the natural viewBox width would wildly
+    // overstate the flex base size.
     if dom.tag(node_id) == Some(Tag::Svg) {
         let (w, _) = super::svg_intrinsic_dimensions(dom, images, node_id);
-        return w + pad_border;
+        let (_, h) = super::svg_intrinsic_dimensions(dom, images, node_id);
+        let content_w = if let Some(css_w) = st.width {
+            css_w.max(0)
+        } else if let Some(pct) = st.width_pct {
+            (viewport_w.max(0) as i64 * pct as i64 / 10000) as i32
+        } else if let Some((px100, pct100)) = st.width_calc {
+            px100 / 100 + (viewport_w.max(0) as i64 * pct100 as i64 / 10000) as i32
+        } else if let Some(css_h) = st.height {
+            if h > 0 {
+                ((w as i64 * css_h.max(0) as i64) / h as i64).max(0) as i32
+            } else {
+                w
+            }
+        } else if let Some((px100, _)) = st.height_calc {
+            if h > 0 {
+                ((w as i64 * (px100 / 100).max(0) as i64) / h as i64).max(0) as i32
+            } else {
+                w
+            }
+        } else {
+            w
+        };
+        return content_w + pad_border;
     }
 
     let children: Vec<usize> = dom.get(node_id).children.iter().copied().collect();
