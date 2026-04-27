@@ -1207,6 +1207,19 @@ fn flush_relayout_for_tab(tab_idx: usize) {
         RenderWork::Paint => st.tabs[tab_idx].webview.repaint_from_cached_layout(),
         RenderWork::None => {}
     }
+    if work == RenderWork::Layout && st.tabs[tab_idx].css_background_scan_pending {
+        st.tabs[tab_idx].css_background_scan_pending = false;
+        if let Some(base_url) = st.tabs[tab_idx].current_url.clone() {
+            let queued = resources::queue_background_images(&base_url, tab_idx, 8);
+            if queued > 0 {
+                crate::surf_log!(
+                    "[surf] queued CSS background images after layout: tab={} count={}",
+                    tab_idx,
+                    queued
+                );
+            }
+        }
+    }
     let elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
     crate::surf_log!(
         "[surf] render flush done: tab={} work={} elapsed={}ms",
@@ -1344,6 +1357,7 @@ fn handle_nav_done(
     st.tabs[tab_idx].deferred_fonts_inflight = 0;
     st.tabs[tab_idx].deferred_images.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
+    st.tabs[tab_idx].css_background_scan_pending = false;
 
     // Set URL and cookies on the JS runtime before rendering.
     st.tabs[tab_idx].webview.set_url(&url_str);
@@ -1591,6 +1605,10 @@ fn handle_css_done(
 
     if body.is_empty() {
         crate::surf_log!("[surf] skipped empty/failed CSS: {}", href);
+        if st.tabs[tab_index].load_state.pending_stylesheet_count == 0 {
+            st.tabs[tab_index].css_background_scan_pending = true;
+            request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
+        }
         if st.tabs[tab_index].load_state.ready_for_script_execution() {
             flush_pending_render_before_scripts(tab_index);
             execute_pending_scripts(tab_index);
@@ -1657,9 +1675,7 @@ fn handle_css_done(
     }
 
     if st.tabs[tab_index].load_state.pending_stylesheet_count == 0 {
-        if let Some(base_url) = st.tabs[tab_index].current_url.clone() {
-            resources::queue_background_images(&base_url, tab_index, 8);
-        }
+        st.tabs[tab_index].css_background_scan_pending = true;
         let schedule = {
             let active = tab_index == st.active_tab;
             if active {

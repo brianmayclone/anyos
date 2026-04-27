@@ -2120,6 +2120,9 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
 }
 
 pub fn resolve_url(base: &str, relative: &str) -> String {
+    if relative.starts_with("data:") {
+        return relative.to_string();
+    }
     if relative.starts_with("http://") || relative.starts_with("https://") {
         return relative.to_string();
     }
@@ -2175,6 +2178,89 @@ pub fn resolve_url(base: &str, relative: &str) -> String {
     } else {
         format!("{}/{}", base, relative)
     }
+}
+
+fn base64_decode(input: &[u8]) -> Vec<u8> {
+    fn val(b: u8) -> Option<u8> {
+        match b {
+            b'A'..=b'Z' => Some(b - b'A'),
+            b'a'..=b'z' => Some(26 + b - b'a'),
+            b'0'..=b'9' => Some(52 + b - b'0'),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &b in input {
+        if b == b'=' {
+            break;
+        }
+        if matches!(b, b' ' | b'\n' | b'\r' | b'\t') {
+            continue;
+        }
+        let Some(v) = val(b) else {
+            continue;
+        };
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    out
+}
+
+fn percent_decode_data_uri_payload(payload: &str) -> Vec<u8> {
+    fn val(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(10 + b - b'a'),
+            b'A'..=b'F' => Some(10 + b - b'A'),
+            _ => None,
+        }
+    }
+
+    let bytes = payload.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (val(bytes[i + 1]), val(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+fn decode_font_data_uri(src: &str) -> Option<Vec<u8>> {
+    let rest = src.strip_prefix("data:")?;
+    let comma = rest.find(',')?;
+    let meta = &rest[..comma];
+    let payload = &rest[comma + 1..];
+    let mime = meta.split(';').next().unwrap_or("").trim();
+    let is_font = mime.starts_with("font/")
+        || mime.starts_with("application/font")
+        || mime.starts_with("application/x-font")
+        || mime.eq_ignore_ascii_case("application/octet-stream");
+    if !is_font {
+        return None;
+    }
+    let bytes = if meta.contains(";base64") {
+        base64_decode(payload.as_bytes())
+    } else {
+        percent_decode_data_uri_payload(payload)
+    };
+    (!bytes.is_empty()).then_some(bytes)
 }
 
 // ── Resource loading (DOM-based, identical to anyOS surf) ────────────────────
@@ -2704,6 +2790,19 @@ fn load_resources(
                         if src.is_empty() {
                             continue;
                         }
+                        if src.starts_with("data:") {
+                            if let Some(font_data) = decode_font_data_uri(src) {
+                                if let Some(font_id) = libfont_client::load_data(&font_data) {
+                                    eprintln!(
+                                        "[surf-host] loaded data font: {} ({} bytes)",
+                                        family,
+                                        font_data.len()
+                                    );
+                                    wv.register_web_font(&family, font_id);
+                                }
+                            }
+                            continue;
+                        }
                         let font_url = resolve_url(base_url, src);
                         eprintln!("[surf-host] fetching font: {}", font_url);
                         if let Some(font_data) = fetch_resource(&font_url) {
@@ -2743,6 +2842,19 @@ fn load_resources(
             if wv.web_font_id(&family).is_some() {
                 continue;
             } // already loaded
+            if src.starts_with("data:") {
+                if let Some(font_data) = decode_font_data_uri(src) {
+                    if let Some(font_id) = libfont_client::load_data(&font_data) {
+                        eprintln!(
+                            "[surf-host] loaded inline data font: {} ({} bytes)",
+                            family,
+                            font_data.len()
+                        );
+                        wv.register_web_font(&family, font_id);
+                    }
+                }
+                continue;
+            }
             let font_url = resolve_url(base_url, src);
             eprintln!("[surf-host] fetching inline font: {}", font_url);
             if let Some(font_data) = fetch_resource(&font_url) {

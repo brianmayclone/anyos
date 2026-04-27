@@ -224,6 +224,9 @@ pub(crate) struct TabState {
     pub(crate) deferred_images: Vec<DeferredImageRequest>,
     /// Number of deferred image requests currently in flight.
     pub(crate) deferred_images_inflight: usize,
+    /// External CSS has completed and background images should be discovered
+    /// after the next layout refreshes the computed-style cache.
+    pub(crate) css_background_scan_pending: bool,
 }
 
 impl TabState {
@@ -248,6 +251,7 @@ impl TabState {
             deferred_fonts_inflight: 0,
             deferred_images: Vec::new(),
             deferred_images_inflight: 0,
+            css_background_scan_pending: false,
         }
     }
 

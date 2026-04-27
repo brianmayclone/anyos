@@ -278,6 +278,21 @@ pub(crate) fn queue_font_face_batch(
             continue;
         }
         queued_keys.push((family.clone(), src_url.clone()));
+        if src_url.starts_with("data:") {
+            if let Some(font_data) = decode_font_data_uri(src_url) {
+                if let Some(font_id) = libfont_client::load_data(&font_data) {
+                    st.tabs[tab_index].webview.register_web_font(family, font_id);
+                    immediate += 1;
+                    crate::surf_log!(
+                        "[surf] loaded inline data font '{}' -> id {} ({} bytes)",
+                        family,
+                        font_id,
+                        font_data.len()
+                    );
+                }
+            }
+            continue;
+        }
         if st.tabs[tab_index]
             .deferred_fonts
             .iter()
@@ -373,36 +388,77 @@ fn base64_decode(input: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Parse a `data:` URI into raw bytes and whether it is SVG.
-///
-/// Returns `None` for URIs that are not image data URIs or cannot be decoded.
-fn decode_data_uri(src: &str) -> Option<(Vec<u8>, bool)> {
+fn percent_decode_data_uri_payload(payload: &str) -> Vec<u8> {
+    let bytes = payload.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = hex_val(bytes[i + 1]);
+            let lo = hex_val(bytes[i + 2]);
+            if hi >= 0 && lo >= 0 {
+                out.push(((hi as u8) << 4) | lo as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+fn hex_val(b: u8) -> i8 {
+    match b {
+        b'0'..=b'9' => (b - b'0') as i8,
+        b'a'..=b'f' => (10 + b - b'a') as i8,
+        b'A'..=b'F' => (10 + b - b'A') as i8,
+        _ => -1,
+    }
+}
+
+fn decode_data_uri_bytes(src: &str, allow_mime: fn(&str) -> bool) -> Option<(Vec<u8>, String)> {
     let rest = src.strip_prefix("data:")?;
     let comma = rest.find(',')?;
     let meta = &rest[..comma];
     let payload = &rest[comma + 1..];
 
-    // Determine MIME type (first segment before ';')
     let mime = meta.split(';').next().unwrap_or("").trim();
-    // Only handle image/* MIME types
-    if !mime.starts_with("image/") && !mime.eq_ignore_ascii_case("image/svg+xml") {
+    if !allow_mime(mime) {
         return None;
     }
-    let is_svg =
-        mime.eq_ignore_ascii_case("image/svg+xml") || mime.eq_ignore_ascii_case("image/svg");
 
     let is_base64 = meta.contains(";base64");
     let bytes = if is_base64 {
         base64_decode(payload.as_bytes())
     } else {
-        // URL-encoded (rare for images) — treat payload as UTF-8 bytes directly
-        payload.as_bytes().to_vec()
+        percent_decode_data_uri_payload(payload)
     };
 
     if bytes.is_empty() {
         return None;
     }
+    Some((bytes, String::from(mime)))
+}
+
+/// Parse an image `data:` URI into raw bytes and whether it is SVG.
+fn decode_data_uri(src: &str) -> Option<(Vec<u8>, bool)> {
+    let (bytes, mime) = decode_data_uri_bytes(src, |mime| {
+        mime.starts_with("image/") || mime.eq_ignore_ascii_case("image/svg+xml")
+    })?;
+    let is_svg =
+        mime.eq_ignore_ascii_case("image/svg+xml") || mime.eq_ignore_ascii_case("image/svg");
     Some((bytes, is_svg))
+}
+
+fn decode_font_data_uri(src: &str) -> Option<Vec<u8>> {
+    decode_data_uri_bytes(src, |mime| {
+        mime.starts_with("font/")
+            || mime.starts_with("application/font")
+            || mime.starts_with("application/x-font")
+            || mime.eq_ignore_ascii_case("application/octet-stream")
+    })
+    .map(|(bytes, _)| bytes)
 }
 
 // ═══════════════════════════════════════════════════════════
