@@ -311,7 +311,6 @@ pub fn layout_inline_content_with_pseudo(
 
         let mut child = frag.layout_box;
         child.x = start_x + line_x + child.x;
-        child.y = child.y;
         if !child.is_out_of_flow {
             if child.width <= 0 {
                 child.width = fw;
@@ -433,6 +432,13 @@ pub fn layout_inline_content_with_pseudo(
             if let Some(nid) = child.node_id {
                 if nid < styles.len() {
                     let va = &styles[nid].vertical_align;
+                    if matches!(child.box_type, BoxType::InlineBlock)
+                        && matches!(va, VerticalAlign::Baseline)
+                        && (child.margin.top != 0 || child.margin.bottom != 0)
+                    {
+                        child.y = inline_offset_y;
+                        continue;
+                    }
                     child.y = match va {
                         VerticalAlign::Baseline => inline_offset_y + base_y,
                         VerticalAlign::Top => inline_offset_y,
