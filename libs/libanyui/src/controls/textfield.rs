@@ -359,7 +359,8 @@ impl Control for TextField {
                 let cursor_px = crate::draw::text_width_n_at(&display, cursor, font_size) as i32;
                 let cx = text_x + cursor_px;
                 let cursor_w = crate::theme::scale(2);
-                let cursor_h = (font_size as u32 + crate::theme::scale(4)).min(h.saturating_sub(2).max(1));
+                let cursor_h =
+                    (font_size as u32 + crate::theme::scale(4)).min(h.saturating_sub(2).max(1));
                 let cursor_y = y + ((h as i32 - cursor_h as i32) / 2).max(0);
                 crate::draw::fill_rect(&clipped, cx, cursor_y, cursor_w, cursor_h, tc.accent);
             }

@@ -93,7 +93,7 @@ impl RunPanel {
         btn_configure.set_font_size(11);
         configure_bar.add(&btn_configure);
 
-        let action_heading = section_label(t("ACTIONS"));
+        let action_heading = section_label(t("STARTUP ACTIONS"));
         panel.add(&action_heading);
 
         let btn_bar = ui::FlowPanel::new();
@@ -103,9 +103,17 @@ impl RunPanel {
         btn_bar.set_padding(6, 0, 6, 0);
         panel.add(&btn_bar);
 
-        let btn_run = plain_icon_button("player-play", tc.success, t("Run selected target"));
-        btn_run.set_tooltip(t("Run selected target"));
+        let btn_run = action_button(
+            "player-play",
+            t("Run"),
+            tc.success,
+            68,
+            t("Run selected target"),
+        );
         btn_bar.add(&btn_run);
+
+        let btn_debug = action_button("bug", t("Debug"), tc.warning, 78, t("Start debugging"));
+        btn_bar.add(&btn_debug);
 
         let btn_build = plain_icon_button("hammer", tc.accent, t("Build selected target"));
         btn_build.set_tooltip(t("Build selected target"));
@@ -130,22 +138,13 @@ impl RunPanel {
         debug_status_label.set_margin(10, 0, 8, 0);
         panel.add(&debug_status_label);
 
-        let debug_bar = ui::FlowPanel::new();
-        debug_bar.set_dock(ui::DOCK_TOP);
-        debug_bar.set_size(200, 30);
-        debug_bar.set_color(tc.sidebar_bg);
-        debug_bar.set_padding(6, 0, 6, 0);
-        panel.add(&debug_bar);
-
-        let btn_debug = plain_icon_button("bug", tc.accent, t("Start debugging"));
-        btn_debug.set_tooltip(t("Start debugging"));
-        debug_bar.add(&btn_debug);
-
         let breakpoint_label = ui::Label::new("0 breakpoints");
-        breakpoint_label.set_size(120, 24);
+        breakpoint_label.set_dock(ui::DOCK_TOP);
+        breakpoint_label.set_size(200, 18);
         breakpoint_label.set_font_size(11);
         breakpoint_label.set_text_color(tc.text_secondary);
-        debug_bar.add(&breakpoint_label);
+        breakpoint_label.set_margin(10, 0, 8, 0);
+        panel.add(&breakpoint_label);
 
         let control_bar = ui::FlowPanel::new();
         control_bar.set_dock(ui::DOCK_TOP);
@@ -620,6 +619,15 @@ fn section_label(text: &str) -> ui::Label {
     label.set_text_color(tc.text_secondary);
     label.set_margin(10, 8, 0, 0);
     label
+}
+
+fn action_button(icon: &str, text: &str, color: u32, width: u32, tooltip: &str) -> ui::PlainButton {
+    let btn = ui::PlainButton::new(text);
+    btn.set_size(width, 24);
+    btn.set_system_icon(icon, IconType::Outline, color, 15);
+    btn.set_text_color(color);
+    btn.set_tooltip(tooltip);
+    btn
 }
 
 fn plain_icon_button(icon: &str, color: u32, tooltip: &str) -> ui::PlainButton {

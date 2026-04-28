@@ -12,10 +12,12 @@ const STYLE_BOLD: u32 = 1;
 pub struct GitPanel {
     pub panel: ui::View,
     pub branch_label: ui::Label,
+    pub repo_label: ui::Label,
+    pub changes_label: ui::Label,
     pub commit_field: ui::TextField,
-    pub btn_commit: ui::Button,
-    pub btn_stage_all: ui::Button,
-    pub btn_init: ui::Button,
+    pub btn_commit: ui::PlainButton,
+    pub btn_stage_all: ui::PlainButton,
+    pub btn_init: ui::PlainButton,
     pub btn_push: ui::PlainButton,
     pub btn_pull: ui::PlainButton,
     pub btn_refresh: ui::PlainButton,
@@ -41,13 +43,35 @@ impl GitPanel {
         header.set_margin(8, 6, 0, 2);
         panel.add(&header);
 
+        let repo_bar = ui::FlowPanel::new();
+        repo_bar.set_dock(ui::DOCK_TOP);
+        repo_bar.set_size(200, 30);
+        repo_bar.set_color(tc.sidebar_bg);
+        repo_bar.set_padding(6, 0, 6, 0);
+        panel.add(&repo_bar);
+
+        let repo_label = ui::Label::new(t("Repository"));
+        repo_label.set_size(88, 26);
+        repo_label.set_font_size(11);
+        repo_label.set_text_color(tc.text_secondary);
+        repo_bar.add(&repo_label);
+
+        let btn_refresh = icon_button("refresh", tc.text_secondary, t("Refresh"));
+        repo_bar.add(&btn_refresh);
+
+        let btn_pull = icon_button("arrow-down-to-line", tc.text_secondary, t("Pull"));
+        repo_bar.add(&btn_pull);
+
+        let btn_push = icon_button("arrow-up-from-line", tc.text_secondary, t("Push"));
+        repo_bar.add(&btn_push);
+
         // Branch label
         let branch_label = ui::Label::new("");
         branch_label.set_dock(ui::DOCK_TOP);
-        branch_label.set_size(200, 18);
+        branch_label.set_size(200, 20);
         branch_label.set_font_size(11);
         branch_label.set_text_color(tc.text);
-        branch_label.set_margin(8, 2, 0, 4);
+        branch_label.set_margin(8, 0, 0, 5);
         panel.add(&branch_label);
 
         // Commit message field
@@ -66,25 +90,28 @@ impl GitPanel {
         btn_bar.set_padding(6, 0, 4, 0);
         panel.add(&btn_bar);
 
-        let btn_commit = ui::Button::new(t("Commit"));
-        btn_commit.set_size(58, 24);
-        btn_commit.set_color(tc.accent);
+        let btn_commit = action_button(
+            "git-commit",
+            t("Commit"),
+            tc.accent,
+            78,
+            t("Commit staged changes"),
+        );
         btn_commit.set_tooltip(t("Commit staged changes"));
         btn_bar.add(&btn_commit);
 
-        let btn_stage_all = ui::Button::new(t("Stage All"));
-        btn_stage_all.set_size(66, 24);
+        let btn_stage_all =
+            action_button("plus", t("Stage All"), tc.text, 92, t("Stage all changes"));
         btn_stage_all.set_tooltip(t("Stage all changes"));
         btn_bar.add(&btn_stage_all);
 
-        let btn_refresh = icon_button("refresh", tc.text_secondary, t("Refresh"));
-        btn_bar.add(&btn_refresh);
-
-        let btn_pull = icon_button("arrow-down", tc.text_secondary, t("Pull"));
-        btn_bar.add(&btn_pull);
-
-        let btn_push = icon_button("arrow-up", tc.text_secondary, t("Push"));
-        btn_bar.add(&btn_push);
+        let changes_label = ui::Label::new(t("CHANGES"));
+        changes_label.set_dock(ui::DOCK_TOP);
+        changes_label.set_size(200, 20);
+        changes_label.set_font_size(10);
+        changes_label.set_text_color(tc.text_secondary);
+        changes_label.set_margin(8, 6, 0, 0);
+        panel.add(&changes_label);
 
         let init_bar = ui::FlowPanel::new();
         init_bar.set_dock(ui::DOCK_TOP);
@@ -93,10 +120,13 @@ impl GitPanel {
         init_bar.set_padding(6, 0, 6, 0);
         panel.add(&init_bar);
 
-        let btn_init = ui::Button::new(t("Initialize Repository"));
-        btn_init.set_size(168, 24);
-        btn_init.set_color(tc.accent);
-        btn_init.set_tooltip(t("Create a Git repository in the current project root"));
+        let btn_init = action_button(
+            "folder-git-2",
+            t("Initialize Repository"),
+            tc.accent,
+            178,
+            t("Create a Git repository in the current project root"),
+        );
         init_bar.add(&btn_init);
 
         // Repository timeline graph at the bottom of source control.
@@ -130,6 +160,8 @@ impl GitPanel {
         Self {
             panel,
             branch_label,
+            repo_label,
+            changes_label,
             commit_field,
             btn_commit,
             btn_stage_all,
@@ -155,6 +187,11 @@ impl GitPanel {
             let text = format!("{}: {}", t("Branch"), state.branch);
             self.branch_label.set_text(&text);
         }
+        self.repo_label.set_text(if state.is_repo {
+            t("Repository")
+        } else {
+            t("No repository")
+        });
         self.btn_init.set_enabled(!state.is_repo);
         self.btn_commit.set_enabled(state.is_repo);
         self.btn_stage_all.set_enabled(state.is_repo);
@@ -169,6 +206,8 @@ impl GitPanel {
         let staged: Vec<&ChangedFile> = state.changed_files.iter().filter(|f| f.staged).collect();
         let unstaged: Vec<&ChangedFile> =
             state.changed_files.iter().filter(|f| !f.staged).collect();
+        self.changes_label
+            .set_text(&format!("{}  {}", t("CHANGES"), state.changed_files.len()));
 
         // Staged changes section
         if !staged.is_empty() {
@@ -228,6 +267,8 @@ impl GitPanel {
         let tc = ui::theme::colors();
         let t = anyos_std::i18n::t;
         self.branch_label.set_text(t("git not found"));
+        self.repo_label.set_text(t("Source Control"));
+        self.changes_label.set_text(t("CHANGES"));
         self.btn_init.set_enabled(false);
         self.btn_commit.set_enabled(false);
         self.btn_stage_all.set_enabled(false);
@@ -252,6 +293,8 @@ impl GitPanel {
         let tc = ui::theme::colors();
         let t = anyos_std::i18n::t;
         self.branch_label.set_text(t("No repository"));
+        self.repo_label.set_text(t("No repository"));
+        self.changes_label.set_text(t("CHANGES"));
         self.btn_init.set_enabled(true);
         self.btn_commit.set_enabled(false);
         self.btn_stage_all.set_enabled(false);
@@ -304,6 +347,15 @@ fn status_char(s: FileStatus) -> char {
         FileStatus::Untracked => '?',
         FileStatus::Conflicted => 'U',
     }
+}
+
+fn action_button(icon: &str, text: &str, color: u32, width: u32, tooltip: &str) -> ui::PlainButton {
+    let btn = ui::PlainButton::new(text);
+    btn.set_size(width, 24);
+    btn.set_system_icon(icon, IconType::Outline, color, 15);
+    btn.set_text_color(color);
+    btn.set_tooltip(tooltip);
+    btn
 }
 
 fn icon_button(icon: &str, color: u32, tooltip: &str) -> ui::PlainButton {

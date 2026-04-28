@@ -86,8 +86,20 @@ impl Control for PlainButton {
         let icon_opacity = if disabled { 96u8 } else { 255u8 };
 
         if !self.icon_pixels.is_empty() {
-            // Center icon in button area
-            let ix = x + (w as i32 - self.icon_w as i32) / 2;
+            let has_text = !self.text_base.text.is_empty();
+            let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
+            let (tw, th) = if has_text {
+                crate::draw::text_size_at(&self.text_base.text, font_size)
+            } else {
+                (0, 0)
+            };
+            let gap = if has_text {
+                crate::theme::scale_i32(6)
+            } else {
+                0
+            };
+            let content_w = self.icon_w as i32 + gap + tw as i32;
+            let ix = x + (w as i32 - content_w).max(0) / 2;
             let iy = y + (h as i32 - self.icon_h as i32) / 2;
             super::icon_button::blit_alpha_opacity(
                 surface,
@@ -98,6 +110,25 @@ impl Control for PlainButton {
                 &self.icon_pixels,
                 icon_opacity,
             );
+            if has_text {
+                let text_color = if disabled {
+                    tc.text_disabled
+                } else if self.text_base.text_style.text_color != 0 {
+                    self.text_base.text_style.text_color
+                } else {
+                    tc.text
+                };
+                let tx = ix + self.icon_w as i32 + gap;
+                let ty = y + (h as i32 - th as i32) / 2;
+                crate::draw::draw_text_sized(
+                    surface,
+                    tx,
+                    ty,
+                    text_color,
+                    &self.text_base.text,
+                    font_size,
+                );
+            }
         } else if b.state > 0 {
             // Legacy pixel-art icon
             let default_icon_sz = crate::theme::scale_i32(16);
