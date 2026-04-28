@@ -2125,6 +2125,44 @@ pub extern "C" fn anyui_datagrid_set_editable_columns(id: ControlId, mask: u32) 
 }
 
 #[no_mangle]
+pub extern "C" fn anyui_datagrid_set_row_editor_kinds(
+    id: ControlId,
+    data: *const u8,
+    len: u32,
+) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            let slice = if len == 0 || data.is_null() {
+                &[]
+            } else {
+                unsafe { core::slice::from_raw_parts(data, len as usize) }
+            };
+            dg.set_row_editor_kinds_from_encoded(slice);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_datagrid_set_row_editor_options(
+    id: ControlId,
+    data: *const u8,
+    len: u32,
+) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            let slice = if len == 0 || data.is_null() {
+                &[]
+            } else {
+                unsafe { core::slice::from_raw_parts(data, len as usize) }
+            };
+            dg.set_row_editor_options_from_encoded(slice);
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn anyui_datagrid_get_selected_row(id: ControlId) -> u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {

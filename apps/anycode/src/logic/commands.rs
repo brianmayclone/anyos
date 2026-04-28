@@ -1115,6 +1115,21 @@ pub fn designer_property_selection_changed() {
         .update_property_value_from_selection(&doc, &s.selected_designer_control);
 }
 
+pub fn open_designer_color_picker() {
+    let s = app();
+    let Some((property_name, value)) = selected_designer_property(s) else {
+        s.status
+            .set_analysis_status("Select a designer color property first");
+        return;
+    };
+    if !is_color_property(&property_name) {
+        s.status
+            .set_analysis_status("Select TextColor, BackgroundColor or BorderColor first");
+        return;
+    }
+    libanyui_client::ColorPickerDialog::show(&value, apply_designer_property_value);
+}
+
 pub fn apply_designer_property() {
     let value = app().inspector_panel.property_value_text();
     apply_designer_property_value(value);
@@ -1189,12 +1204,12 @@ pub fn apply_designer_event_from_grid() {
     }
 }
 
-fn apply_designer_property_value(value: String) {
+pub fn apply_designer_property_value(value: String) -> bool {
     let s = app();
     if s.selected_designer_file.is_empty() {
         s.status
             .set_analysis_status("Select a designer surface or control first");
-        return;
+        return false;
     }
     let file_path = s.selected_designer_file.clone();
     let control_name = s.selected_designer_control.clone();
@@ -1202,7 +1217,7 @@ fn apply_designer_property_value(value: String) {
         Some(doc) => doc,
         None => {
             s.status.set_analysis_status("Could not load designer file");
-            return;
+            return false;
         }
     };
     let property_index = s.inspector_panel.selected_property_index();
@@ -1210,18 +1225,18 @@ fn apply_designer_property_value(value: String) {
         let property_name = doc.form_property_name_at(property_index);
         if let Err(err) = doc.update_form_property(&property_name, &value) {
             s.status.set_analysis_status(err);
-            return;
+            return false;
         }
         if let Err(err) = designer::save_designer(&file_path, &doc) {
             s.status.set_analysis_status(err);
-            return;
+            return false;
         }
         s.editor_view
             .update_designer_document(&file_path, doc.clone(), None);
         s.inspector_panel.show_designer(&doc);
         s.status
             .set_analysis_status(&format!("Updated form.{}", property_name));
-        return;
+        return true;
     }
     let property_name = doc.control_property_name_at(&control_name, property_index);
     if property_name.starts_with("On") {
@@ -1231,7 +1246,7 @@ fn apply_designer_property_value(value: String) {
             .find(|control| control.name == control_name)
         else {
             s.status.set_analysis_status("Designer control not found");
-            return;
+            return false;
         };
         match designer::ensure_control_event_handler(&file_path, control, &property_name) {
             Ok((events_path, handler)) => {
@@ -1242,21 +1257,47 @@ fn apply_designer_property_value(value: String) {
             }
             Err(err) => s.status.set_analysis_status(err),
         }
-        return;
+        return true;
     }
     if let Err(err) = doc.update_control_property(&control_name, &property_name, &value) {
         s.status.set_analysis_status(err);
-        return;
+        return false;
     }
     if let Err(err) = designer::save_designer(&file_path, &doc) {
         s.status.set_analysis_status(err);
-        return;
+        return false;
     }
     s.editor_view
         .update_designer_document(&file_path, doc.clone(), Some(&control_name));
     s.inspector_panel.show_designer_control(&doc, &control_name);
     s.status
         .set_analysis_status(&format!("Updated {}.{}", control_name, property_name));
+    true
+}
+
+fn selected_designer_property(s: &crate::AppState) -> Option<(String, String)> {
+    if s.selected_designer_file.is_empty() {
+        return None;
+    }
+    let doc = designer::load_designer(&s.selected_designer_file)?;
+    let property_index = s.inspector_panel.selected_property_index();
+    if s.selected_designer_control.is_empty() {
+        let property_name = doc.form_property_name_at(property_index);
+        let value = doc.form_property_value(&property_name);
+        Some((property_name, value))
+    } else {
+        let property_name =
+            doc.control_property_name_at(&s.selected_designer_control, property_index);
+        let value = doc.control_property_value(&s.selected_designer_control, &property_name);
+        Some((property_name, value))
+    }
+}
+
+fn is_color_property(property_name: &str) -> bool {
+    matches!(
+        property_name.to_ascii_lowercase().as_str(),
+        "textcolor" | "backgroundcolor" | "bordercolor"
+    )
 }
 
 pub fn delete_selected_designer_control() {

@@ -134,6 +134,8 @@ anyui_marshal_set_text
     anyui_datagrid_get_row_count
     anyui_datagrid_set_selection_mode
     anyui_datagrid_set_editable_columns
+    anyui_datagrid_set_row_editor_kinds
+    anyui_datagrid_set_row_editor_options
     anyui_datagrid_get_selected_row
     anyui_datagrid_set_selected_row
     anyui_datagrid_is_row_selected

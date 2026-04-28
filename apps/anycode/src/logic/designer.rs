@@ -396,14 +396,29 @@ impl DesignerControl {
     pub fn property_name_at(&self, index: u32) -> String {
         let names = self.kind.property_names();
         let idx = index as usize;
-        if idx < names.len() {
-            return String::from(names[idx]);
+        let mut current = 0usize;
+        for name in names {
+            if current == idx {
+                return String::from(*name);
+            }
+            current += 1;
         }
-        let custom_idx = idx.saturating_sub(names.len());
-        self.properties
-            .get(custom_idx)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| String::from("Text"))
+        for property in &self.properties {
+            if has_property_name(names, &property.name) {
+                continue;
+            }
+            if current == idx {
+                return property.name.clone();
+            }
+            current += 1;
+        }
+        for event in CONTROL_EVENTS {
+            if current == idx {
+                return String::from(*event);
+            }
+            current += 1;
+        }
+        String::from("Text")
     }
 
     pub fn property_value(&self, property_name: &str) -> String {
@@ -414,10 +429,10 @@ impl DesignerControl {
             "width" => format!("{}", self.width),
             "height" => format!("{}", self.height),
             "items" => choice_items(self),
-            "onclick" => self.event_name_for("Click"),
-            "ondoubleclick" => self.event_name_for("DoubleClick"),
-            "onchanged" => self.event_name_for("Changed"),
-            "onsubmit" => self.event_name_for("Submit"),
+            "onclick" => self.custom_or_default_event(property_name, "Click"),
+            "ondoubleclick" => self.custom_or_default_event(property_name, "DoubleClick"),
+            "onchanged" => self.custom_or_default_event(property_name, "Changed"),
+            "onsubmit" => self.custom_or_default_event(property_name, "Submit"),
             _ => self
                 .properties
                 .iter()
@@ -429,6 +444,15 @@ impl DesignerControl {
 
     pub fn event_name_for(&self, event_name: &str) -> String {
         format!("{}_{}", self.name, event_name.to_ascii_lowercase())
+    }
+
+    fn custom_or_default_event(&self, property_name: &str, event_name: &str) -> String {
+        self.properties
+            .iter()
+            .find(|property| same_property(&property.name, property_name))
+            .map(|property| property.value.clone())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.event_name_for(event_name))
     }
 
     fn set_custom_property(&mut self, property_name: &str, value: &str) {
@@ -944,7 +968,12 @@ impl DesignerDocument {
                 validate_argb_color(value)?;
                 control.set_custom_property(property_name, value);
             }
-            "onclick" | "ondoubleclick" | "onchanged" | "onsubmit" => {}
+            "onclick" | "ondoubleclick" | "onchanged" | "onsubmit" => {
+                if !is_valid_control_name(value) {
+                    return Err("Event handler must be a valid Rust function name");
+                }
+                control.set_custom_property(property_name, value);
+            }
             _ => control.set_custom_property(property_name, value),
         }
         Ok(())
@@ -1329,12 +1358,7 @@ pub fn ensure_control_event_handler(
     control: &DesignerControl,
     event_property: &str,
 ) -> Result<(String, String), &'static str> {
-    let handler = match normalized_property(event_property) {
-        "ondoubleclick" => control.event_name_for("DoubleClick"),
-        "onchanged" => control.event_name_for("Changed"),
-        "onsubmit" => control.event_name_for("Submit"),
-        _ => control.event_name_for("Click"),
-    };
+    let handler = control.property_value(event_property);
     let events_path = ensure_named_event_handler(designer_file_path, &handler)?;
     Ok((events_path, handler))
 }

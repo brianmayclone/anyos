@@ -100,6 +100,8 @@ pub struct TypeckResult {
     pub trait_impls: HashMap<(Symbol, DefId), Vec<(Symbol, DefId)>>,
     /// Trait DefId -> trait name Symbol
     pub trait_names: HashMap<DefId, Symbol>,
+    /// Impl self type for each inherent or trait impl method.
+    pub impl_self_ty_by_method: HashMap<DefId, TyKind>,
     /// Reverse map: DefId -> type name Symbol (for looking up impl_methods by DefId)
     pub type_def_to_name: HashMap<DefId, Symbol>,
     /// Associated types: (trait DefId, assoc_type_name) -> concrete TyKind
@@ -533,6 +535,12 @@ impl<'a> TypeChecker<'a> {
         Some(TyKind::Adt(def_id, vec![ok_ty, TyKind::Error]))
     }
 
+    fn result_of2(&self, ok_ty: TyKind, err_ty: TyKind) -> Option<TyKind> {
+        let sym = self.interner.lookup("Result")?;
+        let def_id = *self.type_name_to_def.get(&sym)?;
+        Some(TyKind::Adt(def_id, vec![ok_ty, err_ty]))
+    }
+
     fn push_generic_scope(
         &mut self,
         params: &[HirGenericParam],
@@ -716,11 +724,17 @@ impl<'a> TypeChecker<'a> {
         }
 
         let first = path.segments.first()?.ident;
+        if let Some(def_id) = self.resolve_scoped_type_name(first) {
+            return Some(def_id);
+        }
         if let Some(&def_id) = self.type_name_to_def.get(&first) {
             return Some(def_id);
         }
 
         let last = path.segments.last()?.ident;
+        if let Some(def_id) = self.resolve_scoped_type_name(last) {
+            return Some(def_id);
+        }
         self.type_name_to_def.get(&last).copied()
     }
 
@@ -1128,6 +1142,7 @@ impl<'a> TypeChecker<'a> {
             trait_methods: core::mem::take(&mut self.trait_methods),
             trait_impls: core::mem::take(&mut self.trait_impls),
             trait_names: core::mem::take(&mut self.trait_names),
+            impl_self_ty_by_method: core::mem::take(&mut self.impl_self_ty_by_method),
             assoc_types: core::mem::take(&mut self.assoc_types),
             generic_param_bounds: HashMap::new(),
             trait_default_methods: core::mem::take(&mut self.trait_default_methods),
@@ -4428,6 +4443,20 @@ impl<'a> TypeChecker<'a> {
                             let default_ty = self.get_expr_ty_cached(&args[0]);
                             self.unify(&inner_option_ty, &default_ty, args[0].span);
                             return inner_option_ty.clone();
+                        }
+                        "ok_or" if args.len() == 1 => {
+                            let err_ty = self.get_expr_ty_cached(&args[0]);
+                            return self
+                                .result_of2(inner_option_ty.clone(), err_ty)
+                                .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                        }
+                        "ok_or_else" if args.len() == 1 => {
+                            let err_ty = self
+                                .callable_output_ty(&self.get_expr_ty_cached(&args[0]))
+                                .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                            return self
+                                .result_of2(inner_option_ty.clone(), err_ty)
+                                .unwrap_or_else(|| self.fresh_infer(InferKind::General));
                         }
                         "copied" if args.is_empty() => {
                             if let TyKind::Ref(inner, _) =

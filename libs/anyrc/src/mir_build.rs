@@ -823,8 +823,16 @@ impl<'a> MirBuilder<'a> {
                             if *name != method_name {
                                 return None;
                             }
-                            let params = self.typeck.fn_sigs.get(impl_def_id)?.0.as_slice();
-                            let self_ty = params.first()?;
+                            let self_ty = self
+                                .typeck
+                                .impl_self_ty_by_method
+                                .get(impl_def_id)
+                                .or_else(|| {
+                                    self.typeck
+                                        .fn_sigs
+                                        .get(impl_def_id)
+                                        .and_then(|(params, _)| params.first())
+                                })?;
                             let self_inner = Self::peel_refs(self_ty);
                             matches!(self_inner, TyKind::Adt(self_def, _) if self_def == def_id)
                                 .then_some(*impl_def_id)

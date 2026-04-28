@@ -4357,17 +4357,61 @@ impl Compiler {
                 }
             }
             Expr::Index { object, index } => {
-                self.compile_expr(object);
-                self.compile_expr(index);
-                if *op != AssignOp::Assign {
-                    self.emit(Op::Dup); // dup key
-                                        // Complex: need to get current value... simplified
+                if Self::is_logical_assign(op) {
+                    let obj_slot = self.scope_mut().add_local(String::from("__logical_obj__"));
+                    let key_slot = self.scope_mut().add_local(String::from("__logical_key__"));
+
+                    self.compile_expr(object);
+                    self.emit(Op::StoreLocal(obj_slot));
+                    self.emit(Op::Pop);
+                    self.compile_expr(index);
+                    self.emit(Op::StoreLocal(key_slot));
+                    self.emit(Op::Pop);
+
+                    self.emit(Op::LoadLocal(obj_slot));
+                    self.emit(Op::LoadLocal(key_slot));
+                    self.emit(Op::GetProp);
+                    if matches!(op, AssignOp::AndAssign | AssignOp::OrAssign) {
+                        self.emit(Op::Dup);
+                    }
+                    let skip = self.emit_logical_skip(op);
+                    self.emit(Op::Pop);
+                    self.emit(Op::LoadLocal(obj_slot));
+                    self.emit(Op::LoadLocal(key_slot));
+                    self.compile_expr(right);
+                    self.emit(Op::SetProp);
+                    let done = self.emit(Op::Jump(0));
+                    self.patch_jump(skip);
+                    self.patch_jump(done);
+                } else if *op != AssignOp::Assign {
+                    let obj_slot = self.scope_mut().add_local(String::from("__compound_obj__"));
+                    let key_slot = self.scope_mut().add_local(String::from("__compound_key__"));
+                    let val_slot = self.scope_mut().add_local(String::from("__compound_val__"));
+
+                    self.compile_expr(object);
+                    self.emit(Op::StoreLocal(obj_slot));
+                    self.emit(Op::Pop);
+                    self.compile_expr(index);
+                    self.emit(Op::StoreLocal(key_slot));
+                    self.emit(Op::Pop);
+
+                    self.emit(Op::LoadLocal(obj_slot));
+                    self.emit(Op::LoadLocal(key_slot));
+                    self.emit(Op::GetProp);
                     self.compile_expr(right);
                     self.emit_compound_op(op);
+                    self.emit(Op::StoreLocal(val_slot));
+                    self.emit(Op::Pop);
+                    self.emit(Op::LoadLocal(obj_slot));
+                    self.emit(Op::LoadLocal(key_slot));
+                    self.emit(Op::LoadLocal(val_slot));
+                    self.emit(Op::SetProp);
                 } else {
+                    self.compile_expr(object);
+                    self.compile_expr(index);
                     self.compile_expr(right);
+                    self.emit(Op::SetProp);
                 }
-                self.emit(Op::SetProp);
             }
             Expr::Array(elements) if *op == AssignOp::Assign => {
                 // Array destructuring assignment: [x, y, z] = expr

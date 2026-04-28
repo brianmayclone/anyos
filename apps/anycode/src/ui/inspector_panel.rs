@@ -13,6 +13,7 @@ pub struct InspectorPanel {
     pub event_grid: ui::DataGrid,
     pub property_value: ui::TextField,
     pub btn_apply_property: ui::Button,
+    pub btn_pick_color: ui::PlainButton,
     pub btn_delete_control: ui::Button,
     title: ui::Label,
     subtitle: ui::Label,
@@ -144,9 +145,17 @@ impl InspectorPanel {
         btn_apply_property.set_visible(false);
         property_editor.add(&btn_apply_property);
 
+        let btn_pick_color = ui::PlainButton::new("");
+        btn_pick_color.set_position(12, 7);
+        btn_pick_color.set_size(28, 28);
+        btn_pick_color.set_system_icon("palette", ui::IconType::Outline, tc.text, 18);
+        btn_pick_color.set_tooltip("Pick color");
+        btn_pick_color.set_visible(false);
+        property_editor.add(&btn_pick_color);
+
         let btn_delete_control = ui::Button::new("Delete Control");
-        btn_delete_control.set_position(12, 7);
-        btn_delete_control.set_size(216, 28);
+        btn_delete_control.set_position(46, 7);
+        btn_delete_control.set_size(182, 28);
         btn_delete_control.set_color(0xff7f1d1d);
         property_editor.add(&btn_delete_control);
 
@@ -157,6 +166,7 @@ impl InspectorPanel {
             event_grid,
             property_value,
             btn_apply_property,
+            btn_pick_color,
             btn_delete_control,
             title,
             subtitle,
@@ -181,6 +191,7 @@ impl InspectorPanel {
         self.event_page.set_visible(false);
         self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
+        self.btn_pick_color.set_visible(false);
         self.tree.set_dock(ui::DOCK_FILL);
         self.tree.set_visible(true);
         self.tree.clear();
@@ -202,6 +213,7 @@ impl InspectorPanel {
         self.event_page.set_visible(false);
         self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
+        self.btn_pick_color.set_visible(false);
         self.tree.set_dock(ui::DOCK_FILL);
         self.tree.set_visible(true);
         self.tree.clear();
@@ -222,6 +234,7 @@ impl InspectorPanel {
         self.property_editor.set_visible(false);
         self.property_grid.set_visible(true);
         self.btn_delete_control.set_visible(false);
+        self.btn_pick_color.set_visible(false);
         self.property_dropdown.set_items(&doc.form_property_items());
         self.property_dropdown.set_state(0);
         self.property_value
@@ -292,6 +305,7 @@ impl InspectorPanel {
             .set_text(&control.property_value("Text"));
         self.populate_property_grid(control);
         self.populate_control_event_grid(control);
+        self.update_property_actions("Text", true);
         self.tree.clear();
 
         let root = self.tree.add_root(&control.name);
@@ -329,7 +343,7 @@ impl InspectorPanel {
             return;
         }
         self.property_dropdown.set_state(row);
-        let (_property_name, value) = if control_name.is_empty() {
+        let (property_name, value) = if control_name.is_empty() {
             let property_name = doc.form_property_name_at(row);
             let value = doc.form_property_value(&property_name);
             (property_name, value)
@@ -339,6 +353,7 @@ impl InspectorPanel {
             (property_name, value)
         };
         self.property_value.set_text(&value);
+        self.update_property_actions(&property_name, !control_name.is_empty());
     }
 
     pub fn selected_property_index(&self) -> u32 {
@@ -389,19 +404,43 @@ impl InspectorPanel {
             .into()
     }
 
+    pub fn update_property_actions(&self, property_name: &str, has_control: bool) {
+        let is_color = matches!(
+            property_name.to_ascii_lowercase().as_str(),
+            "textcolor" | "backgroundcolor" | "bordercolor"
+        );
+        self.property_editor.set_visible(has_control || is_color);
+        self.btn_pick_color.set_visible(is_color);
+        self.btn_delete_control.set_visible(has_control);
+        if has_control {
+            self.btn_delete_control
+                .set_position(if is_color { 46 } else { 12 }, 7);
+            self.btn_delete_control
+                .set_size(if is_color { 182 } else { 216 }, 28);
+        }
+    }
+
     fn populate_property_grid(&self, control: &DesignerControl) {
         let mut raw = String::new();
+        let mut kinds = String::new();
+        let mut options = String::new();
         let mut row = 0u32;
         for name in control.property_items().split('|') {
             if row > 0 {
                 raw.push('\x1e');
+                kinds.push('\x1e');
+                options.push('\x1e');
             }
             append_grid_cell(&mut raw, name);
             raw.push('\x1f');
             append_grid_cell(&mut raw, &control.property_value(name));
+            kinds.push(editor_kind_code(name));
+            options.push_str(editor_options(name));
             row += 1;
         }
         self.property_grid.set_data_raw(raw.as_bytes());
+        self.property_grid.set_row_editor_kinds(&kinds);
+        self.property_grid.set_row_editor_options(&options);
         if row > 0 {
             self.property_grid.set_selected_row(0);
         }
@@ -409,17 +448,25 @@ impl InspectorPanel {
 
     fn populate_form_property_grid(&self, doc: &DesignerDocument) {
         let mut raw = String::new();
+        let mut kinds = String::new();
+        let mut options = String::new();
         let mut row = 0u32;
         for name in doc.form_property_items().split('|') {
             if row > 0 {
                 raw.push('\x1e');
+                kinds.push('\x1e');
+                options.push('\x1e');
             }
             append_grid_cell(&mut raw, name);
             raw.push('\x1f');
             append_grid_cell(&mut raw, &doc.form_property_value(name));
+            kinds.push(editor_kind_code(name));
+            options.push_str(editor_options(name));
             row += 1;
         }
         self.property_grid.set_data_raw(raw.as_bytes());
+        self.property_grid.set_row_editor_kinds(&kinds);
+        self.property_grid.set_row_editor_options(&options);
         if row > 0 {
             self.property_grid.set_selected_row(0);
         }
@@ -462,5 +509,29 @@ fn append_grid_cell(out: &mut String, value: &str) {
         if ch != '\x1e' && ch != '\x1f' {
             out.push(ch);
         }
+    }
+}
+
+fn editor_kind_code(name: &str) -> char {
+    match name.to_ascii_lowercase().as_str() {
+        "x" | "y" | "width" | "height" | "fontsize" | "maxlength" | "selectedindex"
+        | "activepage" | "pageheight" | "rowheight" | "headerheight" | "indentwidth" | "value"
+        | "min" | "max" | "step" => '1',
+        "enabled" | "visible" | "readonly" | "password" | "checked" | "interactive" => '2',
+        "textcolor" | "backgroundcolor" | "bordercolor" => '3',
+        "dock" | "orientation" | "selectionmode" | "scalemode" | "textalign" | "fontweight" => '4',
+        _ => '0',
+    }
+}
+
+fn editor_options(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "dock" => "None|Top|Bottom|Left|Right|Fill",
+        "orientation" => "Vertical|Horizontal",
+        "selectionmode" => "Single|Multi",
+        "scalemode" => "Fit|Fill|Stretch|Center",
+        "textalign" => "Left|Center|Right",
+        "fontweight" => "Normal|Bold",
+        _ => "",
     }
 }

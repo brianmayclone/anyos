@@ -444,6 +444,7 @@ impl TypeckResult {
             trait_methods: self.trait_methods.clone(),
             trait_impls: self.trait_impls.clone(),
             trait_names: self.trait_names.clone(),
+            impl_self_ty_by_method: self.impl_self_ty_by_method.clone(),
             type_def_to_name: self.type_def_to_name.clone(),
             assoc_types: self.assoc_types.clone(),
             generic_param_bounds: self.generic_param_bounds.clone(),

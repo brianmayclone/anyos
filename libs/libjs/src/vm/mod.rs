@@ -224,7 +224,7 @@ impl Vm {
     }
 
     pub fn is_in_constructor_call(&self) -> bool {
-        self.native_constructor_depth > 0 || self.frames.last().is_some_and(|f| f.is_constructor)
+        self.native_constructor_depth > 0
     }
 
     fn coerce_property_key(&mut self, val: JsValue) -> Option<String> {

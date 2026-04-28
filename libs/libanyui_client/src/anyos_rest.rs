@@ -278,6 +278,8 @@ struct AnyuiLib {
     datagrid_get_row_count: extern "C" fn(u32) -> u32,
     datagrid_set_selection_mode: extern "C" fn(u32, u32),
     datagrid_set_editable_columns: extern "C" fn(u32, u32),
+    datagrid_set_row_editor_kinds: extern "C" fn(u32, *const u8, u32),
+    datagrid_set_row_editor_options: extern "C" fn(u32, *const u8, u32),
     datagrid_get_selected_row: extern "C" fn(u32) -> u32,
     datagrid_set_selected_row: extern "C" fn(u32, u32),
     datagrid_is_row_selected: extern "C" fn(u32, u32) -> u32,
@@ -604,6 +606,14 @@ pub fn init() -> bool {
             datagrid_get_row_count: resolve(&handle, "anyui_datagrid_get_row_count"),
             datagrid_set_selection_mode: resolve(&handle, "anyui_datagrid_set_selection_mode"),
             datagrid_set_editable_columns: resolve(&handle, "anyui_datagrid_set_editable_columns"),
+            datagrid_set_row_editor_kinds: resolve(
+                &handle,
+                "anyui_datagrid_set_row_editor_kinds",
+            ),
+            datagrid_set_row_editor_options: resolve(
+                &handle,
+                "anyui_datagrid_set_row_editor_options",
+            ),
             datagrid_get_selected_row: resolve(&handle, "anyui_datagrid_get_selected_row"),
             datagrid_set_selected_row: resolve(&handle, "anyui_datagrid_set_selected_row"),
             datagrid_is_row_selected: resolve(&handle, "anyui_datagrid_is_row_selected"),

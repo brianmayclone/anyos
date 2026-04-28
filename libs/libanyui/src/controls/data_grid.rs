@@ -156,6 +156,11 @@ pub struct DataGrid {
     editing_col: Option<usize>,
     edit_buffer: Vec<u8>,
     edit_cursor: usize,
+    /// Per data-row editor kind used by property-grid style value columns.
+    /// 0=text, 1=int, 2=bool, 3=color, 4=enum.
+    row_editor_kinds: Vec<u8>,
+    /// Per data-row pipe-separated option list for enum-like editors.
+    row_editor_options: Vec<Vec<u8>>,
 }
 
 impl DataGrid {
@@ -197,6 +202,8 @@ impl DataGrid {
             editing_col: None,
             edit_buffer: Vec::new(),
             edit_cursor: 0,
+            row_editor_kinds: Vec::new(),
+            row_editor_options: Vec::new(),
         }
     }
 
@@ -314,6 +321,28 @@ impl DataGrid {
         self.base.mark_dirty();
     }
 
+    pub fn set_row_editor_kinds_from_encoded(&mut self, data: &[u8]) {
+        self.row_editor_kinds.clear();
+        for row_data in data.split(|&b| b == 0x1E) {
+            let kind = row_data
+                .first()
+                .copied()
+                .map(|b| b.saturating_sub(b'0'))
+                .unwrap_or(0)
+                .min(4);
+            self.row_editor_kinds.push(kind);
+        }
+        self.base.mark_dirty();
+    }
+
+    pub fn set_row_editor_options_from_encoded(&mut self, data: &[u8]) {
+        self.row_editor_options.clear();
+        for row_data in data.split(|&b| b == 0x1E) {
+            self.row_editor_options.push(row_data.to_vec());
+        }
+        self.base.mark_dirty();
+    }
+
     pub fn set_cell_colors(&mut self, colors: &[u32]) {
         if self.cell_colors.as_slice() != colors {
             self.cell_colors = colors.to_vec();
@@ -383,6 +412,66 @@ impl DataGrid {
         logical_col < 32 && (self.editable_columns & (1u32 << logical_col)) != 0
     }
 
+    fn row_editor_kind(&self, data_row: usize) -> u8 {
+        self.row_editor_kinds.get(data_row).copied().unwrap_or(0)
+    }
+
+    fn typed_editor_active(&self, data_row: usize, logical_col: usize) -> bool {
+        logical_col == 1 && self.row_editor_kind(data_row) != 0
+    }
+
+    fn toggle_bool_cell(&mut self, row: usize, col: usize) -> bool {
+        let current = self.get_cell(row, col);
+        let next = if ascii_eq_ignore_case(current, b"true") || current == b"1" {
+            b"false".as_slice()
+        } else {
+            b"true".as_slice()
+        };
+        self.set_cell(row, col, next);
+        self.clear_selection();
+        self.set_row_selected(row, true);
+        self.base.state = row as u32;
+        self.last_click_col = col as i32;
+        self.base.mark_dirty();
+        true
+    }
+
+    fn cycle_enum_cell(&mut self, row: usize, col: usize) -> bool {
+        let Some(options) = self.row_editor_options.get(row) else {
+            return false;
+        };
+        if options.is_empty() {
+            return false;
+        }
+        let current = self.get_cell(row, col);
+        let mut first: Option<&[u8]> = None;
+        let mut next: Option<&[u8]> = None;
+        let mut found_current = false;
+        for option in options.split(|&b| b == b'|') {
+            if option.is_empty() {
+                continue;
+            }
+            if first.is_none() {
+                first = Some(option);
+            }
+            if found_current {
+                next = Some(option);
+                break;
+            }
+            if option == current {
+                found_current = true;
+            }
+        }
+        let value = next.or(first).unwrap_or(current).to_vec();
+        self.set_cell(row, col, &value);
+        self.clear_selection();
+        self.set_row_selected(row, true);
+        self.base.state = row as u32;
+        self.last_click_col = col as i32;
+        self.base.mark_dirty();
+        true
+    }
+
     fn start_edit(&mut self, data_row: usize, display_col: usize) -> bool {
         if data_row >= self.row_count || display_col >= self.display_order.len() {
             return false;
@@ -390,6 +479,15 @@ impl DataGrid {
         let logical_col = self.display_order[display_col];
         if !self.is_col_editable(logical_col) {
             return false;
+        }
+        if self.typed_editor_active(data_row, logical_col)
+            && matches!(self.row_editor_kind(data_row), 2 | 4)
+        {
+            return match self.row_editor_kind(data_row) {
+                2 => self.toggle_bool_cell(data_row, logical_col),
+                4 => self.cycle_enum_cell(data_row, logical_col),
+                _ => false,
+            };
         }
         self.edit_buffer = self.get_cell(data_row, logical_col).to_vec();
         self.edit_cursor = self.edit_buffer.len();
@@ -807,6 +905,11 @@ impl Control for DataGrid {
 
                     let editing_this_cell =
                         self.editing_row == Some(data_row) && self.editing_col == Some(logical_col);
+                    let editor_kind = if logical_col == 1 {
+                        self.row_editor_kind(data_row)
+                    } else {
+                        0
+                    };
                     let text = if editing_this_cell {
                         self.edit_buffer.as_slice()
                     } else if cell_idx < self.cell_data.len() {
@@ -846,6 +949,20 @@ impl Control for DataGrid {
                             tc.text
                         };
 
+                        let decorator_offset = if !editing_this_cell {
+                            draw_cell_editor_decorator(
+                                &cell_clip,
+                                col_x,
+                                row_y,
+                                col_w_s,
+                                rh_u,
+                                editor_kind,
+                                text,
+                                tc,
+                            )
+                        } else {
+                            0
+                        };
                         let text_x = match col.align {
                             CellAlign::Left => col_x + cell_pad + icon_offset,
                             CellAlign::Center => {
@@ -854,7 +971,7 @@ impl Control for DataGrid {
                             }
                             CellAlign::Right => {
                                 let (tw, _) = crate::draw::text_size_at(text, fs);
-                                col_x + col_w_s as i32 - cell_pad - tw as i32
+                                col_x + col_w_s as i32 - cell_pad - decorator_offset - tw as i32
                             }
                         };
                         let text_y = row_y + (rh_s - fs as i32) / 2;
@@ -1385,6 +1502,13 @@ impl Control for DataGrid {
                 _ => {}
             }
             if (32..=126).contains(&_char_code) {
+                if self
+                    .editing_row
+                    .map(|row| self.row_editor_kind(row) == 3 && !is_argb_editor_char(_char_code))
+                    .unwrap_or(false)
+                {
+                    return EventResponse::CONSUMED;
+                }
                 self.edit_buffer.insert(
                     self.edit_cursor.min(self.edit_buffer.len()),
                     _char_code as u8,
@@ -1405,12 +1529,33 @@ impl Control for DataGrid {
                     };
                     if let Some(row) = self.selected_row() {
                         if self.start_edit(row, display_col) {
-                            return EventResponse::CONSUMED;
+                            return if self.typed_editor_active(row, display_col) {
+                                EventResponse::SUBMIT
+                            } else {
+                                EventResponse::CONSUMED
+                            };
                         }
                     }
                     return EventResponse::SUBMIT;
                 }
                 EventResponse::CONSUMED
+            }
+            KEY_SPACE => {
+                if let Some(row) = self.selected_row() {
+                    let display_col = if self.last_click_col >= 0 {
+                        self.last_click_col as usize
+                    } else {
+                        0
+                    };
+                    if display_col < self.display_order.len() {
+                        let logical_col = self.display_order[display_col];
+                        if logical_col == 1 && self.row_editor_kind(row) == 2 {
+                            self.toggle_bool_cell(row, logical_col);
+                            return EventResponse::SUBMIT;
+                        }
+                    }
+                }
+                EventResponse::IGNORED
             }
             KEY_UP => {
                 if self.row_count == 0 {
@@ -1458,7 +1603,12 @@ impl Control for DataGrid {
             if let (Some(vis_row), Some(display_col)) = (self.row_at_y(ly), self.column_at_x(lx)) {
                 let data_row = self.data_row(vis_row);
                 if self.start_edit(data_row, display_col) {
-                    return EventResponse::CONSUMED;
+                    let logical_col = self.display_order[display_col];
+                    return if self.typed_editor_active(data_row, logical_col) {
+                        EventResponse::SUBMIT
+                    } else {
+                        EventResponse::CONSUMED
+                    };
                 }
             }
             if self.selected_row().is_some() {
@@ -1485,6 +1635,79 @@ fn draw_sort_arrow_down(s: &crate::draw::Surface, x: i32, y: i32, color: u32) {
     crate::draw::fill_rect(s, x, y - 3, 5, 1, color);
     crate::draw::fill_rect(s, x + 1, y - 2, 3, 1, color);
     crate::draw::fill_rect(s, x + 2, y - 1, 1, 1, color);
+}
+
+fn draw_cell_editor_decorator(
+    surface: &crate::draw::Surface,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    kind: u8,
+    text: &[u8],
+    tc: &'static crate::theme::ThemeColors,
+) -> i32 {
+    match kind {
+        2 => {
+            let size = crate::theme::scale_i32(14);
+            let bx = x + w as i32 - crate::theme::scale_i32(22);
+            let by = y + (h as i32 - size) / 2;
+            crate::draw::draw_border(surface, bx, by, size as u32, size as u32, tc.separator);
+            if ascii_eq_ignore_case(text, b"true") || text == b"1" {
+                crate::draw::fill_rect(surface, bx + 3, by + size / 2, 3, 2, tc.accent);
+                crate::draw::fill_rect(surface, bx + 5, by + size / 2 - 2, 2, 4, tc.accent);
+                crate::draw::fill_rect(surface, bx + 7, by + size / 2 - 4, 5, 2, tc.accent);
+            }
+            22
+        }
+        3 => {
+            let color = parse_argb_color(text).unwrap_or(tc.control_bg);
+            let size = crate::theme::scale_i32(14);
+            let sx = x + w as i32 - crate::theme::scale_i32(24);
+            let sy = y + (h as i32 - size) / 2;
+            crate::draw::fill_rect(surface, sx, sy, size as u32, size as u32, color);
+            crate::draw::draw_border(surface, sx, sy, size as u32, size as u32, tc.separator);
+            24
+        }
+        4 => {
+            let cx = x + w as i32 - crate::theme::scale_i32(15);
+            let cy = y + h as i32 / 2;
+            draw_sort_arrow_down(surface, cx, cy, tc.text_secondary);
+            18
+        }
+        _ => 0,
+    }
+}
+
+fn parse_argb_color(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() != 9 || bytes[0] != b'#' {
+        return None;
+    }
+    let mut value = 0u32;
+    for &byte in &bytes[1..] {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        };
+        value = (value << 4) | digit as u32;
+    }
+    Some(value)
+}
+
+fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(&l, &r)| l.to_ascii_lowercase() == r.to_ascii_lowercase())
+}
+
+fn is_argb_editor_char(char_code: u32) -> bool {
+    char_code == b'#' as u32
+        || (b'0' as u32..=b'9' as u32).contains(&char_code)
+        || (b'a' as u32..=b'f' as u32).contains(&char_code)
+        || (b'A' as u32..=b'F' as u32).contains(&char_code)
 }
 
 fn parse_u32(s: &[u8]) -> Option<u32> {

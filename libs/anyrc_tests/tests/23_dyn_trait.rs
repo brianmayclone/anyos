@@ -263,3 +263,42 @@ fn mir_trait_ufcs_on_concrete_receiver_resolves_impl_symbol() {
         "UFCS trait call should not lower to a bare trait method symbol:\n{mir}"
     );
 }
+
+#[test]
+fn mir_trait_ufcs_resolves_imported_trait_impl_declared_before_trait_module() {
+    let mir = compile_to_mir(
+        r#"
+        mod driver {
+            use crate::api::Filesystem;
+
+            pub struct RamFs { base: i32 }
+            impl Filesystem for RamFs {
+                fn lookup(&self, id: i32) -> i32 { self.base + id }
+            }
+
+            pub fn call_lookup(driver: &RamFs) -> i32 {
+                Filesystem::lookup(driver, 2)
+            }
+        }
+
+        mod api {
+            pub trait Filesystem {
+                fn lookup(&self, id: i32) -> i32;
+            }
+        }
+
+        fn main() -> i32 {
+            let fs = driver::RamFs { base: 40 };
+            driver::call_lookup(&fs)
+        }
+    "#,
+    );
+    assert!(
+        mir.contains("RamFs::lookup"),
+        "imported trait UFCS call should resolve to the concrete impl symbol:\n{mir}"
+    );
+    assert!(
+        !mir.contains("Filesystem::lookup"),
+        "imported trait UFCS call should not lower to a bare trait method symbol:\n{mir}"
+    );
+}

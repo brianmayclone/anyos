@@ -203,6 +203,10 @@ pub fn wire_inspector() {
         .on_click(|_| commands::apply_designer_property());
     app()
         .inspector_panel
+        .btn_pick_color
+        .on_click(|_| commands::open_designer_color_picker());
+    app()
+        .inspector_panel
         .btn_delete_control
         .on_click(|_| commands::delete_selected_designer_control());
 }

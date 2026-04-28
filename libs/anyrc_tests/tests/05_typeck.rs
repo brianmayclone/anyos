@@ -52,6 +52,20 @@ fn assert_type_ok(src: &str) {
 }
 
 #[test]
+fn option_ok_or_preserves_inner_reference_type() {
+    assert_type_ok(
+        r#"
+        enum Option<T> { None, Some(T) }
+        enum Result<T, E> { Ok(T), Err(E) }
+
+        fn lift(x: Option<&mut i32>) -> Result<&mut i32, i32> {
+            x.ok_or(7)
+        }
+        "#,
+    );
+}
+
+#[test]
 fn iterator_map_accepts_intrinsic_str_trim_fn_item() {
     assert_type_ok(
         r#"

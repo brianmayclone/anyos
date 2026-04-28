@@ -169,6 +169,22 @@ impl DataGrid {
         (lib().datagrid_set_editable_columns)(self.ctrl.id, mask);
     }
 
+    pub fn set_row_editor_kinds(&self, kinds: &str) {
+        (lib().datagrid_set_row_editor_kinds)(
+            self.ctrl.id,
+            kinds.as_ptr(),
+            kinds.len() as u32,
+        );
+    }
+
+    pub fn set_row_editor_options(&self, options: &str) {
+        (lib().datagrid_set_row_editor_options)(
+            self.ctrl.id,
+            options.as_ptr(),
+            options.len() as u32,
+        );
+    }
+
     /// Get the currently selected row index (single selection).
     /// Returns u32::MAX if nothing is selected.
     pub fn selected_row(&self) -> u32 {

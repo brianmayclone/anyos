@@ -296,6 +296,63 @@ mod tests {
     }
 
     #[test]
+    fn number_function_inside_constructor_returns_primitive() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "class Holder { \
+               constructor() { \
+                 this.value = Number('3701384'); \
+                 this.type = typeof this.value; \
+               } \
+             } \
+             var holder = new Holder(); \
+             [holder.type, holder.value === 3701384, typeof new Number('7')].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "number,true,object");
+    }
+
+    #[test]
+    fn computed_compound_assignment_uses_property_value_not_key() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var key = Symbol.for('jas'); \
+             var obj = []; \
+             obj[key] = 7; \
+             function mark(a, b) { a[key] |= b; return a[key]; } \
+             [mark(obj, 34), obj[key]].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "39,39");
+    }
+
+    #[test]
+    fn computed_compound_assignment_evaluates_receiver_once() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var count = 0; \
+             var obj = { value: 1 }; \
+             function receiver() { count++; return obj; } \
+             receiver()['value'] |= 2; \
+             [count, obj.value].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "1,3");
+    }
+
+    #[test]
     fn google_hash_style_array_argument_survives_nested_call() {
         let mut engine = JsEngine::new();
         let result = engine.eval(
