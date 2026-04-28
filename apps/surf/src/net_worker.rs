@@ -432,7 +432,7 @@ fn record_started(req: &FetchRequest) {
             crate::devtools::record_request_started("GET", "font", url);
         }
         FetchRequest::Script { url, .. } => {
-            crate::devtools::record_request_started("GET", "script", url);
+            crate::devtools::record_request_started("GET", "js", url);
         }
     }
 }

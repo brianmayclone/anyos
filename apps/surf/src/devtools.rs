@@ -22,15 +22,71 @@ const COLOR_BG: u32 = 0xFF1E1E1E;
 const COLOR_PANE: u32 = 0xFF252526;
 const COLOR_TEXT: u32 = 0xFFCCCCCC;
 const COLOR_DIM: u32 = 0xFF888888;
+const COLOR_FILTER_ACTIVE: u32 = 0xFF0E639C;
+const COLOR_FILTER_INACTIVE: u32 = 0xFF333333;
+
+const NET_COLS: u32 = 9;
+
+const STATUS_OK: u32 = 0xFF6BB36B; // green
+const STATUS_REDIRECT: u32 = 0xFFD7BA7D; // yellow
+const STATUS_ERROR: u32 = 0xFFE06C75; // red
+const STATUS_PENDING: u32 = 0xFF888888; // dim
+
+/// Status of a network request entry. Includes pending / error states so the
+/// row colour can be picked without parsing strings later.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NetStatus {
+    Pending,
+    Ok(u16),
+    Redirect(u16),
+    ClientError(u16),
+    ServerError(u16),
+    Blocked,
+}
+
+impl NetStatus {
+    pub fn from_http(code: u32) -> Self {
+        match code {
+            0 => Self::Blocked,
+            100..=199 => Self::Ok(code as u16),
+            200..=299 => Self::Ok(code as u16),
+            300..=399 => Self::Redirect(code as u16),
+            400..=499 => Self::ClientError(code as u16),
+            500..=599 => Self::ServerError(code as u16),
+            _ => Self::Blocked,
+        }
+    }
+    pub fn label(&self) -> String {
+        match self {
+            Self::Pending => String::from("…"),
+            Self::Ok(c)
+            | Self::Redirect(c)
+            | Self::ClientError(c)
+            | Self::ServerError(c) => format!("{}", c),
+            Self::Blocked => String::from("⊘"),
+        }
+    }
+    pub fn color(&self) -> u32 {
+        match self {
+            Self::Pending => STATUS_PENDING,
+            Self::Ok(_) => STATUS_OK,
+            Self::Redirect(_) => STATUS_REDIRECT,
+            Self::ClientError(_) | Self::ServerError(_) | Self::Blocked => STATUS_ERROR,
+        }
+    }
+}
 
 /// One row of the network panel.
 pub struct NetEntry {
+    pub status: NetStatus,
     pub method: String,
-    pub status: String,
     pub host: String,
-    pub path: String,
-    pub kind: String,
-    pub size: u64,
+    pub file: String,        // basename (after last '/')
+    pub path: String,        // full path (used for matching)
+    pub initiator: String,
+    pub kind: String,        // "html" | "css" | "js" | "img" | "font" | "xhr" | …
+    pub size: u64,           // body length
+    pub transferred: u64,    // wire bytes (currently == size)
     pub start_ms: u32,
     pub end_ms: u32,
 }
@@ -49,8 +105,19 @@ pub struct DevTools {
     pub console_output: ui_lib::TextArea,
     pub console_input: ui_lib::TextField,
 
+    // ── Netzwerkanalyse ─────────────────────────────────────────────────────
     pub net_grid: ui_lib::DataGrid,
     pub net_entries: Vec<NetEntry>,
+    pub net_search: ui_lib::TextField,
+    pub net_filter_kind: String,            // "" | html | css | js | xhr | font | img | media | ws | other
+    pub net_paused: bool,
+    pub net_pause_btn: ui_lib::IconButton,
+    pub net_clear_btn: ui_lib::IconButton,
+    pub net_block_btn: ui_lib::IconButton,
+    pub net_disable_cache: ui_lib::Checkbox,
+    pub net_filter_btns: Vec<(String, ui_lib::Button)>, // kind id → button
+    pub net_status_label: ui_lib::Label,
+    pub nav_start_ms: u32,                  // for the timeline column
 
     /// `true` while the user is in element-picker mode — set by the toolbar
     /// button and consumed on the next click in the webview.
@@ -58,12 +125,9 @@ pub struct DevTools {
 }
 
 pub fn build() -> DevTools {
-    // Master window — hidden by default and parked off-screen so it doesn't
-    // flash before the user opens it.
-    let win = ui_lib::Window::new("Werkzeuge für Webentwickler", 9999, 9999, 900, 500);
+    let win = ui_lib::Window::new("Werkzeuge für Webentwickler", 9999, 9999, 1100, 560);
     win.set_visible(false);
 
-    // ── Tab bar (DOCK_TOP) ──────────────────────────────────────────────────
     let tab_bar = ui_lib::TabBar::new(
         "Auswählen|Inspektor|Konsole|Debugger|Netzwerkanalyse",
     );
@@ -139,21 +203,119 @@ pub fn build() -> DevTools {
     // ── Network panel ───────────────────────────────────────────────────────
     let net_panel = ui_lib::View::new();
     net_panel.set_color(COLOR_BG);
-    let net_grid = ui_lib::DataGrid::new(900, 460);
+
+    // Toolbar row: clear, search, pause, block, cache toggle.
+    let toolbar = ui_lib::View::new();
+    toolbar.set_dock(ui_lib::DOCK_TOP);
+    toolbar.set_size(0, 32);
+    toolbar.set_color(COLOR_PANE);
+    toolbar.set_padding(4, 4, 4, 4);
+
+    let net_clear_btn = ui_lib::IconButton::new("");
+    net_clear_btn.set_dock(ui_lib::DOCK_LEFT);
+    net_clear_btn.set_size(28, 24);
+    net_clear_btn.set_system_icon("trash", ui_lib::IconType::Outline, COLOR_TEXT, 16);
+    net_clear_btn.set_tooltip("Liste leeren");
+    toolbar.add(&net_clear_btn);
+
+    let net_search = ui_lib::TextField::new();
+    net_search.set_dock(ui_lib::DOCK_LEFT);
+    net_search.set_size(280, 24);
+    net_search.set_placeholder("Adressen durchsuchen");
+    toolbar.add(&net_search);
+
+    let net_pause_btn = ui_lib::IconButton::new("");
+    net_pause_btn.set_dock(ui_lib::DOCK_LEFT);
+    net_pause_btn.set_size(28, 24);
+    net_pause_btn.set_system_icon("pause", ui_lib::IconType::Outline, COLOR_TEXT, 16);
+    net_pause_btn.set_tooltip("Aufzeichnung pausieren");
+    toolbar.add(&net_pause_btn);
+
+    let net_block_btn = ui_lib::IconButton::new("");
+    net_block_btn.set_dock(ui_lib::DOCK_LEFT);
+    net_block_btn.set_size(28, 24);
+    net_block_btn.set_system_icon("block", ui_lib::IconType::Outline, COLOR_TEXT, 16);
+    net_block_btn.set_tooltip("Blockierte Anfragen werden in der Liste markiert");
+    toolbar.add(&net_block_btn);
+
+    let net_disable_cache = ui_lib::Checkbox::new("Cache deaktivieren");
+    net_disable_cache.set_dock(ui_lib::DOCK_RIGHT);
+    net_disable_cache.set_size(160, 24);
+    toolbar.add(&net_disable_cache);
+
+    net_panel.add(&toolbar);
+
+    // Filter row: Alles, HTML, CSS, JS, XHR, Schriften, Grafiken, Medien, WebSockets, Sonstiges.
+    let filter_row = ui_lib::View::new();
+    filter_row.set_dock(ui_lib::DOCK_TOP);
+    filter_row.set_size(0, 30);
+    filter_row.set_color(COLOR_PANE);
+    filter_row.set_padding(4, 2, 4, 2);
+
+    let mut net_filter_btns: Vec<(String, ui_lib::Button)> = Vec::new();
+    let kinds: &[(&str, &str)] = &[
+        ("", "Alles"),
+        ("html", "HTML"),
+        ("css", "CSS"),
+        ("js", "JS"),
+        ("xhr", "XHR"),
+        ("font", "Schriften"),
+        ("img", "Grafiken"),
+        ("media", "Medien"),
+        ("ws", "WebSockets"),
+        ("other", "Sonstiges"),
+    ];
+    for (id, label) in kinds {
+        let b = ui_lib::Button::new(label);
+        b.set_dock(ui_lib::DOCK_LEFT);
+        let w = (label.len() as u32 * 9 + 24).max(50);
+        b.set_size(w, 24);
+        b.set_text_color(if id.is_empty() { COLOR_TEXT } else { COLOR_DIM });
+        b.set_color(if id.is_empty() {
+            COLOR_FILTER_ACTIVE
+        } else {
+            COLOR_FILTER_INACTIVE
+        });
+        filter_row.add(&b);
+        net_filter_btns.push((id.to_string(), b));
+    }
+    net_panel.add(&filter_row);
+
+    // Status bar at the bottom: "N Anfragen, X übertragen, beendet: Y s".
+    let net_status_label = ui_lib::Label::new("");
+    net_status_label.set_dock(ui_lib::DOCK_BOTTOM);
+    net_status_label.set_size(0, 22);
+    net_status_label.set_color(COLOR_PANE);
+    net_status_label.set_text_color(COLOR_DIM);
+    net_status_label.set_font_size(11);
+    net_status_label.set_padding(8, 4, 0, 0);
+    net_panel.add(&net_status_label);
+
+    // Grid takes the rest.
+    let net_grid = ui_lib::DataGrid::new(1100, 460);
     net_grid.set_dock(ui_lib::DOCK_FILL);
     net_grid.set_columns(&[
-        ui_lib::ColumnDef::new("Method").width(70),
-        ui_lib::ColumnDef::new("Status").width(60),
+        ui_lib::ColumnDef::new("Status").width(70).align(ui_lib::ALIGN_CENTER),
+        ui_lib::ColumnDef::new("Methode").width(70),
         ui_lib::ColumnDef::new("Host").width(180),
-        ui_lib::ColumnDef::new("Pfad").width(360),
+        ui_lib::ColumnDef::new("Datei").width(280),
+        ui_lib::ColumnDef::new("Initiator").width(160),
         ui_lib::ColumnDef::new("Typ").width(70),
-        ui_lib::ColumnDef::new("Größe").width(70).align(ui_lib::ALIGN_RIGHT).numeric(),
-        ui_lib::ColumnDef::new("Dauer (ms)").width(80).align(ui_lib::ALIGN_RIGHT).numeric(),
+        ui_lib::ColumnDef::new("Übertragen")
+            .width(90)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("Größe")
+            .width(80)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("Dauer (ms)")
+            .width(90)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
     ]);
     net_panel.add(&net_grid);
 
-    // Make all panels DOCK_FILL so they fill the area below the tab bar; the
-    // TabBar's `connect_panels` shows exactly one at a time.
     picker_panel.set_dock(ui_lib::DOCK_FILL);
     insp_panel.set_dock(ui_lib::DOCK_FILL);
     console_panel.set_dock(ui_lib::DOCK_FILL);
@@ -185,6 +347,16 @@ pub fn build() -> DevTools {
         console_input,
         net_grid,
         net_entries: Vec::new(),
+        net_search,
+        net_filter_kind: String::new(),
+        net_paused: false,
+        net_pause_btn,
+        net_clear_btn,
+        net_block_btn,
+        net_disable_cache,
+        net_filter_btns,
+        net_status_label,
+        nav_start_ms: 0,
         picker_active: false,
     }
 }
@@ -195,13 +367,16 @@ pub fn build() -> DevTools {
 pub fn reset_for_navigation() {
     let st = crate::state();
     st.devtools.net_entries.clear();
+    st.devtools.nav_start_ms = anyos_std::sys::uptime_ms();
     if st.devtools.open {
         st.devtools.net_grid.set_row_count(0);
         st.devtools.net_grid.set_data_raw(&[]);
+        st.devtools.net_grid.set_cell_colors(&[]);
         st.devtools.dom_tree.clear();
         st.devtools.tree_to_dom.clear();
         st.devtools.style_pane.set_text("(kein Element ausgewählt)");
         st.devtools.console_output.set_text("");
+        update_net_status_label();
     }
 }
 
@@ -240,7 +415,6 @@ pub fn refresh_inspector() {
         None => return,
     };
 
-    // BFS-ish build: walk from node 0 (root) and add every Element node.
     fn walk(
         dom: &libwebview::dom::Dom,
         node_id: usize,
@@ -323,28 +497,49 @@ pub fn refresh_console() {
     st.devtools.console_output.set_text(&text);
 }
 
-/// Repaint the network grid from `net_entries`.
+/// Repaint the network grid from `net_entries` honouring the active filter.
 pub fn refresh_network() {
     let st = crate::state();
     if !st.devtools.open {
         return;
     }
-    let count = st.devtools.net_entries.len() as u32;
-    st.devtools.net_grid.set_row_count(count);
+    let filter_kind = st.devtools.net_filter_kind.clone();
+    let mut search = [0u8; 256];
+    let n = st.devtools.net_search.get_text(&mut search);
+    let search_str = core::str::from_utf8(&search[..n as usize])
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let search_active = !search_str.is_empty();
+
     let mut buf: Vec<u8> = Vec::new();
-    for (i, e) in st.devtools.net_entries.iter().enumerate() {
-        if i > 0 {
-            buf.push(0x1E); // row sep
+    let mut cell_colors: Vec<u32> = Vec::new();
+    let mut shown = 0u32;
+
+    for e in st.devtools.net_entries.iter() {
+        if !filter_kind.is_empty() && !kind_matches(&filter_kind, &e.kind) {
+            continue;
         }
-        let dur = e.end_ms.wrapping_sub(e.start_ms);
-        let cells: [&str; 7] = [
-            &e.method,
-            &e.status,
-            &e.host,
-            &e.path,
-            &e.kind,
-            &humanize_size(e.size),
-            &alloc::format!("{}", dur),
+        if search_active {
+            let host_l = e.host.to_ascii_lowercase();
+            let path_l = e.path.to_ascii_lowercase();
+            if !host_l.contains(&search_str) && !path_l.contains(&search_str) {
+                continue;
+            }
+        }
+        if shown > 0 {
+            buf.push(0x1E);
+        }
+        let dur_ms = e.end_ms.wrapping_sub(e.start_ms);
+        let cells: [String; 9] = [
+            e.status.label(),
+            e.method.clone(),
+            e.host.clone(),
+            e.file.clone(),
+            e.initiator.clone(),
+            e.kind.clone(),
+            humanize_size(e.transferred),
+            humanize_size(e.size),
+            format!("{}", dur_ms),
         ];
         for (j, c) in cells.iter().enumerate() {
             if j > 0 {
@@ -352,11 +547,66 @@ pub fn refresh_network() {
             }
             buf.extend_from_slice(c.as_bytes());
         }
+        // Per-cell text colours: only the Status cell gets a coloured tint;
+        // other cells default to 0 (theme default).
+        cell_colors.push(e.status.color());
+        for _ in 1..NET_COLS {
+            cell_colors.push(0);
+        }
+        shown += 1;
     }
+    st.devtools.net_grid.set_row_count(shown);
     st.devtools.net_grid.set_data_raw(&buf);
+    st.devtools.net_grid.set_cell_colors(&cell_colors);
+    update_net_status_label();
+}
+
+fn kind_matches(filter: &str, kind: &str) -> bool {
+    if filter == kind {
+        return true;
+    }
+    // Group "media" → audio/video/image; "img" → img only; "other" → anything
+    // not matching one of the well-known groups.
+    match filter {
+        "media" => matches!(kind, "audio" | "video" | "media"),
+        "other" => !matches!(
+            kind,
+            "html" | "css" | "js" | "xhr" | "font" | "img" | "audio" | "video" | "media" | "ws"
+        ),
+        _ => false,
+    }
+}
+
+fn update_net_status_label() {
+    let st = crate::state();
+    let total = st.devtools.net_entries.len();
+    let mut total_bytes: u64 = 0;
+    let mut last_end_ms = st.devtools.nav_start_ms;
+    for e in &st.devtools.net_entries {
+        total_bytes += e.transferred;
+        if matches!(e.status, NetStatus::Pending) {
+            continue;
+        }
+        if e.end_ms.wrapping_sub(st.devtools.nav_start_ms)
+            > last_end_ms.wrapping_sub(st.devtools.nav_start_ms)
+        {
+            last_end_ms = e.end_ms;
+        }
+    }
+    let elapsed = last_end_ms.wrapping_sub(st.devtools.nav_start_ms);
+    let txt = format!(
+        "{} Anfragen   {} übertragen   Beendet: {} ms",
+        total,
+        humanize_size(total_bytes),
+        elapsed,
+    );
+    st.devtools.net_status_label.set_text(&txt);
 }
 
 fn humanize_size(bytes: u64) -> String {
+    if bytes == 0 {
+        return String::from("—");
+    }
     if bytes < 1024 {
         return format!("{} B", bytes);
     }
@@ -366,28 +616,61 @@ fn humanize_size(bytes: u64) -> String {
     format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
+fn last_segment(path: &str) -> String {
+    let p = path.split('?').next().unwrap_or(path);
+    let trimmed = p.trim_end_matches('/');
+    let seg = trimmed.rsplit('/').next().unwrap_or(p);
+    if seg.is_empty() {
+        String::from("/")
+    } else {
+        // Truncate huge query strings.
+        let s: String = seg.chars().take(120).collect();
+        s
+    }
+}
+
 /// Hook called from net_worker when a request is submitted.
 pub fn record_request_started(method: &str, kind: &str, url: &Url) {
     let st = crate::state();
+    if st.devtools.net_paused {
+        return;
+    }
     let now = anyos_std::sys::uptime_ms();
+    let initiator = current_initiator();
+    let file = last_segment(&url.path);
     st.devtools.net_entries.push(NetEntry {
+        status: NetStatus::Pending,
         method: method.to_string(),
-        status: String::from("…"),
         host: url.host.clone(),
+        file,
         path: url.path.clone(),
+        initiator,
         kind: kind.to_string(),
         size: 0,
+        transferred: 0,
         start_ms: now,
         end_ms: now,
     });
-    // Cap history to keep the grid responsive.
-    if st.devtools.net_entries.len() > 500 {
-        let drop = st.devtools.net_entries.len() - 500;
+    if st.devtools.net_entries.len() > 1000 {
+        let drop = st.devtools.net_entries.len() - 1000;
         st.devtools.net_entries.drain(0..drop);
     }
     if st.devtools.open {
         refresh_network();
     }
+}
+
+/// Compute an initiator label — the URL of the page that drove the request.
+fn current_initiator() -> String {
+    let st = crate::state();
+    if st.active_tab >= st.tabs.len() {
+        return String::new();
+    }
+    let tab = &st.tabs[st.active_tab];
+    if let Some(url) = &tab.current_url {
+        return format!("{}{}", url.host, url.path);
+    }
+    String::new()
 }
 
 /// Hook called when a request completes — matches by host+path of the most
@@ -397,9 +680,10 @@ pub fn record_request_done(host: &str, path: &str, status: u32, size: u64) {
     let now = anyos_std::sys::uptime_ms();
     let mut updated = false;
     for e in st.devtools.net_entries.iter_mut().rev() {
-        if e.status == "…" && e.host == host && e.path == path {
-            e.status = alloc::format!("{}", status);
+        if matches!(e.status, NetStatus::Pending) && e.host == host && e.path == path {
+            e.status = NetStatus::from_http(status);
             e.size = size;
+            e.transferred = size;
             e.end_ms = now;
             updated = true;
             break;
@@ -417,9 +701,10 @@ pub fn record_request_done_by_kind(kind: &str, status: u32, size: u64) {
     let now = anyos_std::sys::uptime_ms();
     let mut updated = false;
     for e in st.devtools.net_entries.iter_mut() {
-        if e.status == "…" && e.kind == kind {
-            e.status = alloc::format!("{}", status);
+        if matches!(e.status, NetStatus::Pending) && e.kind == kind {
+            e.status = NetStatus::from_http(status);
             e.size = size;
+            e.transferred = size;
             e.end_ms = now;
             updated = true;
             break;
@@ -527,6 +812,45 @@ pub fn set_picker_active(on: bool) {
     crate::surf_log!("[devtools] picker_active = {}", on);
 }
 
+/// Activate one of the kind filters by id (`""`, `"html"`, `"css"`, …) — also
+/// updates the visual state of the filter buttons.
+pub fn set_kind_filter(kind: &str) {
+    let st = crate::state();
+    st.devtools.net_filter_kind = kind.to_string();
+    for (id, btn) in &st.devtools.net_filter_btns {
+        let active = id == kind;
+        btn.set_color(if active {
+            COLOR_FILTER_ACTIVE
+        } else {
+            COLOR_FILTER_INACTIVE
+        });
+        btn.set_text_color(if active { COLOR_TEXT } else { COLOR_DIM });
+    }
+    if st.devtools.open {
+        refresh_network();
+    }
+}
+
+/// Toggle pause mode for new request recording.
+pub fn toggle_pause() {
+    let st = crate::state();
+    st.devtools.net_paused = !st.devtools.net_paused;
+    let icon = if st.devtools.net_paused { "play" } else { "pause" };
+    st.devtools
+        .net_pause_btn
+        .set_system_icon(icon, ui_lib::IconType::Outline, COLOR_TEXT, 16);
+}
+
+/// Clear the recorded list (manual button).
+pub fn clear_network() {
+    let st = crate::state();
+    st.devtools.net_entries.clear();
+    st.devtools.nav_start_ms = anyos_std::sys::uptime_ms();
+    if st.devtools.open {
+        refresh_network();
+    }
+}
+
 /// Select the DOM node identified by `dom_id` in the inspector tree, switch
 /// to the Inspektor tab and disable picker mode. Called from the click hook
 /// in `callbacks::on_link_click` when picker mode is active.
@@ -538,8 +862,6 @@ pub fn select_dom_node(dom_id: usize) {
         st.devtools.win.set_visible(true);
         refresh_all();
     }
-    // Find the tree index that maps back to `dom_id`. The tree was built in
-    // pre-order over Element nodes; non-Element parents may be missing.
     let mut found: Option<u32> = None;
     for (i, &mapped) in st.devtools.tree_to_dom.iter().enumerate() {
         if mapped == dom_id {
@@ -551,7 +873,6 @@ pub fn select_dom_node(dom_id: usize) {
         st.devtools.dom_tree.set_selected(idx);
         show_selected_node_styles();
     } else {
-        // Fallback: refresh the tree (DOM may have changed) and try again.
         refresh_inspector();
         for (i, &mapped) in st.devtools.tree_to_dom.iter().enumerate() {
             if mapped == dom_id {
@@ -561,7 +882,6 @@ pub fn select_dom_node(dom_id: usize) {
             }
         }
     }
-    // Switch to the Inspector tab (index 1) and exit picker mode.
     st.devtools.tab_bar.set_state(1);
     st.devtools.picker_active = false;
 }

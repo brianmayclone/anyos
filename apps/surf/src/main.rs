@@ -1134,7 +1134,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     headers,
                     generation,
                 } => {
-                    devtools::record_request_done_by_kind("script", 200, body.len() as u64);
+                    devtools::record_request_done_by_kind("js", 200, body.len() as u64);
                     crate::surf_log!(
                         "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
                         tab_index,
@@ -2387,6 +2387,24 @@ fn main() {
             st.devtools.open = false;
             st.devtools.win.set_visible(false);
         });
+
+        // Network panel: clear / pause / search / kind filters.
+        st.devtools.net_clear_btn.on_click(|_| {
+            devtools::clear_network();
+        });
+        st.devtools.net_pause_btn.on_click(|_| {
+            devtools::toggle_pause();
+        });
+        st.devtools.net_search.on_text_changed(|_| {
+            devtools::refresh_network();
+        });
+        let kinds = st.devtools.net_filter_btns.len();
+        for i in 0..kinds {
+            let id = st.devtools.net_filter_btns[i].0.clone();
+            st.devtools.net_filter_btns[i].1.on_click(move |_| {
+                devtools::set_kind_filter(&id);
+            });
+        }
     }
 
     // Keyboard shortcuts.
