@@ -112,8 +112,8 @@ pub(crate) fn apply_theme() {
     st.status_label.set_color(tc.toolbar_bg);
     st.status_label.set_text_color(tc.text_secondary);
     st.content_view.set_color(tc.window_bg);
-    st.devtools_label.set_color(tc.input_bg);
-    st.devtools_label.set_text_color(tc.success);
+    st.devtools.console_output.set_color(tc.input_bg);
+    st.devtools.console_output.set_text_color(tc.success);
 }
 
 /// Poll for compositor theme changes and re-apply Surf chrome colors.
@@ -190,43 +190,21 @@ pub(crate) fn close_tab(idx: usize) {
 // DevTools console panel
 // ═══════════════════════════════════════════════════════════
 
-/// Toggle the DevTools console window open/closed.
+/// Toggle the DevTools window open/closed.
 pub(crate) fn toggle_devtools() {
-    let st = crate::state();
-    st.devtools_open = !st.devtools_open;
-    if st.devtools_open {
-        // Move from off-screen to a visible position on first open.
-        st.devtools_win.move_to(100, 100);
-        update_devtools();
-    }
-    st.devtools_win.set_visible(st.devtools_open);
+    crate::devtools::toggle();
 }
 
-/// Clear the DevTools console output.
+/// Clear the DevTools console output (legacy entry; the new devtools panel
+/// repopulates from `js_console()` on every refresh).
 pub(crate) fn clear_devtools() {
     let st = crate::state();
-    st.devtools_label.set_text("");
+    st.devtools.console_output.set_text("");
 }
 
-/// Refresh the DevTools console panel with the active tab's JS console output.
+/// Refresh all DevTools panels.
 pub(crate) fn update_devtools() {
-    let st = crate::state();
-    if !st.devtools_open {
-        return;
-    }
-    let lines = st.tabs[st.active_tab].webview.js_console();
-    let mut text = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        if i > 0 {
-            text.push('\n');
-        }
-        text.push_str(line);
-        // Limit output to last 200 lines to avoid unbounded growth.
-        if i >= 199 {
-            break;
-        }
-    }
-    st.devtools_label.set_text(&text);
+    crate::devtools::refresh_all();
 }
 
 /// Make the tab at `idx` the active (visible) tab.

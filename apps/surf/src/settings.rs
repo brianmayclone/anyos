@@ -12,7 +12,7 @@ use crate::state;
 pub fn open_settings() {
     let st = state();
 
-    let win = ui_lib::Window::new("Settings", -1, -1, 460, 180);
+    let win = ui_lib::Window::new("Settings", -1, -1, 460, 240);
 
     // ── General section ──
     let panel = ui_lib::View::new();
@@ -41,6 +41,26 @@ pub fn open_settings() {
     lbl_hint.set_font_size(11);
     panel.add(&lbl_hint);
 
+    // ── Inhalte section ──
+    let lbl_section = ui_lib::Label::new("Inhalte");
+    lbl_section.set_position(0, 72);
+    lbl_section.set_size(425, 22);
+    lbl_section.set_text_color(0xFFCCCCCC);
+    panel.add(&lbl_section);
+
+    let chk_js = ui_lib::Checkbox::new("JavaScript aktivieren");
+    chk_js.set_position(0, 100);
+    chk_js.set_size(425, 22);
+    chk_js.set_state(if st.config.js_enabled { 1 } else { 0 });
+    panel.add(&chk_js);
+
+    let lbl_js_hint = ui_lib::Label::new("Wenn deaktiviert, werden Skripte nicht ausgeführt.");
+    lbl_js_hint.set_position(20, 124);
+    lbl_js_hint.set_size(405, 18);
+    lbl_js_hint.set_text_color(0xFF888888);
+    lbl_js_hint.set_font_size(11);
+    panel.add(&lbl_js_hint);
+
     // ── Buttons ──
     let btn_bar = ui_lib::View::new();
     btn_bar.set_dock(ui_lib::DOCK_BOTTOM);
@@ -65,6 +85,7 @@ pub fn open_settings() {
         let st = state();
         let new_homepage = config::get_field_text(&homepage_field);
         st.config.homepage = new_homepage.clone();
+        st.config.js_enabled = chk_js.get_state() != 0;
         config::save(&st.config, &st.bookmarks);
 
         // Update URL bar placeholder.

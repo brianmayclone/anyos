@@ -58,6 +58,7 @@ mod bookmarks;
 mod callbacks;
 mod config;
 mod deflate;
+mod devtools;
 mod http;
 mod net_worker;
 mod resources;
@@ -242,12 +243,8 @@ struct AppState {
     tab_bar_view: ui_lib::TabBar,
     content_view: ui_lib::View,
     status_label: ui_lib::Label,
-    /// DevTools console window (separate from main browser window).
-    devtools_win: ui_lib::Window,
-    /// Label inside the DevTools window showing JS console output.
-    devtools_label: ui_lib::Label,
-    /// Whether the DevTools window is currently visible.
-    devtools_open: bool,
+    /// DevTools window (Inspector / Console / Network / …).
+    devtools: devtools::DevTools,
     tabs: Vec<tab::TabState>,
     active_tab: usize,
     cookies: http::CookieJar,
@@ -515,6 +512,14 @@ fn execute_script_batch(tab_index: usize, scripts: Vec<String>, label: &str) {
         return;
     }
     let st = state();
+    if !st.config.js_enabled {
+        crate::surf_log!(
+            "[surf] JS disabled in settings — skipping {} {} script(s)",
+            scripts.len(),
+            label
+        );
+        return;
+    }
     crate::surf_log!(
         "[surf] executing {} {} script(s)",
         scripts.len(),
@@ -655,6 +660,14 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
     let script_label = {
         let st = state();
         if tab_index >= st.tabs.len() {
+            return;
+        }
+        if !st.config.js_enabled {
+            crate::surf_log!(
+                "[surf] JS disabled in settings — skipping {} script [{}]",
+                label,
+                slot
+            );
             return;
         }
         st.tabs[tab_index]
@@ -1042,6 +1055,12 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     cookies,
                     generation,
                 } => {
+                    devtools::record_request_done(
+                        &url.host,
+                        &url.path,
+                        response.status as u32,
+                        response.body.len() as u64,
+                    );
                     handle_nav_done(tab_index, response, url, cookies, generation);
                 }
                 net_worker::FetchResult::NavError {
@@ -1049,6 +1068,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     error_msg,
                     generation,
                 } => {
+                    devtools::record_request_done_by_kind("html", 0, 0);
                     handle_nav_error(tab_index, error_msg, generation);
                 }
                 net_worker::FetchResult::CssDone {
@@ -1059,6 +1079,11 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     parsed,
                     generation,
                 } => {
+                    if let Ok(u) = crate::http::parse_url(&href) {
+                        devtools::record_request_done(&u.host, &u.path, 200, body.len() as u64);
+                    } else {
+                        devtools::record_request_done_by_kind("css", 200, body.len() as u64);
+                    }
                     handle_css_done(tab_index, href, body, headers, parsed, generation);
                 }
                 net_worker::FetchResult::ImageDone {
@@ -1070,6 +1095,11 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     priority,
                     generation,
                 } => {
+                    if let Ok(u) = crate::http::parse_url(&src) {
+                        devtools::record_request_done(&u.host, &u.path, 200, body.len() as u64);
+                    } else {
+                        devtools::record_request_done_by_kind("img", 200, body.len() as u64);
+                    }
                     let needs_layout = handle_image_done(
                         tab_index,
                         src,
@@ -1092,6 +1122,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     display,
                     generation,
                 } => {
+                    devtools::record_request_done_by_kind("font", 200, body.len() as u64);
                     if handle_font_done(tab_index, family, body, display, generation) {
                         request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
                     }
@@ -1103,6 +1134,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     headers,
                     generation,
                 } => {
+                    devtools::record_request_done_by_kind("script", 200, body.len() as u64);
                     crate::surf_log!(
                         "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
                         tab_index,
@@ -1567,6 +1599,10 @@ fn handle_nav_done(
 
     // Restart animation/scroll tick timer (may have been stopped while idle).
     ensure_anim_timer();
+
+    // Refresh DevTools panels — DOM is now populated.
+    devtools::refresh_inspector();
+    devtools::refresh_console();
 }
 
 /// Handle a navigation error: show the error message in the status bar.
@@ -2142,19 +2178,8 @@ fn main() {
     tab_bar_view.set_size(0, 30);
     win.add(&tab_bar_view);
 
-    // ── DevTools window (separate window, initially hidden) ─────────────────
-    // Create off-screen (x=9999) so it doesn't flash on startup.
-    // toggle_devtools() will move it to a visible position when opened.
-    let devtools_win = ui_lib::Window::new(i18n::t("DevTools - Console"), 9999, 9999, 700, 400);
-    devtools_win.set_visible(false);
-
-    let devtools_label = ui_lib::Label::new("");
-    devtools_label.set_dock(ui_lib::DOCK_FILL);
-    devtools_label.set_color(tc.input_bg);
-    devtools_label.set_text_color(tc.success);
-    devtools_label.set_font_size(12);
-    devtools_label.set_padding(8, 8, 8, 8);
-    devtools_win.add(&devtools_label);
+    // ── DevTools window (Inspector / Console / Network / …) ────────────────
+    let devtools = devtools::build();
 
     // ── Status bar (DOCK_BOTTOM, 24 px) ─────────────────────────────────────
     let status_label = ui_lib::Label::new(i18n::t("Ready"));
@@ -2205,9 +2230,7 @@ fn main() {
             tab_bar_view,
             content_view,
             status_label,
-            devtools_win,
-            devtools_label,
-            devtools_open: false,
+            devtools,
             tabs: vec![initial_tab],
             active_tab: 0,
             cookies: http::CookieJar {
@@ -2343,6 +2366,28 @@ fn main() {
     win.on_close(|_| {
         ui_lib::quit();
     });
+
+    // ── DevTools wiring ─────────────────────────────────────────────────────
+    {
+        let st = state();
+        // Inspector: refresh styles when the user picks a node in the tree.
+        st.devtools.dom_tree.on_selection_changed(|_| {
+            devtools::show_selected_node_styles();
+        });
+        // Console: Enter in the input field evaluates the expression.
+        st.devtools.console_input.on_submit(|_| {
+            devtools::eval_console_input();
+        });
+        // Tab bar: index 0 is "Auswählen" — toggle picker mode.
+        st.devtools.tab_bar.on_active_changed(|e| {
+            devtools::set_picker_active(e.index == 0);
+        });
+        st.devtools.win.on_close(|_| {
+            let st = state();
+            st.devtools.open = false;
+            st.devtools.win.set_visible(false);
+        });
+    }
 
     // Keyboard shortcuts.
     win.on_key_down(|e| {

@@ -400,6 +400,7 @@ pub(crate) fn init() {
 
 /// Submit a request to the worker queue.
 pub(crate) fn submit(req: FetchRequest) {
+    record_started(&req);
     let class = request_worker_class(&req);
     let lock = request_lock(class);
     acquire(lock);
@@ -410,6 +411,30 @@ pub(crate) fn submit(req: FetchRequest) {
     }
     release(lock);
     ensure_worker(class);
+}
+
+/// Record a started request in the DevTools network panel (UI thread).
+fn record_started(req: &FetchRequest) {
+    match req {
+        FetchRequest::Navigate { url, .. } => {
+            crate::devtools::record_request_started("GET", "html", url);
+        }
+        FetchRequest::NavigatePost { url, .. } => {
+            crate::devtools::record_request_started("POST", "html", url);
+        }
+        FetchRequest::Css { url, .. } => {
+            crate::devtools::record_request_started("GET", "css", url);
+        }
+        FetchRequest::Image { url, .. } => {
+            crate::devtools::record_request_started("GET", "img", url);
+        }
+        FetchRequest::Font { url, .. } => {
+            crate::devtools::record_request_started("GET", "font", url);
+        }
+        FetchRequest::Script { url, .. } => {
+            crate::devtools::record_request_started("GET", "script", url);
+        }
+    }
 }
 
 /// Drain completed results for one tab from its mailbox.

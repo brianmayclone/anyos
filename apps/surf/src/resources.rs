@@ -943,6 +943,8 @@ pub(crate) fn queue_inline_svgs(
         return false;
     };
     let mut count = 0u32;
+    let mut total = 0u32;
+    let mut skipped_no_markup = 0u32;
     let mut sprite_urls = Vec::new();
 
     for (node_id, node) in dom.nodes.iter().enumerate() {
@@ -952,9 +954,13 @@ pub(crate) fn queue_inline_svgs(
             ..
         } = &node.node_type
         {
+            total += 1;
             let inner = match inline_svg_inner_markup(dom, node_id) {
                 Some(s) => s,
-                None => continue,
+                None => {
+                    skipped_no_markup += 1;
+                    continue;
+                }
             };
 
             let svg = reconstruct_inline_svg(attrs, &inner);
@@ -970,14 +976,18 @@ pub(crate) fn queue_inline_svgs(
         }
     }
 
+    let sprite_count = sprite_urls.len();
     queue_svg_sprite_fetches(tab_index, sprite_urls);
 
-    if count > 0 {
-        crate::surf_log!("[surf] rasterised {} inline SVG(s)", count);
-        true
-    } else {
-        false
-    }
+    crate::surf_log!(
+        "[surf] inline SVG scan: total={} rasterised={} skipped_no_markup={} sprites_queued={} tab={}",
+        total,
+        count,
+        skipped_no_markup,
+        sprite_count,
+        tab_index
+    );
+    count > 0
 }
 
 pub(crate) fn reraster_inline_svgs_with_sprite(
@@ -1590,7 +1600,13 @@ pub(crate) fn decode_svg(data: &[u8], src: &str, tab_idx: usize) {
 ///
 /// Used by the batch result processor which does a single relayout at the end.
 pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
-    let (rw, rh) = svg_intrinsic_raster_size(data).unwrap_or_else(|| match libsvg_client::probe(data) {
+    let intrinsic = svg_intrinsic_raster_size(data);
+    let probed = if intrinsic.is_none() {
+        libsvg_client::probe(data)
+    } else {
+        None
+    };
+    let (rw, rh) = intrinsic.unwrap_or_else(|| match probed {
         Some((w, h)) => {
             let w = (w as u32).max(1);
             let h = (h as u32).max(1);
@@ -1601,11 +1617,30 @@ pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
     let (rw, rh) = cap_svg_raster_size(rw, rh);
 
     let Some(pixel_count) = (rw as usize).checked_mul(rh as usize) else {
+        crate::surf_log!(
+            "[surf] svg pixel-count overflow: src={} {}x{} tab={}",
+            src,
+            rw,
+            rh,
+            tab_idx
+        );
         return;
     };
     let mut pixels = vec![0u32; pixel_count];
     let background = parse_svg_root_background(data).unwrap_or(0x00000000);
-    if libsvg_client::render_to_size(data, &mut pixels, rw, rh, background) {
+    let ok = libsvg_client::render_to_size(data, &mut pixels, rw, rh, background);
+    crate::surf_log!(
+        "[surf] svg decode: src={} bytes={} {}x{} intrinsic={} probed={} ok={} tab={}",
+        src,
+        data.len(),
+        rw,
+        rh,
+        intrinsic.is_some(),
+        probed.is_some(),
+        ok,
+        tab_idx
+    );
+    if ok {
         let st = crate::state();
         if tab_idx < st.tabs.len() {
             st.tabs[tab_idx].webview.add_image(src, pixels, rw, rh);

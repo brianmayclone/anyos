@@ -66,6 +66,15 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
         return;
     }
 
+    // DevTools element-picker mode: route the click to the inspector instead
+    // of the page's normal link/submit handling.
+    if st.devtools.picker_active {
+        if let Some(node_id) = tab.webview.hit_test_node_canvas(ctrl_id) {
+            crate::devtools::select_dom_node(node_id);
+        }
+        return;
+    }
+
     let tab_index = st.active_tab;
     if !st.tabs[tab_index].webview.dispatch_click_for_control(ctrl_id) {
         process_dom_event_side_effects(tab_index);

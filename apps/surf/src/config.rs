@@ -6,12 +6,13 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::json::Value;
-use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
+use libconf_schema::{default_bool, default_string, manifest, RegistryScope, ServiceSchema};
 
 const SURF_DIRS: &[&str] = &["config"];
 const SURF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("config/homepage", ""),
     default_string("config/bookmarks_json", "[]"),
+    default_bool("config/js_enabled", true),
 ];
 const SURF_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
 const SURF_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
@@ -30,12 +31,14 @@ const SURF_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("surf", &SURF_MAN
 
 pub struct SurfConfig {
     pub homepage: String,
+    pub js_enabled: bool,
 }
 
 impl SurfConfig {
     pub fn default() -> Self {
         Self {
             homepage: String::new(),
+            js_enabled: true,
         }
     }
 }
@@ -130,6 +133,7 @@ fn bookmark_from_json(val: &Value) -> BookmarkItem {
 pub fn load() -> (SurfConfig, BookmarkStore) {
     let _ = SURF_SCHEMA.register();
     let homepage = SURF_SCHEMA.read_string("config/homepage").unwrap_or_default();
+    let js_enabled = SURF_SCHEMA.read_bool("config/js_enabled").unwrap_or(true);
     let mut store = BookmarkStore::new();
     if let Some(json) = SURF_SCHEMA.read_string("config/bookmarks_json") {
         if let Ok(arr) = Value::parse(&json) {
@@ -140,7 +144,13 @@ pub fn load() -> (SurfConfig, BookmarkStore) {
             }
         }
     }
-    (SurfConfig { homepage }, store)
+    (
+        SurfConfig {
+            homepage,
+            js_enabled,
+        },
+        store,
+    )
 }
 
 pub fn save(config: &SurfConfig, store: &BookmarkStore) {
@@ -151,6 +161,7 @@ pub fn save(config: &SurfConfig, store: &BookmarkStore) {
     let json = bookmarks_arr.to_json_string_pretty();
     let _ = SURF_SCHEMA.write_string("config/homepage", &config.homepage);
     let _ = SURF_SCHEMA.write_string("config/bookmarks_json", &json);
+    let _ = SURF_SCHEMA.write_bool("config/js_enabled", config.js_enabled);
 }
 
 // ═══════════════════════════════════════════════════════════
