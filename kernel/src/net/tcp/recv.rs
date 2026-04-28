@@ -304,14 +304,25 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
                 return u32::MAX;
             }
 
-            // Register ourselves as the waiting thread and block
+            // Race-free publish-state-then-block:
+            //
+            //   1. Set waiting_tid so the input path knows whom to wake.
+            //   2. Transition to Blocked while still holding TCP_CONNECTIONS.
+            //
+            // The input path acquires TCP_CONNECTIONS before reading
+            // waiting_tid and calling try_wake_thread(), so it cannot run
+            // between (1) and (2). When we drop the lock and call schedule(),
+            // any subsequent wake observes state==Blocked and succeeds.
             tcb.waiting_tid = tid;
+            let wake_at = now.wrapping_add(1);
+            crate::task::scheduler::prepare_to_block_until(wake_at);
         }
         // Lock is dropped here — safe to block.
 
-        // Sleep briefly (1 tick = 10ms). Woken early by try_wake_thread().
-        let wake_at = crate::arch::hal::timer_current_ticks() + 1;
-        crate::task::scheduler::sleep_until(wake_at);
+        // Sleep at most 1 tick (1 ms with TICK_HZ=1000). Woken earlier by
+        // try_wake_thread() — see prepare_to_block_until() above for the
+        // race-free publish-state-then-block sequence.
+        crate::task::scheduler::schedule();
 
         // After waking, process incoming packets (fast path).
         crate::net::poll_rx();

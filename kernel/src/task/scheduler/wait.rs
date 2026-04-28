@@ -206,6 +206,31 @@ pub fn try_waitpid(tid: u32) -> u32 {
     u32::MAX // Not found
 }
 
+/// Mark the current thread Blocked with a wake deadline, but do NOT
+/// invoke the scheduler. The caller must call [`schedule`] afterwards,
+/// after dropping any subsystem locks.
+///
+/// This exists to close the missed-wakeup race in subsystems like
+/// `tcp::recv`: the thread can publish its `waiting_tid` AND transition
+/// to `Blocked` while still holding the subsystem lock, so an IRQ-driven
+/// `try_wake_thread` call (which serializes through that same lock)
+/// cannot observe a Ready thread.
+pub fn prepare_to_block_until(wake_at: u32) {
+    crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SLEEP_UNTIL);
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if let Some(idx) = sched.current_idx(cpu_id) {
+        sched.threads[idx].wake_at_tick = Some(wake_at);
+        sched.threads[idx].last_cpu = cpu_id;
+        sched.threads[idx].state = ThreadState::Blocked;
+        sched.threads[idx].context.save_complete = 0;
+    }
+}
+
 /// Block the current thread until the given PIT tick is reached.
 pub fn sleep_until(wake_at: u32) {
     {
