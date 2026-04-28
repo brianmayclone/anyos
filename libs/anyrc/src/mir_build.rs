@@ -142,12 +142,7 @@ impl<'a> MirBuilder<'a> {
                 out.insert(f.def_id, sym);
                 if let Some(body) = &f.body {
                     module_path.push(f.name);
-                    Self::collect_qualified_fn_symbols_from_block(
-                        body,
-                        interner,
-                        out,
-                        module_path,
-                    );
+                    Self::collect_qualified_fn_symbols_from_block(body, interner, out, module_path);
                     module_path.pop();
                 }
             }
@@ -640,9 +635,7 @@ impl<'a> MirBuilder<'a> {
 
         let full = self.hir_path_to_string(path);
         match full.as_str() {
-            "alloc::vec::Vec::new" | "std::vec::Vec::new" => {
-                Some(self.interner.intern("Vec::new"))
-            }
+            "alloc::vec::Vec::new" | "std::vec::Vec::new" => Some(self.interner.intern("Vec::new")),
             "alloc::vec::Vec::with_capacity" | "std::vec::Vec::with_capacity" => {
                 Some(self.interner.intern("Vec::with_capacity"))
             }
@@ -680,7 +673,11 @@ impl<'a> MirBuilder<'a> {
     }
 
     fn resolved_path_call_operand(&mut self, path: &HirPath, callee: &HirExpr) -> Option<Operand> {
-        let def_id = *self.resolve.resolutions.get(&callee.id)?;
+        let typed_def_id = match self.get_expr_ty(callee) {
+            TyKind::FnDef(def_id, _) => Some(def_id),
+            _ => None,
+        };
+        let def_id = typed_def_id.or_else(|| self.resolve.resolutions.get(&callee.id).copied())?;
         if !self.typeck.fn_sigs.contains_key(&def_id) {
             return None;
         }
@@ -704,48 +701,92 @@ impl<'a> MirBuilder<'a> {
             return None;
         }
 
-        let method_info = self.resolve.resolutions.get(&callee.id).and_then(|method_def_id| {
-            self.typeck
-                .trait_methods
-                .iter()
-                .find_map(|(trait_def_id, methods)| {
-                    methods
-                        .iter()
-                        .enumerate()
-                        .find(|(_, (_, def_id))| *def_id == *method_def_id)
-                        .map(|(idx, (name, _))| (*trait_def_id, idx, *name))
-                })
-        });
+        let recv_ty = self.get_expr_ty(&args[0]);
+        let recv_inner = Self::peel_refs(&recv_ty);
+
+        let method_info = self
+            .resolve
+            .resolutions
+            .get(&callee.id)
+            .and_then(|method_def_id| {
+                self.typeck
+                    .trait_methods
+                    .iter()
+                    .find_map(|(trait_def_id, methods)| {
+                        methods
+                            .iter()
+                            .enumerate()
+                            .find(|(_, (_, def_id))| *def_id == *method_def_id)
+                            .map(|(idx, (name, _))| (*trait_def_id, idx, *name))
+                    })
+            });
         let method_info = method_info.or_else(|| {
             let method_name = path.segments.last()?.ident;
             let trait_name = path
                 .segments
                 .get(path.segments.len().checked_sub(2)?)?
                 .ident;
+            if let TyKind::Adt(recv_def_id, _) = recv_inner {
+                if let Some((trait_def_id, _impl_def_id)) = self
+                    .typeck
+                    .trait_impls
+                    .iter()
+                    .filter(|((_, impl_trait), _)| {
+                        self.typeck
+                            .trait_names
+                            .get(impl_trait)
+                            .is_some_and(|name| *name == trait_name)
+                    })
+                    .flat_map(|((_, trait_def_id), methods)| {
+                        methods
+                            .iter()
+                            .map(move |(name, def_id)| (*trait_def_id, *name, *def_id))
+                    })
+                    .find_map(|(trait_def_id, name, impl_def_id)| {
+                        if name != method_name {
+                            return None;
+                        }
+                        let self_ty = self
+                            .typeck
+                            .impl_self_ty_by_method
+                            .get(&impl_def_id)
+                            .or_else(|| {
+                                self.typeck
+                                    .fn_sigs
+                                    .get(&impl_def_id)
+                                    .and_then(|(params, _)| params.first())
+                            })?;
+                        let self_inner = Self::peel_refs(self_ty);
+                        matches!(self_inner, TyKind::Adt(self_def, _) if self_def == recv_def_id)
+                            .then_some((trait_def_id, impl_def_id))
+                    })
+                {
+                    let method_index = self
+                        .typeck
+                        .trait_methods
+                        .get(&trait_def_id)
+                        .and_then(|methods| {
+                            methods.iter().position(|(name, _)| *name == method_name)
+                        })
+                        .unwrap_or(0);
+                    return Some((trait_def_id, method_index, method_name));
+                }
+            }
             let trait_def_id = self
                 .typeck
                 .trait_names
                 .iter()
                 .find_map(|(def_id, name)| (*name == trait_name).then_some(*def_id))?;
             let methods = self.typeck.trait_methods.get(&trait_def_id)?;
-            let method_index = methods
-                .iter()
-                .position(|(name, _)| *name == method_name)?;
+            let method_index = methods.iter().position(|(name, _)| *name == method_name)?;
             Some((trait_def_id, method_index, method_name))
         });
         let (trait_def_id, method_index, method_name) = method_info?;
 
-        let recv_ty = self.get_expr_ty(&args[0]);
-        let recv_inner = Self::peel_refs(&recv_ty);
-
         if matches!(recv_inner, TyKind::DynTrait(def_id) if *def_id == trait_def_id) {
             let recv_op = self.lower_expr(&args[0]);
             let fat_ptr_local = self.alloc_temp(recv_ty.clone(), expr.span);
-            self.emit_assign(
-                Place::local(fat_ptr_local),
-                Rvalue::Use(recv_op),
-                expr.span,
-            );
+            self.emit_assign(Place::local(fat_ptr_local), Rvalue::Use(recv_op), expr.span);
 
             let data_ptr_local = self.alloc_temp(
                 TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable),
@@ -839,7 +880,10 @@ impl<'a> MirBuilder<'a> {
                         })
                 })?;
             let fn_sym = self.fn_symbol_for_def(impl_def_id, path.segments.last()?.ident);
-            let all_args = args.iter().map(|arg| self.lower_expr(arg)).collect::<Vec<_>>();
+            let all_args = args
+                .iter()
+                .map(|arg| self.lower_expr(arg))
+                .collect::<Vec<_>>();
             let ty = self.get_expr_ty(expr);
             let dest = self.alloc_temp(ty, expr.span);
             let next_block = self.push_block();
@@ -1219,9 +1263,7 @@ impl<'a> MirBuilder<'a> {
                         return op;
                     }
                 } else if let HirExprKind::QualifiedPath(qpath) = &callee.kind {
-                    if let Some(op) =
-                        self.lower_trait_ufcs_call(callee, &qpath.path, args, expr)
-                    {
+                    if let Some(op) = self.lower_trait_ufcs_call(callee, &qpath.path, args, expr) {
                         return op;
                     }
                 }
@@ -1253,9 +1295,7 @@ impl<'a> MirBuilder<'a> {
                         return op;
                     }
                 } else if let HirExprKind::QualifiedPath(qpath) = &callee.kind {
-                    if let Some(op) =
-                        self.lower_trait_ufcs_call(callee, &qpath.path, args, expr)
-                    {
+                    if let Some(op) = self.lower_trait_ufcs_call(callee, &qpath.path, args, expr) {
                         return op;
                     }
                 }
@@ -1484,8 +1524,10 @@ impl<'a> MirBuilder<'a> {
                                                     .iter()
                                                     .find(|(n, _)| n == method_name)
                                                 {
-                                                    let fn_sym = self
-                                                        .fn_symbol_for_def(*impl_def_id, *method_name);
+                                                    let fn_sym = self.fn_symbol_for_def(
+                                                        *impl_def_id,
+                                                        *method_name,
+                                                    );
                                                     vtable_fn_names.push(fn_sym);
                                                 }
                                             }
@@ -3567,27 +3609,27 @@ impl<'a> MirBuilder<'a> {
                         }
                         // Keep full names where the final segment is too generic
                         // or where codegen needs the owning primitive/ADT.
-                        let fn_name = self
-                            .fn_symbol_for_path_def(*def_id, path)
-                            .unwrap_or_else(|| {
-                                self.fn_symbol_for_def(
-                                    *def_id,
-                                    path.segments.last().unwrap().ident,
-                                )
-                            });
+                        let fn_name =
+                            self.fn_symbol_for_path_def(*def_id, path)
+                                .unwrap_or_else(|| {
+                                    self.fn_symbol_for_def(
+                                        *def_id,
+                                        path.segments.last().unwrap().ident,
+                                    )
+                                });
                         Operand::Constant(Constant {
                             ty: ty.clone(),
                             value: ConstValue::FnItem(fn_name),
                         })
                     } else {
-                        let fn_name = self
-                            .fn_symbol_for_path_def(*def_id, path)
-                            .unwrap_or_else(|| {
-                                self.fn_symbol_for_def(
-                                    *def_id,
-                                    path.segments.last().unwrap().ident,
-                                )
-                            });
+                        let fn_name =
+                            self.fn_symbol_for_path_def(*def_id, path)
+                                .unwrap_or_else(|| {
+                                    self.fn_symbol_for_def(
+                                        *def_id,
+                                        path.segments.last().unwrap().ident,
+                                    )
+                                });
                         Operand::Constant(Constant {
                             ty: ty.clone(),
                             value: ConstValue::FnItem(fn_name),
@@ -3771,7 +3813,13 @@ impl<'a> MirBuilder<'a> {
         };
         let wants_mut = matches!(
             method,
-            "clear" | "push_str" | "push" | "pop" | "push_back" | "pop_front" | "reserve"
+            "clear"
+                | "push_str"
+                | "push"
+                | "pop"
+                | "push_back"
+                | "pop_front"
+                | "reserve"
                 | "truncate"
         );
         Some((full_name, wants_mut))
@@ -3852,9 +3900,7 @@ impl<'a> MirBuilder<'a> {
                 _ => return None,
             },
             "VecDeque" => match method {
-                "len" | "is_empty" | "push_back" | "pop_front" | "clear" | "reserve" => {
-                    "VecDeque"
-                }
+                "len" | "is_empty" | "push_back" | "pop_front" | "clear" | "reserve" => "VecDeque",
                 _ => return None,
             },
             "Range" => match method {

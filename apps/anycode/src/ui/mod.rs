@@ -23,6 +23,7 @@ pub mod settings_dialog;
 pub mod sidebar;
 pub mod splash;
 pub mod status_bar;
+pub mod storyboard_event_dialog;
 pub mod storyboard_surface;
 pub mod symbols_panel;
 pub mod toolbar;

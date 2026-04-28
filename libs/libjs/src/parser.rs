@@ -530,12 +530,13 @@ impl Parser {
                 // Use empty key as sentinel; compiler checks Pattern::Rest on value
                 props.push(ObjPatProp {
                     key: String::new(),
+                    computed: None,
                     value: Pattern::Rest(Box::new(inner)),
                 });
                 self.eat(&TokenKind::Comma);
                 break;
             }
-            let key = self.pattern_prop_key();
+            let (key, computed) = self.pattern_prop_key();
             let value = if self.eat(&TokenKind::Colon) {
                 self.parse_binding_pattern()
             } else {
@@ -547,7 +548,11 @@ impl Parser {
             } else {
                 value
             };
-            props.push(ObjPatProp { key, value });
+            props.push(ObjPatProp {
+                key,
+                computed,
+                value,
+            });
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
@@ -556,22 +561,29 @@ impl Parser {
         Pattern::Object(props)
     }
 
-    fn pattern_prop_key(&mut self) -> String {
+    fn pattern_prop_key(&mut self) -> (String, Option<Expr>) {
         match self.peek().clone() {
+            TokenKind::LBracket => {
+                self.pos += 1;
+                let expr = self.parse_expression();
+                self.expect(&TokenKind::RBracket);
+                (String::new(), Some(expr))
+            }
             TokenKind::String(s) => {
                 self.pos += 1;
-                s
+                (s, None)
             }
             TokenKind::Number(n) => {
                 self.pos += 1;
                 let int_n = n as i64;
-                if n == int_n as f64 {
+                let key = if n == int_n as f64 {
                     alloc::format!("{}", int_n)
                 } else {
                     alloc::format!("{}", n)
-                }
+                };
+                (key, None)
             }
-            _ => self.ident_str(),
+            _ => (self.ident_str(), None),
         }
     }
 

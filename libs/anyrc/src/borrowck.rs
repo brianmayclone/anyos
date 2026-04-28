@@ -297,7 +297,11 @@ fn merge_moved_entry(
     }
 }
 
-fn end_temporary_borrows(borrows: &mut Vec<ActiveBorrow>, _locals: &[LocalDecl], _arg_count: usize) {
+fn end_temporary_borrows(
+    borrows: &mut Vec<ActiveBorrow>,
+    _locals: &[LocalDecl],
+    _arg_count: usize,
+) {
     borrows.retain(|b| !b.temporary);
 }
 

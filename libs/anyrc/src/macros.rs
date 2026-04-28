@@ -212,7 +212,9 @@ fn expand_items(
                 }
 
                 if macro_name == "include" {
-                    if let Some(mut included) = expand_builtin_include_items(&args, interner, base_dir) {
+                    if let Some(mut included) =
+                        expand_builtin_include_items(&args, interner, base_dir)
+                    {
                         prepend_attrs_to_first_item(&mut included, attrs, interner);
                         items.splice(i..i, included);
                         *changed = true;
@@ -393,7 +395,13 @@ fn expand_builtin_include_items(
     let defs = collect_macro_defs(&krate);
     for _ in 0..64 {
         let mut changed = false;
-        expand_items(&mut krate.items, &defs, interner, &mut changed, &include_dir);
+        expand_items(
+            &mut krate.items,
+            &defs,
+            interner,
+            &mut changed,
+            &include_dir,
+        );
         if !changed {
             break;
         }

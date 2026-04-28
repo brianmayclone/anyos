@@ -15,6 +15,12 @@ fn runtime_does_not_export_fake_stdlib_methods() {
         "Option::map",
         "Result::map_err",
         "HashMap::insert",
+        "__anyrc_hashmap_insert",
+        "__anyrc_hashmap_get",
+        "__anyrc_hashmap_entry",
+        "__anyrc_entry_or_default",
+        "__anyrc_option_map",
+        "__anyrc_to_string",
     ] {
         assert!(
             !exported.contains(&forbidden),

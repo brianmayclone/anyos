@@ -1,7 +1,7 @@
-use alloc::cell::RefCell;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
+use core::cell::RefCell;
 use libanyui_client as ui;
 use ui::Widget;
 
@@ -45,8 +45,9 @@ impl StoryboardSurface {
         hint.set_text_color(tc.text_secondary);
         header.add(&hint);
 
-        let scroll = ui::ScrollView::new(CANVAS_W, CANVAS_H);
+        let scroll = ui::ScrollView::new();
         scroll.set_dock(ui::DOCK_FILL);
+        scroll.set_size(CANVAS_W, CANVAS_H);
         scroll.set_color(tc.editor_bg);
         panel.add(&scroll);
 
@@ -98,40 +99,82 @@ impl StoryboardSurface {
             let Some((from_form, from_control)) = drag_ref_up.borrow_mut().take() else {
                 return;
             };
-            let target_form = {
+            let (target_form, event_options): (Option<String>, String) = {
                 let doc = doc_ref_up.borrow();
-                doc.scene_at(x, y)
+                let target = doc
+                    .scene_at(x, y)
                     .and_then(|idx| doc.scenes.get(idx))
-                    .map(|scene| scene.form_name.clone())
+                    .map(|scene| scene.form_name.clone());
+                let options = trigger_events_for_source(&doc, &from_form, &from_control);
+                (target, options)
             };
             let Some(to_form) = target_form else {
                 return;
             };
-            let mut doc = doc_ref_up.borrow_mut();
-            match storyboard::apply_segue(
-                &file_path_up,
-                &mut doc,
-                &from_form,
-                &from_control,
-                &to_form,
-            ) {
-                Ok(Some(_)) => {
-                    ui::Control::from_id(canvas_id_up).set_tooltip("Segue created");
-                    render_storyboard(&canvas_up, &doc);
-                }
-                Ok(None) => {
-                    ui::Control::from_id(canvas_id_up).set_tooltip("Segue already exists");
-                }
-                Err(err) => {
-                    ui::Control::from_id(canvas_id_up).set_tooltip(err);
-                }
-            }
+
+            let title = format!("Trigger for {}.{}", from_form, from_control);
+            let file_path_apply = file_path_up.clone();
+            let doc_ref_apply = doc_ref_up.clone();
+            let from_form_apply = from_form.clone();
+            let from_control_apply = from_control.clone();
+            let to_form_apply = to_form.clone();
+            crate::ui::storyboard_event_dialog::show(
+                &title,
+                &event_options,
+                move |trigger_event| {
+                    let mut doc = doc_ref_apply.borrow_mut();
+                    match storyboard::apply_segue(
+                        &file_path_apply,
+                        &mut doc,
+                        &from_form_apply,
+                        &from_control_apply,
+                        &trigger_event,
+                        &to_form_apply,
+                    ) {
+                        Ok(Some(_)) => {
+                            ui::Control::from_id(canvas_id_up).set_tooltip("Segue created");
+                            render_storyboard(&canvas_up, &doc);
+                            true
+                        }
+                        Ok(None) => {
+                            ui::Control::from_id(canvas_id_up).set_tooltip("Segue already exists");
+                            true
+                        }
+                        Err(err) => {
+                            ui::Control::from_id(canvas_id_up).set_tooltip(err);
+                            false
+                        }
+                    }
+                },
+            );
         });
     }
 
     fn render(&self) {
         render_storyboard(&self.canvas, &self.doc.borrow());
     }
+}
+
+fn trigger_events_for_source(
+    doc: &storyboard::StoryboardDocument,
+    form_name: &str,
+    control_name: &str,
+) -> String {
+    doc.scenes
+        .iter()
+        .find(|scene| scene.form_name == form_name)
+        .and_then(|scene| designer::load_designer(&scene.designer_path))
+        .and_then(|form| {
+            form.controls
+                .iter()
+                .find(|control| control.name == control_name)
+                .map(|control| {
+                    String::from(storyboard::trigger_event_options_for_control(
+                        control.kind.as_str(),
+                    ))
+                })
+        })
+        .unwrap_or_else(|| String::from("OnClick|OnChanged|OnSubmit|OnDoubleClick"))
 }
 
 fn render_storyboard(canvas: &ui::Canvas, doc: &storyboard::StoryboardDocument) {
@@ -151,12 +194,24 @@ fn draw_grid(canvas: &ui::Canvas, color: u32) {
     let major = color_with_alpha(color, 0x80);
     let mut x = 0;
     while x < CANVAS_W as i32 {
-        canvas.draw_line(x, 0, x, CANVAS_H as i32, if x % 80 == 0 { major } else { minor });
+        canvas.draw_line(
+            x,
+            0,
+            x,
+            CANVAS_H as i32,
+            if x % 80 == 0 { major } else { minor },
+        );
         x += 20;
     }
     let mut y = 0;
     while y < CANVAS_H as i32 {
-        canvas.draw_line(0, y, CANVAS_W as i32, y, if y % 80 == 0 { major } else { minor });
+        canvas.draw_line(
+            0,
+            y,
+            CANVAS_W as i32,
+            y,
+            if y % 80 == 0 { major } else { minor },
+        );
         y += 20;
     }
 }
@@ -170,7 +225,14 @@ fn draw_scene(canvas: &ui::Canvas, scene: &storyboard::StoryboardScene) {
     canvas.draw_text(scene.x + 10, scene.y + 8, tc.text, 1, 12, &scene.form_name);
 
     let Some(doc) = designer::load_designer(&scene.designer_path) else {
-        canvas.draw_text(scene.x + 10, scene.y + 52, tc.error, 0, 11, "Designer missing");
+        canvas.draw_text(
+            scene.x + 10,
+            scene.y + 52,
+            0xffef4444,
+            0,
+            11,
+            "Designer missing",
+        );
         return;
     };
     let ox = scene.x + 16;
@@ -196,11 +258,18 @@ fn draw_segue(
     doc: &storyboard::StoryboardDocument,
     segue: &storyboard::StoryboardSegue,
 ) {
-    let Some(from_scene) = doc.scenes.iter().find(|scene| scene.form_name == segue.from_form)
+    let Some(from_scene) = doc
+        .scenes
+        .iter()
+        .find(|scene| scene.form_name == segue.from_form)
     else {
         return;
     };
-    let Some(to_scene) = doc.scenes.iter().find(|scene| scene.form_name == segue.to_form) else {
+    let Some(to_scene) = doc
+        .scenes
+        .iter()
+        .find(|scene| scene.form_name == segue.to_form)
+    else {
         return;
     };
     let Some(form) = designer::load_designer(&from_scene.designer_path) else {
@@ -219,9 +288,12 @@ fn draw_segue(
     let ey = to_scene.y + h as i32 / 2;
     draw_curve(canvas, sx, sy, ex, ey, ui::theme::colors().accent);
     canvas.fill_circle(ex, ey, 5, ui::theme::colors().accent);
-    if !segue.condition.is_empty() {
-        canvas.draw_text((sx + ex) / 2, (sy + ey) / 2 - 12, 0xfffacc15, 0, 10, &segue.condition);
-    }
+    let label = if segue.condition.is_empty() {
+        segue.trigger_event.clone()
+    } else {
+        format!("{} / {}", segue.trigger_event, segue.condition)
+    };
+    canvas.draw_text((sx + ex) / 2, (sy + ey) / 2 - 12, 0xfffacc15, 0, 10, &label);
 }
 
 fn draw_curve(canvas: &ui::Canvas, sx: i32, sy: i32, ex: i32, ey: i32, color: u32) {

@@ -1265,9 +1265,7 @@ fn build_runtime_object(target_abi: link::TargetAbi) -> elf::ObjectFile {
             "__anyrc_vec_push" => Some("__anyrc_realloc"),
             "__anyrc_string_push_str" => Some("__anyrc_realloc"),
             "__anyrc_string_push_char" => Some("__anyrc_string_push_str"),
-            "Box::new" | "alloc::boxed::Box::new" | "std::boxed::Box::new" => {
-                Some("__anyrc_alloc")
-            }
+            "Box::new" | "alloc::boxed::Box::new" | "std::boxed::Box::new" => Some("__anyrc_alloc"),
             _ => None,
         };
         let Some(target) = target else {
@@ -1649,34 +1647,33 @@ fn render_item(
         HirItemKind::Impl(ib) => {
             let impl_local_names = local_item_names(&ib.items);
             let impl_public_type_names = local_public_type_names(&ib.items);
-            let exported_items: Vec<&crate::hir::HirItem> =
-                if ib.trait_ref.is_some() {
-                    ib.items
-                        .iter()
-                        .filter(|item| {
-                            matches!(
-                                item.kind,
-                                HirItemKind::Fn(_)
-                                    | HirItemKind::TypeAlias(_)
-                                    | HirItemKind::Const(_)
-                                    | HirItemKind::Static(_)
-                            )
-                        })
-                        .collect()
-                } else {
-                    ib.items
-                        .iter()
-                        .filter(|item| {
-                            item_is_exported(
-                                item,
-                                false,
-                                &impl_local_names,
-                                &impl_public_type_names,
-                                interner,
-                            )
-                        })
-                        .collect()
-                };
+            let exported_items: Vec<&crate::hir::HirItem> = if ib.trait_ref.is_some() {
+                ib.items
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            item.kind,
+                            HirItemKind::Fn(_)
+                                | HirItemKind::TypeAlias(_)
+                                | HirItemKind::Const(_)
+                                | HirItemKind::Static(_)
+                        )
+                    })
+                    .collect()
+            } else {
+                ib.items
+                    .iter()
+                    .filter(|item| {
+                        item_is_exported(
+                            item,
+                            false,
+                            &impl_local_names,
+                            &impl_public_type_names,
+                            interner,
+                        )
+                    })
+                    .collect()
+            };
             if exported_items.is_empty() {
                 return;
             }
@@ -1927,10 +1924,19 @@ fn item_is_exported(
     }
 }
 
-fn trait_impl_is_interface_relevant(ib: &crate::hir::HirImplBlock, interner: &Interner) -> bool {
+fn trait_impl_is_interface_relevant(
+    ib: &crate::hir::HirImplBlock,
+    public_type_names: &[crate::intern::Symbol],
+    interner: &Interner,
+) -> bool {
     let Some(trait_ref) = &ib.trait_ref else {
         return false;
     };
+    if inherent_impl_self_type_is_public(ib, public_type_names)
+        && trait_impl_trait_is_public(ib, public_type_names)
+    {
+        return true;
+    }
     let Some(last) = trait_ref.segments.last() else {
         return false;
     };
@@ -1938,6 +1944,16 @@ fn trait_impl_is_interface_relevant(ib: &crate::hir::HirImplBlock, interner: &In
         interner.resolve(last.ident),
         "Deref" | "DerefMut" | "Index" | "From" | "PartialEq" | "Iterator" | "IntoIterator"
     )
+}
+
+fn trait_impl_trait_is_public(
+    ib: &crate::hir::HirImplBlock,
+    public_type_names: &[crate::intern::Symbol],
+) -> bool {
+    ib.trait_ref
+        .as_ref()
+        .and_then(|trait_ref| trait_ref.segments.last())
+        .is_some_and(|last| public_type_names.contains(&last.ident))
 }
 
 fn local_item_names(items: &[crate::hir::HirItem]) -> Vec<crate::intern::Symbol> {

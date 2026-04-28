@@ -119,7 +119,10 @@ pub fn runtime_stubs(target_abi: TargetAbi) -> Vec<(String, Vec<u8>)> {
         stubs.push((name.to_string(), vec![0x48, 0x31, 0xC0, 0xC3])); // xor rax, rax; ret
     }
     for name in ["read"] {
-        stubs.push((name.to_string(), vec![0x48, 0x31, 0xC0, 0x48, 0x31, 0xD2, 0xC3])); // Ok(0)-shaped
+        stubs.push((
+            name.to_string(),
+            vec![0x48, 0x31, 0xC0, 0x48, 0x31, 0xD2, 0xC3],
+        )); // Ok(0)-shaped
     }
     for name in ["id"] {
         stubs.push((name.to_string(), vec![0x8B, 0x07, 0xC3])); // mov eax, [rdi]; ret

@@ -817,15 +817,13 @@ impl DesignerDocument {
         out.push_str("    pub fn new() -> Self {\n");
         out.push_str(&format!("        let ui = {}::build();\n", ui_struct));
         for control in &self.controls {
-            if matches!(
-                control.kind.as_str(),
-                "Button" | "IconButton" | "ImageButton" | "LinkLabel" | "PlainButton"
-            ) {
-                out.push_str(&format!(
-                    "        ui.{}.on_click(|_| events::{}());\n",
-                    control.name,
-                    control.event_name()
-                ));
+            for (event_name, handler) in event_handler_bindings(control) {
+                if let Some(method) = event_hook_method(control.kind.as_str(), &event_name) {
+                    out.push_str(&format!(
+                        "        ui.{}.{}(|_| events::{}());\n",
+                        control.name, method, handler
+                    ));
+                }
             }
         }
         out.push_str("        Self { ui }\n    }\n\n");
@@ -839,13 +837,11 @@ impl DesignerDocument {
     pub fn events_rs(&self) -> String {
         let mut out = String::new();
         for control in &self.controls {
-            if matches!(
-                control.kind.as_str(),
-                "Button" | "IconButton" | "ImageButton" | "LinkLabel" | "PlainButton"
-            ) {
-                out.push_str(&format!("pub fn {}() {{\n", control.event_name()));
-                out.push_str("    // TODO: handle event\n");
-                out.push_str("}\n\n");
+            for (_event_name, handler) in event_handler_bindings(control) {
+                out.push_str(&format!(
+                    "pub fn {}() {{\n    // TODO: handle event\n}}\n\n",
+                    handler
+                ));
             }
         }
         out
@@ -1391,31 +1387,86 @@ fn ensure_event_stubs(events_path: &str, doc: &DesignerDocument) -> Result<(), &
     let mut data = anyos_std::fs::read_to_string(events_path).unwrap_or_default();
     let mut changed = false;
     for control in &doc.controls {
-        if !matches!(
-            control.kind.as_str(),
-            "Button" | "IconButton" | "ImageButton" | "LinkLabel" | "PlainButton"
-        ) {
-            continue;
+        for (_event_name, handler) in event_handler_bindings(control) {
+            let signature = format!("pub fn {}()", handler);
+            if data.contains(&signature) {
+                continue;
+            }
+            if !data.ends_with('\n') {
+                data.push('\n');
+            }
+            data.push_str(&format!(
+                "\npub fn {}() {{\n    // TODO: handle event\n}}\n",
+                handler
+            ));
+            changed = true;
         }
-        let handler = control.event_name();
-        let signature = format!("pub fn {}()", handler);
-        if data.contains(&signature) {
-            continue;
-        }
-        if !data.ends_with('\n') {
-            data.push('\n');
-        }
-        data.push_str(&format!(
-            "\npub fn {}() {{\n    // TODO: handle event\n}}\n",
-            handler
-        ));
-        changed = true;
     }
     if changed {
         anyos_std::fs::write_bytes(events_path, data.as_bytes())
             .map_err(|_| "Could not update event handlers")?;
     }
     Ok(())
+}
+
+fn event_handler_bindings(control: &DesignerControl) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if event_hook_method(control.kind.as_str(), "OnClick").is_some() {
+        out.push((String::from("OnClick"), control.property_value("OnClick")));
+    }
+    for property in &control.properties {
+        if !is_control_event(&property.name) || property.value.is_empty() {
+            continue;
+        }
+        if event_hook_method(control.kind.as_str(), &property.name).is_none() {
+            continue;
+        }
+        if out.iter().any(|(_, handler)| handler == &property.value) {
+            continue;
+        }
+        out.push((property.name.clone(), property.value.clone()));
+    }
+    out
+}
+
+fn is_control_event(name: &str) -> bool {
+    CONTROL_EVENTS
+        .iter()
+        .any(|event| normalized_property(event) == normalized_property(name))
+}
+
+fn event_hook_method(kind: &str, event_name: &str) -> Option<&'static str> {
+    match normalized_property(event_name) {
+        "onclick" => match kind {
+            "Button" | "IconButton" | "ImageButton" | "LinkLabel" | "PlainButton" | "Label"
+            | "Tag" | "Canvas" => Some("on_click"),
+            _ => None,
+        },
+        "ondoubleclick" => match kind {
+            "TabBar" => Some("on_double_click"),
+            _ => None,
+        },
+        "onchanged" => match kind {
+            "TextField" | "TextArea" | "SearchField" | "AutoCompleteTextField" => {
+                Some("on_text_changed")
+            }
+            "TextEditor" => Some("on_text_changed"),
+            "ListBox" | "TreeView" | "DataGrid" | "TableView" | "ComboBox" | "DropDown"
+            | "RadioGroup" => Some("on_selection_changed"),
+            "SegmentedControl" | "TabBar" => Some("on_active_changed"),
+            "CheckBox" | "RadioButton" | "Toggle" => Some("on_checked_changed"),
+            "Slider" | "Stepper" => Some("on_value_changed"),
+            "DatePicker" | "DateTimePicker" | "TimePicker" => Some("on_changed"),
+            "ColorWell" => Some("on_color_selected"),
+            _ => None,
+        },
+        "onsubmit" => match kind {
+            "TextField" | "SearchField" | "AutoCompleteTextField" | "DataGrid" => Some("on_submit"),
+            "TreeView" => Some("on_enter"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn default_control_base_name(kind_name: &str) -> &'static str {

@@ -366,6 +366,7 @@ pub enum Pattern {
 #[derive(Debug, Clone)]
 pub struct ObjPatProp {
     pub key: String,
+    pub computed: Option<Expr>,
     pub value: Pattern,
 }
 

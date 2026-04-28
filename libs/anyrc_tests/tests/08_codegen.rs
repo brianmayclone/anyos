@@ -131,7 +131,10 @@ fn codegen_fnitem_that_names_local_param_is_indirect_call() {
     assert!(
         relocs.iter().all(|rel| rel.symbol != "f"),
         "local function parameter must not be emitted as external relocation: {:?}",
-        relocs.iter().map(|rel| rel.symbol.as_str()).collect::<Vec<_>>()
+        relocs
+            .iter()
+            .map(|rel| rel.symbol.as_str())
+            .collect::<Vec<_>>()
     );
 }
 

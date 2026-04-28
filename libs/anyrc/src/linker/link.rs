@@ -334,7 +334,13 @@ fn link_impl(
                 })
                 .max_by_key(|sym| sym.offset)
                 .map(|sym| sym.name.clone());
-            pending_relocs.push((offset_in_merged, sym_name, source, rel.rela_type, rel.addend));
+            pending_relocs.push((
+                offset_in_merged,
+                sym_name,
+                source,
+                rel.rela_type,
+                rel.addend,
+            ));
         }
     }
 
@@ -383,23 +389,37 @@ fn link_impl(
         let short_sym_name = sym_name.rsplit("::").next().unwrap_or(sym_name.as_str());
         let short_data_name = format!("\x01{}", short_sym_name);
 
-        let (sym_offset, is_data) =
-            if let Some(&o) = global_symbols.get(&format!("\x01{}", sym_name)) {
+        let (sym_offset, is_data) = if let Some(&o) =
+            global_symbols.get(&format!("\x01{}", sym_name))
+        {
+            (o, true)
+        } else if let Some(&o) = global_symbols.get(sym_name) {
+            (o, false)
+        } else if short_sym_name != sym_name {
+            if let Some(&o) = global_symbols.get(&short_data_name) {
                 (o, true)
-            } else if let Some(&o) = global_symbols.get(sym_name) {
+            } else if let Some(&o) = global_symbols.get(short_sym_name) {
                 (o, false)
-            } else if short_sym_name != sym_name {
-                if let Some(&o) = global_symbols.get(&short_data_name) {
-                    (o, true)
-                } else if let Some(&o) = global_symbols.get(short_sym_name) {
-                    (o, false)
-                } else if let Some(o) = unique_symbol_with_path_suffix(&global_symbols, sym_name)
-                {
-                    (o, false)
-                } else if let Some(o) = unique_symbol_with_short_name(&global_symbols, short_sym_name)
-                {
-                    (o, false)
-                } else {
+            } else if let Some(o) = unique_symbol_with_path_suffix(&global_symbols, sym_name) {
+                (o, false)
+            } else if let Some(o) = unique_symbol_with_short_name(&global_symbols, short_sym_name) {
+                (o, false)
+            } else {
+                errors.push(LinkError::new(
+                    LinkErrorKind::UnresolvedSymbol,
+                    sym_name,
+                    source.clone(),
+                    *offset,
+                    *rela_type,
+                ));
+                continue;
+            }
+        } else {
+            match unique_symbol_with_path_suffix(&global_symbols, sym_name)
+                .or_else(|| unique_symbol_with_short_name(&global_symbols, sym_name))
+            {
+                Some(o) => (o, false),
+                None => {
                     errors.push(LinkError::new(
                         LinkErrorKind::UnresolvedSymbol,
                         sym_name,
@@ -409,23 +429,8 @@ fn link_impl(
                     ));
                     continue;
                 }
-            } else {
-                match unique_symbol_with_path_suffix(&global_symbols, sym_name)
-                    .or_else(|| unique_symbol_with_short_name(&global_symbols, sym_name))
-                {
-                    Some(o) => (o, false),
-                    None => {
-                        errors.push(LinkError::new(
-                            LinkErrorKind::UnresolvedSymbol,
-                            sym_name,
-                            source.clone(),
-                            *offset,
-                            *rela_type,
-                        ));
-                        continue;
-                    }
-                }
-            };
+            }
+        };
 
         // For data symbols, the actual offset is the aligned RW segment start
         // plus the symbol's data-section offset.

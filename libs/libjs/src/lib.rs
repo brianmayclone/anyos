@@ -353,6 +353,50 @@ mod tests {
     }
 
     #[test]
+    fn catch_binding_is_visible_in_completion_position() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval("try { throw 7; } catch(e) { e }");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_number(), 7.0);
+    }
+
+    #[test]
+    fn object_pattern_supports_computed_property_names() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var key = 'answer'; \
+             var {[key]: value, plain} = { answer: 42, plain: 8 }; \
+             [value, plain].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "42,8");
+    }
+
+    #[test]
+    fn computed_object_pattern_does_not_break_enclosing_iife() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "this._hd=this._hd||{}; \
+             (function(_){try{var key='x'; var {[key]: value}= {x: 5}; _.value=value;}catch(e){_.err=e}})(this._hd); \
+             this._hd.value",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_number(), 5.0);
+    }
+
+    #[test]
     fn google_hash_style_array_argument_survives_nested_call() {
         let mut engine = JsEngine::new();
         let result = engine.eval(

@@ -1580,7 +1580,7 @@ impl Compiler {
         for prop in props {
             if matches!(&prop.value, Pattern::Rest(_)) {
                 has_rest = true;
-            } else {
+            } else if prop.computed.is_none() {
                 excluded_keys.push(prop.key.clone());
             }
         }
@@ -1591,8 +1591,13 @@ impl Compiler {
                 continue;
             }
             self.emit(Op::Dup);
-            let name_idx = self.add_const(Constant::String(prop.key.clone()));
-            self.emit(Op::GetPropNamed(name_idx));
+            if let Some(key_expr) = &prop.computed {
+                self.compile_expr(key_expr);
+                self.emit(Op::GetProp);
+            } else {
+                let name_idx = self.add_const(Constant::String(prop.key.clone()));
+                self.emit(Op::GetPropNamed(name_idx));
+            }
             self.compile_pattern_binding(&prop.value);
         }
 
@@ -1756,7 +1761,7 @@ impl Compiler {
         for prop in props {
             if matches!(&prop.value, Pattern::Rest(_)) {
                 has_rest = true;
-            } else {
+            } else if prop.computed.is_none() {
                 excluded_keys.push(prop.key.clone());
             }
         }
@@ -1766,8 +1771,13 @@ impl Compiler {
                 continue;
             }
             self.emit(Op::Dup);
-            let name_idx = self.add_const(Constant::String(prop.key.clone()));
-            self.emit(Op::GetPropNamed(name_idx));
+            if let Some(key_expr) = &prop.computed {
+                self.compile_expr(key_expr);
+                self.emit(Op::GetProp);
+            } else {
+                let name_idx = self.add_const(Constant::String(prop.key.clone()));
+                self.emit(Op::GetPropNamed(name_idx));
+            }
             self.compile_pattern_binding_existing(&prop.value);
         }
 

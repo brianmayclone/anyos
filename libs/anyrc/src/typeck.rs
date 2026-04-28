@@ -1366,7 +1366,10 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .map(|sym| self.interner.resolve(*sym).to_string())
                 .collect::<Vec<_>>();
-            relative_parts.extend(path.iter().map(|sym| self.interner.resolve(*sym).to_string()));
+            relative_parts.extend(
+                path.iter()
+                    .map(|sym| self.interner.resolve(*sym).to_string()),
+            );
             let relative = self.expand_scoped_alias_target(&relative_parts.join("::"));
             if self.qualified_or_module_path_exists(&relative) {
                 return relative;
@@ -1380,12 +1383,14 @@ impl<'a> TypeChecker<'a> {
             || self
                 .qualified_type_names
                 .contains_key(&format!("crate::{}", path))
-            || self
-                .qualified_type_names
-                .keys()
-                .any(|known| known.strip_prefix(path).is_some_and(|rest| rest.starts_with("::")))
             || self.qualified_type_names.keys().any(|known| {
-                known.strip_prefix("crate::")
+                known
+                    .strip_prefix(path)
+                    .is_some_and(|rest| rest.starts_with("::"))
+            })
+            || self.qualified_type_names.keys().any(|known| {
+                known
+                    .strip_prefix("crate::")
                     .and_then(|known| known.strip_prefix(path))
                     .is_some_and(|rest| rest.starts_with("::"))
             })
@@ -5950,9 +5955,43 @@ impl<'a> TypeChecker<'a> {
         for (arg, param) in arg_tys.iter().zip(param_tys.iter()) {
             self.unify(param, arg, span);
         }
+        let callee_def_id = self
+            .trait_impl_method_for_self(trait_def_id, method_name, &self_ty)
+            .unwrap_or(method_def_id);
         self.expr_types
-            .insert(callee.id, TyKind::FnDef(method_def_id, vec![]));
+            .insert(callee.id, TyKind::FnDef(callee_def_id, vec![]));
         Some(ret_ty)
+    }
+
+    fn trait_impl_method_for_self(
+        &self,
+        trait_def_id: DefId,
+        method_name: Symbol,
+        self_ty: &TyKind,
+    ) -> Option<DefId> {
+        let self_ty = self.shallow_resolve(self_ty.clone());
+        self.trait_impls
+            .iter()
+            .filter(|((_, impl_trait), _)| {
+                self.trait_defs_refer_to_same_nominal_trait(*impl_trait, trait_def_id)
+            })
+            .flat_map(|(_, methods)| methods.iter())
+            .find_map(|(name, method_def_id)| {
+                if *name != method_name {
+                    return None;
+                }
+                let impl_self_ty = self.impl_self_ty_by_method.get(method_def_id)?;
+                if self.ty_matches_for_candidate(impl_self_ty, &self_ty) {
+                    return Some(*method_def_id);
+                }
+                let impl_inner = self.shallow_resolve(impl_self_ty.clone());
+                match (&impl_inner, &self_ty) {
+                    (TyKind::Adt(a_def, _), TyKind::Adt(b_def, _)) if a_def == b_def => {
+                        Some(*method_def_id)
+                    }
+                    _ => None,
+                }
+            })
     }
 
     fn check_core_fmt_write_fmt_call(
@@ -7017,13 +7056,15 @@ impl<'a> TypeChecker<'a> {
             .lookup("IntoIter")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             .or_else(|| {
-                self.qualified_type_names.iter().find_map(|(path, candidate)| {
-                    (path == "alloc::vec::IntoIter"
-                        || path == "std::vec::IntoIter"
-                        || path.ends_with("::vec::IntoIter")
-                        || path.ends_with("::IntoIter"))
-                    .then_some(*candidate)
-                })
+                self.qualified_type_names
+                    .iter()
+                    .find_map(|(path, candidate)| {
+                        (path == "alloc::vec::IntoIter"
+                            || path == "std::vec::IntoIter"
+                            || path.ends_with("::vec::IntoIter")
+                            || path.ends_with("::IntoIter"))
+                        .then_some(*candidate)
+                    })
             })
             .map(|def_id| TyKind::Adt(def_id, vec![elem_ty]))
     }
@@ -7218,9 +7259,7 @@ impl<'a> TypeChecker<'a> {
             "str::trim" | "core::str::trim" | "std::str::trim" => {
                 Some(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable))
             }
-            "str::to_string" | "core::str::to_string" | "std::str::to_string" => {
-                self.string_ty()
-            }
+            "str::to_string" | "core::str::to_string" | "std::str::to_string" => self.string_ty(),
             _ => None,
         }
     }
