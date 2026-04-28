@@ -5,9 +5,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::{print, println, net, fs, sys, args};
 
+mod tls;
+
 anyos_std::entry!(main);
 
 const HTTP_PORT: u16 = 80;
+const HTTPS_PORT: u16 = 443;
 const CONNECT_TIMEOUT: u32 = 10000;
 const MAX_REDIRECTS: usize = 20;
 const VERSION: &str = "1.0";
@@ -18,16 +21,16 @@ struct Url {
     host: String,
     port: u16,
     path: String,
+    https: bool,
 }
 
 fn parse_url(url_str: &str) -> Option<Url> {
-    let rest = if starts_with_ignore_case(url_str, "https://") {
-        // We don't support HTTPS but still parse the URL
-        &url_str[8..]
+    let (rest, https) = if starts_with_ignore_case(url_str, "https://") {
+        (&url_str[8..], true)
     } else if starts_with_ignore_case(url_str, "http://") {
-        &url_str[7..]
+        (&url_str[7..], false)
     } else {
-        url_str
+        (url_str, false)
     };
 
     let (host_port, path) = match rest.find('/') {
@@ -35,13 +38,14 @@ fn parse_url(url_str: &str) -> Option<Url> {
         None => (rest, "/"),
     };
 
+    let default_port = if https { HTTPS_PORT } else { HTTP_PORT };
     let (host, port) = match host_port.find(':') {
         Some(idx) => {
             let port_str = &host_port[idx + 1..];
             let port = parse_u16(port_str)?;
             (&host_port[..idx], port)
         }
-        None => (host_port, HTTP_PORT),
+        None => (host_port, default_port),
     };
 
     if host.is_empty() {
@@ -52,6 +56,7 @@ fn parse_url(url_str: &str) -> Option<Url> {
         host: String::from(host),
         port,
         path: String::from(path),
+        https,
     })
 }
 
@@ -211,6 +216,43 @@ fn parse_content_type<'a>(headers: &'a str) -> &'a str {
 
 fn parse_location<'a>(headers: &'a str) -> Option<&'a str> {
     find_header_value(headers, "location")
+}
+
+fn is_chunked(headers: &str) -> bool {
+    match find_header_value(headers, "transfer-encoding") {
+        Some(v) => {
+            // Case-insensitive substring match for "chunked".
+            let bytes = v.as_bytes();
+            let pat = b"chunked";
+            if bytes.len() < pat.len() { return false; }
+            for i in 0..=bytes.len() - pat.len() {
+                let mut ok = true;
+                for j in 0..pat.len() {
+                    if to_ascii_lower(bytes[i + j]) != pat[j] { ok = false; break; }
+                }
+                if ok { return true; }
+            }
+            false
+        }
+        None => false,
+    }
+}
+
+fn parse_hex_u32(s: &[u8]) -> Option<u32> {
+    let mut val: u32 = 0;
+    let mut any = false;
+    for &b in s {
+        let d = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            b';' | b'\r' | b' ' | b'\t' => break, // chunk extensions / line end
+            _ => return None,
+        };
+        val = val.checked_mul(16)?.checked_add(d as u32)?;
+        any = true;
+    }
+    if any { Some(val) } else { None }
 }
 
 fn is_redirect(status: u16) -> bool {
@@ -432,6 +474,58 @@ fn draw_progress(filename: &str, received: u32, total: Option<u32>, elapsed_tick
     print!("{}", line);
 }
 
+// ── Connection abstraction (HTTP / HTTPS) ───────────────────────────────────
+
+struct Conn {
+    sock: u32,
+    tls: Option<tls::TlsHandle>,
+}
+
+impl Conn {
+    fn connect(ip: &[u8; 4], port: u16, host: &str, https: bool, timeout_ms: u32) -> Option<Conn> {
+        let sock = net::tcp_connect(ip, port, timeout_ms);
+        if sock == u32::MAX {
+            return None;
+        }
+        if !https {
+            return Some(Conn { sock, tls: None });
+        }
+        let h = tls::connect(sock, host);
+        if h < 0 {
+            net::tcp_close(sock);
+            return None;
+        }
+        Some(Conn { sock, tls: Some(h as tls::TlsHandle) })
+    }
+
+    fn send(&self, data: &[u8]) -> i32 {
+        match self.tls {
+            Some(h) => tls::send(h, data),
+            None => {
+                let n = net::tcp_send(self.sock, data);
+                if n == u32::MAX { -1 } else { n as i32 }
+            }
+        }
+    }
+
+    fn recv(&self, buf: &mut [u8]) -> i32 {
+        match self.tls {
+            Some(h) => tls::recv(h, buf),
+            None => {
+                let n = net::tcp_recv(self.sock, buf);
+                if n == u32::MAX { -1 } else { n as i32 }
+            }
+        }
+    }
+
+    fn close(self) {
+        if let Some(h) = self.tls {
+            tls::close(h);
+        }
+        net::tcp_close(self.sock);
+    }
+}
+
 // ── Build HTTP request ──────────────────────────────────────────────────────
 
 fn build_request(url: &Url, resume_offset: u32) -> String {
@@ -440,7 +534,8 @@ fn build_request(url: &Url, resume_offset: u32) -> String {
     req.push_str(&url.path);
     req.push_str(" HTTP/1.1\r\nHost: ");
     req.push_str(&url.host);
-    if url.port != HTTP_PORT {
+    let default_port = if url.https { HTTPS_PORT } else { HTTP_PORT };
+    if url.port != default_port {
         req.push(':');
         push_u32(&mut req, url.port as u32);
     }
@@ -507,14 +602,6 @@ fn main() {
         return;
     }
 
-    // If URL starts with https://, warn
-    if starts_with_ignore_case(url_str, "https://") {
-        if !quiet {
-            println!("ERROR: HTTPS support not available.");
-        }
-        return;
-    }
-
     // Parse the initial URL
     let mut current_url = match parse_url(url_str) {
         Some(u) => u,
@@ -547,8 +634,10 @@ fn main() {
         // Timestamp header
         if !quiet {
             let ts = fmt_timestamp();
-            println!("--{}--  http://{}{}", ts,
-                if current_url.port != HTTP_PORT {
+            let scheme = if current_url.https { "https" } else { "http" };
+            let default_port = if current_url.https { HTTPS_PORT } else { HTTP_PORT };
+            println!("--{}--  {}://{}{}", ts, scheme,
+                if current_url.port != default_port {
                     let mut h = current_url.host.clone();
                     h.push(':');
                     push_u32(&mut h, current_url.port as u32);
@@ -563,10 +652,12 @@ fn main() {
         if !quiet {
             print!("Resolving {} ({})... ", current_url.host, current_url.host);
         }
+        let t_dns = sys::uptime_ms();
         let ip = match resolve_host(&current_url.host) {
             Some(ip) => {
                 if !quiet {
-                    println!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+                    let dt = sys::uptime_ms().wrapping_sub(t_dns);
+                    println!("{}.{}.{}.{} [{}ms]", ip[0], ip[1], ip[2], ip[3], dt);
                 }
                 ip
             }
@@ -577,41 +668,48 @@ fn main() {
             }
         };
 
-        // Connect
+        // Connect (TCP + optional TLS handshake)
         if !quiet {
             print!("Connecting to {} ({})|{}.{}.{}.{}|:{}... ",
                 current_url.host, current_url.host,
                 ip[0], ip[1], ip[2], ip[3], current_url.port);
         }
-        let sock = net::tcp_connect(&ip, current_url.port, CONNECT_TIMEOUT);
-        if sock == u32::MAX {
-            if !quiet { println!("failed: Connection refused."); }
-            println!("wget: unable to connect to {}:{}", current_url.host, current_url.port);
-            return;
+        let t_conn = sys::uptime_ms();
+        let conn = match Conn::connect(&ip, current_url.port, &current_url.host, current_url.https, CONNECT_TIMEOUT) {
+            Some(c) => c,
+            None => {
+                if !quiet { println!("failed: Connection refused."); }
+                println!("wget: unable to connect to {}:{}", current_url.host, current_url.port);
+                return;
+            }
+        };
+        if !quiet {
+            let dt = sys::uptime_ms().wrapping_sub(t_conn);
+            if current_url.https { println!("connected. TLS established. [{}ms]", dt); }
+            else { println!("connected. [{}ms]", dt); }
         }
-        if !quiet { println!("connected."); }
 
         // Send request
         let request = build_request(&current_url, existing_size);
         if !quiet {
             print!("HTTP request sent, awaiting response... ");
         }
-        let sent = net::tcp_send(sock, request.as_bytes());
-        if sent == u32::MAX {
+        let t_req = sys::uptime_ms();
+        if conn.send(request.as_bytes()) < 0 {
             if !quiet { println!("failed."); }
-            net::tcp_close(sock);
+            conn.close();
             return;
         }
 
         // Receive headers
         let mut response = Vec::new();
-        let mut recv_buf = [0u8; 4096];
+        let mut recv_buf = [0u8; 32768];
         let header_end;
         loop {
-            let n = net::tcp_recv(sock, &mut recv_buf);
-            if n == 0 || n == u32::MAX {
+            let n = conn.recv(&mut recv_buf);
+            if n <= 0 {
                 if !quiet { println!("no data received."); }
-                net::tcp_close(sock);
+                conn.close();
                 return;
             }
             response.extend_from_slice(&recv_buf[..n as usize]);
@@ -621,7 +719,7 @@ fn main() {
             }
             if response.len() > 16384 {
                 if !quiet { println!("headers too large."); }
-                net::tcp_close(sock);
+                conn.close();
                 return;
             }
         }
@@ -630,22 +728,18 @@ fn main() {
         let (status, reason) = parse_status_line(header_str);
 
         if !quiet {
-            println!("{} {}", status, reason);
+            let dt = sys::uptime_ms().wrapping_sub(t_req);
+            println!("{} {} [{}ms]", status, reason, dt);
         }
 
         // Handle redirect
         if is_redirect(status) {
-            net::tcp_close(sock);
+            conn.close();
             if let Some(loc) = parse_location(header_str) {
                 if !quiet {
                     println!("Location: {} [following]", loc);
                 }
-                // Parse new URL — could be relative or absolute
                 if starts_with_ignore_case(loc, "http://") || starts_with_ignore_case(loc, "https://") {
-                    if starts_with_ignore_case(loc, "https://") {
-                        if !quiet { println!("ERROR: HTTPS support not available."); }
-                        return;
-                    }
                     current_url = match parse_url(loc) {
                         Some(u) => u,
                         None => {
@@ -654,7 +748,6 @@ fn main() {
                         }
                     };
                 } else {
-                    // Relative redirect — keep same host/port
                     current_url.path = String::from(loc);
                 }
                 continue;
@@ -668,7 +761,7 @@ fn main() {
         if status >= 400 {
             let ts = fmt_timestamp();
             println!("{} ERROR {}: {}.", ts, status, reason);
-            net::tcp_close(sock);
+            conn.close();
             return;
         }
 
@@ -718,7 +811,7 @@ fn main() {
             let f = fs::open(&out_filename, fs::O_WRITE | fs::O_APPEND);
             if f == u32::MAX {
                 println!("wget: cannot open '{}' for appending", out_filename);
-                net::tcp_close(sock);
+                conn.close();
                 return;
             }
             f
@@ -726,50 +819,119 @@ fn main() {
             let f = fs::open(&out_filename, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
             if f == u32::MAX {
                 println!("wget: cannot open '{}' for writing", out_filename);
-                net::tcp_close(sock);
+                conn.close();
                 return;
             }
             f
         };
 
-        // Write initial body data past headers
-        let initial_body = &response[header_end..];
-        let mut received: u32 = 0;
-        if !initial_body.is_empty() {
-            fs::write(fd, initial_body);
-            received += initial_body.len() as u32;
-        }
+        let chunked = is_chunked(header_str);
 
+        // Bytes already read past the headers (start of the body stream).
+        let mut carry: Vec<u8> = response[header_end..].to_vec();
+        let mut received: u32 = 0;
         let start_ticks = sys::uptime();
         let mut last_progress_bytes: u32 = 0;
 
+        // Helper: ensure carry has at least `n` bytes by recv()'ing more.
+        // Returns false on EOF/error before reaching n.
+        let pull_into_carry = |carry: &mut Vec<u8>, conn: &Conn, recv_buf: &mut [u8], n: usize| -> bool {
+            while carry.len() < n {
+                let r = conn.recv(recv_buf);
+                if r <= 0 { return false; }
+                carry.extend_from_slice(&recv_buf[..r as usize]);
+            }
+            true
+        };
+
         // Show initial progress
         if !quiet && !to_stdout {
-            let display_received = received + existing_size;
-            draw_progress(&out_filename, display_received, total_size, 0, tick_hz);
+            draw_progress(&out_filename, existing_size, total_size, 0, tick_hz);
         }
 
-        // Download body
-        loop {
-            let n = net::tcp_recv(sock, &mut recv_buf);
-            if n == 0 || n == u32::MAX {
-                break;
-            }
-            fs::write(fd, &recv_buf[..n as usize]);
-            received += n;
+        if chunked {
+            // ── Chunked Transfer-Encoding ─────────────────────────────────
+            'chunks: loop {
+                // Read chunk size line, terminated by CRLF.
+                let mut line_end;
+                loop {
+                    line_end = None;
+                    if carry.len() >= 2 {
+                        for i in 0..carry.len() - 1 {
+                            if carry[i] == b'\r' && carry[i + 1] == b'\n' {
+                                line_end = Some(i);
+                                break;
+                            }
+                        }
+                    }
+                    if line_end.is_some() { break; }
+                    let r = conn.recv(&mut recv_buf);
+                    if r <= 0 { break 'chunks; }
+                    carry.extend_from_slice(&recv_buf[..r as usize]);
+                    if carry.len() > 65536 { break 'chunks; } // runaway guard
+                }
+                let line_end = line_end.unwrap();
+                let size = match parse_hex_u32(&carry[..line_end]) {
+                    Some(s) => s,
+                    None => break,
+                };
+                carry.drain(..line_end + 2); // consume size line + CRLF
 
-            // Update progress every 2048 bytes
-            if !quiet && !to_stdout && received - last_progress_bytes >= 2048 {
-                last_progress_bytes = received;
-                let elapsed = sys::uptime().wrapping_sub(start_ticks);
-                let display_received = received + existing_size;
-                draw_progress(&out_filename, display_received, total_size, elapsed, tick_hz);
-            }
-
-            // Stop if we got everything
-            if let Some(cl) = content_length {
-                if received >= cl {
+                if size == 0 {
+                    // Final chunk — done. (Trailers/final CRLF ignored.)
                     break;
+                }
+
+                // Read `size` bytes of chunk data.
+                let mut to_read = size as usize;
+                while to_read > 0 {
+                    if carry.is_empty() {
+                        let r = conn.recv(&mut recv_buf);
+                        if r <= 0 { break 'chunks; }
+                        carry.extend_from_slice(&recv_buf[..r as usize]);
+                    }
+                    let take = carry.len().min(to_read);
+                    fs::write(fd, &carry[..take]);
+                    received += take as u32;
+                    carry.drain(..take);
+                    to_read -= take;
+
+                    if !quiet && !to_stdout && received - last_progress_bytes >= 2048 {
+                        last_progress_bytes = received;
+                        let elapsed = sys::uptime().wrapping_sub(start_ticks);
+                        let display_received = received + existing_size;
+                        draw_progress(&out_filename, display_received, total_size, elapsed, tick_hz);
+                    }
+                }
+
+                // Consume the trailing CRLF after the chunk data.
+                if !pull_into_carry(&mut carry, &conn, &mut recv_buf, 2) { break; }
+                carry.drain(..2);
+            }
+        } else {
+            // ── Plain body: Content-Length or read-until-close ───────────
+            // Flush whatever is already in carry first.
+            if !carry.is_empty() {
+                fs::write(fd, &carry);
+                received += carry.len() as u32;
+                carry.clear();
+            }
+
+            loop {
+                if let Some(cl) = content_length {
+                    if received >= cl { break; }
+                }
+                let n = conn.recv(&mut recv_buf);
+                if n <= 0 { break; }
+                let n = n as u32;
+                fs::write(fd, &recv_buf[..n as usize]);
+                received += n;
+
+                if !quiet && !to_stdout && received - last_progress_bytes >= 2048 {
+                    last_progress_bytes = received;
+                    let elapsed = sys::uptime().wrapping_sub(start_ticks);
+                    let display_received = received + existing_size;
+                    draw_progress(&out_filename, display_received, total_size, elapsed, tick_hz);
                 }
             }
         }
@@ -787,7 +949,7 @@ fn main() {
         if !to_stdout {
             fs::close(fd);
         }
-        net::tcp_close(sock);
+        conn.close();
 
         // Summary line
         if !quiet {

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
+libtls = { path = "../../libs/libtls" }
 
 [profile.dev]
 panic = "abort"
