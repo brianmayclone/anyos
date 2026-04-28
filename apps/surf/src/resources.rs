@@ -1016,15 +1016,18 @@ pub(crate) fn reraster_inline_svgs_with_sprite(
                 continue;
             };
             let svg = reconstruct_inline_svg(attrs, &inner);
-            let svg = apply_svg_inherited_color(
-                svg,
-                webview.resolved_style_ref(node_id).map(|style| style.color),
-            );
+            // Sprite content (e.g. fill="var(--primary-color)") would survive
+            // through apply_svg_inherited_color if we ran it first, so expand
+            // the sprite uses *before* substituting CSS variables / fills.
             let Some(expanded) =
                 expand_svg_uses_from_sprite(&svg, base_url, sprite_url, sprite_text)
             else {
                 continue;
             };
+            let expanded = apply_svg_inherited_color(
+                expanded,
+                webview.resolved_style_ref(node_id).map(|style| style.color),
+            );
             let key = inline_svg_key(node_id);
             decode_svg_no_relayout(expanded.as_bytes(), &key, tab_index);
             count += 1;
@@ -1143,13 +1146,65 @@ fn escape_xml_text_into(value: &str, out: &mut String) {
 
 fn apply_svg_inherited_color(svg: String, color: Option<u32>) -> String {
     let Some(color) = color else {
-        return svg;
+        return substitute_css_vars(svg, "#000000");
     };
     let rgb = color & 0x00FF_FFFF;
     let hex = alloc::format!("#{:06x}", rgb);
     let mut out = svg.replace("currentColor", &hex).replace("currentcolor", &hex);
+    out = substitute_css_vars(out, &hex);
     out = inject_svg_root_color(&out, &hex);
     inject_default_svg_fill(&out, &hex)
+}
+
+/// Replace `var(--name [, fallback])` occurrences with `replacement`.
+///
+/// libsvg has no notion of CSS custom properties, so any `fill="var(...)"`
+/// or `stroke="var(...)"` attribute would otherwise leave the shape with an
+/// unresolvable paint and render nothing. The fallback inside the `var()` is
+/// ignored — we always substitute the caller's preferred colour, since we
+/// have no CSS engine to evaluate the fallback expression here either.
+fn substitute_css_vars(svg: String, replacement: &str) -> String {
+    if !svg.contains("var(") && !svg.contains("VAR(") {
+        return svg;
+    }
+    let mut out = String::with_capacity(svg.len());
+    let bytes = svg.as_bytes();
+    let mut i = 0usize;
+    let mut copy_from = 0usize;
+    while i + 4 <= bytes.len() {
+        if (bytes[i] == b'v' || bytes[i] == b'V')
+            && (bytes[i + 1] == b'a' || bytes[i + 1] == b'A')
+            && (bytes[i + 2] == b'r' || bytes[i + 2] == b'R')
+            && bytes[i + 3] == b'('
+        {
+            // Find matching ')' honouring nested parens (e.g. `var(--x, var(--y))`).
+            let mut depth = 1i32;
+            let mut j = i + 4;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            if j < bytes.len() {
+                out.push_str(&svg[copy_from..i]);
+                out.push_str(replacement);
+                i = j + 1;
+                copy_from = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&svg[copy_from..]);
+    out
 }
 
 fn inject_svg_root_color(svg: &str, hex: &str) -> String {
