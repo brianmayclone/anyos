@@ -54,6 +54,20 @@ fn assert_compiles(src: &str) {
     compile(src, "test.rs", &options).expect("compilation failed");
 }
 
+fn compile_to_mir(src: &str) -> String {
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test.mir".to_string(),
+        emit: EmitKind::Mir,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    String::from_utf8(compile(src, "test.rs", &options).expect("compilation failed"))
+        .expect("mir utf8")
+}
+
 // 1. Parse inner attribute #![no_std]
 #[test]
 fn parse_inner_attribute() {
@@ -97,6 +111,21 @@ fn compile_no_std_crate() {
 #[test]
 fn compile_no_mangle_fn() {
     assert_compiles("#[no_mangle]\nfn foo() -> i32 { 42 }\nfn main() -> i32 { 0 }");
+}
+
+#[test]
+fn no_mangle_nested_fn_uses_export_symbol_in_mir() {
+    let mir = compile_to_mir(
+        r#"
+        mod arch {
+            #[no_mangle]
+            pub extern "C" fn irq_handler(_frame: usize) { }
+        }
+        fn main() -> i32 { 0 }
+        "#,
+    );
+    assert!(mir.contains("fn irq_handler("), "{mir}");
+    assert!(!mir.contains("fn arch::irq_handler("), "{mir}");
 }
 
 // 5. Runtime test: #[no_mangle] function can be called

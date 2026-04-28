@@ -82,12 +82,15 @@ pub fn monomorphize(
     // Also build a map: original fn name symbol -> [(substs, mangled_name)]
     // We need this to rewrite call targets.
 
+    let fn_symbols = MirBuilder::collect_qualified_fn_symbols(interner, hir);
+
     for (_call_id, (def_id, substs)) in &typeck.generic_call_substs {
         let key = (*def_id, substs.clone());
         if !instances.contains_key(&key) {
             // Find the original function name
             if let Some(fn_def) = find_fn_def(hir, *def_id) {
-                let base_name = interner.resolve(fn_def.name).to_string();
+                let base_sym = fn_symbols.get(def_id).copied().unwrap_or(fn_def.name);
+                let base_name = interner.resolve(base_sym).to_string();
                 let mangled = mangle_name(&base_name, substs);
                 instances.insert(key, mangled);
             }
@@ -103,7 +106,6 @@ pub fn monomorphize(
     // concrete instances are still emitted below with mangled names.
 
     // For each unique instantiation, build a specialized MIR body
-    let fn_symbols = collect_fn_symbols(hir);
     for ((def_id, substs), mangled_name) in &instances {
         if let Some(fn_def) = find_fn_def(hir, *def_id) {
             // Create a modified typeck result with concrete types for this instantiation
@@ -152,6 +154,9 @@ pub fn monomorphize(
     for (def_id, _) in &typeck.generic_fn_defs {
         if let Some(fn_def) = find_fn_def(hir, *def_id) {
             name_to_def.insert(fn_def.name, *def_id);
+            if let Some(&qualified) = fn_symbols.get(def_id) {
+                name_to_def.insert(qualified, *def_id);
+            }
         }
     }
 

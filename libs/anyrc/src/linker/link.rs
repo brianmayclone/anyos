@@ -42,6 +42,7 @@ pub enum TargetAbi {
 pub struct LinkError {
     pub kind: LinkErrorKind,
     pub symbol: String,
+    pub source: Option<String>,
     pub offset: u64,
     pub rela_type: u32,
 }
@@ -55,10 +56,17 @@ pub enum LinkErrorKind {
 }
 
 impl LinkError {
-    fn new(kind: LinkErrorKind, symbol: &str, offset: u64, rela_type: u32) -> Self {
+    fn new(
+        kind: LinkErrorKind,
+        symbol: &str,
+        source: Option<String>,
+        offset: u64,
+        rela_type: u32,
+    ) -> Self {
         Self {
             kind,
             symbol: symbol.to_string(),
+            source,
             offset,
             rela_type,
         }
@@ -221,7 +229,7 @@ fn link_impl(
     let mut global_symbols: HashMap<String, u64> = HashMap::new();
 
     // Pending relocations: (offset_in_merged, symbol_name, rela_type, addend)
-    let mut pending_relocs: Vec<(u64, String, u32, i64)> = Vec::new();
+    let mut pending_relocs: Vec<(u64, String, Option<String>, u32, i64)> = Vec::new();
 
     // Emit _start stub (unless no_main is set)
     if !no_main {
@@ -251,6 +259,7 @@ fn link_impl(
         pending_relocs.push((
             start_offset + 1,
             "main".to_string(),
+            Some("_start".to_string()),
             2, /* R_X86_64_PC32 */
             -4,
         ));
@@ -314,7 +323,18 @@ fn link_impl(
                 .copied()
                 .unwrap_or(0)
                 + rel.offset;
-            pending_relocs.push((offset_in_merged, sym_name, rel.rela_type, rel.addend));
+            let source = obj
+                .symbols
+                .iter()
+                .filter(|sym| {
+                    sym.section == Some(reloc_section)
+                        && sym.sym_type == 2
+                        && rel.offset >= sym.offset
+                        && rel.offset < sym.offset.saturating_add(sym.size.max(1))
+                })
+                .max_by_key(|sym| sym.offset)
+                .map(|sym| sym.name.clone());
+            pending_relocs.push((offset_in_merged, sym_name, source, rel.rela_type, rel.addend));
         }
     }
 
@@ -358,7 +378,7 @@ fn link_impl(
         .or_insert(kernel_symbol_base + bss_start + 0x80000);
     let mut errors = Vec::new();
 
-    for (offset, sym_name, rela_type, addend) in &pending_relocs {
+    for (offset, sym_name, source, rela_type, addend) in &pending_relocs {
         // Check if this is a data symbol (prefixed with \x01) or a code symbol
         let short_sym_name = sym_name.rsplit("::").next().unwrap_or(sym_name.as_str());
         let short_data_name = format!("\x01{}", short_sym_name);
@@ -383,6 +403,7 @@ fn link_impl(
                     errors.push(LinkError::new(
                         LinkErrorKind::UnresolvedSymbol,
                         sym_name,
+                        source.clone(),
                         *offset,
                         *rela_type,
                     ));
@@ -397,6 +418,7 @@ fn link_impl(
                         errors.push(LinkError::new(
                             LinkErrorKind::UnresolvedSymbol,
                             sym_name,
+                            source.clone(),
                             *offset,
                             *rela_type,
                         ));
@@ -430,6 +452,7 @@ fn link_impl(
                     errors.push(LinkError::new(
                         LinkErrorKind::RelocationOutOfRange,
                         sym_name,
+                        source.clone(),
                         *offset,
                         *rela_type,
                     ));
@@ -443,6 +466,7 @@ fn link_impl(
                     errors.push(LinkError::new(
                         LinkErrorKind::RelocationOutOfBounds,
                         sym_name,
+                        source.clone(),
                         *offset,
                         *rela_type,
                     ));
@@ -459,6 +483,7 @@ fn link_impl(
                     errors.push(LinkError::new(
                         LinkErrorKind::RelocationOutOfBounds,
                         sym_name,
+                        source.clone(),
                         *offset,
                         *rela_type,
                     ));
@@ -468,6 +493,7 @@ fn link_impl(
                 errors.push(LinkError::new(
                     LinkErrorKind::UnsupportedRelocation,
                     sym_name,
+                    source.clone(),
                     *offset,
                     *rela_type,
                 ));

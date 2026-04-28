@@ -723,9 +723,8 @@ fn doc_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     // For DOMContentLoaded/load, fire immediately since doc is already loaded.
     if event == "DOMContentLoaded" || event == "load" || event == "readystatechange" {
-        if let JsValue::Function(_) = &callback {
-            vm.call_value(&callback, &[], JsValue::Undefined);
-        }
+        let document = vm.get_global("document");
+        super::call_event_listener(vm, &callback, &JsValue::Undefined, &document);
         return JsValue::Undefined;
     }
 

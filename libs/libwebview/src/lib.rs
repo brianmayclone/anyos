@@ -2004,6 +2004,7 @@ impl WebView {
             Some(d) => d,
             None => return true,
         };
+        self.sync_native_form_controls_into_dom(&mut dom);
         let default_allowed = self.js_runtime.dispatch_event(&dom, node_id, event_name, data);
         if !self.js_runtime.mutations.is_empty() {
             self.flush_pending_mutations(&mut dom);
@@ -2013,6 +2014,74 @@ impl WebView {
             self.dom_val = Some(dom);
         }
         default_allowed
+    }
+
+    fn sync_native_form_controls_into_dom(&self, dom: &mut dom::Dom) {
+        for fc in &self.renderer.form_controls {
+            if fc.control_id == 0 || fc.node_id >= dom.nodes.len() {
+                continue;
+            }
+
+            match fc.kind {
+                FormFieldKind::TextInput
+                | FormFieldKind::Password
+                | FormFieldKind::Number
+                | FormFieldKind::Textarea => {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let mut buf = [0u8; 8192];
+                    let len = ctrl.get_text(&mut buf);
+                    if let Ok(value) = core::str::from_utf8(&buf[..len as usize]) {
+                        dom.set_attr(fc.node_id, "value", value);
+                    }
+                }
+                FormFieldKind::Checkbox | FormFieldKind::Radio => {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    if ctrl.get_state() != 0 {
+                        dom.set_attr(fc.node_id, "checked", "checked");
+                    } else {
+                        dom.remove_attr(fc.node_id, "checked");
+                    }
+                }
+                FormFieldKind::Range => {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let pct = ctrl.get_state() as f32 / 100.0;
+                    let min_f: f32 = dom
+                        .attr(fc.node_id, "min")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0);
+                    let max_f: f32 = dom
+                        .attr(fc.node_id, "max")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(100.0);
+                    let raw = min_f + pct * (max_f - min_f);
+                    let value = format_range_value(raw.min(max_f).max(min_f));
+                    dom.set_attr(fc.node_id, "value", &value);
+                }
+                FormFieldKind::Color => {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let argb = ctrl.get_state();
+                    let r = (argb >> 16) & 0xFF;
+                    let g = (argb >> 8) & 0xFF;
+                    let b = argb & 0xFF;
+                    let mut hex = String::from("#");
+                    let hex_digit = |n: u32| -> char {
+                        if n < 10 {
+                            (b'0' + n as u8) as char
+                        } else {
+                            (b'a' + (n - 10) as u8) as char
+                        }
+                    };
+                    hex.push(hex_digit(r >> 4));
+                    hex.push(hex_digit(r & 0xF));
+                    hex.push(hex_digit(g >> 4));
+                    hex.push(hex_digit(g & 0xF));
+                    hex.push(hex_digit(b >> 4));
+                    hex.push(hex_digit(b & 0xF));
+                    dom.set_attr(fc.node_id, "value", &hex);
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Check if a canvas click hit a form control (TextInput/Textarea).

@@ -1810,7 +1810,7 @@ impl<'a> CodeEmitter<'a> {
 
             // ── Vec intrinsics ──
             // Vec layout: [ptr: *mut T, len: usize, capacity: usize] = 24 bytes
-            "Vec::new" => {
+            "Vec::new" | "VecDeque::new" => {
                 // Return empty Vec: ptr=0, len=0, cap=0
                 let slot = self.alloc.stack_slots[dest.local.0];
                 self.asm.xor_rr(Reg::RAX, Reg::RAX);
@@ -1860,6 +1860,37 @@ impl<'a> CodeEmitter<'a> {
             }
             "VecDeque::len" => {
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Vec::contains" => {
+                let elem_size = self.vec_elem_size_from_receiver(args.first()).clamp(1, 8);
+                let loop_label = self.asm.new_label();
+                let found = self.asm.new_label();
+                let not_found = self.asm.new_label();
+                let done = self.asm.new_label();
+
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0); // current ptr
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8); // remaining len
+                self.asm.movzx_rm_sized(Reg::RDX, Reg::RSI, 0, elem_size); // needle
+                self.asm.bind_label(loop_label);
+                self.asm.test_rr(Reg::RCX, Reg::RCX);
+                self.asm.jcc(CondCode::Equal, not_found);
+                self.asm.movzx_rm_sized(Reg::R10, Reg::RAX, 0, elem_size);
+                self.asm.cmp_rr(Reg::R10, Reg::RDX);
+                self.asm.jcc(CondCode::Equal, found);
+                self.asm.add_ri(Reg::RAX, elem_size);
+                self.asm.sub_ri(Reg::RCX, 1);
+                self.asm.jmp(loop_label);
+
+                self.asm.bind_label(found);
+                self.asm.mov_ri(Reg::RAX, 1);
+                self.asm.jmp(done);
+
+                self.asm.bind_label(not_found);
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+
+                self.asm.bind_label(done);
                 self.store_place(dest, Reg::RAX);
                 true
             }
@@ -2093,11 +2124,12 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RDI, 8, Reg::RSI);
                 true
             }
-            "Vec::remove" => {
+            "Vec::remove" | "VecDeque::remove" => {
+                let elem_size = self.vec_elem_size_from_receiver(args.first());
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
-                self.asm.emit_raw(&[0x48, 0xC1, 0xE6, 0x03]); // shl rsi, 3
+                self.asm.imul_ri(Reg::RSI, elem_size as i64);
                 self.asm.emit_raw(&[0x48, 0x01, 0xF0]); // add rax, rsi
-                self.asm.mov_rm(Reg::RAX, Reg::RAX, 0);
+                self.asm.movzx_rm_sized(Reg::RAX, Reg::RAX, 0, elem_size.clamp(1, 8));
                 self.store_place(dest, Reg::RAX);
                 true
             }
@@ -3053,11 +3085,25 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr_sized(Reg::RBP, slot, Reg::RAX, 4);
                 true
             }
+            "VecDeque::as_slices" => {
+                // The bootstrap VecDeque representation is currently linear
+                // Vec-compatible storage, so the logical ring is one front
+                // slice plus an empty wraparound slice.
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0); // front ptr
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8); // front len
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RAX); // back ptr
+                self.asm.mov_mr(Reg::RBP, slot + 24, Reg::RAX); // back len
+                true
+            }
 
             // ── Iterator intrinsics ──
 
             // Vec::iter(&self) → return fat pointer (ptr, len) as an iterator state
-            "iter" | "Vec::iter" | "iter_mut" | "Vec::iter_mut" => {
+            "iter" | "Vec::iter" | "VecDeque::iter" | "iter_mut" | "Vec::iter_mut" => {
                 // Return iterator = (current_ptr, end_ptr)
                 // arg0 = &Vec in RDI
                 let slot = self.alloc.stack_slots[dest.local.0];
@@ -3255,7 +3301,7 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
-            "write_fmt" | "Formatter::write_str" | "write_str" | "Formatter::pad" | "pad" | "DebugTuple::field" | "field"
+            "write_fmt" | "Formatter::write_str" | "write_str" | "Formatter::write_char" | "write_char" | "Formatter::pad" | "pad" | "DebugTuple::field" | "field"
             | "DebugTuple::finish" | "finish" => {
                 // Return Ok(()) for the bootstrap formatting call contract.
                 let slot = self.alloc.stack_slots[dest.local.0];
@@ -3522,6 +3568,9 @@ impl<'a> CodeEmitter<'a> {
             "core::fmt::Formatter::write_str" | "std::fmt::Formatter::write_str" => {
                 "Formatter::write_str"
             }
+            "core::fmt::Formatter::write_char" | "std::fmt::Formatter::write_char" => {
+                "Formatter::write_char"
+            }
             "core::fmt::Write::write_fmt" | "std::fmt::Write::write_fmt" => "write_fmt",
             "core::any::TypeId::of" | "std::any::TypeId::of" => "TypeId::of",
             "core::f32::f32::from_bits" => "f32::from_bits",
@@ -3534,6 +3583,7 @@ impl<'a> CodeEmitter<'a> {
             "alloc::rc::Rc::as_ptr" | "std::rc::Rc::as_ptr" => "Rc::as_ptr",
             "alloc::rc::Rc::into_raw" | "std::rc::Rc::into_raw" => "Rc::into_raw",
             "alloc::vec::Vec::reserve" | "std::vec::Vec::reserve" => "Vec::reserve",
+            "alloc::vec::Vec::contains" | "std::vec::Vec::contains" => "Vec::contains",
             "alloc::vec::Vec::retain" | "std::vec::Vec::retain" => "Vec::retain",
             "alloc::vec::Vec::drain" | "std::vec::Vec::drain" => "Vec::drain",
             "alloc::vec::Vec::resize" | "std::vec::Vec::resize" => "Vec::resize",
@@ -3555,6 +3605,14 @@ impl<'a> CodeEmitter<'a> {
             }
             "alloc::collections::VecDeque::reserve" | "std::collections::VecDeque::reserve" => {
                 "VecDeque::reserve"
+            }
+            "alloc::collections::VecDeque::as_slices"
+            | "std::collections::VecDeque::as_slices" => "VecDeque::as_slices",
+            "alloc::collections::VecDeque::iter" | "std::collections::VecDeque::iter" => {
+                "VecDeque::iter"
+            }
+            "alloc::collections::VecDeque::remove" | "std::collections::VecDeque::remove" => {
+                "VecDeque::remove"
             }
             "alloc::collections::VecDeque::len" | "std::collections::VecDeque::len" => {
                 "VecDeque::len"
@@ -3611,7 +3669,14 @@ impl<'a> CodeEmitter<'a> {
             "alloc::rc::Rc::ptr_eq" | "std::rc::Rc::ptr_eq" => "Rc::ptr_eq",
             "core::cmp::min" | "std::cmp::min" => "min",
             "core::cmp::max" | "std::cmp::max" => "max",
-            _ => fn_name,
+            _ => {
+                let short = fn_name.rsplit("::").next().unwrap_or(fn_name);
+                match short {
+                    "addr" | "eq" | "cmp" | "partial_cmp" | "split" | "size_of_val"
+                    | "size_of_val_raw" => short,
+                    _ => fn_name,
+                }
+            }
         }
     }
 
@@ -3842,6 +3907,11 @@ impl<'a> CodeEmitter<'a> {
                     | "project"
                     | "addr"
                     | "eq"
+                    | "cmp"
+                    | "partial_cmp"
+                    | "split"
+                    | "size_of_val"
+                    | "size_of_val_raw"
                     | "split_at_unchecked"
             )
     }

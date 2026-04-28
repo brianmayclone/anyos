@@ -44,6 +44,20 @@ fn assert_run_returns(src: &str, expected: i32) {
     );
 }
 
+fn compile_to_mir(src: &str) -> String {
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test.mir".to_string(),
+        emit: EmitKind::Mir,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    String::from_utf8(compile(src, "test.rs", &options).expect("compilation failed"))
+        .expect("mir utf8")
+}
+
 #[test]
 fn parse_dyn_trait_type() {
     let src = r#"
@@ -182,5 +196,70 @@ fn run_dyn_trait_call() {
         }
     "#,
         1,
+    );
+}
+
+#[test]
+fn mir_if_let_option_dyn_trait_call_uses_indirect_dispatch() {
+    let mir = compile_to_mir(
+        r#"
+        trait Filesystem {
+            fn lookup(&self, id: i32) -> i32;
+            fn stat(&self, id: i32) -> i32 { self.lookup(id) }
+        }
+        trait Send {}
+        trait Sync {}
+        struct RamFs { base: i32 }
+        impl Send for RamFs {}
+        impl Sync for RamFs {}
+        impl Filesystem for RamFs {
+            fn lookup(&self, id: i32) -> i32 { self.base + id }
+        }
+        fn root_fs(fs: &RamFs) -> Option<&(dyn Filesystem + Send + Sync)> {
+            Some(fs)
+        }
+        fn main() -> i32 {
+            let fs = RamFs { base: 40 };
+            if let Some(driver) = root_fs(&fs) {
+                driver.lookup(2)
+            } else {
+                0
+            }
+        }
+    "#,
+    );
+    assert!(
+        !mir.contains("fn lookup("),
+        "dyn dispatch should not lower to a plain lookup symbol:\n{mir}"
+    );
+}
+
+#[test]
+fn mir_trait_ufcs_on_concrete_receiver_resolves_impl_symbol() {
+    let mir = compile_to_mir(
+        r#"
+        trait Filesystem {
+            fn lookup(&self, id: i32) -> i32;
+        }
+        struct RamFs { base: i32 }
+        impl Filesystem for RamFs {
+            fn lookup(&self, id: i32) -> i32 { self.base + id }
+        }
+        fn call_lookup(driver: &RamFs) -> i32 {
+            Filesystem::lookup(driver, 2)
+        }
+        fn main() -> i32 {
+            let fs = RamFs { base: 40 };
+            call_lookup(&fs)
+        }
+    "#,
+    );
+    assert!(
+        mir.contains("fn RamFs::lookup("),
+        "UFCS trait call should resolve to the concrete impl symbol:\n{mir}"
+    );
+    assert!(
+        !mir.contains("fn lookup("),
+        "UFCS trait call should not lower to a bare trait method symbol:\n{mir}"
     );
 }

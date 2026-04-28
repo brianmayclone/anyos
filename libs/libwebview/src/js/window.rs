@@ -561,6 +561,11 @@ pub fn make_window(
         doc_obj.borrow_mut().prototype = Some(doc_proto);
     }
     document.set_property(String::from("defaultView"), win.clone());
+    if let JsValue::Object(win_obj) = &win {
+        let mut win_obj = win_obj.borrow_mut();
+        win_obj.set_hook = Some(super::dom_property_hook);
+        win_obj.set_hook_data = usize::MAX as *mut u8;
+    }
     win
 }
 
@@ -588,9 +593,8 @@ fn win_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     // For load/DOMContentLoaded, fire immediately.
     if event == "load" || event == "DOMContentLoaded" {
-        if let JsValue::Function(_) = &callback {
-            vm.call_value(&callback, &[], JsValue::Undefined);
-        }
+        let window = vm.get_global("window");
+        super::call_event_listener(vm, &callback, &JsValue::Undefined, &window);
         return JsValue::Undefined;
     }
 

@@ -441,16 +441,38 @@ impl<'a> TypeChecker<'a> {
         // consume the real alloc crate metadata for them. These are layout
         // facts, not method implementations: methods still have to come from
         // normal codegen or real intrinsics.
-        for type_name in ["String", "Vec"] {
+        for type_name in ["String", "Vec", "VecDeque"] {
             let Some(type_sym) = self.interner.lookup(type_name) else {
                 continue;
             };
             let Some(def_id) = self.type_name_to_def.get(&type_sym).copied() else {
                 continue;
             };
-            if self.struct_defs.contains_key(&def_id) {
+            if type_name != "VecDeque" && self.struct_defs.contains_key(&def_id) {
                 continue;
             }
+            self.struct_defs.insert(
+                def_id,
+                vec![
+                    (
+                        type_sym,
+                        TyKind::RawPtr(Box::new(TyKind::Uint(UintTy::U8)), Mutability::Mut),
+                    ),
+                    (type_sym, TyKind::Uint(UintTy::Usize)),
+                    (type_sym, TyKind::Uint(UintTy::Usize)),
+                ],
+            );
+        }
+        for (type_name, full_path) in [
+            ("VecDeque", "alloc::collections::VecDeque"),
+            ("VecDeque", "std::collections::VecDeque"),
+        ] {
+            let Some(type_sym) = self.interner.lookup(type_name) else {
+                continue;
+            };
+            let Some(def_id) = self.lookup_intrinsic_def_by_path(full_path) else {
+                continue;
+            };
             self.struct_defs.insert(
                 def_id,
                 vec![
@@ -1030,10 +1052,12 @@ impl<'a> TypeChecker<'a> {
                         || name.starts_with("NonZero")
                         || name == "UnsafeCell"
                         || name == "Vec"
+                        || name == "VecDeque"
                         || name == "Box"
                         || name == "String"
                         || name == "Option"
                         || name == "Result"
+                        || name == "Range"
                 })
                 .map(|(&d, p)| (d, p.clone()))
                 .collect();
@@ -3970,10 +3994,23 @@ impl<'a> TypeChecker<'a> {
                 // Resolve the receiver type to find the method
                 let base_ty = self.shallow_resolve(recv_ty.clone());
                 // Unwrap references to get the underlying type name
-                let inner_ty = match &base_ty {
+                let mut inner_ty = match &base_ty {
                     TyKind::Ref(inner, _) => self.shallow_resolve(inner.as_ref().clone()),
                     other => other.clone(),
                 };
+                if matches!(
+                    &inner_ty,
+                    TyKind::Adt(def_id, _)
+                        if self.describe_ty(&TyKind::Adt(*def_id, Vec::new()))
+                            .rsplit("::")
+                            .next()
+                            == Some("MutexGuard")
+                            || self.describe_ty(&inner_ty).rsplit("::").next() == Some("MutexGuard")
+                ) {
+                    if let Some(target_ty) = self.lookup_deref_target(&inner_ty) {
+                        inner_ty = self.shallow_resolve(target_ty);
+                    }
+                }
 
                 if method_str == "?" && args.is_empty() {
                     if let Some(inner_option_ty) = self.option_inner_ty(&inner_ty) {
@@ -4491,6 +4528,33 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let TyKind::Adt(def_id, substs) = &inner_ty {
+                    if self.is_range_def(*def_id) && method_str == "contains" && args.len() == 1 {
+                        return TyKind::Bool;
+                    }
+                    if self.is_vec_deque_def(*def_id) && substs.len() == 1 {
+                        let elem_ty = self.shallow_resolve(substs[0].clone());
+                        match method_str {
+                            "len" if args.is_empty() => return TyKind::Uint(UintTy::Usize),
+                            "is_empty" if args.is_empty() => return TyKind::Bool,
+                            "push_back" if args.len() == 1 => {
+                                let arg_ty = self.get_expr_ty_cached(&args[0]);
+                                self.unify(&elem_ty, &arg_ty, args[0].span);
+                                return TyKind::Unit;
+                            }
+                            "pop_front" if args.is_empty() => {
+                                return self
+                                    .option_of(elem_ty)
+                                    .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                            }
+                            "clear" if args.is_empty() => return TyKind::Unit,
+                            "reserve" if args.len() == 1 => {
+                                let arg_ty = self.get_expr_ty_cached(&args[0]);
+                                self.unify(&TyKind::Uint(UintTy::Usize), &arg_ty, args[0].span);
+                                return TyKind::Unit;
+                            }
+                            _ => {}
+                        }
+                    }
                     if self.is_vec_def(*def_id) && substs.len() == 1 {
                         let elem_ty = self.shallow_resolve(substs[0].clone());
                         match method_str {
@@ -5626,6 +5690,19 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Some(ret_ty) = self.check_core_fmt_write_fmt_call(path, args, span, callee) {
+            return Some(ret_ty);
+        }
+
+        let path_str = self.path_to_string(path);
+        if let Some(ret_ty) = self.intrinsic_constructor_type(&path_str) {
+            if method_name_str == "with_capacity" && args.len() == 1 {
+                let arg_ty = self.check_expr(&args[0]);
+                self.unify(&TyKind::Uint(UintTy::Usize), &arg_ty, args[0].span);
+            } else if method_name_str != "new" || !args.is_empty() {
+                return None;
+            }
+            self.expr_types
+                .insert(callee.id, TyKind::FnDef(DefId(0), vec![]));
             return Some(ret_ty);
         }
 
@@ -6792,6 +6869,25 @@ impl<'a> TypeChecker<'a> {
                 let nonzero_def_id = *self.type_name_to_def.get(&sym)?;
                 self.option_of(TyKind::Adt(nonzero_def_id, vec![]))
             }
+            "VecDeque::new"
+            | "VecDeque::with_capacity"
+            | "alloc::collections::VecDeque::new"
+            | "alloc::collections::VecDeque::with_capacity"
+            | "std::collections::VecDeque::new"
+            | "std::collections::VecDeque::with_capacity" => {
+                let def_id = self
+                    .interner
+                    .lookup("VecDeque")
+                    .and_then(|sym| self.type_name_to_def.get(&sym).copied())
+                    .or_else(|| self.lookup_intrinsic_def_by_path("alloc::collections::VecDeque"))
+                    .or_else(|| self.lookup_intrinsic_def_by_path("std::collections::VecDeque"))
+                    .or_else(|| self.resolve_qualified_type_path("alloc::collections::VecDeque"))
+                    .or_else(|| self.resolve_qualified_type_path("std::collections::VecDeque"))?;
+                Some(TyKind::Adt(
+                    def_id,
+                    vec![self.fresh_infer(InferKind::General)],
+                ))
+            }
             _ => None,
         }
     }
@@ -6873,6 +6969,14 @@ impl<'a> TypeChecker<'a> {
             == Some(def_id)
             || self.local_type_name_is(def_id, "Vec")
             || self.is_known_type_path(def_id, "Vec")
+    }
+
+    fn is_vec_deque_def(&self, def_id: DefId) -> bool {
+        self.local_type_name_is(def_id, "VecDeque") || self.is_known_type_path(def_id, "VecDeque")
+    }
+
+    fn is_range_def(&self, def_id: DefId) -> bool {
+        self.local_type_name_is(def_id, "Range") || self.is_known_type_path(def_id, "Range")
     }
 
     fn is_into_iter_def(&self, def_id: DefId) -> bool {

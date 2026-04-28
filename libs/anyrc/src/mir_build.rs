@@ -100,7 +100,7 @@ impl<'a> MirBuilder<'a> {
         fn_defs.iter().map(|f| (f.def_id, f.name)).collect()
     }
 
-    fn collect_qualified_fn_symbols(
+    pub(crate) fn collect_qualified_fn_symbols(
         interner: &mut Interner,
         hir: &HirCrate,
     ) -> HashMap<DefId, Symbol> {
@@ -126,7 +126,7 @@ impl<'a> MirBuilder<'a> {
     ) {
         match &item.kind {
             HirItemKind::Fn(f) => {
-                let sym = if module_path.is_empty() && impl_owner.is_none() {
+                let sym = if f.no_mangle || (module_path.is_empty() && impl_owner.is_none()) {
                     f.name
                 } else {
                     let mut parts: Vec<String> = module_path
@@ -620,6 +620,12 @@ impl<'a> MirBuilder<'a> {
             (Some("ManuallyDrop"), "new") => {
                 return Some(self.interner.intern("ManuallyDrop::new"));
             }
+            (Some("VecDeque"), "new") => {
+                return Some(self.interner.intern("VecDeque::new"));
+            }
+            (Some("VecDeque"), "with_capacity") => {
+                return Some(self.interner.intern("VecDeque::with_capacity"));
+            }
             (
                 Some(
                     owner @ ("u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32"
@@ -639,6 +645,13 @@ impl<'a> MirBuilder<'a> {
             }
             "alloc::vec::Vec::with_capacity" | "std::vec::Vec::with_capacity" => {
                 Some(self.interner.intern("Vec::with_capacity"))
+            }
+            "alloc::collections::VecDeque::new" | "std::collections::VecDeque::new" => {
+                Some(self.interner.intern("VecDeque::new"))
+            }
+            "alloc::collections::VecDeque::with_capacity"
+            | "std::collections::VecDeque::with_capacity" => {
+                Some(self.interner.intern("VecDeque::with_capacity"))
             }
             "alloc::string::String::new" | "std::string::String::new" => {
                 Some(self.interner.intern("String::new"))
@@ -672,12 +685,170 @@ impl<'a> MirBuilder<'a> {
             return None;
         }
 
-        let fn_sym = self.fn_symbol_for_def(def_id, path.segments.last()?.ident);
+        let fn_sym = self.fn_symbol_for_path_def(def_id, path)?;
 
         Some(Operand::Constant(Constant {
             ty: TyKind::FnDef(def_id, vec![]),
             value: ConstValue::FnItem(fn_sym),
         }))
+    }
+
+    fn lower_trait_ufcs_call(
+        &mut self,
+        callee: &HirExpr,
+        path: &HirPath,
+        args: &[HirExpr],
+        expr: &HirExpr,
+    ) -> Option<Operand> {
+        if args.is_empty() {
+            return None;
+        }
+
+        let method_info = self.resolve.resolutions.get(&callee.id).and_then(|method_def_id| {
+            self.typeck
+                .trait_methods
+                .iter()
+                .find_map(|(trait_def_id, methods)| {
+                    methods
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (_, def_id))| *def_id == *method_def_id)
+                        .map(|(idx, (name, _))| (*trait_def_id, idx, *name))
+                })
+        });
+        let method_info = method_info.or_else(|| {
+            let method_name = path.segments.last()?.ident;
+            let trait_name = path
+                .segments
+                .get(path.segments.len().checked_sub(2)?)?
+                .ident;
+            let trait_def_id = self
+                .typeck
+                .trait_names
+                .iter()
+                .find_map(|(def_id, name)| (*name == trait_name).then_some(*def_id))?;
+            let methods = self.typeck.trait_methods.get(&trait_def_id)?;
+            let method_index = methods
+                .iter()
+                .position(|(name, _)| *name == method_name)?;
+            Some((trait_def_id, method_index, method_name))
+        });
+        let (trait_def_id, method_index, method_name) = method_info?;
+
+        let recv_ty = self.get_expr_ty(&args[0]);
+        let recv_inner = Self::peel_refs(&recv_ty);
+
+        if matches!(recv_inner, TyKind::DynTrait(def_id) if *def_id == trait_def_id) {
+            let recv_op = self.lower_expr(&args[0]);
+            let fat_ptr_local = self.alloc_temp(recv_ty.clone(), expr.span);
+            self.emit_assign(
+                Place::local(fat_ptr_local),
+                Rvalue::Use(recv_op),
+                expr.span,
+            );
+
+            let data_ptr_local = self.alloc_temp(
+                TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable),
+                expr.span,
+            );
+            self.emit_assign(
+                Place::local(data_ptr_local),
+                Rvalue::Use(Operand::Copy(Place {
+                    local: fat_ptr_local,
+                    projections: vec![Projection::Field(0)],
+                })),
+                expr.span,
+            );
+
+            let vtable_ptr_local = self.alloc_temp(
+                TyKind::RawPtr(Box::new(TyKind::Unit), Mutability::Immutable),
+                expr.span,
+            );
+            self.emit_assign(
+                Place::local(vtable_ptr_local),
+                Rvalue::Use(Operand::Copy(Place {
+                    local: fat_ptr_local,
+                    projections: vec![Projection::Field(1)],
+                })),
+                expr.span,
+            );
+
+            let fn_ptr_local =
+                self.alloc_temp(TyKind::FnPtr(Vec::new(), Box::new(TyKind::Unit)), expr.span);
+            self.emit_assign(
+                Place::local(fn_ptr_local),
+                Rvalue::Use(Operand::Copy(Place {
+                    local: vtable_ptr_local,
+                    projections: vec![Projection::Deref, Projection::Field(method_index)],
+                })),
+                expr.span,
+            );
+
+            let mut all_args = vec![Operand::Copy(Place::local(data_ptr_local))];
+            for arg in &args[1..] {
+                all_args.push(self.lower_expr(arg));
+            }
+
+            let ty = self.get_expr_ty(expr);
+            let dest = self.alloc_temp(ty, expr.span);
+            let next_block = self.push_block();
+            self.terminate(Terminator::Call {
+                func: Operand::Copy(Place::local(fn_ptr_local)),
+                args: all_args,
+                dest: Place::local(dest),
+                target: next_block,
+            });
+            self.current_block = next_block;
+            return Some(Operand::Copy(Place::local(dest)));
+        }
+
+        if let TyKind::Adt(def_id, _) = recv_inner {
+            let impl_def_id = self
+                .typeck
+                .type_def_to_name
+                .get(def_id)
+                .and_then(|type_name| self.typeck.trait_impls.get(&(*type_name, trait_def_id)))
+                .and_then(|impl_methods| {
+                    impl_methods
+                        .iter()
+                        .find_map(|(name, def_id)| (*name == method_name).then_some(*def_id))
+                })
+                .or_else(|| {
+                    self.typeck
+                        .trait_impls
+                        .iter()
+                        .filter(|((_, impl_trait), _)| *impl_trait == trait_def_id)
+                        .flat_map(|(_, methods)| methods.iter())
+                        .find_map(|(name, impl_def_id)| {
+                            if *name != method_name {
+                                return None;
+                            }
+                            let params = self.typeck.fn_sigs.get(impl_def_id)?.0.as_slice();
+                            let self_ty = params.first()?;
+                            let self_inner = Self::peel_refs(self_ty);
+                            matches!(self_inner, TyKind::Adt(self_def, _) if self_def == def_id)
+                                .then_some(*impl_def_id)
+                        })
+                })?;
+            let fn_sym = self.fn_symbol_for_def(impl_def_id, path.segments.last()?.ident);
+            let all_args = args.iter().map(|arg| self.lower_expr(arg)).collect::<Vec<_>>();
+            let ty = self.get_expr_ty(expr);
+            let dest = self.alloc_temp(ty, expr.span);
+            let next_block = self.push_block();
+            self.terminate(Terminator::Call {
+                func: Operand::Constant(Constant {
+                    ty: TyKind::FnDef(impl_def_id, Vec::new()),
+                    value: ConstValue::FnItem(fn_sym),
+                }),
+                args: all_args,
+                dest: Place::local(dest),
+                target: next_block,
+            });
+            self.current_block = next_block;
+            return Some(Operand::Copy(Place::local(dest)));
+        }
+
+        None
     }
 
     fn fn_symbol_for_def(&mut self, def_id: DefId, fallback: Symbol) -> Symbol {
@@ -697,6 +868,24 @@ impl<'a> MirBuilder<'a> {
             .copied()
             .or_else(|| self.resolve.imported_value_names.get(&def_id).copied())
             .unwrap_or(fallback)
+    }
+
+    fn fn_symbol_for_path_def(&mut self, def_id: DefId, path: &HirPath) -> Option<Symbol> {
+        let fallback = path.segments.last()?.ident;
+        let sym = self.fn_symbol_for_def(def_id, fallback);
+        if sym == fallback && path.segments.len() > 1 {
+            let full_path = self.hir_path_to_string(path);
+            Some(self.interner.intern(&full_path))
+        } else {
+            Some(sym)
+        }
+    }
+
+    fn peel_refs(mut ty: &TyKind) -> &TyKind {
+        while let TyKind::Ref(inner, _) = ty {
+            ty = inner.as_ref();
+        }
+        ty
     }
 
     fn box_deref_target_matches(&self, expected_inner: &TyKind, actual_ty: &TyKind) -> bool {
@@ -1017,6 +1206,18 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
 
+                if let HirExprKind::Path(path) = &callee.kind {
+                    if let Some(op) = self.lower_trait_ufcs_call(callee, path, args, expr) {
+                        return op;
+                    }
+                } else if let HirExprKind::QualifiedPath(qpath) = &callee.kind {
+                    if let Some(op) =
+                        self.lower_trait_ufcs_call(callee, &qpath.path, args, expr)
+                    {
+                        return op;
+                    }
+                }
+
                 // Tuple/unit struct constructor call: PhysAddr(val), Reverse(v),
                 // PhantomData(). Use the checked result type instead of the
                 // spelling of the callee so imports and aliases lower the same.
@@ -1036,6 +1237,18 @@ impl<'a> MirBuilder<'a> {
                             );
                             return Operand::Copy(Place::local(tmp));
                         }
+                    }
+                }
+
+                if let HirExprKind::Path(path) = &callee.kind {
+                    if let Some(op) = self.lower_trait_ufcs_call(callee, path, args, expr) {
+                        return op;
+                    }
+                } else if let HirExprKind::QualifiedPath(qpath) = &callee.kind {
+                    if let Some(op) =
+                        self.lower_trait_ufcs_call(callee, &qpath.path, args, expr)
+                    {
+                        return op;
                     }
                 }
 
@@ -3346,15 +3559,27 @@ impl<'a> MirBuilder<'a> {
                         }
                         // Keep full names where the final segment is too generic
                         // or where codegen needs the owning primitive/ADT.
-                        let fn_name =
-                            self.fn_symbol_for_def(*def_id, path.segments.last().unwrap().ident);
+                        let fn_name = self
+                            .fn_symbol_for_path_def(*def_id, path)
+                            .unwrap_or_else(|| {
+                                self.fn_symbol_for_def(
+                                    *def_id,
+                                    path.segments.last().unwrap().ident,
+                                )
+                            });
                         Operand::Constant(Constant {
                             ty: ty.clone(),
                             value: ConstValue::FnItem(fn_name),
                         })
                     } else {
-                        let fn_name =
-                            self.fn_symbol_for_def(*def_id, path.segments.last().unwrap().ident);
+                        let fn_name = self
+                            .fn_symbol_for_path_def(*def_id, path)
+                            .unwrap_or_else(|| {
+                                self.fn_symbol_for_def(
+                                    *def_id,
+                                    path.segments.last().unwrap().ident,
+                                )
+                            });
                         Operand::Constant(Constant {
                             ty: ty.clone(),
                             value: ConstValue::FnItem(fn_name),
@@ -3491,6 +3716,7 @@ impl<'a> MirBuilder<'a> {
         let TyKind::Adt(def_id, _) = receiver_ty else {
             return None;
         };
+        let type_name_owned;
         let type_sym = self
             .typeck
             .type_def_to_name
@@ -3501,8 +3727,14 @@ impl<'a> MirBuilder<'a> {
                     .struct_defs
                     .get(def_id)
                     .and_then(|fields| fields.first().map(|(name, _)| *name))
-            })?;
-        let type_name = self.interner.resolve(type_sym);
+            });
+        let type_name = if let Some(type_sym) = type_sym {
+            self.interner.resolve(type_sym)
+        } else {
+            type_name_owned = self.resolve.intrinsic_fns.get(def_id)?.clone();
+            type_name_owned.as_str()
+        };
+        let type_name = type_name.rsplit("::").next().unwrap_or(type_name);
         let method = self.interner.resolve(method_name);
         let full_name = match type_name {
             "String" => match method {
@@ -3518,14 +3750,21 @@ impl<'a> MirBuilder<'a> {
                 _ => return None,
             },
             "VecDeque" => match method {
-                "push_back" => String::from("VecDeque::push_back"),
+                "len" | "is_empty" | "push_back" | "pop_front" | "clear" | "reserve" => {
+                    format!("VecDeque::{}", method)
+                }
+                _ => return None,
+            },
+            "Range" => match method {
+                "contains" => String::from("Range::contains"),
                 _ => return None,
             },
             _ => return None,
         };
         let wants_mut = matches!(
             method,
-            "clear" | "push_str" | "push" | "pop" | "push_back" | "truncate"
+            "clear" | "push_str" | "push" | "pop" | "push_back" | "pop_front" | "reserve"
+                | "truncate"
         );
         Some((full_name, wants_mut))
     }
@@ -3561,8 +3800,14 @@ impl<'a> MirBuilder<'a> {
         let TyKind::Adt(def_id, _) = receiver_ty else {
             return None;
         };
-        let type_sym = self.typeck.type_def_to_name.get(def_id).copied()?;
-        let type_name = self.interner.resolve(type_sym);
+        let type_name_owned;
+        let type_name = if let Some(type_sym) = self.typeck.type_def_to_name.get(def_id).copied() {
+            self.interner.resolve(type_sym)
+        } else {
+            type_name_owned = self.resolve.intrinsic_fns.get(def_id)?.clone();
+            type_name_owned.as_str()
+        };
+        let type_name = type_name.rsplit("::").next().unwrap_or(type_name);
         let method = self.interner.resolve(method_name);
         let owner = match type_name {
             "Option" => match method {
@@ -3599,7 +3844,13 @@ impl<'a> MirBuilder<'a> {
                 _ => return None,
             },
             "VecDeque" => match method {
-                "push_back" => "VecDeque",
+                "len" | "is_empty" | "push_back" | "pop_front" | "clear" | "reserve" => {
+                    "VecDeque"
+                }
+                _ => return None,
+            },
+            "Range" => match method {
+                "contains" => "Range",
                 _ => return None,
             },
             _ => return None,

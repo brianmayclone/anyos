@@ -232,4 +232,79 @@ mod tests {
         let result = engine.eval("of=function(a){return a+1}; of(4)");
         assert_eq!(result.to_number(), 5.0);
     }
+
+    #[test]
+    fn contextual_as_from_let_can_be_assigned_as_identifiers() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var as, from; \
+             var io = 0; \
+             as = io = !1; \
+             from = as === false ? 4 : 1; \
+             [as, io, from].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "false,false,4");
+    }
+
+    #[test]
+    fn google_namespace_export_updates_iife_argument_object() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "this.gbar_=this.gbar_||{}; \
+             (function(_){ \
+               _.u=this||self; \
+               _.Md=function(a,b){ \
+                 a=a.split('.'); \
+                 for(var c=_.u,d; a.length && (d=a.shift());) \
+                   a.length || b===void 0 ? c[d] && c[d]!==Object.prototype[d] ? c=c[d] : c=c[d]={} : c[d]=b; \
+               }; \
+               _.Md('gbar_._DumpException', function(a){ return a; }); \
+             }).call(this, this.gbar_); \
+             typeof this.gbar_._DumpException",
+        );
+        assert_eq!(result.to_js_string(), "function");
+    }
+
+    #[test]
+    fn google_int32_helper_accepts_numeric_split_fields() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var _ = {}; \
+             _.gb = Number.isFinite; \
+             _.Ca = function(a){ return Error(a); }; \
+             _.lb = function(a){ if(typeof a !== 'number') throw _.Ca('int32'); if (!(0, _.gb)(a)) throw _.Ca('int32'); return a|0; }; \
+             _.pc = function(a,b,c,d){ a.push(c(d)); return a; }; \
+             var out = []; \
+             var items = '3700942,3701384,102772546,116119825,116249040,116249043'.split(','); \
+             for (var c = 0; c < items.length; c++) { let d = Number(items[c]); isNaN(d) || d == 0 || _.pc(out, 3, _.lb, d); } \
+             out.join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(
+            result.to_js_string(),
+            "3700942,3701384,102772546,116119825,116249040,116249043"
+        );
+    }
+
+    #[test]
+    fn google_hash_style_array_argument_survives_nested_call() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var eDa,fDa; \
+             eDa=function(a){var b=[];for(let c=0;c<a.length;c++)b.push(a.charCodeAt(c));return b}; \
+             fDa=function(a,b){return a[b]+(a[b+1]<<8)+(a[b+2]<<16)+(a[b+3]<<24)}; \
+             var a=eDa('abcdef'); \
+             [a.length, fDa(a,0), fDa(a,1)].join(',')",
+        );
+        assert_eq!(result.to_js_string(), "6,1684234849,1701077858");
+    }
 }

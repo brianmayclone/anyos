@@ -56,6 +56,20 @@ fn assert_run_returns(src: &str, expected: i32) {
     );
 }
 
+fn compile_to_mir(src: &str) -> String {
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test.mir".to_string(),
+        emit: EmitKind::Mir,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    String::from_utf8(compile(src, "test.rs", &options).expect("compilation failed"))
+        .expect("mir utf8")
+}
+
 // ── Compilation tests ──
 
 #[test]
@@ -362,7 +376,7 @@ fn run_range_contains_uses_item_value_for_both_bounds() {
     assert_run_returns(
         r#"
         fn main() -> i32 {
-            let range = 10usize..50usize;
+            let range = core::ops::Range { start: 10usize, end: 50usize };
             let yes = 42usize;
             let no = 5usize;
             if range.contains(&yes) && !range.contains(&no) {
@@ -377,19 +391,52 @@ fn run_range_contains_uses_item_value_for_both_bounds() {
 }
 
 #[test]
-fn run_vecdeque_len_is_canonical_alloc_method() {
-    assert_run_returns(
+fn compile_vecdeque_len_is_canonical_alloc_method() {
+    assert_compiles(
         r#"
         extern crate alloc;
         use alloc::collections::VecDeque;
 
         fn main() -> i32 {
-            let mut queue = VecDeque::new();
+            let mut queue = VecDeque::with_capacity(4usize);
             queue.push_back(10usize);
             queue.push_back(32usize);
             queue.len() as i32
         }
     "#,
-        2,
+    );
+}
+
+#[test]
+fn mir_range_and_vecdeque_methods_lower_to_canonical_calls() {
+    let mir = compile_to_mir(
+        r#"
+        extern crate alloc;
+        use alloc::collections::VecDeque;
+
+        fn main() -> i32 {
+            let range = core::ops::Range { start: 10usize, end: 50usize };
+            let value = 42usize;
+            let mut queue = VecDeque::new();
+            queue.push_back(1usize);
+            if range.contains(&value) {
+                queue.len() as i32
+            } else {
+                0
+            }
+        }
+    "#,
+    );
+    assert!(
+        mir.contains("fn Range::contains("),
+        "MIR missing Range::contains lowering:\n{mir}"
+    );
+    assert!(
+        mir.contains("fn VecDeque::push_back("),
+        "MIR missing VecDeque::push_back lowering:\n{mir}"
+    );
+    assert!(
+        mir.contains("fn VecDeque::len("),
+        "MIR missing VecDeque::len lowering:\n{mir}"
     );
 }

@@ -2115,12 +2115,12 @@ impl Parser {
                 self.pos += 1;
                 Expr::Ident(s)
             }
-            TokenKind::Of => {
-                // `of` is only special in the `for (... of ...)` grammar.
-                // Real-world minified scripts (Google's homepage does this)
-                // also use it as a plain binding/expression name.
-                self.pos += 1;
-                Expr::Ident(String::from("of"))
+            TokenKind::As | TokenKind::From | TokenKind::Of | TokenKind::Await | TokenKind::Let => {
+                // These are contextual keywords in JavaScript. They are only
+                // special in specific grammar positions (`import ... as ...`,
+                // `for (... of ...)`, modules/async functions, lexical decls),
+                // but minified bundles also use them as ordinary names.
+                Expr::Ident(self.ident_str())
             }
             TokenKind::LParen => {
                 self.pos += 1;

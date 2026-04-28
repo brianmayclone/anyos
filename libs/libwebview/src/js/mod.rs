@@ -65,6 +65,8 @@ static mut MUTATION_TARGET: *mut Vec<DomMutation> = core::ptr::null_mut();
 static mut VIRTUAL_NODES_TARGET: *mut Vec<VirtualNode> = core::ptr::null_mut();
 /// Points to the current DomBridge.pending_navigation_requests during JS execution.
 static mut NAVIGATION_TARGET: *mut Vec<PendingNavigationRequest> = core::ptr::null_mut();
+/// Points to the current DomBridge.event_listeners during JS execution.
+static mut EVENT_LISTENERS_TARGET: *mut Vec<EventListener> = core::ptr::null_mut();
 
 /// Hook called by JsObject::set() on DOM element objects.
 /// Records DOM mutations when JS writes to properties like
@@ -80,6 +82,26 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
     let node_id = data as usize as i64;
 
     match key {
+        key if key.starts_with("on") && key.len() > 2 => {
+            if matches!(value, JsValue::Function(_) | JsValue::Object(_)) {
+                let listeners = unsafe {
+                    if EVENT_LISTENERS_TARGET.is_null() {
+                        return;
+                    }
+                    &mut *EVENT_LISTENERS_TARGET
+                };
+                listeners.push(EventListener {
+                    node_id: if node_id >= 0 {
+                        node_id as usize
+                    } else {
+                        usize::MAX
+                    },
+                    event: String::from(&key[2..]),
+                    callback: value.clone(),
+                    capture: false,
+                });
+            }
+        }
         key if key.starts_with("__reactProps$") => {
             let class_value = value.get_property("className");
             let cls = match class_value {
@@ -487,6 +509,21 @@ pub struct EventListener {
     pub callback: JsValue,
     /// True when registered with `{ capture: true }` or a bare `true` third arg.
     pub capture: bool,
+}
+
+fn call_event_listener(vm: &mut Vm, callback: &JsValue, evt: &JsValue, current_target: &JsValue) {
+    match callback {
+        JsValue::Function(_) => {
+            vm.call_value(callback, &[evt.clone()], current_target.clone());
+        }
+        JsValue::Object(_) => {
+            let handler = callback.get_property("handleEvent");
+            if let JsValue::Function(_) = handler {
+                vm.call_value(&handler, &[evt.clone()], callback.clone());
+            }
+        }
+        _ => {}
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -973,6 +1010,7 @@ impl JsRuntime {
             VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
             NAVIGATION_TARGET =
                 &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
+            EVENT_LISTENERS_TARGET = &mut bridge.event_listeners as *mut Vec<EventListener>;
         }
         anyos_std::println!(
             "[js] setup mutation interception done: mutation_target=true virtual_nodes_target=true"
@@ -1086,6 +1124,7 @@ impl JsRuntime {
             MUTATION_TARGET = core::ptr::null_mut();
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
             NAVIGATION_TARGET = core::ptr::null_mut();
+            EVENT_LISTENERS_TARGET = core::ptr::null_mut();
         }
 
         self.mutations = bridge.mutations;
@@ -1330,12 +1369,14 @@ impl JsRuntime {
             VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
             NAVIGATION_TARGET =
                 &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
+            EVENT_LISTENERS_TARGET = &mut bridge.event_listeners as *mut Vec<EventListener>;
         }
         let result = self.engine.eval(source);
         unsafe {
             MUTATION_TARGET = core::ptr::null_mut();
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
             NAVIGATION_TARGET = core::ptr::null_mut();
+            EVENT_LISTENERS_TARGET = core::ptr::null_mut();
         }
 
         for msg in self.engine.console_output() {
@@ -1777,7 +1818,11 @@ impl JsRuntime {
         let target_idx = path.len().saturating_sub(1);
 
         // Fast exit: skip work entirely when no registered listener matches.
-        let has_any = path.iter().any(|&nid| {
+        let has_window = self
+            .event_listeners
+            .iter()
+            .any(|l| l.node_id == usize::MAX && l.event == event_name);
+        let has_any = has_window || path.iter().any(|&nid| {
             self.event_listeners
                 .iter()
                 .any(|l| l.node_id == nid && l.event == event_name)
@@ -1797,6 +1842,7 @@ impl JsRuntime {
         // Build the event object with full W3C properties.
         let target_el = element::make_element(self.engine.vm(), node_id as i64);
         let evt = build_event_object(event_name, data, target_el, bubbles, cancelable);
+        let window_obj = self.engine.vm().get_global("window");
 
         // Set up bridge so DOM-access and event-control native functions work.
         let mut bridge = DomBridge {
@@ -1826,9 +1872,36 @@ impl JsRuntime {
             VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
             NAVIGATION_TARGET =
                 &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
+            EVENT_LISTENERS_TARGET = &mut bridge.event_listeners as *mut Vec<EventListener>;
         }
 
         // ── Phase 1: CAPTURE (eventPhase = 1) ───────────────────────────────
+        // Window is the top of the composed event path in browsers. Many
+        // framework event systems install delegated capture/bubble handlers
+        // there, so it must fire around the DOM path.
+        if !bridge.propagation_stopped && !bridge.immediate_stopped {
+            evt.set_property(String::from("currentTarget"), window_obj.clone());
+            evt.set_property(String::from("eventPhase"), JsValue::Number(1.0));
+
+            let matching: Vec<JsValue> = self
+                .event_listeners
+                .iter()
+                .filter(|l| l.node_id == usize::MAX && l.event == event_name && l.capture)
+                .map(|l| l.callback.clone())
+                .collect();
+
+            for cb in &matching {
+                call_event_listener(self.engine.vm(), cb, &evt, &window_obj);
+                evt.set_property(
+                    String::from("defaultPrevented"),
+                    JsValue::Bool(bridge.prevented),
+                );
+                if bridge.immediate_stopped || bridge.propagation_stopped {
+                    break;
+                }
+            }
+        }
+
         // Fire capture-listeners from root down to (but not including) the target.
         'capture: for i in 0..target_idx {
             if bridge.propagation_stopped || bridge.immediate_stopped {
@@ -1838,6 +1911,7 @@ impl JsRuntime {
             let cur_el = element::make_element(self.engine.vm(), nid as i64);
             evt.set_property(String::from("currentTarget"), cur_el);
             evt.set_property(String::from("eventPhase"), JsValue::Number(1.0));
+            let this_val = element::make_element(self.engine.vm(), nid as i64);
 
             let matching: Vec<JsValue> = self
                 .event_listeners
@@ -1847,9 +1921,7 @@ impl JsRuntime {
                 .collect();
 
             for cb in &matching {
-                self.engine
-                    .vm()
-                    .call_value(cb, &[evt.clone()], JsValue::Undefined);
+                call_event_listener(self.engine.vm(), cb, &evt, &this_val);
                 evt.set_property(
                     String::from("defaultPrevented"),
                     JsValue::Bool(bridge.prevented),
@@ -1869,6 +1941,7 @@ impl JsRuntime {
             let cur_el = element::make_element(self.engine.vm(), node_id as i64);
             evt.set_property(String::from("currentTarget"), cur_el);
             evt.set_property(String::from("eventPhase"), JsValue::Number(2.0));
+            let this_val = element::make_element(self.engine.vm(), node_id as i64);
 
             let matching: Vec<JsValue> = self
                 .event_listeners
@@ -1878,9 +1951,7 @@ impl JsRuntime {
                 .collect();
 
             'target: for cb in &matching {
-                self.engine
-                    .vm()
-                    .call_value(cb, &[evt.clone()], JsValue::Undefined);
+                call_event_listener(self.engine.vm(), cb, &evt, &this_val);
                 evt.set_property(
                     String::from("defaultPrevented"),
                     JsValue::Bool(bridge.prevented),
@@ -1901,6 +1972,7 @@ impl JsRuntime {
                 let cur_el = element::make_element(self.engine.vm(), nid as i64);
                 evt.set_property(String::from("currentTarget"), cur_el);
                 evt.set_property(String::from("eventPhase"), JsValue::Number(3.0));
+                let this_val = element::make_element(self.engine.vm(), nid as i64);
 
                 let matching: Vec<JsValue> = self
                     .event_listeners
@@ -1910,9 +1982,7 @@ impl JsRuntime {
                     .collect();
 
                 for cb in &matching {
-                    self.engine
-                        .vm()
-                        .call_value(cb, &[evt.clone()], JsValue::Undefined);
+                    call_event_listener(self.engine.vm(), cb, &evt, &this_val);
                     evt.set_property(
                         String::from("defaultPrevented"),
                         JsValue::Bool(bridge.prevented),
@@ -1924,10 +1994,35 @@ impl JsRuntime {
             }
         }
 
+        // Bubble listeners on window fire after the DOM ancestors.
+        if bubbles && !bridge.propagation_stopped && !bridge.immediate_stopped {
+            evt.set_property(String::from("currentTarget"), window_obj.clone());
+            evt.set_property(String::from("eventPhase"), JsValue::Number(3.0));
+
+            let matching: Vec<JsValue> = self
+                .event_listeners
+                .iter()
+                .filter(|l| l.node_id == usize::MAX && l.event == event_name && !l.capture)
+                .map(|l| l.callback.clone())
+                .collect();
+
+            for cb in &matching {
+                call_event_listener(self.engine.vm(), cb, &evt, &window_obj);
+                evt.set_property(
+                    String::from("defaultPrevented"),
+                    JsValue::Bool(bridge.prevented),
+                );
+                if bridge.immediate_stopped || bridge.propagation_stopped {
+                    break;
+                }
+            }
+        }
+
         unsafe {
             MUTATION_TARGET = core::ptr::null_mut();
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
             NAVIGATION_TARGET = core::ptr::null_mut();
+            EVENT_LISTENERS_TARGET = core::ptr::null_mut();
         }
 
         // Drain microtask queue after event dispatch (ECMAScript spec:
@@ -2009,6 +2104,8 @@ impl JsRuntime {
                     VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
                     NAVIGATION_TARGET =
                         &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
+                    EVENT_LISTENERS_TARGET =
+                        &mut bridge.event_listeners as *mut Vec<EventListener>;
                 }
 
                 // Timer callbacks get a generous step budget for React initial renders.
@@ -2046,6 +2143,7 @@ impl JsRuntime {
                     MUTATION_TARGET = core::ptr::null_mut();
                     VIRTUAL_NODES_TARGET = core::ptr::null_mut();
                     NAVIGATION_TARGET = core::ptr::null_mut();
+                    EVENT_LISTENERS_TARGET = core::ptr::null_mut();
                 }
                 for msg in self.engine.console_output() {
                     self.console.push(msg.clone());

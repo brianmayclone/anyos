@@ -534,9 +534,14 @@ fn link_errors_to_diagnostics(errors: Vec<link::LinkError>) -> Vec<Diagnostic> {
                 link::LinkErrorKind::RelocationOutOfRange => "relocation out of range",
                 link::LinkErrorKind::UnsupportedRelocation => "unsupported relocation",
             };
+            let source = err
+                .source
+                .as_deref()
+                .map(|source| format!(" in '{}'", source))
+                .unwrap_or_default();
             link_diagnostic(format!(
-                "link error: {} '{}' at .text+0x{:x} (reloc type {})",
-                kind, err.symbol, err.offset, err.rela_type
+                "link error: {} '{}'{} at .text+0x{:x} (reloc type {})",
+                kind, err.symbol, source, err.offset, err.rela_type
             ))
         })
         .collect()
