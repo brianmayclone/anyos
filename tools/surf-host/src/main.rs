@@ -3612,15 +3612,61 @@ fn cap_svg_raster_size(w: u32, h: u32) -> (u32, u32) {
 
 fn apply_svg_inherited_color(svg: String, color: Option<u32>) -> String {
     let Some(color) = color else {
-        return svg;
+        return substitute_css_vars(svg, "#000000");
     };
     let rgb = color & 0x00FF_FFFF;
     let hex = format!("#{:06x}", rgb);
     let mut out = svg
         .replace("currentColor", &hex)
         .replace("currentcolor", &hex);
+    out = substitute_css_vars(out, &hex);
     out = inject_svg_root_color(&out, &hex);
     inject_default_svg_fill(&out, &hex)
+}
+
+/// Replace `var(--name [, fallback])` occurrences with `replacement`.
+/// libsvg/resvg both stumble on CSS custom properties inside fill/stroke.
+fn substitute_css_vars(svg: String, replacement: &str) -> String {
+    if !svg.contains("var(") && !svg.contains("VAR(") {
+        return svg;
+    }
+    let mut out = String::with_capacity(svg.len());
+    let bytes = svg.as_bytes();
+    let mut i = 0usize;
+    let mut copy_from = 0usize;
+    while i + 4 <= bytes.len() {
+        if (bytes[i] == b'v' || bytes[i] == b'V')
+            && (bytes[i + 1] == b'a' || bytes[i + 1] == b'A')
+            && (bytes[i + 2] == b'r' || bytes[i + 2] == b'R')
+            && bytes[i + 3] == b'('
+        {
+            let mut depth = 1i32;
+            let mut j = i + 4;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            if j < bytes.len() {
+                out.push_str(&svg[copy_from..i]);
+                out.push_str(replacement);
+                i = j + 1;
+                copy_from = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&svg[copy_from..]);
+    out
 }
 
 fn inline_svg_inner_markup(dom: &Dom, node_id: usize) -> Option<String> {
