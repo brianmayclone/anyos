@@ -294,6 +294,8 @@ fn build_and_run(
             debug_profile_dropdown_id: tb.debug_profile.id(),
             selected_designer_file: String::new(),
             selected_designer_control: String::new(),
+            selected_storyboard_file: String::new(),
+            selected_storyboard_segue: String::new(),
             pending_designer_event_file: String::new(),
             pending_designer_event_x: 0,
             pending_designer_event_y: 0,

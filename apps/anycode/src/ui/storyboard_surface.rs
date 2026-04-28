@@ -15,11 +15,14 @@ pub struct StoryboardSurface {
     _scroll: ui::ScrollView,
     content: ui::View,
     canvas: ui::Canvas,
+    context_menu: ui::ContextMenu,
     zoom: Rc<RefCell<u32>>,
     zoom_label: ui::Label,
     file_path: String,
     doc: Rc<RefCell<storyboard::StoryboardDocument>>,
     drag_source: Rc<RefCell<Option<(String, String)>>>,
+    drag_start: Rc<RefCell<Option<(i32, i32)>>>,
+    selected_segue: Rc<RefCell<Option<String>>>,
 }
 
 impl StoryboardSurface {
@@ -96,7 +99,10 @@ impl StoryboardSurface {
         canvas.set_position(0, 0);
         canvas.set_size(CANVAS_W, CANVAS_H);
         canvas.set_interactive(true);
+        let context_menu = ui::ContextMenu::new("Delete Segue");
+        canvas.set_context_menu(&context_menu);
         content.add(&canvas);
+        content.add(&context_menu);
 
         let zoom = Rc::new(RefCell::new(100u32));
 
@@ -105,11 +111,14 @@ impl StoryboardSurface {
             _scroll: scroll,
             content,
             canvas,
+            context_menu,
             zoom,
             zoom_label,
             file_path: String::from(file_path),
             doc: Rc::new(RefCell::new(doc)),
             drag_source: Rc::new(RefCell::new(None)),
+            drag_start: Rc::new(RefCell::new(None)),
+            selected_segue: Rc::new(RefCell::new(None)),
         };
         surface.wire_zoom_buttons(&btn_zoom_out, &btn_zoom_in, &btn_zoom_reset);
         surface.wire_events();
@@ -144,6 +153,9 @@ impl StoryboardSurface {
     }
 
     pub fn refresh_from_disk(&self) {
+        if let Some(doc) = storyboard::load_storyboard(&self.file_path) {
+            *self.doc.borrow_mut() = doc;
+        }
         self.render();
     }
 
@@ -151,20 +163,85 @@ impl StoryboardSurface {
         let file_path = self.file_path.clone();
         let doc_ref = self.doc.clone();
         let drag_ref = self.drag_source.clone();
+        let start_ref = self.drag_start.clone();
+        let selected_ref = self.selected_segue.clone();
+        let file_path_select = self.file_path.clone();
+        let canvas_down = self.canvas;
         let canvas_id = self.canvas.id();
         let down_zoom = self.zoom.clone();
-        self.canvas.on_mouse_down(move |x, y, _button| {
+        self.canvas.on_mouse_down(move |x, y, button| {
             let zoom = zoom_value(&down_zoom);
-            let source = doc_ref
-                .borrow()
-                .control_anchor_at(unscale_i32(x, zoom), unscale_i32(y, zoom));
+            let logical_x = unscale_i32(x, zoom);
+            let logical_y = unscale_i32(y, zoom);
+            let doc = doc_ref.borrow();
+            let is_left_button = button & 0x01 != 0;
+            let source = if is_left_button {
+                doc.control_anchor_at(logical_x, logical_y)
+            } else {
+                None
+            };
+            *start_ref.borrow_mut() = if source.is_some() {
+                Some((logical_x, logical_y))
+            } else {
+                None
+            };
             *drag_ref.borrow_mut() = source;
-            ui::Control::from_id(canvas_id).set_tooltip("Release over another form");
+            if drag_ref.borrow().is_some() {
+                ui::Control::from_id(canvas_id).set_tooltip("Drag the connector to a target form");
+            } else if let Some(segue_id) = segue_at(&doc, logical_x, logical_y) {
+                *selected_ref.borrow_mut() = Some(segue_id.clone());
+                render_storyboard(&canvas_down, &doc, zoom, Some(&segue_id));
+                crate::logic::commands::select_storyboard_segue(&file_path_select, &segue_id);
+            } else {
+                *selected_ref.borrow_mut() = None;
+                render_storyboard(&canvas_down, &doc, zoom, None);
+                crate::logic::commands::clear_storyboard_selection(&file_path_select);
+            }
+        });
+
+        let context_menu = self.context_menu;
+        context_menu.on_item_click(|e| {
+            if e.index == 0 {
+                crate::logic::commands::delete_selected_storyboard_segue();
+            }
+        });
+
+        let doc_ref_move = self.doc.clone();
+        let drag_ref_move = self.drag_source.clone();
+        let start_ref_move = self.drag_start.clone();
+        let canvas_move = self.canvas;
+        let move_zoom = self.zoom.clone();
+        self.canvas.on_mouse_move(move |x, y| {
+            let Some((from_form, from_control)) = drag_ref_move.borrow().clone() else {
+                return;
+            };
+            let zoom = zoom_value(&move_zoom);
+            let logical_x = unscale_i32(x, zoom);
+            let logical_y = unscale_i32(y, zoom);
+            if let Some((start_x, start_y)) = *start_ref_move.borrow() {
+                let dx = logical_x - start_x;
+                let dy = logical_y - start_y;
+                if dx * dx + dy * dy < 16 {
+                    return;
+                }
+            }
+            let doc = doc_ref_move.borrow();
+            render_storyboard(&canvas_move, &doc, zoom, None);
+            draw_drag_preview(
+                &canvas_move,
+                &doc,
+                &from_form,
+                &from_control,
+                logical_x,
+                logical_y,
+                zoom,
+            );
         });
 
         let file_path_up = file_path.clone();
         let doc_ref_up = self.doc.clone();
         let drag_ref_up = self.drag_source.clone();
+        let start_ref_up = self.drag_start.clone();
         let canvas_up = self.canvas;
         let canvas_id_up = canvas_up.id();
         let up_zoom = self.zoom.clone();
@@ -175,6 +252,22 @@ impl StoryboardSurface {
             let zoom = zoom_value(&up_zoom);
             let logical_x = unscale_i32(x, zoom);
             let logical_y = unscale_i32(y, zoom);
+            let moved_enough =
+                start_ref_up
+                    .borrow_mut()
+                    .take()
+                    .is_some_and(|(start_x, start_y)| {
+                        let dx = logical_x - start_x;
+                        let dy = logical_y - start_y;
+                        dx * dx + dy * dy >= 16
+                    });
+            {
+                let doc = doc_ref_up.borrow();
+                render_storyboard(&canvas_up, &doc, zoom, None);
+            }
+            if !moved_enough {
+                return;
+            }
             let (target_form, event_options): (Option<String>, String) = {
                 let doc = doc_ref_up.borrow();
                 let target = doc
@@ -185,6 +278,7 @@ impl StoryboardSurface {
                 (target, options)
             };
             let Some(to_form) = target_form else {
+                ui::Control::from_id(canvas_id_up).set_tooltip("Drop on a form to create a segue");
                 return;
             };
 
@@ -209,7 +303,7 @@ impl StoryboardSurface {
                     ) {
                         Ok(Some(_)) => {
                             ui::Control::from_id(canvas_id_up).set_tooltip("Segue created");
-                            render_storyboard(&canvas_up, &doc, zoom);
+                            render_storyboard(&canvas_up, &doc, zoom, None);
                             true
                         }
                         Ok(None) => {
@@ -347,10 +441,15 @@ fn render_storyboard_scaled(
     content.set_size(canvas_w, canvas_h);
     canvas.set_size(canvas_w, canvas_h);
     zoom_label.set_text(&format!("{}%", zoom));
-    render_storyboard(&canvas, doc, zoom);
+    render_storyboard(&canvas, doc, zoom, None);
 }
 
-fn render_storyboard(canvas: &ui::Canvas, doc: &storyboard::StoryboardDocument, zoom: u32) {
+fn render_storyboard(
+    canvas: &ui::Canvas,
+    doc: &storyboard::StoryboardDocument,
+    zoom: u32,
+    selected_segue: Option<&str>,
+) {
     let tc = ui::theme::colors();
     canvas.clear(tc.editor_bg);
     draw_grid(
@@ -361,7 +460,13 @@ fn render_storyboard(canvas: &ui::Canvas, doc: &storyboard::StoryboardDocument, 
         zoom,
     );
     for segue in &doc.segues {
-        draw_segue(canvas, doc, segue, zoom);
+        draw_segue(
+            canvas,
+            doc,
+            segue,
+            zoom,
+            selected_segue == Some(segue.id.as_str()),
+        );
     }
     for scene in &doc.scenes {
         draw_scene(canvas, scene, zoom);
@@ -685,6 +790,7 @@ fn draw_segue(
     doc: &storyboard::StoryboardDocument,
     segue: &storyboard::StoryboardSegue,
     zoom: u32,
+    selected: bool,
 ) {
     let Some(from_scene) = doc
         .scenes
@@ -714,33 +820,149 @@ fn draw_segue(
     let (w, h) = storyboard::scene_size();
     let ex = to_scene.x + w as i32 / 2;
     let ey = to_scene.y + h as i32 / 2;
+    let color = if selected {
+        0xfffacc15
+    } else {
+        ui::theme::colors().accent
+    };
     draw_curve(
         canvas,
         scale_i32(sx, zoom),
         scale_i32(sy, zoom),
         scale_i32(ex, zoom),
         scale_i32(ey, zoom),
-        ui::theme::colors().accent,
+        color,
     );
     canvas.fill_circle(
         scale_i32(ex, zoom),
         scale_i32(ey, zoom),
         scale_i32(5, zoom).max(4),
-        ui::theme::colors().accent,
+        color,
     );
     let label = if segue.condition.is_empty() {
         segue.trigger_event.clone()
     } else {
         format!("{} / {}", segue.trigger_event, segue.condition)
     };
-    canvas.draw_text(
-        scale_i32((sx + ex) / 2, zoom),
-        scale_i32((sy + ey) / 2 - 12, zoom),
-        0xfffacc15,
-        0,
-        scale_font(10, zoom),
-        &label,
+    let lx = scale_i32((sx + ex) / 2, zoom);
+    let ly = scale_i32((sy + ey) / 2 - 12, zoom);
+    if selected {
+        canvas.fill_rect(
+            lx - scale_i32(4, zoom),
+            ly - scale_i32(2, zoom),
+            scale_u32(96, zoom),
+            scale_u32(16, zoom),
+            0xaa1f2937,
+        );
+    }
+    canvas.draw_text(lx, ly, 0xfffacc15, 0, scale_font(10, zoom), &label);
+}
+
+fn draw_drag_preview(
+    canvas: &ui::Canvas,
+    doc: &storyboard::StoryboardDocument,
+    from_form: &str,
+    from_control: &str,
+    mouse_x: i32,
+    mouse_y: i32,
+    zoom: u32,
+) {
+    let Some((sx, sy)) = source_anchor(doc, from_form, from_control) else {
+        return;
+    };
+    let target_color = doc
+        .scene_at(mouse_x, mouse_y)
+        .and_then(|idx| doc.scenes.get(idx))
+        .map(|scene| {
+            let (w, h) = storyboard::scene_size();
+            canvas.draw_rect(
+                scale_i32(scene.x - 4, zoom),
+                scale_i32(scene.y - 4, zoom),
+                scale_u32(w + 8, zoom),
+                scale_u32(h + 8, zoom),
+                0xff22c55e,
+                2,
+            );
+            0xff22c55e
+        })
+        .unwrap_or(0xfffacc15);
+    draw_curve(
+        canvas,
+        scale_i32(sx, zoom),
+        scale_i32(sy, zoom),
+        scale_i32(mouse_x, zoom),
+        scale_i32(mouse_y, zoom),
+        target_color,
     );
+    canvas.fill_circle(
+        scale_i32(mouse_x, zoom),
+        scale_i32(mouse_y, zoom),
+        scale_i32(5, zoom).max(4),
+        target_color,
+    );
+}
+
+fn segue_at(doc: &storyboard::StoryboardDocument, x: i32, y: i32) -> Option<String> {
+    for segue in doc.segues.iter().rev() {
+        let Some((sx, sy)) = source_anchor(doc, &segue.from_form, &segue.from_control) else {
+            continue;
+        };
+        let Some(to_scene) = doc
+            .scenes
+            .iter()
+            .find(|scene| scene.form_name == segue.to_form)
+        else {
+            continue;
+        };
+        let (w, h) = storyboard::scene_size();
+        let ex = to_scene.x + w as i32 / 2;
+        let ey = to_scene.y + h as i32 / 2;
+        let label_x = (sx + ex) / 2;
+        let label_y = (sy + ey) / 2 - 12;
+        if x >= label_x - 8 && x <= label_x + 112 && y >= label_y - 6 && y <= label_y + 18 {
+            return Some(segue.id.clone());
+        }
+        if distance_to_line_sq(x, y, sx, sy, ex, ey) <= 144 {
+            return Some(segue.id.clone());
+        }
+    }
+    None
+}
+
+fn distance_to_line_sq(px: i32, py: i32, ax: i32, ay: i32, bx: i32, by: i32) -> i32 {
+    let abx = (bx - ax) as i64;
+    let aby = (by - ay) as i64;
+    let apx = (px - ax) as i64;
+    let apy = (py - ay) as i64;
+    let len_sq = abx * abx + aby * aby;
+    if len_sq == 0 {
+        let dx = px - ax;
+        let dy = py - ay;
+        return dx * dx + dy * dy;
+    }
+    let t = ((apx * abx + apy * aby) * 1024 / len_sq).clamp(0, 1024);
+    let cx = ax as i64 + abx * t / 1024;
+    let cy = ay as i64 + aby * t / 1024;
+    let dx = px as i64 - cx;
+    let dy = py as i64 - cy;
+    (dx * dx + dy * dy).min(i32::MAX as i64) as i32
+}
+
+fn source_anchor(
+    doc: &storyboard::StoryboardDocument,
+    from_form: &str,
+    from_control: &str,
+) -> Option<(i32, i32)> {
+    let scene = doc
+        .scenes
+        .iter()
+        .find(|scene| scene.form_name == from_form)?;
+    let form = designer::load_designer(&scene.designer_path)?;
+    let control = form
+        .controls
+        .iter()
+        .find(|control| control.name == from_control)?;
+    Some(storyboard::control_anchor(scene, control))
 }
 
 fn draw_curve(canvas: &ui::Canvas, sx: i32, sy: i32, ex: i32, ey: i32, color: u32) {

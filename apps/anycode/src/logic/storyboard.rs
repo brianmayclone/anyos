@@ -24,6 +24,7 @@ pub struct StoryboardSegue {
     pub trigger_event: String,
     pub to_form: String,
     pub condition: String,
+    pub navigation_mode: String,
     pub handler: String,
 }
 
@@ -63,6 +64,8 @@ impl StoryboardDocument {
                         .unwrap_or_else(|| String::from("OnClick")),
                     to_form: attr(trimmed, "to_form").unwrap_or_default(),
                     condition: attr(trimmed, "condition").unwrap_or_default(),
+                    navigation_mode: attr(trimmed, "navigation_mode")
+                        .unwrap_or_else(|| String::from("SameWindow")),
                     handler: attr(trimmed, "handler").unwrap_or_default(),
                 });
             }
@@ -83,13 +86,14 @@ impl StoryboardDocument {
         }
         for segue in &self.segues {
             out.push_str(&format!(
-                "segue id=\"{}\" from_form=\"{}\" from_control=\"{}\" trigger_event=\"{}\" to_form=\"{}\" condition=\"{}\" handler=\"{}\"\n",
+                "segue id=\"{}\" from_form=\"{}\" from_control=\"{}\" trigger_event=\"{}\" to_form=\"{}\" condition=\"{}\" navigation_mode=\"{}\" handler=\"{}\"\n",
                 escape(&segue.id),
                 escape(&segue.from_form),
                 escape(&segue.from_control),
                 escape(&segue.trigger_event),
                 escape(&segue.to_form),
                 escape(&segue.condition),
+                escape(&segue.navigation_mode),
                 escape(&segue.handler)
             ));
         }
@@ -112,6 +116,7 @@ impl StoryboardDocument {
         out.push_str("    pub trigger_event: &'static str,\n");
         out.push_str("    pub to_form: &'static str,\n");
         out.push_str("    pub condition: &'static str,\n");
+        out.push_str("    pub navigation_mode: &'static str,\n");
         out.push_str("    pub handler: &'static str,\n");
         out.push_str("}\n\n");
         out.push_str(&format!(
@@ -132,13 +137,14 @@ impl StoryboardDocument {
         out.push_str("pub const SEGUES: &[StoryboardSegueDef] = &[\n");
         for segue in &self.segues {
             out.push_str(&format!(
-                "    StoryboardSegueDef {{ id: \"{}\", from_form: \"{}\", from_control: \"{}\", trigger_event: \"{}\", to_form: \"{}\", condition: \"{}\", handler: \"{}\" }},\n",
+                "    StoryboardSegueDef {{ id: \"{}\", from_form: \"{}\", from_control: \"{}\", trigger_event: \"{}\", to_form: \"{}\", condition: \"{}\", navigation_mode: \"{}\", handler: \"{}\" }},\n",
                 escape_rs(&segue.id),
                 escape_rs(&segue.from_form),
                 escape_rs(&segue.from_control),
                 escape_rs(&segue.trigger_event),
                 escape_rs(&segue.to_form),
                 escape_rs(&segue.condition),
+                escape_rs(&segue.navigation_mode),
                 escape_rs(&segue.handler)
             ));
         }
@@ -246,10 +252,40 @@ impl StoryboardDocument {
             trigger_event: String::from(trigger_event),
             to_form: String::from(to_form),
             condition: String::new(),
+            navigation_mode: String::from("SameWindow"),
             handler,
         };
         self.segues.push(segue.clone());
         Some(segue)
+    }
+
+    pub fn segue_by_id(&self, segue_id: &str) -> Option<&StoryboardSegue> {
+        self.segues.iter().find(|segue| segue.id == segue_id)
+    }
+
+    pub fn remove_segue(&mut self, segue_id: &str) -> Option<StoryboardSegue> {
+        let index = self.segues.iter().position(|segue| segue.id == segue_id)?;
+        Some(self.segues.remove(index))
+    }
+
+    pub fn update_segue_property(
+        &mut self,
+        segue_id: &str,
+        property_name: &str,
+        value: &str,
+    ) -> Result<(), &'static str> {
+        let Some(segue) = self.segues.iter_mut().find(|segue| segue.id == segue_id) else {
+            return Err("Storyboard segue not found");
+        };
+        match property_name {
+            "TriggerEvent" => segue.trigger_event = String::from(value.trim()),
+            "ToForm" => segue.to_form = String::from(value.trim()),
+            "Condition" => segue.condition = String::from(value.trim()),
+            "NavigationMode" => segue.navigation_mode = normalized_navigation_mode(value),
+            "Handler" => segue.handler = String::from(value.trim()),
+            _ => return Err("Storyboard segue property is read-only"),
+        }
+        Ok(())
     }
 
     pub fn add_missing_scenes(&mut self, project_root: &str) -> usize {
@@ -652,5 +688,13 @@ fn condition_function_name(condition: &str) -> String {
         String::from("true")
     } else {
         format!("{}()", normalized)
+    }
+}
+
+fn normalized_navigation_mode(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "newwindow" | "new window" | "window" => String::from("NewWindow"),
+        "dialog" | "modal" => String::from("Dialog"),
+        _ => String::from("SameWindow"),
     }
 }

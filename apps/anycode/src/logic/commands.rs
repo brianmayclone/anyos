@@ -865,6 +865,8 @@ const DESIGNER_SNAP: i32 = 8;
 
 pub fn designer_pointer_down_at(file_path: &str, x: i32, y: i32) {
     let s = app();
+    s.selected_storyboard_file.clear();
+    s.selected_storyboard_segue.clear();
     s.designer_drag_moved = false;
     let doc = match designer::load_designer(file_path) {
         Some(doc) => doc,
@@ -988,6 +990,32 @@ pub fn designer_drop_tool_at(file_path: &str, x: i32, y: i32, payload: &str) {
     s.inspector_panel.show_designer_control(&doc, &control_name);
     s.status
         .set_analysis_status(&format!("Added {}", control_name));
+}
+
+pub fn select_storyboard_segue(file_path: &str, segue_id: &str) {
+    let s = app();
+    let Some(doc) = storyboard::load_storyboard(file_path) else {
+        s.status.set_analysis_status("Could not load storyboard");
+        return;
+    };
+    let Some(segue) = doc.segue_by_id(segue_id) else {
+        s.status.set_analysis_status("Storyboard segue not found");
+        return;
+    };
+    s.selected_designer_file.clear();
+    s.selected_designer_control.clear();
+    s.selected_storyboard_file = String::from(file_path);
+    s.selected_storyboard_segue = String::from(segue_id);
+    s.inspector_panel.show_storyboard_segue(&doc.name, segue);
+    s.status
+        .set_analysis_status(&format!("Selected segue {}", segue_id));
+}
+
+pub fn clear_storyboard_selection(file_path: &str) {
+    let s = app();
+    s.selected_storyboard_file.clear();
+    s.selected_storyboard_segue.clear();
+    s.inspector_panel.show_file(file_path);
 }
 
 fn update_designer_drag(file_path: &str, x: i32, y: i32, persist: bool) {
@@ -1216,13 +1244,67 @@ pub fn open_designer_color_picker() {
 }
 
 pub fn apply_designer_property() {
+    if !app().selected_storyboard_file.is_empty() {
+        apply_storyboard_property_from_grid();
+        return;
+    }
     let value = app().inspector_panel.property_value_text();
     apply_designer_property_value(value);
 }
 
 pub fn apply_designer_property_from_grid() {
+    if !app().selected_storyboard_file.is_empty() {
+        apply_storyboard_property_from_grid();
+        return;
+    }
     let value = app().inspector_panel.property_grid_value_text();
     apply_designer_property_value(value);
+}
+
+pub fn apply_storyboard_property_from_grid() {
+    let s = app();
+    if s.selected_storyboard_file.is_empty() || s.selected_storyboard_segue.is_empty() {
+        return;
+    }
+    let file_path = s.selected_storyboard_file.clone();
+    let segue_id = s.selected_storyboard_segue.clone();
+    let row = s.inspector_panel.selected_property_index();
+    let property_name = storyboard_segue_property_name(row);
+    let value = s.inspector_panel.property_grid_value_text();
+    let mut doc = match storyboard::load_storyboard(&file_path) {
+        Some(doc) => doc,
+        None => {
+            s.status.set_analysis_status("Could not load storyboard");
+            return;
+        }
+    };
+    if let Err(err) = doc.update_segue_property(&segue_id, property_name, &value) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    if let Err(err) = storyboard::save_storyboard(&file_path, &doc) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    s.editor_view.refresh_storyboards();
+    if let Some(segue) = doc.segue_by_id(&segue_id) {
+        s.inspector_panel.show_storyboard_segue(&doc.name, segue);
+    }
+    s.status
+        .set_analysis_status(&format!("Updated segue.{}", property_name));
+}
+
+fn storyboard_segue_property_name(row: u32) -> &'static str {
+    match row {
+        3 => "TriggerEvent",
+        4 => "ToForm",
+        5 => "Condition",
+        6 => "NavigationMode",
+        7 => "Handler",
+        1 => "FromForm",
+        2 => "FromControl",
+        _ => "Id",
+    }
 }
 
 pub fn apply_designer_event_from_grid() {
@@ -1387,6 +1469,10 @@ fn is_color_property(property_name: &str) -> bool {
 
 pub fn delete_selected_designer_control() {
     let s = app();
+    if !s.selected_storyboard_file.is_empty() {
+        delete_selected_storyboard_segue();
+        return;
+    }
     if s.selected_designer_file.is_empty() || s.selected_designer_control.is_empty() {
         s.status
             .set_analysis_status("Select a designer control first");
@@ -1415,6 +1501,71 @@ pub fn delete_selected_designer_control() {
     s.inspector_panel.show_designer(&doc);
     s.status
         .set_analysis_status(&format!("Deleted control {}", control_name));
+}
+
+pub fn delete_selected_storyboard_segue() -> bool {
+    let s = app();
+    if s.selected_storyboard_file.is_empty() || s.selected_storyboard_segue.is_empty() {
+        return false;
+    }
+    let file_path = s.selected_storyboard_file.clone();
+    let segue_id = s.selected_storyboard_segue.clone();
+    let mut doc = match storyboard::load_storyboard(&file_path) {
+        Some(doc) => doc,
+        None => {
+            s.status.set_analysis_status("Could not load storyboard");
+            return true;
+        }
+    };
+    let Some(segue) = doc.remove_segue(&segue_id) else {
+        s.status.set_analysis_status("Storyboard segue not found");
+        s.selected_storyboard_file.clear();
+        s.selected_storyboard_segue.clear();
+        s.editor_view.refresh_storyboards();
+        s.inspector_panel.show_file(&file_path);
+        return true;
+    };
+    if let Err(err) = storyboard::save_storyboard(&file_path, &doc) {
+        s.status.set_analysis_status(err);
+        return true;
+    }
+
+    if let Some((designer_path, form)) = clear_storyboard_source_event_hook(&doc, &segue) {
+        s.editor_view
+            .update_designer_document(&designer_path, form, Some(&segue.from_control));
+    }
+
+    s.selected_storyboard_file.clear();
+    s.selected_storyboard_segue.clear();
+    s.editor_view.refresh_storyboards();
+    s.inspector_panel.show_file(&file_path);
+    s.status
+        .set_analysis_status(&format!("Deleted segue {}", segue_id));
+    true
+}
+
+fn clear_storyboard_source_event_hook(
+    doc: &storyboard::StoryboardDocument,
+    segue: &storyboard::StoryboardSegue,
+) -> Option<(String, designer::DesignerDocument)> {
+    let scene = doc
+        .scenes
+        .iter()
+        .find(|scene| scene.form_name == segue.from_form)?;
+    let mut form = designer::load_designer(&scene.designer_path)?;
+    if form.control_property_value(&segue.from_control, &segue.trigger_event) != segue.handler {
+        return None;
+    }
+    if form
+        .update_control_property(&segue.from_control, &segue.trigger_event, "")
+        .is_err()
+    {
+        return None;
+    }
+    if designer::save_designer(&scene.designer_path, &form).is_err() {
+        return None;
+    }
+    Some((scene.designer_path.clone(), form))
 }
 
 pub fn toggle_inspector() {

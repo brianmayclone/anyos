@@ -91,6 +91,11 @@ pub fn wire_keyboard(win: &anyui::Window) {
             return;
         }
 
+        // Delete selected storyboard segue.
+        if e.keycode == anyui::KEY_DELETE && commands::delete_selected_storyboard_segue() {
+            return;
+        }
+
         // New File: Ctrl+N
         if e.ctrl() && e.keycode == b'N' as u32 {
             commands::new_file();

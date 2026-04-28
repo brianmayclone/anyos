@@ -87,6 +87,8 @@ pub struct AppState {
     // Designer interaction state
     pub selected_designer_file: String,
     pub selected_designer_control: String,
+    pub selected_storyboard_file: String,
+    pub selected_storyboard_segue: String,
     pub pending_designer_event_file: String,
     pub pending_designer_event_x: i32,
     pub pending_designer_event_y: i32,

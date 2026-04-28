@@ -3,6 +3,7 @@ use alloc::string::String;
 use libanyui_client as ui;
 
 use crate::logic::designer::{DesignerControl, DesignerDocument};
+use crate::logic::storyboard::StoryboardSegue;
 
 const STYLE_BOLD: u32 = 1;
 
@@ -192,6 +193,8 @@ impl InspectorPanel {
         self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
         self.btn_pick_color.set_visible(false);
+        self.btn_delete_control.set_text("Delete Control");
+        self.btn_delete_control.set_visible(false);
         self.tree.set_dock(ui::DOCK_FILL);
         self.tree.set_visible(true);
         self.tree.clear();
@@ -214,6 +217,8 @@ impl InspectorPanel {
         self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
         self.btn_pick_color.set_visible(false);
+        self.btn_delete_control.set_text("Delete Control");
+        self.btn_delete_control.set_visible(false);
         self.tree.set_dock(ui::DOCK_FILL);
         self.tree.set_visible(true);
         self.tree.clear();
@@ -235,6 +240,7 @@ impl InspectorPanel {
         self.property_grid.set_visible(true);
         self.btn_delete_control.set_visible(false);
         self.btn_pick_color.set_visible(false);
+        self.btn_delete_control.set_text("Delete Control");
         self.property_dropdown.set_items(&doc.form_property_items());
         self.property_dropdown.set_state(0);
         self.property_value
@@ -285,6 +291,44 @@ impl InspectorPanel {
         }
     }
 
+    pub fn show_storyboard_segue(&self, storyboard_name: &str, segue: &StoryboardSegue) {
+        let tc = ui::theme::colors();
+        self.title.set_text("Segue Properties");
+        self.subtitle
+            .set_text(&format!("{} -> {}", segue.from_control, segue.to_form));
+        self.tabs.set_visible(false);
+        self.property_page.set_visible(true);
+        self.event_page.set_visible(false);
+        self.property_editor.set_visible(false);
+        self.property_grid.set_visible(true);
+        self.btn_delete_control.set_text("Delete Segue");
+        self.btn_delete_control.set_position(12, 7);
+        self.btn_delete_control.set_size(216, 28);
+        self.btn_delete_control.set_visible(true);
+        self.btn_pick_color.set_visible(false);
+        self.tree.set_dock(ui::DOCK_BOTTOM);
+        self.tree.set_size(240, 150);
+        self.tree.set_visible(true);
+        self.populate_storyboard_segue_grid(segue);
+        self.tree.clear();
+
+        let root = self.tree.add_root(&format!("Segue: {}", segue.id));
+        self.tree.set_node_style(root, STYLE_BOLD);
+        self.tree.set_node_text_color(root, tc.accent);
+        self.tree
+            .add_child(root, &format!("Storyboard: {}", storyboard_name));
+        self.tree.add_child(
+            root,
+            &format!("From: {}.{}", segue.from_form, segue.from_control),
+        );
+        self.tree
+            .add_child(root, &format!("Trigger: {}", segue.trigger_event));
+        self.tree.add_child(root, &format!("To: {}", segue.to_form));
+        self.tree
+            .add_child(root, &format!("Mode: {}", segue.navigation_mode));
+        self.tree.set_expanded(root, true);
+    }
+
     fn show_control_properties(&self, doc: &DesignerDocument, control: &DesignerControl) {
         let tc = ui::theme::colors();
         self.title.set_text("Properties");
@@ -295,6 +339,7 @@ impl InspectorPanel {
         self.event_page.set_visible(self.tabs.get_state() == 1);
         self.property_editor.set_visible(true);
         self.property_grid.set_visible(true);
+        self.btn_delete_control.set_text("Delete Control");
         self.btn_delete_control.set_visible(true);
         self.tree.set_dock(ui::DOCK_BOTTOM);
         self.tree.set_size(240, 150);
@@ -470,6 +515,43 @@ impl InspectorPanel {
         if row > 0 {
             self.property_grid.set_selected_row(0);
         }
+    }
+
+    fn populate_storyboard_segue_grid(&self, segue: &StoryboardSegue) {
+        let rows = [
+            ("Id", segue.id.as_str(), "0", ""),
+            ("FromForm", segue.from_form.as_str(), "0", ""),
+            ("FromControl", segue.from_control.as_str(), "0", ""),
+            ("TriggerEvent", segue.trigger_event.as_str(), "0", ""),
+            ("ToForm", segue.to_form.as_str(), "0", ""),
+            ("Condition", segue.condition.as_str(), "0", ""),
+            (
+                "NavigationMode",
+                segue.navigation_mode.as_str(),
+                "4",
+                "SameWindow|NewWindow|Dialog",
+            ),
+            ("Handler", segue.handler.as_str(), "0", ""),
+        ];
+        let mut raw = String::new();
+        let mut kinds = String::new();
+        let mut options = String::new();
+        for (row, (name, value, kind, option)) in rows.iter().enumerate() {
+            if row > 0 {
+                raw.push('\x1e');
+                kinds.push('\x1e');
+                options.push('\x1e');
+            }
+            append_grid_cell(&mut raw, name);
+            raw.push('\x1f');
+            append_grid_cell(&mut raw, value);
+            kinds.push_str(kind);
+            options.push_str(option);
+        }
+        self.property_grid.set_data_raw(raw.as_bytes());
+        self.property_grid.set_row_editor_kinds(&kinds);
+        self.property_grid.set_row_editor_options(&options);
+        self.property_grid.set_selected_row(0);
     }
 
     fn populate_control_event_grid(&self, control: &DesignerControl) {
