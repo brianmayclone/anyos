@@ -34,6 +34,127 @@ fn eval_throws(code: &str) -> bool {
     engine.last_exception().is_some()
 }
 
+#[test]
+fn class_declaration_initializes_preallocated_function_scope_binding() {
+    assert_eq!(
+        eval_str("(function(){ class Logger {}; return typeof Logger + ':' + Logger.name; })()"),
+        "function:Logger"
+    );
+}
+
+#[test]
+fn assignment_expression_preserves_nested_member_value() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                var exports = {}, css;
+                (function(e){ e.toColor = function(v) { return 'ok:' + v; }; })(css || (exports.css = css = {}));
+                return typeof exports.css.toColor + ':' + exports.css.toColor('#fff');
+            })()
+            "#,
+        ),
+        "function:ok:#fff"
+    );
+}
+
+#[test]
+fn comma_chained_iifes_initialize_namespaces() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                var exports = {}, channels, color, css;
+                (function(e){ e.toRgb = function(){ return 1; }; })(channels || (exports.channels = channels = {})),
+                (function(e){ e.toColorRGB = function(){ return 2; }; })(color || (exports.color = color = {})),
+                (function(e){ e.toColor = function(){ return 3; }; })(css || (exports.css = css = {}));
+                return [
+                    typeof exports.channels.toRgb,
+                    typeof exports.color.toColorRGB,
+                    typeof exports.css.toColor,
+                    exports.css.toColor()
+                ].join(':');
+            })()
+            "#,
+        ),
+        "function:function:function:3"
+    );
+}
+
+#[test]
+fn optional_catch_binding_continues_after_catch_block() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                var ns = {};
+                (function(e){
+                    try { throw new Error('ignore'); } catch {}
+                    e.toColor = function(){ return 7; };
+                })(ns);
+                return typeof ns.toColor + ':' + ns.toColor();
+            })()
+            "#,
+        ),
+        "function:7"
+    );
+}
+
+#[test]
+fn try_block_lexical_binding_does_not_shadow_after_block() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                let i = 0;
+                try {
+                    const i = missingGlobal;
+                } catch {}
+                i = 3;
+                return i;
+            })()
+            "#,
+        ),
+        "3"
+    );
+}
+
+#[test]
+fn try_block_lexical_binding_can_shadow_parameter() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(e){
+                try {
+                    const e = { local: true };
+                } catch {}
+                e.toColor = function(){ return 'outer'; };
+                return typeof e.toColor + ':' + e.toColor() + ':' + e.local;
+            })({})
+            "#,
+        ),
+        "function:outer:undefined"
+    );
+}
+
+#[test]
+fn for_of_lexical_binding_can_shadow_rest_parameter() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(...items){
+                var seen = [];
+                for (const items of [1, 2]) {
+                    seen.push(items);
+                }
+                return items.length + ':' + seen.join(',');
+            })('a', 'b', 'c')
+            "#,
+        ),
+        "3:1,2"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // §13.3 — Variable Declarations (let, const, var)
 // ═══════════════════════════════════════════════════════════
@@ -865,6 +986,22 @@ fn template_literal_expr() {
 fn optional_chaining() {
     assert_eq!(eval_str("let obj = {a: {b: 42}}; obj?.a?.b"), "42");
     assert_eq!(eval_str("let obj = null; obj?.a?.b"), "undefined");
+    assert_eq!(
+        eval_str("let obj = null; obj?.a.b"),
+        "undefined"
+    );
+    assert_eq!(
+        eval_str("let obj = {a: {b: {c: 7}}}; obj?.a.b.c"),
+        "7"
+    );
+    assert_eq!(
+        eval_str("let called = 0; let obj = {}; obj.missing?.callMe(called = 1); called"),
+        "0"
+    );
+    assert_eq!(
+        eval_str("let obj = {x: 3, get(){ return this.x; }}; obj?.get()"),
+        "3"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════

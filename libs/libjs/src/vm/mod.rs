@@ -266,6 +266,10 @@ impl Vm {
         alloc::format!("__private_slot_{}", name)
     }
 
+    fn is_private_name(name: &str) -> bool {
+        name.starts_with('#') && name.len() > 1
+    }
+
     fn close_iterator_on_abrupt(&mut self, iter: &JsValue, original_exc: JsValue) -> JsValue {
         let return_fn = self.get_property_invoking_getter(iter, "return");
         if let Some(close_exc) = self.last_exception.take() {
@@ -1880,7 +1884,7 @@ impl Vm {
                     // Only attempt IC for plain `JsValue::Object` receivers
                     // and non-private property names. Proxies, primitives,
                     // arrays, strings and the like always fall through.
-                    if !name.starts_with('#') {
+                    if !Self::is_private_name(&name) {
                         if let JsValue::Object(ref obj_rc) = obj {
                             let is_proxy = obj_rc.borrow().internal_tag.as_deref()
                                 == Some(native_proxy::PROXY_TAG);
@@ -1928,7 +1932,7 @@ impl Vm {
                             return JsValue::Undefined;
                         }
                     // Private member brand check (ES2023 §7.3.29 PrivateGet)
-                    } else if name.starts_with('#') {
+                    } else if Self::is_private_name(&name) {
                         let private_name = Self::mangle_private_name(&name);
                         let has_private = self.has_private_member(&obj, &private_name);
                         if has_private {
@@ -2023,7 +2027,7 @@ impl Vm {
                         continue;
                     }
                     // Private member write check (ES2023 §7.3.30 PrivateSet)
-                    if name.starts_with('#') {
+                    if Self::is_private_name(&name) {
                         let private_name = Self::mangle_private_name(&name);
                         // Check if the target has this private name
                         let has_own = self.has_private_member(&obj, &private_name);
@@ -2618,7 +2622,20 @@ impl Vm {
                                     tgt_rc.borrow_mut().push(JsValue::String(cs));
                                 }
                             }
-                            JsValue::Object(_) => {
+                            JsValue::Object(src_rc) => {
+                                if src_rc.borrow().internal_tag.as_deref() == Some("__arguments__") {
+                                    let len = src
+                                        .get_property("length")
+                                        .to_number()
+                                        .max(0.0) as usize;
+                                    let mut tgt_a = tgt_rc.borrow_mut();
+                                    for idx in 0..len {
+                                        tgt_a.push(src.get_property(&alloc::format!("{}", idx)));
+                                    }
+                                    drop(tgt_a);
+                                    self.stack.push(tgt);
+                                    continue;
+                                }
                                 // Use Symbol.iterator protocol
                                 let depth_before = self.frames.len();
                                 let sym_iter_key = native_symbol::WELL_KNOWN_ITERATOR;

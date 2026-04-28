@@ -71,7 +71,35 @@ fn format_args_to_string(args: &[JsValue]) -> String {
                 }
                 out.push(']');
             }
-            JsValue::Object(_) => out.push_str("[object Object]"),
+            JsValue::Object(obj) => {
+                let borrowed = obj.borrow();
+                let name = borrowed.get("name");
+                let message = borrowed.get("message");
+                let stack = borrowed.get("stack");
+                let name_s = match name {
+                    JsValue::String(ref s) if !s.is_empty() => Some(s.as_str()),
+                    _ => None,
+                };
+                let message_s = match message {
+                    JsValue::String(ref s) if !s.is_empty() => Some(s.as_str()),
+                    _ => None,
+                };
+                if name_s.is_some() || message_s.is_some() {
+                    out.push_str(name_s.unwrap_or("Error"));
+                    if let Some(message) = message_s {
+                        out.push_str(": ");
+                        out.push_str(message);
+                    }
+                    if let JsValue::String(ref stack_s) = stack {
+                        if !stack_s.is_empty() {
+                            out.push_str(" ");
+                            out.push_str(stack_s);
+                        }
+                    }
+                } else {
+                    out.push_str("[object Object]");
+                }
+            }
             JsValue::Function(f) => {
                 let func = f.borrow();
                 out.push_str("[Function");

@@ -115,6 +115,7 @@ fn compute_sibling_ids(
 /// at call time, so they work identically whether found on instance or prototype.
 pub fn populate_element_prototype(proto: &JsValue) {
     use libjs::vm::native_fn;
+    proto.set_property(String::from("isConnected"), JsValue::Bool(true));
     // Node interface
     proto.set_property(
         String::from("appendChild"),
@@ -616,7 +617,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     );
 
     // Node properties (W3C DOM §4.4).
-    obj.set(String::from("isConnected"), JsValue::Bool(node_id >= 0));
+    obj.set(String::from("isConnected"), JsValue::Bool(node_id != -9999));
     obj.set(
         String::from("getRootNode"),
         native_fn("getRootNode", el_get_root_node),
@@ -1298,7 +1299,12 @@ fn el_query_selector(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if sel.is_empty() {
         return JsValue::Null;
     }
-    if let Some(bridge) = get_bridge(vm) {
+    let root_id = this_node_id(vm);
+    if root_id != -9999 {
+        if let Some(id) = find_first_descendant_matching(vm, root_id, &sel) {
+            return make_element(vm, id);
+        }
+    } else if let Some(bridge) = get_bridge(vm) {
         let dom = bridge.dom();
         if let Some(id) = selector::find_first(dom, &sel) {
             return make_element(vm, id as i64);
@@ -1312,7 +1318,12 @@ fn el_query_selector_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if sel.is_empty() {
         return make_array(Vec::new());
     }
-    if let Some(bridge) = get_bridge(vm) {
+    let root_id = this_node_id(vm);
+    if root_id != -9999 {
+        let ids = find_descendants_matching(vm, root_id, &sel);
+        let elements: Vec<JsValue> = ids.iter().map(|&id| make_element(vm, id)).collect();
+        return make_array(elements);
+    } else if let Some(bridge) = get_bridge(vm) {
         let dom = bridge.dom();
         let ids = selector::find_all(dom, &sel);
         let elements: Vec<JsValue> = ids.iter().map(|&id| make_element(vm, id as i64)).collect();
@@ -1337,6 +1348,83 @@ fn el_get_elements_by_tag_name(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
     let results: Vec<JsValue> = ids.iter().map(|&id| make_element(vm, id)).collect();
     make_array(results)
+}
+
+fn find_first_descendant_matching(vm: &mut Vm, root_id: i64, sel: &str) -> Option<i64> {
+    let children = read_all_child_ids(vm, root_id);
+    for child_id in children {
+        if element_matches_simple_selector(vm, child_id, sel) {
+            return Some(child_id);
+        }
+        if let Some(found) = find_first_descendant_matching(vm, child_id, sel) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_descendants_matching(vm: &mut Vm, root_id: i64, sel: &str) -> Vec<i64> {
+    let mut out = Vec::new();
+    collect_descendants_matching(vm, root_id, sel, &mut out);
+    out
+}
+
+fn collect_descendants_matching(vm: &mut Vm, root_id: i64, sel: &str, out: &mut Vec<i64>) {
+    let children = read_all_child_ids(vm, root_id);
+    for child_id in children {
+        if element_matches_simple_selector(vm, child_id, sel) {
+            out.push(child_id);
+        }
+        collect_descendants_matching(vm, child_id, sel, out);
+    }
+}
+
+fn element_matches_simple_selector(vm: &mut Vm, node_id: i64, sel: &str) -> bool {
+    if read_node_type(vm, node_id) as u32 != 1 {
+        return false;
+    }
+    let sel = sel.trim();
+    if sel.is_empty() {
+        return false;
+    }
+    if let Some(id) = sel.strip_prefix('#') {
+        return attr_eq(vm, node_id, "id", id);
+    }
+    if let Some(class_name) = sel.strip_prefix('.') {
+        if let JsValue::String(classes) = read_attribute(vm, node_id, "class") {
+            return classes.split_whitespace().any(|c| c == class_name);
+        }
+        return false;
+    }
+    if sel.starts_with('[') && sel.ends_with(']') {
+        let inner = &sel[1..sel.len() - 1];
+        if let Some(eq) = inner.find('=') {
+            let name = inner[..eq].trim();
+            let value = unquote_selector_value(inner[eq + 1..].trim());
+            return attr_eq(vm, node_id, name, value);
+        }
+        return !matches!(read_attribute(vm, node_id, inner.trim()), JsValue::Null);
+    }
+    read_tag_name(vm, node_id).eq_ignore_ascii_case(sel)
+}
+
+fn attr_eq(vm: &mut Vm, node_id: i64, name: &str, expected: &str) -> bool {
+    match read_attribute(vm, node_id, name) {
+        JsValue::String(value) => value == expected,
+        _ => false,
+    }
+}
+
+fn unquote_selector_value(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
 }
 
 fn el_get_elements_by_class_name(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -1519,9 +1607,13 @@ fn el_replace_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     old_node
 }
 
-fn el_clone_node(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+fn el_clone_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let nid = this_node_id(vm);
-    make_element(vm, nid)
+    if args.first().map(|v| v.to_boolean()).unwrap_or(false) {
+        deep_clone_node(vm, nid)
+    } else {
+        make_element(vm, nid)
+    }
 }
 
 fn el_contains(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -3090,11 +3182,118 @@ fn ctx_create_image_data(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 fn ctx_get_image_data(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = args.first().map(|v| v.to_number() as usize).unwrap_or(0);
-    let y = args.get(1).map(|v| v.to_number() as usize).unwrap_or(0);
     let w = args.get(2).map(|v| v.to_number() as usize).unwrap_or(1);
     let h = args.get(3).map(|v| v.to_number() as usize).unwrap_or(1);
-    ctx_create_image_data(_vm, &[JsValue::Number(w as f64), JsValue::Number(h as f64)])
+    let len = w.saturating_mul(h).saturating_mul(4);
+    let (r, g, b, a) = match _vm.current_this.get_property("fillStyle") {
+        JsValue::String(s) => parse_canvas_color(&s).unwrap_or((0, 0, 0, 255)),
+        _ => (0, 0, 0, 255),
+    };
+    let mut pixels = Vec::with_capacity(len);
+    for i in 0..len {
+        let channel = match i % 4 {
+            0 => r,
+            1 => g,
+            2 => b,
+            _ => a,
+        };
+        pixels.push(JsValue::Number(channel as f64));
+    }
+    let data = JsValue::new_array(pixels);
+    let img = JsValue::new_object();
+    img.set_property(String::from("width"), JsValue::Number(w as f64));
+    img.set_property(String::from("height"), JsValue::Number(h as f64));
+    img.set_property(String::from("data"), data);
+    img
+}
+
+fn parse_canvas_color(s: &str) -> Option<(u8, u8, u8, u8)> {
+    let color = s.trim();
+    if let Some(hex) = color.strip_prefix('#') {
+        return match hex.len() {
+            3 => Some((
+                parse_hex_nibble(hex.as_bytes()[0])? * 17,
+                parse_hex_nibble(hex.as_bytes()[1])? * 17,
+                parse_hex_nibble(hex.as_bytes()[2])? * 17,
+                255,
+            )),
+            4 => Some((
+                parse_hex_nibble(hex.as_bytes()[0])? * 17,
+                parse_hex_nibble(hex.as_bytes()[1])? * 17,
+                parse_hex_nibble(hex.as_bytes()[2])? * 17,
+                parse_hex_nibble(hex.as_bytes()[3])? * 17,
+            )),
+            6 | 8 => {
+                let r = parse_hex_byte(&hex[0..2])?;
+                let g = parse_hex_byte(&hex[2..4])?;
+                let b = parse_hex_byte(&hex[4..6])?;
+                let a = if hex.len() == 8 { parse_hex_byte(&hex[6..8])? } else { 255 };
+                Some((r, g, b, a))
+            }
+            _ => None,
+        };
+    }
+
+    let lower = color.to_ascii_lowercase();
+    if let Some(args) = lower.strip_prefix("rgb(").and_then(|v| v.strip_suffix(')')) {
+        return parse_rgb_components(args, false);
+    }
+    if let Some(args) = lower.strip_prefix("rgba(").and_then(|v| v.strip_suffix(')')) {
+        return parse_rgb_components(args, true);
+    }
+    match lower.as_str() {
+        "black" => Some((0, 0, 0, 255)),
+        "white" => Some((255, 255, 255, 255)),
+        "red" => Some((255, 0, 0, 255)),
+        "green" => Some((0, 128, 0, 255)),
+        "blue" => Some((0, 0, 255, 255)),
+        "transparent" => Some((0, 0, 0, 0)),
+        _ => None,
+    }
+}
+
+fn parse_rgb_components(args: &str, has_alpha: bool) -> Option<(u8, u8, u8, u8)> {
+    let mut parts = args.split(',').map(str::trim);
+    let r = parse_rgb_component(parts.next()?)?;
+    let g = parse_rgb_component(parts.next()?)?;
+    let b = parse_rgb_component(parts.next()?)?;
+    let a = if has_alpha {
+        parse_alpha_component(parts.next().unwrap_or("1"))?
+    } else {
+        255
+    };
+    Some((r, g, b, a))
+}
+
+fn parse_rgb_component(s: &str) -> Option<u8> {
+    if let Some(pct) = s.strip_suffix('%') {
+        let v = pct.parse::<f32>().ok()?;
+        return Some(((v.clamp(0.0, 100.0) * 255.0 / 100.0).round()) as u8);
+    }
+    let v = s.parse::<f32>().ok()?;
+    Some(v.clamp(0.0, 255.0).round() as u8)
+}
+
+fn parse_alpha_component(s: &str) -> Option<u8> {
+    if let Some(pct) = s.strip_suffix('%') {
+        let v = pct.parse::<f32>().ok()?;
+        return Some(((v.clamp(0.0, 100.0) * 255.0 / 100.0).round()) as u8);
+    }
+    let v = s.parse::<f32>().ok()?;
+    Some((v.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+fn parse_hex_byte(s: &str) -> Option<u8> {
+    u8::from_str_radix(s, 16).ok()
+}
+
+fn parse_hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn ctx_get_transform(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {

@@ -113,6 +113,18 @@ impl Scope {
         None
     }
 
+    fn resolve_local_at_current_depth(&self, name: &str) -> Option<u16> {
+        for (i, local) in self.locals.iter().enumerate().rev() {
+            if local.depth != self.scope_depth {
+                continue;
+            }
+            if local.name == name {
+                return Some(i as u16);
+            }
+        }
+        None
+    }
+
     fn add_local(&mut self, name: String) -> u16 {
         self.add_local_with_flags(name, true, false)
     }
@@ -1292,7 +1304,7 @@ impl Compiler {
                         .scope()
                         .resolve_local(name)
                         .unwrap_or_else(|| self.scope_mut().add_local(name.clone()));
-                    self.emit(Op::StoreLocal(slot));
+                    self.emit(Op::InitLocal(slot));
                     self.emit(Op::Pop);
                 }
             }
@@ -1443,7 +1455,7 @@ impl Compiler {
                 let prealloc_slot = if !is_var && !is_global_var {
                     let slot = self
                         .scope()
-                        .resolve_local(name)
+                        .resolve_local_at_current_depth(name)
                         .unwrap_or_else(|| {
                             self.scope_mut()
                                 .add_local_with_flags(name.clone(), !is_const, true)
@@ -1793,7 +1805,7 @@ impl Compiler {
                     let mut names = Vec::new();
                     Self::collect_pattern_names(&decl.name, &mut names);
                     for name in names {
-                        if self.scope().resolve_local(&name).is_none() {
+                        if self.scope().resolve_local_at_current_depth(&name).is_none() {
                             self.scope_mut().add_local_with_flags(
                                 name,
                                 *kind != VarKind::Const,
@@ -1850,7 +1862,9 @@ impl Compiler {
                             let name_clone = name.clone();
                             if *kind == VarKind::Var {
                                 self.bind_ident(&name_clone);
-                            } else if let Some(slot) = self.scope().resolve_local(&name_clone) {
+                            } else if let Some(slot) =
+                                self.scope().resolve_local_at_current_depth(&name_clone)
+                            {
                                 self.emit(Op::InitLocal(slot));
                                 self.emit(Op::Pop);
                             } else {
@@ -1955,7 +1969,7 @@ impl Compiler {
                     let mut names = Vec::new();
                     Self::collect_pattern_names(&decl.name, &mut names);
                     for name in names {
-                        if self.scope().resolve_local(&name).is_none() {
+                        if self.scope().resolve_local_at_current_depth(&name).is_none() {
                             self.scope_mut().add_local_with_flags(
                                 name,
                                 *kind != VarKind::Const,
@@ -2004,7 +2018,9 @@ impl Compiler {
                             let name_clone = name.clone();
                             if *kind == VarKind::Var {
                                 self.bind_ident(&name_clone);
-                            } else if let Some(slot) = self.scope().resolve_local(&name_clone) {
+                            } else if let Some(slot) =
+                                self.scope().resolve_local_at_current_depth(&name_clone)
+                            {
                                 self.emit(Op::InitLocal(slot));
                                 self.emit(Op::Pop);
                             } else {
@@ -2258,10 +2274,15 @@ impl Compiler {
             self.scope_mut().pending_finallies.push(fin.clone());
         }
 
-        // Try block
+        // Try/finally bodies are block statements with their own lexical scope.
+        // Without this, `let`/`const` names declared inside a try block leak into
+        // the surrounding function and can shadow outer bindings with a stale TDZ
+        // slot after the block has completed.
+        self.begin_scope();
         for s in block {
             self.compile_stmt(s);
         }
+        self.end_scope();
         let try_end_jump = self.emit(Op::Jump(0));
 
         // Pop pending finally (we're leaving the try body).
@@ -2297,9 +2318,11 @@ impl Compiler {
 
         // Finally block (normal path — no exception, no early return).
         if let Some(fin) = finally {
+            self.begin_scope();
             for s in fin {
                 self.compile_stmt(s);
             }
+            self.end_scope();
         }
     }
 
@@ -2318,10 +2341,12 @@ impl Compiler {
         if let Some(fin) = finally {
             self.scope_mut().pending_finallies.push(fin.clone());
         }
+        self.begin_scope();
         for s in block {
             self.compile_stmt_completion(s);
             self.emit_update_completion(slot);
         }
+        self.end_scope();
         let try_end_jump = self.emit(Op::Jump(0));
         if finally.is_some() {
             self.scope_mut().pending_finallies.pop();
@@ -2349,10 +2374,12 @@ impl Compiler {
         self.patch_jump(try_end_jump);
         self.emit(Op::TryEnd);
         if let Some(fin) = finally {
+            self.begin_scope();
             for s in fin {
                 self.compile_stmt_completion(s);
                 self.emit_update_completion(slot);
             }
+            self.end_scope();
         }
         self.emit(Op::LoadLocal(slot));
     }
@@ -3453,7 +3480,51 @@ impl Compiler {
 
     // ── Expressions ──
 
+    fn compile_optional_member_chain(&mut self, expr: &Expr) -> bool {
+        let mut properties = Vec::new();
+        let Some(base) = Self::collect_optional_member_chain(expr, &mut properties) else {
+            return false;
+        };
+        self.compile_expr(base);
+        let skip = self.emit(Op::JumpIfNullish(0));
+        for property in properties {
+            let ci = self.add_const(Constant::String(property));
+            self.emit(Op::GetPropNamed(ci));
+        }
+        let end = self.emit(Op::Jump(0));
+        self.patch_jump(skip);
+        self.emit(Op::Pop);
+        self.emit(Op::LoadUndefined);
+        self.patch_jump(end);
+        true
+    }
+
+    fn collect_optional_member_chain<'a>(
+        expr: &'a Expr,
+        properties: &mut Vec<String>,
+    ) -> Option<&'a Expr> {
+        match expr {
+            Expr::OptionalChain { object, property } => {
+                properties.push(property.clone());
+                Some(object)
+            }
+            Expr::Member {
+                object,
+                property,
+                computed: false,
+            } => {
+                let base = Self::collect_optional_member_chain(object, properties)?;
+                properties.push(property.clone());
+                Some(base)
+            }
+            _ => None,
+        }
+    }
+
     fn compile_expr(&mut self, expr: &Expr) {
+        if self.compile_optional_member_chain(expr) {
+            return;
+        }
         match expr {
             Expr::Number(n) => {
                 let ci = self.add_const(Constant::Number(*n));
@@ -3683,6 +3754,28 @@ impl Compiler {
                             self.compile_expr(arg);
                         }
                         self.emit(Op::CallMethod(arguments.len() as u8));
+                    }
+                    Expr::OptionalChain { object, property } => {
+                        self.compile_expr(object);
+                        self.emit(Op::Dup);
+                        let skip = self.emit(Op::JumpIfNullish(0));
+                        let ci = self.add_const(Constant::String(property.clone()));
+                        self.emit(Op::GetPropNamed(ci));
+                        if Self::args_have_spread(arguments) {
+                            self.compile_args_as_array(arguments);
+                            self.emit(Op::CallMethodSpread);
+                        } else {
+                            for arg in arguments {
+                                self.compile_expr(arg);
+                            }
+                            self.emit(Op::CallMethod(arguments.len() as u8));
+                        }
+                        let end = self.emit(Op::Jump(0));
+                        self.patch_jump(skip);
+                        self.emit(Op::Pop);
+                        self.emit(Op::Pop);
+                        self.emit(Op::LoadUndefined);
+                        self.patch_jump(end);
                     }
                     Expr::Member {
                         object, property, ..
@@ -4033,7 +4126,6 @@ impl Compiler {
             }
             Expr::OptionalChain { object, property } => {
                 self.compile_expr(object);
-                self.emit(Op::Dup);
                 let skip = self.emit(Op::JumpIfNullish(0));
                 let ci = self.add_const(Constant::String(property.clone()));
                 self.emit(Op::GetPropNamed(ci));
@@ -4046,7 +4138,6 @@ impl Compiler {
             Expr::OptionalCall { callee, arguments } => {
                 // expr?.(args) — if expr is nullish, short-circuit to undefined.
                 self.compile_expr(callee);
-                self.emit(Op::Dup);
                 let skip = self.emit(Op::JumpIfNullish(0));
                 for arg in arguments {
                     self.compile_expr(arg);
