@@ -2194,7 +2194,18 @@ pub(super) fn layout_children_ex_with_budget(
             i += 1;
         } else {
             // ── Inline run ──
+            // Collect consecutive non-block-level siblings.  Absolutely- or
+            // fixed-positioned elements that happen to sit inside an inline
+            // run are out-of-flow per CSS 2.1 §9.3 and must not be laid out
+            // by the inline path (which would assign them a 0×0 box and
+            // ignore their `top/right/bottom/left/width/height`).  Defer
+            // them to the same per-block abs loop that handles block-level
+            // OOF children — that path resolves the proper containing block
+            // (padding box of the nearest positioned ancestor).
             let run_start = i;
+            let mut inline_ids: Vec<NodeId> = Vec::new();
+            let oof_static_x = bw + parent.padding.left;
+            let oof_static_w = available_width.max(0);
             while i < child_ids.len() {
                 let sid = child_ids[i];
                 let ss = &styles[sid];
@@ -2202,12 +2213,17 @@ pub(super) fn layout_children_ex_with_budget(
                     i += 1;
                     continue;
                 }
+                if matches!(ss.position, Position::Absolute | Position::Fixed) {
+                    deferred_abs.push((sid, oof_static_x, cursor_y, oof_static_w, 0));
+                    i += 1;
+                    continue;
+                }
                 if is_block_level(dom, sid, ss) {
                     break;
                 }
+                inline_ids.push(sid);
                 i += 1;
             }
-            let inline_ids: Vec<NodeId> = child_ids[run_start..i].iter().copied().collect();
 
             // CSS §9.2.1: Whitespace-only text nodes between block-level siblings do NOT
             // generate boxes and must not advance the block cursor.
@@ -2337,17 +2353,31 @@ pub(super) fn layout_children_ex_with_budget(
             && styles[_parent_node].position == Position::Static;
 
         // Containing block size for the absolute element.
-        let parent_content_width =
-            (parent.width - parent.padding.left - parent.padding.right - bw * 2).max(0);
+        // CSS 2.1 §10.1: the containing block for an absolutely-positioned
+        // element is the *padding box* of the nearest positioned ancestor, not
+        // its content box.  Percentage widths/heights and inset offsets on the
+        // abs element resolve against that padding box.
+        //
+        // For the height, `parent_height` here is the parent's *definite*
+        // content-box height (or 0 when not definite); we extend it with any
+        // content already laid out in flow, so containers whose height comes
+        // from in-flow content (e.g. the classic Next.js `padding-bottom: %`
+        // aspect-ratio trick) still expose a non-zero containing block.
+        let parent_pad_box_w = (parent.width - bw * 2).max(0);
+        let pad_top = parent.padding.top;
+        let pad_bot = parent.padding.bottom;
+        let in_flow_content_h = (cursor_y - bw - pad_top).max(0);
+        let parent_content_h = parent_height.max(in_flow_content_h);
+        let parent_pad_box_h = parent_content_h + pad_top + pad_bot;
         let cb_width = if is_fixed_pos || uses_initial_abs_cb {
             viewport_w
         } else {
-            parent_content_width
+            parent_pad_box_w
         };
         let cb_height = if is_fixed_pos || uses_initial_abs_cb {
             viewport_h
         } else {
-            parent_height
+            parent_pad_box_h
         };
 
         // CSS §10.3.7: For absolute elements with width:auto and BOTH left and right

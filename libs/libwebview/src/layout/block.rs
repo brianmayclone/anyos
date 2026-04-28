@@ -914,6 +914,14 @@ fn build_block_internal(
         } else {
             resolved_h + vertical_non_content
         })
+    } else if style.aspect_ratio > 0 && inner_w > 0 {
+        // CSS Sizing 4 §2.4: when the box has a definite inline size and
+        // `aspect-ratio` is set, its block size is computed from the ratio.
+        // This makes the height definite for the purpose of resolving
+        // percentage heights on descendants (and abs-positioned descendants
+        // resolving their containing block height against the padding box).
+        let ar_h = inner_w * 100 / style.aspect_ratio;
+        Some(ar_h + vertical_non_content)
     } else {
         None
     };

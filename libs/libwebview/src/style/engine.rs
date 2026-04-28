@@ -2733,9 +2733,10 @@ fn resolve_nested_vars(
                 result.push_str(&resolved_fb);
             } else {
                 // No value, no fallback — keep original
-                result.push_str(&value[i..end + 1]);
+                let stop = (end + 1).min(bytes.len());
+                result.push_str(&value[i..stop]);
             }
-            i = end + 1; // skip past closing )
+            i = (end + 1).min(bytes.len()); // skip past closing )
         } else {
             result.push(bytes[i] as char);
             i += 1;

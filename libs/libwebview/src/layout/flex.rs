@@ -785,14 +785,27 @@ pub fn layout_flex(
             // §9.7: Clamp to min/max constraints.
             // Note: main_base is content-box in most code paths (only the
             // auto/max-content case adds margins), so clamp without margins.
+            //
+            // `max_width` is stored with negative values encoding percentages
+            // (e.g. -10000 for `max-width: 100%`), matching how block.rs reads
+            // them.  The UA stylesheet applies `img { max-width: 100% }`, so
+            // forgetting to resolve the percentage here clamps every img flex
+            // item to a negative width and produces a 0×0 box.
             let st = &styles[items[i].node_id];
+            let resolve_pct_constraint = |raw: i32, basis: i32| -> i32 {
+                if raw < 0 {
+                    (basis.max(0) as i64 * (-raw) as i64 / 10000) as i32
+                } else {
+                    raw
+                }
+            };
             let clamped = if is_row {
                 let mut s = final_size;
                 if st.min_width > 0 {
                     s = s.max(st.min_width);
                 }
                 if let Some(mw) = st.max_width {
-                    s = s.min(mw);
+                    s = s.min(resolve_pct_constraint(mw, available_width));
                 }
                 s
             } else {
@@ -801,7 +814,8 @@ pub fn layout_flex(
                     s = s.max(st.min_height);
                 }
                 if let Some(mh) = st.max_height {
-                    s = s.min(mh);
+                    let basis = definite_container_height.unwrap_or(0);
+                    s = s.min(resolve_pct_constraint(mh, basis));
                 }
                 s
             };
