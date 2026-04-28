@@ -33,37 +33,48 @@ pub fn show(tool_status: &[ToolStatus]) -> bool {
     let flags = anyui::WIN_FLAG_BORDERLESS | anyui::WIN_FLAG_SHADOW | anyui::WIN_FLAG_NOT_RESIZABLE;
     let win = anyui::Window::new_with_flags("", x, y, SPLASH_W, SPLASH_H, flags);
 
-    // ── Dark background ──
+    // ── Branded background ──
     let bg = anyui::View::new();
     bg.set_dock(anyui::DOCK_FILL);
     bg.set_color(0xFF1A1A2E);
     win.add(&bg);
+
+    let bg_path = crate::logic::config::bundle_path("assets/bezier_neon_start.jpg");
+    let image = anyui::ImageView::from_file(&bg_path, SPLASH_W, SPLASH_H);
+    image.set_dock(anyui::DOCK_FILL);
+    image.set_scale_mode(anyui::SCALE_FILL);
+    bg.add(&image);
+
+    let overlay = anyui::View::new();
+    overlay.set_dock(anyui::DOCK_FILL);
+    overlay.set_color(0xCC101018);
+    bg.add(&overlay);
 
     // ── Accent stripe (top, 3px) ──
     let stripe = anyui::View::new();
     stripe.set_dock(anyui::DOCK_TOP);
     stripe.set_size(SPLASH_W, 3);
     stripe.set_color(tc.accent);
-    bg.add(&stripe);
+    overlay.add(&stripe);
 
     // ── Product name ──
     let title = anyui::Label::new("anyOS Code");
     title.set_position(36, 36);
     title.set_font_size(32);
     title.set_text_color(0xFFFFFFFF);
-    bg.add(&title);
+    overlay.add(&title);
 
     let subtitle = anyui::Label::new("Professional IDE");
     subtitle.set_position(38, 76);
     subtitle.set_font_size(13);
     subtitle.set_text_color(0xAACCCCCC);
-    bg.add(&subtitle);
+    overlay.add(&subtitle);
 
     let version = anyui::Label::new("Version 2.0");
     version.set_position(38, 96);
     version.set_font_size(11);
     version.set_text_color(0x88888888);
-    bg.add(&version);
+    overlay.add(&version);
 
     // ── Tool status (compact list) ──
     let mut y_pos: i32 = 130;
@@ -94,14 +105,14 @@ pub fn show(tool_status: &[ToolStatus]) -> bool {
         } else {
             0xFF666666
         });
-        bg.add(&lbl);
+        overlay.add(&lbl);
 
         if tool.available {
             let path_lbl = anyui::Label::new(tool.name);
-            path_lbl.set_position(280, y_pos);
+            path_lbl.set_position(344, y_pos);
             path_lbl.set_font_size(11);
-            path_lbl.set_text_color(0xFF555555);
-            bg.add(&path_lbl);
+            path_lbl.set_text_color(0xAA9CA3AF);
+            overlay.add(&path_lbl);
         }
 
         y_pos += 17;
@@ -120,13 +131,13 @@ pub fn show(tool_status: &[ToolStatus]) -> bool {
     } else {
         0xFFF44747
     });
-    bg.add(&loading);
+    overlay.add(&loading);
 
     let copy = anyui::Label::new("anyOS Project");
     copy.set_position((SPLASH_W as i32) - 110, (SPLASH_H as i32) - 26);
     copy.set_font_size(11);
-    copy.set_text_color(0xFF444444);
-    bg.add(&copy);
+    copy.set_text_color(0xAA9CA3AF);
+    overlay.add(&copy);
 
     // ── Run for 3 seconds then close ──
     let start = anyos_std::sys::uptime_ms();

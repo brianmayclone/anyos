@@ -26,12 +26,6 @@ impl WelcomeTab {
 
         let t = anyos_std::i18n::t;
 
-        let bg_path = crate::logic::config::bundle_path("assets/bezier_neon_start.jpg");
-        let background = ui::ImageView::from_file(&bg_path, 1200, 720);
-        background.set_dock(ui::DOCK_FILL);
-        background.set_scale_mode(ui::SCALE_FILL);
-        panel.add(&background);
-
         let title = ui::Label::new("anyOS Code");
         title.set_position(56, 46);
         title.set_font_size((config.font_size + 12).max(22));
