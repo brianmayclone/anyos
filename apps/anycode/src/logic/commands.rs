@@ -772,6 +772,12 @@ pub fn fold_block_at_cursor() {
 }
 
 pub fn editor_cut() {
+    if active_tab_is_selected_designer() {
+        if designer_copy_selected_control() {
+            delete_selected_designer_control();
+        }
+        return;
+    }
     let s = app();
     if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
         editor.cut();
@@ -779,6 +785,10 @@ pub fn editor_cut() {
 }
 
 pub fn editor_copy() {
+    if active_tab_is_selected_designer() {
+        designer_copy_selected_control();
+        return;
+    }
     let s = app();
     if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
         editor.copy();
@@ -786,10 +796,25 @@ pub fn editor_copy() {
 }
 
 pub fn editor_paste() {
+    if active_tab_is_selected_designer() {
+        designer_paste_control();
+        return;
+    }
     let s = app();
     if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
         editor.paste();
     }
+}
+
+fn active_tab_is_selected_designer() -> bool {
+    let s = app();
+    if s.selected_designer_file.is_empty() {
+        return false;
+    }
+    s.file_mgr
+        .active_file()
+        .map(|file| file.path == s.selected_designer_file)
+        .unwrap_or(false)
 }
 
 pub fn editor_select_all() {
@@ -1546,6 +1571,82 @@ pub fn delete_selected_designer_control() {
     s.inspector_panel.show_designer(&doc);
     s.status
         .set_analysis_status(&format!("Deleted control {}", control_name));
+}
+
+pub fn designer_copy_selected_control() -> bool {
+    let s = app();
+    if s.selected_designer_file.is_empty() || s.selected_designer_control.is_empty() {
+        s.status
+            .set_analysis_status("Select a designer control first");
+        return false;
+    }
+    let Some(doc) = designer::load_designer(&s.selected_designer_file) else {
+        s.status.set_analysis_status("Could not load designer file");
+        return false;
+    };
+    let Some(control) = doc
+        .controls
+        .iter()
+        .find(|control| control.name == s.selected_designer_control)
+        .cloned()
+    else {
+        s.status.set_analysis_status("Designer control not found");
+        return false;
+    };
+    let name = control.name.clone();
+    s.designer_clipboard = Some(control);
+    s.status
+        .set_analysis_status(&format!("Copied control {}", name));
+    true
+}
+
+pub fn designer_paste_control() -> bool {
+    let s = app();
+    if s.selected_designer_file.is_empty() {
+        s.status
+            .set_analysis_status("Open a designer surface first");
+        return false;
+    }
+    let Some(template) = s.designer_clipboard.clone() else {
+        s.status.set_analysis_status("No designer control copied");
+        return false;
+    };
+    let file_path = s.selected_designer_file.clone();
+    let mut doc = match designer::load_designer(&file_path) {
+        Some(doc) => doc,
+        None => {
+            s.status.set_analysis_status("Could not load designer file");
+            return false;
+        }
+    };
+    let before = doc.clone();
+    let selected_before = s.selected_designer_control.clone();
+    let control_name = match doc.add_control_copy(&template, DESIGNER_SNAP * 2, DESIGNER_SNAP * 2) {
+        Ok(name) => name,
+        Err(err) => {
+            s.status.set_analysis_status(err);
+            return false;
+        }
+    };
+    if let Err(err) = designer::save_designer(&file_path, &doc) {
+        s.status.set_analysis_status(err);
+        return false;
+    }
+    record_designer_history(
+        "Paste Control",
+        &file_path,
+        before,
+        doc.clone(),
+        &selected_before,
+        &control_name,
+    );
+    s.selected_designer_control = control_name.clone();
+    s.editor_view
+        .update_designer_document(&file_path, doc.clone(), Some(&control_name));
+    s.inspector_panel.show_designer_control(&doc, &control_name);
+    s.status
+        .set_analysis_status(&format!("Pasted control {}", control_name));
+    true
 }
 
 pub fn delete_selected_storyboard_segue() -> bool {

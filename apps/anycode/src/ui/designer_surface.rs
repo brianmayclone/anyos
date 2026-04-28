@@ -29,6 +29,7 @@ pub struct DesignerSurface {
     _scroll: ui::ScrollView,
     content: ui::View,
     canvas: ui::Canvas,
+    _context_menu: ui::ContextMenu,
     zoom: Rc<RefCell<u32>>,
     zoom_label: ui::Label,
     preview_controls: RefCell<Vec<ui::Control>>,
@@ -180,7 +181,23 @@ impl DesignerSurface {
         canvas.set_size(DESIGNER_CONTENT_W, DESIGNER_CONTENT_H);
         canvas.set_interactive(true);
         canvas.set_drop_target(true);
+        let context_menu = ui::ContextMenu::new("Copy|Paste|-|Delete");
+        canvas.set_context_menu(&context_menu);
         content.add(&canvas);
+        content.add(&context_menu);
+
+        context_menu.on_item_click(|e| match e.index {
+            0 => {
+                crate::logic::commands::designer_copy_selected_control();
+            }
+            1 => {
+                crate::logic::commands::designer_paste_control();
+            }
+            3 => {
+                crate::logic::commands::delete_selected_designer_control();
+            }
+            _ => {}
+        });
 
         let zoom = Rc::new(RefCell::new(100u32));
         let zoom_out_path = String::from(file_path);
@@ -306,6 +323,7 @@ impl DesignerSurface {
             _scroll: scroll,
             content,
             canvas,
+            _context_menu: context_menu,
             zoom,
             zoom_label,
             preview_controls: RefCell::new(Vec::new()),

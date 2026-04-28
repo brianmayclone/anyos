@@ -1006,6 +1006,40 @@ impl DesignerDocument {
         Ok(name)
     }
 
+    pub fn add_control_copy(
+        &mut self,
+        template: &DesignerControl,
+        offset_x: i32,
+        offset_y: i32,
+    ) -> Result<String, &'static str> {
+        let name = self.next_control_name(default_control_base_name(template.kind.as_str()));
+        let parent_name = template
+            .parent_name()
+            .filter(|parent_name| {
+                self.controls
+                    .iter()
+                    .any(|control| control.name == *parent_name)
+            })
+            .map(String::from);
+        let (x, y, width, height) = self.fit_bounds_to_container(
+            parent_name.as_deref(),
+            template.x.saturating_add(offset_x),
+            template.y.saturating_add(offset_y),
+            template.width,
+            template.height,
+        );
+        let mut control = template.clone();
+        control.name = name.clone();
+        control.x = x;
+        control.y = y;
+        control.width = width;
+        control.height = height;
+        control.set_parent_name(parent_name.as_deref());
+        self.controls.push(control);
+        self.normalize_layout();
+        Ok(name)
+    }
+
     pub fn set_control_bounds(
         &mut self,
         control_name: &str,

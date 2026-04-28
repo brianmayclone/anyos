@@ -314,6 +314,7 @@ fn build_and_run(
             designer_drag_moved: false,
             designer_undo: alloc::vec::Vec::new(),
             designer_redo: alloc::vec::Vec::new(),
+            designer_clipboard: None,
         });
     }
 

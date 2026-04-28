@@ -43,6 +43,20 @@ pub fn wire_keyboard(win: &anyui::Window) {
                 return;
             }
         }
+        if e.ctrl() && !e.shift() && e.keycode == b'C' as u32 && active_tab_is_selected_designer() {
+            commands::designer_copy_selected_control();
+            return;
+        }
+        if e.ctrl() && !e.shift() && e.keycode == b'V' as u32 && active_tab_is_selected_designer() {
+            commands::designer_paste_control();
+            return;
+        }
+        if e.ctrl() && !e.shift() && e.keycode == b'X' as u32 && active_tab_is_selected_designer() {
+            if commands::designer_copy_selected_control() {
+                commands::delete_selected_designer_control();
+            }
+            return;
+        }
 
         // Split editor: Ctrl+\
         if e.ctrl() && e.keycode == b'\\' as u32 {
@@ -107,6 +121,10 @@ pub fn wire_keyboard(win: &anyui::Window) {
 
         // Delete selected storyboard segue.
         if e.keycode == anyui::KEY_DELETE && commands::delete_selected_storyboard_segue() {
+            return;
+        }
+        if e.keycode == anyui::KEY_DELETE && active_tab_is_selected_designer() {
+            commands::delete_selected_designer_control();
             return;
         }
 

@@ -107,6 +107,7 @@ pub struct AppState {
     pub designer_drag_moved: bool,
     pub designer_undo: alloc::vec::Vec<DesignerHistoryEntry>,
     pub designer_redo: alloc::vec::Vec<DesignerHistoryEntry>,
+    pub designer_clipboard: Option<designer::DesignerControl>,
 }
 
 pub struct DesignerHistoryEntry {
