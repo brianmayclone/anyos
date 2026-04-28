@@ -1650,7 +1650,7 @@ fn render_item(
             let impl_local_names = local_item_names(&ib.items);
             let impl_public_type_names = local_public_type_names(&ib.items);
             let exported_items: Vec<&crate::hir::HirItem> =
-                if trait_impl_is_interface_relevant(ib, interner) {
+                if ib.trait_ref.is_some() {
                     ib.items
                         .iter()
                         .filter(|item| {
@@ -1879,10 +1879,14 @@ fn item_is_exported(
             })
         }
         crate::hir::HirItemKind::Impl(ib) => {
-            if ib.trait_ref.is_none() && !inherent_impl_self_type_is_public(ib, public_type_names) {
+            if ib.trait_ref.is_none() {
+                if !inherent_impl_self_type_is_public(ib, public_type_names) {
+                    return false;
+                }
+            } else if !trait_impl_is_interface_relevant(ib, public_type_names, interner) {
                 return false;
             }
-            if trait_impl_is_interface_relevant(ib, interner)
+            if ib.trait_ref.is_some()
                 && ib.items.iter().any(|item| {
                     matches!(
                         item.kind,
