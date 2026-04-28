@@ -96,6 +96,11 @@ pub struct DevTools {
     pub open: bool,
 
     pub tab_bar: ui_lib::TabBar,
+    /// Top-level panel views in tab order. Visibility is toggled in
+    /// `on_active_changed` (we cannot use `tab_bar.connect_panels` because the
+    /// underlying libanyui `on_change` callback only supports a single
+    /// registration and we already need it for picker-mode handling).
+    pub panels: [u32; 5],
 
     /// Maps a TreeView index to the libwebview DOM node id.
     pub dom_tree: ui_lib::TreeView,
@@ -328,18 +333,26 @@ pub fn build() -> DevTools {
     win.add(&dbg_panel);
     win.add(&net_panel);
 
-    tab_bar.connect_panels(&[
-        &picker_panel,
-        &insp_panel,
-        &console_panel,
-        &dbg_panel,
-        &net_panel,
-    ]);
+    // Initial visibility: only the first tab's panel is visible. Switching is
+    // handled in main.rs via `tab_bar.on_active_changed`.
+    insp_panel.set_visible(false);
+    console_panel.set_visible(false);
+    dbg_panel.set_visible(false);
+    net_panel.set_visible(false);
+
+    let panels = [
+        picker_panel.id(),
+        insp_panel.id(),
+        console_panel.id(),
+        dbg_panel.id(),
+        net_panel.id(),
+    ];
 
     DevTools {
         win,
         open: false,
         tab_bar,
+        panels,
         dom_tree,
         style_pane,
         tree_to_dom: Vec::new(),
@@ -810,6 +823,32 @@ pub fn set_picker_active(on: bool) {
     let st = crate::state();
     st.devtools.picker_active = on;
     crate::surf_log!("[devtools] picker_active = {}", on);
+}
+
+/// Switch the visible top-level panel inside the DevTools window.
+///
+/// Called from the `on_active_changed` handler — combines panel visibility
+/// switching with picker-mode toggling because libanyui's `on_change`
+/// callback only supports a single registration per control.
+pub fn switch_panel(index: u32) {
+    let st = crate::state();
+    let n = st.devtools.panels.len() as u32;
+    if index >= n {
+        return;
+    }
+    for (i, &pid) in st.devtools.panels.iter().enumerate() {
+        ui_lib::Control::from_id(pid).set_visible(i as u32 == index);
+    }
+    st.devtools.picker_active = index == 0;
+    if index == 4 {
+        // Repaint the network grid in case entries arrived while another tab
+        // was active.
+        refresh_network();
+    } else if index == 1 {
+        refresh_inspector();
+    } else if index == 2 {
+        refresh_console();
+    }
 }
 
 /// Activate one of the kind filters by id (`""`, `"html"`, `"css"`, …) — also

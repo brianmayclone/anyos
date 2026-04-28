@@ -2378,9 +2378,11 @@ fn main() {
         st.devtools.console_input.on_submit(|_| {
             devtools::eval_console_input();
         });
-        // Tab bar: index 0 is "Auswählen" — toggle picker mode.
+        // Tab bar: switch which panel is visible AND toggle picker mode.
+        // libanyui exposes only one on_change per control, so the panel
+        // switching has to live inside the same callback.
         st.devtools.tab_bar.on_active_changed(|e| {
-            devtools::set_picker_active(e.index == 0);
+            devtools::switch_panel(e.index);
         });
         st.devtools.win.on_close(|_| {
             let st = state();
