@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use libanyui_client as ui_lib;
 use ui_lib::Widget;
 
-use crate::http::Url;
+use crate::http::{RequestTiming, Url};
 
 const COLOR_BG: u32 = 0xFF1E1E1E;
 const COLOR_PANE: u32 = 0xFF252526;
@@ -25,7 +25,7 @@ const COLOR_DIM: u32 = 0xFF888888;
 const COLOR_FILTER_ACTIVE: u32 = 0xFF0E639C;
 const COLOR_FILTER_INACTIVE: u32 = 0xFF333333;
 
-const NET_COLS: u32 = 9;
+const NET_COLS: u32 = 20;
 
 const STATUS_OK: u32 = 0xFF6BB36B; // green
 const STATUS_REDIRECT: u32 = 0xFFD7BA7D; // yellow
@@ -59,10 +59,9 @@ impl NetStatus {
     pub fn label(&self) -> String {
         match self {
             Self::Pending => String::from("…"),
-            Self::Ok(c)
-            | Self::Redirect(c)
-            | Self::ClientError(c)
-            | Self::ServerError(c) => format!("{}", c),
+            Self::Ok(c) | Self::Redirect(c) | Self::ClientError(c) | Self::ServerError(c) => {
+                format!("{}", c)
+            }
             Self::Blocked => String::from("⊘"),
         }
     }
@@ -76,19 +75,36 @@ impl NetStatus {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct NetPhases {
+    pub queue_ms: u32,
+    pub dns_ms: u32,
+    pub connect_ms: u32,
+    pub tls_ms: u32,
+    pub send_ms: u32,
+    pub wait_ms: u32,
+    pub body_ms: u32,
+    pub decode_ms: u32,
+    pub enqueue_ms: u32,
+    pub ui_ms: u32,
+    pub reused_connection: bool,
+}
+
 /// One row of the network panel.
 pub struct NetEntry {
+    pub id: u32,
     pub status: NetStatus,
     pub method: String,
     pub host: String,
-    pub file: String,        // basename (after last '/')
-    pub path: String,        // full path (used for matching)
+    pub file: String, // basename (after last '/')
+    pub path: String, // full path (used for matching)
     pub initiator: String,
-    pub kind: String,        // "html" | "css" | "js" | "img" | "font" | "xhr" | …
-    pub size: u64,           // body length
-    pub transferred: u64,    // wire bytes (currently == size)
+    pub kind: String,     // "html" | "css" | "js" | "img" | "font" | "xhr" | …
+    pub size: u64,        // body length
+    pub transferred: u64, // wire bytes (currently == size)
     pub start_ms: u32,
     pub end_ms: u32,
+    pub phases: NetPhases,
 }
 
 pub struct DevTools {
@@ -114,7 +130,7 @@ pub struct DevTools {
     pub net_grid: ui_lib::DataGrid,
     pub net_entries: Vec<NetEntry>,
     pub net_search: ui_lib::TextField,
-    pub net_filter_kind: String,            // "" | html | css | js | xhr | font | img | media | ws | other
+    pub net_filter_kind: String, // "" | html | css | js | xhr | font | img | media | ws | other
     pub net_paused: bool,
     pub net_pause_btn: ui_lib::IconButton,
     pub net_clear_btn: ui_lib::IconButton,
@@ -122,7 +138,8 @@ pub struct DevTools {
     pub net_disable_cache: ui_lib::Checkbox,
     pub net_filter_btns: Vec<(String, ui_lib::Button)>, // kind id → button
     pub net_status_label: ui_lib::Label,
-    pub nav_start_ms: u32,                  // for the timeline column
+    pub nav_start_ms: u32, // for the timeline column
+    pub net_next_request_id: u32,
 
     /// `true` while the user is in element-picker mode — set by the toolbar
     /// button and consumed on the next click in the webview.
@@ -133,9 +150,7 @@ pub fn build() -> DevTools {
     let win = ui_lib::Window::new("Werkzeuge für Webentwickler", 9999, 9999, 1100, 560);
     win.set_visible(false);
 
-    let tab_bar = ui_lib::TabBar::new(
-        "Auswählen|Inspektor|Konsole|Debugger|Netzwerkanalyse",
-    );
+    let tab_bar = ui_lib::TabBar::new("Auswählen|Inspektor|Konsole|Debugger|Netzwerkanalyse");
     tab_bar.set_dock(ui_lib::DOCK_TOP);
     tab_bar.set_size(0, 30);
     win.add(&tab_bar);
@@ -300,7 +315,9 @@ pub fn build() -> DevTools {
     let net_grid = ui_lib::DataGrid::new(1100, 460);
     net_grid.set_dock(ui_lib::DOCK_FILL);
     net_grid.set_columns(&[
-        ui_lib::ColumnDef::new("Status").width(70).align(ui_lib::ALIGN_CENTER),
+        ui_lib::ColumnDef::new("Status")
+            .width(70)
+            .align(ui_lib::ALIGN_CENTER),
         ui_lib::ColumnDef::new("Methode").width(70),
         ui_lib::ColumnDef::new("Host").width(180),
         ui_lib::ColumnDef::new("Datei").width(280),
@@ -318,6 +335,47 @@ pub fn build() -> DevTools {
             .width(90)
             .align(ui_lib::ALIGN_RIGHT)
             .numeric(),
+        ui_lib::ColumnDef::new("Queue")
+            .width(70)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("DNS")
+            .width(60)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("TCP")
+            .width(60)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("TLS")
+            .width(60)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("Senden")
+            .width(70)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("Warten")
+            .width(75)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("Body")
+            .width(65)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("Dec")
+            .width(55)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("Enq")
+            .width(55)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("UI")
+            .width(50)
+            .align(ui_lib::ALIGN_RIGHT)
+            .numeric(),
+        ui_lib::ColumnDef::new("Conn").width(60),
     ]);
     net_panel.add(&net_grid);
 
@@ -370,6 +428,7 @@ pub fn build() -> DevTools {
         net_filter_btns,
         net_status_label,
         nav_start_ms: 0,
+        net_next_request_id: 1,
         picker_active: false,
     }
 }
@@ -380,6 +439,7 @@ pub fn build() -> DevTools {
 pub fn reset_for_navigation() {
     let st = crate::state();
     st.devtools.net_entries.clear();
+    st.devtools.net_next_request_id = 1;
     st.devtools.nav_start_ms = anyos_std::sys::uptime_ms();
     if st.devtools.open {
         st.devtools.net_grid.set_row_count(0);
@@ -502,7 +562,11 @@ pub fn refresh_console() {
     }
     let lines = st.tabs[st.active_tab].webview.js_console();
     let mut text = String::new();
-    let start = if lines.len() > 500 { lines.len() - 500 } else { 0 };
+    let start = if lines.len() > 500 {
+        lines.len() - 500
+    } else {
+        0
+    };
     for line in &lines[start..] {
         text.push_str(line);
         text.push('\n');
@@ -543,7 +607,7 @@ pub fn refresh_network() {
             buf.push(0x1E);
         }
         let dur_ms = e.end_ms.wrapping_sub(e.start_ms);
-        let cells: [String; 9] = [
+        let cells: [String; 20] = [
             e.status.label(),
             e.method.clone(),
             e.host.clone(),
@@ -553,6 +617,21 @@ pub fn refresh_network() {
             humanize_size(e.transferred),
             humanize_size(e.size),
             format!("{}", dur_ms),
+            phase_label(e.phases.queue_ms),
+            phase_label(e.phases.dns_ms),
+            phase_label(e.phases.connect_ms),
+            phase_label(e.phases.tls_ms),
+            phase_label(e.phases.send_ms),
+            phase_label(e.phases.wait_ms),
+            phase_label(e.phases.body_ms),
+            phase_label(e.phases.decode_ms),
+            phase_label(e.phases.enqueue_ms),
+            phase_label(e.phases.ui_ms),
+            if e.phases.reused_connection {
+                String::from("reuse")
+            } else {
+                String::from("neu")
+            },
         ];
         for (j, c) in cells.iter().enumerate() {
             if j > 0 {
@@ -629,6 +708,14 @@ fn humanize_size(bytes: u64) -> String {
     format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
+fn phase_label(ms: u32) -> String {
+    if ms == 0 {
+        String::from("—")
+    } else {
+        format!("{}", ms)
+    }
+}
+
 fn last_segment(path: &str) -> String {
     let p = path.split('?').next().unwrap_or(path);
     let trimmed = p.trim_end_matches('/');
@@ -643,15 +730,18 @@ fn last_segment(path: &str) -> String {
 }
 
 /// Hook called from net_worker when a request is submitted.
-pub fn record_request_started(method: &str, kind: &str, url: &Url) {
+pub fn record_request_started(method: &str, kind: &str, url: &Url) -> u32 {
     let st = crate::state();
     if st.devtools.net_paused {
-        return;
+        return 0;
     }
     let now = anyos_std::sys::uptime_ms();
+    let id = st.devtools.net_next_request_id;
+    st.devtools.net_next_request_id = st.devtools.net_next_request_id.wrapping_add(1).max(1);
     let initiator = current_initiator();
     let file = last_segment(&url.path);
     st.devtools.net_entries.push(NetEntry {
+        id,
         status: NetStatus::Pending,
         method: method.to_string(),
         host: url.host.clone(),
@@ -663,6 +753,7 @@ pub fn record_request_started(method: &str, kind: &str, url: &Url) {
         transferred: 0,
         start_ms: now,
         end_ms: now,
+        phases: NetPhases::default(),
     });
     if st.devtools.net_entries.len() > 1000 {
         let drop = st.devtools.net_entries.len() - 1000;
@@ -671,6 +762,7 @@ pub fn record_request_started(method: &str, kind: &str, url: &Url) {
     if st.devtools.open {
         refresh_network();
     }
+    id
 }
 
 /// Compute an initiator label — the URL of the page that drove the request.
@@ -689,15 +781,76 @@ fn current_initiator() -> String {
 /// Hook called when a request completes — matches by host+path of the most
 /// recent entry without an end time.
 pub fn record_request_done(host: &str, path: &str, status: u32, size: u64) {
+    record_request_done_inner(host, path, status, size, None);
+}
+
+pub fn record_request_done_with_timing(
+    host: &str,
+    path: &str,
+    status: u32,
+    size: u64,
+    timing: RequestTiming,
+) {
+    record_request_done_inner(host, path, status, size, Some(timing));
+}
+
+fn record_request_done_inner(
+    host: &str,
+    path: &str,
+    status: u32,
+    size: u64,
+    timing: Option<RequestTiming>,
+) {
     let st = crate::state();
     let now = anyos_std::sys::uptime_ms();
     let mut updated = false;
     for e in st.devtools.net_entries.iter_mut().rev() {
-        if matches!(e.status, NetStatus::Pending) && e.host == host && e.path == path {
+        let id_matches = timing
+            .as_ref()
+            .map(|t| t.request_id != 0 && e.id == t.request_id)
+            .unwrap_or(false);
+        let url_matches = matches!(e.status, NetStatus::Pending) && e.host == host && e.path == path;
+        if matches!(e.status, NetStatus::Pending) && (id_matches || url_matches) {
             e.status = NetStatus::from_http(status);
             e.size = size;
             e.transferred = size;
             e.end_ms = now;
+            if let Some(mut t) = timing {
+                t.ui_done_ms = now;
+                let submitted_ms = if t.submitted_ms != 0 {
+                    t.submitted_ms
+                } else {
+                    e.start_ms
+                };
+                let dequeued_ms = if t.dequeued_ms != 0 {
+                    t.dequeued_ms
+                } else {
+                    t.start_ms
+                };
+                let fetch_done_ms = if t.fetch_done_ms != 0 {
+                    t.fetch_done_ms
+                } else {
+                    now
+                };
+                let result_enqueued_ms = if t.result_enqueued_ms != 0 {
+                    t.result_enqueued_ms
+                } else {
+                    fetch_done_ms
+                };
+                e.phases = NetPhases {
+                    queue_ms: dequeued_ms.wrapping_sub(submitted_ms),
+                    dns_ms: t.dns_ms,
+                    connect_ms: t.connect_ms,
+                    tls_ms: t.tls_ms,
+                    send_ms: t.send_ms,
+                    wait_ms: t.wait_ms,
+                    body_ms: t.body_ms,
+                    decode_ms: t.decode_ms,
+                    enqueue_ms: result_enqueued_ms.wrapping_sub(fetch_done_ms),
+                    ui_ms: t.ui_done_ms.wrapping_sub(result_enqueued_ms),
+                    reused_connection: t.reused_connection,
+                };
+            }
             updated = true;
             break;
         }
@@ -772,7 +925,10 @@ pub fn show_selected_node_styles() {
     if let Some(style) = webview.resolved_style_ref(dom_id) {
         out.push_str("\nComputed Style:\n");
         out.push_str(&format!("  color:           #{:08X}\n", style.color));
-        out.push_str(&format!("  background:      #{:08X}\n", style.background_color));
+        out.push_str(&format!(
+            "  background:      #{:08X}\n",
+            style.background_color
+        ));
         out.push_str(&format!("  font-size:       {}px\n", style.font_size));
         out.push_str(&format!("  display:         {:?}\n", style.display));
         let pos = match style.position {
@@ -874,7 +1030,11 @@ pub fn set_kind_filter(kind: &str) {
 pub fn toggle_pause() {
     let st = crate::state();
     st.devtools.net_paused = !st.devtools.net_paused;
-    let icon = if st.devtools.net_paused { "play" } else { "pause" };
+    let icon = if st.devtools.net_paused {
+        "play"
+    } else {
+        "pause"
+    };
     st.devtools
         .net_pause_btn
         .set_system_icon(icon, ui_lib::IconType::Outline, COLOR_TEXT, 16);
@@ -884,6 +1044,7 @@ pub fn toggle_pause() {
 pub fn clear_network() {
     let st = crate::state();
     st.devtools.net_entries.clear();
+    st.devtools.net_next_request_id = 1;
     st.devtools.nav_start_ms = anyos_std::sys::uptime_ms();
     if st.devtools.open {
         refresh_network();

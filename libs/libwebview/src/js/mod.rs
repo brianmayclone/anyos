@@ -933,9 +933,13 @@ impl JsRuntime {
         const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
 
         // Per-script step limit to keep pages responsive.
-        // Google Search's gate script currently needs more than 20 M VM steps
-        // before it can set its cookie and reload into the real results page.
-        const SCRIPT_STEP_LIMIT: u64 = 100_000_000;
+        //
+        // Surf runs page JavaScript on the UI thread today. A very high budget
+        // lets heavy third-party bundles monopolize the browser for seconds and
+        // makes already-fetched images/fonts appear as slow "UI" work in the
+        // network panel. Keep this deliberately tight until scripts can run on
+        // a preemptible worker.
+        const SCRIPT_STEP_LIMIT: u64 = 10_000_000;
         self.engine.set_step_limit(SCRIPT_STEP_LIMIT);
 
         // Set up DOM bridge via userdata.

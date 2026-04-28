@@ -8,7 +8,7 @@
 //! state guarded by `AtomicBool` spinlocks since `Thread::spawn` only
 //! accepts `fn()` (not closures).
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -93,6 +93,12 @@ pub(crate) enum FetchRequest {
     },
 }
 
+struct QueuedFetchRequest {
+    req: FetchRequest,
+    request_id: u32,
+    submitted_ms: u32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImagePriority {
     Viewport,
@@ -119,27 +125,33 @@ pub(crate) enum FetchResult {
     CssDone {
         tab_index: usize,
         href: String,
+        url: Url,
         body: Vec<u8>,
         headers: String,
         parsed: Option<DecodedCss>,
+        timing: Option<http::RequestTiming>,
         generation: u32,
     },
     /// Image fetch completed successfully.
     ImageDone {
         tab_index: usize,
         src: String,
+        url: Url,
         body: Vec<u8>,
         headers: String,
         decoded_raster: Option<DecodedRaster>,
         priority: ImagePriority,
+        timing: Option<http::RequestTiming>,
         generation: u32,
     },
     /// Web font fetch completed successfully.
     FontDone {
         tab_index: usize,
         family: String,
+        url: Url,
         body: Vec<u8>,
         display: libwebview::css::FontDisplay,
+        timing: Option<http::RequestTiming>,
         generation: u32,
     },
     /// External script fetch completed successfully.
@@ -148,8 +160,10 @@ pub(crate) enum FetchResult {
         /// Slot index — matches the request's `slot` so the UI thread can
         /// place the fetched text at the correct position in document order.
         slot: usize,
+        url: Url,
         body: Vec<u8>,
         headers: String,
+        timing: Option<http::RequestTiming>,
         generation: u32,
     },
 }
@@ -178,21 +192,31 @@ static REQUEST_LOCK_FONT: AtomicBool = AtomicBool::new(false);
 static REQUEST_LOCK_VISIBLE: AtomicBool = AtomicBool::new(false);
 static REQUEST_LOCK_BACKGROUND: AtomicBool = AtomicBool::new(false);
 static RESULT_LOCK: AtomicBool = AtomicBool::new(false);
+static CACHE_LOCK: AtomicBool = AtomicBool::new(false);
+static HOST_LIMIT_LOCK: AtomicBool = AtomicBool::new(false);
 const RESULT_MAILBOX_COUNT: usize = 16;
-const CRITICAL_WORKER_LANES: u32 = 2;
+const MAX_CONNECTIONS_PER_HOST: u32 = 8;
+const CRITICAL_WORKER_LANES: u32 = 4;
 const TLS_WORKER_LANES: u32 = 8;
-const SCRIPT_WORKER_LANES: u32 = 2;
-const FONT_WORKER_LANES: u32 = 2;
-const VISIBLE_WORKER_LANES: u32 = 6;
+const SCRIPT_WORKER_LANES: u32 = 4;
+const FONT_WORKER_LANES: u32 = 4;
+const VISIBLE_WORKER_LANES: u32 = 8;
 const BACKGROUND_WORKER_LANES: u32 = 8;
 
-static mut REQUEST_QUEUE_CRITICAL: Option<Vec<FetchRequest>> = None;
-static mut REQUEST_QUEUE_TLS: Option<Vec<FetchRequest>> = None;
-static mut REQUEST_QUEUE_SCRIPT: Option<Vec<FetchRequest>> = None;
-static mut REQUEST_QUEUE_FONT: Option<Vec<FetchRequest>> = None;
-static mut REQUEST_QUEUE_VISIBLE: Option<Vec<FetchRequest>> = None;
-static mut REQUEST_QUEUE_BACKGROUND: Option<Vec<FetchRequest>> = None;
+static mut REQUEST_QUEUE_CRITICAL: Option<Vec<QueuedFetchRequest>> = None;
+static mut REQUEST_QUEUE_TLS: Option<Vec<QueuedFetchRequest>> = None;
+static mut REQUEST_QUEUE_SCRIPT: Option<Vec<QueuedFetchRequest>> = None;
+static mut REQUEST_QUEUE_FONT: Option<Vec<QueuedFetchRequest>> = None;
+static mut REQUEST_QUEUE_VISIBLE: Option<Vec<QueuedFetchRequest>> = None;
+static mut REQUEST_QUEUE_BACKGROUND: Option<Vec<QueuedFetchRequest>> = None;
 static mut RESULT_MAILBOXES: Option<Vec<Vec<FetchResult>>> = None;
+static mut SUBRESOURCE_CACHE: Option<SubResourceCache> = None;
+static mut HOST_ACTIVE_COUNTS: Option<Vec<HostActiveCount>> = None;
+
+struct HostActiveCount {
+    host: String,
+    count: u32,
+}
 
 /// Generation counter — incremented on each Navigate request.
 /// Worker skips CSS/Image requests with a stale generation.
@@ -280,7 +304,7 @@ fn worker_lane_target(class: WorkerClass) -> u32 {
     }
 }
 
-unsafe fn request_queue_mut(class: WorkerClass) -> Option<&'static mut Vec<FetchRequest>> {
+unsafe fn request_queue_mut(class: WorkerClass) -> Option<&'static mut Vec<QueuedFetchRequest>> {
     match class {
         WorkerClass::Critical => REQUEST_QUEUE_CRITICAL.as_mut(),
         WorkerClass::Tls => REQUEST_QUEUE_TLS.as_mut(),
@@ -291,7 +315,7 @@ unsafe fn request_queue_mut(class: WorkerClass) -> Option<&'static mut Vec<Fetch
     }
 }
 
-unsafe fn request_queue_ref(class: WorkerClass) -> Option<&'static Vec<FetchRequest>> {
+unsafe fn request_queue_ref(class: WorkerClass) -> Option<&'static Vec<QueuedFetchRequest>> {
     match class {
         WorkerClass::Critical => REQUEST_QUEUE_CRITICAL.as_ref(),
         WorkerClass::Tls => REQUEST_QUEUE_TLS.as_ref(),
@@ -303,9 +327,6 @@ unsafe fn request_queue_ref(class: WorkerClass) -> Option<&'static Vec<FetchRequ
 }
 
 fn request_worker_class(req: &FetchRequest) -> WorkerClass {
-    if request_is_https(req) {
-        return WorkerClass::Tls;
-    }
     match req {
         FetchRequest::Navigate { .. }
         | FetchRequest::NavigatePost { .. }
@@ -319,33 +340,18 @@ fn request_worker_class(req: &FetchRequest) -> WorkerClass {
     }
 }
 
-fn request_is_https(req: &FetchRequest) -> bool {
-    match req {
-        FetchRequest::Navigate { url, .. }
-        | FetchRequest::NavigatePost { url, .. }
-        | FetchRequest::Css { url, .. }
-        | FetchRequest::Image { url, .. }
-        | FetchRequest::Font { url, .. }
-        | FetchRequest::Script { url, .. } => url.scheme == "https",
-    }
-}
-
 fn ensure_worker(class: WorkerClass) {
     let target = worker_lane_target(class);
     let active = worker_active_count(class);
 
     loop {
-        let reserved = active.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |current| {
-                if current < target {
-                    Some(current + 1)
-                } else {
-                    None
-                }
-            },
-        );
+        let reserved = active.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            if current < target {
+                Some(current + 1)
+            } else {
+                None
+            }
+        });
         if reserved.is_err() {
             return;
         }
@@ -395,18 +401,25 @@ pub(crate) fn init() {
         REQUEST_QUEUE_VISIBLE = Some(Vec::new());
         REQUEST_QUEUE_BACKGROUND = Some(Vec::new());
         RESULT_MAILBOXES = Some((0..RESULT_MAILBOX_COUNT).map(|_| Vec::new()).collect());
+        SUBRESOURCE_CACHE = Some(SubResourceCache::new());
+        HOST_ACTIVE_COUNTS = Some(Vec::new());
     }
 }
 
 /// Submit a request to the worker queue.
 pub(crate) fn submit(req: FetchRequest) {
-    record_started(&req);
+    let submitted_ms = anyos_std::sys::uptime_ms();
+    let request_id = record_started(&req);
     let class = request_worker_class(&req);
     let lock = request_lock(class);
     acquire(lock);
     unsafe {
         if let Some(q) = request_queue_mut(class) {
-            q.push(req);
+            q.push(QueuedFetchRequest {
+                req,
+                request_id,
+                submitted_ms,
+            });
         }
     }
     release(lock);
@@ -414,25 +427,25 @@ pub(crate) fn submit(req: FetchRequest) {
 }
 
 /// Record a started request in the DevTools network panel (UI thread).
-fn record_started(req: &FetchRequest) {
+fn record_started(req: &FetchRequest) -> u32 {
     match req {
         FetchRequest::Navigate { url, .. } => {
-            crate::devtools::record_request_started("GET", "html", url);
+            crate::devtools::record_request_started("GET", "html", url)
         }
         FetchRequest::NavigatePost { url, .. } => {
-            crate::devtools::record_request_started("POST", "html", url);
+            crate::devtools::record_request_started("POST", "html", url)
         }
         FetchRequest::Css { url, .. } => {
-            crate::devtools::record_request_started("GET", "css", url);
+            crate::devtools::record_request_started("GET", "css", url)
         }
         FetchRequest::Image { url, .. } => {
-            crate::devtools::record_request_started("GET", "img", url);
+            crate::devtools::record_request_started("GET", "img", url)
         }
         FetchRequest::Font { url, .. } => {
-            crate::devtools::record_request_started("GET", "font", url);
+            crate::devtools::record_request_started("GET", "font", url)
         }
         FetchRequest::Script { url, .. } => {
-            crate::devtools::record_request_started("GET", "js", url);
+            crate::devtools::record_request_started("GET", "js", url)
         }
     }
 }
@@ -460,6 +473,7 @@ pub(crate) fn drain_results_for_tab(tab_index: usize) -> Vec<FetchResult> {
     results
 }
 
+#[cfg(feature = "debug_surf")]
 pub(crate) fn mailbox_pending_counts() -> Vec<usize> {
     acquire(&RESULT_LOCK);
     let counts = unsafe {
@@ -470,6 +484,17 @@ pub(crate) fn mailbox_pending_counts() -> Vec<usize> {
     };
     release(&RESULT_LOCK);
     counts
+}
+
+pub(crate) fn result_mailboxes_pending() -> bool {
+    acquire(&RESULT_LOCK);
+    let pending = unsafe {
+        RESULT_MAILBOXES
+            .as_ref()
+            .is_some_and(|mailboxes| mailboxes.iter().any(|mailbox| !mailbox.is_empty()))
+    };
+    release(&RESULT_LOCK);
+    pending
 }
 
 /// Requeue results to the front of a tab mailbox so they are seen on the next UI poll.
@@ -514,7 +539,7 @@ pub(crate) fn new_generation() -> u32 {
         acquire(lock);
         unsafe {
             if let Some(q) = request_queue_mut(class) {
-                q.retain(|r| match r {
+                q.retain(|r| match &r.req {
                     FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => true,
                     FetchRequest::Css { generation, .. }
                     | FetchRequest::Image { generation, .. }
@@ -563,15 +588,15 @@ pub(crate) fn handle_closed_tab(closed_idx: usize) {
         unsafe {
             if let Some(q) = request_queue_mut(class) {
                 let mut old = core::mem::replace(q, Vec::new());
-                for mut req in old.drain(..) {
-                    let tab_index = request_tab_index_mut(&mut req);
+                for mut queued in old.drain(..) {
+                    let tab_index = request_tab_index_mut(&mut queued.req);
                     if *tab_index == closed_idx {
                         continue;
                     }
                     if *tab_index > closed_idx {
                         *tab_index -= 1;
                     }
-                    q.push(req);
+                    q.push(queued);
                 }
             }
         }
@@ -628,10 +653,12 @@ pub(crate) fn has_pending_activity() -> bool {
 // Sub-resource cache
 // ═══════════════════════════════════════════════════════════
 
-/// Maximum number of cached CSS/image responses.
-const MAX_CACHE_ENTRIES: usize = 128;
+/// Maximum number of cached sub-resource responses.
+const MAX_CACHE_ENTRIES: usize = 256;
+const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CACHEABLE_BODY_BYTES: usize = 4 * 1024 * 1024;
 
-/// A cached HTTP response for a sub-resource (CSS or image).
+/// A cached HTTP response for a sub-resource.
 struct CacheEntry {
     /// Cache key: fully-qualified URL string.
     url_key: String,
@@ -641,45 +668,72 @@ struct CacheEntry {
     headers: String,
 }
 
-/// Per-worker sub-resource cache for CSS and images.
-///
-/// Avoids re-fetching the same stylesheet or image across page loads.
-/// Uses a simple FIFO eviction when the cache is full.
+/// Shared sub-resource cache for CSS, scripts, images, and fonts.
 struct SubResourceCache {
     entries: Vec<CacheEntry>,
+    total_bytes: usize,
 }
 
 impl SubResourceCache {
     fn new() -> Self {
         SubResourceCache {
             entries: Vec::new(),
+            total_bytes: 0,
         }
     }
 
-    /// Look up a cached response by URL.
-    fn get(&self, url_key: &str) -> Option<(&[u8], &str)> {
+    fn get(&self, url_key: &str) -> Option<(Vec<u8>, String)> {
         self.entries
             .iter()
             .find(|e| e.url_key == url_key)
-            .map(|e| (e.body.as_slice(), e.headers.as_str()))
+            .map(|e| (e.body.clone(), e.headers.clone()))
     }
 
-    /// Store a response in the cache, evicting the oldest entry if full.
     fn put(&mut self, url_key: String, body: Vec<u8>, headers: String) {
-        if self.entries.len() >= MAX_CACHE_ENTRIES {
-            self.entries.remove(0);
+        if body.len() > MAX_CACHEABLE_BODY_BYTES {
+            return;
         }
+        if let Some(pos) = self.entries.iter().position(|e| e.url_key == url_key) {
+            let old = self.entries.remove(pos);
+            self.total_bytes = self.total_bytes.saturating_sub(old.body.len());
+        }
+        while self.entries.len() >= MAX_CACHE_ENTRIES
+            || self.total_bytes.saturating_add(body.len()) > MAX_CACHE_BYTES
+        {
+            if self.entries.is_empty() {
+                break;
+            }
+            let old = self.entries.remove(0);
+            self.total_bytes = self.total_bytes.saturating_sub(old.body.len());
+        }
+        self.total_bytes = self.total_bytes.saturating_add(body.len());
         self.entries.push(CacheEntry {
             url_key,
             body,
             headers,
         });
     }
+}
 
-    /// Clear all entries (called on navigation to a new page).
-    fn _clear(&mut self) {
-        self.entries.clear();
+fn cache_get(url_key: &str) -> Option<(Vec<u8>, String)> {
+    acquire(&CACHE_LOCK);
+    let hit = unsafe {
+        SUBRESOURCE_CACHE
+            .as_ref()
+            .and_then(|cache| cache.get(url_key))
+    };
+    release(&CACHE_LOCK);
+    hit
+}
+
+fn cache_put(url_key: String, body: Vec<u8>, headers: String) {
+    acquire(&CACHE_LOCK);
+    unsafe {
+        if let Some(cache) = SUBRESOURCE_CACHE.as_mut() {
+            cache.put(url_key, body, headers);
+        }
     }
+    release(&CACHE_LOCK);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -716,17 +770,19 @@ fn worker_entry_background() {
 
 fn worker_entry(class: WorkerClass) {
     let mut pool = ConnPool::new();
-    let mut cache = SubResourceCache::new();
     let mut idle_count: u32 = 0;
 
     loop {
         let req = dequeue_request(class);
 
         match req {
-            Some(request) => {
+            Some(queued) => {
                 idle_count = 0;
                 REQUESTS_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
-                process_request(request, &mut pool, &mut cache);
+                let host = request_host(&queued.req).to_string();
+                let dequeued_ms = anyos_std::sys::uptime_ms();
+                process_request(queued, dequeued_ms, &mut pool);
+                release_host_slot(&host);
                 REQUESTS_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
             }
             None => {
@@ -752,8 +808,58 @@ fn worker_entry(class: WorkerClass) {
     }
 }
 
-/// Dequeue the next request from the queue (FIFO).
-fn dequeue_request(class: WorkerClass) -> Option<FetchRequest> {
+fn request_host(req: &FetchRequest) -> &str {
+    match req {
+        FetchRequest::Navigate { url, .. }
+        | FetchRequest::NavigatePost { url, .. }
+        | FetchRequest::Css { url, .. }
+        | FetchRequest::Image { url, .. }
+        | FetchRequest::Font { url, .. }
+        | FetchRequest::Script { url, .. } => &url.host,
+    }
+}
+
+fn try_acquire_host_slot(host: &str) -> bool {
+    acquire(&HOST_LIMIT_LOCK);
+    let ok = unsafe {
+        let counts = HOST_ACTIVE_COUNTS.get_or_insert_with(Vec::new);
+        if let Some(entry) = counts.iter_mut().find(|entry| entry.host == host) {
+            if entry.count >= MAX_CONNECTIONS_PER_HOST {
+                false
+            } else {
+                entry.count += 1;
+                true
+            }
+        } else {
+            counts.push(HostActiveCount {
+                host: String::from(host),
+                count: 1,
+            });
+            true
+        }
+    };
+    release(&HOST_LIMIT_LOCK);
+    ok
+}
+
+fn release_host_slot(host: &str) {
+    acquire(&HOST_LIMIT_LOCK);
+    unsafe {
+        if let Some(counts) = HOST_ACTIVE_COUNTS.as_mut() {
+            if let Some(pos) = counts.iter().position(|entry| entry.host == host) {
+                if counts[pos].count <= 1 {
+                    counts.remove(pos);
+                } else {
+                    counts[pos].count -= 1;
+                }
+            }
+        }
+    }
+    release(&HOST_LIMIT_LOCK);
+}
+
+/// Dequeue the next request while respecting global per-host limits.
+fn dequeue_request(class: WorkerClass) -> Option<QueuedFetchRequest> {
     let lock = request_lock(class);
     acquire(lock);
     let req = unsafe {
@@ -761,16 +867,26 @@ fn dequeue_request(class: WorkerClass) -> Option<FetchRequest> {
             if q.is_empty() {
                 None
             } else {
-                let mut best_idx = 0usize;
-                let mut best_priority = request_priority(&q[0]);
-                for (idx, item) in q.iter().enumerate().skip(1) {
-                    let priority = request_priority(item);
-                    if priority > best_priority {
-                        best_priority = priority;
-                        best_idx = idx;
+                let mut best: Option<(usize, u8)> = None;
+                for (idx, item) in q.iter().enumerate() {
+                    if !try_acquire_host_slot(request_host(&item.req)) {
+                        continue;
+                    }
+                    let priority = request_priority(&item.req);
+                    match best {
+                        Some((_, best_priority)) if priority <= best_priority => {
+                            release_host_slot(request_host(&item.req));
+                        }
+                        Some((best_idx, _)) => {
+                            release_host_slot(request_host(&q[best_idx].req));
+                            best = Some((idx, priority));
+                        }
+                        None => {
+                            best = Some((idx, priority));
+                        }
                     }
                 }
-                Some(q.remove(best_idx))
+                best.map(|(best_idx, _)| q.remove(best_idx))
             }
         } else {
             None
@@ -805,7 +921,8 @@ fn request_tab_index_mut(req: &mut FetchRequest) -> &mut usize {
 }
 
 /// Enqueue a result for the UI thread to pick up.
-fn enqueue_result(result: FetchResult) {
+fn enqueue_result(mut result: FetchResult) {
+    stamp_result_enqueued(&mut result);
     acquire(&RESULT_LOCK);
     unsafe {
         if let Some(mailboxes) = RESULT_MAILBOXES.as_mut() {
@@ -819,14 +936,18 @@ fn enqueue_result(result: FetchResult) {
                 FetchResult::ScriptDone {
                     tab_index,
                     slot,
+                    url,
                     body,
                     generation,
                     ..
                 } => {
                     surf_net_log!(
-                        "enqueue ScriptDone: tab={} slot={} bytes={} gen={} queue_before={}",
+                        "enqueue ScriptDone: tab={} slot={} url={}://{}{} bytes={} gen={} queue_before={}",
                         tab_index,
                         slot,
+                        url.scheme,
+                        url.host,
+                        url.path,
                         body.len(),
                         generation,
                         mailbox.len()
@@ -838,6 +959,34 @@ fn enqueue_result(result: FetchResult) {
         }
     }
     release(&RESULT_LOCK);
+}
+
+fn stamp_result_enqueued(result: &mut FetchResult) {
+    let now = anyos_std::sys::uptime_ms();
+    match result {
+        FetchResult::NavDone { response, .. } => {
+            response.timing.result_enqueued_ms = now;
+        }
+        FetchResult::CssDone {
+            timing: Some(timing),
+            ..
+        }
+        | FetchResult::ImageDone {
+            timing: Some(timing),
+            ..
+        }
+        | FetchResult::FontDone {
+            timing: Some(timing),
+            ..
+        }
+        | FetchResult::ScriptDone {
+            timing: Some(timing),
+            ..
+        } => {
+            timing.result_enqueued_ms = now;
+        }
+        _ => {}
+    }
 }
 
 /// Format a URL as a cache key string.
@@ -865,9 +1014,38 @@ fn cache_key(url: &http::Url) -> String {
     key
 }
 
+fn stamp_worker_timing(
+    timing: &mut http::RequestTiming,
+    request_id: u32,
+    submitted_ms: u32,
+    dequeued_ms: u32,
+) {
+    timing.request_id = request_id;
+    timing.submitted_ms = submitted_ms;
+    timing.dequeued_ms = dequeued_ms;
+    if timing.fetch_done_ms == 0 {
+        timing.fetch_done_ms = anyos_std::sys::uptime_ms();
+    }
+}
+
+fn instant_timing(request_id: u32, submitted_ms: u32, dequeued_ms: u32) -> http::RequestTiming {
+    let now = anyos_std::sys::uptime_ms();
+    http::RequestTiming {
+        request_id,
+        submitted_ms,
+        dequeued_ms,
+        start_ms: now,
+        fetch_done_ms: now,
+        ..http::RequestTiming::default()
+    }
+}
+
 /// Process a single fetch request.
-fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResourceCache) {
+fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut ConnPool) {
     let current_gen = GENERATION.load(Ordering::Relaxed);
+    let request_id = queued.request_id;
+    let submitted_ms = queued.submitted_ms;
+    let req = queued.req;
 
     match req {
         FetchRequest::Navigate {
@@ -879,7 +1057,8 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             surf_net_log!("navigate: {}://{}{}", url.scheme, url.host, url.path);
 
             match http::fetch(&url, &mut cookies, pool) {
-                Ok(response) => {
+                Ok(mut response) => {
+                    stamp_worker_timing(&mut response.timing, request_id, submitted_ms, dequeued_ms);
                     enqueue_result(FetchResult::NavDone {
                         tab_index,
                         response,
@@ -908,7 +1087,8 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             surf_net_log!("navigate POST: {}://{}{}", url.scheme, url.host, url.path);
 
             match http::fetch_post(&url, &body, &mut cookies, pool) {
-                Ok(response) => {
+                Ok(mut response) => {
+                    stamp_worker_timing(&mut response.timing, request_id, submitted_ms, dequeued_ms);
                     enqueue_result(FetchResult::NavDone {
                         tab_index,
                         response,
@@ -940,10 +1120,8 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             let key = cache_key(&url);
 
             // Check sub-resource cache first.
-            if let Some((body, headers)) = cache.get(&key) {
+            if let Some((body_vec, headers_string)) = cache_get(&key) {
                 surf_net_log!("CSS cache hit: {}", href);
-                let body_vec = body.to_vec();
-                let headers_string = String::from(headers);
                 let css_text = crate::resources::decode_http_body(&body_vec, &headers_string);
                 let parsed = Some(DecodedCss {
                     sheet: libwebview::css::parse_stylesheet(&css_text),
@@ -951,9 +1129,11 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 enqueue_result(FetchResult::CssDone {
                     tab_index,
                     href,
+                    url,
                     body: body_vec,
                     headers: headers_string,
                     parsed,
+                    timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                     generation,
                 });
                 return;
@@ -962,9 +1142,10 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             surf_net_log!("fetching CSS: {}", href);
             let mut css_cookies = CookieJar::new();
             match http::fetch(&url, &mut css_cookies, pool) {
-                Ok(resp) if resp.status >= 200 && resp.status < 400 => {
+                Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     // Cache the response for future requests.
-                    cache.put(key, resp.body.clone(), resp.headers.clone());
+                    cache_put(key, resp.body.clone(), resp.headers.clone());
                     let css_text = crate::resources::decode_http_body(&resp.body, &resp.headers);
                     let parsed = Some(DecodedCss {
                         sheet: libwebview::css::parse_stylesheet(&css_text),
@@ -972,13 +1153,16 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     enqueue_result(FetchResult::CssDone {
                         tab_index,
                         href,
+                        url,
                         body: resp.body,
                         headers: resp.headers,
                         parsed,
+                        timing: Some(resp.timing),
                         generation,
                     });
                 }
-                _ => {
+                Ok(mut resp) => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     surf_net_log!("CSS fetch failed: {} ({})", href, key);
                     // Do not leave the page stuck waiting forever on a failed
                     // stylesheet; the UI thread still needs a completion signal
@@ -986,9 +1170,24 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     enqueue_result(FetchResult::CssDone {
                         tab_index,
                         href,
+                        url,
+                        body: Vec::new(),
+                        headers: resp.headers,
+                        parsed: None,
+                        timing: Some(resp.timing),
+                        generation,
+                    });
+                }
+                Err(_) => {
+                    surf_net_log!("CSS fetch failed: {} ({})", href, key);
+                    enqueue_result(FetchResult::CssDone {
+                        tab_index,
+                        href,
+                        url,
                         body: Vec::new(),
                         headers: String::new(),
                         parsed: None,
+                        timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                         generation,
                     });
                 }
@@ -1011,10 +1210,8 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             let key = cache_key(&url);
 
             // Check sub-resource cache first.
-            if let Some((body, headers)) = cache.get(&key) {
+            if let Some((body_vec, headers_string)) = cache_get(&key) {
                 surf_net_log!("image cache hit: {}", src);
-                let body_vec = body.to_vec();
-                let headers_string = String::from(headers);
                 let decoded_raster = if crate::resources::is_svg(&src, &headers_string) {
                     None
                 } else {
@@ -1031,42 +1228,52 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 enqueue_result(FetchResult::ImageDone {
                     tab_index,
                     src,
+                    url,
                     body: body_vec,
                     headers: headers_string,
                     decoded_raster,
                     priority,
+                    timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                     generation,
                 });
                 return;
             }
 
             match http::fetch(&url, &mut CookieJar::new(), pool) {
-                Ok(resp) if resp.status >= 200 && resp.status < 400 => {
-                    cache.put(key, resp.body.clone(), resp.headers.clone());
+                Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
+                    cache_put(key, resp.body.clone(), resp.headers.clone());
                     let decoded_raster = if crate::resources::is_svg(&src, &resp.headers) {
                         None
                     } else {
-                        crate::resources::decode_raster_to_image(&resp.body, target_width, target_height)
-                            .ok()
-                            .map(|image| DecodedRaster {
-                                pixels: image.pixels,
-                                width: image.width,
-                                height: image.height,
-                                format: image.format,
-                                suspicious_black_ppm: image.suspicious_black_ppm,
-                            })
+                        crate::resources::decode_raster_to_image(
+                            &resp.body,
+                            target_width,
+                            target_height,
+                        )
+                        .ok()
+                        .map(|image| DecodedRaster {
+                            pixels: image.pixels,
+                            width: image.width,
+                            height: image.height,
+                            format: image.format,
+                            suspicious_black_ppm: image.suspicious_black_ppm,
+                        })
                     };
                     enqueue_result(FetchResult::ImageDone {
                         tab_index,
                         src,
+                        url,
                         body: resp.body,
                         headers: resp.headers,
                         decoded_raster,
                         priority,
+                        timing: Some(resp.timing),
                         generation,
                     });
                 }
-                Ok(resp) => {
+                Ok(mut resp) => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     surf_net_log!(
                         "image fetch HTTP failure: status={} bytes={} src={}",
                         resp.status,
@@ -1076,10 +1283,12 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     enqueue_result(FetchResult::ImageDone {
                         tab_index,
                         src,
+                        url,
                         body: Vec::new(),
                         headers: resp.headers,
                         decoded_raster: None,
                         priority,
+                        timing: Some(resp.timing),
                         generation,
                     });
                 }
@@ -1088,10 +1297,12 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     enqueue_result(FetchResult::ImageDone {
                         tab_index,
                         src,
+                        url,
                         body: Vec::new(),
                         headers: String::new(),
                         decoded_raster: None,
                         priority,
+                        timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                         generation,
                     });
                 }
@@ -1109,17 +1320,38 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 return;
             }
 
+            let key = cache_key(&url);
+
+            if let Some((body, _headers)) = cache_get(&key) {
+                surf_net_log!("font cache hit: {}", family);
+                enqueue_result(FetchResult::FontDone {
+                    tab_index,
+                    family,
+                    url,
+                    body,
+                    display,
+                    timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    generation,
+                });
+                return;
+            }
+
             match http::fetch(&url, &mut CookieJar::new(), pool) {
-                Ok(resp) if resp.status >= 200 && resp.status < 400 => {
+                Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
+                    cache_put(key, resp.body.clone(), resp.headers.clone());
                     enqueue_result(FetchResult::FontDone {
                         tab_index,
                         family,
+                        url,
                         body: resp.body,
                         display,
+                        timing: Some(resp.timing),
                         generation,
                     });
                 }
-                Ok(resp) => {
+                Ok(mut resp) => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     surf_net_log!(
                         "font fetch HTTP failure: status={} bytes={} family={}",
                         resp.status,
@@ -1129,8 +1361,10 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     enqueue_result(FetchResult::FontDone {
                         tab_index,
                         family,
+                        url,
                         body: Vec::new(),
                         display,
+                        timing: Some(resp.timing),
                         generation,
                     });
                 }
@@ -1139,8 +1373,10 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     enqueue_result(FetchResult::FontDone {
                         tab_index,
                         family,
+                        url,
                         body: Vec::new(),
                         display,
+                        timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                         generation,
                     });
                 }
@@ -1160,13 +1396,15 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
 
             let key = cache_key(&url);
 
-            if let Some((body, headers)) = cache.get(&key) {
+            if let Some((body, headers)) = cache_get(&key) {
                 surf_net_log!("script cache hit: {}", src);
                 enqueue_result(FetchResult::ScriptDone {
                     tab_index,
                     slot,
+                    url,
                     body: body.to_vec(),
                     headers: String::from(headers),
+                    timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                     generation,
                 });
                 return;
@@ -1174,7 +1412,8 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
 
             surf_net_log!("fetching script: {}", src);
             match http::fetch(&url, &mut CookieJar::new(), pool) {
-                Ok(resp) if resp.status >= 200 && resp.status < 400 => {
+                Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     surf_net_log!(
                         "script fetch OK: slot={} status={} bytes={} src={}",
                         slot,
@@ -1182,16 +1421,19 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                         resp.body.len(),
                         src
                     );
-                    cache.put(key, resp.body.clone(), resp.headers.clone());
+                    cache_put(key, resp.body.clone(), resp.headers.clone());
                     enqueue_result(FetchResult::ScriptDone {
                         tab_index,
                         slot,
+                        url,
                         body: resp.body,
                         headers: resp.headers,
+                        timing: Some(resp.timing),
                         generation,
                     });
                 }
-                Ok(resp) => {
+                Ok(mut resp) => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     surf_net_log!(
                         "script fetch HTTP failure: slot={} status={} bytes={} src={}",
                         slot,
@@ -1202,8 +1444,10 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     enqueue_result(FetchResult::ScriptDone {
                         tab_index,
                         slot,
+                        url,
                         body: Vec::new(),
                         headers: resp.headers,
+                        timing: Some(resp.timing),
                         generation,
                     });
                 }
@@ -1214,8 +1458,10 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     enqueue_result(FetchResult::ScriptDone {
                         tab_index,
                         slot,
+                        url,
                         body: Vec::new(),
                         headers: String::new(),
+                        timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                         generation,
                     });
                 }

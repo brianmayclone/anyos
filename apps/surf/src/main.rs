@@ -18,12 +18,8 @@ static SURF_LOG_START_MS: AtomicU32 = AtomicU32::new(u32::MAX);
 pub(crate) fn surf_log_times() -> (u32, u32) {
     let now = anyos_std::sys::uptime_ms();
     if SURF_LOG_START_MS.load(Ordering::Relaxed) == u32::MAX {
-        let _ = SURF_LOG_START_MS.compare_exchange(
-            u32::MAX,
-            now,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
+        let _ =
+            SURF_LOG_START_MS.compare_exchange(u32::MAX, now, Ordering::Relaxed, Ordering::Relaxed);
     }
     let start = SURF_LOG_START_MS.load(Ordering::Relaxed);
     (now, now.wrapping_sub(start))
@@ -94,12 +90,15 @@ enum RenderWork {
     Layout,
 }
 
-const IMAGE_RESULTS_PER_TAB_BATCH: usize = 24;
+const IMAGE_RESULTS_PER_TAB_BATCH: usize = 64;
+const MAX_RESULTS_PER_UI_POLL: usize = 64;
+const RESULT_PROCESS_BUDGET_MS: u32 = 16;
 const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 8;
 const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
 const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
 const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
+const SCRIPT_PUMP_DELAY_MS: u32 = 16;
 const MAX_SCRIPT_SOURCE_BYTES: usize = 200 * 1024;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = false;
 const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
@@ -258,6 +257,8 @@ struct AppState {
     anim_timer: u32,
     /// Timer ID for the network poll loop (0 = not running).
     net_poll_timer: u32,
+    /// Timer ID for cooperative script execution (0 = not running).
+    script_pump_timer: u32,
     /// Per-tab render work. Paint-only updates can reuse the cached layout tree,
     /// while layout updates require a full relayout before painting.
     render_dirty: [RenderWork; 16],
@@ -507,38 +508,6 @@ pub(crate) fn refresh_active_viewport_tiles() {
     }
 }
 
-fn execute_script_batch(tab_index: usize, scripts: Vec<String>, label: &str) {
-    if scripts.is_empty() {
-        return;
-    }
-    let st = state();
-    if !st.config.js_enabled {
-        crate::surf_log!(
-            "[surf] JS disabled in settings — skipping {} {} script(s)",
-            scripts.len(),
-            label
-        );
-        return;
-    }
-    crate::surf_log!(
-        "[surf] executing {} {} script(s)",
-        scripts.len(),
-        label
-    );
-    let changed = st.tabs[tab_index].webview.execute_js(&scripts);
-    for line in st.tabs[tab_index].webview.js_console() {
-        crate::surf_log!("[surf-js] {}", line);
-    }
-    apply_js_host_mutations(tab_index);
-    connect_pending_ws(tab_index);
-    if drain_js_navigation_for_tab(tab_index) {
-        return;
-    }
-    if changed {
-        request_image_refresh(tab_index);
-    }
-}
-
 fn apply_js_host_mutations(tab_index: usize) {
     let st = state();
     if tab_index >= st.tabs.len() {
@@ -733,25 +702,194 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
 }
 
 fn execute_buffered_async_scripts(tab_index: usize) {
+    schedule_script_pump_for_tab(tab_index);
+}
+
+fn log_main_phase_elapsed(label: &str, start_ms: u32) {
+    let elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
+    if elapsed_ms >= 8 {
+        crate::surf_log!("[surf-perf] {} ui_ms={}", label, elapsed_ms);
+    }
+}
+
+fn tab_has_pending_script_kind(tab_index: usize, async_scripts: bool) -> bool {
     let st = state();
     if tab_index >= st.tabs.len() {
-        return;
+        return false;
     }
-    let mut scripts = Vec::new();
     for slot in 0..st.tabs[tab_index].pending_scripts.len() {
-        if !matches!(
+        if st.tabs[tab_index].pending_scripts[slot].is_none() {
+            continue;
+        }
+        let is_async = matches!(
             st.tabs[tab_index].pending_script_modes.get(slot),
             Some(libwebview::js::ScriptMode::Async)
-        ) {
+        );
+        if is_async == async_scripts {
+            return true;
+        }
+    }
+    false
+}
+
+fn take_next_pending_script(tab_index: usize, async_scripts: bool) -> Option<(usize, String)> {
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return None;
+    }
+    for slot in 0..st.tabs[tab_index].pending_scripts.len() {
+        let is_async = matches!(
+            st.tabs[tab_index].pending_script_modes.get(slot),
+            Some(libwebview::js::ScriptMode::Async)
+        );
+        if is_async != async_scripts {
             continue;
         }
         if let Some(text) = st.tabs[tab_index].pending_scripts[slot].take() {
-            crate::surf_log!("[surf] async script [{}] released after script gate", slot);
-            scripts.push((slot, text));
+            return Some((slot, text));
         }
     }
-    for (slot, text) in scripts {
-        execute_script_slot(tab_index, slot, text, "async");
+    None
+}
+
+fn script_work_pending_for_tab(tab_index: usize) -> bool {
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return false;
+    }
+    if st.tabs[tab_index].load_state.ready_for_script_execution()
+        && tab_has_pending_script_kind(tab_index, false)
+    {
+        return true;
+    }
+    matches!(
+        st.tabs[tab_index].load_state.phase,
+        PageLoadPhase::Interactive
+    ) && tab_has_pending_script_kind(tab_index, true)
+}
+
+fn any_script_work_pending() -> bool {
+    let st = state();
+    for tab_index in 0..st.tabs.len() {
+        if script_work_pending_for_tab(tab_index) {
+            return true;
+        }
+    }
+    false
+}
+
+fn schedule_script_pump_for_tab(tab_index: usize) {
+    let st = state();
+    if tab_index >= st.tabs.len() || st.script_pump_timer != 0 {
+        return;
+    }
+    if !script_work_pending_for_tab(tab_index) {
+        return;
+    }
+    st.script_pump_timer = ui_lib::set_timer(SCRIPT_PUMP_DELAY_MS, pump_script_tick);
+    ensure_anim_timer();
+}
+
+fn schedule_script_pump() {
+    let st = state();
+    if st.script_pump_timer != 0 || !any_script_work_pending() {
+        return;
+    }
+    st.script_pump_timer = ui_lib::set_timer(SCRIPT_PUMP_DELAY_MS, pump_script_tick);
+    ensure_anim_timer();
+}
+
+fn next_script_tab() -> Option<usize> {
+    let st = state();
+    if st.active_tab < st.tabs.len() && script_work_pending_for_tab(st.active_tab) {
+        return Some(st.active_tab);
+    }
+    for tab_index in 0..st.tabs.len() {
+        if script_work_pending_for_tab(tab_index) {
+            return Some(tab_index);
+        }
+    }
+    None
+}
+
+fn finish_blocking_scripts_for_tab(tab_index: usize) {
+    let st = state();
+    if tab_index >= st.tabs.len() || tab_has_pending_script_kind(tab_index, false) {
+        return;
+    }
+    if !matches!(
+        st.tabs[tab_index].load_state.phase,
+        PageLoadPhase::Interactive
+    ) {
+        st.tabs[tab_index].load_state.mark_interactive();
+        log_tab_load_state(tab_index, "mark_interactive_after_blocking_scripts");
+        pump_deferred_fonts_for_tab(tab_index);
+        pump_deferred_images_for_tab(tab_index);
+        flush_deferred_resize_if_ready();
+    }
+    schedule_script_pump_for_tab(tab_index);
+}
+
+fn pump_script_tick() {
+    {
+        let st = state();
+        st.script_pump_timer = 0;
+    }
+
+    if net_worker::result_mailboxes_pending() {
+        let results = drain_results_from_mailboxes();
+        if !results.is_empty() {
+            crate::surf_log!(
+                "[surf] script-pump yielding to {} queued network result(s)",
+                results.len()
+            );
+            process_fetched_results(results);
+        }
+        if any_script_work_pending() {
+            schedule_script_pump();
+        }
+        return;
+    }
+
+    let Some(tab_index) = next_script_tab() else {
+        return;
+    };
+
+    let ran = {
+        let st = state();
+        if tab_index >= st.tabs.len() {
+            false
+        } else if st.tabs[tab_index].load_state.ready_for_script_execution()
+            && tab_has_pending_script_kind(tab_index, false)
+        {
+            flush_pending_render_before_scripts(tab_index);
+            if let Some((slot, script)) = take_next_pending_script(tab_index, false) {
+                execute_script_slot(tab_index, slot, script, "blocking/defer");
+                true
+            } else {
+                false
+            }
+        } else if matches!(
+            st.tabs[tab_index].load_state.phase,
+            PageLoadPhase::Interactive
+        ) && tab_has_pending_script_kind(tab_index, true)
+        {
+            if let Some((slot, script)) = take_next_pending_script(tab_index, true) {
+                crate::surf_log!("[surf] async script [{}] released after script gate", slot);
+                execute_script_slot(tab_index, slot, script, "async");
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    finish_blocking_scripts_for_tab(tab_index);
+
+    if ran && any_script_work_pending() {
+        schedule_script_pump();
     }
 }
 
@@ -863,6 +1001,7 @@ fn start_net_poll_timer() {
         st.tabs.iter().any(tab_waiting_on_network)
     );
     st.net_poll_timer = ui_lib::set_timer(NET_POLL_INTERVAL_MS, || {
+        #[cfg(feature = "debug_surf")]
         let mailbox_counts = net_worker::mailbox_pending_counts();
         #[cfg(feature = "debug_surf")]
         crate::surf_log!(
@@ -1042,109 +1181,182 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
 
         let mut urgent = nav_results;
         urgent.extend(css_results);
-        urgent.extend(script_results);
         urgent.extend(font_results);
         urgent.extend(images);
+        // Script execution can block the UI thread for a long time on heavy
+        // pages. Apply visual resources first so their DevTools timing and
+        // rendering are not stuck behind synchronous JS work.
+        urgent.extend(script_results);
 
-        for result in urgent {
-            match result {
-                net_worker::FetchResult::NavDone {
-                    tab_index,
-                    response,
-                    url,
-                    cookies,
-                    generation,
-                } => {
-                    devtools::record_request_done(
-                        &url.host,
-                        &url.path,
-                        response.status as u32,
-                        response.body.len() as u64,
-                    );
-                    handle_nav_done(tab_index, response, url, cookies, generation);
-                }
-                net_worker::FetchResult::NavError {
-                    tab_index,
-                    error_msg,
-                    generation,
-                } => {
-                    devtools::record_request_done_by_kind("html", 0, 0);
-                    handle_nav_error(tab_index, error_msg, generation);
-                }
-                net_worker::FetchResult::CssDone {
-                    tab_index,
-                    href,
-                    body,
-                    headers,
-                    parsed,
-                    generation,
-                } => {
-                    if let Ok(u) = crate::http::parse_url(&href) {
-                        devtools::record_request_done(&u.host, &u.path, 200, body.len() as u64);
-                    } else {
-                        devtools::record_request_done_by_kind("css", 200, body.len() as u64);
-                    }
-                    handle_css_done(tab_index, href, body, headers, parsed, generation);
-                }
-                net_worker::FetchResult::ImageDone {
-                    tab_index,
-                    src,
-                    body,
-                    headers,
-                    decoded_raster,
-                    priority,
-                    generation,
-                } => {
-                    if let Ok(u) = crate::http::parse_url(&src) {
-                        devtools::record_request_done(&u.host, &u.path, 200, body.len() as u64);
-                    } else {
-                        devtools::record_request_done_by_kind("img", 200, body.len() as u64);
-                    }
-                    let needs_layout = handle_image_done(
-                        tab_index,
-                        src,
-                        body,
-                        headers,
-                        decoded_raster,
-                        priority,
-                        generation,
-                    );
-                    if needs_layout {
-                        request_layout_refresh(tab_index);
-                    } else {
-                        request_image_refresh(tab_index);
-                    }
-                }
-                net_worker::FetchResult::FontDone {
-                    tab_index,
-                    family,
-                    body,
-                    display,
-                    generation,
-                } => {
-                    devtools::record_request_done_by_kind("font", 200, body.len() as u64);
-                    if handle_font_done(tab_index, family, body, display, generation) {
-                        request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
-                    }
-                }
-                net_worker::FetchResult::ScriptDone {
-                    tab_index,
-                    slot,
-                    body,
-                    headers,
-                    generation,
-                } => {
-                    devtools::record_request_done_by_kind("js", 200, body.len() as u64);
+        let batch_start_ms = anyos_std::sys::uptime_ms();
+        let mut processed = 0usize;
+        while !urgent.is_empty() {
+            let result = urgent.remove(0);
+            process_single_fetch_result(result);
+            processed += 1;
+            let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(batch_start_ms);
+            if processed >= MAX_RESULTS_PER_UI_POLL || elapsed >= RESULT_PROCESS_BUDGET_MS {
+                if !urgent.is_empty() {
                     crate::surf_log!(
-                        "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
+                        "[surf] requeue {} result(s) for tab {} after ui budget processed={} elapsed={}ms",
+                        urgent.len(),
                         tab_index,
-                        slot,
-                        body.len(),
-                        generation
+                        processed,
+                        elapsed
                     );
-                    handle_script_done(tab_index, slot, body, headers, generation);
+                    net_worker::prepend_results_for_tab(tab_index, urgent);
+                    ensure_net_poll_timer();
                 }
+                break;
             }
+        }
+    }
+}
+
+fn process_single_fetch_result(result: net_worker::FetchResult) {
+    match result {
+        net_worker::FetchResult::NavDone {
+            tab_index,
+            response,
+            url,
+            cookies,
+            generation,
+        } => {
+            devtools::record_request_done_with_timing(
+                &url.host,
+                &url.path,
+                response.status as u32,
+                response.body.len() as u64,
+                response.timing,
+            );
+            let start_ms = anyos_std::sys::uptime_ms();
+            handle_nav_done(tab_index, response, url, cookies, generation);
+            log_main_phase_elapsed("handle_nav_done", start_ms);
+        }
+        net_worker::FetchResult::NavError {
+            tab_index,
+            error_msg,
+            generation,
+        } => {
+            devtools::record_request_done_by_kind("html", 0, 0);
+            let start_ms = anyos_std::sys::uptime_ms();
+            handle_nav_error(tab_index, error_msg, generation);
+            log_main_phase_elapsed("handle_nav_error", start_ms);
+        }
+        net_worker::FetchResult::CssDone {
+            tab_index,
+            href,
+            url,
+            body,
+            headers,
+            parsed,
+            timing,
+            generation,
+        } => {
+            if let Some(timing) = timing {
+                devtools::record_request_done_with_timing(
+                    &url.host,
+                    &url.path,
+                    200,
+                    body.len() as u64,
+                    timing,
+                );
+            } else {
+                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
+            }
+            let start_ms = anyos_std::sys::uptime_ms();
+            handle_css_done(tab_index, href, body, headers, parsed, generation);
+            log_main_phase_elapsed("handle_css_done", start_ms);
+        }
+        net_worker::FetchResult::ImageDone {
+            tab_index,
+            src,
+            url,
+            body,
+            headers,
+            decoded_raster,
+            priority,
+            timing,
+            generation,
+        } => {
+            if let Some(timing) = timing {
+                devtools::record_request_done_with_timing(
+                    &url.host,
+                    &url.path,
+                    200,
+                    body.len() as u64,
+                    timing,
+                );
+            } else {
+                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
+            }
+            let start_ms = anyos_std::sys::uptime_ms();
+            let needs_layout =
+                handle_image_done(tab_index, src, body, headers, decoded_raster, priority, generation);
+            log_main_phase_elapsed("handle_image_done", start_ms);
+            if needs_layout {
+                request_layout_refresh(tab_index);
+            } else {
+                request_image_refresh(tab_index);
+            }
+        }
+        net_worker::FetchResult::FontDone {
+            tab_index,
+            family,
+            url,
+            body,
+            display,
+            timing,
+            generation,
+        } => {
+            if let Some(timing) = timing {
+                devtools::record_request_done_with_timing(
+                    &url.host,
+                    &url.path,
+                    200,
+                    body.len() as u64,
+                    timing,
+                );
+            } else {
+                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
+            }
+            let start_ms = anyos_std::sys::uptime_ms();
+            let needs_layout = handle_font_done(tab_index, family, body, display, generation);
+            log_main_phase_elapsed("handle_font_done", start_ms);
+            if needs_layout {
+                request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
+            }
+        }
+        net_worker::FetchResult::ScriptDone {
+            tab_index,
+            slot,
+            url,
+            body,
+            headers,
+            timing,
+            generation,
+        } => {
+            if let Some(timing) = timing {
+                devtools::record_request_done_with_timing(
+                    &url.host,
+                    &url.path,
+                    200,
+                    body.len() as u64,
+                    timing,
+                );
+            } else {
+                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
+            }
+            crate::surf_log!(
+                "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
+                tab_index,
+                slot,
+                body.len(),
+                generation
+            );
+            let start_ms = anyos_std::sys::uptime_ms();
+            handle_script_done(tab_index, slot, body, headers, generation);
+            log_main_phase_elapsed("handle_script_done", start_ms);
         }
     }
 }
@@ -1425,18 +1637,6 @@ fn handle_nav_done(
     st.tabs[tab_idx].load_state.begin_parse();
     log_tab_load_state(tab_idx, "begin_parse");
     st.tabs[tab_idx].webview.set_html_dom_only(&body_text);
-    // Always allow an initial fallback first paint from raw DOM, even while
-    // stylesheets and scripts are still in flight. Without this, pages with
-    // slow/broken subresources can remain visually blank for far too long.
-    //
-    // Use an immediate flush for the active tab so navigation never sits on a
-    // white page waiting for the debounce timer or stylesheet gate.
-    let first_paint_schedule = if st.active_tab == tab_idx {
-        RenderSchedule::Immediate
-    } else {
-        RenderSchedule::Debounced
-    };
-    request_render(tab_idx, RenderWork::Layout, first_paint_schedule);
     crate::surf_log!(
         "[surf] html parsed: tab={} title_present={} dom_present={}",
         tab_idx,
@@ -1573,7 +1773,10 @@ fn handle_nav_done(
             async_count
         );
         log_tab_load_state(tab_idx, "after_begin_subresource_load");
-        if entries.iter().any(|entry| matches!(entry, libwebview::js::ScriptEntry::External { .. })) {
+        if entries
+            .iter()
+            .any(|entry| matches!(entry, libwebview::js::ScriptEntry::External { .. }))
+        {
             ensure_net_poll_timer();
         }
     }
@@ -1674,7 +1877,9 @@ fn handle_css_done(
     );
 
     if let Some(parsed) = parsed {
-        st.tabs[tab_index].webview.add_parsed_stylesheet(parsed.sheet);
+        st.tabs[tab_index]
+            .webview
+            .add_parsed_stylesheet(parsed.sheet);
     } else {
         st.tabs[tab_index].webview.add_stylesheet(&css_text);
     }
@@ -1876,7 +2081,9 @@ fn handle_image_done(
     } else {
         resources::decode_raster_no_relayout(&body, &src, tab_index);
     }
-    let needs_layout = st.tabs[tab_index].webview.image_requires_layout_refresh(&src);
+    let needs_layout = st.tabs[tab_index]
+        .webview
+        .image_requires_layout_refresh(&src);
     if priority == net_worker::ImagePriority::Deferred
         && st.tabs[tab_index].deferred_images_inflight > 0
     {
@@ -1981,13 +2188,13 @@ fn handle_script_done(
     }
 }
 
-/// Execute all pending scripts for a tab in document order.
+/// Schedule pending scripts for a tab in document order.
 ///
 /// Called when all external script fetches have completed (or immediately
-/// if the page has only inline scripts).
+/// if the page has only inline scripts). The actual execution is pumped in
+/// small UI-timer slices so heavy pages do not block image/font completion
+/// accounting and painting for many seconds.
 fn execute_pending_scripts(tab_index: usize) {
-    flush_pending_render_before_scripts(tab_index);
-
     let st = state();
     if tab_index >= st.tabs.len() {
         return;
@@ -1997,43 +2204,22 @@ fn execute_pending_scripts(tab_index: usize) {
         return;
     }
 
-    let mut scripts = Vec::new();
-    for slot in 0..st.tabs[tab_index].pending_scripts.len() {
-        if matches!(
-            st.tabs[tab_index].pending_script_modes.get(slot),
-            Some(libwebview::js::ScriptMode::Async)
-        ) {
-            continue;
-        }
-        if let Some(text) = st.tabs[tab_index].pending_scripts[slot].take() {
-            scripts.push((slot, text));
-        }
-    }
-    crate::surf_log!(
-        "[surf] execute_pending_scripts: tab={} collected={} pending_slots={}",
-        tab_index,
-        scripts.len(),
-        st.tabs[tab_index].pending_scripts.len()
-    );
-
-    if scripts.is_empty() {
+    if !tab_has_pending_script_kind(tab_index, false) {
         st.tabs[tab_index].load_state.mark_interactive();
         log_tab_load_state(tab_index, "mark_interactive_no_blocking_scripts");
         execute_buffered_async_scripts(tab_index);
         pump_deferred_fonts_for_tab(tab_index);
         pump_deferred_images_for_tab(tab_index);
+        flush_deferred_resize_if_ready();
         return;
     }
 
-    for (slot, script) in scripts {
-        execute_script_slot(tab_index, slot, script, "blocking/defer");
-    }
-    st.tabs[tab_index].load_state.mark_interactive();
-    log_tab_load_state(tab_index, "mark_interactive_after_blocking_scripts");
-    execute_buffered_async_scripts(tab_index);
-    pump_deferred_fonts_for_tab(tab_index);
-    pump_deferred_images_for_tab(tab_index);
-    flush_deferred_resize_if_ready();
+    crate::surf_log!(
+        "[surf] execute_pending_scripts: tab={} pending_slots={} scheduled",
+        tab_index,
+        st.tabs[tab_index].pending_scripts.len()
+    );
+    schedule_script_pump_for_tab(tab_index);
 }
 
 /// Merge cookies returned by the worker thread into the main cookie jar.
@@ -2114,13 +2300,23 @@ fn main() {
     let btn_back = ui_lib::IconButton::new("");
     btn_back.set_position(0, 0);
     btn_back.set_size(32, 28);
-    btn_back.set_system_icon("chevron-left", ui_lib::IconType::Outline, tc.text_secondary, 20);
+    btn_back.set_system_icon(
+        "chevron-left",
+        ui_lib::IconType::Outline,
+        tc.text_secondary,
+        20,
+    );
     nav_group.add(&btn_back);
 
     let btn_forward = ui_lib::IconButton::new("");
     btn_forward.set_position(34, 0);
     btn_forward.set_size(32, 28);
-    btn_forward.set_system_icon("chevron-right", ui_lib::IconType::Outline, tc.text_secondary, 20);
+    btn_forward.set_system_icon(
+        "chevron-right",
+        ui_lib::IconType::Outline,
+        tc.text_secondary,
+        20,
+    );
     nav_group.add(&btn_forward);
 
     let btn_reload = ui_lib::IconButton::new("");
@@ -2241,6 +2437,7 @@ fn main() {
             ws_poll_timer: 0,
             anim_timer: 0,
             net_poll_timer: 0,
+            script_pump_timer: 0,
             render_dirty: [RenderWork::None; 16],
             relayout_timer: 0,
             relayout_due_ms: 0,

@@ -8,6 +8,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::net;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::deflate;
 
@@ -29,6 +30,29 @@ pub struct Response {
     pub body: Vec<u8>,
     /// The final URL after all redirects.
     pub final_url: Option<Url>,
+    pub timing: RequestTiming,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct RequestTiming {
+    pub request_id: u32,
+    pub submitted_ms: u32,
+    pub dequeued_ms: u32,
+    /// Absolute timestamp when the worker started this HTTP transaction.
+    pub start_ms: u32,
+    pub fetch_done_ms: u32,
+    pub result_enqueued_ms: u32,
+    pub ui_done_ms: u32,
+    pub dns_ms: u32,
+    pub connect_ms: u32,
+    pub tls_ms: u32,
+    pub send_ms: u32,
+    /// Time from request sent until response headers were complete.
+    pub wait_ms: u32,
+    pub body_ms: u32,
+    pub decode_ms: u32,
+    pub reused_connection: bool,
+    pub redirects: u32,
 }
 
 pub enum FetchError {
@@ -233,6 +257,8 @@ impl AsciiLowerStr for str {
 
 const MAX_REDIRECTS: usize = 20;
 const CONNECT_TIMEOUT_MS: u32 = 10_000;
+const HEADER_RECV_TIMEOUT_MS: u32 = 5_000;
+const RECV_POLL_MS: u32 = 10;
 const MAX_HEADER_SIZE: usize = 16384;
 const RECV_BUF_SIZE: usize = 32768;
 
@@ -250,6 +276,8 @@ fn should_log_body_details(url: &Url) -> bool {
 // ---------------------------------------------------------------------------
 
 const MAX_POOL_SIZE: usize = 6;
+const MAX_GLOBAL_POOL_SIZE: usize = 32;
+const MAX_GLOBAL_POOL_PER_HOST: usize = 8;
 
 struct PoolEntry {
     host: String,
@@ -264,6 +292,10 @@ struct DnsCacheEntry {
     host: String,
     ip: [u8; 4],
 }
+
+static GLOBAL_POOL_LOCK: AtomicBool = AtomicBool::new(false);
+static mut GLOBAL_CONN_POOL: Option<Vec<PoolEntry>> = None;
+static mut GLOBAL_DNS_CACHE: Option<Vec<DnsCacheEntry>> = None;
 
 /// Maximum number of cached DNS entries.
 const MAX_DNS_CACHE: usize = 64;
@@ -289,9 +321,22 @@ impl ConnPool {
         if let Some(entry) = self.dns_cache.iter().find(|e| e.host == host) {
             return Some(entry.ip);
         }
+        if let Some(ip) = global_dns_get(host) {
+            self.remember_dns(host, ip);
+            return Some(ip);
+        }
         // Syscall fallback.
         let ip = resolve_host(host)?;
         // Cache the result.
+        self.remember_dns(host, ip);
+        global_dns_put(host, ip);
+        Some(ip)
+    }
+
+    fn remember_dns(&mut self, host: &str, ip: [u8; 4]) {
+        if self.dns_cache.iter().any(|e| e.host == host) {
+            return;
+        }
         if self.dns_cache.len() >= MAX_DNS_CACHE {
             self.dns_cache.remove(0);
         }
@@ -299,16 +344,18 @@ impl ConnPool {
             host: String::from(host),
             ip,
         });
-        Some(ip)
     }
 
     /// Take a reusable connection for the given host/port/scheme.
     fn take(&mut self, host: &str, port: u16, is_https: bool) -> Option<PoolEntry> {
-        let pos = self
+        if let Some(pos) = self
             .entries
             .iter()
-            .position(|e| e.host == host && e.port == port && e.is_https == is_https)?;
-        Some(self.entries.remove(pos))
+            .position(|e| e.host == host && e.port == port && e.is_https == is_https)
+        {
+            return Some(self.entries.remove(pos));
+        }
+        global_pool_take(host, port, is_https)
     }
 
     /// Return a connection to the pool for reuse.
@@ -320,6 +367,9 @@ impl ConnPool {
         is_https: bool,
         tls_handle: Option<crate::tls::TlsHandle>,
     ) {
+        if global_pool_put(host.clone(), port, sock, is_https, tls_handle) {
+            return;
+        }
         while self.entries.len() >= MAX_POOL_SIZE {
             let old = self.entries.remove(0);
             close_tls_handle(old.tls_handle);
@@ -342,6 +392,105 @@ impl ConnPool {
     }
 }
 
+fn acquire_global_pool() {
+    while GLOBAL_POOL_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+}
+
+fn release_global_pool() {
+    GLOBAL_POOL_LOCK.store(false, Ordering::Release);
+}
+
+fn global_dns_get(host: &str) -> Option<[u8; 4]> {
+    acquire_global_pool();
+    let ip = unsafe {
+        GLOBAL_DNS_CACHE
+            .as_ref()
+            .and_then(|cache| cache.iter().find(|e| e.host == host).map(|e| e.ip))
+    };
+    release_global_pool();
+    ip
+}
+
+fn global_dns_put(host: &str, ip: [u8; 4]) {
+    acquire_global_pool();
+    unsafe {
+        let cache = GLOBAL_DNS_CACHE.get_or_insert_with(Vec::new);
+        if !cache.iter().any(|e| e.host == host) {
+            if cache.len() >= MAX_DNS_CACHE {
+                cache.remove(0);
+            }
+            cache.push(DnsCacheEntry {
+                host: String::from(host),
+                ip,
+            });
+        }
+    }
+    release_global_pool();
+}
+
+fn global_pool_take(host: &str, port: u16, is_https: bool) -> Option<PoolEntry> {
+    acquire_global_pool();
+    let entry = unsafe {
+        let pool = GLOBAL_CONN_POOL.get_or_insert_with(Vec::new);
+        pool.iter()
+            .position(|e| e.host == host && e.port == port && e.is_https == is_https)
+            .map(|pos| pool.remove(pos))
+    };
+    release_global_pool();
+    entry
+}
+
+fn global_pool_put(
+    host: String,
+    port: u16,
+    sock: u32,
+    is_https: bool,
+    tls_handle: Option<crate::tls::TlsHandle>,
+) -> bool {
+    acquire_global_pool();
+    let mut evicted: Vec<PoolEntry> = Vec::new();
+    unsafe {
+        let pool = GLOBAL_CONN_POOL.get_or_insert_with(Vec::new);
+        while pool
+            .iter()
+            .filter(|e| e.host == host && e.port == port && e.is_https == is_https)
+            .count()
+            >= MAX_GLOBAL_POOL_PER_HOST
+        {
+            if let Some(pos) = pool
+                .iter()
+                .position(|e| e.host == host && e.port == port && e.is_https == is_https)
+            {
+                evicted.push(pool.remove(pos));
+            } else {
+                break;
+            }
+        }
+        while pool.len() >= MAX_GLOBAL_POOL_SIZE {
+            evicted.push(pool.remove(0));
+        }
+        pool.push(PoolEntry {
+            host,
+            port,
+            sock,
+            is_https,
+            tls_handle,
+        });
+    }
+    release_global_pool();
+
+    for entry in evicted {
+        close_tls_handle(entry.tls_handle);
+        net::tcp_close(entry.sock);
+    }
+    true
+}
+
 /// Open a fresh TCP connection (+ TLS handshake for HTTPS).
 ///
 /// Uses the pool's DNS cache to avoid redundant DNS syscalls.
@@ -350,14 +499,22 @@ fn connect_fresh(
     host: &str,
     port: u16,
     is_https: bool,
+    timing: &mut RequestTiming,
 ) -> Result<(u32, Option<crate::tls::TlsHandle>), FetchError> {
+    let dns_start = anyos_std::sys::uptime_ms();
     let ip = match pool.resolve_cached(host) {
         Some(ip) => ip,
         None => {
             anyos_std::println!("[http] DNS failed for {}", host);
+            timing.dns_ms = timing
+                .dns_ms
+                .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(dns_start));
             return Err(FetchError::DnsFailure);
         }
     };
+    timing.dns_ms = timing
+        .dns_ms
+        .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(dns_start));
     let attempts = if is_https { 2 } else { 1 };
     for attempt in 0..attempts {
         anyos_std::println!(
@@ -368,7 +525,11 @@ fn connect_fresh(
             port,
             if is_https { "https" } else { "http" }
         );
+        let connect_start = anyos_std::sys::uptime_ms();
         let sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT_MS);
+        timing.connect_ms = timing
+            .connect_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(connect_start));
         if sock == u32::MAX {
             anyos_std::println!("[http] TCP connect failed");
             return Err(FetchError::ConnectFailure);
@@ -384,7 +545,11 @@ fn connect_fresh(
             }
             return Ok((sock, None));
         }
+        let tls_start = anyos_std::sys::uptime_ms();
         let ret = crate::tls::connect(sock, host);
+        timing.tls_ms = timing
+            .tls_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(tls_start));
         if ret > 0 {
             let tls_handle = ret as crate::tls::TlsHandle;
             if attempt > 0 {
@@ -457,11 +622,26 @@ fn recv_some(sock: u32, tls_handle: Option<crate::tls::TlsHandle>, buf: &mut [u8
             n as usize
         }
     } else {
-        let n = net::tcp_recv(sock, buf);
-        if n == u32::MAX {
-            0
-        } else {
-            n as usize
+        let start = anyos_std::sys::uptime_ms();
+        loop {
+            let avail = net::tcp_recv_available(sock);
+            match avail {
+                u32::MAX => return 0,
+                0xFFFF_FFFE => return 0,
+                n if n > 0 => {
+                    let read_len = (n as usize).min(buf.len());
+                    let n = net::tcp_recv(sock, &mut buf[..read_len]);
+                    if n == 0 || n == u32::MAX {
+                        return 0;
+                    }
+                    return n as usize;
+                }
+                _ => {}
+            }
+            if anyos_std::sys::uptime_ms().wrapping_sub(start) >= HEADER_RECV_TIMEOUT_MS {
+                return 0;
+            }
+            anyos_std::process::sleep(RECV_POLL_MS);
         }
     }
 }
@@ -675,8 +855,13 @@ pub fn fetch(
     pool: &mut ConnPool,
 ) -> Result<Response, FetchError> {
     let mut current = clone_url(url);
+    let mut timing = RequestTiming {
+        start_ms: anyos_std::sys::uptime_ms(),
+        ..RequestTiming::default()
+    };
 
-    for _redirect_n in 0..MAX_REDIRECTS {
+    for redirect_n in 0..MAX_REDIRECTS {
+        timing.redirects = redirect_n as u32;
         let is_https = current.scheme == "https";
         anyos_std::println!(
             "[http] {} GET {}:{}{}",
@@ -699,23 +884,33 @@ pub fn fetch(
                 }
                 None => {
                     let (sock, tls_handle) =
-                        connect_fresh(pool, &current.host, current.port, is_https)?;
+                        connect_fresh(pool, &current.host, current.port, is_https, &mut timing)?;
                     (sock, tls_handle, false)
                 }
             };
+        timing.reused_connection = timing.reused_connection || from_pool;
 
         // 2. Build and send GET request.
         let request = build_request(&current, cookies);
+        let send_start = anyos_std::sys::uptime_ms();
         let mut send_ok = send_data(sock, tls_handle, request.as_bytes());
+        timing.send_ms = timing
+            .send_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(send_start));
+        let mut retried_stale_pool = false;
 
         // Retry on stale pooled connection.
         if !send_ok && from_pool {
             close_conn(sock, tls_handle);
             let (new_sock, new_tls_handle) =
-                connect_fresh(pool, &current.host, current.port, is_https)?;
+                connect_fresh(pool, &current.host, current.port, is_https, &mut timing)?;
             sock = new_sock;
             tls_handle = new_tls_handle;
+            let retry_send_start = anyos_std::sys::uptime_ms();
             send_ok = send_data(sock, tls_handle, request.as_bytes());
+            timing.send_ms = timing
+                .send_ms
+                .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(retry_send_start));
         }
         if !send_ok {
             anyos_std::println!("[http] send failed");
@@ -727,10 +922,33 @@ pub fn fetch(
         let mut response_buf: Vec<u8> = Vec::new();
         let mut recv_buf = [0u8; RECV_BUF_SIZE];
         let header_end;
+        let header_wait_start = anyos_std::sys::uptime_ms();
 
         loop {
             let n = recv_some(sock, tls_handle, &mut recv_buf);
             if n == 0 {
+                if from_pool && !retried_stale_pool && response_buf.is_empty() {
+                    anyos_std::println!(
+                        "[http] pooled connection stale while waiting for headers; reconnecting to {}:{}",
+                        current.host,
+                        current.port
+                    );
+                    close_conn(sock, tls_handle);
+                    let (new_sock, new_tls_handle) =
+                        connect_fresh(pool, &current.host, current.port, is_https, &mut timing)?;
+                    sock = new_sock;
+                    tls_handle = new_tls_handle;
+                    retried_stale_pool = true;
+                    let retry_send_start = anyos_std::sys::uptime_ms();
+                    if !send_data(sock, tls_handle, request.as_bytes()) {
+                        close_conn(sock, tls_handle);
+                        return Err(FetchError::SendFailure);
+                    }
+                    timing.send_ms = timing
+                        .send_ms
+                        .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(retry_send_start));
+                    continue;
+                }
                 anyos_std::println!("[http] recv failed (buf={}B)", response_buf.len());
                 close_conn(sock, tls_handle);
                 return Err(FetchError::NoResponse);
@@ -747,6 +965,9 @@ pub fn fetch(
                 return Err(FetchError::NoResponse);
             }
         }
+        timing.wait_ms = timing
+            .wait_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(header_wait_start));
 
         // 4. Parse status + headers.
         let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
@@ -764,11 +985,13 @@ pub fn fetch(
                 current = resolve_url(&current, location);
                 continue;
             }
+            timing.fetch_done_ms = anyos_std::sys::uptime_ms();
             return Ok(Response {
                 status,
                 headers,
                 body: Vec::new(),
                 final_url: Some(clone_url(&current)),
+                timing,
             });
         }
 
@@ -806,6 +1029,7 @@ pub fn fetch(
             );
         }
 
+        let body_start = anyos_std::sys::uptime_ms();
         let raw_body = if is_chunked {
             if let Some(handle) = tls_handle {
                 read_chunked_body_tls(handle, &trailing)
@@ -817,6 +1041,9 @@ pub fn fetch(
         } else {
             read_body(sock, &trailing, content_length)
         };
+        timing.body_ms = timing
+            .body_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(body_start));
 
         if should_log_body_details(&current) {
             anyos_std::println!(
@@ -841,13 +1068,19 @@ pub fn fetch(
         }
 
         // 8. Decompress if content-encoded.
+        let decode_start = anyos_std::sys::uptime_ms();
         let body = decompress_body(raw_body, &content_encoding);
+        timing.decode_ms = timing
+            .decode_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(decode_start));
+        timing.fetch_done_ms = anyos_std::sys::uptime_ms();
 
         return Ok(Response {
             status,
             headers,
             body,
             final_url: Some(clone_url(&current)),
+            timing,
         });
     }
 
@@ -863,8 +1096,13 @@ pub fn fetch_post(
     pool: &mut ConnPool,
 ) -> Result<Response, FetchError> {
     let mut current = clone_url(url);
+    let mut timing = RequestTiming {
+        start_ms: anyos_std::sys::uptime_ms(),
+        ..RequestTiming::default()
+    };
 
     for redirect_n in 0..MAX_REDIRECTS {
+        timing.redirects = redirect_n as u32;
         let is_https = current.scheme == "https";
         anyos_std::println!(
             "[http] {} POST {}:{}{}",
@@ -887,10 +1125,11 @@ pub fn fetch_post(
                 }
                 None => {
                     let (sock, tls_handle) =
-                        connect_fresh(pool, &current.host, current.port, is_https)?;
+                        connect_fresh(pool, &current.host, current.port, is_https, &mut timing)?;
                     (sock, tls_handle, false)
                 }
             };
+        timing.reused_connection = timing.reused_connection || from_pool;
 
         // Use POST on first request, but follow redirects as GET.
         let request = if redirect_n == 0 {
@@ -899,16 +1138,24 @@ pub fn fetch_post(
             build_request(&current, cookies)
         };
 
+        let send_start = anyos_std::sys::uptime_ms();
         let mut send_ok = send_data(sock, tls_handle, request.as_bytes());
+        timing.send_ms = timing
+            .send_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(send_start));
 
         // Retry on stale pooled connection.
         if !send_ok && from_pool {
             close_conn(sock, tls_handle);
             let (new_sock, new_tls_handle) =
-                connect_fresh(pool, &current.host, current.port, is_https)?;
+                connect_fresh(pool, &current.host, current.port, is_https, &mut timing)?;
             sock = new_sock;
             tls_handle = new_tls_handle;
+            let retry_send_start = anyos_std::sys::uptime_ms();
             send_ok = send_data(sock, tls_handle, request.as_bytes());
+            timing.send_ms = timing
+                .send_ms
+                .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(retry_send_start));
         }
         if !send_ok {
             close_conn(sock, tls_handle);
@@ -918,6 +1165,7 @@ pub fn fetch_post(
         let mut response_buf: Vec<u8> = Vec::new();
         let mut recv_buf = [0u8; RECV_BUF_SIZE];
         let header_end;
+        let header_wait_start = anyos_std::sys::uptime_ms();
 
         loop {
             let n = recv_some(sock, tls_handle, &mut recv_buf);
@@ -935,6 +1183,9 @@ pub fn fetch_post(
                 return Err(FetchError::NoResponse);
             }
         }
+        timing.wait_ms = timing
+            .wait_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(header_wait_start));
 
         let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
         let (status, _reason) = parse_status_line(header_str);
@@ -949,11 +1200,13 @@ pub fn fetch_post(
                 current = resolve_url(&current, location);
                 continue;
             }
+            timing.fetch_done_ms = anyos_std::sys::uptime_ms();
             return Ok(Response {
                 status,
                 headers,
                 body: Vec::new(),
                 final_url: Some(clone_url(&current)),
+                timing,
             });
         }
 
@@ -990,6 +1243,7 @@ pub fn fetch_post(
             );
         }
 
+        let body_start = anyos_std::sys::uptime_ms();
         let raw_body = if is_chunked {
             if let Some(handle) = tls_handle {
                 read_chunked_body_tls(handle, &trailing)
@@ -1001,6 +1255,9 @@ pub fn fetch_post(
         } else {
             read_body(sock, &trailing, content_length)
         };
+        timing.body_ms = timing
+            .body_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(body_start));
 
         if should_log_body_details(&current) {
             anyos_std::println!(
@@ -1024,12 +1281,18 @@ pub fn fetch_post(
             close_conn(sock, tls_handle);
         }
 
+        let decode_start = anyos_std::sys::uptime_ms();
         let resp_body = decompress_body(raw_body, &content_encoding);
+        timing.decode_ms = timing
+            .decode_ms
+            .wrapping_add(anyos_std::sys::uptime_ms().wrapping_sub(decode_start));
+        timing.fetch_done_ms = anyos_std::sys::uptime_ms();
         return Ok(Response {
             status,
             headers,
             body: resp_body,
             final_url: Some(clone_url(&current)),
+            timing,
         });
     }
 
