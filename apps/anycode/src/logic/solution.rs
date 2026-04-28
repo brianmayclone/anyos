@@ -9,6 +9,7 @@ pub struct SolutionMetadata {
     pub path: String,
     pub startup_project: String,
     pub startup_form: String,
+    pub startup_storyboard: String,
     pub startup_run_config: String,
     pub build_order: Vec<String>,
     pub unloaded_projects: Vec<String>,
@@ -21,6 +22,7 @@ impl SolutionMetadata {
             path: path.clone(),
             startup_project: default_startup_project(project),
             startup_form: String::new(),
+            startup_storyboard: String::new(),
             startup_run_config: String::new(),
             build_order: default_build_order(project),
             unloaded_projects: Vec::new(),
@@ -41,6 +43,7 @@ impl SolutionMetadata {
             match key.trim() {
                 "startup_project" => metadata.startup_project = String::from(value),
                 "startup_form" => metadata.startup_form = String::from(value),
+                "startup_storyboard" => metadata.startup_storyboard = String::from(value),
                 "startup_run_config" => metadata.startup_run_config = String::from(value),
                 "build_order" => metadata.build_order = split_list(value),
                 "unloaded_projects" => metadata.unloaded_projects = split_list(value),
@@ -54,6 +57,7 @@ impl SolutionMetadata {
         let mut out = String::from("anycode-workspace-v1\n");
         out.push_str(&format!("startup_project={}\n", self.startup_project));
         out.push_str(&format!("startup_form={}\n", self.startup_form));
+        out.push_str(&format!("startup_storyboard={}\n", self.startup_storyboard));
         out.push_str(&format!("startup_run_config={}\n", self.startup_run_config));
         out.push_str(&format!("build_order={}\n", self.build_order.join(",")));
         out.push_str(&format!(

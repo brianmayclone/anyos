@@ -381,6 +381,24 @@ mod tests {
     }
 
     #[test]
+    fn object_pattern_supports_computed_symbol_property_names() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var key = Symbol('answer'); \
+             var obj = {}; \
+             obj[key] = 42; \
+             var {[key]: value} = obj; \
+             value",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_number(), 42.0);
+    }
+
+    #[test]
     fn computed_object_pattern_does_not_break_enclosing_iife() {
         let mut engine = JsEngine::new();
         let result = engine.eval(

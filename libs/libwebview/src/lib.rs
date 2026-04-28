@@ -1381,15 +1381,7 @@ impl WebView {
             };
 
             let radio_name = String::from(dom.attr(node_id, "name").unwrap_or(""));
-            let mut form_node = None;
-            let mut cur = dom.get(node_id).parent;
-            while let Some(id) = cur {
-                if dom.tag(id) == Some(dom::Tag::Form) {
-                    form_node = Some(id);
-                    break;
-                }
-                cur = dom.get(id).parent;
-            }
+            let form_node = Self::find_form_for_node_in_dom(dom, node_id);
 
             for other_id in 0..dom.nodes.len() {
                 if dom.tag(other_id) != Some(dom::Tag::Input) || other_id == node_id {
@@ -1407,16 +1399,7 @@ impl WebView {
                     continue;
                 }
                 let same_form = {
-                    let mut other_form = None;
-                    let mut up = dom.get(other_id).parent;
-                    while let Some(id) = up {
-                        if dom.tag(id) == Some(dom::Tag::Form) {
-                            other_form = Some(id);
-                            break;
-                        }
-                        up = dom.get(id).parent;
-                    }
-                    other_form == form_node
+                    Self::find_form_for_node_in_dom(dom, other_id) == form_node
                 };
                 if !same_form {
                     continue;
@@ -1649,33 +1632,14 @@ impl WebView {
             None => return,
         };
 
-        // Find parent <form>.
-        let mut form_node = None;
-        let mut cur = Some(node_id);
-        while let Some(id) = cur {
-            if dom.tag(id) == Some(dom::Tag::Form) {
-                form_node = Some(id);
-                break;
-            }
-            cur = dom.get(id).parent;
-        }
-        let form_id = match form_node {
+        let form_id = match Self::find_form_for_node_in_dom(dom, node_id) {
             Some(id) => id,
             None => return,
         };
 
         // Reset all form controls that are descendants of this form.
         for fc in &self.renderer.form_controls {
-            let mut is_child = false;
-            let mut up = Some(fc.node_id);
-            while let Some(id) = up {
-                if id == form_id {
-                    is_child = true;
-                    break;
-                }
-                up = dom.get(id).parent;
-            }
-            if !is_child {
+            if Self::find_form_for_node_in_dom(dom, fc.node_id) != Some(form_id) {
                 continue;
             }
 
@@ -2269,6 +2233,18 @@ impl WebView {
 
     fn find_form_for_node(&self, node_id: usize) -> Option<usize> {
         let dom = self.dom_val.as_ref()?;
+        Self::find_form_for_node_in_dom(dom, node_id)
+    }
+
+    fn find_form_for_node_in_dom(dom: &dom::Dom, node_id: usize) -> Option<usize> {
+        if let Some(form_attr) = dom.attr(node_id, "form") {
+            for id in 0..dom.nodes.len() {
+                if dom.tag(id) == Some(dom::Tag::Form) && dom.attr(id, "id") == Some(form_attr) {
+                    return Some(id);
+                }
+            }
+        }
+
         let mut cur = Some(node_id);
         while let Some(id) = cur {
             if dom.tag(id) == Some(dom::Tag::Form) {
@@ -2287,17 +2263,7 @@ impl WebView {
             None => return Vec::new(),
         };
 
-        // Find the parent <form> node.
-        let mut form_node = None;
-        let mut cur = Some(node_id);
-        while let Some(id) = cur {
-            if dom.tag(id) == Some(dom::Tag::Form) {
-                form_node = Some(id);
-                break;
-            }
-            cur = dom.get(id).parent;
-        }
-        let form_id = match form_node {
+        let form_id = match Self::find_form_for_node_in_dom(dom, node_id) {
             Some(id) => id,
             None => return Vec::new(),
         };
@@ -2305,16 +2271,7 @@ impl WebView {
         // Collect all form controls that are descendants of this form.
         let mut data = Vec::new();
         for fc in &self.renderer.form_controls {
-            let mut is_child = false;
-            let mut up = Some(fc.node_id);
-            while let Some(id) = up {
-                if id == form_id {
-                    is_child = true;
-                    break;
-                }
-                up = dom.get(id).parent;
-            }
-            if !is_child {
+            if Self::find_form_for_node_in_dom(dom, fc.node_id) != Some(form_id) {
                 continue;
             }
 
@@ -4643,6 +4600,37 @@ mod tests {
         assert_eq!(style.background_color, 0xFF020617);
         assert_eq!(style.font_size, 48);
         assert!(matches!(style.display, Display::Flex));
+    }
+
+    #[test]
+    fn controls_can_be_associated_with_form_attribute() {
+        let mut wv = WebView::new(800, 600);
+        wv.set_url("https://example.test/");
+        wv.set_html_no_js(
+            r#"
+            <html><body>
+              <form id="search" action="/search"></form>
+              <input id="q" name="q" form="search" value="test">
+              <button id="go" form="search">Search</button>
+            </body></html>
+            "#,
+        );
+
+        let dom = wv.dom().expect("dom");
+        let form = find_node_by_id(dom, "search");
+        let input = find_node_by_id(dom, "q");
+        let button = find_node_by_id(dom, "go");
+
+        assert_eq!(WebView::find_form_for_node_in_dom(dom, input), Some(form));
+        assert_eq!(WebView::find_form_for_node_in_dom(dom, button), Some(form));
+        assert_eq!(
+            wv.form_action_for_node(button),
+            Some((
+                String::from("/search"),
+                String::from("GET"),
+                String::from("application/x-www-form-urlencoded"),
+            ))
+        );
     }
 }
 

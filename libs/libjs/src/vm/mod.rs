@@ -4082,6 +4082,17 @@ impl Vm {
         // caught by an outer try/catch).
         if let Some(handler) = self.try_handlers.last() {
             if handler.frame_depth > self.run_target_depth {
+                #[cfg(feature = "host")]
+                {
+                    if std::env::var_os("LIBJS_DEBUG_CAUGHT").is_some() {
+                        let detail = self.describe_exception(&val);
+                        let stack_info = self.frame_stack_summary(8);
+                        self.log_engine(&format!(
+                            "[libjs] DEBUG caught exception: {} [{}]",
+                            detail, stack_info
+                        ));
+                    }
+                }
                 let handler = self.try_handlers.pop().unwrap();
                 self.close_iterators_in_stack_range(handler.stack_depth);
                 self.stack.truncate(handler.stack_depth);

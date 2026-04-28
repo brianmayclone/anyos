@@ -206,6 +206,18 @@ impl Sidebar {
             self.set_system_icon(form, "panel-top", tc.text_secondary);
         }
 
+        if !solution.startup_storyboard.is_empty() {
+            let storyboard = self.tree.add_child(
+                root,
+                &format!(
+                    "Startup Storyboard: {}",
+                    crate::util::path::basename(&solution.startup_storyboard)
+                ),
+            );
+            self.remember_virtual(storyboard);
+            self.set_system_icon(storyboard, "route", tc.accent);
+        }
+
         let order = self.tree.add_child(
             root,
             &format!("Build Order ({})", solution.build_order.len()),

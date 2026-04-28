@@ -4486,13 +4486,21 @@ impl<'a> TypeChecker<'a> {
                     if method_str == "map" && args.len() == 1 {
                         if let HirExprKind::Closure(params, _, body, _) = &args[0].kind {
                             if params.len() == 1 {
-                                self.bind_closure_param(&params[0], inner_option_ty);
+                                self.bind_closure_param(&params[0], inner_option_ty.clone());
                                 let body_ty =
                                     self.check_closure_body_return(None, None, body, expr.span);
                                 return self
                                     .option_of(body_ty)
                                     .unwrap_or_else(|| self.fresh_infer(InferKind::General));
                             }
+                        }
+                        let mapper_ty = self.get_expr_ty_cached(&args[0]);
+                        if let Some(mapped_ty) =
+                            self.callable_map_output_ty(&inner_option_ty, &mapper_ty, args[0].span)
+                        {
+                            return self
+                                .option_of(mapped_ty)
+                                .unwrap_or_else(|| self.fresh_infer(InferKind::General));
                         }
                     }
                 }
@@ -4745,6 +4753,16 @@ impl<'a> TypeChecker<'a> {
                                 let default_ty = self.get_expr_ty_cached(&args[0]);
                                 self.unify(&substs[0], &default_ty, args[0].span);
                                 return substs[0].clone();
+                            }
+                            "map" if args.len() == 1 => {
+                                let mapper_ty = self.get_expr_ty_cached(&args[0]);
+                                if let Some(mapped_ty) =
+                                    self.callable_map_output_ty(&substs[0], &mapper_ty, args[0].span)
+                                {
+                                    return self
+                                        .result_of2(mapped_ty, substs[1].clone())
+                                        .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                                }
                             }
                             _ => {}
                         }
@@ -7249,6 +7267,33 @@ impl<'a> TypeChecker<'a> {
             TyKind::FnPtr(_, ret) => Some(*ret),
             TyKind::Adt(def_id, substs) if self.enum_variant_fields.contains_key(&def_id) => {
                 Some(TyKind::Adt(def_id, substs))
+            }
+            _ => None,
+        }
+    }
+
+    fn callable_map_output_ty(
+        &mut self,
+        input_ty: &TyKind,
+        callable_ty: &TyKind,
+        span: Span,
+    ) -> Option<TyKind> {
+        match self.shallow_resolve(callable_ty.clone()) {
+            TyKind::FnDef(def_id, _) => {
+                let (params, ret) = self.fn_sigs.get(&def_id).cloned().or_else(|| {
+                    self.intrinsic_fn_value_output_ty(def_id)
+                        .map(|ret| (vec![input_ty.clone()], ret))
+                })?;
+                if let Some(param) = params.first() {
+                    self.unify(input_ty, param, span);
+                }
+                Some(ret)
+            }
+            TyKind::FnPtr(params, ret) => {
+                if let Some(param) = params.first() {
+                    self.unify(input_ty, param, span);
+                }
+                Some(*ret)
             }
             _ => None,
         }

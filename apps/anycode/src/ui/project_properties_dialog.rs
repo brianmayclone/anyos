@@ -1,8 +1,10 @@
 use alloc::format;
+use alloc::string::String;
 use libanyui_client as ui;
 use ui::Widget;
 
 use crate::app;
+use crate::logic::storyboard;
 
 const DLG_W: u32 = 820;
 const DLG_H: u32 = 560;
@@ -53,7 +55,7 @@ pub fn show() {
     win.add(&tabs);
 
     let pages = [
-        page("Application", application_text()),
+        application_page(),
         page("Build", build_text()),
         page("Run", run_text()),
         page("Debug", debug_text()),
@@ -85,7 +87,114 @@ pub fn show() {
     });
 }
 
-fn page(title: &str, body: alloc::string::String) -> ui::View {
+fn application_page() -> ui::View {
+    let tc = ui::theme::colors();
+    let page = ui::View::new();
+    page.set_dock(ui::DOCK_FILL);
+    page.set_color(tc.editor_bg);
+
+    let s = app();
+    let Some(project) = s.current_project.as_ref() else {
+        return page;
+    };
+    let startup_project = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.startup_project.as_str())
+        .unwrap_or(project.name.as_str());
+    let startup_form = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.startup_form.as_str())
+        .unwrap_or("");
+    let startup_storyboard = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.startup_storyboard.as_str())
+        .unwrap_or("");
+    let project_count = s
+        .solution
+        .as_ref()
+        .map(|solution| solution.project_count(project))
+        .unwrap_or(1);
+    let storyboards = storyboard::discover_storyboards(&project.root);
+    let storyboard_items = storyboard_dropdown_items(&project.root, &storyboards);
+
+    let label = ui::Label::new("Application");
+    label.set_position(24, 18);
+    label.set_size(360, 22);
+    label.set_font_size(15);
+    label.set_text_color(tc.text);
+    page.add(&label);
+
+    let editor = ui::TextEditor::new(740, 170);
+    editor.set_position(24, 54);
+    editor.set_text(&format!(
+        "Name: {}\nRoot: {}\nType: {}\nWorkspace: {}\nProjects: {}\nStartup project: {}\nStartup form: {}\nStartup storyboard: {}\nMetadata: .anycode-workspace\n",
+        project.name,
+        project.root,
+        project.project_type.display_name(),
+        if project.is_workspace { "yes" } else { "no" },
+        project_count,
+        startup_project,
+        if startup_form.is_empty() {
+            "not set"
+        } else {
+            startup_form
+        },
+        if startup_storyboard.is_empty() {
+            "not set"
+        } else {
+            startup_storyboard
+        }
+    ));
+    page.add(&editor);
+
+    let lbl_storyboard = ui::Label::new("Startup Storyboard");
+    lbl_storyboard.set_position(24, 250);
+    lbl_storyboard.set_size(150, 18);
+    lbl_storyboard.set_font_size(11);
+    lbl_storyboard.set_text_color(tc.text_secondary);
+    page.add(&lbl_storyboard);
+
+    let dropdown = ui::DropDown::new(&storyboard_items);
+    dropdown.set_position(190, 244);
+    dropdown.set_size(380, 28);
+    dropdown.set_selected_index(selected_storyboard_index(&storyboards, startup_storyboard));
+    page.add(&dropdown);
+
+    let btn_save = ui::Button::new("Set Startup");
+    btn_save.set_position(584, 244);
+    btn_save.set_size(120, 28);
+    btn_save.set_color(tc.accent);
+    page.add(&btn_save);
+
+    let hint = ui::Label::new(
+        "Generates src/main.rs only if it does not exist. Existing entry points are preserved.",
+    );
+    hint.set_position(190, 282);
+    hint.set_size(560, 18);
+    hint.set_font_size(10);
+    hint.set_text_color(tc.text_secondary);
+    page.add(&hint);
+
+    btn_save.on_click(move |_| {
+        let idx = dropdown.selected_index();
+        let path = if idx == 0 {
+            String::new()
+        } else {
+            storyboards
+                .get((idx - 1) as usize)
+                .cloned()
+                .unwrap_or_default()
+        };
+        crate::logic::commands::set_startup_storyboard(path);
+    });
+
+    page
+}
+
+fn page(title: &str, body: String) -> ui::View {
     let tc = ui::theme::colors();
     let page = ui::View::new();
     page.set_dock(ui::DOCK_FILL);
@@ -105,42 +214,10 @@ fn page(title: &str, body: alloc::string::String) -> ui::View {
     page
 }
 
-fn application_text() -> alloc::string::String {
+fn build_text() -> String {
     let s = app();
     let Some(project) = s.current_project.as_ref() else {
-        return alloc::string::String::new();
-    };
-    let startup_project = s
-        .solution
-        .as_ref()
-        .map(|solution| solution.startup_project.as_str())
-        .unwrap_or(project.name.as_str());
-    let startup_form = s
-        .solution
-        .as_ref()
-        .map(|solution| solution.startup_form.as_str())
-        .unwrap_or("");
-    let project_count = s
-        .solution
-        .as_ref()
-        .map(|solution| solution.project_count(project))
-        .unwrap_or(1);
-    format!(
-        "Name: {}\nRoot: {}\nType: {}\nWorkspace: {}\nProjects: {}\nStartup project: {}\nStartup form: {}\nMetadata: .anycode-workspace\n",
-        project.name,
-        project.root,
-        project.project_type.display_name(),
-        if project.is_workspace { "yes" } else { "no" },
-        project_count,
-        startup_project,
-        if startup_form.is_empty() { "not set" } else { startup_form }
-    )
-}
-
-fn build_text() -> alloc::string::String {
-    let s = app();
-    let Some(project) = s.current_project.as_ref() else {
-        return alloc::string::String::new();
+        return String::new();
     };
     let build_order = s
         .solution
@@ -155,10 +232,10 @@ fn build_text() -> alloc::string::String {
     )
 }
 
-fn run_text() -> alloc::string::String {
+fn run_text() -> String {
     let s = app();
     let Some(project) = s.current_project.as_ref() else {
-        return alloc::string::String::new();
+        return String::new();
     };
     let startup_run_config = s
         .solution
@@ -181,7 +258,7 @@ fn run_text() -> alloc::string::String {
     )
 }
 
-fn debug_text() -> alloc::string::String {
+fn debug_text() -> String {
     let s = app();
     format!(
         "Breakpoints: {}\nSession: {:?}\nPanels: Call Stack, Registers, Memory and Disassembly are available in Run and Debug.\n",
@@ -190,10 +267,10 @@ fn debug_text() -> alloc::string::String {
     )
 }
 
-fn dependencies_text() -> alloc::string::String {
+fn dependencies_text() -> String {
     let s = app();
     let Some(project) = s.current_project.as_ref() else {
-        return alloc::string::String::new();
+        return String::new();
     };
     let deps = crate::logic::crates::dependencies_for_project(project);
     format!(
@@ -202,10 +279,10 @@ fn dependencies_text() -> alloc::string::String {
     )
 }
 
-fn connected_services_text() -> alloc::string::String {
+fn connected_services_text() -> String {
     let s = app();
     let Some(project) = s.current_project.as_ref() else {
-        return alloc::string::String::new();
+        return String::new();
     };
     let services = crate::logic::connected_services::services_for_project(project);
     let mut out = format!("Connected services: {}\n", services.len());
@@ -231,14 +308,44 @@ fn connected_services_text() -> alloc::string::String {
     out
 }
 
-fn designer_text() -> alloc::string::String {
-    alloc::string::String::from(
+fn designer_text() -> String {
+    String::from(
         "Designer metadata: .Designer files\nProperty grid: typed layout properties in progress\nEvents: double-click handler generation active\nUndo/Redo, alignment and resources: pending\n",
     )
 }
 
-fn ai_text() -> alloc::string::String {
-    alloc::string::String::from(
+fn ai_text() -> String {
+    String::from(
         "Codex provider: configured through AI settings/confd\nPatch preview: required for mutating agent tasks\nConnected Services can later expose AI-assisted client generation and review.\n",
     )
+}
+
+fn storyboard_dropdown_items(project_root: &str, storyboards: &[String]) -> String {
+    let mut items = String::from("None");
+    for path in storyboards {
+        items.push('|');
+        items.push_str(&relative_label(project_root, path));
+    }
+    items
+}
+
+fn selected_storyboard_index(storyboards: &[String], startup_storyboard: &str) -> u32 {
+    if startup_storyboard.is_empty() {
+        return 0;
+    }
+    for (idx, path) in storyboards.iter().enumerate() {
+        if path == startup_storyboard {
+            return (idx + 1) as u32;
+        }
+    }
+    0
+}
+
+fn relative_label(project_root: &str, path: &str) -> String {
+    let prefix = format!("{}/", project_root);
+    if let Some(rel) = path.strip_prefix(&prefix) {
+        String::from(rel)
+    } else {
+        String::from(path)
+    }
 }

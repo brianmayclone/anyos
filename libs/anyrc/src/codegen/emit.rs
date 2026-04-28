@@ -579,6 +579,34 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
+    fn fn_item_operand_name(&self, op: Option<&Operand>) -> Option<String> {
+        let Operand::Constant(c) = op? else {
+            return None;
+        };
+        match &c.value {
+            ConstValue::FnItem(sym) | ConstValue::MethodRef(sym) => {
+                Some(self.interner.resolve(*sym).to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn local_adt_operand_slot(&self, op: Option<&Operand>) -> Option<(i32, i32)> {
+        let Operand::Copy(place) | Operand::Move(place) = op? else {
+            return None;
+        };
+        if !place.projections.is_empty() {
+            return None;
+        }
+        if !matches!(self.body.locals[place.local.0].ty, TyKind::Adt(_, _)) {
+            return None;
+        }
+        Some((
+            self.alloc.stack_slots[place.local.0],
+            self.alloc.local_sizes[place.local.0],
+        ))
+    }
+
     fn emit_primitive_from_ne_bytes(
         &mut self,
         args: &[Operand],
@@ -2882,13 +2910,90 @@ impl<'a> CodeEmitter<'a> {
                 self.store_operand_to_stack_offset(&args[0], Reg::RBP, slot, size);
                 true
             }
-            "Option::map" | "Result::map" => {
-                // arg0 = &Option in RDI, arg1 = closure fn ptr in RSI
-                // Check disc, if Some: call closure with value, wrap result in Some
-                self.asm.call_extern("__anyrc_option_map");
+            "Option::map" => {
                 let slot = self.alloc.stack_slots[dest.local.0];
-                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX); // disc
-                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX); // value
+                let keep_original = self.asm.new_label();
+                let done = self.asm.new_label();
+
+                let by_value = args
+                    .first()
+                    .is_some_and(|arg| self.operand_slot_count(arg) > 1);
+                let (disc_reg, value_reg, mapper_reg) = if by_value {
+                    (Reg::RDI, Reg::RSI, Reg::RDX)
+                } else {
+                    self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                    self.asm.mov_rm(Reg::R11, Reg::RDI, 8);
+                    (Reg::RAX, Reg::R11, Reg::RSI)
+                };
+
+                // Rust Option is encoded as None=0, Some=1 in this backend.
+                // Only Some maps through the function item; None is preserved.
+                if !matches!(disc_reg, Reg::RAX) {
+                    self.asm.mov_rr(Reg::RAX, disc_reg);
+                }
+                self.asm.test_rr(Reg::RAX, Reg::RAX);
+                self.asm.jcc(CondCode::Equal, keep_original);
+                self.asm.mov_rr(Reg::RDI, value_reg);
+                if let Some(mapper_name) = self.fn_item_operand_name(args.get(1)) {
+                    self.asm.call_extern(&mapper_name);
+                } else {
+                    self.asm.call_reg(mapper_reg);
+                }
+                self.asm.mov_rr(Reg::RDX, Reg::RAX);
+                self.asm.mov_ri(Reg::RAX, 1);
+                self.asm.jmp(done);
+
+                self.asm.bind_label(keep_original);
+                if !matches!(value_reg, Reg::RDX) {
+                    self.asm.mov_rr(Reg::RDX, value_reg);
+                }
+
+                self.asm.bind_label(done);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                true
+            }
+            "Result::map" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let keep_original = self.asm.new_label();
+                let done = self.asm.new_label();
+
+                let by_value = args
+                    .first()
+                    .is_some_and(|arg| self.operand_slot_count(arg) > 1);
+                let (disc_reg, value_reg, mapper_reg) = if by_value {
+                    (Reg::RDI, Reg::RSI, Reg::RDX)
+                } else {
+                    self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                    self.asm.mov_rm(Reg::R11, Reg::RDI, 8);
+                    (Reg::RAX, Reg::R11, Reg::RSI)
+                };
+
+                // Result is encoded as Ok=0, Err=1. Map transforms Ok and
+                // preserves Err.
+                if !matches!(disc_reg, Reg::RAX) {
+                    self.asm.mov_rr(Reg::RAX, disc_reg);
+                }
+                self.asm.test_rr(Reg::RAX, Reg::RAX);
+                self.asm.jcc(CondCode::NotEqual, keep_original);
+                self.asm.mov_rr(Reg::RDI, value_reg);
+                if let Some(mapper_name) = self.fn_item_operand_name(args.get(1)) {
+                    self.asm.call_extern(&mapper_name);
+                } else {
+                    self.asm.call_reg(mapper_reg);
+                }
+                self.asm.mov_rr(Reg::RDX, Reg::RAX);
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.jmp(done);
+
+                self.asm.bind_label(keep_original);
+                if !matches!(value_reg, Reg::RDX) {
+                    self.asm.mov_rr(Reg::RDX, value_reg);
+                }
+
+                self.asm.bind_label(done);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
                 true
             }
             "Result::map_err" => {
@@ -3173,43 +3278,8 @@ impl<'a> CodeEmitter<'a> {
                 true
             }
 
-            // ── HashMap intrinsics ──
-            "HashMap::insert" => {
-                // arg0 = &mut HashMap, arg1 = key, arg2 = value
-                self.asm.call_extern("__anyrc_hashmap_insert");
-                true
-            }
-            "HashMap::get" => {
-                // arg0 = &HashMap, arg1 = &key → Option<&V>
-                self.asm.call_extern("__anyrc_hashmap_get");
-                let slot = self.alloc.stack_slots[dest.local.0];
-                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX); // disc
-                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX); // value ptr
-                true
-            }
-            "HashMap::contains_key" => {
-                self.asm.call_extern("__anyrc_hashmap_get");
-                // If RAX (disc) == 0, key exists
-                self.asm.emit_raw(&[0x48, 0x85, 0xC0]); // test rax, rax
-                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]); // sete al
-                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
-                self.store_place(dest, Reg::RAX);
-                true
-            }
-            "HashMap::entry" => {
-                // Returns a reference to the entry slot
-                self.asm.call_extern("__anyrc_hashmap_entry");
-                self.store_place(dest, Reg::RAX);
-                true
-            }
             "map_split" | "Ref::map_split" | "RefMut::map_split" => {
                 self.zero_dest(dest);
-                true
-            }
-            "or_default" | "or_insert" => {
-                // Entry::or_default() — insert default if vacant
-                self.asm.call_extern("__anyrc_entry_or_default");
-                self.store_place(dest, Reg::RAX);
                 true
             }
 

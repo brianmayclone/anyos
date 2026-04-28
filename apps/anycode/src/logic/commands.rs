@@ -1385,6 +1385,55 @@ pub fn create_storyboard() {
     s.status.set_analysis_status("Created Storyboard");
 }
 
+pub fn set_startup_storyboard(storyboard_path: String) {
+    let s = app();
+    let Some(project) = s.current_project.as_ref() else {
+        s.status.set_analysis_status("Open a Rust project first");
+        return;
+    };
+    let project_root = project.root.clone();
+    if storyboard_path.is_empty() {
+        if let Some(solution) = s.solution.as_mut() {
+            solution.startup_storyboard.clear();
+            let _ = solution.save();
+        }
+        if let Some(project) = s.current_project.as_ref() {
+            s.sidebar.populate_project(project, &s.task_mgr);
+        }
+        s.status.set_analysis_status("Startup Storyboard cleared");
+        return;
+    }
+
+    match storyboard::ensure_startup_main(&project_root, &storyboard_path) {
+        Ok(created_main) => {
+            if s.solution.is_none() {
+                s.solution = s
+                    .current_project
+                    .as_ref()
+                    .map(crate::logic::solution::SolutionMetadata::load);
+            }
+            if let Some(solution) = s.solution.as_mut() {
+                solution.startup_storyboard = storyboard_path;
+                if let Err(err) = solution.save() {
+                    s.status.set_analysis_status(err);
+                    return;
+                }
+            }
+            if let Some(project) = s.current_project.as_ref() {
+                s.sidebar.populate_project(project, &s.task_mgr);
+            }
+            if created_main {
+                s.status
+                    .set_analysis_status("Startup Storyboard saved; src/main.rs generated");
+            } else {
+                s.status
+                    .set_analysis_status("Startup Storyboard saved; existing src/main.rs kept");
+            }
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
 pub fn manage_crates() {
     let s = app();
     if s.current_project.is_none() {

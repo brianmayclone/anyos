@@ -268,6 +268,12 @@ pub fn load_storyboard(file_path: &str) -> Option<StoryboardDocument> {
     Some(doc)
 }
 
+pub fn discover_storyboards(project_root: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    discover_storyboard_files(&format!("{}/src", project_root), &mut out, 0);
+    out
+}
+
 pub fn save_storyboard(file_path: &str, doc: &StoryboardDocument) -> Result<(), &'static str> {
     let mut normalized = doc.clone();
     if normalized.scenes.is_empty() {
@@ -319,6 +325,36 @@ pub fn apply_segue(
     save_storyboard(storyboard_path, doc)?;
     write_navigation_handler(doc, &segue)?;
     Ok(Some(segue))
+}
+
+pub fn ensure_startup_main(
+    project_root: &str,
+    storyboard_path: &str,
+) -> Result<bool, &'static str> {
+    let main_path = format!("{}/src/main.rs", project_root);
+    if path::exists(&main_path) {
+        return Ok(false);
+    }
+    let doc = load_storyboard(storyboard_path).ok_or("Could not load startup storyboard")?;
+    let scene = doc
+        .scenes
+        .first()
+        .ok_or("Startup storyboard has no forms")?;
+    let form =
+        designer::load_designer(&scene.designer_path).ok_or("Could not load startup form")?;
+    let module_name = module_name_for_designer_path(&scene.designer_path, &form.form_name);
+    let code = startup_main_rs(
+        storyboard_path,
+        &module_name,
+        &form.form_name,
+        &form.title,
+        form.width,
+        form.height,
+    );
+    let _ = anyos_std::fs::mkdir(&format!("{}/src", project_root));
+    anyos_std::fs::write_bytes(&main_path, code.as_bytes())
+        .map_err(|_| "Could not write src/main.rs")?;
+    Ok(true)
 }
 
 pub fn scene_size() -> (u32, u32) {
@@ -425,6 +461,23 @@ fn discover_designer_files(dir: &str, out: &mut Vec<StoryboardScene>, depth: u32
     }
 }
 
+fn discover_storyboard_files(dir: &str, out: &mut Vec<String>, depth: u32) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(entries) = anyos_std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        let full = path::join(dir, &entry.name);
+        if entry.is_dir() {
+            discover_storyboard_files(&full, out, depth + 1);
+        } else if is_storyboard_file(&full) {
+            out.push(full);
+        }
+    }
+}
+
 fn project_root_for(file_path: &str) -> Option<String> {
     let mut dir = String::from(path::parent(file_path));
     for _ in 0..6 {
@@ -475,6 +528,37 @@ fn escape_rs(value: &str) -> String {
         .replace('"', "\\\"")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
+}
+
+fn startup_main_rs(
+    storyboard_path: &str,
+    module_name: &str,
+    form_name: &str,
+    title: &str,
+    width: u32,
+    height: u32,
+) -> String {
+    format!(
+        "use libanyui_client as ui;\nuse ui::Widget;\n\n#[path = \"ui/{}/mod.rs\"]\nmod {};\n\nconst STARTUP_STORYBOARD: &str = \"{}\";\n\nfn main() {{\n    if !ui::init() {{\n        return;\n    }}\n\n    let form = {}::{}::new();\n    form.root().set_dock(ui::DOCK_FILL);\n\n    let win = ui::Window::new(\"{}\", -1, -1, {}, {});\n    win.add(form.root());\n\n    let _ = STARTUP_STORYBOARD;\n    ui::run();\n}}\n",
+        escape_rs(module_name),
+        module_name,
+        escape_rs(storyboard_path),
+        module_name,
+        form_name,
+        escape_rs(title),
+        width,
+        height
+    )
+}
+
+fn module_name_for_designer_path(designer_path: &str, form_name: &str) -> String {
+    let parent = path::parent(designer_path);
+    let module = path::basename(parent);
+    if module.is_empty() {
+        to_module_name(form_name)
+    } else {
+        String::from(module)
+    }
 }
 
 fn unescape(value: &str) -> String {

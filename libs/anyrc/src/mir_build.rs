@@ -544,6 +544,27 @@ impl<'a> MirBuilder<'a> {
         None
     }
 
+    fn enum_option_result_owner(&self, enum_def_id: DefId) -> Option<String> {
+        if self.type_def_name_is(enum_def_id, "Option") {
+            return Some(String::from("Option"));
+        }
+        if self.type_def_name_is(enum_def_id, "Result") {
+            return Some(String::from("Result"));
+        }
+        let variants = self.typeck.enum_variants.get(&enum_def_id)?;
+        if variants.len() == 2 {
+            let first = self.interner.resolve(variants[0].0);
+            let second = self.interner.resolve(variants[1].0);
+            if first == "None" && second == "Some" {
+                return Some(String::from("Option"));
+            }
+            if first == "Ok" && second == "Err" {
+                return Some(String::from("Result"));
+            }
+        }
+        None
+    }
+
     fn enum_max_fields(&self, enum_def_id: DefId) -> Option<usize> {
         if let Some(variants) = self.typeck.enum_variants.get(&enum_def_id) {
             return Some(
@@ -1920,7 +1941,7 @@ impl<'a> MirBuilder<'a> {
                 };
 
                 // Handle .len() on arrays
-                let method_str = self.interner.resolve(*method_name);
+                let method_str = self.interner.resolve(*method_name).to_string();
                 if let TyKind::RawPtr(inner, _) = &inner_ty {
                     if method_str == "is_null" && args.is_empty() {
                         let recv_op = self.lower_expr(recv);
@@ -2117,6 +2138,54 @@ impl<'a> MirBuilder<'a> {
                     None
                 };
 
+                if method_str == "map" {
+                    let result_owner = match self.get_expr_ty(expr) {
+                        TyKind::Adt(def_id, _) => self
+                            .typeck
+                            .type_def_to_name
+                            .get(&def_id)
+                            .map(|sym| {
+                                self.interner
+                                    .resolve(*sym)
+                                    .rsplit("::")
+                                    .next()
+                                    .unwrap_or("")
+                                    .to_string()
+                            })
+                            .or_else(|| self.enum_option_result_owner(def_id)),
+                        _ => None,
+                    };
+                    let receiver_owner = match &inner_ty {
+                        TyKind::Adt(def_id, _) => self.enum_option_result_owner(*def_id),
+                        _ => None,
+                    };
+                    if let Some(owner @ ("Option" | "Result")) = result_owner
+                        .as_deref()
+                        .or(receiver_owner.as_deref())
+                    {
+                        let fn_sym = self.interner.intern(&format!("{owner}::map"));
+                        let mut all_args = vec![self.lower_expr(recv)];
+                        for a in args {
+                            all_args.push(self.lower_expr(a));
+                        }
+
+                        let ty = self.get_expr_ty(expr);
+                        let dest = self.alloc_temp(ty, expr.span);
+                        let next_block = self.push_block();
+                        self.terminate(Terminator::Call {
+                            func: Operand::Constant(Constant {
+                                ty: TyKind::FnDef(DefId(0), vec![]),
+                                value: ConstValue::FnItem(fn_sym),
+                            }),
+                            args: all_args,
+                            dest: Place::local(dest),
+                            target: next_block,
+                        });
+                        self.current_block = next_block;
+                        return Operand::Copy(Place::local(dest));
+                    }
+                }
+
                 if let Some(method_did) = method_def_id {
                     let fn_name = self
                         .known_adt_method_symbol(&inner_ty, *method_name)
@@ -2304,7 +2373,7 @@ impl<'a> MirBuilder<'a> {
                     self.current_block = next_block;
                     Operand::Copy(Place::local(dest))
                 } else if let Some((fn_name, method_wants_mut)) =
-                    self.fallback_alloc_method_call(method_str, args)
+                    self.fallback_alloc_method_call(&method_str, args)
                 {
                     let recv_op = match &recv_ty {
                         TyKind::Ref(_, _) => {
