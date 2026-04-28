@@ -78,6 +78,7 @@ const SYNTH_PROC_MACRO_DELIMITER_DEF_ID: DefId = DefId(0x7F00_0006);
 
 pub struct TypeckResult {
     pub expr_types: HashMap<HirId, TyKind>,
+    pub local_types: HashMap<DefId, TyKind>,
     pub struct_defs: HashMap<DefId, Vec<(Symbol, TyKind)>>,
     pub fn_sigs: HashMap<DefId, (Vec<TyKind>, TyKind)>,
     pub errors: Vec<Diagnostic>,
@@ -736,6 +737,19 @@ impl<'a> TypeChecker<'a> {
                 {
                     return TyKind::Ref(Box::new(substs[0].clone()), mutability);
                 }
+                TyKind::Adt(def_id, substs)
+                    if self.is_btree_set_def(def_id) && substs.len() == 1 =>
+                {
+                    return TyKind::Ref(Box::new(substs[0].clone()), mutability);
+                }
+                TyKind::Adt(def_id, substs)
+                    if self.is_btree_map_def(def_id) && substs.len() == 2 =>
+                {
+                    return TyKind::Tuple(vec![
+                        TyKind::Ref(Box::new(substs[0].clone()), mutability),
+                        TyKind::Ref(Box::new(substs[1].clone()), mutability),
+                    ]);
+                }
                 TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
                     return TyKind::Ref(Box::new(substs[0].clone()), mutability);
                 }
@@ -780,6 +794,12 @@ impl<'a> TypeChecker<'a> {
             }
             TyKind::Adt(def_id, substs) if self.is_hash_set_def(def_id) && substs.len() == 1 => {
                 substs[0].clone()
+            }
+            TyKind::Adt(def_id, substs) if self.is_btree_set_def(def_id) && substs.len() == 1 => {
+                substs[0].clone()
+            }
+            TyKind::Adt(def_id, substs) if self.is_btree_map_def(def_id) && substs.len() == 2 => {
+                TyKind::Tuple(vec![substs[0].clone(), substs[1].clone()])
             }
             TyKind::Adt(def_id, _) if self.is_token_stream_def(def_id) => self.token_tree_ty(),
             other @ TyKind::Adt(def_id, _) => self
@@ -1056,6 +1076,11 @@ impl<'a> TypeChecker<'a> {
             *ty = self.resolve_ty_full(ty.clone());
         }
 
+        let mut local_types = core::mem::take(&mut self.local_types);
+        for ty in local_types.values_mut() {
+            *ty = self.resolve_ty_full(ty.clone());
+        }
+
         // Also resolve types in generic_call_substs
         let mut generic_call_substs = core::mem::take(&mut self.generic_call_substs);
         for (_, (_, substs)) in generic_call_substs.iter_mut() {
@@ -1066,6 +1091,7 @@ impl<'a> TypeChecker<'a> {
 
         TypeckResult {
             expr_types,
+            local_types,
             struct_defs: core::mem::take(&mut self.struct_defs),
             fn_sigs: self.fn_sigs.clone(),
             errors: core::mem::take(&mut self.errors),
@@ -4366,6 +4392,24 @@ impl<'a> TypeChecker<'a> {
                             self.unify(&inner_option_ty, &default_ty, args[0].span);
                             return inner_option_ty.clone();
                         }
+                        "copied" if args.is_empty() => {
+                            if let TyKind::Ref(inner, _) =
+                                self.shallow_resolve(inner_option_ty.clone())
+                            {
+                                return self
+                                    .option_of(inner.as_ref().clone())
+                                    .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                            }
+                        }
+                        "cloned" if args.is_empty() => {
+                            if let TyKind::Ref(inner, _) =
+                                self.shallow_resolve(inner_option_ty.clone())
+                            {
+                                return self
+                                    .option_of(inner.as_ref().clone())
+                                    .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                            }
+                        }
                         _ => {}
                     }
                     if method_str == "map" && args.len() == 1 {
@@ -4520,6 +4564,64 @@ impl<'a> TypeChecker<'a> {
                                     Box::new(TyKind::Slice(Box::new(elem_ty))),
                                     Mutability::Immutable,
                                 );
+                            }
+                            _ => {}
+                        }
+                    }
+                    if self.is_btree_set_def(*def_id) && substs.len() == 1 {
+                        let elem_ty = self.shallow_resolve(substs[0].clone());
+                        match method_str {
+                            "contains" if args.len() == 1 => return TyKind::Bool,
+                            "insert" | "remove" if args.len() == 1 => return TyKind::Bool,
+                            "clear" if args.is_empty() => return TyKind::Unit,
+                            "iter" if args.is_empty() => {
+                                return TyKind::Slice(Box::new(TyKind::Ref(
+                                    Box::new(elem_ty),
+                                    Mutability::Immutable,
+                                )));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if self.is_btree_map_def(*def_id) && substs.len() == 2 {
+                        let key_ty = self.shallow_resolve(substs[0].clone());
+                        let value_ty = self.shallow_resolve(substs[1].clone());
+                        match method_str {
+                            "get" if args.len() == 1 => {
+                                if let Some(ty) = self.option_of(TyKind::Ref(
+                                    Box::new(value_ty),
+                                    Mutability::Immutable,
+                                )) {
+                                    return ty;
+                                }
+                                return self.fresh_infer(InferKind::General);
+                            }
+                            "get_mut" if args.len() == 1 => {
+                                if let Some(ty) =
+                                    self.option_of(TyKind::Ref(Box::new(value_ty), Mutability::Mut))
+                                {
+                                    return ty;
+                                }
+                                return self.fresh_infer(InferKind::General);
+                            }
+                            "contains_key" if args.len() == 1 => return TyKind::Bool,
+                            "insert" if args.len() == 2 => {
+                                let val_ty = self.get_expr_ty_cached(&args[1]);
+                                self.unify(&value_ty, &val_ty, args[1].span);
+                                return self
+                                    .option_of(value_ty)
+                                    .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                            }
+                            "remove" if args.len() == 1 => {
+                                return self
+                                    .option_of(value_ty)
+                                    .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                            }
+                            "iter" if args.is_empty() => {
+                                return TyKind::Slice(Box::new(TyKind::Tuple(vec![
+                                    TyKind::Ref(Box::new(key_ty), Mutability::Immutable),
+                                    TyKind::Ref(Box::new(value_ty), Mutability::Immutable),
+                                ])));
                             }
                             _ => {}
                         }
@@ -5523,6 +5625,10 @@ impl<'a> TypeChecker<'a> {
             return Some(ret_ty);
         }
 
+        if let Some(ret_ty) = self.check_core_fmt_write_fmt_call(path, args, span, callee) {
+            return Some(ret_ty);
+        }
+
         if method_name_str == "from" && args.len() == 1 {
             let target_ty = self.assoc_parent_ty_for_path(path).unwrap_or_else(|| {
                 self.path_segments_to_ty(&path.segments[..path.segments.len() - 1])
@@ -5743,6 +5849,52 @@ impl<'a> TypeChecker<'a> {
         Some(ret_ty)
     }
 
+    fn check_core_fmt_write_fmt_call(
+        &mut self,
+        path: &HirPath,
+        args: &[HirExpr],
+        span: Span,
+        callee: &HirExpr,
+    ) -> Option<TyKind> {
+        if !matches!(
+            self.path_to_string(path).as_str(),
+            "core::fmt::Write::write_fmt" | "std::fmt::Write::write_fmt"
+        ) || args.len() != 2
+        {
+            return None;
+        }
+
+        let recv_ty = self.check_expr(&args[0]);
+        match self.shallow_resolve(recv_ty) {
+            TyKind::Ref(inner, Mutability::Mut) => {
+                let _ = self.shallow_resolve(*inner);
+            }
+            other => {
+                let expected = TyKind::Ref(Box::new(other.clone()), Mutability::Mut);
+                self.unify(&expected, &other, span);
+            }
+        }
+
+        let args_ty = self.check_expr(&args[1]);
+        if let Some(arguments_def_id) = self
+            .resolve_qualified_type_path("core::fmt::Arguments")
+            .or_else(|| self.lookup_intrinsic_def_by_path("Arguments"))
+        {
+            let expected_args_ty = TyKind::Adt(arguments_def_id, vec![]);
+            if self.ty_matches_for_candidate(&expected_args_ty, &args_ty) {
+                self.unify(&expected_args_ty, &args_ty, args[1].span);
+            }
+        }
+
+        self.expr_types
+            .insert(callee.id, TyKind::FnDef(DefId(0), vec![]));
+        Some(
+            self.resolve_qualified_type_alias("core::fmt::Result")
+                .or_else(|| self.resolve_qualified_type_alias("std::fmt::Result"))
+                .unwrap_or(TyKind::Unit),
+        )
+    }
+
     fn infer_trait_self_from_expected_ret(
         &self,
         template: &TyKind,
@@ -5765,7 +5917,8 @@ impl<'a> TypeChecker<'a> {
         let expected = self.shallow_resolve(expected.clone());
         match (&template, &expected) {
             (TyKind::Adt(def_id, substs), expected)
-                if *def_id == trait_def_id && substs.is_empty() =>
+                if self.trait_defs_refer_to_same_nominal_trait(*def_id, trait_def_id)
+                    && substs.is_empty() =>
             {
                 if found.is_none() {
                     *found = Some(expected.clone());
@@ -5825,13 +5978,18 @@ impl<'a> TypeChecker<'a> {
         arg: &TyKind,
     ) -> Option<TyKind> {
         match self.shallow_resolve(param.clone()) {
-            TyKind::Adt(def_id, substs) if def_id == trait_def_id && substs.is_empty() => {
+            TyKind::Adt(def_id, substs)
+                if self.trait_defs_refer_to_same_nominal_trait(def_id, trait_def_id)
+                    && substs.is_empty() =>
+            {
                 Some(self.shallow_resolve(arg.clone()))
             }
             TyKind::Ref(inner, _) => {
                 if matches!(
                     self.shallow_resolve(inner.as_ref().clone()),
-                    TyKind::Adt(def_id, ref substs) if def_id == trait_def_id && substs.is_empty()
+                    TyKind::Adt(def_id, ref substs)
+                        if self.trait_defs_refer_to_same_nominal_trait(def_id, trait_def_id)
+                            && substs.is_empty()
                 ) {
                     return match self.shallow_resolve(arg.clone()) {
                         TyKind::Ref(arg_inner, _) => Some(*arg_inner),
@@ -5843,7 +6001,9 @@ impl<'a> TypeChecker<'a> {
             TyKind::RawPtr(inner, _) => {
                 if matches!(
                     self.shallow_resolve(inner.as_ref().clone()),
-                    TyKind::Adt(def_id, ref substs) if def_id == trait_def_id && substs.is_empty()
+                    TyKind::Adt(def_id, ref substs)
+                        if self.trait_defs_refer_to_same_nominal_trait(def_id, trait_def_id)
+                            && substs.is_empty()
                 ) {
                     return match self.shallow_resolve(arg.clone()) {
                         TyKind::RawPtr(arg_inner, _) => Some(*arg_inner),
@@ -5858,7 +6018,12 @@ impl<'a> TypeChecker<'a> {
 
     fn is_trait_self_receiver_ty(&self, ty: &TyKind, trait_def_id: DefId) -> bool {
         match self.shallow_resolve(ty.clone()) {
-            TyKind::Adt(def_id, substs) if def_id == trait_def_id && substs.is_empty() => true,
+            TyKind::Adt(def_id, substs)
+                if self.trait_defs_refer_to_same_nominal_trait(def_id, trait_def_id)
+                    && substs.is_empty() =>
+            {
+                true
+            }
             TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
                 self.is_trait_self_receiver_ty(&inner, trait_def_id)
             }
@@ -5869,7 +6034,8 @@ impl<'a> TypeChecker<'a> {
     fn ty_mentions_trait_self(&self, ty: &TyKind, trait_def_id: DefId) -> bool {
         match self.shallow_resolve(ty.clone()) {
             TyKind::Adt(def_id, substs) => {
-                (def_id == trait_def_id && substs.is_empty())
+                (self.trait_defs_refer_to_same_nominal_trait(def_id, trait_def_id)
+                    && substs.is_empty())
                     || substs
                         .iter()
                         .any(|ty| self.ty_mentions_trait_self(ty, trait_def_id))
@@ -6128,7 +6294,10 @@ impl<'a> TypeChecker<'a> {
 
     fn substitute_trait_self(&self, ty: &TyKind, trait_def_id: DefId, self_ty: &TyKind) -> TyKind {
         match ty {
-            TyKind::Adt(def_id, substs) if *def_id == trait_def_id && substs.is_empty() => {
+            TyKind::Adt(def_id, substs)
+                if self.trait_defs_refer_to_same_nominal_trait(*def_id, trait_def_id)
+                    && substs.is_empty() =>
+            {
                 self_ty.clone()
             }
             TyKind::Ref(inner, m) => TyKind::Ref(
@@ -6492,6 +6661,18 @@ impl<'a> TypeChecker<'a> {
             .is_some_and(|b_path| a_path == b_path)
     }
 
+    fn trait_defs_refer_to_same_nominal_trait(&self, a: DefId, b: DefId) -> bool {
+        if a == b || self.def_ids_share_intrinsic_path(a, b) {
+            return true;
+        }
+        let Some(a_name) = self.trait_names.get(&a) else {
+            return false;
+        };
+        self.trait_names
+            .get(&b)
+            .is_some_and(|b_name| a_name == b_name)
+    }
+
     fn intrinsic_enum_variant_type(&self, path_str: &str) -> Option<TyKind> {
         let (parent_path, variant_name) = path_str.rsplit_once("::")?;
         match parent_path {
@@ -6720,6 +6901,14 @@ impl<'a> TypeChecker<'a> {
 
     fn is_hash_set_def(&self, def_id: DefId) -> bool {
         self.local_type_name_is(def_id, "HashSet") || self.is_known_type_path(def_id, "HashSet")
+    }
+
+    fn is_btree_map_def(&self, def_id: DefId) -> bool {
+        self.local_type_name_is(def_id, "BTreeMap") || self.is_known_type_path(def_id, "BTreeMap")
+    }
+
+    fn is_btree_set_def(&self, def_id: DefId) -> bool {
+        self.local_type_name_is(def_id, "BTreeSet") || self.is_known_type_path(def_id, "BTreeSet")
     }
 
     fn is_punctuated_def(&self, def_id: DefId) -> bool {

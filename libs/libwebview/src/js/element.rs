@@ -18,7 +18,7 @@ use super::selector;
 use super::{
     arg_string, dom_property_hook, get_bridge, make_array, read_all_child_node_ids, read_attribute,
     read_child_ids, read_inner_html, read_node_type, read_parent_id, read_tag_name,
-    read_text_content, this_node_id, DomMutation,
+    read_text_content, this_node_id, DomMutation, StyleAnimation,
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -235,6 +235,7 @@ pub fn populate_element_prototype(proto: &JsValue) {
         native_fn("scrollBy", el_scroll_by),
     );
     proto.set_property(String::from("scroll"), native_fn("scroll", el_scroll_to));
+    proto.set_property(String::from("animate"), native_fn("animate", el_animate));
     // Misc stubs
     proto.set_property(String::from("focus"), native_fn("focus", el_noop));
     proto.set_property(String::from("blur"), native_fn("blur", el_noop));
@@ -682,6 +683,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
         String::from("scrollBy"),
         native_fn("scrollBy", el_scroll_by),
     );
+    obj.set(String::from("animate"), native_fn("animate", el_animate));
     obj.set(
         String::from("getBoundingClientRect"),
         native_fn("getBoundingClientRect", el_get_bounding_rect),
@@ -2477,6 +2479,183 @@ fn el_scroll_by(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Undefined
 }
 
+/// Minimal Web Animations API implementation for compositor-friendly
+/// properties. Supports `element.animate([{ opacity, transform }, ...], opts)`.
+fn el_animate(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let node_id = this_node_id(vm);
+    let Some(keyframes) = args.first() else {
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_ANIMATIONS").is_some() {
+            eprintln!("[js-dom-debug] Element.animate node={} without keyframes", node_id);
+        }
+        return make_animation_object();
+    };
+
+    let from_opacity = read_keyframe_number(keyframes, "opacity", false);
+    let to_opacity = read_keyframe_number(keyframes, "opacity", true);
+    let from_transform = read_keyframe_string(keyframes, "transform", false);
+    let to_transform = read_keyframe_string(keyframes, "transform", true);
+    if from_opacity.is_none()
+        && to_opacity.is_none()
+        && from_transform.is_none()
+        && to_transform.is_none()
+    {
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_ANIMATIONS").is_some() {
+            eprintln!(
+                "[js-dom-debug] Element.animate node={} unsupported keyframes",
+                node_id
+            );
+        }
+        return make_animation_object();
+    }
+
+    let (duration_ms, delay_ms, iterations, fill_forwards) = parse_animation_options(args.get(1));
+    let style = vm.current_this.get_property("style");
+    let current_opacity = match style.get_property("opacity") {
+        JsValue::Number(n) => Some(n as f32),
+        JsValue::String(s) => s.parse::<f32>().ok(),
+        _ => None,
+    };
+    let current_transform = match style.get_property("transform") {
+        JsValue::String(s) if !s.is_empty() => Some(s),
+        _ => None,
+    };
+
+    let anim = StyleAnimation {
+        node_id,
+        duration_ms,
+        delay_ms,
+        elapsed_ms: 0,
+        iterations,
+        fill_forwards,
+        from_opacity: from_opacity.or(current_opacity).or(to_opacity),
+        to_opacity: to_opacity.or(from_opacity).or(current_opacity),
+        from_transform: from_transform
+            .clone()
+            .or(current_transform.clone())
+            .or_else(|| to_transform.clone()),
+        to_transform: to_transform.or(from_transform).or(current_transform),
+    };
+
+    #[cfg(feature = "host")]
+    if std::env::var_os("SURF_DEBUG_ANIMATIONS").is_some() {
+        eprintln!(
+            "[js-dom-debug] Element.animate node={} duration={} delay={} iterations={} fill={} opacity={:?}->{:?} transform={:?}->{:?}",
+            anim.node_id,
+            anim.duration_ms,
+            anim.delay_ms,
+            anim.iterations,
+            anim.fill_forwards,
+            anim.from_opacity,
+            anim.to_opacity,
+            anim.from_transform,
+            anim.to_transform
+        );
+    }
+
+    if let Some(bridge) = get_bridge(vm) {
+        if let Some(v) = anim.from_opacity {
+            bridge.mutations.push(DomMutation::SetStyleProperty {
+                node_id,
+                property: String::from("opacity"),
+                value: alloc::format!("{}", v.clamp(0.0, 1.0)),
+            });
+        }
+        if let Some(v) = &anim.from_transform {
+            bridge.mutations.push(DomMutation::SetStyleProperty {
+                node_id,
+                property: String::from("transform"),
+                value: v.clone(),
+            });
+        }
+        bridge.pending_style_animations.push(anim);
+    }
+
+    make_animation_object()
+}
+
+fn make_animation_object() -> JsValue {
+    let obj = JsValue::new_object();
+    obj.set_property(String::from("playState"), JsValue::String(String::from("running")));
+    obj.set_property(String::from("play"), native_fn("play", el_noop));
+    obj.set_property(String::from("pause"), native_fn("pause", el_noop));
+    obj.set_property(String::from("cancel"), native_fn("cancel", el_noop));
+    obj.set_property(String::from("finish"), native_fn("finish", el_noop));
+    obj.set_property(String::from("finished"), JsValue::Undefined);
+    obj
+}
+
+fn parse_animation_options(options: Option<&JsValue>) -> (u64, u64, u32, bool) {
+    match options {
+        Some(JsValue::Number(n)) => (n.max(0.0) as u64, 0, 1, true),
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            let duration = o.get("duration").to_number().max(0.0) as u64;
+            let delay = o.get("delay").to_number().max(0.0) as u64;
+            let iterations_val = o.get("iterations");
+            let iterations = if iterations_val.to_number().is_infinite()
+                || matches!(iterations_val, JsValue::String(ref s) if s.eq_ignore_ascii_case("infinity"))
+            {
+                0
+            } else {
+                iterations_val.to_number().max(1.0) as u32
+            };
+            let fill_forwards = match o.get("fill") {
+                JsValue::String(s) => s == "forwards" || s == "both" || s == "auto",
+                JsValue::Undefined => true,
+                _ => true,
+            };
+            (duration, delay, iterations, fill_forwards)
+        }
+        _ => (0, 0, 1, true),
+    }
+}
+
+fn read_keyframe_number(keyframes: &JsValue, name: &str, last: bool) -> Option<f32> {
+    match read_keyframe_value(keyframes, name, last)? {
+        JsValue::Number(n) => Some(n as f32),
+        JsValue::String(s) => s.parse::<f32>().ok(),
+        other => Some(other.to_number() as f32),
+    }
+}
+
+fn read_keyframe_string(keyframes: &JsValue, name: &str, last: bool) -> Option<String> {
+    match read_keyframe_value(keyframes, name, last)? {
+        JsValue::String(s) if !s.is_empty() => Some(s),
+        JsValue::Number(n) => Some(alloc::format!("{}", n)),
+        _ => None,
+    }
+}
+
+fn read_keyframe_value(keyframes: &JsValue, name: &str, last: bool) -> Option<JsValue> {
+    match keyframes {
+        JsValue::Array(arr) => {
+            let a = arr.borrow();
+            if a.length == 0 {
+                return None;
+            }
+            Some(a.get(if last { a.length - 1 } else { 0 }).get_property(name))
+        }
+        JsValue::Object(obj) => {
+            let value = obj.borrow().get(name);
+            match value {
+                JsValue::Array(arr) => {
+                    let a = arr.borrow();
+                    if a.length == 0 {
+                        None
+                    } else {
+                        Some(a.get(if last { a.length - 1 } else { 0 }))
+                    }
+                }
+                JsValue::Undefined => None,
+                other => Some(other),
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Parse scrollTo/scrollBy arguments: either `(x, y)` or `({ top, left, behavior })`.
 /// Returns `(left, top, Some(true)=smooth, Some(false)=auto, None=use CSS behavior)`.
 fn parse_scroll_args(args: &[JsValue]) -> (f64, f64, Option<bool>) {
@@ -3316,19 +3495,23 @@ fn parse_rgb_components(args: &str, has_alpha: bool) -> Option<(u8, u8, u8, u8)>
 fn parse_rgb_component(s: &str) -> Option<u8> {
     if let Some(pct) = s.strip_suffix('%') {
         let v = pct.parse::<f32>().ok()?;
-        return Some(((v.clamp(0.0, 100.0) * 255.0 / 100.0).round()) as u8);
+        return Some(round_channel(v.clamp(0.0, 100.0) * 255.0 / 100.0));
     }
     let v = s.parse::<f32>().ok()?;
-    Some(v.clamp(0.0, 255.0).round() as u8)
+    Some(round_channel(v.clamp(0.0, 255.0)))
 }
 
 fn parse_alpha_component(s: &str) -> Option<u8> {
     if let Some(pct) = s.strip_suffix('%') {
         let v = pct.parse::<f32>().ok()?;
-        return Some(((v.clamp(0.0, 100.0) * 255.0 / 100.0).round()) as u8);
+        return Some(round_channel(v.clamp(0.0, 100.0) * 255.0 / 100.0));
     }
     let v = s.parse::<f32>().ok()?;
-    Some((v.clamp(0.0, 1.0) * 255.0).round() as u8)
+    Some(round_channel(v.clamp(0.0, 1.0) * 255.0))
+}
+
+fn round_channel(v: f32) -> u8 {
+    (v + 0.5).clamp(0.0, 255.0) as u8
 }
 
 fn parse_hex_byte(s: &str) -> Option<u8> {

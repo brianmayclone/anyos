@@ -326,3 +326,70 @@ fn run_use_import_null_mut() {
         0,
     );
 }
+
+#[test]
+fn run_core_ptr_copy_u64_counts_elements() {
+    assert_run_returns(
+        r#"
+        fn main() -> i32 {
+            let src: u64 = 42;
+            let mut dst: u64 = 0;
+            unsafe {
+                core::ptr::copy(&src as *const u64, &mut dst as *mut u64, 1);
+            }
+            dst as i32
+        }
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn run_atomic_fence_is_emit_builtin() {
+    assert_run_returns(
+        r#"
+        fn main() -> i32 {
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+            0
+        }
+    "#,
+        0,
+    );
+}
+
+#[test]
+fn run_range_contains_uses_item_value_for_both_bounds() {
+    assert_run_returns(
+        r#"
+        fn main() -> i32 {
+            let range = 10usize..50usize;
+            let yes = 42usize;
+            let no = 5usize;
+            if range.contains(&yes) && !range.contains(&no) {
+                42
+            } else {
+                1
+            }
+        }
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn run_vecdeque_len_is_canonical_alloc_method() {
+    assert_run_returns(
+        r#"
+        extern crate alloc;
+        use alloc::collections::VecDeque;
+
+        fn main() -> i32 {
+            let mut queue = VecDeque::new();
+            queue.push_back(10usize);
+            queue.push_back(32usize);
+            queue.len() as i32
+        }
+    "#,
+        2,
+    );
+}

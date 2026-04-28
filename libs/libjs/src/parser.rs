@@ -27,7 +27,12 @@ pub struct Parser {
 }
 
 /// Maximum parser recursion depth before bailing out with a SyntaxError.
-const MAX_PARSER_DEPTH: usize = 128;
+///
+/// Modern minified framework bundles regularly create expression trees deeper
+/// than 128 levels (nested conditionals/calls/sequences). Keep this high enough
+/// for real-world pages while still retaining a hard guard against pathological
+/// input exhausting the VM stack.
+const MAX_PARSER_DEPTH: usize = 1024;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {

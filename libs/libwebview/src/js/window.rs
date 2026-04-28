@@ -221,12 +221,20 @@ pub fn make_window(
         native_fn("setInterval", super::native_set_interval),
     );
     obj.set(
+        String::from("setImmediate"),
+        native_fn("setImmediate", super::native_set_immediate),
+    );
+    obj.set(
         String::from("clearTimeout"),
         native_fn("clearTimeout", super::native_clear_timeout),
     );
     obj.set(
         String::from("clearInterval"),
         native_fn("clearInterval", super::native_clear_interval),
+    );
+    obj.set(
+        String::from("clearImmediate"),
+        native_fn("clearImmediate", super::native_clear_timeout),
     );
 
     // Style.
@@ -958,10 +966,12 @@ fn eval_media_query(query: &str, vw: u32, vh: u32) -> bool {
             continue; // desktop has hover
         } else if inner == "hover: none" {
             return false;
-        } else if inner.starts_with("prefers-reduced-motion") {
-            if inner.contains("reduce") {
-                return false;
-            }
+        } else if inner == "prefers-reduced-motion" {
+            return false;
+        } else if inner == "prefers-reduced-motion: reduce" {
+            return false;
+        } else if inner == "prefers-reduced-motion: no-preference" {
+            continue;
         }
         // Unknown conditions: treat as matching (lenient).
     }
@@ -1774,6 +1784,8 @@ fn win_message_channel(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
             bridge.timers.push(super::PendingTimer {
                 id,
                 callback,
+                this_arg: peer,
+                args: alloc::vec![msg_evt],
                 delay_ms: 0,
                 repeat: false,
                 elapsed_ms: 0,

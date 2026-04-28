@@ -163,6 +163,12 @@ impl DataGrid {
         (lib().datagrid_set_selection_mode)(self.ctrl.id, mode);
     }
 
+    /// Set which logical columns can be edited in-place. Bit 0 enables column 0,
+    /// bit 1 enables column 1, and so on.
+    pub fn set_editable_columns(&self, mask: u32) {
+        (lib().datagrid_set_editable_columns)(self.ctrl.id, mask);
+    }
+
     /// Get the currently selected row index (single selection).
     /// Returns u32::MAX if nothing is selected.
     pub fn selected_row(&self) -> u32 {

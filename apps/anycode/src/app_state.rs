@@ -102,4 +102,5 @@ pub struct AppState {
     pub designer_drag_orig_y: i32,
     pub designer_drag_orig_w: u32,
     pub designer_drag_orig_h: u32,
+    pub designer_drag_moved: bool,
 }

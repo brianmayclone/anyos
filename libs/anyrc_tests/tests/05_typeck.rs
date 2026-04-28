@@ -1000,6 +1000,179 @@ fn trait_path_assoc_fn_infers_self_from_expected_result() {
 }
 
 #[test]
+fn trait_path_assoc_fn_infers_self_from_mut_receiver() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod result {
+                pub enum Result<T, E> {
+                    Ok(T),
+                    Err(E),
+                }
+            }
+
+            pub mod fmt {
+                pub struct Error;
+                pub type Result = crate::core::result::Result<(), Error>;
+                pub struct Arguments;
+
+                pub trait Write {
+                    fn write_str(&mut self, s: &str) -> Result;
+                    fn write_fmt(&mut self, args: Arguments) -> Result;
+                }
+            }
+        }
+
+        struct Writer;
+
+        impl core::fmt::Write for Writer {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                core::result::Result::Ok(())
+            }
+        }
+
+        fn main() {
+            let mut writer = Writer;
+            let args = core::fmt::Arguments;
+            let _ = core::fmt::Write::write_fmt(&mut writer, args);
+        }
+    "#,
+    );
+}
+
+#[test]
+fn write_macro_accepts_fmt_write_impl_receiver() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod result {
+                pub enum Result<T, E> {
+                    Ok(T),
+                    Err(E),
+                }
+            }
+
+            pub mod fmt {
+                pub struct Error;
+                pub type Result = crate::core::result::Result<(), Error>;
+                pub struct Arguments;
+
+                pub trait Write {
+                    fn write_str(&mut self, s: &str) -> Result;
+                    fn write_fmt(&mut self, args: Arguments) -> Result;
+                }
+            }
+        }
+
+        struct Writer;
+
+        impl core::fmt::Write for Writer {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                core::result::Result::Ok(())
+            }
+        }
+
+        fn main() {
+            let mut writer = Writer;
+            let _ = write!(writer, "hello");
+        }
+    "#,
+    );
+}
+
+#[test]
+fn write_macro_accepts_fmt_module_alias_impl_receiver() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod result {
+                pub enum Result<T, E> {
+                    Ok(T),
+                    Err(E),
+                }
+            }
+
+            pub mod fmt {
+                pub struct Error;
+                pub type Result = crate::core::result::Result<(), Error>;
+                pub struct Arguments;
+
+                pub trait Write {
+                    fn write_str(&mut self, s: &str) -> Result;
+                    fn write_fmt(&mut self, args: Arguments) -> Result;
+                }
+            }
+        }
+
+        use core::fmt::{self, Write};
+
+        struct Writer;
+
+        impl fmt::Write for Writer {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                core::result::Result::Ok(())
+            }
+        }
+
+        fn main() {
+            let mut writer = Writer;
+            let _ = write!(writer, "hello");
+        }
+    "#,
+    );
+}
+
+#[test]
+fn btree_set_for_loop_yields_references() {
+    assert_type_ok(
+        r#"
+        mod alloc {
+            pub mod collections {
+                pub struct BTreeSet<T> {}
+            }
+        }
+
+        use alloc::collections::BTreeSet;
+
+        fn main(set: &BTreeSet<u64>) {
+            for id in set {
+                let copied: u64 = *id;
+            }
+        }
+    "#,
+    );
+}
+
+#[test]
+fn btree_map_get_copied_returns_value_option() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod option {
+                pub enum Option<T> {
+                    Some(T),
+                    None,
+                }
+            }
+        }
+
+        mod alloc {
+            pub mod collections {
+                pub struct BTreeMap<K, V> {}
+            }
+        }
+
+        use alloc::collections::BTreeMap;
+
+        fn main(map: &BTreeMap<u64, u32>, id: &u64) {
+            let slot = map.get(id).copied();
+            let fallback: Option<u32> = slot;
+        }
+    "#,
+    );
+}
+
+#[test]
 fn blanket_trait_impl_does_not_shadow_inherent_method_arity() {
     assert_type_ok(
         r#"

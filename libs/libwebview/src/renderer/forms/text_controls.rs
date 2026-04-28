@@ -16,6 +16,7 @@ impl Renderer {
         let fg = self.default_control_fg(bx);
         let w = bx.width;
         let h = bx.height;
+        let font_size = form_control_font_size(bx);
 
         if let Some(fc) = self
             .form_controls
@@ -27,6 +28,7 @@ impl Renderer {
             ctrl.set_size(w as u32, h as u32);
             ctrl.set_color(bg);
             ctrl.set_text_color(fg);
+            ctrl.set_font_size(font_size);
             ctrl.set_enabled(!bx.form_disabled);
             fc.seen = true;
             fc.doc_x = x;
@@ -42,6 +44,7 @@ impl Renderer {
             atf.set_size(w as u32, h as u32);
             atf.set_color(bg);
             atf.set_text_color(fg);
+            atf.set_font_size(font_size);
             atf.set_enabled(!bx.form_disabled);
             atf.set_suggestions(suggestions);
             if let Some(ref ph) = bx.form_placeholder {
@@ -61,6 +64,7 @@ impl Renderer {
             sf.set_size(w as u32, h as u32);
             sf.set_color(bg);
             sf.set_text_color(fg);
+            sf.set_font_size(font_size);
             sf.set_enabled(!bx.form_disabled);
             if let Some(ref ph) = bx.form_placeholder {
                 sf.set_placeholder(ph);
@@ -82,6 +86,7 @@ impl Renderer {
             tf.set_size(w as u32, h as u32);
             tf.set_color(bg);
             tf.set_text_color(fg);
+            tf.set_font_size(font_size);
             tf.set_enabled(!bx.form_disabled);
             if let Some(ref ph) = bx.form_placeholder {
                 tf.set_placeholder(ph);
@@ -122,6 +127,7 @@ impl Renderer {
         let fg = self.default_control_fg(bx);
         let w = bx.width;
         let h = bx.height;
+        let font_size = form_control_font_size(bx);
 
         if let Some(fc) = self
             .form_controls
@@ -133,6 +139,7 @@ impl Renderer {
             ctrl.set_size(w as u32, h as u32);
             ctrl.set_color(bg);
             ctrl.set_text_color(fg);
+            ctrl.set_font_size(font_size);
             ctrl.set_enabled(!bx.form_disabled);
             fc.seen = true;
             fc.doc_x = x;
@@ -147,6 +154,7 @@ impl Renderer {
         ta.set_size(w as u32, h as u32);
         ta.set_color(bg);
         ta.set_text_color(fg);
+        ta.set_font_size(font_size);
         ta.set_enabled(!bx.form_disabled);
         parent.add(&ta);
         let id = ta.id();
@@ -179,6 +187,7 @@ impl Renderer {
         let fg = self.default_control_fg(bx);
         let w = bx.width;
         let h = bx.height;
+        let font_size = form_control_font_size(bx);
 
         if let Some(fc) = self
             .form_controls
@@ -190,6 +199,7 @@ impl Renderer {
             ctrl.set_size(w as u32, h as u32);
             ctrl.set_color(bg);
             ctrl.set_text_color(fg);
+            ctrl.set_font_size(font_size);
             ctrl.set_enabled(!bx.form_disabled);
             fc.seen = true;
             fc.doc_x = x;
@@ -204,6 +214,7 @@ impl Renderer {
         tf.set_size(w as u32, h as u32);
         tf.set_color(bg);
         tf.set_text_color(fg);
+        tf.set_font_size(font_size);
         if let Some(ref ph) = bx.form_placeholder {
             tf.set_placeholder(ph);
         }
@@ -316,4 +327,8 @@ impl Renderer {
             doc_h: h,
         });
     }
+}
+
+fn form_control_font_size(bx: &LayoutBox) -> u32 {
+    bx.font_size.clamp(10, 32) as u32
 }

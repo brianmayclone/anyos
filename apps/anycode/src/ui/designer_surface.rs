@@ -1,3 +1,4 @@
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
@@ -28,6 +29,8 @@ pub struct DesignerSurface {
     _scroll: ui::ScrollView,
     content: ui::View,
     canvas: ui::Canvas,
+    zoom: Rc<RefCell<u32>>,
+    zoom_label: ui::Label,
     preview_controls: RefCell<Vec<ui::Control>>,
     file_path: String,
     doc: DesignerDocument,
@@ -46,12 +49,25 @@ impl DesignerSurface {
         toolbox_panel.set_color(tc.sidebar_bg);
         panel.add(&toolbox_panel);
 
-        let toolbox_header = ui::Label::new("Toolbox");
+        let toolbox_header = ui::View::new();
         toolbox_header.set_dock(ui::DOCK_TOP);
         toolbox_header.set_size(210, 34);
-        toolbox_header.set_font_size(13);
-        toolbox_header.set_text_color(tc.text);
+        toolbox_header.set_color(tc.sidebar_bg);
         toolbox_panel.add(&toolbox_header);
+
+        let toolbox_title = ui::Label::new("Toolbox");
+        toolbox_title.set_position(12, 8);
+        toolbox_title.set_size(150, 20);
+        toolbox_title.set_font_size(13);
+        toolbox_title.set_text_color(tc.text);
+        toolbox_header.add(&toolbox_title);
+
+        let btn_toggle_toolbox = ui::PlainButton::new("");
+        btn_toggle_toolbox.set_position(178, 5);
+        btn_toggle_toolbox.set_size(26, 24);
+        btn_toggle_toolbox.set_system_icon("chevron-left", ui::IconType::Outline, tc.text, 16);
+        btn_toggle_toolbox.set_tooltip("Collapse Toolbox");
+        toolbox_header.add(&btn_toggle_toolbox);
 
         let toolbox = ui::TreeView::new(210, SURFACE_H - 34);
         toolbox.set_dock(ui::DOCK_FILL);
@@ -83,10 +99,74 @@ impl DesignerSurface {
             }
         });
 
+        let toolbox_expanded = RefCell::new(true);
+        let toggle_panel = toolbox_panel;
+        let toggle_header = toolbox_header;
+        let toggle_title = toolbox_title;
+        let toggle_tree = toolbox;
+        let toggle_btn = btn_toggle_toolbox;
+        btn_toggle_toolbox.on_click(move |_| {
+            let expanded = !*toolbox_expanded.borrow();
+            *toolbox_expanded.borrow_mut() = expanded;
+            if expanded {
+                toggle_panel.set_size(210, SURFACE_H);
+                toggle_header.set_size(210, 34);
+                toggle_title.set_visible(true);
+                toggle_tree.set_visible(true);
+                toggle_btn.set_position(178, 5);
+                toggle_btn.set_system_icon("chevron-left", ui::IconType::Outline, tc.text, 16);
+                toggle_btn.set_tooltip("Collapse Toolbox");
+            } else {
+                toggle_panel.set_size(34, SURFACE_H);
+                toggle_header.set_size(34, 34);
+                toggle_title.set_visible(false);
+                toggle_tree.set_visible(false);
+                toggle_btn.set_position(4, 5);
+                toggle_btn.set_system_icon("chevron-right", ui::IconType::Outline, tc.text, 16);
+                toggle_btn.set_tooltip("Expand Toolbox");
+            }
+        });
+
+        let work_area = ui::View::new();
+        work_area.set_dock(ui::DOCK_FILL);
+        work_area.set_color(tc.editor_bg);
+        panel.add(&work_area);
+
+        let zoom_bar = ui::View::new();
+        zoom_bar.set_dock(ui::DOCK_TOP);
+        zoom_bar.set_size(DESIGNER_CONTENT_W, 32);
+        zoom_bar.set_color(tc.toolbar_bg);
+        work_area.add(&zoom_bar);
+
+        let btn_zoom_out = ui::PlainButton::new("-");
+        btn_zoom_out.set_position(10, 4);
+        btn_zoom_out.set_size(28, 24);
+        btn_zoom_out.set_tooltip("Zoom out");
+        zoom_bar.add(&btn_zoom_out);
+
+        let zoom_label = ui::Label::new("100%");
+        zoom_label.set_position(44, 7);
+        zoom_label.set_size(52, 18);
+        zoom_label.set_font_size(11);
+        zoom_label.set_text_color(tc.text_secondary);
+        zoom_bar.add(&zoom_label);
+
+        let btn_zoom_in = ui::PlainButton::new("+");
+        btn_zoom_in.set_position(102, 4);
+        btn_zoom_in.set_size(28, 24);
+        btn_zoom_in.set_tooltip("Zoom in");
+        zoom_bar.add(&btn_zoom_in);
+
+        let btn_zoom_reset = ui::PlainButton::new("100");
+        btn_zoom_reset.set_position(136, 4);
+        btn_zoom_reset.set_size(42, 24);
+        btn_zoom_reset.set_tooltip("Reset zoom");
+        zoom_bar.add(&btn_zoom_reset);
+
         let scroll = ui::ScrollView::new();
         scroll.set_dock(ui::DOCK_FILL);
         scroll.set_color(tc.editor_bg);
-        panel.add(&scroll);
+        work_area.add(&scroll);
 
         let content = ui::View::new();
         content.set_position(0, 0);
@@ -102,49 +182,124 @@ impl DesignerSurface {
         canvas.set_drop_target(true);
         content.add(&canvas);
 
+        let zoom = Rc::new(RefCell::new(100u32));
+        let zoom_out_path = String::from(file_path);
+        btn_zoom_out.on_click(move |_| {
+            crate::queue_designer_zoom(&zoom_out_path, -10);
+        });
+        let zoom_in_path = String::from(file_path);
+        btn_zoom_in.on_click(move |_| {
+            crate::queue_designer_zoom(&zoom_in_path, 10);
+        });
+        let zoom_reset_path = String::from(file_path);
+        btn_zoom_reset.on_click(move |_| {
+            crate::queue_designer_zoom(&zoom_reset_path, 0);
+        });
+
+        let pan_state = Rc::new(RefCell::new(None::<(i32, i32, i32, i32)>));
+        let event_zoom = zoom.clone();
+        let down_pan_state = pan_state.clone();
+        let down_scroll = scroll;
         let click_path = String::from(file_path);
-        canvas.on_mouse_down(move |x, y, _| {
-            crate::queue_designer_click(&click_path, x, y);
+        canvas.on_mouse_down(move |x, y, button| {
+            if button & 0x04 != 0 {
+                let (sx, sy) = down_scroll.scroll_offsets();
+                *down_pan_state.borrow_mut() = Some((x, y, sx, sy));
+                return;
+            }
+            if button & 0x01 != 0 {
+                crate::queue_designer_click(
+                    &click_path,
+                    unscale_i32(x, zoom_value(&event_zoom)),
+                    unscale_i32(y, zoom_value(&event_zoom)),
+                );
+            }
         });
 
         let move_path = String::from(file_path);
+        let event_zoom = zoom.clone();
+        let move_pan_state = pan_state.clone();
+        let move_scroll = scroll;
+        let move_canvas = canvas;
         canvas.on_mouse_move(move |x, y| {
-            crate::queue_designer_mouse_move(&move_path, x, y);
+            let (_, _, button) = move_canvas.get_mouse();
+            if let Some((start_x, start_y, scroll_x, scroll_y)) = *move_pan_state.borrow() {
+                if button & 0x04 != 0 {
+                    move_scroll
+                        .set_scroll_offsets(scroll_x - (x - start_x), scroll_y - (y - start_y));
+                    return;
+                }
+                *move_pan_state.borrow_mut() = None;
+            }
+            crate::queue_designer_mouse_move(
+                &move_path,
+                unscale_i32(x, zoom_value(&event_zoom)),
+                unscale_i32(y, zoom_value(&event_zoom)),
+            );
         });
 
         let up_path = String::from(file_path);
-        canvas.on_mouse_up(move |x, y, _| {
-            crate::queue_designer_mouse_up(&up_path, x, y);
+        let event_zoom = zoom.clone();
+        let up_pan_state = pan_state.clone();
+        canvas.on_mouse_up(move |x, y, button| {
+            if button & 0x04 != 0 || up_pan_state.borrow().is_some() {
+                *up_pan_state.borrow_mut() = None;
+                return;
+            }
+            if button & 0x01 != 0 {
+                crate::queue_designer_mouse_up(
+                    &up_path,
+                    unscale_i32(x, zoom_value(&event_zoom)),
+                    unscale_i32(y, zoom_value(&event_zoom)),
+                );
+            }
         });
 
         let dbl_path = String::from(file_path);
         let dbl_canvas = canvas;
+        let event_zoom = zoom.clone();
         canvas.on_double_click(move |_| {
             let (x, y, _) = dbl_canvas.get_mouse();
-            crate::queue_designer_double_click(&dbl_path, x, y);
+            crate::queue_designer_double_click(
+                &dbl_path,
+                unscale_i32(x, zoom_value(&event_zoom)),
+                unscale_i32(y, zoom_value(&event_zoom)),
+            );
         });
 
         let drop_path = String::from(file_path);
         let drop_content = content;
+        let drop_zoom = zoom.clone();
         content.on_drag_enter(move |_| {
             ui::drag_accept(ui::DND_EFFECT_COPY);
         });
 
         let content_drop_path = String::from(drop_path);
         content.on_drop(move |_| {
-            queue_drop_from_drag(&content_drop_path, drop_content, None);
+            queue_drop_from_drag(
+                &content_drop_path,
+                drop_content,
+                None,
+                zoom_value(&drop_zoom),
+            );
         });
 
         let drop_path = String::from(file_path);
         let drop_content = content;
         let drop_canvas = canvas;
+        let drop_zoom = zoom.clone();
         canvas.on_drag_enter(move |_| {
             ui::drag_accept(ui::DND_EFFECT_COPY);
         });
 
         let drop_path = String::from(drop_path);
         canvas.on_drop(move |_| {
-            queue_drop_from_drag(&drop_path, drop_content, Some(drop_canvas));
+            queue_drop_from_drag(
+                &drop_path,
+                drop_content,
+                Some(drop_canvas),
+                zoom_value(&drop_zoom),
+            );
         });
 
         let this = Self {
@@ -153,6 +308,8 @@ impl DesignerSurface {
             _scroll: scroll,
             content,
             canvas,
+            zoom,
+            zoom_label,
             preview_controls: RefCell::new(Vec::new()),
             file_path: String::from(file_path),
             doc,
@@ -171,46 +328,56 @@ impl DesignerSurface {
 
     pub fn render(&self, selected_control: Option<&str>) {
         let tc = ui::theme::colors();
-        let canvas_w = self.canvas.get_stride().max(1);
-        let canvas_h = self.canvas.get_height().max(1);
+        let zoom = self.zoom_percent();
+        let canvas_w = scale_u32(DESIGNER_CONTENT_W, zoom).max(1);
+        let canvas_h = scale_u32(DESIGNER_CONTENT_H, zoom).max(1);
+        self.content.set_size(canvas_w, canvas_h);
+        self.canvas.set_size(canvas_w, canvas_h);
+        self.zoom_label.set_text(&alloc::format!("{}%", zoom));
         self.canvas.clear(tc.editor_bg);
         draw_grid(&self.canvas, canvas_w, canvas_h, tc.separator);
 
         let shadow = 0x22000000;
         self.canvas.fill_rect(
-            FORM_X + 4,
-            FORM_Y + 4,
-            self.doc.width,
-            self.doc.height,
+            scale_i32(FORM_X + 4, zoom),
+            scale_i32(FORM_Y + 4, zoom),
+            scale_u32(self.doc.width, zoom),
+            scale_u32(self.doc.height, zoom),
             shadow,
         );
         self.canvas.fill_rect(
-            FORM_X,
-            FORM_Y,
-            self.doc.width,
-            self.doc.height,
+            scale_i32(FORM_X, zoom),
+            scale_i32(FORM_Y, zoom),
+            scale_u32(self.doc.width, zoom),
+            scale_u32(self.doc.height, zoom),
             tc.sidebar_bg,
         );
         self.canvas.draw_rect(
-            FORM_X,
-            FORM_Y,
-            self.doc.width,
-            self.doc.height,
+            scale_i32(FORM_X, zoom),
+            scale_i32(FORM_Y, zoom),
+            scale_u32(self.doc.width, zoom),
+            scale_u32(self.doc.height, zoom),
             tc.separator,
             1,
         );
-        self.canvas
-            .draw_text(FORM_X + 12, FORM_Y + 8, tc.text, 1, 14, &self.doc.title);
+        self.canvas.draw_text(
+            scale_i32(FORM_X + 12, zoom),
+            scale_i32(FORM_Y + 8, zoom),
+            tc.text,
+            1,
+            scale_font(14, zoom),
+            &self.doc.title,
+        );
         self.canvas.draw_line(
-            FORM_X,
-            FORM_Y + 32,
-            FORM_X + self.doc.width as i32,
-            FORM_Y + 32,
+            scale_i32(FORM_X, zoom),
+            scale_i32(FORM_Y + 32, zoom),
+            scale_i32(FORM_X + self.doc.width as i32, zoom),
+            scale_i32(FORM_Y + 32, zoom),
             tc.separator,
         );
 
         for control in &self.doc.controls {
-            draw_control_outline(&self.canvas, &self.doc, control, selected_control, tc);
+            draw_control_outline(&self.canvas, &self.doc, control, selected_control, tc, zoom);
         }
         self.render_preview_controls();
 
@@ -233,6 +400,20 @@ impl DesignerSurface {
         self.render(selected_control);
     }
 
+    pub fn zoom_by(&self, delta: i32, selected_control: Option<&str>) {
+        let next = if delta == 0 {
+            100
+        } else {
+            (self.zoom_percent() as i32 + delta).clamp(50, 200) as u32
+        };
+        *self.zoom.borrow_mut() = next;
+        self.render(selected_control);
+    }
+
+    fn zoom_percent(&self) -> u32 {
+        zoom_value(&self.zoom)
+    }
+
     fn render_preview_controls(&self) {
         let old_controls = self.preview_controls.replace(Vec::new());
         for control in old_controls {
@@ -249,8 +430,15 @@ impl DesignerSurface {
                 control.width,
                 control.height,
             ));
-            preview.set_position(FORM_X + abs_x, FORM_CONTENT_Y + abs_y);
-            preview.set_size(control.width, control.height);
+            let zoom = self.zoom_percent();
+            preview.set_position(
+                scale_i32(FORM_X + abs_x, zoom),
+                scale_i32(FORM_CONTENT_Y + abs_y, zoom),
+            );
+            preview.set_size(
+                scale_u32(control.width, zoom),
+                scale_u32(control.height, zoom),
+            );
             preview.set_enabled(false);
             apply_preview_common_style(&preview, control);
             self.content.add_child(preview.id());
@@ -259,7 +447,12 @@ impl DesignerSurface {
     }
 }
 
-fn queue_drop_from_drag(file_path: &str, content: ui::View, fallback_canvas: Option<ui::Canvas>) {
+fn queue_drop_from_drag(
+    file_path: &str,
+    content: ui::View,
+    fallback_canvas: Option<ui::Canvas>,
+    zoom: u32,
+) {
     let (x, y) = if let Some((drag_x, drag_y)) = ui::drag_pos() {
         let (content_x, content_y) = content.get_abs_position();
         (drag_x - content_x, drag_y - content_y)
@@ -277,7 +470,32 @@ fn queue_drop_from_drag(file_path: &str, content: ui::View, fallback_canvas: Opt
             payload = String::from_utf8_lossy(&bytes).into_owned();
         }
     }
-    crate::queue_designer_drop(file_path, x, y, &payload);
+    crate::queue_designer_drop(
+        file_path,
+        unscale_i32(x, zoom),
+        unscale_i32(y, zoom),
+        &payload,
+    );
+}
+
+fn zoom_value(zoom: &Rc<RefCell<u32>>) -> u32 {
+    (*zoom.borrow()).clamp(50, 200)
+}
+
+fn scale_i32(value: i32, zoom: u32) -> i32 {
+    ((value as i64 * zoom as i64) / 100) as i32
+}
+
+fn unscale_i32(value: i32, zoom: u32) -> i32 {
+    ((value as i64 * 100) / zoom.max(1) as i64) as i32
+}
+
+fn scale_u32(value: u32, zoom: u32) -> u32 {
+    ((value as u64 * zoom as u64) / 100).max(1) as u32
+}
+
+fn scale_font(value: u32, zoom: u32) -> u16 {
+    scale_u32(value, zoom).max(8).min(32) as u16
 }
 
 pub fn hit_test_doc(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {
@@ -414,6 +632,7 @@ fn draw_control_outline(
     control: &DesignerControl,
     selected_control: Option<&str>,
     tc: &'static ui::theme::ThemeColors,
+    zoom: u32,
 ) {
     let (abs_x, abs_y, _, _) = doc.control_absolute_bounds(&control.name).unwrap_or((
         control.x,
@@ -421,34 +640,36 @@ fn draw_control_outline(
         control.width,
         control.height,
     ));
-    let x = FORM_X + abs_x;
-    let y = FORM_CONTENT_Y + abs_y;
+    let x = scale_i32(FORM_X + abs_x, zoom);
+    let y = scale_i32(FORM_CONTENT_Y + abs_y, zoom);
+    let width = scale_u32(control.width, zoom);
+    let height = scale_u32(control.height, zoom);
     let selected = selected_control == Some(control.name.as_str());
     let border = if selected { tc.accent } else { tc.separator };
-    canvas.draw_rect(
-        x,
-        y,
-        control.width,
-        control.height,
-        border,
-        if selected { 2 } else { 1 },
-    );
+    canvas.draw_rect(x, y, width, height, border, if selected { 2 } else { 1 });
     if is_paged_kind(control.kind.as_str()) {
-        let page_y = y + control.height as i32 + paged_content_gap(control);
-        let page_h = paged_content_height(control);
-        canvas.fill_rect(x, page_y, control.width, page_h, tc.editor_bg);
+        let page_y = y + height as i32 + scale_i32(paged_content_gap(control), zoom);
+        let page_h = scale_u32(paged_content_height(control), zoom);
+        canvas.fill_rect(x, page_y, width, page_h, tc.editor_bg);
         canvas.draw_rect(
             x,
             page_y,
-            control.width,
+            width,
             page_h,
             if selected { tc.accent } else { tc.separator },
             1,
         );
-        canvas.draw_text(x + 8, page_y + 7, tc.text_secondary, 0, 11, "Page content");
+        canvas.draw_text(
+            x + scale_i32(8, zoom),
+            page_y + scale_i32(7, zoom),
+            tc.text_secondary,
+            0,
+            scale_font(11, zoom),
+            "Page content",
+        );
     }
     if selected {
-        draw_handles(canvas, x, y, control.width, control.height, tc.accent);
+        draw_handles(canvas, x, y, width, height, tc.accent);
     }
 }
 

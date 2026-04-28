@@ -277,6 +277,10 @@ impl ScrollView {
         }
     }
     pub fn on_scroll(&self, _f: impl FnMut(&ScrollChangedEvent) + 'static) {}
+    pub fn scroll_offsets(&self) -> (i32, i32) {
+        (0, 0)
+    }
+    pub fn set_scroll_offsets(&self, _x: i32, _y: i32) {}
 }
 
 // ── Canvas ───────────────────────────────────────────────────────────────────

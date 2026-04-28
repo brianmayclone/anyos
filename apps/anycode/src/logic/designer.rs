@@ -175,6 +175,7 @@ const MEDIA_PROPERTIES: &[&str] = &[
     "Tooltip",
 ];
 const CONTROL_EVENTS: &[&str] = &["OnClick", "OnDoubleClick", "OnChanged", "OnSubmit"];
+const FORM_EVENTS: &[&str] = &["OnLoad", "OnShown", "OnClosing", "OnClosed"];
 const FORM_PROPERTIES: &[&str] = &["Name", "Title", "Width", "Height", "BackgroundColor"];
 
 const MIN_FORM_SIZE: u32 = 160;
@@ -586,9 +587,37 @@ impl DesignerDocument {
             "title" => self.title.clone(),
             "width" => format!("{}", self.width),
             "height" => format!("{}", self.height),
-            "backgroundcolor" => String::from("theme.editor_bg"),
+            "background_color" => String::from("#FF1E1E1E"),
             _ => String::new(),
         }
+    }
+
+    pub fn form_event_items(&self) -> String {
+        FORM_EVENTS.join("|")
+    }
+
+    pub fn form_event_name_at(&self, index: u32) -> String {
+        FORM_EVENTS
+            .get(index as usize)
+            .map(|name| String::from(*name))
+            .unwrap_or_else(|| String::from("OnLoad"))
+    }
+
+    pub fn form_event_value(&self, event_name: &str) -> String {
+        match normalized_property(event_name) {
+            "onshown" => self.form_event_handler("Shown"),
+            "onclosing" => self.form_event_handler("Closing"),
+            "onclosed" => self.form_event_handler("Closed"),
+            _ => self.form_event_handler("Load"),
+        }
+    }
+
+    pub fn form_event_handler(&self, event_name: &str) -> String {
+        format!(
+            "{}_{}",
+            to_module_name(&self.form_name),
+            event_name.to_ascii_lowercase()
+        )
     }
 
     pub fn update_form_property(
@@ -618,7 +647,9 @@ impl DesignerDocument {
                 }
                 self.height = height;
             }
-            "backgroundcolor" => {}
+            "background_color" => {
+                validate_argb_color(value)?;
+            }
             _ => return Err("Unknown form property"),
         }
         Ok(())
@@ -908,6 +939,10 @@ impl DesignerDocument {
                     return Err("Height is outside the supported designer range");
                 }
                 control.height = height;
+            }
+            "text_color" | "background_color" | "border_color" => {
+                validate_argb_color(value)?;
+                control.set_custom_property(property_name, value);
             }
             "onclick" | "ondoubleclick" | "onchanged" | "onsubmit" => {}
             _ => control.set_custom_property(property_name, value),
@@ -1304,10 +1339,13 @@ pub fn ensure_control_event_handler(
     Ok((events_path, handler))
 }
 
-fn ensure_named_event_handler(
+pub fn ensure_named_event_handler(
     designer_file_path: &str,
     handler: &str,
 ) -> Result<String, &'static str> {
+    if !is_valid_control_name(handler) {
+        return Err("Event handler must be a valid Rust function name");
+    }
     let events_path = events_file_for_designer(designer_file_path);
     let signature = format!("pub fn {}()", handler);
     let mut data = anyos_std::fs::read_to_string(&events_path).unwrap_or_default();
@@ -2147,6 +2185,19 @@ fn parse_i32(value: &str) -> Option<i32> {
             }
         })
     }
+}
+
+fn validate_argb_color(value: &str) -> Result<(), &'static str> {
+    let bytes = value.trim().as_bytes();
+    if bytes.len() != 9 || bytes[0] != b'#' {
+        return Err("Color must use #AARRGGBB");
+    }
+    for &byte in &bytes[1..] {
+        if !byte.is_ascii_hexdigit() {
+            return Err("Color must use #AARRGGBB");
+        }
+    }
+    Ok(())
 }
 
 fn clamp_u32(value: u32, min: u32, max: u32) -> u32 {

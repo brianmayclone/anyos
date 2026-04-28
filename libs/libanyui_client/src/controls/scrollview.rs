@@ -20,4 +20,15 @@ impl ScrollView {
         });
         (lib().on_change_fn)(self.container.ctrl.id, thunk, ud);
     }
+
+    pub fn scroll_offsets(&self) -> (i32, i32) {
+        let mut x = 0i32;
+        let mut y = 0i32;
+        (lib().scrollview_get_offsets)(self.container.ctrl.id, &mut x, &mut y);
+        (x, y)
+    }
+
+    pub fn set_scroll_offsets(&self, x: i32, y: i32) {
+        (lib().scrollview_set_offsets)(self.container.ctrl.id, x, y);
+    }
 }

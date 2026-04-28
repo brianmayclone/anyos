@@ -200,7 +200,7 @@ impl Control for SearchField {
         let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
         let scaled_scroll_x = crate::theme::scale_i32(self.scroll_x);
         let text_x = x + text_left - scaled_scroll_x;
-        let text_y = y + crate::theme::scale_i32(6);
+        let text_y = y + ((h as i32 - font_size as i32) / 2).max(0);
 
         if self.text_base.text.is_empty() {
             crate::draw::draw_text_sized(
@@ -249,17 +249,13 @@ impl Control for SearchField {
                 let cursor = self.cursor_pos.min(self.text_base.text.len());
                 let cursor_px =
                     crate::draw::text_width_n_at(&self.text_base.text, cursor, font_size) as i32;
-                let cursor_pad = crate::theme::scale_i32(4);
                 let cursor_w = crate::theme::scale(2);
-                let cursor_h = if h > (cursor_pad as u32 * 2) {
-                    h - cursor_pad as u32 * 2
-                } else {
-                    1
-                };
+                let cursor_h = (font_size as u32 + crate::theme::scale(4)).min(h.saturating_sub(2).max(1));
+                let cursor_y = y + ((h as i32 - cursor_h as i32) / 2).max(0);
                 crate::draw::fill_rect(
                     &clipped,
                     text_x + cursor_px,
-                    y + cursor_pad,
+                    cursor_y,
                     cursor_w,
                     cursor_h,
                     tc.accent,

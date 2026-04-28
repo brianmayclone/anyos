@@ -43,6 +43,7 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
             let hovered = control_node.or_else(|| tab.webview.hit_test_node_canvas(ctrl_id));
             tab.webview.set_active_node(None);
             tab.webview.set_hovered_node(hovered);
+            return;
         }
         libanyui_client::EVENT_FOCUS => {
             let focused = control_node;
@@ -60,6 +61,20 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
         }
         _ => {}
     }
+
+    if _event_type != libanyui_client::EVENT_CLICK {
+        return;
+    }
+
+    let tab_index = st.active_tab;
+    if !st.tabs[tab_index].webview.dispatch_click_for_control(ctrl_id) {
+        process_dom_event_side_effects(tab_index);
+        return;
+    }
+    if process_dom_event_side_effects(tab_index) {
+        return;
+    }
+    let tab = &mut st.tabs[tab_index];
 
     // Try link hit first.
     if let Some(link_url) = tab.webview.link_url_for(ctrl_id) {
@@ -135,7 +150,24 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
 /// navigates with either GET (query string) or POST (request body).
 pub(crate) extern "C" fn on_form_submit(ctrl_id: u32, _event_type: u32, _userdata: u64) {
     let st = crate::state();
-    let tab = &st.tabs[st.active_tab];
+    let tab_index = st.active_tab;
+
+    if _event_type == libanyui_client::EVENT_SUBMIT
+        && !st.tabs[tab_index].webview.dispatch_enter_for_control(ctrl_id)
+    {
+        process_dom_event_side_effects(tab_index);
+        return;
+    }
+
+    if !st.tabs[tab_index].webview.dispatch_submit_for_control(ctrl_id) {
+        process_dom_event_side_effects(tab_index);
+        return;
+    }
+    if process_dom_event_side_effects(tab_index) {
+        return;
+    }
+
+    let tab = &st.tabs[tab_index];
 
     // Works for both submit-button clicks and Enter key in text fields.
     let (action, method, enctype) = match tab.webview.form_action_for(ctrl_id) {
@@ -204,6 +236,12 @@ pub(crate) extern "C" fn on_form_submit(ctrl_id: u32, _event_type: u32, _userdat
         }
         crate::tab::navigate(&url);
     }
+}
+
+fn process_dom_event_side_effects(tab_index: usize) -> bool {
+    crate::apply_js_host_mutations(tab_index);
+    crate::connect_pending_ws(tab_index);
+    crate::drain_js_navigation_for_tab(tab_index)
 }
 
 // ═══════════════════════════════════════════════════════════

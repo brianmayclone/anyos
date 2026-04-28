@@ -277,6 +277,7 @@ struct AnyuiLib {
     datagrid_set_row_count: extern "C" fn(u32, u32),
     datagrid_get_row_count: extern "C" fn(u32) -> u32,
     datagrid_set_selection_mode: extern "C" fn(u32, u32),
+    datagrid_set_editable_columns: extern "C" fn(u32, u32),
     datagrid_get_selected_row: extern "C" fn(u32) -> u32,
     datagrid_set_selected_row: extern "C" fn(u32, u32),
     datagrid_is_row_selected: extern "C" fn(u32, u32) -> u32,
@@ -371,6 +372,8 @@ struct AnyuiLib {
     get_size: extern "C" fn(u32, *mut u32, *mut u32),
     get_position: extern "C" fn(u32, *mut i32, *mut i32),
     get_abs_position: extern "C" fn(u32, *mut i32, *mut i32),
+    scrollview_get_offsets: extern "C" fn(u32, *mut i32, *mut i32),
+    scrollview_set_offsets: extern "C" fn(u32, i32, i32),
     // DataGrid scroll
     datagrid_get_scroll_offset: extern "C" fn(u32) -> u32,
     datagrid_set_scroll_offset: extern "C" fn(u32, u32),
@@ -600,6 +603,7 @@ pub fn init() -> bool {
             datagrid_set_row_count: resolve(&handle, "anyui_datagrid_set_row_count"),
             datagrid_get_row_count: resolve(&handle, "anyui_datagrid_get_row_count"),
             datagrid_set_selection_mode: resolve(&handle, "anyui_datagrid_set_selection_mode"),
+            datagrid_set_editable_columns: resolve(&handle, "anyui_datagrid_set_editable_columns"),
             datagrid_get_selected_row: resolve(&handle, "anyui_datagrid_get_selected_row"),
             datagrid_set_selected_row: resolve(&handle, "anyui_datagrid_set_selected_row"),
             datagrid_is_row_selected: resolve(&handle, "anyui_datagrid_is_row_selected"),
@@ -702,6 +706,8 @@ pub fn init() -> bool {
             get_size: resolve(&handle, "anyui_get_size"),
             get_position: resolve(&handle, "anyui_get_position"),
             get_abs_position: resolve(&handle, "anyui_get_abs_position"),
+            scrollview_get_offsets: resolve(&handle, "anyui_scrollview_get_offsets"),
+            scrollview_set_offsets: resolve(&handle, "anyui_scrollview_set_offsets"),
             // DataGrid scroll
             datagrid_get_scroll_offset: resolve(&handle, "anyui_datagrid_get_scroll_offset"),
             datagrid_set_scroll_offset: resolve(&handle, "anyui_datagrid_set_scroll_offset"),

@@ -150,6 +150,12 @@ pub struct DataGrid {
     dragging_scrollbar: bool,
     /// Mouse-Y offset from thumb top when scrollbar drag started.
     scrollbar_drag_anchor: i32,
+    /// Bitmask of logical columns that can be edited in-place.
+    editable_columns: u32,
+    editing_row: Option<usize>,
+    editing_col: Option<usize>,
+    edit_buffer: Vec<u8>,
+    edit_cursor: usize,
 }
 
 impl DataGrid {
@@ -186,6 +192,11 @@ impl DataGrid {
             indent_column: 0,
             dragging_scrollbar: false,
             scrollbar_drag_anchor: 0,
+            editable_columns: 0,
+            editing_row: None,
+            editing_col: None,
+            edit_buffer: Vec::new(),
+            edit_cursor: 0,
         }
     }
 
@@ -297,6 +308,12 @@ impl DataGrid {
         self.cell_data.get(idx).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    pub fn set_editable_columns(&mut self, mask: u32) {
+        self.editable_columns = mask;
+        self.cancel_edit();
+        self.base.mark_dirty();
+    }
+
     pub fn set_cell_colors(&mut self, colors: &[u32]) {
         if self.cell_colors.as_slice() != colors {
             self.cell_colors = colors.to_vec();
@@ -360,6 +377,55 @@ impl DataGrid {
     /// Get the display column index of the last click (-1 if none).
     pub fn last_click_col(&self) -> i32 {
         self.last_click_col
+    }
+
+    fn is_col_editable(&self, logical_col: usize) -> bool {
+        logical_col < 32 && (self.editable_columns & (1u32 << logical_col)) != 0
+    }
+
+    fn start_edit(&mut self, data_row: usize, display_col: usize) -> bool {
+        if data_row >= self.row_count || display_col >= self.display_order.len() {
+            return false;
+        }
+        let logical_col = self.display_order[display_col];
+        if !self.is_col_editable(logical_col) {
+            return false;
+        }
+        self.edit_buffer = self.get_cell(data_row, logical_col).to_vec();
+        self.edit_cursor = self.edit_buffer.len();
+        self.editing_row = Some(data_row);
+        self.editing_col = Some(logical_col);
+        self.clear_selection();
+        self.set_row_selected(data_row, true);
+        self.base.state = data_row as u32;
+        self.last_click_col = display_col as i32;
+        self.base.mark_dirty();
+        true
+    }
+
+    fn commit_edit(&mut self) -> bool {
+        let Some(row) = self.editing_row else {
+            return false;
+        };
+        let Some(col) = self.editing_col else {
+            return false;
+        };
+        let value = self.edit_buffer.clone();
+        self.set_cell(row, col, &value);
+        self.editing_row = None;
+        self.editing_col = None;
+        self.edit_buffer.clear();
+        self.edit_cursor = 0;
+        self.base.state = row as u32;
+        self.base.mark_dirty();
+        true
+    }
+
+    fn cancel_edit(&mut self) {
+        self.editing_row = None;
+        self.editing_col = None;
+        self.edit_buffer.clear();
+        self.edit_cursor = 0;
     }
 
     /// Set connector lines (drawn over a column, typically the separator).
@@ -739,12 +805,41 @@ impl Control for DataGrid {
                         }
                     }
 
-                    if cell_idx < self.cell_data.len() && !self.cell_data[cell_idx].is_empty() {
-                        let text = &self.cell_data[cell_idx];
+                    let editing_this_cell =
+                        self.editing_row == Some(data_row) && self.editing_col == Some(logical_col);
+                    let text = if editing_this_cell {
+                        self.edit_buffer.as_slice()
+                    } else if cell_idx < self.cell_data.len() {
+                        self.cell_data[cell_idx].as_slice()
+                    } else {
+                        &[]
+                    };
+                    if editing_this_cell {
+                        crate::draw::fill_rect(
+                            &cell_clip,
+                            col_x + 1,
+                            row_y + 2,
+                            col_w_s.saturating_sub(2),
+                            rh_u.saturating_sub(4),
+                            tc.control_bg,
+                        );
+                        crate::draw::draw_border(
+                            &cell_clip,
+                            col_x + 1,
+                            row_y + 2,
+                            col_w_s.saturating_sub(2),
+                            rh_u.saturating_sub(4),
+                            tc.accent,
+                        );
+                    }
+
+                    if !text.is_empty() || editing_this_cell {
                         let default_color = if cell_idx < self.cell_colors.len()
                             && self.cell_colors[cell_idx] != 0
                         {
                             self.cell_colors[cell_idx]
+                        } else if editing_this_cell {
+                            tc.text
                         } else if selected {
                             0xFFFFFFFF
                         } else {
@@ -813,6 +908,20 @@ impl Control for DataGrid {
                                 default_color,
                                 text,
                                 fs,
+                            );
+                        }
+
+                        if editing_this_cell {
+                            let cursor_prefix = &text[..self.edit_cursor.min(text.len())];
+                            let (prefix_w, _) = crate::draw::text_size_at(cursor_prefix, fs);
+                            let caret_x = text_x + prefix_w as i32 + 1;
+                            crate::draw::fill_rect(
+                                &cell_clip,
+                                caret_x,
+                                row_y + 5,
+                                1,
+                                rh_u.saturating_sub(10),
+                                tc.accent,
                             );
                         }
                     }
@@ -1219,9 +1328,86 @@ impl Control for DataGrid {
 
     fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
         use crate::control::*;
+        if self.editing_row.is_some() {
+            match keycode {
+                KEY_ENTER | KEY_TAB => {
+                    if self.commit_edit() {
+                        return EventResponse::SUBMIT;
+                    }
+                    return EventResponse::CONSUMED;
+                }
+                KEY_ESCAPE => {
+                    self.cancel_edit();
+                    self.base.mark_dirty();
+                    return EventResponse::CONSUMED;
+                }
+                KEY_BACKSPACE => {
+                    if self.edit_cursor > 0 {
+                        self.edit_cursor -= 1;
+                        self.edit_buffer.remove(self.edit_cursor);
+                        self.base.mark_dirty();
+                        return EventResponse::CHANGED;
+                    }
+                    return EventResponse::CONSUMED;
+                }
+                KEY_DELETE => {
+                    if self.edit_cursor < self.edit_buffer.len() {
+                        self.edit_buffer.remove(self.edit_cursor);
+                        self.base.mark_dirty();
+                        return EventResponse::CHANGED;
+                    }
+                    return EventResponse::CONSUMED;
+                }
+                KEY_LEFT => {
+                    if self.edit_cursor > 0 {
+                        self.edit_cursor -= 1;
+                        self.base.mark_dirty();
+                    }
+                    return EventResponse::CONSUMED;
+                }
+                KEY_RIGHT => {
+                    if self.edit_cursor < self.edit_buffer.len() {
+                        self.edit_cursor += 1;
+                        self.base.mark_dirty();
+                    }
+                    return EventResponse::CONSUMED;
+                }
+                KEY_HOME => {
+                    self.edit_cursor = 0;
+                    self.base.mark_dirty();
+                    return EventResponse::CONSUMED;
+                }
+                KEY_END => {
+                    self.edit_cursor = self.edit_buffer.len();
+                    self.base.mark_dirty();
+                    return EventResponse::CONSUMED;
+                }
+                _ => {}
+            }
+            if (32..=126).contains(&_char_code) {
+                self.edit_buffer.insert(
+                    self.edit_cursor.min(self.edit_buffer.len()),
+                    _char_code as u8,
+                );
+                self.edit_cursor = (self.edit_cursor + 1).min(self.edit_buffer.len());
+                self.base.mark_dirty();
+                return EventResponse::CHANGED;
+            }
+            return EventResponse::CONSUMED;
+        }
         match keycode {
             KEY_ENTER => {
                 if self.selected_row().is_some() {
+                    let display_col = if self.last_click_col >= 0 {
+                        self.last_click_col as usize
+                    } else {
+                        0
+                    };
+                    if let Some(row) = self.selected_row() {
+                        if self.start_edit(row, display_col) {
+                            return EventResponse::CONSUMED;
+                        }
+                    }
                     return EventResponse::SUBMIT;
                 }
                 EventResponse::CONSUMED
@@ -1266,9 +1452,15 @@ impl Control for DataGrid {
         }
     }
 
-    fn handle_double_click(&mut self, _lx: i32, ly: i32, _button: u32) -> EventResponse {
+    fn handle_double_click(&mut self, lx: i32, ly: i32, _button: u32) -> EventResponse {
         // Double-click on a data row → SUBMIT
         if ly >= self.header_height as i32 {
+            if let (Some(vis_row), Some(display_col)) = (self.row_at_y(ly), self.column_at_x(lx)) {
+                let data_row = self.data_row(vis_row);
+                if self.start_edit(data_row, display_col) {
+                    return EventResponse::CONSUMED;
+                }
+            }
             if self.selected_row().is_some() {
                 return EventResponse::SUBMIT;
             }

@@ -2115,6 +2115,16 @@ pub extern "C" fn anyui_datagrid_set_selection_mode(id: ControlId, mode: u32) {
 }
 
 #[no_mangle]
+pub extern "C" fn anyui_datagrid_set_editable_columns(id: ControlId, mask: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(dg) = as_data_grid(ctrl) {
+            dg.set_editable_columns(mask);
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn anyui_datagrid_get_selected_row(id: ControlId) -> u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
@@ -4413,6 +4423,39 @@ pub extern "C" fn anyui_get_abs_position(id: ControlId, out_x: *mut i32, out_y: 
     if !out_y.is_null() {
         unsafe {
             *out_y = y;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_scrollview_get_offsets(
+    id: ControlId,
+    out_x: *mut i32,
+    out_y: *mut i32,
+) {
+    let st = state();
+    let (x, y) = controls::scroll_view::scroll_offsets(&st.controls, id);
+    if !out_x.is_null() {
+        unsafe {
+            *out_x = x;
+        }
+    }
+    if !out_y.is_null() {
+        unsafe {
+            *out_y = y;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_scrollview_set_offsets(id: ControlId, x: i32, y: i32) {
+    let st = state();
+    if let Some(idx) = control::find_idx(&st.controls, id) {
+        if let Some(sv) = control::cast_mut::<controls::scroll_view::ScrollView>(
+            &mut st.controls[idx],
+            control::ControlKind::ScrollView,
+        ) {
+            sv.set_scroll_offsets(x, y);
         }
     }
 }

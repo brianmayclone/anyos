@@ -187,6 +187,14 @@ pub fn wire_inspector() {
         .on_selection_changed(|_| commands::designer_property_selection_changed());
     app()
         .inspector_panel
+        .property_grid
+        .on_submit(|_| commands::apply_designer_property_from_grid());
+    app()
+        .inspector_panel
+        .event_grid
+        .on_submit(|_| commands::apply_designer_event_from_grid());
+    app()
+        .inspector_panel
         .property_dropdown
         .on_selection_changed(|_| commands::designer_property_selection_changed());
     app()

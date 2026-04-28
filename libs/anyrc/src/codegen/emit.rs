@@ -315,6 +315,30 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
+    fn copy_memory_bytes(
+        &mut self,
+        dst_base: Reg,
+        dst_off: i32,
+        src_base: Reg,
+        src_off: i32,
+        size: i32,
+    ) {
+        let mut copied = 0;
+        while copied < size {
+            let chunk = (size - copied).min(8);
+            if chunk == 8 {
+                self.asm.mov_rm(Reg::RAX, src_base, src_off + copied);
+                self.asm.mov_mr(dst_base, dst_off + copied, Reg::RAX);
+            } else {
+                self.asm
+                    .movzx_rm_sized(Reg::RAX, src_base, src_off + copied, chunk);
+                self.asm
+                    .mov_mr_sized(dst_base, dst_off + copied, Reg::RAX, chunk);
+            }
+            copied += chunk;
+        }
+    }
+
     fn store_operand_to_stack_offset(
         &mut self,
         op: &Operand,
@@ -371,7 +395,8 @@ impl<'a> CodeEmitter<'a> {
 
     fn operand_slot_count(&self, op: &Operand) -> usize {
         match op {
-            Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place, _) => {
+            Operand::Ref(_, _) => 1,
+            Operand::Copy(place) | Operand::Move(place) => {
                 if place.projections.is_empty() {
                     Self::slots_for_size(self.alloc.local_sizes[place.local.0])
                 } else {
@@ -382,9 +407,155 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
+    fn operand_value_size(&self, op: &Operand) -> i32 {
+        match op {
+            Operand::Copy(place) | Operand::Move(place) => self.place_value_size(place).max(1),
+            Operand::Ref(_, _) => 8,
+            Operand::Constant(c) => self.ty_layout_size(&c.ty),
+        }
+    }
+
+    fn operand_ty(&self, op: &Operand) -> TyKind {
+        match op {
+            Operand::Copy(place) | Operand::Move(place) => self.projection_value_ty(place),
+            Operand::Ref(place, mutability) => {
+                TyKind::Ref(Box::new(self.projection_value_ty(place)), *mutability)
+            }
+            Operand::Constant(c) => c.ty.clone(),
+        }
+    }
+
+    fn vec_elem_size_from_ty(&self, ty: &TyKind) -> Option<i32> {
+        let inner = match ty {
+            TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => inner.as_ref(),
+            other => other,
+        };
+        match inner {
+            TyKind::Slice(elem) | TyKind::Array(elem, _) => Some(self.ty_layout_size(elem).max(1)),
+            TyKind::Adt(_, substs) if substs.len() == 1 => {
+                Some(self.ty_layout_size(&substs[0]).max(1))
+            }
+            _ => None,
+        }
+    }
+
+    fn pointee_elem_size_from_operand(&self, op: Option<&Operand>) -> i32 {
+        op.map(|arg| self.operand_ty(arg))
+            .and_then(|ty| match ty {
+                TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
+                    Some(self.ty_layout_size(inner.as_ref()).max(1))
+                }
+                _ => None,
+            })
+            .unwrap_or(1)
+    }
+
+    fn vec_elem_size_from_receiver(&self, receiver: Option<&Operand>) -> i32 {
+        receiver
+            .and_then(|op| self.vec_elem_size_from_ty(&self.operand_ty(op)))
+            .unwrap_or(8)
+    }
+
+    fn emit_string_literal_into_place(&mut self, place: &Place, value: &str) {
+        let slot = self.alloc.stack_slots[place.local.0];
+        let bytes = value.as_bytes();
+        self.asm.mov_ri(Reg::RDI, bytes.len() as i64);
+        self.asm.call_extern("__anyrc_alloc");
+        for (offset, chunk) in bytes.chunks(8).enumerate() {
+            let mut word = 0u64;
+            for (idx, byte) in chunk.iter().enumerate() {
+                word |= (*byte as u64) << (idx * 8);
+            }
+            self.asm.mov_ri(Reg::RDX, word as i64);
+            self.asm.mov_mr_sized(
+                Reg::RAX,
+                (offset * 8) as i32,
+                Reg::RDX,
+                chunk.len() as i32,
+            );
+        }
+        self.asm.mov_ri(Reg::RCX, bytes.len() as i64);
+        if self.alloc.local_sizes[place.local.0] <= 8 {
+            self.asm.push(Reg::RAX);
+            self.asm.push(Reg::RCX);
+            self.asm.mov_ri(Reg::RDI, 24);
+            self.asm.call_extern("__anyrc_alloc");
+            self.asm.pop(Reg::RCX);
+            self.asm.pop(Reg::RDX);
+            self.asm.mov_mr(Reg::RAX, 0, Reg::RDX);
+            self.asm.mov_mr(Reg::RAX, 8, Reg::RCX);
+            self.asm.mov_mr(Reg::RAX, 16, Reg::RCX);
+            self.store_place(place, Reg::RAX);
+        } else {
+            self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+            self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
+            self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RCX);
+        }
+    }
+
+    fn emit_place_address(&mut self, place: &Place, dst: Reg) {
+        let slot = self.alloc.stack_slots[place.local.0];
+        if place.projections.is_empty() {
+            self.asm.lea(dst, Reg::RBP, slot);
+            return;
+        }
+
+        enum Base {
+            Stack(i32),
+            Reg,
+        }
+        let mut base = Base::Stack(slot);
+
+        for (i, proj) in place.projections.iter().enumerate() {
+            match proj {
+                Projection::Deref => {
+                    match base {
+                        Base::Stack(off) => self.asm.mov_rm(dst, Reg::RBP, off),
+                        Base::Reg => self.asm.mov_rm(dst, dst, 0),
+                    }
+                    base = Base::Reg;
+                }
+                Projection::Field(_) => {
+                    let field_offset = self.field_byte_offset(place, i);
+                    match base {
+                        Base::Stack(ref mut off) => *off += field_offset,
+                        Base::Reg => {
+                            if field_offset != 0 {
+                                self.asm.add_ri(dst, field_offset);
+                            }
+                        }
+                    }
+                }
+                Projection::Index(idx_local) => {
+                    match base {
+                        Base::Stack(off) => self.asm.lea(dst, Reg::RBP, off),
+                        Base::Reg => {}
+                    }
+                    self.asm
+                        .mov_rm(Reg::RAX, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
+                    let stride = self.index_stride(place, i);
+                    if stride == 8 {
+                        self.asm.shl_ri(Reg::RAX, 3);
+                    } else if stride != 1 {
+                        self.asm.imul_ri(Reg::RAX, stride as i64);
+                    }
+                    self.asm.add_rr(dst, Reg::RAX);
+                    base = Base::Reg;
+                }
+            }
+        }
+
+        if let Base::Stack(off) = base {
+            self.asm.lea(dst, Reg::RBP, off);
+        }
+    }
+
     fn load_operand(&mut self, op: &Operand, dst: Reg) {
         match op {
-            Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place, _) => {
+            Operand::Ref(place, _) => {
+                self.emit_place_address(place, dst);
+            }
+            Operand::Copy(place) | Operand::Move(place) => {
                 self.load_place(place, dst);
             }
             Operand::Constant(c) => match &c.value {
@@ -501,7 +672,12 @@ impl<'a> CodeEmitter<'a> {
                             if next_needs_addr {
                                 self.asm.lea(dst, Reg::RBP, off + field_offset);
                             } else {
-                                self.asm.mov_rm(dst, Reg::RBP, off + field_offset);
+                                self.asm.movzx_rm_sized(
+                                    dst,
+                                    Reg::RBP,
+                                    off + field_offset,
+                                    self.place_value_size(place),
+                                );
                             }
                         }
                         Base::Reg => {
@@ -510,7 +686,12 @@ impl<'a> CodeEmitter<'a> {
                                     self.asm.add_ri(dst, field_offset);
                                 }
                             } else {
-                                self.asm.mov_rm(dst, dst, field_offset);
+                                self.asm.movzx_rm_sized(
+                                    dst,
+                                    dst,
+                                    field_offset,
+                                    self.place_value_size(place),
+                                );
                             }
                         }
                     }
@@ -615,6 +796,18 @@ impl<'a> CodeEmitter<'a> {
                 // Special-case aggregates: store each field directly into the place
                 if let Rvalue::Aggregate(agg_kind, operands) = rvalue {
                     if place.projections.is_empty() {
+                        if let [Operand::Constant(Constant {
+                            value: ConstValue::Str(value),
+                            ..
+                        })] = operands.as_slice()
+                        {
+                            if matches!(self.body.locals[place.local.0].ty, TyKind::Adt(_, _))
+                                && self.alloc.local_sizes[place.local.0] >= 16
+                            {
+                                self.emit_string_literal_into_place(place, value);
+                                return;
+                            }
+                        }
                         let base_slot = self.alloc.stack_slots[place.local.0];
                         for (i, op) in operands.iter().enumerate() {
                             let (field_off, field_size) =
@@ -644,18 +837,33 @@ impl<'a> CodeEmitter<'a> {
                 }
                 // Special-case multi-slot copies (struct = struct)
                 if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rvalue {
-                    if place.projections.is_empty() && src.projections.is_empty() {
+                    if place.projections.is_empty() {
                         let dst_size = self.alloc.local_sizes[place.local.0];
-                        let src_size = self.alloc.local_sizes[src.local.0];
+                        let src_size = if src.projections.is_empty() {
+                            self.alloc.local_sizes[src.local.0]
+                        } else {
+                            // A projected aggregate may not have a precise type in MIR
+                            // for enum payloads. When the destination is aggregate-sized,
+                            // copy the destination width from the projected source address.
+                            self.place_value_size(src).max(dst_size)
+                        };
                         let copy_size = dst_size.min(src_size);
                         if copy_size > 8 {
                             let dst_slot = self.alloc.stack_slots[place.local.0];
-                            let src_slot = self.alloc.stack_slots[src.local.0];
-                            let n_slots = Self::slots_for_size(copy_size);
-                            for i in 0..n_slots {
-                                let byte_off = (i as i32) * 8;
-                                self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + byte_off);
-                                self.asm.mov_mr(Reg::RBP, dst_slot + byte_off, Reg::RAX);
+                            if src.projections.is_empty() {
+                                let src_slot = self.alloc.stack_slots[src.local.0];
+                                let n_slots = Self::slots_for_size(copy_size);
+                                for i in 0..n_slots {
+                                    let byte_off = (i as i32) * 8;
+                                    self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + byte_off);
+                                    self.asm.mov_mr(Reg::RBP, dst_slot + byte_off, Reg::RAX);
+                                }
+                            } else {
+                                self.emit_place_address(src, Reg::R11);
+                                self.copy_memory_bytes(Reg::RBP, dst_slot, Reg::R11, 0, copy_size);
+                            }
+                            if copy_size == 16 {
+                                self.asm.lea(Reg::RDI, Reg::RBP, dst_slot);
                             }
                             return;
                         }
@@ -1309,9 +1517,55 @@ impl<'a> CodeEmitter<'a> {
                 // (src: *const T, dst: *mut T, count: usize)
                 // Args: RDI=src, RSI=dst, RDX=count
                 // rep movsb needs: RSI=src, RDI=dst, RCX=count
+                let elem_size = self.pointee_elem_size_from_operand(args.first());
                 self.asm.emit_raw(&[0x48, 0x87, 0xFE]); // xchg rdi, rsi
                 self.asm.emit_raw(&[0x48, 0x89, 0xD1]); // mov rcx, rdx
+                if elem_size != 1 {
+                    self.asm.imul_ri(Reg::RCX, elem_size as i64);
+                }
                 self.asm.emit_raw(&[0xF3, 0xA4]); // rep movsb
+                true
+            }
+            "copy" => {
+                // core::ptr::copy has memmove semantics: it must also work
+                // when the source and destination ranges overlap.
+                let elem_size = self.pointee_elem_size_from_operand(args.first());
+                let forward = self.asm.new_label();
+                let done = self.asm.new_label();
+
+                self.asm.mov_rr(Reg::RCX, Reg::RDX);
+                if elem_size != 1 {
+                    self.asm.imul_ri(Reg::RCX, elem_size as i64);
+                }
+                self.asm.test_rr(Reg::RCX, Reg::RCX);
+                self.asm.jcc(CondCode::Equal, done);
+
+                self.asm.mov_rr(Reg::RAX, Reg::RDI); // src_end = src + bytes
+                self.asm.add_rr(Reg::RAX, Reg::RCX);
+                self.asm.cmp_rr(Reg::RSI, Reg::RDI);
+                self.asm.jcc(CondCode::BelowEqual, forward);
+                self.asm.cmp_rr(Reg::RSI, Reg::RAX);
+                self.asm.jcc(CondCode::AboveEqual, forward);
+
+                // Backward copy for dst inside the source range.
+                self.asm.mov_rr(Reg::R10, Reg::RDI);
+                self.asm.add_rr(Reg::R10, Reg::RCX);
+                self.asm.sub_ri(Reg::R10, 1);
+                self.asm.mov_rr(Reg::R11, Reg::RSI);
+                self.asm.add_rr(Reg::R11, Reg::RCX);
+                self.asm.sub_ri(Reg::R11, 1);
+                self.asm.mov_rr(Reg::RSI, Reg::R10);
+                self.asm.mov_rr(Reg::RDI, Reg::R11);
+                self.asm.emit_raw(&[0xFD]); // std
+                self.asm.emit_raw(&[0xF3, 0xA4]); // rep movsb
+                self.asm.emit_raw(&[0xFC]); // cld
+                self.asm.jmp(done);
+
+                self.asm.bind_label(forward);
+                self.asm.emit_raw(&[0x48, 0x87, 0xFE]); // xchg rdi, rsi
+                self.asm.emit_raw(&[0xF3, 0xA4]); // rep movsb
+
+                self.asm.bind_label(done);
                 true
             }
             "write_volatile" | "write" | "write_unaligned" => {
@@ -1484,7 +1738,10 @@ impl<'a> CodeEmitter<'a> {
                 }
                 true
             }
-            "from_size_align_unchecked" | "Layout::from_size_align_unchecked" => {
+            "from_size_align"
+            | "Layout::from_size_align"
+            | "from_size_align_unchecked"
+            | "Layout::from_size_align_unchecked" => {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RDI);
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
@@ -1564,10 +1821,13 @@ impl<'a> CodeEmitter<'a> {
             }
             "Vec::with_capacity" | "VecDeque::with_capacity" => {
                 // arg0 = capacity in RDI
-                // Allocate capacity * 8 bytes
+                // Allocate capacity * size_of::<T>() bytes
                 let slot = self.alloc.stack_slots[dest.local.0];
+                let elem_size = self
+                    .vec_elem_size_from_ty(&self.body.locals[dest.local.0].ty)
+                    .unwrap_or(8);
                 self.asm.push(Reg::RDI); // save capacity
-                self.asm.emit_raw(&[0x48, 0xC1, 0xE7, 0x03]); // shl rdi, 3 (capacity * 8)
+                self.asm.imul_ri(Reg::RDI, elem_size as i64);
                 self.asm.call_extern("__anyrc_alloc");
                 self.asm.pop(Reg::RCX); // rcx = original capacity
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RAX); // ptr
@@ -1598,6 +1858,11 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "VecDeque::len" => {
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             "Vec::is_empty" | "String::is_empty" => {
                 // len == 0
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 8);
@@ -1616,12 +1881,92 @@ impl<'a> CodeEmitter<'a> {
                 true
             }
             "Vec::reserve" | "VecDeque::reserve" | "reserve" => true,
+            "Range::contains" => {
+                let item_ty = args
+                    .get(1)
+                    .map(|arg| self.operand_ty(arg))
+                    .and_then(|ty| match ty {
+                        TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
+                            Some((*inner).clone())
+                        }
+                        other => Some(other),
+                    })
+                    .unwrap_or(TyKind::Uint(crate::typeck::UintTy::Usize));
+                let item_size = self.ty_layout_size(&item_ty).max(1).min(8);
+                let lower_cc = if matches!(item_ty, TyKind::Int(_)) {
+                    CondCode::GreaterEqual
+                } else {
+                    CondCode::AboveEqual
+                };
+                let upper_cc = if matches!(item_ty, TyKind::Int(_)) {
+                    CondCode::Less
+                } else {
+                    CondCode::Below
+                };
+                self.asm
+                    .movzx_rm_sized(Reg::RDX, Reg::RSI, 0, item_size as i32);
+                self.asm
+                    .movzx_rm_sized(Reg::R10, Reg::RDI, 0, item_size as i32);
+                self.asm.cmp_rr(Reg::RDX, Reg::R10);
+                self.asm.setcc(lower_cc, Reg::RAX);
+                self.asm.movzx_r8_r64(Reg::RAX, Reg::RAX);
+                self.asm
+                    .movzx_rm_sized(Reg::R11, Reg::RDI, 8, item_size as i32);
+                self.asm.cmp_rr(Reg::RDX, Reg::R11);
+                self.asm.setcc(upper_cc, Reg::R10);
+                self.asm.movzx_r8_r64(Reg::R10, Reg::R10);
+                self.asm.and_rr(Reg::RAX, Reg::R10);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             "Vec::push" | "VecDeque::push_back" | "push_back" => {
-                // arg0 = &mut Vec-like collection in RDI, arg1 = value in RSI.
-                // VecDeque currently uses the same bootstrap backing layout for
-                // compiler-built binaries, so push_back shares the Vec push
-                // helper until the collection runtime grows ring-buffer support.
-                self.asm.call_extern("__anyrc_vec_push");
+                let Some(value) = args.get(1) else {
+                    return true;
+                };
+                let elem_size = self.operand_value_size(value).max(1);
+                let has_space = self.asm.new_label();
+
+                // arg0 = &mut Vec-like collection in RDI.
+                // Layout: [ptr, len, cap], where len/cap count elements.
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8); // len
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 16); // cap
+                self.asm.cmp_rr(Reg::RAX, Reg::RCX);
+                self.asm.jcc(CondCode::Below, has_space);
+
+                // Grow to max(cap * 2, 4), preserving the receiver pointer
+                // across the allocator call.
+                self.asm.push(Reg::RDI);
+                self.asm.add_rr(Reg::RCX, Reg::RCX);
+                self.asm.mov_ri(Reg::RDX, 4);
+                self.asm.cmp_rr(Reg::RCX, Reg::RDX);
+                let cap_ok = self.asm.new_label();
+                self.asm.jcc(CondCode::AboveEqual, cap_ok);
+                self.asm.mov_rr(Reg::RCX, Reg::RDX);
+                self.asm.bind_label(cap_ok);
+                self.asm.push(Reg::RCX); // new cap
+
+                self.asm.mov_rm(Reg::RSI, Reg::RDI, 16); // old cap
+                self.asm.imul_ri(Reg::RSI, elem_size as i64); // old bytes
+                self.asm.mov_rr(Reg::RDX, Reg::RCX);
+                self.asm.imul_ri(Reg::RDX, elem_size as i64); // new bytes
+                self.asm.mov_rm(Reg::RDI, Reg::RDI, 0); // old ptr
+                self.asm.call_extern("__anyrc_realloc");
+
+                self.asm.pop(Reg::RCX); // new cap
+                self.asm.pop(Reg::RDI); // &mut Vec
+                self.asm.mov_mr(Reg::RDI, 0, Reg::RAX);
+                self.asm.mov_mr(Reg::RDI, 16, Reg::RCX);
+
+                self.asm.bind_label(has_space);
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0); // ptr
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8); // len
+                self.asm.imul_ri(Reg::RCX, elem_size as i64);
+                self.asm.add_rr(Reg::RAX, Reg::RCX); // dst = ptr + len * elem_size
+                self.asm.mov_rr(Reg::R11, Reg::RAX);
+                self.store_operand_to_stack_offset(value, Reg::R11, 0, elem_size);
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8);
+                self.asm.add_ri(Reg::RCX, 1);
+                self.asm.mov_mr(Reg::RDI, 8, Reg::RCX);
                 true
             }
             "Vec::pop" | "VecDeque::pop_front" | "pop_front" => {
@@ -1714,8 +2059,34 @@ impl<'a> CodeEmitter<'a> {
                 true
             }
             "Vec::copy_from_slice" | "copy_from_slice" => true,
-            "Vec::retain" | "Vec::drain" => {
-                self.zero_dest(dest);
+            "Vec::retain" => {
+                // Retain needs closure invocation and compaction. Keeping the
+                // current elements is a conservative runtime fallback until
+                // closure calls in collection intrinsics are lowered fully.
+                true
+            }
+            "Vec::drain" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let elem_size = self
+                    .vec_elem_size_from_ty(&self.body.locals[dest.local.0].ty)
+                    .or_else(|| args.first().and_then(|op| self.vec_elem_size_from_ty(&self.operand_ty(op))))
+                    .unwrap_or(8);
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0); // current = ptr
+                self.asm.mov_rm(Reg::RCX, Reg::RDI, 8); // len
+                self.asm.imul_ri(Reg::RCX, elem_size as i64);
+                self.asm.mov_rr(Reg::RDX, Reg::RAX);
+                self.asm.add_rr(Reg::RDX, Reg::RCX); // end = ptr + len * elem_size
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                if self.alloc.local_sizes[dest.local.0] > 16 {
+                    self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                    for off in (16..self.alloc.local_sizes[dest.local.0]).step_by(8) {
+                        self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);
+                    }
+                }
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RDI, 8, Reg::RAX); // full drain: len = 0
+                self.asm.lea(Reg::RDI, Reg::RBP, slot);
                 true
             }
             "Vec::resize" => {
@@ -2690,13 +3061,14 @@ impl<'a> CodeEmitter<'a> {
                 // Return iterator = (current_ptr, end_ptr)
                 // arg0 = &Vec in RDI
                 let slot = self.alloc.stack_slots[dest.local.0];
+                let elem_size = self.vec_elem_size_from_receiver(args.first());
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0); // ptr
                 self.asm.mov_rm(Reg::RCX, Reg::RDI, 8); // len
-                                                        // end = ptr + len * 8
-                self.asm.emit_raw(&[0x48, 0xC1, 0xE1, 0x03]); // shl rcx, 3
+                self.asm.imul_ri(Reg::RCX, elem_size as i64);
                 self.asm.emit_raw(&[0x48, 0x01, 0xC1]); // add rcx, rax
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RAX); // current ptr
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX); // end ptr
+                self.asm.lea(Reg::RDI, Reg::RBP, slot);
                 true
             }
             "next" => {
@@ -2705,24 +3077,43 @@ impl<'a> CodeEmitter<'a> {
                 // If current < end: return Some(*current), advance current
                 // Else: return None
                 let slot = self.alloc.stack_slots[dest.local.0];
+                let item_size = args
+                    .first()
+                    .and_then(|op| self.vec_elem_size_from_ty(&self.operand_ty(op)))
+                    .unwrap_or_else(|| (self.alloc.local_sizes[dest.local.0] - 8).max(8));
+                let none = self.asm.new_label();
+                let done = self.asm.new_label();
                 self.asm.mov_rm(Reg::RAX, Reg::RDI, 0); // current
                 self.asm.mov_rm(Reg::RCX, Reg::RDI, 8); // end
                 self.asm.emit_raw(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
-                self.asm.emit_raw(&[0x73, 0x15]); // jae .none
-                                                  // Some: read value, advance ptr
-                self.asm.mov_rm(Reg::RDX, Reg::RAX, 0); // value = *current
-                self.asm.emit_raw(&[0x48, 0x83, 0xC0, 0x08]); // add rax, 8
+                self.asm.jcc(CondCode::AboveEqual, none);
+                // Some: copy value bytes, advance ptr
+                self.asm.mov_rr(Reg::RDX, Reg::RAX);
+                let mut copied = 0;
+                while copied < item_size {
+                    let chunk = (item_size - copied).min(8);
+                    if chunk == 8 {
+                        self.asm.mov_rm(Reg::RAX, Reg::RDX, copied);
+                        self.asm.mov_mr(Reg::RBP, slot + 8 + copied, Reg::RAX);
+                    } else {
+                        self.asm.movzx_rm_sized(Reg::RAX, Reg::RDX, copied, chunk);
+                        self.asm
+                            .mov_mr_sized(Reg::RBP, slot + 8 + copied, Reg::RAX, chunk);
+                    }
+                    copied += chunk;
+                }
+                self.asm.mov_rr(Reg::RAX, Reg::RDX);
+                self.asm.add_ri(Reg::RAX, item_size);
                 self.asm.mov_mr(Reg::RDI, 0, Reg::RAX); // update current
                 self.asm.xor_rr(Reg::RAX, Reg::RAX); // disc = 0 (Some)
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
-                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
-                self.asm.emit_raw(&[0xEB, 0x0D]); // jmp .done
-                                                  // .none:
+                self.asm.jmp(done);
+                self.asm.bind_label(none);
                 self.asm.mov_ri(Reg::RAX, 1); // disc = 1 (None)
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
                 self.asm.xor_rr(Reg::RAX, Reg::RAX);
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);
-                // .done:
+                self.asm.bind_label(done);
                 true
             }
             "enumerate" => {
@@ -3037,6 +3428,7 @@ impl<'a> CodeEmitter<'a> {
             "core::ptr::copy_nonoverlapping" | "std::ptr::copy_nonoverlapping" => {
                 "copy_nonoverlapping"
             }
+            "core::ptr::copy" | "std::ptr::copy" => "copy",
             "core::ptr::swap_nonoverlapping" | "std::ptr::swap_nonoverlapping" => {
                 "swap_nonoverlapping"
             }
@@ -3084,9 +3476,15 @@ impl<'a> CodeEmitter<'a> {
             }
             "core::mem::MaybeUninit::assume_init"
             | "std::mem::MaybeUninit::assume_init" => "MaybeUninit::assume_init",
+            "alloc::alloc::alloc" | "std::alloc::alloc" => "alloc",
+            "alloc::alloc::alloc_zeroed" | "std::alloc::alloc_zeroed" => "alloc_zeroed",
+            "alloc::alloc::dealloc" | "std::alloc::dealloc" => "dealloc",
             "core::alloc::Layout::new" | "std::alloc::Layout::new" | "alloc::alloc::Layout::new" => {
                 "Layout::new"
             }
+            "core::alloc::Layout::from_size_align"
+            | "std::alloc::Layout::from_size_align"
+            | "alloc::alloc::Layout::from_size_align" => "Layout::from_size_align",
             "core::alloc::Layout::from_size_align_unchecked"
             | "std::alloc::Layout::from_size_align_unchecked"
             | "alloc::alloc::Layout::from_size_align_unchecked" => "Layout::from_size_align_unchecked",
@@ -3098,7 +3496,12 @@ impl<'a> CodeEmitter<'a> {
             "core::hint::unreachable_unchecked" | "std::hint::unreachable_unchecked" => {
                 "unreachable_unchecked"
             }
+            "core::sync::atomic::fence" | "std::sync::atomic::fence" => "fence",
+            "core::sync::atomic::compiler_fence" | "std::sync::atomic::compiler_fence" => {
+                "compiler_fence"
+            }
             "core::convert::identity" | "std::convert::identity" => "identity",
+            "core::ops::Range::contains" | "std::ops::Range::contains" => "Range::contains",
             "core::ops::RangeInclusive::new" | "std::ops::RangeInclusive::new" => {
                 "RangeInclusive::new"
             }
@@ -3152,6 +3555,9 @@ impl<'a> CodeEmitter<'a> {
             }
             "alloc::collections::VecDeque::reserve" | "std::collections::VecDeque::reserve" => {
                 "VecDeque::reserve"
+            }
+            "alloc::collections::VecDeque::len" | "std::collections::VecDeque::len" => {
+                "VecDeque::len"
             }
             "alloc::collections::VecDeque::is_empty" | "std::collections::VecDeque::is_empty" => {
                 "VecDeque::is_empty"

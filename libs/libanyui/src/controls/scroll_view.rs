@@ -80,6 +80,33 @@ impl ScrollView {
         }
     }
 
+    pub fn scroll_offsets(&self) -> (i32, i32) {
+        (self.scroll_x, self.scroll_y)
+    }
+
+    pub fn set_scroll_offsets(&mut self, x: i32, y: i32) -> bool {
+        let max_scroll_x = if self.content_width > self.base.w {
+            (self.content_width - self.base.w) as i32
+        } else {
+            0
+        };
+        let max_scroll_y = if self.content_height > self.base.h {
+            (self.content_height - self.base.h) as i32
+        } else {
+            0
+        };
+        let next_x = x.max(0).min(max_scroll_x);
+        let next_y = y.max(0).min(max_scroll_y);
+        if self.scroll_x == next_x && self.scroll_y == next_y {
+            return false;
+        }
+        self.scroll_x = next_x;
+        self.scroll_y = next_y;
+        self.base.state = self.scroll_y as u32;
+        self.base.mark_dirty();
+        true
+    }
+
     /// Returns (track_h, thumb_h, max_scroll) if the scrollbar is visible.
     fn scrollbar_metrics(&self) -> Option<(i32, i32, i32)> {
         let h = self.base.h;
@@ -360,7 +387,7 @@ pub fn scroll_offsets(controls: &[alloc::boxed::Box<dyn Control>], id: u32) -> (
     else {
         return (0, 0);
     };
-    (sv.scroll_x, sv.scroll_y)
+    sv.scroll_offsets()
 }
 
 /// Update content_height for all ScrollViews (called from event_loop after layout).

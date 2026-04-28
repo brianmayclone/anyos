@@ -95,13 +95,7 @@ fn assemble_kernel_x86_objects(root: &Path) -> KernelAsm {
     let out_dir = root.join("target/anyrc-tests/kernel-asm");
     std::fs::create_dir_all(&out_dir).expect("failed to create kernel asm test dir");
 
-    let sources = [
-        "boot",
-        "interrupts",
-        "context_switch",
-        "syscall_entry",
-        "syscall_fast",
-    ];
+    let sources = ["boot", "interrupts", "context_switch", "syscall_fast"];
     let mut objects = Vec::new();
     for name in sources {
         let src = root.join(format!("kernel/asm/x86/{}.asm", name));

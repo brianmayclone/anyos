@@ -1036,7 +1036,21 @@ impl WebView {
         // ── 2. CSS animations & transitions ──────────────────────────────────────
         if !self.js_runtime.active_animations.is_empty()
             || !self.js_runtime.active_transitions.is_empty()
+            || !self.js_runtime.active_style_animations.is_empty()
         {
+            if !self.js_runtime.active_style_animations.is_empty() {
+                let style_anim_mutations = self.js_runtime.advance_style_animations(delta_ms);
+                if style_anim_mutations > 0 {
+                    let mut dom = match self.dom_val.take() {
+                        Some(d) => d,
+                        None => return changed,
+                    };
+                    self.flush_pending_mutations(&mut dom);
+                    self.dom_val = Some(dom);
+                    changed = true;
+                }
+            }
+
             let (any_active, overrides) = self
                 .js_runtime
                 .advance_animations(delta_ms, &self.keyframes);
@@ -1906,6 +1920,101 @@ impl WebView {
         self.hit_test_node_document(mx, doc_y)
     }
 
+    /// Dispatch a DOM click for a rendered control/canvas hit.
+    ///
+    /// Returns `true` when the browser default action may continue.
+    pub fn dispatch_click_for_control(&mut self, control_id: u32) -> bool {
+        let node_id = self
+            .node_id_for_control(control_id)
+            .or_else(|| self.hit_test_node_canvas(control_id));
+        let Some(node_id) = node_id else {
+            return true;
+        };
+
+        let data = js::EventData::Mouse {
+            client_x: 0.0,
+            client_y: 0.0,
+            page_x: 0.0,
+            page_y: 0.0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            button: 0,
+            buttons: 0,
+            ctrl_key: false,
+            shift_key: false,
+            alt_key: false,
+            meta_key: false,
+        };
+        self.dispatch_dom_event_and_apply(node_id, "click", &data)
+    }
+
+    /// Dispatch the keyboard events produced by pressing Enter in a native
+    /// form control. Returns `true` when the default submit action may run.
+    pub fn dispatch_enter_for_control(&mut self, control_id: u32) -> bool {
+        let Some(node_id) = self.node_id_for_control(control_id) else {
+            return true;
+        };
+        let data = js::EventData::Keyboard {
+            key: String::from("Enter"),
+            code: String::from("Enter"),
+            key_code: 13,
+            which: 13,
+            char_code: 13,
+            ctrl_key: false,
+            shift_key: false,
+            alt_key: false,
+            meta_key: false,
+            repeat: false,
+            is_composing: false,
+        };
+        let keydown_allowed = self.dispatch_dom_event_and_apply(node_id, "keydown", &data);
+        self.dispatch_dom_event_and_apply(node_id, "keypress", &data);
+        self.dispatch_dom_event_and_apply(node_id, "keyup", &data);
+        keydown_allowed
+    }
+
+    /// Dispatch a cancelable `submit` event for the form containing `node_id`.
+    pub fn dispatch_submit_for_node(&mut self, node_id: usize) -> bool {
+        let Some(form_id) = self.find_form_for_node(node_id) else {
+            return true;
+        };
+        self.dispatch_dom_event_and_apply(form_id, "submit", &js::EventData::None)
+    }
+
+    /// Dispatch a cancelable `submit` event for the form containing a control.
+    pub fn dispatch_submit_for_control(&mut self, control_id: u32) -> bool {
+        let node_id = self
+            .canvas_submit_hit(control_id)
+            .or_else(|| self.node_id_for_control(control_id));
+        let Some(node_id) = node_id else {
+            return true;
+        };
+        self.dispatch_submit_for_node(node_id)
+    }
+
+    fn dispatch_dom_event_and_apply(
+        &mut self,
+        node_id: usize,
+        event_name: &str,
+        data: &js::EventData,
+    ) -> bool {
+        let mut dom = match self.dom_val.take() {
+            Some(d) => d,
+            None => return true,
+        };
+        let default_allowed = self.js_runtime.dispatch_event(&dom, node_id, event_name, data);
+        if !self.js_runtime.mutations.is_empty() {
+            self.flush_pending_mutations(&mut dom);
+            self.dom_val = Some(dom);
+            self.relayout();
+        } else {
+            self.dom_val = Some(dom);
+        }
+        default_allowed
+    }
+
     /// Check if a canvas click hit a form control (TextInput/Textarea).
     /// If so, focus the control and return true.
     /// Also handles `<label for="id">` clicks — focuses the associated control.
@@ -2076,19 +2185,25 @@ impl WebView {
     /// Returns (action, method, enctype).
     pub fn form_action_for_node(&self, node_id: usize) -> Option<(String, String, String)> {
         let dom = self.dom_val.as_ref()?;
+        let id = self.find_form_for_node(node_id)?;
+        let action = dom.attr(id, "action").unwrap_or("");
+        let method = dom.attr(id, "method").unwrap_or("GET");
+        let enctype = dom
+            .attr(id, "enctype")
+            .unwrap_or("application/x-www-form-urlencoded");
+        return Some((
+            String::from(action),
+            method.to_ascii_uppercase(),
+            String::from(enctype),
+        ));
+    }
+
+    fn find_form_for_node(&self, node_id: usize) -> Option<usize> {
+        let dom = self.dom_val.as_ref()?;
         let mut cur = Some(node_id);
         while let Some(id) = cur {
             if dom.tag(id) == Some(dom::Tag::Form) {
-                let action = dom.attr(id, "action").unwrap_or("");
-                let method = dom.attr(id, "method").unwrap_or("GET");
-                let enctype = dom
-                    .attr(id, "enctype")
-                    .unwrap_or("application/x-www-form-urlencoded");
-                return Some((
-                    String::from(action),
-                    method.to_ascii_uppercase(),
-                    String::from(enctype),
-                ));
+                return Some(id);
             }
             cur = dom.get(id).parent;
         }

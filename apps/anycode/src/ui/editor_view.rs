@@ -371,6 +371,17 @@ impl EditorView {
             }
         }
     }
+
+    pub fn zoom_designer(&self, file_path: &str, delta: i32, selected_control: Option<&str>) {
+        for tab in &self.editors {
+            if let EditorTab::Designer { surface } = tab {
+                if surface.file_path() == file_path {
+                    surface.zoom_by(delta, selected_control);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl EditorTab {

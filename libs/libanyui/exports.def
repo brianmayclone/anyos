@@ -133,6 +133,7 @@ anyui_marshal_set_text
     anyui_datagrid_set_row_count
     anyui_datagrid_get_row_count
     anyui_datagrid_set_selection_mode
+    anyui_datagrid_set_editable_columns
     anyui_datagrid_get_selected_row
     anyui_datagrid_set_selected_row
     anyui_datagrid_is_row_selected
@@ -200,6 +201,8 @@ anyui_marshal_set_text
     anyui_get_size
     anyui_get_position
     anyui_get_abs_position
+    anyui_scrollview_get_offsets
+    anyui_scrollview_set_offsets
     anyui_datagrid_get_scroll_offset
     anyui_datagrid_set_scroll_offset
     anyui_measure_text

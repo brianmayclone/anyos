@@ -130,6 +130,58 @@ pub const PRELUDE_TYPES: &[KnownItem] = &[
         local_name: "Sized",
         full_path: "Sized",
     },
+    KnownItem {
+        local_name: "AtomicBool",
+        full_path: "core::sync::atomic::AtomicBool",
+    },
+    KnownItem {
+        local_name: "AtomicI8",
+        full_path: "core::sync::atomic::AtomicI8",
+    },
+    KnownItem {
+        local_name: "AtomicI16",
+        full_path: "core::sync::atomic::AtomicI16",
+    },
+    KnownItem {
+        local_name: "AtomicI32",
+        full_path: "core::sync::atomic::AtomicI32",
+    },
+    KnownItem {
+        local_name: "AtomicI64",
+        full_path: "core::sync::atomic::AtomicI64",
+    },
+    KnownItem {
+        local_name: "AtomicIsize",
+        full_path: "core::sync::atomic::AtomicIsize",
+    },
+    KnownItem {
+        local_name: "AtomicU8",
+        full_path: "core::sync::atomic::AtomicU8",
+    },
+    KnownItem {
+        local_name: "AtomicU16",
+        full_path: "core::sync::atomic::AtomicU16",
+    },
+    KnownItem {
+        local_name: "AtomicU32",
+        full_path: "core::sync::atomic::AtomicU32",
+    },
+    KnownItem {
+        local_name: "AtomicU64",
+        full_path: "core::sync::atomic::AtomicU64",
+    },
+    KnownItem {
+        local_name: "AtomicUsize",
+        full_path: "core::sync::atomic::AtomicUsize",
+    },
+    KnownItem {
+        local_name: "Ordering",
+        full_path: "core::sync::atomic::Ordering",
+    },
+    KnownItem {
+        local_name: "Layout",
+        full_path: "core::alloc::Layout",
+    },
 ];
 
 pub const PRELUDE_VALUES: &[KnownItem] = &[
@@ -172,6 +224,22 @@ pub const PRELUDE_VALUES: &[KnownItem] = &[
     KnownItem {
         local_name: "drop",
         full_path: "drop",
+    },
+    KnownItem {
+        local_name: "alloc",
+        full_path: "alloc::alloc::alloc",
+    },
+    KnownItem {
+        local_name: "alloc_zeroed",
+        full_path: "alloc::alloc::alloc_zeroed",
+    },
+    KnownItem {
+        local_name: "dealloc",
+        full_path: "alloc::alloc::dealloc",
+    },
+    KnownItem {
+        local_name: "handle_alloc_error",
+        full_path: "alloc::alloc::handle_alloc_error",
     },
 ];
 

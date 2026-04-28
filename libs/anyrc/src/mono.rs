@@ -426,6 +426,7 @@ impl TypeckResult {
     pub fn clone_for_mono(&self) -> TypeckResult {
         TypeckResult {
             expr_types: self.expr_types.clone(),
+            local_types: self.local_types.clone(),
             struct_defs: self.struct_defs.clone(),
             fn_sigs: self.fn_sigs.clone(),
             errors: Vec::new(),

@@ -17,6 +17,7 @@ mod window;
 mod xhr;
 
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec;
@@ -284,6 +285,8 @@ struct DomBridge {
     pending_navigation_requests: Vec<PendingNavigationRequest>,
     /// Pending timers (setTimeout / setInterval).
     timers: Vec<PendingTimer>,
+    /// Pending Web Animations started from Element.animate().
+    pending_style_animations: Vec<StyleAnimation>,
     /// Next timer ID.
     next_timer_id: u32,
     /// Set by `stopPropagation()` — halts moving to the next node, but
@@ -439,6 +442,20 @@ pub enum DomMutation {
     FormReset {
         form_node_id: usize,
     },
+}
+
+#[derive(Clone)]
+pub struct StyleAnimation {
+    pub node_id: i64,
+    pub duration_ms: u64,
+    pub delay_ms: u64,
+    pub elapsed_ms: u64,
+    pub iterations: u32,
+    pub fill_forwards: bool,
+    pub from_opacity: Option<f32>,
+    pub to_opacity: Option<f32>,
+    pub from_transform: Option<String>,
+    pub to_transform: Option<String>,
 }
 
 /// A pending HTTP request from XMLHttpRequest / fetch.
@@ -620,6 +637,10 @@ pub struct PendingWsClose {
 pub struct PendingTimer {
     pub id: u32,
     pub callback: JsValue,
+    /// `this` value used when invoking the callback.
+    pub this_arg: JsValue,
+    /// Arguments passed to the callback when the timer fires.
+    pub args: Vec<JsValue>,
     pub delay_ms: u64,
     pub repeat: bool,
     /// Accumulated time since creation/last fire.
@@ -708,6 +729,8 @@ pub struct JsRuntime {
     pub active_animations: Vec<ActiveAnimation>,
     /// Currently running CSS transitions.
     pub active_transitions: Vec<ActiveTransition>,
+    /// Native Web Animations API animations driven by the browser tick.
+    pub active_style_animations: Vec<StyleAnimation>,
     /// Total elapsed time since page load (ms) — used as DOMHighResTimeStamp for rAF callbacks.
     total_elapsed_ms: u64,
     /// Viewport dimensions exposed to `window`.
@@ -715,6 +738,25 @@ pub struct JsRuntime {
     viewport_height: u32,
     native_api_initialized: bool,
     native_api_url: String,
+}
+
+fn js_exception_summary(exc: &JsValue) -> String {
+    match exc {
+        JsValue::String(s) => s.clone(),
+        JsValue::Object(obj) => {
+            let o = obj.borrow();
+            let name = match o.get("name") {
+                JsValue::String(s) => s,
+                _ => String::from("Error"),
+            };
+            let msg = match o.get("message") {
+                JsValue::String(s) => s,
+                _ => String::from("(no message)"),
+            };
+            format!("{}: {}", name, msg)
+        }
+        other => format!("{:?}", other),
+    }
 }
 
 impl JsRuntime {
@@ -739,6 +781,7 @@ impl JsRuntime {
             ws_registry: Vec::new(),
             active_animations: Vec::new(),
             active_transitions: Vec::new(),
+            active_style_animations: Vec::new(),
             total_elapsed_ms: 0,
             viewport_width: 1024,
             viewport_height: 768,
@@ -885,6 +928,7 @@ impl JsRuntime {
             pending_ws_closes: Vec::new(),
             ws_registry: Vec::new(),
             remove_listeners: Vec::new(),
+            pending_style_animations: Vec::new(),
         };
         anyos_std::println!(
             "[js] setup bridge ready: mutations={} listeners={} pending_http={} timers={}",
@@ -998,22 +1042,7 @@ impl JsRuntime {
 
             // Check for unhandled exceptions.
             if let Some(ref exc) = self.engine.vm().last_exception {
-                let exc_str = match exc {
-                    JsValue::String(s) => s.clone(),
-                    JsValue::Object(obj) => {
-                        let o = obj.borrow();
-                        let name = match o.get("name") {
-                            JsValue::String(s) => s,
-                            _ => String::from("Error"),
-                        };
-                        let msg = match o.get("message") {
-                            JsValue::String(s) => s,
-                            _ => String::from("(no message)"),
-                        };
-                        alloc::format!("{}: {}", name, msg)
-                    }
-                    other => alloc::format!("{:?}", other),
-                };
+                let exc_str = js_exception_summary(exc);
                 anyos_std::println!("[js] !! script #{} EXCEPTION: {}", idx, exc_str);
                 // Clear last_exception so next script can run fresh.
                 self.engine.vm().last_exception = None;
@@ -1068,6 +1097,8 @@ impl JsRuntime {
         self.pending_navigation_requests = bridge.pending_navigation_requests;
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
+        self.active_style_animations
+            .extend(bridge.pending_style_animations);
         self.pending_ws_connects.extend(bridge.pending_ws_connects);
         self.pending_ws_sends.extend(bridge.pending_ws_sends);
         self.pending_ws_closes.extend(bridge.pending_ws_closes);
@@ -1237,6 +1268,7 @@ impl JsRuntime {
         anyos_std::println!("[js] setup native api: timer globals begin");
         vm.set_global("setTimeout", native_fn("setTimeout", native_set_timeout));
         vm.set_global("setInterval", native_fn("setInterval", native_set_interval));
+        vm.set_global("setImmediate", native_fn("setImmediate", native_set_immediate));
         vm.set_global(
             "clearTimeout",
             native_fn("clearTimeout", native_clear_timeout),
@@ -1244,6 +1276,10 @@ impl JsRuntime {
         vm.set_global(
             "clearInterval",
             native_fn("clearInterval", native_clear_interval),
+        );
+        vm.set_global(
+            "clearImmediate",
+            native_fn("clearImmediate", native_clear_timeout),
         );
         vm.set_global(
             "requestAnimationFrame",
@@ -1285,6 +1321,7 @@ impl JsRuntime {
             pending_ws_closes: Vec::new(),
             ws_registry: Vec::new(),
             remove_listeners: Vec::new(),
+            pending_style_animations: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
@@ -1317,6 +1354,8 @@ impl JsRuntime {
             .extend(bridge.pending_navigation_requests);
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
+        self.active_style_animations
+            .extend(bridge.pending_style_animations);
         self.engine.vm().userdata = core::ptr::null_mut();
         result
     }
@@ -1350,6 +1389,7 @@ impl JsRuntime {
         self.ws_registry.clear();
         self.active_animations.clear();
         self.active_transitions.clear();
+        self.active_style_animations.clear();
         self.native_api_initialized = false;
         self.native_api_url.clear();
     }
@@ -1778,6 +1818,7 @@ impl JsRuntime {
             pending_ws_closes: Vec::new(),
             ws_registry: Vec::new(),
             remove_listeners: Vec::new(),
+            pending_style_animations: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
         unsafe {
@@ -1960,6 +2001,7 @@ impl JsRuntime {
                     pending_ws_closes: Vec::new(),
                     ws_registry: Vec::new(),
                     remove_listeners: Vec::new(),
+                    pending_style_animations: Vec::new(),
                 };
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
                 unsafe {
@@ -1976,15 +2018,26 @@ impl JsRuntime {
                 let cb_args: Vec<JsValue> = if t.is_raf {
                     vec![JsValue::Number(self.total_elapsed_ms as f64)]
                 } else {
-                    Vec::new()
+                    t.args.clone()
                 };
                 self.engine
                     .vm()
-                    .call_value(&t.callback, &cb_args, JsValue::Undefined);
+                    .call_value(&t.callback, &cb_args, t.this_arg.clone());
 
                 // Drain microtask queue after each macrotask (ECMAScript spec:
                 // all microtasks run to completion before the next macrotask).
                 self.engine.vm().drain_microtasks();
+
+                #[cfg(feature = "host")]
+                if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+                    if let Some(ref exc) = self.engine.vm().last_exception {
+                        eprintln!(
+                            "[js-dom-debug] timer id={} exception: {}",
+                            t.id,
+                            js_exception_summary(exc)
+                        );
+                    }
+                }
 
                 // Clear any timer callback exceptions so next timer can run fresh.
                 self.engine.vm().last_exception = None;
@@ -2013,6 +2066,8 @@ impl JsRuntime {
                 self.pending_navigation_requests
                     .extend(bridge.pending_navigation_requests);
                 self.next_timer_id = bridge.next_timer_id;
+                self.active_style_animations
+                    .extend(bridge.pending_style_animations);
                 // New timers created during callback.
                 keep.extend(bridge.timers);
                 self.engine.vm().userdata = core::ptr::null_mut();
@@ -2153,6 +2208,72 @@ impl JsRuntime {
                 });
             }
         }
+    }
+
+    /// Advance native Web Animations API animations created by Element.animate().
+    ///
+    /// These animations write only compositor-friendly inline style properties
+    /// (`opacity`, `transform`) into the normal mutation path. That keeps the
+    /// implementation cheap and lets the existing incremental relayout/paint
+    /// path decide how much needs to be refreshed.
+    pub fn advance_style_animations(&mut self, delta_ms: u64) -> usize {
+        if self.active_style_animations.is_empty() {
+            return 0;
+        }
+
+        let mut changed = 0usize;
+        let mut keep = Vec::new();
+        let animations = core::mem::take(&mut self.active_style_animations);
+        for mut anim in animations {
+            anim.elapsed_ms = anim.elapsed_ms.saturating_add(delta_ms);
+            let active_elapsed = anim.elapsed_ms.saturating_sub(anim.delay_ms);
+            let duration = anim.duration_ms.max(1);
+            let iteration = active_elapsed / duration;
+            let iteration_count = if anim.iterations == 0 {
+                u64::MAX
+            } else {
+                anim.iterations as u64
+            };
+            let finished = iteration >= iteration_count;
+            let local_elapsed = if finished {
+                duration
+            } else {
+                active_elapsed % duration
+            };
+            let t = if anim.elapsed_ms < anim.delay_ms {
+                0.0
+            } else {
+                (local_elapsed as f32 / duration as f32).clamp(0.0, 1.0)
+            };
+
+            if !finished || anim.fill_forwards {
+                if let (Some(from), Some(to)) = (anim.from_opacity, anim.to_opacity) {
+                    let value = from + (to - from) * t;
+                    self.mutations.push(DomMutation::SetStyleProperty {
+                        node_id: anim.node_id,
+                        property: String::from("opacity"),
+                        value: format!("{}", value.clamp(0.0, 1.0)),
+                    });
+                    changed += 1;
+                }
+                if let (Some(from), Some(to)) = (&anim.from_transform, &anim.to_transform) {
+                    let value = interpolate_transform_value(from, to, (t * 1000.0) as i32)
+                        .unwrap_or_else(|| if t >= 1.0 { to.clone() } else { from.clone() });
+                    self.mutations.push(DomMutation::SetStyleProperty {
+                        node_id: anim.node_id,
+                        property: String::from("transform"),
+                        value,
+                    });
+                    changed += 1;
+                }
+            }
+
+            if !finished {
+                keep.push(anim);
+            }
+        }
+        self.active_style_animations = keep;
+        changed
     }
 
     /// Advance all active animations and transitions by `delta_ms`.
@@ -3064,6 +3185,99 @@ mod tests {
     }
 
     #[test]
+    fn set_immediate_runs_as_zero_delay_macrotask_with_args() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                globalThis.__immediate_value = 'pending';
+                setImmediate((a, b) => {
+                    globalThis.__immediate_value = a + ':' + b;
+                }, 'core', 'vm');
+                "#,
+            )],
+        );
+
+        assert_eq!(runtime.tick(&dom, 0), 1);
+        assert!(matches!(
+            runtime.engine.vm().get_global("__immediate_value"),
+            JsValue::String(ref s) if s == "core:vm"
+        ));
+    }
+
+    #[test]
+    fn prefers_reduced_motion_reports_no_preference() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                globalThis.__reduced_motion_bool = matchMedia('(prefers-reduced-motion)').matches;
+                globalThis.__reduced_motion_reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+                globalThis.__reduced_motion_none = matchMedia('(prefers-reduced-motion: no-preference)').matches;
+                "#,
+            )],
+        );
+
+        assert!(matches!(
+            runtime.engine.vm().get_global("__reduced_motion_bool"),
+            JsValue::Bool(false)
+        ));
+        assert!(matches!(
+            runtime.engine.vm().get_global("__reduced_motion_reduce"),
+            JsValue::Bool(false)
+        ));
+        assert!(matches!(
+            runtime.engine.vm().get_global("__reduced_motion_none"),
+            JsValue::Bool(true)
+        ));
+    }
+
+    #[test]
+    fn request_animation_frame_can_drive_style_frames() {
+        let mut dom = html::parse("<html><body><div id=\"root\"></div></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                const el = document.createElement('div');
+                el.style.opacity = '0';
+                document.getElementById('root').appendChild(el);
+                let frames = 0;
+                function step() {
+                    frames++;
+                    el.style.opacity = frames >= 2 ? '1' : '0.5';
+                    if (frames < 2) requestAnimationFrame(step);
+                }
+                requestAnimationFrame(step);
+                "#,
+            )],
+        );
+        runtime.apply_mutations(&mut dom);
+
+        assert_eq!(runtime.tick(&dom, 16), 1);
+        runtime.apply_mutations(&mut dom);
+        assert!(runtime.timers.len() >= 1);
+        assert_eq!(runtime.tick(&dom, 16), 1);
+        runtime.apply_mutations(&mut dom);
+
+        assert!(dom.nodes.iter().any(|node| {
+            matches!(
+                &node.node_type,
+                crate::dom::NodeType::Element { attrs, .. }
+                    if attrs.iter().any(|a| a.name == "style" && a.value.contains("opacity: 1"))
+            )
+        }));
+    }
+
+    #[test]
     fn object_assign_class_name_updates_virtual_node_attribute() {
         let mut dom = html::parse("<html><body><div id=\"root\"></div></body></html>");
         let mut runtime = JsRuntime::new();
@@ -3265,6 +3479,8 @@ fn native_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         bridge.timers.push(PendingTimer {
             id,
             callback,
+            this_arg: JsValue::Undefined,
+            args: args.iter().skip(2).cloned().collect(),
             delay_ms: delay,
             repeat: false,
             elapsed_ms: 0,
@@ -3291,8 +3507,34 @@ fn native_set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         bridge.timers.push(PendingTimer {
             id,
             callback,
+            this_arg: JsValue::Undefined,
+            args: args.iter().skip(2).cloned().collect(),
             delay_ms: delay,
             repeat: true,
+            elapsed_ms: 0,
+            is_raf: false,
+        });
+        return JsValue::Number(id as f64);
+    }
+    JsValue::Number(0.0)
+}
+
+fn native_set_immediate(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if let Some(bridge) = get_bridge(vm) {
+        let id = bridge.next_timer_id;
+        bridge.next_timer_id += 1;
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+            eprintln!("[js-dom-debug] setImmediate id={}", id);
+        }
+        bridge.timers.push(PendingTimer {
+            id,
+            callback,
+            this_arg: JsValue::Undefined,
+            args: args.iter().skip(1).cloned().collect(),
+            delay_ms: 0,
+            repeat: false,
             elapsed_ms: 0,
             is_raf: false,
         });
@@ -3326,6 +3568,8 @@ fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         bridge.timers.push(PendingTimer {
             id,
             callback,
+            this_arg: JsValue::Undefined,
+            args: Vec::new(),
             delay_ms: 16,
             repeat: false,
             elapsed_ms: 0,
@@ -3397,6 +3641,11 @@ fn interpolate_decl(
 
     let from_val = from.map(|d| &d.value);
     let blended = match (&from_val, &to.value) {
+        (Some(CssValue::Keyword(a)), CssValue::Keyword(b))
+            if matches!(to.property, Property::Transform) =>
+        {
+            interpolate_transform_value(a, b, t).map(CssValue::Keyword)?
+        }
         (Some(CssValue::Number(a)), CssValue::Number(b)) => CssValue::Number(lerp_i32(*a, *b, t)),
         (Some(CssValue::Length(a, ua)), CssValue::Length(b, ub)) if ua == ub => {
             CssValue::Length(lerp_i32(*a, *b, t), *ub)
@@ -3451,6 +3700,181 @@ fn lerp_color(a: u32, b: u32, t: i32) -> u32 {
     out
 }
 
+#[derive(Clone, Copy)]
+struct TransformParts {
+    tx: i32,
+    ty: i32,
+    tx_pct: i32,
+    ty_pct: i32,
+    sx: i32,
+    sy: i32,
+    rotate: i32,
+}
+
+impl TransformParts {
+    fn identity() -> Self {
+        Self {
+            tx: 0,
+            ty: 0,
+            tx_pct: 0,
+            ty_pct: 0,
+            sx: 1000,
+            sy: 1000,
+            rotate: 0,
+        }
+    }
+}
+
+fn interpolate_transform_value(from: &str, to: &str, t: i32) -> Option<String> {
+    let a = parse_transform_parts(from)?;
+    let b = parse_transform_parts(to)?;
+    let tx = lerp_i32(a.tx, b.tx, t);
+    let ty = lerp_i32(a.ty, b.ty, t);
+    let tx_pct = lerp_i32(a.tx_pct, b.tx_pct, t);
+    let ty_pct = lerp_i32(a.ty_pct, b.ty_pct, t);
+    let sx = lerp_i32(a.sx, b.sx, t).max(1);
+    let sy = lerp_i32(a.sy, b.sy, t).max(1);
+    let rotate = lerp_i32(a.rotate, b.rotate, t);
+    Some(format!(
+        "translate({}px, {}px) translate({}%, {}%) scale({}, {}) rotate({}deg)",
+        tx / 100,
+        ty / 100,
+        tx_pct / 100,
+        ty_pct / 100,
+        sx as f32 / 1000.0,
+        sy as f32 / 1000.0,
+        rotate as f32 / 100.0
+    ))
+}
+
+fn parse_transform_parts(s: &str) -> Option<TransformParts> {
+    let s = s.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("none") {
+        return Some(TransformParts::identity());
+    }
+
+    let mut out = TransformParts::identity();
+    let mut pos = 0usize;
+    let bytes = s.as_bytes();
+    while pos < bytes.len() {
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if pos >= bytes.len() {
+            break;
+        }
+
+        let name_start = pos;
+        while pos < bytes.len() && bytes[pos] != b'(' && !bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        let name = core::str::from_utf8(&bytes[name_start..pos]).ok()?;
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if pos >= bytes.len() || bytes[pos] != b'(' {
+            return None;
+        }
+        pos += 1;
+        let args_start = pos;
+        let mut depth = 1u32;
+        while pos < bytes.len() && depth > 0 {
+            match bytes[pos] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            pos += 1;
+        }
+        if depth != 0 {
+            return None;
+        }
+        let args = core::str::from_utf8(&bytes[args_start..pos.saturating_sub(1)]).ok()?;
+        let parts: Vec<&str> = if args.contains(',') {
+            args.split(',').map(str::trim).collect()
+        } else {
+            args.split_whitespace().collect()
+        };
+        match name.to_ascii_lowercase().as_str() {
+            "translate" | "translate3d" => {
+                if let Some(x) = parts.first() {
+                    let (px, pct) = parse_transform_length_component(x)?;
+                    out.tx += px;
+                    out.tx_pct += pct;
+                }
+                if let Some(y) = parts.get(1) {
+                    let (px, pct) = parse_transform_length_component(y)?;
+                    out.ty += px;
+                    out.ty_pct += pct;
+                }
+            }
+            "translatex" => {
+                let (px, pct) = parse_transform_length_component(parts.first().copied().unwrap_or("0"))?;
+                out.tx += px;
+                out.tx_pct += pct;
+            }
+            "translatey" => {
+                let (px, pct) = parse_transform_length_component(parts.first().copied().unwrap_or("0"))?;
+                out.ty += px;
+                out.ty_pct += pct;
+            }
+            "scale" => {
+                let sx = parse_scale_component(parts.first().copied().unwrap_or("1"))?;
+                let sy = if let Some(v) = parts.get(1) {
+                    parse_scale_component(v)?
+                } else {
+                    sx
+                };
+                out.sx = out.sx * sx / 1000;
+                out.sy = out.sy * sy / 1000;
+            }
+            "scalex" => out.sx = out.sx * parse_scale_component(parts.first().copied().unwrap_or("1"))? / 1000,
+            "scaley" => out.sy = out.sy * parse_scale_component(parts.first().copied().unwrap_or("1"))? / 1000,
+            "rotate" | "rotatez" => {
+                out.rotate += parse_angle_component(parts.first().copied().unwrap_or("0"))?;
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+fn parse_transform_length_component(s: &str) -> Option<(i32, i32)> {
+    let s = s.trim();
+    if s == "0" || s == "+0" || s == "-0" {
+        return Some((0, 0));
+    }
+    if let Some(v) = s.strip_suffix('%') {
+        return Some((0, (v.trim().parse::<f32>().ok()? * 100.0) as i32));
+    }
+    let number = s
+        .strip_suffix("px")
+        .or_else(|| s.strip_suffix("rem"))
+        .or_else(|| s.strip_suffix("em"))
+        .unwrap_or(s)
+        .trim()
+        .parse::<f32>()
+        .ok()?;
+    Some(((number * 100.0) as i32, 0))
+}
+
+fn parse_scale_component(s: &str) -> Option<i32> {
+    Some((s.trim().parse::<f32>().ok()? * 1000.0) as i32)
+}
+
+fn parse_angle_component(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if let Some(v) = s.strip_suffix("deg") {
+        Some((v.trim().parse::<f32>().ok()? * 100.0) as i32)
+    } else if let Some(v) = s.strip_suffix("turn") {
+        Some((v.trim().parse::<f32>().ok()? * 36000.0) as i32)
+    } else if let Some(v) = s.strip_suffix("rad") {
+        Some((v.trim().parse::<f32>().ok()? * 18000.0 / core::f32::consts::PI) as i32)
+    } else {
+        Some((s.parse::<f32>().ok()? * 100.0) as i32)
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // CSS Transition helpers
 // ═══════════════════════════════════════════════════════════
@@ -3495,6 +3919,7 @@ const ANIMATABLE_PROPERTIES: &[Property] = &[
     Property::ColumnGap,
     Property::Order,
     Property::ZIndex,
+    Property::Transform,
 ];
 
 /// Extract a `Declaration` from a `ComputedStyle` for a given `Property`.
@@ -3505,7 +3930,7 @@ fn computed_style_to_decl(
     prop: &Property,
 ) -> Option<crate::css::Declaration> {
     let value = match prop {
-        Property::Opacity => CssValue::Number(s.opacity),
+        Property::Opacity => CssValue::Number((s.opacity * 100 + 127) / 255),
         Property::Color => CssValue::Color(s.color),
         Property::BackgroundColor => CssValue::Color(s.background_color),
         Property::BorderColor => CssValue::Color(s.border_color),
@@ -3564,6 +3989,16 @@ fn computed_style_to_decl(
         Property::ColumnGap => CssValue::Length(s.column_gap * 100, Unit::Px),
         Property::Order => CssValue::Number(s.order),
         Property::ZIndex => CssValue::Number(s.z_index),
+        Property::Transform => CssValue::Keyword(format!(
+            "translate({}px, {}px) translate({}%, {}%) scale({}, {}) rotate({}deg)",
+            s.transform_tx,
+            s.transform_ty,
+            s.transform_tx_pct / 100,
+            s.transform_ty_pct / 100,
+            s.transform_sx as f32 / 1000.0,
+            s.transform_sy as f32 / 1000.0,
+            s.transform_rotate as f32 / 100.0
+        )),
         _ => return None,
     };
     Some(crate::css::Declaration {

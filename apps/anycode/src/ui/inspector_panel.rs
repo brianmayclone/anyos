@@ -10,11 +10,15 @@ pub struct InspectorPanel {
     pub panel: ui::View,
     pub property_dropdown: ui::DropDown,
     pub property_grid: ui::DataGrid,
+    pub event_grid: ui::DataGrid,
     pub property_value: ui::TextField,
     pub btn_apply_property: ui::Button,
     pub btn_delete_control: ui::Button,
     title: ui::Label,
     subtitle: ui::Label,
+    tabs: ui::TabBar,
+    property_page: ui::View,
+    event_page: ui::View,
     tree: ui::TreeView,
     property_editor: ui::View,
 }
@@ -46,37 +50,77 @@ impl InspectorPanel {
         subtitle.set_text_color(tc.text_secondary);
         header.add(&subtitle);
 
+        let tabs = ui::TabBar::new("Properties|Events");
+        tabs.set_dock(ui::DOCK_TOP);
+        tabs.set_size(240, 30);
+        tabs.set_color(tc.toolbar_bg);
+        tabs.set_style(ui::STYLE_ACTIVE_BG, tc.sidebar_bg);
+        tabs.set_style(ui::STYLE_ACTIVE_TEXT, tc.text);
+        tabs.set_style(ui::STYLE_INACTIVE_BG, tc.toolbar_bg);
+        tabs.set_style(ui::STYLE_INACTIVE_TEXT, tc.text_secondary);
+        tabs.set_style(ui::STYLE_HOVER_BG, tc.control_hover);
+        tabs.set_style(ui::STYLE_ACCENT, tc.accent);
+        tabs.set_style(ui::STYLE_RADIUS, 3);
+        tabs.set_visible(false);
+        panel.add(&tabs);
+
+        let property_page = ui::View::new();
+        property_page.set_dock(ui::DOCK_FILL);
+        property_page.set_color(tc.sidebar_bg);
+        property_page.set_visible(false);
+        panel.add(&property_page);
+
+        let event_page = ui::View::new();
+        event_page.set_dock(ui::DOCK_FILL);
+        event_page.set_color(tc.sidebar_bg);
+        event_page.set_visible(false);
+        panel.add(&event_page);
+
         let tree = ui::TreeView::new(240, 420);
         tree.set_dock(ui::DOCK_FILL);
         tree.set_indent_width(14);
         tree.set_row_height(20);
-        panel.add(&tree);
+        property_page.add(&tree);
 
         let property_grid = ui::DataGrid::new(240, 320);
         property_grid.set_dock(ui::DOCK_FILL);
         property_grid.set_columns(&[
-            ui::ColumnDef::new("Property").width(88),
-            ui::ColumnDef::new("Value").width(104),
-            ui::ColumnDef::new("Editor").width(48),
+            ui::ColumnDef::new("Property").width(94),
+            ui::ColumnDef::new("Value").width(146),
         ]);
         property_grid.set_row_height(22);
         property_grid.set_header_height(24);
         property_grid.set_selection_mode(ui::SELECTION_SINGLE);
+        property_grid.set_editable_columns(1 << 1);
         property_grid.set_visible(false);
-        panel.add(&property_grid);
+        property_page.add(&property_grid);
+
+        let event_grid = ui::DataGrid::new(240, 320);
+        event_grid.set_dock(ui::DOCK_FILL);
+        event_grid.set_columns(&[
+            ui::ColumnDef::new("Event").width(94),
+            ui::ColumnDef::new("Handler").width(142),
+        ]);
+        event_grid.set_row_height(22);
+        event_grid.set_header_height(24);
+        event_grid.set_selection_mode(ui::SELECTION_SINGLE);
+        event_grid.set_editable_columns(1 << 1);
+        event_grid.set_visible(true);
+        event_page.add(&event_grid);
 
         let property_editor = ui::View::new();
         property_editor.set_dock(ui::DOCK_BOTTOM);
-        property_editor.set_size(240, 128);
+        property_editor.set_size(240, 42);
         property_editor.set_color(tc.sidebar_bg);
         property_editor.set_visible(false);
-        panel.add(&property_editor);
+        property_page.add(&property_editor);
 
         let property_title = ui::Label::new("Value");
         property_title.set_position(12, 8);
         property_title.set_size(210, 18);
         property_title.set_font_size(11);
         property_title.set_text_color(tc.text_secondary);
+        property_title.set_visible(false);
         property_editor.add(&property_title);
 
         let property_dropdown = ui::DropDown::new("Text|X|Y|Width|Height");
@@ -90,17 +134,19 @@ impl InspectorPanel {
         property_value.set_size(216, 28);
         property_value.set_color(tc.control_bg);
         property_value.set_text_color(tc.text);
+        property_value.set_visible(false);
         property_editor.add(&property_value);
 
         let btn_apply_property = ui::Button::new("Apply");
         btn_apply_property.set_position(12, 66);
         btn_apply_property.set_size(104, 28);
         btn_apply_property.set_color(tc.accent);
+        btn_apply_property.set_visible(false);
         property_editor.add(&btn_apply_property);
 
         let btn_delete_control = ui::Button::new("Delete Control");
-        btn_delete_control.set_position(124, 66);
-        btn_delete_control.set_size(104, 28);
+        btn_delete_control.set_position(12, 7);
+        btn_delete_control.set_size(216, 28);
         btn_delete_control.set_color(0xff7f1d1d);
         property_editor.add(&btn_delete_control);
 
@@ -108,14 +154,20 @@ impl InspectorPanel {
             panel,
             property_dropdown,
             property_grid,
+            event_grid,
             property_value,
             btn_apply_property,
             btn_delete_control,
             title,
             subtitle,
+            tabs,
+            property_page,
+            event_page,
             tree,
             property_editor,
         };
+        this.tabs
+            .connect_panels(&[&this.property_page, &this.event_page]);
         this.show_empty();
         this
     }
@@ -124,6 +176,9 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Properties");
         self.subtitle.set_text("No selection");
+        self.tabs.set_visible(false);
+        self.property_page.set_visible(true);
+        self.event_page.set_visible(false);
         self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
         self.tree.set_dock(ui::DOCK_FILL);
@@ -142,6 +197,9 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Properties");
         self.subtitle.set_text(file_path);
+        self.tabs.set_visible(false);
+        self.property_page.set_visible(true);
+        self.event_page.set_visible(false);
         self.property_grid.set_visible(false);
         self.property_editor.set_visible(false);
         self.tree.set_dock(ui::DOCK_FILL);
@@ -158,7 +216,10 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Designer Properties");
         self.subtitle.set_text(&doc.form_name);
-        self.property_editor.set_visible(true);
+        self.tabs.set_visible(true);
+        self.property_page.set_visible(self.tabs.get_state() == 0);
+        self.event_page.set_visible(self.tabs.get_state() == 1);
+        self.property_editor.set_visible(false);
         self.property_grid.set_visible(true);
         self.btn_delete_control.set_visible(false);
         self.property_dropdown.set_items(&doc.form_property_items());
@@ -166,6 +227,7 @@ impl InspectorPanel {
         self.property_value
             .set_text(&doc.form_property_value("Title"));
         self.populate_form_property_grid(doc);
+        self.populate_form_event_grid(doc);
         self.tree.set_dock(ui::DOCK_BOTTOM);
         self.tree.set_size(240, 150);
         self.tree.set_visible(true);
@@ -215,6 +277,9 @@ impl InspectorPanel {
         self.title.set_text("Properties");
         self.subtitle
             .set_text(&format!("{} / {}", doc.form_name, control.name));
+        self.tabs.set_visible(true);
+        self.property_page.set_visible(self.tabs.get_state() == 0);
+        self.event_page.set_visible(self.tabs.get_state() == 1);
         self.property_editor.set_visible(true);
         self.property_grid.set_visible(true);
         self.btn_delete_control.set_visible(true);
@@ -226,6 +291,7 @@ impl InspectorPanel {
         self.property_value
             .set_text(&control.property_value("Text"));
         self.populate_property_grid(control);
+        self.populate_control_event_grid(control);
         self.tree.clear();
 
         let root = self.tree.add_root(&control.name);
@@ -293,6 +359,36 @@ impl InspectorPanel {
             .into()
     }
 
+    pub fn property_grid_value_text(&self) -> alloc::string::String {
+        let row = self.property_grid.selected_row();
+        if row == u32::MAX {
+            return self.property_value_text();
+        }
+        let mut buf = [0u8; 512];
+        let len = self.property_grid.get_cell(row, 1, &mut buf);
+        core::str::from_utf8(&buf[..len as usize])
+            .unwrap_or("")
+            .trim()
+            .into()
+    }
+
+    pub fn selected_event_index(&self) -> u32 {
+        self.event_grid.selected_row()
+    }
+
+    pub fn event_grid_handler_text(&self) -> alloc::string::String {
+        let row = self.event_grid.selected_row();
+        if row == u32::MAX {
+            return String::new();
+        }
+        let mut buf = [0u8; 512];
+        let len = self.event_grid.get_cell(row, 1, &mut buf);
+        core::str::from_utf8(&buf[..len as usize])
+            .unwrap_or("")
+            .trim()
+            .into()
+    }
+
     fn populate_property_grid(&self, control: &DesignerControl) {
         let mut raw = String::new();
         let mut row = 0u32;
@@ -303,8 +399,6 @@ impl InspectorPanel {
             append_grid_cell(&mut raw, name);
             raw.push('\x1f');
             append_grid_cell(&mut raw, &control.property_value(name));
-            raw.push('\x1f');
-            append_grid_cell(&mut raw, property_editor_kind(name));
             row += 1;
         }
         self.property_grid.set_data_raw(raw.as_bytes());
@@ -323,14 +417,43 @@ impl InspectorPanel {
             append_grid_cell(&mut raw, name);
             raw.push('\x1f');
             append_grid_cell(&mut raw, &doc.form_property_value(name));
-            raw.push('\x1f');
-            append_grid_cell(&mut raw, property_editor_kind(name));
             row += 1;
         }
         self.property_grid.set_data_raw(raw.as_bytes());
         if row > 0 {
             self.property_grid.set_selected_row(0);
         }
+    }
+
+    fn populate_control_event_grid(&self, control: &DesignerControl) {
+        let mut raw = String::new();
+        for (row, name) in ["OnClick", "OnDoubleClick", "OnChanged", "OnSubmit"]
+            .iter()
+            .enumerate()
+        {
+            if row > 0 {
+                raw.push('\x1e');
+            }
+            append_grid_cell(&mut raw, name);
+            raw.push('\x1f');
+            append_grid_cell(&mut raw, &control.property_value(name));
+        }
+        self.event_grid.set_data_raw(raw.as_bytes());
+        self.event_grid.set_selected_row(0);
+    }
+
+    fn populate_form_event_grid(&self, doc: &DesignerDocument) {
+        let mut raw = String::new();
+        for (row, name) in doc.form_event_items().split('|').enumerate() {
+            if row > 0 {
+                raw.push('\x1e');
+            }
+            append_grid_cell(&mut raw, name);
+            raw.push('\x1f');
+            append_grid_cell(&mut raw, &doc.form_event_value(name));
+        }
+        self.event_grid.set_data_raw(raw.as_bytes());
+        self.event_grid.set_selected_row(0);
     }
 }
 
@@ -339,20 +462,5 @@ fn append_grid_cell(out: &mut String, value: &str) {
         if ch != '\x1e' && ch != '\x1f' {
             out.push(ch);
         }
-    }
-}
-
-fn property_editor_kind(name: &str) -> &'static str {
-    match name.to_ascii_lowercase().as_str() {
-        "x" | "y" | "width" | "height" | "fontsize" | "maxlength" | "selectedindex"
-        | "activepage" | "pageheight" | "rowheight" | "headerheight" | "indentwidth" | "value"
-        | "min" | "max" | "step" => "Int",
-        "enabled" | "visible" | "readonly" | "password" | "checked" | "interactive" => "Bool",
-        "textcolor" | "backgroundcolor" | "bordercolor" => "Color",
-        "dock" | "orientation" | "selectionmode" | "scalemode" | "textalign" | "fontweight" => {
-            "Enum"
-        }
-        "onclick" | "ondoubleclick" | "onchanged" | "onsubmit" => "Event",
-        _ => "Text",
     }
 }

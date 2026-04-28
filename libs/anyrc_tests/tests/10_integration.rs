@@ -89,6 +89,60 @@ fn run_string_from_and_push_str_len() {
 }
 
 #[test]
+fn run_vec_push_len() {
+    let source = r#"
+        fn main() -> i32 {
+            let mut v = Vec::new();
+            v.push(10);
+            v.push(32);
+            v.len() as i32
+        }
+    "#;
+
+    assert_eq!(compile_and_run(source), 2);
+}
+
+#[test]
+fn run_vec_drain_sums_items_and_clears_len() {
+    let source = r#"
+        fn main() -> i32 {
+            let mut v = Vec::new();
+            v.push(10);
+            v.push(32);
+            let mut sum = 0;
+            for x in v.drain(..) {
+                sum = sum + x;
+            }
+            sum + v.len() as i32
+        }
+    "#;
+
+    assert_eq!(compile_and_run(source), 42);
+}
+
+#[test]
+fn run_vec_drain_struct_items() {
+    let source = r#"
+        struct Tile {
+            a: i32,
+            b: i32,
+            c: i32,
+        }
+
+        fn main() -> i32 {
+            let mut v = Vec::new();
+            v.push(Tile { a: 7, b: 11, c: 24 });
+            for tile in v.drain(..) {
+                return tile.a + tile.b + tile.c;
+            }
+            0
+        }
+    "#;
+
+    assert_eq!(compile_and_run(source), 42);
+}
+
+#[test]
 fn mir_string_methods_lower_to_intrinsic_calls() {
     let source = r#"
         fn main() -> i32 {
@@ -109,8 +163,10 @@ fn mir_string_methods_lower_to_intrinsic_calls() {
     let mir = String::from_utf8(compile(source, "test.rs", &options).expect("compilation failed"))
         .expect("mir utf8");
     assert!(
-        mir.contains("fn String::from(") || mir.contains("fn from("),
-        "MIR missing String::from fallback:\n{mir}"
+        mir.contains("aggregate(Str(\"ab\"))")
+            || mir.contains("fn String::from(")
+            || mir.contains("fn from("),
+        "MIR missing String literal construction:\n{mir}"
     );
     assert!(
         mir.contains("fn String::push_str("),

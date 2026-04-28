@@ -2721,8 +2721,19 @@ impl<'a> MirBuilder<'a> {
                         self.locals[iter_local.0].mutability = Mutability::Mut;
                         self.emit_assign(Place::local(iter_local), Rvalue::Use(iter_op), expr.span);
 
-                        // Determine element type from the pattern or infer as i64 fallback
-                        let elem_ty = self.get_expr_ty(expr);
+                        // Determine element type from typeck's pattern binding when available.
+                        // The `for` expression itself has type `()`, so using its expression type
+                        // here would collapse iterator item payloads to Unit in MIR.
+                        let elem_ty = match pat {
+                            HirPattern::Ident(hir_id, _, _, _, _) => self
+                                .resolve
+                                .resolutions
+                                .get(hir_id)
+                                .and_then(|def_id| self.typeck.local_types.get(def_id))
+                                .cloned()
+                                .unwrap_or_else(|| self.get_expr_ty(expr)),
+                            _ => self.get_expr_ty(expr),
+                        };
 
                         let loop_header = self.push_block();
                         let loop_body = self.push_block();

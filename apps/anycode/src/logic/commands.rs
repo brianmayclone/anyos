@@ -728,6 +728,8 @@ fn active_editor_context() -> Option<(String, String, u32, u32)> {
 // ════════════════════════════════════════════════════════════════
 
 pub fn open_file(file_path: &str) {
+    clear_designer_drag_state();
+
     if let Some(designer_path) = designer::try_create_designer_from_rust_ui(file_path) {
         let s = app();
         s.welcome.hide();
@@ -778,6 +780,7 @@ const DESIGNER_SNAP: i32 = 8;
 
 pub fn designer_pointer_down_at(file_path: &str, x: i32, y: i32) {
     let s = app();
+    s.designer_drag_moved = false;
     let doc = match designer::load_designer(file_path) {
         Some(doc) => doc,
         None => return,
@@ -805,6 +808,7 @@ pub fn designer_pointer_down_at(file_path: &str, x: i32, y: i32) {
         s.designer_drag_orig_y = control.y;
         s.designer_drag_orig_w = control.width;
         s.designer_drag_orig_h = control.height;
+        s.designer_drag_moved = false;
         s.inspector_panel.show_designer_control(&doc, &control_name);
         s.editor_view
             .select_designer_control(file_path, &control_name);
@@ -816,6 +820,7 @@ pub fn designer_pointer_down_at(file_path: &str, x: i32, y: i32) {
         s.designer_drag_file.clear();
         s.designer_drag_control.clear();
         s.designer_drag_mode = crate::ui::designer_surface::DESIGNER_DRAG_NONE;
+        s.designer_drag_moved = false;
         s.inspector_panel.show_designer(&doc);
         s.status.set_analysis_status("Selected form surface");
     }
@@ -831,6 +836,18 @@ pub fn designer_pointer_up_at(file_path: &str, x: i32, y: i32) {
     s.designer_drag_file.clear();
     s.designer_drag_control.clear();
     s.designer_drag_mode = crate::ui::designer_surface::DESIGNER_DRAG_NONE;
+}
+
+pub fn designer_zoom(file_path: &str, delta: i32) {
+    let s = app();
+    let selected =
+        if s.selected_designer_file == file_path && !s.selected_designer_control.is_empty() {
+            Some(s.selected_designer_control.clone())
+        } else {
+            None
+        };
+    s.editor_view
+        .zoom_designer(file_path, delta, selected.as_deref());
 }
 
 pub fn designer_drop_tool_at(file_path: &str, x: i32, y: i32, payload: &str) {
@@ -911,6 +928,9 @@ fn update_designer_drag(file_path: &str, x: i32, y: i32, persist: bool) {
     };
     let dx = x - start_x;
     let dy = y - start_y;
+    if dx.abs() > 2 || dy.abs() > 2 {
+        s.designer_drag_moved = true;
+    }
     let (new_x, new_y, new_w, new_h) =
         designer_drag_bounds(drag_mode, orig_x, orig_y, orig_w, orig_h, dx, dy);
     if let Err(err) = doc.set_control_bounds(&control_name, new_x, new_y, new_w, new_h) {
@@ -1011,6 +1031,13 @@ fn snap_i32(value: i32, grid: i32) -> i32 {
 
 pub fn designer_double_click_at(file_path: &str, x: i32, y: i32) {
     let s = app();
+    if s.designer_drag_moved {
+        clear_designer_drag_state();
+        s.designer_drag_moved = false;
+        s.status
+            .set_analysis_status("Ignored double-click while moving designer control");
+        return;
+    }
     let doc = match designer::load_designer(file_path) {
         Some(doc) => doc,
         None => return,
@@ -1032,6 +1059,7 @@ pub fn designer_double_click_at(file_path: &str, x: i32, y: i32) {
             s.selected_designer_file = String::from(file_path);
             s.selected_designer_control = control_name.clone();
             s.inspector_panel.show_designer_control(&doc, &control_name);
+            clear_designer_drag_state();
             open_file(&events_path);
             jump_to_text_in_active_editor(&format!("pub fn {}()", control.event_name()));
             s.status
@@ -1039,6 +1067,19 @@ pub fn designer_double_click_at(file_path: &str, x: i32, y: i32) {
         }
         Err(err) => s.status.set_analysis_status(err),
     }
+}
+
+fn clear_designer_drag_state() {
+    let s = app();
+    s.designer_drag_file.clear();
+    s.designer_drag_control.clear();
+    s.designer_drag_mode = crate::ui::designer_surface::DESIGNER_DRAG_NONE;
+    s.designer_drag_start_x = 0;
+    s.designer_drag_start_y = 0;
+    s.designer_drag_orig_x = 0;
+    s.designer_drag_orig_y = 0;
+    s.designer_drag_orig_w = 0;
+    s.designer_drag_orig_h = 0;
 }
 
 fn jump_to_text_in_active_editor(needle: &str) {
@@ -1075,6 +1116,16 @@ pub fn designer_property_selection_changed() {
 }
 
 pub fn apply_designer_property() {
+    let value = app().inspector_panel.property_value_text();
+    apply_designer_property_value(value);
+}
+
+pub fn apply_designer_property_from_grid() {
+    let value = app().inspector_panel.property_grid_value_text();
+    apply_designer_property_value(value);
+}
+
+pub fn apply_designer_event_from_grid() {
     let s = app();
     if s.selected_designer_file.is_empty() {
         s.status
@@ -1083,7 +1134,70 @@ pub fn apply_designer_property() {
     }
     let file_path = s.selected_designer_file.clone();
     let control_name = s.selected_designer_control.clone();
-    let value = s.inspector_panel.property_value_text();
+    let mut handler = s.inspector_panel.event_grid_handler_text();
+    let event_index = s.inspector_panel.selected_event_index();
+    if event_index == u32::MAX {
+        return;
+    }
+    let Some(doc) = designer::load_designer(&file_path) else {
+        s.status.set_analysis_status("Could not load designer file");
+        return;
+    };
+
+    if control_name.is_empty() {
+        let event_name = doc.form_event_name_at(event_index);
+        if handler.is_empty() {
+            handler = doc.form_event_value(&event_name);
+        }
+        match designer::ensure_named_event_handler(&file_path, &handler) {
+            Ok(events_path) => {
+                open_file(&events_path);
+                jump_to_text_in_active_editor(&format!("pub fn {}()", handler));
+                s.status
+                    .set_analysis_status(&format!("Opened handler {}", handler));
+            }
+            Err(err) => s.status.set_analysis_status(err),
+        }
+        return;
+    }
+
+    let Some(control) = doc
+        .controls
+        .iter()
+        .find(|control| control.name == control_name)
+    else {
+        s.status.set_analysis_status("Designer control not found");
+        return;
+    };
+    let event_property = match event_index {
+        1 => "OnDoubleClick",
+        2 => "OnChanged",
+        3 => "OnSubmit",
+        _ => "OnClick",
+    };
+    if handler.is_empty() {
+        handler = control.property_value(event_property);
+    }
+    match designer::ensure_named_event_handler(&file_path, &handler) {
+        Ok(events_path) => {
+            open_file(&events_path);
+            jump_to_text_in_active_editor(&format!("pub fn {}()", handler));
+            s.status
+                .set_analysis_status(&format!("Opened handler {}", handler));
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
+fn apply_designer_property_value(value: String) {
+    let s = app();
+    if s.selected_designer_file.is_empty() {
+        s.status
+            .set_analysis_status("Select a designer surface or control first");
+        return;
+    }
+    let file_path = s.selected_designer_file.clone();
+    let control_name = s.selected_designer_control.clone();
     let mut doc = match designer::load_designer(&file_path) {
         Some(doc) => doc,
         None => {

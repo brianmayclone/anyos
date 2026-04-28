@@ -13,6 +13,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc"
+version = "0.1.0"
+dependencies = [
+ "core",
+]
+
+[[package]]
 name = "anyos_kernel"
 version = "0.1.0"
 dependencies = [
@@ -20,6 +27,8 @@ dependencies = [
  "bincode",
  "serde",
  "corefs-fuse-proto",
+ "core",
+ "alloc",
  "anyos_std",
 ]
 
@@ -28,6 +37,8 @@ name = "anyos_std"
 version = "0.1.0"
 dependencies = [
  "libheap",
+ "core",
+ "alloc",
 ]
 
 [[package]]
@@ -43,6 +54,10 @@ dependencies = [
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "core"
+version = "0.1.0"
 
 [[package]]
 name = "corefs-core"
@@ -73,27 +88,15 @@ dependencies = [
 [[package]]
 name = "libheap"
 version = "0.1.0"
+dependencies = [
+ "core",
+ "alloc",
+]
 
 [[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
-name = "proc-macro2"
-version = "1.0.106"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "unicode-ident",
-]
-
-[[package]]
-name = "quote"
-version = "1.0.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "proc-macro2",
-]
 
 [[package]]
 name = "serde"
@@ -115,26 +118,6 @@ dependencies = [
 [[package]]
 name = "serde_derive"
 version = "1.0.228"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "syn",
- "quote",
- "proc-macro2",
-]
-
-[[package]]
-name = "syn"
-version = "2.0.117"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "quote",
- "unicode-ident",
- "proc-macro2",
-]
-
-[[package]]
-name = "unicode-ident"
-version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]

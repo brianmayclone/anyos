@@ -309,6 +309,7 @@ fn build_and_run(
             designer_drag_orig_y: 0,
             designer_drag_orig_w: 0,
             designer_drag_orig_h: 0,
+            designer_drag_moved: false,
         });
     }
 
@@ -631,6 +632,10 @@ pub fn queue_designer_drop(file_path: &str, x: i32, y: i32, payload: &str) {
     queue_designer_event(file_path, x, y, 5, payload);
 }
 
+pub fn queue_designer_zoom(file_path: &str, delta: i32) {
+    queue_designer_event(file_path, 0, 0, 6, &alloc::format!("{}", delta));
+}
+
 fn queue_designer_event(file_path: &str, x: i32, y: i32, kind: u32, payload: &str) {
     let s = app();
     s.pending_designer_event_file = String::from(file_path);
@@ -680,6 +685,10 @@ fn poll_designer_event() {
             3 => logic::commands::designer_pointer_move_at(&file_path, x, y),
             4 => logic::commands::designer_pointer_up_at(&file_path, x, y),
             5 => logic::commands::designer_drop_tool_at(&file_path, x, y, &payload),
+            6 => {
+                let delta = payload.parse::<i32>().unwrap_or(0);
+                logic::commands::designer_zoom(&file_path, delta);
+            }
             _ => {}
         }
     }
