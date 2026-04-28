@@ -269,13 +269,14 @@ pub struct ToolStatus {
 /// Check which development tools are installed.
 pub fn check_prerequisites() -> Vec<ToolStatus> {
     let mut results = Vec::new();
-    let tools: [(&str, &str, &[&str]); 7] = [
-        ("crust", "Rust Compiler", &["crust", "rustc", "anyrc"]),
+    let tools: [(&str, &str, &[&str]); 8] = [
+        ("crust", "Rust Compiler", &["crust", "rustc"]),
         (
             "ccargo",
             "Cargo Build System",
             &["ccargo", "cargo", "acargo"],
         ),
+        ("anyrc", "anyRC Compiler Library", &["anyrc"]),
         ("cc", "C Compiler", &["cc", "gcc", "clang"]),
         ("c++", "C++ Compiler", &["c++", "g++", "clang++"]),
         ("make", "Make Build Tool", &["make"]),
@@ -296,9 +297,9 @@ pub fn check_prerequisites() -> Vec<ToolStatus> {
     results
 }
 
-/// Check if the essential tools (crust, ccargo, cc, make) are all available.
+/// Check if the essential Rust-first tools (crust, ccargo, anyrc) are all available.
 pub fn has_essential_tools(statuses: &[ToolStatus]) -> bool {
-    let essential = ["crust", "ccargo", "cc", "make"];
+    let essential = ["crust", "ccargo", "anyrc"];
     essential
         .iter()
         .all(|name| statuses.iter().any(|s| s.name == *name && s.available))
