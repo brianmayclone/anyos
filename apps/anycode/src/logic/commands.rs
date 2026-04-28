@@ -20,6 +20,87 @@ pub fn new_file() {
     crate::ui::new_item_dialog::show();
 }
 
+pub fn show_new_project_dialog() {
+    crate::ui::new_project_dialog::show();
+}
+
+pub fn create_rust_ui_project_named(project_name: String, project_root: String) -> bool {
+    let s = app();
+    let project_name = project_name.trim();
+    let project_root = project_root.trim();
+    if !is_valid_project_name(project_name) {
+        s.status
+            .set_analysis_status("Project name must be a Rust type-like name");
+        return false;
+    }
+    if project_root.is_empty() || path::exists(project_root) {
+        s.status
+            .set_analysis_status("Choose a new empty project folder");
+        return false;
+    }
+    let parent = path::parent(project_root);
+    if parent.is_empty() || !path::is_directory(parent) {
+        s.status
+            .set_analysis_status("Project parent folder does not exist");
+        return false;
+    }
+
+    let crate_name = to_crate_name(project_name);
+    if anyos_std::fs::mkdir(project_root).is_err()
+        || anyos_std::fs::mkdir(&format!("{}/src", project_root)).is_err()
+        || anyos_std::fs::mkdir(&format!("{}/src/ui", project_root)).is_err()
+    {
+        s.status.set_analysis_status("Could not create project folders");
+        return false;
+    }
+
+    let (stdlib_path, dynlink_path, anyui_path) = template_dependency_paths(project_root);
+    let cargo_toml = format!(
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nanyos_std = {{ path = \"{}\" }}\ndynlink = {{ path = \"{}\" }}\nlibanyui_client = {{ path = \"{}\" }}\n\n[profile.dev]\npanic = \"abort\"\nopt-level = 2\n\n[profile.release]\npanic = \"abort\"\n\n[package.metadata.anycode.run]\nname = \"Debug\"\ntarget = \"{}\"\nkind = \"bin\"\nprofile = \"debug\"\nargs = \"\"\nworking_dir = \".\"\n",
+        crate_name, stdlib_path, dynlink_path, anyui_path, crate_name
+    );
+    if anyos_std::fs::write_bytes(&format!("{}/Cargo.toml", project_root), cargo_toml.as_bytes())
+        .is_err()
+    {
+        s.status.set_analysis_status("Could not write Cargo.toml");
+        return false;
+    }
+
+    if let Err(err) = designer::create_form_files(project_root, "MainForm") {
+        s.status.set_analysis_status(err);
+        return false;
+    }
+    let storyboard_path = format!("{}/src/ui/Main.Storyboard", project_root);
+    let designer_path = designer::designer_file_path(project_root, "MainForm");
+    let storyboard_doc = storyboard::StoryboardDocument {
+        name: String::from("Main"),
+        scenes: vec![storyboard::StoryboardScene {
+            form_name: String::from("MainForm"),
+            designer_path,
+            x: 48,
+            y: 48,
+        }],
+        segues: Vec::new(),
+    };
+    if let Err(err) = storyboard::save_storyboard(&storyboard_path, &storyboard_doc) {
+        s.status.set_analysis_status(err);
+        return false;
+    }
+    if let Err(err) = storyboard::ensure_startup_main(project_root, &storyboard_path) {
+        s.status.set_analysis_status(err);
+        return false;
+    }
+
+    let project = project::Project::open(project_root);
+    let mut solution = crate::logic::solution::SolutionMetadata::load(&project);
+    solution.startup_storyboard = storyboard_path;
+    let _ = solution.save();
+    open_workspace(project_root, false);
+    s.status
+        .set_analysis_status(&format!("Created Rust UI App {}", project_name));
+    true
+}
+
 pub fn new_text_file() {
     let s = app();
     let (_idx, ref p) = s.file_mgr.add_untitled(&s.config.temp_dir);
@@ -2717,6 +2798,85 @@ pub fn update_action_state() {
 
 fn set_enabled(id: u32, enabled: bool) {
     libanyui_client::Control::from_id(id).set_enabled(enabled);
+}
+
+fn is_valid_project_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    for (idx, ch) in trimmed.chars().enumerate() {
+        if ch == ' ' || ch == '-' {
+            continue;
+        }
+        if idx == 0 && ch.is_ascii_digit() {
+            return false;
+        }
+        if !(ch.is_ascii_alphanumeric() || ch == '_') {
+            return false;
+        }
+    }
+    true
+}
+
+fn to_crate_name(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if (ch == ' ' || ch == '-' || ch == '_') && !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let out = out.trim_matches('_');
+    if out.is_empty() {
+        String::from("anycode_app")
+    } else {
+        String::from(out)
+    }
+}
+
+fn template_dependency_paths(project_root: &str) -> (String, String, String) {
+    if let Some(root) = find_anyos_source_root(project_root) {
+        return (
+            format!("{}/libs/stdlib", root),
+            format!("{}/libs/dynlink", root),
+            format!("{}/libs/libanyui_client", root),
+        );
+    }
+    (
+        String::from("../../libs/stdlib"),
+        String::from("../../libs/dynlink"),
+        String::from("../../libs/libanyui_client"),
+    )
+}
+
+fn find_anyos_source_root(project_root: &str) -> Option<String> {
+    let s = app();
+    if let Some(project) = s.current_project.as_ref() {
+        if let Some(root) = find_anyos_source_root_from(&project.root) {
+            return Some(root);
+        }
+    }
+    find_anyos_source_root_from(project_root)
+        .or_else(|| find_anyos_source_root_from("/Libraries/sources/anyos"))
+}
+
+fn find_anyos_source_root_from(start: &str) -> Option<String> {
+    let mut dir = String::from(start);
+    for _ in 0..10 {
+        if path::exists(&format!("{}/libs/libanyui_client/Cargo.toml", dir))
+            && path::exists(&format!("{}/libs/stdlib/Cargo.toml", dir))
+        {
+            return Some(dir);
+        }
+        let parent = path::parent(&dir);
+        if parent == dir || parent.is_empty() {
+            break;
+        }
+        dir = String::from(parent);
+    }
+    None
 }
 
 pub fn show_recent_projects() {

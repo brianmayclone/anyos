@@ -1205,7 +1205,9 @@ impl<'a> MirBuilder<'a> {
 
             HirExprKind::Path(path) => self.lower_path(path, expr),
 
-            HirExprKind::QualifiedPath(qpath) => self.lower_path(&qpath.path, expr),
+            HirExprKind::QualifiedPath(qpath) => self
+                .lower_unit_enum_variant_path(&qpath.path, expr)
+                .unwrap_or_else(|| self.lower_path(&qpath.path, expr)),
 
             HirExprKind::Binary(op, lhs, rhs) => {
                 let l = self.lower_expr(lhs);
@@ -3788,6 +3790,54 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    fn lower_unit_enum_variant_path(&mut self, path: &HirPath, expr: &HirExpr) -> Option<Operand> {
+        let ty = self.get_expr_ty(expr);
+        let TyKind::Adt(enum_def_id, _) = &ty else {
+            return None;
+        };
+        let enum_def_id = *enum_def_id;
+        let variant_name = path.segments.last()?.ident;
+        let idx = self
+            .typeck
+            .enum_variants
+            .get(&enum_def_id)
+            .and_then(|variants| {
+                variants
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (name, fields))| *name == variant_name && fields.is_empty())
+                    .map(|(idx, _)| idx)
+            })
+            .or_else(|| self.known_enum_variant_index(enum_def_id, variant_name))?;
+
+        if let Some(max_fields) = self.enum_max_fields(enum_def_id) {
+            if max_fields > 0 {
+                let tmp = self.alloc_temp(ty, expr.span);
+                let mut operands = vec![Operand::Constant(Constant {
+                    ty: TyKind::Int(IntTy::I64),
+                    value: ConstValue::Int(idx as i128),
+                })];
+                for _ in 0..max_fields {
+                    operands.push(Operand::Constant(Constant {
+                        ty: TyKind::Int(IntTy::I64),
+                        value: ConstValue::Int(0),
+                    }));
+                }
+                self.emit_assign(
+                    Place::local(tmp),
+                    Rvalue::Aggregate(AggregateKind::Adt(enum_def_id, idx), operands),
+                    expr.span,
+                );
+                return Some(Operand::Copy(Place::local(tmp)));
+            }
+        }
+
+        Some(Operand::Constant(Constant {
+            ty,
+            value: ConstValue::Int(idx as i128),
+        }))
+    }
+
     fn resolve_path_to_local(&self, path: &HirPath, hir_id: HirId) -> Option<Local> {
         if let Some(&def_id) = self.resolve.resolutions.get(&hir_id) {
             if let Some(local) = self.var_map.get(&def_id).copied() {
@@ -4038,6 +4088,14 @@ impl<'a> MirBuilder<'a> {
     /// Extract discriminant value from a match arm pattern.
     fn pattern_discriminant(&self, pat: &HirPattern) -> Option<u128> {
         match pat {
+            HirPattern::Path(path) if path.segments.len() == 1 => {
+                let variant_name = self.interner.resolve(path.segments[0].ident);
+                match variant_name {
+                    "None" | "Ok" => Some(0),
+                    "Some" | "Err" => Some(1),
+                    _ => None,
+                }
+            }
             HirPattern::Path(path) if path.segments.len() == 2 => {
                 let enum_name = path.segments[0].ident;
                 let variant_name = path.segments[1].ident;
@@ -4045,6 +4103,14 @@ impl<'a> MirBuilder<'a> {
                     .variant_indices
                     .get(&(enum_name, variant_name))
                     .map(|&idx| idx as u128)
+            }
+            HirPattern::TupleStruct(path, _, _) if path.segments.len() == 1 => {
+                let variant_name = self.interner.resolve(path.segments[0].ident);
+                match variant_name {
+                    "None" | "Ok" => Some(0),
+                    "Some" | "Err" => Some(1),
+                    _ => None,
+                }
             }
             HirPattern::TupleStruct(path, _, _) if path.segments.len() == 2 => {
                 let enum_name = path.segments[0].ident;

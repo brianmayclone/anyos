@@ -122,6 +122,18 @@ fn run_option_and_result_map_call_function_items() {
         }
     "#;
 
+    let mir_options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test.mir".to_string(),
+        emit: EmitKind::Mir,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let mir = String::from_utf8(compile(source, "test.rs", &mir_options).expect("mir")).unwrap();
+    eprintln!("{mir}");
+
     assert_eq!(compile_and_run(source), 22);
 }
 

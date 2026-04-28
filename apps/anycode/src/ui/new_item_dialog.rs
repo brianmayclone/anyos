@@ -2,7 +2,7 @@ use libanyui_client as ui;
 use ui::Widget;
 
 const DLG_W: u32 = 420;
-const DLG_H: u32 = 286;
+const DLG_H: u32 = 330;
 
 pub fn show() {
     let t = anyos_std::i18n::t;
@@ -60,10 +60,16 @@ pub fn show() {
     btn_service.set_color(tc.control_bg);
     content.add(&btn_service);
 
+    let btn_project = ui::Button::new(t("Rust UI App"));
+    btn_project.set_position(24, 124);
+    btn_project.set_size(168, 38);
+    btn_project.set_color(tc.success);
+    content.add(&btn_project);
+
     let hint = ui::Label::new(t(
         "UI Forms create .Designer metadata; Storyboards connect Forms and generate navigation handlers.",
     ));
-    hint.set_position(24, 128);
+    hint.set_position(24, 176);
     hint.set_size(360, 18);
     hint.set_font_size(10);
     hint.set_text_color(tc.text_secondary);
@@ -98,6 +104,11 @@ pub fn show() {
 
     btn_service.on_click(move |_| {
         crate::logic::commands::manage_connected_services();
+        ui::Window::from_id(win_id).destroy();
+    });
+
+    btn_project.on_click(move |_| {
+        crate::logic::commands::show_new_project_dialog();
         ui::Window::from_id(win_id).destroy();
     });
 

@@ -220,6 +220,7 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
         3 => commands::save(),
         4 => commands::save_all(),
         5 => anyui::quit(),
+        6 => commands::show_new_project_dialog(),
         10..=13 => {}
         14 => commands::switch_sidebar_view(2),
         15 => commands::show_new_ui_form_dialog(),

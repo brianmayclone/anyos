@@ -1718,6 +1718,30 @@ impl Vm {
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
                     if matches!(obj, JsValue::Null | JsValue::Undefined) {
                         let key_str = Self::property_key_error_hint(&key);
+                        #[cfg(feature = "host")]
+                        {
+                            if std::env::var_os("LIBJS_DEBUG_GETPROP").is_some() {
+                                use std::sync::atomic::{AtomicUsize, Ordering};
+                                static GETPROP_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
+                                let stack_info = self.frame_stack_summary(8);
+                                if stack_info.contains("Ww")
+                                    && GETPROP_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) < 16
+                                {
+                                    let chunk = &self.frames[frame_idx].chunk;
+                                    let ip = self.frames[frame_idx].ip;
+                                    let start = ip.saturating_sub(6);
+                                    let end = (ip + 6).min(chunk.code.len());
+                                    self.log_engine(&format!(
+                                        "[libjs] DEBUG GetProp undefined key={} chunk={:?} ip={} ops={:?} locals={:?}",
+                                        key_str,
+                                        chunk.name,
+                                        ip,
+                                        &chunk.code[start..end],
+                                        chunk.local_names
+                                    ));
+                                }
+                            }
+                        }
                         if key_str == native_symbol::WELL_KNOWN_TO_PRIMITIVE {
                             let chunk = &self.frames[frame_idx].chunk;
                             self.log_engine(&format!(
@@ -4085,12 +4109,16 @@ impl Vm {
                 #[cfg(feature = "host")]
                 {
                     if std::env::var_os("LIBJS_DEBUG_CAUGHT").is_some() {
-                        let detail = self.describe_exception(&val);
-                        let stack_info = self.frame_stack_summary(8);
-                        self.log_engine(&format!(
-                            "[libjs] DEBUG caught exception: {} [{}]",
-                            detail, stack_info
-                        ));
+                        use std::sync::atomic::{AtomicUsize, Ordering};
+                        static CAUGHT_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
+                        if CAUGHT_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) < 32 {
+                            let detail = self.describe_exception(&val);
+                            let stack_info = self.frame_stack_summary(8);
+                            self.log_engine(&format!(
+                                "[libjs] DEBUG caught exception: {} [{}]",
+                                detail, stack_info
+                            ));
+                        }
                     }
                 }
                 let handler = self.try_handlers.pop().unwrap();

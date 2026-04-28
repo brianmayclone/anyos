@@ -539,7 +539,7 @@ fn startup_main_rs(
     height: u32,
 ) -> String {
     format!(
-        "use libanyui_client as ui;\nuse ui::Widget;\n\n#[path = \"ui/{}/mod.rs\"]\nmod {};\n\nconst STARTUP_STORYBOARD: &str = \"{}\";\n\nfn main() {{\n    if !ui::init() {{\n        return;\n    }}\n\n    let form = {}::{}::new();\n    form.root().set_dock(ui::DOCK_FILL);\n\n    let win = ui::Window::new(\"{}\", -1, -1, {}, {});\n    win.add(form.root());\n\n    let _ = STARTUP_STORYBOARD;\n    ui::run();\n}}\n",
+        "#![no_std]\n#![no_main]\n\nuse libanyui_client as ui;\nuse ui::Widget;\n\n#[path = \"ui/{}/mod.rs\"]\nmod {};\n\nconst STARTUP_STORYBOARD: &str = \"{}\";\n\nanyos_std::entry!(main);\n\nfn main() {{\n    if !ui::init() {{\n        anyos_std::println!(\"Failed to load libanyui.so\");\n        return;\n    }}\n\n    let form = {}::{}::new();\n    form.root().set_dock(ui::DOCK_FILL);\n\n    let win = ui::Window::new(\"{}\", -1, -1, {}, {});\n    win.add(form.root());\n\n    let _ = STARTUP_STORYBOARD;\n    ui::run();\n}}\n",
         escape_rs(module_name),
         module_name,
         escape_rs(storyboard_path),

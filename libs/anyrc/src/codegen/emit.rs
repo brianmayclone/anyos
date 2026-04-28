@@ -592,7 +592,7 @@ impl<'a> CodeEmitter<'a> {
     }
 
     fn local_adt_operand_slot(&self, op: Option<&Operand>) -> Option<(i32, i32)> {
-        let Operand::Copy(place) | Operand::Move(place) = op? else {
+        let (Operand::Copy(place) | Operand::Move(place)) = op? else {
             return None;
         };
         if !place.projections.is_empty() {
@@ -2915,16 +2915,24 @@ impl<'a> CodeEmitter<'a> {
                 let keep_original = self.asm.new_label();
                 let done = self.asm.new_label();
 
-                let by_value = args
-                    .first()
-                    .is_some_and(|arg| self.operand_slot_count(arg) > 1);
-                let (disc_reg, value_reg, mapper_reg) = if by_value {
-                    (Reg::RDI, Reg::RSI, Reg::RDX)
-                } else {
-                    self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
-                    self.asm.mov_rm(Reg::R11, Reg::RDI, 8);
-                    (Reg::RAX, Reg::R11, Reg::RSI)
-                };
+                let arg0_slots = args.first().map_or(1, |arg| self.operand_slot_count(arg));
+                let mapper_reg = ARG_REGS[arg0_slots.min(ARG_REGS.len() - 1)];
+                let (disc_reg, value_reg) =
+                    if let Some((src_slot, src_size)) = self.local_adt_operand_slot(args.first()) {
+                        self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot);
+                        if src_size > 8 {
+                            self.asm.mov_rm(Reg::R11, Reg::RBP, src_slot + 8);
+                        } else {
+                            self.asm.xor_rr(Reg::R11, Reg::R11);
+                        }
+                        (Reg::RAX, Reg::R11)
+                    } else if arg0_slots > 1 {
+                        (Reg::RDI, Reg::RSI)
+                    } else {
+                        self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                        self.asm.mov_rm(Reg::R11, Reg::RDI, 8);
+                        (Reg::RAX, Reg::R11)
+                    };
 
                 // Rust Option is encoded as None=0, Some=1 in this backend.
                 // Only Some maps through the function item; None is preserved.
@@ -2958,16 +2966,24 @@ impl<'a> CodeEmitter<'a> {
                 let keep_original = self.asm.new_label();
                 let done = self.asm.new_label();
 
-                let by_value = args
-                    .first()
-                    .is_some_and(|arg| self.operand_slot_count(arg) > 1);
-                let (disc_reg, value_reg, mapper_reg) = if by_value {
-                    (Reg::RDI, Reg::RSI, Reg::RDX)
-                } else {
-                    self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
-                    self.asm.mov_rm(Reg::R11, Reg::RDI, 8);
-                    (Reg::RAX, Reg::R11, Reg::RSI)
-                };
+                let arg0_slots = args.first().map_or(1, |arg| self.operand_slot_count(arg));
+                let mapper_reg = ARG_REGS[arg0_slots.min(ARG_REGS.len() - 1)];
+                let (disc_reg, value_reg) =
+                    if let Some((src_slot, src_size)) = self.local_adt_operand_slot(args.first()) {
+                        self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot);
+                        if src_size > 8 {
+                            self.asm.mov_rm(Reg::R11, Reg::RBP, src_slot + 8);
+                        } else {
+                            self.asm.xor_rr(Reg::R11, Reg::R11);
+                        }
+                        (Reg::RAX, Reg::R11)
+                    } else if arg0_slots > 1 {
+                        (Reg::RDI, Reg::RSI)
+                    } else {
+                        self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                        self.asm.mov_rm(Reg::R11, Reg::RDI, 8);
+                        (Reg::RAX, Reg::R11)
+                    };
 
                 // Result is encoded as Ok=0, Err=1. Map transforms Ok and
                 // preserves Err.
