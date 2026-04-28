@@ -312,6 +312,8 @@ fn build_and_run(
             designer_drag_orig_w: 0,
             designer_drag_orig_h: 0,
             designer_drag_moved: false,
+            designer_undo: alloc::vec::Vec::new(),
+            designer_redo: alloc::vec::Vec::new(),
         });
     }
 

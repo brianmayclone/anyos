@@ -1031,6 +1031,16 @@ impl Control {
         self.on_double_click_raw(thunk, ud);
     }
 
+    pub fn on_context_menu_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_CONTEXT_MENU, cb, userdata);
+    }
+
+    /// Register a closure that runs just before this control's context menu opens.
+    pub fn on_context_menu(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_context_menu_raw(thunk, ud);
+    }
+
     pub fn on_focus_raw(&self, cb: Callback, userdata: u64) {
         self.on_event_raw(EVENT_FOCUS, cb, userdata);
     }

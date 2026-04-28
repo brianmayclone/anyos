@@ -4,6 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::app;
+use crate::app_state::DesignerHistoryEntry;
 use crate::logic::{
     ai, build, crates, debug_session, designer, diagnostics, file_manager, git, intellisense,
     language, language_service, live_analysis, project, search, storyboard, symbols, tasks,
@@ -949,6 +950,7 @@ pub fn designer_drop_tool_at(file_path: &str, x: i32, y: i32, payload: &str) {
         Some(doc) => doc,
         None => return,
     };
+    let before = doc.clone();
     let (form_x, form_y) = crate::ui::designer_surface::canvas_to_form(x, y);
     let parent_name = crate::ui::designer_surface::hit_test_container(&doc, x, y);
     let page_index = parent_name
@@ -983,6 +985,14 @@ pub fn designer_drop_tool_at(file_path: &str, x: i32, y: i32, payload: &str) {
         s.status.set_analysis_status(err);
         return;
     }
+    record_designer_history(
+        "Add Control",
+        file_path,
+        before,
+        doc.clone(),
+        "",
+        &control_name,
+    );
     s.selected_designer_file = String::from(file_path);
     s.selected_designer_control = control_name.clone();
     s.editor_view
@@ -1039,6 +1049,7 @@ fn update_designer_drag(file_path: &str, x: i32, y: i32, persist: bool) {
         Some(doc) => doc,
         None => return,
     };
+    let before = doc.clone();
     let dx = x - start_x;
     let dy = y - start_y;
     if dx.abs() > 2 || dy.abs() > 2 {
@@ -1055,6 +1066,14 @@ fn update_designer_drag(file_path: &str, x: i32, y: i32, persist: bool) {
             s.status.set_analysis_status(err);
             return;
         }
+        record_designer_history(
+            "Move/Resize Control",
+            file_path,
+            before,
+            doc.clone(),
+            &control_name,
+            &control_name,
+        );
     }
     s.editor_view
         .update_designer_document(file_path, doc.clone(), Some(&control_name));
@@ -1387,6 +1406,7 @@ pub fn apply_designer_property_value(value: String) -> bool {
             return false;
         }
     };
+    let before = doc.clone();
     let property_index = s.inspector_panel.selected_property_index();
     if control_name.is_empty() {
         let property_name = doc.form_property_name_at(property_index);
@@ -1398,6 +1418,14 @@ pub fn apply_designer_property_value(value: String) -> bool {
             s.status.set_analysis_status(err);
             return false;
         }
+        record_designer_history(
+            "Edit Form Property",
+            &file_path,
+            before,
+            doc.clone(),
+            "",
+            "",
+        );
         s.editor_view
             .update_designer_document(&file_path, doc.clone(), None);
         s.inspector_panel.show_designer(&doc);
@@ -1434,6 +1462,14 @@ pub fn apply_designer_property_value(value: String) -> bool {
         s.status.set_analysis_status(err);
         return false;
     }
+    record_designer_history(
+        "Edit Control Property",
+        &file_path,
+        before,
+        doc.clone(),
+        &control_name,
+        &control_name,
+    );
     s.editor_view
         .update_designer_document(&file_path, doc.clone(), Some(&control_name));
     s.inspector_panel.show_designer_control(&doc, &control_name);
@@ -1487,6 +1523,7 @@ pub fn delete_selected_designer_control() {
             return;
         }
     };
+    let before = doc.clone();
     if let Err(err) = doc.remove_control(&control_name) {
         s.status.set_analysis_status(err);
         return;
@@ -1495,6 +1532,14 @@ pub fn delete_selected_designer_control() {
         s.status.set_analysis_status(err);
         return;
     }
+    record_designer_history(
+        "Delete Control",
+        &file_path,
+        before,
+        doc.clone(),
+        &control_name,
+        "",
+    );
     s.selected_designer_control.clear();
     s.editor_view
         .update_designer_document(&file_path, doc.clone(), None);
@@ -1566,6 +1611,114 @@ fn clear_storyboard_source_event_hook(
         return None;
     }
     Some((scene.designer_path.clone(), form))
+}
+
+fn record_designer_history(
+    label: &str,
+    file_path: &str,
+    before: designer::DesignerDocument,
+    after: designer::DesignerDocument,
+    selected_before: &str,
+    selected_after: &str,
+) {
+    if before.to_designer_metadata() == after.to_designer_metadata() {
+        return;
+    }
+    let s = app();
+    s.designer_undo.push(DesignerHistoryEntry {
+        label: String::from(label),
+        file_path: String::from(file_path),
+        before,
+        after,
+        selected_before: String::from(selected_before),
+        selected_after: String::from(selected_after),
+    });
+    s.designer_redo.clear();
+    if s.designer_undo.len() > 100 {
+        s.designer_undo.remove(0);
+    }
+}
+
+pub fn undo_designer_action() -> bool {
+    let Some(entry) = app().designer_undo.pop() else {
+        return false;
+    };
+    let label = entry.label.clone();
+    let file_path = entry.file_path.clone();
+    let selected = entry.selected_before.clone();
+    if apply_designer_history_document(&entry.file_path, &entry.before, &entry.selected_before) {
+        let s = app();
+        s.designer_redo.push(entry);
+        s.status.set_analysis_status(&format!("Undid {}", label));
+        if s.designer_redo.len() > 100 {
+            s.designer_redo.remove(0);
+        }
+        true
+    } else {
+        let s = app();
+        s.designer_undo.push(entry);
+        s.status
+            .set_analysis_status("Could not undo designer action");
+        if !file_path.is_empty() {
+            s.selected_designer_file = file_path;
+            s.selected_designer_control = selected;
+        }
+        true
+    }
+}
+
+pub fn redo_designer_action() -> bool {
+    let Some(entry) = app().designer_redo.pop() else {
+        return false;
+    };
+    let label = entry.label.clone();
+    if apply_designer_history_document(&entry.file_path, &entry.after, &entry.selected_after) {
+        let s = app();
+        s.designer_undo.push(entry);
+        s.status.set_analysis_status(&format!("Redid {}", label));
+        if s.designer_undo.len() > 100 {
+            s.designer_undo.remove(0);
+        }
+        true
+    } else {
+        let s = app();
+        s.designer_redo.push(entry);
+        s.status
+            .set_analysis_status("Could not redo designer action");
+        true
+    }
+}
+
+fn apply_designer_history_document(
+    file_path: &str,
+    doc: &designer::DesignerDocument,
+    selected_control: &str,
+) -> bool {
+    let s = app();
+    if designer::save_designer(file_path, doc).is_err() {
+        return false;
+    }
+    s.selected_storyboard_file.clear();
+    s.selected_storyboard_segue.clear();
+    s.selected_designer_file = String::from(file_path);
+    s.selected_designer_control = String::from(selected_control);
+    s.editor_view.update_designer_document(
+        file_path,
+        doc.clone(),
+        if selected_control.is_empty() {
+            None
+        } else {
+            Some(selected_control)
+        },
+    );
+    if selected_control.is_empty() {
+        s.inspector_panel.show_designer(doc);
+    } else {
+        s.inspector_panel
+            .show_designer_control(doc, selected_control);
+    }
+    s.editor_view.refresh_storyboards_for_designer(file_path);
+    true
 }
 
 pub fn toggle_inspector() {

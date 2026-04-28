@@ -189,6 +189,8 @@ impl Control {
     pub fn on_change_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_submit_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_key_down_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_context_menu_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_context_menu(&self, _f: impl FnMut(u32) + 'static) {}
     pub fn on_mouse_down_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_mouse_up_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_scroll_raw(&self, _cb: Callback, _userdata: u64) {}

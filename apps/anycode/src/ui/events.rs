@@ -4,6 +4,7 @@ use libanyui_client as anyui;
 
 use crate::app;
 use crate::logic::{ai, commands, git, tasks};
+use crate::ui::sidebar::SidebarContextKind;
 use crate::ui::toolbar::AppToolbar;
 use crate::util::path;
 
@@ -28,6 +29,19 @@ pub fn wire_keyboard(win: &anyui::Window) {
         if e.ctrl() && e.shift() && e.keycode == b'P' as u32 {
             s.command_palette.show_commands();
             return;
+        }
+
+        // Designer undo/redo. Keep this scoped to active Designer tabs so text editors
+        // can keep their own editing semantics.
+        if e.ctrl() && !e.shift() && e.keycode == b'Z' as u32 && active_tab_is_selected_designer() {
+            if commands::undo_designer_action() {
+                return;
+            }
+        }
+        if e.ctrl() && e.keycode == b'Y' as u32 && active_tab_is_selected_designer() {
+            if commands::redo_designer_action() {
+                return;
+            }
         }
 
         // Split editor: Ctrl+\
@@ -117,6 +131,17 @@ pub fn wire_keyboard(win: &anyui::Window) {
             return;
         }
     });
+}
+
+fn active_tab_is_selected_designer() -> bool {
+    let s = app();
+    if s.selected_designer_file.is_empty() {
+        return false;
+    }
+    s.file_mgr
+        .active_file()
+        .map(|file| file.path == s.selected_designer_file)
+        .unwrap_or(false)
 }
 
 // ── Activity bar ───────────────────────────────────────────────
@@ -331,49 +356,72 @@ pub fn wire_sidebar() {
     });
 
     // Context menu
+    app().sidebar.tree.on_context_menu(|_| {
+        app().sidebar.prepare_context_menu();
+    });
+
     app().sidebar.context_menu.on_item_click(|e| {
         let s = app();
-        let dir = match s.sidebar.selected_dir() {
-            Some(d) => d,
-            None => return,
-        };
-        match e.index {
-            0 => {
-                let new_path = path::join(&dir, "untitled.txt");
-                let _ = anyos_std::fs::write_bytes(&new_path, b"");
-                if let Some(ref proj) = s.current_project {
-                    s.sidebar.populate_project(proj, &s.task_mgr);
-                }
-            }
-            1 => {
-                commands::show_new_ui_form_dialog();
-            }
-            2 => {
-                commands::show_new_storyboard_dialog();
-            }
-            3 => {
-                let new_path = path::join(&dir, "new_folder");
-                let _ = anyos_std::fs::mkdir(&new_path);
-                if let Some(ref proj) = s.current_project {
-                    s.sidebar.populate_project(proj, &s.task_mgr);
-                }
-            }
-            5 => {
-                let sel = s.sidebar.tree.selected();
-                if sel != u32::MAX {
-                    if let Some(p) = s.sidebar.path_for_node(sel) {
-                        let owned = String::from(p);
-                        anyos_std::fs::unlink(&owned);
-                        if let Some(ref proj) = s.current_project {
-                            s.sidebar.populate_project(proj, &s.task_mgr);
-                        }
-                    }
-                }
-            }
-            7 => {
-                commands::show_new_project_dialog();
-            }
-            _ => {}
+        match s.sidebar.context_kind {
+            SidebarContextKind::File => match e.index {
+                0 => open_selected_sidebar_file(),
+                2 => app().sidebar.start_rename(),
+                3 => delete_selected_sidebar_path(),
+                _ => {}
+            },
+            SidebarContextKind::Directory => match e.index {
+                0 => create_sidebar_file("untitled.txt"),
+                1 => commands::show_new_ui_form_dialog(),
+                2 => commands::show_new_storyboard_dialog(),
+                3 => create_sidebar_folder("new_folder"),
+                5 => app().sidebar.start_rename(),
+                6 => delete_selected_sidebar_path(),
+                _ => {}
+            },
+            SidebarContextKind::Project => match e.index {
+                0 => commands::show_project_properties(),
+                2 => commands::show_new_ui_form_dialog(),
+                3 => commands::show_new_storyboard_dialog(),
+                5 => commands::manage_crates(),
+                6 => commands::manage_connected_services(),
+                _ => {}
+            },
+            SidebarContextKind::Crates => match e.index {
+                0 => commands::manage_crates(),
+                1 => refresh_sidebar_project(),
+                _ => {}
+            },
+            SidebarContextKind::ConnectedServices => match e.index {
+                0 | 1 => commands::manage_connected_services(),
+                _ => {}
+            },
+            SidebarContextKind::BuildRun => match e.index {
+                0 => commands::configure_run_profiles(),
+                2 => commands::build(),
+                3 => commands::run(),
+                4 => commands::test(),
+                _ => {}
+            },
+            SidebarContextKind::Configurations => match e.index {
+                0 => commands::show_project_properties(),
+                1 => commands::configure_run_profiles(),
+                _ => {}
+            },
+            SidebarContextKind::Solution => match e.index {
+                0 => commands::show_project_properties(),
+                2 => commands::show_new_project_dialog(),
+                _ => {}
+            },
+            SidebarContextKind::Virtual => match e.index {
+                0 => commands::show_project_properties(),
+                1 => refresh_sidebar_project(),
+                _ => {}
+            },
+            SidebarContextKind::Empty => match e.index {
+                0 => commands::show_new_project_dialog(),
+                1 => commands::open_folder(),
+                _ => {}
+            },
         }
     });
 
@@ -388,6 +436,59 @@ pub fn wire_sidebar() {
             s.sidebar.populate_project(proj, &s.task_mgr);
         }
     });
+}
+
+fn open_selected_sidebar_file() {
+    let s = app();
+    let sel = s.sidebar.tree.selected();
+    if sel == u32::MAX {
+        return;
+    }
+    if let Some(p) = s.sidebar.path_for_node(sel) {
+        let owned = String::from(p);
+        commands::open_file(&owned);
+        commands::update_status();
+    }
+}
+
+fn create_sidebar_file(name: &str) {
+    let s = app();
+    let Some(dir) = s.sidebar.selected_dir() else {
+        return;
+    };
+    let new_path = path::join(&dir, name);
+    let _ = anyos_std::fs::write_bytes(&new_path, b"");
+    refresh_sidebar_project();
+}
+
+fn create_sidebar_folder(name: &str) {
+    let s = app();
+    let Some(dir) = s.sidebar.selected_dir() else {
+        return;
+    };
+    let new_path = path::join(&dir, name);
+    let _ = anyos_std::fs::mkdir(&new_path);
+    refresh_sidebar_project();
+}
+
+fn delete_selected_sidebar_path() {
+    let s = app();
+    let sel = s.sidebar.tree.selected();
+    if sel == u32::MAX {
+        return;
+    }
+    if let Some(p) = s.sidebar.path_for_node(sel) {
+        let owned = String::from(p);
+        anyos_std::fs::unlink(&owned);
+        refresh_sidebar_project();
+    }
+}
+
+fn refresh_sidebar_project() {
+    let s = app();
+    if let Some(ref proj) = s.current_project {
+        s.sidebar.populate_project(proj, &s.task_mgr);
+    }
 }
 
 // ── Search panel ───────────────────────────────────────────────

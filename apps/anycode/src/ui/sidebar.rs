@@ -9,6 +9,20 @@ use crate::util::{path, syntax_map};
 
 const STYLE_BOLD: u32 = 1;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarContextKind {
+    Empty,
+    File,
+    Directory,
+    Project,
+    Crates,
+    ConnectedServices,
+    BuildRun,
+    Configurations,
+    Solution,
+    Virtual,
+}
+
 /// Simple icon cache: stores decoded 16x16 ARGB icons keyed by file path.
 struct IconCache {
     entries: Vec<(String, Vec<u32>, u32, u32)>, // (icon_path, pixels, w, h)
@@ -55,6 +69,7 @@ pub struct Sidebar {
     pub rename_node: u32,
     pub paths: Vec<String>,
     pub virtual_nodes: Vec<bool>,
+    pub context_kind: SidebarContextKind,
     mime_db: anyos_std::icons::MimeDb,
     icon_cache: IconCache,
 }
@@ -130,6 +145,7 @@ impl Sidebar {
             rename_node: u32::MAX,
             paths: Vec::new(),
             virtual_nodes: Vec::new(),
+            context_kind: SidebarContextKind::Empty,
             mime_db: anyos_std::icons::MimeDb::load(),
             icon_cache: IconCache::new(),
         }
@@ -150,7 +166,7 @@ impl Sidebar {
 
         let project_label = format!("{} ({})", project.name, project.project_type.display_name());
         let project_node = self.tree.add_child(solution, &project_label);
-        self.remember_virtual(project_node);
+        self.remember_path(project_node, "anycode://project", true);
         self.tree.set_node_style(project_node, STYLE_BOLD);
         self.tree.set_node_text_color(project_node, tc.text);
         self.tree.set_expanded(project_node, true);
@@ -188,7 +204,7 @@ impl Sidebar {
             .unwrap_or_else(|| crate::logic::solution::SolutionMetadata::load(project));
         let tc = ui::theme::colors();
         let root = self.tree.add_child(parent, "Solution");
-        self.remember_virtual(root);
+        self.remember_path(root, "anycode://solution", true);
         self.tree.set_node_style(root, STYLE_BOLD);
         self.tree.set_node_text_color(root, tc.text);
         self.set_system_icon(root, "layout-dashboard", tc.text_secondary);
@@ -241,7 +257,7 @@ impl Sidebar {
         let crates_node = self
             .tree
             .add_child(parent, &format!("Crates ({})", deps.len()));
-        self.remember_virtual(crates_node);
+        self.remember_path(crates_node, "anycode://crates", true);
         self.tree.set_node_style(crates_node, STYLE_BOLD);
         self.tree.set_node_text_color(crates_node, tc.accent);
         self.set_system_icon(crates_node, "package", tc.accent);
@@ -359,6 +375,48 @@ impl Sidebar {
         self.path_for_node(index)
             .map(|path| path == "anycode://connected-services")
             .unwrap_or(false)
+    }
+
+    pub fn prepare_context_menu(&mut self) {
+        let hovered = self.tree.hovered();
+        let selected = self.tree.selected();
+        let node = if hovered != u32::MAX {
+            hovered
+        } else {
+            selected
+        };
+        if node != u32::MAX {
+            self.tree.set_selected(node);
+        }
+        self.context_kind = self.context_kind_for_node(node);
+        self.context_menu
+            .set_text(context_menu_items(self.context_kind));
+    }
+
+    fn context_kind_for_node(&self, index: u32) -> SidebarContextKind {
+        if index == u32::MAX {
+            return SidebarContextKind::Empty;
+        }
+        let Some(node_path) = self.path_for_node(index) else {
+            return SidebarContextKind::Empty;
+        };
+        match node_path {
+            "anycode://project" => return SidebarContextKind::Project,
+            "anycode://solution" => return SidebarContextKind::Solution,
+            "anycode://crates" | "anycode://manage-crates" => return SidebarContextKind::Crates,
+            "anycode://connected-services" => return SidebarContextKind::ConnectedServices,
+            "anycode://build-run" | "anycode://targets" => return SidebarContextKind::BuildRun,
+            "anycode://configurations" => return SidebarContextKind::Configurations,
+            _ => {}
+        }
+        if self.is_virtual_node(index) {
+            return SidebarContextKind::Virtual;
+        }
+        if path::is_directory(node_path) {
+            SidebarContextKind::Directory
+        } else {
+            SidebarContextKind::File
+        }
     }
 
     /// Check if the given node index is a directory.
@@ -691,7 +749,7 @@ impl Sidebar {
     fn add_config_nodes(&mut self, project_node: u32, project: &Project) {
         let tc = ui::theme::colors();
         let root = self.tree.add_child(project_node, "Configurations");
-        self.remember_virtual(root);
+        self.remember_path(root, "anycode://configurations", true);
         self.tree.set_node_style(root, STYLE_BOLD);
         self.tree.set_node_text_color(root, tc.text);
         self.set_system_icon(root, "settings", tc.text_secondary);
@@ -723,7 +781,7 @@ impl Sidebar {
         let count = project.target_count();
         let label = format!("Targets ({})", count);
         let root = self.tree.add_child(project_node, &label);
-        self.remember_virtual(root);
+        self.remember_path(root, "anycode://targets", true);
         self.tree.set_node_style(root, STYLE_BOLD);
         self.tree.set_node_text_color(root, tc.text);
         self.set_system_icon(root, "crosshair", tc.text_secondary);
@@ -790,7 +848,7 @@ impl Sidebar {
         let tc = ui::theme::colors();
         let label = format!("Build & Run ({})", task_mgr.tasks.len());
         let root = self.tree.add_child(project_node, &label);
-        self.remember_virtual(root);
+        self.remember_path(root, "anycode://build-run", true);
         self.tree.set_node_style(root, STYLE_BOLD);
         self.tree.set_node_text_color(root, tc.text);
         self.set_system_icon(root, "play", tc.text_secondary);
@@ -842,6 +900,31 @@ impl Sidebar {
 
     fn remember_virtual(&mut self, node: u32) {
         self.remember_path(node, "", true);
+    }
+}
+
+fn context_menu_items(kind: SidebarContextKind) -> &'static str {
+    match kind {
+        SidebarContextKind::File => "Open|-|Rename|Delete",
+        SidebarContextKind::Directory => {
+            "New File|New UI Form...|New Storyboard / Workflow...|New Folder|-|Rename|Delete"
+        }
+        SidebarContextKind::Project => {
+            "Project Properties...|-|New UI Form...|New Storyboard / Workflow...|-|Manage Crates...|Connected Services..."
+        }
+        SidebarContextKind::Crates => "Manage Crates...|Refresh Dependencies",
+        SidebarContextKind::ConnectedServices => {
+            "Add Connected Service...|Manage Connected Services..."
+        }
+        SidebarContextKind::BuildRun => {
+            "Configure Run Profiles...|-|Build|Run|Test"
+        }
+        SidebarContextKind::Configurations => "Project Properties...|Configure Run Profiles...",
+        SidebarContextKind::Solution => {
+            "Project Properties...|-|Add New Project...|Add Existing Project..."
+        }
+        SidebarContextKind::Virtual => "Project Properties...|Refresh",
+        SidebarContextKind::Empty => "New Rust UI Project...|Open Folder...",
     }
 }
 

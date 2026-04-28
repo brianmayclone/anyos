@@ -2,7 +2,7 @@ use alloc::string::String;
 use libanyui_client as anyui;
 
 use crate::logic::{
-    ai, build, config, debug_backend, debug_session, diagnostic_pipeline, diagnostics,
+    ai, build, config, debug_backend, debug_session, designer, diagnostic_pipeline, diagnostics,
     file_manager, git, plugin, project, solution, symbol_index, tasks, test_explorer,
 };
 use crate::ui::{
@@ -105,4 +105,15 @@ pub struct AppState {
     pub designer_drag_orig_w: u32,
     pub designer_drag_orig_h: u32,
     pub designer_drag_moved: bool,
+    pub designer_undo: alloc::vec::Vec<DesignerHistoryEntry>,
+    pub designer_redo: alloc::vec::Vec<DesignerHistoryEntry>,
+}
+
+pub struct DesignerHistoryEntry {
+    pub label: String,
+    pub file_path: String,
+    pub before: designer::DesignerDocument,
+    pub after: designer::DesignerDocument,
+    pub selected_before: String,
+    pub selected_after: String,
 }
