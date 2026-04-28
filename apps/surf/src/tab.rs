@@ -320,6 +320,7 @@ pub(crate) fn navigate(url_str: &str) {
     st.tabs[st.active_tab]
         .load_state
         .begin_navigation(generation);
+    crate::devtools::reset_for_navigation();
 
     // Update UI to show loading state.
     st.tabs[st.active_tab].is_loading = true;
@@ -362,6 +363,7 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
     st.tabs[st.active_tab]
         .load_state
         .begin_navigation(generation);
+    crate::devtools::reset_for_navigation();
 
     st.tabs[st.active_tab].is_loading = true;
     st.tabs[st.active_tab].status_text = String::from("Submitting...");

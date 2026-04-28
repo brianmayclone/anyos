@@ -189,6 +189,22 @@ pub fn build() -> DevTools {
     }
 }
 
+/// Clear every panel — called from `tab::navigate*` so each page load gets a
+/// fresh slate, regardless of whether the DevTools window is currently
+/// visible. Network recording starts from zero on the new navigation.
+pub fn reset_for_navigation() {
+    let st = crate::state();
+    st.devtools.net_entries.clear();
+    if st.devtools.open {
+        st.devtools.net_grid.set_row_count(0);
+        st.devtools.net_grid.set_data_raw(&[]);
+        st.devtools.dom_tree.clear();
+        st.devtools.tree_to_dom.clear();
+        st.devtools.style_pane.set_text("(kein Element ausgewählt)");
+        st.devtools.console_output.set_text("");
+    }
+}
+
 /// Toggle the DevTools window open/closed; refresh on open.
 pub fn toggle() {
     let st = crate::state();
