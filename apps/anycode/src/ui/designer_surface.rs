@@ -92,6 +92,7 @@ impl DesignerSurface {
         content.set_position(0, 0);
         content.set_size(DESIGNER_CONTENT_W, DESIGNER_CONTENT_H);
         content.set_color(tc.editor_bg);
+        content.set_drop_target(true);
         scroll.add(&content);
 
         let canvas = ui::Canvas::new(DESIGNER_CONTENT_W, DESIGNER_CONTENT_H);
@@ -124,6 +125,18 @@ impl DesignerSurface {
         });
 
         let drop_path = String::from(file_path);
+        let drop_content = content;
+        content.on_drag_enter(move |_| {
+            ui::drag_accept(ui::DND_EFFECT_COPY);
+        });
+
+        let content_drop_path = String::from(drop_path);
+        content.on_drop(move |_| {
+            queue_drop_from_drag(&content_drop_path, drop_content, None);
+        });
+
+        let drop_path = String::from(file_path);
+        let drop_content = content;
         let drop_canvas = canvas;
         canvas.on_drag_enter(move |_| {
             ui::drag_accept(ui::DND_EFFECT_COPY);
@@ -131,15 +144,7 @@ impl DesignerSurface {
 
         let drop_path = String::from(drop_path);
         canvas.on_drop(move |_| {
-            let (x, y, _) = drop_canvas.get_mouse();
-            let mut payload = ui::drag_get_text();
-            if payload.is_empty() {
-                let (bytes, format) = ui::drag_get_payload();
-                if format == ui::DND_FORMAT_TEXT {
-                    payload = String::from_utf8_lossy(&bytes).into_owned();
-                }
-            }
-            crate::queue_designer_drop(&drop_path, x, y, &payload);
+            queue_drop_from_drag(&drop_path, drop_content, Some(drop_canvas));
         });
 
         let this = Self {
@@ -252,6 +257,27 @@ impl DesignerSurface {
             self.preview_controls.borrow_mut().push(preview);
         }
     }
+}
+
+fn queue_drop_from_drag(file_path: &str, content: ui::View, fallback_canvas: Option<ui::Canvas>) {
+    let (x, y) = if let Some((drag_x, drag_y)) = ui::drag_pos() {
+        let (content_x, content_y) = content.get_abs_position();
+        (drag_x - content_x, drag_y - content_y)
+    } else if let Some(canvas) = fallback_canvas {
+        let (x, y, _) = canvas.get_mouse();
+        (x, y)
+    } else {
+        return;
+    };
+
+    let mut payload = ui::drag_get_text();
+    if payload.is_empty() {
+        let (bytes, format) = ui::drag_get_payload();
+        if format == ui::DND_FORMAT_TEXT {
+            payload = String::from_utf8_lossy(&bytes).into_owned();
+        }
+    }
+    crate::queue_designer_drop(file_path, x, y, &payload);
 }
 
 pub fn hit_test_doc(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {

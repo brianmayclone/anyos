@@ -43,6 +43,137 @@ fn class_declaration_initializes_preallocated_function_scope_binding() {
 }
 
 #[test]
+fn try_catch_catches_exception_from_called_function() {
+    assert_eq!(
+        eval_str(
+            r#"
+            let ok = false;
+            function boom() { throw new Error('caught'); }
+            try { boom(); } catch { ok = true; }
+            ok;
+            "#
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn try_catch_catches_exception_from_comma_call_argument() {
+    assert_eq!(
+        eval_str(
+            r#"
+            let ok = false;
+            function missing() { throw new Error('missing optional dependency'); }
+            function consume(_) {}
+            try { consume((missing(), {}).default); } catch { ok = true; }
+            ok;
+            "#
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn for_in_enumerates_first_static_object_property_with_children_array() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                const props = {
+                    className: 'mx-auto flex max-w-7xl items-center justify-between px-6 py-4',
+                    children: [1, 2, 3]
+                };
+                const keys = [];
+                for (const key in props) keys.push(key + '=' + props[key]);
+                return keys.join('|');
+            })()
+            "#
+        ),
+        "children=1,2,3|className=mx-auto flex max-w-7xl items-center justify-between px-6 py-4"
+    );
+}
+
+#[test]
+fn switch_break_inside_for_in_does_not_break_loop() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                const props = { className: 'x', children: [1] };
+                const seen = [];
+                for (const key in props) {
+                    switch (key) {
+                        case 'children':
+                            seen.push('children');
+                            break;
+                        case 'className':
+                            seen.push('className');
+                            break;
+                    }
+                }
+                return seen.join(',');
+            })()
+            "#
+        ),
+        "children,className"
+    );
+}
+
+#[test]
+fn react_style_initial_props_loop_reaches_class_after_children() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                const props = {
+                    className: 'mx-auto flex max-w-7xl',
+                    children: [1, 2]
+                };
+                const seen = [];
+                function apply(name, value) {
+                    switch (name) {
+                        case 'children':
+                            if (typeof value === 'string') seen.push('text');
+                            break;
+                        case 'className':
+                            seen.push('class=' + value);
+                            break;
+                    }
+                }
+                for (const key in props) {
+                    let value = props[key];
+                    if (props.hasOwnProperty(key) && value != null) apply(key, value);
+                }
+                return seen.join('|');
+            })()
+            "#
+        ),
+        "class=mx-auto flex max-w-7xl"
+    );
+}
+
+#[test]
+fn switch_break_continues_after_switch_statement() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(tag){
+                switch (tag) {
+                    case 'div':
+                    case 'span':
+                        break;
+                    case 'button':
+                        return 'button';
+                }
+                return 'after';
+            })('div')
+            "#
+        ),
+        "after"
+    );
+}
+
+#[test]
 fn assignment_expression_preserves_nested_member_value() {
     assert_eq!(
         eval_str(
@@ -237,6 +368,79 @@ fn function_call_can_dispatch_bytecode_without_reentrant_run() {
     "#
         ),
         "17"
+    );
+}
+
+#[test]
+fn function_call_empty_completion_preserves_expression_stack() {
+    assert_eq!(
+        eval_str(
+            r#"
+        function noop() {}
+        let callNoop = Function.prototype.call.bind(noop);
+        let values = [1, callNoop(null), 3];
+        values.length + ':' + String(values[1]) + ':' + values[2]
+    "#
+        ),
+        "3:undefined:3"
+    );
+}
+
+#[test]
+fn super_spread_preserves_destructured_constructor_argument() {
+    assert_eq!(
+        eval_str(
+            r#"
+            class Base {
+                constructor({ visualState: state }, options = {}) {
+                    this.latestValues = state.latestValues;
+                    this.renderState = state.renderState;
+                    this.optionCount = Object.keys(options).length;
+                }
+            }
+            class Derived extends Base {
+                constructor() {
+                    super(...arguments);
+                }
+            }
+            let instance = new Derived({
+                visualState: {
+                    latestValues: { transform: 'none' },
+                    renderState: { style: {} }
+                }
+            });
+            instance.latestValues.transform + ':' + typeof instance.renderState.style + ':' + instance.optionCount
+            "#,
+        ),
+        "none:object:0"
+    );
+}
+
+#[test]
+fn destructured_state_survives_for_in_shadowing_and_logical_assignment() {
+    assert_eq!(
+        eval_str(
+            r#"
+            function buildTransform(values, stateTransform, template) {
+                if (template) stateTransform.x = values.x || 0;
+                return 'ok';
+            }
+            function build(state, values, template) {
+                let { style: style, vars: vars, transformOrigin: origin } = state;
+                let hasTransform = false;
+                for (let state in values) {
+                    if (state === 'x') hasTransform = true;
+                    else style[state] = values[state];
+                }
+                if (values.transform || (hasTransform || template
+                    ? style.transform = buildTransform(values, state.transform, template)
+                    : style.transform &&= 'none')) {}
+                return style.opacity + ':' + String(style.transform);
+            }
+            build({ style: {}, transform: {}, transformOrigin: {}, vars: {} }, { opacity: 0 }, undefined)
+            "#,
+        ),
+        "0:undefined"
     );
 }
 

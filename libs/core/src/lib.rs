@@ -100,6 +100,10 @@ pub mod default {
 pub mod convert {
     pub enum Infallible {}
 
+    pub fn identity<T>(x: T) -> T {
+        x
+    }
+
     pub trait From<T> {
         fn from(value: T) -> Self;
     }
@@ -225,6 +229,10 @@ pub mod ops {
         pub start: Idx,
         pub end: Idx,
     }
+
+    impl<Idx> RangeInclusive<Idx> {
+        pub fn new(start: Idx, end: Idx) -> RangeInclusive<Idx>;
+    }
 }
 
 pub mod iter {
@@ -268,6 +276,8 @@ pub mod mem {
 
     impl<T> ManuallyDrop<T> {
         pub fn new(value: T) -> ManuallyDrop<T>;
+        pub fn into_inner(slot: ManuallyDrop<T>) -> T;
+        pub unsafe fn take(slot: &mut ManuallyDrop<T>) -> T;
     }
 
     impl<T> crate::ops::Deref for ManuallyDrop<T> {
@@ -366,6 +376,11 @@ pub mod slice {
 pub mod str {
     pub struct Utf8Error;
 
+    impl str {
+        pub fn trim(&self) -> &str;
+    }
+
+    pub fn trim(s: &str) -> &str;
     pub fn from_utf8(v: &[u8]) -> crate::result::Result<&str, Utf8Error>;
     pub unsafe fn from_utf8_unchecked(v: &[u8]) -> &str;
 }
@@ -416,6 +431,7 @@ pub mod alloc {
     }
 
     impl Layout {
+        pub fn new<T>() -> Layout;
         pub fn from_size_align(
             size: usize,
             align: usize,
@@ -456,6 +472,10 @@ pub mod sync {
             pub value: usize,
         }
 
+        pub struct AtomicPtr<T> {
+            pub value: *mut T,
+        }
+
         impl AtomicBool {
             pub const fn new(value: bool) -> AtomicBool;
             pub fn load(&self, order: Ordering) -> bool;
@@ -484,6 +504,13 @@ pub mod sync {
             pub fn fetch_add(&self, value: usize, order: Ordering) -> usize;
         }
 
+        impl<T> AtomicPtr<T> {
+            pub const fn new(value: *mut T) -> AtomicPtr<T>;
+            pub fn load(&self, order: Ordering) -> *mut T;
+            pub fn store(&self, value: *mut T, order: Ordering);
+            pub fn get_mut(&mut self) -> &mut *mut T;
+        }
+
         pub fn fence(order: Ordering);
         pub fn compiler_fence(order: Ordering);
     }
@@ -510,26 +537,146 @@ pub mod cell {
     impl<T> UnsafeCell<T> {
         pub const fn new(value: T) -> UnsafeCell<T>;
         pub fn get(&self) -> *mut T;
+        pub fn into_inner(self) -> T;
     }
 
     pub struct Cell<T> {
         pub value: T,
     }
 
+    impl<T> Cell<T> {
+        pub const fn new(value: T) -> Cell<T>;
+    }
+
     pub struct RefCell<T> {
         pub value: T,
+    }
+
+    impl<T> RefCell<T> {
+        pub const fn new(value: T) -> RefCell<T>;
     }
 }
 
 pub mod num {
+    pub struct NonZeroU8 {
+        pub value: u8,
+    }
+
+    pub struct NonZeroU16 {
+        pub value: u16,
+    }
+
+    pub struct NonZeroU32 {
+        pub value: u32,
+    }
+
+    pub struct NonZeroU64 {
+        pub value: u64,
+    }
+
+    pub struct NonZeroU128 {
+        pub value: u128,
+    }
+
     pub struct NonZeroUsize {
         pub value: usize,
     }
 
+    pub struct NonZeroI8 {
+        pub value: i8,
+    }
+
+    pub struct NonZeroI16 {
+        pub value: i16,
+    }
+
+    pub struct NonZeroI32 {
+        pub value: i32,
+    }
+
+    pub struct NonZeroI64 {
+        pub value: i64,
+    }
+
+    pub struct NonZeroI128 {
+        pub value: i128,
+    }
+
+    pub struct NonZeroIsize {
+        pub value: isize,
+    }
+
+    impl NonZeroU8 {
+        pub fn new(value: u8) -> crate::option::Option<NonZeroU8>;
+        pub const unsafe fn new_unchecked(value: u8) -> NonZeroU8;
+        pub fn get(self) -> u8;
+    }
+
+    impl NonZeroU16 {
+        pub fn new(value: u16) -> crate::option::Option<NonZeroU16>;
+        pub const unsafe fn new_unchecked(value: u16) -> NonZeroU16;
+        pub fn get(self) -> u16;
+    }
+
+    impl NonZeroU32 {
+        pub fn new(value: u32) -> crate::option::Option<NonZeroU32>;
+        pub const unsafe fn new_unchecked(value: u32) -> NonZeroU32;
+        pub fn get(self) -> u32;
+    }
+
+    impl NonZeroU64 {
+        pub fn new(value: u64) -> crate::option::Option<NonZeroU64>;
+        pub const unsafe fn new_unchecked(value: u64) -> NonZeroU64;
+        pub fn get(self) -> u64;
+    }
+
+    impl NonZeroU128 {
+        pub fn new(value: u128) -> crate::option::Option<NonZeroU128>;
+        pub const unsafe fn new_unchecked(value: u128) -> NonZeroU128;
+        pub fn get(self) -> u128;
+    }
+
     impl NonZeroUsize {
         pub fn new(value: usize) -> crate::option::Option<NonZeroUsize>;
+        pub const unsafe fn new_unchecked(value: usize) -> NonZeroUsize;
         pub fn get(self) -> usize;
         pub fn unwrap(self) -> NonZeroUsize;
+    }
+
+    impl NonZeroI8 {
+        pub fn new(value: i8) -> crate::option::Option<NonZeroI8>;
+        pub const unsafe fn new_unchecked(value: i8) -> NonZeroI8;
+        pub fn get(self) -> i8;
+    }
+
+    impl NonZeroI16 {
+        pub fn new(value: i16) -> crate::option::Option<NonZeroI16>;
+        pub const unsafe fn new_unchecked(value: i16) -> NonZeroI16;
+        pub fn get(self) -> i16;
+    }
+
+    impl NonZeroI32 {
+        pub fn new(value: i32) -> crate::option::Option<NonZeroI32>;
+        pub const unsafe fn new_unchecked(value: i32) -> NonZeroI32;
+        pub fn get(self) -> i32;
+    }
+
+    impl NonZeroI64 {
+        pub fn new(value: i64) -> crate::option::Option<NonZeroI64>;
+        pub const unsafe fn new_unchecked(value: i64) -> NonZeroI64;
+        pub fn get(self) -> i64;
+    }
+
+    impl NonZeroI128 {
+        pub fn new(value: i128) -> crate::option::Option<NonZeroI128>;
+        pub const unsafe fn new_unchecked(value: i128) -> NonZeroI128;
+        pub fn get(self) -> i128;
+    }
+
+    impl NonZeroIsize {
+        pub fn new(value: isize) -> crate::option::Option<NonZeroIsize>;
+        pub const unsafe fn new_unchecked(value: isize) -> NonZeroIsize;
+        pub fn get(self) -> isize;
     }
 
     pub struct Wrapping<T>(pub T);
@@ -543,6 +690,10 @@ pub mod time {
     }
 
     impl Duration {
+        pub const fn new(secs: u64, nanos: u32) -> Duration {
+            Duration { secs, nanos }
+        }
+
         pub fn from_secs(secs: u64) -> Duration {
             Duration { secs, nanos: 0 }
         }

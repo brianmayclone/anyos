@@ -4316,27 +4316,32 @@ impl Compiler {
             Expr::Member {
                 object, property, ..
             } => {
-                self.compile_expr(object);
                 if Self::is_logical_assign(op) {
-                    // obj.prop &&= expr: short-circuit on property value
-                    self.emit(Op::Dup); // [obj, obj]
+                    // obj.prop &&= expr / ||= / ??= expr
+                    // Evaluate the receiver exactly once, then keep it in a
+                    // temporary while the old value controls short-circuiting.
+                    let obj_slot = self.scope_mut().add_local(String::from("__logical_obj__"));
+                    self.compile_expr(object);
+                    self.emit(Op::StoreLocal(obj_slot));
+                    self.emit(Op::Pop);
+                    self.emit(Op::LoadLocal(obj_slot));
                     let ci = self.add_const(Constant::String(property.clone()));
-                    self.emit(Op::GetPropNamed(ci)); // [obj, prop_val] — GetPropNamed pops obj copy
-                    let skip = self.emit_logical_skip(op); // [obj, prop_val]
-                    self.emit(Op::Pop); // [obj]
+                    self.emit(Op::GetPropNamed(ci)); // [old_val]
+                    if matches!(op, AssignOp::AndAssign | AssignOp::OrAssign) {
+                        self.emit(Op::Dup); // preserve old_val for the short-circuit result
+                    }
+                    let skip = self.emit_logical_skip(op);
+                    self.emit(Op::Pop); // discard old_val before evaluating RHS
+                    self.emit(Op::LoadLocal(obj_slot));
                     self.compile_expr(right); // [obj, new_val]
                     let ci2 = self.add_const(Constant::String(property.clone()));
-                    self.emit(Op::SetPropNamed(ci2)); // [new_val] — SetPropNamed pops obj+val, pushes val
+                    self.emit(Op::SetPropNamed(ci2)); // [new_val]
                     let done = self.emit(Op::Jump(0));
                     self.patch_jump(skip);
-                    // Short-circuited: stack is [obj, old_val] — need just [old_val]
-                    // Pop old_val temporarily, pop obj, then re-read property
-                    // Simpler: just pop old_val, then re-read from obj (value hasn't changed)
-                    self.emit(Op::Pop); // [obj]
-                    let ci3 = self.add_const(Constant::String(property.clone()));
-                    self.emit(Op::GetPropNamed(ci3)); // [prop_val]
+                    // Short-circuited path already has [old_val] as the expression result.
                     self.patch_jump(done);
                 } else if *op != AssignOp::Assign {
+                    self.compile_expr(object);
                     self.emit(Op::Dup);
                     let ci = self.add_const(Constant::String(property.clone()));
                     self.emit(Op::GetPropNamed(ci));
@@ -4345,6 +4350,7 @@ impl Compiler {
                     let ci2 = self.add_const(Constant::String(property.clone()));
                     self.emit(Op::SetPropNamed(ci2));
                 } else {
+                    self.compile_expr(object);
                     self.compile_expr(right);
                     let ci = self.add_const(Constant::String(property.clone()));
                     self.emit(Op::SetPropNamed(ci));

@@ -370,6 +370,7 @@ struct AnyuiLib {
     // Size/Position query
     get_size: extern "C" fn(u32, *mut u32, *mut u32),
     get_position: extern "C" fn(u32, *mut i32, *mut i32),
+    get_abs_position: extern "C" fn(u32, *mut i32, *mut i32),
     // DataGrid scroll
     datagrid_get_scroll_offset: extern "C" fn(u32) -> u32,
     datagrid_set_scroll_offset: extern "C" fn(u32, u32),
@@ -700,6 +701,7 @@ pub fn init() -> bool {
             // Size/Position query
             get_size: resolve(&handle, "anyui_get_size"),
             get_position: resolve(&handle, "anyui_get_position"),
+            get_abs_position: resolve(&handle, "anyui_get_abs_position"),
             // DataGrid scroll
             datagrid_get_scroll_offset: resolve(&handle, "anyui_datagrid_get_scroll_offset"),
             datagrid_set_scroll_offset: resolve(&handle, "anyui_datagrid_set_scroll_offset"),
@@ -865,6 +867,13 @@ impl Control {
         let mut x: i32 = 0;
         let mut y: i32 = 0;
         (lib().get_position)(self.id, &mut x, &mut y);
+        (x, y)
+    }
+
+    pub fn get_abs_position(&self) -> (i32, i32) {
+        let mut x: i32 = 0;
+        let mut y: i32 = 0;
+        (lib().get_abs_position)(self.id, &mut x, &mut y);
         (x, y)
     }
 
@@ -1260,7 +1269,9 @@ pub fn drag_get_payload() -> (alloc::vec::Vec<u8>, u32) {
 pub fn drag_set_files(paths: &[&str], allowed_effects: u32) {
     let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
     for (i, p) in paths.iter().filter(|p| !p.is_empty()).enumerate() {
-        if i > 0 { buf.push(0); }
+        if i > 0 {
+            buf.push(0);
+        }
         buf.extend_from_slice(p.as_bytes());
     }
     drag_set_payload(DND_FORMAT_FILES, &buf, allowed_effects);

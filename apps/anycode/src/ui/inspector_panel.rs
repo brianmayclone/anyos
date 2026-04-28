@@ -55,8 +55,9 @@ impl InspectorPanel {
         let property_grid = ui::DataGrid::new(240, 320);
         property_grid.set_dock(ui::DOCK_FILL);
         property_grid.set_columns(&[
-            ui::ColumnDef::new("Property").width(96),
-            ui::ColumnDef::new("Value").width(136),
+            ui::ColumnDef::new("Property").width(88),
+            ui::ColumnDef::new("Value").width(104),
+            ui::ColumnDef::new("Editor").width(48),
         ]);
         property_grid.set_row_height(22);
         property_grid.set_header_height(24);
@@ -157,9 +158,16 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Designer Properties");
         self.subtitle.set_text(&doc.form_name);
-        self.property_grid.set_visible(false);
-        self.property_editor.set_visible(false);
-        self.tree.set_dock(ui::DOCK_FILL);
+        self.property_editor.set_visible(true);
+        self.property_grid.set_visible(true);
+        self.btn_delete_control.set_visible(false);
+        self.property_dropdown.set_items(&doc.form_property_items());
+        self.property_dropdown.set_state(0);
+        self.property_value
+            .set_text(&doc.form_property_value("Title"));
+        self.populate_form_property_grid(doc);
+        self.tree.set_dock(ui::DOCK_BOTTOM);
+        self.tree.set_size(240, 150);
         self.tree.set_visible(true);
         self.tree.clear();
 
@@ -209,6 +217,7 @@ impl InspectorPanel {
             .set_text(&format!("{} / {}", doc.form_name, control.name));
         self.property_editor.set_visible(true);
         self.property_grid.set_visible(true);
+        self.btn_delete_control.set_visible(true);
         self.tree.set_dock(ui::DOCK_BOTTOM);
         self.tree.set_size(240, 150);
         self.tree.set_visible(true);
@@ -254,8 +263,15 @@ impl InspectorPanel {
             return;
         }
         self.property_dropdown.set_state(row);
-        let property_name = doc.control_property_name_at(control_name, row);
-        let value = doc.control_property_value(control_name, &property_name);
+        let (_property_name, value) = if control_name.is_empty() {
+            let property_name = doc.form_property_name_at(row);
+            let value = doc.form_property_value(&property_name);
+            (property_name, value)
+        } else {
+            let property_name = doc.control_property_name_at(control_name, row);
+            let value = doc.control_property_value(control_name, &property_name);
+            (property_name, value)
+        };
         self.property_value.set_text(&value);
     }
 
@@ -287,6 +303,28 @@ impl InspectorPanel {
             append_grid_cell(&mut raw, name);
             raw.push('\x1f');
             append_grid_cell(&mut raw, &control.property_value(name));
+            raw.push('\x1f');
+            append_grid_cell(&mut raw, property_editor_kind(name));
+            row += 1;
+        }
+        self.property_grid.set_data_raw(raw.as_bytes());
+        if row > 0 {
+            self.property_grid.set_selected_row(0);
+        }
+    }
+
+    fn populate_form_property_grid(&self, doc: &DesignerDocument) {
+        let mut raw = String::new();
+        let mut row = 0u32;
+        for name in doc.form_property_items().split('|') {
+            if row > 0 {
+                raw.push('\x1e');
+            }
+            append_grid_cell(&mut raw, name);
+            raw.push('\x1f');
+            append_grid_cell(&mut raw, &doc.form_property_value(name));
+            raw.push('\x1f');
+            append_grid_cell(&mut raw, property_editor_kind(name));
             row += 1;
         }
         self.property_grid.set_data_raw(raw.as_bytes());
@@ -301,5 +339,20 @@ fn append_grid_cell(out: &mut String, value: &str) {
         if ch != '\x1e' && ch != '\x1f' {
             out.push(ch);
         }
+    }
+}
+
+fn property_editor_kind(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "x" | "y" | "width" | "height" | "fontsize" | "maxlength" | "selectedindex"
+        | "activepage" | "pageheight" | "rowheight" | "headerheight" | "indentwidth" | "value"
+        | "min" | "max" | "step" => "Int",
+        "enabled" | "visible" | "readonly" | "password" | "checked" | "interactive" => "Bool",
+        "textcolor" | "backgroundcolor" | "bordercolor" => "Color",
+        "dock" | "orientation" | "selectionmode" | "scalemode" | "textalign" | "fontweight" => {
+            "Enum"
+        }
+        "onclick" | "ondoubleclick" | "onchanged" | "onsubmit" => "Event",
+        _ => "Text",
     }
 }

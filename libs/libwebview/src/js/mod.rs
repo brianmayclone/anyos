@@ -31,6 +31,28 @@ use crate::css::{Declaration, KeyframeSet};
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{apply_timing, TimingFunction, TransitionDef};
 
+#[cfg(feature = "host")]
+fn debug_class_mutations_enabled() -> bool {
+    std::env::var_os("SURF_DEBUG_CLASS_MUTATIONS").is_some()
+}
+
+#[cfg(feature = "host")]
+fn debug_all_class_mutations_enabled() -> bool {
+    std::env::var("SURF_DEBUG_CLASS_MUTATIONS")
+        .map(|value| value.eq_ignore_ascii_case("all"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(feature = "host"))]
+fn debug_class_mutations_enabled() -> bool {
+    false
+}
+
+#[cfg(not(feature = "host"))]
+fn debug_all_class_mutations_enabled() -> bool {
+    false
+}
+
 // ═══════════════════════════════════════════════════════════
 // Property write interception — static target for set_hook
 // ═══════════════════════════════════════════════════════════
@@ -57,13 +79,41 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
     let node_id = data as usize as i64;
 
     match key {
-        "textContent" | "innerText" => {
-            if node_id >= 0 {
-                mutations.push(DomMutation::SetTextContent {
-                    node_id: node_id,
-                    text: value.to_js_string(),
+        key if key.starts_with("__reactProps$") => {
+            let class_value = value.get_property("className");
+            let cls = match class_value {
+                JsValue::Undefined | JsValue::Null => String::new(),
+                _ => class_value.to_js_string(),
+            };
+            if !cls.is_empty() && cls != "undefined" {
+                mutations.push(DomMutation::SetAttribute {
+                    node_id,
+                    name: String::from("class"),
+                    value: cls.clone(),
                 });
             }
+            if !cls.is_empty()
+                && cls != "undefined"
+                && debug_class_mutations_enabled()
+                && (debug_all_class_mutations_enabled()
+                    || cls.contains("max-w-7xl")
+                    || cls.contains("text-center")
+                    || cls.contains("relative mx-auto")
+                    || cls.contains("max-w-4xl"))
+            {
+                #[cfg(feature = "host")]
+                eprintln!(
+                    "[js-dom-debug] react props class nid={} value={}",
+                    node_id, cls
+                );
+            }
+            apply_react_motion_final_styles(node_id, value, mutations);
+        }
+        "textContent" | "innerText" => {
+            mutations.push(DomMutation::SetTextContent {
+                node_id,
+                text: value.to_js_string(),
+            });
         }
         "innerHTML" => {
             mutations.push(DomMutation::SetInnerHTML {
@@ -76,6 +126,19 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
             if cls.contains("client-js") {
                 cls = cls.replace("client-js", "client-nojs");
             }
+            if debug_class_mutations_enabled()
+                && (debug_all_class_mutations_enabled()
+                    || cls.contains("max-w-7xl")
+                    || cls.contains("text-center")
+                    || cls.contains("relative mx-auto")
+                    || cls.contains("max-w-4xl"))
+            {
+                #[cfg(feature = "host")]
+                eprintln!(
+                    "[js-dom-debug] className property nid={} value={}",
+                    node_id, cls
+                );
+            }
             // Always emit SetAttribute mutation — for virtual nodes,
             // apply_mutations resolves the ID via id_map.
             mutations.push(DomMutation::SetAttribute {
@@ -85,28 +148,24 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
             });
         }
         "value" | "src" | "href" | "id" | "name" | "type" => {
-            if node_id >= 0 {
-                mutations.push(DomMutation::SetAttribute {
-                    node_id: node_id,
-                    name: String::from(key),
-                    value: value.to_js_string(),
-                });
-            }
+            mutations.push(DomMutation::SetAttribute {
+                node_id,
+                name: String::from(key),
+                value: value.to_js_string(),
+            });
         }
         "checked" | "disabled" => {
-            if node_id >= 0 {
-                if value.to_boolean() {
-                    mutations.push(DomMutation::SetAttribute {
-                        node_id: node_id,
-                        name: String::from(key),
-                        value: String::new(),
-                    });
-                } else {
-                    mutations.push(DomMutation::RemoveAttribute {
-                        node_id: node_id,
-                        name: String::from(key),
-                    });
-                }
+            if value.to_boolean() {
+                mutations.push(DomMutation::SetAttribute {
+                    node_id,
+                    name: String::from(key),
+                    value: String::new(),
+                });
+            } else {
+                mutations.push(DomMutation::RemoveAttribute {
+                    node_id,
+                    name: String::from(key),
+                });
             }
         }
         "scrollTop" => {
@@ -140,6 +199,71 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
     }
 }
 
+fn apply_react_motion_final_styles(
+    node_id: i64,
+    props: &JsValue,
+    mutations: &mut Vec<DomMutation>,
+) {
+    let final_style = {
+        let while_in_view = props.get_property("whileInView");
+        if while_in_view.is_object() {
+            #[cfg(feature = "host")]
+            if std::env::var_os("SURF_DEBUG_MOTION_PROPS").is_some() {
+                eprintln!("[js-dom-debug] motion whileInView nid={}", node_id);
+            }
+            while_in_view
+        } else {
+            let animate = props.get_property("animate");
+            if animate.is_object() {
+                #[cfg(feature = "host")]
+                if std::env::var_os("SURF_DEBUG_MOTION_PROPS").is_some() {
+                    eprintln!("[js-dom-debug] motion animate nid={}", node_id);
+                }
+                animate
+            } else {
+                return;
+            }
+        }
+    };
+
+    let opacity = final_style.get_property("opacity");
+    if !opacity.is_undefined() && !opacity.is_null() {
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_MOTION_PROPS").is_some() {
+            eprintln!(
+                "[js-dom-debug] motion opacity nid={} value={}",
+                node_id,
+                opacity.to_js_string()
+            );
+        }
+        mutations.push(DomMutation::SetStyleProperty {
+            node_id,
+            property: String::from("opacity"),
+            value: opacity.to_js_string(),
+        });
+    }
+
+    let x = final_style.get_property("x");
+    let y = final_style.get_property("y");
+    if (!x.is_undefined() && !x.is_null()) || (!y.is_undefined() && !y.is_null()) {
+        let tx = if x.is_undefined() || x.is_null() {
+            0.0
+        } else {
+            x.to_number()
+        };
+        let ty = if y.is_undefined() || y.is_null() {
+            0.0
+        } else {
+            y.to_number()
+        };
+        mutations.push(DomMutation::SetStyleProperty {
+            node_id,
+            property: String::from("transform"),
+            value: alloc::format!("translate({}px, {}px)", tx as i32, ty as i32),
+        });
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // DomBridge — stored in vm.userdata so native fns can reach the DOM
 // ═══════════════════════════════════════════════════════════
@@ -152,6 +276,8 @@ struct DomBridge {
     next_virtual_id: i64,
     /// Virtual nodes created by createElement.
     virtual_nodes: Vec<VirtualNode>,
+    /// Persistent mapping from JS virtual node IDs to real DOM node IDs.
+    real_node_ids: BTreeMap<i64, usize>,
     /// Pending HTTP requests from XHR / fetch.
     pending_http_requests: Vec<PendingHttpRequest>,
     /// Pending page navigations requested by JavaScript.
@@ -198,6 +324,14 @@ impl DomBridge {
     fn get_virtual_mut(&mut self, id: i64) -> Option<&mut VirtualNode> {
         self.virtual_nodes.iter_mut().find(|v| v.id == id)
     }
+
+    fn resolve_node_id(&self, id: i64) -> Option<usize> {
+        if id >= 0 {
+            Some(id as usize)
+        } else {
+            self.real_node_ids.get(&id).copied()
+        }
+    }
 }
 
 /// Retrieve the DomBridge from vm.userdata.
@@ -215,6 +349,7 @@ fn get_bridge(vm: &mut Vm) -> Option<&mut DomBridge> {
 
 #[allow(dead_code)]
 /// A virtual node created via document.createElement().
+#[derive(Clone)]
 struct VirtualNode {
     id: i64,
     tag: String,
@@ -551,6 +686,8 @@ pub struct JsRuntime {
     pub mutations: Vec<DomMutation>,
     /// Virtual DOM nodes created by JS but not yet inserted into real DOM.
     pub virtual_nodes: Vec<VirtualNode>,
+    next_virtual_id: i64,
+    real_node_ids: BTreeMap<i64, usize>,
     pub event_listeners: Vec<EventListener>,
     pub pending_http_requests: Vec<PendingHttpRequest>,
     pub pending_navigation_requests: Vec<PendingNavigationRequest>,
@@ -588,6 +725,8 @@ impl JsRuntime {
             console: Vec::new(),
             mutations: Vec::new(),
             virtual_nodes: Vec::new(),
+            next_virtual_id: -1,
+            real_node_ids: BTreeMap::new(),
             event_listeners: Vec::new(),
             pending_http_requests: Vec::new(),
             pending_navigation_requests: Vec::new(),
@@ -731,8 +870,9 @@ impl JsRuntime {
             dom: dom as *const Dom,
             mutations: Vec::new(),
             event_listeners: Vec::new(),
-            next_virtual_id: -1,
-            virtual_nodes: Vec::new(),
+            next_virtual_id: self.next_virtual_id,
+            virtual_nodes: self.virtual_nodes.clone(),
+            real_node_ids: self.real_node_ids.clone(),
             pending_http_requests: Vec::new(),
             pending_navigation_requests: Vec::new(),
             timers: Vec::new(),
@@ -921,6 +1061,8 @@ impl JsRuntime {
 
         self.mutations = bridge.mutations;
         self.virtual_nodes = bridge.virtual_nodes;
+        self.next_virtual_id = bridge.next_virtual_id;
+        self.real_node_ids = bridge.real_node_ids;
         self.event_listeners = bridge.event_listeners;
         self.pending_http_requests = bridge.pending_http_requests;
         self.pending_navigation_requests = bridge.pending_navigation_requests;
@@ -1128,8 +1270,9 @@ impl JsRuntime {
             dom: dom as *const Dom,
             mutations: Vec::new(),
             event_listeners: Vec::new(),
-            next_virtual_id: -1,
-            virtual_nodes: Vec::new(),
+            next_virtual_id: self.next_virtual_id,
+            virtual_nodes: self.virtual_nodes.clone(),
+            real_node_ids: self.real_node_ids.clone(),
             pending_http_requests: Vec::new(),
             pending_navigation_requests: Vec::new(),
             timers: Vec::new(),
@@ -1163,6 +1306,9 @@ impl JsRuntime {
         }
         self.engine.clear_console();
         self.mutations.extend(bridge.mutations);
+        self.virtual_nodes = bridge.virtual_nodes;
+        self.next_virtual_id = bridge.next_virtual_id;
+        self.real_node_ids = bridge.real_node_ids;
         self.event_listeners.extend(bridge.event_listeners);
         self.apply_remove_listeners(&bridge.remove_listeners);
         self.pending_http_requests
@@ -1189,6 +1335,9 @@ impl JsRuntime {
         self.engine = JsEngine::new();
         self.console.clear();
         self.mutations.clear();
+        self.virtual_nodes.clear();
+        self.next_virtual_id = -1;
+        self.real_node_ids.clear();
         self.event_listeners.clear();
         self.pending_http_requests.clear();
         self.pending_navigation_requests.clear();
@@ -1378,36 +1527,80 @@ impl JsRuntime {
                         None,
                     );
                     id_map.insert(*virtual_id, real_id);
+                    self.real_node_ids.insert(*virtual_id, real_id);
                 }
                 DomMutation::CreateTextNode { virtual_id, text } => {
                     let real_id = dom.add_node(NodeType::Text(text.clone()), None);
                     id_map.insert(*virtual_id, real_id);
+                    self.real_node_ids.insert(*virtual_id, real_id);
                 }
                 DomMutation::SetAttribute {
                     node_id,
                     name,
                     value,
                 } => {
-                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                    if debug_class_mutations_enabled()
+                        && name.eq_ignore_ascii_case("class")
+                        && (debug_all_class_mutations_enabled()
+                            || value.contains("max-w-7xl")
+                            || value.contains("text-center")
+                            || value.contains("relative mx-auto")
+                            || value.contains("max-w-4xl"))
+                    {
+                        #[cfg(feature = "host")]
+                        eprintln!(
+                            "[js-dom-debug] apply SetAttribute class node_id={} value={}",
+                            node_id, value
+                        );
+                    }
+                    if let Some(real_id) = resolve_id(*node_id, &id_map, &self.real_node_ids) {
                         dom.set_attr(real_id, name, value);
+                    } else if *node_id < 0 {
+                        if let Some(vn) = self.virtual_nodes.iter_mut().find(|vn| vn.id == *node_id)
+                        {
+                            if let Some((_, existing)) =
+                                vn.attrs.iter_mut().find(|(k, _)| k == name)
+                            {
+                                *existing = value.clone();
+                            } else {
+                                vn.attrs.push((name.clone(), value.clone()));
+                            }
+                        }
                     }
                 }
                 DomMutation::RemoveAttribute { node_id, name } => {
-                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                    if debug_class_mutations_enabled() && name.eq_ignore_ascii_case("class") {
+                        #[cfg(feature = "host")]
+                        eprintln!(
+                            "[js-dom-debug] apply RemoveAttribute class node_id={}",
+                            node_id
+                        );
+                    }
+                    if let Some(real_id) = resolve_id(*node_id, &id_map, &self.real_node_ids) {
                         dom.remove_attr(real_id, name);
+                    } else if *node_id < 0 {
+                        if let Some(vn) = self.virtual_nodes.iter_mut().find(|vn| vn.id == *node_id)
+                        {
+                            vn.attrs.retain(|(k, _)| k != name);
+                        }
                     }
                 }
                 DomMutation::SetTextContent { node_id, text } => {
-                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                    if let Some(real_id) = resolve_id(*node_id, &id_map, &self.real_node_ids) {
                         dom.set_text(real_id, text);
+                    } else if *node_id < 0 {
+                        if let Some(vn) = self.virtual_nodes.iter_mut().find(|vn| vn.id == *node_id)
+                        {
+                            vn.text_content = text.clone();
+                        }
                     }
                 }
                 DomMutation::AppendChild {
                     parent_id,
                     child_id,
                 } => {
-                    let real_parent = resolve_id(*parent_id, &id_map);
-                    let real_child = resolve_id(*child_id, &id_map);
+                    let real_parent = resolve_id(*parent_id, &id_map, &self.real_node_ids);
+                    let real_child = resolve_id(*child_id, &id_map, &self.real_node_ids);
                     if let (Some(p), Some(c)) = (real_parent, real_child) {
                         dom.append_child(p, c);
                     }
@@ -1416,8 +1609,8 @@ impl JsRuntime {
                     parent_id,
                     child_id,
                 } => {
-                    let real_parent = resolve_id(*parent_id, &id_map);
-                    let real_child = resolve_id(*child_id, &id_map);
+                    let real_parent = resolve_id(*parent_id, &id_map, &self.real_node_ids);
+                    let real_child = resolve_id(*child_id, &id_map, &self.real_node_ids);
                     if let (Some(p), Some(c)) = (real_parent, real_child) {
                         dom.remove_child(p, c);
                     }
@@ -1427,9 +1620,9 @@ impl JsRuntime {
                     new_child_id,
                     ref_child_id,
                 } => {
-                    let real_parent = resolve_id(*parent_id, &id_map);
-                    let real_new = resolve_id(*new_child_id, &id_map);
-                    let real_ref = resolve_id(*ref_child_id, &id_map);
+                    let real_parent = resolve_id(*parent_id, &id_map, &self.real_node_ids);
+                    let real_new = resolve_id(*new_child_id, &id_map, &self.real_node_ids);
+                    let real_ref = resolve_id(*ref_child_id, &id_map, &self.real_node_ids);
                     if let (Some(p), Some(n), Some(r)) = (real_parent, real_new, real_ref) {
                         dom.insert_before(p, n, r);
                     }
@@ -1439,16 +1632,16 @@ impl JsRuntime {
                     new_child_id,
                     old_child_id,
                 } => {
-                    let real_parent = resolve_id(*parent_id, &id_map);
-                    let real_new = resolve_id(*new_child_id, &id_map);
-                    let real_old = resolve_id(*old_child_id, &id_map);
+                    let real_parent = resolve_id(*parent_id, &id_map, &self.real_node_ids);
+                    let real_new = resolve_id(*new_child_id, &id_map, &self.real_node_ids);
+                    let real_old = resolve_id(*old_child_id, &id_map, &self.real_node_ids);
                     if let (Some(p), Some(n), Some(o)) = (real_parent, real_new, real_old) {
                         dom.remove_child(p, o);
                         dom.append_child(p, n);
                     }
                 }
                 DomMutation::RemoveNode { node_id } => {
-                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                    if let Some(real_id) = resolve_id(*node_id, &id_map, &self.real_node_ids) {
                         // Remove from parent.
                         if let Some(pid) = dom.nodes.get(real_id).and_then(|n| n.parent) {
                             dom.remove_child(pid, real_id);
@@ -1456,7 +1649,7 @@ impl JsRuntime {
                     }
                 }
                 DomMutation::SetInnerHTML { node_id, html } => {
-                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                    if let Some(real_id) = resolve_id(*node_id, &id_map, &self.real_node_ids) {
                         // Remove old children.
                         let children: Vec<usize> = dom
                             .nodes
@@ -1479,7 +1672,7 @@ impl JsRuntime {
                     value,
                 } => {
                     // Store style as a `style` attribute for now.
-                    if let Some(real_id) = resolve_id(*node_id, &id_map) {
+                    if let Some(real_id) = resolve_id(*node_id, &id_map, &self.real_node_ids) {
                         let existing = String::from(dom.attr(real_id, "style").unwrap_or(""));
                         let new_style = if existing.is_empty() {
                             alloc::format!("{}: {}", property, value)
@@ -1570,8 +1763,9 @@ impl JsRuntime {
             dom: dom as *const Dom,
             mutations: Vec::new(),
             event_listeners: Vec::new(),
-            next_virtual_id: -1,
-            virtual_nodes: Vec::new(),
+            next_virtual_id: self.next_virtual_id,
+            virtual_nodes: self.virtual_nodes.clone(),
+            real_node_ids: self.real_node_ids.clone(),
             pending_http_requests: Vec::new(),
             pending_navigation_requests: Vec::new(),
             timers: Vec::new(),
@@ -1705,6 +1899,9 @@ impl JsRuntime {
         }
         self.engine.clear_console();
         self.mutations.extend(bridge.mutations);
+        self.virtual_nodes = bridge.virtual_nodes;
+        self.next_virtual_id = bridge.next_virtual_id;
+        self.real_node_ids = bridge.real_node_ids;
         self.event_listeners.extend(bridge.event_listeners);
         self.apply_remove_listeners(&bridge.remove_listeners);
         self.pending_http_requests
@@ -1737,12 +1934,20 @@ impl JsRuntime {
             t.elapsed_ms += delta_ms;
             if t.elapsed_ms >= t.delay_ms {
                 // Timer is due — execute callback.
+                #[cfg(feature = "host")]
+                if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+                    eprintln!(
+                        "[js-dom-debug] fire timer id={} delay={} raf={} elapsed={}",
+                        t.id, t.delay_ms, t.is_raf, t.elapsed_ms
+                    );
+                }
                 let mut bridge = DomBridge {
                     dom: dom as *const Dom,
                     mutations: Vec::new(),
                     event_listeners: Vec::new(),
-                    next_virtual_id: -1,
-                    virtual_nodes: Vec::new(),
+                    next_virtual_id: self.next_virtual_id,
+                    virtual_nodes: self.virtual_nodes.clone(),
+                    real_node_ids: self.real_node_ids.clone(),
                     pending_http_requests: Vec::new(),
                     pending_navigation_requests: Vec::new(),
                     timers: Vec::new(),
@@ -1799,6 +2004,9 @@ impl JsRuntime {
                 }
                 self.engine.vm().engine_log.clear();
                 self.mutations.extend(bridge.mutations);
+                self.virtual_nodes = bridge.virtual_nodes;
+                self.next_virtual_id = bridge.next_virtual_id;
+                self.real_node_ids = bridge.real_node_ids;
                 self.event_listeners.extend(bridge.event_listeners);
                 self.pending_http_requests
                     .extend(bridge.pending_http_requests);
@@ -2068,9 +2276,8 @@ fn make_array(elements: Vec<JsValue>) -> JsValue {
 /// Read an attribute from a real DOM node or virtual node.
 fn read_attribute(vm: &mut Vm, node_id: i64, name: &str) -> JsValue {
     if let Some(bridge) = get_bridge(vm) {
-        if node_id >= 0 {
+        if let Some(nid) = bridge.resolve_node_id(node_id) {
             let dom = bridge.dom();
-            let nid = node_id as usize;
             if nid < dom.nodes.len() {
                 return match dom.attr(nid, name) {
                     Some(val) => JsValue::String(String::from(val)),
@@ -2092,9 +2299,8 @@ fn read_attribute(vm: &mut Vm, node_id: i64, name: &str) -> JsValue {
 /// Read the text content of a real or virtual node.
 fn read_text_content(vm: &mut Vm, node_id: i64) -> String {
     if let Some(bridge) = get_bridge(vm) {
-        if node_id >= 0 {
+        if let Some(nid) = bridge.resolve_node_id(node_id) {
             let dom = bridge.dom();
-            let nid = node_id as usize;
             if nid < dom.nodes.len() {
                 return dom.text_content(nid);
             }
@@ -2108,9 +2314,8 @@ fn read_text_content(vm: &mut Vm, node_id: i64) -> String {
 /// Read the tag name of a real or virtual node.
 fn read_tag_name(vm: &mut Vm, node_id: i64) -> String {
     if let Some(bridge) = get_bridge(vm) {
-        if node_id >= 0 {
+        if let Some(nid) = bridge.resolve_node_id(node_id) {
             let dom = bridge.dom();
-            let nid = node_id as usize;
             if nid < dom.nodes.len() {
                 return match dom.tag(nid) {
                     Some(tag) => String::from(tag.tag_name()),
@@ -2127,9 +2332,8 @@ fn read_tag_name(vm: &mut Vm, node_id: i64) -> String {
 /// Read child node IDs.
 fn read_child_ids(vm: &mut Vm, node_id: i64) -> Vec<i64> {
     if let Some(bridge) = get_bridge(vm) {
-        if node_id >= 0 {
+        if let Some(nid) = bridge.resolve_node_id(node_id) {
             let dom = bridge.dom();
-            let nid = node_id as usize;
             if nid < dom.nodes.len() {
                 return dom
                     .get(nid)
@@ -2149,9 +2353,8 @@ fn read_child_ids(vm: &mut Vm, node_id: i64) -> Vec<i64> {
 /// Read all direct child node IDs, including text nodes.
 fn read_all_child_node_ids(vm: &mut Vm, node_id: i64) -> Vec<i64> {
     if let Some(bridge) = get_bridge(vm) {
-        if node_id >= 0 {
+        if let Some(nid) = bridge.resolve_node_id(node_id) {
             let dom = bridge.dom();
-            let nid = node_id as usize;
             if nid < dom.nodes.len() {
                 return dom
                     .get(nid)
@@ -2171,9 +2374,8 @@ fn read_all_child_node_ids(vm: &mut Vm, node_id: i64) -> Vec<i64> {
 /// Read the parent node ID.
 fn read_parent_id(vm: &mut Vm, node_id: i64) -> i64 {
     if let Some(bridge) = get_bridge(vm) {
-        if node_id >= 0 {
+        if let Some(nid) = bridge.resolve_node_id(node_id) {
             let dom = bridge.dom();
-            let nid = node_id as usize;
             if nid < dom.nodes.len() {
                 return match dom.get(nid).parent {
                     Some(pid) => pid as i64,
@@ -2190,9 +2392,8 @@ fn read_parent_id(vm: &mut Vm, node_id: i64) -> i64 {
 /// Read the node type (1 = element, 3 = text).
 fn read_node_type(vm: &mut Vm, node_id: i64) -> f64 {
     if let Some(bridge) = get_bridge(vm) {
-        if node_id >= 0 {
+        if let Some(nid) = bridge.resolve_node_id(node_id) {
             let dom = bridge.dom();
-            let nid = node_id as usize;
             if nid < dom.nodes.len() {
                 return match &dom.nodes[nid].node_type {
                     NodeType::Element { .. } => 1.0,
@@ -2206,12 +2407,11 @@ fn read_node_type(vm: &mut Vm, node_id: i64) -> f64 {
 
 /// Read innerHTML for a real node.
 fn read_inner_html(vm: &mut Vm, node_id: i64) -> String {
-    if node_id < 0 {
-        return String::new();
-    }
     if let Some(bridge) = get_bridge(vm) {
+        let Some(nid) = bridge.resolve_node_id(node_id) else {
+            return String::new();
+        };
         let dom = bridge.dom();
-        let nid = node_id as usize;
         if nid < dom.nodes.len() {
             let mut html = String::new();
             for &cid in &dom.get(nid).children {
@@ -2271,11 +2471,17 @@ fn js_escape_string(s: &str) -> String {
 }
 
 /// Resolve a (possibly virtual) node ID to a real DOM NodeId.
-fn resolve_id(id: i64, map: &BTreeMap<i64, usize>) -> Option<usize> {
+fn resolve_id(
+    id: i64,
+    map: &BTreeMap<i64, usize>,
+    persistent_map: &BTreeMap<i64, usize>,
+) -> Option<usize> {
     if id >= 0 {
         Some(id as usize)
     } else {
-        map.get(&id).copied()
+        map.get(&id)
+            .copied()
+            .or_else(|| persistent_map.get(&id).copied())
     }
 }
 
@@ -2779,6 +2985,112 @@ mod tests {
             "global assignment was not mirrored to window"
         );
     }
+
+    #[test]
+    fn class_name_property_assignment_updates_virtual_node_attribute() {
+        let mut dom = html::parse("<html><body><div id=\"root\"></div></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                const el = document.createElement('div');
+                el.className = 'text-white bg-dark';
+                el.textContent = 'CoreVM';
+                document.getElementById('root').appendChild(el);
+                "#,
+            )],
+        );
+        runtime.apply_mutations(&mut dom);
+
+        assert!(
+            dom.nodes.iter().any(|node| {
+                matches!(
+                    &node.node_type,
+                    crate::dom::NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "class" && a.value == "text-white bg-dark")
+                )
+            }),
+            "className assignment should become a real class attribute"
+        );
+    }
+
+    #[test]
+    fn timer_mutations_keep_virtual_node_identity_after_initial_insert() {
+        let mut dom = html::parse("<html><body><div id=\"root\"></div></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                const el = document.createElement('div');
+                el.className = 'before';
+                document.getElementById('root').appendChild(el);
+                setTimeout(() => {
+                    el.setAttribute('className', 'after');
+                    el.textContent = 'updated';
+                }, 1);
+                "#,
+            )],
+        );
+        runtime.apply_mutations(&mut dom);
+
+        assert_eq!(runtime.tick(&dom, 1), 1);
+        runtime.apply_mutations(&mut dom);
+
+        assert!(
+            dom.nodes.iter().any(|node| {
+                matches!(
+                    &node.node_type,
+                    crate::dom::NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "class" && a.value == "after")
+                )
+            }),
+            "timer mutation should resolve the original virtual element to its real DOM node"
+        );
+        assert!(
+            dom.nodes.iter().enumerate().any(|(idx, node)| {
+                matches!(
+                    &node.node_type,
+                    crate::dom::NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "class" && a.value == "after")
+                            && dom.text_content(idx) == "updated"
+                )
+            }),
+            "timer textContent mutation should update the inserted element"
+        );
+    }
+
+    #[test]
+    fn object_assign_class_name_updates_virtual_node_attribute() {
+        let mut dom = html::parse("<html><body><div id=\"root\"></div></body></html>");
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                const el = document.createElement('div');
+                Object.assign(el, { className: 'relative mx-auto max-w-7xl px-6' });
+                document.getElementById('root').appendChild(el);
+                "#,
+            )],
+        );
+        runtime.apply_mutations(&mut dom);
+
+        assert!(
+            dom.nodes.iter().any(|node| {
+                matches!(
+                    &node.node_type,
+                    crate::dom::NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "class" && a.value == "relative mx-auto max-w-7xl px-6")
+                )
+            }),
+            "Object.assign should route className writes through the DOM property hook"
+        );
+    }
 }
 
 /// Helper: read all [name, value] pairs from FormData's __entries.
@@ -2946,6 +3258,10 @@ fn native_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let Some(bridge) = get_bridge(vm) {
         let id = bridge.next_timer_id;
         bridge.next_timer_id += 1;
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+            eprintln!("[js-dom-debug] setTimeout id={} delay={}", id, delay);
+        }
         bridge.timers.push(PendingTimer {
             id,
             callback,
@@ -2968,6 +3284,10 @@ fn native_set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let Some(bridge) = get_bridge(vm) {
         let id = bridge.next_timer_id;
         bridge.next_timer_id += 1;
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+            eprintln!("[js-dom-debug] setInterval id={} delay={}", id, delay);
+        }
         bridge.timers.push(PendingTimer {
             id,
             callback,
@@ -2999,6 +3319,10 @@ fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let Some(bridge) = get_bridge(vm) {
         let id = bridge.next_timer_id;
         bridge.next_timer_id += 1;
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+            eprintln!("[js-dom-debug] requestAnimationFrame id={}", id);
+        }
         bridge.timers.push(PendingTimer {
             id,
             callback,

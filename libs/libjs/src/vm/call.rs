@@ -320,7 +320,9 @@ impl Vm {
 
     /// Regular function call: Stack = [..., callee, arg1..argN]
     pub fn call_function(&mut self, argc: usize) {
-        if self.stack.len() < argc + 1 {
+        let frame_stack_base = self.frames.last().map(|f| f.stack_base).unwrap_or(0);
+        if self.stack.len().saturating_sub(frame_stack_base) < argc + 1 {
+            self.stack.truncate(frame_stack_base);
             self.stack.push(JsValue::Undefined);
             return;
         }
@@ -344,7 +346,9 @@ impl Vm {
 
     /// Method call: Stack = [..., this_obj, method_fn, arg1..argN]
     pub fn call_method(&mut self, argc: usize) {
-        if self.stack.len() < argc + 2 {
+        let frame_stack_base = self.frames.last().map(|f| f.stack_base).unwrap_or(0);
+        if self.stack.len().saturating_sub(frame_stack_base) < argc + 2 {
+            self.stack.truncate(frame_stack_base);
             self.stack.push(JsValue::Undefined);
             return;
         }
@@ -443,6 +447,7 @@ impl Vm {
 
                 match kind {
                     FnKind::Native(native_fn) => {
+                        let frame_depth_before_native = self.frames.len();
                         let result = native_fn(self, args);
                         // Check if the native function signalled an exception.
                         if let Some(exc) = self.pending_exception.take() {
@@ -455,7 +460,16 @@ impl Vm {
                                 self.control_flow_restored = true;
                             }
                         } else {
-                            if !matches!(result, JsValue::Empty) {
+                            if matches!(result, JsValue::Empty) {
+                                // Some native helpers (notably Function.prototype.call/apply
+                                // dispatching to bytecode) push a new frame and return Empty as
+                                // a control-transfer marker. A plain native call still needs a
+                                // JavaScript completion value, otherwise expression evaluation
+                                // silently consumes values from the caller's stack.
+                                if self.frames.len() == frame_depth_before_native {
+                                    self.stack.push(JsValue::Undefined);
+                                }
+                            } else {
                                 self.stack.push(result);
                             }
                         }

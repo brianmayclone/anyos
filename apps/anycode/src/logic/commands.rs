@@ -811,7 +811,7 @@ pub fn designer_pointer_down_at(file_path: &str, x: i32, y: i32) {
         s.status
             .set_analysis_status(&format!("Selected {}", control_name));
     } else {
-        s.selected_designer_file.clear();
+        s.selected_designer_file = String::from(file_path);
         s.selected_designer_control.clear();
         s.designer_drag_file.clear();
         s.designer_drag_control.clear();
@@ -1064,7 +1064,7 @@ fn jump_to_text_in_active_editor(needle: &str) {
 
 pub fn designer_property_selection_changed() {
     let s = app();
-    if s.selected_designer_file.is_empty() || s.selected_designer_control.is_empty() {
+    if s.selected_designer_file.is_empty() {
         return;
     }
     let Some(doc) = designer::load_designer(&s.selected_designer_file) else {
@@ -1076,9 +1076,9 @@ pub fn designer_property_selection_changed() {
 
 pub fn apply_designer_property() {
     let s = app();
-    if s.selected_designer_file.is_empty() || s.selected_designer_control.is_empty() {
+    if s.selected_designer_file.is_empty() {
         s.status
-            .set_analysis_status("Select a designer control first");
+            .set_analysis_status("Select a designer surface or control first");
         return;
     }
     let file_path = s.selected_designer_file.clone();
@@ -1091,8 +1091,45 @@ pub fn apply_designer_property() {
             return;
         }
     };
-    let property_name =
-        doc.control_property_name_at(&control_name, s.inspector_panel.selected_property_index());
+    let property_index = s.inspector_panel.selected_property_index();
+    if control_name.is_empty() {
+        let property_name = doc.form_property_name_at(property_index);
+        if let Err(err) = doc.update_form_property(&property_name, &value) {
+            s.status.set_analysis_status(err);
+            return;
+        }
+        if let Err(err) = designer::save_designer(&file_path, &doc) {
+            s.status.set_analysis_status(err);
+            return;
+        }
+        s.editor_view
+            .update_designer_document(&file_path, doc.clone(), None);
+        s.inspector_panel.show_designer(&doc);
+        s.status
+            .set_analysis_status(&format!("Updated form.{}", property_name));
+        return;
+    }
+    let property_name = doc.control_property_name_at(&control_name, property_index);
+    if property_name.starts_with("On") {
+        let Some(control) = doc
+            .controls
+            .iter()
+            .find(|control| control.name == control_name)
+        else {
+            s.status.set_analysis_status("Designer control not found");
+            return;
+        };
+        match designer::ensure_control_event_handler(&file_path, control, &property_name) {
+            Ok((events_path, handler)) => {
+                open_file(&events_path);
+                jump_to_text_in_active_editor(&format!("pub fn {}()", handler));
+                s.status
+                    .set_analysis_status(&format!("Opened handler {}", handler));
+            }
+            Err(err) => s.status.set_analysis_status(err),
+        }
+        return;
+    }
     if let Err(err) = doc.update_control_property(&control_name, &property_name, &value) {
         s.status.set_analysis_status(err);
         return;

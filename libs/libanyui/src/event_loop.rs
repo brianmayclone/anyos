@@ -2250,10 +2250,8 @@ pub fn run_once() -> u32 {
                 }
 
                 compositor::EVT_DRAG_LEAVE => {
-                    if let Some(target_id) = st
-                        .incoming_drag
-                        .as_ref()
-                        .and_then(|i| i.target_control)
+                    if let Some(target_id) =
+                        st.incoming_drag.as_ref().and_then(|i| i.target_control)
                     {
                         set_drop_hover(&mut st.controls, target_id, false);
                         fire_event_callback(
@@ -2280,10 +2278,7 @@ pub fn run_once() -> u32 {
                     let negotiated_effect = ev[3];
                     let lx = (packed_xy >> 16) as i32;
                     let ly = (packed_xy & 0xFFFF) as i32;
-                    let target_control = st
-                        .incoming_drag
-                        .as_ref()
-                        .and_then(|i| i.target_control);
+                    let target_control = st.incoming_drag.as_ref().and_then(|i| i.target_control);
                     if let Some(inc) = st.incoming_drag.as_mut() {
                         inc.pointer_x = lx;
                         inc.pointer_y = ly;
@@ -3368,14 +3363,21 @@ fn collect_dirty_rects(
     let children: Vec<u32> = controls[idx].children().to_vec();
 
     // Handle ScrollView offset for child absolute positions
-    let child_abs_y = match controls[idx].kind() {
-        ControlKind::ScrollView => abs_y - b.state as i32,
-        ControlKind::Expander => abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
-        _ => abs_y,
+    let (child_abs_x, child_abs_y) = match controls[idx].kind() {
+        ControlKind::ScrollView => {
+            let (sx, sy) =
+                crate::controls::scroll_view::scroll_offsets(controls, controls[idx].id());
+            (abs_x - sx, abs_y - sy)
+        }
+        ControlKind::Expander => (
+            abs_x,
+            abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        ),
+        _ => (abs_x, abs_y),
     };
 
     for &cid in &children {
-        collect_dirty_rects(controls, cid, abs_x, child_abs_y, cw);
+        collect_dirty_rects(controls, cid, child_abs_x, child_abs_y, cw);
     }
 }
 
@@ -3462,38 +3464,48 @@ fn render_tree(
     }
     // ScrollView: offset children by -scroll_y and clip to viewport
     // Expander: offset children by +HEADER_HEIGHT (below header)
-    let (child_abs_y, child_surface, sv_cull) = match controls[idx].kind() {
+    let (child_abs_x, child_abs_y, child_surface, sv_cull) = match controls[idx].kind() {
         ControlKind::ScrollView => {
             // Logical coords for the ScrollView viewport
             let sv_x = parent_abs_x + controls[idx].base().x;
             let sv_y = parent_abs_y + controls[idx].base().y;
             let sv_w = controls[idx].base().w;
             let sv_h = controls[idx].base().h;
+            let (sx, sy) = crate::controls::scroll_view::scroll_offsets(controls, id);
             // Scale to physical for the Surface clip rect
             let p = crate::draw::scale_bounds(0, 0, sv_x, sv_y, sv_w, sv_h);
             (
-                child_abs_y - controls[idx].base().state as i32,
+                child_abs_x - sx,
+                child_abs_y - sy,
                 surface.with_clip(p.x, p.y, p.w, p.h),
-                Some((sv_y, sv_h as i32)),
+                Some((sv_x, sv_y, sv_w as i32, sv_h as i32)),
             )
         }
         ControlKind::Expander => (
+            child_abs_x,
             child_abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
             *surface,
             None,
         ),
-        _ => (child_abs_y, *surface, None),
+        _ => (child_abs_x, child_abs_y, *surface, None),
     };
     for &cid in &children {
         // Viewport culling: skip children completely outside the ScrollView viewport.
-        if let Some((vis_top, vis_h)) = sv_cull {
+        if let Some((vis_left, vis_top, vis_w, vis_h)) = sv_cull {
             if let Some(ci) = control::find_idx(controls, cid) {
-                let (_, cy) = controls[ci].position();
-                let (_, c_h) = controls[ci].size();
+                let (cx, cy) = controls[ci].position();
+                let (c_w, c_h) = controls[ci].size();
+                let child_left = child_abs_x + cx;
+                let child_right = child_left + c_w as i32;
                 let child_top = child_abs_y + cy;
                 let child_bottom = child_top + c_h as i32;
+                let vis_right = vis_left + vis_w;
                 let vis_bottom = vis_top + vis_h;
-                if child_bottom < vis_top || child_top > vis_bottom {
+                if child_right < vis_left
+                    || child_left > vis_right
+                    || child_bottom < vis_top
+                    || child_top > vis_bottom
+                {
                     continue;
                 }
             }

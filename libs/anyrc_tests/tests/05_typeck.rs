@@ -51,6 +51,106 @@ fn assert_type_ok(src: &str) {
     );
 }
 
+#[test]
+fn iterator_map_accepts_intrinsic_str_trim_fn_item() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod option {
+                pub enum Option<T> {
+                    Some(T),
+                    None,
+                }
+            }
+
+            pub mod str {
+                impl str {
+                    pub fn trim(&self) -> &str;
+                }
+
+                pub fn trim(s: &str) -> &str;
+            }
+        }
+
+        use core::option::Option;
+
+        mod alloc {
+            pub mod vec {
+                pub struct Vec<T> {}
+                pub struct IntoIter<T> {}
+
+                impl<T> Vec<T> {
+                    pub fn new() -> Vec<T> { Vec {} }
+                    pub fn push(&mut self, value: T) {}
+                    pub fn into_iter(self) -> IntoIter<T> { IntoIter {} }
+                }
+
+                impl<T> IntoIter<T> {
+                    pub fn map<F>(self, f: F) -> IntoIter<&str> { IntoIter {} }
+                    pub fn next(&mut self) -> Option<T> { None }
+                }
+            }
+        }
+
+        use alloc::vec::Vec;
+
+        fn main() {
+            let mut parts: Vec<&str> = Vec::new();
+            parts.push(" a ");
+            let mut trimmed = parts.into_iter().map(str::trim);
+            let item: &str = trimmed.next().unwrap_or("");
+        }
+        "#,
+    );
+}
+
+#[test]
+fn vec_drain_for_loop_binds_element_not_iterator() {
+    assert_type_ok(
+        r#"
+        mod core {
+            pub mod option {
+                pub enum Option<T> {
+                    Some(T),
+                    None,
+                }
+            }
+        }
+
+        mod alloc {
+            pub mod vec {
+                pub struct Vec<T> {}
+                pub struct IntoIter<T> {}
+
+                impl<T> Vec<T> {
+                    pub fn new() -> Vec<T> { Vec {} }
+                    pub fn push(&mut self, value: T) {}
+                    pub fn drain<R>(&mut self, range: R) -> IntoIter<T> { IntoIter {} }
+                    pub fn len(&self) -> usize { 0 }
+                }
+
+                impl<T> IntoIter<T> {
+                    pub fn next(&mut self) -> Option<T> { None }
+                }
+            }
+        }
+
+        use alloc::vec::Vec;
+
+        struct Tile {
+            pixels: Vec<u32>,
+        }
+
+        fn main() {
+            let mut tiles: Vec<Tile> = Vec::new();
+            for tile in tiles.drain(..) {
+                let len = tile.pixels.len();
+            }
+        }
+        "#,
+    );
+}
+
 fn assert_type_error(src: &str, expected_msg: &str) {
     let (result, _) = typecheck(src);
     assert!(

@@ -121,6 +121,10 @@ pub struct LayoutBox {
     /// If true, this box is `position:absolute` or `position:fixed` — out of
     /// normal flow.  Used by `intrinsic_width()` to skip these children.
     pub is_out_of_flow: bool,
+    /// True for any non-static positioned box.  This is separate from
+    /// `is_out_of_flow`: position:relative/sticky stay in flow but participate
+    /// in the positioned auto-z paint phase.
+    pub is_positioned: bool,
     /// Hypothetical in-flow static-position rectangle for abs/fixed alignment.
     pub static_position_x: Option<i32>,
     pub static_position_y: Option<i32>,
@@ -357,6 +361,7 @@ impl LayoutBox {
             opacity: 255,
             is_fixed: false,
             is_out_of_flow: false,
+            is_positioned: false,
             static_position_x: None,
             static_position_y: None,
             static_position_width: None,
@@ -1334,6 +1339,7 @@ pub fn layout_with_budget(
     let style = &styles[body_id];
 
     let mut root = LayoutBox::new(Some(body_id), BoxType::Block);
+    root.is_positioned = style.position != Position::Static;
     // Body width: explicit width if set, else viewport width.
     root.width = if let Some(w) = style.width {
         w
@@ -2469,6 +2475,7 @@ pub(super) fn layout_children_ex_with_budget(
 
             abs_box.is_fixed = true;
             abs_box.is_out_of_flow = true;
+            abs_box.is_positioned = true;
         } else {
             // position:absolute — coordinates relative to the direct containing block (parent box).
             let top = resolve_inset(abs_style.top, abs_style.top_calc, cb_height, cb_height > 0);
@@ -2509,6 +2516,7 @@ pub(super) fn layout_children_ex_with_budget(
 
         apply_transform_translation(&mut abs_box, abs_style);
         abs_box.is_out_of_flow = true;
+        abs_box.is_positioned = true;
         abs_box.static_position_x = Some(static_x);
         abs_box.static_position_y = Some(static_y);
         abs_box.static_position_width = Some(static_w);

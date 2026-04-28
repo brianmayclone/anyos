@@ -65,7 +65,7 @@ impl Renderer {
         // This makes the first styled paint arrive quickly; the full list is
         // materialized later on demand when the user scrolls outside the
         // initial viewport band.
-        if fast_initial_display_list {
+        if fast_initial_display_list && allow_progressive_display_list {
             self.walk_controls_visible(
                 root,
                 0,

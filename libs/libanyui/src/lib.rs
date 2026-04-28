@@ -3022,17 +3022,15 @@ pub extern "C" fn anyui_drag_get_payload(buf: *mut u8, cap: u32, format_out: *mu
     // Target-side read (cross-process payload SHM).
     if let Some(inc) = st.incoming_drag.as_ref() {
         if !format_out.is_null() {
-            unsafe { *format_out = inc.format; }
+            unsafe {
+                *format_out = inc.format;
+            }
         }
         let total = inc.payload_len as usize;
         let n = core::cmp::min(total, cap as usize);
         if !buf.is_null() && n > 0 && inc.payload_addr != 0 {
             unsafe {
-                core::ptr::copy_nonoverlapping(
-                    inc.payload_addr as *const u8,
-                    buf,
-                    n,
-                );
+                core::ptr::copy_nonoverlapping(inc.payload_addr as *const u8, buf, n);
             }
         }
         return total as u32;
@@ -4397,6 +4395,24 @@ pub extern "C" fn anyui_get_position(id: ControlId, out_x: *mut i32, out_y: *mut
             unsafe {
                 *out_y = ctrl.base().y;
             }
+        }
+    }
+}
+
+/// Get the absolute position of a control in window coordinates. This mirrors
+/// hit-testing offsets, including ScrollView scroll positions.
+#[no_mangle]
+pub extern "C" fn anyui_get_abs_position(id: ControlId, out_x: *mut i32, out_y: *mut i32) {
+    let st = state();
+    let (x, y) = control::abs_position(&st.controls, id);
+    if !out_x.is_null() {
+        unsafe {
+            *out_x = x;
+        }
+    }
+    if !out_y.is_null() {
+        unsafe {
+            *out_y = y;
         }
     }
 }

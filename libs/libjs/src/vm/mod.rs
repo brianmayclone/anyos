@@ -1581,7 +1581,10 @@ impl Vm {
                     self.call_method(argc as usize);
                 }
                 Op::Return => {
-                    let val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let mut val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    if matches!(val, JsValue::Empty) {
+                        val = JsValue::Undefined;
+                    }
                     // Clean up any try-catch handlers that belong to the
                     // returning frame.  This handles `try { return x; }`
                     // where Op::TryEnd is never reached.
@@ -4391,8 +4394,12 @@ pub fn native_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
 pub fn native_ctor_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
     let func = native_fn(name, f);
     if let JsValue::Function(f) = &func {
-        f.borrow_mut()
-            .own_props
+        let proto = Rc::new(RefCell::new(JsObject::new()));
+        let mut func = f.borrow_mut();
+        func.prototype = Some(proto.clone());
+        func.own_props
+            .insert(String::from("prototype"), JsValue::Object(proto));
+        func.own_props
             .insert(String::from("__constructable__"), JsValue::Bool(true));
     }
     func
@@ -4427,8 +4434,12 @@ pub fn native_ctor_fn_with_length(
 ) -> JsValue {
     let func = native_fn_with_length(name, f, length);
     if let JsValue::Function(f) = &func {
-        f.borrow_mut()
-            .own_props
+        let proto = Rc::new(RefCell::new(JsObject::new()));
+        let mut func = f.borrow_mut();
+        func.prototype = Some(proto.clone());
+        func.own_props
+            .insert(String::from("prototype"), JsValue::Object(proto));
+        func.own_props
             .insert(String::from("__constructable__"), JsValue::Bool(true));
     }
     func

@@ -134,11 +134,7 @@ pub fn install_drag_image(
     }
     // Copy pixels into SHM.
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            pixels.as_ptr(),
-            addr as *mut u32,
-            (w * h) as usize,
-        );
+        core::ptr::copy_nonoverlapping(pixels.as_ptr(), addr as *mut u32, (w * h) as usize);
     }
     if let Some(bridge) = st.drag.as_mut().and_then(|d| d.bridge.as_mut()) {
         bridge.image_shm_id = shm_id;
@@ -162,7 +158,17 @@ pub fn install_drag_image(
 /// updates the payload, but only the *first* call announces the drag —
 /// subsequent calls just overwrite the SHM contents for any future readers.
 pub fn announce_drag(st: &mut AnyuiState) {
-    let (data_ptr, data_len, format, allowed_effects, source_window_id, shm_addr, shm_cap, shm_id, announced) = {
+    let (
+        data_ptr,
+        data_len,
+        format,
+        allowed_effects,
+        source_window_id,
+        shm_addr,
+        shm_cap,
+        shm_id,
+        announced,
+    ) = {
         let drag = match st.drag.as_ref() {
             Some(d) => d,
             None => return,

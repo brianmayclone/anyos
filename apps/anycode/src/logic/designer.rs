@@ -174,6 +174,8 @@ const MEDIA_PROPERTIES: &[&str] = &[
     "Visible",
     "Tooltip",
 ];
+const CONTROL_EVENTS: &[&str] = &["OnClick", "OnDoubleClick", "OnChanged", "OnSubmit"];
+const FORM_PROPERTIES: &[&str] = &["Name", "Title", "Width", "Height", "BackgroundColor"];
 
 const MIN_FORM_SIZE: u32 = 160;
 const MAX_FORM_SIZE: u32 = 4096;
@@ -381,6 +383,12 @@ impl DesignerControl {
                 out.push_str(&property.name);
             }
         }
+        for event in CONTROL_EVENTS {
+            if !out.is_empty() {
+                out.push('|');
+            }
+            out.push_str(event);
+        }
         out
     }
 
@@ -405,6 +413,10 @@ impl DesignerControl {
             "width" => format!("{}", self.width),
             "height" => format!("{}", self.height),
             "items" => choice_items(self),
+            "onclick" => self.event_name_for("Click"),
+            "ondoubleclick" => self.event_name_for("DoubleClick"),
+            "onchanged" => self.event_name_for("Changed"),
+            "onsubmit" => self.event_name_for("Submit"),
             _ => self
                 .properties
                 .iter()
@@ -412,6 +424,10 @@ impl DesignerControl {
                 .map(|property| property.value.clone())
                 .unwrap_or_else(|| default_property_value(&self.kind, property_name)),
         }
+    }
+
+    pub fn event_name_for(&self, event_name: &str) -> String {
+        format!("{}_{}", self.name, event_name.to_ascii_lowercase())
     }
 
     fn set_custom_property(&mut self, property_name: &str, value: &str) {
@@ -551,6 +567,61 @@ impl DesignerDocument {
             control.width = clamp_u32(control.width, MIN_CONTROL_SIZE, MAX_CONTROL_SIZE);
             control.height = clamp_u32(control.height, MIN_CONTROL_SIZE, MAX_CONTROL_SIZE);
         }
+    }
+
+    pub fn form_property_items(&self) -> String {
+        FORM_PROPERTIES.join("|")
+    }
+
+    pub fn form_property_name_at(&self, index: u32) -> String {
+        FORM_PROPERTIES
+            .get(index as usize)
+            .map(|name| String::from(*name))
+            .unwrap_or_else(|| String::from("Title"))
+    }
+
+    pub fn form_property_value(&self, property_name: &str) -> String {
+        match normalized_property(property_name) {
+            "name" => self.form_name.clone(),
+            "title" => self.title.clone(),
+            "width" => format!("{}", self.width),
+            "height" => format!("{}", self.height),
+            "backgroundcolor" => String::from("theme.editor_bg"),
+            _ => String::new(),
+        }
+    }
+
+    pub fn update_form_property(
+        &mut self,
+        property_name: &str,
+        value: &str,
+    ) -> Result<(), &'static str> {
+        match normalized_property(property_name) {
+            "name" => {
+                if !is_valid_form_name(value) {
+                    return Err("Form name must be a Rust type name");
+                }
+                self.form_name = String::from(value);
+            }
+            "title" => self.title = String::from(value),
+            "width" => {
+                let width = parse_u32(value).ok_or("Width must be a number")?;
+                if !(MIN_FORM_SIZE..=MAX_FORM_SIZE).contains(&width) {
+                    return Err("Width is outside the supported designer range");
+                }
+                self.width = width;
+            }
+            "height" => {
+                let height = parse_u32(value).ok_or("Height must be a number")?;
+                if !(MIN_FORM_SIZE..=MAX_FORM_SIZE).contains(&height) {
+                    return Err("Height is outside the supported designer range");
+                }
+                self.height = height;
+            }
+            "backgroundcolor" => {}
+            _ => return Err("Unknown form property"),
+        }
+        Ok(())
     }
 
     pub fn to_designer_metadata(&self) -> String {
@@ -838,6 +909,7 @@ impl DesignerDocument {
                 }
                 control.height = height;
             }
+            "onclick" | "ondoubleclick" | "onchanged" | "onsubmit" => {}
             _ => control.set_custom_property(property_name, value),
         }
         Ok(())
@@ -1214,8 +1286,29 @@ pub fn ensure_event_handler(
     designer_file_path: &str,
     control: &DesignerControl,
 ) -> Result<String, &'static str> {
+    ensure_named_event_handler(designer_file_path, &control.event_name())
+}
+
+pub fn ensure_control_event_handler(
+    designer_file_path: &str,
+    control: &DesignerControl,
+    event_property: &str,
+) -> Result<(String, String), &'static str> {
+    let handler = match normalized_property(event_property) {
+        "ondoubleclick" => control.event_name_for("DoubleClick"),
+        "onchanged" => control.event_name_for("Changed"),
+        "onsubmit" => control.event_name_for("Submit"),
+        _ => control.event_name_for("Click"),
+    };
+    let events_path = ensure_named_event_handler(designer_file_path, &handler)?;
+    Ok((events_path, handler))
+}
+
+fn ensure_named_event_handler(
+    designer_file_path: &str,
+    handler: &str,
+) -> Result<String, &'static str> {
     let events_path = events_file_for_designer(designer_file_path);
-    let handler = control.event_name();
     let signature = format!("pub fn {}()", handler);
     let mut data = anyos_std::fs::read_to_string(&events_path).unwrap_or_default();
     if !data.contains(&signature) {

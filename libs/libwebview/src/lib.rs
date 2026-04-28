@@ -3360,6 +3360,16 @@ impl WebView {
             return;
         };
 
+        #[cfg(feature = "host")]
+        if std::env::var_os("SURF_DEBUG_RENDER_REFRESH").is_some() {
+            eprintln!(
+                "[libwebview] refresh render surface: doc={}x{} root_h={}",
+                doc_w,
+                doc_h,
+                root.height
+            );
+        }
+
         // Cached-style relayouts can change geometry, so a paint-only refresh
         // would reuse a stale display list and stale tile commands. Rebuild the
         // render surface from the new layout tree instead.
@@ -3377,7 +3387,7 @@ impl WebView {
             self.link_cb_ud,
             self.submit_cb,
             self.submit_cb_ud,
-            true,
+            false,
         );
         self.last_render_scroll_y = 0;
     }
@@ -4396,6 +4406,60 @@ fn child_total_height(bx: &LayoutBox, parent_y: i32) -> i32 {
         }
     }
     max
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn find_node_by_id(dom: &dom::Dom, id_value: &str) -> usize {
+        dom.nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    dom::NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == id_value)
+                )
+            })
+            .expect("node id")
+    }
+
+    #[test]
+    fn js_inserted_elements_are_restyled_against_external_css() {
+        let mut wv = WebView::new(800, 600);
+        wv.set_url("https://example.test/");
+        wv.set_html_no_js("<html><body><div id=\"root\"></div></body></html>");
+        wv.add_stylesheet(
+            r#"
+            .text-white { color: #fff; }
+            .surface { background-color: #020617; }
+            .hero { font-size: 48px; display: flex; }
+            "#,
+        );
+        wv.relayout();
+
+        assert!(wv.execute_js(&[String::from(
+            r#"
+            const el = document.createElement('h1');
+            el.id = 'hero';
+            el.className = 'text-white surface hero';
+            el.textContent = 'CoreVM';
+            document.getElementById('root').appendChild(el);
+            "#,
+        )]));
+
+        let hero = {
+            let dom = wv.dom().expect("dom");
+            find_node_by_id(dom, "hero")
+        };
+        let style = wv.resolved_style_ref(hero).expect("computed style");
+
+        assert_eq!(style.color, 0xFFFFFFFF);
+        assert_eq!(style.background_color, 0xFF020617);
+        assert_eq!(style.font_size, 48);
+        assert!(matches!(style.display, Display::Flex));
+    }
 }
 
 /// Browser default CSS (minimal reset + sensible defaults).

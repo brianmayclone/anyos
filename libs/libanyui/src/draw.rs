@@ -1036,7 +1036,9 @@ pub fn blit_argb_scaled(
             }
             let dst_idx = dst_row_base + dx as usize;
             if alpha == 255 {
-                unsafe { *s.pixels.add(dst_idx) = src_px; }
+                unsafe {
+                    *s.pixels.add(dst_idx) = src_px;
+                }
             } else {
                 let dst_px = unsafe { *s.pixels.add(dst_idx) };
                 let inv = 255 - alpha;

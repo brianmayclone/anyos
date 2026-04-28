@@ -51,6 +51,7 @@ fn is_inside_pre(dom: &Dom, node_id: NodeId) -> bool {
 
 fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> LayoutBox {
     let mut bx = LayoutBox::new(Some(node_id), BoxType::Inline);
+    bx.is_positioned = style.position != Position::Static;
     bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
     bx.color = style.color;
     bx.bg_color = if style.background_color_is_current {
@@ -503,6 +504,7 @@ fn collect_inline_fragments(
         };
         oof_box.is_out_of_flow = true;
         oof_box.is_fixed = style.position == Position::Fixed;
+        oof_box.is_positioned = true;
         out.push(InlineFragment {
             width: 0,
             height: 0,
@@ -1522,6 +1524,7 @@ fn emit_nowrap_fragments(
     if collapsed.is_empty() {
         return;
     }
+    let custom_font_id = usable_text_font_id(&collapsed, font_size, custom_font_id, bold, italic);
     let (w, h) = measure_text(&collapsed, font_size, custom_font_id, bold, italic);
     let mut wbox = LayoutBox::new_text(collapsed, font_size, bold, italic, color);
     wbox.custom_font_id = custom_font_id;
@@ -1533,6 +1536,24 @@ fn emit_nowrap_fragments(
         layout_box: wbox,
         breaks_after: false,
     });
+}
+
+fn usable_text_font_id(
+    text: &str,
+    font_size: i32,
+    custom_font_id: u32,
+    bold: bool,
+    italic: bool,
+) -> u32 {
+    if custom_font_id == 0 || text.trim().is_empty() {
+        return custom_font_id;
+    }
+    let (w, _) = measure_text(text, font_size, custom_font_id, bold, italic);
+    if w <= 0 {
+        0
+    } else {
+        custom_font_id
+    }
 }
 
 /// Collapse whitespace sequences to single spaces.
@@ -2099,10 +2120,11 @@ fn emit_word_fragments(
         // We emit a zero-height space so the word-spacing gap is preserved without
         // affecting the line box height calculation.
         if has_leading_space {
-            let (sw, _sh) = measure_text(" ", font_size, custom_font_id, bold, italic);
+            let font_id = usable_text_font_id(" ", font_size, custom_font_id, bold, italic);
+            let (sw, _sh) = measure_text(" ", font_size, font_id, bold, italic);
             let mut space_box =
                 LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
-            space_box.custom_font_id = custom_font_id;
+            space_box.custom_font_id = font_id;
             space_box.link_url = link.clone();
             space_box.text_decoration = deco;
             out.push(InlineFragment {
@@ -2116,9 +2138,10 @@ fn emit_word_fragments(
     }
 
     if has_leading_space {
-        let (sw, sh) = measure_text(" ", font_size, custom_font_id, bold, italic);
+        let font_id = usable_text_font_id(" ", font_size, custom_font_id, bold, italic);
+        let (sw, sh) = measure_text(" ", font_size, font_id, bold, italic);
         let mut space_box = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
-        space_box.custom_font_id = custom_font_id;
+        space_box.custom_font_id = font_id;
         space_box.link_url = link.clone();
         space_box.text_decoration = deco;
         out.push(InlineFragment {
@@ -2130,11 +2153,12 @@ fn emit_word_fragments(
     }
 
     for (wi, word) in words.iter().enumerate() {
-        let (ww, wh) = measure_text(word, font_size, custom_font_id, bold, italic);
+        let font_id = usable_text_font_id(word, font_size, custom_font_id, bold, italic);
+        let (ww, wh) = measure_text(word, font_size, font_id, bold, italic);
         // Apply letter-spacing: add extra pixels per character.
         let letter_extra = letter_spacing * (word.len().max(1) as i32 - 1).max(0);
         let mut wbox = LayoutBox::new_text(String::from(*word), font_size, bold, italic, color);
-        wbox.custom_font_id = custom_font_id;
+        wbox.custom_font_id = font_id;
         wbox.link_url = link.clone();
         wbox.text_decoration = deco;
         out.push(InlineFragment {
@@ -2146,10 +2170,11 @@ fn emit_word_fragments(
 
         let need_space = wi + 1 < words.len() || has_trailing_space;
         if need_space {
-            let (sw, sh) = measure_text(" ", font_size, custom_font_id, bold, italic);
+            let space_font_id = usable_text_font_id(" ", font_size, custom_font_id, bold, italic);
+            let (sw, sh) = measure_text(" ", font_size, space_font_id, bold, italic);
             // Apply word-spacing: add extra pixels to space between words.
             let mut sbox = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
-            sbox.custom_font_id = custom_font_id;
+            sbox.custom_font_id = space_font_id;
             sbox.link_url = link.clone();
             sbox.text_decoration = deco;
             out.push(InlineFragment {

@@ -1200,8 +1200,20 @@ fn el_get_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn el_set_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let nid = this_node_id(vm);
-    let name = arg_string(args, 0);
+    let mut name = arg_string(args, 0);
     let value = arg_string(args, 1);
+    if name == "className" {
+        name = String::from("class");
+    }
+    #[cfg(feature = "host")]
+    if std::env::var_os("SURF_DEBUG_CLASS_MUTATIONS").is_some()
+        && name.eq_ignore_ascii_case("class")
+    {
+        eprintln!(
+            "[js-dom-debug] setAttribute class nid={} value={}",
+            nid, value
+        );
+    }
 
     // Update virtual node if applicable.
     if let Some(bridge) = get_bridge(vm) {
@@ -1215,13 +1227,11 @@ fn el_set_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 }
             }
         }
-        if nid >= 0 {
-            bridge.mutations.push(DomMutation::SetAttribute {
-                node_id: nid,
-                name: name.clone(),
-                value: value.clone(),
-            });
-        }
+        bridge.mutations.push(DomMutation::SetAttribute {
+            node_id: nid,
+            name: name.clone(),
+            value: value.clone(),
+        });
     }
 
     // Update cached properties on `this`.
@@ -1242,7 +1252,10 @@ fn el_set_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn el_remove_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let nid = this_node_id(vm);
-    let name = arg_string(args, 0);
+    let mut name = arg_string(args, 0);
+    if name == "className" {
+        name = String::from("class");
+    }
 
     if let Some(bridge) = get_bridge(vm) {
         if nid < 0 {
@@ -1250,11 +1263,9 @@ fn el_remove_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 vn.attrs.retain(|(k, _)| k != &name);
             }
         }
-        if nid >= 0 {
-            bridge
-                .mutations
-                .push(DomMutation::RemoveAttribute { node_id: nid, name });
-        }
+        bridge
+            .mutations
+            .push(DomMutation::RemoveAttribute { node_id: nid, name });
     }
     JsValue::Undefined
 }
@@ -1663,12 +1674,10 @@ fn el_set_text_content(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 vn.text_content = text.clone();
             }
         }
-        if nid >= 0 {
-            bridge.mutations.push(DomMutation::SetTextContent {
-                node_id: nid,
-                text: text.clone(),
-            });
-        }
+        bridge.mutations.push(DomMutation::SetTextContent {
+            node_id: nid,
+            text: text.clone(),
+        });
     }
 
     if let JsValue::Object(obj) = &vm.current_this {
@@ -2547,6 +2556,21 @@ fn make_css_style_declaration(node_id: i64) -> JsValue {
     sobj.set(String::from("cssText"), JsValue::String(String::new()));
     // length
     sobj.set(String::from("length"), JsValue::Number(0.0));
+    // Common CSSOM properties return an empty string on inline style objects
+    // until explicitly set. Animation libraries probe these directly.
+    for prop in [
+        "transform",
+        "transformOrigin",
+        "translate",
+        "scale",
+        "rotate",
+        "opacity",
+        "transition",
+        "willChange",
+        "display",
+    ] {
+        sobj.set(String::from(prop), JsValue::String(String::new()));
+    }
     // item(index)
     sobj.set(
         String::from("item"),
@@ -2638,7 +2662,28 @@ fn style_property_hook(data: *mut u8, key: &str, value: &JsValue) {
     let css_prop = css_prop_from_camel(key);
     let val_str = value.to_js_string();
 
-    // For virtual nodes: store as "style" attribute on VirtualNode
+    #[cfg(feature = "host")]
+    if std::env::var_os("SURF_DEBUG_STYLE_WRITES").is_some()
+        && (css_prop == "opacity" || css_prop == "transform")
+    {
+        eprintln!(
+            "[js-dom-debug] style write nid={} {}={}",
+            node_id, css_prop, val_str
+        );
+    }
+
+    let mutations = unsafe {
+        if super::MUTATION_TARGET.is_null() {
+            None
+        } else {
+            Some(&mut *super::MUTATION_TARGET)
+        }
+    };
+
+    // For virtual nodes: store as "style" attribute on VirtualNode so initial
+    // styles survive materialization. Also emit a mutation: once a virtual node
+    // has a real DOM mapping, apply_mutations resolves the negative ID and
+    // applies subsequent React/animation style writes to the live node.
     if node_id < 0 {
         let vnodes = unsafe {
             if super::VIRTUAL_NODES_TARGET.is_null() {
@@ -2661,20 +2706,23 @@ fn style_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                 ));
             }
         }
+        if let Some(mutations) = mutations {
+            mutations.push(DomMutation::SetStyleProperty {
+                node_id,
+                property: css_prop,
+                value: val_str,
+            });
+        }
         return;
     }
 
-    let mutations = unsafe {
-        if super::MUTATION_TARGET.is_null() {
-            return;
-        }
-        &mut *super::MUTATION_TARGET
-    };
-    mutations.push(DomMutation::SetStyleProperty {
-        node_id,
-        property: css_prop,
-        value: val_str,
-    });
+    if let Some(mutations) = mutations {
+        mutations.push(DomMutation::SetStyleProperty {
+            node_id,
+            property: css_prop,
+            value: val_str,
+        });
+    }
 }
 
 /// Convert camelCase CSS property name to kebab-case.

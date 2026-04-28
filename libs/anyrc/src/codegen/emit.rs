@@ -396,7 +396,9 @@ impl<'a> CodeEmitter<'a> {
                     let name = self.interner.resolve(*sym).to_string();
                     if let Some(local) = self.local_named(*sym) {
                         self.load_place(&Place::local(local), dst);
-                    } else if Self::is_unit_like_fnitem_value(&name) {
+                    } else if Self::is_unit_like_fnitem_value(&name)
+                        || Self::is_intrinsic_fnitem_value(&name)
+                    {
                         self.asm.xor_rr(dst, dst);
                     } else {
                         self.asm.lea_rip_relative(dst, &name);
@@ -1013,6 +1015,48 @@ impl<'a> CodeEmitter<'a> {
                 }
                 true
             }
+            s if Self::is_scalar_wrapper_constructor(s) => {
+                if let Some(arg) = args.first() {
+                    let slot = self.alloc.stack_slots[dest.local.0];
+                    let size = self.alloc.local_sizes[dest.local.0].max(8);
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                } else {
+                    self.zero_dest(dest);
+                }
+                true
+            }
+            "core::ops::Add::add" | "Add::add" | "add" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.add_rr(Reg::RAX, Reg::RSI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "core::ops::Sub::sub" | "Sub::sub" | "sub" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.sub_rr(Reg::RAX, Reg::RSI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "core::ops::Mul::mul" | "Mul::mul" | "mul" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.imul_rr(Reg::RAX, Reg::RSI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "core::ops::Div::div" | "Div::div" | "div" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.cqo();
+                self.asm.idiv_r(Reg::RSI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "core::ops::Rem::rem" | "Rem::rem" | "rem" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.asm.cqo();
+                self.asm.idiv_r(Reg::RSI);
+                self.store_place(dest, Reg::RDX);
+                true
+            }
             "max" | "u8::max" | "u16::max" | "u32::max" | "u64::max" | "u128::max"
             | "usize::max" => {
                 self.asm.mov_rr(Reg::RAX, Reg::RDI);
@@ -1051,6 +1095,12 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);
                 true
             }
+            "Duration::new" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RDI);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
+                true
+            }
             "default" | "Default::default" => {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 let size = self.alloc.local_sizes[dest.local.0].max(8);
@@ -1072,7 +1122,28 @@ impl<'a> CodeEmitter<'a> {
                 self.store_operand_to_stack_offset(&args[0], Reg::RBP, slot + 8, 8);
                 true
             }
+            "RangeInclusive::new" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let size = (self.alloc.local_sizes[dest.local.0] / 2).max(8);
+                if let Some(arg) = args.first() {
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                }
+                if let Some(arg) = args.get(1) {
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot + size, size);
+                }
+                true
+            }
             "from_ne_bytes" | "from_le_bytes" | "from_be_bytes" => {
+                let size =
+                    regalloc::ty_layout_size(&self.body.locals[dest.local.0].ty, self.struct_sizes)
+                        .clamp(1, 8);
+                self.emit_primitive_from_ne_bytes(args, dest, size, false);
+                true
+            }
+            s if s.ends_with("::from_ne_bytes")
+                || s.ends_with("::from_le_bytes")
+                || s.ends_with("::from_be_bytes") =>
+            {
                 let size =
                     regalloc::ty_layout_size(&self.body.locals[dest.local.0].ty, self.struct_sizes)
                         .clamp(1, 8);
@@ -1149,6 +1220,72 @@ impl<'a> CodeEmitter<'a> {
                 // Return null pointer (0)
                 self.asm.xor_rr(Reg::RAX, Reg::RAX);
                 self.store_place(dest, Reg::RAX);
+                true
+            }
+            "identity" => {
+                if let Some(arg) = args.first() {
+                    let slot = self.alloc.stack_slots[dest.local.0];
+                    let size = self.alloc.local_sizes[dest.local.0].max(8);
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                }
+                true
+            }
+            "addr" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "eq" => {
+                self.asm.cmp_rr(Reg::RDI, Reg::RSI);
+                self.asm.setcc(CondCode::Equal, Reg::RAX);
+                self.asm.movzx_r8_r64(Reg::RAX, Reg::RAX);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "project" | "reader" | "writer" | "config" | "context" | "borrow_reader" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "T::claim_bytes_read" | "T::unclaim_bytes_read" => true,
+            "serialize" | "decode" | "borrow_decode" | "deserialize_tuple" | "run" => {
+                self.zero_dest(dest);
+                true
+            }
+            "NonNull::new_unchecked" | "NonNull::from" | "NonNull::as_ptr" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "NonNull::new" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.xor_rr(Reg::RCX, Reg::RCX);
+                self.asm.emit_raw(&[0x48, 0x85, 0xFF]); // test rdi, rdi
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC1]); // setz cl (None if null)
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RCX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDI);
+                true
+            }
+            s if s.contains("NonZero") && s.ends_with("::new") => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.xor_rr(Reg::RCX, Reg::RCX);
+                self.asm.emit_raw(&[0x48, 0x85, 0xFF]); // test rdi, rdi
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC1]); // setz cl (None if zero)
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RCX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDI);
+                true
+            }
+            s if s.contains("NonZero")
+                && (s.ends_with("::new_unchecked") || s.ends_with("::get")) =>
+            {
+                if let Some(arg) = args.first() {
+                    let slot = self.alloc.stack_slots[dest.local.0];
+                    let size = self.alloc.local_sizes[dest.local.0].max(8);
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                } else {
+                    self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                    self.store_place(dest, Reg::RAX);
+                }
                 true
             }
             "is_null" => {
@@ -1353,6 +1490,13 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
                 true
             }
+            "Layout::new" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_ri(Reg::RAX, 8);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);
+                true
+            }
 
             // ── Box intrinsics ──
 
@@ -1380,10 +1524,24 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "Box::as_ref" => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             "Box::into_raw" | "Box::from_raw" | "Rc::into_raw" | "into_raw" => {
                 // In this backend Box<T> is represented by the owned allocation
                 // pointer, so raw conversion is a representation-preserving cast.
                 self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Rc::new" => {
+                self.asm.push(Reg::RDI);
+                self.asm.mov_ri(Reg::RDI, 8);
+                self.asm.call_extern("__anyrc_alloc");
+                self.asm.pop(Reg::RDI);
+                self.asm.mov_mr(Reg::RAX, 0, Reg::RDI);
                 self.store_place(dest, Reg::RAX);
                 true
             }
@@ -1404,7 +1562,7 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RAX); // cap = 0
                 true
             }
-            "Vec::with_capacity" => {
+            "Vec::with_capacity" | "VecDeque::with_capacity" => {
                 // arg0 = capacity in RDI
                 // Allocate capacity * 8 bytes
                 let slot = self.alloc.stack_slots[dest.local.0];
@@ -1457,6 +1615,7 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "Vec::reserve" | "VecDeque::reserve" | "reserve" => true,
             "Vec::push" | "VecDeque::push_back" | "push_back" => {
                 // arg0 = &mut Vec-like collection in RDI, arg1 = value in RSI.
                 // VecDeque currently uses the same bootstrap backing layout for
@@ -1555,6 +1714,47 @@ impl<'a> CodeEmitter<'a> {
                 true
             }
             "Vec::copy_from_slice" | "copy_from_slice" => true,
+            "Vec::retain" | "Vec::drain" => {
+                self.zero_dest(dest);
+                true
+            }
+            "Vec::resize" => {
+                self.asm.mov_mr(Reg::RDI, 8, Reg::RSI);
+                true
+            }
+            "Vec::remove" => {
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
+                self.asm.emit_raw(&[0x48, 0xC1, 0xE6, 0x03]); // shl rsi, 3
+                self.asm.emit_raw(&[0x48, 0x01, 0xF0]); // add rax, rsi
+                self.asm.mov_rm(Reg::RAX, Reg::RAX, 0);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "Vec::get" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                let none = self.asm.new_label();
+                let done = self.asm.new_label();
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 8); // len
+                self.asm.cmp_rr(Reg::RSI, Reg::RAX);
+                self.asm.jcc(CondCode::AboveEqual, none);
+                self.asm.mov_rm(Reg::RDX, Reg::RDI, 0); // ptr
+                self.asm.emit_raw(&[0x48, 0xC1, 0xE6, 0x03]); // shl rsi, 3
+                self.asm.emit_raw(&[0x48, 0x01, 0xF2]); // add rdx, rsi
+                self.asm.xor_rr(Reg::RAX, Reg::RAX); // Some
+                self.asm.jmp(done);
+                self.asm.bind_label(none);
+                self.asm
+                    .emit_raw(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]); // None
+                self.asm.xor_rr(Reg::RDX, Reg::RDX);
+                self.asm.bind_label(done);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RDX);
+                true
+            }
+            "Vec::join" => {
+                self.zero_dest(dest);
+                true
+            }
             "Vec::clone" | "Vec::into_boxed_slice" => {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 let size = self.alloc.local_sizes[dest.local.0].max(8);
@@ -1599,6 +1799,12 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RCX);
                 true
             }
+            "str::trim" | "trim" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RDI);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
+                true
+            }
             "String::push_str" => {
                 // arg0 = &mut String in RDI, arg1 = &str (ptr,len) fat ptr
                 if let Some(Operand::Constant(Constant {
@@ -1638,6 +1844,19 @@ impl<'a> CodeEmitter<'a> {
             "String::remove" => {
                 self.asm.xor_rr(Reg::RAX, Reg::RAX);
                 self.store_place(dest, Reg::RAX);
+                true
+            }
+            "String::cmp" => {
+                self.asm.mov_ri(Reg::RAX, 1);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
+            "String::into" => {
+                if let Some(arg) = args.first() {
+                    let slot = self.alloc.stack_slots[dest.local.0];
+                    let size = self.alloc.local_sizes[dest.local.0].max(8);
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                }
                 true
             }
             "fmt::write" => {
@@ -1792,6 +2011,16 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "UnsafeCell::new" | "UnsafeCell::into_inner" => {
+                if let Some(arg) = args.first() {
+                    let slot = self.alloc.stack_slots[dest.local.0];
+                    let size = self.alloc.local_sizes[dest.local.0].max(8);
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                } else {
+                    self.zero_dest(dest);
+                }
+                true
+            }
             "RefCell::new" => {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 let size = self.alloc.local_sizes[dest.local.0].max(8);
@@ -1859,7 +2088,10 @@ impl<'a> CodeEmitter<'a> {
                 }
                 true
             }
-            "BTreeMap::new" | "BTreeSet::new" | "BinaryHeap::with_capacity" => {
+            "BTreeMap::new"
+            | "BTreeSet::new"
+            | "BinaryHeap::with_capacity"
+            | "LinkedList::new" => {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 let size = self.alloc.local_sizes[dest.local.0].max(8);
                 self.asm.xor_rr(Reg::RAX, Reg::RAX);
@@ -1868,7 +2100,13 @@ impl<'a> CodeEmitter<'a> {
                 }
                 true
             }
-            "BinaryHeap::push" | "BinaryHeap::clear" | "BinaryHeap::reserve" | "BTreeSet::clear" => true,
+            "BinaryHeap::push"
+            | "BinaryHeap::clear"
+            | "BinaryHeap::reserve"
+            | "BTreeSet::clear"
+            | "LinkedList::push_back"
+            | "LinkedList::clear"
+            | "VecDeque::clear" => true,
             "BTreeSet::insert" => {
                 self.asm.mov_ri(Reg::RAX, 1);
                 self.store_place(dest, Reg::RAX);
@@ -2002,6 +2240,11 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            s if s.ends_with("::get_mut") && s.contains("AtomicPtr") => {
+                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             // ── core::mem intrinsics ──
             "take" => {
                 // core::mem::take(&mut T) -> T: replace *ptr with default (0) and return old
@@ -2038,16 +2281,37 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.mov_mr(Reg::RBP, slot + 16, Reg::RSI);
                 true
             }
+            "core::str::trim" | "std::str::trim" => {
+                let slot = self.alloc.stack_slots[dest.local.0];
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RDI);
+                self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
+                true
+            }
             "from_utf8_unchecked" => {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RDI);
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RSI);
                 true
             }
-            "ManuallyDrop::new" => {
+            "ManuallyDrop::new" | "ManuallyDrop::into_inner" => {
                 // Just pass through the value
-                self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                if let Some(arg) = args.first() {
+                    let slot = self.alloc.stack_slots[dest.local.0];
+                    let size = self.alloc.local_sizes[dest.local.0].max(8);
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                } else {
+                    self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                    self.store_place(dest, Reg::RAX);
+                }
+                true
+            }
+            "ManuallyDrop::take" => {
+                self.asm.mov_rm(Reg::RAX, Reg::RDI, 0);
                 self.store_place(dest, Reg::RAX);
+                true
+            }
+            "split_at_unchecked" => {
+                self.zero_dest(dest);
                 true
             }
 
@@ -2759,6 +3023,8 @@ impl<'a> CodeEmitter<'a> {
             "alloc::string::String::from_utf8_unchecked"
             | "std::string::String::from_utf8_unchecked" => "String::from_utf8_unchecked",
             "alloc::string::String::remove" | "std::string::String::remove" => "String::remove",
+            "alloc::string::String::cmp" | "std::string::String::cmp" => "String::cmp",
+            "alloc::string::String::into" | "std::string::String::into" => "String::into",
             "alloc::borrow::Cow::into_owned" | "std::borrow::Cow::into_owned" => {
                 "Cow::into_owned"
             }
@@ -2782,9 +3048,22 @@ impl<'a> CodeEmitter<'a> {
             "core::ptr::write_unaligned" | "std::ptr::write_unaligned" => "write_unaligned",
             "core::ptr::write_bytes" | "std::ptr::write_bytes" => "write_bytes",
             "core::ptr::drop_in_place" | "std::ptr::drop_in_place" => "drop_in_place",
+            "core::ptr::NonNull::new" | "std::ptr::NonNull::new" => "NonNull::new",
+            "core::ptr::NonNull::new_unchecked" | "std::ptr::NonNull::new_unchecked" => {
+                "NonNull::new_unchecked"
+            }
+            "core::ptr::NonNull::from" | "std::ptr::NonNull::from" => "NonNull::from",
+            "core::ptr::NonNull::as_ptr" | "std::ptr::NonNull::as_ptr" => "NonNull::as_ptr",
+            "core::ptr::slice_from_raw_parts_mut" | "std::ptr::slice_from_raw_parts_mut" => {
+                "slice_from_raw_parts_mut"
+            }
+            "core::ptr::addr_of" | "std::ptr::addr_of" => "addr",
             "core::slice::from_raw_parts" | "std::slice::from_raw_parts" => "from_raw_parts",
             "core::slice::from_raw_parts_mut" | "std::slice::from_raw_parts_mut" => {
                 "from_raw_parts_mut"
+            }
+            "core::slice::split_at_unchecked" | "std::slice::split_at_unchecked" => {
+                "split_at_unchecked"
             }
             "core::mem::size_of" | "std::mem::size_of" => "size_of",
             "core::mem::size_of_val" | "std::mem::size_of_val" => "size_of_val",
@@ -2795,10 +3074,46 @@ impl<'a> CodeEmitter<'a> {
             "core::mem::transmute_copy" | "std::mem::transmute_copy" => "transmute_copy",
             "core::mem::forget" | "std::mem::forget" => "forget",
             "core::mem::drop" | "std::mem::drop" => "drop",
+            "core::mem::ManuallyDrop::new" | "std::mem::ManuallyDrop::new" => {
+                "ManuallyDrop::new"
+            }
+            "core::mem::ManuallyDrop::into_inner"
+            | "std::mem::ManuallyDrop::into_inner" => "ManuallyDrop::into_inner",
+            "core::mem::ManuallyDrop::take" | "std::mem::ManuallyDrop::take" => {
+                "ManuallyDrop::take"
+            }
             "core::mem::MaybeUninit::assume_init"
             | "std::mem::MaybeUninit::assume_init" => "MaybeUninit::assume_init",
+            "core::alloc::Layout::new" | "std::alloc::Layout::new" | "alloc::alloc::Layout::new" => {
+                "Layout::new"
+            }
+            "core::alloc::Layout::from_size_align_unchecked"
+            | "std::alloc::Layout::from_size_align_unchecked"
+            | "alloc::alloc::Layout::from_size_align_unchecked" => "Layout::from_size_align_unchecked",
+            "alloc::alloc::handle_alloc_error" | "std::alloc::handle_alloc_error" => {
+                "handle_alloc_error"
+            }
             "core::hint::spin_loop" | "std::hint::spin_loop" => "spin_loop",
             "core::hint::black_box" | "std::hint::black_box" => "black_box",
+            "core::hint::unreachable_unchecked" | "std::hint::unreachable_unchecked" => {
+                "unreachable_unchecked"
+            }
+            "core::convert::identity" | "std::convert::identity" => "identity",
+            "core::ops::RangeInclusive::new" | "std::ops::RangeInclusive::new" => {
+                "RangeInclusive::new"
+            }
+            "core::ops::Add::add" | "std::ops::Add::add" => "core::ops::Add::add",
+            "core::ops::Sub::sub" | "std::ops::Sub::sub" => "core::ops::Sub::sub",
+            "core::ops::Mul::mul" | "std::ops::Mul::mul" => "core::ops::Mul::mul",
+            "core::ops::Div::div" | "std::ops::Div::div" => "core::ops::Div::div",
+            "core::ops::Rem::rem" | "std::ops::Rem::rem" => "core::ops::Rem::rem",
+            "core::time::Duration::new" | "std::time::Duration::new" => "Duration::new",
+            "core::time::Duration::from_secs" | "std::time::Duration::from_secs" => {
+                "Duration::from_secs"
+            }
+            "core::time::Duration::from_millis" | "std::time::Duration::from_millis" => {
+                "Duration::from_millis"
+            }
             "core::char::from_u32" | "std::char::from_u32" => "char::from_u32",
             "core::fmt::write" | "std::fmt::write" => "fmt::write",
             "core::fmt::Formatter::write_str" | "std::fmt::Formatter::write_str" => {
@@ -2811,18 +3126,41 @@ impl<'a> CodeEmitter<'a> {
             "core::f32::f32::to_bits" => "f32::to_bits",
             "core::f64::f64::to_bits" => "f64::to_bits",
             "alloc::boxed::Box::new" | "std::boxed::Box::new" => "Box::new",
+            "alloc::boxed::Box::as_ref" | "std::boxed::Box::as_ref" => "Box::as_ref",
+            "alloc::rc::Rc::new" | "std::rc::Rc::new" => "Rc::new",
             "alloc::rc::Rc::as_ptr" | "std::rc::Rc::as_ptr" => "Rc::as_ptr",
             "alloc::rc::Rc::into_raw" | "std::rc::Rc::into_raw" => "Rc::into_raw",
+            "alloc::vec::Vec::reserve" | "std::vec::Vec::reserve" => "Vec::reserve",
+            "alloc::vec::Vec::retain" | "std::vec::Vec::retain" => "Vec::retain",
+            "alloc::vec::Vec::drain" | "std::vec::Vec::drain" => "Vec::drain",
+            "alloc::vec::Vec::resize" | "std::vec::Vec::resize" => "Vec::resize",
+            "alloc::vec::Vec::remove" | "std::vec::Vec::remove" => "Vec::remove",
+            "alloc::vec::Vec::get" | "std::vec::Vec::get" => "Vec::get",
+            "alloc::vec::Vec::join" | "std::vec::Vec::join" => "Vec::join",
             "alloc::collections::VecDeque::new" | "std::collections::VecDeque::new" => {
                 "Vec::new"
             }
+            "alloc::collections::VecDeque::with_capacity"
+            | "std::collections::VecDeque::with_capacity" => "VecDeque::with_capacity",
+            "alloc::collections::VecDeque::push_back"
+            | "std::collections::VecDeque::push_back" => "VecDeque::push_back",
             "alloc::collections::VecDeque::pop_front" | "std::collections::VecDeque::pop_front" => {
                 "VecDeque::pop_front"
+            }
+            "alloc::collections::VecDeque::clear" | "std::collections::VecDeque::clear" => {
+                "VecDeque::clear"
+            }
+            "alloc::collections::VecDeque::reserve" | "std::collections::VecDeque::reserve" => {
+                "VecDeque::reserve"
             }
             "alloc::collections::VecDeque::is_empty" | "std::collections::VecDeque::is_empty" => {
                 "VecDeque::is_empty"
             }
             "core::cell::UnsafeCell::get" | "std::cell::UnsafeCell::get" => "UnsafeCell::get",
+            "core::cell::UnsafeCell::new" | "std::cell::UnsafeCell::new" => "UnsafeCell::new",
+            "core::cell::UnsafeCell::into_inner" | "std::cell::UnsafeCell::into_inner" => {
+                "UnsafeCell::into_inner"
+            }
             "core::cell::Cell::new" | "std::cell::Cell::new" => "Cell::new",
             "core::cell::RefCell::new" | "std::cell::RefCell::new" => "RefCell::new",
             "core::option::Option::expect" | "std::option::Option::expect" => "Option::expect",
@@ -2850,6 +3188,14 @@ impl<'a> CodeEmitter<'a> {
             }
             "alloc::collections::BTreeSet::clear" | "std::collections::BTreeSet::clear" => {
                 "BTreeSet::clear"
+            }
+            "alloc::collections::LinkedList::new" | "std::collections::LinkedList::new" => {
+                "LinkedList::new"
+            }
+            "alloc::collections::LinkedList::push_back"
+            | "std::collections::LinkedList::push_back" => "LinkedList::push_back",
+            "alloc::collections::LinkedList::clear" | "std::collections::LinkedList::clear" => {
+                "LinkedList::clear"
             }
             "alloc::vec::Vec::into_iter" | "std::vec::Vec::into_iter" => "Vec::into_iter",
             "core::iter::adapters::fuse::Fuse::next"
@@ -2882,6 +3228,35 @@ impl<'a> CodeEmitter<'a> {
             )
     }
 
+    fn is_scalar_wrapper_constructor(fn_name: &str) -> bool {
+        let mut parts = fn_name.rsplit("::");
+        let method = parts.next().unwrap_or(fn_name);
+        let ty = parts.next().unwrap_or("");
+        if method != "new" {
+            return false;
+        }
+        matches!(
+            ty,
+            "Self"
+                | "U8"
+                | "U16"
+                | "U32"
+                | "U64"
+                | "U128"
+                | "Usize"
+                | "I8"
+                | "I16"
+                | "I32"
+                | "I64"
+                | "I128"
+                | "Isize"
+                | "F32"
+                | "F64"
+                | "NonZeroBitMaskWord"
+                | "GroupWord"
+        )
+    }
+
     fn try_emit_intrinsic_without_preloaded_args(&mut self, fn_name: &str, dest: &Place) -> bool {
         let fn_name = Self::canonical_intrinsic_name(fn_name);
         let short = fn_name.rsplit("::").next().unwrap_or(fn_name);
@@ -2894,6 +3269,9 @@ impl<'a> CodeEmitter<'a> {
             | "Vec::copy_from_slice"
             | "Vec::extend"
             | "Vec::extend_from_slice"
+            | "Vec::reserve"
+            | "VecDeque::reserve"
+            | "VecDeque::clear"
             | "copy_from_slice"
             | "drop"
             | "drop_in_place"
@@ -2901,7 +3279,9 @@ impl<'a> CodeEmitter<'a> {
             | "BinaryHeap::push"
             | "BinaryHeap::clear"
             | "BinaryHeap::reserve"
-            | "BTreeSet::clear" => true,
+            | "BTreeSet::clear"
+            | "LinkedList::push_back"
+            | "LinkedList::clear" => true,
             "write_fmt"
             | "Formatter::write_str"
             | "write_str"
@@ -2924,7 +3304,21 @@ impl<'a> CodeEmitter<'a> {
             | "core::any::type_name"
             | "map_split"
             | "Ref::map_split"
-            | "RefMut::map_split" => {
+            | "RefMut::map_split"
+            | "RefCell::new"
+            | "Cell::new"
+            | "UnsafeCell::new"
+            | "serialize"
+            | "decode"
+            | "borrow_decode"
+            | "deserialize_tuple"
+            | "reader"
+            | "writer"
+            | "config"
+            | "context"
+            | "borrow_reader"
+            | "project"
+            | "split_at_unchecked" => {
                 self.zero_dest(dest);
                 true
             }
@@ -2938,6 +3332,9 @@ impl<'a> CodeEmitter<'a> {
                     | "copy_from_slice"
                     | "extend"
                     | "extend_from_slice"
+                    | "reserve"
+                    | "clear"
+                    | "push_back"
                     | "drop"
                     | "drop_in_place"
                     | "dealloc"
@@ -2957,6 +3354,18 @@ impl<'a> CodeEmitter<'a> {
                     | "custom"
                     | "map_split"
                     | "type_name"
+                    | "serialize"
+                    | "decode"
+                    | "borrow_decode"
+                    | "deserialize_tuple"
+                    | "reader"
+                    | "writer"
+                    | "config"
+                    | "context"
+                    | "borrow_reader"
+                    | "project"
+                    | "split_at_unchecked"
+                    | "run"
             ) =>
             {
                 self.zero_dest(dest);
@@ -2985,6 +3394,50 @@ impl<'a> CodeEmitter<'a> {
             fn_name.rsplit("::").next().unwrap_or(fn_name),
             "PhantomData" | "Unbounded"
         )
+    }
+
+    fn is_intrinsic_fnitem_value(fn_name: &str) -> bool {
+        let canonical = Self::canonical_intrinsic_name(fn_name);
+        let short = canonical.rsplit("::").next().unwrap_or(canonical);
+        Self::is_scalar_wrapper_constructor(canonical)
+            || matches!(
+                canonical,
+                "RefCell::new"
+                    | "Cell::new"
+                    | "UnsafeCell::new"
+                    | "serialize"
+                    | "decode"
+                    | "borrow_decode"
+                    | "deserialize_tuple"
+                    | "reader"
+                    | "writer"
+                    | "config"
+                    | "context"
+                    | "borrow_reader"
+                    | "project"
+                    | "split_at_unchecked"
+                    | "core::ops::Add::add"
+                    | "core::ops::Sub::sub"
+                    | "core::ops::Mul::mul"
+                    | "core::ops::Div::div"
+                    | "core::ops::Rem::rem"
+            )
+            || matches!(
+                short,
+                "serialize"
+                    | "decode"
+                    | "borrow_decode"
+                    | "deserialize_tuple"
+                    | "reader"
+                    | "writer"
+                    | "config"
+                    | "context"
+                    | "borrow_reader"
+                    | "project"
+                    | "addr"
+                    | "eq"
+                    | "split_at_unchecked"
+            )
     }
 
     fn local_named(&self, name: Symbol) -> Option<Local> {

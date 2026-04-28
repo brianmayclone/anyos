@@ -254,13 +254,37 @@ pub fn control_name_for_node(nodes: &[ToolboxNode], node: u32) -> Option<&str> {
 }
 
 pub fn set_control_icon(tree: &ui::TreeView, node: u32, control_name: &str, color: u32) {
-    if let Some(icon) = ui::Icon::system(
+    let icon = ui::Icon::system(
         icon_name_for_control(control_name),
         ui::IconType::Outline,
         color,
         16,
-    ) {
+    )
+    .or_else(|| {
+        ui::Icon::system(
+            fallback_icon_for_control(control_name),
+            ui::IconType::Outline,
+            color,
+            16,
+        )
+    })
+    .or_else(|| ui::Icon::system("box", ui::IconType::Outline, color, 16));
+    if let Some(icon) = icon {
         tree.set_node_icon(node, &icon.pixels, icon.width, icon.height);
+    }
+}
+
+fn fallback_icon_for_control(control_name: &str) -> &'static str {
+    match control_name {
+        "Alert" | "Tooltip" => "info-circle",
+        "Badge" | "Tag" => "tag",
+        "IconButton" | "ImageButton" | "Button" | "PlainButton" => "square",
+        "DataGrid" | "TableView" | "TableLayout" => "grid",
+        "SplitView" => "columns",
+        "StackPanel" => "rows",
+        "FlowPanel" => "layout",
+        "ImageView" => "photo",
+        _ => "box",
     }
 }
 

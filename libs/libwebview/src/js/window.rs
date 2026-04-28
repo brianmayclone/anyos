@@ -68,7 +68,10 @@ fn make_native_constructor(
         proto
             .borrow_mut()
             .set(String::from("constructor"), ctor.clone());
-        func.borrow_mut().prototype = Some(proto);
+        let mut func = func.borrow_mut();
+        func.prototype = Some(proto.clone());
+        func.own_props
+            .insert(String::from("prototype"), JsValue::Object(proto));
     }
     ctor
 }
@@ -350,7 +353,7 @@ pub fn make_window(
     // Observer stubs.
     obj.set(
         String::from("ResizeObserver"),
-        native_ctor_fn("ResizeObserver", win_observer_ctor),
+        native_ctor_fn("ResizeObserver", win_resize_observer_ctor),
     );
     obj.set(
         String::from("MutationObserver"),
@@ -358,7 +361,7 @@ pub fn make_window(
     );
     obj.set(
         String::from("IntersectionObserver"),
-        native_ctor_fn("IntersectionObserver", win_observer_ctor),
+        native_ctor_fn("IntersectionObserver", win_intersection_observer_ctor),
     );
 
     // Event constructors (W3C DOM Events Level 3 / UIEvents / Pointer Events).
@@ -980,15 +983,121 @@ fn win_get_selection(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     sel
 }
 
-fn win_observer_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+fn win_resize_observer_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let obs = JsValue::new_object();
-    obs.set_property(String::from("observe"), native_fn("observe", win_noop));
+    obs.set_property(String::from("__callback"), callback);
+    obs.set_property(
+        String::from("observe"),
+        native_fn("observe", win_resize_observer_observe),
+    );
     obs.set_property(String::from("unobserve"), native_fn("unobserve", win_noop));
     obs.set_property(
         String::from("disconnect"),
         native_fn("disconnect", win_noop),
     );
     obs
+}
+
+fn win_resize_observer_observe(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let callback = vm.current_this.get_property("__callback");
+    if callback.is_function() {
+        let rect = target.get_property("getBoundingClientRect");
+        let content_rect = if rect.is_function() {
+            vm.call_value(&rect, &[], target.clone())
+        } else {
+            make_dom_rect(0.0, 0.0, 0.0, 0.0)
+        };
+        let entry = JsValue::new_object();
+        entry.set_property(String::from("target"), target);
+        entry.set_property(String::from("contentRect"), content_rect);
+        let entries = make_array(vec![entry]);
+        let observer = vm.current_this.clone();
+        vm.call_value(&callback, &[entries, observer], JsValue::Undefined);
+    }
+    JsValue::Undefined
+}
+
+fn win_intersection_observer_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let options = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    #[cfg(feature = "host")]
+    if std::env::var_os("SURF_DEBUG_OBSERVERS").is_some() {
+        eprintln!(
+            "[libwebview] IntersectionObserver ctor callback_fn={}",
+            callback.is_function()
+        );
+    }
+    let obs = JsValue::new_object();
+    obs.set_property(String::from("__callback"), callback);
+    obs.set_property(String::from("__options"), options);
+    obs.set_property(
+        String::from("observe"),
+        native_fn("observe", win_intersection_observer_observe),
+    );
+    obs.set_property(String::from("unobserve"), native_fn("unobserve", win_noop));
+    obs.set_property(
+        String::from("disconnect"),
+        native_fn("disconnect", win_noop),
+    );
+    obs.set_property(
+        String::from("takeRecords"),
+        native_fn("takeRecords", |_, _| make_array(Vec::new())),
+    );
+    obs
+}
+
+fn win_intersection_observer_observe(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let callback = vm.current_this.get_property("__callback");
+    #[cfg(feature = "host")]
+    if std::env::var_os("SURF_DEBUG_OBSERVERS").is_some() {
+        eprintln!(
+            "[libwebview] IntersectionObserver.observe target_node={} callback_fn={}",
+            target.get_property("__nodeId").to_js_string(),
+            callback.is_function()
+        );
+    }
+    if callback.is_function() {
+        let rect_fn = target.get_property("getBoundingClientRect");
+        let rect = if rect_fn.is_function() {
+            vm.call_value(&rect_fn, &[], target.clone())
+        } else {
+            make_dom_rect(0.0, 0.0, 0.0, 0.0)
+        };
+        let root_bounds = make_dom_rect(
+            0.0,
+            0.0,
+            vm.get_global("innerWidth").to_number(),
+            vm.get_global("innerHeight").to_number(),
+        );
+        let entry = JsValue::new_object();
+        entry.set_property(String::from("time"), JsValue::Number(0.0));
+        entry.set_property(String::from("target"), target);
+        entry.set_property(String::from("rootBounds"), root_bounds);
+        entry.set_property(String::from("boundingClientRect"), rect.clone());
+        entry.set_property(String::from("intersectionRect"), rect);
+        entry.set_property(String::from("isIntersecting"), JsValue::Bool(true));
+        entry.set_property(String::from("intersectionRatio"), JsValue::Number(1.0));
+        let entries = make_array(vec![entry]);
+        let observer = vm.current_this.clone();
+        vm.call_value(&callback, &[entries, observer], JsValue::Undefined);
+    }
+    JsValue::Undefined
+}
+
+fn make_dom_rect(x: f64, y: f64, width: f64, height: f64) -> JsValue {
+    let rect = JsValue::new_object();
+    rect.set_property(String::from("x"), JsValue::Number(x));
+    rect.set_property(String::from("y"), JsValue::Number(y));
+    rect.set_property(String::from("left"), JsValue::Number(x));
+    rect.set_property(String::from("top"), JsValue::Number(y));
+    rect.set_property(String::from("width"), JsValue::Number(width));
+    rect.set_property(String::from("height"), JsValue::Number(height));
+    rect.set_property(String::from("right"), JsValue::Number(x + width));
+    rect.set_property(String::from("bottom"), JsValue::Number(y + height));
+    rect
 }
 
 fn win_mutation_observer_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -1653,6 +1762,10 @@ fn win_message_channel(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         if let Some(bridge) = super::get_bridge(vm) {
             let id = bridge.next_timer_id;
             bridge.next_timer_id += 1;
+            #[cfg(feature = "host")]
+            if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
+                eprintln!("[js-dom-debug] MessageChannel postMessage timer id={}", id);
+            }
             // We wrap: call onmessage(evt) when the timer fires.
             // Since we can't close over msg_evt, we store callback+arg
             // by creating a wrapper native function that calls the peer callback.

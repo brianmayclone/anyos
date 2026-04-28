@@ -1834,6 +1834,7 @@ fn resolve_styles_prepared_impl(
     // eliminating the per-node clone that caused heap-stack collision on large
     // pages (~54 MiB for chip.de's 6228 nodes).
     let mut custom_props: Vec<Vec<(String, String)>> = vec![Vec::new(); resolved_count];
+    let mut set_flags_by_node: Vec<u32> = Vec::with_capacity(resolved_count.max(1));
     let mut active_containers: Vec<ActiveContainer> = Vec::new();
 
     for id in 0..resolved_count {
@@ -2153,6 +2154,7 @@ fn resolve_styles_prepared_impl(
             style.line_height = (style.font_size * 6 + 2) / 5;
         }
 
+        set_flags_by_node.push(set_flags);
         styles.push(style);
 
         if matches!(
@@ -2172,7 +2174,16 @@ fn resolve_styles_prepared_impl(
         let mut hidden = default_style();
         hidden.display = Display::None;
         styles.resize(count, hidden);
+        set_flags_by_node.resize(count, 0);
     }
+
+    // JS-created virtual DOM nodes are materialized from React-style createElement
+    // trees, where child text nodes can receive real DOM ids before their parent
+    // element does.  The main resolver walks numeric node ids for performance, so
+    // `pid < id` inheritance is not guaranteed for those nodes.  A cheap DOM-order
+    // inheritance pass makes inheritable properties (especially color/font) match
+    // the actual tree, while preserving properties explicitly set on the child.
+    inherit_unset_in_dom_order(dom, &mut styles, &set_flags_by_node);
 
     crate::debug_surf!("[style] resolve_styles done: {} styles", styles.len());
     #[cfg(feature = "debug_surf")]
@@ -2526,10 +2537,8 @@ fn lookup_custom_property<'a>(
             if let Some((_, val)) = ancestors_cp[pid].iter().find(|(k, _)| k == name) {
                 return Some(val.as_str());
             }
-            cur = dom.nodes[pid].parent;
-        } else {
-            break;
         }
+        cur = dom.nodes.get(pid).and_then(|node| node.parent);
     }
     fallback_custom_property(name)
 }
@@ -2836,6 +2845,36 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u32) {
     }
 }
 
+fn inherit_unset_in_dom_order(dom: &Dom, styles: &mut [ComputedStyle], set_flags: &[u32]) {
+    fn walk(dom: &Dom, styles: &mut [ComputedStyle], set_flags: &[u32], node_id: usize) {
+        if node_id >= styles.len() {
+            return;
+        }
+        let parent_style = dom.nodes[node_id]
+            .parent
+            .and_then(|pid| styles.get(pid))
+            .cloned();
+        if let Some(parent) = parent_style {
+            let flags = set_flags.get(node_id).copied().unwrap_or(0);
+            inherit_unset(&mut styles[node_id], &parent, flags);
+            if flags & SET_LINE_HEIGHT == 0 {
+                styles[node_id].line_height = (styles[node_id].font_size * 6 + 2) / 5;
+            }
+        }
+
+        let children = dom.nodes[node_id].children.clone();
+        for child_id in children {
+            walk(dom, styles, set_flags, child_id);
+        }
+    }
+
+    for (node_id, node) in dom.nodes.iter().enumerate() {
+        if node.parent.is_none() {
+            walk(dom, styles, set_flags, node_id);
+        }
+    }
+}
+
 /// Map a CSS property to the inheritable-set bitflag (0 if not inheritable).
 fn decl_set_flag(prop: &Property) -> u32 {
     match prop {
@@ -2867,6 +2906,28 @@ fn decl_set_flag(prop: &Property) -> u32 {
 // ---------------------------------------------------------------------------
 // Declaration application
 // ---------------------------------------------------------------------------
+
+fn apply_inset_side(
+    value: &CssValue,
+    offset: &mut Option<i32>,
+    calc: &mut Option<(i32, i32)>,
+    parent_fs: i32,
+    root_fs: i32,
+) {
+    if matches!(value, CssValue::Auto) {
+        *offset = None;
+        *calc = None;
+    } else if let CssValue::Calc(px, pct) = value {
+        *offset = if *pct == 0 { Some(px / 100) } else { None };
+        *calc = Some((*px, *pct));
+    } else if let CssValue::Percentage(v) = value {
+        *offset = None;
+        *calc = Some((0, *v));
+    } else if let Some(px) = resolve_length(value, parent_fs, root_fs) {
+        *offset = Some(px);
+        *calc = None;
+    }
+}
 
 /// Resolve a CSS length value to pixels.
 ///
@@ -3489,99 +3550,67 @@ pub fn apply_declaration(
             }
         }
         Property::Top => {
-            if matches!(decl.value, CssValue::Auto) {
-                style.top = Option::None;
-                style.top_calc = Option::None;
-            } else if matches!(decl.value, CssValue::Inherit) {
+            if matches!(decl.value, CssValue::Inherit) {
                 if let Some(parent) = parent_style {
                     style.top = parent.top;
                     style.top_calc = parent.top_calc;
                 }
-            } else if let CssValue::Calc(px, pct) = decl.value {
-                style.top = if pct == 0 {
-                    Some(px / 100)
-                } else {
-                    Option::None
-                };
-                style.top_calc = Some((px, pct));
-            } else if let CssValue::Percentage(v) = decl.value {
-                style.top = Option::None;
-                style.top_calc = Some((0, v));
-            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
-                style.top = Some(px);
-                style.top_calc = Option::None;
+            } else {
+                apply_inset_side(
+                    &decl.value,
+                    &mut style.top,
+                    &mut style.top_calc,
+                    parent_fs,
+                    root_fs,
+                );
             }
         }
         Property::Right => {
-            if matches!(decl.value, CssValue::Auto) {
-                style.right_offset = Option::None;
-                style.right_calc = Option::None;
-            } else if matches!(decl.value, CssValue::Inherit) {
+            if matches!(decl.value, CssValue::Inherit) {
                 if let Some(parent) = parent_style {
                     style.right_offset = parent.right_offset;
                     style.right_calc = parent.right_calc;
                 }
-            } else if let CssValue::Calc(px, pct) = decl.value {
-                style.right_offset = if pct == 0 {
-                    Some(px / 100)
-                } else {
-                    Option::None
-                };
-                style.right_calc = Some((px, pct));
-            } else if let CssValue::Percentage(v) = decl.value {
-                style.right_offset = Option::None;
-                style.right_calc = Some((0, v));
-            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
-                style.right_offset = Some(px);
-                style.right_calc = Option::None;
+            } else {
+                apply_inset_side(
+                    &decl.value,
+                    &mut style.right_offset,
+                    &mut style.right_calc,
+                    parent_fs,
+                    root_fs,
+                );
             }
         }
         Property::Bottom => {
-            if matches!(decl.value, CssValue::Auto) {
-                style.bottom_offset = Option::None;
-                style.bottom_calc = Option::None;
-            } else if matches!(decl.value, CssValue::Inherit) {
+            if matches!(decl.value, CssValue::Inherit) {
                 if let Some(parent) = parent_style {
                     style.bottom_offset = parent.bottom_offset;
                     style.bottom_calc = parent.bottom_calc;
                 }
-            } else if let CssValue::Calc(px, pct) = decl.value {
-                style.bottom_offset = if pct == 0 {
-                    Some(px / 100)
-                } else {
-                    Option::None
-                };
-                style.bottom_calc = Some((px, pct));
-            } else if let CssValue::Percentage(v) = decl.value {
-                style.bottom_offset = Option::None;
-                style.bottom_calc = Some((0, v));
-            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
-                style.bottom_offset = Some(px);
-                style.bottom_calc = Option::None;
+            } else {
+                apply_inset_side(
+                    &decl.value,
+                    &mut style.bottom_offset,
+                    &mut style.bottom_calc,
+                    parent_fs,
+                    root_fs,
+                );
             }
         }
         Property::Left => {
-            if matches!(decl.value, CssValue::Auto) {
-                style.left_offset = Option::None;
-                style.left_calc = Option::None;
-            } else if matches!(decl.value, CssValue::Inherit) {
+            if matches!(decl.value, CssValue::Inherit) {
                 if let Some(parent) = parent_style {
                     style.left_offset = parent.left_offset;
                     style.left_calc = parent.left_calc;
                 }
-            } else if let CssValue::Calc(px, pct) = decl.value {
-                style.left_offset = if pct == 0 {
-                    Some(px / 100)
-                } else {
-                    Option::None
-                };
-                style.left_calc = Some((px, pct));
-            } else if let CssValue::Percentage(v) = decl.value {
-                style.left_offset = Option::None;
-                style.left_calc = Some((0, v));
-            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
-                style.left_offset = Some(px);
-                style.left_calc = Option::None;
+            } else {
+                apply_inset_side(
+                    &decl.value,
+                    &mut style.left_offset,
+                    &mut style.left_calc,
+                    parent_fs,
+                    root_fs,
+                );
             }
         }
         Property::ZIndex => match decl.value {
@@ -4697,7 +4726,68 @@ pub fn apply_declaration(
             }
         }
         // Inset shorthand is expanded before reaching here.
-        Property::Inset => {}
+        Property::Inset => {
+            apply_inset_side(
+                &decl.value,
+                &mut style.top,
+                &mut style.top_calc,
+                parent_fs,
+                root_fs,
+            );
+            apply_inset_side(
+                &decl.value,
+                &mut style.right_offset,
+                &mut style.right_calc,
+                parent_fs,
+                root_fs,
+            );
+            apply_inset_side(
+                &decl.value,
+                &mut style.bottom_offset,
+                &mut style.bottom_calc,
+                parent_fs,
+                root_fs,
+            );
+            apply_inset_side(
+                &decl.value,
+                &mut style.left_offset,
+                &mut style.left_calc,
+                parent_fs,
+                root_fs,
+            );
+        }
+        Property::InsetInline => {
+            apply_inset_side(
+                &decl.value,
+                &mut style.left_offset,
+                &mut style.left_calc,
+                parent_fs,
+                root_fs,
+            );
+            apply_inset_side(
+                &decl.value,
+                &mut style.right_offset,
+                &mut style.right_calc,
+                parent_fs,
+                root_fs,
+            );
+        }
+        Property::InsetBlock => {
+            apply_inset_side(
+                &decl.value,
+                &mut style.top,
+                &mut style.top_calc,
+                parent_fs,
+                root_fs,
+            );
+            apply_inset_side(
+                &decl.value,
+                &mut style.bottom_offset,
+                &mut style.bottom_calc,
+                parent_fs,
+                root_fs,
+            );
+        }
         Property::Overflow => {
             // `overflow` shorthand: one or two keywords.
             // One value → both axes. Two values → overflow-x overflow-y.
@@ -6191,6 +6281,24 @@ mod declaration_tests {
     }
 
     #[test]
+    fn logical_inset_properties_expand_to_physical_offsets() {
+        let decls = crate::css::parse_inline_style(
+            "inset-inline: calc(.25rem * 6); inset-block: 50%; inset-inline-start: 3px",
+        );
+        let mut style = default_style();
+        for decl in &decls {
+            apply_declaration(&mut style, decl, None, 16, 16);
+        }
+
+        assert_eq!(style.left_offset, Some(3));
+        assert_eq!(style.right_offset, Some(24));
+        assert_eq!(style.top, None);
+        assert_eq!(style.top_calc, Some((0, 5000)));
+        assert_eq!(style.bottom_offset, None);
+        assert_eq!(style.bottom_calc, Some((0, 5000)));
+    }
+
+    #[test]
     fn transform_translate_percent_uses_fixed_percent_units() {
         let decls = crate::css::parse_inline_style("transform: translateX(-50%) translateY(25%)");
         let mut style = default_style();
@@ -7201,6 +7309,49 @@ mod layout_regression_tests {
             styles[nav_text].font_family.as_deref(),
             Some("Gotham XNarrow, Arial Narrow, sans-serif")
         );
+    }
+
+    #[test]
+    fn layered_root_custom_properties_resolve_for_tailwind_utilities() {
+        let dom = crate::html::parse(
+            r#"
+            <main id="app" class="min-h-screen bg-surface-950 text-white">
+                CoreVM
+            </main>
+            "#,
+        );
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            @layer theme {
+                :root, :host {
+                    --color-white: #fff;
+                    --color-surface-950: #020617;
+                }
+            }
+            @layer utilities {
+                .min-h-screen { min-height: 100vh; }
+                .bg-surface-950 { background-color: var(--color-surface-950); }
+                .text-white { color: var(--color-white); }
+            }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1280, 900, &mut inline_style_cache);
+        let app = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "app")
+                )
+            })
+            .expect("app node");
+
+        assert_eq!(styles[app].color, 0xFFFFFFFF);
+        assert_eq!(styles[app].background_color, 0xFF020617);
+        assert_eq!(styles[app].min_height, 900);
     }
 
     #[test]

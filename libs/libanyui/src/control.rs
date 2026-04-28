@@ -830,6 +830,12 @@ pub trait Control {
         None
     }
 
+    /// If the control has a horizontal scrollbar, returns the local-Y threshold
+    /// at which a click should target the scrollbar.
+    fn scrollbar_hit_y(&self) -> Option<i32> {
+        None
+    }
+
     /// Apply a drag-driven auto-scroll step. The framework calls this on the
     /// nearest scrollable ancestor of the drop target once per pointer move
     /// event while a drag is active. `delta_x` / `delta_y` are pre-computed
@@ -1080,8 +1086,15 @@ pub fn hit_test(
 
     // If the click lands on a built-in scrollbar, return this control
     // immediately — children must not intercept scrollbar clicks.
+    let local_x = px - abs_x;
+    let local_y = py - abs_y;
     if let Some(threshold) = controls[idx].scrollbar_hit_x() {
-        if px - abs_x >= threshold {
+        if local_x >= threshold {
+            return Some(root);
+        }
+    }
+    if let Some(threshold) = controls[idx].scrollbar_hit_y() {
+        if local_y >= threshold {
             return Some(root);
         }
     }
@@ -1093,12 +1106,16 @@ pub fn hit_test(
     }
 
     // ScrollView/Expander: offset children's Y for hit-testing
-    let child_abs_y = match controls[idx].kind() {
-        ControlKind::ScrollView => abs_y - b.state as i32,
-        ControlKind::Expander if b.state != 0 => {
-            abs_y + crate::controls::expander::HEADER_HEIGHT as i32
+    let (child_abs_x, child_abs_y) = match controls[idx].kind() {
+        ControlKind::ScrollView => {
+            let (sx, sy) = crate::controls::scroll_view::scroll_offsets(controls, root);
+            (abs_x - sx, abs_y - sy)
         }
-        _ => abs_y,
+        ControlKind::Expander if b.state != 0 => (
+            abs_x,
+            abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        ),
+        _ => (abs_x, abs_y),
     };
 
     // Skip children if collapsed Expander
@@ -1108,7 +1125,7 @@ pub fn hit_test(
         // Check children in reverse order (topmost first)
         let children: Vec<ControlId> = b.children.to_vec();
         for &child_id in children.iter().rev() {
-            if let Some(hit) = hit_test(controls, child_id, px, py, abs_x, child_abs_y) {
+            if let Some(hit) = hit_test(controls, child_id, px, py, child_abs_x, child_abs_y) {
                 return Some(hit);
             }
         }
@@ -1166,13 +1183,16 @@ pub fn cursor_at_point(
     }
 
     // Recurse into children
-    let child_abs_y = match controls[idx].kind() {
-        ControlKind::ScrollView => abs_y - b.state as i32,
-        _ => abs_y,
+    let (child_abs_x, child_abs_y) = match controls[idx].kind() {
+        ControlKind::ScrollView => {
+            let (sx, sy) = crate::controls::scroll_view::scroll_offsets(controls, root);
+            (abs_x - sx, abs_y - sy)
+        }
+        _ => (abs_x, abs_y),
     };
     let children: Vec<ControlId> = b.children.to_vec();
     for &child_id in children.iter().rev() {
-        let c = cursor_at_point(controls, child_id, px, py, abs_x, child_abs_y);
+        let c = cursor_at_point(controls, child_id, px, py, child_abs_x, child_abs_y);
         if c != 0 {
             return c;
         }
@@ -1210,12 +1230,16 @@ pub fn hit_test_any(
     }
 
     // ScrollView/Expander: offset children's Y
-    let child_abs_y = match controls[idx].kind() {
-        ControlKind::ScrollView => abs_y - b.state as i32,
-        ControlKind::Expander if b.state != 0 => {
-            abs_y + crate::controls::expander::HEADER_HEIGHT as i32
+    let (child_abs_x, child_abs_y) = match controls[idx].kind() {
+        ControlKind::ScrollView => {
+            let (sx, sy) = crate::controls::scroll_view::scroll_offsets(controls, root);
+            (abs_x - sx, abs_y - sy)
         }
-        _ => abs_y,
+        ControlKind::Expander if b.state != 0 => (
+            abs_x,
+            abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        ),
+        _ => (abs_x, abs_y),
     };
 
     if controls[idx].kind() == ControlKind::Expander && b.state == 0 {
@@ -1223,7 +1247,7 @@ pub fn hit_test_any(
     } else {
         let children: Vec<ControlId> = b.children.to_vec();
         for &child_id in children.iter().rev() {
-            if let Some(hit) = hit_test_any(controls, child_id, px, py, abs_x, child_abs_y) {
+            if let Some(hit) = hit_test_any(controls, child_id, px, py, child_abs_x, child_abs_y) {
                 return Some(hit);
             }
         }
@@ -1251,7 +1275,10 @@ pub fn abs_position(controls: &[Box<dyn Control>], id: ControlId) -> (i32, i32) 
             if let Some(pidx) = find_idx(controls, parent) {
                 match controls[pidx].kind() {
                     ControlKind::ScrollView => {
-                        ay -= controls[pidx].base().state as i32;
+                        let (sx, sy) =
+                            crate::controls::scroll_view::scroll_offsets(controls, parent);
+                        ax -= sx;
+                        ay -= sy;
                     }
                     ControlKind::Expander if controls[pidx].base().state != 0 => {
                         ay += crate::controls::expander::HEADER_HEIGHT as i32;

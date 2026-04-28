@@ -153,6 +153,7 @@ fn build_block_internal(
     bx.visibility_hidden = matches!(style.visibility, Visibility::Hidden | Visibility::Collapse);
     bx.opacity = style.opacity;
     bx.backdrop_filter_blur = style.backdrop_filter.blur_px;
+    bx.is_positioned = style.position != Position::Static;
     // Per-side borders (litehtml-style)
     bx.border_top_width = style.border_top.width;
     bx.border_right_width = style.border_right.width;
@@ -1379,6 +1380,7 @@ fn append_out_of_flow_children(
         apply_transform_translation(&mut abs_box, abs_style);
         abs_box.is_fixed = abs_style.position == Position::Fixed;
         abs_box.is_out_of_flow = true;
+        abs_box.is_positioned = true;
         abs_box.static_position_x = Some(static_x);
         abs_box.static_position_y = Some(static_y);
         abs_box.static_position_width = Some(content_w);

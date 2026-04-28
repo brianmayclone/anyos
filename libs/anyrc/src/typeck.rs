@@ -766,6 +766,9 @@ impl<'a> TypeChecker<'a> {
             TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
                 substs[0].clone()
             }
+            TyKind::Adt(def_id, substs) if self.is_into_iter_def(def_id) && substs.len() == 1 => {
+                substs[0].clone()
+            }
             TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.is_empty() => {
                 self.fresh_infer(InferKind::General)
             }
@@ -914,6 +917,7 @@ impl<'a> TypeChecker<'a> {
                 Some(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable))
             }
             "str::to_string" => self.string_ty(),
+            "str::trim" => Some(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable)),
             "core::hint::unreachable_unchecked" | "hint::unreachable_unchecked" => {
                 Some(TyKind::Never)
             }
@@ -4157,7 +4161,9 @@ impl<'a> TypeChecker<'a> {
                                 )));
                             }
                             "into_iter" if args.is_empty() => {
-                                return TyKind::Slice(Box::new(elem_ty.clone()));
+                                return self
+                                    .vec_into_iter_ty(elem_ty.clone())
+                                    .unwrap_or_else(|| TyKind::Slice(Box::new(elem_ty.clone())));
                             }
                             "iter_mut" if args.is_empty() => {
                                 return TyKind::Slice(Box::new(TyKind::Ref(
@@ -4474,6 +4480,12 @@ impl<'a> TypeChecker<'a> {
                                 let arg_ty = self.get_expr_ty_cached(&args[0]);
                                 self.unify(&TyKind::Uint(UintTy::Usize), &arg_ty, args[0].span);
                                 return elem_ty.clone();
+                            }
+                            "drain" if args.len() == 1 => {
+                                self.check_expr(&args[0]);
+                                return self
+                                    .vec_into_iter_ty(elem_ty.clone())
+                                    .unwrap_or_else(|| TyKind::Slice(Box::new(elem_ty.clone())));
                             }
                             "insert" if args.len() == 2 => {
                                 let idx_ty = self.get_expr_ty_cached(&args[0]);
@@ -6682,6 +6694,26 @@ impl<'a> TypeChecker<'a> {
             || self.is_known_type_path(def_id, "Vec")
     }
 
+    fn is_into_iter_def(&self, def_id: DefId) -> bool {
+        self.local_type_name_is(def_id, "IntoIter") || self.is_known_type_path(def_id, "IntoIter")
+    }
+
+    fn vec_into_iter_ty(&self, elem_ty: TyKind) -> Option<TyKind> {
+        self.interner
+            .lookup("IntoIter")
+            .and_then(|sym| self.type_name_to_def.get(&sym).copied())
+            .or_else(|| {
+                self.qualified_type_names.iter().find_map(|(path, candidate)| {
+                    (path == "alloc::vec::IntoIter"
+                        || path == "std::vec::IntoIter"
+                        || path.ends_with("::vec::IntoIter")
+                        || path.ends_with("::IntoIter"))
+                    .then_some(*candidate)
+                })
+            })
+            .map(|def_id| TyKind::Adt(def_id, vec![elem_ty]))
+    }
+
     fn is_hash_map_def(&self, def_id: DefId) -> bool {
         self.local_type_name_is(def_id, "HashMap") || self.is_known_type_path(def_id, "HashMap")
     }
@@ -6802,6 +6834,9 @@ impl<'a> TypeChecker<'a> {
             TyKind::Adt(def_id, substs) if self.is_vec_def(*def_id) && substs.len() == 1 => {
                 Some(substs[0].clone())
             }
+            TyKind::Adt(def_id, substs) if self.is_into_iter_def(*def_id) && substs.len() == 1 => {
+                Some(substs[0].clone())
+            }
             TyKind::Projection(self_ty, Some(trait_def_id), assoc_name)
                 if self.trait_def_name_is(*trait_def_id, "IntoIterator")
                     && self.symbol_name_is(*assoc_name, "IntoIter") =>
@@ -6843,10 +6878,26 @@ impl<'a> TypeChecker<'a> {
 
     fn callable_output_ty(&self, ty: &TyKind) -> Option<TyKind> {
         match self.shallow_resolve(ty.clone()) {
-            TyKind::FnDef(def_id, _) => self.fn_sigs.get(&def_id).map(|(_, ret)| ret.clone()),
+            TyKind::FnDef(def_id, _) => self
+                .fn_sigs
+                .get(&def_id)
+                .map(|(_, ret)| ret.clone())
+                .or_else(|| self.intrinsic_fn_value_output_ty(def_id)),
             TyKind::FnPtr(_, ret) => Some(*ret),
             TyKind::Adt(def_id, substs) if self.enum_variant_fields.contains_key(&def_id) => {
                 Some(TyKind::Adt(def_id, substs))
+            }
+            _ => None,
+        }
+    }
+
+    fn intrinsic_fn_value_output_ty(&self, def_id: DefId) -> Option<TyKind> {
+        match self.resolve.intrinsic_fns.get(&def_id)?.as_str() {
+            "str::trim" | "core::str::trim" | "std::str::trim" => {
+                Some(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable))
+            }
+            "str::to_string" | "core::str::to_string" | "std::str::to_string" => {
+                self.string_ty()
             }
             _ => None,
         }

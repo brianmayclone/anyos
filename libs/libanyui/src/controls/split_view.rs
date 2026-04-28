@@ -216,6 +216,7 @@ impl Control for SplitView {
             }
             self.base.state = self.split_ratio;
             self.base.mark_dirty();
+            crate::mark_needs_layout();
             EventResponse::CHANGED
         } else {
             EventResponse::IGNORED
@@ -225,6 +226,7 @@ impl Control for SplitView {
     fn handle_mouse_up(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
         if self.dragging {
             self.dragging = false;
+            crate::mark_needs_layout();
             EventResponse::CHANGED
         } else {
             EventResponse::CONSUMED

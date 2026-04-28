@@ -156,6 +156,24 @@ fn rasterize_draw_cmd_basic(
             scale_x_percent,
             text,
         } => {
+            #[cfg(feature = "host")]
+            if std::env::var_os("SURF_DEBUG_PAINT_TEXT").is_some()
+                && draw_y >= -200
+                && draw_y < buf_h as i32
+                && !text.trim().is_empty()
+            {
+                eprintln!(
+                    "[libwebview] paint text x={} y={} w={} h={} color=0x{:08x} font={} size={} text={:?}",
+                    cmd.src_x,
+                    draw_y,
+                    cmd.src_w,
+                    cmd.src_h,
+                    color,
+                    font_id,
+                    font_size,
+                    text
+                );
+            }
             if crate::is_ahem_font_id(*font_id) {
                 draw_ahem_string_buf(
                     buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_size, text,

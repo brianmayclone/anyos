@@ -359,7 +359,12 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "margin-block" => Some(Property::MarginBlock),
         "margin-block-start" => Some(Property::MarginTop),
         "margin-block-end" => Some(Property::MarginBottom),
-        "inset-inline" | "inset-inline-start" | "inset-inline-end" => Some(Property::Inset),
+        "inset-inline" => Some(Property::InsetInline),
+        "inset-inline-start" => Some(Property::Left),
+        "inset-inline-end" => Some(Property::Right),
+        "inset-block" => Some(Property::InsetBlock),
+        "inset-block-start" => Some(Property::Top),
+        "inset-block-end" => Some(Property::Bottom),
         "border-inline-width" => Some(Property::BorderWidth),
         "border-block-width" => Some(Property::BorderWidth),
         // Font shorthand

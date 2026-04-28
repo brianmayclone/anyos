@@ -304,6 +304,7 @@ impl<'a> Resolver<'a> {
                     | "min"
                     | "max"
                     | "to_string"
+                    | "trim"
             ) || (type_name_str == "char"
                 && matches!(assoc_str, "from_u32" | "is_whitespace"));
             if is_assoc_const || is_assoc_fn {

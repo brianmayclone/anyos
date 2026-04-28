@@ -142,18 +142,64 @@ impl DisplayList {
         offset_y: i32,
         sticky_ctx: Option<StickyContext>,
     ) {
+        #[cfg(feature = "host")]
+        let debug_trace_node = debug_flatten_trace_node(bx.node_id);
+        #[cfg(feature = "host")]
+        if debug_trace_node {
+            eprintln!(
+                "[libwebview] flatten enter node={:?} off=({}, {}) box=({}, {}) {}x{} children={} vis_hidden={} opacity={} sc={} pos={} out={} fixed={} subtree=({}, {}) cull={:?}",
+                bx.node_id,
+                offset_x,
+                offset_y,
+                bx.x,
+                bx.y,
+                bx.width,
+                bx.height,
+                bx.children.len(),
+                bx.visibility_hidden,
+                bx.opacity,
+                bx.creates_stacking_context,
+                bx.is_positioned,
+                bx.is_out_of_flow,
+                bx.is_fixed,
+                bx.subtree_top,
+                bx.subtree_bottom,
+                self.cull_y_range
+            );
+        }
         if bx.visibility_hidden || bx.opacity <= 0 {
+            #[cfg(feature = "host")]
+            if debug_trace_node {
+                eprintln!(
+                    "[libwebview] flatten skip node={:?}: hidden/transparent",
+                    bx.node_id
+                );
+            }
             return;
         }
 
         let orig_abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
         let orig_abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
+        #[cfg(feature = "host")]
+        if debug_trace_node {
+            eprintln!(
+                "[libwebview] flatten abs node={:?} orig=({}, {})",
+                bx.node_id, orig_abs_x, orig_abs_y
+            );
+        }
 
         if let Some((y_start, y_end)) = self.cull_y_range {
             if !bx.subtree_has_viewport_positioned {
                 let subtree_abs_top = orig_abs_y + bx.subtree_top;
                 let subtree_abs_bottom = orig_abs_y + bx.subtree_bottom;
                 if subtree_abs_bottom <= y_start || subtree_abs_top >= y_end {
+                    #[cfg(feature = "host")]
+                    if debug_trace_node {
+                        eprintln!(
+                            "[libwebview] flatten skip node={:?}: culled band=({}, {}) subtree_abs=({}, {})",
+                            bx.node_id, y_start, y_end, subtree_abs_top, subtree_abs_bottom
+                        );
+                    }
                     return;
                 }
             }
@@ -591,6 +637,23 @@ impl DisplayList {
                     crate::synthetic_font_width_scale_percent(bx.custom_font_id);
                 let font_size = bx.font_size.max(1) as u16;
                 let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+                #[cfg(feature = "host")]
+                if std::env::var_os("SURF_DEBUG_FLATTEN_TEXT").is_some()
+                    && !text.trim().is_empty()
+                    && (abs_y >= -200 && abs_y < 1200
+                        || text.contains("Your")
+                        || text.contains("Infrastructure"))
+                {
+                    eprintln!(
+                        "[libwebview] flatten text x={} y={} w={} h={} color=0x{:08x} text={:?}",
+                        abs_x,
+                        abs_y,
+                        draw_w,
+                        draw_h,
+                        color,
+                        text
+                    );
+                }
 
                 // Text shadows (behind the text).
                 for ts in &bx.text_shadows {
@@ -851,8 +914,8 @@ impl DisplayList {
         if has_sc_children {
             // Partition children into three groups:
             // 1. Child stacking contexts with negative z-index (sorted ascending)
-            // 2. Non-stacking-context in-flow children in document order
-            // 3. Non-stacking-context positioned out-of-flow children in document order
+            // 2. Non-stacking-context non-positioned children in document order
+            // 3. Non-stacking-context positioned auto-z children in document order
             // 4. Child stacking contexts with z-index >= 0 (sorted ascending)
             let mut neg: Vec<(i32, usize)> = Vec::new();
             let mut pos: Vec<(i32, usize)> = Vec::new();
@@ -866,7 +929,7 @@ impl DisplayList {
                     } else {
                         pos.push((child.z_index, i));
                     }
-                } else if child.is_out_of_flow || child.is_fixed {
+                } else if child.is_positioned || child.is_out_of_flow || child.is_fixed {
                     positioned_auto.push(i);
                 } else {
                     normal.push(i);
@@ -879,13 +942,15 @@ impl DisplayList {
                 self.flatten(&bx.children[idx], cx, cy, next_sticky_ctx);
             }
 
-            // Non-stacking-context in-flow children in document order
+            // Non-stacking-context non-positioned children in document order
             for idx in normal {
                 self.flatten(&bx.children[idx], cx, cy, next_sticky_ctx);
             }
 
-            // Positioned out-of-flow children with auto z-index paint after
-            // normal in-flow content/floats but before positive stacking contexts.
+            // Positioned children with auto z-index paint after normal in-flow
+            // content/floats but before positive stacking contexts.  Keep
+            // position:relative/sticky in this bucket too; they remain in flow
+            // for layout, but their paint order is the positioned auto-z phase.
             for idx in positioned_auto {
                 self.flatten(&bx.children[idx], cx, cy, next_sticky_ctx);
             }
@@ -913,4 +978,20 @@ impl DisplayList {
         }
     }
 
+}
+
+#[cfg(feature = "host")]
+fn debug_flatten_trace_node(node_id: Option<usize>) -> bool {
+    let Some(node_id) = node_id else {
+        return false;
+    };
+    let Some(spec) = std::env::var_os("SURF_DEBUG_FLATTEN_NODES") else {
+        return false;
+    };
+    let Some(spec) = spec.to_str() else {
+        return false;
+    };
+    spec.split(',')
+        .filter_map(|part| part.trim().parse::<usize>().ok())
+        .any(|id| id == node_id)
 }

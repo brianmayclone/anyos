@@ -493,10 +493,24 @@ fn load_page_inner(
     }
     wv.set_html_no_js(&html);
     load_resources(wv, &base_url, image_backend, load_web_fonts); // CSS, fonts, SVGs (sync) + initial relayout
-    let pending = start_image_loading(wv, &base_url, image_backend); // images (async, parallel threads)
+    let mut pending = if js_enabled {
+        PendingImages::empty()
+    } else {
+        start_image_loading(wv, &base_url, image_backend) // images (async, parallel threads)
+    };
     if js_enabled {
         run_javascript(wv, &base_url, cookies);
         run_js_timers(wv, &base_url, cookies, 5000);
+        if std::env::var_os("SURF_DEBUG_DOM_ELEMENTS_AFTER_JS").is_some() {
+            if let Some(dom) = wv.dom() {
+                debug_dump_dom_elements(dom);
+            }
+        }
+        if std::env::var_os("SURF_DEBUG_INTERESTING_STYLES_AFTER_JS").is_some() {
+            if let Some(dom) = wv.dom() {
+                debug_dump_interesting_styles(wv, dom);
+            }
+        }
         if redirect_depth < 3 {
             if let Some(nav) = wv.take_pending_navigation_requests().pop() {
                 let abs = resolve_url(&base_url, &nav.url);
@@ -516,6 +530,7 @@ fn load_page_inner(
                 );
             }
         }
+        pending = start_image_loading(wv, &base_url, image_backend);
     }
     pending
 }
@@ -1293,6 +1308,16 @@ fn main() {
             }
             // Final relayout after timers
             wv.relayout();
+            if std::env::var_os("SURF_DEBUG_LAYOUT_BOXES_AFTER_WAIT").is_some() {
+                if let (Some(root), Some(dom)) = (wv.layout_root_ref(), wv.dom()) {
+                    debug_dump_boxes(dom, root, 0, 0, 0);
+                }
+            }
+            if std::env::var_os("SURF_DEBUG_LAYOUT_TEXT_AFTER_WAIT").is_some() {
+                if let Some(root) = wv.layout_root_ref() {
+                    debug_dump_text_runs(root, 0);
+                }
+            }
             let mut pending_tiles = true;
             while pending_tiles {
                 pending_tiles = wv.render_viewport_at(0);
@@ -2271,7 +2296,7 @@ fn debug_dump_text_runs(bx: &libwebview::LayoutBox, depth: usize) {
     if let Some(text) = &bx.text {
         if !text.is_empty() {
             eprintln!(
-                "[surf-host] text-run depth={} node={:?} x={} y={} w={} h={} font_id={} size={} text={:?}",
+                "[surf-host] text-run depth={} node={:?} x={} y={} w={} h={} font_id={} size={} color=0x{:08x} text={:?}",
                 depth,
                 bx.node_id,
                 bx.x,
@@ -2280,6 +2305,7 @@ fn debug_dump_text_runs(bx: &libwebview::LayoutBox, depth: usize) {
                 bx.height,
                 bx.custom_font_id,
                 bx.font_size,
+                bx.color,
                 text
             );
         }
@@ -2317,7 +2343,7 @@ fn debug_dump_boxes(
             libwebview::style::TextAlignVal::Justify => "justify",
         };
         eprintln!(
-            "[surf-host] box depth={} node={:?} tag={} class={:?} rel=({}, {}) abs=({}, {}) size=({}, {}) margin=({}, {}, {}, {}) text_align={} bg=0x{:08x}",
+            "[surf-host] box depth={} node={:?} tag={} class={:?} rel=({}, {}) abs=({}, {}) size=({}, {}) margin=({}, {}, {}, {}) text_align={} color=0x{:08x} bg=0x{:08x}",
             depth,
             bx.node_id,
             tag,
@@ -2333,6 +2359,7 @@ fn debug_dump_boxes(
             bx.margin.bottom,
             bx.margin.left,
             text_align,
+            bx.color,
             bx.bg_color
         );
     }

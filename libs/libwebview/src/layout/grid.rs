@@ -699,6 +699,7 @@ fn layout_grid_abs_children(
 
         apply_transform_translation(&mut abs_box, st);
         abs_box.is_out_of_flow = true;
+        abs_box.is_positioned = true;
         parent.children.push(abs_box);
     }
 }

@@ -36,6 +36,7 @@ pub mod boxed {
     impl<T> Box<T> {
         pub fn new(value: T) -> Box<T>;
         pub fn leak<'a>(boxed: Box<T>) -> &'a mut T;
+        pub fn as_ref(&self) -> &T;
     }
 
     impl<T> core::ops::Deref for Box<T> {
@@ -68,9 +69,15 @@ pub mod vec {
         pub fn len(&self) -> usize;
         pub fn capacity(&self) -> usize;
         pub fn is_empty(&self) -> bool;
+        pub fn reserve(&mut self, additional: usize);
         pub fn push(&mut self, value: T);
         pub fn pop(&mut self) -> core::option::Option<T>;
         pub fn clear(&mut self);
+        pub fn retain<F>(&mut self, f: F);
+        pub fn drain<R>(&mut self, range: R) -> IntoIter<T>;
+        pub fn resize(&mut self, new_len: usize, value: T);
+        pub fn remove(&mut self, index: usize) -> T;
+        pub fn get<I>(&self, index: I) -> core::option::Option<&T>;
         pub fn truncate(&mut self, len: usize);
         pub fn last(&self) -> core::option::Option<&T>;
         pub fn as_ptr(&self) -> *const T;
@@ -84,6 +91,7 @@ pub mod vec {
         pub fn dedup_by<F>(&mut self, same_bucket: F);
         pub fn last_mut(&mut self) -> core::option::Option<&mut T>;
         pub fn copy_from_slice(&mut self, src: &[T]);
+        pub fn join(&self, sep: &str) -> crate::string::String;
     }
 }
 
@@ -109,6 +117,7 @@ pub mod string {
         pub fn push(&mut self, ch: char);
         pub fn as_str(&self) -> &str;
         pub fn as_bytes(&self) -> &[u8];
+        pub fn cmp(&self, other: &String) -> core::cmp::Ordering;
         pub fn find(&self, pat: &str) -> core::option::Option<usize>;
         pub fn rfind(&self, pat: &str) -> core::option::Option<usize>;
         pub fn remove(&mut self, idx: usize) -> char;
@@ -156,8 +165,11 @@ pub mod collections {
 
     impl<T> VecDeque<T> {
         pub fn new() -> VecDeque<T>;
+        pub fn with_capacity(capacity: usize) -> VecDeque<T>;
         pub fn push_back(&mut self, value: T);
         pub fn pop_front(&mut self) -> core::option::Option<T>;
+        pub fn clear(&mut self);
+        pub fn reserve(&mut self, additional: usize);
         pub fn len(&self) -> usize;
         pub fn is_empty(&self) -> bool;
     }
@@ -176,6 +188,12 @@ pub mod collections {
 
     pub struct LinkedList<T> {
         pub marker: core::marker::PhantomData<T>,
+    }
+
+    impl<T> LinkedList<T> {
+        pub fn new() -> LinkedList<T>;
+        pub fn push_back(&mut self, elt: T);
+        pub fn clear(&mut self);
     }
 
     pub mod btree_map {

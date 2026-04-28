@@ -364,6 +364,8 @@ pub enum Property {
     PaddingBlock,
     MarginInline,
     MarginBlock,
+    InsetInline,
+    InsetBlock,
     Appearance,
     AccentColor,
     BackgroundClip,
