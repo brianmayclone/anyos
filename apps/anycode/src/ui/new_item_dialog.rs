@@ -2,7 +2,7 @@ use libanyui_client as ui;
 use ui::Widget;
 
 const DLG_W: u32 = 420;
-const DLG_H: u32 = 238;
+const DLG_H: u32 = 286;
 
 pub fn show() {
     let t = anyos_std::i18n::t;
@@ -48,14 +48,20 @@ pub fn show() {
     btn_form.set_color(tc.accent);
     content.add(&btn_form);
 
+    let btn_storyboard = ui::Button::new(t("Storyboard"));
+    btn_storyboard.set_position(24, 76);
+    btn_storyboard.set_size(168, 38);
+    btn_storyboard.set_color(tc.control_bg);
+    content.add(&btn_storyboard);
+
     let btn_service = ui::Button::new(t("Connected Service"));
-    btn_service.set_position(24, 76);
-    btn_service.set_size(356, 38);
+    btn_service.set_position(212, 76);
+    btn_service.set_size(168, 38);
     btn_service.set_color(tc.control_bg);
     content.add(&btn_service);
 
     let hint = ui::Label::new(t(
-        "UI Forms create .Designer metadata; Connected Services generate Rust client stubs.",
+        "UI Forms create .Designer metadata; Storyboards connect Forms and generate navigation handlers.",
     ));
     hint.set_position(24, 128);
     hint.set_size(360, 18);
@@ -82,6 +88,11 @@ pub fn show() {
 
     btn_form.on_click(move |_| {
         crate::logic::commands::show_new_ui_form_dialog();
+        ui::Window::from_id(win_id).destroy();
+    });
+
+    btn_storyboard.on_click(move |_| {
+        crate::logic::commands::create_storyboard();
         ui::Window::from_id(win_id).destroy();
     });
 

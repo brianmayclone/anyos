@@ -4,13 +4,16 @@ use libanyui_client as ui;
 
 use crate::logic::config::Config;
 use crate::logic::designer;
+use crate::logic::storyboard;
 use crate::ui::designer_surface::DesignerSurface;
+use crate::ui::storyboard_surface::StoryboardSurface;
 use crate::util::{path, syntax_map};
 
 /// UI wrapper for a single open editor tab.
 enum EditorTab {
     Text { editor: ui::TextEditor },
     Designer { surface: DesignerSurface },
+    Storyboard { surface: StoryboardSurface },
     Image { panel: ui::View },
 }
 
@@ -155,6 +158,16 @@ impl EditorView {
                 self.panel.add(&surface.panel);
                 let idx = self.editors.len();
                 self.editors.push(EditorTab::Designer { surface });
+                return idx;
+            }
+        }
+
+        if storyboard::is_storyboard_file(file_path) {
+            if let Some(doc) = storyboard::load_storyboard(file_path) {
+                let surface = StoryboardSurface::new(file_path, doc);
+                self.panel.add(&surface.panel);
+                let idx = self.editors.len();
+                self.editors.push(EditorTab::Storyboard { surface });
                 return idx;
             }
         }
@@ -312,6 +325,7 @@ impl EditorView {
             match tab {
                 EditorTab::Text { editor } => editor.get_text(buf),
                 EditorTab::Designer { .. } => 0,
+                EditorTab::Storyboard { .. } => 0,
                 EditorTab::Image { .. } => 0,
             }
         } else {
@@ -325,6 +339,7 @@ impl EditorView {
             match tab {
                 EditorTab::Text { editor } => editor.cursor(),
                 EditorTab::Designer { .. } => (0, 0),
+                EditorTab::Storyboard { .. } => (0, 0),
                 EditorTab::Image { .. } => (0, 0),
             }
         } else {
@@ -337,6 +352,7 @@ impl EditorView {
         self.editors.get(index).and_then(|tab| match tab {
             EditorTab::Text { editor } => Some(editor),
             EditorTab::Designer { .. } => None,
+            EditorTab::Storyboard { .. } => None,
             EditorTab::Image { .. } => None,
         })
     }
@@ -389,6 +405,7 @@ impl EditorTab {
         match self {
             EditorTab::Text { editor } => editor.set_visible(visible),
             EditorTab::Designer { surface } => surface.set_visible(visible),
+            EditorTab::Storyboard { surface } => surface.set_visible(visible),
             EditorTab::Image { panel } => panel.set_visible(visible),
         }
     }
@@ -397,6 +414,7 @@ impl EditorTab {
         match self {
             EditorTab::Text { editor } => editor.remove(),
             EditorTab::Designer { surface } => surface.remove(),
+            EditorTab::Storyboard { surface } => surface.remove(),
             EditorTab::Image { panel } => panel.remove(),
         }
     }

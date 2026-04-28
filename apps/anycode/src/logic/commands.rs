@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::app;
 use crate::logic::{
     ai, build, crates, debug_session, designer, diagnostics, file_manager, git, intellisense,
-    language, language_service, live_analysis, project, search, symbols, tasks,
+    language, language_service, live_analysis, project, search, storyboard, symbols, tasks,
 };
 use crate::ui::problems_panel::ProblemFilter;
 use crate::util::path;
@@ -1352,6 +1352,37 @@ pub fn show_new_ui_form_dialog() {
     };
     let default_name = designer::next_form_name(&root, "MainForm");
     crate::ui::new_form_dialog::show(&default_name);
+}
+
+pub fn create_storyboard() {
+    let s = app();
+    let root = match s.current_project.as_ref() {
+        Some(project) => project.root.clone(),
+        None => {
+            s.status.set_analysis_status("Open a Rust project first");
+            return;
+        }
+    };
+    let ui_dir = format!("{}/src/ui", root);
+    let _ = anyos_std::fs::mkdir(&format!("{}/src", root));
+    let _ = anyos_std::fs::mkdir(&ui_dir);
+    let mut name_idx = 1u32;
+    let mut path = format!("{}/Main.Storyboard", ui_dir);
+    while crate::util::path::exists(&path) {
+        name_idx += 1;
+        path = format!("{}/Main{}.Storyboard", ui_dir, name_idx);
+    }
+    let doc = storyboard::StoryboardDocument {
+        name: String::from(crate::util::path::basename(&path).trim_end_matches(".Storyboard")),
+        scenes: Vec::new(),
+        segues: Vec::new(),
+    };
+    if let Err(err) = storyboard::save_storyboard(&path, &doc) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    open_file(&path);
+    s.status.set_analysis_status("Created Storyboard");
 }
 
 pub fn manage_crates() {
