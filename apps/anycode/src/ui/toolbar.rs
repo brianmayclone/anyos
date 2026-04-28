@@ -75,7 +75,7 @@ impl AppToolbar {
             &toolbar,
             "file-plus",
             tc.text,
-            t("New File"),
+            t("New..."),
             toolbar_h,
             icon_sz,
         );

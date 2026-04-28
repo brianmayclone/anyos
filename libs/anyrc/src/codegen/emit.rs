@@ -607,6 +607,44 @@ impl<'a> CodeEmitter<'a> {
         ))
     }
 
+    fn emit_enum_payload_constructor(&mut self, dest: &Place, variant_idx: i64, args: &[Operand]) {
+        let slot = self.alloc.stack_slots[dest.local.0];
+        let size = self.alloc.local_sizes[dest.local.0].max(8);
+        self.asm.xor_rr(Reg::RAX, Reg::RAX);
+        for off in (0..size).step_by(8) {
+            self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);
+        }
+        self.asm.mov_ri(Reg::RAX, variant_idx);
+        self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
+        let mut payload_off = 8;
+        for arg in args {
+            if payload_off >= size {
+                break;
+            }
+            let arg_size = self.operand_value_size(arg).max(8);
+            self.store_operand_to_stack_offset(arg, Reg::RBP, slot + payload_off, arg_size);
+            payload_off += ((arg_size + 7) / 8) * 8;
+        }
+    }
+
+    fn emit_struct_constructor(&mut self, dest: &Place, args: &[Operand]) {
+        let slot = self.alloc.stack_slots[dest.local.0];
+        let size = self.alloc.local_sizes[dest.local.0].max(8);
+        self.asm.xor_rr(Reg::RAX, Reg::RAX);
+        for off in (0..size).step_by(8) {
+            self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);
+        }
+        let mut field_off = 0;
+        for arg in args {
+            if field_off >= size {
+                break;
+            }
+            let arg_size = self.operand_value_size(arg).max(8);
+            self.store_operand_to_stack_offset(arg, Reg::RBP, slot + field_off, arg_size);
+            field_off += ((arg_size + 7) / 8) * 8;
+        }
+    }
+
     fn emit_primitive_from_ne_bytes(
         &mut self,
         args: &[Operand],
@@ -2441,13 +2479,14 @@ impl<'a> CodeEmitter<'a> {
                 }
                 true
             }
-            "RefCell::new" => {
+            "core::cell::RefCell::new" | "cell::RefCell::new" | "RefCell::new" => {
                 let slot = self.alloc.stack_slots[dest.local.0];
                 let size = self.alloc.local_sizes[dest.local.0].max(8);
+                self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
                 if let Some(arg) = args.first() {
-                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot, size);
+                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot + 8, size.saturating_sub(8).max(8));
                 } else {
-                    self.asm.xor_rr(Reg::RAX, Reg::RAX);
                     for off in (0..size).step_by(8) {
                         self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);
                     }
@@ -2481,10 +2520,8 @@ impl<'a> CodeEmitter<'a> {
                 // Option<usize>::None. The full substring search should live
                 // in alloc/core string code once those bodies are compiled.
                 let slot = self.alloc.stack_slots[dest.local.0];
-                self.asm
-                    .emit_raw(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]);
-                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
                 self.asm.xor_rr(Reg::RAX, Reg::RAX);
+                self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
                 self.asm.mov_mr(Reg::RBP, slot + 8, Reg::RAX);
                 true
             }
@@ -2943,7 +2980,11 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.jcc(CondCode::Equal, keep_original);
                 self.asm.mov_rr(Reg::RDI, value_reg);
                 if let Some(mapper_name) = self.fn_item_operand_name(args.get(1)) {
-                    self.asm.call_extern(&mapper_name);
+                    if Self::is_intrinsic_fnitem_value(&mapper_name) {
+                        self.asm.mov_rr(Reg::RAX, value_reg);
+                    } else {
+                        self.asm.call_extern(&mapper_name);
+                    }
                 } else {
                     self.asm.call_reg(mapper_reg);
                 }
@@ -2994,7 +3035,11 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.jcc(CondCode::NotEqual, keep_original);
                 self.asm.mov_rr(Reg::RDI, value_reg);
                 if let Some(mapper_name) = self.fn_item_operand_name(args.get(1)) {
-                    self.asm.call_extern(&mapper_name);
+                    if Self::is_intrinsic_fnitem_value(&mapper_name) {
+                        self.asm.mov_rr(Reg::RAX, value_reg);
+                    } else {
+                        self.asm.call_extern(&mapper_name);
+                    }
                 } else {
                     self.asm.call_reg(mapper_reg);
                 }
@@ -3337,6 +3382,30 @@ impl<'a> CodeEmitter<'a> {
                 self.store_operand_to_stack_offset(&args[0], Reg::RBP, slot, size);
                 true
             }
+            "core::net::IpAddr::V4" | "net::IpAddr::V4" | "IpAddr::V4" => {
+                self.emit_enum_payload_constructor(dest, 0, args);
+                true
+            }
+            "core::net::IpAddr::V6" | "net::IpAddr::V6" | "IpAddr::V6" => {
+                self.emit_enum_payload_constructor(dest, 1, args);
+                true
+            }
+            "core::net::SocketAddr::V4" | "net::SocketAddr::V4" | "SocketAddr::V4" => {
+                self.emit_enum_payload_constructor(dest, 0, args);
+                true
+            }
+            "core::net::SocketAddr::V6" | "net::SocketAddr::V6" | "SocketAddr::V6" => {
+                self.emit_enum_payload_constructor(dest, 1, args);
+                true
+            }
+            "net::SocketAddrV4::new" | "core::net::SocketAddrV4::new" | "SocketAddrV4::new" => {
+                self.emit_struct_constructor(dest, args);
+                true
+            }
+            "net::SocketAddrV6::new" | "core::net::SocketAddrV6::new" | "SocketAddrV6::new" => {
+                self.emit_struct_constructor(dest, args);
+                true
+            }
             "from_fn" | "array::from_fn" | "core::array::from_fn" => {
                 // Bootstrap lowering for core::array::from_fn. Full Rust
                 // semantics require invoking the closure once per element; for
@@ -3350,13 +3419,6 @@ impl<'a> CodeEmitter<'a> {
                 }
                 true
             }
-            "to_string" => {
-                // Convert to String — calls runtime
-                self.asm.call_extern("__anyrc_to_string");
-                self.store_place(dest, Reg::RAX);
-                true
-            }
-
             // ── Comparison/ordering intrinsics ──
 
             // ── Format/Print intrinsics ──
@@ -3958,6 +4020,20 @@ impl<'a> CodeEmitter<'a> {
                 "RefCell::new"
                     | "Cell::new"
                     | "UnsafeCell::new"
+                    | "core::cell::RefCell::new"
+                    | "cell::RefCell::new"
+                    | "core::net::IpAddr::V4"
+                    | "core::net::IpAddr::V6"
+                    | "core::net::SocketAddr::V4"
+                    | "core::net::SocketAddr::V6"
+                    | "net::IpAddr::V4"
+                    | "net::IpAddr::V6"
+                    | "net::SocketAddr::V4"
+                    | "net::SocketAddr::V6"
+                    | "net::SocketAddrV4::new"
+                    | "net::SocketAddrV6::new"
+                    | "core::net::SocketAddrV4::new"
+                    | "core::net::SocketAddrV6::new"
                     | "serialize"
                     | "decode"
                     | "borrow_decode"

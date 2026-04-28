@@ -221,6 +221,7 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
         4 => commands::save_all(),
         5 => anyui::quit(),
         6 => commands::show_new_project_dialog(),
+        7 => commands::show_new_storyboard_dialog(),
         10..=13 => {}
         14 => commands::switch_sidebar_view(2),
         15 => commands::show_new_ui_form_dialog(),
@@ -343,13 +344,16 @@ pub fn wire_sidebar() {
                 commands::show_new_ui_form_dialog();
             }
             2 => {
+                commands::show_new_storyboard_dialog();
+            }
+            3 => {
                 let new_path = path::join(&dir, "new_folder");
                 let _ = anyos_std::fs::mkdir(&new_path);
                 if let Some(ref proj) = s.current_project {
                     s.sidebar.populate_project(proj, &s.task_mgr);
                 }
             }
-            4 => {
+            5 => {
                 let sel = s.sidebar.tree.selected();
                 if sel != u32::MAX {
                     if let Some(p) = s.sidebar.path_for_node(sel) {
@@ -360,6 +364,9 @@ pub fn wire_sidebar() {
                         }
                     }
                 }
+            }
+            7 => {
+                commands::show_new_project_dialog();
             }
             _ => {}
         }
@@ -795,6 +802,10 @@ pub fn wire_editor_text_changed(editor_index: usize) {
 pub fn wire_welcome_tab() {
     app()
         .welcome
+        .btn_new_project
+        .on_click(|_| commands::show_new_project_dialog());
+    app()
+        .welcome
         .btn_new_file
         .on_click(|_| commands::new_file());
     app()
@@ -870,6 +881,8 @@ fn execute_palette_command(cmd_id: u32) {
     match cmd_id {
         100 => commands::new_file(),
         101 => commands::open_folder(),
+        108 => commands::show_new_project_dialog(),
+        109 => commands::show_new_storyboard_dialog(),
         102 => commands::save(),
         103 => commands::save_all(),
         104 => {

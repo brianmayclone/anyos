@@ -11,6 +11,7 @@ use crate::util::path;
 pub struct WelcomeTab {
     pub panel: ui::View,
     pub btn_open_folder: ui::LinkLabel,
+    pub btn_new_project: ui::LinkLabel,
     pub btn_new_file: ui::LinkLabel,
     pub btn_open_recent: ui::LinkLabel,
     pub btn_ai_setup: ui::LinkLabel,
@@ -59,22 +60,26 @@ impl WelcomeTab {
         btn_open_folder.set_position(58, 174);
         panel.add(&btn_open_folder);
 
+        let btn_new_project = make_start_link(t("Create a new Rust UI app..."));
+        btn_new_project.set_position(58, 202);
+        panel.add(&btn_new_project);
+
         let btn_new_file = make_start_link(t("Create a new file..."));
-        btn_new_file.set_position(58, 202);
+        btn_new_file.set_position(58, 230);
         panel.add(&btn_new_file);
 
         let btn_open_recent = make_start_link(t("Open a recent workspace..."));
-        btn_open_recent.set_position(58, 230);
+        btn_open_recent.set_position(58, 258);
         panel.add(&btn_open_recent);
 
         let tool_label = ui::Label::new(t("Tools"));
-        tool_label.set_position(58, 316);
+        tool_label.set_position(58, 344);
         tool_label.set_font_size(13);
         tool_label.set_text_color(tc.text);
         panel.add(&tool_label);
 
         let btn_ai_setup = make_start_link(t("Configure AI assistant..."));
-        btn_ai_setup.set_position(58, 344);
+        btn_ai_setup.set_position(58, 372);
         panel.add(&btn_ai_setup);
 
         let recent_label = ui::Label::new(t("Recent Workspaces"));
@@ -104,6 +109,7 @@ impl WelcomeTab {
         Self {
             panel,
             btn_open_folder,
+            btn_new_project,
             btn_new_file,
             btn_open_recent,
             btn_ai_setup,

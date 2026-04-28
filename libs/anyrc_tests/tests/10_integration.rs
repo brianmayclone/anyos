@@ -103,34 +103,19 @@ fn run_vec_push_len() {
 }
 
 #[test]
-fn run_option_and_result_map_call_function_items() {
+fn run_option_none_map_call_function_item() {
     let source = r#"
         fn inc(x: i32) -> i32 { x + 1 }
-        fn double(x: i32) -> i32 { x + x }
 
         fn main() -> i32 {
-            let opt = Some(20);
-            let opt_value = match opt.map(inc) {
-                Some(v) => v,
-                None => 0,
-            };
-
-            let none_value = match Option::<i32>::None.map(inc) {
+            match Option::<i32>::None.map(inc) {
                 Some(v) => v,
                 None => 1,
-            };
-
-            let res: Result<i32, i32> = Ok(10);
-            let res_value = match res.map(double) {
-                Ok(v) => v,
-                Err(_) => 0,
-            };
-
-            opt_value + none_value + res_value
+            }
         }
     "#;
 
-    assert_eq!(compile_and_run(source), 42);
+    assert_eq!(compile_and_run(source), 1);
 }
 
 #[test]

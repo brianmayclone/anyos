@@ -99,11 +99,13 @@ impl Sidebar {
 
         // Context menu for folders
         let ctx_items = alloc::format!(
-            "{}|{}|{}|-|{}",
+            "{}|{}|{}|{}|-|{}|-|{}",
             t("New File"),
             t("New UI Form..."),
+            t("New Storyboard / Workflow..."),
             t("New Folder"),
-            t("Delete")
+            t("Delete"),
+            t("New Rust UI Project...")
         );
         let context_menu = ui::ContextMenu::new(&ctx_items);
         tree.set_context_menu(&context_menu);

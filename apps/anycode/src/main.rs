@@ -329,6 +329,7 @@ fn build_and_run(
         .menu(t("File"))
         .item(1, t("New"), 0)
         .item(6, t("New Project..."), 0)
+        .item(7, t("New Storyboard / Workflow..."), 0)
         .item(2, t("Open Folder..."), 0)
         .separator()
         .item(3, t("Save"), 0)

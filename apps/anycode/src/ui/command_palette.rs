@@ -121,6 +121,8 @@ impl CommandPalette {
     fn register_commands(&mut self) {
         let cmds = [
             (100, "New File", "File", ""),
+            (108, "New Project", "File", ""),
+            (109, "New Storyboard / Workflow", "File", ""),
             (101, "Open Folder", "File", ""),
             (102, "Save", "File", "Ctrl+S"),
             (103, "Save All", "File", "Ctrl+Shift+S"),
