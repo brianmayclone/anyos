@@ -251,6 +251,29 @@ impl StoryboardDocument {
         self.segues.push(segue.clone());
         Some(segue)
     }
+
+    pub fn add_missing_scenes(&mut self, project_root: &str) -> usize {
+        let discovered = discover_scenes(project_root);
+        let mut added = 0usize;
+        for scene in discovered {
+            let already_present = self.scenes.iter().any(|existing| {
+                existing.designer_path == scene.designer_path
+                    || existing.form_name == scene.form_name
+            });
+            if already_present {
+                continue;
+            }
+            let idx = self.scenes.len();
+            self.scenes.push(StoryboardScene {
+                form_name: scene.form_name,
+                designer_path: scene.designer_path,
+                x: 36 + ((idx as i32 % 3) * 280),
+                y: 42 + ((idx as i32 / 3) * 220),
+            });
+            added += 1;
+        }
+        added
+    }
 }
 
 pub fn is_storyboard_file(file_path: &str) -> bool {
@@ -284,6 +307,37 @@ pub fn save_storyboard(file_path: &str, doc: &StoryboardDocument) -> Result<(), 
     anyos_std::fs::write_bytes(file_path, normalized.to_metadata().as_bytes())
         .map_err(|_| "Could not write storyboard")?;
     regenerate_generated_files(file_path, &normalized)
+}
+
+pub fn sync_document_with_project(
+    storyboard_path: &str,
+    doc: &mut StoryboardDocument,
+) -> Result<usize, &'static str> {
+    let Some(root) = project_root_for(storyboard_path) else {
+        return Err("Could not find project root for storyboard");
+    };
+    let added = doc.add_missing_scenes(&root);
+    if added > 0 {
+        save_storyboard(storyboard_path, doc)?;
+    }
+    Ok(added)
+}
+
+pub fn sync_storyboards_for_project(project_root: &str) -> usize {
+    let mut changed = 0usize;
+    for storyboard_path in discover_storyboards(project_root) {
+        let Some(mut doc) = load_storyboard(&storyboard_path) else {
+            continue;
+        };
+        let added = doc.add_missing_scenes(project_root);
+        if added == 0 {
+            continue;
+        }
+        if save_storyboard(&storyboard_path, &doc).is_ok() {
+            changed += 1;
+        }
+    }
+    changed
 }
 
 pub fn designer_rs_path(storyboard_path: &str) -> String {

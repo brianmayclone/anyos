@@ -246,13 +246,11 @@ impl DesignerSurface {
                 *up_pan_state.borrow_mut() = None;
                 return;
             }
-            if button & 0x01 != 0 {
-                crate::queue_designer_mouse_up(
-                    &up_path,
-                    unscale_i32(x, zoom_value(&event_zoom)),
-                    unscale_i32(y, zoom_value(&event_zoom)),
-                );
-            }
+            crate::queue_designer_mouse_up(
+                &up_path,
+                unscale_i32(x, zoom_value(&event_zoom)),
+                unscale_i32(y, zoom_value(&event_zoom)),
+            );
         });
 
         let dbl_path = String::from(file_path);

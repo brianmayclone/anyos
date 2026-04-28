@@ -386,6 +386,23 @@ impl EditorView {
                 }
             }
         }
+        self.refresh_storyboards_for_designer(file_path);
+    }
+
+    pub fn refresh_storyboards_for_designer(&self, designer_path: &str) {
+        for tab in &self.editors {
+            if let EditorTab::Storyboard { surface } = tab {
+                surface.refresh_if_uses_designer(designer_path);
+            }
+        }
+    }
+
+    pub fn refresh_storyboards(&self) {
+        for tab in &self.editors {
+            if let EditorTab::Storyboard { surface } = tab {
+                surface.refresh_from_disk();
+            }
+        }
     }
 
     pub fn zoom_designer(&self, file_path: &str, delta: i32, selected_control: Option<&str>) {

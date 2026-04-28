@@ -1769,12 +1769,21 @@ pub fn create_ui_form_named(form_name: String) -> bool {
     match designer::create_form_files(&root, &form_name) {
         Ok(()) => {
             let designer_path = designer::designer_file_path(&root, &form_name);
-            s.status
-                .set_analysis_status("Created Rust UI form and designer files");
+            let synced_storyboards = storyboard::sync_storyboards_for_project(&root);
+            if synced_storyboards > 0 {
+                s.status.set_analysis_status(&format!(
+                    "Created Rust UI form and added it to {} storyboard(s)",
+                    synced_storyboards
+                ));
+            } else {
+                s.status
+                    .set_analysis_status("Created Rust UI form and designer files");
+            }
             open_file(&designer_path);
             if let Some(ref project) = s.current_project {
                 s.sidebar.populate_project(project, &s.task_mgr);
             }
+            s.editor_view.refresh_storyboards();
             true
         }
         Err(err) => {
