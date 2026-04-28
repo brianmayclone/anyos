@@ -46,11 +46,12 @@ pub fn create_rust_ui_project_named(project_name: String, project_root: String) 
     }
 
     let crate_name = to_crate_name(project_name);
-    if anyos_std::fs::mkdir(project_root).is_err()
-        || anyos_std::fs::mkdir(&format!("{}/src", project_root)).is_err()
-        || anyos_std::fs::mkdir(&format!("{}/src/ui", project_root)).is_err()
+    if !mkdir_ok(project_root)
+        || !mkdir_ok(&format!("{}/src", project_root))
+        || !mkdir_ok(&format!("{}/src/ui", project_root))
     {
-        s.status.set_analysis_status("Could not create project folders");
+        s.status
+            .set_analysis_status("Could not create project folders");
         return false;
     }
 
@@ -59,8 +60,11 @@ pub fn create_rust_ui_project_named(project_name: String, project_root: String) 
         "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nanyos_std = {{ path = \"{}\" }}\ndynlink = {{ path = \"{}\" }}\nlibanyui_client = {{ path = \"{}\" }}\n\n[profile.dev]\npanic = \"abort\"\nopt-level = 2\n\n[profile.release]\npanic = \"abort\"\n\n[package.metadata.anycode.run]\nname = \"Debug\"\ntarget = \"{}\"\nkind = \"bin\"\nprofile = \"debug\"\nargs = \"\"\nworking_dir = \".\"\n",
         crate_name, stdlib_path, dynlink_path, anyui_path, crate_name
     );
-    if anyos_std::fs::write_bytes(&format!("{}/Cargo.toml", project_root), cargo_toml.as_bytes())
-        .is_err()
+    if anyos_std::fs::write_bytes(
+        &format!("{}/Cargo.toml", project_root),
+        cargo_toml.as_bytes(),
+    )
+    .is_err()
     {
         s.status.set_analysis_status("Could not write Cargo.toml");
         return false;
@@ -1435,6 +1439,19 @@ pub fn show_new_ui_form_dialog() {
     crate::ui::new_form_dialog::show(&default_name);
 }
 
+pub fn show_new_storyboard_dialog() {
+    let s = app();
+    let root = match s.current_project.as_ref() {
+        Some(project) => project.root.clone(),
+        None => {
+            s.status.set_analysis_status("Open a Rust project first");
+            return;
+        }
+    };
+    let default_name = next_storyboard_name(&root, "Main");
+    crate::ui::new_storyboard_dialog::show(&default_name);
+}
+
 pub fn create_storyboard() {
     let s = app();
     let root = match s.current_project.as_ref() {
@@ -1444,26 +1461,51 @@ pub fn create_storyboard() {
             return;
         }
     };
+    let name = next_storyboard_name(&root, "Main");
+    let _ = create_storyboard_named(name, false);
+}
+
+pub fn create_storyboard_named(storyboard_name: String, set_startup: bool) -> bool {
+    let s = app();
+    let root = match s.current_project.as_ref() {
+        Some(project) => project.root.clone(),
+        None => {
+            s.status.set_analysis_status("Open a Rust project first");
+            return false;
+        }
+    };
+    let storyboard_name = storyboard_name.trim();
+    if !is_valid_storyboard_name(storyboard_name) {
+        s.status
+            .set_analysis_status("Storyboard name must be file-safe");
+        return false;
+    }
     let ui_dir = format!("{}/src/ui", root);
     let _ = anyos_std::fs::mkdir(&format!("{}/src", root));
     let _ = anyos_std::fs::mkdir(&ui_dir);
-    let mut name_idx = 1u32;
-    let mut path = format!("{}/Main.Storyboard", ui_dir);
-    while crate::util::path::exists(&path) {
-        name_idx += 1;
-        path = format!("{}/Main{}.Storyboard", ui_dir, name_idx);
+    let path = format!("{}/{}.Storyboard", ui_dir, storyboard_name);
+    if crate::util::path::exists(&path) {
+        s.status.set_analysis_status("Storyboard already exists");
+        return false;
     }
     let doc = storyboard::StoryboardDocument {
-        name: String::from(crate::util::path::basename(&path).trim_end_matches(".Storyboard")),
+        name: String::from(storyboard_name),
         scenes: Vec::new(),
         segues: Vec::new(),
     };
     if let Err(err) = storyboard::save_storyboard(&path, &doc) {
         s.status.set_analysis_status(err);
-        return;
+        return false;
+    }
+    if set_startup {
+        set_startup_storyboard(path.clone());
+    } else if let Some(project) = s.current_project.as_ref() {
+        s.sidebar.populate_project(project, &s.task_mgr);
     }
     open_file(&path);
-    s.status.set_analysis_status("Created Storyboard");
+    s.status
+        .set_analysis_status(&format!("Created Storyboard {}", storyboard_name));
+    true
 }
 
 pub fn set_startup_storyboard(storyboard_path: String) {
@@ -2836,6 +2878,40 @@ fn to_crate_name(name: &str) -> String {
     }
 }
 
+fn next_storyboard_name(project_root: &str, base_name: &str) -> String {
+    if !storyboard_exists(project_root, base_name) {
+        return String::from(base_name);
+    }
+    let mut index = 2u32;
+    loop {
+        let candidate = format!("{}{}", base_name, index);
+        if !storyboard_exists(project_root, &candidate) {
+            return candidate;
+        }
+        index = index.saturating_add(1);
+    }
+}
+
+fn storyboard_exists(project_root: &str, name: &str) -> bool {
+    path::exists(&format!("{}/src/ui/{}.Storyboard", project_root, name))
+}
+
+fn is_valid_storyboard_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    for (idx, ch) in trimmed.chars().enumerate() {
+        if idx == 0 && ch.is_ascii_digit() {
+            return false;
+        }
+        if !(ch.is_ascii_alphanumeric() || ch == '_') {
+            return false;
+        }
+    }
+    true
+}
+
 fn template_dependency_paths(project_root: &str) -> (String, String, String) {
     if let Some(root) = find_anyos_source_root(project_root) {
         return (
@@ -2849,6 +2925,10 @@ fn template_dependency_paths(project_root: &str) -> (String, String, String) {
         String::from("../../libs/dynlink"),
         String::from("../../libs/libanyui_client"),
     )
+}
+
+fn mkdir_ok(path: &str) -> bool {
+    anyos_std::fs::mkdir(path) != u32::MAX || crate::util::path::is_directory(path)
 }
 
 fn find_anyos_source_root(project_root: &str) -> Option<String> {

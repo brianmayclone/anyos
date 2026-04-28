@@ -1722,11 +1722,18 @@ impl Vm {
                         {
                             if std::env::var_os("LIBJS_DEBUG_GETPROP").is_some() {
                                 use std::sync::atomic::{AtomicUsize, Ordering};
-                                static GETPROP_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
+                                static Ww_GETPROP_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
+                                static OH_GETPROP_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
                                 let stack_info = self.frame_stack_summary(8);
-                                if stack_info.contains("Ww")
-                                    && GETPROP_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) < 16
-                                {
+                                let is_oh = stack_info.contains("oh");
+                                let should_log = if is_oh {
+                                    OH_GETPROP_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) < 16
+                                } else if stack_info.contains("Ww") {
+                                    Ww_GETPROP_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) < 8
+                                } else {
+                                    false
+                                };
+                                if should_log {
                                     let chunk = &self.frames[frame_idx].chunk;
                                     let ip = self.frames[frame_idx].ip;
                                     let start = ip.saturating_sub(6);

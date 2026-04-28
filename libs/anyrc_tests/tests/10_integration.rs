@@ -115,26 +115,36 @@ fn run_option_and_result_map_call_function_items() {
                 None => 0,
             };
 
-            opt_value + match Option::<i32>::None.map(inc) {
+            let none_value = match Option::<i32>::None.map(inc) {
                 Some(v) => v,
+                None => 1,
+            };
+
+            let res: Result<i32, i32> = Ok(10);
+            let res_value = match res.map(double) {
+                Ok(v) => v,
+                Err(_) => 0,
+            };
+
+            opt_value + none_value + res_value
+        }
+    "#;
+
+    assert_eq!(compile_and_run(source), 42);
+}
+
+#[test]
+fn run_prelude_option_unit_variant_match() {
+    let source = r#"
+        fn main() -> i32 {
+            match Option::<i32>::None {
+                Some(_) => 0,
                 None => 1,
             }
         }
     "#;
 
-    let mir_options = CompileOptions {
-        input: "test.rs".to_string(),
-        output: "test.mir".to_string(),
-        emit: EmitKind::Mir,
-        opt_level: 0,
-        crate_type: CrateType::Bin,
-        crate_name: None,
-        ..CompileOptions::default()
-    };
-    let mir = String::from_utf8(compile(source, "test.rs", &mir_options).expect("mir")).unwrap();
-    eprintln!("{mir}");
-
-    assert_eq!(compile_and_run(source), 22);
+    assert_eq!(compile_and_run(source), 1);
 }
 
 #[test]

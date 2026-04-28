@@ -98,7 +98,7 @@ pub fn show() {
     });
 
     btn_storyboard.on_click(move |_| {
-        crate::logic::commands::create_storyboard();
+        crate::logic::commands::show_new_storyboard_dialog();
         ui::Window::from_id(win_id).destroy();
     });
 

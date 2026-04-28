@@ -14,6 +14,7 @@ pub mod inspector_panel;
 pub mod new_form_dialog;
 pub mod new_item_dialog;
 pub mod new_project_dialog;
+pub mod new_storyboard_dialog;
 pub mod output_panel;
 pub mod problems_panel;
 pub mod project_properties_dialog;

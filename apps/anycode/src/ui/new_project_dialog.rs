@@ -30,7 +30,9 @@ pub fn show() {
     title.set_text_color(tc.text);
     header.add(&title);
 
-    let subtitle = ui::Label::new(t("Creates Cargo metadata, MainForm, Main.Storyboard and startup main.rs."));
+    let subtitle = ui::Label::new(t(
+        "Creates Cargo metadata, MainForm, Main.Storyboard and startup main.rs.",
+    ));
     subtitle.set_position(22, 39);
     subtitle.set_size(500, 18);
     subtitle.set_font_size(10);

@@ -3574,6 +3574,10 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        if let Some(op) = self.lower_unit_enum_variant_path(path, expr) {
+            return op;
+        }
+
         // Check if it resolves to a local variable
         if let Some(local) = self.resolve_path_to_local(path, expr.id) {
             let ty = self.get_expr_ty(expr);
