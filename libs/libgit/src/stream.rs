@@ -32,6 +32,9 @@ pub struct HttpStream {
     /// Decoded response body bytes pushed back by pack parsing.
     pushback: Vec<u8>,
     pushback_pos: usize,
+    /// Logical decoded response-body position. Bytes moved into pushback are
+    /// rewound and counted again when consumed.
+    decoded_pos: usize,
     /// Chunked encoding state.
     chunked: bool,
     chunk_remaining: usize,
@@ -174,6 +177,7 @@ impl HttpStream {
                 buf_pos: 0,
                 pushback: Vec::new(),
                 pushback_pos: 0,
+                decoded_pos: 0,
                 chunked,
                 chunk_remaining: 0,
                 eof: false,
@@ -262,6 +266,7 @@ impl HttpStream {
             buf_pos: 0,
             pushback: Vec::new(),
             pushback_pos: 0,
+            decoded_pos: 0,
             chunked: false,
             chunk_remaining: 0,
             eof: false,
@@ -284,6 +289,11 @@ impl HttpStream {
         true
     }
 
+    /// Number of decoded HTTP response-body bytes consumed by callers.
+    pub fn decoded_pos(&self) -> usize {
+        self.decoded_pos
+    }
+
     /// Read up to `out.len()` bytes. Returns number of bytes read (0 = EOF).
     pub fn read(&mut self, out: &mut [u8]) -> usize {
         if self.pushback_pos < self.pushback.len() {
@@ -291,6 +301,7 @@ impl HttpStream {
             let n = available.min(out.len());
             out[..n].copy_from_slice(&self.pushback[self.pushback_pos..self.pushback_pos + n]);
             self.pushback_pos += n;
+            self.decoded_pos += n;
             if self.pushback_pos == self.pushback.len() {
                 self.pushback.clear();
                 self.pushback_pos = 0;
@@ -323,12 +334,14 @@ impl HttpStream {
                 self.buf_pos += n;
                 self.chunk_remaining -= n;
                 self.total_read += n;
+                self.decoded_pos += n;
                 return n;
             }
 
             out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
             self.buf_pos += n;
             self.total_read += n;
+            self.decoded_pos += n;
             return n;
         }
 
@@ -343,6 +356,7 @@ impl HttpStream {
                     }
                     Ok(n) => {
                         self.total_read += n;
+                        self.decoded_pos += n;
                         n
                     }
                     Err(_) => {
@@ -379,6 +393,7 @@ impl HttpStream {
         if data.is_empty() {
             return;
         }
+        self.decoded_pos = self.decoded_pos.saturating_sub(data.len());
         let mut next =
             Vec::with_capacity(data.len() + self.pushback.len().saturating_sub(self.pushback_pos));
         next.extend_from_slice(data);

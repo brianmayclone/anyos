@@ -41,7 +41,11 @@ pub(crate) const DELAYED_ACK_SEGMENTS: u32 = 2;
 /// Delayed ACK: flush after this many ticks (20 ms at 100 Hz).
 pub(crate) const DELAYED_ACK_TICKS: u32 = 2;
 /// Maximum out-of-order segments buffered per connection.
-pub(crate) const MAX_OOO_SEGMENTS: usize = 32;
+///
+/// WAN downloads can deliver sizeable bursts after a single missing segment.
+/// Keeping only 32 MSS-sized segments makes us drop already-received data and
+/// forces avoidable retransmission rounds.
+pub(crate) const MAX_OOO_SEGMENTS: usize = 512;
 /// Maximum send buffer size (matches MAX_IN_FLIGHT).
 pub(crate) const MAX_SEND_BUF: usize = MAX_IN_FLIGHT;
 

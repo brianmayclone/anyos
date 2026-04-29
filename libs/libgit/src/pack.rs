@@ -318,17 +318,14 @@ pub(crate) fn inflate_from_stream(
         .min(MAX_PACK_OBJECT_OUTPUT);
 
     // Read enough data to inflate. We don't know the compressed size upfront,
-    // so read in chunks and try to inflate. When inflate succeeds (BFINAL block
-    // found), we know how many bytes were consumed and can "push back" the rest.
-    let mut compressed = Vec::with_capacity(4096);
-
-    // Read initial chunk
-    let mut buf = [0u8; 8192];
-    let n = stream.read(&mut buf);
-    if n == 0 {
-        return Err(alloc::string::String::from("EOF during inflate"));
-    }
-    compressed.extend_from_slice(&buf[..n]);
+    // so read in adaptive chunks and try to inflate. When inflate succeeds
+    // (BFINAL block found), we know how many bytes were consumed and can push
+    // the rest back. Growing the read target avoids re-inflating large objects
+    // thousands of times in 8 KiB steps.
+    let mut compressed = Vec::with_capacity(8192);
+    let mut buf = [0u8; 32768];
+    let mut read_target = initial_inflate_read_target(expected_size, max_compressed);
+    read_until_target(stream, &mut compressed, &mut buf, read_target)?;
 
     // Skip zlib header if present
     let zlib_skip = if compressed.len() >= 2 && compressed[0] == 0x78 {
@@ -374,16 +371,62 @@ pub(crate) fn inflate_from_stream(
                         compressed.len()
                     ));
                 }
-                let n = stream.read(&mut buf);
-                if n == 0 {
-                    return Err(alloc::string::String::from(
-                        "EOF during inflate (incomplete)",
-                    ));
-                }
-                compressed.extend_from_slice(&buf[..n]);
+                read_target =
+                    next_inflate_read_target(compressed.len(), read_target, max_compressed);
+                read_until_target(stream, &mut compressed, &mut buf, read_target)?;
             }
         }
     }
+}
+
+fn initial_inflate_read_target(expected_size: usize, max_compressed: usize) -> usize {
+    let target = if expected_size <= 16 * 1024 {
+        8 * 1024
+    } else if expected_size <= 256 * 1024 {
+        expected_size.saturating_add(16 * 1024)
+    } else {
+        256 * 1024
+    };
+    target.min(max_compressed).max(1)
+}
+
+fn next_inflate_read_target(
+    current_len: usize,
+    previous_target: usize,
+    max_compressed: usize,
+) -> usize {
+    let growth = previous_target
+        .saturating_sub(current_len)
+        .max(32 * 1024)
+        .saturating_mul(2)
+        .min(1024 * 1024);
+    current_len
+        .saturating_add(growth)
+        .min(max_compressed)
+        .max(current_len + 1)
+}
+
+fn read_until_target(
+    stream: &mut crate::stream::HttpStream,
+    compressed: &mut Vec<u8>,
+    buf: &mut [u8],
+    target: usize,
+) -> Result<(), alloc::string::String> {
+    let start_len = compressed.len();
+    while compressed.len() < target {
+        let want = core::cmp::min(buf.len(), target - compressed.len());
+        let n = stream.read(&mut buf[..want]);
+        if n == 0 {
+            if compressed.len() > start_len {
+                return Ok(());
+            }
+            return Err(alloc::string::String::from(
+                "EOF during inflate (incomplete)",
+            ));
+        }
+        compressed.extend_from_slice(&buf[..n]);
+    }
+    Ok(())
 }
 
 /// Parse a pack file from a byte buffer (legacy, for small packs).

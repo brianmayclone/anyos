@@ -284,8 +284,10 @@ pub fn make_window(
     obj.set(String::from("XMLHttpRequest"), xhr::make_xhr_constructor());
     obj.set(
         String::from("Headers"),
-        native_fn("Headers", fetch::native_headers_ctor),
+        fetch::make_headers_constructor(),
     );
+    obj.set(String::from("Request"), fetch::make_request_constructor());
+    obj.set(String::from("Response"), fetch::make_response_constructor());
 
     // Performance (W3C Performance Timeline §4).
     let perf = JsValue::new_object();
@@ -502,6 +504,7 @@ pub fn make_window(
     }
     let html_element_ctor =
         make_native_constructor(vm, "HTMLElement", win_dom_ctor, element_proto.clone());
+    let attr_ctor = make_native_constructor(vm, "Attr", win_attr_ctor, node_proto.clone());
     let custom_element_registry_ctor = make_native_constructor(
         vm,
         "CustomElementRegistry",
@@ -519,6 +522,28 @@ pub fn make_window(
     obj.set(String::from("Comment"), comment_ctor);
     obj.set(String::from("Element"), element_ctor);
     obj.set(String::from("HTMLElement"), html_element_ctor);
+    install_html_element_constructor(vm, &mut obj, "HTMLAnchorElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLAreaElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLButtonElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLCanvasElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLDivElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLFormElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLHeadElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLHtmlElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLIFrameElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLImageElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLInputElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLLabelElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLLinkElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLMetaElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLOptionElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLScriptElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLSelectElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLSpanElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLStyleElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLTableElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLTextAreaElement", element_proto.clone());
+    obj.set(String::from("Attr"), attr_ctor);
     obj.set(
         String::from("CustomElementRegistry"),
         custom_element_registry_ctor,
@@ -618,6 +643,51 @@ fn win_noop_obj(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 fn win_dom_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::new_object()
+}
+
+fn install_html_element_constructor(
+    vm: &Vm,
+    window: &mut JsObject,
+    name: &str,
+    element_proto: Option<Rc<RefCell<JsObject>>>,
+) {
+    let ctor = make_native_constructor(vm, name, win_dom_ctor, element_proto);
+    if let JsValue::Function(func) = &ctor {
+        if let Some(proto) = func.borrow().prototype.clone() {
+            let proto_val = JsValue::Object(proto);
+            if name == "HTMLAnchorElement" || name == "HTMLAreaElement" {
+                proto_val.set_property(String::from("href"), JsValue::String(String::new()));
+                proto_val.set_property(String::from("protocol"), JsValue::String(String::new()));
+                proto_val.set_property(String::from("host"), JsValue::String(String::new()));
+                proto_val.set_property(String::from("hostname"), JsValue::String(String::new()));
+                proto_val.set_property(String::from("pathname"), JsValue::String(String::new()));
+                proto_val.set_property(String::from("search"), JsValue::String(String::new()));
+                proto_val.set_property(String::from("hash"), JsValue::String(String::new()));
+            }
+            if name == "HTMLImageElement" {
+                proto_val.set_property(String::from("complete"), JsValue::Bool(false));
+                proto_val.set_property(String::from("naturalWidth"), JsValue::Number(0.0));
+                proto_val.set_property(String::from("naturalHeight"), JsValue::Number(0.0));
+            }
+        }
+    }
+    window.set(String::from(name), ctor);
+}
+
+fn win_attr_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = arg_string(args, 0);
+    let value = args
+        .get(1)
+        .map(|v| v.to_js_string())
+        .unwrap_or_else(String::new);
+    let attr = JsValue::new_object();
+    attr.set_property(String::from("name"), JsValue::String(name.clone()));
+    attr.set_property(String::from("nodeName"), JsValue::String(name));
+    attr.set_property(String::from("value"), JsValue::String(value.clone()));
+    attr.set_property(String::from("nodeValue"), JsValue::String(value));
+    attr.set_property(String::from("specified"), JsValue::Bool(true));
+    attr.set_property(String::from("ownerElement"), JsValue::Null);
+    attr
 }
 
 fn win_custom_element_registry_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {

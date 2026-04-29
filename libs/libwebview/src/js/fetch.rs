@@ -5,7 +5,7 @@ use alloc::string::String;
 use core::cell::RefCell;
 
 use libjs::value::JsObject;
-use libjs::vm::native_fn;
+use libjs::vm::{native_ctor_fn, native_fn};
 use libjs::JsValue;
 use libjs::Vm;
 
@@ -17,16 +17,28 @@ use super::http;
 /// Since our Promise implementation is synchronous, the request is made
 /// immediately via `__http_request` and wrapped in Promise.resolve/reject.
 pub fn native_fetch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let url = arg_string(args, 0);
+    let input = args.get(0).cloned().unwrap_or(JsValue::Undefined);
+    let url = if let JsValue::Object(_) = &input {
+        let u = input.get_property("url").to_js_string();
+        if u == "undefined" {
+            input.to_js_string()
+        } else {
+            u
+        }
+    } else {
+        arg_string(args, 0)
+    };
     let options = args.get(1).cloned().unwrap_or(JsValue::Undefined);
 
     let method = if let JsValue::Object(_) = &options {
         let m = options.get_property("method").to_js_string();
         if m.is_empty() || m == "undefined" {
-            String::from("GET")
+            request_property_string(&input, "method", "GET")
         } else {
             m
         }
+    } else if let JsValue::Object(_) = &input {
+        request_property_string(&input, "method", "GET")
     } else {
         String::from("GET")
     };
@@ -38,6 +50,8 @@ pub fn native_fetch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         } else {
             b
         }
+    } else if let JsValue::Object(_) = &input {
+        request_property_string(&input, "__body", "")
     } else {
         String::new()
     };
@@ -92,6 +106,176 @@ pub fn native_fetch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         JsValue::Undefined
     }
+}
+
+fn request_property_string(obj: &JsValue, key: &str, default: &str) -> String {
+    if !matches!(obj, JsValue::Object(_)) {
+        return String::from(default);
+    }
+    let v = obj.get_property(key);
+    if v.is_undefined() || v.is_null() {
+        String::from(default)
+    } else {
+        v.to_js_string()
+    }
+}
+
+/// Create the `Headers` constructor function.
+pub fn make_headers_constructor() -> JsValue {
+    native_ctor_fn("Headers", native_headers_ctor)
+}
+
+/// Create the `Request` constructor function.
+pub fn make_request_constructor() -> JsValue {
+    native_ctor_fn("Request", native_request_ctor)
+}
+
+/// Create the `Response` constructor function, including common static helpers.
+pub fn make_response_constructor() -> JsValue {
+    let ctor = native_ctor_fn("Response", native_response_ctor);
+    ctor.set_property(String::from("json"), native_fn("json", response_static_json));
+    ctor.set_property(String::from("error"), native_fn("error", response_static_error));
+    ctor.set_property(
+        String::from("redirect"),
+        native_fn("redirect", response_static_redirect),
+    );
+    ctor
+}
+
+/// `new Request(input, init)`.
+pub fn native_request_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let input = args.get(0).cloned().unwrap_or(JsValue::Undefined);
+    let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+
+    let base_url = if let JsValue::Object(_) = &input {
+        request_property_string(&input, "url", "")
+    } else {
+        input.to_js_string()
+    };
+    let init_method = request_property_string(&init, "method", "");
+    let method = if init_method.is_empty() {
+        request_property_string(&input, "method", "GET")
+    } else {
+        init_method
+    };
+    let init_body = request_property_string(&init, "body", "");
+    let body = if init_body.is_empty() {
+        request_property_string(&input, "__body", "")
+    } else {
+        init_body
+    };
+    let headers_init = if let JsValue::Object(_) = &init {
+        init.get_property("headers")
+    } else if let JsValue::Object(_) = &input {
+        input.get_property("headers")
+    } else {
+        JsValue::Undefined
+    };
+
+    let mut obj = JsObject::new();
+    obj.set(String::from("method"), JsValue::String(method));
+    obj.set(String::from("url"), JsValue::String(base_url));
+    obj.set(String::from("__body"), JsValue::String(body));
+    obj.set(String::from("bodyUsed"), JsValue::Bool(false));
+    obj.set(String::from("cache"), request_option(&init, "cache", "default"));
+    obj.set(
+        String::from("credentials"),
+        request_option(&init, "credentials", "same-origin"),
+    );
+    obj.set(String::from("destination"), JsValue::String(String::new()));
+    obj.set(String::from("integrity"), request_option(&init, "integrity", ""));
+    obj.set(String::from("keepalive"), JsValue::Bool(false));
+    obj.set(String::from("mode"), request_option(&init, "mode", "cors"));
+    obj.set(String::from("redirect"), request_option(&init, "redirect", "follow"));
+    obj.set(String::from("referrer"), request_option(&init, "referrer", "about:client"));
+    obj.set(String::from("signal"), request_signal(&init));
+    obj.set(String::from("headers"), native_headers_ctor(_vm, &[headers_init]));
+    obj.set(String::from("clone"), native_fn("clone", request_clone));
+    obj.set(String::from("text"), native_fn("text", request_text));
+    obj.set(String::from("json"), native_fn("json", request_json));
+
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+fn request_option(init: &JsValue, key: &str, default: &str) -> JsValue {
+    if matches!(init, JsValue::Object(_)) {
+        let v = init.get_property(key);
+        if !v.is_undefined() && !v.is_null() {
+            return JsValue::String(v.to_js_string());
+        }
+    }
+    JsValue::String(String::from(default))
+}
+
+fn request_signal(init: &JsValue) -> JsValue {
+    if matches!(init, JsValue::Object(_)) {
+        let v = init.get_property("signal");
+        if !v.is_undefined() {
+            return v;
+        }
+    }
+    JsValue::Null
+}
+
+fn request_clone(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    native_request_ctor(vm, &[vm.current_this.clone()])
+}
+
+fn request_text(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let body = if let JsValue::Object(obj) = &vm.current_this {
+        obj.borrow().get("__body")
+    } else {
+        JsValue::String(String::new())
+    };
+    wrap_promise_resolve(vm, body)
+}
+
+fn request_json(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    resp_json(vm, _args)
+}
+
+/// `new Response(body, init)`.
+pub fn native_response_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let body = args.get(0).cloned().unwrap_or(JsValue::Null);
+    let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let status = if let JsValue::Object(_) = &init {
+        let s = init.get_property("status");
+        if s.is_undefined() || s.is_null() {
+            200.0
+        } else {
+            s.to_number()
+        }
+    } else {
+        200.0
+    };
+    let status_text = request_property_string(&init, "statusText", "");
+    let resp = make_response(status, &status_text, "", &body.to_js_string());
+    let headers_init = if let JsValue::Object(_) = &init {
+        init.get_property("headers")
+    } else {
+        JsValue::Undefined
+    };
+    resp.set_property(String::from("headers"), native_headers_ctor(_vm, &[headers_init]));
+    resp
+}
+
+fn response_static_json(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = args.get(0).cloned().unwrap_or(JsValue::Null);
+    native_response_ctor(vm, &[JsValue::String(value.to_js_string())])
+}
+
+fn response_static_error(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let resp = make_response(0.0, "", "", "");
+    resp.set_property(String::from("type"), JsValue::String(String::from("error")));
+    resp
+}
+
+fn response_static_redirect(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let url = arg_string(args, 0);
+    let status = args.get(1).map(|v| v.to_number()).unwrap_or(302.0);
+    let resp = make_response(status, "", &url, "");
+    resp.set_property(String::from("redirected"), JsValue::Bool(true));
+    resp
 }
 
 fn make_response(status: f64, status_text: &str, url: &str, body: &str) -> JsValue {

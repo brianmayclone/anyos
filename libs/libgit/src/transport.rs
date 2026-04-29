@@ -446,7 +446,8 @@ pub fn fetch_pack_streamed_with_caps(
     }
 
     // Step 6: Stream-parse objects directly into the repository
-    let count = stream_parse_objects(&mut stream, repo, num_objects)?;
+    let pack_base_pos = stream.decoded_pos().saturating_sub(12);
+    let count = stream_parse_objects(&mut stream, repo, num_objects, pack_base_pos)?;
 
     if crate::pack::verbose() {
         anyos_std::println!(
@@ -465,14 +466,17 @@ fn stream_parse_objects(
     stream: &mut crate::stream::HttpStream,
     repo: &crate::repo::Repository,
     num_objects: u32,
+    pack_base_pos: usize,
 ) -> Result<u32> {
     use crate::object::{Object, ObjectType};
 
-    let mut resolved: Vec<(Oid, Vec<u8>, u8)> = Vec::new();
+    let mut resolved: Vec<(usize, Oid, Vec<u8>, u8)> = Vec::new();
+    let mut offset_index: Vec<(usize, Oid, u8)> = Vec::new();
     let mut resolved_bytes = 0usize;
     let mut count = 0u32;
 
     for i in 0..num_objects {
+        let entry_start = stream.decoded_pos().saturating_sub(pack_base_pos);
         let (obj_type_raw, size) =
             crate::pack::read_entry_header_stream(stream).map_err(|e| Error::Other(e))?;
 
@@ -505,7 +509,9 @@ fn stream_parse_objects(
                 let _ = repo.write_object(&obj);
                 push_delta_cache(
                     &mut resolved,
+                    &mut offset_index,
                     &mut resolved_bytes,
+                    entry_start,
                     oid,
                     inflated,
                     obj_type_raw,
@@ -524,8 +530,8 @@ fn stream_parse_objects(
 
                 let base = resolved
                     .iter()
-                    .find(|(o, _, _)| *o == base_oid)
-                    .map(|(_, d, t)| (d.clone(), *t))
+                    .find(|(_, o, _, _)| *o == base_oid)
+                    .map(|(_, _, d, t)| (d.clone(), *t))
                     .or_else(|| {
                         repo.read_object(&base_oid).ok().map(|o| {
                             let t = match o.obj_type {
@@ -547,20 +553,39 @@ fn stream_parse_objects(
                         data: result.clone(),
                     };
                     let _ = repo.write_object(&obj);
-                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, base_type);
+                    push_delta_cache(
+                        &mut resolved,
+                        &mut offset_index,
+                        &mut resolved_bytes,
+                        entry_start,
+                        oid,
+                        result,
+                        base_type,
+                    );
                     count += 1;
                 }
             }
             OBJ_OFS_DELTA => {
-                let _offset =
+                let offset =
                     crate::pack::read_ofs_offset_stream(stream).map_err(|e| Error::Other(e))?;
                 let delta_data =
                     crate::pack::inflate_from_stream(stream, size).map_err(|e| Error::Other(e))?;
 
-                if let Some((base_data, base_type)) = resolved
-                    .last()
-                    .map(|(_, data, obj_type)| (data.clone(), *obj_type))
-                {
+                let base_abs = entry_start.saturating_sub(offset);
+                let base = resolved
+                    .iter()
+                    .find(|(off, _, _, _)| *off == base_abs)
+                    .map(|(_, _, data, obj_type)| (data.clone(), *obj_type))
+                    .or_else(|| {
+                        offset_index
+                            .iter()
+                            .find(|(off, _, _)| *off == base_abs)
+                            .and_then(|(_, oid, obj_type)| {
+                                repo.read_object(oid).ok().map(|obj| (obj.data, *obj_type))
+                            })
+                    });
+
+                if let Some((base_data, base_type)) = base {
                     let result = crate::pack::apply_delta(&base_data, &delta_data);
                     let obj_type = crate::pack::pack_type_to_object_type(base_type);
                     let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
@@ -569,7 +594,15 @@ fn stream_parse_objects(
                         data: result.clone(),
                     };
                     let _ = repo.write_object(&obj);
-                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, base_type);
+                    push_delta_cache(
+                        &mut resolved,
+                        &mut offset_index,
+                        &mut resolved_bytes,
+                        entry_start,
+                        oid,
+                        result,
+                        base_type,
+                    );
                     count += 1;
                 }
             }
@@ -589,25 +622,29 @@ const DELTA_CACHE_MAX_OBJECTS: usize = 128;
 const DELTA_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 fn push_delta_cache(
-    cache: &mut Vec<(Oid, Vec<u8>, u8)>,
+    cache: &mut Vec<(usize, Oid, Vec<u8>, u8)>,
+    offset_index: &mut Vec<(usize, Oid, u8)>,
     cache_bytes: &mut usize,
+    pack_offset: usize,
     oid: Oid,
     data: Vec<u8>,
     obj_type: u8,
 ) {
+    offset_index.push((pack_offset, oid, obj_type));
+
     if data.len() > DELTA_CACHE_MAX_BYTES / 2 {
         return;
     }
 
     *cache_bytes += data.len();
-    cache.push((oid, data, obj_type));
+    cache.push((pack_offset, oid, data, obj_type));
 
     while cache.len() > DELTA_CACHE_MAX_OBJECTS || *cache_bytes > DELTA_CACHE_MAX_BYTES {
         if cache.is_empty() {
             *cache_bytes = 0;
             break;
         }
-        let (_, data, _) = cache.remove(0);
+        let (_, _, data, _) = cache.remove(0);
         *cache_bytes = cache_bytes.saturating_sub(data.len());
     }
 }

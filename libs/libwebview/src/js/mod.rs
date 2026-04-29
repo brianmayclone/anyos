@@ -132,7 +132,7 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
             }
             apply_react_motion_final_styles(node_id, value, mutations);
         }
-        "textContent" | "innerText" => {
+        "textContent" | "innerText" | "nodeValue" | "data" => {
             mutations.push(DomMutation::SetTextContent {
                 node_id,
                 text: value.to_js_string(),
@@ -1229,6 +1229,28 @@ impl JsRuntime {
             "Comment",
             "Element",
             "HTMLElement",
+            "HTMLAnchorElement",
+            "HTMLAreaElement",
+            "HTMLButtonElement",
+            "HTMLCanvasElement",
+            "HTMLDivElement",
+            "HTMLFormElement",
+            "HTMLHeadElement",
+            "HTMLHtmlElement",
+            "HTMLIFrameElement",
+            "HTMLImageElement",
+            "HTMLInputElement",
+            "HTMLLabelElement",
+            "HTMLLinkElement",
+            "HTMLMetaElement",
+            "HTMLOptionElement",
+            "HTMLScriptElement",
+            "HTMLSelectElement",
+            "HTMLSpanElement",
+            "HTMLStyleElement",
+            "HTMLTableElement",
+            "HTMLTextAreaElement",
+            "Attr",
             "CustomElementRegistry",
             "customElements",
             "MutationObserver",
@@ -1296,10 +1318,9 @@ impl JsRuntime {
         vm.set_global("fetch", native_fn("fetch", fetch::native_fetch));
         vm.set_global("XMLHttpRequest", xhr::make_xhr_constructor());
         vm.set_global("WebSocket", websocket::make_ws_constructor());
-        vm.set_global(
-            "Headers",
-            native_ctor_fn("Headers", fetch::native_headers_ctor),
-        );
+        vm.set_global("Headers", fetch::make_headers_constructor());
+        vm.set_global("Request", fetch::make_request_constructor());
+        vm.set_global("Response", fetch::make_response_constructor());
         vm.set_global(
             "Image",
             native_ctor_fn("Image", document::native_image_ctor),
