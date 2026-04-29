@@ -83,6 +83,7 @@ static mut ERROR_SHADOW_ID: u32 = 0;
 static mut ERROR_LBL_ID: u32 = 0;
 static mut LOGIN_CONTROLS: Option<Vec<u32>> = None;
 static mut PICKER_CONTROLS: Option<Vec<u32>> = None;
+static mut AVATAR_GLOW_FILTER: Option<ui::AntiAliasFilterContainer> = None;
 static mut AVATAR_GLOW: Option<ui::Canvas> = None;
 static mut CENTER_AVATAR_POS: (i32, i32) = (0, 0);
 static mut CENTER_GLOW_POS: (i32, i32) = (0, 0);
@@ -93,6 +94,7 @@ static mut AVATAR_TIMER_ID: u32 = 0;
 
 #[derive(Clone, Copy)]
 struct AvatarAnim {
+    glow_filter: ui::AntiAliasFilterContainer,
     glow: ui::Canvas,
     avatar: ui::Canvas,
     avatar_x: i32,
@@ -206,14 +208,24 @@ fn main() -> u32 {
     let panel = palette.panel;
 
     // ── Large lock-screen clock ─────────────────────────────────────────
+    let clock_top = (sh as i32 * 9) / 100;
+    let clock_time_y = (sh as i32 * 12) / 100;
+    let clock_h = (clock_time_y - clock_top).max(0) as u32 + (sh / 6).max(90) + 18;
+    let clock_filter = ui::AntiAliasFilterContainer::new();
+    clock_filter.set_position(0, clock_top);
+    clock_filter.set_size(sw + 10, clock_h);
+    clock_filter.set_style(ui::STYLE_FILTER_STRENGTH, 72);
+    clock_filter.set_style(ui::STYLE_FILTER_QUALITY, 1);
+    win.add(&clock_filter);
+
     let date_shadow_soft = ui::Label::new("");
     date_shadow_soft.set_font_size((sh / 42).clamp(15, 28));
     date_shadow_soft.set_font(1);
     date_shadow_soft.set_text_color(shadow_soft);
     date_shadow_soft.set_text_align(ui::TEXT_ALIGN_CENTER);
-    date_shadow_soft.set_position(3, (sh as i32 * 9) / 100 + 4);
+    date_shadow_soft.set_position(3, 4);
     date_shadow_soft.set_size(sw, (sh / 22).max(24));
-    win.add(&date_shadow_soft);
+    clock_filter.add(&date_shadow_soft);
     unsafe { DATE_SHADOW_SOFT_ID = date_shadow_soft.id(); }
 
     let date_shadow = ui::Label::new("");
@@ -221,9 +233,9 @@ fn main() -> u32 {
     date_shadow.set_font(1);
     date_shadow.set_text_color(shadow_near);
     date_shadow.set_text_align(ui::TEXT_ALIGN_CENTER);
-    date_shadow.set_position(1, (sh as i32 * 9) / 100 + 2);
+    date_shadow.set_position(1, 2);
     date_shadow.set_size(sw, (sh / 22).max(24));
-    win.add(&date_shadow);
+    clock_filter.add(&date_shadow);
     unsafe { DATE_SHADOW_ID = date_shadow.id(); }
 
     let date_lbl = ui::Label::new("");
@@ -231,9 +243,9 @@ fn main() -> u32 {
     date_lbl.set_font(1);
     date_lbl.set_text_color(text_soft);
     date_lbl.set_text_align(ui::TEXT_ALIGN_CENTER);
-    date_lbl.set_position(0, (sh as i32 * 9) / 100);
+    date_lbl.set_position(0, 0);
     date_lbl.set_size(sw, (sh / 22).max(24));
-    win.add(&date_lbl);
+    clock_filter.add(&date_lbl);
     unsafe { DATE_LBL_ID = date_lbl.id(); }
 
     let time_shadow_soft = ui::Label::new("");
@@ -241,9 +253,9 @@ fn main() -> u32 {
     time_shadow_soft.set_font(1);
     time_shadow_soft.set_text_color(shadow_soft);
     time_shadow_soft.set_text_align(ui::TEXT_ALIGN_CENTER);
-    time_shadow_soft.set_position(5, (sh as i32 * 12) / 100 + 8);
+    time_shadow_soft.set_position(5, clock_time_y - clock_top + 8);
     time_shadow_soft.set_size(sw, (sh / 6).max(90));
-    win.add(&time_shadow_soft);
+    clock_filter.add(&time_shadow_soft);
     unsafe { TIME_SHADOW_SOFT_ID = time_shadow_soft.id(); }
 
     let time_shadow = ui::Label::new("");
@@ -251,9 +263,9 @@ fn main() -> u32 {
     time_shadow.set_font(1);
     time_shadow.set_text_color(shadow_near);
     time_shadow.set_text_align(ui::TEXT_ALIGN_CENTER);
-    time_shadow.set_position(2, (sh as i32 * 12) / 100 + 4);
+    time_shadow.set_position(2, clock_time_y - clock_top + 4);
     time_shadow.set_size(sw, (sh / 6).max(90));
-    win.add(&time_shadow);
+    clock_filter.add(&time_shadow);
     unsafe { TIME_SHADOW_ID = time_shadow.id(); }
 
     let time_lbl = ui::Label::new("");
@@ -261,9 +273,9 @@ fn main() -> u32 {
     time_lbl.set_font(1);
     time_lbl.set_text_color(text_soft);
     time_lbl.set_text_align(ui::TEXT_ALIGN_CENTER);
-    time_lbl.set_position(0, (sh as i32 * 12) / 100);
+    time_lbl.set_position(0, clock_time_y - clock_top);
     time_lbl.set_size(sw, (sh / 6).max(90));
-    win.add(&time_lbl);
+    clock_filter.add(&time_lbl);
     unsafe { TIME_LBL_ID = time_lbl.id(); }
     update_clock_labels();
     ui::set_timer(1000, || update_clock_labels());
@@ -282,10 +294,18 @@ fn main() -> u32 {
     let avatar_y = (sh as i32 * 58) / 100;
     let avatar_x = center_x - CURRENT_AVATAR_SIZE as i32 / 2;
     let current_glow_pad = 16;
+    let avatar_glow_filter = ui::AntiAliasFilterContainer::new();
+    avatar_glow_filter.set_position(avatar_x - current_glow_pad as i32, avatar_y - current_glow_pad as i32);
+    avatar_glow_filter.set_size(CURRENT_AVATAR_SIZE + current_glow_pad * 2, CURRENT_AVATAR_SIZE + current_glow_pad * 2);
+    avatar_glow_filter.set_visible(has_last_user);
+    avatar_glow_filter.set_style(ui::STYLE_FILTER_STRENGTH, 92);
+    avatar_glow_filter.set_style(ui::STYLE_FILTER_QUALITY, 1);
+    win.add(&avatar_glow_filter);
+    login_ids.push(avatar_glow_filter.id());
+
     let avatar_glow = ui::Canvas::new(CURRENT_AVATAR_SIZE + current_glow_pad * 2, CURRENT_AVATAR_SIZE + current_glow_pad * 2);
-    avatar_glow.set_position(avatar_x - current_glow_pad as i32, avatar_y - current_glow_pad as i32);
+    avatar_glow.set_position(0, 0);
     avatar_glow.set_size(CURRENT_AVATAR_SIZE + current_glow_pad * 2, CURRENT_AVATAR_SIZE + current_glow_pad * 2);
-    avatar_glow.set_visible(has_last_user);
     draw_avatar_ring(
         &avatar_glow,
         CURRENT_AVATAR_SIZE,
@@ -294,9 +314,9 @@ fn main() -> u32 {
         avatar_glow_inner,
         118,
     );
-    win.add(&avatar_glow);
-    login_ids.push(avatar_glow.id());
+    avatar_glow_filter.add(&avatar_glow);
     unsafe {
+        AVATAR_GLOW_FILTER = Some(avatar_glow_filter);
         AVATAR_GLOW = Some(avatar_glow);
         CENTER_AVATAR_POS = (avatar_x, avatar_y);
         CENTER_GLOW_POS = (avatar_x - current_glow_pad as i32, avatar_y - current_glow_pad as i32);
@@ -476,10 +496,18 @@ fn main() -> u32 {
         let picker_glow_pad = 14;
         let glow_size = PICKER_AVATAR_SIZE + picker_glow_pad * 2;
         let glow_x = cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2 - picker_glow_pad as i32;
+        let glow_filter = ui::AntiAliasFilterContainer::new();
+        glow_filter.set_position(glow_x, picker_y - picker_glow_pad as i32);
+        glow_filter.set_size(glow_size, glow_size);
+        glow_filter.set_visible(!has_last_user);
+        glow_filter.set_style(ui::STYLE_FILTER_STRENGTH, 92);
+        glow_filter.set_style(ui::STYLE_FILTER_QUALITY, 1);
+        win.add(&glow_filter);
+        picker_ids.push(glow_filter.id());
+
         let glow = ui::Canvas::new(glow_size, glow_size);
-        glow.set_position(glow_x, picker_y - picker_glow_pad as i32);
+        glow.set_position(0, 0);
         glow.set_size(glow_size, glow_size);
-        glow.set_visible(!has_last_user);
         draw_avatar_ring(
             &glow,
             PICKER_AVATAR_SIZE,
@@ -488,8 +516,7 @@ fn main() -> u32 {
             avatar_glow_inner,
             0,
         );
-        win.add(&glow);
-        picker_ids.push(glow.id());
+        glow_filter.add(&glow);
 
         let av = ui::Canvas::new(PICKER_AVATAR_SIZE, PICKER_AVATAR_SIZE);
         let av_x = cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2;
@@ -506,6 +533,7 @@ fn main() -> u32 {
         win.add(&av);
         picker_ids.push(av.id());
         avatar_anims.push(AvatarAnim {
+            glow_filter,
             glow,
             avatar: av,
             avatar_x: av_x,
@@ -661,9 +689,12 @@ fn set_controls_visible(ids: &Option<Vec<u32>>, visible: bool) {
 fn show_login() {
     clear_login_error();
     unsafe {
-        if let Some(glow) = AVATAR_GLOW {
+        if let Some(filter) = AVATAR_GLOW_FILTER {
             let (x, y) = CENTER_GLOW_POS;
-            glow.set_position(x, y);
+            filter.set_position(x, y);
+            filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+        }
+        if let Some(glow) = AVATAR_GLOW {
             glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
             draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 118);
         }
@@ -683,9 +714,12 @@ fn show_picker() {
             avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
             update_avatar();
         }
-        if let Some(glow) = AVATAR_GLOW {
+        if let Some(filter) = AVATAR_GLOW_FILTER {
             let (x, y) = CENTER_GLOW_POS;
-            glow.set_position(x, y);
+            filter.set_position(x, y);
+            filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+        }
+        if let Some(glow) = AVATAR_GLOW {
             glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
             draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 0);
         }
@@ -708,7 +742,7 @@ fn show_picker_animated() {
         };
         set_controls_visible(&PICKER_CONTROLS, true);
         for picker in list.iter() {
-            picker.glow.set_visible(false);
+            picker.glow_filter.set_visible(false);
             picker.avatar.set_visible(false);
         }
         if let Some(avatar) = AVATAR {
@@ -717,9 +751,12 @@ fn show_picker_animated() {
             avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
             update_avatar();
         }
-        if let Some(glow) = AVATAR_GLOW {
+        if let Some(filter) = AVATAR_GLOW_FILTER {
             let (x, y) = CENTER_GLOW_POS;
-            glow.set_position(x, y);
+            filter.set_position(x, y);
+            filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+        }
+        if let Some(glow) = AVATAR_GLOW {
             glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
             draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 120);
         }
@@ -768,9 +805,12 @@ fn select_user_animated(idx: usize) {
                     update_avatar();
                 }
                 if let Some(glow) = AVATAR_GLOW {
-                    glow.set_position(from_glow_x, from_glow_y);
                     glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                     draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 180);
+                }
+                if let Some(filter) = AVATAR_GLOW_FILTER {
+                    filter.set_position(from_glow_x, from_glow_y);
+                    filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                 }
                 let (to_avatar_x, to_avatar_y) = CENTER_AVATAR_POS;
                 let (to_glow_x, to_glow_y) = CENTER_GLOW_POS;
@@ -859,9 +899,12 @@ fn tick_avatar_animation() {
                 avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
             }
             if let Some(glow) = AVATAR_GLOW {
-                glow.set_position(gl_x, gl_y);
                 glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                 draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 160);
+            }
+            if let Some(filter) = AVATAR_GLOW_FILTER {
+                filter.set_position(gl_x, gl_y);
+                filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
             }
             if sel.ticks >= 14 {
                 let returning_to_picker = sel.returning_to_picker;
@@ -871,10 +914,13 @@ fn tick_avatar_animation() {
                     update_avatar();
                 }
                 if let Some(glow) = AVATAR_GLOW {
-                    glow.set_position(sel.to_glow_x, sel.to_glow_y);
                     glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                     let final_glow = if returning_to_picker { 0 } else { 118 };
                     draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, final_glow);
+                }
+                if let Some(filter) = AVATAR_GLOW_FILTER {
+                    filter.set_position(sel.to_glow_x, sel.to_glow_y);
+                    filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                 }
                 SELECT_ANIM = None;
                 if returning_to_picker {
@@ -887,10 +933,11 @@ fn tick_avatar_animation() {
                             anim.avatar.set_position(anim.avatar_x, anim.avatar_y);
                             anim.avatar.set_size(anim.avatar_size, anim.avatar_size);
                             anim.avatar.set_visible(true);
-                            anim.glow.set_position(anim.glow_x, anim.glow_y);
+                            anim.glow_filter.set_position(anim.glow_x, anim.glow_y);
+                            anim.glow_filter.set_size(anim.glow_size, anim.glow_size);
+                            anim.glow_filter.set_visible(true);
                             anim.glow.set_size(anim.glow_size, anim.glow_size);
                             draw_avatar_ring(&anim.glow, anim.avatar_size, anim.pad, 0x22FFFFFF, 0x24000000, 0);
-                            anim.glow.set_visible(true);
                         }
                     }
                     set_controls_visible(&LOGIN_CONTROLS, false);
@@ -904,9 +951,12 @@ fn tick_avatar_animation() {
                         update_avatar();
                     }
                     if let Some(glow) = AVATAR_GLOW {
-                        glow.set_position(to_gx, to_gy);
                         glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                         draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 118);
+                    }
+                    if let Some(filter) = AVATAR_GLOW_FILTER {
+                        filter.set_position(to_gx, to_gy);
+                        filter.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                     }
                     ui::Control::from_id(PASS_ID).focus();
                 }

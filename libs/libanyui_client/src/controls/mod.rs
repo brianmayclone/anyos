@@ -39,6 +39,7 @@ mod treeview;
 
 // ── Container controls (can have children) ──
 mod alert;
+mod antialiasfiltercontainer;
 mod card;
 mod contextmenu;
 mod expander;
@@ -100,6 +101,7 @@ pub use tooltip::Tooltip;
 pub use treeview::{TreeView, STYLE_BOLD, STYLE_NORMAL};
 
 pub use alert::Alert;
+pub use antialiasfiltercontainer::AntiAliasFilterContainer;
 pub use autocompletatextbox::AutoCompleteTextField;
 pub use card::Card;
 pub use combobox::ComboBox;

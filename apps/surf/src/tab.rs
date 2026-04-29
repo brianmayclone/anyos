@@ -231,6 +231,8 @@ pub(crate) struct TabState {
     pub(crate) css_background_scan_pending: bool,
     /// Number of JS console lines already mirrored to Surf's system log.
     pub(crate) js_console_logged_len: usize,
+    /// True while DOM + JS runtime are detached and executing on the JS worker.
+    pub(crate) js_worker_busy: bool,
 }
 
 impl TabState {
@@ -258,6 +260,7 @@ impl TabState {
             deferred_images_inflight: 0,
             css_background_scan_pending: false,
             js_console_logged_len: 0,
+            js_worker_busy: false,
         }
     }
 
@@ -327,6 +330,7 @@ pub(crate) fn navigate(url_str: &str) {
         .load_state
         .begin_navigation(generation);
     st.tabs[st.active_tab].js_console_logged_len = 0;
+    st.tabs[st.active_tab].js_worker_busy = false;
     crate::devtools::reset_for_navigation();
 
     // Update UI to show loading state.
@@ -371,6 +375,7 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
         .load_state
         .begin_navigation(generation);
     st.tabs[st.active_tab].js_console_logged_len = 0;
+    st.tabs[st.active_tab].js_worker_busy = false;
     crate::devtools::reset_for_navigation();
 
     st.tabs[st.active_tab].is_loading = true;

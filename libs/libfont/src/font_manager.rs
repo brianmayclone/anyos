@@ -44,12 +44,12 @@ fn read_font_smoothing() -> u32 {
 }
 
 /// Maximum number of cached glyphs before LRU eviction.
-/// Sized for HiDPI: at 200%+ scale, each font size generates a distinct cache
-/// entry, doubling the working set compared to 100%.
-const MAX_CACHE_SIZE: usize = 4096;
+/// Browser pages mix many webfont weights, sizes, and UI text runs. Keep a
+/// larger working set hot so scrolling does not constantly re-rasterize glyphs.
+const MAX_CACHE_SIZE: usize = 16384;
 
 /// Hash table size for glyph cache lookup (must be power of 2).
-const GLYPH_HASH_SIZE: usize = 4096;
+const GLYPH_HASH_SIZE: usize = 16384;
 const GLYPH_HASH_EMPTY: u16 = 0xFFFF;
 
 /// System font IDs (must match kernel convention).

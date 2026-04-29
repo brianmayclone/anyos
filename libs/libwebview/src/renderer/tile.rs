@@ -7,11 +7,11 @@ use libanyui_client as ui;
 // ═══════════════════════════════════════════════════════════════════════════
 
 pub(super) const TILE_HEIGHT: u32 = 256;
-const MAX_CACHED_TILES: usize = 40;
+const MAX_CACHED_TILES: usize = 160;
 pub(super) const BUFFER_ZONE: i32 = 768;
-pub(super) const MAX_TILE_CANVASES: usize = 30;
+pub(super) const MAX_TILE_CANVASES: usize = 48;
 pub(super) const MAX_TILES_PER_SCROLL_TICK: usize = 1;
-pub(super) const MAX_TILES_PER_IDLE_TICK: usize = 4;
+pub(super) const MAX_TILES_PER_IDLE_TICK: usize = 8;
 pub(super) const INITIAL_VISIBLE_EXTRA_ROWS: u32 = 1;
 
 struct CachedTile {
@@ -50,7 +50,7 @@ impl TileCache {
         if let Some(tile) = self.tiles.iter_mut().find(|t| t.row == row) {
             // Return old buffer to pool before replacing.
             let old = core::mem::replace(&mut tile.pixels, pixels);
-            if self.free_bufs.len() < 8 {
+            if self.free_bufs.len() < 32 {
                 self.free_bufs.push(old);
             }
             tile.generation = gen;
@@ -66,7 +66,7 @@ impl TileCache {
                 .map(|(i, _)| i)
                 .unwrap_or(0);
             let evicted = self.tiles.swap_remove(min_idx);
-            if self.free_bufs.len() < 8 {
+            if self.free_bufs.len() < 32 {
                 self.free_bufs.push(evicted.pixels);
             }
         }
@@ -80,7 +80,7 @@ impl TileCache {
 
     pub(super) fn invalidate_all(&mut self) {
         for tile in self.tiles.drain(..) {
-            if self.free_bufs.len() < 8 {
+            if self.free_bufs.len() < 32 {
                 self.free_bufs.push(tile.pixels);
             }
         }

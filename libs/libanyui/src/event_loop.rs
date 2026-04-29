@@ -3448,6 +3448,18 @@ fn render_tree(
         }
     }
 
+    if controls[idx].kind() == ControlKind::AntiAliasFilterContainer {
+        render_antialias_filter_container(
+            controls,
+            idx,
+            surface,
+            parent_abs_x,
+            parent_abs_y,
+            dirty_rect,
+        );
+        return;
+    }
+
     // ScrollView: skip initial render — scrollbar is drawn after children
     // so it isn't painted over by content.
     if controls[idx].kind() != ControlKind::ScrollView {
@@ -3529,6 +3541,111 @@ fn render_tree(
         let p = crate::draw::scale_bounds(parent_abs_x, parent_abs_y, cx, cy, cw, ch);
         let sv_surface = surface.with_clip(p.x, p.y, p.w, p.h);
         controls[idx].render(&sv_surface, parent_abs_x, parent_abs_y);
+    }
+}
+
+fn render_antialias_filter_container(
+    controls: &[Box<dyn Control>],
+    idx: usize,
+    surface: &crate::draw::Surface,
+    parent_abs_x: i32,
+    parent_abs_y: i32,
+    _dirty_rect: Option<(i32, i32, u32, u32)>,
+) {
+    let b = controls[idx].base();
+    if b.w == 0 || b.h == 0 {
+        return;
+    }
+
+    let p = crate::draw::scale_bounds(parent_abs_x, parent_abs_y, b.x, b.y, b.w, b.h);
+    if p.w == 0 || p.h == 0 {
+        return;
+    }
+
+    let pixel_count = (p.w as usize).saturating_mul(p.h as usize);
+    if pixel_count == 0 || pixel_count > 16 * 1024 * 1024 {
+        return;
+    }
+
+    let mut pixels = alloc::vec![0u32; pixel_count];
+    let offscreen = crate::draw::Surface::new(pixels.as_mut_ptr(), p.w, p.h);
+
+    // Render the container itself with its logical origin mapped to (0, 0).
+    controls[idx].render(&offscreen, -b.x, -b.y);
+
+    let children: Vec<u32> = controls[idx].children().to_vec();
+    for &cid in &children {
+        // The offscreen subtree must be complete; the outer dirty rect only
+        // decides whether this container is rendered at all.
+        render_tree(controls, cid, &offscreen, 0, 0, None);
+    }
+
+    let strength = if b.style.filter_strength == 0 {
+        96
+    } else {
+        b.style.filter_strength.clamp(0, 255)
+    };
+    let quality = b.style.filter_quality.clamp(1, 3);
+    if strength > 0 {
+        for _ in 0..quality {
+            antialias_edge_pass(&mut pixels, p.w as usize, p.h as usize, strength);
+        }
+    }
+
+    crate::draw::blit_argb(surface, p.x, p.y, p.w, p.h, &pixels);
+}
+
+fn antialias_edge_pass(pixels: &mut [u32], w: usize, h: usize, strength: u32) {
+    if w < 3 || h < 3 || pixels.len() < w.saturating_mul(h) {
+        return;
+    }
+
+    let src = pixels.to_vec();
+    let mix = strength.min(255);
+    let keep = 255 - mix;
+
+    for y in 1..h - 1 {
+        let row = y * w;
+        for x in 1..w - 1 {
+            let i = row + x;
+            let c = src[i];
+            let a = (c >> 24) & 0xFF;
+            let n0 = src[i - 1];
+            let n1 = src[i + 1];
+            let n2 = src[i - w];
+            let n3 = src[i + w];
+            let a0 = (n0 >> 24) & 0xFF;
+            let a1 = (n1 >> 24) & 0xFF;
+            let a2 = (n2 >> 24) & 0xFF;
+            let a3 = (n3 >> 24) & 0xFF;
+            let min_a = a.min(a0).min(a1).min(a2).min(a3);
+            let max_a = a.max(a0).max(a1).max(a2).max(a3);
+
+            if max_a - min_a < 96 {
+                continue;
+            }
+
+            let avg_a = (a0 + a1 + a2 + a3) / 4;
+            let avg_r = (((n0 >> 16) & 0xFF)
+                + ((n1 >> 16) & 0xFF)
+                + ((n2 >> 16) & 0xFF)
+                + ((n3 >> 16) & 0xFF)) / 4;
+            let avg_g = (((n0 >> 8) & 0xFF)
+                + ((n1 >> 8) & 0xFF)
+                + ((n2 >> 8) & 0xFF)
+                + ((n3 >> 8) & 0xFF)) / 4;
+            let avg_b = ((n0 & 0xFF) + (n1 & 0xFF) + (n2 & 0xFF) + (n3 & 0xFF)) / 4;
+
+            let r = ((c >> 16) & 0xFF) * keep + avg_r * mix;
+            let g = ((c >> 8) & 0xFF) * keep + avg_g * mix;
+            let b = (c & 0xFF) * keep + avg_b * mix;
+            let out_a = a * keep + avg_a * mix;
+
+            pixels[i] = ((out_a / 255) << 24)
+                | ((r / 255) << 16)
+                | ((g / 255) << 8)
+                | (b / 255);
+        }
     }
 }
 

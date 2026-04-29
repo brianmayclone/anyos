@@ -74,6 +74,23 @@ pub use layout::{FormFieldKind, LayoutBox};
 pub use renderer::{FormControl, HitKind, ImageCache, ImageEntry};
 use style::{Display, FloatVal, Position, TextAlignVal};
 
+/// Detached JavaScript execution state.
+///
+/// Surf can temporarily move this bundle to a background worker so large
+/// scripts do not monopolize the UI thread. The state is returned to the
+/// originating `WebView` with `finish_js_execution_state`.
+pub struct JsExecutionState {
+    dom: dom::Dom,
+    runtime: js::JsRuntime,
+    url: String,
+}
+
+impl JsExecutionState {
+    pub fn execute_script_source(&mut self, script: String) {
+        self.runtime.execute_script_sources(&self.dom, &self.url, &[script]);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MutationImpact {
     None,
@@ -786,6 +803,32 @@ impl WebView {
         }
 
         self.dom_val = Some(dom);
+        changed
+    }
+
+    /// Move DOM + JavaScript runtime out of the WebView for background script
+    /// execution. Rendering can continue from cached layout/tiles while this is
+    /// detached, but DOM-backed operations should wait until the state returns.
+    pub fn take_js_execution_state(&mut self) -> Option<JsExecutionState> {
+        let dom = self.dom_val.take()?;
+        let runtime = core::mem::replace(&mut self.js_runtime, js::JsRuntime::new());
+        Some(JsExecutionState {
+            dom,
+            runtime,
+            url: self.current_url.clone(),
+        })
+    }
+
+    /// Reattach a completed JavaScript execution state and apply DOM mutations.
+    /// Returns true when layout/paint changed.
+    pub fn finish_js_execution_state(&mut self, mut state: JsExecutionState) -> bool {
+        self.js_runtime = state.runtime;
+        let mut changed = false;
+        if !self.js_runtime.mutations.is_empty() {
+            self.flush_pending_mutations(&mut state.dom);
+            changed = true;
+        }
+        self.dom_val = Some(state.dom);
         changed
     }
 
