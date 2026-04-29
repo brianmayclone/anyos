@@ -53,6 +53,7 @@ pub const KIND_DATE_TIME_PICKER: u32 = 46;
 pub const KIND_LIST_BOX: u32 = 47;
 pub const KIND_COMBO_BOX: u32 = 48;
 pub const KIND_LINK_LABEL: u32 = 49;
+pub const KIND_ANTI_ALIAS_FILTER_CONTAINER: u32 = 50;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 
@@ -74,6 +75,8 @@ pub const STYLE_INACTIVE_TEXT: u32 = 6;
 pub const STYLE_HOVER_BG: u32 = 7;
 pub const STYLE_RADIUS: u32 = 8;
 pub const STYLE_ACCENT: u32 = 9;
+pub const STYLE_FILTER_STRENGTH: u32 = 10;
+pub const STYLE_FILTER_QUALITY: u32 = 11;
 
 // ── Orientation constants ───────────────────────────────────────────
 

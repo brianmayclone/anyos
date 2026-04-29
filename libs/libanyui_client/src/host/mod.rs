@@ -47,6 +47,8 @@ pub const STYLE_INACTIVE_TEXT: u32 = 6;
 pub const STYLE_HOVER_BG: u32 = 7;
 pub const STYLE_RADIUS: u32 = 8;
 pub const STYLE_ACCENT: u32 = 9;
+pub const STYLE_FILTER_STRENGTH: u32 = 10;
+pub const STYLE_FILTER_QUALITY: u32 = 11;
 
 pub const EVENT_CLICK: u32 = 1;
 pub const EVENT_CHANGE: u32 = 2;

@@ -7,7 +7,7 @@
 //! - HTTP response body decoding (charset detection, Latin-1 → UTF-8)
 //! - External CSS stylesheet discovery and submission to the network worker
 //! - External image discovery and submission to the network worker
-//! - SVG rasterisation and raster image decoding (called from result handlers)
+//! - SVG rasterisation and raster image decoding helpers for worker threads
 
 use alloc::string::String;
 use alloc::vec;
@@ -338,6 +338,15 @@ pub(crate) fn queue_font_face_batch(
 }
 
 pub(crate) fn load_valid_web_font_data(family: &str, data: &[u8]) -> Option<u32> {
+    if web_font_is_cff_only(data) {
+        crate::surf_log!(
+            "[surf] skipped web font '{}' ({}): CFF outlines are disabled until rasterization is correct",
+            family,
+            web_font_format_hint(data)
+        );
+        return None;
+    }
+
     let Some(font_id) = libfont_client::load_data(data) else {
         crate::surf_log!(
             "[surf] rejected web font '{}' ({}): unsupported or invalid data",
@@ -356,6 +365,13 @@ pub(crate) fn load_valid_web_font_data(family: &str, data: &[u8]) -> Option<u32>
         font_id
     );
     None
+}
+
+fn web_font_is_cff_only(data: &[u8]) -> bool {
+    (data.len() >= 8
+        && ((&data[..4] == b"wOF2" && &data[4..8] == b"OTTO")
+            || (&data[..4] == b"wOFF" && &data[4..8] == b"OTTO")))
+        || (data.len() >= 4 && &data[..4] == b"OTTO")
 }
 
 fn web_font_format_hint(data: &[u8]) -> &'static str {
@@ -2072,6 +2088,65 @@ pub(crate) fn decode_raster_to_image(
         width: final_w,
         height: final_h,
         format: info.format,
+        suspicious_black_ppm,
+    })
+}
+
+pub(crate) fn decode_svg_to_image(data: &[u8]) -> Result<DecodedRasterImage, ()> {
+    let intrinsic = svg_intrinsic_raster_size(data);
+    let probed = if intrinsic.is_none() {
+        libsvg_client::probe(data)
+    } else {
+        None
+    };
+    let (rw, rh) = intrinsic.unwrap_or_else(|| match probed {
+        Some((w, h)) => {
+            let w = (w as u32).max(1);
+            let h = (h as u32).max(1);
+            cap_svg_raster_size(w, h)
+        }
+        None => (256, 256),
+    });
+    let (rw, rh) = cap_svg_raster_size(rw, rh);
+
+    let pixel_count = (rw as usize).checked_mul(rh as usize).ok_or(())?;
+    let background = parse_svg_root_background(data).unwrap_or(0x00000000);
+    let supersample = svg_supersample_factor(rw, rh);
+    let (ok, pixels) = if supersample > 1 {
+        let hi_w = rw.saturating_mul(supersample);
+        let hi_h = rh.saturating_mul(supersample);
+        let hi_count = (hi_w as usize).checked_mul(hi_h as usize).ok_or(())?;
+        let mut hi_pixels = vec![0u32; hi_count];
+        let ok = libsvg_client::render_to_size(data, &mut hi_pixels, hi_w, hi_h, background);
+        let mut lo_pixels = vec![0u32; pixel_count];
+        if ok {
+            let scaled = libimage_client::scale_image(
+                &hi_pixels,
+                hi_w,
+                hi_h,
+                &mut lo_pixels,
+                rw,
+                rh,
+                libimage_client::MODE_SCALE,
+            );
+            (scaled, lo_pixels)
+        } else {
+            (false, lo_pixels)
+        }
+    } else {
+        let mut pixels = vec![0u32; pixel_count];
+        let ok = libsvg_client::render_to_size(data, &mut pixels, rw, rh, background);
+        (ok, pixels)
+    };
+    if !ok {
+        return Err(());
+    }
+    let suspicious_black_ppm = decoded_image_looks_suspiciously_black(&pixels);
+    Ok(DecodedRasterImage {
+        pixels,
+        width: rw,
+        height: rh,
+        format: libimage_client::FMT_UNKNOWN,
         suspicious_black_ppm,
     })
 }

@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use crate::error::TlsError;
 use crate::cipher_suite::CipherSuite;
-use crate::record::{ContentType, ProtocolVersion, RecordHeader, RECORD_HEADER_SIZE};
+use crate::record::{ContentType, ProtocolVersion, RecordHeader, MAX_RECORD_PAYLOAD, RECORD_HEADER_SIZE};
 use crate::crypto::{gcm, chacha20poly1305};
 use crate::handshake::{tls13, tls12, extensions, NegotiatedVersion};
 use crate::{transport_send, transport_recv, transport_sleep, transport_random};
@@ -196,6 +196,10 @@ impl TlsConnection {
                 return -1;
             }
             let header = RecordHeader::parse(&header_buf);
+            if header.length as usize > MAX_RECORD_PAYLOAD + 256 {
+                self.error = TlsError::RecordOverflow;
+                return -1;
+            }
 
             // TLS 1.3 middlebox compat: skip ChangeCipherSpec records
             if header.content_type == ContentType::ChangeCipherSpec as u8 {
@@ -461,6 +465,9 @@ fn do_tls13_continuation(
         let mut hdr = [0u8; RECORD_HEADER_SIZE];
         recv_exact_raw(fd, &mut hdr)?;
         let header = RecordHeader::parse(&hdr);
+        if header.length as usize > MAX_RECORD_PAYLOAD + 256 {
+            return Err(TlsError::RecordOverflow);
+        }
 
         let mut record_body = alloc::vec![0u8; header.length as usize];
         recv_exact_raw(fd, &mut record_body)?;

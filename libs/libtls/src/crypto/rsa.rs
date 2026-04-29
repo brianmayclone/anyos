@@ -3,10 +3,10 @@
 //! Only verification is implemented (TLS client doesn't need signing).
 //! Supports RSA-2048 and RSA-4096 key sizes.
 
-use alloc::vec::Vec;
 use crate::crypto::bignum::BigUint;
 use crate::crypto::sha256;
 use crate::crypto::sha384;
+use alloc::vec::Vec;
 
 /// RSA public key (modulus n, exponent e).
 #[derive(Clone, Debug)]
@@ -202,14 +202,18 @@ fn build_digest_info(hash: &[u8], alg: HashAlgorithm) -> Vec<u8> {
     let (oid, hash_len) = match alg {
         HashAlgorithm::Sha256 => (
             // OID 2.16.840.1.101.3.4.2.1 (SHA-256)
-            &[0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
-              0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00][..],
+            &[
+                0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+                0x00,
+            ][..],
             32usize,
         ),
         HashAlgorithm::Sha384 => (
             // OID 2.16.840.1.101.3.4.2.2 (SHA-384)
-            &[0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
-              0x65, 0x03, 0x04, 0x02, 0x02, 0x05, 0x00][..],
+            &[
+                0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05,
+                0x00,
+            ][..],
             48usize,
         ),
     };

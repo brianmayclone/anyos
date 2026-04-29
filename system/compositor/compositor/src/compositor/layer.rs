@@ -36,6 +36,17 @@ pub(crate) struct ShadowCache {
     pub(crate) layer_h: u32,
 }
 
+/// Cached blurred pixels for a static blur-behind layer.
+pub(crate) struct BlurCache {
+    pub(crate) pixels: Vec<u32>,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) radius: u32,
+    pub(crate) generation: u64,
+}
+
 // ── Layer ───────────────────────────────────────────────────────────────────
 
 pub struct Layer {
@@ -56,6 +67,8 @@ pub struct Layer {
     /// Blur the back buffer behind this layer before compositing.
     pub blur_behind: bool,
     pub blur_radius: u32,
+    /// Cached blur-behind output. Reused while lower scene content is unchanged.
+    pub(crate) blur_cache: Option<BlurCache>,
     /// Cached shadow alpha bitmap (computed lazily, invalidated on resize).
     pub(crate) shadow_cache: Option<ShadowCache>,
     /// VRAM-direct surface: app writes directly to off-screen VRAM, compositor

@@ -45,7 +45,6 @@ fn read_avatar_path(uid: u32) -> Option<String> {
 const CURRENT_AVATAR_SIZE: u32 = 72;
 const PICKER_AVATAR_SIZE: u32 = 64;
 const PASS_H: u32 = 34;
-const DEFAULT_WALLPAPER: &str = "/media/wallpapers/default.png";
 
 #[derive(Clone, Copy)]
 struct LoginPalette {
@@ -84,6 +83,44 @@ static mut ERROR_SHADOW_ID: u32 = 0;
 static mut ERROR_LBL_ID: u32 = 0;
 static mut LOGIN_CONTROLS: Option<Vec<u32>> = None;
 static mut PICKER_CONTROLS: Option<Vec<u32>> = None;
+static mut AVATAR_GLOW: Option<ui::Canvas> = None;
+static mut CENTER_AVATAR_POS: (i32, i32) = (0, 0);
+static mut CENTER_GLOW_POS: (i32, i32) = (0, 0);
+static mut CENTER_GLOW_SIZE: u32 = 0;
+static mut PICKER_AVATARS: Option<Vec<AvatarAnim>> = None;
+static mut SELECT_ANIM: Option<SelectAnim> = None;
+static mut AVATAR_TIMER_ID: u32 = 0;
+
+#[derive(Clone, Copy)]
+struct AvatarAnim {
+    glow: ui::Canvas,
+    avatar: ui::Canvas,
+    avatar_x: i32,
+    avatar_y: i32,
+    glow_x: i32,
+    glow_y: i32,
+    avatar_size: u32,
+    glow_size: u32,
+    pad: u32,
+    hover: u16,
+    target: u16,
+    pressed: bool,
+    shown_pressed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SelectAnim {
+    ticks: u8,
+    from_avatar_x: i32,
+    from_avatar_y: i32,
+    from_glow_x: i32,
+    from_glow_y: i32,
+    to_avatar_x: i32,
+    to_avatar_y: i32,
+    to_glow_x: i32,
+    to_glow_y: i32,
+    returning_to_picker: bool,
+}
 
 fn user_list() -> &'static mut Vec<(u32, String, String)> {
     unsafe { USERS.as_mut().unwrap() }
@@ -246,18 +283,25 @@ fn main() -> u32 {
     let avatar_x = center_x - CURRENT_AVATAR_SIZE as i32 / 2;
     let current_glow_pad = 16;
     let avatar_glow = ui::Canvas::new(CURRENT_AVATAR_SIZE + current_glow_pad * 2, CURRENT_AVATAR_SIZE + current_glow_pad * 2);
-    avatar_glow.set_position(avatar_x - current_glow_pad as i32, avatar_y - current_glow_pad as i32 + 3);
+    avatar_glow.set_position(avatar_x - current_glow_pad as i32, avatar_y - current_glow_pad as i32);
     avatar_glow.set_size(CURRENT_AVATAR_SIZE + current_glow_pad * 2, CURRENT_AVATAR_SIZE + current_glow_pad * 2);
     avatar_glow.set_visible(has_last_user);
-    draw_avatar_glow(
+    draw_avatar_ring(
         &avatar_glow,
         CURRENT_AVATAR_SIZE,
         current_glow_pad,
         avatar_glow_outer,
         avatar_glow_inner,
+        118,
     );
     win.add(&avatar_glow);
     login_ids.push(avatar_glow.id());
+    unsafe {
+        AVATAR_GLOW = Some(avatar_glow);
+        CENTER_AVATAR_POS = (avatar_x, avatar_y);
+        CENTER_GLOW_POS = (avatar_x - current_glow_pad as i32, avatar_y - current_glow_pad as i32);
+        CENTER_GLOW_SIZE = CURRENT_AVATAR_SIZE + current_glow_pad * 2;
+    }
 
     let avatar = ui::Canvas::new(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
     avatar.set_position(avatar_x, avatar_y);
@@ -324,6 +368,9 @@ fn main() -> u32 {
     pass_field.set_placeholder(i18n::t("Enter Password"));
     pass_field.set_color(panel);
     pass_field.set_text_color(text);
+    pass_field.set_style(ui::STYLE_BORDER, 0x80FFFFFF);
+    pass_field.set_style(ui::STYLE_ACCENT, 0xFFFFFFFF);
+    pass_field.set_style(ui::STYLE_RADIUS, PASS_H / 2);
     pass_field.set_position(pass_x, pass_y);
     pass_field.set_size(pass_w, PASS_H);
     pass_field.set_visible(has_last_user);
@@ -418,6 +465,7 @@ fn main() -> u32 {
     let total_w = (cell_w * count).min(sw.saturating_sub(40));
     let picker_x = sw as i32 / 2 - total_w as i32 / 2;
     let picker_y = (sh as i32 * 52) / 100;
+    let mut avatar_anims: Vec<AvatarAnim> = Vec::new();
     for idx in 0..user_list().len() {
         let (uid, username, display) = {
             let users = user_list();
@@ -429,28 +477,49 @@ fn main() -> u32 {
         let glow_size = PICKER_AVATAR_SIZE + picker_glow_pad * 2;
         let glow_x = cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2 - picker_glow_pad as i32;
         let glow = ui::Canvas::new(glow_size, glow_size);
-        glow.set_position(glow_x, picker_y - picker_glow_pad as i32 + 2);
+        glow.set_position(glow_x, picker_y - picker_glow_pad as i32);
         glow.set_size(glow_size, glow_size);
         glow.set_visible(!has_last_user);
-        draw_avatar_glow(
+        draw_avatar_ring(
             &glow,
             PICKER_AVATAR_SIZE,
             picker_glow_pad,
             avatar_glow_outer,
             avatar_glow_inner,
+            0,
         );
         win.add(&glow);
         picker_ids.push(glow.id());
 
         let av = ui::Canvas::new(PICKER_AVATAR_SIZE, PICKER_AVATAR_SIZE);
-        av.set_position(cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2, picker_y);
+        let av_x = cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2;
+        av.set_position(av_x, picker_y);
         av.set_size(PICKER_AVATAR_SIZE, PICKER_AVATAR_SIZE);
         av.set_interactive(true);
         av.set_visible(!has_last_user);
         draw_avatar_for(&av, PICKER_AVATAR_SIZE, uid, &username, &display);
-        av.on_click(move |_| select_user(idx));
+        av.on_mouse_enter(move |_| set_avatar_hover(idx, true));
+        av.on_mouse_leave(move |_| set_avatar_hover(idx, false));
+        av.on_mouse_down(move |_, _, _| set_avatar_pressed(idx, true));
+        av.on_mouse_up(move |_, _, _| set_avatar_pressed(idx, false));
+        av.on_click(move |_| select_user_animated(idx));
         win.add(&av);
         picker_ids.push(av.id());
+        avatar_anims.push(AvatarAnim {
+            glow,
+            avatar: av,
+            avatar_x: av_x,
+            avatar_y: picker_y,
+            glow_x,
+            glow_y: picker_y - picker_glow_pad as i32,
+            avatar_size: PICKER_AVATAR_SIZE,
+            glow_size,
+            pad: picker_glow_pad,
+            hover: 0,
+            target: 0,
+            pressed: false,
+            shown_pressed: false,
+        });
 
         let label_y = picker_y + PICKER_AVATAR_SIZE as i32 + 18;
         let lbl = ui::Label::new(&display);
@@ -498,11 +567,13 @@ fn main() -> u32 {
             ui::quit();
         }
     });
-    back_btn.on_click(|_| show_picker());
+    back_btn.on_click(|_| show_picker_animated());
 
     unsafe {
         LOGIN_CONTROLS = Some(login_ids);
         PICKER_CONTROLS = Some(picker_ids);
+        PICKER_AVATARS = Some(avatar_anims);
+        AVATAR_TIMER_ID = ui::set_timer(16, || tick_avatar_animation());
     }
     if has_last_user {
         show_login();
@@ -533,151 +604,16 @@ fn current_displayname() -> &'static str {
     users.get(idx).map(|(_, _, d)| d.as_str()).unwrap_or("")
 }
 
-fn choose_login_palette(sw: u32, sh: u32, uid: u32) -> LoginPalette {
-    let path = wallpaper_path_for_uid(uid);
-    let use_dark_text = wallpaper_is_light(&path, sw, sh).unwrap_or(false);
-    if use_dark_text {
-        LoginPalette {
-            text: 0xFF16181C,
-            text_soft: 0xFF16181C,
-            shadow_soft: 0x08000000,
-            shadow_near: 0x18000000,
-            avatar_glow_outer: 0x12FFFFFF,
-            avatar_glow_inner: 0x18000000,
-            panel: 0x88FFFFFF,
-        }
-    } else {
-        LoginPalette {
-            text: 0xFFFFFFFF,
-            text_soft: 0xE8FFFFFF,
-            shadow_soft: 0x14000000,
-            shadow_near: 0x28000000,
-            avatar_glow_outer: 0x1EFFFFFF,
-            avatar_glow_inner: 0x14000000,
-            panel: 0x88FFFFFF,
-        }
+fn choose_login_palette(_sw: u32, _sh: u32, _uid: u32) -> LoginPalette {
+    LoginPalette {
+        text: 0xFFFFFFFF,
+        text_soft: 0xF2FFFFFF,
+        shadow_soft: 0x32000000,
+        shadow_near: 0x70000000,
+        avatar_glow_outer: 0x22FFFFFF,
+        avatar_glow_inner: 0x24000000,
+        panel: 0x66000000,
     }
-}
-
-fn wallpaper_path_for_uid(uid: u32) -> String {
-    use anyos_std::fs;
-
-    let fd = fs::open("/System/users/wallpapers", 0);
-    if fd == u32::MAX {
-        return DEFAULT_WALLPAPER.to_string();
-    }
-    let mut buf = [0u8; 1024];
-    let n = fs::read(fd, &mut buf) as usize;
-    fs::close(fd);
-
-    let data = &buf[..n.min(buf.len())];
-    let mut pos = 0;
-    while pos < data.len() {
-        let line_end = data[pos..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map(|p| pos + p)
-            .unwrap_or(data.len());
-        let line = &data[pos..line_end];
-        pos = line_end + 1;
-        if let Some(colon) = line.iter().position(|&b| b == b':') {
-            if parse_u32_ascii(&line[..colon]) == Some(uid) {
-                if let Ok(path) = core::str::from_utf8(&line[colon + 1..]) {
-                    let path = path.trim();
-                    if !path.is_empty() {
-                        return path.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    DEFAULT_WALLPAPER.to_string()
-}
-
-fn parse_u32_ascii(bytes: &[u8]) -> Option<u32> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let mut out = 0u32;
-    for &b in bytes {
-        if !(b'0'..=b'9').contains(&b) {
-            return None;
-        }
-        out = out.saturating_mul(10).saturating_add((b - b'0') as u32);
-    }
-    Some(out)
-}
-
-fn wallpaper_is_light(path: &str, _sw: u32, _sh: u32) -> Option<bool> {
-    let (pixels, w, h) = load_image_pixels(path, 4 * 1024 * 1024)?;
-    if w == 0 || h == 0 {
-        return None;
-    }
-
-    let preview_w = 64;
-    let preview_h = 64;
-    let mut preview = alloc::vec![0u32; (preview_w * preview_h) as usize];
-    if !libimage_client::scale_image(
-        &pixels,
-        w,
-        h,
-        &mut preview,
-        preview_w,
-        preview_h,
-        libimage_client::MODE_COVER,
-    ) {
-        return Some(average_luminance(&pixels) > 150);
-    }
-
-    let clock_top = ((preview_h as u64 * 8) / 100) as u32;
-    let clock_bottom = ((preview_h as u64 * 32) / 100) as u32;
-    let login_top = ((preview_h as u64 * 48) / 100) as u32;
-    let login_bottom = ((preview_h as u64 * 72) / 100) as u32;
-    let content_left = ((preview_w as u64 * 24) / 100) as u32;
-    let content_right = ((preview_w as u64 * 76) / 100) as u32;
-
-    let mut weighted_sum = 0u64;
-    let mut weight = 0u64;
-    for y in 0..preview_h {
-        for x in 0..preview_w {
-            let mut px_weight = 1u64;
-            if y >= clock_top && y < clock_bottom && x >= content_left && x < content_right {
-                px_weight += 3;
-            }
-            if y >= login_top && y < login_bottom && x >= content_left && x < content_right {
-                px_weight += 3;
-            }
-            let lum = pixel_luminance(preview[(y * preview_w + x) as usize]) as u64;
-            weighted_sum += lum * px_weight;
-            weight += px_weight;
-        }
-    }
-    if weight == 0 {
-        return None;
-    }
-
-    // Bright, saturated wallpapers still need dark text once the local login
-    // area is light enough; white otherwise wins on photographic/dark regions.
-    Some((weighted_sum / weight) > 112)
-}
-
-fn average_luminance(pixels: &[u32]) -> u32 {
-    if pixels.is_empty() {
-        return 0;
-    }
-    let mut sum = 0u64;
-    for &px in pixels {
-        sum += pixel_luminance(px) as u64;
-    }
-    (sum / pixels.len() as u64) as u32
-}
-
-fn pixel_luminance(px: u32) -> u32 {
-    let r = (px >> 16) & 0xFF;
-    let g = (px >> 8) & 0xFF;
-    let b = px & 0xFF;
-    (77 * r + 150 * g + 29 * b) >> 8
 }
 
 fn update_name_label() {
@@ -725,6 +661,12 @@ fn set_controls_visible(ids: &Option<Vec<u32>>, visible: bool) {
 fn show_login() {
     clear_login_error();
     unsafe {
+        if let Some(glow) = AVATAR_GLOW {
+            let (x, y) = CENTER_GLOW_POS;
+            glow.set_position(x, y);
+            glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+            draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 118);
+        }
         set_controls_visible(&LOGIN_CONTROLS, true);
         set_controls_visible(&PICKER_CONTROLS, false);
     }
@@ -734,12 +676,75 @@ fn show_login() {
 fn show_picker() {
     clear_login_error();
     unsafe {
+        SELECT_ANIM = None;
+        if let Some(avatar) = AVATAR {
+            let (x, y) = CENTER_AVATAR_POS;
+            avatar.set_position(x, y);
+            avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
+            update_avatar();
+        }
+        if let Some(glow) = AVATAR_GLOW {
+            let (x, y) = CENTER_GLOW_POS;
+            glow.set_position(x, y);
+            glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+            draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 0);
+        }
         set_controls_visible(&LOGIN_CONTROLS, false);
         set_controls_visible(&PICKER_CONTROLS, true);
     }
 }
 
-fn select_user(idx: usize) {
+fn show_picker_animated() {
+    clear_login_error();
+    unsafe {
+        let idx = CURRENT_USER;
+        let Some(list) = PICKER_AVATARS.as_ref() else {
+            show_picker();
+            return;
+        };
+        let Some(anim) = list.get(idx) else {
+            show_picker();
+            return;
+        };
+        set_controls_visible(&PICKER_CONTROLS, true);
+        for picker in list.iter() {
+            picker.glow.set_visible(false);
+            picker.avatar.set_visible(false);
+        }
+        if let Some(avatar) = AVATAR {
+            let (x, y) = CENTER_AVATAR_POS;
+            avatar.set_position(x, y);
+            avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
+            update_avatar();
+        }
+        if let Some(glow) = AVATAR_GLOW {
+            let (x, y) = CENTER_GLOW_POS;
+            glow.set_position(x, y);
+            glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+            draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 120);
+        }
+        let to_avatar_x = anim.avatar_x - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
+        let to_avatar_y = anim.avatar_y - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
+        let to_glow_x = anim.glow_x - ((CENTER_GLOW_SIZE - anim.glow_size) / 2) as i32;
+        let to_glow_y = anim.glow_y - ((CENTER_GLOW_SIZE - anim.glow_size) / 2) as i32;
+        let (from_avatar_x, from_avatar_y) = CENTER_AVATAR_POS;
+        let (from_glow_x, from_glow_y) = CENTER_GLOW_POS;
+        SELECT_ANIM = Some(SelectAnim {
+            ticks: 0,
+            from_avatar_x,
+            from_avatar_y,
+            from_glow_x,
+            from_glow_y,
+            to_avatar_x,
+            to_avatar_y,
+            to_glow_x,
+            to_glow_y,
+            returning_to_picker: true,
+        });
+    }
+}
+
+fn select_user_animated(idx: usize) {
     if idx >= user_list().len() {
         return;
     }
@@ -748,7 +753,170 @@ fn select_user(idx: usize) {
     update_name_label();
     ui::Control::from_id(unsafe { PASS_ID }).set_text("");
     clear_login_error();
+    unsafe {
+        set_controls_visible(&LOGIN_CONTROLS, true);
+        set_controls_visible(&PICKER_CONTROLS, false);
+        if let Some(list) = PICKER_AVATARS.as_ref() {
+            if let Some(anim) = list.get(idx) {
+                let from_avatar_x = anim.avatar_x - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
+                let from_avatar_y = anim.avatar_y - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
+                let from_glow_x = anim.glow_x - ((CENTER_GLOW_SIZE - anim.glow_size) / 2) as i32;
+                let from_glow_y = anim.glow_y - ((CENTER_GLOW_SIZE - anim.glow_size) / 2) as i32;
+                if let Some(avatar) = AVATAR {
+                    avatar.set_position(from_avatar_x, from_avatar_y);
+                    avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
+                    update_avatar();
+                }
+                if let Some(glow) = AVATAR_GLOW {
+                    glow.set_position(from_glow_x, from_glow_y);
+                    glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+                    draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 180);
+                }
+                let (to_avatar_x, to_avatar_y) = CENTER_AVATAR_POS;
+                let (to_glow_x, to_glow_y) = CENTER_GLOW_POS;
+                SELECT_ANIM = Some(SelectAnim {
+                    ticks: 0,
+                    from_avatar_x,
+                    from_avatar_y,
+                    from_glow_x,
+                    from_glow_y,
+                    to_avatar_x,
+                    to_avatar_y,
+                    to_glow_x,
+                    to_glow_y,
+                    returning_to_picker: false,
+                });
+                return;
+            }
+        }
+    }
     show_login();
+}
+
+fn set_avatar_hover(idx: usize, hovering: bool) {
+    unsafe {
+        if let Some(list) = PICKER_AVATARS.as_mut() {
+            if let Some(anim) = list.get_mut(idx) {
+                anim.target = if hovering { 255 } else { 0 };
+                if !hovering {
+                    anim.pressed = false;
+                }
+            }
+        }
+    }
+}
+
+fn set_avatar_pressed(idx: usize, pressed: bool) {
+    unsafe {
+        if let Some(list) = PICKER_AVATARS.as_mut() {
+            if let Some(anim) = list.get_mut(idx) {
+                anim.pressed = pressed;
+                anim.target = if pressed { 255 } else { anim.target };
+            }
+        }
+    }
+}
+
+fn tick_avatar_animation() {
+    unsafe {
+        if let Some(list) = PICKER_AVATARS.as_mut() {
+            for anim in list.iter_mut() {
+                let target = anim.target;
+                let old_hover = anim.hover;
+                if anim.hover < target {
+                    anim.hover = (anim.hover + 26).min(target);
+                } else if anim.hover > target {
+                    anim.hover = anim.hover.saturating_sub(22).max(target);
+                }
+                if old_hover == anim.hover && anim.shown_pressed == anim.pressed {
+                    continue;
+                }
+                anim.shown_pressed = anim.pressed;
+                let inset = if anim.pressed { 2 } else { 0 };
+                anim.avatar.set_position(anim.avatar_x + inset, anim.avatar_y + inset);
+                anim.avatar.set_size(anim.avatar_size, anim.avatar_size);
+                draw_avatar_ring(
+                    &anim.glow,
+                    anim.avatar_size,
+                    anim.pad,
+                    0x22FFFFFF,
+                    0x24000000,
+                    anim.hover,
+                );
+            }
+        }
+
+        if let Some(sel) = SELECT_ANIM.as_mut() {
+            sel.ticks = sel.ticks.saturating_add(1);
+            let t = sel.ticks.min(14) as i32;
+            let eased = t * t * (42 - 2 * t) / (14 * 14);
+            let av_x = lerp_i32(sel.from_avatar_x, sel.to_avatar_x, eased, 14);
+            let av_y = lerp_i32(sel.from_avatar_y, sel.to_avatar_y, eased, 14);
+            let gl_x = lerp_i32(sel.from_glow_x, sel.to_glow_x, eased, 14);
+            let gl_y = lerp_i32(sel.from_glow_y, sel.to_glow_y, eased, 14);
+            if let Some(avatar) = AVATAR {
+                avatar.set_position(av_x, av_y);
+                avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
+            }
+            if let Some(glow) = AVATAR_GLOW {
+                glow.set_position(gl_x, gl_y);
+                glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+                draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 160);
+            }
+            if sel.ticks >= 14 {
+                let returning_to_picker = sel.returning_to_picker;
+                if let Some(avatar) = AVATAR {
+                    avatar.set_position(sel.to_avatar_x, sel.to_avatar_y);
+                    avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
+                    update_avatar();
+                }
+                if let Some(glow) = AVATAR_GLOW {
+                    glow.set_position(sel.to_glow_x, sel.to_glow_y);
+                    glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+                    let final_glow = if returning_to_picker { 0 } else { 118 };
+                    draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, final_glow);
+                }
+                SELECT_ANIM = None;
+                if returning_to_picker {
+                    if let Some(list) = PICKER_AVATARS.as_mut() {
+                        for anim in list.iter_mut() {
+                            anim.hover = 0;
+                            anim.target = 0;
+                            anim.pressed = false;
+                            anim.shown_pressed = false;
+                            anim.avatar.set_position(anim.avatar_x, anim.avatar_y);
+                            anim.avatar.set_size(anim.avatar_size, anim.avatar_size);
+                            anim.avatar.set_visible(true);
+                            anim.glow.set_position(anim.glow_x, anim.glow_y);
+                            anim.glow.set_size(anim.glow_size, anim.glow_size);
+                            draw_avatar_ring(&anim.glow, anim.avatar_size, anim.pad, 0x22FFFFFF, 0x24000000, 0);
+                            anim.glow.set_visible(true);
+                        }
+                    }
+                    set_controls_visible(&LOGIN_CONTROLS, false);
+                    set_controls_visible(&PICKER_CONTROLS, true);
+                } else {
+                    let (to_ax, to_ay) = CENTER_AVATAR_POS;
+                    let (to_gx, to_gy) = CENTER_GLOW_POS;
+                    if let Some(avatar) = AVATAR {
+                        avatar.set_position(to_ax, to_ay);
+                        avatar.set_size(CURRENT_AVATAR_SIZE, CURRENT_AVATAR_SIZE);
+                        update_avatar();
+                    }
+                    if let Some(glow) = AVATAR_GLOW {
+                        glow.set_position(to_gx, to_gy);
+                        glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
+                        draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 118);
+                    }
+                    ui::Control::from_id(PASS_ID).focus();
+                }
+            }
+        }
+    }
+}
+
+fn lerp_i32(a: i32, b: i32, t: i32, denom: i32) -> i32 {
+    a + ((b - a) * t) / denom
 }
 
 fn update_clock_labels() {
@@ -895,14 +1063,66 @@ fn draw_avatar_for(canvas: &ui::Canvas, size: u32, uid: u32, username: &str, dis
     canvas.draw_text(tx, ty, 0xFFFFFFFF, 1, font_size, &initials);
 }
 
-fn draw_avatar_glow(canvas: &ui::Canvas, avatar_size: u32, pad: u32, outer: u32, inner: u32) {
+fn draw_avatar_ring(canvas: &ui::Canvas, avatar_size: u32, pad: u32, outer: u32, inner: u32, glow: u16) {
     let size = avatar_size + pad * 2;
     let center = (size / 2) as i32;
-    let avatar_r = (avatar_size / 2) as i32;
+    let avatar_r = (avatar_size as i32) / 2;
+    let ring_inner = avatar_r + 2;
+    let ring_outer = ring_inner + 3;
+    let halo_outer = avatar_r + pad as i32 - 5;
+    let glow_i = glow as i32;
     canvas.clear(0);
-    canvas.fill_circle(center, center, avatar_r + pad as i32 - 2, outer);
-    canvas.fill_circle(center, center, avatar_r + (pad as i32 * 2) / 3, outer);
-    canvas.fill_circle(center, center, avatar_r + (pad as i32 / 3), inner);
+    if glow == 0 {
+        return;
+    }
+    for y in 0..size as i32 {
+        for x in 0..size as i32 {
+            let dx = x - center;
+            let dy = y - center;
+            let d2 = dx * dx + dy * dy;
+            let mut px = 0;
+
+            if d2 >= ring_inner * ring_inner && d2 <= ring_outer * ring_outer {
+                let alpha = 126 + (glow_i * 86) / 255;
+                px = rgba(alpha as u32, 255, 255, 255);
+            } else if d2 > ring_outer * ring_outer && d2 <= (ring_outer + 2) * (ring_outer + 2) {
+                let alpha = 36 + (glow_i * 76) / 255;
+                px = rgba(alpha as u32, 0, 0, 0);
+            } else if glow > 0 && d2 > (ring_outer + 2) * (ring_outer + 2) && d2 <= halo_outer * halo_outer {
+                let dist = isqrt(d2 as u32) as i32;
+                let span = (halo_outer - ring_outer - 2).max(1);
+                let falloff = ((halo_outer - dist).max(0) * 255) / span;
+                let alpha = (glow_i * falloff * 58) / (255 * 255);
+                if alpha > 0 {
+                    let r = ((outer >> 16) & 0xFF) as u32;
+                    let g = ((outer >> 8) & 0xFF) as u32;
+                    let b = (outer & 0xFF) as u32;
+                    px = rgba(alpha as u32, r, g, b);
+                }
+            } else if d2 >= (avatar_r - 1) * (avatar_r - 1) && d2 < ring_inner * ring_inner {
+                let alpha = ((inner >> 24) & 0xFF).max(22);
+                px = rgba(alpha, 0, 0, 0);
+            }
+
+            if px != 0 {
+                canvas.set_pixel(x, y, px);
+            }
+        }
+    }
+}
+
+fn rgba(a: u32, r: u32, g: u32, b: u32) -> u32 {
+    ((a.min(255)) << 24) | ((r.min(255)) << 16) | ((g.min(255)) << 8) | b.min(255)
+}
+
+fn isqrt(n: u32) -> u32 {
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }
 
 fn load_image_pixels(path: &str, max_pixels: usize) -> Option<(Vec<u32>, u32, u32)> {

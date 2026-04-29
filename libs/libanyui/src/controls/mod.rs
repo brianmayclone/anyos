@@ -7,6 +7,7 @@ use crate::control::{Control, ControlBase, ControlId, ControlKind, TextControlBa
 use alloc::boxed::Box;
 
 pub mod alert;
+pub mod antialias_filter_container;
 pub mod autocomplete_textfield;
 pub mod badge;
 pub mod button;
@@ -107,6 +108,9 @@ pub fn create_control(
         ControlKind::TreeView => Box::new(tree_view::TreeView::new(base)),
         ControlKind::RadioGroup => Box::new(radio_group::RadioGroup::new(base)),
         ControlKind::Spinner => Box::new(spinner::Spinner::new(base)),
+        ControlKind::AntiAliasFilterContainer => {
+            Box::new(antialias_filter_container::AntiAliasFilterContainer::new(base))
+        }
 
         // DropDown (text-based, pipe-separated items)
         ControlKind::DropDown => Box::new(dropdown::DropDown::new(

@@ -642,9 +642,9 @@ pub fn load_font(path: &[u8]) -> u32 {
 
 /// Load a font from raw data in memory.
 ///
-/// Supports raw TrueType/OpenType data plus WOFF/WOFF2 containers.
+/// Supports raw TrueType data plus WOFF/WOFF2 containers.
 ///
-/// WOFF 1.0 and unsupported WOFF2 outline formats fail closed. Callers should
+/// CFF-only OpenType and unsupported WOFF2 outline formats fail closed. Callers should
 /// keep their CSS/system fallback family when this returns u32::MAX.
 /// Returns font_id or u32::MAX on failure.
 pub fn load_font_data(data: alloc::vec::Vec<u8>) -> u32 {

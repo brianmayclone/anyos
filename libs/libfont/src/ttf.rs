@@ -2,7 +2,7 @@
 //! TrueType font parser for `no_std` environments.
 //!
 //! Zero-copy parser that operates on `&[u8]` references into raw TTF data.
-//! Supports TrueType glyf and OpenType/CFF outlines, cmap format 4 and 12
+//! Supports TrueType glyf outlines, cmap format 4 and 12
 //! character mapping, horizontal metrics, and CBDT/CBLC color bitmap lookup.
 
 use crate::cff;
@@ -246,6 +246,12 @@ impl TtfFont {
         let (cff_off, cff_len) = cff_rec.unwrap_or((0, 0));
         let has_cff_outlines = cff_len > 0 && data.len() >= cff_off.saturating_add(cff_len);
         let has_outlines = has_glyf_outlines || has_cff_outlines;
+        // CFF-only OpenType fonts are common on news sites, but the current
+        // CFF path is not yet production-safe. Reject them at parse time so
+        // browsers keep CSS fallback fonts instead of rendering corrupt glyphs.
+        if has_cff_outlines && !has_glyf_outlines {
+            return None;
+        }
 
         // Bitmap tables are optional
         let has_bitmaps = cblc_off.is_some() && cbdt_off.is_some();
@@ -253,11 +259,28 @@ impl TtfFont {
         let cbdt_off = cbdt_off.unwrap_or(0);
 
         if data.len() < head_off + 54 { return None; }
+        if read_u32_be(&data, head_off + 12) != 0x5F0F3CF5 {
+            return None;
+        }
         let units_per_em = read_u16_be(&data, head_off + 18);
         let loca_format = read_i16_be(&data, head_off + 50);
+        if units_per_em == 0 || !(loca_format == 0 || loca_format == 1) {
+            return None;
+        }
 
         if data.len() < maxp_off + 6 { return None; }
         let num_glyphs = read_u16_be(&data, maxp_off + 4);
+        if num_glyphs == 0 {
+            return None;
+        }
+
+        if data.len() < cmap_off + 4 || read_u16_be(&data, cmap_off) != 0 {
+            return None;
+        }
+        let cmap_subtables = read_u16_be(&data, cmap_off + 2);
+        if cmap_subtables == 0 || cmap_subtables > 64 {
+            return None;
+        }
 
         if data.len() < hhea_off + 36 { return None; }
         let ascent = read_i16_be(&data, hhea_off + 4);

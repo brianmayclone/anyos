@@ -36,12 +36,11 @@ impl CipherSuite {
     /// AEAD key size in bytes.
     pub fn key_len(&self) -> usize {
         match self {
-            CipherSuite::Aes128GcmSha256 |
-            CipherSuite::EcdheRsaAes128GcmSha256 |
-            CipherSuite::EcdheEcdsaAes128GcmSha256 => 16,
+            CipherSuite::Aes128GcmSha256
+            | CipherSuite::EcdheRsaAes128GcmSha256
+            | CipherSuite::EcdheEcdsaAes128GcmSha256 => 16,
             CipherSuite::Aes256GcmSha384 => 32,
-            CipherSuite::Chacha20Poly1305Sha256 |
-            CipherSuite::EcdheRsaChacha20Poly1305Sha256 => 32,
+            CipherSuite::Chacha20Poly1305Sha256 | CipherSuite::EcdheRsaChacha20Poly1305Sha256 => 32,
         }
     }
 
@@ -59,7 +58,7 @@ impl CipherSuite {
     pub fn hash_len(&self) -> usize {
         match self {
             CipherSuite::Aes256GcmSha384 => 48, // SHA-384
-            _ => 32, // SHA-256
+            _ => 32,                            // SHA-256
         }
     }
 

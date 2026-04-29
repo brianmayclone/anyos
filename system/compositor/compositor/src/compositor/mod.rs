@@ -95,6 +95,9 @@ pub struct Compositor {
     /// Reusable scratch buffer for blur operations (avoids per-frame heap allocation).
     pub(crate) blur_temp: Vec<u32>,
 
+    /// Incremented whenever scene content below blur-behind layers may have changed.
+    pub(crate) blur_generation: u64,
+
     /// Reusable Vec for compositing loop (swap with self.damage to avoid drain+collect alloc).
     pub(crate) compositing_damage: Vec<Rect>,
 
@@ -130,6 +133,7 @@ impl Compositor {
             accel_move_hint: None,
             vram_allocator: None,
             blur_temp: Vec::with_capacity(width.max(height) as usize),
+            blur_generation: 1,
             compositing_damage: Vec::with_capacity(32),
             vram_dirty: false,
             gmr_active: false,
@@ -165,6 +169,7 @@ impl Compositor {
             dirty: true,
             blur_behind: false,
             blur_radius: 0,
+            blur_cache: None,
             shadow_cache: None,
             is_vram: false,
             vram_y: 0,
@@ -200,6 +205,7 @@ impl Compositor {
             dirty: true,
             blur_behind: false,
             blur_radius: 0,
+            blur_cache: None,
             shadow_cache: None,
             is_vram: false,
             vram_y: 0,
@@ -237,6 +243,7 @@ impl Compositor {
             dirty: true,
             blur_behind: false,
             blur_radius: 0,
+            blur_cache: None,
             shadow_cache: None,
             is_vram: false,
             vram_y: 0,
@@ -250,6 +257,7 @@ impl Compositor {
         if let Some(idx) = self.layer_index(id) {
             let layer = &self.layers[idx];
             self.damage.push(layer.damage_bounds());
+            self.blur_generation = self.blur_generation.wrapping_add(1);
             // Free off-screen VRAM allocation if this was a VRAM-direct layer
             if layer.is_vram {
                 if let Some(ref mut alloc) = self.vram_allocator {
@@ -289,6 +297,7 @@ impl Compositor {
             dirty: true,
             blur_behind: false,
             blur_radius: 0,
+            blur_cache: None,
             shadow_cache: None,
             is_vram: true,
             vram_y: alloc.vram_y,
@@ -348,6 +357,11 @@ impl Compositor {
             let old_bounds = self.layers[idx].damage_bounds().expand(1);
             self.layers[idx].x = new_x;
             self.layers[idx].y = new_y;
+            if self.layers[idx].blur_behind {
+                self.layers[idx].blur_cache = None;
+            } else {
+                self.blur_generation = self.blur_generation.wrapping_add(1);
+            }
             let new_bounds = self.layers[idx].damage_bounds().expand(1);
 
             if self.gpu_accel {
@@ -378,6 +392,7 @@ impl Compositor {
                 let layer = self.layers.remove(idx);
                 let bounds = layer.damage_bounds();
                 self.layers.push(layer);
+                self.blur_generation = self.blur_generation.wrapping_add(1);
                 self.damage.push(bounds);
             }
         }
@@ -386,6 +401,7 @@ impl Compositor {
     /// Set the focused layer (gets stronger shadow).
     pub fn set_focused_layer(&mut self, id: Option<u32>) {
         if self.focused_layer_id != id {
+            self.blur_generation = self.blur_generation.wrapping_add(1);
             // Damage old and new focused layers (shadow intensity changed)
             if let Some(old_id) = self.focused_layer_id {
                 if let Some(idx) = self.layer_index(old_id) {
@@ -408,6 +424,10 @@ impl Compositor {
         if let Some(idx) = self.layer_index(id) {
             if self.layers[idx].visible != visible {
                 self.layers[idx].visible = visible;
+                self.layers[idx].blur_cache = None;
+                if !self.layers[idx].blur_behind {
+                    self.blur_generation = self.blur_generation.wrapping_add(1);
+                }
                 self.damage.push(self.layers[idx].damage_bounds());
             }
         }
@@ -453,6 +473,8 @@ impl Compositor {
             self.layers[idx].height = new_h;
             self.layers[idx].pixels = new_pixels;
             self.layers[idx].shadow_cache = None;
+            self.layers[idx].blur_cache = None;
+            self.blur_generation = self.blur_generation.wrapping_add(1);
             self.layers[idx].dirty = true;
         }
     }
@@ -510,6 +532,7 @@ impl Compositor {
     pub fn damage_all(&mut self) {
         self.damage
             .push(Rect::new(0, 0, self.fb_width, self.fb_height));
+        self.blur_generation = self.blur_generation.wrapping_add(1);
     }
 
     /// Resize the compositor for a new screen resolution.
@@ -520,6 +543,8 @@ impl Compositor {
         self.fb_pitch = new_pitch;
         let pixel_count = (new_width * new_height) as usize;
         self.back_buffer = vec![0u32; pixel_count];
+        self.blur_temp = Vec::with_capacity(new_width.max(new_height) as usize);
+        self.blur_generation = self.blur_generation.wrapping_add(1);
         // GMR must be re-registered since back_buffer was reallocated
         if self.gmr_active {
             self.gmr_active = false;

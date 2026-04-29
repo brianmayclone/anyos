@@ -685,13 +685,13 @@ pub(crate) fn has_pending_activity() -> bool {
 // ═══════════════════════════════════════════════════════════
 
 /// Maximum number of cached sub-resource responses.
-const MAX_CACHE_ENTRIES: usize = 256;
-const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_CACHEABLE_BODY_BYTES: usize = 4 * 1024 * 1024;
-const MAX_CACHEABLE_IMAGE_BODY_BYTES: usize = 256 * 1024;
-const MAX_WORKER_DECODE_IMAGE_BYTES: usize = 1536 * 1024;
-const MAX_IMAGE_MAILBOX_BACKLOG_FOR_WORKER_DECODE: usize = 4;
-
+const MAX_CACHE_ENTRIES: usize = 1024;
+const MAX_CACHE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_CACHEABLE_BODY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CACHEABLE_IMAGE_BODY_BYTES: usize = 16 * 1024 * 1024;
+const MAX_DISK_CACHEABLE_BODY_BYTES: usize = 32 * 1024 * 1024;
+const DISK_CACHE_ROOT: &str = "/tmp/surf/caches";
+const DISK_CACHE_DEFAULT_MAX_AGE_SECS: u32 = 60 * 60;
 /// A cached HTTP response for a sub-resource.
 struct CacheEntry {
     /// Cache key: fully-qualified URL string.
@@ -757,10 +757,21 @@ fn cache_get(url_key: &str) -> Option<(Vec<u8>, String)> {
             .and_then(|cache| cache.get(url_key))
     };
     release(&CACHE_LOCK);
-    hit
+    if hit.is_some() {
+        return hit;
+    }
+    disk_cache_get(url_key).map(|(body, headers)| {
+        cache_put_memory_only(String::from(url_key), body.clone(), headers.clone());
+        (body, headers)
+    })
 }
 
 fn cache_put(url_key: String, body: Vec<u8>, headers: String) {
+    disk_cache_put(&url_key, &body, &headers);
+    cache_put_memory_only(url_key, body, headers);
+}
+
+fn cache_put_memory_only(url_key: String, body: Vec<u8>, headers: String) {
     acquire(&CACHE_LOCK);
     unsafe {
         if let Some(cache) = SUBRESOURCE_CACHE.as_mut() {
@@ -770,19 +781,226 @@ fn cache_put(url_key: String, body: Vec<u8>, headers: String) {
     release(&CACHE_LOCK);
 }
 
-fn should_worker_decode_image(
-    tab_index: usize,
-    priority: ImagePriority,
-    encoded_len: usize,
-    is_svg: bool,
-) -> bool {
-    if is_svg || priority == ImagePriority::Deferred {
+fn disk_cache_get(url_key: &str) -> Option<(Vec<u8>, String)> {
+    let (body_path, headers_path) = disk_cache_paths(url_key);
+    let headers = anyos_std::fs::read_to_string(&headers_path).ok()?;
+    if !disk_cache_is_fresh(&body_path, &headers) {
+        let _ = anyos_std::fs::unlink(&body_path);
+        let _ = anyos_std::fs::unlink(&headers_path);
+        return None;
+    }
+    let body = anyos_std::fs::read_to_vec(&body_path).ok()?;
+    surf_net_log!("disk cache hit: {} ({} bytes)", url_key, body.len());
+    Some((body, headers))
+}
+
+fn disk_cache_put(url_key: &str, body: &[u8], headers: &str) {
+    if body.is_empty()
+        || body.len() > MAX_DISK_CACHEABLE_BODY_BYTES
+        || !headers_cacheable(headers)
+    {
+        return;
+    }
+
+    let (body_path, headers_path) = disk_cache_paths(url_key);
+    ensure_disk_cache_dir(url_key);
+    if anyos_std::fs::write_bytes(&body_path, body).is_err() {
+        return;
+    }
+    let _ = anyos_std::fs::write_bytes(&headers_path, headers.as_bytes());
+}
+
+fn ensure_disk_cache_dir(url_key: &str) {
+    let _ = anyos_std::fs::mkdir("/tmp");
+    let _ = anyos_std::fs::mkdir("/tmp/surf");
+    let _ = anyos_std::fs::mkdir(DISK_CACHE_ROOT);
+    let mut dir = String::from(DISK_CACHE_ROOT);
+    dir.push('/');
+    append_hex64(&mut dir, hash_str64(url_key));
+    let _ = anyos_std::fs::mkdir(&dir);
+}
+
+fn disk_cache_paths(url_key: &str) -> (String, String) {
+    let mut dir = String::from(DISK_CACHE_ROOT);
+    dir.push('/');
+    append_hex64(&mut dir, hash_str64(url_key));
+    dir.push('/');
+    let mut name = cache_file_name(url_key);
+    if name.is_empty() {
+        name.push_str("asset.bin");
+    }
+    if name.len() > 72 {
+        name.truncate(72);
+    }
+    let mut body = dir;
+    body.push_str(&name);
+    let mut headers = body.clone();
+    headers.push_str(".headers");
+    (body, headers)
+}
+
+fn cache_file_name(url_key: &str) -> String {
+    let path_part = url_key
+        .split('?')
+        .next()
+        .unwrap_or(url_key)
+        .rsplit('/')
+        .next()
+        .unwrap_or("asset.bin");
+    let mut out = String::new();
+    for ch in path_part.chars() {
+        let keep = ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_');
+        out.push(if keep { ch } else { '_' });
+    }
+    if out.is_empty() || out == "." || out == ".." {
+        String::from("asset.bin")
+    } else {
+        out
+    }
+}
+
+fn disk_cache_is_fresh(body_path: &str, headers: &str) -> bool {
+    let max_age = match cache_max_age_secs(headers) {
+        Some(age) => age,
+        None if headers_cacheable(headers) => DISK_CACHE_DEFAULT_MAX_AGE_SECS,
+        None => return false,
+    };
+    let mut stat = [0u32; 7];
+    if anyos_std::fs::stat(body_path, &mut stat) != 0 {
         return false;
     }
-    if encoded_len > MAX_WORKER_DECODE_IMAGE_BYTES {
-        return false;
+    let mtime = stat[6];
+    let now = current_unix_secs();
+    now == 0 || mtime == 0 || now <= mtime || now.saturating_sub(mtime) <= max_age
+}
+
+fn headers_cacheable(headers: &str) -> bool {
+    let cc = header_value(headers, "cache-control").unwrap_or_default();
+    let lower = cc.to_ascii_lowercase();
+    !lower.contains("no-store") && !lower.contains("no-cache") && !lower.contains("must-revalidate")
+}
+
+fn cache_max_age_secs(headers: &str) -> Option<u32> {
+    let value = header_value(headers, "cache-control")?;
+    for part in value.split(',') {
+        let part = part.trim();
+        let lower = part.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("max-age=") {
+            if let Ok(v) = rest.parse::<u32>() {
+                return Some(v);
+            }
+        }
     }
-    result_mailbox_len_for_tab(tab_index) <= MAX_IMAGE_MAILBOX_BACKLOG_FOR_WORKER_DECODE
+    None
+}
+
+fn header_value(headers: &str, name: &str) -> Option<String> {
+    for line in headers.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case(name) {
+                return Some(String::from(v.trim()));
+            }
+        }
+    }
+    None
+}
+
+fn current_unix_secs() -> u32 {
+    let mut buf = [0u8; 8];
+    if anyos_std::sys::time(&mut buf) == u32::MAX {
+        return 0;
+    }
+    let year = u16::from_le_bytes([buf[0], buf[1]]) as i32;
+    let month = buf[2] as i32;
+    let day = buf[3] as i32;
+    let hour = buf[4] as i32;
+    let minute = buf[5] as i32;
+    let second = buf[6] as i32;
+    if year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 {
+        return 0;
+    }
+    let days = days_from_civil(year, month, day);
+    let secs = days
+        .saturating_mul(86_400)
+        .saturating_add(hour.saturating_mul(3_600))
+        .saturating_add(minute.saturating_mul(60))
+        .saturating_add(second);
+    if secs < 0 {
+        0
+    } else {
+        secs as u32
+    }
+}
+
+fn days_from_civil(year: i32, month: i32, day: i32) -> i32 {
+    let y = year - if month <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = month + if month > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn hash_str64(s: &str) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for &b in s.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn append_hex64(out: &mut String, value: u64) {
+    for shift in (0..64).step_by(4).rev() {
+        let n = ((value >> shift) & 0xF) as u8;
+        out.push(if n < 10 {
+            (b'0' + n) as char
+        } else {
+            (b'a' + (n - 10)) as char
+        });
+    }
+}
+
+fn decode_image_in_worker(
+    src: &str,
+    body: &[u8],
+    headers: &str,
+    target_width: Option<u32>,
+    target_height: Option<u32>,
+) -> Option<DecodedRaster> {
+    let is_svg = crate::resources::is_svg(src, headers);
+    let decoded = if is_svg {
+        crate::resources::decode_svg_to_image(body).map_err(|_| {
+            surf_net_log!(
+                "worker svg decode failed: src={} bytes={}",
+                src,
+                body.len()
+            );
+            libimage_client::ImageError::InvalidData
+        })
+    } else {
+        crate::resources::decode_raster_to_image(body, target_width, target_height).map_err(|err| {
+            surf_net_log!(
+                "worker image decode failed: src={} bytes={} err={:?}",
+                src,
+                body.len(),
+                err
+            );
+            err
+        })
+    };
+
+    match decoded {
+        Ok(image) => Some(DecodedRaster {
+            pixels: image.pixels,
+            width: image.width,
+            height: image.height,
+            format: image.format,
+            suspicious_black_ppm: image.suspicious_black_ppm,
+        }),
+        Err(_) => None,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1261,47 +1479,20 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             // Check sub-resource cache first.
             if let Some((body_vec, headers_string)) = cache_get(&key) {
                 surf_net_log!("image cache hit: {}", src);
-                let is_svg = crate::resources::is_svg(&src, &headers_string);
                 let encoded_len = body_vec.len();
-                let worker_decode =
-                    should_worker_decode_image(tab_index, priority, encoded_len, is_svg);
-                let decoded_raster = if worker_decode {
-                    match crate::resources::decode_raster_to_image(
-                        &body_vec,
-                        target_width,
-                        target_height,
-                    ) {
-                        Ok(image) => Some(DecodedRaster {
-                            pixels: image.pixels,
-                            width: image.width,
-                            height: image.height,
-                            format: image.format,
-                            suspicious_black_ppm: image.suspicious_black_ppm,
-                        }),
-                        Err(err) => {
-                            surf_net_log!(
-                                "worker image decode failed: src={} bytes={} err={:?}",
-                                src,
-                                encoded_len,
-                                err
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-                let body = if is_svg || (!worker_decode && decoded_raster.is_none()) {
-                    body_vec
-                } else {
-                    Vec::new()
-                };
+                let decoded_raster = decode_image_in_worker(
+                    &src,
+                    &body_vec,
+                    &headers_string,
+                    target_width,
+                    target_height,
+                );
                 enqueue_result(FetchResult::ImageDone {
                     tab_index,
                     src,
                     url,
                     encoded_len,
-                    body,
+                    body: Vec::new(),
                     headers: headers_string,
                     decoded_raster,
                     priority,
@@ -1319,45 +1510,19 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     if is_svg || encoded_len <= MAX_CACHEABLE_IMAGE_BODY_BYTES {
                         cache_put(key, resp.body.clone(), resp.headers.clone());
                     }
-                    let worker_decode =
-                        should_worker_decode_image(tab_index, priority, encoded_len, is_svg);
-                    let decoded_raster = if worker_decode {
-                        match crate::resources::decode_raster_to_image(
-                            &resp.body,
-                            target_width,
-                            target_height,
-                        ) {
-                            Ok(image) => Some(DecodedRaster {
-                            pixels: image.pixels,
-                            width: image.width,
-                            height: image.height,
-                            format: image.format,
-                            suspicious_black_ppm: image.suspicious_black_ppm,
-                            }),
-                            Err(err) => {
-                                surf_net_log!(
-                                    "worker image decode failed: src={} bytes={} err={:?}",
-                                    src,
-                                    encoded_len,
-                                    err
-                                );
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    let body = if is_svg || (!worker_decode && decoded_raster.is_none()) {
-                        resp.body
-                    } else {
-                        Vec::new()
-                    };
+                    let decoded_raster = decode_image_in_worker(
+                        &src,
+                        &resp.body,
+                        &resp.headers,
+                        target_width,
+                        target_height,
+                    );
                     enqueue_result(FetchResult::ImageDone {
                         tab_index,
                         src,
                         url,
                         encoded_len,
-                        body,
+                        body: Vec::new(),
                         headers: resp.headers,
                         decoded_raster,
                         priority,

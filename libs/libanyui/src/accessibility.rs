@@ -603,6 +603,7 @@ fn kind_name(k: ControlKind) -> &'static str {
         ControlKind::DropDown => "DropDown",
         ControlKind::ComboBox => "ComboBox",
         ControlKind::AutoCompleteTextField => "AutoCompleteTextField",
+        ControlKind::AntiAliasFilterContainer => "AntiAliasFilterContainer",
         ControlKind::Spinner => "Spinner",
         ControlKind::PlainButton => "PlainButton",
         ControlKind::DateTimePicker => "DateTimePicker",

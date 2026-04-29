@@ -6,10 +6,10 @@
 
 pub mod asn1;
 
-use alloc::vec::Vec;
 use crate::crypto::bignum::BigUint;
-use crate::crypto::rsa::RsaPublicKey;
 use crate::crypto::p256::P256Point;
+use crate::crypto::rsa::RsaPublicKey;
+use alloc::vec::Vec;
 use asn1::*;
 
 /// The type of public key found in a certificate.
@@ -63,7 +63,10 @@ pub fn parse_certificate(der: &[u8]) -> Option<Certificate> {
     let sig_alg_tlv = iter.next()?;
     let signature_algorithm = parse_algorithm_identifier(sig_alg_tlv.value);
 
-    Some(Certificate { public_key, signature_algorithm })
+    Some(Certificate {
+        public_key,
+        signature_algorithm,
+    })
 }
 
 /// Parse TBSCertificate to extract the SubjectPublicKeyInfo.

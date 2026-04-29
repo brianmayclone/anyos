@@ -302,7 +302,10 @@ fn send_all_fn(fd: u32, data: &[u8], send_fn: fn(u32, &[u8]) -> i32) -> Result<(
     while offset < data.len() {
         let n = send_fn(fd, &data[offset..]);
         if n < 0 { return Err(TlsError::SendFailed); }
-        if n == 0 { core::hint::spin_loop(); continue; }
+        if n == 0 {
+            crate::transport_sleep(1);
+            continue;
+        }
         offset += n as usize;
     }
     Ok(())
@@ -333,12 +336,23 @@ fn recv_raw_record(fd: u32, recv_fn: fn(u32, &mut [u8]) -> i32) -> Result<Vec<u8
 }
 
 fn recv_exact(fd: u32, buf: &mut [u8], recv_fn: fn(u32, &mut [u8]) -> i32) -> Result<(), TlsError> {
+    const MAX_EMPTY_READS: u32 = 10;
     let mut filled = 0;
+    let mut retries = 0;
     while filled < buf.len() {
         let n = recv_fn(fd, &mut buf[filled..]);
-        if n <= 0 {
+        if n < 0 {
             return Err(TlsError::RecvFailed);
         }
+        if n == 0 {
+            retries += 1;
+            if retries > MAX_EMPTY_READS {
+                return Err(TlsError::RecvFailed);
+            }
+            crate::transport_sleep(100);
+            continue;
+        }
+        retries = 0;
         filled += n as usize;
     }
     Ok(())

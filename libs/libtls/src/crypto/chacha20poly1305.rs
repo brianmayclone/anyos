@@ -56,7 +56,9 @@ pub fn decrypt(
     }
 
     if diff != 0 {
-        for b in ciphertext.iter_mut() { *b = 0; }
+        for b in ciphertext.iter_mut() {
+            *b = 0;
+        }
         return false;
     }
 
@@ -82,5 +84,9 @@ fn build_mac_data(aad: &[u8], ct: &[u8]) -> alloc::vec::Vec<u8> {
 }
 
 fn pad16(len: usize) -> usize {
-    if len % 16 == 0 { 0 } else { 16 - (len % 16) }
+    if len % 16 == 0 {
+        0
+    } else {
+        16 - (len % 16)
+    }
 }

@@ -173,7 +173,6 @@ impl PrefixCode {
             next_code[len] += 1;
 
             if len <= 8 {
-                // Reverse the code bits for LSB-first reading
                 let rev = reverse_bits(c, len as u32);
                 // Fill all fast-table entries that match this prefix
                 let step = 1u32 << len;
@@ -256,7 +255,7 @@ fn read_prefix_code(br: &mut BitReader, alphabet_size: u32) -> Option<PrefixCode
 /// Simple prefix code: 1–4 symbols with explicit bit patterns.
 fn read_simple_prefix_code(br: &mut BitReader, alphabet_size: u32) -> Option<PrefixCode> {
     let nsym = br.read(2) + 1; // 1..4 symbols
-    let bits_per_sym = if alphabet_size > 256 { 16 } else if alphabet_size > 16 { 8 } else if alphabet_size > 4 { 4 } else if alphabet_size > 2 { 2 } else { 1 };
+    let bits_per_sym = alphabet_bits(alphabet_size);
 
     let mut syms = [0u16; 4];
     for i in 0..nsym as usize {
@@ -301,6 +300,16 @@ fn read_simple_prefix_code(br: &mut BitReader, alphabet_size: u32) -> Option<Pre
         }
         _ => return None,
     }
+}
+
+fn alphabet_bits(alphabet_size: u32) -> u32 {
+    let mut bits = 0u32;
+    let mut n = alphabet_size.saturating_sub(1);
+    while n > 0 {
+        bits += 1;
+        n >>= 1;
+    }
+    bits.max(1)
 }
 
 /// Complex prefix code: code-length codes (like DEFLATE dynamic Huffman).
@@ -352,7 +361,11 @@ fn read_complex_prefix_code(br: &mut BitReader, alphabet_size: u32, hskip: u32) 
                 let extra = br.read(2) + 3;
                 if repeat_len != prev_len { repeat = 0; }
                 let old_repeat = repeat;
-                repeat = ((repeat as i64 - 2) as u32).wrapping_add(extra + 3);
+                repeat = if repeat == 0 {
+                    extra
+                } else {
+                    repeat.saturating_sub(2).saturating_mul(4).saturating_add(extra)
+                };
                 let times = repeat.wrapping_sub(old_repeat);
                 repeat_len = prev_len;
                 for _ in 0..times {
@@ -367,7 +380,11 @@ fn read_complex_prefix_code(br: &mut BitReader, alphabet_size: u32, hskip: u32) 
                 let extra = br.read(3) + 3;
                 if repeat_len != 0 { repeat = 0; }
                 let old_repeat = repeat;
-                repeat = ((repeat as i64 - 2) as u32).wrapping_add(extra + 3);
+                repeat = if repeat == 0 {
+                    extra
+                } else {
+                    repeat.saturating_sub(2).saturating_mul(8).saturating_add(extra)
+                };
                 let times = repeat.wrapping_sub(old_repeat);
                 repeat_len = 0;
                 for _ in 0..times {
@@ -385,19 +402,35 @@ fn read_complex_prefix_code(br: &mut BitReader, alphabet_size: u32, hskip: u32) 
 }
 
 fn read_code_length_code(br: &mut BitReader) -> u8 {
-    // Variable-length encoding for code-length code lengths (0..5)
-    // RFC 7932 §3.4.2: the code length code is encoded with a fixed scheme
     let v = br.peek(4);
-    match v & 0x7 {
-        0 => { br.drop_bits(2); 0 } // 00 → 0
-        4 => { br.drop_bits(3); 1 } // 100 → 1
-        1 => { br.drop_bits(2); 2 } // 01 → 2
-        5 => { br.drop_bits(3); 3 } // 101 → 3
-        3 => { br.drop_bits(3); 4 } // 011 → 4
-        7 => { br.drop_bits(3); 5 } // 111 → 5
-        2 => { br.drop_bits(2); 4 } // 10 → can't happen since we check 3 bits first
-        6 => { br.drop_bits(3); 5 }
-        _ => { br.drop_bits(1); 0 }
+    if (v & 0x0F) == 0b0111 {
+        br.drop_bits(4);
+        1
+    } else if (v & 0x0F) == 0b1111 {
+        br.drop_bits(4);
+        5
+    } else if (v & 0x07) == 0b011 {
+        br.drop_bits(3);
+        2
+    } else {
+        match v & 0x03 {
+            0b00 => {
+                br.drop_bits(2);
+                0
+            }
+            0b10 => {
+                br.drop_bits(2);
+                3
+            }
+            0b01 => {
+                br.drop_bits(2);
+                4
+            }
+            _ => {
+                br.drop_bits(1);
+                0
+            }
+        }
     }
 }
 
@@ -492,7 +525,7 @@ fn read_var_int(br: &mut BitReader) -> u32 {
     let v = br.read(1);
     if v == 0 { return 1; }
     let nbits = br.read(3);
-    if nbits == 0 { return 1; }
+    if nbits == 0 { return 2; }
     let v = br.read(nbits) as u32;
     v + (1 << nbits) + 1
 }
@@ -527,48 +560,35 @@ static DIST_SHORT_BASE: [i8; 16] = [
 ];
 
 /// Decode insert-and-copy length from a single symbol.
-fn decode_insert_copy(cmd_sym: u16) -> (u32, u32, u32) {
-    // RFC 7932 §5: the 704-symbol insert-and-copy command uses a 2D table
-    // decomposed as: cmd = insert_code * 8 + copy_code (for short distances)
-    // or more complex mapping.
-    //
-    // Simplified: cmd_sym encodes (insert_length_code, copy_length_code, distance_context).
+fn decode_insert_copy(cmd_sym: u16) -> (u32, u32, bool) {
     let cmd = cmd_sym as u32;
 
-    // Table from RFC 7932 §5, Appendix C
-    let (insert_code, copy_code, dist_ctx) = if cmd < 128 {
-        let ic = (cmd >> 3) & 0xF;
-        let cc = cmd & 0x7;
-        let d = if cmd < 8 { 0u32 } else if cmd < 128 { 1 } else { 2 };
-        (ic as u32, cc as u32, d)
+    let low_insert = (cmd >> 3) & 7;
+    let low_copy = cmd & 7;
+    let (insert_base, copy_base, distance_omitted) = if cmd < 64 {
+        (0, 0, true)
+    } else if cmd < 128 {
+        (0, 8, true)
+    } else if cmd < 192 {
+        (0, 0, false)
     } else if cmd < 256 {
-        let v = cmd - 128;
-        let ic = (v >> 3) & 0xF;
-        let cc = (v & 0x7) + 8;
-        (ic as u32, cc as u32, 1u32)
+        (0, 8, false)
     } else if cmd < 384 {
-        let v = cmd - 256;
-        let ic = (v >> 3) + 8;
-        let cc = v & 0x7;
-        (ic as u32, cc as u32, 1u32)
+        let copy_base = if cmd < 320 { 0 } else { 8 };
+        (8, copy_base, false)
+    } else if cmd < 448 {
+        (0, 16, false)
     } else if cmd < 512 {
-        let v = cmd - 384;
-        let ic = (v >> 3) + 8;
-        let cc = (v & 0x7) + 8;
-        (ic as u32, cc as u32, 1u32)
+        (16, 0, false)
     } else if cmd < 640 {
-        let v = cmd - 512;
-        let ic = (v >> 3) + 16;
-        let cc = v & 0x7;
-        (ic as u32, cc as u32, 2u32)
+        let insert_base = if cmd < 576 { 8 } else { 16 };
+        let copy_base = if cmd < 576 { 16 } else { 8 };
+        (insert_base, copy_base, false)
     } else {
-        let v = cmd - 640;
-        let ic = (v >> 3) + 16;
-        let cc = (v & 0x7) + 8;
-        (ic as u32, cc as u32, 2u32)
+        (16, 16, false)
     };
 
-    (insert_code.min(23), copy_code.min(23), dist_ctx)
+    ((insert_base + low_insert).min(23), (copy_base + low_copy).min(23), distance_omitted)
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -670,14 +690,14 @@ static CONTEXT_LUT_SIGNED: [u8; 256] = {
 /// Compute literal context ID from two preceding bytes.
 fn literal_context(p1: u8, p2: u8, mode: u8) -> u32 {
     match mode & 3 {
-        0 => (CONTEXT_LUT_LSB6[p1 as usize] as u32) | ((CONTEXT_LUT_LSB6[p2 as usize] as u32) << 3),
-        1 => (CONTEXT_LUT_MSB6[p1 as usize] as u32) & 0x3F,
+        0 => (p1 & 0x3F) as u32,
+        1 => (p1 >> 2) as u32,
         2 => {
             let idx0 = CONTEXT_LUT_UTF8[p1 as usize] as u32;
             let idx1 = CONTEXT_LUT_UTF8[256 + p2 as usize] as u32;
-            (idx0 << 3) | idx1
+            idx0 | idx1
         }
-        3 => (CONTEXT_LUT_SIGNED[p1 as usize] as u32) | ((CONTEXT_LUT_SIGNED[p2 as usize] as u32) << 3),
+        3 => ((CONTEXT_LUT_SIGNED[p1 as usize] as u32) << 3) | CONTEXT_LUT_SIGNED[p2 as usize] as u32,
         _ => 0,
     }
 }
@@ -993,7 +1013,7 @@ fn decompress_meta_block(
         let iac_code = &iac_codes[iac_type as usize % iac_codes.len()];
         let cmd_sym = iac_code.decode(br);
 
-        let (insert_code, copy_code, dist_ctx_offset) = decode_insert_copy(cmd_sym);
+        let (insert_code, copy_code, distance_omitted) = decode_insert_copy(cmd_sym);
 
         // Insert length
         let insert_len = if (insert_code as usize) < INSERT_LEN_BASE.len() {
@@ -1028,11 +1048,12 @@ fn decompress_meta_block(
         if out.len() >= target { break; }
 
         // Distance
-        let distance = if dist_ctx_offset == 0 && copy_len >= 2 {
+        let distance = if distance_omitted {
             // Implied distance (last distance)
             dist_ring.last()
         } else {
             let dist_type = dist_block.check_switch(br);
+            let dist_ctx_offset = copy_len.saturating_sub(2).min(3);
             let ctx_idx = (dist_type * 4 + dist_ctx_offset.min(3)) as usize;
             let tree_idx = if ctx_idx < dist_context_map.len() {
                 dist_context_map[ctx_idx] as usize

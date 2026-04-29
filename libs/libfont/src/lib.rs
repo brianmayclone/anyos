@@ -7,8 +7,8 @@
 //! text measurement, and rendering into ARGB pixel buffers.
 //!
 //! System fonts are loaded from /System/fonts/ at runtime.
-//! WOFF2 webfont containers with TrueType or CFF outlines are decoded at load
-//! time. WOFF 1.0 and unsupported outline formats fail closed so callers can
+//! WOFF/WOFF2 webfont containers with TrueType outlines are decoded at load
+//! time. CFF-only and unsupported outline formats fail closed so callers can
 //! use CSS/system fallback fonts instead of registering corrupt font faces.
 
 #![cfg_attr(not(feature = "host"), no_std)]

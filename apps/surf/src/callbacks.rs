@@ -8,6 +8,7 @@
 //! user interacts with rendered page controls.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 // ═══════════════════════════════════════════════════════════
 // Link click callback
@@ -76,6 +77,9 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
     }
 
     let tab_index = st.active_tab;
+    let clicked_submit_node = st.tabs[tab_index]
+        .webview
+        .submit_node_for_control(ctrl_id);
     if !st.tabs[tab_index].webview.dispatch_click_for_control(ctrl_id) {
         process_dom_event_side_effects(tab_index);
         return;
@@ -100,8 +104,19 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
     }
 
     // Try submit button hit (canvas-based submit regions).
-    if tab.webview.is_submit_button(ctrl_id) {
-        on_form_submit(ctrl_id, _event_type, _userdata);
+    if let Some(node_id) = clicked_submit_node {
+        if !tab.webview.dispatch_submit_for_node(node_id) {
+            process_dom_event_side_effects(tab_index);
+            return;
+        }
+        if process_dom_event_side_effects(tab_index) {
+            return;
+        }
+        let tab = &st.tabs[tab_index];
+        if let Some((action, method, enctype)) = tab.webview.form_action_for_node(node_id) {
+            let data = tab.webview.collect_form_data_for_node(node_id);
+            submit_form_data(tab.current_url.as_ref(), action, method, enctype, data);
+        }
         return;
     }
 
@@ -187,8 +202,18 @@ pub(crate) extern "C" fn on_form_submit(ctrl_id: u32, _event_type: u32, _userdat
     // Collect form data.
     let data = tab.webview.collect_form_data(ctrl_id);
 
+    submit_form_data(tab.current_url.as_ref(), action, method, enctype, data);
+}
+
+fn submit_form_data(
+    current_url: Option<&crate::http::Url>,
+    action: String,
+    method: String,
+    enctype: String,
+    data: Vec<(String, String)>,
+) {
     // Resolve the action URL relative to the current page.
-    let resolved_action = if let Some(ref base) = tab.current_url {
+    let resolved_action = if let Some(base) = current_url {
         let action_url = crate::http::resolve_url(base, &action);
         crate::ui::format_url(&action_url)
     } else {

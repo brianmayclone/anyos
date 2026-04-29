@@ -31,13 +31,14 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
         tcb.ack_seg_count += 1;
         tcb.pending_ack = true;
 
+        let had_ooo = !tcb.ooo_buf.is_empty();
+
         // Drain any now-contiguous OOO segments
         drain_ooo(tcb);
 
         // Decide whether to ACK now or delay
         let buf_pressure = tcb.recv_buf.len() > (RECV_BUF_SIZE * 3 / 4);
         let batch_full = tcb.ack_seg_count >= DELAYED_ACK_SEGMENTS;
-        let had_ooo = !tcb.ooo_buf.is_empty();
         // Loopback: always ACK immediately (no timer to flush delayed ACKs)
         let is_loopback = tcb.remote_ip.0[0] == 127;
 
@@ -169,15 +170,26 @@ fn drain_ooo(tcb: &mut Tcb) {
 
         match idx {
             Some(i) => {
-                let seg = tcb.ooo_buf.remove(i);
+                let mut seg = tcb.ooo_buf.remove(i);
                 // Calculate how much of this segment is new data
                 let overlap = next_seq.wrapping_sub(seg.seq) as usize;
                 if overlap < seg.data.len() {
                     let new_data = &seg.data[overlap..];
                     let space = RECV_BUF_SIZE - tcb.recv_buf.len();
+                    if space == 0 {
+                        tcb.ooo_buf.insert(i, seg);
+                        break;
+                    }
                     let take = new_data.len().min(space);
                     tcb.recv_buf.extend(&new_data[..take]);
                     tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(take as u32);
+                    let consumed = overlap + take;
+                    if consumed < seg.data.len() {
+                        seg.seq = seg.seq.wrapping_add(consumed as u32);
+                        seg.data = seg.data[consumed..].to_vec();
+                        tcb.ooo_buf.insert(i, seg);
+                        break;
+                    }
                 }
             }
             None => break,

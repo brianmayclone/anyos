@@ -253,12 +253,21 @@ impl Control for TextField {
         let corner = crate::theme::input_corner();
 
         let custom = b.color;
-        let palette = crate::controls::chrome::flat_field_palette(
+        let mut palette = crate::controls::chrome::flat_field_palette(
             custom,
             ctx.hovered,
             self.focused,
             ctx.disabled,
         );
+        if b.style.border != 0 {
+            palette.border = b.style.border;
+            palette.focus_ring = b.style.border;
+            palette.focus_glow = 0;
+        }
+        if b.style.accent != 0 {
+            palette.focus_ring = b.style.accent;
+            palette.focus_glow = crate::theme::with_alpha(b.style.accent, 72);
+        }
         if self.focused && !ctx.disabled {
             crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
         }
@@ -306,6 +315,7 @@ impl Control for TextField {
         } else {
             self.text_base.effective_text_color()
         };
+        let accent = if b.style.accent != 0 { b.style.accent } else { tc.accent };
         let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
         let text_y = y + ((h as i32 - font_size as i32) / 2).max(0);
         let scaled_scroll_x = crate::theme::scale_i32(self.scroll_x);
@@ -346,7 +356,7 @@ impl Control for TextField {
                     y + sel_pad,
                     sel_w,
                     sel_h,
-                    tc.accent & 0x60FFFFFF,
+                    accent & 0x60FFFFFF,
                 );
             }
 
@@ -362,7 +372,7 @@ impl Control for TextField {
                 let cursor_h =
                     (font_size as u32 + crate::theme::scale(4)).min(h.saturating_sub(2).max(1));
                 let cursor_y = y + ((h as i32 - cursor_h as i32) / 2).max(0);
-                crate::draw::fill_rect(&clipped, cx, cursor_y, cursor_w, cursor_h, tc.accent);
+                crate::draw::fill_rect(&clipped, cx, cursor_y, cursor_w, cursor_h, accent);
             }
         }
     }

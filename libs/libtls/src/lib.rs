@@ -16,17 +16,17 @@
 
 extern crate alloc;
 
-pub mod crypto;
-pub mod error;
-pub mod record;
 pub mod cipher_suite;
 pub mod connection;
-pub mod x509;
+pub mod crypto;
+pub mod error;
 pub mod handshake;
+pub mod record;
+pub mod x509;
 
 use alloc::vec::Vec;
-use error::TlsError;
 use connection::TlsConnection;
+use error::TlsError;
 
 // ---------------------------------------------------------------------------
 // Transport callbacks (set by consumer)
@@ -49,11 +49,17 @@ struct TransportCallbacks {
 }
 
 // Default stubs that return errors (must be replaced before use)
-fn default_send(_fd: u32, _data: &[u8]) -> i32 { -1 }
-fn default_recv(_fd: u32, _buf: &mut [u8]) -> i32 { -1 }
+fn default_send(_fd: u32, _data: &[u8]) -> i32 {
+    -1
+}
+fn default_recv(_fd: u32, _buf: &mut [u8]) -> i32 {
+    -1
+}
 fn default_sleep(_ms: u32) {}
 fn default_random(buf: &mut [u8]) -> u32 {
-    for b in buf.iter_mut() { *b = 0; }
+    for b in buf.iter_mut() {
+        *b = 0;
+    }
     buf.len() as u32
 }
 
@@ -67,7 +73,12 @@ static mut TRANSPORT: TransportCallbacks = TransportCallbacks {
 /// Register transport callbacks. Must be called once before any TLS operation.
 pub fn set_transport(send: SendFn, recv: RecvFn, sleep: SleepFn, random: RandomFn) {
     unsafe {
-        TRANSPORT = TransportCallbacks { send, recv, sleep, random };
+        TRANSPORT = TransportCallbacks {
+            send,
+            recv,
+            sleep,
+            random,
+        };
     }
 }
 
@@ -104,7 +115,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 static TABLE_LOCK: AtomicBool = AtomicBool::new(false);
 
 fn lock_table() {
-    while TABLE_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+    while TABLE_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         core::hint::spin_loop();
     }
 }
@@ -138,7 +152,9 @@ fn insert_conn(conn: TlsConnection) -> TlsHandle {
     lock_table();
     ensure_table();
     let handle = unsafe { NEXT_HANDLE };
-    unsafe { NEXT_HANDLE += 1; }
+    unsafe {
+        NEXT_HANDLE += 1;
+    }
 
     let entry = ConnEntry { handle, conn };
     let table = unsafe { CONN_TABLE.as_mut().unwrap() };
@@ -262,8 +278,8 @@ pub fn last_error(handle: TlsHandle) -> i32 {
 mod tests {
     extern crate std;
 
-    use alloc::vec;
     use super::*;
+    use alloc::vec;
     use core::sync::atomic::{AtomicU32, Ordering};
     use rcgen::generate_simple_self_signed;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -295,7 +311,9 @@ mod tests {
 
     fn test_send(fd: u32, data: &[u8]) -> i32 {
         let mut guard = socket_map().lock().unwrap();
-        let Some(stream) = guard.get_mut(&fd) else { return -1; };
+        let Some(stream) = guard.get_mut(&fd) else {
+            return -1;
+        };
         match stream.write(data) {
             Ok(n) => n as i32,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
@@ -305,7 +323,9 @@ mod tests {
 
     fn test_recv(fd: u32, buf: &mut [u8]) -> i32 {
         let mut guard = socket_map().lock().unwrap();
-        let Some(stream) = guard.get_mut(&fd) else { return -1; };
+        let Some(stream) = guard.get_mut(&fd) else {
+            return -1;
+        };
         match stream.read(buf) {
             Ok(n) => n as i32,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,

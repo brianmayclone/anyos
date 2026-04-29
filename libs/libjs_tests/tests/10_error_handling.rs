@@ -61,6 +61,22 @@ fn no_throw_skips_catch() {
     assert_eq!(e.get_global("x").to_number(), 1.0);
 }
 
+#[test]
+fn optional_catch_binding_catches_sequence_call_throw() {
+    let mut e = JsEngine::new();
+    e.eval(r#"
+        var ok = false;
+        function boom() { throw new Error('vite optional dependency'); }
+        try {
+            (boom(), 1).x;
+            ok = false;
+        } catch {
+            ok = true;
+        }
+    "#);
+    assert!(e.get_global("ok").to_boolean());
+}
+
 // ── finally ───────────────────────────────────────────────────────────────────
 
 #[test]

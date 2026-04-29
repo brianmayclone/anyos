@@ -68,7 +68,13 @@ pub fn parse_tlv(data: &[u8]) -> Option<Tlv<'_>> {
     let value = &data[pos..pos + length];
     let total_len = pos + length;
 
-    Some(Tlv { tag: tag_byte, class, constructed, value, total_len })
+    Some(Tlv {
+        tag: tag_byte,
+        class,
+        constructed,
+        value,
+        total_len,
+    })
 }
 
 /// Parse DER length encoding. Returns (length, bytes_consumed).

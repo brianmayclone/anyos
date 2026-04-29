@@ -8,17 +8,15 @@ use core::cell::Cell;
 
 /// Maximum total decoded image bytes in the cache.
 ///
-/// The old 512 MiB cap protected against aggressive evictions, but it also let
-/// Surf accumulate far too much decoded image memory on pages like Heise. That
-/// pushed allocator pressure and made failures around `sbrk` much more likely.
-/// Keep the cache large enough for smooth scrolling, but substantially smaller.
-const IMAGE_CACHE_MAX_BYTES: usize = 96 * 1024 * 1024;
+/// Surf is a desktop browser and should use available RAM to avoid decoding
+/// and re-fetching images while scrolling image-heavy pages.
+const IMAGE_CACHE_MAX_BYTES: usize = 384 * 1024 * 1024;
 /// When we cross the hard cap, trim to a softer target so we do not thrash
 /// around the limit by evicting only one entry per insertion.
-const IMAGE_CACHE_TRIM_TARGET_BYTES: usize = 72 * 1024 * 1024;
+const IMAGE_CACHE_TRIM_TARGET_BYTES: usize = 288 * 1024 * 1024;
 /// Small UI images and inline SVG logos are cheap but visually important.
 /// Prefer evicting article-sized images before dropping these.
-const IMAGE_CACHE_SMALL_IMAGE_PROTECT_BYTES: usize = 1024 * 1024;
+const IMAGE_CACHE_SMALL_IMAGE_PROTECT_BYTES: usize = 2 * 1024 * 1024;
 pub const PROGRESSIVE_BAND_VIEWPORTS_BEFORE: i32 = 1;
 pub const PROGRESSIVE_BAND_VIEWPORTS_AFTER: i32 = 3;
 

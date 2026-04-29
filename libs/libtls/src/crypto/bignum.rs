@@ -14,15 +14,21 @@ pub struct BigUint {
 
 impl BigUint {
     pub fn zero() -> Self {
-        Self { limbs: alloc::vec![0] }
+        Self {
+            limbs: alloc::vec![0],
+        }
     }
 
     pub fn one() -> Self {
-        Self { limbs: alloc::vec![1] }
+        Self {
+            limbs: alloc::vec![1],
+        }
     }
 
     pub fn from_u64(v: u64) -> Self {
-        Self { limbs: alloc::vec![v] }
+        Self {
+            limbs: alloc::vec![v],
+        }
     }
 
     /// Decode from big-endian bytes (as used in DER/X.509).
@@ -151,8 +157,16 @@ impl BigUint {
         let mut result = Vec::with_capacity(max_len + 1);
         let mut carry = 0u64;
         for i in 0..max_len {
-            let a = if i < self.limbs.len() { self.limbs[i] } else { 0 };
-            let b = if i < other.limbs.len() { other.limbs[i] } else { 0 };
+            let a = if i < self.limbs.len() {
+                self.limbs[i]
+            } else {
+                0
+            };
+            let b = if i < other.limbs.len() {
+                other.limbs[i]
+            } else {
+                0
+            };
             let (sum1, c1) = a.overflowing_add(b);
             let (sum2, c2) = sum1.overflowing_add(carry);
             result.push(sum2);
@@ -172,7 +186,11 @@ impl BigUint {
         let mut borrow = 0u64;
         for i in 0..self.limbs.len() {
             let a = self.limbs[i];
-            let b = if i < other.limbs.len() { other.limbs[i] } else { 0 };
+            let b = if i < other.limbs.len() {
+                other.limbs[i]
+            } else {
+                0
+            };
             let (diff1, c1) = a.overflowing_sub(b);
             let (diff2, c2) = diff1.overflowing_sub(borrow);
             result.push(diff2);

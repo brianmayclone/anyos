@@ -1,7 +1,10 @@
 impl DisplayList {
+    const INDEX_TILE_HEIGHT: i32 = 256;
+
     pub fn new() -> Self {
         Self {
             cmds: Vec::new(),
+            tile_cmds: Vec::new(),
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
@@ -16,6 +19,7 @@ impl DisplayList {
     pub fn build(root: &LayoutBox) -> Self {
         let mut dl = DisplayList {
             cmds: Vec::new(),
+            tile_cmds: Vec::new(),
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
@@ -23,6 +27,7 @@ impl DisplayList {
             cull_y_range: None,
         };
         dl.flatten(root, 0, 0, None);
+        dl.rebuild_tile_index();
         dl
     }
 
@@ -33,6 +38,7 @@ impl DisplayList {
     pub fn build_visible(root: &LayoutBox, y_start: i32, y_end: i32) -> Self {
         let mut dl = DisplayList {
             cmds: Vec::new(),
+            tile_cmds: Vec::new(),
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
@@ -40,14 +46,49 @@ impl DisplayList {
             cull_y_range: Some((y_start, y_end)),
         };
         dl.flatten(root, 0, 0, None);
+        dl.rebuild_tile_index();
         dl
     }
 
     /// Clear the display list (called on relayout / navigation).
     pub fn clear(&mut self) {
         self.cmds.clear();
+        self.tile_cmds.clear();
         self.max_h = 0;
         self.cull_y_range = None;
+    }
+
+    fn rebuild_tile_index(&mut self) {
+        self.tile_cmds.clear();
+        let mut max_row = 0usize;
+        for cmd in &self.cmds {
+            if cmd.h <= 0 {
+                continue;
+            }
+            let start_y = cmd.y.max(0);
+            let end_y = (cmd.y + cmd.h - 1).max(0);
+            let end_row = (end_y / Self::INDEX_TILE_HEIGHT) as usize;
+            let start_row = (start_y / Self::INDEX_TILE_HEIGHT) as usize;
+            max_row = max_row.max(start_row).max(end_row);
+        }
+        if self.cmds.is_empty() {
+            return;
+        }
+        self.tile_cmds.resize_with(max_row.saturating_add(1), Vec::new);
+        for (idx, cmd) in self.cmds.iter().enumerate() {
+            if cmd.h <= 0 {
+                continue;
+            }
+            let start_y = cmd.y.max(0);
+            let end_y = (cmd.y + cmd.h - 1).max(0);
+            let start_row = (start_y / Self::INDEX_TILE_HEIGHT) as usize;
+            let end_row = (end_y / Self::INDEX_TILE_HEIGHT) as usize;
+            for row in start_row..=end_row {
+                if let Some(indices) = self.tile_cmds.get_mut(row) {
+                    indices.push(idx);
+                }
+            }
+        }
     }
 
     fn text_clip_color(&self, bx: &LayoutBox) -> Option<u32> {
@@ -95,9 +136,17 @@ impl DisplayList {
         tile_y_start: i32,
         tile_y_end: i32,
     ) {
-        // Commands are in correct paint order (back-to-front) from the
-        // stacking-context-aware tree walk.  Scan linearly.
-        for i in 0..self.cmds.len() {
+        let row = (tile_y_start.max(0) / Self::INDEX_TILE_HEIGHT) as usize;
+        let indexed_cmds = self.tile_cmds.get(row).map(|v| v.as_slice()).unwrap_or(&[]);
+        let fallback_cmds;
+        let cmd_indices = if self.tile_cmds.is_empty() && !self.cmds.is_empty() {
+            fallback_cmds = (0..self.cmds.len()).collect::<Vec<_>>();
+            fallback_cmds.as_slice()
+        } else {
+            indexed_cmds
+        };
+
+        for &i in cmd_indices {
             let cmd = &self.cmds[i];
             // Skip commands that don't overlap the tile vertically.
             if cmd.y >= tile_y_end || cmd.y + cmd.h <= tile_y_start {

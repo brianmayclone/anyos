@@ -4,8 +4,8 @@
 //! cipher negotiation for both TLS 1.3 and TLS 1.2.
 
 pub mod extensions;
-pub mod tls13;
 pub mod tls12;
+pub mod tls13;
 
 /// Handshake message types (RFC 8446 Section 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

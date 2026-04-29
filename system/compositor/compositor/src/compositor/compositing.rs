@@ -10,7 +10,7 @@
 
 use super::Compositor;
 use super::rect::Rect;
-use super::layer::{AccelMoveHint, SHADOW_OFFSET_X, shadow_offset_y, shadow_spread};
+use super::layer::{AccelMoveHint, BlurCache, SHADOW_OFFSET_X, shadow_offset_y, shadow_spread};
 use super::blend::{alpha_blend, shadow_blend, compute_shadow_cache, blur_back_buffer_region};
 use super::gpu::{GPU_UPDATE, GPU_FLIP, GPU_RECT_COPY, GPU_SYNC};
 
@@ -20,11 +20,18 @@ impl Compositor {
     /// This ensures that resized, moved, or content-updated layers always
     /// trigger recomposition of their region.
     fn collect_dirty_damage(&mut self) {
+        let mut behind_blur_changed = false;
         for i in 0..self.layers.len() {
             if self.layers[i].dirty {
                 self.damage.push(self.layers[i].damage_bounds());
+                if !self.layers[i].blur_behind {
+                    behind_blur_changed = true;
+                }
                 self.layers[i].dirty = false;
             }
+        }
+        if behind_blur_changed {
+            self.blur_generation = self.blur_generation.wrapping_add(1);
         }
     }
 
@@ -347,15 +354,7 @@ impl Compositor {
             if blur_behind && blur_radius > 0 {
                 let lb = self.layers[li].bounds();
                 if let Some(blur_area) = rect.intersect(&lb) {
-                    // Split borrow: take blur_temp out to avoid &mut self conflict
-                    let mut blur_temp = core::mem::take(&mut self.blur_temp);
-                    blur_back_buffer_region(
-                        &mut self.back_buffer, self.fb_width, self.fb_height,
-                        blur_area.x, blur_area.y, blur_area.width, blur_area.height,
-                        blur_radius, 2,
-                        &mut blur_temp,
-                    );
-                    self.blur_temp = blur_temp;
+                    self.apply_blur_behind(rect, li, lb, blur_area, blur_radius);
                 }
             }
 
@@ -456,6 +455,203 @@ impl Compositor {
                 }
             }
         }
+    }
+
+    fn apply_blur_behind(
+        &mut self,
+        damage: &Rect,
+        layer_idx: usize,
+        layer_bounds: Rect,
+        blur_area: Rect,
+        radius: u32,
+    ) {
+        if self.copy_blur_cache_to_bb(layer_idx, blur_area) {
+            return;
+        }
+
+        let layer_clip = layer_bounds.clip_to_screen(self.fb_width, self.fb_height);
+        if !layer_clip.is_empty() && damage.fully_contains(&layer_clip) {
+            self.rebuild_blur_cache(layer_idx, layer_clip, radius);
+            if self.copy_blur_cache_to_bb(layer_idx, blur_area) {
+                return;
+            }
+        }
+
+        // Fallback for partial first paints or changing below-content.
+        let mut blur_temp = core::mem::take(&mut self.blur_temp);
+        blur_back_buffer_region(
+            &mut self.back_buffer, self.fb_width, self.fb_height,
+            blur_area.x, blur_area.y, blur_area.width, blur_area.height,
+            radius, 2,
+            &mut blur_temp,
+        );
+        self.blur_temp = blur_temp;
+    }
+
+    fn copy_blur_cache_to_bb(&mut self, layer_idx: usize, area: Rect) -> bool {
+        let generation = self.blur_generation;
+        let Some(cache) = self.layers[layer_idx].blur_cache.as_ref() else {
+            return false;
+        };
+        if cache.generation != generation || cache.radius == 0 {
+            return false;
+        }
+        let cache_rect = Rect::new(cache.x, cache.y, cache.width, cache.height);
+        let Some(overlap) = area.intersect(&cache_rect) else {
+            return false;
+        };
+
+        let bb_stride = self.fb_width as usize;
+        let cache_stride = cache.width as usize;
+        for row in 0..overlap.height as usize {
+            let src_y = (overlap.y - cache.y) as usize + row;
+            let src_x = (overlap.x - cache.x) as usize;
+            let dst_y = overlap.y as usize + row;
+            let dst_x = overlap.x as usize;
+            let w = overlap.width as usize;
+            let src = src_y * cache_stride + src_x;
+            let dst = dst_y * bb_stride + dst_x;
+            let safe = w
+                .min(cache.pixels.len().saturating_sub(src))
+                .min(self.back_buffer.len().saturating_sub(dst));
+            if safe > 0 {
+                self.back_buffer[dst..dst + safe].copy_from_slice(&cache.pixels[src..src + safe]);
+            }
+        }
+        true
+    }
+
+    fn rebuild_blur_cache(&mut self, layer_idx: usize, area: Rect, radius: u32) {
+        let w = area.width as usize;
+        let h = area.height as usize;
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        if radius >= 8 && w.saturating_mul(h) >= 240_000 {
+            self.rebuild_blur_cache_downsampled(layer_idx, area, radius);
+            return;
+        }
+
+        let mut pixels = alloc::vec![0u32; w * h];
+        let bb_stride = self.fb_width as usize;
+        for row in 0..h {
+            let src = (area.y as usize + row) * bb_stride + area.x as usize;
+            let dst = row * w;
+            let safe = w
+                .min(self.back_buffer.len().saturating_sub(src))
+                .min(pixels.len().saturating_sub(dst));
+            if safe > 0 {
+                pixels[dst..dst + safe].copy_from_slice(&self.back_buffer[src..src + safe]);
+            }
+        }
+
+        let mut blur_temp = core::mem::take(&mut self.blur_temp);
+        blur_back_buffer_region(
+            &mut pixels, area.width, area.height,
+            0, 0, area.width, area.height,
+            radius, 2,
+            &mut blur_temp,
+        );
+        self.blur_temp = blur_temp;
+
+        self.layers[layer_idx].blur_cache = Some(BlurCache {
+            pixels,
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+            radius,
+            generation: self.blur_generation,
+        });
+    }
+
+    fn rebuild_blur_cache_downsampled(&mut self, layer_idx: usize, area: Rect, radius: u32) {
+        let w = area.width as usize;
+        let h = area.height as usize;
+        let dw = (w + 1) / 2;
+        let dh = (h + 1) / 2;
+        if dw == 0 || dh == 0 {
+            return;
+        }
+
+        let mut small = alloc::vec![0u32; dw * dh];
+        let bb_stride = self.fb_width as usize;
+        for sy in 0..dh {
+            for sx in 0..dw {
+                let src_x = area.x as usize + sx * 2;
+                let src_y = area.y as usize + sy * 2;
+                let mut a = 0u32;
+                let mut r = 0u32;
+                let mut g = 0u32;
+                let mut b = 0u32;
+                let mut n = 0u32;
+                for oy in 0..2 {
+                    let y = src_y + oy;
+                    if y >= area.y as usize + h || y >= self.fb_height as usize {
+                        continue;
+                    }
+                    for ox in 0..2 {
+                        let x = src_x + ox;
+                        if x >= area.x as usize + w || x >= self.fb_width as usize {
+                            continue;
+                        }
+                        let idx = y * bb_stride + x;
+                        if idx >= self.back_buffer.len() {
+                            continue;
+                        }
+                        let px = self.back_buffer[idx];
+                        a += (px >> 24) & 0xFF;
+                        r += (px >> 16) & 0xFF;
+                        g += (px >> 8) & 0xFF;
+                        b += px & 0xFF;
+                        n += 1;
+                    }
+                }
+                if n > 0 {
+                    small[sy * dw + sx] =
+                        ((a / n) << 24) | ((r / n) << 16) | ((g / n) << 8) | (b / n);
+                }
+            }
+        }
+
+        let mut blur_temp = core::mem::take(&mut self.blur_temp);
+        blur_back_buffer_region(
+            &mut small, dw as u32, dh as u32,
+            0, 0, dw as u32, dh as u32,
+            (radius + 1) / 2, 2,
+            &mut blur_temp,
+        );
+        self.blur_temp = blur_temp;
+
+        let mut pixels = alloc::vec![0u32; w * h];
+        for y in 0..h {
+            let sy = (y / 2).min(dh - 1);
+            let sy1 = (sy + 1).min(dh - 1);
+            let fy = (y & 1) as u32;
+            for x in 0..w {
+                let sx = (x / 2).min(dw - 1);
+                let sx1 = (sx + 1).min(dw - 1);
+                let fx = (x & 1) as u32;
+                let c00 = small[sy * dw + sx];
+                let c10 = small[sy * dw + sx1];
+                let c01 = small[sy1 * dw + sx];
+                let c11 = small[sy1 * dw + sx1];
+                let top = mix_px(c00, c10, fx);
+                let bot = mix_px(c01, c11, fx);
+                pixels[y * w + x] = mix_px(top, bot, fy);
+            }
+        }
+
+        self.layers[layer_idx].blur_cache = Some(BlurCache {
+            pixels,
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+            radius,
+            generation: self.blur_generation,
+        });
     }
 
     /// Draw a soft gradient shadow for a layer into the back buffer (within damage rect).
@@ -682,4 +878,16 @@ impl Compositor {
             }
         }
     }
+}
+
+fn mix_px(a: u32, b: u32, t: u32) -> u32 {
+    if t == 0 {
+        return a;
+    }
+    let ia = 2 - t;
+    let aa = ((a >> 24) & 0xFF) * ia + ((b >> 24) & 0xFF) * t;
+    let rr = ((a >> 16) & 0xFF) * ia + ((b >> 16) & 0xFF) * t;
+    let gg = ((a >> 8) & 0xFF) * ia + ((b >> 8) & 0xFF) * t;
+    let bb = (a & 0xFF) * ia + (b & 0xFF) * t;
+    ((aa / 2) << 24) | ((rr / 2) << 16) | ((gg / 2) << 8) | (bb / 2)
 }

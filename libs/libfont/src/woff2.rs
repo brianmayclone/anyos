@@ -262,6 +262,9 @@ pub fn convert_to_ttf(data: &[u8]) -> Option<Vec<u8>> {
     if decompressed.len() < expected_decompressed_len {
         return None;
     }
+    if decompressed[..expected_decompressed_len].iter().all(|&b| b == 0) {
+        return None;
+    }
 
     // Split decompressed data into individual tables
     let mut table_data: Vec<Vec<u8>> = Vec::with_capacity(num_tables);

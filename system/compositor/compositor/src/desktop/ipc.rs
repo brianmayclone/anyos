@@ -415,6 +415,7 @@ impl Desktop {
                     if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
                         layer.blur_behind = radius > 0;
                         layer.blur_radius = radius;
+                        layer.blur_cache = None;
                         let bounds = layer.damage_bounds();
                         self.compositor.add_damage(bounds);
                     }

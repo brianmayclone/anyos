@@ -2,8 +2,8 @@
 //!
 //! Builds ClientHello extensions and parses ServerHello extensions.
 
-use alloc::vec::Vec;
 use crate::cipher_suite::{CipherSuite, NamedGroup, SignatureScheme};
+use alloc::vec::Vec;
 
 // Extension types
 const EXT_SERVER_NAME: u16 = 0;
@@ -15,10 +15,7 @@ const EXT_KEY_SHARE: u16 = 51;
 /// Build the extensions block for a TLS 1.3 ClientHello.
 ///
 /// Includes: SNI, supported_versions, supported_groups, signature_algorithms, key_share.
-pub fn build_client_hello_extensions(
-    host: &str,
-    x25519_public: &[u8; 32],
-) -> Vec<u8> {
+pub fn build_client_hello_extensions(host: &str, x25519_public: &[u8; 32]) -> Vec<u8> {
     let mut extensions = Vec::new();
 
     // SNI (Server Name Indication)
@@ -161,11 +158,7 @@ fn push_u16(buf: &mut Vec<u8>, val: u16) {
 }
 
 /// Build a full ClientHello message (handshake type 0x01 + body).
-pub fn build_client_hello(
-    random: &[u8; 32],
-    host: &str,
-    x25519_public: &[u8; 32],
-) -> Vec<u8> {
+pub fn build_client_hello(random: &[u8; 32], host: &str, x25519_public: &[u8; 32]) -> Vec<u8> {
     let mut body = Vec::with_capacity(512);
 
     // Client Version: TLS 1.2 (0x0303) for compatibility (real version in extensions)
@@ -180,7 +173,8 @@ pub fn build_client_hello(
     body.extend_from_slice(random); // reuse random as session ID
 
     // Cipher Suites
-    let all_suites: Vec<u16> = CipherSuite::TLS13_SUITES.iter()
+    let all_suites: Vec<u16> = CipherSuite::TLS13_SUITES
+        .iter()
         .chain(CipherSuite::TLS12_SUITES.iter())
         .map(|s| *s as u16)
         .collect();

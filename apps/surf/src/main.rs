@@ -103,6 +103,7 @@ const SCRIPT_PUMP_DELAY_MS: u32 = 16;
 const MAX_SCRIPT_SOURCE_BYTES: usize = 1024 * 1024;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = false;
 const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
+const IMAGE_REPAINT_BURST_DELAY_MS: u32 = 64;
 const NET_POLL_INTERVAL_MS: u32 = 16;
 const DEBUG_SKIP_BLOCKING_SLOT2: bool = false;
 
@@ -1434,6 +1435,14 @@ fn render_delay_ms_for(tab_index: usize, work: RenderWork) -> u32 {
     }
     let active = tab_index == st.active_tab;
     let phase = st.tabs[tab_index].load_state.phase;
+    if active
+        && work == RenderWork::Paint
+        && (st.tabs[tab_index].deferred_images_inflight > 0
+            || !st.tabs[tab_index].deferred_images.is_empty()
+            || net_worker::result_mailboxes_pending())
+    {
+        return IMAGE_REPAINT_BURST_DELAY_MS;
+    }
     match (active, work, phase) {
         (true, RenderWork::Paint, _) => 16,
         (true, RenderWork::Layout, PageLoadPhase::FetchingDocument)
@@ -1492,27 +1501,11 @@ pub(crate) fn request_layout_refresh(tab_index: usize) {
 }
 
 pub(crate) fn request_image_refresh(tab_index: usize) {
-    let schedule = {
-        let st = state();
-        if tab_index >= st.tabs.len() {
-            RenderSchedule::Debounced
-        } else {
-            let layout_pending = tab_index < st.render_dirty.len()
-                && st.render_dirty[tab_index] == RenderWork::Layout;
-            let phase = st.tabs[tab_index].load_state.phase;
-            if scroll_interaction_hot() || net_worker::result_mailboxes_pending() {
-                RenderSchedule::Debounced
-            } else if tab_index == st.active_tab
-                && !layout_pending
-                && matches!(phase, PageLoadPhase::Interactive)
-            {
-                RenderSchedule::Immediate
-            } else {
-                RenderSchedule::Debounced
-            }
-        }
-    };
-    request_render(tab_index, RenderWork::Paint, schedule);
+    // Image fetches often complete in long bursts on media-heavy pages. A
+    // synchronous repaint per image makes the UI hitch continuously; mark the
+    // tab paint-dirty and let the render timer coalesce many image arrivals
+    // into one cached-layout repaint.
+    request_render(tab_index, RenderWork::Paint, RenderSchedule::Debounced);
 }
 
 fn flush_relayout_for_tab(tab_idx: usize) {
@@ -2098,7 +2091,7 @@ fn handle_image_done(
     tab_index: usize,
     src: String,
     encoded_len: usize,
-    body: Vec<u8>,
+    _body: Vec<u8>,
     headers: String,
     decoded_raster: Option<net_worker::DecodedRaster>,
     priority: net_worker::ImagePriority,
@@ -2120,9 +2113,8 @@ fn handle_image_done(
         generation
     );
 
-    if body.is_empty() && decoded_raster.is_none() {
-        crate::surf_log!("[surf] image unavailable: tab={} src={}", tab_index, src);
-    } else if let Some(decoded_raster) = decoded_raster {
+    let _ = headers;
+    if let Some(decoded_raster) = decoded_raster {
         if let Some(black_ratio_ppm) = decoded_raster.suspicious_black_ppm {
             crate::surf_log!(
                 "[surf] WARN suspicious worker image decode: src={} format={} {}x{} black_ratio_ppm={} tab={}",
@@ -2140,20 +2132,13 @@ fn handle_image_done(
             decoded_raster.width,
             decoded_raster.height,
         );
-    } else if resources::is_svg(&src, &headers) {
-        resources::decode_svg_no_relayout(&body, &src, tab_index);
-        let base_url = st.tabs[tab_index].current_url.clone();
-        if let Some(base_url) = base_url.as_ref() {
-            resources::reraster_inline_svgs_with_sprite(
-                &st.tabs[tab_index].webview,
-                base_url,
-                tab_index,
-                &src,
-                &body,
-            );
-        }
     } else {
-        resources::decode_raster_no_relayout(&body, &src, tab_index);
+        crate::surf_log!(
+            "[surf] image unavailable after worker decode: tab={} src={} bytes={}",
+            tab_index,
+            src,
+            encoded_len
+        );
     }
     let needs_layout = st.tabs[tab_index]
         .webview

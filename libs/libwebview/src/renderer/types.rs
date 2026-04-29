@@ -147,6 +147,9 @@ pub(super) enum DrawKind {
 /// is already in back-to-front paint order — no post-hoc sort needed.
 pub(crate) struct DisplayList {
     pub(super) cmds: Vec<DrawCmd>,
+    /// Per-256px tile-row index into `cmds`.  Indices stay in paint order
+    /// because they are appended while scanning `cmds` front-to-back.
+    pub(super) tile_cmds: Vec<Vec<usize>>,
     /// Current clip rect during flatten (None = no clipping).
     pub(super) clip_stack: Vec<(i32, i32, i32, i32)>,
     /// Current CSS mask layers during flatten.

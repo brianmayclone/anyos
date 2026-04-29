@@ -4285,23 +4285,29 @@ impl WebView {
 
     /// Check if a control ID belongs to a submit button (real control or canvas hit).
     pub fn is_submit_button(&self, control_id: u32) -> bool {
-        // Canvas hit-test for submit regions.
-        if self.canvas_submit_hit(control_id).is_some() {
-            return true;
+        self.submit_node_for_control(control_id).is_some()
+    }
+
+    /// Resolve a submit-capable control or canvas hit to its DOM node.
+    pub fn submit_node_for_control(&self, control_id: u32) -> Option<usize> {
+        if let Some(node_id) = self.canvas_submit_hit(control_id) {
+            return Some(node_id);
         }
-        // Legacy: real control lookup.
-        self.renderer.form_controls.iter().any(|fc| {
-            fc.control_id == control_id
-                && matches!(fc.kind, FormFieldKind::Submit | FormFieldKind::ButtonEl)
-        })
+        self.renderer
+            .form_controls
+            .iter()
+            .find(|fc| {
+                fc.control_id == control_id
+                    && matches!(fc.kind, FormFieldKind::Submit | FormFieldKind::ButtonEl)
+            })
+            .map(|fc| fc.node_id)
     }
 
     /// Find the form action URL, method, and enctype for a submit button click.
     /// Returns (action, method, enctype).
     /// Handles both real controls and canvas-based submit hit regions.
     pub fn form_action_for(&self, control_id: u32) -> Option<(String, String, String)> {
-        // Canvas hit-test for submit regions.
-        if let Some(node_id) = self.canvas_submit_hit(control_id) {
+        if let Some(node_id) = self.submit_node_for_control(control_id) {
             return self.form_action_for_node(node_id);
         }
         // Legacy: real control lookup.

@@ -188,6 +188,8 @@ pub struct ControlStyle {
     pub hover_bg: u32,
     pub radius: u32,
     pub accent: u32,
+    pub filter_strength: u32,
+    pub filter_quality: u32,
 }
 
 impl ControlStyle {
@@ -202,6 +204,8 @@ impl ControlStyle {
             STYLE_HOVER_BG => self.hover_bg = value,
             STYLE_RADIUS => self.radius = value,
             STYLE_ACCENT => self.accent = value,
+            STYLE_FILTER_STRENGTH => self.filter_strength = value,
+            STYLE_FILTER_QUALITY => self.filter_quality = value,
             _ => {}
         }
     }
@@ -216,6 +220,8 @@ pub const STYLE_INACTIVE_TEXT: u32 = 6;
 pub const STYLE_HOVER_BG: u32 = 7;
 pub const STYLE_RADIUS: u32 = 8;
 pub const STYLE_ACCENT: u32 = 9;
+pub const STYLE_FILTER_STRENGTH: u32 = 10;
+pub const STYLE_FILTER_QUALITY: u32 = 11;
 
 impl Default for TextStyle {
     fn default() -> Self {
@@ -305,6 +311,7 @@ pub enum ControlKind {
     ListBox = 47,
     ComboBox = 48,
     LinkLabel = 49,
+    AntiAliasFilterContainer = 50,
 }
 
 impl ControlKind {
@@ -360,6 +367,7 @@ impl ControlKind {
             47 => Self::ListBox,
             48 => Self::ComboBox,
             49 => Self::LinkLabel,
+            50 => Self::AntiAliasFilterContainer,
             _ => Self::View,
         }
     }
@@ -391,6 +399,7 @@ impl ControlKind {
             Self::ListBox => (200, 120),
             Self::ComboBox => (200, 32),
             Self::LinkLabel => (200, 22),
+            Self::AntiAliasFilterContainer => (0, 0),
             Self::Toolbar => (0, 36),
             Self::NavigationBar => (0, 44),
             Self::TabBar => (0, 32),

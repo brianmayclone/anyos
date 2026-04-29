@@ -97,20 +97,32 @@ pub fn poly1305(key: &[u8; 32], msg: &[u8]) -> [u8; TAG_SIZE] {
         let s3v = rr3 * 5;
         let s4v = rr4 * 5;
 
-        let mut d0 = a0*rr0 + a1*s4v + a2*s3v + a3*s2v + a4*s1v;
-        let mut d1 = a0*rr1 + a1*rr0 + a2*s4v + a3*s3v + a4*s2v;
-        let mut d2 = a0*rr2 + a1*rr1 + a2*rr0 + a3*s4v + a4*s3v;
-        let mut d3 = a0*rr3 + a1*rr2 + a2*rr1 + a3*rr0 + a4*s4v;
-        let mut d4 = a0*rr4 + a1*rr3 + a2*rr2 + a3*rr1 + a4*rr0;
+        let mut d0 = a0 * rr0 + a1 * s4v + a2 * s3v + a3 * s2v + a4 * s1v;
+        let mut d1 = a0 * rr1 + a1 * rr0 + a2 * s4v + a3 * s3v + a4 * s2v;
+        let mut d2 = a0 * rr2 + a1 * rr1 + a2 * rr0 + a3 * s4v + a4 * s3v;
+        let mut d3 = a0 * rr3 + a1 * rr2 + a2 * rr1 + a3 * rr0 + a4 * s4v;
+        let mut d4 = a0 * rr4 + a1 * rr3 + a2 * rr2 + a3 * rr1 + a4 * rr0;
 
         // Carry propagation
         let mut c: u64;
-        c = d0 >> 26; d0 &= 0x3FFFFFF; d1 += c;
-        c = d1 >> 26; d1 &= 0x3FFFFFF; d2 += c;
-        c = d2 >> 26; d2 &= 0x3FFFFFF; d3 += c;
-        c = d3 >> 26; d3 &= 0x3FFFFFF; d4 += c;
-        c = d4 >> 26; d4 &= 0x3FFFFFF; d0 += c * 5;
-        c = d0 >> 26; d0 &= 0x3FFFFFF; d1 += c;
+        c = d0 >> 26;
+        d0 &= 0x3FFFFFF;
+        d1 += c;
+        c = d1 >> 26;
+        d1 &= 0x3FFFFFF;
+        d2 += c;
+        c = d2 >> 26;
+        d2 &= 0x3FFFFFF;
+        d3 += c;
+        c = d3 >> 26;
+        d3 &= 0x3FFFFFF;
+        d4 += c;
+        c = d4 >> 26;
+        d4 &= 0x3FFFFFF;
+        d0 += c * 5;
+        c = d0 >> 26;
+        d0 &= 0x3FFFFFF;
+        d1 += c;
 
         // Convert back to 32-bit limbs
         h[0] = (d0 | (d1 << 26)) as u32;
