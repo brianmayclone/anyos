@@ -50,6 +50,23 @@ impl DisplayList {
         self.cull_y_range = None;
     }
 
+    fn text_clip_color(&self, bx: &LayoutBox) -> Option<u32> {
+        if !matches!(bx.background_clip, BackgroundClipVal::Text) {
+            return None;
+        }
+        match &bx.background_image {
+            BackgroundImageVal::LinearGradient { stops, .. } if !stops.is_empty() => {
+                let color = if stops.len() == 1 {
+                    stops[0].color
+                } else {
+                    interpolate_gradient_color(stops, 5000)
+                };
+                Some(if (color >> 24) == 0 { color | 0xFF00_0000 } else { color })
+            }
+            _ => None,
+        }
+    }
+
     fn resolve_radius_for_rect(value: i32, w: i32, h: i32) -> i32 {
         if value < 0 {
             let pct = (-value) as i64;
@@ -636,7 +653,9 @@ impl DisplayList {
                 let scale_x_percent =
                     crate::synthetic_font_width_scale_percent(bx.custom_font_id);
                 let font_size = bx.font_size.max(1) as u16;
-                let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+                let color = self
+                    .text_clip_color(bx)
+                    .unwrap_or_else(|| if bx.color != 0 { bx.color } else { 0xFF000000 });
                 #[cfg(feature = "host")]
                 if std::env::var_os("SURF_DEBUG_FLATTEN_TEXT").is_some()
                     && !text.trim().is_empty()

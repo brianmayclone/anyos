@@ -3549,7 +3549,6 @@ impl Shell {
         buf.write_str("\n");
         buf.write_str("  Shortcuts:\n");
         buf.write_str("    Ctrl+Z        Prozess anhalten\n");
-        buf.write_str("    Ctrl+Shift+T  Neuer Tab\n");
         buf.write_str("    Ctrl+Shift+W  Tab schliessen\n");
         buf.write_str("    Ctrl+Shift+R  Tab umbenennen\n");
         buf.write_str("    Ctrl+Shift+F  Suchen\n");
@@ -6368,7 +6367,7 @@ fn main() {
     new_tab_btn.set_size(28, 28);
     new_tab_btn.set_color(0xFF3C3C3C);
     new_tab_btn.set_text_color(0xFFCCCCCC);
-    new_tab_btn.set_tooltip("Neuer Tab (Ctrl+Shift+T)");
+    new_tab_btn.set_tooltip("Neuer Tab");
     tab_row.add(&new_tab_btn);
 
     let tab_bar = anyui::TabBar::new("Tab 1");
@@ -6995,13 +6994,6 @@ fn main() {
 
         if ctrl_shift {
             match key_code {
-                0x14 => { // Ctrl+Shift+T: New tab
-                    a.new_tab();
-                    a.update_pane_sizes();
-                    update_tab_labels();
-                    redraw();
-                    return;
-                }
                 0x11 => { // Ctrl+Shift+W: Close tab
                     if a.tabs.len() > 1 {
                         a.close_tab(a.active_tab);

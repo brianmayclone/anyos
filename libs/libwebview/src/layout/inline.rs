@@ -595,6 +595,26 @@ fn collect_inline_fragments(
                     }
                 }
             }
+            let mut paint_ancestor = dom.get(node_id).parent;
+            while let Some(parent_id) = paint_ancestor {
+                if let Some(parent_style) = styles.get(parent_id) {
+                    if matches!(
+                        parent_style.background_clip,
+                        crate::style::BackgroundClipVal::Text
+                    ) || !matches!(
+                        parent_style.background_image,
+                        crate::style::BackgroundImageVal::None
+                    ) {
+                        for frag in &mut out[start_idx..] {
+                            frag.layout_box.background_clip = parent_style.background_clip;
+                            frag.layout_box.background_image =
+                                parent_style.background_image.clone();
+                        }
+                        break;
+                    }
+                }
+                paint_ancestor = dom.get(parent_id).parent;
+            }
             // Resolve web font ID from font-family.
             if custom_font_id != 0 {
                 for frag in &mut out[start_idx..] {

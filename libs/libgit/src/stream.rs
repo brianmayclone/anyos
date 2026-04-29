@@ -525,7 +525,10 @@ fn host_spool_path() -> PathBuf {
 
 /// Recv with patience — retries on timeout, checking if connection is alive.
 fn tls_recv_patient(handle: u32, sock: u32, buf: &mut [u8]) -> i32 {
-    for _ in 0..5 {
+    const STALL_TIMEOUT_MS: u32 = 60_000;
+    let start_ms = anyos_std::sys::uptime_ms();
+
+    loop {
         let n = libtls::recv(handle, buf);
         if n > 0 {
             return n;
@@ -533,14 +536,27 @@ fn tls_recv_patient(handle: u32, sock: u32, buf: &mut [u8]) -> i32 {
         if n == 0 {
             return 0;
         } // EOF
-          // Timeout — check connection
+
+        // No complete TLS record yet, or a transient transport timeout.
+        // Keep the HTTP stream alive while the TCP socket is still established,
+        // but fail with a bounded stall instead of looking hung forever.
         let avail = anyos_std::net::tcp_recv_available(sock);
         if avail == u32::MAX || avail == u32::MAX - 1 {
             return 0;
         }
+        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
+        if elapsed >= STALL_TIMEOUT_MS {
+            if crate::pack::verbose() {
+                anyos_std::println!(
+                    "[stream] TLS receive stalled for {} ms (socket {})",
+                    elapsed,
+                    sock
+                );
+            }
+            return -1;
+        }
         anyos_std::process::sleep(200);
     }
-    -1
 }
 
 #[cfg(not(feature = "host"))]
@@ -572,19 +588,15 @@ fn tls_send_cb(fd: u32, data: &[u8]) -> i32 {
 
 #[cfg(not(feature = "host"))]
 fn tls_recv_cb(fd: u32, buf: &mut [u8]) -> i32 {
-    let n = anyos_std::net::tcp_recv(fd, buf);
-    if n == 0 {
-        return 0;
-    }
-    if n != u32::MAX {
-        return n as i32;
-    }
     let avail = anyos_std::net::tcp_recv_available(fd);
     match avail {
         u32::MAX => -1,
         0xFFFFFFFE => 0,
+        0 => {
+            anyos_std::process::sleep(20);
+            0
+        }
         _ => {
-            anyos_std::process::sleep(50);
             let n = anyos_std::net::tcp_recv(fd, buf);
             if n == 0 {
                 0

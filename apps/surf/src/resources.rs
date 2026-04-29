@@ -280,7 +280,7 @@ pub(crate) fn queue_font_face_batch(
         queued_keys.push((family.clone(), src_url.clone()));
         if src_url.starts_with("data:") {
             if let Some(font_data) = decode_font_data_uri(src_url) {
-                if let Some(font_id) = libfont_client::load_data(&font_data) {
+                if let Some(font_id) = load_valid_web_font_data(family, &font_data) {
                     st.tabs[tab_index].webview.register_web_font(family, font_id);
                     immediate += 1;
                     crate::surf_log!(
@@ -293,15 +293,17 @@ pub(crate) fn queue_font_face_batch(
             }
             continue;
         }
+
+        let resolved = crate::http::resolve_url(base_url, src_url);
         if st.tabs[tab_index]
-            .deferred_fonts
+            .requested_font_urls
             .iter()
-            .any(|req| req.family == *family)
+            .any(|url| url == &resolved)
         {
             continue;
         }
+        st.tabs[tab_index].requested_font_urls.push(resolved.clone());
 
-        let resolved = crate::http::resolve_url(base_url, src_url);
         if should_defer_font_face(*display) {
             st.tabs[tab_index]
                 .deferred_fonts
@@ -332,6 +334,45 @@ pub(crate) fn queue_font_face_batch(
         );
         crate::ensure_net_poll_timer();
     }
+}
+
+pub(crate) fn load_valid_web_font_data(family: &str, data: &[u8]) -> Option<u32> {
+    let Some(font_id) = libfont_client::load_data(data) else {
+        return None;
+    };
+    if web_font_is_renderable(font_id) {
+        return Some(font_id);
+    }
+    libfont_client::unload(font_id);
+    crate::surf_log!(
+        "[surf] rejected web font '{}' -> id {}: render validation failed",
+        family,
+        font_id
+    );
+    None
+}
+
+fn web_font_is_renderable(font_id: u32) -> bool {
+    let (w, h) = libfont_client::measure(font_id, 24, "Ag");
+    if w < 8 || h < 8 || w > 200 || h > 100 {
+        return false;
+    }
+
+    let mut pixels = vec![0u32; 96 * 48];
+    libfont_client::draw_string_buf(
+        pixels.as_mut_ptr(),
+        96,
+        48,
+        4,
+        4,
+        0xFFFF_FFFF,
+        font_id,
+        24,
+        "Ag",
+    );
+    pixels
+        .iter()
+        .any(|px| ((*px >> 24) & 0xFF) != 0 || (*px & 0x00FF_FFFF) != 0)
 }
 
 // ═══════════════════════════════════════════════════════════

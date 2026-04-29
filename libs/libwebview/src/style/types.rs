@@ -195,6 +195,7 @@ pub enum BackgroundClipVal {
     BorderBox,
     PaddingBox,
     ContentBox,
+    Text,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

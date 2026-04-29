@@ -4263,6 +4263,7 @@ pub fn apply_declaration(
                 style.background_clip = match kw.as_str() {
                     "padding-box" => BackgroundClipVal::PaddingBox,
                     "content-box" => BackgroundClipVal::ContentBox,
+                    "text" => BackgroundClipVal::Text,
                     _ => BackgroundClipVal::BorderBox,
                 };
             }
@@ -4993,6 +4994,7 @@ pub fn apply_declaration(
                 style.mask_clip = match kw.as_str() {
                     "padding-box" => BackgroundClipVal::PaddingBox,
                     "content-box" => BackgroundClipVal::ContentBox,
+                    "text" => BackgroundClipVal::Text,
                     _ => BackgroundClipVal::BorderBox,
                 };
             }
@@ -5002,6 +5004,7 @@ pub fn apply_declaration(
                 style.mask_origin = match kw.as_str() {
                     "padding-box" => BackgroundClipVal::PaddingBox,
                     "content-box" => BackgroundClipVal::ContentBox,
+                    "text" => BackgroundClipVal::Text,
                     _ => BackgroundClipVal::BorderBox,
                 };
             }

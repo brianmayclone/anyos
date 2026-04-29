@@ -1676,6 +1676,7 @@ fn handle_nav_done(
     st.tabs[tab_idx].pending_script_modes.clear();
     st.tabs[tab_idx].pending_script_labels.clear();
     st.tabs[tab_idx].deferred_fonts.clear();
+    st.tabs[tab_idx].requested_font_urls.clear();
     st.tabs[tab_idx].deferred_fonts_inflight = 0;
     st.tabs[tab_idx].deferred_images.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
@@ -2039,7 +2040,7 @@ fn handle_font_done(
     );
 
     // Try loading the font data (supports TTF/sfnt and WOFF2 TrueType outlines).
-    if let Some(font_id) = libfont_client::load_data(&body) {
+    if let Some(font_id) = resources::load_valid_web_font_data(&family, &body) {
         st.tabs[tab_index]
             .webview
             .register_web_font(&family, font_id);

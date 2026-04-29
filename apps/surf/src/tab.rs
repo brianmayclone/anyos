@@ -218,6 +218,8 @@ pub(crate) struct TabState {
     pub(crate) pending_script_labels: Vec<String>,
     /// Web fonts intentionally deferred until after first paint / interactive.
     pub(crate) deferred_fonts: Vec<DeferredFontRequest>,
+    /// Absolute font URLs already queued for this navigation.
+    pub(crate) requested_font_urls: Vec<String>,
     /// Number of deferred font fetches currently in flight.
     pub(crate) deferred_fonts_inflight: usize,
     /// Deferred image requests that are intentionally not submitted yet.
@@ -248,6 +250,7 @@ impl TabState {
             pending_script_modes: Vec::new(),
             pending_script_labels: Vec::new(),
             deferred_fonts: Vec::new(),
+            requested_font_urls: Vec::new(),
             deferred_fonts_inflight: 0,
             deferred_images: Vec::new(),
             deferred_images_inflight: 0,

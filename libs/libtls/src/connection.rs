@@ -192,7 +192,8 @@ impl TlsConnection {
         let plaintext = loop {
             let mut header_buf = [0u8; RECORD_HEADER_SIZE];
             if recv_exact_raw(self.fd, &mut header_buf).is_err() {
-                return 0; // EOF
+                self.error = TlsError::RecvFailed;
+                return -1;
             }
             let header = RecordHeader::parse(&header_buf);
 
@@ -205,7 +206,8 @@ impl TlsConnection {
 
             let mut record_body = alloc::vec![0u8; header.length as usize];
             if recv_exact_raw(self.fd, &mut record_body).is_err() {
-                return 0;
+                self.error = TlsError::RecvFailed;
+                return -1;
             }
 
             let pt = match self.version {

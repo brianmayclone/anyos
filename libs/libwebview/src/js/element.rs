@@ -2839,7 +2839,26 @@ fn style_property_hook(data: *mut u8, key: &str, value: &JsValue) {
     }
     let node_id = data as usize as i64;
     let css_prop = css_prop_from_camel(key);
-    let val_str = value.to_js_string();
+    let mut val_str = value.to_js_string();
+    if let Some(final_value) = super::motion_final_style_value(node_id, &css_prop) {
+        let is_initial_motion_opacity = css_prop == "opacity" && val_str.trim() == "0";
+        let is_initial_motion_transform =
+            css_prop == "transform" && val_str.trim_start().starts_with("translate");
+        if is_initial_motion_opacity || is_initial_motion_transform {
+            val_str = final_value;
+        }
+    } else if node_id < 0 {
+        // Many React/Framer pages create virtual nodes with `initial`
+        // animation styles (`opacity: 0`, `translateY(...)`) and rely on the
+        // animation runtime to immediately bring them into view. Until our
+        // Framer/Web-Animations bridge can drive that whole lifecycle, render
+        // those mount-only states as their reduced-motion final state.
+        if css_prop == "opacity" && val_str.trim() == "0" {
+            val_str = String::from("1");
+        } else if css_prop == "transform" && val_str.trim_start().starts_with("translate") {
+            val_str = String::from("translate(0px, 0px)");
+        }
+    }
 
     #[cfg(feature = "host")]
     if std::env::var_os("SURF_DEBUG_STYLE_WRITES").is_some()

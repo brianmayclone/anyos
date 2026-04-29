@@ -13,7 +13,10 @@ fn compress(state: &mut [u32; 5], block: &[u8; 64]) {
     let mut w = [0u32; 80];
     for i in 0..16 {
         w[i] = u32::from_be_bytes([
-            block[i * 4], block[i * 4 + 1], block[i * 4 + 2], block[i * 4 + 3],
+            block[i * 4],
+            block[i * 4 + 1],
+            block[i * 4 + 2],
+            block[i * 4 + 3],
         ]);
     }
     for i in 16..80 {
@@ -29,9 +32,17 @@ fn compress(state: &mut [u32; 5], block: &[u8; 64]) {
             40..=59 => ((b & c) | (b & d) | (c & d), SHA1_K[2]),
             _ => (b ^ c ^ d, SHA1_K[3]),
         };
-        let temp = a.rotate_left(5).wrapping_add(f).wrapping_add(e)
-            .wrapping_add(k).wrapping_add(w[i]);
-        e = d; d = c; c = b.rotate_left(30); b = a; a = temp;
+        let temp = a
+            .rotate_left(5)
+            .wrapping_add(f)
+            .wrapping_add(e)
+            .wrapping_add(k)
+            .wrapping_add(w[i]);
+        e = d;
+        d = c;
+        c = b.rotate_left(30);
+        b = a;
+        a = temp;
     }
 
     state[0] = state[0].wrapping_add(a);
@@ -58,7 +69,7 @@ pub fn sha1(data: &[u8]) -> [u8; DIGEST_SIZE] {
     pad[..remainder.len()].copy_from_slice(remainder);
     pad[remainder.len()] = 0x80;
 
-    if remainder.len() + 1 > 55 {
+    if remainder.len() > 55 {
         compress(&mut state, &pad);
         pad = [0u8; BLOCK_SIZE];
     }
@@ -80,10 +91,29 @@ mod tests {
     #[test]
     fn test_abc() {
         let expected: [u8; 20] = [
-            0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a,
-            0xba, 0x3e, 0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c,
-            0x9c, 0xd0, 0xd8, 0x9d,
+            0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78, 0x50,
+            0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d,
         ];
         assert_eq!(sha1(b"abc"), expected);
+    }
+
+    #[test]
+    fn test_55_byte_message() {
+        let data = [b'a'; 55];
+        let expected: [u8; 20] = [
+            0xc1, 0xc8, 0xbb, 0xdc, 0x22, 0x79, 0x6e, 0x28, 0xc0, 0xe1, 0x51, 0x63, 0xd2, 0x08,
+            0x99, 0xb6, 0x56, 0x21, 0xd6, 0x5a,
+        ];
+        assert_eq!(sha1(&data), expected);
+    }
+
+    #[test]
+    fn test_56_byte_message() {
+        let data = [b'a'; 56];
+        let expected: [u8; 20] = [
+            0xc2, 0xdb, 0x33, 0x0f, 0x60, 0x83, 0x85, 0x4c, 0x99, 0xd4, 0xb5, 0xbf, 0xb6, 0xe8,
+            0xf2, 0x9f, 0x20, 0x1b, 0xe6, 0x99,
+        ];
+        assert_eq!(sha1(&data), expected);
     }
 }

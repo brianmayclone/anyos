@@ -35,6 +35,11 @@ impl TreeEntry {
         self.mode == 0o120000 || self.mode == 120000
     }
 
+    /// Check if this entry is a gitlink (submodule commit).
+    pub fn is_gitlink(&self) -> bool {
+        self.mode == 0o160000 || self.mode == 160000
+    }
+
     /// Get the mode as a string for serialization.
     pub fn mode_str(&self) -> String {
         match self.mode {
@@ -42,6 +47,7 @@ impl TreeEntry {
             0o100644 | 100644 => String::from("100644"),
             0o100755 | 100755 => String::from("100755"),
             0o120000 | 120000 => String::from("120000"),
+            0o160000 | 160000 => String::from("160000"),
             _ => alloc::format!("{:o}", self.mode),
         }
     }

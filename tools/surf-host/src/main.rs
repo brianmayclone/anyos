@@ -447,6 +447,44 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
     }
 }
 
+fn load_valid_web_font_data(family: &str, data: &[u8]) -> Option<u32> {
+    let Some(font_id) = libfont_client::load_data(data) else {
+        return None;
+    };
+    if web_font_is_renderable(font_id) {
+        return Some(font_id);
+    }
+    libfont_client::unload(font_id);
+    eprintln!(
+        "[surf-host] rejected web font '{}' -> id {}: render validation failed",
+        family, font_id
+    );
+    None
+}
+
+fn web_font_is_renderable(font_id: u32) -> bool {
+    let (w, h) = libfont_client::measure(font_id, 24, "Ag");
+    if w < 8 || h < 8 || w > 200 || h > 100 {
+        return false;
+    }
+
+    let mut pixels = vec![0u32; 96 * 48];
+    libfont_client::draw_string_buf(
+        pixels.as_mut_ptr(),
+        96,
+        48,
+        4,
+        4,
+        0xFFFF_FFFF,
+        font_id,
+        24,
+        "Ag",
+    );
+    pixels
+        .iter()
+        .any(|px| ((*px >> 24) & 0xFF) != 0 || (*px & 0x00FF_FFFF) != 0)
+}
+
 // ── Navigation ────────────────────────────────────────────────────────────────
 
 /// Load a URL: fetch HTML, load resources, run JS.  Returns (html, base_url).
@@ -2740,6 +2778,7 @@ fn load_resources(
         }
         links
     };
+    let mut fetched_font_urls: Vec<String> = Vec::new();
 
     for (css_url, _href) in &css_links {
         eprintln!("[surf-host] fetching CSS: {}", css_url);
@@ -2819,7 +2858,7 @@ fn load_resources(
                         }
                         if src.starts_with("data:") {
                             if let Some(font_data) = decode_font_data_uri(src) {
-                                if let Some(font_id) = libfont_client::load_data(&font_data) {
+                                if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
                                     eprintln!(
                                         "[surf-host] loaded data font: {} ({} bytes)",
                                         family,
@@ -2831,9 +2870,13 @@ fn load_resources(
                             continue;
                         }
                         let font_url = resolve_url(base_url, src);
+                        if fetched_font_urls.iter().any(|url| url == &font_url) {
+                            continue;
+                        }
+                        fetched_font_urls.push(font_url.clone());
                         eprintln!("[surf-host] fetching font: {}", font_url);
                         if let Some(font_data) = fetch_resource(&font_url) {
-                            if let Some(font_id) = libfont_client::load_data(&font_data) {
+                            if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
                                 wv.register_web_font(&family, font_id);
                             }
                         }
@@ -2871,7 +2914,7 @@ fn load_resources(
             } // already loaded
             if src.starts_with("data:") {
                 if let Some(font_data) = decode_font_data_uri(src) {
-                    if let Some(font_id) = libfont_client::load_data(&font_data) {
+                    if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
                         eprintln!(
                             "[surf-host] loaded inline data font: {} ({} bytes)",
                             family,
@@ -2883,9 +2926,13 @@ fn load_resources(
                 continue;
             }
             let font_url = resolve_url(base_url, src);
+            if fetched_font_urls.iter().any(|url| url == &font_url) {
+                continue;
+            }
+            fetched_font_urls.push(font_url.clone());
             eprintln!("[surf-host] fetching inline font: {}", font_url);
             if let Some(font_data) = fetch_resource(&font_url) {
-                if let Some(font_id) = libfont_client::load_data(&font_data) {
+                if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
                     wv.register_web_font(&family, font_id);
                 }
             }

@@ -32,6 +32,13 @@ fn checkout_tree_recursive(repo: &Repository, tree_oid: &Oid, prefix: &str) -> R
             let dir_path = repo.workdir_path(&path);
             let _ = std::fs::create_dir_all(&dir_path);
             count += checkout_tree_recursive(repo, &entry.oid, &path)?;
+        } else if entry.is_gitlink() {
+            // Submodule gitlinks point at a commit object that is not part of
+            // this repository's object database. Materialize an empty directory
+            // like a fresh Git checkout with uninitialized submodules.
+            let dir_path = repo.workdir_path(&path);
+            let _ = std::fs::create_dir_all(&dir_path);
+            count += 1;
         } else {
             // Write file
             let blob = repo.read_object(&entry.oid)?;
@@ -94,6 +101,9 @@ fn build_index_recursive(
 
         if entry.is_tree() {
             build_index_recursive(repo, &entry.oid, &path, index)?;
+        } else if entry.is_gitlink() {
+            let index_entry = crate::index::IndexEntry::new(&path, entry.oid, entry.mode, 0);
+            index.add(index_entry);
         } else {
             // Read blob to get its size
             let blob = repo.read_object(&entry.oid)?;

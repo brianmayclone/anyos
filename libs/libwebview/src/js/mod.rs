@@ -67,6 +67,8 @@ static mut VIRTUAL_NODES_TARGET: *mut Vec<VirtualNode> = core::ptr::null_mut();
 static mut NAVIGATION_TARGET: *mut Vec<PendingNavigationRequest> = core::ptr::null_mut();
 /// Points to the current DomBridge.event_listeners during JS execution.
 static mut EVENT_LISTENERS_TARGET: *mut Vec<EventListener> = core::ptr::null_mut();
+/// Points to final compositor-friendly styles inferred from React/Framer props.
+static mut MOTION_FINAL_STYLES_TARGET: *mut Vec<MotionFinalStyle> = core::ptr::null_mut();
 
 /// Hook called by JsObject::set() on DOM element objects.
 /// Records DOM mutations when JS writes to properties like
@@ -250,7 +252,7 @@ fn apply_react_motion_final_styles(
     };
 
     let opacity = final_style.get_property("opacity");
-    if !opacity.is_undefined() && !opacity.is_null() {
+    let final_opacity = if !opacity.is_undefined() && !opacity.is_null() {
         #[cfg(feature = "host")]
         if std::env::var_os("SURF_DEBUG_MOTION_PROPS").is_some() {
             eprintln!(
@@ -259,16 +261,21 @@ fn apply_react_motion_final_styles(
                 opacity.to_js_string()
             );
         }
+        let value = opacity.to_js_string();
         mutations.push(DomMutation::SetStyleProperty {
             node_id,
             property: String::from("opacity"),
-            value: opacity.to_js_string(),
+            value: value.clone(),
         });
-    }
+        Some(value)
+    } else {
+        None
+    };
 
     let x = final_style.get_property("x");
     let y = final_style.get_property("y");
-    if (!x.is_undefined() && !x.is_null()) || (!y.is_undefined() && !y.is_null()) {
+    let final_transform =
+        if (!x.is_undefined() && !x.is_null()) || (!y.is_undefined() && !y.is_null()) {
         let tx = if x.is_undefined() || x.is_null() {
             0.0
         } else {
@@ -279,11 +286,56 @@ fn apply_react_motion_final_styles(
         } else {
             y.to_number()
         };
+        let value = alloc::format!("translate({}px, {}px)", tx as i32, ty as i32);
         mutations.push(DomMutation::SetStyleProperty {
             node_id,
             property: String::from("transform"),
-            value: alloc::format!("translate({}px, {}px)", tx as i32, ty as i32),
+            value: value.clone(),
         });
+        Some(value)
+    } else {
+        None
+    };
+
+    if final_opacity.is_some() || final_transform.is_some() {
+        let final_styles = unsafe {
+            if MOTION_FINAL_STYLES_TARGET.is_null() {
+                None
+            } else {
+                Some(&mut *MOTION_FINAL_STYLES_TARGET)
+            }
+        };
+        if let Some(final_styles) = final_styles {
+            if let Some(existing) = final_styles.iter_mut().find(|entry| entry.node_id == node_id) {
+                if final_opacity.is_some() {
+                    existing.opacity = final_opacity;
+                }
+                if final_transform.is_some() {
+                    existing.transform = final_transform;
+                }
+            } else {
+                final_styles.push(MotionFinalStyle {
+                    node_id,
+                    opacity: final_opacity,
+                    transform: final_transform,
+                });
+            }
+        }
+    }
+}
+
+pub(super) fn motion_final_style_value(node_id: i64, property: &str) -> Option<String> {
+    let final_styles = unsafe {
+        if MOTION_FINAL_STYLES_TARGET.is_null() {
+            return None;
+        }
+        &mut *MOTION_FINAL_STYLES_TARGET
+    };
+    let entry = final_styles.iter().find(|entry| entry.node_id == node_id)?;
+    match property {
+        "opacity" => entry.opacity.clone(),
+        "transform" => entry.transform.clone(),
+        _ => None,
     }
 }
 
@@ -309,6 +361,8 @@ struct DomBridge {
     timers: Vec<PendingTimer>,
     /// Pending Web Animations started from Element.animate().
     pending_style_animations: Vec<StyleAnimation>,
+    /// Final visible styles inferred from React/Framer motion props.
+    motion_final_styles: Vec<MotionFinalStyle>,
     /// Next timer ID.
     next_timer_id: u32,
     /// Set by `stopPropagation()` — halts moving to the next node, but
@@ -382,6 +436,13 @@ struct VirtualNode {
     text_content: String,
     child_ids: Vec<i64>,
     parent_id: Option<i64>,
+}
+
+#[derive(Clone)]
+struct MotionFinalStyle {
+    node_id: i64,
+    opacity: Option<String>,
+    transform: Option<String>,
 }
 
 /// A recorded DOM mutation from JavaScript.
@@ -970,6 +1031,7 @@ impl JsRuntime {
             ws_registry: Vec::new(),
             remove_listeners: Vec::new(),
             pending_style_animations: Vec::new(),
+            motion_final_styles: Vec::new(),
         };
         anyos_std::println!(
             "[js] setup bridge ready: mutations={} listeners={} pending_http={} timers={}",
@@ -1015,6 +1077,8 @@ impl JsRuntime {
             NAVIGATION_TARGET =
                 &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
             EVENT_LISTENERS_TARGET = &mut bridge.event_listeners as *mut Vec<EventListener>;
+            MOTION_FINAL_STYLES_TARGET =
+                &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
         }
         anyos_std::println!(
             "[js] setup mutation interception done: mutation_target=true virtual_nodes_target=true"
@@ -1129,6 +1193,7 @@ impl JsRuntime {
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
             NAVIGATION_TARGET = core::ptr::null_mut();
             EVENT_LISTENERS_TARGET = core::ptr::null_mut();
+            MOTION_FINAL_STYLES_TARGET = core::ptr::null_mut();
         }
 
         self.mutations = bridge.mutations;
@@ -1386,6 +1451,7 @@ impl JsRuntime {
             ws_registry: Vec::new(),
             remove_listeners: Vec::new(),
             pending_style_animations: Vec::new(),
+            motion_final_styles: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
@@ -1395,6 +1461,8 @@ impl JsRuntime {
             NAVIGATION_TARGET =
                 &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
             EVENT_LISTENERS_TARGET = &mut bridge.event_listeners as *mut Vec<EventListener>;
+            MOTION_FINAL_STYLES_TARGET =
+                &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
         }
         let result = self.engine.eval(source);
         unsafe {
@@ -1402,6 +1470,7 @@ impl JsRuntime {
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
             NAVIGATION_TARGET = core::ptr::null_mut();
             EVENT_LISTENERS_TARGET = core::ptr::null_mut();
+            MOTION_FINAL_STYLES_TARGET = core::ptr::null_mut();
         }
 
         for msg in self.engine.console_output() {
@@ -1890,6 +1959,7 @@ impl JsRuntime {
             ws_registry: Vec::new(),
             remove_listeners: Vec::new(),
             pending_style_animations: Vec::new(),
+            motion_final_styles: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
         unsafe {
@@ -1898,6 +1968,8 @@ impl JsRuntime {
             NAVIGATION_TARGET =
                 &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
             EVENT_LISTENERS_TARGET = &mut bridge.event_listeners as *mut Vec<EventListener>;
+            MOTION_FINAL_STYLES_TARGET =
+                &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
         }
 
         // ── Phase 1: CAPTURE (eventPhase = 1) ───────────────────────────────
@@ -2048,6 +2120,7 @@ impl JsRuntime {
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
             NAVIGATION_TARGET = core::ptr::null_mut();
             EVENT_LISTENERS_TARGET = core::ptr::null_mut();
+            MOTION_FINAL_STYLES_TARGET = core::ptr::null_mut();
         }
 
         // Drain microtask queue after event dispatch (ECMAScript spec:
@@ -2136,9 +2209,10 @@ impl JsRuntime {
                     pending_ws_sends: Vec::new(),
                     pending_ws_closes: Vec::new(),
                     ws_registry: Vec::new(),
-                    remove_listeners: Vec::new(),
-                    pending_style_animations: Vec::new(),
-                };
+            remove_listeners: Vec::new(),
+            pending_style_animations: Vec::new(),
+            motion_final_styles: Vec::new(),
+        };
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
                 unsafe {
                     MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
@@ -2147,6 +2221,8 @@ impl JsRuntime {
                         &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
                     EVENT_LISTENERS_TARGET =
                         &mut bridge.event_listeners as *mut Vec<EventListener>;
+                    MOTION_FINAL_STYLES_TARGET =
+                        &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
                 }
 
                 // Timer callbacks get a generous step budget for React initial renders.
@@ -2185,6 +2261,7 @@ impl JsRuntime {
                     VIRTUAL_NODES_TARGET = core::ptr::null_mut();
                     NAVIGATION_TARGET = core::ptr::null_mut();
                     EVENT_LISTENERS_TARGET = core::ptr::null_mut();
+                    MOTION_FINAL_STYLES_TARGET = core::ptr::null_mut();
                 }
                 for msg in self.engine.console_output() {
                     self.console.push(msg.clone());

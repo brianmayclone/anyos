@@ -327,6 +327,9 @@ impl DisplayList {
 
     fn emit_background_image(&mut self, abs_x: i32, abs_y: i32, bx: &LayoutBox) {
         use crate::style::BackgroundImageVal;
+        if matches!(bx.background_clip, BackgroundClipVal::Text) {
+            return;
+        }
         let (bg_x, bg_y, bg_w, bg_h) = self.background_paint_rect(abs_x, abs_y, bx);
         if bg_w <= 0 || bg_h <= 0 {
             return;
@@ -547,21 +550,25 @@ impl DisplayList {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_left_width.max(0),
             BackgroundClipVal::ContentBox => (bx.border_left_width + bx.padding.left).max(0),
+            BackgroundClipVal::Text => (bx.border_left_width + bx.padding.left).max(0),
         };
         let right_inset = match area {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_right_width.max(0),
             BackgroundClipVal::ContentBox => (bx.border_right_width + bx.padding.right).max(0),
+            BackgroundClipVal::Text => (bx.border_right_width + bx.padding.right).max(0),
         };
         let top_inset = match area {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_top_width.max(0),
             BackgroundClipVal::ContentBox => (bx.border_top_width + bx.padding.top).max(0),
+            BackgroundClipVal::Text => (bx.border_top_width + bx.padding.top).max(0),
         };
         let bottom_inset = match area {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_bottom_width.max(0),
             BackgroundClipVal::ContentBox => (bx.border_bottom_width + bx.padding.bottom).max(0),
+            BackgroundClipVal::Text => (bx.border_bottom_width + bx.padding.bottom).max(0),
         };
         let w = (bx.width - left_inset - right_inset).max(0);
         let h = (bx.height - top_inset - bottom_inset).max(0);
@@ -576,11 +583,17 @@ impl DisplayList {
             BackgroundClipVal::ContentBox => (bx.border_left_width + bx.padding.left)
                 .max(bx.border_right_width + bx.padding.right)
                 .max(0),
+            BackgroundClipVal::Text => (bx.border_left_width + bx.padding.left)
+                .max(bx.border_right_width + bx.padding.right)
+                .max(0),
         };
         let inset_y = match bx.background_clip {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_top_width.max(bx.border_bottom_width).max(0),
             BackgroundClipVal::ContentBox => (bx.border_top_width + bx.padding.top)
+                .max(bx.border_bottom_width + bx.padding.bottom)
+                .max(0),
+            BackgroundClipVal::Text => (bx.border_top_width + bx.padding.top)
                 .max(bx.border_bottom_width + bx.padding.bottom)
                 .max(0),
         };

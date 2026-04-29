@@ -324,8 +324,10 @@ pub fn recv(socket_id: u32, buf: &mut [u8], timeout_ticks: u32) -> u32 {
         // race-free publish-state-then-block sequence.
         crate::task::scheduler::schedule();
 
-        // After waking, process incoming packets (fast path).
-        crate::net::poll_rx();
+        // After waking, process incoming packets and TCP timers. The timer
+        // pass is needed here too: long blocking reads must still flush
+        // delayed ACKs and window updates promptly.
+        crate::net::poll();
     }
 }
 
