@@ -327,6 +327,18 @@ unsafe fn request_queue_ref(class: WorkerClass) -> Option<&'static Vec<QueuedFet
     }
 }
 
+fn queued_request_count(class: WorkerClass) -> u32 {
+    let lock = request_lock(class);
+    acquire(lock);
+    let count = unsafe {
+        request_queue_ref(class)
+            .map(|q| q.len().min(u32::MAX as usize) as u32)
+            .unwrap_or(0)
+    };
+    release(lock);
+    count
+}
+
 fn request_worker_class(req: &FetchRequest) -> WorkerClass {
     match req {
         FetchRequest::Navigate { .. }
@@ -344,10 +356,15 @@ fn request_worker_class(req: &FetchRequest) -> WorkerClass {
 fn ensure_worker(class: WorkerClass) {
     let target = worker_lane_target(class);
     let active = worker_active_count(class);
+    let pending = queued_request_count(class);
+    let wanted = active.load(Ordering::Relaxed).saturating_add(pending).min(target);
+    if wanted == 0 {
+        return;
+    }
 
     loop {
         let reserved = active.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-            if current < target {
+            if current < wanted {
                 Some(current + 1)
             } else {
                 None
@@ -1214,6 +1231,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             if let Some((body_vec, headers_string)) = cache_get(&key) {
                 surf_net_log!("image cache hit: {}", src);
                 let is_svg = crate::resources::is_svg(&src, &headers_string);
+                let encoded_len = body_vec.len();
                 let decoded_raster = if is_svg {
                     None
                 } else {
@@ -1236,7 +1254,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     tab_index,
                     src,
                     url,
-                    encoded_len: body_vec.len(),
+                    encoded_len,
                     body,
                     headers: headers_string,
                     decoded_raster,
@@ -1252,6 +1270,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     cache_put(key, resp.body.clone(), resp.headers.clone());
                     let is_svg = crate::resources::is_svg(&src, &resp.headers);
+                    let encoded_len = resp.body.len();
                     let decoded_raster = if is_svg {
                         None
                     } else {
@@ -1278,7 +1297,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         tab_index,
                         src,
                         url,
-                        encoded_len: resp.body.len(),
+                        encoded_len,
                         body,
                         headers: resp.headers,
                         decoded_raster,

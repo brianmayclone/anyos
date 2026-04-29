@@ -37,8 +37,8 @@ use raster_utils::{
     resolve_axis_origin, sin_approx,
 };
 use tile::{
-    TileCache, TileCanvas, BUFFER_ZONE, INITIAL_VISIBLE_EXTRA_ROWS, MAX_TILES_PER_TICK,
-    MAX_TILE_CANVASES, TILE_HEIGHT,
+    TileCache, TileCanvas, BUFFER_ZONE, INITIAL_VISIBLE_EXTRA_ROWS, MAX_TILE_CANVASES,
+    MAX_TILES_PER_IDLE_TICK, MAX_TILES_PER_SCROLL_TICK, TILE_HEIGHT,
 };
 use types::{DisplayList, DrawCmd, DrawKind, DrawRotation, HitRegion, MaskLayer, StickyContext};
 

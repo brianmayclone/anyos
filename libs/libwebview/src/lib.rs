@@ -110,6 +110,9 @@ const SYNTHETIC_AHEM_FONT_ID: u32 = u32::MAX - 1;
 const SYNTHETIC_CONDENSED_FONT_ID: u32 = u32::MAX - 2;
 const SYNTHETIC_NARROW_FONT_ID: u32 = u32::MAX - 3;
 const SYNTHETIC_EXTRA_CONDENSED_FONT_ID: u32 = u32::MAX - 4;
+const JS_TIMER_CALLBACK_BUDGET: usize = 4;
+const JS_QUIET_TIMER_TICKS_BEFORE_THROTTLE: u32 = 30;
+const JS_QUIET_TIMER_THROTTLE_MS: u64 = 250;
 
 fn font_family_contains_ahem(family: &str) -> bool {
     family
@@ -331,6 +334,11 @@ pub struct WebView {
     dom_only_initial_render_pending: bool,
     /// Dynamic selector state for pseudo-classes such as :hover and :focus.
     selector_state: style::SelectorState,
+    /// Consecutive ticks where JS timers fired without producing visible or
+    /// host-visible work. Used to throttle noisy analytics/heartbeat timers.
+    js_quiet_timer_ticks: u32,
+    /// Real elapsed time accumulated while quiet timers are throttled.
+    js_timer_throttle_accum_ms: u64,
 }
 
 impl WebView {
@@ -389,6 +397,8 @@ impl WebView {
             smooth_scrolls: Vec::new(),
             dom_only_initial_render_pending: false,
             selector_state: style::SelectorState::default(),
+            js_quiet_timer_ticks: 0,
+            js_timer_throttle_accum_ms: 0,
         };
         webview.js_runtime.set_viewport(w, h);
         webview
@@ -539,6 +549,8 @@ impl WebView {
         self.web_fonts.clear();
         // Reset JS runtime (fresh engine, no timers/listeners/websockets).
         self.js_runtime.reset();
+        self.js_quiet_timer_ticks = 0;
+        self.js_timer_throttle_accum_ms = 0;
     }
 
     fn prime_inline_stylesheets_from_dom(&mut self, dom: &dom::Dom) {
@@ -774,6 +786,31 @@ impl WebView {
         changed
     }
 
+    /// Evaluate a JavaScript expression from Developer Tools and append the
+    /// prompt/result to the page console buffer. Returns true when DOM changes
+    /// require a refresh.
+    pub fn eval_js_for_devtools(&mut self, source: &str) -> bool {
+        let mut dom = match self.dom_val.take() {
+            Some(d) => d,
+            None => return false,
+        };
+
+        self.js_runtime.console.push(alloc::format!("> {}", source));
+        let result = self.js_runtime.eval_with_dom(source, &dom);
+        self.js_runtime
+            .console
+            .push(alloc::format!("< {}", result.to_js_string()));
+
+        let mut changed = false;
+        if !self.js_runtime.mutations.is_empty() {
+            self.flush_pending_mutations(&mut dom);
+            changed = true;
+        }
+
+        self.dom_val = Some(dom);
+        changed
+    }
+
     /// Run JS timers for `delta_ms` milliseconds and apply any resulting mutations.
     /// Returns `true` if any timer fired (and thus mutations may have occurred).
     pub fn run_timers(&mut self, delta_ms: u64) -> bool {
@@ -858,10 +895,23 @@ impl WebView {
     /// Render tiles for the given scroll position (public wrapper).
     /// Returns `true` if there are pending tiles not yet rasterized.
     pub fn render_viewport_at(&mut self, scroll_y: i32) -> bool {
-        let pending = self.render_viewport(scroll_y);
+        let pending = self.render_viewport(scroll_y, false);
         self.last_render_scroll_y = scroll_y;
         self.pending_tiles = pending;
         pending
+    }
+
+    /// Render only immediately visible viewport tiles with a tiny per-frame
+    /// budget. Used while the user is actively scrolling.
+    pub fn render_scroll_frame_at(&mut self, scroll_y: i32) -> bool {
+        let pending = self.render_viewport(scroll_y, true);
+        self.last_render_scroll_y = scroll_y;
+        self.pending_tiles = pending;
+        pending
+    }
+
+    pub fn deferred_layout_upgrade_needed(&self, scroll_y: i32) -> bool {
+        self.should_upgrade_deferred_layout(scroll_y)
     }
 
     /// Resize the viewport and re-layout.
@@ -1016,21 +1066,63 @@ impl WebView {
         // ── 1. Advance JS timers (setTimeout / setInterval / requestAnimationFrame). ──
         // Short-circuits internally when no timers exist (zero allocation).
         if !self.js_runtime.timers.is_empty() {
-            let mut dom = match self.dom_val.take() {
-                Some(d) => d,
-                None => return false,
-            };
-            let fired = self.js_runtime.tick(&dom, delta_ms);
-            if !self.js_runtime.mutations.is_empty() {
-                self.flush_pending_mutations(&mut dom);
-                self.relayout();
-                changed = true;
-            } else if fired > 0 {
-                // Keep the tick loop alive for timer-driven async work
-                // even when the callbacks produced no immediate DOM mutations.
-                changed = true;
+            let quiet_throttled =
+                self.js_quiet_timer_ticks >= JS_QUIET_TIMER_TICKS_BEFORE_THROTTLE;
+            let mut timer_delta_ms = delta_ms;
+            let mut run_js_timers = true;
+            if quiet_throttled {
+                self.js_timer_throttle_accum_ms += delta_ms;
+                if self.js_timer_throttle_accum_ms < JS_QUIET_TIMER_THROTTLE_MS {
+                    run_js_timers = false;
+                    changed = true;
+                } else {
+                    timer_delta_ms = self.js_timer_throttle_accum_ms;
+                    self.js_timer_throttle_accum_ms = 0;
+                }
             }
-            self.dom_val = Some(dom);
+
+            if run_js_timers {
+                let mut dom = match self.dom_val.take() {
+                    Some(d) => d,
+                    None => return false,
+                };
+                let pending_http_before = self.js_runtime.pending_http_requests.len();
+                let pending_nav_before = self.js_runtime.pending_navigation_requests.len();
+                let pending_ws_before = self.js_runtime.pending_ws_connects.len()
+                    + self.js_runtime.pending_ws_sends.len()
+                    + self.js_runtime.pending_ws_closes.len();
+                let fired =
+                    self.js_runtime
+                        .tick_with_budget(&dom, timer_delta_ms, JS_TIMER_CALLBACK_BUDGET);
+                let produced_host_work =
+                    self.js_runtime.pending_http_requests.len() != pending_http_before
+                        || self.js_runtime.pending_navigation_requests.len() != pending_nav_before
+                        || (self.js_runtime.pending_ws_connects.len()
+                            + self.js_runtime.pending_ws_sends.len()
+                            + self.js_runtime.pending_ws_closes.len())
+                            != pending_ws_before;
+                if !self.js_runtime.mutations.is_empty() {
+                    self.flush_pending_mutations(&mut dom);
+                    self.relayout();
+                    changed = true;
+                    self.js_quiet_timer_ticks = 0;
+                    self.js_timer_throttle_accum_ms = 0;
+                } else if produced_host_work {
+                    changed = true;
+                    self.js_quiet_timer_ticks = 0;
+                    self.js_timer_throttle_accum_ms = 0;
+                } else if fired > 0 {
+                    self.js_quiet_timer_ticks = self.js_quiet_timer_ticks.saturating_add(1);
+                    // Keep the tick loop alive for timer-driven async work, but
+                    // once callbacks repeatedly produce no visible/host work they
+                    // are throttled above instead of running at 60Hz forever.
+                    changed = true;
+                }
+                self.dom_val = Some(dom);
+            }
+        } else {
+            self.js_quiet_timer_ticks = 0;
+            self.js_timer_throttle_accum_ms = 0;
         }
 
         // ── 2. CSS animations & transitions ──────────────────────────────────────
@@ -1082,12 +1174,12 @@ impl WebView {
         //
         // When pending tiles remain, we signal changed=true so the anim timer
         // keeps running until all visible tiles are rasterized.  The per-tick
-        // limit (MAX_TILES_PER_TICK) prevents blocking the event loop.
+        // limit prevents blocking the event loop.
         if self.layout_root.is_some() {
             let scroll_y = self.scroll_view.get_state() as i32;
             let delta = (scroll_y - self.last_render_scroll_y).abs();
             if delta > 4 || self.pending_tiles {
-                let pending = self.render_viewport(scroll_y);
+                let pending = self.render_viewport(scroll_y, false);
                 self.last_render_scroll_y = scroll_y;
                 self.pending_tiles = pending;
                 changed = true;
@@ -1105,17 +1197,7 @@ impl WebView {
     /// Uses the fast scroll path: only creates canvases for rows not yet
     /// present.  Cache-miss tiles are rasterized incrementally (max 2 per
     /// call).  Returns `true` if there are still pending tiles.
-    fn render_viewport(&mut self, scroll_y: i32) -> bool {
-        if self.should_upgrade_deferred_layout(scroll_y) {
-            debug_surf!(
-                "[webview] upgrading budgeted layout to full layout at scroll_y={} current_height={}",
-                scroll_y,
-                self.total_height_val
-            );
-            self.clear_deferred_layout_state();
-            self.relayout();
-        }
-
+    fn render_viewport(&mut self, scroll_y: i32, scrolling: bool) -> bool {
         // The display list is stored in the renderer — no layout_root needed
         // for scroll rendering.  We still pass root for API compatibility but
         // render_scroll ignores it (uses the display list instead).
@@ -1137,6 +1219,7 @@ impl WebView {
                 self.viewport_height,
                 scroll_y,
                 self.bg_color_cached,
+                scrolling,
                 self.link_cb,
                 self.link_cb_ud,
             )

@@ -140,6 +140,8 @@ pub struct DevTools {
     pub net_status_label: ui_lib::Label,
     pub nav_start_ms: u32, // for the timeline column
     pub net_next_request_id: u32,
+    pub net_dirty: bool,
+    pub net_refresh_timer: u32,
 
     /// `true` while the user is in element-picker mode — set by the toolbar
     /// button and consumed on the next click in the webview.
@@ -429,6 +431,8 @@ pub fn build() -> DevTools {
         net_status_label,
         nav_start_ms: 0,
         net_next_request_id: 1,
+        net_dirty: false,
+        net_refresh_timer: 0,
         picker_active: false,
     }
 }
@@ -441,6 +445,7 @@ pub fn reset_for_navigation() {
     st.devtools.net_entries.clear();
     st.devtools.net_next_request_id = 1;
     st.devtools.nav_start_ms = anyos_std::sys::uptime_ms();
+    st.devtools.net_dirty = false;
     if st.devtools.open {
         st.devtools.net_grid.set_row_count(0);
         st.devtools.net_grid.set_data_raw(&[]);
@@ -459,6 +464,7 @@ pub fn toggle() {
     st.devtools.open = !st.devtools.open;
     if st.devtools.open {
         st.devtools.win.move_to(120, 120);
+        flush_deferred_network_refresh();
         refresh_all();
     }
     st.devtools.win.set_visible(st.devtools.open);
@@ -580,6 +586,7 @@ pub fn refresh_network() {
     if !st.devtools.open {
         return;
     }
+    st.devtools.net_dirty = false;
     let filter_kind = st.devtools.net_filter_kind.clone();
     let mut search = [0u8; 256];
     let n = st.devtools.net_search.get_text(&mut search);
@@ -651,6 +658,29 @@ pub fn refresh_network() {
     st.devtools.net_grid.set_data_raw(&buf);
     st.devtools.net_grid.set_cell_colors(&cell_colors);
     update_net_status_label();
+}
+
+fn schedule_network_refresh() {
+    let st = crate::state();
+    st.devtools.net_dirty = true;
+    if !st.devtools.open || st.devtools.net_refresh_timer != 0 {
+        return;
+    }
+    st.devtools.net_refresh_timer = ui_lib::set_timer(100, || {
+        flush_deferred_network_refresh();
+    });
+}
+
+fn flush_deferred_network_refresh() {
+    let st = crate::state();
+    if st.devtools.net_dirty && st.devtools.open {
+        refresh_network();
+    }
+    if !st.devtools.net_dirty && st.devtools.net_refresh_timer != 0 {
+        let timer_id = st.devtools.net_refresh_timer;
+        st.devtools.net_refresh_timer = 0;
+        crate::defer_kill_timer(timer_id);
+    }
 }
 
 fn kind_matches(filter: &str, kind: &str) -> bool {
@@ -759,9 +789,7 @@ pub fn record_request_started(method: &str, kind: &str, url: &Url) -> u32 {
         let drop = st.devtools.net_entries.len() - 1000;
         st.devtools.net_entries.drain(0..drop);
     }
-    if st.devtools.open {
-        refresh_network();
-    }
+    schedule_network_refresh();
     id
 }
 
@@ -855,8 +883,8 @@ fn record_request_done_inner(
             break;
         }
     }
-    if updated && st.devtools.open {
-        refresh_network();
+    if updated {
+        schedule_network_refresh();
     }
 }
 
@@ -876,8 +904,8 @@ pub fn record_request_done_by_kind(kind: &str, status: u32, size: u64) {
             break;
         }
     }
-    if updated && st.devtools.open {
-        refresh_network();
+    if updated {
+        schedule_network_refresh();
     }
 }
 
@@ -967,11 +995,15 @@ pub fn eval_console_input() {
         return;
     }
     crate::surf_log!("[devtools] eval: {}", expr);
-    let _ = st.tabs[st.active_tab]
+    let script = alloc::format!("(function(){{return ({});}})()", expr);
+    let changed = st.tabs[st.active_tab]
         .webview
-        .execute_js(&[alloc::format!("(function(){{return ({});}})()", expr)]);
+        .eval_js_for_devtools(&script);
     st.devtools.console_input.set_text("");
     refresh_console();
+    if changed {
+        crate::request_layout_refresh(st.active_tab);
+    }
 }
 
 /// Toggle picker mode on/off — wired to the "Auswählen" tab activation.
@@ -1046,6 +1078,7 @@ pub fn clear_network() {
     st.devtools.net_entries.clear();
     st.devtools.net_next_request_id = 1;
     st.devtools.nav_start_ms = anyos_std::sys::uptime_ms();
+    st.devtools.net_dirty = false;
     if st.devtools.open {
         refresh_network();
     }

@@ -37,7 +37,7 @@ extern "C" fn deferred_kill_timer_cb(userdata: u64) {
     }
 }
 
-fn defer_kill_timer(timer_id: u32) {
+pub(crate) fn defer_kill_timer(timer_id: u32) {
     if timer_id != 0 {
         ui_lib::marshal_dispatch(deferred_kill_timer_cb, timer_id as u64);
     }
@@ -93,6 +93,7 @@ enum RenderWork {
 const IMAGE_RESULTS_PER_TAB_BATCH: usize = 64;
 const MAX_RESULTS_PER_UI_POLL: usize = 64;
 const RESULT_PROCESS_BUDGET_MS: u32 = 16;
+const SCROLL_INTERACTION_GRACE_MS: u32 = 160;
 const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 8;
 const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
 const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
@@ -262,6 +263,11 @@ struct AppState {
     /// Per-tab render work. Paint-only updates can reuse the cached layout tree,
     /// while layout updates require a full relayout before painting.
     render_dirty: [RenderWork; 16],
+    /// True when the active tab scrolled and viewport tiles should be prepared
+    /// from the animation timer instead of inside the scroll event callback.
+    scroll_render_pending: bool,
+    /// Last user scroll timestamp. Background work yields while this is hot.
+    last_scroll_input_ms: u32,
     /// Timer ID for the relayout debounce timer (0 = not running).
     relayout_timer: u32,
     /// Absolute uptime deadline for the pending relayout timer.
@@ -400,6 +406,16 @@ pub(crate) fn start_anim_timer() {
     static mut IDLE_TICKS: u32 = 0;
     st.anim_timer = ui_lib::set_timer(16, || {
         let st = state();
+        if st.scroll_render_pending {
+            st.scroll_render_pending = false;
+            refresh_active_viewport_tiles();
+            unsafe {
+                IDLE_TICKS = 0;
+            }
+            if scroll_interaction_hot() {
+                return;
+            }
+        }
         let net_results = drain_results_from_mailboxes();
         if !net_results.is_empty() {
             crate::surf_log!(
@@ -452,6 +468,20 @@ pub(crate) fn ensure_anim_timer() {
     start_anim_timer();
 }
 
+pub(crate) fn mark_scroll_activity() {
+    let st = state();
+    st.scroll_render_pending = true;
+    st.last_scroll_input_ms = anyos_std::sys::uptime_ms();
+    ensure_anim_timer();
+}
+
+fn scroll_interaction_hot() -> bool {
+    let st = state();
+    st.last_scroll_input_ms != 0
+        && anyos_std::sys::uptime_ms().wrapping_sub(st.last_scroll_input_ms)
+            < SCROLL_INTERACTION_GRACE_MS
+}
+
 pub(crate) fn pump_deferred_images_for_tab(tab_index: usize) {
     let allowance = {
         let st = state();
@@ -502,8 +532,19 @@ pub(crate) fn refresh_active_viewport_tiles() {
         return;
     }
     let scroll_y = st.tabs[tab_index].webview.scroll_view().get_state() as i32;
-    let pending = st.tabs[tab_index].webview.render_viewport_at(scroll_y);
+    let needs_deferred_upgrade = st.tabs[tab_index]
+        .webview
+        .deferred_layout_upgrade_needed(scroll_y);
+    let pending = if scroll_interaction_hot() {
+        st.tabs[tab_index].webview.render_scroll_frame_at(scroll_y)
+    } else {
+        st.tabs[tab_index].webview.render_viewport_at(scroll_y)
+    };
+    if needs_deferred_upgrade {
+        request_layout_refresh(tab_index);
+    }
     if pending {
+        state().scroll_render_pending = true;
         ensure_anim_timer();
     }
 }
@@ -836,6 +877,13 @@ fn pump_script_tick() {
         st.script_pump_timer = 0;
     }
 
+    if scroll_interaction_hot() {
+        state().scroll_render_pending = true;
+        ensure_anim_timer();
+        schedule_script_pump();
+        return;
+    }
+
     if net_worker::result_mailboxes_pending() {
         let results = drain_results_from_mailboxes();
         if !results.is_empty() {
@@ -1010,6 +1058,11 @@ fn start_net_poll_timer() {
             net_worker::has_pending_activity(),
             mailbox_counts
         );
+        if scroll_interaction_hot() {
+            state().scroll_render_pending = true;
+            ensure_anim_timer();
+            return;
+        }
         let results = drain_results_from_mailboxes();
         if results.is_empty() {
             let st = state();
@@ -1518,6 +1571,10 @@ fn flush_relayout() {
     let st = state();
     st.relayout_timer = 0;
     st.relayout_due_ms = 0;
+    if scroll_interaction_hot() {
+        schedule_render_flush(SCROLL_INTERACTION_GRACE_MS);
+        return;
+    }
     let mut any_dirty = false;
     let active_tab = st.active_tab;
     let mut background_renders = 0usize;
@@ -2417,9 +2474,7 @@ fn main() {
         .scroll_view()
         .set_dock(ui_lib::DOCK_FILL);
     initial_tab.webview.scroll_view().on_scroll(|_| {
-        refresh_active_viewport_tiles();
-        ensure_anim_timer();
-        pump_deferred_images_for_active_tab();
+        mark_scroll_activity();
     });
 
     unsafe {
@@ -2449,6 +2504,8 @@ fn main() {
             net_poll_timer: 0,
             script_pump_timer: 0,
             render_dirty: [RenderWork::None; 16],
+            scroll_render_pending: false,
+            last_scroll_input_ms: 0,
             relayout_timer: 0,
             relayout_due_ms: 0,
             resize_timer: 0,

@@ -43,16 +43,19 @@ pub fn resolve_ipv4(host: &str) -> Option<[u8; 4]> {
         return Some(ip);
     }
 
-    let response = request(&alloc::format!("RESOLVE {}", host))?;
-    parse_resolve_response(&response).or_else(|| {
-        // Keep kernel DNS as fallback until dnsd is guaranteed to be present.
-        let mut resolved = [0u8; 4];
-        if libsyscall::dns_resolve(host, &mut resolved) == 0 {
-            Some(resolved)
-        } else {
-            None
+    if let Some(response) = request(&alloc::format!("RESOLVE {}", host)) {
+        if let Some(ip) = parse_resolve_response(&response) {
+            return Some(ip);
         }
-    })
+    }
+
+    // Keep kernel DNS as fallback until dnsd is guaranteed to be present.
+    let mut resolved = [0u8; 4];
+    if libsyscall::dns_resolve(host, &mut resolved) == 0 {
+        Some(resolved)
+    } else {
+        None
+    }
 }
 
 #[cfg(not(feature = "host"))]
@@ -92,6 +95,7 @@ fn request(command: &str) -> Option<String> {
 
     let resp_pipe = pipe_create(&resp_name);
     if resp_pipe == 0 {
+        pipe_close(main_pipe);
         return None;
     }
 

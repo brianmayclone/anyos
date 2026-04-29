@@ -202,7 +202,7 @@ fn cmd_clone(args: &anyos_std::args::ParsedArgs) {
 
     // Step 5+6: Stream pack data directly into repository (no buffering)
     anyos_std::println!("remote: Counting objects...");
-    match libgit::transport::fetch_pack_streamed(&url, &unique_wants, &[], &repo) {
+    match libgit::transport::fetch_pack_streamed_with_caps(&url, &unique_wants, &[], &repo, &caps) {
         Ok(_n) => {}
         Err(e) => {
             anyos_std::println!("fatal: {}", e);
@@ -224,7 +224,9 @@ fn cmd_clone(args: &anyos_std::args::ParsedArgs) {
     checkout_candidates.push(String::from("refs/heads/main"));
     if let Some(head_ref) = caps.symref_head.as_deref() {
         if head_ref.starts_with("refs/heads/")
-            && !checkout_candidates.iter().any(|candidate| candidate == head_ref)
+            && !checkout_candidates
+                .iter()
+                .any(|candidate| candidate == head_ref)
         {
             checkout_candidates.push(String::from(head_ref));
         }
@@ -237,7 +239,9 @@ fn cmd_clone(args: &anyos_std::args::ParsedArgs) {
     }
     for rref in &remote_refs {
         if rref.name.starts_with("refs/heads/")
-            && !checkout_candidates.iter().any(|candidate| candidate == &rref.name)
+            && !checkout_candidates
+                .iter()
+                .any(|candidate| candidate == &rref.name)
         {
             checkout_candidates.push(rref.name.clone());
         }
@@ -1711,7 +1715,7 @@ fn cmd_fetch(args: &anyos_std::args::ParsedArgs) {
     anyos_std::println!("From {}", remote.url);
 
     // Discover remote refs
-    let (remote_refs, _) = match libgit::transport::discover_refs(&url, "git-upload-pack") {
+    let (remote_refs, caps) = match libgit::transport::discover_refs(&url, "git-upload-pack") {
         Ok(r) => r,
         Err(e) => {
             anyos_std::println!("fatal: {}", e);
@@ -1745,7 +1749,7 @@ fn cmd_fetch(args: &anyos_std::args::ParsedArgs) {
     }
 
     // Stream pack directly into repository
-    match libgit::transport::fetch_pack_streamed(&url, &wants, &haves, &repo) {
+    match libgit::transport::fetch_pack_streamed_with_caps(&url, &wants, &haves, &repo, &caps) {
         Ok(_n) => {}
         Err(e) => {
             anyos_std::println!("fatal: {}", e);

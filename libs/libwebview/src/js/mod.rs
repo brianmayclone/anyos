@@ -2059,6 +2059,18 @@ impl JsRuntime {
     /// Advance timers by `delta_ms` and execute any that are due.
     /// Returns the number of timers fired.
     pub fn tick(&mut self, dom: &Dom, delta_ms: u64) -> usize {
+        self.tick_with_budget(dom, delta_ms, usize::MAX)
+    }
+
+    /// Advance timers by `delta_ms`, executing at most `max_callbacks` due
+    /// callbacks. Due timers beyond the budget remain queued for the next host
+    /// tick so timer-heavy pages cannot monopolize the UI thread.
+    pub fn tick_with_budget(
+        &mut self,
+        dom: &Dom,
+        delta_ms: u64,
+        max_callbacks: usize,
+    ) -> usize {
         self.total_elapsed_ms += delta_ms;
 
         // Short-circuit: no allocation or work when there are no timers.
@@ -2073,6 +2085,10 @@ impl JsRuntime {
         for mut t in timers {
             t.elapsed_ms += delta_ms;
             if t.elapsed_ms >= t.delay_ms {
+                if fired >= max_callbacks {
+                    keep.push(t);
+                    continue;
+                }
                 // Timer is due — execute callback.
                 #[cfg(feature = "host")]
                 if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {

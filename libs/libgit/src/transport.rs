@@ -85,8 +85,14 @@ pub fn discover_refs(url: &GitUrl, service: &str) -> Result<(Vec<RemoteRef>, Cap
     let info_url = url.info_refs_url(service);
 
     libhttp_client::init();
-    let response = libhttp_client::get(&info_url)
-        .ok_or(Error::Other(format!("HTTP GET failed: {}", info_url)))?;
+    let response = libhttp_client::get(&info_url).ok_or_else(|| {
+        let status = libhttp_client::last_status();
+        let err = libhttp_client::last_error();
+        Error::Other(format!(
+            "HTTP GET failed: {} (status {}, error {})",
+            info_url, status, err
+        ))
+    })?;
 
     parse_ref_discovery(&response, service)
 }
@@ -102,7 +108,10 @@ fn parse_ref_discovery(response: &[u8], service: &str) -> Result<(Vec<RemoteRef>
     }
 }
 
-fn parse_pkt_ref_discovery(response: &[u8], service: &str) -> Result<(Vec<RemoteRef>, Capabilities)> {
+fn parse_pkt_ref_discovery(
+    response: &[u8],
+    service: &str,
+) -> Result<(Vec<RemoteRef>, Capabilities)> {
     let mut refs = Vec::new();
     let mut caps = Capabilities::new();
     let mut first_ref = true;
@@ -155,13 +164,7 @@ fn parse_line_ref_discovery(text: &str) -> Result<(Vec<RemoteRef>, Capabilities)
     let mut first_ref = true;
 
     for line in text.lines() {
-        parse_ref_advertisement(
-            line.as_bytes(),
-            "",
-            &mut first_ref,
-            &mut refs,
-            &mut caps,
-        )?;
+        parse_ref_advertisement(line.as_bytes(), "", &mut first_ref, &mut refs, &mut caps)?;
     }
 
     Ok((refs, caps))
@@ -331,8 +334,19 @@ pub fn fetch_pack_streamed(
     // Step 1: Discover refs and capabilities
     let (_, caps) = discover_refs(url, "git-upload-pack")?;
 
+    fetch_pack_streamed_with_caps(url, wants, haves, repo, &caps)
+}
+
+/// Fetch pack data using capabilities already obtained from reference discovery.
+pub fn fetch_pack_streamed_with_caps(
+    url: &GitUrl,
+    wants: &[Oid],
+    haves: &[Oid],
+    repo: &crate::repo::Repository,
+    caps: &Capabilities,
+) -> Result<u32> {
     // Step 2: Build request body
-    let request_body = build_upload_pack_request(wants, haves, &caps);
+    let request_body = build_upload_pack_request(wants, haves, caps);
 
     // Step 3: Open streaming connection
     let service_path = format!("{}/git-upload-pack", url.path.trim_end_matches('/'));

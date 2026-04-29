@@ -10,7 +10,8 @@ pub(super) const TILE_HEIGHT: u32 = 256;
 const MAX_CACHED_TILES: usize = 40;
 pub(super) const BUFFER_ZONE: i32 = 768;
 pub(super) const MAX_TILE_CANVASES: usize = 30;
-pub(super) const MAX_TILES_PER_TICK: usize = 8;
+pub(super) const MAX_TILES_PER_SCROLL_TICK: usize = 1;
+pub(super) const MAX_TILES_PER_IDLE_TICK: usize = 4;
 pub(super) const INITIAL_VISIBLE_EXTRA_ROWS: u32 = 1;
 
 struct CachedTile {

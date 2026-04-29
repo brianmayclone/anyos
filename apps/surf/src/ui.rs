@@ -151,9 +151,7 @@ pub(crate) fn add_tab() {
     st.content_view.add(tab.webview.scroll_view());
     tab.webview.scroll_view().set_dock(ui::DOCK_FILL);
     tab.webview.scroll_view().on_scroll(|_| {
-        crate::refresh_active_viewport_tiles();
-        crate::ensure_anim_timer();
-        crate::pump_deferred_images_for_active_tab();
+        crate::mark_scroll_activity();
     });
 
     // Hide all existing tabs while we add the new one.

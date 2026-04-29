@@ -373,8 +373,13 @@ impl Control for ScrollView {
         } else {
             0
         };
+        let prev = self.scroll_y;
         self.scroll_y = (self.scroll_y - delta * 20).max(0).min(max_scroll);
+        if self.scroll_y == prev {
+            return EventResponse::CONSUMED;
+        }
         self.base.state = self.scroll_y as u32;
+        self.base.mark_dirty();
         EventResponse::CHANGED
     }
 }

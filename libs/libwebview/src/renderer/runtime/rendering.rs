@@ -240,6 +240,7 @@ impl Renderer {
         viewport_h: u32,
         scroll_y: i32,
         bg_color: u32,
+        scrolling: bool,
         _link_cb: Option<ui::Callback>,
         _link_cb_ud: u64,
     ) -> bool {
@@ -250,8 +251,9 @@ impl Renderer {
         self.doc_h = doc_h;
         self.last_scroll_y = scroll_y;
 
-        let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
-        let render_y_end = (scroll_y + viewport_h as i32 + BUFFER_ZONE).min(doc_h as i32);
+        let buffer_zone = if scrolling { 0 } else { BUFFER_ZONE };
+        let render_y_start = (scroll_y - buffer_zone).max(0);
+        let render_y_end = (scroll_y + viewport_h as i32 + buffer_zone).min(doc_h as i32);
         let first_row = render_y_start as u32 / TILE_HEIGHT;
         let last_row = if render_y_end > 0 {
             ((render_y_end - 1) as u32) / TILE_HEIGHT
@@ -302,13 +304,18 @@ impl Renderer {
 
         let mut rasterized = 0usize;
         let mut pending = false;
+        let max_tiles = if scrolling {
+            MAX_TILES_PER_SCROLL_TICK
+        } else {
+            MAX_TILES_PER_IDLE_TICK
+        };
         for row in prioritized_rows {
             if self.tile_canvases.iter().any(|tc| tc.row == row) {
                 continue;
             }
 
             if self.tile_cache.get(row).is_none() {
-                if rasterized >= MAX_TILES_PER_TICK {
+                if rasterized >= max_tiles {
                     pending = true;
                     continue;
                 }

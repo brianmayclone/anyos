@@ -278,6 +278,7 @@ fn should_log_body_details(url: &Url) -> bool {
 const MAX_POOL_SIZE: usize = 6;
 const MAX_GLOBAL_POOL_SIZE: usize = 32;
 const MAX_GLOBAL_POOL_PER_HOST: usize = 8;
+const MAX_POOL_IDLE_MS: u32 = 2_000;
 
 struct PoolEntry {
     host: String,
@@ -285,6 +286,7 @@ struct PoolEntry {
     sock: u32,
     is_https: bool,
     tls_handle: Option<crate::tls::TlsHandle>,
+    idle_since_ms: u32,
 }
 
 /// Cached DNS resolution entry (hostname → IPv4 address).
@@ -348,6 +350,7 @@ impl ConnPool {
 
     /// Take a reusable connection for the given host/port/scheme.
     fn take(&mut self, host: &str, port: u16, is_https: bool) -> Option<PoolEntry> {
+        self.prune_stale();
         if let Some(pos) = self
             .entries
             .iter()
@@ -356,6 +359,20 @@ impl ConnPool {
             return Some(self.entries.remove(pos));
         }
         global_pool_take(host, port, is_https)
+    }
+
+    fn prune_stale(&mut self) {
+        let now = anyos_std::sys::uptime_ms();
+        let mut idx = 0usize;
+        while idx < self.entries.len() {
+            if now.wrapping_sub(self.entries[idx].idle_since_ms) > MAX_POOL_IDLE_MS {
+                let old = self.entries.remove(idx);
+                close_tls_handle(old.tls_handle);
+                net::tcp_close(old.sock);
+            } else {
+                idx += 1;
+            }
+        }
     }
 
     /// Return a connection to the pool for reuse.
@@ -381,6 +398,7 @@ impl ConnPool {
             sock,
             is_https,
             tls_handle,
+            idle_since_ms: anyos_std::sys::uptime_ms(),
         });
     }
 
@@ -435,13 +453,27 @@ fn global_dns_put(host: &str, ip: [u8; 4]) {
 
 fn global_pool_take(host: &str, port: u16, is_https: bool) -> Option<PoolEntry> {
     acquire_global_pool();
+    let now = anyos_std::sys::uptime_ms();
+    let mut evicted: Vec<PoolEntry> = Vec::new();
     let entry = unsafe {
         let pool = GLOBAL_CONN_POOL.get_or_insert_with(Vec::new);
+        let mut idx = 0usize;
+        while idx < pool.len() {
+            if now.wrapping_sub(pool[idx].idle_since_ms) > MAX_POOL_IDLE_MS {
+                evicted.push(pool.remove(idx));
+            } else {
+                idx += 1;
+            }
+        }
         pool.iter()
             .position(|e| e.host == host && e.port == port && e.is_https == is_https)
             .map(|pos| pool.remove(pos))
     };
     release_global_pool();
+    for entry in evicted {
+        close_tls_handle(entry.tls_handle);
+        net::tcp_close(entry.sock);
+    }
     entry
 }
 
@@ -480,6 +512,7 @@ fn global_pool_put(
             sock,
             is_https,
             tls_handle,
+            idle_since_ms: anyos_std::sys::uptime_ms(),
         });
     }
     release_global_pool();
