@@ -737,9 +737,7 @@ fn tls_recv_cb(fd: u32, buf: &mut [u8]) -> i32 {
         u32::MAX => -1,
         0xFFFFFFFE => 0,
         0 => tcp_recv_cb_blocking(fd, buf),
-        _ => {
-            tcp_recv_cb_blocking(fd, buf)
-        }
+        _ => tcp_recv_cb_blocking(fd, buf),
     }
 }
 
@@ -751,7 +749,11 @@ fn tcp_recv_cb_blocking(fd: u32, buf: &mut [u8]) -> i32 {
     } else if n != u32::MAX {
         n as i32
     } else {
-        -1
+        match anyos_std::net::tcp_recv_available(fd) {
+            u32::MAX => -1,
+            0xFFFFFFFE => 0,
+            _ => 0,
+        }
     }
 }
 

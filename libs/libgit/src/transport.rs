@@ -354,6 +354,27 @@ pub fn fetch_pack_streamed_with_caps(
     repo: &crate::repo::Repository,
     caps: &Capabilities,
 ) -> Result<u32> {
+    match fetch_pack_streamed_attempt(url, wants, haves, repo, caps) {
+        Err(Error::Other(message))
+            if (caps.side_band_64k || caps.side_band) && message == "EOF before PACK header" =>
+        {
+            anyos_std::println!("warning: side-band ended before PACK; retrying without side-band");
+            let mut raw_caps = caps.clone();
+            raw_caps.side_band = false;
+            raw_caps.side_band_64k = false;
+            fetch_pack_streamed_attempt(url, wants, haves, repo, &raw_caps)
+        }
+        result => result,
+    }
+}
+
+fn fetch_pack_streamed_attempt(
+    url: &GitUrl,
+    wants: &[Oid],
+    haves: &[Oid],
+    repo: &crate::repo::Repository,
+    caps: &Capabilities,
+) -> Result<u32> {
     // Step 2: Build request body
     let request_body = build_upload_pack_request(wants, haves, caps);
 

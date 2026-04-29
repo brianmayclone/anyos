@@ -12,10 +12,10 @@ use core::cell::Cell;
 /// Surf accumulate far too much decoded image memory on pages like Heise. That
 /// pushed allocator pressure and made failures around `sbrk` much more likely.
 /// Keep the cache large enough for smooth scrolling, but substantially smaller.
-const IMAGE_CACHE_MAX_BYTES: usize = 192 * 1024 * 1024;
+const IMAGE_CACHE_MAX_BYTES: usize = 96 * 1024 * 1024;
 /// When we cross the hard cap, trim to a softer target so we do not thrash
 /// around the limit by evicting only one entry per insertion.
-const IMAGE_CACHE_TRIM_TARGET_BYTES: usize = 144 * 1024 * 1024;
+const IMAGE_CACHE_TRIM_TARGET_BYTES: usize = 72 * 1024 * 1024;
 /// Small UI images and inline SVG logos are cheap but visually important.
 /// Prefer evicting article-sized images before dropping these.
 const IMAGE_CACHE_SMALL_IMAGE_PROTECT_BYTES: usize = 1024 * 1024;

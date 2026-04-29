@@ -49,6 +49,15 @@ impl<'a> BitReader<'a> {
         val
     }
 
+    fn can_ensure_bits(&self, count: u8) -> bool {
+        if self.bit_count >= count {
+            return true;
+        }
+        let needed_bits = count - self.bit_count;
+        let needed_bytes = needed_bits.div_ceil(8) as usize;
+        self.data.len().saturating_sub(self.pos) >= needed_bytes
+    }
+
     fn peek_bits(&self, count: u8) -> u32 {
         self.bit_buf & ((1 << count) - 1)
     }
@@ -166,25 +175,30 @@ impl HuffmanTable {
         table
     }
 
-    fn decode(&self, reader: &mut BitReader) -> u16 {
-        reader.ensure_bits(9);
-        let fast = self.fast[reader.peek_bits(9) as usize];
-        if fast != 0 {
-            let len = (fast >> 9) as u8;
-            reader.consume_bits(len);
-            return (fast & 0x01ff) - 1;
+    fn decode(&self, reader: &mut BitReader) -> Option<u16> {
+        if reader.can_ensure_bits(9) {
+            reader.ensure_bits(9);
+            let fast = self.fast[reader.peek_bits(9) as usize];
+            if fast != 0 {
+                let len = (fast >> 9) as u8;
+                reader.consume_bits(len);
+                return Some((fast & 0x01ff) - 1);
+            }
         }
 
         let mut code: u32 = 0;
         for len in 1..=MAX_BITS {
             code |= reader.read_bits(1) << (len - 1);
+            if reader.overread {
+                return None;
+            }
             for sym in 0..self.num_symbols {
                 if self.lengths[sym] as usize == len && self.codes[sym] as u32 == code {
-                    return sym as u16;
+                    return Some(sym as u16);
                 }
             }
         }
-        0 // Should not happen with valid data
+        None
     }
 }
 
@@ -274,6 +288,9 @@ pub fn inflate_counted_limited(compressed: &[u8], max_output: usize) -> Option<(
     loop {
         let bfinal = reader.read_bits(1);
         let btype = reader.read_bits(2);
+        if reader.overread {
+            return None;
+        }
 
         match btype {
             0 => {
@@ -284,12 +301,19 @@ pub fn inflate_counted_limited(compressed: &[u8], max_output: usize) -> Option<(
                 let len = (lo as u16) | ((hi as u16) << 8);
                 let _nlo = reader.read_byte_aligned();
                 let _nhi = reader.read_byte_aligned();
+                if reader.overread {
+                    return None;
+                }
                 // nlen is one's complement of len — skip validation
                 if output.len().checked_add(len as usize)? > max_output {
                     return None;
                 }
                 for _ in 0..len {
-                    output.push(reader.read_byte_aligned());
+                    let byte = reader.read_byte_aligned();
+                    if reader.overread {
+                        return None;
+                    }
+                    output.push(byte);
                 }
             }
             1 => {
@@ -309,11 +333,17 @@ pub fn inflate_counted_limited(compressed: &[u8], max_output: usize) -> Option<(
                 let hlit = reader.read_bits(5) as usize + 257;
                 let hdist = reader.read_bits(5) as usize + 1;
                 let hclen = reader.read_bits(4) as usize + 4;
+                if reader.overread {
+                    return None;
+                }
 
                 // Read code length code lengths
                 let mut cl_lengths = [0u8; 19];
                 for i in 0..hclen {
                     cl_lengths[CL_ORDER[i]] = reader.read_bits(3) as u8;
+                    if reader.overread {
+                        return None;
+                    }
                 }
 
                 let cl_table = HuffmanTable::build(&cl_lengths, 19);
@@ -323,7 +353,7 @@ pub fn inflate_counted_limited(compressed: &[u8], max_output: usize) -> Option<(
                 let mut lengths = vec![0u8; total];
                 let mut i = 0;
                 while i < total {
-                    let sym = cl_table.decode(&mut reader);
+                    let sym = cl_table.decode(&mut reader)?;
                     match sym {
                         0..=15 => {
                             lengths[i] = sym as u8;
@@ -398,7 +428,7 @@ fn decode_block(
     max_output: usize,
 ) -> Option<()> {
     loop {
-        let sym = lit_table.decode(reader) as usize;
+        let sym = lit_table.decode(reader)? as usize;
 
         if sym == 256 {
             // End of block
@@ -419,13 +449,19 @@ fn decode_block(
             }
             let length =
                 LENGTH_BASE[len_idx] as usize + reader.read_bits(LENGTH_EXTRA[len_idx]) as usize;
+            if reader.overread {
+                return None;
+            }
 
-            let dist_sym = dist_table.decode(reader) as usize;
+            let dist_sym = dist_table.decode(reader)? as usize;
             if dist_sym >= 30 {
                 return None;
             }
             let distance =
                 DIST_BASE[dist_sym] as usize + reader.read_bits(DIST_EXTRA[dist_sym]) as usize;
+            if reader.overread {
+                return None;
+            }
 
             // Copy from sliding window
             if distance > output.len() {
@@ -440,5 +476,27 @@ fn decode_block(
                 output.push(b);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncated_deflate_returns_none_quickly() {
+        let compressed = crate::deflate::deflate(b"hello from a deliberately truncated stream");
+        assert!(compressed.len() > 2);
+
+        let truncated_len = compressed.len() / 2;
+        assert!(
+            inflate_counted_limited(&compressed[..truncated_len], 4096).is_none(),
+            "truncated stream unexpectedly inflated"
+        );
+
+        let (inflated, consumed) =
+            inflate_counted_limited(&compressed, 4096).expect("complete stream should inflate");
+        assert_eq!(inflated, b"hello from a deliberately truncated stream");
+        assert!(consumed <= compressed.len());
     }
 }

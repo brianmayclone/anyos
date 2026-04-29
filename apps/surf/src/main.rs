@@ -729,9 +729,13 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
         script_label,
         exec_elapsed_ms
     );
-    for line in st.tabs[tab_index].webview.js_console() {
+    let console_start = st.tabs[tab_index]
+        .js_console_logged_len
+        .min(st.tabs[tab_index].webview.js_console().len());
+    for line in &st.tabs[tab_index].webview.js_console()[console_start..] {
         crate::surf_log!("[surf-js] {}", line);
     }
+    st.tabs[tab_index].js_console_logged_len = st.tabs[tab_index].webview.js_console().len();
     apply_js_host_mutations(tab_index);
     connect_pending_ws(tab_index);
     if drain_js_navigation_for_tab(tab_index) {

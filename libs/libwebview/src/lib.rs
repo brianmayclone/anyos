@@ -1089,7 +1089,9 @@ impl WebView {
                 self.js_timer_throttle_accum_ms += delta_ms;
                 if self.js_timer_throttle_accum_ms < JS_QUIET_TIMER_THROTTLE_MS {
                     run_js_timers = false;
-                    changed = true;
+                    // Quiet analytics/consent retry loops should not keep the
+                    // browser's 16 ms animation timer alive. If nothing else
+                    // changes visually, the outer UI timer may go idle.
                 } else {
                     timer_delta_ms = self.js_timer_throttle_accum_ms;
                     self.js_timer_throttle_accum_ms = 0;

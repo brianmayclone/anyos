@@ -387,6 +387,7 @@ fn recv_plaintext_record(fd: u32) -> Result<Vec<u8>, TlsError> {
 }
 
 fn recv_exact_raw(fd: u32, buf: &mut [u8]) -> Result<(), TlsError> {
+    const MAX_EMPTY_READS: u32 = 10;
     let mut filled = 0;
     let mut retries = 0;
     while filled < buf.len() {
@@ -396,7 +397,7 @@ fn recv_exact_raw(fd: u32, buf: &mut [u8]) -> Result<(), TlsError> {
         }
         if n == 0 {
             retries += 1;
-            if retries > 50 {
+            if retries > MAX_EMPTY_READS {
                 return Err(TlsError::RecvFailed);
             }
             transport_sleep(100);

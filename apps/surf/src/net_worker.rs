@@ -675,6 +675,7 @@ pub(crate) fn has_pending_activity() -> bool {
 const MAX_CACHE_ENTRIES: usize = 256;
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CACHEABLE_BODY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CACHEABLE_IMAGE_BODY_BYTES: usize = 256 * 1024;
 
 /// A cached HTTP response for a sub-resource.
 struct CacheEntry {
@@ -1268,9 +1269,11 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             match http::fetch(&url, &mut CookieJar::new(), pool) {
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
-                    cache_put(key, resp.body.clone(), resp.headers.clone());
                     let is_svg = crate::resources::is_svg(&src, &resp.headers);
                     let encoded_len = resp.body.len();
+                    if is_svg || encoded_len <= MAX_CACHEABLE_IMAGE_BODY_BYTES {
+                        cache_put(key, resp.body.clone(), resp.headers.clone());
+                    }
                     let decoded_raster = if is_svg {
                         None
                     } else {

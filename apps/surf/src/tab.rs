@@ -229,6 +229,8 @@ pub(crate) struct TabState {
     /// External CSS has completed and background images should be discovered
     /// after the next layout refreshes the computed-style cache.
     pub(crate) css_background_scan_pending: bool,
+    /// Number of JS console lines already mirrored to Surf's system log.
+    pub(crate) js_console_logged_len: usize,
 }
 
 impl TabState {
@@ -255,6 +257,7 @@ impl TabState {
             deferred_images: Vec::new(),
             deferred_images_inflight: 0,
             css_background_scan_pending: false,
+            js_console_logged_len: 0,
         }
     }
 
@@ -323,6 +326,7 @@ pub(crate) fn navigate(url_str: &str) {
     st.tabs[st.active_tab]
         .load_state
         .begin_navigation(generation);
+    st.tabs[st.active_tab].js_console_logged_len = 0;
     crate::devtools::reset_for_navigation();
 
     // Update UI to show loading state.
@@ -366,6 +370,7 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
     st.tabs[st.active_tab]
         .load_state
         .begin_navigation(generation);
+    st.tabs[st.active_tab].js_console_logged_len = 0;
     crate::devtools::reset_for_navigation();
 
     st.tabs[st.active_tab].is_loading = true;
