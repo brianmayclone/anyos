@@ -1855,7 +1855,7 @@ fn win_message_channel(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
             // by creating a wrapper native function that calls the peer callback.
             // Simpler: just fire the callback immediately — React only needs
             // the deferral, and our tick() runs on the next frame anyway.
-            bridge.timers.push(super::PendingTimer {
+            super::push_pending_timer(&mut bridge.timers, super::PendingTimer {
                 id,
                 callback,
                 this_arg: peer,

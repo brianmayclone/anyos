@@ -5,20 +5,22 @@ use alloc::string::String;
 use super::Vm;
 use crate::value::*;
 
+const MAX_CONSOLE_OUTPUT: usize = 128;
+
 // ═══════════════════════════════════════════════════════════
 // console methods
 // ═══════════════════════════════════════════════════════════
 
 pub fn console_log(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let msg = format_args_to_string(args);
-    vm.console_output.push(msg);
+    push_console_output(vm, msg);
     JsValue::Undefined
 }
 
 pub fn console_warn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut msg = String::from("[WARN] ");
     msg.push_str(&format_args_to_string(args));
-    vm.console_output.push(msg);
+    push_console_output(vm, msg);
     JsValue::Undefined
 }
 
@@ -36,13 +38,21 @@ pub fn console_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
     stack.push(']');
     msg.push_str(&stack);
-    vm.console_output.push(msg);
+    push_console_output(vm, msg);
     JsValue::Undefined
 }
 
 // ═══════════════════════════════════════════════════════════
 // Helper
 // ═══════════════════════════════════════════════════════════
+
+fn push_console_output(vm: &mut Vm, msg: String) {
+    if vm.console_output.len() >= MAX_CONSOLE_OUTPUT {
+        let overflow = vm.console_output.len() + 1 - MAX_CONSOLE_OUTPUT;
+        vm.console_output.drain(0..overflow);
+    }
+    vm.console_output.push(msg);
+}
 
 fn format_args_to_string(args: &[JsValue]) -> String {
     let mut out = String::new();

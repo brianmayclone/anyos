@@ -288,11 +288,10 @@ fn decompress_raw(input: &[u8], output: &mut [u8], window: &mut [u8]) -> i32 {
     loop {
         let bfinal = bs.read_bits(1);
         let btype = bs.read_bits(2);
-        if bfinal.is_none() || btype.is_none() {
-            return -1;
-        }
-        let is_final = bfinal.unwrap() == 1;
-        let block_type = btype.unwrap();
+        let (is_final, block_type) = match (bfinal, btype) {
+            (Some(bfinal), Some(btype)) => (bfinal == 1, btype),
+            _ => return -1,
+        };
 
         match block_type {
             0 => {

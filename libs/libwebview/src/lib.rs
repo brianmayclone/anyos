@@ -796,7 +796,8 @@ impl WebView {
             None => return false,
         };
 
-        self.js_runtime.console.push(alloc::format!("> {}", source));
+        self.js_runtime
+            .push_console_line(alloc::format!("> {}", source));
         let result = self.js_runtime.eval_with_dom(source, &dom);
         self.js_runtime
             .console

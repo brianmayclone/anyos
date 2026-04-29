@@ -295,14 +295,15 @@ pub(crate) fn queue_font_face_batch(
         }
 
         let resolved = crate::http::resolve_url(base_url, src_url);
+        let resolved_key = crate::ui::format_url(&resolved);
         if st.tabs[tab_index]
             .requested_font_urls
             .iter()
-            .any(|url| url == &resolved)
+            .any(|url| url == &resolved_key)
         {
             continue;
         }
-        st.tabs[tab_index].requested_font_urls.push(resolved.clone());
+        st.tabs[tab_index].requested_font_urls.push(resolved_key);
 
         if should_defer_font_face(*display) {
             st.tabs[tab_index]

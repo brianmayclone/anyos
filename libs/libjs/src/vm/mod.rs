@@ -15,6 +15,8 @@ use core::cell::RefCell;
 use crate::bytecode::{Chunk, Constant, Op};
 use crate::value::*;
 
+const MAX_ENGINE_LOG_MESSAGES: usize = 128;
+
 pub mod builtins;
 pub mod call;
 pub mod event_loop;
@@ -725,6 +727,10 @@ impl Vm {
 
     /// Append a diagnostic message to the engine log.
     pub fn log_engine(&mut self, msg: &str) {
+        if self.engine_log.len() >= MAX_ENGINE_LOG_MESSAGES {
+            let overflow = self.engine_log.len() + 1 - MAX_ENGINE_LOG_MESSAGES;
+            self.engine_log.drain(0..overflow);
+        }
         self.engine_log.push(String::from(msg));
     }
 

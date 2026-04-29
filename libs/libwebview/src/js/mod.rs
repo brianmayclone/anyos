@@ -32,6 +32,9 @@ use crate::css::{Declaration, KeyframeSet};
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{apply_timing, TimingFunction, TransitionDef};
 
+const MAX_CONSOLE_MESSAGES: usize = 512;
+const MAX_PENDING_TIMERS: usize = 1024;
+
 #[cfg(feature = "host")]
 fn debug_class_mutations_enabled() -> bool {
     std::env::var_os("SURF_DEBUG_CLASS_MUTATIONS").is_some()
@@ -858,6 +861,18 @@ fn js_exception_summary(exc: &JsValue) -> String {
 }
 
 impl JsRuntime {
+    pub fn push_console_line(&mut self, msg: String) {
+        push_console_message(&mut self.console, msg);
+    }
+
+    fn collect_engine_console(&mut self) {
+        let messages: Vec<String> = self.engine.console_output().iter().cloned().collect();
+        for msg in messages {
+            push_console_message(&mut self.console, msg);
+        }
+        self.engine.clear_console();
+    }
+
     pub fn new() -> Self {
         let engine = JsEngine::new();
         Self {
@@ -1168,7 +1183,7 @@ impl JsRuntime {
             // Flush console output after each script.
             for msg in self.engine.console_output() {
                 anyos_std::println!("[js] console #{}: {}", idx, msg);
-                self.console.push(msg.clone());
+                push_console_message(&mut self.console, msg.clone());
             }
             self.engine.clear_console();
 
@@ -1204,7 +1219,7 @@ impl JsRuntime {
         self.pending_http_requests = bridge.pending_http_requests;
         self.pending_navigation_requests = bridge.pending_navigation_requests;
         self.next_timer_id = bridge.next_timer_id;
-        self.timers.extend(bridge.timers);
+        extend_pending_timers(&mut self.timers, bridge.timers);
         self.active_style_animations
             .extend(bridge.pending_style_animations);
         self.pending_ws_connects.extend(bridge.pending_ws_connects);
@@ -1423,10 +1438,7 @@ impl JsRuntime {
 
     pub fn eval(&mut self, source: &str) -> JsValue {
         let result = self.engine.eval(source);
-        for msg in self.engine.console_output() {
-            self.console.push(msg.clone());
-        }
-        self.engine.clear_console();
+        self.collect_engine_console();
         result
     }
 
@@ -1473,10 +1485,7 @@ impl JsRuntime {
             MOTION_FINAL_STYLES_TARGET = core::ptr::null_mut();
         }
 
-        for msg in self.engine.console_output() {
-            self.console.push(msg.clone());
-        }
-        self.engine.clear_console();
+        self.collect_engine_console();
         self.mutations.extend(bridge.mutations);
         self.virtual_nodes = bridge.virtual_nodes;
         self.next_virtual_id = bridge.next_virtual_id;
@@ -1488,7 +1497,7 @@ impl JsRuntime {
         self.pending_navigation_requests
             .extend(bridge.pending_navigation_requests);
         self.next_timer_id = bridge.next_timer_id;
-        self.timers.extend(bridge.timers);
+        extend_pending_timers(&mut self.timers, bridge.timers);
         self.active_style_animations
             .extend(bridge.pending_style_animations);
         self.engine.vm().userdata = core::ptr::null_mut();
@@ -1651,10 +1660,7 @@ impl JsRuntime {
             return;
         }
         self.engine.vm().call_value(&cb, args, this.clone());
-        for msg in self.engine.console_output() {
-            self.console.push(msg.clone());
-        }
-        self.engine.clear_console();
+        self.collect_engine_console();
     }
 
     /// Apply recorded mutations to the real DOM.
@@ -2128,10 +2134,7 @@ impl JsRuntime {
         self.engine.vm().drain_microtasks();
 
         // Collect all side-effects from the dispatch.
-        for msg in self.engine.console_output() {
-            self.console.push(msg.clone());
-        }
-        self.engine.clear_console();
+        self.collect_engine_console();
         self.mutations.extend(bridge.mutations);
         self.virtual_nodes = bridge.virtual_nodes;
         self.next_virtual_id = bridge.next_virtual_id;
@@ -2143,7 +2146,7 @@ impl JsRuntime {
         self.pending_navigation_requests
             .extend(bridge.pending_navigation_requests);
         self.next_timer_id = bridge.next_timer_id;
-        self.timers.extend(bridge.timers);
+        extend_pending_timers(&mut self.timers, bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
 
         // Return true when preventDefault() was NOT called (default action proceeds).
@@ -2263,10 +2266,7 @@ impl JsRuntime {
                     EVENT_LISTENERS_TARGET = core::ptr::null_mut();
                     MOTION_FINAL_STYLES_TARGET = core::ptr::null_mut();
                 }
-                for msg in self.engine.console_output() {
-                    self.console.push(msg.clone());
-                }
-                self.engine.clear_console();
+                self.collect_engine_console();
                 // Print engine log from timer callback for diagnostics
                 for log_msg in self.engine.vm().engine_log.iter() {
                     anyos_std::println!("[js] timer: {}", log_msg);
@@ -2285,7 +2285,7 @@ impl JsRuntime {
                 self.active_style_animations
                     .extend(bridge.pending_style_animations);
                 // New timers created during callback.
-                keep.extend(bridge.timers);
+                extend_pending_timers(&mut keep, bridge.timers);
                 self.engine.vm().userdata = core::ptr::null_mut();
 
                 fired += 1;
@@ -3692,7 +3692,7 @@ fn native_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
             eprintln!("[js-dom-debug] setTimeout id={} delay={}", id, delay);
         }
-        bridge.timers.push(PendingTimer {
+        push_pending_timer(&mut bridge.timers, PendingTimer {
             id,
             callback,
             this_arg: JsValue::Undefined,
@@ -3720,7 +3720,7 @@ fn native_set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
             eprintln!("[js-dom-debug] setInterval id={} delay={}", id, delay);
         }
-        bridge.timers.push(PendingTimer {
+        push_pending_timer(&mut bridge.timers, PendingTimer {
             id,
             callback,
             this_arg: JsValue::Undefined,
@@ -3744,7 +3744,7 @@ fn native_set_immediate(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
             eprintln!("[js-dom-debug] setImmediate id={}", id);
         }
-        bridge.timers.push(PendingTimer {
+        push_pending_timer(&mut bridge.timers, PendingTimer {
             id,
             callback,
             this_arg: JsValue::Undefined,
@@ -3781,7 +3781,7 @@ fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
             eprintln!("[js-dom-debug] requestAnimationFrame id={}", id);
         }
-        bridge.timers.push(PendingTimer {
+        push_pending_timer(&mut bridge.timers, PendingTimer {
             id,
             callback,
             this_arg: JsValue::Undefined,
@@ -4222,4 +4222,37 @@ fn computed_style_to_decl(
         value,
         important: false,
     })
+}
+
+fn push_console_message(console: &mut Vec<String>, msg: String) {
+    if console.len() >= MAX_CONSOLE_MESSAGES {
+        let overflow = console.len() + 1 - MAX_CONSOLE_MESSAGES;
+        console.drain(0..overflow);
+    }
+    console.push(msg);
+}
+
+pub(super) fn push_pending_timer(queue: &mut Vec<PendingTimer>, timer: PendingTimer) {
+    if queue.len() >= MAX_PENDING_TIMERS {
+        let overflow = queue.len() + 1 - MAX_PENDING_TIMERS;
+        queue.drain(0..overflow);
+    }
+    queue.push(timer);
+}
+
+fn extend_pending_timers(queue: &mut Vec<PendingTimer>, timers: Vec<PendingTimer>) {
+    if timers.is_empty() {
+        return;
+    }
+    let incoming_len = timers.len();
+    if incoming_len >= MAX_PENDING_TIMERS {
+        queue.clear();
+        queue.extend(timers.into_iter().skip(incoming_len - MAX_PENDING_TIMERS));
+        return;
+    }
+    if queue.len() + incoming_len > MAX_PENDING_TIMERS {
+        let overflow = queue.len() + incoming_len - MAX_PENDING_TIMERS;
+        queue.drain(0..overflow);
+    }
+    queue.extend(timers);
 }
