@@ -894,7 +894,7 @@ add_rust_user_program(neofetch)
 add_rust_user_program(nvi)
 add_rust_user_program(crust)
 add_rust_user_program(ccargo)
-add_rust_user_program(cgit)
+add_rust_user_program(git)
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/cargo
@@ -913,15 +913,6 @@ add_custom_command(
   COMMENT "Linking rustc -> crust"
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/rustc)
-
-add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/System/bin/git
-  COMMAND ${CMAKE_COMMAND} -E remove -f ${SYSROOT_DIR}/System/bin/git
-  COMMAND ${CMAKE_COMMAND} -E create_symlink cgit ${SYSROOT_DIR}/System/bin/git
-  DEPENDS ${SYSROOT_DIR}/System/bin/cgit
-  COMMENT "Linking git -> cgit"
-)
-list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/git)
 
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/anyrc
@@ -944,9 +935,9 @@ list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/acargo)
 add_custom_command(
   OUTPUT ${SYSROOT_DIR}/System/bin/agit
   COMMAND ${CMAKE_COMMAND} -E remove -f ${SYSROOT_DIR}/System/bin/agit
-  COMMAND ${CMAKE_COMMAND} -E create_symlink cgit ${SYSROOT_DIR}/System/bin/agit
-  DEPENDS ${SYSROOT_DIR}/System/bin/cgit
-  COMMENT "Linking agit -> cgit"
+  COMMAND ${CMAKE_COMMAND} -E create_symlink git ${SYSROOT_DIR}/System/bin/agit
+  DEPENDS ${SYSROOT_DIR}/System/bin/git
+  COMMENT "Linking agit -> git"
 )
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/agit)
 # Privileged sbin programs

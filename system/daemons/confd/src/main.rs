@@ -329,39 +329,20 @@ impl ConfState {
 }
 
 fn main() {
-    let t_start = anyos_std::sys::uptime_ms();
-    anyos_std::println!(
-        "[confd] starting central configuration registry (t={}ms)",
-        t_start
-    );
     // Non-blocking: only a single attempt. Real retry happens in the main loop.
     let mut lifecycle = ServiceLifecycle::connect("confd").ok();
     if let Some(svc) = lifecycle.as_mut() {
         let _ = svc.notify_starting();
     }
-    anyos_std::println!(
-        "[confd] lifecycle={} (t={}ms)",
-        if lifecycle.is_some() {
-            "ok"
-        } else {
-            "deferred"
-        },
-        anyos_std::sys::uptime_ms().wrapping_sub(t_start)
-    );
 
     if !libdb_client::init() {
         anyos_std::println!("[confd] failed to load libdb.so");
         notify_failed(&mut lifecycle, "libdb_init_failed");
         return;
     }
-    anyos_std::println!(
-        "[confd] libdb loaded (t={}ms)",
-        anyos_std::sys::uptime_ms().wrapping_sub(t_start)
-    );
 
     anyos_std::fs::mkdir(DB_DIR);
-    let db_preexisting = ensure_db_file();
-    log_db_file_state("before-open");
+    ensure_db_file();
 
     let db = match libdb_client::Database::open(DB_PATH) {
         Some(db) => db,
@@ -371,38 +352,10 @@ fn main() {
             return;
         }
     };
-    anyos_std::println!(
-        "[confd] db opened (t={}ms)",
-        anyos_std::sys::uptime_ms().wrapping_sub(t_start)
-    );
 
     schema::init_tables(&db);
-    log_db_file_state("after-init");
     let entries = schema::load_entries(&db);
-    anyos_std::println!(
-        "[confd] entries loaded: {} (t={}ms)",
-        entries.len(),
-        anyos_std::sys::uptime_ms().wrapping_sub(t_start)
-    );
     let next_audit_seq = schema::load_next_audit_seq(&db);
-    let registry_rows = schema::count_rows(&db, "registry");
-    let audit_rows = schema::count_rows(&db, "audit");
-    let schema_rows = schema::count_rows(&db, "schemas");
-    if registry_rows.is_some() && audit_rows.is_some() && schema_rows.is_some() {
-        anyos_std::println!(
-            "[confd] db integrity check OK (registry={}, audit={}, schemas={})",
-            registry_rows.unwrap_or(0),
-            audit_rows.unwrap_or(0),
-            schema_rows.unwrap_or(0),
-        );
-    } else {
-        anyos_std::println!(
-            "[confd] db integrity check WARNING (registry={:?}, audit={:?}, schemas={:?})",
-            registry_rows,
-            audit_rows,
-            schema_rows,
-        );
-    }
     let mut state = ConfState::new(entries, next_audit_seq);
 
     let old_pipe = anyos_std::ipc::pipe_open(PIPE_NAME);
@@ -417,17 +370,6 @@ fn main() {
         return;
     }
 
-    anyos_std::println!(
-        "[confd] ready (pipe='{}', db='{}', existed={}, entries={}, registry_rows={:?}, audit_rows={:?}, schema_rows={:?}, next_audit_seq={})",
-        PIPE_NAME,
-        DB_PATH,
-        db_preexisting,
-        state.entries.len(),
-        registry_rows,
-        audit_rows,
-        schema_rows,
-        state.next_audit_seq,
-    );
     let entries_detail = alloc::format!("{}", state.entries.len());
     let mut ready_notified = false;
     if let Some(svc) = lifecycle.as_mut() {
@@ -437,11 +379,6 @@ fn main() {
         if svc.notify_ready().is_ok() {
             ready_notified = true;
         }
-    }
-    if !ready_notified {
-        anyos_std::println!(
-            "[confd] ready notification deferred (AMID unavailable), will retry in background"
-        );
     }
 
     let mut pipe_buf = [0u8; 4096];
@@ -469,7 +406,6 @@ fn main() {
                         if let Some(svc) = lifecycle.as_mut() {
                             let _ = svc.notify_starting();
                         }
-                        anyos_std::println!("[confd] AMID lifecycle connected late");
                     }
                 }
                 if let Some(svc) = lifecycle.as_mut() {
@@ -478,7 +414,6 @@ fn main() {
                     let _ = svc.set_detail("entries", &entries_detail);
                     if svc.notify_ready().is_ok() {
                         ready_notified = true;
-                        anyos_std::println!("[confd] ready notification sent (late)");
                     }
                 }
             }
@@ -492,7 +427,6 @@ fn ensure_db_file() -> bool {
     let probe = anyos_std::fs::open(DB_PATH, 0);
     if probe != u32::MAX {
         anyos_std::fs::close(probe);
-        anyos_std::println!("[confd] database file found at {}", DB_PATH);
         return true;
     }
 
@@ -505,27 +439,7 @@ fn ensure_db_file() -> bool {
         return false;
     }
     anyos_std::fs::close(fd);
-    anyos_std::println!("[confd] created new database file at {}", DB_PATH);
     false
-}
-
-fn log_db_file_state(stage: &str) {
-    let mut stat_buf = [0u32; 7];
-    if anyos_std::fs::stat(DB_PATH, &mut stat_buf) != 0 {
-        anyos_std::println!("[confd] db {} stat FAILED path={}", stage, DB_PATH);
-        return;
-    }
-
-    anyos_std::println!(
-        "[confd] db {} type={} size={} uid={} gid={} mode=0x{:x} mtime={}",
-        stage,
-        stat_buf[0],
-        stat_buf[1],
-        stat_buf[3],
-        stat_buf[4],
-        stat_buf[5],
-        stat_buf[6],
-    );
 }
 
 fn notify_failed(lifecycle: &mut Option<ServiceLifecycle>, reason: &str) {

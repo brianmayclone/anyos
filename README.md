@@ -306,7 +306,7 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 | Settings Store | `sget` `sstore` `sdel` `ac` |
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` `jp2a` |
-| Dev Tools | `cc` (TCC) `nasm` `make` `git` `cgit` `crust` `ccargo` `open` `vi` `nvi` `nano` `jscript` |
+| Dev Tools | `cc` (TCC) `nasm` `make` `git` `crust` `ccargo` `open` `vi` `nvi` `nano` `jscript` |
 | System | `vdagent` |
 
 ---

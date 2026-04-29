@@ -73,87 +73,45 @@ fn dispatch(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &st
     let (verb, rest) = split_first_word(cmd);
     match verb {
         "HELLO" | "hello" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_hello(state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "PING" | "ping" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             let _ = send_line(reply_pipe_name, tid, "PONG");
-            trace_done(tid, verb);
         }
         "REGISTER" | "register" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_register(db, state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "MKDIR" | "mkdir" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_mkdir(db, state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "SET" | "set" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_set(db, state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "GET" | "get" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_get(state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "DEL" | "del" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_del(db, state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "LIST" | "list" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_list(state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "LISTCHILDREN" | "listchildren" | "LIST_CHILDREN" | "list_children" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_list_children(state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "AUDIT" | "audit" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_audit(db, state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "WATCH" | "watch" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_watch(state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         "UNWATCH" | "unwatch" => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             cmd_unwatch(state, tid, reply_pipe_name, rest);
-            trace_done(tid, verb);
         }
         _ => {
-            trace_request(tid, reply_pipe_name, verb, rest);
             let _ = send_line(reply_pipe_name, tid, "ERR unknown_command");
-            trace_done(tid, verb);
         }
     }
-}
-
-fn trace_request(tid: u32, reply_pipe_name: &str, verb: &str, rest: &str) {
-    let preview_len = rest.len().min(96);
-    anyos_std::println!(
-        "confd: req tid={} reply='{}' verb={} rest_len={} rest='{}'",
-        tid,
-        reply_pipe_name,
-        verb,
-        rest.len(),
-        &rest[..preview_len]
-    );
-}
-
-fn trace_done(tid: u32, verb: &str) {
-    anyos_std::println!("confd: done tid={} verb={}", tid, verb);
 }
 
 fn cmd_hello(state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {

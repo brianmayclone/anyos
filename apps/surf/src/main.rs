@@ -1273,6 +1273,7 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             src,
             url,
             body,
+            encoded_len,
             headers,
             decoded_raster,
             priority,
@@ -1284,15 +1285,23 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
                     &url.host,
                     &url.path,
                     200,
-                    body.len() as u64,
+                    encoded_len as u64,
                     timing,
                 );
             } else {
-                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
+                devtools::record_request_done(&url.host, &url.path, 200, encoded_len as u64);
             }
             let start_ms = anyos_std::sys::uptime_ms();
-            let needs_layout =
-                handle_image_done(tab_index, src, body, headers, decoded_raster, priority, generation);
+            let needs_layout = handle_image_done(
+                tab_index,
+                src,
+                encoded_len,
+                body,
+                headers,
+                decoded_raster,
+                priority,
+                generation,
+            );
             log_main_phase_elapsed("handle_image_done", start_ms);
             if needs_layout {
                 request_layout_refresh(tab_index);
@@ -2024,6 +2033,7 @@ fn handle_font_done(
 fn handle_image_done(
     tab_index: usize,
     src: String,
+    encoded_len: usize,
     body: Vec<u8>,
     headers: String,
     decoded_raster: Option<net_worker::DecodedRaster>,
@@ -2041,7 +2051,7 @@ fn handle_image_done(
         "[surf] image done: tab={} src={} bytes={} priority={} gen={}",
         tab_index,
         src,
-        body.len(),
+        encoded_len,
         image_priority_name(priority),
         generation
     );

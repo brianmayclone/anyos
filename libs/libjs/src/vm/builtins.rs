@@ -1601,6 +1601,7 @@ impl Vm {
             proto.borrow_mut().prototype = Some(self.object_proto.clone());
             proto.borrow_mut()
                 .set(String::from("constructor"), ctor.clone());
+            native_date::install_date_instance_methods(&mut proto.borrow_mut());
             ctor.set_property(String::from("prototype"), JsValue::Object(proto));
             ctor.set_property(String::from("now"), native_fn("now", native_date::date_now));
             ctor.set_property(

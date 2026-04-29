@@ -41,9 +41,15 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
         return None;
     }
 
-    // scratch_needed: LZW table (4096*8) + index buffer (w*h) + margin (1024)
+    // scratch_needed: LZW table (4096*8) + index buffer (w*h) +
+    // concatenated image-data sub-blocks.  The decoder copies the first
+    // image's compressed sub-block payload into scratch after the index
+    // buffer, so the old fixed 1 KiB margin was far too small for large
+    // web GIFs.
+    let compressed = first_image_compressed_size(data).unwrap_or(data.len());
     let scratch = lzw::LZW_SCRATCH_SIZE as u32
         + width * height
+        + compressed.min(u32::MAX as usize) as u32
         + 1024;
 
     Some(ImageInfo {
@@ -52,6 +58,78 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
         format: FMT_GIF,
         scratch_needed: scratch,
     })
+}
+
+fn first_image_compressed_size(data: &[u8]) -> Option<usize> {
+    if data.len() < HEADER_SIZE {
+        return None;
+    }
+    let packed = data[10];
+    let has_gct = (packed & 0x80) != 0;
+    let gct_entries = if has_gct {
+        1usize << ((packed & 0x07) + 1)
+    } else {
+        0
+    };
+    let mut pos = HEADER_SIZE + gct_entries * 3;
+    while pos < data.len() {
+        match data[pos] {
+            0x2C => {
+                pos += 10;
+                if pos > data.len() {
+                    return None;
+                }
+                let image_packed = data[pos - 1];
+                if (image_packed & 0x80) != 0 {
+                    let lct_entries = 1usize << ((image_packed & 0x07) + 1);
+                    pos = pos.checked_add(lct_entries * 3)?;
+                    if pos > data.len() {
+                        return None;
+                    }
+                }
+                pos += 1; // LZW minimum code size
+                if pos > data.len() {
+                    return None;
+                }
+                let mut total = 0usize;
+                loop {
+                    if pos >= data.len() {
+                        return None;
+                    }
+                    let len = data[pos] as usize;
+                    pos += 1;
+                    if len == 0 {
+                        return Some(total);
+                    }
+                    if pos.checked_add(len)? > data.len() {
+                        return None;
+                    }
+                    total = total.checked_add(len)?;
+                    pos += len;
+                }
+            }
+            0x21 => {
+                pos += 2;
+                loop {
+                    if pos >= data.len() {
+                        return None;
+                    }
+                    let len = data[pos] as usize;
+                    pos += 1;
+                    if len == 0 {
+                        break;
+                    }
+                    pos = pos.checked_add(len)?;
+                    if pos > data.len() {
+                        return None;
+                    }
+                }
+            }
+            0x3B => return None,
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Decode the first frame of a GIF file into ARGB8888 pixels.

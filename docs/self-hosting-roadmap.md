@@ -276,7 +276,7 @@ Fuer Rust-Projekte ist `BuildBackend::Ccargo` der Standard. Tasks enthalten:
 
 Kurzfristig:
 
-- `anycode` ruft `agit`/`cgit` als Prozess auf
+- `anycode` ruft `git` als Prozess auf
 - `status --porcelain`, `diff`, `add`, `commit`, `pull`, `push` werden robust
   verarbeitet
 
@@ -316,4 +316,3 @@ spaeter ueber dedizierte Kernel-Symbol- und VM-/Hardware-Hooks.
 5. `anycode` auf ein natives Build-Backend-Modell umstellen.
 6. `agit`-Status/Diff/Commit in `anycode` stabilisieren.
 7. `anytrace` als Debug-Backend fuer `anycode` kapseln.
-

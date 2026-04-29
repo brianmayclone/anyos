@@ -25,7 +25,7 @@ fn build_agit() -> PathBuf {
         .expect("failed to spawn cargo build for agit");
 
     assert_success("cargo build agit(host)", &output);
-    root.join("target/debug/cgit")
+    root.join("target/debug/git")
 }
 
 fn temp_repo(name: &str) -> PathBuf {

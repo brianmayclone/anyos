@@ -138,6 +138,7 @@ pub(crate) enum FetchResult {
         src: String,
         url: Url,
         body: Vec<u8>,
+        encoded_len: usize,
         headers: String,
         decoded_raster: Option<DecodedRaster>,
         priority: ImagePriority,
@@ -1212,7 +1213,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             // Check sub-resource cache first.
             if let Some((body_vec, headers_string)) = cache_get(&key) {
                 surf_net_log!("image cache hit: {}", src);
-                let decoded_raster = if crate::resources::is_svg(&src, &headers_string) {
+                let is_svg = crate::resources::is_svg(&src, &headers_string);
+                let decoded_raster = if is_svg {
                     None
                 } else {
                     crate::resources::decode_raster_to_image(&body_vec, target_width, target_height)
@@ -1225,11 +1227,17 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                             suspicious_black_ppm: image.suspicious_black_ppm,
                         })
                 };
+                let body = if is_svg {
+                    body_vec
+                } else {
+                    Vec::new()
+                };
                 enqueue_result(FetchResult::ImageDone {
                     tab_index,
                     src,
                     url,
-                    body: body_vec,
+                    encoded_len: body_vec.len(),
+                    body,
                     headers: headers_string,
                     decoded_raster,
                     priority,
@@ -1243,7 +1251,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                 Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
                     stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
                     cache_put(key, resp.body.clone(), resp.headers.clone());
-                    let decoded_raster = if crate::resources::is_svg(&src, &resp.headers) {
+                    let is_svg = crate::resources::is_svg(&src, &resp.headers);
+                    let decoded_raster = if is_svg {
                         None
                     } else {
                         crate::resources::decode_raster_to_image(
@@ -1260,11 +1269,17 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                             suspicious_black_ppm: image.suspicious_black_ppm,
                         })
                     };
+                    let body = if is_svg {
+                        resp.body
+                    } else {
+                        Vec::new()
+                    };
                     enqueue_result(FetchResult::ImageDone {
                         tab_index,
                         src,
                         url,
-                        body: resp.body,
+                        encoded_len: resp.body.len(),
+                        body,
                         headers: resp.headers,
                         decoded_raster,
                         priority,
@@ -1285,6 +1300,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         src,
                         url,
                         body: Vec::new(),
+                        encoded_len: resp.body.len(),
                         headers: resp.headers,
                         decoded_raster: None,
                         priority,
@@ -1299,6 +1315,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         src,
                         url,
                         body: Vec::new(),
+                        encoded_len: 0,
                         headers: String::new(),
                         decoded_raster: None,
                         priority,

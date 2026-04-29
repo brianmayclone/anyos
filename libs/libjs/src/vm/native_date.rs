@@ -108,6 +108,14 @@ pub fn ctor_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         native_fn("toString", date_to_string),
     );
     obj.set(
+        String::from("toUTCString"),
+        native_fn("toUTCString", date_to_string),
+    );
+    obj.set(
+        String::from("toGMTString"),
+        native_fn("toGMTString", date_to_string),
+    );
+    obj.set(
         String::from("toLocaleDateString"),
         native_fn("toLocaleDateString", date_to_string),
     );
@@ -120,6 +128,78 @@ pub fn ctor_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         native_fn("toLocaleString", date_to_string),
     );
     JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+pub fn install_date_instance_methods(obj: &mut JsObject) {
+    obj.set(String::from("getTime"), native_fn("getTime", date_get_time));
+    obj.set(String::from("valueOf"), native_fn("valueOf", date_get_time));
+    obj.set(
+        String::from("getFullYear"),
+        native_fn("getFullYear", date_get_full_year),
+    );
+    obj.set(
+        String::from("getMonth"),
+        native_fn("getMonth", date_get_month),
+    );
+    obj.set(String::from("getDate"), native_fn("getDate", date_get_date));
+    obj.set(String::from("getDay"), native_fn("getDay", date_get_day));
+    obj.set(
+        String::from("getHours"),
+        native_fn("getHours", date_get_hours),
+    );
+    obj.set(
+        String::from("getMinutes"),
+        native_fn("getMinutes", date_get_minutes),
+    );
+    obj.set(
+        String::from("getSeconds"),
+        native_fn("getSeconds", date_get_seconds),
+    );
+    obj.set(
+        String::from("getMilliseconds"),
+        native_fn("getMilliseconds", date_get_milliseconds),
+    );
+    obj.set(String::from("setTime"), native_fn("setTime", date_set_time));
+    obj.set(String::from("setFullYear"), native_fn("setFullYear", date_set_full_year));
+    obj.set(String::from("setMonth"), native_fn("setMonth", date_set_month));
+    obj.set(String::from("setDate"), native_fn("setDate", date_set_date));
+    obj.set(String::from("setHours"), native_fn("setHours", date_set_hours));
+    obj.set(String::from("setMinutes"), native_fn("setMinutes", date_set_minutes));
+    obj.set(String::from("setSeconds"), native_fn("setSeconds", date_set_seconds));
+    obj.set(String::from("setMilliseconds"), native_fn("setMilliseconds", date_set_milliseconds));
+    obj.set(String::from("getTimezoneOffset"), native_fn("getTimezoneOffset", date_get_timezone_offset));
+    obj.set(
+        String::from("toISOString"),
+        native_fn("toISOString", date_to_iso_string),
+    );
+    obj.set(
+        String::from("toJSON"),
+        native_fn("toJSON", date_to_iso_string),
+    );
+    obj.set(
+        String::from("toString"),
+        native_fn("toString", date_to_string),
+    );
+    obj.set(
+        String::from("toUTCString"),
+        native_fn("toUTCString", date_to_string),
+    );
+    obj.set(
+        String::from("toGMTString"),
+        native_fn("toGMTString", date_to_string),
+    );
+    obj.set(
+        String::from("toLocaleDateString"),
+        native_fn("toLocaleDateString", date_to_string),
+    );
+    obj.set(
+        String::from("toLocaleTimeString"),
+        native_fn("toLocaleTimeString", date_to_string),
+    );
+    obj.set(
+        String::from("toLocaleString"),
+        native_fn("toLocaleString", date_to_string),
+    );
 }
 
 /// `Date.now()` — returns ms since epoch.

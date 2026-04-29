@@ -15,7 +15,7 @@ host = [
 ]
 
 [[bin]]
-name = "cgit"
+name = "git"
 path = "src/main.rs"
 
 [dependencies]

@@ -11,6 +11,6 @@ export ANYOS_SRC=/Libraries/system/src/anyos
 export ANYOS_RUST_SRC=/Libraries/system/src/anyos/libs
 export CRUST=/System/bin/crust
 export CCARGO=/System/bin/ccargo
-export CGIT=/System/bin/cgit
+export GIT=/System/bin/git
 export RUSTC=/System/bin/rustc
 export CARGO=/System/bin/cargo

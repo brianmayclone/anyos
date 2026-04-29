@@ -11,13 +11,13 @@ Usage:
 
 Default:
   scripts/test-agit.sh
-    clones https://github.com/brianmayclone/serodesk with the host-built agit/cgit,
+    clones https://github.com/brianmayclone/serodesk with the host-built agit/git,
     verifies refs, HEAD, remote config, object resolution, and clean checkout,
     then deletes the temporary clone.
 
 Environment:
   AGIT_TEST_REPO=<url>  repository URL to clone
-  AGIT_BIN=<path>       use an existing agit/cgit binary instead of building one
+  AGIT_BIN=<path>       use an existing agit/git binary instead of building one
   AGIT_KEEP_TMP=1       keep the temporary directory for debugging
   AGIT_TIMEOUT=60s      maximum runtime for each agit command
   AGIT_MAX_VMEM_KB=2097152
@@ -59,7 +59,7 @@ if [[ -n "${AGIT_BIN:-}" ]]; then
   fi
 else
   cargo build --manifest-path bin/agit/Cargo.toml --no-default-features --features host
-  agit_bin="$repo_root/target/debug/cgit"
+  agit_bin="$repo_root/target/debug/git"
 fi
 
 if [[ ! -x "$agit_bin" ]]; then

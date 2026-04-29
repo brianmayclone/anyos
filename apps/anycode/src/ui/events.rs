@@ -747,7 +747,7 @@ pub fn wire_git_panel() {
             s.git_process = git::GitProcess::spawn(&s.config.git_path, "init");
             s.git_pending_op = Some(git::GitOp::Init);
             s.output.clear();
-            s.output.append_line("$ cgit init");
+            s.output.append_line("$ git init");
         }
     });
 
@@ -804,7 +804,7 @@ pub fn wire_git_panel() {
                 s.git_process = git::GitProcess::spawn(&s.config.git_path, "push");
                 s.git_pending_op = Some(git::GitOp::Push);
                 s.output.clear();
-                s.output.append_line("$ cgit push");
+                s.output.append_line("$ git push");
             }
         }
     });
@@ -820,7 +820,7 @@ pub fn wire_git_panel() {
                 s.git_process = git::GitProcess::spawn(&s.config.git_path, "pull");
                 s.git_pending_op = Some(git::GitOp::Pull);
                 s.output.clear();
-                s.output.append_line("$ cgit pull");
+                s.output.append_line("$ git pull");
             }
         }
     });

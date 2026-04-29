@@ -1111,7 +1111,7 @@ capabilities=filesystem,dll # Comma-separated capability list
 - **VM**: vmd (CoreVM daemon), vmctl (CoreVM CLI controller)
 - **Process management**: kill, killall, nice, crond, crontab
 - **Service manager**: svc, logd
-- **Misc**: cal, banner, jp2a, open, play, pipes, vdagent, crust, ccargo, cgit, echoserver
+- **Misc**: cal, banner, jp2a, open, play, pipes, vdagent, crust, ccargo, git, echoserver
 
 ---
 

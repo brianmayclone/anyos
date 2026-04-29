@@ -59,14 +59,6 @@ pub fn init_tables(db: &Database) {
     }
 }
 
-pub fn count_rows(db: &Database, table: &str) -> Option<u64> {
-    let sql = format!("SELECT * FROM {}", table);
-    let Ok(result) = db.query(&sql) else {
-        return None;
-    };
-    Some(result.row_count() as u64)
-}
-
 pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
     let mut entries = Vec::new();
     let sql = "SELECT canonical_path, logical_path, scope, owner_uid, kind, value_type, value_text, value_int, value_bool, version, updated_at, writer_uid, writer_name FROM registry ORDER BY canonical_path";

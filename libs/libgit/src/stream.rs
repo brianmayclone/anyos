@@ -88,7 +88,7 @@ impl HttpStream {
              Content-Type: {}\r\n\
              {}\
              Content-Length: {}\r\n\
-             User-Agent: cgit/1.0\r\n\
+             User-Agent: git/anyos\r\n\
              Connection: close\r\n\
              \r\n",
                 path,
@@ -204,7 +204,7 @@ impl HttpStream {
             .arg("--max-time")
             .arg("300")
             .arg("--user-agent")
-            .arg("cgit/1.0")
+            .arg("git/anyos")
             .arg("-H")
             .arg(format!("Content-Type: {}", content_type));
 

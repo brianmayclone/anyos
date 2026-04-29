@@ -22,7 +22,7 @@ pub fn has_long_option(tokens: &[String], option: &str) -> bool {
 
 fn is_git_argv0(arg: &str) -> bool {
     let name = arg.rsplit('/').next().unwrap_or(arg);
-    name == "git" || name == "cgit" || name == "agit"
+    name == "git" || name == "agit"
 }
 
 fn append_shell_arg(out: &mut String, arg: &str) {

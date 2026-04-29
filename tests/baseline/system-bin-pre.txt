@@ -21,7 +21,6 @@ cargo
 cat
 cc
 ccargo
-cgit
 chmod
 chown
 clear

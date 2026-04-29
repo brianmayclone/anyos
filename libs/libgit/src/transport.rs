@@ -88,82 +88,178 @@ pub fn discover_refs(url: &GitUrl, service: &str) -> Result<(Vec<RemoteRef>, Cap
     let response = libhttp_client::get(&info_url)
         .ok_or(Error::Other(format!("HTTP GET failed: {}", info_url)))?;
 
-    let text = core::str::from_utf8(&response)
-        .map_err(|_| Error::Other(String::from("invalid UTF-8 in response")))?;
-
-    parse_ref_discovery(text, service)
+    parse_ref_discovery(&response, service)
 }
 
 /// Parse the reference discovery response.
-fn parse_ref_discovery(text: &str, _service: &str) -> Result<(Vec<RemoteRef>, Capabilities)> {
+fn parse_ref_discovery(response: &[u8], service: &str) -> Result<(Vec<RemoteRef>, Capabilities)> {
+    if response.len() >= 4 && pkt_len(&response[..4]).is_some() {
+        parse_pkt_ref_discovery(response, service)
+    } else {
+        let text = core::str::from_utf8(response)
+            .map_err(|_| Error::Other(String::from("invalid UTF-8 in response")))?;
+        parse_line_ref_discovery(text)
+    }
+}
+
+fn parse_pkt_ref_discovery(response: &[u8], service: &str) -> Result<(Vec<RemoteRef>, Capabilities)> {
     let mut refs = Vec::new();
     let mut caps = Capabilities::new();
-    let mut first_line = true;
+    let mut first_ref = true;
+    let mut pos = 0;
 
-    for line in text.lines() {
-        // Skip service announcement and flush lines
-        if line.starts_with('#') || line.len() < 4 {
+    while pos < response.len() {
+        if response.len() - pos < 4 {
+            let rest = trim_ascii(&response[pos..]);
+            if rest.is_empty() {
+                break;
+            }
+            return Err(Error::Other(String::from("truncated pkt-line length")));
+        }
+
+        let len = pkt_len(&response[pos..pos + 4])
+            .ok_or_else(|| Error::Other(String::from("invalid pkt-line length")))?;
+        pos += 4;
+
+        if len == 0 {
             continue;
         }
-
-        // Parse pkt-line: first 4 chars are hex length
-        let content = if line.len() >= 4 {
-            let len_hex = &line[..4];
-            if let Ok(len) = usize::from_str_radix(len_hex, 16) {
-                if len == 0 {
-                    continue; // flush
-                }
-                &line[4..]
-            } else {
-                line
-            }
-        } else {
-            line
-        };
-
-        // Skip empty or service lines
-        if content.is_empty() || content.starts_with("# ") {
-            continue;
+        if len < 4 {
+            return Err(Error::Other(String::from("invalid pkt-line length")));
         }
 
-        // First ref line may contain capabilities after \0
-        let (ref_part, caps_part) = if let Some(null_pos) = content.find('\0') {
-            (&content[..null_pos], Some(&content[null_pos + 1..]))
-        } else {
-            (content, None)
-        };
-
-        // Parse capabilities from first line
-        if first_line {
-            if let Some(caps_str) = caps_part {
-                caps = Capabilities::parse(caps_str.trim());
-            }
-            first_line = false;
+        let payload_len = len - 4;
+        if response.len() - pos < payload_len {
+            return Err(Error::Other(String::from("truncated pkt-line payload")));
         }
 
-        // Parse "sha1 refname"
-        let ref_part = ref_part.trim();
-        if ref_part.len() >= 41 {
-            let hex = &ref_part[..40];
-            let name = ref_part[41..].trim();
-            if let Some(oid) = Oid::from_hex(hex) {
-                refs.push(RemoteRef {
-                    oid,
-                    name: String::from(name),
-                });
-            }
+        let mut content = &response[pos..pos + payload_len];
+        pos += payload_len;
+
+        if content.ends_with(b"\n") {
+            content = &content[..content.len() - 1];
         }
+        if content.ends_with(b"\r") {
+            content = &content[..content.len() - 1];
+        }
+
+        parse_ref_advertisement(content, service, &mut first_ref, &mut refs, &mut caps)?;
     }
 
     Ok((refs, caps))
 }
 
+fn parse_line_ref_discovery(text: &str) -> Result<(Vec<RemoteRef>, Capabilities)> {
+    let mut refs = Vec::new();
+    let mut caps = Capabilities::new();
+    let mut first_ref = true;
+
+    for line in text.lines() {
+        parse_ref_advertisement(
+            line.as_bytes(),
+            "",
+            &mut first_ref,
+            &mut refs,
+            &mut caps,
+        )?;
+    }
+
+    Ok((refs, caps))
+}
+
+fn parse_ref_advertisement(
+    content: &[u8],
+    service: &str,
+    first_ref: &mut bool,
+    refs: &mut Vec<RemoteRef>,
+    caps: &mut Capabilities,
+) -> Result<()> {
+    let content = trim_ascii(content);
+    if content.is_empty() || content.starts_with(b"# ") {
+        return Ok(());
+    }
+    if !service.is_empty() && content == format!("# service={}", service).as_bytes() {
+        return Ok(());
+    }
+
+    let null_pos = content.iter().position(|b| *b == 0);
+    let (ref_part, caps_part) = match null_pos {
+        Some(pos) => (&content[..pos], Some(&content[pos + 1..])),
+        None => (content, None),
+    };
+
+    if *first_ref {
+        if let Some(caps_bytes) = caps_part {
+            let caps_str = core::str::from_utf8(trim_ascii(caps_bytes))
+                .map_err(|_| Error::Other(String::from("invalid UTF-8 in capabilities")))?;
+            *caps = Capabilities::parse(caps_str);
+        }
+        *first_ref = false;
+    }
+
+    let ref_part = trim_ascii(ref_part);
+    if ref_part.len() < 41 || !is_ascii_whitespace(ref_part[40]) {
+        return Ok(());
+    }
+
+    let hex = core::str::from_utf8(&ref_part[..40])
+        .map_err(|_| Error::Other(String::from("invalid UTF-8 in object id")))?;
+    let name = core::str::from_utf8(trim_ascii(&ref_part[41..]))
+        .map_err(|_| Error::Other(String::from("invalid UTF-8 in ref name")))?;
+
+    if let Some(oid) = Oid::from_hex(hex) {
+        refs.push(RemoteRef {
+            oid,
+            name: String::from(name),
+        });
+    }
+
+    Ok(())
+}
+
+fn pkt_len(hex: &[u8]) -> Option<usize> {
+    if hex.len() != 4 {
+        return None;
+    }
+    let mut value = 0usize;
+    for b in hex {
+        value <<= 4;
+        value |= match *b {
+            b'0'..=b'9' => (*b - b'0') as usize,
+            b'a'..=b'f' => (*b - b'a' + 10) as usize,
+            b'A'..=b'F' => (*b - b'A' + 10) as usize,
+            _ => return None,
+        };
+    }
+    Some(value)
+}
+
+fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
+    while let Some((first, rest)) = bytes.split_first() {
+        if !is_ascii_whitespace(*first) {
+            break;
+        }
+        bytes = rest;
+    }
+    while let Some((last, rest)) = bytes.split_last() {
+        if !is_ascii_whitespace(*last) {
+            break;
+        }
+        bytes = rest;
+    }
+    bytes
+}
+
+fn is_ascii_whitespace(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\r' | b'\n')
+}
+
 /// Build an upload-pack request body (want/have negotiation).
-pub fn build_upload_pack_request(wants: &[Oid], haves: &[Oid], caps: &Capabilities) -> Vec<u8> {
+pub fn build_upload_pack_request(wants: &[Oid], haves: &[Oid], _caps: &Capabilities) -> Vec<u8> {
     let mut body = Vec::new();
 
     // Minimal capabilities for initial clone (no haves)
-    let cap_str = String::from("ofs-delta agent=cgit/1.0");
+    let cap_str = String::from("ofs-delta agent=git/anyos");
 
     // Want lines
     for (i, oid) in wants.iter().enumerate() {
@@ -563,4 +659,52 @@ pub fn parse_pkt_lines(data: &[u8]) -> Vec<Vec<u8>> {
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+    use alloc::string::ToString;
+
+    fn pkt(payload: &[u8]) -> Vec<u8> {
+        let mut out = format!("{:04x}", payload.len() + 4).into_bytes();
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn parses_ref_discovery_pkt_lines_without_line_slicing() {
+        let mut response = Vec::new();
+        response.extend_from_slice(&pkt(b"# service=git-upload-pack\n"));
+        response.extend_from_slice(b"0000");
+        response.extend_from_slice(&pkt(
+            b"1111111111111111111111111111111111111111 HEAD\0multi_ack side-band-64k ofs-delta symref=HEAD:refs/heads/main\n",
+        ));
+        response.extend_from_slice(&pkt(
+            b"2222222222222222222222222222222222222222 refs/heads/main\n",
+        ));
+        response.extend_from_slice(b"0000");
+
+        let (refs, caps) = parse_ref_discovery(&response, "git-upload-pack").unwrap();
+
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].name, "HEAD");
+        assert_eq!(refs[1].name, "refs/heads/main");
+        assert!(caps.multi_ack);
+        assert!(caps.side_band_64k);
+        assert!(caps.ofs_delta);
+        assert_eq!(caps.symref_head, Some("refs/heads/main".to_string()));
+    }
+
+    #[test]
+    fn rejects_truncated_ref_discovery_pkt_lines() {
+        let response = b"003f1111111111111111111111111111111111111111 HEAD\n";
+        let err = parse_ref_discovery(response, "git-upload-pack").unwrap_err();
+
+        match err {
+            Error::Other(message) => assert!(message.contains("truncated pkt-line payload")),
+            _ => panic!("unexpected error: {:?}", err),
+        }
+    }
 }

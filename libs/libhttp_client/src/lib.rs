@@ -59,7 +59,7 @@ mod host {
             .arg("--max-time")
             .arg("300")
             .arg("--user-agent")
-            .arg("cgit/1.0")
+            .arg("git/anyos")
             .arg("-o")
             .arg(path)
             .arg(url)
@@ -115,7 +115,7 @@ mod host {
             .arg("--max-time")
             .arg("300")
             .arg("--user-agent")
-            .arg("cgit/1.0");
+            .arg("git/anyos");
 
         for header in headers {
             cmd.arg("-H").arg(header);

@@ -218,28 +218,63 @@ fn cmd_clone(args: &anyos_std::args::ParsedArgs) {
         }
     }
 
-    // Step 8: Determine HEAD branch
-    let head_ref = caps.symref_head.as_deref().unwrap_or("refs/heads/main");
-    let head_branch = head_ref.strip_prefix("refs/heads/").unwrap_or("main");
-
-    // Find HEAD commit
-    let head_oid = remote_refs
+    // Step 8: Determine HEAD branch and checkout. Some hosts advertise stale
+    // HEAD symrefs, so try sensible branch candidates before giving up.
+    let mut checkout_candidates: Vec<String> = Vec::new();
+    checkout_candidates.push(String::from("refs/heads/main"));
+    if let Some(head_ref) = caps.symref_head.as_deref() {
+        if head_ref.starts_with("refs/heads/")
+            && !checkout_candidates.iter().any(|candidate| candidate == head_ref)
+        {
+            checkout_candidates.push(String::from(head_ref));
+        }
+    }
+    if !checkout_candidates
         .iter()
-        .find(|r| r.name == head_ref || r.name == "HEAD")
-        .map(|r| r.oid);
+        .any(|candidate| candidate == "refs/heads/master")
+    {
+        checkout_candidates.push(String::from("refs/heads/master"));
+    }
+    for rref in &remote_refs {
+        if rref.name.starts_with("refs/heads/")
+            && !checkout_candidates.iter().any(|candidate| candidate == &rref.name)
+        {
+            checkout_candidates.push(rref.name.clone());
+        }
+    }
 
-    if let Some(oid) = head_oid {
-        // Update local branch
+    let mut checkout_done = false;
+    let mut last_checkout_error: Option<libgit::repo::Error> = None;
+    for head_ref in checkout_candidates {
+        let Some(oid) = remote_refs
+            .iter()
+            .find(|r| r.name == head_ref)
+            .map(|r| r.oid)
+        else {
+            continue;
+        };
+        let head_branch = head_ref.strip_prefix("refs/heads/").unwrap_or("main");
         let local_branch_ref = format!("refs/heads/{}", head_branch);
         let _ = libgit::refs::update_ref(&repo, &local_branch_ref, &oid);
-
-        // Set HEAD to point to the branch
         let _ = libgit::refs::update_head(&repo, head_branch);
 
-        // Step 9: Checkout working tree
         match libgit::checkout::checkout_head(&repo) {
-            Ok(n) => anyos_std::println!("Resolving deltas, checking out files ({})...", n),
-            Err(e) => anyos_std::println!("warning: checkout failed: {}", e),
+            Ok(n) => {
+                anyos_std::println!("Resolving deltas, checking out files ({})...", n);
+                checkout_done = true;
+                break;
+            }
+            Err(e) => {
+                last_checkout_error = Some(e);
+            }
+        }
+    }
+
+    if !checkout_done {
+        if let Some(e) = last_checkout_error {
+            anyos_std::println!("warning: checkout failed: {}", e);
+        } else {
+            anyos_std::println!("warning: checkout failed: no branch refs advertised");
         }
     }
 
