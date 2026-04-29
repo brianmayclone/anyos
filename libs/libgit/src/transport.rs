@@ -258,11 +258,20 @@ fn is_ascii_whitespace(b: u8) -> bool {
 }
 
 /// Build an upload-pack request body (want/have negotiation).
-pub fn build_upload_pack_request(wants: &[Oid], haves: &[Oid], _caps: &Capabilities) -> Vec<u8> {
+pub fn build_upload_pack_request(wants: &[Oid], haves: &[Oid], caps: &Capabilities) -> Vec<u8> {
     let mut body = Vec::new();
 
-    // Minimal capabilities for initial clone (no haves)
-    let cap_str = String::from("ofs-delta agent=git/anyos");
+    let mut requested_caps = Vec::new();
+    if caps.side_band_64k {
+        requested_caps.push("side-band-64k");
+    } else if caps.side_band {
+        requested_caps.push("side-band");
+    }
+    if caps.ofs_delta {
+        requested_caps.push("ofs-delta");
+    }
+    requested_caps.push("agent=git/anyos");
+    let cap_str = requested_caps.join(" ");
 
     // Want lines
     for (i, oid) in wants.iter().enumerate() {
@@ -369,6 +378,10 @@ pub fn fetch_pack_streamed_with_caps(
         extra_headers,
     )
     .map_err(|e| Error::Other(e))?;
+
+    if caps.side_band_64k || caps.side_band {
+        stream.enable_sideband();
+    }
 
     // Step 4: Skip pkt-line NAK/ACK before PACK data
     // Read until we find "PACK" magic
@@ -757,5 +770,20 @@ mod tests {
             Error::Other(message) => assert!(message.contains("truncated pkt-line payload")),
             _ => panic!("unexpected error: {:?}", err),
         }
+    }
+
+    #[test]
+    fn upload_pack_requests_sideband_when_advertised() {
+        let want = Oid::from_hex("1111111111111111111111111111111111111111").unwrap();
+        let mut caps = Capabilities::new();
+        caps.side_band_64k = true;
+        caps.ofs_delta = true;
+
+        let request = build_upload_pack_request(&[want], &[], &caps);
+        let text = core::str::from_utf8(&request).unwrap();
+
+        assert!(text.contains("side-band-64k"));
+        assert!(text.contains("ofs-delta"));
+        assert!(text.contains("agent=git/anyos"));
     }
 }

@@ -109,12 +109,15 @@ impl GitIgnore {
 
     /// Add default ignores (always ignored regardless of .gitignore).
     pub fn with_defaults(mut self) -> Self {
-        self.rules.insert(0, IgnoreRule {
-            pattern: String::from(".git"),
-            is_negation: false,
-            is_dir_only: true,
-            is_anchored: false,
-        });
+        self.rules.insert(
+            0,
+            IgnoreRule {
+                pattern: String::from(".git"),
+                is_negation: false,
+                is_dir_only: true,
+                is_anchored: false,
+            },
+        );
         self
     }
 }

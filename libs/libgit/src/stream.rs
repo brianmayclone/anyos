@@ -40,6 +40,11 @@ pub struct HttpStream {
     chunk_remaining: usize,
     /// Set when the final chunk (size 0) has been read.
     eof: bool,
+    /// Decode git side-band pkt-lines and deliver only channel 1 pack bytes.
+    sideband: bool,
+    sideband_buf: Vec<u8>,
+    sideband_pos: usize,
+    sideband_progress_line_start: bool,
     /// Total bytes delivered to caller.
     pub total_read: usize,
     #[cfg(feature = "host")]
@@ -181,6 +186,10 @@ impl HttpStream {
                 chunked,
                 chunk_remaining: 0,
                 eof: false,
+                sideband: false,
+                sideband_buf: Vec::new(),
+                sideband_pos: 0,
+                sideband_progress_line_start: true,
                 total_read: 0,
                 #[cfg(feature = "host")]
                 host_file: None,
@@ -270,6 +279,10 @@ impl HttpStream {
             chunked: false,
             chunk_remaining: 0,
             eof: false,
+            sideband: false,
+            sideband_buf: Vec::new(),
+            sideband_pos: 0,
+            sideband_progress_line_start: true,
             total_read: 0,
             host_file: Some(file),
             host_path: Some(spool_path),
@@ -294,6 +307,11 @@ impl HttpStream {
         self.decoded_pos
     }
 
+    /// Enable git side-band demuxing for upload-pack responses.
+    pub fn enable_sideband(&mut self) {
+        self.sideband = true;
+    }
+
     /// Read up to `out.len()` bytes. Returns number of bytes read (0 = EOF).
     pub fn read(&mut self, out: &mut [u8]) -> usize {
         if self.pushback_pos < self.pushback.len() {
@@ -309,6 +327,126 @@ impl HttpStream {
             return n;
         }
 
+        if self.sideband {
+            return self.read_sideband(out);
+        }
+
+        self.read_body(out, true)
+    }
+
+    fn read_body_exact(&mut self, out: &mut [u8]) -> bool {
+        let mut filled = 0;
+        while filled < out.len() {
+            let n = self.read_body(&mut out[filled..], false);
+            if n == 0 {
+                return false;
+            }
+            filled += n;
+        }
+        true
+    }
+
+    fn read_sideband(&mut self, out: &mut [u8]) -> usize {
+        loop {
+            if self.sideband_pos < self.sideband_buf.len() {
+                let available = self.sideband_buf.len() - self.sideband_pos;
+                let n = available.min(out.len());
+                out[..n]
+                    .copy_from_slice(&self.sideband_buf[self.sideband_pos..self.sideband_pos + n]);
+                self.sideband_pos += n;
+                self.total_read += n;
+                self.decoded_pos += n;
+                if self.sideband_pos == self.sideband_buf.len() {
+                    self.sideband_buf.clear();
+                    self.sideband_pos = 0;
+                }
+                return n;
+            }
+
+            if self.eof {
+                return 0;
+            }
+
+            if !self.read_next_sideband_packet() {
+                return 0;
+            }
+        }
+    }
+
+    fn read_next_sideband_packet(&mut self) -> bool {
+        loop {
+            let mut len_hex = [0u8; 4];
+            if !self.read_body_exact(&mut len_hex) {
+                self.eof = true;
+                return false;
+            }
+
+            let Ok(len_str) = core::str::from_utf8(&len_hex) else {
+                self.eof = true;
+                return false;
+            };
+            let Some(pkt_len) = usize::from_str_radix(len_str, 16).ok() else {
+                self.eof = true;
+                return false;
+            };
+
+            if pkt_len == 0 {
+                continue;
+            }
+            if pkt_len <= 4 {
+                continue;
+            }
+
+            let payload_len = pkt_len - 4;
+            let mut payload = Vec::with_capacity(payload_len);
+            payload.resize(payload_len, 0);
+            if !self.read_body_exact(&mut payload) {
+                self.eof = true;
+                return false;
+            }
+            if payload.is_empty() {
+                continue;
+            }
+
+            match payload[0] {
+                1 => {
+                    self.sideband_buf.extend_from_slice(&payload[1..]);
+                    if !self.sideband_buf.is_empty() {
+                        return true;
+                    }
+                }
+                2 => self.print_sideband_progress(&payload[1..]),
+                3 => {
+                    anyos_std::print!("remote: error: ");
+                    self.print_sideband_progress(&payload[1..]);
+                    self.eof = true;
+                    return false;
+                }
+                _ => {
+                    if crate::pack::verbose() {
+                        if let Ok(text) = core::str::from_utf8(&payload) {
+                            anyos_std::println!("[stream] upload-pack control: {}", text.trim());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn print_sideband_progress(&mut self, payload: &[u8]) {
+        for &b in payload {
+            if self.sideband_progress_line_start {
+                anyos_std::print!("remote: ");
+                self.sideband_progress_line_start = false;
+            }
+            anyos_std::print!("{}", b as char);
+            if b == b'\n' || b == b'\r' {
+                self.sideband_progress_line_start = true;
+            }
+        }
+    }
+
+    fn read_body(&mut self, out: &mut [u8], count_decoded: bool) -> usize {
         if self.eof {
             return 0;
         }
@@ -333,15 +471,19 @@ impl HttpStream {
                 out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
                 self.buf_pos += n;
                 self.chunk_remaining -= n;
-                self.total_read += n;
-                self.decoded_pos += n;
+                if count_decoded {
+                    self.total_read += n;
+                    self.decoded_pos += n;
+                }
                 return n;
             }
 
             out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
             self.buf_pos += n;
-            self.total_read += n;
-            self.decoded_pos += n;
+            if count_decoded {
+                self.total_read += n;
+                self.decoded_pos += n;
+            }
             return n;
         }
 
@@ -355,8 +497,10 @@ impl HttpStream {
                         0
                     }
                     Ok(n) => {
-                        self.total_read += n;
-                        self.decoded_pos += n;
+                        if count_decoded {
+                            self.total_read += n;
+                            self.decoded_pos += n;
+                        }
                         n
                     }
                     Err(_) => {
@@ -384,7 +528,7 @@ impl HttpStream {
             self.buf.extend_from_slice(&recv_buf[..n as usize]);
 
             // Recurse to serve from the newly filled buffer
-            self.read(out)
+            self.read_body(out, count_decoded)
         }
     }
 
@@ -525,7 +669,7 @@ fn host_spool_path() -> PathBuf {
 
 /// Recv with patience — retries on timeout, checking if connection is alive.
 fn tls_recv_patient(handle: u32, sock: u32, buf: &mut [u8]) -> i32 {
-    const STALL_TIMEOUT_MS: u32 = 60_000;
+    const STALL_TIMEOUT_MS: u32 = 300_000;
     let start_ms = anyos_std::sys::uptime_ms();
 
     loop {
@@ -592,20 +736,22 @@ fn tls_recv_cb(fd: u32, buf: &mut [u8]) -> i32 {
     match avail {
         u32::MAX => -1,
         0xFFFFFFFE => 0,
-        0 => {
-            anyos_std::process::sleep(20);
-            0
-        }
+        0 => tcp_recv_cb_blocking(fd, buf),
         _ => {
-            let n = anyos_std::net::tcp_recv(fd, buf);
-            if n == 0 {
-                0
-            } else if n != u32::MAX {
-                n as i32
-            } else {
-                -1
-            }
+            tcp_recv_cb_blocking(fd, buf)
         }
+    }
+}
+
+#[cfg(not(feature = "host"))]
+fn tcp_recv_cb_blocking(fd: u32, buf: &mut [u8]) -> i32 {
+    let n = anyos_std::net::tcp_recv(fd, buf);
+    if n == 0 {
+        0
+    } else if n != u32::MAX {
+        n as i32
+    } else {
+        -1
     }
 }
 

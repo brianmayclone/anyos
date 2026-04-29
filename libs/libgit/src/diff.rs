@@ -113,7 +113,9 @@ fn group_into_hunks(
         let ctx_before = old_idx - ctx_start_old;
         for k in 0..ctx_before {
             if ctx_start_old + k < old_lines.len() {
-                lines.push(DiffLine::Context(String::from(old_lines[ctx_start_old + k])));
+                lines.push(DiffLine::Context(String::from(
+                    old_lines[ctx_start_old + k],
+                )));
             }
         }
 
@@ -159,8 +161,14 @@ fn group_into_hunks(
             i += 1;
         }
 
-        let old_count = lines.iter().filter(|l| !matches!(l, DiffLine::Added(_))).count();
-        let new_count = lines.iter().filter(|l| !matches!(l, DiffLine::Removed(_))).count();
+        let old_count = lines
+            .iter()
+            .filter(|l| !matches!(l, DiffLine::Added(_)))
+            .count();
+        let new_count = lines
+            .iter()
+            .filter(|l| !matches!(l, DiffLine::Removed(_)))
+            .count();
 
         hunks.push(DiffHunk {
             old_start: ctx_start_old + 1,
@@ -183,8 +191,10 @@ pub fn format_diff(path: &str, hunks: &[DiffHunk]) -> String {
     for hunk in hunks {
         out.push_str(&alloc::format!(
             "@@ -{},{} +{},{} @@\n",
-            hunk.old_start, hunk.old_count,
-            hunk.new_start, hunk.new_count,
+            hunk.old_start,
+            hunk.old_count,
+            hunk.new_start,
+            hunk.new_count,
         ));
         for line in &hunk.lines {
             match line {

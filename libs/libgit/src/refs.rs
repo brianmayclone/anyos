@@ -3,11 +3,11 @@
 //! References are stored as plain text files containing SHA-1 hex strings,
 //! or as symbolic refs ("ref: refs/heads/main").
 
+use crate::oid::Oid;
+use crate::repo::{Error, Repository, Result};
 use alloc::string::String;
 use alloc::vec::Vec;
 use std::path::PathBuf;
-use crate::oid::Oid;
-use crate::repo::{Repository, Result, Error};
 
 /// Resolve a reference name to an OID (follows symbolic refs).
 pub fn resolve_ref(repo: &Repository, refname: &str) -> Result<Oid> {
@@ -61,15 +61,13 @@ pub fn update_head(repo: &Repository, target: &str) -> Result<()> {
         // Assume it's a branch name
         alloc::format!("ref: refs/heads/{}\n", target)
     };
-    std::fs::write(&repo.gitdir.join("HEAD"), content.as_bytes())
-        .map_err(|_| Error::IoError)
+    std::fs::write(&repo.gitdir.join("HEAD"), content.as_bytes()).map_err(|_| Error::IoError)
 }
 
 /// Update HEAD to a detached state pointing to an OID.
 pub fn detach_head(repo: &Repository, oid: &Oid) -> Result<()> {
     let content = alloc::format!("{}\n", oid.to_hex());
-    std::fs::write(&repo.gitdir.join("HEAD"), content.as_bytes())
-        .map_err(|_| Error::IoError)
+    std::fs::write(&repo.gitdir.join("HEAD"), content.as_bytes()).map_err(|_| Error::IoError)
 }
 
 /// List all references with their OIDs.

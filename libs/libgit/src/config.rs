@@ -2,9 +2,9 @@
 //!
 //! Simple INI-style parser for git configuration.
 
+use crate::repo::{Error, Repository, Result};
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::repo::{Repository, Result, Error};
 
 /// A config key-value pair.
 #[derive(Debug, Clone)]
@@ -66,7 +66,8 @@ impl Config {
 
     /// Get a config value by section and key.
     pub fn get(&self, section: &str, key: &str) -> Option<&str> {
-        self.entries.iter()
+        self.entries
+            .iter()
             .rev()
             .find(|e| e.section == section && e.key == key)
             .map(|e| e.value.as_str())
@@ -74,12 +75,11 @@ impl Config {
 
     /// Get a config value with subsection.
     pub fn get_subsection(&self, section: &str, subsection: &str, key: &str) -> Option<&str> {
-        self.entries.iter()
+        self.entries
+            .iter()
             .rev()
             .find(|e| {
-                e.section == section
-                    && e.subsection.as_deref() == Some(subsection)
-                    && e.key == key
+                e.section == section && e.subsection.as_deref() == Some(subsection) && e.key == key
             })
             .map(|e| e.value.as_str())
     }

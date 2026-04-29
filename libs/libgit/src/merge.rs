@@ -1,11 +1,11 @@
 //! Git merge operations (fast-forward and basic three-way).
 
+use crate::object::{Commit, Object, ObjectType};
+use crate::oid::Oid;
+use crate::repo::{Error, Repository, Result};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
-use crate::oid::Oid;
-use crate::object::{Object, ObjectType, Commit};
-use crate::repo::{Repository, Result, Error};
 
 /// Merge result.
 #[derive(Debug)]

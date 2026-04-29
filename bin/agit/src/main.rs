@@ -201,7 +201,6 @@ fn cmd_clone(args: &anyos_std::args::ParsedArgs) {
     }
 
     // Step 5+6: Stream pack data directly into repository (no buffering)
-    anyos_std::println!("remote: Counting objects...");
     match libgit::transport::fetch_pack_streamed_with_caps(&url, &unique_wants, &[], &repo, &caps) {
         Ok(_n) => {}
         Err(e) => {

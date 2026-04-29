@@ -663,7 +663,9 @@ impl Dom {
                             continue;
                         }
                     }
-                    if let Some(srcset) = self.attr(child_id, "srcset") {
+                    if let Some(srcset) =
+                        first_non_empty_non_data_attr(self, child_id, &["srcset", "data-srcset"])
+                    {
                         if let Some(candidate) = pick_srcset_candidate(srcset) {
                             return Some(candidate);
                         }
@@ -671,7 +673,7 @@ impl Dom {
                     if let Some(src) = first_non_empty_attr(
                         self,
                         child_id,
-                        &["src", "data-src", "data-lazy-src", "data-original"],
+                        &["data-src", "data-lazy-src", "data-original", "src"],
                     ) {
                         return Some(String::from(src));
                     }
@@ -680,11 +682,26 @@ impl Dom {
         }
 
         if let Some(srcset) =
-            first_non_empty_attr(self, id, &["srcset", "data-srcset", "data-lazy-srcset"])
+            first_non_empty_non_data_attr(self, id, &["srcset", "data-srcset", "data-lazy-srcset"])
         {
             if let Some(candidate) = pick_srcset_candidate(srcset) {
                 return Some(candidate);
             }
+        }
+
+        if let Some(src) = first_non_empty_non_data_attr(
+            self,
+            id,
+            &[
+                "src",
+                "data-src",
+                "data-lazy-src",
+                "data-original",
+                "data-url",
+                "data-image",
+            ],
+        ) {
+            return Some(String::from(src));
         }
 
         first_non_empty_attr(
@@ -923,6 +940,18 @@ fn first_non_empty_attr<'a>(dom: &'a Dom, id: NodeId, names: &[&str]) -> Option<
         if let Some(value) = dom.attr(id, name) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    None
+}
+
+fn first_non_empty_non_data_attr<'a>(dom: &'a Dom, id: NodeId, names: &[&str]) -> Option<&'a str> {
+    for &name in names {
+        if let Some(value) = dom.attr(id, name) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with("data:") {
                 return Some(trimmed);
             }
         }
@@ -1477,6 +1506,40 @@ mod tests {
         assert_eq!(
             dom.image_url(img_id).as_deref(),
             Some("https://images.bild.de/a/d,e?w=992")
+        );
+    }
+
+    #[test]
+    fn image_url_prefers_lazy_data_src_over_placeholder_data_uri() {
+        let dom = crate::html::parse(
+            r#"<img src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs=" data-src="https://im.chip.de/hero.jpg" width="620" height="349">"#,
+        );
+        let img_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Img, .. }))
+            .expect("img node");
+
+        assert_eq!(
+            dom.image_url(img_id).as_deref(),
+            Some("https://im.chip.de/hero.jpg")
+        );
+    }
+
+    #[test]
+    fn image_url_prefers_real_src_over_lazy_fallback() {
+        let dom = crate::html::parse(
+            r#"<img src="https://cdn.example.com/current.jpg" data-src="https://cdn.example.com/lazy.jpg">"#,
+        );
+        let img_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Img, .. }))
+            .expect("img node");
+
+        assert_eq!(
+            dom.image_url(img_id).as_deref(),
+            Some("https://cdn.example.com/current.jpg")
         );
     }
 }

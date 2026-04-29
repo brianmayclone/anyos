@@ -1,7 +1,7 @@
 //! Git Object ID (SHA-1 hash) type.
 
-use core::fmt;
 use alloc::string::String;
+use core::fmt;
 
 /// A 20-byte SHA-1 object identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -74,8 +74,10 @@ impl Oid {
 
     /// Get the first two hex characters (used for object storage path).
     pub fn dir_prefix(&self) -> (u8, u8) {
-        (HEX_CHARS[(self.bytes[0] >> 4) as usize],
-         HEX_CHARS[(self.bytes[0] & 0xf) as usize])
+        (
+            HEX_CHARS[(self.bytes[0] >> 4) as usize],
+            HEX_CHARS[(self.bytes[0] & 0xf) as usize],
+        )
     }
 }
 

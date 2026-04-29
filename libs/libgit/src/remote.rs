@@ -2,11 +2,11 @@
 //!
 //! Remotes are stored in .git/config as [remote "name"] sections.
 
+use crate::config;
+use crate::repo::{Error, Repository, Result};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
-use crate::repo::{Repository, Result, Error};
-use crate::config;
 
 /// A configured remote.
 #[derive(Debug, Clone)]
@@ -27,10 +27,12 @@ pub fn list_remotes(repo: &Repository) -> Result<Vec<Remote>> {
             if let Some(ref name) = entry.subsection {
                 if !seen.contains(name) {
                     seen.push(name.clone());
-                    let url = cfg.get_subsection("remote", name, "url")
+                    let url = cfg
+                        .get_subsection("remote", name, "url")
                         .unwrap_or("")
                         .into();
-                    let fetch = cfg.get_subsection("remote", name, "fetch")
+                    let fetch = cfg
+                        .get_subsection("remote", name, "fetch")
                         .unwrap_or(&format!("+refs/heads/*:refs/remotes/{}/*", name))
                         .into();
                     remotes.push(Remote {
@@ -49,7 +51,8 @@ pub fn list_remotes(repo: &Repository) -> Result<Vec<Remote>> {
 /// Get a remote by name.
 pub fn get_remote(repo: &Repository, name: &str) -> Result<Remote> {
     let remotes = list_remotes(repo)?;
-    remotes.into_iter()
+    remotes
+        .into_iter()
         .find(|r| r.name == name)
         .ok_or(Error::NotFound)
 }
@@ -132,7 +135,10 @@ impl GitUrl {
 
         let (user, password) = if let Some(auth) = auth {
             if let Some(colon) = auth.find(':') {
-                (Some(String::from(&auth[..colon])), Some(String::from(&auth[colon + 1..])))
+                (
+                    Some(String::from(&auth[..colon])),
+                    Some(String::from(&auth[colon + 1..])),
+                )
             } else {
                 (Some(String::from(auth)), None)
             }
@@ -155,11 +161,14 @@ impl GitUrl {
             });
             (String::from(&hostport[..colon]), port)
         } else {
-            (String::from(hostport), match scheme {
-                "https" => 443,
-                "git" => 9418,
-                _ => 80,
-            })
+            (
+                String::from(hostport),
+                match scheme {
+                    "https" => 443,
+                    "git" => 9418,
+                    _ => 80,
+                },
+            )
         };
 
         // Normalize host: strip www. prefix for known git hosts

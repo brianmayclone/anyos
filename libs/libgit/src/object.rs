@@ -2,10 +2,10 @@
 //!
 //! Git objects are stored as: "type size\0content", zlib-compressed.
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use crate::oid::Oid;
 use crate::sha1;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// Git object type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,17 +47,26 @@ pub struct Object {
 impl Object {
     /// Create a new blob object.
     pub fn blob(data: Vec<u8>) -> Self {
-        Object { obj_type: ObjectType::Blob, data }
+        Object {
+            obj_type: ObjectType::Blob,
+            data,
+        }
     }
 
     /// Create a new tree object.
     pub fn tree(data: Vec<u8>) -> Self {
-        Object { obj_type: ObjectType::Tree, data }
+        Object {
+            obj_type: ObjectType::Tree,
+            data,
+        }
     }
 
     /// Create a new commit object.
     pub fn commit(data: Vec<u8>) -> Self {
-        Object { obj_type: ObjectType::Commit, data }
+        Object {
+            obj_type: ObjectType::Commit,
+            data,
+        }
     }
 
     /// Compute the OID of this object.
@@ -125,7 +134,13 @@ impl Commit {
             }
         }
 
-        Some(Commit { tree, parents, author, committer, message })
+        Some(Commit {
+            tree,
+            parents,
+            author,
+            committer,
+            message,
+        })
     }
 
     /// Serialize to commit data bytes.
