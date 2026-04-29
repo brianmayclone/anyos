@@ -52,6 +52,41 @@ fn blend_src_over(dst: u32, src: u32) -> u32 {
     (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b
 }
 
+fn lerp_u32(a: u32, b: u32, t: u32) -> u32 {
+    (a * (255 - t) + b * t + 127) / 255
+}
+
+fn lerp_argb_premul(a: u32, b: u32, t: u32) -> u32 {
+    let aa = (a >> 24) & 0xFF;
+    let ba = (b >> 24) & 0xFF;
+    let ar = (a >> 16) & 0xFF;
+    let ag = (a >> 8) & 0xFF;
+    let ab = a & 0xFF;
+    let br = (b >> 16) & 0xFF;
+    let bg = (b >> 8) & 0xFF;
+    let bb = b & 0xFF;
+
+    let out_a = lerp_u32(aa, ba, t);
+    if out_a == 0 {
+        return 0;
+    }
+
+    let ar_pm = ar * aa;
+    let ag_pm = ag * aa;
+    let ab_pm = ab * aa;
+    let br_pm = br * ba;
+    let bg_pm = bg * ba;
+    let bb_pm = bb * ba;
+
+    let r_pm = lerp_u32(ar_pm, br_pm, t);
+    let g_pm = lerp_u32(ag_pm, bg_pm, t);
+    let b_pm = lerp_u32(ab_pm, bb_pm, t);
+    let r = ((r_pm + out_a / 2) / out_a).min(255);
+    let g = ((g_pm + out_a / 2) / out_a).min(255);
+    let b = ((b_pm + out_a / 2) / out_a).min(255);
+    (out_a << 24) | (r << 16) | (g << 8) | b
+}
+
 fn draw_scaled_text_buf(
     buf: *mut u32,
     stride: u32,
@@ -94,8 +129,12 @@ fn draw_scaled_text_buf(
             if out_x < 0 || out_x >= stride as i32 {
                 continue;
             }
-            let sx = (dx * 100 / scale).clamp(0, src_w as i32 - 1);
-            let src = tmp[dy as usize * src_w as usize + sx as usize];
+            let src_center = ((dx * 100 + 50) / scale).saturating_sub(1);
+            let sx0 = src_center.clamp(0, src_w as i32 - 1) as usize;
+            let sx1 = (sx0 + 1).min(src_w as usize - 1);
+            let frac = ((dx * 100 + 50) % scale) * 255 / scale;
+            let row = dy as usize * src_w as usize;
+            let src = lerp_argb_premul(tmp[row + sx0], tmp[row + sx1], frac as u32);
             if (src >> 24) == 0 {
                 continue;
             }

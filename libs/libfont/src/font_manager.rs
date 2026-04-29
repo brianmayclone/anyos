@@ -642,7 +642,7 @@ pub fn load_font(path: &[u8]) -> u32 {
 
 /// Load a font from raw data in memory.
 ///
-/// Supports raw TrueType/sfnt data and WOFF2 containers with TrueType outlines.
+/// Supports raw TrueType/OpenType data plus WOFF/WOFF2 containers.
 ///
 /// WOFF 1.0 and unsupported WOFF2 outline formats fail closed. Callers should
 /// keep their CSS/system fallback family when this returns u32::MAX.
@@ -660,8 +660,10 @@ pub fn load_font_data(data: alloc::vec::Vec<u8>) -> u32 {
             None => return u32::MAX,
         }
     } else if data.len() >= 4 && &data[..4] == b"wOFF" {
-        // WOFF 1.0 — not yet supported
-        return u32::MAX;
+        match crate::woff::convert_to_sfnt(&data) {
+            Some(converted) => converted,
+            None => return u32::MAX,
+        }
     } else {
         data
     };

@@ -90,9 +90,9 @@ enum RenderWork {
     Layout,
 }
 
-const IMAGE_RESULTS_PER_TAB_BATCH: usize = 64;
-const MAX_RESULTS_PER_UI_POLL: usize = 64;
-const RESULT_PROCESS_BUDGET_MS: u32 = 16;
+const IMAGE_RESULTS_PER_TAB_BATCH: usize = 8;
+const MAX_RESULTS_PER_UI_POLL: usize = 16;
+const RESULT_PROCESS_BUDGET_MS: u32 = 8;
 const SCROLL_INTERACTION_GRACE_MS: u32 = 160;
 const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 8;
 const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
@@ -100,7 +100,7 @@ const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
 const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
 const SCRIPT_PUMP_DELAY_MS: u32 = 16;
-const MAX_SCRIPT_SOURCE_BYTES: usize = 200 * 1024;
+const MAX_SCRIPT_SOURCE_BYTES: usize = 1024 * 1024;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = false;
 const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
 const NET_POLL_INTERVAL_MS: u32 = 16;
@@ -1500,7 +1500,9 @@ pub(crate) fn request_image_refresh(tab_index: usize) {
             let layout_pending = tab_index < st.render_dirty.len()
                 && st.render_dirty[tab_index] == RenderWork::Layout;
             let phase = st.tabs[tab_index].load_state.phase;
-            if tab_index == st.active_tab
+            if scroll_interaction_hot() || net_worker::result_mailboxes_pending() {
+                RenderSchedule::Debounced
+            } else if tab_index == st.active_tab
                 && !layout_pending
                 && matches!(phase, PageLoadPhase::Interactive)
             {

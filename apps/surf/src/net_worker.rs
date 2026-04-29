@@ -515,6 +515,19 @@ pub(crate) fn result_mailboxes_pending() -> bool {
     pending
 }
 
+fn result_mailbox_len_for_tab(tab_index: usize) -> usize {
+    acquire(&RESULT_LOCK);
+    let len = unsafe {
+        RESULT_MAILBOXES
+            .as_ref()
+            .and_then(|mailboxes| mailboxes.get(tab_index))
+            .map(|mailbox| mailbox.len())
+            .unwrap_or(0)
+    };
+    release(&RESULT_LOCK);
+    len
+}
+
 /// Requeue results to the front of a tab mailbox so they are seen on the next UI poll.
 pub(crate) fn prepend_results_for_tab(tab_index: usize, mut results: Vec<FetchResult>) {
     let requeued = results.len();
@@ -676,6 +689,8 @@ const MAX_CACHE_ENTRIES: usize = 256;
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CACHEABLE_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CACHEABLE_IMAGE_BODY_BYTES: usize = 256 * 1024;
+const MAX_WORKER_DECODE_IMAGE_BYTES: usize = 1536 * 1024;
+const MAX_IMAGE_MAILBOX_BACKLOG_FOR_WORKER_DECODE: usize = 4;
 
 /// A cached HTTP response for a sub-resource.
 struct CacheEntry {
@@ -753,6 +768,21 @@ fn cache_put(url_key: String, body: Vec<u8>, headers: String) {
         }
     }
     release(&CACHE_LOCK);
+}
+
+fn should_worker_decode_image(
+    tab_index: usize,
+    priority: ImagePriority,
+    encoded_len: usize,
+    is_svg: bool,
+) -> bool {
+    if is_svg || priority == ImagePriority::Deferred {
+        return false;
+    }
+    if encoded_len > MAX_WORKER_DECODE_IMAGE_BYTES {
+        return false;
+    }
+    result_mailbox_len_for_tab(tab_index) <= MAX_IMAGE_MAILBOX_BACKLOG_FOR_WORKER_DECODE
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1233,20 +1263,35 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                 surf_net_log!("image cache hit: {}", src);
                 let is_svg = crate::resources::is_svg(&src, &headers_string);
                 let encoded_len = body_vec.len();
-                let decoded_raster = if is_svg {
-                    None
-                } else {
-                    crate::resources::decode_raster_to_image(&body_vec, target_width, target_height)
-                        .ok()
-                        .map(|image| DecodedRaster {
+                let worker_decode =
+                    should_worker_decode_image(tab_index, priority, encoded_len, is_svg);
+                let decoded_raster = if worker_decode {
+                    match crate::resources::decode_raster_to_image(
+                        &body_vec,
+                        target_width,
+                        target_height,
+                    ) {
+                        Ok(image) => Some(DecodedRaster {
                             pixels: image.pixels,
                             width: image.width,
                             height: image.height,
                             format: image.format,
                             suspicious_black_ppm: image.suspicious_black_ppm,
-                        })
+                        }),
+                        Err(err) => {
+                            surf_net_log!(
+                                "worker image decode failed: src={} bytes={} err={:?}",
+                                src,
+                                encoded_len,
+                                err
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
                 };
-                let body = if is_svg {
+                let body = if is_svg || (!worker_decode && decoded_raster.is_none()) {
                     body_vec
                 } else {
                     Vec::new()
@@ -1274,24 +1319,35 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     if is_svg || encoded_len <= MAX_CACHEABLE_IMAGE_BODY_BYTES {
                         cache_put(key, resp.body.clone(), resp.headers.clone());
                     }
-                    let decoded_raster = if is_svg {
-                        None
-                    } else {
-                        crate::resources::decode_raster_to_image(
+                    let worker_decode =
+                        should_worker_decode_image(tab_index, priority, encoded_len, is_svg);
+                    let decoded_raster = if worker_decode {
+                        match crate::resources::decode_raster_to_image(
                             &resp.body,
                             target_width,
                             target_height,
-                        )
-                        .ok()
-                        .map(|image| DecodedRaster {
+                        ) {
+                            Ok(image) => Some(DecodedRaster {
                             pixels: image.pixels,
                             width: image.width,
                             height: image.height,
                             format: image.format,
                             suspicious_black_ppm: image.suspicious_black_ppm,
-                        })
+                            }),
+                            Err(err) => {
+                                surf_net_log!(
+                                    "worker image decode failed: src={} bytes={} err={:?}",
+                                    src,
+                                    encoded_len,
+                                    err
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
                     };
-                    let body = if is_svg {
+                    let body = if is_svg || (!worker_decode && decoded_raster.is_none()) {
                         resp.body
                     } else {
                         Vec::new()

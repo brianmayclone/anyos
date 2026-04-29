@@ -346,13 +346,13 @@ fn font_src_score(candidate: &str, url: &str) -> u8 {
         || lower.contains("format(woff)")
         || url_lower.ends_with(".woff");
 
-    if is_woff2 {
+    if is_woff {
         4
     } else if is_truetype {
         3
     } else if !has_format && !is_woff {
         2
-    } else if is_woff {
+    } else if is_woff2 {
         1
     } else {
         0

@@ -339,6 +339,11 @@ pub(crate) fn queue_font_face_batch(
 
 pub(crate) fn load_valid_web_font_data(family: &str, data: &[u8]) -> Option<u32> {
     let Some(font_id) = libfont_client::load_data(data) else {
+        crate::surf_log!(
+            "[surf] rejected web font '{}' ({}): unsupported or invalid data",
+            family,
+            web_font_format_hint(data)
+        );
         return None;
     };
     if web_font_is_renderable(font_id) {
@@ -351,6 +356,30 @@ pub(crate) fn load_valid_web_font_data(family: &str, data: &[u8]) -> Option<u32>
         font_id
     );
     None
+}
+
+fn web_font_format_hint(data: &[u8]) -> &'static str {
+    if data.len() >= 8 && &data[..4] == b"wOF2" {
+        if &data[4..8] == b"OTTO" {
+            "WOFF2/CFF"
+        } else if &data[4..8] == b"\0\x01\0\0" || &data[4..8] == b"true" {
+            "WOFF2/TrueType"
+        } else {
+            "WOFF2"
+        }
+    } else if data.len() >= 8 && &data[..4] == b"wOFF" {
+        if &data[4..8] == b"OTTO" {
+            "WOFF/CFF"
+        } else {
+            "WOFF"
+        }
+    } else if data.len() >= 4 && &data[..4] == b"OTTO" {
+        "OpenType/CFF"
+    } else if data.len() >= 4 && (&data[..4] == b"\0\x01\0\0" || &data[..4] == b"true") {
+        "TrueType"
+    } else {
+        "unknown"
+    }
 }
 
 fn web_font_is_renderable(font_id: u32) -> bool {
@@ -523,7 +552,7 @@ pub(crate) fn queue_images(
     // `loading=lazy` stays out of the startup path entirely, while explicit
     // eager/high-priority images get a small bonus budget similar to browsers'
     // visible-first behaviour.
-    let mut immediate_budget = if startup_critical_only { 0usize } else { 8usize };
+    let mut immediate_budget = if startup_critical_only { 4usize } else { 8usize };
     let mut high_priority_budget = if startup_critical_only { 2usize } else { 4usize };
     let mut deferred: Vec<(i32, crate::tab::DeferredImageRequest)> = Vec::new();
 
@@ -612,6 +641,9 @@ pub(crate) fn queue_images(
                     if high_priority && initial_viewport_hit && high_priority_budget > 0 {
                         high_priority_budget -= 1;
                         true
+                    } else if initial_viewport_hit && immediate_budget > 0 {
+                        immediate_budget -= 1;
+                        true
                     } else {
                         false
                     }
@@ -699,6 +731,29 @@ pub(crate) fn queue_images(
                 }
                 let img_url = crate::http::resolve_url(base_url, bg_src);
                 let priority = crate::net_worker::ImagePriority::Viewport;
+                let (width, height, initial_viewport_hit) = {
+                    let viewport_h = webview.viewport_height() as i32;
+                    if let Some((_, y, w, h)) = webview.node_bounds(i) {
+                        (Some(w), Some(h), y < viewport_h + 640 && y + h > -192)
+                    } else {
+                        (None, None, false)
+                    }
+                };
+                if initial_viewport_hit && immediate_budget > 0 {
+                    immediate_budget -= 1;
+                    crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
+                        tab_index,
+                        src: bg_src.clone(),
+                        url: img_url,
+                        target_width: width.map(|v| v.max(1) as u32),
+                        target_height: height.map(|v| v.max(1) as u32),
+                        priority,
+                        generation,
+                    });
+                    immediate_count += 1;
+                    count += 1;
+                    continue;
+                }
                 let rank = deferred_image_rank(i, None, None, false, true);
                 deferred.push((
                     rank,
@@ -1723,15 +1778,51 @@ pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
         );
         return;
     };
-    let mut pixels = vec![0u32; pixel_count];
     let background = parse_svg_root_background(data).unwrap_or(0x00000000);
-    let ok = libsvg_client::render_to_size(data, &mut pixels, rw, rh, background);
+    let supersample = svg_supersample_factor(rw, rh);
+    let (ok, pixels) = if supersample > 1 {
+        let hi_w = rw.saturating_mul(supersample);
+        let hi_h = rh.saturating_mul(supersample);
+        let Some(hi_count) = (hi_w as usize).checked_mul(hi_h as usize) else {
+            crate::surf_log!(
+                "[surf] svg supersample overflow: src={} {}x{} factor={} tab={}",
+                src,
+                rw,
+                rh,
+                supersample,
+                tab_idx
+            );
+            return;
+        };
+        let mut hi_pixels = vec![0u32; hi_count];
+        let ok = libsvg_client::render_to_size(data, &mut hi_pixels, hi_w, hi_h, background);
+        let mut lo_pixels = vec![0u32; pixel_count];
+        if ok {
+            let scaled = libimage_client::scale_image(
+                &hi_pixels,
+                hi_w,
+                hi_h,
+                &mut lo_pixels,
+                rw,
+                rh,
+                libimage_client::MODE_SCALE,
+            );
+            (scaled, lo_pixels)
+        } else {
+            (false, lo_pixels)
+        }
+    } else {
+        let mut pixels = vec![0u32; pixel_count];
+        let ok = libsvg_client::render_to_size(data, &mut pixels, rw, rh, background);
+        (ok, pixels)
+    };
     crate::surf_log!(
-        "[surf] svg decode: src={} bytes={} {}x{} intrinsic={} probed={} ok={} tab={}",
+        "[surf] svg decode: src={} bytes={} {}x{} aa={} intrinsic={} probed={} ok={} tab={}",
         src,
         data.len(),
         rw,
         rh,
+        supersample,
         intrinsic.is_some(),
         probed.is_some(),
         ok,
@@ -1742,6 +1833,17 @@ pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
         if tab_idx < st.tabs.len() {
             st.tabs[tab_idx].webview.add_image(src, pixels, rw, rh);
         }
+    }
+}
+
+fn svg_supersample_factor(w: u32, h: u32) -> u32 {
+    let max_dim = w.max(h);
+    if max_dim <= 256 {
+        3
+    } else if max_dim <= 768 {
+        2
+    } else {
+        1
     }
 }
 

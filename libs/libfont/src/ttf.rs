@@ -2,9 +2,10 @@
 //! TrueType font parser for `no_std` environments.
 //!
 //! Zero-copy parser that operates on `&[u8]` references into raw TTF data.
-//! Supports simple and composite glyphs, cmap format 4 and 12 character mapping,
-//! horizontal metrics, and CBDT/CBLC color bitmap lookup.
+//! Supports TrueType glyf and OpenType/CFF outlines, cmap format 4 and 12
+//! character mapping, horizontal metrics, and CBDT/CBLC color bitmap lookup.
 
+use crate::cff;
 use alloc::vec::Vec;
 
 // ---------------------------------------------------------------------------
@@ -148,12 +149,19 @@ pub struct TtfFont {
     pub loca_offset: usize,
     /// Byte offset of the `hmtx` table in `data`.
     pub hmtx_offset: usize,
+    /// Byte offset and length of the `CFF ` table in `data`.
+    pub cff_offset: usize,
+    pub cff_length: usize,
 
     /// Number of long horizontal metrics (from `hhea`).
     pub num_h_metrics: u16,
 
-    /// True if font has glyf/loca tables (outline glyphs).
+    /// True if font has glyf/loca or CFF tables (outline glyphs).
     pub has_outlines: bool,
+    /// True if font has glyf/loca TrueType outlines.
+    pub has_glyf_outlines: bool,
+    /// True if font has OpenType/CFF outlines.
+    pub has_cff_outlines: bool,
     /// True if font has CBLC/CBDT tables (bitmap glyphs).
     pub has_bitmaps: bool,
     /// Byte offset of the `CBLC` table.
@@ -183,7 +191,7 @@ impl TtfFont {
         }
 
         let magic = read_u32_be(&data, 0);
-        if magic != 0x00010000 && magic != 0x74727565 {
+        if magic != 0x00010000 && magic != 0x74727565 && magic != 0x4F54544F {
             return None;
         }
 
@@ -199,6 +207,7 @@ impl TtfFont {
         let mut hmtx_off: Option<usize> = None;
         let mut loca_off: Option<usize> = None;
         let mut glyf_off: Option<usize> = None;
+        let mut cff_rec: Option<(usize, usize)> = None;
         let mut cblc_off: Option<usize> = None;
         let mut cbdt_off: Option<usize> = None;
 
@@ -206,6 +215,7 @@ impl TtfFont {
             let rec = 12 + i * 16;
             let tag = read_u32_be(&data, rec);
             let offset = read_u32_be(&data, rec + 8) as usize;
+            let length = read_u32_be(&data, rec + 12) as usize;
 
             match tag {
                 0x68656164 => head_off = Some(offset), // 'head'
@@ -215,6 +225,7 @@ impl TtfFont {
                 0x686D7478 => hmtx_off = Some(offset), // 'hmtx'
                 0x6C6F6361 => loca_off = Some(offset), // 'loca'
                 0x676C7966 => glyf_off = Some(offset), // 'glyf'
+                0x43464620 => cff_rec = Some((offset, length)), // 'CFF '
                 0x43424C43 => cblc_off = Some(offset), // 'CBLC'
                 0x43424454 => cbdt_off = Some(offset), // 'CBDT'
                 _ => {}
@@ -229,9 +240,12 @@ impl TtfFont {
         let hmtx_off = hmtx_off?;
 
         // Outline tables are optional (bitmap-only fonts like NotoColorEmoji)
-        let has_outlines = loca_off.is_some() && glyf_off.is_some();
+        let has_glyf_outlines = loca_off.is_some() && glyf_off.is_some();
         let glyf_off = glyf_off.unwrap_or(0);
         let loca_off = loca_off.unwrap_or(0);
+        let (cff_off, cff_len) = cff_rec.unwrap_or((0, 0));
+        let has_cff_outlines = cff_len > 0 && data.len() >= cff_off.saturating_add(cff_len);
+        let has_outlines = has_glyf_outlines || has_cff_outlines;
 
         // Bitmap tables are optional
         let has_bitmaps = cblc_off.is_some() && cbdt_off.is_some();
@@ -263,8 +277,12 @@ impl TtfFont {
             glyf_offset: glyf_off,
             loca_offset: loca_off,
             hmtx_offset: hmtx_off,
+            cff_offset: cff_off,
+            cff_length: cff_len,
             num_h_metrics,
             has_outlines,
+            has_glyf_outlines,
+            has_cff_outlines,
             has_bitmaps,
             cblc_offset: cblc_off,
             cbdt_offset: cbdt_off,
@@ -423,7 +441,7 @@ impl TtfFont {
     // ------------------------------------------------------------------
 
     pub fn glyph_offset(&self, glyph_id: u16) -> Option<usize> {
-        if !self.has_outlines { return None; }
+        if !self.has_glyf_outlines { return None; }
         if glyph_id >= self.num_glyphs {
             return None;
         }
@@ -495,6 +513,11 @@ impl TtfFont {
 
     pub fn glyph_outline(&self, glyph_id: u16) -> Option<GlyphOutline> {
         if !self.has_outlines { return None; }
+        if self.has_cff_outlines && !self.has_glyf_outlines {
+            let end = self.cff_offset.checked_add(self.cff_length)?;
+            let cff_data = self.data.get(self.cff_offset..end)?;
+            return cff::glyph_outline(cff_data, glyph_id);
+        }
         self.glyph_outline_depth(glyph_id, 0)
     }
 

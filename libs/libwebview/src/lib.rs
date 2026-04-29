@@ -534,7 +534,9 @@ impl WebView {
         self.pending_tiles = false;
         self.clear_deferred_layout_state();
         self.selector_state = style::SelectorState::default();
-        self.content_view.set_size(self.viewport_width as u32, 1);
+        self.content_view
+            .set_size(self.viewport_width as u32, self.viewport_height.max(1));
+        self.content_view.set_color(0xFFFFFFFF);
         // Clear all stylesheets (external + inline).
         self.external_sheets.clear();
         self.inline_sheets.clear();
@@ -944,6 +946,9 @@ impl WebView {
         // If we have a DOM, re-layout (invalidates cached layout tree).
         if self.dom_val.is_some() {
             self.relayout();
+        } else {
+            self.content_view.set_size(w, h.max(1));
+            self.content_view.set_color(0xFFFFFFFF);
         }
     }
 
@@ -1254,7 +1259,9 @@ impl WebView {
         self.last_render_scroll_y = 0;
         self.pending_tiles = false;
         self.clear_deferred_layout_state();
-        self.content_view.set_size(self.viewport_width as u32, 1);
+        self.content_view
+            .set_size(self.viewport_width as u32, self.viewport_height.max(1));
+        self.content_view.set_color(0xFFFFFFFF);
     }
 
     /// Access the current DOM (if set).
