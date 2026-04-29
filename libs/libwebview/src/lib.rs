@@ -64,6 +64,7 @@ pub mod layout;
 mod renderer;
 pub mod style;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -886,6 +887,19 @@ impl WebView {
     /// Return the last fully resolved computed style for a DOM node.
     pub fn resolved_style_ref(&self, node_id: usize) -> Option<&style::ComputedStyle> {
         self.resolved_styles_cache.get(node_id)
+    }
+
+    /// Build a Developer Tools inspector report for a DOM node.
+    ///
+    /// This is intentionally assembled in libwebview rather than Surf so the
+    /// inspector sees the same selector matching, cached computed styles, and
+    /// layout data the renderer used.
+    pub fn devtools_inspector_report(&self, node_id: usize) -> Option<String> {
+        let dom = self.dom_val.as_ref()?;
+        if node_id >= dom.nodes.len() {
+            return None;
+        }
+        Some(build_devtools_inspector_report(self, dom, node_id))
     }
 
     pub fn tile_canvas_ids(&self) -> Vec<u32> {
@@ -4630,6 +4644,187 @@ fn child_total_height(bx: &LayoutBox, parent_y: i32) -> i32 {
         }
     }
     max
+}
+
+fn build_devtools_inspector_report(webview: &WebView, dom: &dom::Dom, node_id: usize) -> String {
+    let mut out = String::new();
+    let node = &dom.nodes[node_id];
+
+    out.push_str("DOM\n");
+    out.push_str("----------------------------------------\n");
+    append_devtools_dom_path(dom, node_id, &mut out);
+    append_devtools_node_syntax(node, &mut out);
+
+    if let Some((x, y, w, h)) = webview.node_bounds(node_id) {
+        out.push_str("\nBox Model\n");
+        out.push_str("----------------------------------------\n");
+        out.push_str(&format!("  document: x={} y={} size={}x{}\n", x, y, w, h));
+    }
+
+    if let Some(style) = webview.resolved_style_ref(node_id) {
+        out.push_str("\nComputed Style\n");
+        out.push_str("----------------------------------------\n");
+        out.push_str(&format!("  display:          {:?}\n", style.display));
+        out.push_str(&format!("  position:         {}\n", devtools_position_name(style.position)));
+        out.push_str(&format!("  color:            {}\n", devtools_css_color(style.color)));
+        out.push_str(&format!(
+            "  background-color: {}\n",
+            devtools_css_color(style.background_color)
+        ));
+        out.push_str(&format!(
+            "  font-family:      {}\n",
+            style.font_family.as_deref().unwrap_or("(default)")
+        ));
+        out.push_str(&format!("  font-size:        {}px\n", style.font_size));
+        out.push_str(&format!("  line-height:      {}px\n", style.line_height));
+        out.push_str(&format!("  width / height:   {:?} / {:?}\n", style.width, style.height));
+        out.push_str(&format!(
+            "  margin:           {} {} {} {}\n",
+            style.margin_top, style.margin_right, style.margin_bottom, style.margin_left
+        ));
+        out.push_str(&format!(
+            "  border-width:     {} {} {} {}\n",
+            style.border_top.width,
+            style.border_right.width,
+            style.border_bottom.width,
+            style.border_left.width
+        ));
+        out.push_str(&format!(
+            "  padding:          {} {} {} {}\n",
+            style.padding_top, style.padding_right, style.padding_bottom, style.padding_left
+        ));
+        out.push_str(&format!(
+            "  overflow-x / y:   {:?} / {:?}\n",
+            style.overflow_x, style.overflow_y
+        ));
+        out.push_str(&format!("  z-index:          {}\n", style.z_index));
+        out.push_str(&format!(
+            "  transform:        translate({}px, {}px) scale({}, {}) rotate({})\n",
+            style.transform_tx,
+            style.transform_ty,
+            devtools_css_num(style.transform_sx),
+            devtools_css_num(style.transform_sy),
+            devtools_css_num(style.transform_rotate)
+        ));
+    }
+
+    out.push_str("\nMatched Rules\n");
+    out.push_str("----------------------------------------\n");
+    out.push_str("  Regel-/Cascade-Details werden hier aufgebaut.\n");
+    out
+}
+
+fn append_devtools_dom_path(dom: &dom::Dom, mut node_id: usize, out: &mut String) {
+    let mut chain: Vec<String> = Vec::new();
+    loop {
+        if node_id >= dom.nodes.len() {
+            break;
+        }
+        let node = &dom.nodes[node_id];
+        match &node.node_type {
+            dom::NodeType::Element { tag, attrs } => {
+                let mut s = String::from(tag.tag_name());
+                if let Some(id) = devtools_attr_value(attrs, "id") {
+                    s.push('#');
+                    s.push_str(id);
+                }
+                if let Some(classes) = devtools_attr_value(attrs, "class") {
+                    for class in classes.split_whitespace().take(2) {
+                        s.push('.');
+                        s.push_str(class);
+                    }
+                }
+                chain.push(s);
+            }
+            dom::NodeType::Text(_) => chain.push(String::from("#text")),
+        }
+        match node.parent {
+            Some(parent) => node_id = parent,
+            None => break,
+        }
+    }
+    chain.reverse();
+    out.push_str("  ");
+    for (i, item) in chain.iter().enumerate() {
+        if i > 0 {
+            out.push_str(" > ");
+        }
+        out.push_str(item);
+    }
+    out.push('\n');
+}
+
+fn append_devtools_node_syntax(node: &dom::DomNode, out: &mut String) {
+    match &node.node_type {
+        dom::NodeType::Element { tag, attrs } => {
+            out.push_str("  <");
+            out.push_str(tag.tag_name());
+            for attr in attrs {
+                out.push('\n');
+                out.push_str("    ");
+                out.push_str(&attr.name);
+                out.push_str("=\"");
+                devtools_push_escaped_preview(out, &attr.value, 160);
+                out.push('"');
+            }
+            out.push_str("\n  >\n");
+        }
+        dom::NodeType::Text(text) => {
+            out.push_str("  \"");
+            devtools_push_escaped_preview(out, text.trim(), 300);
+            out.push_str("\"\n");
+        }
+    }
+}
+
+fn devtools_attr_value<'a>(attrs: &'a [dom::Attr], name: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case(name))
+        .map(|a| a.value.as_str())
+}
+
+fn devtools_push_escaped_preview(out: &mut String, value: &str, max_chars: usize) {
+    for c in value.chars().take(max_chars) {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    if value.chars().count() > max_chars {
+        out.push_str("...");
+    }
+}
+
+fn devtools_css_color(c: u32) -> String {
+    format!(
+        "#{:02X}{:02X}{:02X} / {}",
+        (c >> 16) & 0xFF,
+        (c >> 8) & 0xFF,
+        c & 0xFF,
+        (c >> 24) & 0xFF
+    )
+}
+
+fn devtools_css_num(v: i32) -> String {
+    if v % 100 == 0 {
+        format!("{}", v / 100)
+    } else {
+        format!("{}.{:02}", v / 100, (v.abs() % 100))
+    }
+}
+
+fn devtools_position_name(v: style::Position) -> &'static str {
+    match v {
+        style::Position::Static => "static",
+        style::Position::Relative => "relative",
+        style::Position::Absolute => "absolute",
+        style::Position::Fixed => "fixed",
+        style::Position::Sticky => "sticky",
+    }
 }
 
 #[cfg(test)]

@@ -29,6 +29,9 @@ pub struct HttpStream {
     /// Buffered data not yet consumed by the caller.
     pub(crate) buf: Vec<u8>,
     pub(crate) buf_pos: usize,
+    /// Decoded response body bytes pushed back by pack parsing.
+    pushback: Vec<u8>,
+    pushback_pos: usize,
     /// Chunked encoding state.
     chunked: bool,
     chunk_remaining: usize,
@@ -133,19 +136,20 @@ impl HttpStream {
 
             let header_str = core::str::from_utf8(&hdr_buf[..header_end]).unwrap_or("");
 
-            // Always log response headers for debugging
-            anyos_std::println!("[stream] HTTP response headers:");
-            for line in header_str.lines().take(10) {
-                anyos_std::println!("  {}", line);
-            }
             let leftover_len = hdr_buf.len() - header_end;
-            anyos_std::println!("[stream] leftover after headers: {} bytes", leftover_len);
-            if leftover_len > 0 && leftover_len <= 32 {
-                anyos_std::print!("[stream] leftover hex: ");
-                for b in &hdr_buf[header_end..] {
-                    anyos_std::print!("{:02x} ", b);
+            if crate::pack::verbose() {
+                anyos_std::println!("[stream] HTTP response headers:");
+                for line in header_str.lines().take(10) {
+                    anyos_std::println!("  {}", line);
                 }
-                anyos_std::println!();
+                anyos_std::println!("[stream] leftover after headers: {} bytes", leftover_len);
+                if leftover_len > 0 && leftover_len <= 32 {
+                    anyos_std::print!("[stream] leftover hex: ");
+                    for b in &hdr_buf[header_end..] {
+                        anyos_std::print!("{:02x} ", b);
+                    }
+                    anyos_std::println!();
+                }
             }
 
             // Check HTTP status
@@ -168,6 +172,8 @@ impl HttpStream {
                 tcp_socket: sock,
                 buf: leftover,
                 buf_pos: 0,
+                pushback: Vec::new(),
+                pushback_pos: 0,
                 chunked,
                 chunk_remaining: 0,
                 eof: false,
@@ -254,6 +260,8 @@ impl HttpStream {
             tcp_socket: u32::MAX,
             buf: Vec::new(),
             buf_pos: 0,
+            pushback: Vec::new(),
+            pushback_pos: 0,
             chunked: false,
             chunk_remaining: 0,
             eof: false,
@@ -278,6 +286,18 @@ impl HttpStream {
 
     /// Read up to `out.len()` bytes. Returns number of bytes read (0 = EOF).
     pub fn read(&mut self, out: &mut [u8]) -> usize {
+        if self.pushback_pos < self.pushback.len() {
+            let available = self.pushback.len() - self.pushback_pos;
+            let n = available.min(out.len());
+            out[..n].copy_from_slice(&self.pushback[self.pushback_pos..self.pushback_pos + n]);
+            self.pushback_pos += n;
+            if self.pushback_pos == self.pushback.len() {
+                self.pushback.clear();
+                self.pushback_pos = 0;
+            }
+            return n;
+        }
+
         if self.eof {
             return 0;
         }
@@ -354,6 +374,21 @@ impl HttpStream {
         }
     }
 
+    /// Put decoded response body bytes back in front of the reader.
+    pub(crate) fn unread_decoded(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let mut next =
+            Vec::with_capacity(data.len() + self.pushback.len().saturating_sub(self.pushback_pos));
+        next.extend_from_slice(data);
+        if self.pushback_pos < self.pushback.len() {
+            next.extend_from_slice(&self.pushback[self.pushback_pos..]);
+        }
+        self.pushback = next;
+        self.pushback_pos = 0;
+    }
+
     /// Read the next HTTP chunk header (hex size + CRLF).
     fn read_next_chunk_header(&mut self) {
         // Ensure we have data containing a CRLF (chunk size line)
@@ -365,12 +400,22 @@ impl HttpStream {
                     Some(i) => &size_str[..i],
                     None => size_str,
                 };
-                self.chunk_remaining = usize::from_str_radix(size_str.trim(), 16).unwrap_or(0);
-                anyos_std::println!(
-                    "[stream] chunk: size_str='{}' → {} bytes",
-                    size_str.trim(),
-                    self.chunk_remaining
-                );
+                let trimmed = size_str.trim();
+                let Some(size) = usize::from_str_radix(trimmed, 16).ok() else {
+                    if crate::pack::verbose() {
+                        anyos_std::println!("[stream] invalid chunk size '{}'", trimmed);
+                    }
+                    self.eof = true;
+                    return;
+                };
+                self.chunk_remaining = size;
+                if crate::pack::verbose() {
+                    anyos_std::println!(
+                        "[stream] chunk: size_str='{}' -> {} bytes",
+                        trimmed,
+                        self.chunk_remaining
+                    );
+                }
                 self.buf_pos += crlf + 2;
                 if self.chunk_remaining == 0 {
                     self.eof = true;
@@ -408,9 +453,16 @@ impl HttpStream {
             }
             self.buf.extend_from_slice(&recv_buf[..n as usize]);
         }
-        // Skip \r\n
-        if self.buf_pos + 2 <= self.buf.len() {
+        if self.buf_pos + 2 <= self.buf.len()
+            && self.buf[self.buf_pos] == b'\r'
+            && self.buf[self.buf_pos + 1] == b'\n'
+        {
             self.buf_pos += 2;
+        } else {
+            if crate::pack::verbose() {
+                anyos_std::println!("[stream] missing chunk terminator");
+            }
+            self.eof = true;
         }
     }
 

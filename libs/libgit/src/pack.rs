@@ -361,12 +361,7 @@ pub(crate) fn inflate_from_stream(
                     total_consumed += 4;
                 }
                 if total_consumed < compressed.len() {
-                    let mut leftover = compressed[total_consumed..].to_vec();
-                    if stream.buf_pos < stream.buf.len() {
-                        leftover.extend_from_slice(&stream.buf[stream.buf_pos..]);
-                    }
-                    stream.buf = leftover;
-                    stream.buf_pos = 0;
+                    stream.unread_decoded(&compressed[total_consumed..]);
                 }
                 return Ok(data);
             }

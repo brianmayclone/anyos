@@ -932,51 +932,10 @@ pub fn show_selected_node_styles() {
     if dom_id >= dom.nodes.len() {
         return;
     }
-    let mut out = String::new();
-    let node = &dom.nodes[dom_id];
-    match &node.node_type {
-        libwebview::dom::NodeType::Element { tag, attrs } => {
-            out.push_str(&format!("Element: <{}>\n", tag.tag_name()));
-            if !attrs.is_empty() {
-                out.push_str("\nAttribute:\n");
-                for a in attrs {
-                    out.push_str(&format!("  {} = \"{}\"\n", a.name, a.value));
-                }
-            }
-        }
-        libwebview::dom::NodeType::Text(t) => {
-            out.push_str("Textknoten:\n");
-            out.push('\n');
-            out.push_str(t);
-        }
-    }
-    if let Some(style) = webview.resolved_style_ref(dom_id) {
-        out.push_str("\nComputed Style:\n");
-        out.push_str(&format!("  color:           #{:08X}\n", style.color));
-        out.push_str(&format!(
-            "  background:      #{:08X}\n",
-            style.background_color
-        ));
-        out.push_str(&format!("  font-size:       {}px\n", style.font_size));
-        out.push_str(&format!("  display:         {:?}\n", style.display));
-        let pos = match style.position {
-            libwebview::style::Position::Static => "static",
-            libwebview::style::Position::Relative => "relative",
-            libwebview::style::Position::Absolute => "absolute",
-            libwebview::style::Position::Fixed => "fixed",
-            libwebview::style::Position::Sticky => "sticky",
-        };
-        out.push_str(&format!("  position:        {}\n", pos));
-        out.push_str(&format!(
-            "  margin:          {} {} {} {}\n",
-            style.margin_top, style.margin_right, style.margin_bottom, style.margin_left
-        ));
-        out.push_str(&format!(
-            "  padding:         {} {} {} {}\n",
-            style.padding_top, style.padding_right, style.padding_bottom, style.padding_left
-        ));
-    }
-    st.devtools.style_pane.set_text(&out);
+    let report = webview
+        .devtools_inspector_report(dom_id)
+        .unwrap_or_else(|| String::from("(kein Inspector-Report verfügbar)"));
+    st.devtools.style_pane.set_text(&report);
 }
 
 /// Evaluate the console input text as JavaScript in the active tab.
