@@ -205,7 +205,7 @@ pub(crate) extern "C" fn on_form_submit(ctrl_id: u32, _event_type: u32, _userdat
     submit_form_data(tab.current_url.as_ref(), action, method, enctype, data);
 }
 
-fn submit_form_data(
+pub(crate) fn submit_form_data(
     current_url: Option<&crate::http::Url>,
     action: String,
     method: String,

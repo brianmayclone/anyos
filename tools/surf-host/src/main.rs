@@ -24,6 +24,7 @@ extern crate libfont;
 use eframe::egui;
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
@@ -1361,9 +1362,31 @@ fn main() {
                 pending_tiles = wv.render_viewport_at(0);
             }
             debug_log_image_bounds(&mut wv);
-            // Print any console output from timer callbacks
-            for line in wv.js_console() {
-                eprintln!("[js:console:timer] {}", line);
+            // Print a bounded console sample from timer callbacks. Pages with
+            // 10ms consent/ad polling loops can otherwise spend more time
+            // logging than rendering in screenshot tests.
+            let console = wv.js_console();
+            let mut printed = 0usize;
+            let mut suppressed = 0usize;
+            let mut last_line: Option<&str> = None;
+            for line in console {
+                if last_line == Some(line.as_str()) {
+                    suppressed += 1;
+                    continue;
+                }
+                if printed < 64 {
+                    eprintln!("[js:console:timer] {}", line);
+                    printed += 1;
+                } else {
+                    suppressed += 1;
+                }
+                last_line = Some(line);
+            }
+            if suppressed > 0 {
+                eprintln!(
+                    "[js:console:timer] suppressed {} repeated/excess line(s)",
+                    suppressed
+                );
             }
         }
         extract_pixels(&wv, &mut framebuffer, width as usize, height as usize, 0);
@@ -2165,6 +2188,7 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
     // Network fetch
     match ureq::get(url)
         .set("User-Agent", SURF_HOST_USER_AGENT)
+        .set("Accept", "*/*")
         .call()
     {
         Ok(resp) => {
@@ -2175,7 +2199,8 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
             let _ = std::fs::write(&data_path, &buf);
             Some(buf)
         }
-        Err(_) => {
+        Err(err) => {
+            eprintln!("[surf-host] fetch_resource failed: {} ({})", url, err);
             // Fall back to stale cache on network error
             std::fs::read(&data_path).ok()
         }
@@ -2233,14 +2258,51 @@ pub fn resolve_url(base: &str, relative: &str) -> String {
         } else {
             0
         };
-        if last_slash > after_proto {
+        let joined = if last_slash > after_proto {
             format!("{}/{}", &base[..last_slash], relative)
         } else {
             format!("{}/{}", base.trim_end_matches('/'), relative)
-        }
+        };
+        normalize_http_path(&joined)
     } else {
         format!("{}/{}", base, relative)
     }
+}
+
+fn normalize_http_path(url: &str) -> String {
+    let Some(scheme_idx) = url.find("://") else {
+        return url.to_string();
+    };
+    let path_start = url[scheme_idx + 3..]
+        .find('/')
+        .map(|i| scheme_idx + 3 + i)
+        .unwrap_or(url.len());
+    if path_start >= url.len() {
+        return url.to_string();
+    }
+    let (origin, rest) = url.split_at(path_start);
+    let (path_part, suffix) = match rest.find(['?', '#']) {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in path_part.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            _ => segments.push(seg),
+        }
+    }
+    let mut out = String::from(origin);
+    out.push('/');
+    out.push_str(&segments.join("/"));
+    if path_part.ends_with('/') && !out.ends_with('/') {
+        out.push('/');
+    }
+    out.push_str(suffix);
+    out
 }
 
 fn base64_decode(input: &[u8]) -> Vec<u8> {
@@ -2537,6 +2599,11 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         "unit-image",
         "headline",
         "subhead",
+        "Header-Navigation",
+        "Header-Navigation-List",
+        "Header-Navigation-First-Level",
+        "Header-Navigation-All",
+        "Header-Navigation-Icon",
     ];
 
     for (node_id, _) in dom.nodes.iter().enumerate() {
@@ -3324,6 +3391,32 @@ fn apply_host_js_mutations(
     }
 }
 
+fn prefetch_module_sources(
+    wv: &mut libwebview::WebView,
+    referrer_url: &str,
+    source: &str,
+    seen: &mut HashSet<String>,
+) {
+    for specifier in libwebview::js::extract_module_specifiers(source) {
+        let full_url = resolve_url(referrer_url, &specifier);
+        if !seen.insert(full_url.clone()) {
+            continue;
+        }
+        eprintln!("[js] fetching module: {} -> {}", specifier, full_url);
+        let Some(data) = fetch_resource(&full_url) else {
+            eprintln!("[js]   module fetch failed");
+            continue;
+        };
+        let Ok(text) = String::from_utf8(data) else {
+            eprintln!("[js]   module not valid UTF-8, skipping");
+            continue;
+        };
+        wv.js_runtime().register_module_source(&specifier, &text);
+        wv.js_runtime().register_module_source(&full_url, &text);
+        prefetch_module_sources(wv, &full_url, &text, seen);
+    }
+}
+
 fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut HostCookieJar) {
     // Register synchronous HTTP handler so fetch()/XHR work inside JS.
     register_http_handler(wv);
@@ -3336,6 +3429,7 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut Ho
     }
 
     let mut scripts: Vec<String> = Vec::new();
+    let mut script_urls: Vec<Option<String>> = Vec::new();
     let mut external_count = 0u32;
     let mut inline_count = 0u32;
 
@@ -3343,6 +3437,7 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut Ho
         match entry {
             libwebview::js::ScriptEntry::Inline { text, mode: _ } => {
                 scripts.push(text.clone());
+                script_urls.push(None);
                 inline_count += 1;
             }
             libwebview::js::ScriptEntry::External {
@@ -3354,6 +3449,7 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut Ho
                 if let Some(data) = fetch_resource(&full_url) {
                     if let Ok(text) = String::from_utf8(data) {
                         scripts.push(text);
+                        script_urls.push(Some(full_url));
                         external_count += 1;
                     } else {
                         eprintln!("[js]   not valid UTF-8, skipping");
@@ -3371,6 +3467,18 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut Ho
         inline_count,
         external_count
     );
+
+    let mut seen_modules = HashSet::new();
+    for (idx, script) in scripts.iter().enumerate() {
+        let referrer = script_urls
+            .get(idx)
+            .and_then(|u| u.as_deref())
+            .unwrap_or(base_url);
+        if let Some(Some(url)) = script_urls.get(idx) {
+            wv.js_runtime().register_module_source(url, script);
+        }
+        prefetch_module_sources(wv, referrer, script, &mut seen_modules);
+    }
 
     // Execute all scripts.
     wv.execute_js(&scripts);

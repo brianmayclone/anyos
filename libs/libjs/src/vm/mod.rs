@@ -16,6 +16,7 @@ use crate::bytecode::{Chunk, Constant, Op};
 use crate::value::*;
 
 const MAX_ENGINE_LOG_MESSAGES: usize = 128;
+const STEP_CHECK_MASK: u64 = 0x3ff;
 
 pub mod builtins;
 pub mod call;
@@ -88,7 +89,7 @@ impl LocalSlot {
 
 /// Call frame for function invocations.
 pub struct CallFrame {
-    pub chunk: Chunk,
+    pub chunk: Rc<Chunk>,
     pub ip: usize,
     pub stack_base: usize,
     /// Local variable slots — a mix of Direct (non-captured) and Cell (captured).
@@ -270,6 +271,10 @@ impl Vm {
 
     fn is_private_name(name: &str) -> bool {
         name.starts_with('#') && name.len() > 1
+    }
+
+    fn is_nullish_safe_probe_key(name: &str) -> bool {
+        name.starts_with("__symbol__") || matches!(name, "valueOf" | "toString")
     }
 
     fn close_iterator_on_abrupt(&mut self, iter: &JsValue, original_exc: JsValue) -> JsValue {
@@ -528,9 +533,10 @@ impl Vm {
     pub fn execute(&mut self, chunk: Chunk) -> JsValue {
         self.steps = 0;
         self.last_exception = None;
+        let chunk = Rc::new(chunk);
         let locals = Self::make_locals(&chunk);
         let frame = CallFrame {
-            chunk,
+            chunk: chunk.clone(),
             ip: 0,
             stack_base: self.stack.len(),
             locals,
@@ -611,6 +617,61 @@ impl Vm {
 
     pub fn get_global(&mut self, name: &str) -> JsValue {
         self.globals.borrow().get(name)
+    }
+
+    /// Fast path for repeated global reads at one bytecode site.
+    ///
+    /// Modern JS bundles hit global names constantly.  Without this, every
+    /// `LoadGlobal` pays at least one `BTreeMap` lookup and often a full
+    /// prototype walk.  The existing per-op IC table is safe to reuse here:
+    /// global writes that add/delete names bump the global object's shape, and
+    /// value-only writes are observed because the cache re-reads the holder.
+    fn try_load_global_ic(&mut self, frame_idx: usize, ip: usize, name: &str) -> Option<JsValue> {
+        if Self::is_private_name(name) {
+            return None;
+        }
+        let cached = {
+            let ic_table = self.frames[frame_idx].chunk.inline_caches.clone();
+            let ics = ic_table.borrow();
+            ics.get(ip).cloned()
+        };
+        if let Some(cache) = cached {
+            if let Some(val) = ic_get_prop_named(&cache, &self.globals, name) {
+                return Some(val);
+            }
+        }
+
+        let (val, holder_opt) = lookup_property_with_holder(&self.globals, name);
+        if let Some(holder) = holder_opt {
+            self.update_global_ic(frame_idx, ip, &holder);
+            return Some(val);
+        }
+
+        // Browser globals often live on `window` rather than directly on the
+        // VM global object.  Cache those too, guarded by the global object's
+        // shape so a later direct global declaration shadows correctly.
+        let window = self.globals.borrow().get("window");
+        if let JsValue::Object(window_obj) = window {
+            let (val, holder_opt) = lookup_property_with_holder(&window_obj, name);
+            if let Some(holder) = holder_opt {
+                self.update_global_ic(frame_idx, ip, &holder);
+                return Some(val);
+            }
+        }
+
+        None
+    }
+
+    fn update_global_ic(&self, frame_idx: usize, ip: usize, holder: &Rc<RefCell<JsObject>>) {
+        let recv_shape = self.globals.borrow().shape_id;
+        let holder_shape = holder.borrow().shape_id;
+        let ic_table = self.frames[frame_idx].chunk.inline_caches.clone();
+        let mut slots = ic_table.borrow_mut();
+        if let Some(slot) = slots.get_mut(ip) {
+            slot.recv_shape = recv_shape;
+            slot.holder_shape = holder_shape;
+            slot.holder = Some(Rc::downgrade(holder));
+        }
     }
 
     fn browser_window_global_get(&self, name: &str) -> Option<JsValue> {
@@ -739,7 +800,7 @@ impl Vm {
     pub fn run(&mut self) -> JsValue {
         loop {
             self.steps += 1;
-            if self.steps > self.step_limit {
+            if (self.steps & STEP_CHECK_MASK) == 0 && self.steps > self.step_limit {
                 self.log_engine("[libjs] WARN: step limit reached — aborting execution");
                 return JsValue::Undefined;
             }
@@ -771,7 +832,7 @@ impl Vm {
                 continue;
             }
 
-            let op = self.frames[frame_idx].chunk.code[ip].clone();
+            let op = self.frames[frame_idx].chunk.code[ip];
             self.frames[frame_idx].ip += 1;
 
             match op {
@@ -973,6 +1034,10 @@ impl Vm {
                         self.stack.push(val);
                     } else if let Some(val) = self.captured_with_scope_get(frame_idx, &name) {
                         self.stack.push(val);
+                    } else if let Some(val) =
+                        self.try_load_global_ic(frame_idx, ip, name.as_str())
+                    {
+                        self.stack.push(val);
                     } else if self.globals.borrow().has(&name) {
                         let val = self.globals.borrow().get(&name);
                         self.stack.push(val);
@@ -1065,6 +1130,10 @@ impl Vm {
                     } else if let Some(val) = self.active_with_scope_get(frame_idx, &name) {
                         self.stack.push(val);
                     } else if let Some(val) = self.captured_with_scope_get(frame_idx, &name) {
+                        self.stack.push(val);
+                    } else if let Some(val) =
+                        self.try_load_global_ic(frame_idx, ip, name.as_str())
+                    {
                         self.stack.push(val);
                     } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
@@ -1402,6 +1471,10 @@ impl Vm {
                 Op::Add => {
                     let b = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let a = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    if let (JsValue::Number(an), JsValue::Number(bn)) = (&a, &b) {
+                        self.stack.push(JsValue::Number(an + bn));
+                        continue;
+                    }
 
                     let depth_before = self.frames.len();
 
@@ -1647,7 +1720,7 @@ impl Vm {
                 Op::Closure(idx) => {
                     let chunk = match &self.frames[frame_idx].chunk.constants[idx as usize] {
                         Constant::Function(c) => c.clone(),
-                        _ => Chunk::new(),
+                        _ => Rc::new(Chunk::new()),
                     };
                     // Capture upvalue cells as described by the chunk's upvalue_refs.
                     let mut upvalue_cells: Vec<Rc<RefCell<JsValue>>> = Vec::new();
@@ -1693,7 +1766,7 @@ impl Vm {
                     let func_rc = Rc::new(RefCell::new(JsFunction {
                         name: chunk.name.clone(),
                         params: param_stubs,
-                        kind: FnKind::Bytecode(chunk),
+                        kind: FnKind::Bytecode(chunk.clone()),
                         object_proto: None,
                         this_binding,
                         bound_args: Vec::new(),
@@ -1724,46 +1797,9 @@ impl Vm {
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
                     if matches!(obj, JsValue::Null | JsValue::Undefined) {
                         let key_str = Self::property_key_error_hint(&key);
-                        #[cfg(feature = "host")]
-                        {
-                            if std::env::var_os("LIBJS_DEBUG_GETPROP").is_some() {
-                                use std::sync::atomic::{AtomicUsize, Ordering};
-                                static WW_GETPROP_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
-                                static OH_GETPROP_DEBUG_COUNT: AtomicUsize = AtomicUsize::new(0);
-                                let stack_info = self.frame_stack_summary(8);
-                                let is_oh = stack_info.contains("oh");
-                                let should_log = if is_oh {
-                                    OH_GETPROP_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) < 16
-                                } else if stack_info.contains("Ww") {
-                                    WW_GETPROP_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) < 8
-                                } else {
-                                    false
-                                };
-                                if should_log {
-                                    let chunk = &self.frames[frame_idx].chunk;
-                                    let ip = self.frames[frame_idx].ip;
-                                    let start = ip.saturating_sub(6);
-                                    let end = (ip + 6).min(chunk.code.len());
-                                    self.log_engine(&format!(
-                                        "[libjs] DEBUG GetProp undefined key={} chunk={:?} ip={} ops={:?} locals={:?}",
-                                        key_str,
-                                        chunk.name,
-                                        ip,
-                                        &chunk.code[start..end],
-                                        chunk.local_names
-                                    ));
-                                }
-                            }
-                        }
-                        if key_str == native_symbol::WELL_KNOWN_TO_PRIMITIVE {
-                            let chunk = &self.frames[frame_idx].chunk;
-                            self.log_engine(&format!(
-                                "[libjs] DEBUG get undefined @@toPrimitive via GetProp in chunk {:?} locals={:?} upvalues={:?} ip={}",
-                                chunk.name,
-                                chunk.local_names,
-                                chunk.upvalue_names,
-                                self.frames[frame_idx].ip
-                            ));
+                        if Self::is_nullish_safe_probe_key(&key_str) {
+                            self.stack.push(JsValue::Undefined);
+                            continue;
                         }
                         let msg = alloc::format!(
                             "Cannot read properties of {} (reading '{}')",
@@ -1948,15 +1984,9 @@ impl Vm {
                     }
 
                     if matches!(obj, JsValue::Null | JsValue::Undefined) {
-                        if name == native_symbol::WELL_KNOWN_TO_PRIMITIVE {
-                            let chunk = &self.frames[frame_idx].chunk;
-                            self.log_engine(&format!(
-                                "[libjs] DEBUG get undefined @@toPrimitive via GetPropNamed in chunk {:?} locals={:?} upvalues={:?} ip={}",
-                                chunk.name,
-                                chunk.local_names,
-                                chunk.upvalue_names,
-                                self.frames[frame_idx].ip
-                            ));
+                        if Self::is_nullish_safe_probe_key(&name) {
+                            self.stack.push(JsValue::Undefined);
+                            continue;
                         }
                         let msg = alloc::format!(
                             "Cannot read properties of {} (reading '{}')",
@@ -4044,6 +4074,10 @@ impl Vm {
     fn binary_num_op(&mut self, f: fn(f64, f64) -> f64) {
         let b = self.stack.pop().unwrap_or(JsValue::Undefined);
         let a = self.stack.pop().unwrap_or(JsValue::Undefined);
+        if let (JsValue::Number(an), JsValue::Number(bn)) = (&a, &b) {
+            self.stack.push(JsValue::Number(f(*an, *bn)));
+            return;
+        }
         // BigInt operands not supported for this op (e.g. **)
         if matches!((&a, &b), (JsValue::BigInt(_), _) | (_, JsValue::BigInt(_))) {
             let err = self.make_type_error(
@@ -4072,6 +4106,9 @@ impl Vm {
                 );
                 self.handle_exception(err);
             }
+            (JsValue::Number(an), JsValue::Number(bn)) => {
+                self.stack.push(JsValue::Number(num_f(*an, *bn)));
+            }
             _ => {
                 self.stack
                     .push(JsValue::Number(num_f(a.to_number(), b.to_number())));
@@ -4088,7 +4125,9 @@ impl Vm {
     fn compare_op(&mut self, f: fn(f64, f64) -> bool) {
         let b = self.stack.pop().unwrap_or(JsValue::Undefined);
         let a = self.stack.pop().unwrap_or(JsValue::Undefined);
-        if let (JsValue::String(sa), JsValue::String(sb)) = (&a, &b) {
+        if let (JsValue::Number(an), JsValue::Number(bn)) = (&a, &b) {
+            self.stack.push(JsValue::Bool(f(*an, *bn)));
+        } else if let (JsValue::String(sa), JsValue::String(sb)) = (&a, &b) {
             let cmp = if *sa < *sb {
                 -1.0
             } else if *sa > *sb {
@@ -4164,7 +4203,7 @@ impl Vm {
     /// Uses the main `run()` loop by pushing a frame and using `run_target_depth`.
     pub fn run_generator_step(
         &mut self,
-        chunk: Chunk,
+        chunk: Rc<Chunk>,
         start_ip: usize,
         locals: Vec<LocalSlot>,
         upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
@@ -4233,7 +4272,7 @@ impl Vm {
 
     pub fn run_generator_prologue(
         &mut self,
-        chunk: Chunk,
+        chunk: Rc<Chunk>,
         locals: Vec<LocalSlot>,
         upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
         this_val: JsValue,

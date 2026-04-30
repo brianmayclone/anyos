@@ -91,6 +91,13 @@ pub(crate) enum FetchRequest {
         url: Url,
         generation: u32,
     },
+    /// ES module dependency fetch discovered from a script import.
+    ModuleScript {
+        tab_index: usize,
+        specifier: String,
+        url: Url,
+        generation: u32,
+    },
 }
 
 struct QueuedFetchRequest {
@@ -167,6 +174,16 @@ pub(crate) enum FetchResult {
         timing: Option<http::RequestTiming>,
         generation: u32,
     },
+    /// ES module dependency fetch completed.
+    ModuleScriptDone {
+        tab_index: usize,
+        specifier: String,
+        url: Url,
+        body: Vec<u8>,
+        headers: String,
+        timing: Option<http::RequestTiming>,
+        generation: u32,
+    },
 }
 
 impl FetchResult {
@@ -177,7 +194,8 @@ impl FetchResult {
             | FetchResult::CssDone { tab_index, .. }
             | FetchResult::ImageDone { tab_index, .. }
             | FetchResult::FontDone { tab_index, .. }
-            | FetchResult::ScriptDone { tab_index, .. } => *tab_index,
+            | FetchResult::ScriptDone { tab_index, .. }
+            | FetchResult::ModuleScriptDone { tab_index, .. } => *tab_index,
         }
     }
 }
@@ -344,7 +362,7 @@ fn request_worker_class(req: &FetchRequest) -> WorkerClass {
         FetchRequest::Navigate { .. }
         | FetchRequest::NavigatePost { .. }
         | FetchRequest::Css { .. } => WorkerClass::Critical,
-        FetchRequest::Script { .. } => WorkerClass::Script,
+        FetchRequest::Script { .. } | FetchRequest::ModuleScript { .. } => WorkerClass::Script,
         FetchRequest::Font { .. } => WorkerClass::Font,
         FetchRequest::Image { priority, .. } => match priority {
             ImagePriority::Viewport => WorkerClass::Visible,
@@ -462,7 +480,7 @@ fn record_started(req: &FetchRequest) -> u32 {
         FetchRequest::Font { url, .. } => {
             crate::devtools::record_request_started("GET", "font", url)
         }
-        FetchRequest::Script { url, .. } => {
+        FetchRequest::Script { url, .. } | FetchRequest::ModuleScript { url, .. } => {
             crate::devtools::record_request_started("GET", "js", url)
         }
     }
@@ -575,7 +593,8 @@ pub(crate) fn new_generation() -> u32 {
                     FetchRequest::Css { generation, .. }
                     | FetchRequest::Image { generation, .. }
                     | FetchRequest::Font { generation, .. }
-                    | FetchRequest::Script { generation, .. } => *generation == gen,
+                    | FetchRequest::Script { generation, .. }
+                    | FetchRequest::ModuleScript { generation, .. } => *generation == gen,
                 });
             }
         }
@@ -591,7 +610,8 @@ pub(crate) fn new_generation() -> u32 {
                     FetchResult::CssDone { generation, .. }
                     | FetchResult::ImageDone { generation, .. }
                     | FetchResult::FontDone { generation, .. }
-                    | FetchResult::ScriptDone { generation, .. } => *generation == gen,
+                    | FetchResult::ScriptDone { generation, .. }
+                    | FetchResult::ModuleScriptDone { generation, .. } => *generation == gen,
                 });
             }
         }
@@ -1082,7 +1102,8 @@ fn request_host(req: &FetchRequest) -> &str {
         | FetchRequest::Css { url, .. }
         | FetchRequest::Image { url, .. }
         | FetchRequest::Font { url, .. }
-        | FetchRequest::Script { url, .. } => &url.host,
+        | FetchRequest::Script { url, .. }
+        | FetchRequest::ModuleScript { url, .. } => &url.host,
     }
 }
 
@@ -1167,7 +1188,7 @@ fn request_priority(req: &FetchRequest) -> u8 {
     match req {
         FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => 5,
         FetchRequest::Css { .. } => 4,
-        FetchRequest::Script { .. } => 3,
+        FetchRequest::Script { .. } | FetchRequest::ModuleScript { .. } => 3,
         FetchRequest::Font { .. } => 2,
         FetchRequest::Image { priority, .. } => match priority {
             ImagePriority::Viewport => 1,
@@ -1183,7 +1204,8 @@ fn request_tab_index_mut(req: &mut FetchRequest) -> &mut usize {
         | FetchRequest::Css { tab_index, .. }
         | FetchRequest::Image { tab_index, .. }
         | FetchRequest::Font { tab_index, .. }
-        | FetchRequest::Script { tab_index, .. } => tab_index,
+        | FetchRequest::Script { tab_index, .. }
+        | FetchRequest::ModuleScript { tab_index, .. } => tab_index,
     }
 }
 
@@ -1247,6 +1269,10 @@ fn stamp_result_enqueued(result: &mut FetchResult) {
             ..
         }
         | FetchResult::ScriptDone {
+            timing: Some(timing),
+            ..
+        }
+        | FetchResult::ModuleScriptDone {
             timing: Some(timing),
             ..
         } => {
@@ -1718,6 +1744,84 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     enqueue_result(FetchResult::ScriptDone {
                         tab_index,
                         slot,
+                        url,
+                        body: Vec::new(),
+                        headers: String::new(),
+                        timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                        generation,
+                    });
+                }
+            }
+        }
+
+        FetchRequest::ModuleScript {
+            tab_index,
+            specifier,
+            url,
+            generation,
+        } => {
+            if generation != current_gen {
+                return;
+            }
+
+            let key = cache_key(&url);
+
+            if let Some((body, headers)) = cache_get(&key) {
+                surf_net_log!("module script cache hit: {}", specifier);
+                enqueue_result(FetchResult::ModuleScriptDone {
+                    tab_index,
+                    specifier,
+                    url,
+                    body: body.to_vec(),
+                    headers: String::from(headers),
+                    timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
+                    generation,
+                });
+                return;
+            }
+
+            surf_net_log!("fetching module script: {}", specifier);
+            match http::fetch(&url, &mut CookieJar::new(), pool) {
+                Ok(mut resp) if resp.status >= 200 && resp.status < 400 => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
+                    cache_put(key, resp.body.clone(), resp.headers.clone());
+                    enqueue_result(FetchResult::ModuleScriptDone {
+                        tab_index,
+                        specifier,
+                        url,
+                        body: resp.body,
+                        headers: resp.headers,
+                        timing: Some(resp.timing),
+                        generation,
+                    });
+                }
+                Ok(mut resp) => {
+                    stamp_worker_timing(&mut resp.timing, request_id, submitted_ms, dequeued_ms);
+                    surf_net_log!(
+                        "module script HTTP failure: status={} bytes={} specifier={}",
+                        resp.status,
+                        resp.body.len(),
+                        specifier
+                    );
+                    enqueue_result(FetchResult::ModuleScriptDone {
+                        tab_index,
+                        specifier,
+                        url,
+                        body: Vec::new(),
+                        headers: resp.headers,
+                        timing: Some(resp.timing),
+                        generation,
+                    });
+                }
+                Err(e) => {
+                    surf_net_log!(
+                        "module script fetch failed: {} ({})",
+                        specifier,
+                        fetch_error_msg(e)
+                    );
+                    enqueue_result(FetchResult::ModuleScriptDone {
+                        tab_index,
+                        specifier,
                         url,
                         body: Vec::new(),
                         headers: String::new(),

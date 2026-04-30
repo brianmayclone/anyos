@@ -128,9 +128,9 @@ const SYNTHETIC_AHEM_FONT_ID: u32 = u32::MAX - 1;
 const SYNTHETIC_CONDENSED_FONT_ID: u32 = u32::MAX - 2;
 const SYNTHETIC_NARROW_FONT_ID: u32 = u32::MAX - 3;
 const SYNTHETIC_EXTRA_CONDENSED_FONT_ID: u32 = u32::MAX - 4;
-const JS_TIMER_CALLBACK_BUDGET: usize = 4;
-const JS_QUIET_TIMER_TICKS_BEFORE_THROTTLE: u32 = 30;
-const JS_QUIET_TIMER_THROTTLE_MS: u64 = 250;
+const JS_TIMER_CALLBACK_BUDGET: usize = 2;
+const JS_QUIET_TIMER_TICKS_BEFORE_THROTTLE: u32 = 10;
+const JS_QUIET_TIMER_THROTTLE_MS: u64 = 500;
 
 fn font_family_contains_ahem(family: &str) -> bool {
     family
@@ -601,6 +601,7 @@ impl WebView {
     /// Add a decoded image to the cache. Will be displayed on next render.
     pub fn add_image(&mut self, src: &str, pixels: Vec<u32>, w: u32, h: u32) {
         self.images.add(String::from(src), pixels, w, h);
+        self.mark_loaded_lazy_images(src);
     }
 
     pub fn has_decoded_image(&self, src: &str) -> bool {
@@ -634,6 +635,13 @@ impl WebView {
             if node_src != src {
                 continue;
             }
+            if dom
+                .attr(node_id, "class")
+                .map(|class| class.split_ascii_whitespace().any(|c| c == "Lazy"))
+                .unwrap_or(false)
+            {
+                return true;
+            }
             let has_width = dom.attr(node_id, "width").is_some();
             let has_height = dom.attr(node_id, "height").is_some();
             if !(has_width && has_height) {
@@ -641,6 +649,45 @@ impl WebView {
             }
         }
         false
+    }
+
+    fn mark_loaded_lazy_images(&mut self, src: &str) {
+        let Some(dom) = self.dom_val.as_mut() else {
+            return;
+        };
+        let mut matches = Vec::new();
+        for (node_id, node) in dom.nodes.iter().enumerate() {
+            let is_image_like = matches!(
+                &node.node_type,
+                dom::NodeType::Element {
+                    tag: dom::Tag::Img,
+                    ..
+                }
+            ) || dom.has_tag_name(node_id, "a-img");
+            if !is_image_like {
+                continue;
+            }
+            if dom.image_url(node_id).as_deref() == Some(src) {
+                matches.push(node_id);
+            }
+        }
+        for node_id in matches {
+            let class_attr = dom.attr(node_id, "class").unwrap_or("");
+            if !class_attr
+                .split_ascii_whitespace()
+                .any(|class| class == "Lazy")
+            {
+                continue;
+            }
+            let mut classes: Vec<&str> = class_attr
+                .split_ascii_whitespace()
+                .filter(|class| *class != "loading" && *class != "error")
+                .collect();
+            if !classes.iter().any(|class| *class == "loaded") {
+                classes.push("loaded");
+            }
+            dom.set_attr(node_id, "class", &classes.join(" "));
+        }
     }
 
     /// Set HTML content and render it.
@@ -866,7 +913,9 @@ impl WebView {
             None => return false,
         };
 
-        let fired = self.js_runtime.tick(&dom, delta_ms);
+        let fired = self
+            .js_runtime
+            .tick_with_budget(&dom, delta_ms, JS_TIMER_CALLBACK_BUDGET);
 
         // Apply mutations if timers fired.
         let mut dom = dom;
@@ -968,6 +1017,10 @@ impl WebView {
         self.last_render_scroll_y = scroll_y;
         self.pending_tiles = pending;
         pending
+    }
+
+    pub fn has_pending_tiles(&self) -> bool {
+        self.pending_tiles
     }
 
     pub fn deferred_layout_upgrade_needed(&self, scroll_y: i32) -> bool {

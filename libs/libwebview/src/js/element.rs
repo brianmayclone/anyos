@@ -733,6 +733,21 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
             }),
         );
         obj.set(
+            String::from("requestSubmit"),
+            native_fn("requestSubmit", |vm, _args| {
+                let this = vm.current_this.clone();
+                let nid = extract_node_id(&this);
+                if nid >= 0 {
+                    if let Some(bridge) = get_bridge(vm) {
+                        bridge.mutations.push(crate::js::DomMutation::FormSubmit {
+                            form_node_id: nid as usize,
+                        });
+                    }
+                }
+                JsValue::Undefined
+            }),
+        );
+        obj.set(
             String::from("reset"),
             native_fn("reset", |vm, _args| {
                 let this = vm.current_this.clone();
@@ -1468,8 +1483,22 @@ fn el_get_elements_by_class_name(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn el_append_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let parent_id = this_node_id(vm);
     let child = args.first().cloned().unwrap_or(JsValue::Null);
-    let child_id = extract_node_id(&child);
+    if let Some(children) = fragment_children(&child) {
+        if let Some(bridge) = get_bridge(vm) {
+            for fragment_child in &children {
+                bridge.mutations.push(DomMutation::AppendChild {
+                    parent_id,
+                    child_id: extract_node_id(fragment_child),
+                });
+            }
+        }
+        for fragment_child in children {
+            js_append_child(&vm.current_this, fragment_child);
+        }
+        return child;
+    }
 
+    let child_id = extract_node_id(&child);
     if let Some(bridge) = get_bridge(vm) {
         bridge.mutations.push(DomMutation::AppendChild {
             parent_id,
@@ -1544,9 +1573,24 @@ fn el_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let parent_id = this_node_id(vm);
     let new_node = args.first().cloned().unwrap_or(JsValue::Null);
     let ref_node = args.get(1).cloned().unwrap_or(JsValue::Null);
-    let new_id = extract_node_id(&new_node);
     let ref_id = extract_node_id(&ref_node);
+    if let Some(children) = fragment_children(&new_node) {
+        if let Some(bridge) = get_bridge(vm) {
+            for fragment_child in &children {
+                bridge.mutations.push(DomMutation::InsertBefore {
+                    parent_id,
+                    new_child_id: extract_node_id(fragment_child),
+                    ref_child_id: ref_id,
+                });
+            }
+        }
+        for fragment_child in children {
+            js_insert_before(&vm.current_this, fragment_child, &ref_node);
+        }
+        return new_node;
+    }
 
+    let new_id = extract_node_id(&new_node);
     if let Some(bridge) = get_bridge(vm) {
         bridge.mutations.push(DomMutation::InsertBefore {
             parent_id,
@@ -1782,6 +1826,42 @@ fn el_prepend(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let parent_id = this_node_id(vm);
     let parent_js = vm.current_this.clone();
     for arg in args {
+        if let Some(children) = fragment_children(arg) {
+            for child in &children {
+                let child_id = extract_node_id(child);
+                if let Some(bridge) = get_bridge(vm) {
+                    let first_child_id = if parent_id >= 0 {
+                        bridge
+                            .dom()
+                            .nodes
+                            .get(parent_id as usize)
+                            .and_then(|n| n.children.first().copied())
+                            .map(|id| id as i64)
+                    } else {
+                        bridge
+                            .get_virtual(parent_id)
+                            .and_then(|vn| vn.child_ids.first().copied())
+                    };
+                    if let Some(ref_id) = first_child_id {
+                        bridge.mutations.push(DomMutation::InsertBefore {
+                            parent_id,
+                            new_child_id: child_id,
+                            ref_child_id: ref_id,
+                        });
+                    } else {
+                        bridge.mutations.push(DomMutation::AppendChild {
+                            parent_id,
+                            child_id,
+                        });
+                    }
+                }
+            }
+            for child in children.into_iter().rev() {
+                js_prepend_child(&parent_js, child);
+            }
+            continue;
+        }
+
         let child_id = extract_node_id(arg);
         if let Some(bridge) = get_bridge(vm) {
             // InsertBefore the first child — we use the first child as ref.
@@ -1820,6 +1900,24 @@ fn el_append(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let parent_id = this_node_id(vm);
     let parent_js = vm.current_this.clone();
     for arg in args {
+        if let Some(children) = fragment_children(arg) {
+            for child in children {
+                if let Some(bridge) = get_bridge(vm) {
+                    bridge.mutations.push(DomMutation::AppendChild {
+                        parent_id,
+                        child_id: extract_node_id(&child),
+                    });
+                    if parent_id < 0 {
+                        if let Some(vn) = bridge.get_virtual_mut(parent_id) {
+                            vn.child_ids.push(extract_node_id(&child));
+                        }
+                    }
+                }
+                js_append_child(&parent_js, child);
+            }
+            continue;
+        }
+
         let child_id = extract_node_id(arg);
         if let Some(bridge) = get_bridge(vm) {
             bridge.mutations.push(DomMutation::AppendChild {
@@ -1862,14 +1960,33 @@ fn el_replace_children(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         // Append new children.
         for arg in args {
-            let child_id = extract_node_id(arg);
-            bridge.mutations.push(DomMutation::AppendChild {
-                parent_id,
-                child_id,
-            });
+            if let Some(children) = fragment_children(arg) {
+                for child in &children {
+                    bridge.mutations.push(DomMutation::AppendChild {
+                        parent_id,
+                        child_id: extract_node_id(child),
+                    });
+                }
+            } else {
+                let child_id = extract_node_id(arg);
+                bridge.mutations.push(DomMutation::AppendChild {
+                    parent_id,
+                    child_id,
+                });
+            }
         }
     }
-    js_replace_children(&vm.current_this, args);
+    let expanded: Vec<JsValue> = args
+        .iter()
+        .flat_map(|arg| {
+            fragment_children(arg).unwrap_or_else(|| {
+                let mut single = Vec::new();
+                single.push(arg.clone());
+                single
+            })
+        })
+        .collect();
+    js_replace_children(&vm.current_this, &expanded);
     JsValue::Undefined
 }
 
@@ -2998,6 +3115,16 @@ fn get_first_last(children: &JsValue) -> (JsValue, JsValue) {
         }
     }
     (JsValue::Null, JsValue::Null)
+}
+
+fn fragment_children(value: &JsValue) -> Option<Vec<JsValue>> {
+    if value.get_property("nodeType").to_number() as i32 != 11 {
+        return None;
+    }
+    match value.get_property("children") {
+        JsValue::Array(arr) => Some(arr.borrow().values_vec()),
+        _ => Some(Vec::new()),
+    }
 }
 
 pub(super) fn refresh_element_children_metadata(parent: &JsValue) {

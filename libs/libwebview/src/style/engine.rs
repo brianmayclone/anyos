@@ -1554,6 +1554,19 @@ fn has_skip_link_class(class_str: &str) -> bool {
     false
 }
 
+fn has_visually_hidden_class(class_str: &str) -> bool {
+    for tok in class_str.split_ascii_whitespace() {
+        if eq_ignore_ascii_case(tok, "sr-only")
+            || eq_ignore_ascii_case(tok, "visually-hidden")
+            || eq_ignore_ascii_case(tok, "screen-reader-text")
+            || eq_ignore_ascii_case(tok, "u-hidden-visually")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn is_unfocused_skip_link(
     tag: Tag,
     attrs: &[crate::dom::Attr],
@@ -2051,6 +2064,8 @@ fn resolve_styles_prepared_impl(
 
             if let NodeType::Element { attrs, .. } = &node.node_type {
                 apply_tailwind_display_fallback(&mut style, attrs, viewport_width);
+                apply_tailwind_spacing_fallback(&mut style, attrs);
+                apply_flexbox_grid_column_fallback(&mut style, attrs, viewport_width);
             }
 
             // Phase 3: Apply inline styles (highest specificity).
@@ -2108,6 +2123,18 @@ fn resolve_styles_prepared_impl(
             }
 
             if is_unfocused_skip_link(*tag, attrs, id, selector_state) {
+                apply_visually_hidden_style(&mut style);
+            } else if selector_state.focused_node != Some(id)
+                && attrs.iter().any(|a| {
+                    eq_ignore_ascii_case(&a.name, "class")
+                        && has_visually_hidden_class(&a.value)
+                })
+            {
+                apply_visually_hidden_style(&mut style);
+            }
+        }
+
+        fn apply_visually_hidden_style(style: &mut ComputedStyle) {
                 style.position = Position::Absolute;
                 style.left_offset = Some(-10000);
                 style.top = Some(0);
@@ -2122,7 +2149,6 @@ fn resolve_styles_prepared_impl(
                 style.overflow_x = OverflowVal::Hidden;
                 style.overflow_y = OverflowVal::Hidden;
                 style.clip_rect = Some([0, 0, 0, 0]);
-            }
         }
 
         // (Phase 3b removed: custom properties are resolved on-demand via
@@ -2505,6 +2531,243 @@ fn tailwind_display_utility(class_name: &str) -> Option<Display> {
     }
 }
 
+fn apply_tailwind_spacing_fallback(style: &mut ComputedStyle, attrs: &[crate::dom::Attr]) {
+    let Some(class_attr) = attrs.iter().find(|a| eq_ignore_ascii_case(&a.name, "class")) else {
+        return;
+    };
+
+    for class_name in class_attr.value.split_ascii_whitespace() {
+        let utility = class_name.rsplit(':').next().unwrap_or(class_name);
+
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("gap-")) {
+            style.row_gap = px;
+            style.column_gap = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("gap-x-")) {
+            style.column_gap = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("gap-y-")) {
+            style.row_gap = px;
+            continue;
+        }
+
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("p-")) {
+            style.padding_top = px;
+            style.padding_right = px;
+            style.padding_bottom = px;
+            style.padding_left = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("px-")) {
+            style.padding_left = px;
+            style.padding_right = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("py-")) {
+            style.padding_top = px;
+            style.padding_bottom = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("pt-")) {
+            style.padding_top = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("pr-")) {
+            style.padding_right = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("pb-")) {
+            style.padding_bottom = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("pl-")) {
+            style.padding_left = px;
+            continue;
+        }
+
+        if utility == "mx-auto" {
+            style.margin_left_auto = true;
+            style.margin_right_auto = true;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("m-")) {
+            style.margin_top = px;
+            style.margin_right = px;
+            style.margin_bottom = px;
+            style.margin_left = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("mx-")) {
+            style.margin_left = px;
+            style.margin_right = px;
+            style.margin_left_auto = false;
+            style.margin_right_auto = false;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("my-")) {
+            style.margin_top = px;
+            style.margin_bottom = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("mt-")) {
+            style.margin_top = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("mr-")) {
+            style.margin_right = px;
+            style.margin_right_auto = false;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("mb-")) {
+            style.margin_bottom = px;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("ml-")) {
+            style.margin_left = px;
+            style.margin_left_auto = false;
+            continue;
+        }
+
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("w-")) {
+            style.width = Some(px);
+            style.width_pct = None;
+            style.width_calc = None;
+            continue;
+        }
+        if let Some(px) = tailwind_spacing_value(utility.strip_prefix("h-")) {
+            style.height = Some(px);
+            style.height_pct = None;
+            style.height_calc = None;
+            continue;
+        }
+        if let Some(px) = tailwind_max_width_value(utility) {
+            style.max_width = Some(px);
+            style.max_width_calc = None;
+        }
+    }
+}
+
+fn tailwind_spacing_value(rest: Option<&str>) -> Option<i32> {
+    let rest = rest?;
+    match rest {
+        "px" => return Some(1),
+        "0" => return Some(0),
+        "0.5" => return Some(2),
+        "1" => return Some(4),
+        "1.5" => return Some(6),
+        "2" => return Some(8),
+        "2.5" => return Some(10),
+        "3" => return Some(12),
+        "3.5" => return Some(14),
+        "4" => return Some(16),
+        "5" => return Some(20),
+        "6" => return Some(24),
+        "7" => return Some(28),
+        "8" => return Some(32),
+        "9" => return Some(36),
+        "10" => return Some(40),
+        "11" => return Some(44),
+        "12" => return Some(48),
+        "14" => return Some(56),
+        "16" => return Some(64),
+        "20" => return Some(80),
+        "24" => return Some(96),
+        "28" => return Some(112),
+        "32" => return Some(128),
+        _ => {}
+    }
+    None
+}
+
+fn tailwind_max_width_value(class_name: &str) -> Option<i32> {
+    match class_name {
+        "max-w-xs" => Some(320),
+        "max-w-sm" => Some(384),
+        "max-w-md" => Some(448),
+        "max-w-lg" => Some(512),
+        "max-w-xl" => Some(576),
+        "max-w-2xl" => Some(672),
+        "max-w-3xl" => Some(768),
+        "max-w-4xl" => Some(896),
+        "max-w-5xl" => Some(1024),
+        "max-w-6xl" => Some(1152),
+        "max-w-7xl" => Some(1280),
+        _ => None,
+    }
+}
+
+fn apply_flexbox_grid_column_fallback(
+    style: &mut ComputedStyle,
+    attrs: &[crate::dom::Attr],
+    viewport_width: i32,
+) {
+    let Some(class_attr) = attrs.iter().find(|a| eq_ignore_ascii_case(&a.name, "class")) else {
+        return;
+    };
+
+    let mut base: Option<i32> = None;
+    let mut sm: Option<i32> = None;
+    let mut md: Option<i32> = None;
+    let mut lg: Option<i32> = None;
+    let mut xl: Option<i32> = None;
+
+    for class_name in class_attr.value.split_ascii_whitespace() {
+        if let Some(cols) = parse_fb_col_class(class_name, "fb-col-") {
+            base = Some(cols);
+            continue;
+        }
+        if let Some(cols) = parse_fb_col_class(class_name, "fb-col-sm-") {
+            sm = Some(cols);
+            continue;
+        }
+        if let Some(cols) = parse_fb_col_class(class_name, "fb-col-md-") {
+            md = Some(cols);
+            continue;
+        }
+        if let Some(cols) = parse_fb_col_class(class_name, "fb-col-lg-") {
+            lg = Some(cols);
+            continue;
+        }
+        if let Some(cols) = parse_fb_col_class(class_name, "fb-col-xl-") {
+            xl = Some(cols);
+        }
+    }
+
+    let mut cols = base;
+    if viewport_width >= 660 {
+        cols = sm.or(md).or(cols);
+    }
+    if viewport_width >= 1000 {
+        cols = lg.or(cols);
+    }
+    if viewport_width >= 1200 {
+        cols = xl.or(cols);
+    }
+
+    let Some(cols) = cols else {
+        return;
+    };
+    let pct = ((cols.clamp(1, 12) as i64 * 10000 + 6) / 12) as i32;
+    style.width = None;
+    style.width_calc = None;
+    style.width_pct = Some(pct);
+}
+
+fn parse_fb_col_class(class_name: &str, prefix: &str) -> Option<i32> {
+    let rest = class_name.strip_prefix(prefix)?;
+    if rest.is_empty() || rest.as_bytes().iter().any(|b| !b.is_ascii_digit()) {
+        return None;
+    }
+    let cols = rest.parse::<i32>().ok()?;
+    if (1..=12).contains(&cols) {
+        Some(cols)
+    } else {
+        None
+    }
+}
+
 /// Store a custom property in a node's custom property list.
 fn store_custom_prop(cp: &mut Vec<(String, String)>, name: &str, val: &str) {
     if let Some(existing) = cp.iter_mut().find(|(k, _)| k == name) {
@@ -2599,6 +2862,38 @@ fn fallback_custom_property(name: &str) -> Option<&'static str> {
         "--spacing-lg" => Some("1.5rem"),
         "--spacing-xl" => Some("2rem"),
         "--spacing-xxl" => Some("4rem"),
+        "--spacing" => Some(".25rem"),
+        "--container-xs" => Some("20rem"),
+        "--container-sm" => Some("24rem"),
+        "--container-md" => Some("28rem"),
+        "--container-lg" => Some("32rem"),
+        "--container-xl" => Some("36rem"),
+        "--container-2xl" => Some("42rem"),
+        "--container-3xl" => Some("48rem"),
+        "--container-4xl" => Some("56rem"),
+        "--container-5xl" => Some("64rem"),
+        "--container-6xl" => Some("72rem"),
+        "--container-7xl" => Some("80rem"),
+        "--scaling-factor-xxxs" => Some("27/40"),
+        "--scaling-factor-xxs" => Some("3/4"),
+        "--scaling-factor-xs" => Some("27/32"),
+        "--scaling-factor-sm" => Some("1"),
+        "--scaling-factor-base" => Some("9/8"),
+        "--scaling-factor-md" => Some("27/20"),
+        "--scaling-factor-lg" => Some("27/16"),
+        "--scaling-factor-xl" => Some("2/1"),
+        "--scaling-factor-xxl" => Some("9/4"),
+        "--scaling-factor-xxxl" => Some("27/8"),
+        "--baseline-down-04" => Some("calc(1rem * 27/40)"),
+        "--baseline-down-03" => Some("calc(1rem * 3/4)"),
+        "--baseline-down-02" => Some("calc(1rem * 27/32)"),
+        "--baseline-down-01" => Some("1rem"),
+        "--baseline" => Some("calc(1rem * 9/8)"),
+        "--baseline-up-01" => Some("calc(1rem * 27/20)"),
+        "--baseline-up-02" => Some("calc(1rem * 27/16)"),
+        "--baseline-up-03" => Some("calc(1rem * 2)"),
+        "--baseline-up-04" => Some("calc(1rem * 9/4)"),
+        "--baseline-up-05" => Some("calc(1rem * 27/8)"),
         "--grid-spacing" | "--container-spacing" => Some("20px"),
         "--column-gap" => Some("1.25rem"),
         "--article-content-width" => Some("800px"),
@@ -2651,7 +2946,12 @@ fn resolve_css_var_value(
     match value {
         CssValue::Var(name, fallback) => {
             if let Some(val) = lookup_custom_property(name, node_cp, dom, node_id, ancestors_cp) {
-                let parsed = crate::css::parse_value(property, val);
+                let resolved_val = if val.contains("var(") {
+                    resolve_nested_vars(val, dom, node_id, node_cp, ancestors_cp)
+                } else {
+                    String::from(val)
+                };
+                let parsed = crate::css::parse_value(property, &resolved_val);
                 if matches!(parsed, CssValue::Var(_, _)) {
                     resolve_css_var_value(
                         &parsed,
@@ -2735,7 +3035,12 @@ fn resolve_nested_vars(
             // Look up the variable
             if let Some(val) = lookup_custom_property(var_name, node_cp, dom, node_id, ancestors_cp)
             {
-                result.push_str(val);
+                let resolved_val = if val.contains("var(") {
+                    resolve_nested_vars(val, dom, node_id, node_cp, ancestors_cp)
+                } else {
+                    String::from(val)
+                };
+                result.push_str(&resolved_val);
             } else if let Some(fb) = fallback {
                 // Recursively resolve vars in fallback too
                 let resolved_fb = resolve_nested_vars(fb, dom, node_id, node_cp, ancestors_cp);
@@ -7355,6 +7660,41 @@ mod layout_regression_tests {
         assert_eq!(styles[app].color, 0xFFFFFFFF);
         assert_eq!(styles[app].background_color, 0xFF020617);
         assert_eq!(styles[app].min_height, 900);
+    }
+
+    #[test]
+    fn custom_property_chain_resolves_nested_var_inside_calc() {
+        let dom = crate::html::parse(r#"<svg id="icon" class="icon"></svg>"#);
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            :root {
+                --font-size-base: 1rem;
+                --scaling-factor-xxxs: 27/40;
+                --baseline-down-04: calc(var(--font-size-base) * var(--scaling-factor-xxxs));
+                --text-xxs: var(--baseline-down-04);
+            }
+            .icon {
+                width: var(--text-xxs);
+                height: var(--text-xxs);
+            }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1280, 900, &mut inline_style_cache);
+        let icon = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "icon")
+                )
+            })
+            .expect("icon node");
+
+        assert_eq!(styles[icon].width, Some(10));
+        assert_eq!(styles[icon].height, Some(10));
     }
 
     #[test]

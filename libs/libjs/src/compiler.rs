@@ -2,6 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec;
@@ -2848,7 +2849,7 @@ impl Compiler {
                 index: uv.index,
             })
             .collect();
-        let ci = self.add_const(Constant::Function(func_chunk));
+        let ci = self.add_const(Constant::Function(Rc::new(func_chunk)));
         self.emit(Op::Closure(ci));
 
         // Restore binding_is_global to the value before entering this function.
@@ -2860,6 +2861,7 @@ impl Compiler {
         let consts = &mut self.scope_mut().chunk.constants;
         for c in consts.iter_mut().rev() {
             if let Constant::Function(ref mut chunk) = c {
+                let chunk = Rc::make_mut(chunk);
                 chunk.is_class_constructor = true;
                 chunk.strict = true; // Class bodies are always strict
                 break;
@@ -3730,6 +3732,17 @@ impl Compiler {
                     self.emit(Op::GetProp);
                 }
             }
+            Expr::OptionalIndex { object, index } => {
+                self.compile_expr(object);
+                let skip = self.emit(Op::JumpIfNullish(0));
+                self.compile_expr(index);
+                self.emit(Op::GetProp);
+                let end = self.emit(Op::Jump(0));
+                self.patch_jump(skip);
+                self.emit(Op::Pop);
+                self.emit(Op::LoadUndefined);
+                self.patch_jump(end);
+            }
             Expr::Call { callee, arguments } => {
                 // Check for super() and super.method() before other patterns.
                 match callee.as_ref() {
@@ -3771,6 +3784,28 @@ impl Compiler {
                         let skip = self.emit(Op::JumpIfNullish(0));
                         let ci = self.add_const(Constant::String(property.clone()));
                         self.emit(Op::GetPropNamed(ci));
+                        if Self::args_have_spread(arguments) {
+                            self.compile_args_as_array(arguments);
+                            self.emit(Op::CallMethodSpread);
+                        } else {
+                            for arg in arguments {
+                                self.compile_expr(arg);
+                            }
+                            self.emit(Op::CallMethod(arguments.len() as u8));
+                        }
+                        let end = self.emit(Op::Jump(0));
+                        self.patch_jump(skip);
+                        self.emit(Op::Pop);
+                        self.emit(Op::Pop);
+                        self.emit(Op::LoadUndefined);
+                        self.patch_jump(end);
+                    }
+                    Expr::OptionalIndex { object, index } => {
+                        self.compile_expr(object);
+                        self.emit(Op::Dup);
+                        let skip = self.emit(Op::JumpIfNullish(0));
+                        self.compile_expr(index);
+                        self.emit(Op::GetProp);
                         if Self::args_have_spread(arguments) {
                             self.compile_args_as_array(arguments);
                             self.emit(Op::CallMethodSpread);

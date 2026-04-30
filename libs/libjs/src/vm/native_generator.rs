@@ -33,7 +33,7 @@ pub enum GeneratorState {
 /// Suspended generator frame state.
 #[derive(Clone)]
 pub struct GeneratorFrame {
-    pub chunk: Chunk,
+    pub chunk: Rc<Chunk>,
     pub ip: usize,
     pub locals: Vec<LocalSlot>,
     pub upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
@@ -90,7 +90,7 @@ pub fn free_frame(id: u32) {
 /// Create a generator object from a generator function call.
 pub fn create_generator_object(
     vm: &Vm,
-    chunk: Chunk,
+    chunk: Rc<Chunk>,
     start_ip: usize,
     locals: Vec<LocalSlot>,
     upvalue_cells: Vec<Rc<RefCell<JsValue>>>,

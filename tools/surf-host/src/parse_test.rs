@@ -7,7 +7,11 @@ fn main() {
     });
     let source = std::fs::read_to_string(&path).expect("read failed");
     let mut engine = libjs::JsEngine::new();
-    engine.set_step_limit(5_000_000);
+    let step_limit = std::env::var("LIBJS_STEP_LIMIT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(5_000_000);
+    engine.set_step_limit(step_limit);
     engine.eval(&source);
     if let Some(exc) = engine.last_exception() {
         let msg = exc.get_property("message");

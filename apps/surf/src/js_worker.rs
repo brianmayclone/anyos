@@ -6,6 +6,7 @@
 //! Large scripts must not run on the UI thread. The UI detaches the DOM/JS
 //! runtime bundle from a tab, submits it here, and later reattaches the result.
 
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -33,8 +34,9 @@ pub(crate) struct JsWorkerResult {
 static REQUEST_LOCK: AtomicBool = AtomicBool::new(false);
 static RESULT_LOCK: AtomicBool = AtomicBool::new(false);
 static ACTIVE_WORKERS: AtomicU32 = AtomicU32::new(0);
+static BUSY_WORKERS: AtomicU32 = AtomicU32::new(0);
 
-static mut REQUEST_QUEUE: Option<Vec<JsWorkerRequest>> = None;
+static mut REQUEST_QUEUE: Option<VecDeque<JsWorkerRequest>> = None;
 static mut RESULT_QUEUE: Option<Vec<JsWorkerResult>> = None;
 
 fn acquire(lock: &AtomicBool) {
@@ -54,7 +56,7 @@ pub(crate) fn init() {
     acquire(&REQUEST_LOCK);
     acquire(&RESULT_LOCK);
     unsafe {
-        REQUEST_QUEUE = Some(Vec::new());
+        REQUEST_QUEUE = Some(VecDeque::new());
         RESULT_QUEUE = Some(Vec::new());
     }
     release(&RESULT_LOCK);
@@ -65,7 +67,7 @@ pub(crate) fn submit(req: JsWorkerRequest) {
     acquire(&REQUEST_LOCK);
     unsafe {
         if let Some(queue) = REQUEST_QUEUE.as_mut() {
-            queue.push(req);
+            queue.push_back(req);
         }
     }
     release(&REQUEST_LOCK);
@@ -85,7 +87,7 @@ pub(crate) fn drain_results() -> Vec<JsWorkerResult> {
 }
 
 pub(crate) fn has_pending_activity() -> bool {
-    if ACTIVE_WORKERS.load(Ordering::Relaxed) > 0 {
+    if BUSY_WORKERS.load(Ordering::Relaxed) > 0 {
         return true;
     }
     acquire(&REQUEST_LOCK);
@@ -132,7 +134,7 @@ fn take_request() -> Option<JsWorkerRequest> {
             if queue.is_empty() {
                 None
             } else {
-                Some(queue.remove(0))
+                queue.pop_front()
             }
         })
     };
@@ -158,10 +160,22 @@ fn push_result(result: JsWorkerResult) {
 }
 
 fn worker_entry() {
-    while let Some(mut req) = take_request() {
+    let mut idle_loops = 0u32;
+    loop {
+        let Some(mut req) = take_request() else {
+            idle_loops += 1;
+            if idle_loops >= 100 {
+                break;
+            }
+            anyos_std::process::sleep(5);
+            continue;
+        };
+        idle_loops = 0;
+        BUSY_WORKERS.fetch_add(1, Ordering::SeqCst);
         let start_ms = anyos_std::sys::uptime_ms();
         req.state.execute_script_source(req.script);
         let exec_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
+        BUSY_WORKERS.fetch_sub(1, Ordering::SeqCst);
         push_result(JsWorkerResult {
             tab_index: req.tab_index,
             slot: req.slot,

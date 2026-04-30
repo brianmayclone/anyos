@@ -166,13 +166,14 @@ fn log_tab_load_state(tab_index: usize, reason: &str) {
     }
     let tab = &st.tabs[tab_index];
     crate::surf_log!(
-        "[surf] state: tab={} reason={} phase={} loading={} pending_css={} pending_script={} deferred_fonts={} inflight_fonts={} deferred_images={} inflight_images={} ready_for_scripts={}",
+        "[surf] state: tab={} reason={} phase={} loading={} pending_css={} pending_script={} pending_module={} deferred_fonts={} inflight_fonts={} deferred_images={} inflight_images={} ready_for_scripts={}",
         tab_index,
         reason,
         phase_name(tab.load_state.phase),
         tab.is_loading,
         tab.load_state.pending_stylesheet_count,
         tab.load_state.pending_script_count,
+        tab.load_state.pending_module_count,
         tab.deferred_fonts.len(),
         tab.deferred_fonts_inflight,
         tab.deferred_images.len(),
@@ -435,8 +436,12 @@ pub(crate) fn start_anim_timer() {
         }
         let active_tab = st.active_tab;
         let changed = if st.tabs[active_tab].js_worker_busy {
-            let scroll_y = st.tabs[active_tab].webview.scroll_view().get_state() as i32;
-            st.tabs[active_tab].webview.render_viewport_at(scroll_y)
+            if st.tabs[active_tab].webview.has_pending_tiles() && !scroll_interaction_hot() {
+                let scroll_y = st.tabs[active_tab].webview.scroll_view().get_state() as i32;
+                st.tabs[active_tab].webview.render_viewport_at(scroll_y)
+            } else {
+                false
+            }
         } else {
             st.tabs[active_tab].webview.tick(16)
         };
@@ -586,6 +591,17 @@ fn apply_js_host_mutations(tab_index: usize) {
                         .set_cookies(&cookie_hdr);
                 }
             }
+            libwebview::js::DomMutation::FormSubmit { form_node_id } => {
+                if let Some((action, method, enctype)) =
+                    st.tabs[tab_index].webview.form_action_for_node(form_node_id)
+                {
+                    let data = st.tabs[tab_index]
+                        .webview
+                        .collect_form_data_for_node(form_node_id);
+                    crate::callbacks::submit_form_data(Some(&url), action, method, enctype, data);
+                }
+                return;
+            }
             _ => {}
         }
     }
@@ -625,6 +641,7 @@ fn drain_js_navigation_for_tab(tab_index: usize) -> bool {
 }
 
 fn mirror_new_js_console_lines(tab_index: usize) {
+    const MAX_MIRRORED_CONSOLE_LINES_PER_DRAIN: usize = 24;
     let st = state();
     if tab_index >= st.tabs.len() {
         return;
@@ -632,10 +649,18 @@ fn mirror_new_js_console_lines(tab_index: usize) {
     let console_start = st.tabs[tab_index]
         .js_console_logged_len
         .min(st.tabs[tab_index].webview.js_console().len());
-    for line in &st.tabs[tab_index].webview.js_console()[console_start..] {
+    let console = st.tabs[tab_index].webview.js_console();
+    let new_lines = &console[console_start..];
+    for line in new_lines.iter().take(MAX_MIRRORED_CONSOLE_LINES_PER_DRAIN) {
         crate::surf_log!("[surf-js] {}", line);
     }
-    st.tabs[tab_index].js_console_logged_len = st.tabs[tab_index].webview.js_console().len();
+    if new_lines.len() > MAX_MIRRORED_CONSOLE_LINES_PER_DRAIN {
+        crate::surf_log!(
+            "[surf-js] suppressed {} repeated console line(s)",
+            new_lines.len() - MAX_MIRRORED_CONSOLE_LINES_PER_DRAIN
+        );
+    }
+    st.tabs[tab_index].js_console_logged_len = console.len();
 }
 
 fn script_preview(script: &str) -> String {
@@ -857,7 +882,6 @@ fn ensure_js_worker_timer() {
             st.js_worker_timer = 0;
         }
     });
-    ensure_anim_timer();
 }
 
 fn execute_buffered_async_scripts(tab_index: usize) {
@@ -1245,9 +1269,7 @@ fn tab_waiting_on_network(tab: &tab::TabState) -> bool {
 
 fn network_work_pending() -> bool {
     let st = state();
-    st.tabs.iter().any(tab_waiting_on_network)
-        || net_worker::has_pending_activity()
-        || js_worker::has_pending_activity()
+    st.tabs.iter().any(tab_waiting_on_network) || net_worker::has_pending_activity()
 }
 
 fn drain_results_from_mailboxes() -> Vec<net_worker::FetchResult> {
@@ -1288,6 +1310,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
     let mut image_count = 0usize;
     let mut font_count = 0usize;
     let mut script_count = 0usize;
+    let mut module_count = 0usize;
     for result in results {
         match result {
             net_worker::FetchResult::NavDone { .. } | net_worker::FetchResult::NavError { .. } => {
@@ -1297,6 +1320,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
             net_worker::FetchResult::ImageDone { .. } => image_count += 1,
             net_worker::FetchResult::FontDone { .. } => font_count += 1,
             net_worker::FetchResult::ScriptDone { .. } => script_count += 1,
+            net_worker::FetchResult::ModuleScriptDone { .. } => module_count += 1,
         }
         let tab_index = result.tab_index();
         if let Some((_, batch)) = batches.iter_mut().find(|(idx, _)| *idx == tab_index) {
@@ -1306,13 +1330,14 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
         }
     }
     crate::surf_log!(
-        "[surf] drain_results: total={} nav={} css={} image={} font={} script={}",
-        nav_count + css_count + image_count + font_count + script_count,
+        "[surf] drain_results: total={} nav={} css={} image={} font={} script={} module={}",
+        nav_count + css_count + image_count + font_count + script_count + module_count,
         nav_count,
         css_count,
         image_count,
         font_count,
-        script_count
+        script_count,
+        module_count
     );
 
     for (tab_index, batch) in batches {
@@ -1326,7 +1351,10 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                 net_worker::FetchResult::NavDone { .. }
                 | net_worker::FetchResult::NavError { .. } => nav_results.push(result),
                 net_worker::FetchResult::CssDone { .. } => css_results.push(result),
-                net_worker::FetchResult::ScriptDone { .. } => script_results.push(result),
+                net_worker::FetchResult::ScriptDone { .. }
+                | net_worker::FetchResult::ModuleScriptDone { .. } => {
+                    script_results.push(result)
+                }
                 net_worker::FetchResult::FontDone { .. } => font_results.push(result),
                 net_worker::FetchResult::ImageDone { .. } => images.push(result),
             }
@@ -1548,8 +1576,39 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
                 generation
             );
             let start_ms = anyos_std::sys::uptime_ms();
-            handle_script_done(tab_index, slot, body, headers, generation);
+            handle_script_done(tab_index, slot, url, body, headers, generation);
             log_main_phase_elapsed("handle_script_done", start_ms);
+        }
+        net_worker::FetchResult::ModuleScriptDone {
+            tab_index,
+            specifier,
+            url,
+            body,
+            headers,
+            timing,
+            generation,
+        } => {
+            if let Some(timing) = timing {
+                devtools::record_request_done_with_timing(
+                    &url.host,
+                    &url.path,
+                    200,
+                    body.len() as u64,
+                    timing,
+                );
+            } else {
+                devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
+            }
+            crate::surf_log!(
+                "[surf] received ModuleScriptDone: tab={} specifier={} bytes={} gen={}",
+                tab_index,
+                specifier,
+                body.len(),
+                generation
+            );
+            let start_ms = anyos_std::sys::uptime_ms();
+            handle_module_script_done(tab_index, specifier, url, body, headers, generation);
+            log_main_phase_elapsed("handle_module_script_done", start_ms);
         }
     }
 }
@@ -1800,6 +1859,7 @@ fn handle_nav_done(
     st.tabs[tab_idx].pending_scripts.clear();
     st.tabs[tab_idx].pending_script_modes.clear();
     st.tabs[tab_idx].pending_script_labels.clear();
+    st.tabs[tab_idx].requested_module_urls.clear();
     st.tabs[tab_idx].deferred_fonts.clear();
     st.tabs[tab_idx].requested_font_urls.clear();
     st.tabs[tab_idx].deferred_fonts_inflight = 0;
@@ -2288,9 +2348,113 @@ fn handle_image_done(
 ///
 /// Places the fetched text into the tab's `pending_scripts` slot.
 /// When all slots are filled, executes all scripts in document order.
+fn module_url_key(url: &http::Url) -> String {
+    ui::format_url(url)
+}
+
+fn register_module_source_aliases(
+    tab_index: usize,
+    specifier: &str,
+    url: &http::Url,
+    source: &str,
+) {
+    let st = state();
+    if tab_index >= st.tabs.len() || source.is_empty() {
+        return;
+    }
+    let absolute = module_url_key(url);
+    st.tabs[tab_index]
+        .webview
+        .js_runtime()
+        .register_module_source(specifier, source);
+    st.tabs[tab_index]
+        .webview
+        .js_runtime()
+        .register_module_source(&absolute, source);
+}
+
+fn queue_module_dependencies(
+    tab_index: usize,
+    referrer_url: &http::Url,
+    source: &str,
+    generation: u32,
+) -> usize {
+    let specs = libwebview::js::extract_module_specifiers(source);
+    if specs.is_empty() {
+        return 0;
+    }
+
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return 0;
+    }
+
+    let mut queued = 0usize;
+    for specifier in specs {
+        let url = http::resolve_url(referrer_url, &specifier);
+        let key = module_url_key(&url);
+        if st.tabs[tab_index]
+            .requested_module_urls
+            .iter()
+            .any(|existing| existing == &key)
+        {
+            continue;
+        }
+        st.tabs[tab_index].requested_module_urls.push(key);
+        crate::surf_log!(
+            "[surf] queuing module fetch: tab={} specifier={} referrer={}://{}{}",
+            tab_index,
+            specifier,
+            referrer_url.scheme,
+            referrer_url.host,
+            referrer_url.path
+        );
+        net_worker::submit(net_worker::FetchRequest::ModuleScript {
+            tab_index,
+            specifier,
+            url,
+            generation,
+        });
+        queued += 1;
+    }
+
+    if queued > 0 {
+        st.tabs[tab_index].load_state.on_module_added(queued);
+    }
+    queued
+}
+
+fn handle_module_script_done(
+    tab_index: usize,
+    specifier: String,
+    url: http::Url,
+    body: Vec<u8>,
+    headers: String,
+    generation: u32,
+) {
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return;
+    }
+    if !st.tabs[tab_index].load_state.generation_matches(generation) {
+        return;
+    }
+    let text = resources::decode_http_body(&body, &headers);
+    if !text.is_empty() {
+        register_module_source_aliases(tab_index, &specifier, &url, &text);
+        queue_module_dependencies(tab_index, &url, &text, generation);
+    }
+    st.tabs[tab_index].load_state.on_module_finished();
+    log_tab_load_state(tab_index, "after_module_script_done");
+    if st.tabs[tab_index].load_state.ready_for_script_execution() {
+        execute_pending_scripts(tab_index);
+    }
+}
+
 fn handle_script_done(
     tab_index: usize,
     slot: usize,
+    url: http::Url,
     body: Vec<u8>,
     headers: String,
     generation: u32,
@@ -2329,6 +2493,10 @@ fn handle_script_done(
         .get(slot)
         .cloned()
         .unwrap_or_else(|| String::from("<unknown>"));
+    if !text.is_empty() {
+        register_module_source_aliases(tab_index, &label, &url, &text);
+        queue_module_dependencies(tab_index, &url, &text, generation);
+    }
     crate::surf_log!(
         "[surf] script [{}] fetched: {} bytes label={} pending_before={}",
         slot,

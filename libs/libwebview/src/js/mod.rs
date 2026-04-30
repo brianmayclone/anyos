@@ -34,6 +34,30 @@ use crate::style::{apply_timing, TimingFunction, TransitionDef};
 
 const MAX_CONSOLE_MESSAGES: usize = 512;
 const MAX_PENDING_TIMERS: usize = 1024;
+const JS_TRACE: bool = false;
+const TIMER_CALLBACK_STEP_LIMIT: u64 = 1_000_000;
+const DEFAULT_SCRIPT_STEP_LIMIT: u64 = 64_000_000;
+
+fn configured_script_step_limit() -> u64 {
+    #[cfg(feature = "host")]
+    {
+        if let Ok(raw) = std::env::var("LIBJS_SCRIPT_STEP_LIMIT") {
+            if let Ok(limit) = raw.parse::<u64>() {
+                return limit.max(1_000_000);
+            }
+        }
+    }
+    DEFAULT_SCRIPT_STEP_LIMIT
+}
+const QUIET_SELF_RESCHEDULE_MIN_DELAY_MS: u64 = 250;
+
+macro_rules! js_trace {
+    ($($arg:tt)*) => {{
+        if JS_TRACE {
+            anyos_std::println!($($arg)*);
+        }
+    }};
+}
 
 #[cfg(feature = "host")]
 fn debug_class_mutations_enabled() -> bool {
@@ -47,6 +71,11 @@ fn debug_all_class_mutations_enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "host")]
+fn debug_dom_apply_enabled() -> bool {
+    std::env::var_os("SURF_DEBUG_DOM_APPLY").is_some()
+}
+
 #[cfg(not(feature = "host"))]
 fn debug_class_mutations_enabled() -> bool {
     false
@@ -54,6 +83,11 @@ fn debug_class_mutations_enabled() -> bool {
 
 #[cfg(not(feature = "host"))]
 fn debug_all_class_mutations_enabled() -> bool {
+    false
+}
+
+#[cfg(not(feature = "host"))]
+fn debug_dom_apply_enabled() -> bool {
     false
 }
 
@@ -135,6 +169,29 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                     node_id, cls
                 );
             }
+            for attr_name in [
+                "width",
+                "height",
+                "viewBox",
+                "fill",
+                "stroke",
+                "strokeWidth",
+                "strokeLinecap",
+                "strokeLinejoin",
+                "xmlns",
+                "role",
+                "aria-hidden",
+                "focusable",
+            ] {
+                let attr_value = value.get_property(attr_name);
+                if !matches!(attr_value, JsValue::Undefined | JsValue::Null) {
+                    mutations.push(DomMutation::SetAttribute {
+                        node_id,
+                        name: String::from(attr_name),
+                        value: attr_value.to_js_string(),
+                    });
+                }
+            }
             apply_react_motion_final_styles(node_id, value, mutations);
         }
         "textContent" | "innerText" | "nodeValue" | "data" => {
@@ -175,7 +232,9 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                 value: cls,
             });
         }
-        "value" | "src" | "href" | "id" | "name" | "type" => {
+        "value" | "src" | "href" | "id" | "name" | "type" | "width" | "height" | "viewBox"
+        | "fill" | "stroke" | "strokeWidth" | "strokeLinecap" | "strokeLinejoin" | "xmlns"
+        | "role" | "aria-hidden" | "focusable" => {
             mutations.push(DomMutation::SetAttribute {
                 node_id,
                 name: String::from(key),
@@ -766,6 +825,160 @@ pub enum ScriptEntry {
     External { src: String, mode: ScriptMode },
 }
 
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
+fn skip_js_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() {
+        match bytes[i] {
+            b' ' | b'\n' | b'\r' | b'\t' | 0x0c => i += 1,
+            _ => break,
+        }
+    }
+    i
+}
+
+fn parse_quoted_js_string(bytes: &[u8], mut i: usize) -> Option<(String, usize)> {
+    if i >= bytes.len() || (bytes[i] != b'\'' && bytes[i] != b'"') {
+        return None;
+    }
+    let quote = bytes[i];
+    i += 1;
+    let mut out = String::new();
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == quote {
+            return Some((out, i + 1));
+        }
+        if b == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+            out.push(bytes[i] as char);
+        } else {
+            out.push(b as char);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn push_unique_spec(specs: &mut Vec<String>, spec: String) {
+    if !spec.is_empty() && !specs.iter().any(|s| s == &spec) {
+        specs.push(spec);
+    }
+}
+
+fn bytes_start_with(bytes: &[u8], i: usize, pat: &[u8]) -> bool {
+    i + pat.len() <= bytes.len() && &bytes[i..i + pat.len()] == pat
+}
+
+/// Extract simple static/dynamic ES module specifiers from a script.
+///
+/// This is intentionally conservative and string-aware enough for bundled
+/// browser code (`import{...}from"chunk.js"`, `import "chunk.js"`,
+/// `export{...}from"chunk.js"`, `import("chunk.js")`). The real parser still
+/// owns JS semantics; this helper only lets hosts prefetch module chunks before
+/// `__import__()` resolves them.
+pub fn extract_module_specifiers(source: &str) -> Vec<String> {
+    let bytes = source.as_bytes();
+    let mut specs = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = i.saturating_add(2);
+                    } else if bytes[i] == quote {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = core::cmp::min(i + 2, bytes.len());
+            }
+            b'i' if bytes_start_with(bytes, i, b"import")
+                && (i == 0 || !is_ident_byte(bytes[i - 1]))
+                && (i + 6 >= bytes.len() || !is_ident_byte(bytes[i + 6])) =>
+            {
+                let mut j = skip_js_ws(bytes, i + 6);
+                if j < bytes.len() && bytes[j] == b'(' {
+                    j = skip_js_ws(bytes, j + 1);
+                    if let Some((spec, end)) = parse_quoted_js_string(bytes, j) {
+                        push_unique_spec(&mut specs, spec);
+                        i = end;
+                        continue;
+                    }
+                } else if let Some((spec, end)) = parse_quoted_js_string(bytes, j) {
+                    push_unique_spec(&mut specs, spec);
+                    i = end;
+                    continue;
+                } else {
+                    while j + 4 <= bytes.len() {
+                        if bytes_start_with(bytes, j, b"from")
+                            && (j == 0 || !is_ident_byte(bytes[j - 1]))
+                            && (j + 4 >= bytes.len() || !is_ident_byte(bytes[j + 4]))
+                        {
+                            let k = skip_js_ws(bytes, j + 4);
+                            if let Some((spec, end)) = parse_quoted_js_string(bytes, k) {
+                                push_unique_spec(&mut specs, spec);
+                                i = end;
+                                break;
+                            }
+                        }
+                        if matches!(bytes[j], b';' | b'\n' | b'\r') {
+                            break;
+                        }
+                        j += 1;
+                    }
+                }
+                i += 1;
+            }
+            b'e' if bytes_start_with(bytes, i, b"export")
+                && (i == 0 || !is_ident_byte(bytes[i - 1]))
+                && (i + 6 >= bytes.len() || !is_ident_byte(bytes[i + 6])) =>
+            {
+                let mut j = i + 6;
+                while j + 4 <= bytes.len() {
+                    if bytes_start_with(bytes, j, b"from")
+                        && (j == 0 || !is_ident_byte(bytes[j - 1]))
+                        && (j + 4 >= bytes.len() || !is_ident_byte(bytes[j + 4]))
+                    {
+                        let k = skip_js_ws(bytes, j + 4);
+                        if let Some((spec, end)) = parse_quoted_js_string(bytes, k) {
+                            push_unique_spec(&mut specs, spec);
+                            i = end;
+                            break;
+                        }
+                    }
+                    if matches!(bytes[j], b';' | b'\n' | b'\r') {
+                        break;
+                    }
+                    j += 1;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    specs
+}
+
 // ═══════════════════════════════════════════════════════════
 // JsRuntime — public API
 // ═══════════════════════════════════════════════════════════
@@ -854,6 +1067,14 @@ fn js_exception_summary(exc: &JsValue) -> String {
                 JsValue::String(s) => s,
                 _ => String::from("(no message)"),
             };
+            if let JsValue::String(stack) = o.get("stack") {
+                if let Some(line) = stack.lines().nth(1) {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        return format!("{}: {} [{}]", name, msg, line);
+                    }
+                }
+            }
             format!("{}: {}", name, msg)
         }
         other => format!("{:?}", other),
@@ -922,6 +1143,10 @@ impl JsRuntime {
                 );
             }
         }
+    }
+
+    pub fn register_module_source(&mut self, specifier: &str, source: &str) {
+        self.engine.register_module_source(specifier, source);
     }
 
     /// Collect all `<script>` entries from the DOM in document order.
@@ -994,7 +1219,7 @@ impl JsRuntime {
         }
 
         let total_bytes: usize = scripts.iter().map(|s| s.len()).sum();
-        anyos_std::println!(
+        js_trace!(
             "[js] {} script(s) to execute, {} bytes total",
             scripts.len(),
             total_bytes
@@ -1015,11 +1240,11 @@ impl JsRuntime {
         // makes already-fetched images/fonts appear as slow "UI" work in the
         // network panel. Keep this deliberately tight until scripts can run on
         // a preemptible worker.
-        const SCRIPT_STEP_LIMIT: u64 = 10_000_000;
-        self.engine.set_step_limit(SCRIPT_STEP_LIMIT);
+        let script_step_limit = configured_script_step_limit();
+        self.engine.set_step_limit(script_step_limit);
 
         // Set up DOM bridge via userdata.
-        anyos_std::println!(
+        js_trace!(
             "[js] setup begin: url={} scripts={} next_timer_id={} cookies_len={}",
             url,
             scripts.len(),
@@ -1031,8 +1256,8 @@ impl JsRuntime {
             mutations: Vec::new(),
             event_listeners: Vec::new(),
             next_virtual_id: self.next_virtual_id,
-            virtual_nodes: self.virtual_nodes.clone(),
-            real_node_ids: self.real_node_ids.clone(),
+            virtual_nodes: core::mem::take(&mut self.virtual_nodes),
+            real_node_ids: core::mem::take(&mut self.real_node_ids),
             pending_http_requests: Vec::new(),
             pending_navigation_requests: Vec::new(),
             timers: Vec::new(),
@@ -1048,7 +1273,7 @@ impl JsRuntime {
             pending_style_animations: Vec::new(),
             motion_final_styles: Vec::new(),
         };
-        anyos_std::println!(
+        js_trace!(
             "[js] setup bridge ready: mutations={} listeners={} pending_http={} timers={}",
             bridge.mutations.len(),
             bridge.event_listeners.len(),
@@ -1056,7 +1281,7 @@ impl JsRuntime {
             bridge.timers.len()
         );
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
-        anyos_std::println!(
+        js_trace!(
             "[js] setup userdata installed: frames={} stack={} vm_userdata_set=true",
             self.engine.vm().frames.len(),
             self.engine.vm().stack.len()
@@ -1064,17 +1289,17 @@ impl JsRuntime {
 
         // Set up native host objects (document, window, etc.) once per navigation.
         if !self.native_api_initialized || self.native_api_url != url {
-            anyos_std::println!("[js] setup native api begin");
+            js_trace!("[js] setup native api begin");
             self.setup_native_api(dom, url, &self.cookies.clone());
             self.native_api_initialized = true;
             self.native_api_url = String::from(url);
-            anyos_std::println!(
+            js_trace!(
                 "[js] setup native api done: console_msgs={} engine_logs={}",
                 self.engine.console_output().len(),
                 self.engine.vm().engine_log.len()
             );
         } else {
-            anyos_std::println!("[js] setup native api reuse: url={}", url);
+            js_trace!("[js] setup native api reuse: url={}", url);
             let doc = self.engine.vm().get_global("document");
             if !doc.is_undefined() {
                 doc.set_property(
@@ -1085,7 +1310,7 @@ impl JsRuntime {
         }
 
         // Enable property-write interception.
-        anyos_std::println!("[js] setup mutation interception begin");
+        js_trace!("[js] setup mutation interception begin");
         unsafe {
             MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
             VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
@@ -1095,7 +1320,7 @@ impl JsRuntime {
             MOTION_FINAL_STYLES_TARGET =
                 &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
         }
-        anyos_std::println!(
+        js_trace!(
             "[js] setup mutation interception done: mutation_target=true virtual_nodes_target=true"
         );
 
@@ -1111,7 +1336,7 @@ impl JsRuntime {
                 continue;
             }
             // Reset step counter and engine state before each script so each gets the full budget.
-            anyos_std::println!(
+            js_trace!(
                 "[js] prepare #{} begin: bytes={} frames={} stack={} last_exc={} pending_exc={}",
                 idx,
                 script.len(),
@@ -1122,18 +1347,18 @@ impl JsRuntime {
             );
             self.engine.vm().steps = 0;
             self.engine.vm().last_exception = None;
-            self.engine.set_step_limit(SCRIPT_STEP_LIMIT);
+            self.engine.set_step_limit(script_step_limit);
             // Clear any leftover call frames from aborted scripts (e.g. step-limit abort).
             self.engine.vm().frames.clear();
             self.engine.vm().stack.clear();
-            anyos_std::println!(
+            js_trace!(
                 "[js] prepare #{} reset done: frames={} stack={} step_limit={}",
                 idx,
                 self.engine.vm().frames.len(),
                 self.engine.vm().stack.len(),
                 self.engine.vm().step_limit
             );
-            anyos_std::println!(
+            js_trace!(
                 "[js] eval #{}: {} bytes (frames={} stack={})",
                 idx,
                 script.len(),
@@ -1153,7 +1378,7 @@ impl JsRuntime {
                     self.engine.vm().step_limit
                 );
             } else {
-                anyos_std::println!(
+                js_trace!(
                     "[js] script #{} completed: {} steps (limit {})",
                     idx,
                     steps_used,
@@ -1174,7 +1399,7 @@ impl JsRuntime {
                 let logs = &self.engine.vm().engine_log;
                 if !logs.is_empty() {
                     for log_msg in logs.iter() {
-                        anyos_std::println!("[js] engine #{}: {}", idx, log_msg);
+                        js_trace!("[js] engine #{}: {}", idx, log_msg);
                     }
                     self.engine.vm().engine_log.clear();
                 }
@@ -1182,7 +1407,7 @@ impl JsRuntime {
 
             // Flush console output after each script.
             for msg in self.engine.console_output() {
-                anyos_std::println!("[js] console #{}: {}", idx, msg);
+                js_trace!("[js] console #{}: {}", idx, msg);
                 push_console_message(&mut self.console, msg.clone());
             }
             self.engine.clear_console();
@@ -1191,7 +1416,7 @@ impl JsRuntime {
             if !matches!(result, JsValue::Undefined) {
                 let r = alloc::format!("{:?}", result);
                 let truncated = if r.len() > 80 { &r[..80] } else { &r };
-                anyos_std::println!("[js] result #{}: {}", idx, truncated);
+                js_trace!("[js] result #{}: {}", idx, truncated);
             }
         }
         if scripts.len() > script_count {
@@ -1259,41 +1484,97 @@ impl JsRuntime {
     /// * `cookies` — cookie string for this domain (populates `document.cookie`).
     fn setup_native_api(&mut self, dom: &Dom, url: &str, cookies: &str) {
         let vm = self.engine.vm();
-        anyos_std::println!("[js] setup native api: event-callbacks begin");
+        js_trace!("[js] setup native api: event-callbacks begin");
 
         // Event callback storage (only tiny bit of eval for array init).
         vm.set_global(
             "__eventCallbacks",
             JsValue::Array(Rc::new(RefCell::new(JsArray::new()))),
         );
-        anyos_std::println!("[js] setup native api: event-callbacks done");
+        js_trace!("[js] setup native api: event-callbacks done");
 
         // Create document object natively.
-        anyos_std::println!("[js] setup native api: document make begin");
+        js_trace!("[js] setup native api: document make begin");
         let doc = document::make_document(vm, dom, url, cookies);
-        anyos_std::println!("[js] setup native api: document make done");
-        anyos_std::println!("[js] setup native api: document global begin");
+        js_trace!("[js] setup native api: document make done");
+        js_trace!("[js] setup native api: document global begin");
         vm.set_global("document", doc.clone());
-        anyos_std::println!("[js] setup native api: document global done");
+        js_trace!("[js] setup native api: document global done");
 
         // Extract origin (scheme + "://" + host) for localStorage key isolation.
-        anyos_std::println!("[js] setup native api: origin extract begin");
+        js_trace!("[js] setup native api: origin extract begin");
         let origin = extract_origin(url);
-        anyos_std::println!("[js] setup native api: origin extract done: {}", origin);
+        js_trace!("[js] setup native api: origin extract done: {}", origin);
 
         // Create window object natively.
-        anyos_std::println!("[js] setup native api: window make begin");
+        js_trace!("[js] setup native api: window make begin");
         let win = window::make_window(vm, doc, &origin, self.viewport_width, self.viewport_height);
-        anyos_std::println!("[js] setup native api: window make done");
-        anyos_std::println!("[js] setup native api: global window begin");
+        js_trace!("[js] setup native api: window make done");
+        js_trace!("[js] setup native api: global window begin");
         vm.set_global("window", win.clone());
-        anyos_std::println!("[js] setup native api: global window done");
-        anyos_std::println!("[js] setup native api: global self begin");
+        js_trace!("[js] setup native api: global window done");
+        js_trace!("[js] setup native api: global self begin");
         vm.set_global("self", win.clone());
-        anyos_std::println!("[js] setup native api: global self done");
-        anyos_std::println!("[js] setup native api: global globalThis begin");
+        js_trace!("[js] setup native api: global self done");
+        js_trace!("[js] setup native api: global globalThis begin");
         vm.set_global("globalThis", win.clone());
-        anyos_std::println!("[js] setup native api: global globalThis done");
+        js_trace!("[js] setup native api: global globalThis done");
+
+        // Browser semantics: `globalThis` is the Window object, so built-in
+        // constructors and namespaces must also be visible as window properties.
+        // Many modern bundles intentionally read `globalThis.Object`,
+        // `globalThis.Symbol`, or typed-array constructors instead of bare
+        // globals.  Keep these in sync before page scripts start.
+        for key in &[
+            "Object",
+            "Array",
+            "String",
+            "Number",
+            "Boolean",
+            "Function",
+            "Error",
+            "TypeError",
+            "RangeError",
+            "ReferenceError",
+            "SyntaxError",
+            "URIError",
+            "EvalError",
+            "AggregateError",
+            "Promise",
+            "Map",
+            "Set",
+            "WeakMap",
+            "WeakSet",
+            "WeakRef",
+            "FinalizationRegistry",
+            "Date",
+            "RegExp",
+            "Symbol",
+            "Proxy",
+            "BigInt",
+            "ArrayBuffer",
+            "DataView",
+            "Int8Array",
+            "Uint8Array",
+            "Uint8ClampedArray",
+            "Int16Array",
+            "Uint16Array",
+            "Int32Array",
+            "Uint32Array",
+            "Float32Array",
+            "Float64Array",
+            "Math",
+            "JSON",
+            "console",
+            "Infinity",
+            "NaN",
+            "undefined",
+        ] {
+            let val = vm.get_global(key);
+            if !val.is_undefined() || *key == "undefined" {
+                win.set_property(String::from(*key), val);
+            }
+        }
 
         // In browsers, window IS the global object — properties on window are directly
         // accessible as global variables (e.g. `MutationObserver` === `window.MutationObserver`).
@@ -1342,6 +1623,7 @@ impl JsRuntime {
             "TextDecoder",
             "URL",
             "URLSearchParams",
+            "EventTarget",
             "CustomEvent",
             "Event",
             "MouseEvent",
@@ -1382,18 +1664,18 @@ impl JsRuntime {
             "__cmp",
             "__uspapi",
         ] {
-            anyos_std::println!("[js] setup native api: mirror {} begin", key);
+            js_trace!("[js] setup native api: mirror {} begin", key);
             let val = win.get_property(key);
             if !val.is_undefined() {
                 vm.set_global(key, val);
-                anyos_std::println!("[js] setup native api: mirror {} done", key);
+                js_trace!("[js] setup native api: mirror {} done", key);
             } else {
-                anyos_std::println!("[js] setup native api: mirror {} skipped(undefined)", key);
+                js_trace!("[js] setup native api: mirror {} skipped(undefined)", key);
             }
         }
 
         // Top-level constructors/functions from window.
-        anyos_std::println!("[js] setup native api: top-level globals begin");
+        js_trace!("[js] setup native api: top-level globals begin");
         vm.set_global("alert", native_fn("alert", window::native_alert));
         vm.set_global("fetch", native_fn("fetch", fetch::native_fetch));
         vm.set_global("XMLHttpRequest", xhr::make_xhr_constructor());
@@ -1406,10 +1688,10 @@ impl JsRuntime {
             native_ctor_fn("Image", document::native_image_ctor),
         );
         vm.set_global("FormData", native_ctor_fn("FormData", native_formdata_ctor));
-        anyos_std::println!("[js] setup native api: top-level globals done");
+        js_trace!("[js] setup native api: top-level globals done");
 
         // Timer globals.
-        anyos_std::println!("[js] setup native api: timer globals begin");
+        js_trace!("[js] setup native api: timer globals begin");
         vm.set_global("setTimeout", native_fn("setTimeout", native_set_timeout));
         vm.set_global("setInterval", native_fn("setInterval", native_set_interval));
         vm.set_global("setImmediate", native_fn("setImmediate", native_set_immediate));
@@ -1433,7 +1715,7 @@ impl JsRuntime {
             "cancelAnimationFrame",
             native_fn("cancelAnimationFrame", native_clear_timeout),
         );
-        anyos_std::println!("[js] setup native api: timer globals done");
+        js_trace!("[js] setup native api: timer globals done");
     }
 
     pub fn eval(&mut self, source: &str) -> JsValue {
@@ -1680,6 +1962,7 @@ impl JsRuntime {
             .cloned()
             .collect();
         let mut id_map: BTreeMap<i64, usize> = BTreeMap::new();
+        let mut created_ids: Vec<usize> = Vec::new();
 
         for m in &mutations {
             match m {
@@ -1709,12 +1992,21 @@ impl JsRuntime {
                     );
                     id_map.insert(*virtual_id, real_id);
                     self.real_node_ids.insert(*virtual_id, real_id);
+                    created_ids.push(real_id);
                 }
                 DomMutation::CreateTextNode { virtual_id, text } => {
                     let real_id = dom.add_node(NodeType::Text(text.clone()), None);
                     id_map.insert(*virtual_id, real_id);
                     self.real_node_ids.insert(*virtual_id, real_id);
+                    created_ids.push(real_id);
                 }
+                _ => {}
+            }
+        }
+
+        for m in &mutations {
+            match m {
+                DomMutation::CreateElement { .. } | DomMutation::CreateTextNode { .. } => {}
                 DomMutation::SetAttribute {
                     node_id,
                     name,
@@ -1782,6 +2074,13 @@ impl JsRuntime {
                 } => {
                     let real_parent = resolve_id(*parent_id, &id_map, &self.real_node_ids);
                     let real_child = resolve_id(*child_id, &id_map, &self.real_node_ids);
+                    if debug_dom_apply_enabled() {
+                        #[cfg(feature = "host")]
+                        eprintln!(
+                            "[js-dom-apply] AppendChild parent={} child={} -> parent={:?} child={:?}",
+                            parent_id, child_id, real_parent, real_child
+                        );
+                    }
                     if let (Some(p), Some(c)) = (real_parent, real_child) {
                         dom.append_child(p, c);
                     }
@@ -1804,6 +2103,13 @@ impl JsRuntime {
                     let real_parent = resolve_id(*parent_id, &id_map, &self.real_node_ids);
                     let real_new = resolve_id(*new_child_id, &id_map, &self.real_node_ids);
                     let real_ref = resolve_id(*ref_child_id, &id_map, &self.real_node_ids);
+                    if debug_dom_apply_enabled() {
+                        #[cfg(feature = "host")]
+                        eprintln!(
+                            "[js-dom-apply] InsertBefore parent={} new={} ref={} -> parent={:?} new={:?} ref={:?}",
+                            parent_id, new_child_id, ref_child_id, real_parent, real_new, real_ref
+                        );
+                    }
                     if let (Some(p), Some(n), Some(r)) = (real_parent, real_new, real_ref) {
                         dom.insert_before(p, n, r);
                     }
@@ -1879,8 +2185,43 @@ impl JsRuntime {
                 }
             }
         }
+        self.adopt_detached_framework_roots(dom, &created_ids);
         self.mutations.extend(host_side_effects);
         id_map
+    }
+
+    fn adopt_detached_framework_roots(&self, dom: &mut Dom, created_ids: &[usize]) {
+        let Some(root_id) = find_element_by_id(dom, "root") else {
+            return;
+        };
+        if !dom.nodes[root_id].children.is_empty() {
+            return;
+        }
+
+        let mut roots: Vec<usize> = Vec::new();
+        for &node_id in created_ids {
+            let Some(node) = dom.nodes.get(node_id) else {
+                continue;
+            };
+            if node.parent.is_some() || !detached_node_is_visual_root(node) {
+                continue;
+            }
+            roots.push(node_id);
+        }
+        if roots.is_empty() {
+            return;
+        }
+
+        if debug_dom_apply_enabled() {
+            #[cfg(feature = "host")]
+            eprintln!(
+                "[js-dom-apply] adopting {} detached framework root(s) into #root",
+                roots.len()
+            );
+        }
+        for node_id in roots {
+            dom.append_child(root_id, node_id);
+        }
     }
 
     /// Dispatch an event per the W3C DOM Events Level 3 algorithm (§10.3).
@@ -2199,8 +2540,8 @@ impl JsRuntime {
                     mutations: Vec::new(),
                     event_listeners: Vec::new(),
                     next_virtual_id: self.next_virtual_id,
-                    virtual_nodes: self.virtual_nodes.clone(),
-                    real_node_ids: self.real_node_ids.clone(),
+                    virtual_nodes: core::mem::take(&mut self.virtual_nodes),
+                    real_node_ids: core::mem::take(&mut self.real_node_ids),
                     pending_http_requests: Vec::new(),
                     pending_navigation_requests: Vec::new(),
                     timers: Vec::new(),
@@ -2228,8 +2569,10 @@ impl JsRuntime {
                         &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
                 }
 
-                // Timer callbacks get a generous step budget for React initial renders.
-                self.engine.set_step_limit(5_000_000);
+                // Timer callbacks should be short tasks. Heavy recurring
+                // analytics/ad loops must not burn a full script-sized budget
+                // on every frame.
+                self.engine.set_step_limit(TIMER_CALLBACK_STEP_LIMIT);
                 self.engine.vm().steps = 0;
                 // rAF callbacks receive a DOMHighResTimeStamp (W3C spec).
                 let cb_args: Vec<JsValue> = if t.is_raf {
@@ -2269,9 +2612,31 @@ impl JsRuntime {
                 self.collect_engine_console();
                 // Print engine log from timer callback for diagnostics
                 for log_msg in self.engine.vm().engine_log.iter() {
-                    anyos_std::println!("[js] timer: {}", log_msg);
+                    js_trace!("[js] timer: {}", log_msg);
                 }
                 self.engine.vm().engine_log.clear();
+                let quiet_self_reschedule = bridge.mutations.is_empty()
+                    && bridge.event_listeners.is_empty()
+                    && bridge.remove_listeners.is_empty()
+                    && bridge.pending_http_requests.is_empty()
+                    && bridge.pending_navigation_requests.is_empty()
+                    && bridge.pending_ws_connects.is_empty()
+                    && bridge.pending_ws_sends.is_empty()
+                    && bridge.pending_ws_closes.is_empty()
+                    && bridge.pending_style_animations.is_empty()
+                    && bridge.motion_final_styles.is_empty();
+                if quiet_self_reschedule {
+                    for next in &mut bridge.timers {
+                        if !next.repeat
+                            && !next.is_raf
+                            && next.delay_ms < QUIET_SELF_RESCHEDULE_MIN_DELAY_MS
+                            && same_timer_callback(&next.callback, &t.callback)
+                        {
+                            next.delay_ms = QUIET_SELF_RESCHEDULE_MIN_DELAY_MS;
+                        }
+                    }
+                }
+
                 self.mutations.extend(bridge.mutations);
                 self.virtual_nodes = bridge.virtual_nodes;
                 self.next_virtual_id = bridge.next_virtual_id;
@@ -2820,6 +3185,48 @@ fn resolve_id(
             .copied()
             .or_else(|| persistent_map.get(&id).copied())
     }
+}
+
+fn same_timer_callback(a: &JsValue, b: &JsValue) -> bool {
+    match (a, b) {
+        (JsValue::Function(a), JsValue::Function(b)) => alloc::rc::Rc::ptr_eq(a, b),
+        (JsValue::Object(a), JsValue::Object(b)) => alloc::rc::Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+fn find_element_by_id(dom: &Dom, id_value: &str) -> Option<usize> {
+    for (idx, node) in dom.nodes.iter().enumerate() {
+        let NodeType::Element { attrs, .. } = &node.node_type else {
+            continue;
+        };
+        if attrs
+            .iter()
+            .any(|attr| attr.name.eq_ignore_ascii_case("id") && attr.value == id_value)
+        {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn detached_node_is_visual_root(node: &crate::dom::DomNode) -> bool {
+    let NodeType::Element { tag, attrs } = &node.node_type else {
+        return false;
+    };
+    if matches!(
+        tag,
+        Tag::Html | Tag::Head | Tag::Body | Tag::Link | Tag::Meta | Tag::Script | Tag::Style
+    ) {
+        return false;
+    }
+    !node.children.is_empty()
+        || attrs.iter().any(|attr| {
+            attr.name.eq_ignore_ascii_case("class")
+                || attr.name.eq_ignore_ascii_case("id")
+                || attr.name.eq_ignore_ascii_case("src")
+                || attr.name.eq_ignore_ascii_case("href")
+        })
 }
 
 // ═══════════════════════════════════════════════════════════

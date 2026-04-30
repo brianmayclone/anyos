@@ -1948,7 +1948,7 @@ impl Parser {
                         self.pos += 1;
                         let index = self.parse_expression();
                         self.expect(&TokenKind::RBracket);
-                        expr = Expr::Index {
+                        expr = Expr::OptionalIndex {
                             object: Box::new(expr),
                             index: Box::new(index),
                         };

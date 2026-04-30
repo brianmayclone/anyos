@@ -95,6 +95,8 @@ pub(crate) struct PageLoadState {
     pub(crate) pending_script_count: usize,
     /// Number of external stylesheet fetches still outstanding.
     pub(crate) pending_stylesheet_count: usize,
+    /// Number of ES module chunk fetches still outstanding.
+    pub(crate) pending_module_count: usize,
 }
 
 #[derive(Clone)]
@@ -126,6 +128,7 @@ impl PageLoadState {
             phase: PageLoadPhase::Idle,
             pending_script_count: 0,
             pending_stylesheet_count: 0,
+            pending_module_count: 0,
         }
     }
 
@@ -134,6 +137,7 @@ impl PageLoadState {
         self.phase = PageLoadPhase::FetchingDocument;
         self.pending_script_count = 0;
         self.pending_stylesheet_count = 0;
+        self.pending_module_count = 0;
     }
 
     pub(crate) fn begin_parse(&mut self) {
@@ -148,6 +152,7 @@ impl PageLoadState {
         };
         self.pending_stylesheet_count = stylesheets;
         self.pending_script_count = scripts;
+        self.pending_module_count = 0;
     }
 
     pub(crate) fn on_stylesheets_added(&mut self, count: usize) {
@@ -169,15 +174,30 @@ impl PageLoadState {
         }
     }
 
+    pub(crate) fn on_module_added(&mut self, count: usize) {
+        self.pending_module_count += count;
+        if count > 0 {
+            self.phase = PageLoadPhase::LoadingSubresources;
+        }
+    }
+
+    pub(crate) fn on_module_finished(&mut self) {
+        if self.pending_module_count > 0 {
+            self.pending_module_count -= 1;
+        }
+    }
+
     pub(crate) fn mark_interactive(&mut self) {
         self.phase = PageLoadPhase::Interactive;
         self.pending_script_count = 0;
+        self.pending_module_count = 0;
     }
 
     pub(crate) fn mark_failed(&mut self) {
         self.phase = PageLoadPhase::Failed;
         self.pending_script_count = 0;
         self.pending_stylesheet_count = 0;
+        self.pending_module_count = 0;
     }
 
     pub(crate) fn generation_matches(&self, generation: u32) -> bool {
@@ -185,7 +205,9 @@ impl PageLoadState {
     }
 
     pub(crate) fn ready_for_script_execution(&self) -> bool {
-        self.pending_script_count == 0 && self.pending_stylesheet_count == 0
+        self.pending_script_count == 0
+            && self.pending_stylesheet_count == 0
+            && self.pending_module_count == 0
     }
 }
 
@@ -216,6 +238,8 @@ pub(crate) struct TabState {
     pub(crate) pending_script_modes: Vec<libwebview::js::ScriptMode>,
     /// Human-readable script label per slot for logging/debugging.
     pub(crate) pending_script_labels: Vec<String>,
+    /// Absolute module chunk URLs already queued for this navigation.
+    pub(crate) requested_module_urls: Vec<String>,
     /// Web fonts intentionally deferred until after first paint / interactive.
     pub(crate) deferred_fonts: Vec<DeferredFontRequest>,
     /// Absolute font URLs already queued for this navigation.
@@ -253,6 +277,7 @@ impl TabState {
             pending_scripts: Vec::new(),
             pending_script_modes: Vec::new(),
             pending_script_labels: Vec::new(),
+            requested_module_urls: Vec::new(),
             deferred_fonts: Vec::new(),
             requested_font_urls: Vec::new(),
             deferred_fonts_inflight: 0,

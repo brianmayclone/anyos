@@ -1,6 +1,6 @@
 impl Renderer {
     pub fn hit_test_link_at(&self, x: i32, doc_y: i32) -> Option<&str> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y
@@ -15,7 +15,7 @@ impl Renderer {
     }
 
     pub fn hit_test_submit_at(&self, x: i32, doc_y: i32) -> Option<usize> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y
@@ -30,7 +30,7 @@ impl Renderer {
     }
 
     pub fn hit_test_reset_at(&self, x: i32, doc_y: i32) -> Option<usize> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y
@@ -45,7 +45,7 @@ impl Renderer {
     }
 
     pub fn hit_test_checkbox_at(&self, x: i32, doc_y: i32) -> Option<usize> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y
@@ -60,7 +60,7 @@ impl Renderer {
     }
 
     pub fn hit_test_select_at(&self, x: i32, doc_y: i32) -> Option<usize> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y
@@ -75,7 +75,7 @@ impl Renderer {
     }
 
     pub fn hit_test_radio_at(&self, x: i32, doc_y: i32) -> Option<usize> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y
@@ -90,7 +90,7 @@ impl Renderer {
     }
 
     pub fn hit_test_range_at(&self, x: i32, doc_y: i32) -> Option<usize> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y
@@ -105,7 +105,7 @@ impl Renderer {
     }
 
     pub fn hit_test_file_input_at(&self, x: i32, doc_y: i32) -> Option<usize> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y
@@ -120,7 +120,7 @@ impl Renderer {
     }
 
     pub fn hit_test_color_input_at(&self, x: i32, doc_y: i32) -> Option<usize> {
-        for region in &self.hit_regions {
+        for region in self.hit_regions.iter().rev() {
             if x >= region.x
                 && x < region.x + region.w
                 && doc_y >= region.y

@@ -1696,7 +1696,7 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             crate::value::JsFunction {
                 name: Some(String::from("eval")),
                 params: alloc::vec::Vec::new(),
-                kind: crate::value::FnKind::Bytecode(chunk),
+                kind: crate::value::FnKind::Bytecode(alloc::rc::Rc::new(chunk)),
                 object_proto: None,
                 this_binding: None,
                 bound_args: alloc::vec::Vec::new(),
@@ -1793,7 +1793,7 @@ fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             crate::value::JsFunction {
                 name: Some(alloc::format!("<module:{}>", specifier)),
                 params: alloc::vec::Vec::new(),
-                kind: crate::value::FnKind::Bytecode(chunk),
+                kind: crate::value::FnKind::Bytecode(alloc::rc::Rc::new(chunk)),
                 object_proto: None,
                 this_binding: None,
                 bound_args: alloc::vec::Vec::new(),

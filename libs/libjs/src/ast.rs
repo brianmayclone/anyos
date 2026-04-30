@@ -316,6 +316,12 @@ pub enum Expr {
     /// Optional chaining: `a?.b`
     OptionalChain { object: Box<Expr>, property: String },
 
+    /// Optional computed chaining: `a?.[expr]`
+    OptionalIndex {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
+
     /// Optional call: `a?.(args)`
     OptionalCall {
         callee: Box<Expr>,

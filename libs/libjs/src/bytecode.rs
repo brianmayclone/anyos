@@ -49,7 +49,7 @@ impl PropCache {
 }
 
 /// A single bytecode instruction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Op {
     // ── Stack Operations ──
     /// Push a constant from the constant pool.
@@ -511,7 +511,7 @@ pub enum Constant {
     Number(f64),
     String(String),
     /// A nested function prototype.
-    Function(Chunk),
+    Function(Rc<Chunk>),
     /// BigInt literal (decimal string representation).
     BigInt(String),
 }

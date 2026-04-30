@@ -700,14 +700,66 @@ fn doc_create_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let typ = arg_string(args, 0);
     let evt = JsValue::new_object();
     evt.set_property(String::from("type"), JsValue::String(typ));
+    evt.set_property(String::from("bubbles"), JsValue::Bool(false));
+    evt.set_property(String::from("cancelable"), JsValue::Bool(false));
+    evt.set_property(String::from("composed"), JsValue::Bool(false));
+    evt.set_property(String::from("isTrusted"), JsValue::Bool(false));
+    evt.set_property(String::from("defaultPrevented"), JsValue::Bool(false));
     evt.set_property(String::from("target"), JsValue::Null);
+    evt.set_property(String::from("currentTarget"), JsValue::Null);
+    evt.set_property(String::from("eventPhase"), JsValue::Number(0.0));
+    evt.set_property(String::from("timeStamp"), JsValue::Number(0.0));
     evt.set_property(
         String::from("preventDefault"),
-        native_fn("preventDefault", doc_noop),
+        native_fn("preventDefault", |vm, _| {
+            vm.current_this
+                .set_property(String::from("defaultPrevented"), JsValue::Bool(true));
+            JsValue::Undefined
+        }),
     );
     evt.set_property(
         String::from("stopPropagation"),
         native_fn("stopPropagation", doc_noop),
+    );
+    evt.set_property(
+        String::from("stopImmediatePropagation"),
+        native_fn("stopImmediatePropagation", doc_noop),
+    );
+    evt.set_property(
+        String::from("composedPath"),
+        native_fn("composedPath", |_, _| make_array(Vec::new())),
+    );
+    evt.set_property(
+        String::from("initEvent"),
+        native_fn("initEvent", |vm, args| {
+            let typ = arg_string(args, 0);
+            let bubbles = args.get(1).map(|v| v.to_boolean()).unwrap_or(false);
+            let cancelable = args.get(2).map(|v| v.to_boolean()).unwrap_or(false);
+            vm.current_this
+                .set_property(String::from("type"), JsValue::String(typ));
+            vm.current_this
+                .set_property(String::from("bubbles"), JsValue::Bool(bubbles));
+            vm.current_this
+                .set_property(String::from("cancelable"), JsValue::Bool(cancelable));
+            JsValue::Undefined
+        }),
+    );
+    evt.set_property(
+        String::from("initCustomEvent"),
+        native_fn("initCustomEvent", |vm, args| {
+            let typ = arg_string(args, 0);
+            let bubbles = args.get(1).map(|v| v.to_boolean()).unwrap_or(false);
+            let cancelable = args.get(2).map(|v| v.to_boolean()).unwrap_or(false);
+            let detail = args.get(3).cloned().unwrap_or(JsValue::Null);
+            vm.current_this
+                .set_property(String::from("type"), JsValue::String(typ));
+            vm.current_this
+                .set_property(String::from("bubbles"), JsValue::Bool(bubbles));
+            vm.current_this
+                .set_property(String::from("cancelable"), JsValue::Bool(cancelable));
+            vm.current_this.set_property(String::from("detail"), detail);
+            JsValue::Undefined
+        }),
     );
     evt
 }

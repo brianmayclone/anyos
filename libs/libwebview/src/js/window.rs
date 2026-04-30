@@ -375,6 +375,10 @@ pub fn make_window(
     );
 
     // Event constructors (W3C DOM Events Level 3 / UIEvents / Pointer Events).
+    obj.set(
+        String::from("EventTarget"),
+        native_ctor_fn("EventTarget", win_event_target),
+    );
     obj.set(String::from("Event"), native_ctor_fn("Event", win_event));
     obj.set(
         String::from("CustomEvent"),
@@ -643,6 +647,22 @@ fn win_noop_obj(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 fn win_dom_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::new_object()
+}
+fn win_event_target(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let target = JsValue::new_object();
+    target.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", win_noop),
+    );
+    target.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", win_noop),
+    );
+    target.set_property(
+        String::from("dispatchEvent"),
+        native_fn("dispatchEvent", |_, _| JsValue::Bool(true)),
+    );
+    target
 }
 
 fn install_html_element_constructor(

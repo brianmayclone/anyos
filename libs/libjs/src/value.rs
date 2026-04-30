@@ -987,7 +987,7 @@ impl fmt::Debug for JsFunction {
 /// Function implementation: either bytecode or a native Rust function.
 #[derive(Clone)]
 pub enum FnKind {
-    Bytecode(Chunk),
+    Bytecode(Rc<Chunk>),
     Native(fn(&mut crate::vm::Vm, &[JsValue]) -> JsValue),
 }
 

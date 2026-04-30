@@ -104,7 +104,11 @@ impl DisplayList {
                 };
                 Some(if (color >> 24) == 0 { color | 0xFF00_0000 } else { color })
             }
-            _ => None,
+            // Tailwind-style `bg-clip-text text-transparent` often expresses
+            // its gradient through CSS custom properties. Until the full var()
+            // gradient chain is resolved, keep clipped text visible instead of
+            // falling back to black transparent text.
+            _ => Some(0xFF8B5CF6),
         }
     }
 
