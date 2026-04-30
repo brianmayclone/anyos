@@ -373,12 +373,14 @@ impl WebView {
         content_view.set_color(0xFFFFFFFF); // white background
         scroll_view.add(&content_view);
 
+        let default_sheet = default_stylesheet();
+
         let mut webview = Self {
             scroll_view,
             content_view,
             renderer: renderer::Renderer::new(),
             dom_val: None,
-            default_sheet: css::parse_stylesheet(DEFAULT_CSS),
+            default_sheet,
             external_sheets: Vec::new(),
             inline_sheets: Vec::new(),
             inline_sheets_dirty: true,
@@ -5022,6 +5024,25 @@ mod tests {
             ))
         );
     }
+}
+
+fn default_stylesheet() -> css::Stylesheet {
+    let mut sheet = css::parse_stylesheet(DEFAULT_CSS);
+    const UA_LAYER: &str = "__anyos_ua_default";
+    if !sheet.layer_order.iter().any(|name| name == UA_LAYER) {
+        sheet.layer_order.insert(0, String::from(UA_LAYER));
+    }
+    for rule in &mut sheet.rules {
+        rule.layer_name = Some(String::from(UA_LAYER));
+        rule.layer_index = Some(0);
+    }
+    for media_rule in &mut sheet.media_rules {
+        for rule in &mut media_rule.rules {
+            rule.layer_name = Some(String::from(UA_LAYER));
+            rule.layer_index = Some(0);
+        }
+    }
+    sheet
 }
 
 /// Browser default CSS (minimal reset + sensible defaults).

@@ -3280,8 +3280,17 @@ pub fn apply_declaration(
             }
         }
         Property::Color => {
-            if let CssValue::Color(c) = decl.value {
-                style.color = c;
+            match decl.value {
+                CssValue::Color(c) => {
+                    style.color = c;
+                }
+                CssValue::CurrentColor => {}
+                CssValue::Inherit => {
+                    if let Some(parent) = parent_style {
+                        style.color = parent.color;
+                    }
+                }
+                _ => {}
             }
         }
         Property::BackgroundColor | Property::Background => match decl.value {
@@ -3397,17 +3406,25 @@ pub fn apply_declaration(
             }
         }
         Property::TextDecoration => {
-            if let CssValue::Keyword(ref kw) = decl.value {
-                style.text_decoration = match kw.as_str() {
-                    "underline" => TextDeco::Underline,
-                    "line-through" => TextDeco::LineThrough,
-                    "overline" => TextDeco::Overline,
-                    "none" => TextDeco::None,
-                    _ => style.text_decoration,
-                };
-            }
-            if matches!(decl.value, CssValue::None) {
-                style.text_decoration = TextDeco::None;
+            match decl.value {
+                CssValue::Keyword(ref kw) => {
+                    style.text_decoration = match kw.as_str() {
+                        "underline" => TextDeco::Underline,
+                        "line-through" => TextDeco::LineThrough,
+                        "overline" => TextDeco::Overline,
+                        "none" => TextDeco::None,
+                        _ => style.text_decoration,
+                    };
+                }
+                CssValue::None => {
+                    style.text_decoration = TextDeco::None;
+                }
+                CssValue::Inherit => {
+                    if let Some(parent) = parent_style {
+                        style.text_decoration = parent.text_decoration;
+                    }
+                }
+                _ => {}
             }
         }
         Property::LineHeight => {
