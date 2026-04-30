@@ -813,6 +813,17 @@ struct BrowserHostApp {
     screenshot_count: u32,
     status: String,
     needs_redraw: bool,
+    devtools_open: bool,
+    devtools_tab: DevToolsTab,
+    devtools_selected_node: Option<usize>,
+    devtools_console_input: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DevToolsTab {
+    Inspector,
+    Console,
+    Network,
 }
 
 impl BrowserHostApp {
@@ -845,6 +856,10 @@ impl BrowserHostApp {
             screenshot_count: 0,
             status: String::from("ready"),
             needs_redraw: true,
+            devtools_open: false,
+            devtools_tab: DevToolsTab::Inspector,
+            devtools_selected_node: None,
+            devtools_console_input: String::new(),
         }
     }
 
@@ -1065,6 +1080,125 @@ impl BrowserHostApp {
             self.needs_redraw = true;
         }
     }
+
+    fn render_devtools(&mut self, ctx: &egui::Context) {
+        if !self.devtools_open {
+            return;
+        }
+
+        egui::SidePanel::right("surf_host_devtools")
+            .resizable(true)
+            .default_width(430.0)
+            .min_width(300.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Developer Tools");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("×").clicked() {
+                            self.devtools_open = false;
+                        }
+                    });
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.devtools_tab, DevToolsTab::Inspector, "Inspector");
+                    ui.selectable_value(&mut self.devtools_tab, DevToolsTab::Console, "Konsole");
+                    ui.selectable_value(&mut self.devtools_tab, DevToolsTab::Network, "Netzwerk");
+                });
+                ui.separator();
+
+                match self.devtools_tab {
+                    DevToolsTab::Inspector => self.render_devtools_inspector(ui),
+                    DevToolsTab::Console => self.render_devtools_console(ui),
+                    DevToolsTab::Network => self.render_devtools_network(ui),
+                }
+            });
+    }
+
+    fn render_devtools_inspector(&mut self, ui: &mut egui::Ui) {
+        ui.columns(2, |cols| {
+            egui::ScrollArea::vertical()
+                .id_source("surf_host_dom_tree")
+                .show(&mut cols[0], |ui| {
+                    if let Some(dom) = self.wv.dom() {
+                        if dom.nodes.is_empty() {
+                            ui.label("DOM leer");
+                        } else {
+                            render_dom_node_tree(ui, dom, 0, &mut self.devtools_selected_node);
+                        }
+                    } else {
+                        ui.label("Keine Seite geladen");
+                    }
+                });
+
+            egui::ScrollArea::vertical()
+                .id_source("surf_host_style_report")
+                .show(&mut cols[1], |ui| {
+                    if let Some(node_id) = self.devtools_selected_node {
+                        if let Some(report) = self.wv.devtools_inspector_report(node_id) {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut report.clone())
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(28),
+                            );
+                        } else {
+                            ui.label("Kein Report fuer diesen Node");
+                        }
+                    } else {
+                        ui.label("Element im DOM-Baum auswaehlen.");
+                    }
+                });
+        });
+    }
+
+    fn render_devtools_console(&mut self, ui: &mut egui::Ui) {
+        let mut console = self.wv.js_console().join("\n");
+        egui::ScrollArea::vertical()
+            .id_source("surf_host_console_output")
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut console)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(24)
+                        .interactive(false),
+                );
+            });
+        ui.separator();
+        ui.horizontal(|ui| {
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.devtools_console_input)
+                    .hint_text("JavaScript auswerten")
+                    .desired_width(f32::INFINITY),
+            );
+            let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("Run").clicked() || enter {
+                let source = self.devtools_console_input.trim().to_string();
+                if !source.is_empty() {
+                    if self.wv.eval_js_for_devtools(&source) {
+                        self.needs_redraw = true;
+                    }
+                    apply_host_js_mutations(&mut self.wv, &self.current_url, &mut self.cookies);
+                    self.devtools_console_input.clear();
+                }
+            }
+        });
+    }
+
+    fn render_devtools_network(&mut self, ui: &mut egui::Ui) {
+        ui.label("Host-Netzwerkpanel: Request-Erfassung wird als naechstes mit Surf geteilt.");
+        ui.separator();
+        ui.monospace(format!(
+            "URL: {}\nViewport: {}x{}\nDokumenthoehe: {}\nScroll: {}",
+            self.current_url,
+            self.wv.viewport_width(),
+            self.wv.viewport_height(),
+            self.wv.total_height(),
+            self.scroll_y
+        ));
+    }
 }
 
 impl eframe::App for BrowserHostApp {
@@ -1101,6 +1235,9 @@ impl eframe::App for BrowserHostApp {
                         &path,
                     );
                     self.status = format!("saved {}", path);
+                }
+                if ui.button("DevTools").clicked() {
+                    self.devtools_open = !self.devtools_open;
                 }
             });
         });
@@ -1154,10 +1291,77 @@ impl eframe::App for BrowserHostApp {
             }
         });
 
+        self.render_devtools(ctx);
+
         if self.pending.is_done() && !self.wv.has_timers() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         } else {
             ctx.request_repaint();
+        }
+    }
+}
+
+fn render_dom_node_tree(
+    ui: &mut egui::Ui,
+    dom: &libwebview::dom::Dom,
+    node_id: usize,
+    selected: &mut Option<usize>,
+) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    let label = dom_node_label(dom, node_id);
+    let is_selected = *selected == Some(node_id);
+    match &node.node_type {
+        libwebview::dom::NodeType::Element { .. } if !node.children.is_empty() => {
+            egui::CollapsingHeader::new(label)
+                .id_source(("dom", node_id))
+                .default_open(node_id == 0 || is_selected)
+                .show(ui, |ui| {
+                    if ui.selectable_label(is_selected, "select").clicked() {
+                        *selected = Some(node_id);
+                    }
+                    for &child in &node.children {
+                        render_dom_node_tree(ui, dom, child, selected);
+                    }
+                });
+        }
+        _ => {
+            if ui.selectable_label(is_selected, label).clicked() {
+                *selected = Some(node_id);
+            }
+        }
+    }
+}
+
+fn dom_node_label(dom: &libwebview::dom::Dom, node_id: usize) -> String {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return format!("#{}", node_id);
+    };
+    match &node.node_type {
+        libwebview::dom::NodeType::Element { tag, .. } => {
+            let mut s = String::from(tag.tag_name().to_ascii_lowercase());
+            if let Some(id) = dom.attr(node_id, "id") {
+                if !id.is_empty() {
+                    s.push('#');
+                    s.push_str(id);
+                }
+            }
+            if let Some(class) = dom.attr(node_id, "class") {
+                for cls in class.split_whitespace().take(3) {
+                    s.push('.');
+                    s.push_str(cls);
+                }
+            }
+            s
+        }
+        libwebview::dom::NodeType::Text(text) => {
+            let preview: String = text.trim().chars().take(32).collect();
+            if preview.is_empty() {
+                String::from("#text")
+            } else {
+                format!("#text {:?}", preview)
+            }
         }
     }
 }
@@ -1231,8 +1435,8 @@ fn run_egui_browser(
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([width as f32, height as f32])
             .with_title(format!("surf-host — {}", current_url)),
-        renderer: eframe::Renderer::Glow,
-        hardware_acceleration: eframe::HardwareAcceleration::Off,
+        renderer: eframe::Renderer::Wgpu,
+        hardware_acceleration: eframe::HardwareAcceleration::Preferred,
         ..Default::default()
     };
     let app = BrowserHostApp::new(
@@ -1245,11 +1449,14 @@ fn run_egui_browser(
         load_web_fonts,
         image_backend,
     );
-    let _ = eframe::run_native(
+    if let Err(err) = eframe::run_native(
         "surf-host",
         native_options,
         Box::new(move |_cc| Box::new(app)),
-    );
+    ) {
+        eprintln!("[surf-host] egui startup failed: {}", err);
+        eprintln!("[surf-host] rerun with --minifb to use the CPU fallback shell");
+    }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
