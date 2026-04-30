@@ -4995,6 +4995,42 @@ mod tests {
     }
 
     #[test]
+    fn author_layered_css_overrides_browser_defaults() {
+        let mut wv = WebView::new(1280, 900);
+        wv.set_url("https://example.test/");
+        wv.set_html_no_js(
+            r##"<html><body class="text-white"><h1 id="hero" class="text-8xl">CoreVM</h1><a id="link" href="#">Link</a></body></html>"##,
+        );
+        wv.add_stylesheet(
+            r#"
+            @layer theme {
+                :root { --text-8xl: 6rem; --color-white: #fff; }
+            }
+            @layer base {
+                h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+                a { color: inherit; text-decoration: inherit; }
+            }
+            @layer utilities {
+                .text-8xl { font-size: var(--text-8xl); }
+                .text-white { color: var(--color-white); }
+            }
+            "#,
+        );
+        wv.relayout();
+
+        let (hero, link) = {
+            let dom = wv.dom().expect("dom");
+            (find_node_by_id(dom, "hero"), find_node_by_id(dom, "link"))
+        };
+        let hero_style = wv.resolved_style_ref(hero).expect("hero style");
+        let link_style = wv.resolved_style_ref(link).expect("link style");
+
+        assert_eq!(hero_style.font_size, 96);
+        assert_eq!(link_style.color, 0xFFFFFFFF);
+        assert!(matches!(link_style.text_decoration, style::TextDeco::None));
+    }
+
+    #[test]
     fn controls_can_be_associated_with_form_attribute() {
         let mut wv = WebView::new(800, 600);
         wv.set_url("https://example.test/");

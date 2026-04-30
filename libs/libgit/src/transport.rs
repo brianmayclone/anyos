@@ -540,7 +540,9 @@ fn stream_parse_objects(
                     obj_type,
                     data: inflated.clone(),
                 };
-                let _ = repo.write_object(&obj);
+                repo.write_object(&obj).map_err(|e| {
+                    Error::Other(format!("failed to write object {}: {}", oid.to_hex(), e))
+                })?;
                 push_delta_cache(
                     &mut resolved,
                     &mut offset_index,
@@ -578,26 +580,34 @@ fn stream_parse_objects(
                         })
                     });
 
-                if let Some((base_data, base_type)) = base {
-                    let result = crate::pack::apply_delta(&base_data, &delta_data);
-                    let obj_type = crate::pack::pack_type_to_object_type(base_type);
-                    let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
-                    let obj = Object {
-                        obj_type,
-                        data: result.clone(),
-                    };
-                    let _ = repo.write_object(&obj);
-                    push_delta_cache(
-                        &mut resolved,
-                        &mut offset_index,
-                        &mut resolved_bytes,
-                        entry_start,
-                        oid,
-                        result,
-                        base_type,
-                    );
-                    count += 1;
-                }
+                let Some((base_data, base_type)) = base else {
+                    return Err(Error::Other(format!(
+                        "missing REF_DELTA base {} for pack object {}",
+                        base_oid.to_hex(),
+                        i + 1
+                    )));
+                };
+
+                let result = crate::pack::apply_delta(&base_data, &delta_data);
+                let obj_type = crate::pack::pack_type_to_object_type(base_type);
+                let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
+                let obj = Object {
+                    obj_type,
+                    data: result.clone(),
+                };
+                repo.write_object(&obj).map_err(|e| {
+                    Error::Other(format!("failed to write delta object {}: {}", oid.to_hex(), e))
+                })?;
+                push_delta_cache(
+                    &mut resolved,
+                    &mut offset_index,
+                    &mut resolved_bytes,
+                    entry_start,
+                    oid,
+                    result,
+                    base_type,
+                );
+                count += 1;
             }
             OBJ_OFS_DELTA => {
                 let offset =
@@ -619,36 +629,56 @@ fn stream_parse_objects(
                             })
                     });
 
-                if let Some((base_data, base_type)) = base {
-                    let result = crate::pack::apply_delta(&base_data, &delta_data);
-                    let obj_type = crate::pack::pack_type_to_object_type(base_type);
-                    let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
-                    let obj = Object {
-                        obj_type,
-                        data: result.clone(),
-                    };
-                    let _ = repo.write_object(&obj);
-                    push_delta_cache(
-                        &mut resolved,
-                        &mut offset_index,
-                        &mut resolved_bytes,
-                        entry_start,
-                        oid,
-                        result,
-                        base_type,
-                    );
-                    count += 1;
-                }
+                let Some((base_data, base_type)) = base else {
+                    return Err(Error::Other(format!(
+                        "missing OFS_DELTA base at pack offset {} for object {}",
+                        base_abs,
+                        i + 1
+                    )));
+                };
+
+                let result = crate::pack::apply_delta(&base_data, &delta_data);
+                let obj_type = crate::pack::pack_type_to_object_type(base_type);
+                let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
+                let obj = Object {
+                    obj_type,
+                    data: result.clone(),
+                };
+                repo.write_object(&obj).map_err(|e| {
+                    Error::Other(format!("failed to write delta object {}: {}", oid.to_hex(), e))
+                })?;
+                push_delta_cache(
+                    &mut resolved,
+                    &mut offset_index,
+                    &mut resolved_bytes,
+                    entry_start,
+                    oid,
+                    result,
+                    base_type,
+                );
+                count += 1;
             }
-            _ => {}
+            _ => {
+                return Err(Error::Other(format!(
+                    "unsupported pack object type {} at object {}",
+                    obj_type_raw,
+                    i + 1
+                )));
+            }
         }
     }
 
     anyos_std::println!(
         "\rReceiving objects: 100% ({}/{}), done.",
-        num_objects,
+        count,
         num_objects
     );
+    if count != num_objects {
+        return Err(Error::Other(format!(
+            "resolved only {}/{} pack objects",
+            count, num_objects
+        )));
+    }
     Ok(count)
 }
 

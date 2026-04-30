@@ -843,6 +843,35 @@ fn finish_script_slot(result: js_worker::JsWorkerResult) {
         return;
     }
     if changed {
+        let base_url = {
+            let st = state();
+            st.tabs
+                .get(result.tab_index)
+                .and_then(|tab| tab.current_url.clone())
+        };
+        if let Some(base_url) = base_url {
+            let rasterized_svg = {
+                let st = state();
+                result.tab_index < st.tabs.len()
+                    && resources::queue_inline_svgs(
+                        &st.tabs[result.tab_index].webview,
+                        &base_url,
+                        result.tab_index,
+                    )
+            };
+            if rasterized_svg {
+                request_layout_refresh(result.tab_index);
+            }
+            {
+                let st = state();
+                if result.tab_index < st.tabs.len() {
+                    if let Some(dom) = st.tabs[result.tab_index].webview.dom() {
+                        resources::queue_images(dom, &base_url, result.tab_index, false);
+                    }
+                }
+            }
+            pump_deferred_images_for_tab(result.tab_index);
+        }
         request_image_refresh(result.tab_index);
     }
     finish_blocking_scripts_for_tab(result.tab_index);

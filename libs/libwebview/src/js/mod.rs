@@ -169,21 +169,31 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                     node_id, cls
                 );
             }
-            for attr_name in [
-                "width",
-                "height",
-                "viewBox",
-                "fill",
-                "stroke",
-                "strokeWidth",
-                "strokeLinecap",
-                "strokeLinejoin",
-                "xmlns",
-                "role",
-                "aria-hidden",
-                "focusable",
+            for (prop_name, attr_name) in [
+                ("src", "src"),
+                ("srcSet", "srcset"),
+                ("alt", "alt"),
+                ("decoding", "decoding"),
+                ("loading", "loading"),
+                ("fetchPriority", "fetchpriority"),
+                ("href", "href"),
+                ("target", "target"),
+                ("rel", "rel"),
+                ("title", "title"),
+                ("width", "width"),
+                ("height", "height"),
+                ("viewBox", "viewBox"),
+                ("fill", "fill"),
+                ("stroke", "stroke"),
+                ("strokeWidth", "strokeWidth"),
+                ("strokeLinecap", "strokeLinecap"),
+                ("strokeLinejoin", "strokeLinejoin"),
+                ("xmlns", "xmlns"),
+                ("role", "role"),
+                ("aria-hidden", "aria-hidden"),
+                ("focusable", "focusable"),
             ] {
-                let attr_value = value.get_property(attr_name);
+                let attr_value = value.get_property(prop_name);
                 if !matches!(attr_value, JsValue::Undefined | JsValue::Null) {
                     mutations.push(DomMutation::SetAttribute {
                         node_id,
@@ -234,10 +244,25 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
         }
         "value" | "src" | "href" | "id" | "name" | "type" | "width" | "height" | "viewBox"
         | "fill" | "stroke" | "strokeWidth" | "strokeLinecap" | "strokeLinejoin" | "xmlns"
-        | "role" | "aria-hidden" | "focusable" => {
+        | "role" | "aria-hidden" | "focusable" | "alt" | "decoding" | "loading" | "target"
+        | "rel" | "title" => {
             mutations.push(DomMutation::SetAttribute {
                 node_id,
                 name: String::from(key),
+                value: value.to_js_string(),
+            });
+        }
+        "srcSet" => {
+            mutations.push(DomMutation::SetAttribute {
+                node_id,
+                name: String::from("srcset"),
+                value: value.to_js_string(),
+            });
+        }
+        "fetchPriority" => {
+            mutations.push(DomMutation::SetAttribute {
+                node_id,
+                name: String::from("fetchpriority"),
                 value: value.to_js_string(),
             });
         }
@@ -1969,7 +1994,7 @@ impl JsRuntime {
                 DomMutation::CreateElement { virtual_id, tag } => {
                     let real_tag = Tag::from_str(tag);
                     // Copy attributes from virtual node if they were set before insertion
-                    let attrs: Vec<crate::dom::Attr> = self
+                    let mut attrs: Vec<crate::dom::Attr> = self
                         .virtual_nodes
                         .iter()
                         .find(|vn| vn.id == *virtual_id)
@@ -1983,6 +2008,12 @@ impl JsRuntime {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    if real_tag == Tag::Unknown && attrs.iter().all(|a| a.name != "\x00") {
+                        attrs.push(crate::dom::Attr {
+                            name: String::from("\x00"),
+                            value: tag.to_ascii_lowercase(),
+                        });
+                    }
                     let real_id = dom.add_node(
                         NodeType::Element {
                             tag: real_tag,
