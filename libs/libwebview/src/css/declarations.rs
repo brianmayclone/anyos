@@ -149,7 +149,7 @@ pub fn parse_property(name: &str) -> Option<Property> {
 
     match lower {
         "display" => Some(Property::Display),
-        "color" => Some(Property::Color),
+        "color" | "-webkit-text-fill-color" => Some(Property::Color),
         "background-color" => Some(Property::BackgroundColor),
         "background" => Some(Property::Background),
         "font-size" => Some(Property::FontSize),
@@ -380,8 +380,9 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "scroll-behavior" => Some(Property::ScrollBehavior),
         "resize" => Some(Property::Resize),
         "object-position" => Some(Property::ObjectPosition),
-        "translate" => Some(Property::Transform),
-        "scale" => Some(Property::Transform),
+        "translate" => Some(Property::Translate),
+        "scale" => Some(Property::Scale),
+        "rotate" => Some(Property::Rotate),
         _ => Option::None,
     }
 }
@@ -403,6 +404,23 @@ mod tests {
         assert!(decls.iter().any(|d| {
             d.property == Property::FontFamily
                 && matches!(d.value, CssValue::Keyword(ref kw) if kw == "Ahem")
+        }));
+    }
+
+    #[test]
+    fn css_math_lengths_keep_fixed_point_scale() {
+        let decls = parse_inline_style("font-size: clamp(48px, 80px, 112px); width: min(24px, 32px); height: max(12px, 18px)");
+        assert!(decls.iter().any(|d| {
+            d.property == Property::FontSize
+                && matches!(d.value, CssValue::Length(8000, crate::css::Unit::Px))
+        }));
+        assert!(decls.iter().any(|d| {
+            d.property == Property::Width
+                && matches!(d.value, CssValue::Length(2400, crate::css::Unit::Px))
+        }));
+        assert!(decls.iter().any(|d| {
+            d.property == Property::Height
+                && matches!(d.value, CssValue::Length(1800, crate::css::Unit::Px))
         }));
     }
 }

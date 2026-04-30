@@ -730,6 +730,8 @@ fn build_block_internal(
     // These have intrinsic sizes that build_block wouldn't otherwise know about.
     if tag == Some(Tag::Input) {
         let input_type = dom.attr(node_id, "type").unwrap_or("text");
+        let input_type_lower = input_type.to_ascii_lowercase();
+        let input_type = input_type_lower.as_str();
         if input_type == "hidden" {
             bx.width = 0;
             bx.height = 0;
@@ -755,7 +757,11 @@ fn build_block_internal(
             "submit" | "button" => {
                 let input_h = if let Some(h) = style.height { h } else { 30 };
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
-                bx.form_field = Some(FormFieldKind::Submit);
+                bx.form_field = Some(if input_type == "button" {
+                    FormFieldKind::ButtonEl
+                } else {
+                    FormFieldKind::Submit
+                });
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
                 bx.text = bx
                     .form_value
@@ -847,7 +853,12 @@ fn build_block_internal(
         if !label.is_empty() {
             bx.text = Some(String::from(label));
         }
-        bx.form_field = Some(FormFieldKind::Submit);
+        let btn_type = dom.attr(node_id, "type").unwrap_or("submit");
+        bx.form_field = Some(match btn_type {
+            "button" => FormFieldKind::ButtonEl,
+            "reset" => FormFieldKind::Reset,
+            _ => FormFieldKind::Submit,
+        });
         return bx;
     }
     if tag == Some(Tag::Textarea) {

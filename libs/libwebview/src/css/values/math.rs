@@ -46,11 +46,11 @@ fn eval_min_max_clamp(s: &str, func: CssMathFunc) -> CssValue {
         CssMathFunc::Min => {
             if vals.iter().all(|(_, pct)| *pct == 0) {
                 let min_px = vals.iter().map(|(px, _)| *px).min().unwrap_or(0);
-                return CssValue::Length(min_px / 100, Unit::Px);
+                return CssValue::Length(min_px, Unit::Px);
             }
             let (px, pct) = vals.first().copied().unwrap_or((0, 0));
             if pct == 0 {
-                CssValue::Length(px / 100, Unit::Px)
+                CssValue::Length(px, Unit::Px)
             } else if px == 0 {
                 CssValue::Percentage(pct)
             } else {
@@ -60,11 +60,11 @@ fn eval_min_max_clamp(s: &str, func: CssMathFunc) -> CssValue {
         CssMathFunc::Max => {
             if vals.iter().all(|(_, pct)| *pct == 0) {
                 let max_px = vals.iter().map(|(px, _)| *px).max().unwrap_or(0);
-                return CssValue::Length(max_px / 100, Unit::Px);
+                return CssValue::Length(max_px, Unit::Px);
             }
             let (px, pct) = vals.last().copied().unwrap_or((0, 0));
             if pct == 0 {
-                CssValue::Length(px / 100, Unit::Px)
+                CssValue::Length(px, Unit::Px)
             } else if px == 0 {
                 CssValue::Percentage(pct)
             } else {
@@ -78,10 +78,10 @@ fn eval_min_max_clamp(s: &str, func: CssMathFunc) -> CssValue {
                 let (max_px, max_pct) = vals[2];
                 if min_pct == 0 && val_pct == 0 && max_pct == 0 {
                     let v = val_px.max(min_px).min(max_px);
-                    return CssValue::Length(v / 100, Unit::Px);
+                    return CssValue::Length(v, Unit::Px);
                 }
                 if val_pct == 0 {
-                    CssValue::Length(val_px / 100, Unit::Px)
+                    CssValue::Length(val_px, Unit::Px)
                 } else if val_px == 0 {
                     CssValue::Percentage(val_pct)
                 } else {
@@ -90,7 +90,7 @@ fn eval_min_max_clamp(s: &str, func: CssMathFunc) -> CssValue {
             } else {
                 let (px, pct) = vals.first().copied().unwrap_or((0, 0));
                 if pct == 0 {
-                    CssValue::Length(px / 100, Unit::Px)
+                    CssValue::Length(px, Unit::Px)
                 } else {
                     CssValue::Percentage(pct)
                 }

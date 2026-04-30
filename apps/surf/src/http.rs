@@ -789,6 +789,14 @@ pub fn parse_url(s: &str) -> Result<Url, FetchError> {
 }
 
 pub fn resolve_url(base: &Url, relative: &str) -> Url {
+    if relative.trim().is_empty() {
+        let mut resolved = clone_url(base);
+        if let Some(hash) = resolved.path.find('#') {
+            resolved.path.truncate(hash);
+        }
+        return resolved;
+    }
+
     if starts_with_ignore_case(relative, "http://") || starts_with_ignore_case(relative, "https://")
     {
         match parse_url(relative) {

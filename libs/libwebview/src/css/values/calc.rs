@@ -167,7 +167,7 @@ fn parse_calc_operand(s: &str) -> (i32, i32) {
             CssMathFunc::Max
         };
         match eval_min_max_clamp(lower, func) {
-            CssValue::Length(v, Unit::Px) => return (v * 100, 0),
+            CssValue::Length(v, Unit::Px) => return (v, 0),
             CssValue::Percentage(p) => return (0, p),
             CssValue::Calc(px, pct) => return (px, pct),
             _ => {}

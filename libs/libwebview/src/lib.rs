@@ -2661,6 +2661,19 @@ impl WebView {
                 _ => {}
             }
         }
+
+        if matches!(dom.tag(node_id), Some(dom::Tag::Input) | Some(dom::Tag::Button)) {
+            if let Some(name) = dom.attr(node_id, "name") {
+                if !name.is_empty()
+                    && data
+                        .iter()
+                        .all(|(existing_name, _)| existing_name.as_str() != name)
+                {
+                    let value = dom.attr(node_id, "value").unwrap_or("");
+                    data.push((String::from(name), String::from(value)));
+                }
+            }
+        }
         data
     }
 
@@ -4389,16 +4402,38 @@ impl WebView {
     /// Resolve a submit-capable control or canvas hit to its DOM node.
     pub fn submit_node_for_control(&self, control_id: u32) -> Option<usize> {
         if let Some(node_id) = self.canvas_submit_hit(control_id) {
-            return Some(node_id);
+            if self.node_is_submit_button(node_id) {
+                return Some(node_id);
+            }
+            return None;
         }
         self.renderer
             .form_controls
             .iter()
             .find(|fc| {
                 fc.control_id == control_id
-                    && matches!(fc.kind, FormFieldKind::Submit | FormFieldKind::ButtonEl)
+                    && fc.kind == FormFieldKind::Submit
+                    && self.node_is_submit_button(fc.node_id)
             })
             .map(|fc| fc.node_id)
+    }
+
+    fn node_is_submit_button(&self, node_id: usize) -> bool {
+        let dom = match self.dom_val.as_ref() {
+            Some(dom) => dom,
+            None => return false,
+        };
+        match dom.tag(node_id) {
+            Some(dom::Tag::Input) => {
+                let ty = dom.attr(node_id, "type").unwrap_or("text").to_ascii_lowercase();
+                ty == "submit" || ty == "image"
+            }
+            Some(dom::Tag::Button) => {
+                let ty = dom.attr(node_id, "type").unwrap_or("submit").to_ascii_lowercase();
+                ty.is_empty() || ty == "submit"
+            }
+            _ => false,
+        }
     }
 
     /// Find the form action URL, method, and enctype for a submit button click.
@@ -4409,29 +4444,12 @@ impl WebView {
             return self.form_action_for_node(node_id);
         }
         // Legacy: real control lookup.
-        let dom = self.dom_val.as_ref()?;
         let fc = self
             .renderer
             .form_controls
             .iter()
             .find(|fc| fc.control_id == control_id)?;
-        let mut cur = Some(fc.node_id);
-        while let Some(id) = cur {
-            if dom.tag(id) == Some(dom::Tag::Form) {
-                let action = dom.attr(id, "action").unwrap_or("");
-                let method = dom.attr(id, "method").unwrap_or("GET");
-                let enctype = dom
-                    .attr(id, "enctype")
-                    .unwrap_or("application/x-www-form-urlencoded");
-                return Some((
-                    String::from(action),
-                    method.to_ascii_uppercase(),
-                    String::from(enctype),
-                ));
-            }
-            cur = dom.get(id).parent;
-        }
-        None
+        self.form_action_for_node(fc.node_id)
     }
 
     /// Collect form data (name=value pairs) for the form containing `control_id`.
@@ -4442,10 +4460,6 @@ impl WebView {
             return self.collect_form_data_for_node(node_id);
         }
         // Legacy: real control lookup.
-        let dom = match self.dom_val.as_ref() {
-            Some(d) => d,
-            None => return Vec::new(),
-        };
         let fc = match self
             .renderer
             .form_controls
@@ -5059,6 +5073,33 @@ mod tests {
                 String::from("application/x-www-form-urlencoded"),
             ))
         );
+    }
+
+    #[test]
+    fn only_real_submit_buttons_submit_forms() {
+        let mut wv = WebView::new(800, 600);
+        wv.set_url("https://example.test/");
+        wv.set_html_no_js(
+            r#"
+            <html><body>
+              <form id="f" action="/search">
+                <input id="plain" type="button" value="Plain">
+                <button id="button" type="button">No submit</button>
+                <button id="submit">Submit</button>
+              </form>
+            </body></html>
+            "#,
+        );
+        wv.relayout();
+
+        let dom = wv.dom().expect("dom");
+        let plain = find_node_by_id(dom, "plain");
+        let button = find_node_by_id(dom, "button");
+        let submit = find_node_by_id(dom, "submit");
+
+        assert!(!wv.node_is_submit_button(plain));
+        assert!(!wv.node_is_submit_button(button));
+        assert!(wv.node_is_submit_button(submit));
     }
 }
 

@@ -239,6 +239,7 @@ pub fn populate_element_prototype(proto: &JsValue) {
     // Misc stubs
     proto.set_property(String::from("focus"), native_fn("focus", el_noop));
     proto.set_property(String::from("blur"), native_fn("blur", el_noop));
+    proto.set_property(String::from("click"), native_fn("click", el_click));
     proto.set_property(
         String::from("removeEventListener"),
         native_fn("removeEventListener", el_noop),
@@ -670,7 +671,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("closest"), native_fn("closest", el_closest));
     obj.set(String::from("focus"), native_fn("focus", el_noop));
     obj.set(String::from("blur"), native_fn("blur", el_noop));
-    obj.set(String::from("click"), native_fn("click", el_noop));
+    obj.set(String::from("click"), native_fn("click", el_click));
     obj.set(
         String::from("scrollIntoView"),
         native_fn("scrollIntoView", el_noop),
@@ -1316,8 +1317,179 @@ fn el_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Undefined
 }
 
-fn el_dispatch_event(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::Bool(true)
+fn el_dispatch_event(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if nid < 0 {
+        return JsValue::Bool(true);
+    }
+    let event = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let event_name = match event.get_property("type") {
+        JsValue::String(s) if !s.is_empty() => s,
+        _ => return JsValue::Bool(true),
+    };
+    JsValue::Bool(dispatch_synthetic_event(
+        vm,
+        nid as usize,
+        &event_name,
+        Some(event),
+    ))
+}
+
+fn el_click(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if nid < 0 {
+        return JsValue::Undefined;
+    }
+    if dispatch_synthetic_event(vm, nid as usize, "click", None) {
+        queue_click_default_action(vm, nid as usize);
+    }
+    JsValue::Undefined
+}
+
+fn dispatch_synthetic_event(
+    vm: &mut Vm,
+    node_id: usize,
+    event_name: &str,
+    event_obj: Option<JsValue>,
+) -> bool {
+    let evt = event_obj.unwrap_or_else(|| {
+        let target = vm.current_this.clone();
+        let data = super::EventData::Mouse {
+            client_x: 0.0,
+            client_y: 0.0,
+            page_x: 0.0,
+            page_y: 0.0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            button: 0,
+            buttons: 0,
+            ctrl_key: false,
+            shift_key: false,
+            alt_key: false,
+            meta_key: false,
+        };
+        super::build_event_object(event_name, &data, target, true, true)
+    });
+    let target = vm.current_this.clone();
+    evt.set_property(String::from("target"), target.clone());
+    evt.set_property(String::from("currentTarget"), target.clone());
+    evt.set_property(String::from("eventPhase"), JsValue::Number(2.0));
+
+    let inline_name = alloc::format!("on{}", event_name);
+    let inline = target.get_property(&inline_name);
+    if matches!(inline, JsValue::Function(_)) {
+        vm.call_value(&inline, &[evt.clone()], target.clone());
+    }
+
+    let callbacks: Vec<JsValue> = {
+        if let Some(bridge) = get_bridge(vm) {
+            bridge
+                .installed_event_listeners()
+                .iter()
+                .chain(bridge.event_listeners.iter())
+                .filter(|l| l.node_id == node_id && l.event == event_name)
+                .map(|l| l.callback.clone())
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+    for cb in callbacks {
+        match cb {
+            JsValue::Function(_) => {
+                vm.call_value(&cb, &[evt.clone()], target.clone());
+            }
+            JsValue::Object(_) => {
+                let handler = cb.get_property("handleEvent");
+                if matches!(handler, JsValue::Function(_)) {
+                    vm.call_value(&handler, &[evt.clone()], cb);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let default_prevented = matches!(evt.get_property("defaultPrevented"), JsValue::Bool(true));
+    let bridge_prevented = get_bridge(vm).map(|b| b.prevented).unwrap_or(false);
+    !(default_prevented || bridge_prevented)
+}
+
+fn queue_click_default_action(vm: &mut Vm, node_id: usize) {
+    let tag = read_tag_name(vm, node_id as i64).to_ascii_lowercase();
+    if tag == "a" {
+        if let JsValue::String(href) = read_attribute(vm, node_id as i64, "href") {
+            if !href.trim().is_empty() {
+                if let Some(bridge) = get_bridge(vm) {
+                    bridge
+                        .pending_navigation_requests
+                        .push(super::PendingNavigationRequest {
+                            url: href,
+                            replace: false,
+                        });
+                }
+            }
+        }
+        return;
+    }
+
+    let ty = match read_attribute(vm, node_id as i64, "type") {
+        JsValue::String(s) => s.to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    let is_submit = match tag.as_str() {
+        "input" => ty.is_empty() || ty == "submit" || ty == "image",
+        "button" => ty.is_empty() || ty == "submit",
+        _ => false,
+    };
+    let is_reset = match tag.as_str() {
+        "input" | "button" => ty == "reset",
+        _ => false,
+    };
+    if !is_submit && !is_reset {
+        return;
+    }
+    let Some(form_id) = find_form_for_click_default(vm, node_id) else {
+        return;
+    };
+    if let Some(bridge) = get_bridge(vm) {
+        if is_reset {
+            bridge
+                .mutations
+                .push(crate::js::DomMutation::FormReset { form_node_id: form_id });
+        } else {
+            bridge.mutations.push(crate::js::DomMutation::FormSubmit {
+                form_node_id: form_id,
+            });
+        }
+    }
+}
+
+fn find_form_for_click_default(vm: &mut Vm, node_id: usize) -> Option<usize> {
+    if let JsValue::String(form_attr) = read_attribute(vm, node_id as i64, "form") {
+        if let Some(bridge) = get_bridge(vm) {
+            let dom = bridge.dom();
+            for id in 0..dom.nodes.len() {
+                if matches!(dom.tag(id), Some(crate::dom::Tag::Form))
+                    && dom.attr(id, "id") == Some(form_attr.as_str())
+                {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            if matches!(dom.tag(id), Some(crate::dom::Tag::Form)) {
+                return Some(id);
+            }
+            cur = dom.nodes.get(id).and_then(|n| n.parent);
+        }
+    }
+    None
 }
 
 // ── Query methods ──

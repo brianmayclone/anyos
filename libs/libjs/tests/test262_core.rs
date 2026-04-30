@@ -1576,6 +1576,12 @@ fn date_now() {
     assert_eq!(eval_str("typeof Date.now()"), "number");
 }
 
+#[test]
+fn date_call_returns_string_while_constructor_returns_date_object() {
+    assert_eq!(eval_str("typeof Date()"), "string");
+    assert_eq!(eval_str("typeof new Date(0).toGMTString()"), "string");
+}
+
 // ═══════════════════════════════════════════════════════════
 // §24.3 — TypedArrays
 // ═══════════════════════════════════════════════════════════

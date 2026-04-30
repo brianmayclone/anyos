@@ -2415,6 +2415,12 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
 }
 
 pub fn resolve_url(base: &str, relative: &str) -> String {
+    if relative.trim().is_empty() {
+        if let Some(hash) = base.find('#') {
+            return base[..hash].to_string();
+        }
+        return base.to_string();
+    }
     if relative.starts_with("data:") {
         return relative.to_string();
     }

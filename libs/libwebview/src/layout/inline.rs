@@ -1699,7 +1699,11 @@ fn emit_input_fragment(
             let (bw, _) = measure_text(label, 14, 0, false, false);
             let w = resolve_control_width((bw + 24).max(60));
             let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
-            btn.form_field = Some(FormFieldKind::Submit);
+            btn.form_field = Some(if lower == "button" {
+                FormFieldKind::ButtonEl
+            } else {
+                FormFieldKind::Submit
+            });
             btn.text = Some(String::from(label));
             btn.bg_color = css_bg;
             btn.color = css_fg;

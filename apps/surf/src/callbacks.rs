@@ -213,7 +213,13 @@ pub(crate) fn submit_form_data(
     data: Vec<(String, String)>,
 ) {
     // Resolve the action URL relative to the current page.
-    let resolved_action = if let Some(base) = current_url {
+    let resolved_action = if action.trim().is_empty() {
+        if let Some(base) = current_url {
+            crate::ui::format_url(base)
+        } else {
+            action
+        }
+    } else if let Some(base) = current_url {
         let action_url = crate::http::resolve_url(base, &action);
         crate::ui::format_url(&action_url)
     } else {

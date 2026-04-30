@@ -7,7 +7,6 @@
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use super::{native_fn, Vm};
@@ -19,6 +18,10 @@ use crate::value::*;
 
 /// `new Date()` / `new Date(ms)` / `Date()`
 pub fn ctor_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !vm.is_in_constructor_call() {
+        return JsValue::String(format_date_string(date_now_ms(vm)));
+    }
+
     let ms = if args.is_empty() {
         // Try to get time from environment
         date_now_ms(vm)
@@ -483,6 +486,10 @@ pub fn date_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if ms_val.is_nan() {
         return JsValue::String(String::from("Invalid Date"));
     }
+    JsValue::String(format_date_string(ms_val))
+}
+
+fn format_date_string(ms_val: f64) -> String {
     let (y, mo, d, h, mi, s, _) = decompose(ms_val);
     let months = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -496,7 +503,7 @@ pub fn date_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         "{} {} {:02} {} {:02}:{:02}:{:02} GMT",
         days[day_of_week], months[mo as usize], d, y, h, mi, s
     );
-    JsValue::String(result)
+    result
 }
 
 // ═══════════════════════════════════════════════════════════

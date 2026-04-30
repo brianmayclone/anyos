@@ -3400,9 +3400,27 @@ pub fn apply_declaration(
                 style.text_align = match kw.as_str() {
                     "center" => TextAlignVal::Center,
                     "right" => TextAlignVal::Right,
+                    "end" => {
+                        if style.direction == Direction::Rtl {
+                            TextAlignVal::Left
+                        } else {
+                            TextAlignVal::Right
+                        }
+                    }
                     "justify" => TextAlignVal::Justify,
+                    "start" | "match-parent" => {
+                        if style.direction == Direction::Rtl {
+                            TextAlignVal::Right
+                        } else {
+                            TextAlignVal::Left
+                        }
+                    }
                     _ => TextAlignVal::Left,
                 };
+            } else if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.text_align = parent.text_align;
+                }
             }
         }
         Property::TextDecoration => {
@@ -3434,6 +3452,14 @@ pub fn apply_declaration(
                 style.line_height = (style.font_size * v) / 100;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.line_height = px;
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                if kw == "normal" {
+                    style.line_height = (style.font_size * 6 + 2) / 5;
+                }
+            } else if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.line_height = parent.line_height;
+                }
             }
         }
         Property::Width => {
@@ -4810,6 +4836,43 @@ pub fn apply_declaration(
                 style.transform_ty = ty;
                 style.transform_tx_pct = tx_pct;
                 style.transform_ty_pct = ty_pct;
+            }
+        }
+        Property::Translate => {
+            if matches!(decl.value, CssValue::None)
+                || matches!(decl.value, CssValue::Keyword(ref k) if k == "none")
+            {
+                style.transform_tx = 0;
+                style.transform_ty = 0;
+                style.transform_tx_pct = 0;
+                style.transform_ty_pct = 0;
+            } else if let Some((tx, ty, tx_pct, ty_pct)) =
+                parse_individual_translate(&decl.value, parent_fs, root_fs)
+            {
+                style.transform_tx = tx;
+                style.transform_ty = ty;
+                style.transform_tx_pct = tx_pct;
+                style.transform_ty_pct = ty_pct;
+            }
+        }
+        Property::Scale => {
+            if matches!(decl.value, CssValue::None)
+                || matches!(decl.value, CssValue::Keyword(ref k) if k == "none")
+            {
+                style.transform_sx = 1000;
+                style.transform_sy = 1000;
+            } else if let Some((sx, sy)) = parse_individual_scale(&decl.value) {
+                style.transform_sx = sx;
+                style.transform_sy = sy;
+            }
+        }
+        Property::Rotate => {
+            if matches!(decl.value, CssValue::None)
+                || matches!(decl.value, CssValue::Keyword(ref k) if k == "none")
+            {
+                style.transform_rotate = 0;
+            } else if let Some(deg100) = parse_individual_rotate(&decl.value) {
+                style.transform_rotate = deg100;
             }
         }
         Property::TransformOrigin => {
@@ -6436,13 +6499,11 @@ fn parse_linear_gradient(inner: &str) -> Option<BackgroundImageVal> {
 
     for i in start_idx..parts.len() {
         let part = parts[i].trim();
-        // Try to parse "color position" or just "color"
-        let tokens: Vec<&str> = part.split_whitespace().collect();
-        let color_str = if tokens.len() >= 1 { tokens[0] } else { part };
+        let (color_str, position_str) = split_gradient_stop(part);
         let color = crate::css::try_parse_color_pub(color_str)
             .or_else(|| crate::css::named_color_pub(&color_str.to_ascii_lowercase()))?;
-        let position = if tokens.len() >= 2 {
-            parse_gradient_position(tokens[1])
+        let position = if let Some(pos) = position_str {
+            parse_gradient_position(pos)
         } else {
             -1 // auto
         };
@@ -6484,6 +6545,30 @@ fn parse_linear_gradient(inner: &str) -> Option<BackgroundImageVal> {
     }
 
     Some(BackgroundImageVal::LinearGradient { angle_deg, stops })
+}
+
+fn split_gradient_stop(part: &str) -> (&str, Option<&str>) {
+    let s = part.trim();
+    if s.is_empty() {
+        return (s, None);
+    }
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    let mut depth = 0u32;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'(' {
+            depth += 1;
+        } else if b == b')' {
+            depth = depth.saturating_sub(1);
+        } else if b.is_ascii_whitespace() && depth == 0 {
+            let color = s[..i].trim();
+            let rest = s[i..].trim();
+            return (color, if rest.is_empty() { None } else { Some(rest) });
+        }
+        i += 1;
+    }
+    (s, None)
 }
 
 fn parse_gradient_angle(s: &str) -> Option<i32> {
@@ -6567,6 +6652,191 @@ fn split_comma_respecting_parens(s: &str) -> Vec<&str> {
     parts
 }
 
+fn split_transform_component_list(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, b) in s.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' | b' ' | b'\t' | b'\n' | b'\r' if depth == 0 => {
+                if start < i {
+                    let part = s[start..i].trim();
+                    if !part.is_empty() {
+                        parts.push(part);
+                    }
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < s.len() {
+        let part = s[start..].trim();
+        if !part.is_empty() {
+            parts.push(part);
+        }
+    }
+    parts
+}
+
+fn parse_individual_translate(
+    value: &CssValue,
+    parent_fs: i32,
+    root_fs: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    match value {
+        CssValue::Length(_, _)
+        | CssValue::Percentage(_)
+        | CssValue::Calc(_, _)
+        | CssValue::Number(_) => {
+            let (tx, tx_pct) = translate_component_from_value(value, parent_fs, root_fs)?;
+            Some((tx, 0, tx_pct, 0))
+        }
+        CssValue::Keyword(s) => {
+            let parts = split_transform_component_list(s);
+            if parts.is_empty() {
+                return None;
+            }
+            let (tx, tx_pct) = translate_component_from_str(parts[0], parent_fs, root_fs)?;
+            let (ty, ty_pct) = if let Some(y) = parts.get(1) {
+                translate_component_from_str(y, parent_fs, root_fs)?
+            } else {
+                (0, 0)
+            };
+            Some((tx, ty, tx_pct, ty_pct))
+        }
+        _ => None,
+    }
+}
+
+fn translate_component_from_value(
+    value: &CssValue,
+    parent_fs: i32,
+    root_fs: i32,
+) -> Option<(i32, i32)> {
+    match value {
+        CssValue::Length(_, _) => resolve_length(value, parent_fs, root_fs).map(|px| (px, 0)),
+        CssValue::Percentage(pct) => Some((0, *pct)),
+        CssValue::Calc(px, pct) => Some((px / 100, *pct)),
+        CssValue::Number(n) => Some((n / 100, 0)),
+        _ => None,
+    }
+}
+
+fn translate_component_from_str(s: &str, parent_fs: i32, root_fs: i32) -> Option<(i32, i32)> {
+    let lower = s.trim().to_ascii_lowercase();
+    if lower.starts_with("calc(")
+        || lower.starts_with("min(")
+        || lower.starts_with("max(")
+        || lower.starts_with("clamp(")
+    {
+        let parsed = crate::css::parse_value(&Property::Width, s);
+        translate_component_from_value(&parsed, parent_fs, root_fs)
+    } else {
+        Some(parse_transform_translate_component(s, parent_fs))
+    }
+}
+
+fn parse_individual_scale(value: &CssValue) -> Option<(i32, i32)> {
+    match value {
+        CssValue::Number(n) => {
+            let scale = *n * 10;
+            Some((scale, scale))
+        }
+        CssValue::Percentage(p) => {
+            let scale = *p / 10;
+            Some((scale, scale))
+        }
+        CssValue::Keyword(s) => {
+            let parts = split_transform_component_list(s);
+            if parts.is_empty() {
+                return None;
+            }
+            let sx = parse_scale_component(parts[0])?;
+            let sy = if let Some(y) = parts.get(1) {
+                parse_scale_component(y)?
+            } else {
+                sx
+            };
+            Some((sx, sy))
+        }
+        _ => None,
+    }
+}
+
+fn parse_scale_component(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix('%') {
+        parse_decimal_fixed100(num).map(|v| v / 10)
+    } else {
+        parse_decimal_fixed100(s).map(|v| v * 10)
+    }
+}
+
+fn parse_individual_rotate(value: &CssValue) -> Option<i32> {
+    match value {
+        CssValue::Number(n) => Some(*n),
+        CssValue::Keyword(s) => parse_angle_deg100(s),
+        _ => None,
+    }
+}
+
+fn parse_angle_deg100(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix("deg") {
+        parse_decimal_fixed100(num)
+    } else if let Some(num) = s.strip_suffix("turn") {
+        parse_decimal_fixed100(num).map(|v| v * 360)
+    } else if let Some(num) = s.strip_suffix("rad") {
+        parse_decimal_fixed100(num).map(|v| (v as i64 * 18000 / 314) as i32)
+    } else {
+        parse_decimal_fixed100(s)
+    }
+}
+
+fn parse_decimal_fixed100(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let neg = s.starts_with('-');
+    let s = if neg || s.starts_with('+') {
+        &s[1..]
+    } else {
+        s
+    };
+    let mut int_part = 0i32;
+    let mut frac = 0i32;
+    let mut in_frac = false;
+    let mut frac_mul = 10;
+    let mut saw_digit = false;
+    for &b in s.as_bytes() {
+        if b == b'.' && !in_frac {
+            in_frac = true;
+            continue;
+        }
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        saw_digit = true;
+        if in_frac {
+            if frac_mul <= 100 {
+                frac += (b - b'0') as i32 * (100 / frac_mul);
+                frac_mul *= 10;
+            }
+        } else {
+            int_part = int_part.saturating_mul(10) + (b - b'0') as i32;
+        }
+    }
+    if !saw_digit {
+        return None;
+    }
+    let value = int_part.saturating_mul(100).saturating_add(frac);
+    Some(if neg { -value } else { value })
+}
+
 #[cfg(test)]
 mod declaration_tests {
     use super::*;
@@ -6646,6 +6916,22 @@ mod declaration_tests {
     }
 
     #[test]
+    fn individual_transform_properties_apply_translate_scale_and_rotate() {
+        let decls = crate::css::parse_inline_style(
+            "translate: calc(1rem * -2) 50%; scale: 1.05 95%; rotate: 0.25turn",
+        );
+        let mut style = default_style();
+        for decl in &decls {
+            apply_declaration(&mut style, decl, None, 16, 16);
+        }
+        assert_eq!(style.transform_tx, -32);
+        assert_eq!(style.transform_ty_pct, 5000);
+        assert_eq!(style.transform_sx, 1050);
+        assert_eq!(style.transform_sy, 950);
+        assert_eq!(style.transform_rotate, 9000);
+    }
+
+    #[test]
     fn border_radius_accepts_percentage_for_avatar_circles() {
         let decls = crate::css::parse_inline_style("border-radius: 50%");
         let mut style = default_style();
@@ -6664,6 +6950,17 @@ mod declaration_tests {
         assert!(parse_background_image_val("linear-gradient(100gradian, red, red)").is_none());
         assert!(parse_background_image_val("linear-gradient(1.57radian, red, red)").is_none());
         assert!(parse_background_image_val("linear-gradient(0.25turns, red, red)").is_none());
+    }
+
+    #[test]
+    fn linear_gradient_accepts_space_separated_function_colors() {
+        let parsed = parse_background_image_val(
+            "linear-gradient(to right, oklch(0.65 0.2 280), rgb(59 130 246 / 1))",
+        );
+        assert!(matches!(
+            parsed,
+            Some(BackgroundImageVal::LinearGradient { ref stops, .. }) if stops.len() == 2
+        ));
     }
 
     #[test]

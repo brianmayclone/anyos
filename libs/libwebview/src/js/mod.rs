@@ -434,6 +434,7 @@ struct DomBridge {
     dom: *const Dom,
     mutations: Vec<DomMutation>,
     event_listeners: Vec<EventListener>,
+    installed_event_listeners: *const Vec<EventListener>,
     /// Counter for virtual (createElement'd) node IDs: -1, -2, -3, …
     next_virtual_id: i64,
     /// Virtual nodes created by createElement.
@@ -496,6 +497,14 @@ impl DomBridge {
             Some(id as usize)
         } else {
             self.real_node_ids.get(&id).copied()
+        }
+    }
+
+    fn installed_event_listeners(&self) -> &[EventListener] {
+        if self.installed_event_listeners.is_null() {
+            &[]
+        } else {
+            unsafe { &*self.installed_event_listeners }
         }
     }
 }
@@ -1280,6 +1289,7 @@ impl JsRuntime {
             dom: dom as *const Dom,
             mutations: Vec::new(),
             event_listeners: Vec::new(),
+            installed_event_listeners: &self.event_listeners as *const Vec<EventListener>,
             next_virtual_id: self.next_virtual_id,
             virtual_nodes: core::mem::take(&mut self.virtual_nodes),
             real_node_ids: core::mem::take(&mut self.real_node_ids),
@@ -1754,6 +1764,7 @@ impl JsRuntime {
             dom: dom as *const Dom,
             mutations: Vec::new(),
             event_listeners: Vec::new(),
+            installed_event_listeners: &self.event_listeners as *const Vec<EventListener>,
             next_virtual_id: self.next_virtual_id,
             virtual_nodes: self.virtual_nodes.clone(),
             real_node_ids: self.real_node_ids.clone(),
@@ -2321,6 +2332,7 @@ impl JsRuntime {
             dom: dom as *const Dom,
             mutations: Vec::new(),
             event_listeners: Vec::new(),
+            installed_event_listeners: &self.event_listeners as *const Vec<EventListener>,
             next_virtual_id: self.next_virtual_id,
             virtual_nodes: self.virtual_nodes.clone(),
             real_node_ids: self.real_node_ids.clone(),
@@ -2570,6 +2582,7 @@ impl JsRuntime {
                     dom: dom as *const Dom,
                     mutations: Vec::new(),
                     event_listeners: Vec::new(),
+                    installed_event_listeners: &self.event_listeners as *const Vec<EventListener>,
                     next_virtual_id: self.next_virtual_id,
                     virtual_nodes: core::mem::take(&mut self.virtual_nodes),
                     real_node_ids: core::mem::take(&mut self.real_node_ids),
@@ -3285,7 +3298,7 @@ fn make_close_event(code: u16, reason: &str, was_clean: bool) -> JsValue {
 ///
 /// Sets the common `Event` interface properties and then overlays the
 /// type-specific properties from `data` (MouseEvent, KeyboardEvent, …).
-fn build_event_object(
+pub(super) fn build_event_object(
     event_name: &str,
     data: &EventData,
     target: JsValue,
@@ -3957,6 +3970,63 @@ mod tests {
                 )
             }),
             "Object.assign should route className writes through the DOM property hook"
+        );
+    }
+
+    #[test]
+    fn element_click_dispatches_listener_and_respects_prevent_default() {
+        let dom = html::parse(
+            "<html><body><form id=\"f\"><button id=\"b\" name=\"go\" value=\"1\">Go</button></form></body></html>",
+        );
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from(
+                r#"
+                let seen = 0;
+                const b = document.getElementById('b');
+                b.addEventListener('click', (event) => {
+                    seen += 1;
+                    event.preventDefault();
+                });
+                b.click();
+                globalThis.__click_seen = seen;
+                "#,
+            )],
+        );
+
+        assert_eq!(
+            runtime.engine.vm().get_global("__click_seen").to_number() as i32,
+            1
+        );
+        assert!(
+            !runtime
+                .mutations
+                .iter()
+                .any(|m| matches!(m, super::DomMutation::FormSubmit { .. })),
+            "preventDefault on a synthetic click must cancel the submit default action"
+        );
+    }
+
+    #[test]
+    fn element_click_queues_default_form_submit() {
+        let dom = html::parse(
+            "<html><body><form id=\"f\"><button id=\"b\" name=\"go\" value=\"1\">Go</button></form></body></html>",
+        );
+        let mut runtime = JsRuntime::new();
+        runtime.execute_script_sources(
+            &dom,
+            "https://example.test/",
+            &[String::from("document.getElementById('b').click();")],
+        );
+
+        assert!(
+            runtime
+                .mutations
+                .iter()
+                .any(|m| matches!(m, super::DomMutation::FormSubmit { form_node_id } if dom.attr(*form_node_id, "id") == Some("f"))),
+            "programmatic button.click() should perform the browser submit default action"
         );
     }
 }
