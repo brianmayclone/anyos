@@ -42,6 +42,21 @@ pub fn console_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Undefined
 }
 
+pub fn console_assert(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if args.first().map(|v| v.to_boolean()).unwrap_or(false) {
+        return JsValue::Undefined;
+    }
+
+    let mut msg = String::from("[ASSERT] ");
+    if args.len() > 1 {
+        msg.push_str(&format_args_to_string(&args[1..]));
+    } else {
+        msg.push_str("Assertion failed");
+    }
+    push_console_output(vm, msg);
+    JsValue::Undefined
+}
+
 // ═══════════════════════════════════════════════════════════
 // Helper
 // ═══════════════════════════════════════════════════════════

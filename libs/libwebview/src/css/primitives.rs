@@ -22,6 +22,20 @@ fn try_parse_dimension(s: &str) -> Option<CssValue> {
             i += 1;
         }
     }
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        let exp_start = i;
+        i += 1;
+        if i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+') {
+            i += 1;
+        }
+        let digits_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if digits_start == i {
+            i = exp_start;
+        }
+    }
 
     if i == 0 || (i == 1 && (bytes[0] == b'-' || bytes[0] == b'+' || bytes[0] == b'.')) {
         return Option::None;
@@ -112,6 +126,38 @@ fn parse_fixed_point(s: &str) -> Option<i32> {
         .saturating_mul(100)
         .saturating_add(frac)
         .min(MAX_FIXED);
+    let mut val = val;
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        i += 1;
+        let exp_negative = if i < bytes.len() && bytes[i] == b'-' {
+            i += 1;
+            true
+        } else if i < bytes.len() && bytes[i] == b'+' {
+            i += 1;
+            false
+        } else {
+            false
+        };
+        let mut exp = 0u32;
+        let exp_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            exp = exp
+                .saturating_mul(10)
+                .saturating_add((bytes[i] - b'0') as u32)
+                .min(64);
+            i += 1;
+        }
+        if i == exp_start {
+            return Option::None;
+        }
+        for _ in 0..exp {
+            if exp_negative {
+                val /= 10;
+            } else {
+                val = val.saturating_mul(10).min(MAX_FIXED);
+            }
+        }
+    }
     Some(if negative { val.saturating_neg() } else { val })
 }
 
@@ -161,4 +207,25 @@ pub fn named_color_pub(name: &str) -> Option<u32> {
 
 pub fn try_parse_dimension_pub(s: &str) -> Option<CssValue> {
     try_parse_dimension(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dimensions_accept_scientific_notation() {
+        assert!(matches!(
+            try_parse_dimension("3.40282e38px"),
+            Some(CssValue::Length(v, Unit::Px)) if v > 1_000_000
+        ));
+        assert!(matches!(
+            try_parse_dimension("1.5e2px"),
+            Some(CssValue::Length(15_000, Unit::Px))
+        ));
+        assert!(matches!(
+            try_parse_dimension("1e-2px"),
+            Some(CssValue::Length(1, Unit::Px))
+        ));
+    }
 }

@@ -978,6 +978,15 @@ impl WebView {
     /// Run JS timers for `delta_ms` milliseconds and apply any resulting mutations.
     /// Returns `true` if any timer fired (and thus mutations may have occurred).
     pub fn run_timers(&mut self, delta_ms: u64) -> bool {
+        self.run_timers_with_budget(delta_ms, JS_TIMER_CALLBACK_BUDGET)
+    }
+
+    /// Run JS timers with an explicit callback budget.
+    ///
+    /// Interactive callers should normally use [`run_timers`], which keeps the
+    /// UI responsive. Headless test harnesses can use a larger budget to drive
+    /// timer-heavy benchmarks without waiting on the UI frame budget.
+    pub fn run_timers_with_budget(&mut self, delta_ms: u64, callback_budget: usize) -> bool {
         let dom = match self.dom_val.take() {
             Some(d) => d,
             None => return false,
@@ -985,7 +994,7 @@ impl WebView {
 
         let fired = self
             .js_runtime
-            .tick_with_budget(&dom, delta_ms, JS_TIMER_CALLBACK_BUDGET);
+            .tick_with_budget(&dom, delta_ms, callback_budget);
 
         // Apply mutations if timers fired.
         let mut dom = dom;

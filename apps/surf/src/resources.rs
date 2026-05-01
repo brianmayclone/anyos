@@ -115,6 +115,58 @@ fn parse_dimension_attr(value: &str) -> Option<i32> {
     digits.parse::<i32>().ok().filter(|v| *v > 0)
 }
 
+fn explicit_image_decode_hints(
+    webview: &libwebview::WebView,
+    node_id: usize,
+    bounds: Option<(i32, i32, i32, i32)>,
+) -> (Option<i32>, Option<i32>) {
+    let Some((_, _, box_w, box_h)) = bounds else {
+        return (None, None);
+    };
+    let Some(style) = webview.resolved_style_ref(node_id) else {
+        return (None, None);
+    };
+    let width = if style.width.is_some() && box_w > 0 {
+        Some(box_w)
+    } else {
+        None
+    };
+    let height = if style.height.is_some() && box_h > 0 {
+        Some(box_h)
+    } else {
+        None
+    };
+    (width, height)
+}
+
+fn image_decode_dimensions(
+    dom: &libwebview::dom::Dom,
+    webview: &libwebview::WebView,
+    node_id: usize,
+) -> (Option<i32>, Option<i32>) {
+    let bounds = webview.node_bounds(node_id);
+    let (css_w, css_h) = explicit_image_decode_hints(webview, node_id, bounds);
+    let has_attr_w = dom
+        .attr(node_id, "width")
+        .and_then(parse_dimension_attr)
+        .is_some();
+    let has_attr_h = dom
+        .attr(node_id, "height")
+        .and_then(parse_dimension_attr)
+        .is_some();
+    let attr_bounds = bounds.and_then(|(_, _, w, h)| {
+        if w > 0 && h > 0 && (has_attr_w || has_attr_h) {
+            Some((w, h))
+        } else {
+            None
+        }
+    });
+    (
+        css_w.or_else(|| attr_bounds.map(|(w, _)| w)),
+        css_h.or_else(|| attr_bounds.map(|(_, h)| h)),
+    )
+}
+
 fn deferred_image_rank(
     dom_index: usize,
     width: Option<i32>,
@@ -744,21 +796,7 @@ pub(crate) fn queue_images(
                         )
                     } else {
                         let webview = &st.tabs[tab_index].webview;
-                        if let Some((_, _, w, h)) = webview.node_bounds(i) {
-                            if w > 0 && h > 0 {
-                                (Some(w), Some(h))
-                            } else {
-                                (
-                                    dom.attr(i, "width").and_then(parse_dimension_attr),
-                                    dom.attr(i, "height").and_then(parse_dimension_attr),
-                                )
-                            }
-                        } else {
-                            (
-                                dom.attr(i, "width").and_then(parse_dimension_attr),
-                                dom.attr(i, "height").and_then(parse_dimension_attr),
-                            )
-                        }
+                        image_decode_dimensions(dom, webview, i)
                     }
                 };
                 let should_start_immediately = if lazy_requested && !initial_viewport_hit {
@@ -2135,7 +2173,7 @@ fn compute_decode_size(
     target_w: Option<u32>,
     target_h: Option<u32>,
 ) -> (u32, u32) {
-    let (tw, th) = match (target_w, target_h) {
+    let (mut tw, mut th) = match (target_w, target_h) {
         (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
         (Some(w), None) if w > 0 && orig_w > 0 => {
             (w, (orig_h as u64 * w as u64 / orig_w as u64).max(1) as u32)
@@ -2154,6 +2192,11 @@ fn compute_decode_size(
             return (orig_w, orig_h);
         }
     };
+    let max_target = tw.max(th);
+    if max_target > MAX_DECODE_DIM {
+        tw = ((tw as u64 * MAX_DECODE_DIM as u64) / max_target as u64).max(1) as u32;
+        th = ((th as u64 * MAX_DECODE_DIM as u64) / max_target as u64).max(1) as u32;
+    }
 
     if orig_w <= tw.saturating_mul(2) && orig_h <= th.saturating_mul(2) {
         return (orig_w, orig_h);

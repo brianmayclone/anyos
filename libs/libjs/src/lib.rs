@@ -510,4 +510,61 @@ mod tests {
         );
         assert_eq!(result.to_js_string(), "6,1684234849,1701077858");
     }
+
+    #[test]
+    fn member_expression_argument_is_not_called_as_method() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var seen = ''; \
+             console.assert = function(value) { seen = typeof value + ':' + value; }; \
+             var obj = { _isRunning: true }; \
+             console.assert(obj._isRunning); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "boolean:true");
+    }
+
+    #[test]
+    fn console_assert_exists_and_does_not_throw_when_true() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var obj = { _isRunning: true }; \
+             console.assert(obj._isRunning); \
+             'ok'",
+        );
+        assert_eq!(result.to_js_string(), "ok");
+    }
+
+    #[test]
+    fn numeric_in_operator_uses_js_number_to_property_key() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var o = { 0.975: true }; \
+             var probability = 1 - (1 - 0.95) / 2; \
+             [String(probability), probability in o].join(',')",
+        );
+        assert_eq!(result.to_js_string(), "0.975,true");
+    }
+
+    #[test]
+    fn speedometer_score_formatting_handles_zero_delta() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "function sigFigFromPercentDelta(percentDelta) { \
+                 return Math.ceil(-Math.log(percentDelta) / Math.log(10)) + 3; \
+             } \
+             function toSigFigPrecision(number, sigFig) { \
+                 const nonDecimalDigitCount = number < 1 ? 0 : Math.floor(Math.log(number) / Math.log(10)) + 1; \
+                 return number.toPrecision(Math.max(nonDecimalDigitCount, Math.min(6, sigFig))); \
+             } \
+             var meanSigFig = sigFigFromPercentDelta(0); \
+             [String(meanSigFig), toSigFigPrecision(0, 2), toSigFigPrecision(123.456, Math.max(meanSigFig, 3))].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "Infinity,0.0,123.456");
+    }
 }

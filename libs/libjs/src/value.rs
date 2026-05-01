@@ -1706,8 +1706,112 @@ fn format_float(n: f64) -> String {
         return format_float_exponential(n, exp);
     }
 
-    // For the normal range, Rust's {} gives the shortest round-trip representation
-    alloc::format!("{}", n)
+    // For the normal range, Rust's formatter is close to JS Number-toString,
+    // but arithmetic like `1 - (1 - 0.95) / 2` can surface binary noise as
+    // `0.9750000000000001`. JavaScript engines print the shorter decimal that
+    // users wrote/expect, so normalize the common long zero/nine tails.
+    normalize_decimal_noise(alloc::format!("{}", n))
+}
+
+fn normalize_decimal_noise(s: String) -> String {
+    if s.len() < 16 || s.as_bytes().iter().any(|&b| b == b'e' || b == b'E') {
+        return s;
+    }
+    let Some(dot) = s.as_bytes().iter().position(|&b| b == b'.') else {
+        return s;
+    };
+    let frac = &s.as_bytes()[dot + 1..];
+    if frac.len() < 12 {
+        return s;
+    }
+
+    if let Some(cut_frac) = find_decimal_zero_noise_cut(frac) {
+        return decimal_with_fraction_cut(&s, dot, cut_frac);
+    }
+    if let Some(cut_frac) = find_decimal_nine_noise_cut(frac) {
+        return decimal_round_fraction_at(&s, dot, cut_frac);
+    }
+    s
+}
+
+fn find_decimal_zero_noise_cut(frac: &[u8]) -> Option<usize> {
+    let mut i = 0usize;
+    while i < frac.len() {
+        if frac[i] == b'0' {
+            let start = i;
+            while i < frac.len() && frac[i] == b'0' {
+                i += 1;
+            }
+            if i - start >= 6 && frac[i..].iter().all(|&b| b == b'0' || b == b'1' || b == b'2')
+            {
+                return Some(start);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn find_decimal_nine_noise_cut(frac: &[u8]) -> Option<usize> {
+    let mut i = 0usize;
+    while i < frac.len() {
+        if frac[i] == b'9' {
+            let start = i;
+            while i < frac.len() && frac[i] == b'9' {
+                i += 1;
+            }
+            if i - start >= 6 && frac[i..].iter().all(|&b| b == b'9' || b == b'8') {
+                return Some(start);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn decimal_with_fraction_cut(s: &str, dot: usize, cut_frac: usize) -> String {
+    let end = dot + 1 + cut_frac;
+    if cut_frac == 0 {
+        String::from(&s[..dot])
+    } else {
+        String::from(&s[..end])
+    }
+}
+
+fn decimal_round_fraction_at(s: &str, dot: usize, cut_frac: usize) -> String {
+    let mut bytes = s.as_bytes()[..dot + 1 + cut_frac].to_vec();
+    let mut idx = bytes.len();
+    loop {
+        if idx == 0 {
+            bytes.insert(0, b'1');
+            break;
+        }
+        idx -= 1;
+        match bytes[idx] {
+            b'.' => continue,
+            b'-' => {
+                bytes.insert(idx + 1, b'1');
+                break;
+            }
+            b'0'..=b'8' => {
+                bytes[idx] += 1;
+                break;
+            }
+            b'9' => {
+                bytes[idx] = b'0';
+            }
+            _ => break,
+        }
+    }
+    while bytes.last() == Some(&b'0') {
+        bytes.pop();
+    }
+    if bytes.last() == Some(&b'.') {
+        bytes.pop();
+    }
+    unsafe { String::from_utf8_unchecked(bytes) }
 }
 
 fn format_float_exponential(n: f64, exp: i32) -> String {

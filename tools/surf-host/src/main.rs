@@ -34,6 +34,7 @@ const SURF_HOST_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36";
 const HOST_SYNC_WEB_FONT_LIMIT: usize = 6;
 const HOST_VIEWPORT_RENDER_PASS_LIMIT: usize = 128;
+const HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET: usize = 64;
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -1772,7 +1773,7 @@ fn main() {
             let mut waited = 0u64;
             while waited < args.delay_ms {
                 if run_screenshot_timers && wv.has_timers() {
-                    wv.run_timers(step);
+                    wv.run_timers_with_budget(step, HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET);
                     wv.tick(step);
                 }
                 waited += step;
@@ -3834,21 +3835,18 @@ fn start_image_loading(
                 let abs_url = resolve_url(base_url, &src);
                 let bounds = wv.node_bounds(i);
                 let priority_y = bounds.map(|(_, y, _, _)| y).unwrap_or(i32::MAX);
-                let bounds_hint = bounds.and_then(|(_, _, w, h)| {
-                    if w > 0 && h > 0 {
+                let has_attr_w = dom.attr(i, "width").and_then(parse_positive_px_attr).is_some();
+                let has_attr_h = dom.attr(i, "height").and_then(parse_positive_px_attr).is_some();
+                let (css_w, css_h) = explicit_image_decode_hints(wv, i, bounds);
+                let attr_bounds = bounds.and_then(|(_, _, w, h)| {
+                    if w > 0 && h > 0 && (has_attr_w || has_attr_h) {
                         Some((w as u32, h as u32))
                     } else {
                         None
                     }
                 });
-                let target_w: Option<u32> = bounds_hint.map(|(w, _)| w).or_else(|| {
-                    dom.attr(i, "width")
-                        .and_then(|s| s.trim().trim_end_matches("px").parse().ok())
-                });
-                let target_h: Option<u32> = bounds_hint.map(|(_, h)| h).or_else(|| {
-                    dom.attr(i, "height")
-                        .and_then(|s| s.trim().trim_end_matches("px").parse().ok())
-                });
+                let target_w = css_w.or_else(|| attr_bounds.map(|(w, _)| w));
+                let target_h = css_h.or_else(|| attr_bounds.map(|(_, h)| h));
                 infos.push((abs_url, src, target_w, target_h, i, priority_y));
             }
         }
@@ -3921,6 +3919,36 @@ fn start_image_loading(
         receiver: rx,
         done: false,
     }
+}
+
+fn parse_positive_px_attr(value: &str) -> Option<u32> {
+    let trimmed = value.trim().trim_end_matches("px").trim();
+    let parsed = trimmed.parse::<u32>().ok()?;
+    (parsed > 0).then_some(parsed)
+}
+
+fn explicit_image_decode_hints(
+    wv: &libwebview::WebView,
+    node_id: usize,
+    bounds: Option<(i32, i32, i32, i32)>,
+) -> (Option<u32>, Option<u32>) {
+    let Some((_, _, box_w, box_h)) = bounds else {
+        return (None, None);
+    };
+    let Some(style) = wv.resolved_style_ref(node_id) else {
+        return (None, None);
+    };
+    let width = if style.width.is_some() && box_w > 0 {
+        Some(box_w as u32)
+    } else {
+        None
+    };
+    let height = if style.height.is_some() && box_h > 0 {
+        Some(box_h as u32)
+    } else {
+        None
+    };
+    (width, height)
 }
 
 // ── JavaScript execution ────────────────────────────────────────────────────
@@ -4379,7 +4407,7 @@ fn compute_decode_size(
     target_w: Option<u32>,
     target_h: Option<u32>,
 ) -> (u32, u32) {
-    let (tw, th) = match (target_w, target_h) {
+    let (mut tw, mut th) = match (target_w, target_h) {
         (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
         (Some(w), None) if w > 0 && orig_w > 0 => {
             (w, (orig_h as u64 * w as u64 / orig_w as u64).max(1) as u32)
@@ -4399,6 +4427,11 @@ fn compute_decode_size(
             return (orig_w, orig_h);
         }
     };
+    let max_target = tw.max(th);
+    if max_target > MAX_DECODE_DIM {
+        tw = ((tw as u64 * MAX_DECODE_DIM as u64) / max_target as u64).max(1) as u32;
+        th = ((th as u64 * MAX_DECODE_DIM as u64) / max_target as u64).max(1) as u32;
+    }
 
     // Only downscale if source is >2x larger (marginal savings not worth the blur)
     if orig_w <= tw * 2 && orig_h <= th * 2 {

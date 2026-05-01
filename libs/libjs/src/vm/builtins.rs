@@ -1165,6 +1165,10 @@ impl Vm {
             String::from("dir"),
             native_fn("dir", native_console::console_log),
         );
+        console.set_property(
+            String::from("assert"),
+            native_fn("assert", native_console::console_assert),
+        );
         self.set_global("console", console);
     }
 

@@ -1295,11 +1295,15 @@ fn js_exception_summary(exc: &JsValue) -> String {
                 _ => String::from("(no message)"),
             };
             if let JsValue::String(stack) = o.get("stack") {
-                if let Some(line) = stack.lines().nth(1) {
+                let mut frames = Vec::new();
+                for line in stack.lines().skip(1).take(4) {
                     let line = line.trim();
                     if !line.is_empty() {
-                        return format!("{}: {} [{}]", name, msg, line);
+                        frames.push(String::from(line));
                     }
+                }
+                if !frames.is_empty() {
+                    return format!("{}: {} [{}]", name, msg, frames.join(" <- "));
                 }
             }
             format!("{}: {}", name, msg)
@@ -1911,6 +1915,14 @@ impl JsRuntime {
             "Math",
             "JSON",
             "console",
+            "parseInt",
+            "parseFloat",
+            "isNaN",
+            "isFinite",
+            "encodeURIComponent",
+            "decodeURIComponent",
+            "encodeURI",
+            "decodeURI",
             "Infinity",
             "NaN",
             "undefined",
@@ -4055,6 +4067,7 @@ fn native_formdata_ctor(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 mod tests {
     use super::JsRuntime;
     use crate::html;
+    use alloc::string::String;
     use libjs::JsValue;
 
     #[test]
@@ -4147,6 +4160,35 @@ mod tests {
                 JsValue::Bool(true)
             ),
             "global assignment was not mirrored to window"
+        );
+    }
+
+    #[test]
+    fn browser_global_functions_are_window_properties() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        let script = r#"
+            globalThis.__global_function_window_ok =
+                window.parseFloat('12.5px') === 12.5 &&
+                globalThis.parseInt('10', 10) === 10 &&
+                window.isFinite(4) === true &&
+                window.isNaN(NaN) === true &&
+                window.decodeURIComponent(encodeURIComponent('ä')) === 'ä';
+        "#;
+
+        runtime.execute_script_sources(&dom, "https://example.com/", &[script.to_string()]);
+
+        assert!(
+            runtime.engine.vm().last_exception.is_none(),
+            "unexpected JS exception: {:?}",
+            runtime.engine.vm().last_exception
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__global_function_window_ok"),
+                JsValue::Bool(true)
+            ),
+            "browser global functions were not visible through window/globalThis"
         );
     }
 

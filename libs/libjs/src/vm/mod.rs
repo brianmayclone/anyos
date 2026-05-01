@@ -482,6 +482,32 @@ impl Vm {
     /// The exception is stored in `pending_exception` and processed by
     /// `invoke_function`/`new_object` after the native call returns.
     pub fn throw_native(&mut self, val: JsValue) {
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_NATIVE_THROW").is_some() {
+            let name = val.get_property("name").to_js_string();
+            let message = val.get_property("message").to_js_string();
+            let callers = self
+                .frames
+                .iter()
+                .rev()
+                .take(8)
+                .map(|frame| {
+                    alloc::format!(
+                        "{}@{}",
+                        frame.chunk.name.as_deref().unwrap_or("<script>"),
+                        frame.ip
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" <- ");
+            std::eprintln!(
+                "[libjs-debug] native throw: {}: {} this={} stack=[{}]",
+                name,
+                message,
+                self.current_this.to_js_string(),
+                callers
+            );
+        }
         self.pending_exception = Some(val);
     }
 
