@@ -36,12 +36,12 @@ pub fn check_retransmissions() {
         for i in 0..table.len() {
             if let Some(tcb) = table[i].as_mut() {
                 if tcb.pending_ack && now.wrapping_sub(tcb.last_ack_tick) >= DELAYED_ACK_TICKS {
-                    tcb.pending_ack = false;
-                    tcb.ack_seg_count = 0;
-                    tcb.last_ack_tick = now;
                     let win = tcb.advertised_window();
                     if tcb.is_ipv6 {
                         if delayed_ack_count_v6 < delayed_acks_v6.len() {
+                            tcb.pending_ack = false;
+                            tcb.ack_seg_count = 0;
+                            tcb.last_ack_tick = now;
                             delayed_acks_v6[delayed_ack_count_v6] = (
                                 tcb.local_ip6,
                                 tcb.local_port,
@@ -55,6 +55,9 @@ pub fn check_retransmissions() {
                         }
                     } else {
                         if delayed_ack_count < delayed_acks.len() {
+                            tcb.pending_ack = false;
+                            tcb.ack_seg_count = 0;
+                            tcb.last_ack_tick = now;
                             delayed_acks[delayed_ack_count] = (
                                 tcb.local_ip,
                                 tcb.local_port,

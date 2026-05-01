@@ -116,7 +116,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
 
         let wake_at = crate::arch::hal::timer_current_ticks() + 1;
         crate::task::scheduler::sleep_until(wake_at);
-        crate::net::poll_rx();
+        crate::net::poll();
     }
 }
 
@@ -331,7 +331,7 @@ pub fn accept(listener_id: u32, timeout_ticks: u32) -> (u32, Ipv4Addr, u16) {
 
         let wake_at = crate::arch::hal::timer_current_ticks() + 1;
         crate::task::scheduler::sleep_until(wake_at);
-        crate::net::poll_rx();
+        crate::net::poll();
     }
 }
 

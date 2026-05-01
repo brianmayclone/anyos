@@ -539,8 +539,8 @@ impl VirtioDevice {
             return None;
         }
 
-        // Use min of max_size and 128
-        let queue_size = max_size.min(128);
+        // Use a larger ring for network bursts while still capping memory use.
+        let queue_size = max_size.min(256);
         self.write_queue_size(queue_size);
 
         // Allocate the queue

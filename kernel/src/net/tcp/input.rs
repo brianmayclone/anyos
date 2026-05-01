@@ -10,7 +10,7 @@ use super::tcb::*;
 use super::util::{
     insert_slot_hash, is_seq_gt, is_seq_gte, is_seq_lte, remove_slot_hash, send_rst,
 };
-use super::{TCP_CONNECTIONS, TCP_RETRANSMITS, TCP_SEGMENTS_RECV};
+use super::{TCP_CONNECTIONS, TCP_SEGMENTS_RECV};
 use crate::net::types::Ipv6Addr;
 use core::sync::atomic::Ordering;
 
@@ -496,61 +496,25 @@ fn handle_established(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
     }
 }
 
-/// Fast retransmit: resend one MSS from the send buffer at snd_una.
+/// Fast retransmit: make the timer path retransmit one MSS from snd_una.
 ///
 /// Called when 3 duplicate ACKs are received, indicating a lost segment.
-/// Sends outside the critical section would require collecting deferred data,
-/// but since we're already inside handle_tcp's lock scope, we record the
-/// retransmit and let the timer path handle the actual send.
+/// We do not send directly from the input path because handle_tcp holds
+/// TCP_CONNECTIONS here; the actual packet send may touch ARP/driver paths.
 fn fast_retransmit(tcb: &mut Tcb) {
     if tcb.send_buf.is_empty() {
         return;
     }
 
-    TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
-    tcb.retransmit_count = 0; // Reset — fast retransmit is not a timeout
-    tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
+    let now = crate::arch::hal::timer_current_ticks();
+    tcb.retransmit_count = 0;
+    tcb.last_send_tick = now.wrapping_sub(RETRANSMIT_TICKS);
 
-    // Extract first MSS of send_buf for retransmission
-    let len = tcb.send_buf.len().min(MSS);
-    let mut data = [0u8; 1460];
-    let (front, back) = tcb.send_buf.as_slices();
-    let front_n = front.len().min(len);
-    data[..front_n].copy_from_slice(&front[..front_n]);
-    if front_n < len {
-        data[front_n..len].copy_from_slice(&back[..len - front_n]);
-    }
-
-    let win = tcb.advertised_window();
-
-    // Send directly — send_segment doesn't need TCP_CONNECTIONS lock.
-    if tcb.is_ipv6 {
-        send_segment_v6(
-            tcb.local_ip6,
-            tcb.local_port,
-            tcb.remote_ip6,
-            tcb.remote_port,
-            tcb.snd_una,
-            tcb.rcv_nxt,
-            PSH | ACK,
-            win,
-            &data[..len],
-        );
-    } else {
-        send_segment(
-            tcb.local_ip,
-            tcb.local_port,
-            tcb.remote_ip,
-            tcb.remote_port,
-            tcb.snd_una,
-            tcb.rcv_nxt,
-            PSH | ACK,
-            win,
-            &data[..len],
-        );
-    }
-
-    crate::serial_verbose_println!("TCP: fast retransmit seq={} len={}", tcb.snd_una, len);
+    crate::serial_verbose_println!(
+        "TCP: fast retransmit scheduled seq={} len={}",
+        tcb.snd_una,
+        tcb.send_buf.len().min(MSS)
+    );
 }
 
 /// Handle SynReceived state (server-side 3-way handshake completion).

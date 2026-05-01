@@ -128,8 +128,7 @@ pub fn send_ipv6(dst: Ipv6Addr, next_header: u8, payload: &[u8]) -> bool {
         }
     };
 
-    ethernet::send_frame(dst_mac, ethernet::ETHERTYPE_IPV6, &packet);
-    true
+    ethernet::send_frame(dst_mac, ethernet::ETHERTYPE_IPV6, &packet)
 }
 
 /// Build an IPv6 packet (header + payload).

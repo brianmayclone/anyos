@@ -290,6 +290,9 @@ pub(crate) fn parse_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) -> Option<TcpSeg
     if data_offset < TCP_HEADER_LEN || data_offset > data.len() {
         return None;
     }
+    if !tcp_checksum_valid_v4(pkt.src.as_bytes(), pkt.dst.as_bytes(), data) {
+        return None;
+    }
 
     // Parse TCP options (between fixed header and payload).
     let mut wscale = None;
@@ -384,6 +387,9 @@ pub(crate) fn parse_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) -> Option<Tcp
     if data_offset < TCP_HEADER_LEN || data_offset > data.len() {
         return None;
     }
+    if !tcp_checksum_valid_v6(pkt.src.as_bytes(), pkt.dst.as_bytes(), data) {
+        return None;
+    }
 
     // Parse TCP options
     let mut wscale = None;
@@ -450,4 +456,39 @@ pub(crate) fn parse_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) -> Option<Tcp
         wscale,
         peer_mss,
     })
+}
+
+fn tcp_checksum_valid_v4(src: &[u8; 4], dst: &[u8; 4], data: &[u8]) -> bool {
+    let sum = crate::net::checksum::pseudo_header_checksum(
+        src,
+        dst,
+        crate::net::ipv4::PROTO_TCP,
+        data.len() as u16,
+    );
+    tcp_checksum_valid(sum, data)
+}
+
+fn tcp_checksum_valid_v6(src: &[u8; 16], dst: &[u8; 16], data: &[u8]) -> bool {
+    let sum = crate::net::checksum::pseudo_header_checksum_v6(
+        src,
+        dst,
+        crate::net::ipv6::PROTO_TCP,
+        data.len() as u32,
+    );
+    tcp_checksum_valid(sum, data)
+}
+
+fn tcp_checksum_valid(mut sum: u32, data: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i + 1 < data.len() {
+        sum += ((data[i] as u32) << 8) | data[i + 1] as u32;
+        i += 2;
+    }
+    if i < data.len() {
+        sum += (data[i] as u32) << 8;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    sum as u16 == 0xFFFF
 }

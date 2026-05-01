@@ -5,7 +5,7 @@
 
 use super::send::send_segment;
 use super::tcb::*;
-use super::util::is_seq_gt;
+use super::util::{is_seq_gt, is_seq_gte, is_seq_lte};
 use super::TCP_CONNECTIONS;
 
 // ── Out-of-order reassembly ─────────────────────────────────────────
@@ -22,11 +22,47 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
 
     let win = tcb.advertised_window();
 
-    if seg.seq == tcb.rcv_nxt {
+    let mut seq = seg.seq;
+    let mut payload = seg.payload.as_slice();
+
+    // Retransmissions commonly overlap already accepted data. Trim the
+    // duplicate prefix and keep any new tail instead of dropping the segment.
+    if is_seq_gt(tcb.rcv_nxt, seq) {
+        let overlap = tcb.rcv_nxt.wrapping_sub(seq) as usize;
+        if overlap >= payload.len() {
+            return Some(DeferredSend {
+                local_ip: tcb.local_ip,
+                local_port: tcb.local_port,
+                remote_ip: tcb.remote_ip,
+                remote_port: tcb.remote_port,
+                seq: tcb.snd_nxt,
+                ack_num: tcb.rcv_nxt,
+                flags: ACK,
+                window: win,
+            });
+        }
+        payload = &payload[overlap..];
+        seq = tcb.rcv_nxt;
+    }
+
+    if seq == tcb.rcv_nxt {
         // ── In-order segment ──
         let space = RECV_BUF_SIZE - tcb.recv_buf.len();
-        let take = seg.payload.len().min(space);
-        tcb.recv_buf.extend(&seg.payload[..take]);
+        if space == 0 {
+            return Some(DeferredSend {
+                local_ip: tcb.local_ip,
+                local_port: tcb.local_port,
+                remote_ip: tcb.remote_ip,
+                remote_port: tcb.remote_port,
+                seq: tcb.snd_nxt,
+                ack_num: tcb.rcv_nxt,
+                flags: ACK,
+                window: tcb.advertised_window(),
+            });
+        }
+
+        let take = payload.len().min(space);
+        tcb.recv_buf.extend(&payload[..take]);
         tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(take as u32);
         tcb.ack_seg_count += 1;
         tcb.pending_ack = true;
@@ -59,9 +95,9 @@ pub(crate) fn accept_data_deferred(tcb: &mut Tcb, seg: &TcpSegment) -> Option<De
         } else {
             None
         }
-    } else if is_seq_gt(seg.seq, tcb.rcv_nxt) {
+    } else if is_seq_gt(seq, tcb.rcv_nxt) {
         // ── Out-of-order segment — buffer it ──
-        insert_ooo(tcb, seg.seq, &seg.payload);
+        insert_ooo(tcb, seq, payload);
 
         // Send duplicate ACK immediately (fast retransmit signal to sender)
         Some(DeferredSend {
@@ -102,7 +138,7 @@ fn insert_ooo(tcb: &mut Tcb, seq: u32, data: &[u8]) {
     for existing in tcb.ooo_buf.iter() {
         let ex_end = existing.seq.wrapping_add(existing.data.len() as u32);
         // New segment entirely within existing → skip
-        if !is_seq_gt(seq, existing.seq.wrapping_sub(1)) && !is_seq_gt(end, ex_end) {
+        if is_seq_gte(seq, existing.seq) && is_seq_lte(end, ex_end) {
             return;
         }
     }

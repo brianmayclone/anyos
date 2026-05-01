@@ -427,6 +427,15 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
                 let chunk_end = (send_offset + MSS)
                     .min(data.len())
                     .min(send_offset + remaining_window);
+                let chunk = &data[send_offset..chunk_end];
+                let chunk_len = chunk.len();
+
+                // Never put bytes on the wire unless they are retained for
+                // retransmission. Otherwise a transient TX drop or lost ACK can
+                // make the stream unrecoverable.
+                if tcb.send_buf.len() + chunk_len > MAX_SEND_BUF {
+                    break;
+                }
 
                 let seg = BatchSegment {
                     local_ip: tcb.local_ip,
@@ -441,11 +450,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
                 };
 
                 // Append to send buffer for retransmission
-                let chunk = &data[send_offset..chunk_end];
-                let chunk_len = chunk.len();
-                if tcb.send_buf.len() + chunk_len <= MAX_SEND_BUF {
-                    tcb.send_buf.extend(chunk);
-                }
+                tcb.send_buf.extend(chunk);
 
                 // Update TCB for this segment
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(chunk_len as u32);
@@ -481,8 +486,9 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
             return data.len() as u32;
         }
 
-        // Poll network for incoming ACKs (fast path).
-        crate::net::poll_rx();
+        // Poll network and TCP timers. Retransmits and delayed ACK flushes must
+        // continue while a userspace send() is waiting for peer ACKs.
+        crate::net::poll();
 
         // Check timeout.
         let now = crate::arch::hal::timer_current_ticks();
@@ -499,7 +505,7 @@ pub fn send(socket_id: u32, data: &[u8], timeout_ticks: u32) -> u32 {
         if batch_count == 0 {
             let wake_at = crate::arch::hal::timer_current_ticks() + 1;
             crate::task::scheduler::sleep_until(wake_at);
-            crate::net::poll_rx();
+            crate::net::poll();
         }
     }
 }

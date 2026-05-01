@@ -71,10 +71,10 @@ pub fn handle_frame(data: &[u8]) {
 }
 
 /// Send a raw Ethernet frame.
-pub fn send_frame(dst: MacAddr, ethertype: u16, payload: &[u8]) {
+pub fn send_frame(dst: MacAddr, ethertype: u16, payload: &[u8]) -> bool {
     let our_mac = super::config().mac;
     let frame = build_frame(dst, our_mac, ethertype, payload);
     super::trace::record_frame(super::trace::DIR_TX, &frame);
     // Use the registered network driver (E1000, VirtIO Net, etc.)
-    crate::drivers::network::transmit(&frame);
+    crate::drivers::network::transmit(&frame)
 }

@@ -50,6 +50,9 @@ pub fn parse(data: &[u8]) -> Option<Ipv4Packet<'_>> {
     if (total_len as usize) > data.len() {
         return None;
     }
+    if checksum::internet_checksum(&data[..header_len]) != 0 {
+        return None;
+    }
 
     let ttl = data[8];
     let protocol = data[9];
@@ -166,8 +169,7 @@ pub fn send_ipv4(dst: Ipv4Addr, protocol: u8, payload: &[u8]) -> bool {
         }
     };
 
-    ethernet::send_frame(dst_mac, ethernet::ETHERTYPE_IPV4, &packet);
-    true
+    ethernet::send_frame(dst_mac, ethernet::ETHERTYPE_IPV4, &packet)
 }
 
 /// Build and send an IPv4 packet with a specific source IP (for DHCP before config)
@@ -208,8 +210,7 @@ pub fn send_ipv4_raw(
     packet.extend_from_slice(&header);
     packet.extend_from_slice(payload);
 
-    ethernet::send_frame(dst_mac, ethernet::ETHERTYPE_IPV4, &packet);
-    true
+    ethernet::send_frame(dst_mac, ethernet::ETHERTYPE_IPV4, &packet)
 }
 
 /// Handle an incoming IPv4 packet

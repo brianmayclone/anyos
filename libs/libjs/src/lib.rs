@@ -567,4 +567,73 @@ mod tests {
         );
         assert_eq!(result.to_js_string(), "Infinity,0.0,123.456");
     }
+
+    #[test]
+    fn async_method_optional_chain_reaches_prototype_method() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "class Client { didRunSuites(v) { this.values.push(v); } } \
+             class Runner { \
+                 constructor(client) { this._client = client; } \
+                 async finalize() { if (this._client?.didRunSuites) await this._client.didRunSuites(7); } \
+             } \
+             var c = new Client(); \
+             c.values = []; \
+             var r = new Runner(c); \
+             r.finalize(); \
+             c.values.length + ':' + c.values[0]",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "1:7");
+    }
+
+    #[test]
+    fn speedometer_finalize_calls_client_with_measured_values() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "class Client { \
+                 constructor() { this.values = []; } \
+                 didRunSuites(v) { this.values.push(v); } \
+             } \
+             class Runner { \
+                 constructor(client) { \
+                     this._client = client; \
+                     this._measuredValues = { tests: { A: { total: 10 }, B: { total: 40 } } }; \
+                 } \
+                 async finalize() { \
+                     if (this._client?.didRunSuites) { \
+                         let product = 1; \
+                         const values = []; \
+                         for (const suiteName in this._measuredValues.tests) { \
+                             const suiteTotal = this._measuredValues.tests[suiteName].total; \
+                             product *= suiteTotal; \
+                             values.push(suiteTotal); \
+                         } \
+                         values.sort((a, b) => a - b); \
+                         const total = values.reduce((a, b) => a + b); \
+                         const geomean = Math.pow(product, 1 / values.length); \
+                         this._measuredValues.total = total; \
+                         this._measuredValues.mean = total / values.length; \
+                         this._measuredValues.geomean = geomean; \
+                         this._measuredValues.score = 1000 / geomean; \
+                         await this._client.didRunSuites(this._measuredValues); \
+                     } \
+                 } \
+             } \
+             var c = new Client(); \
+             var r = new Runner(c); \
+             r.finalize(); \
+             [c.values.length, c.values[0] && c.values[0].total, c.values[0] && c.values[0].score].join(',')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "1,50,50");
+    }
 }

@@ -569,7 +569,7 @@ fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<Resp
         read_chunked_body(conn, &trailing, is_https)
     } else {
         read_body(conn, &trailing, content_length, is_https)
-    };
+    }?;
 
     // Decompress if content-encoded (skip in raw mode for file downloads)
     let body = if raw { raw_body } else { decompress_body(raw_body, &content_encoding) };
@@ -697,7 +697,7 @@ fn receive_response_drain(
         read_chunked_body_drain(conn, &trailing, is_https)
     } else {
         read_body_drain(conn, &trailing, content_length, is_https)
-    };
+    }?;
 
     Ok(ResponseDrainAction::Complete(status, received))
 }
@@ -872,7 +872,7 @@ fn read_body(
     initial: &[u8],
     content_length: Option<u32>,
     is_https: bool,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, u32> {
     let capacity = content_length
         .map(|cl| (cl as usize).min(32 * 1024 * 1024))
         .unwrap_or(65536);
@@ -892,7 +892,9 @@ fn read_body(
 
     loop {
         if let Some(cl) = content_length {
-            if body.len() >= cl as usize { break; }
+            if body.len() >= cl as usize {
+                return Ok(body);
+            }
         }
         let n = recv_some(conn, &mut recv_buf, is_https);
         if n == 0 {
@@ -902,8 +904,11 @@ fn read_body(
                     syscall::sleep(50);
                     continue;
                 }
+                if body.len() < cl as usize {
+                    return Err(ERR_NO_RESPONSE);
+                }
             }
-            break;
+            return Ok(body);
         }
         retried = false;
         body.extend_from_slice(&recv_buf[..n]);
@@ -914,7 +919,6 @@ fn read_body(
             }
         }
     }
-    body
 }
 
 /// Stream a Content-Length or connection-close body directly to a file.
@@ -966,6 +970,9 @@ fn read_body_to_file(
                     syscall::sleep(50);
                     continue;
                 }
+                if received < cl {
+                    return Err(ERR_NO_RESPONSE);
+                }
             }
             break;
         }
@@ -992,6 +999,12 @@ fn read_body_to_file(
         }
     }
 
+    if let Some(cl) = content_length {
+        if received < cl {
+            return Err(ERR_NO_RESPONSE);
+        }
+    }
+
     Ok(received)
 }
 
@@ -1001,7 +1014,7 @@ fn read_body_drain(
     initial: &[u8],
     content_length: Option<u32>,
     is_https: bool,
-) -> u32 {
+) -> Result<u32, u32> {
     let total = content_length.unwrap_or(0);
     let mut received = 0u32;
 
@@ -1026,7 +1039,7 @@ fn read_body_drain(
     loop {
         if let Some(cl) = content_length {
             if received >= cl {
-                break;
+                return Ok(received);
             }
         }
 
@@ -1038,8 +1051,11 @@ fn read_body_drain(
                     syscall::sleep(50);
                     continue;
                 }
+                if received < cl {
+                    return Err(ERR_NO_RESPONSE);
+                }
             }
-            break;
+            return Ok(received);
         }
         retried = false;
 
@@ -1059,7 +1075,6 @@ fn read_body_drain(
         }
     }
 
-    received
 }
 
 /// Read a chunked transfer-encoded body.
@@ -1067,7 +1082,7 @@ fn read_body_drain(
 /// `recv_some` already handles transient TCP failures with internal retries
 /// and connection-liveness checks. If it still returns 0 mid-stream, the
 /// peer is gone for good — no point spinning here.
-fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Vec<u8> {
+fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Result<Vec<u8>, u32> {
     let mut buf: Vec<u8> = Vec::with_capacity(RECV_BUF_SIZE * 4);
     buf.extend_from_slice(initial);
     let mut cursor: usize = 0;
@@ -1089,7 +1104,7 @@ fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Vec<u
                 break;
             }
             let n = recv_some(conn, &mut recv_buf, is_https);
-            if n == 0 { return body; }
+            if n == 0 { return Err(ERR_NO_RESPONSE); }
             buf.extend_from_slice(&recv_buf[..n]);
         }
 
@@ -1098,7 +1113,7 @@ fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Vec<u
         // Read chunk data
         while buf.len() - cursor < chunk_size {
             let n = recv_some(conn, &mut recv_buf, is_https);
-            if n == 0 { break; }
+            if n == 0 { return Err(ERR_NO_RESPONSE); }
             buf.extend_from_slice(&recv_buf[..n]);
         }
 
@@ -1115,7 +1130,7 @@ fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Vec<u
         // Skip trailing CRLF
         while buf.len() - cursor < 2 {
             let n = recv_some(conn, &mut recv_buf, is_https);
-            if n == 0 { return body; }
+            if n == 0 { return Err(ERR_NO_RESPONSE); }
             buf.extend_from_slice(&recv_buf[..n]);
         }
         if buf[cursor] == b'\r' && buf[cursor + 1] == b'\n' {
@@ -1128,7 +1143,7 @@ fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Vec<u
         }
     }
 
-    body
+    Ok(body)
 }
 
 /// Stream a chunked transfer-encoded body directly to a file.
@@ -1159,7 +1174,7 @@ fn read_chunked_body_to_file(
             }
             let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
-                return Ok(received);
+                return Err(ERR_NO_RESPONSE);
             }
             buf.extend_from_slice(&recv_buf[..n]);
         }
@@ -1171,7 +1186,7 @@ fn read_chunked_body_to_file(
         while buf.len() - cursor < chunk_size {
             let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
-                return Ok(received);
+                return Err(ERR_NO_RESPONSE);
             }
             buf.extend_from_slice(&recv_buf[..n]);
         }
@@ -1194,7 +1209,7 @@ fn read_chunked_body_to_file(
         while buf.len() - cursor < 2 {
             let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
-                return Ok(received);
+                return Err(ERR_NO_RESPONSE);
             }
             buf.extend_from_slice(&recv_buf[..n]);
         }
@@ -1212,7 +1227,7 @@ fn read_chunked_body_to_file(
 }
 
 /// Read a chunked transfer-encoded body and discard it.
-fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) -> u32 {
+fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) -> Result<u32, u32> {
     let mut buf: Vec<u8> = Vec::with_capacity(RECV_BUF_SIZE * 4);
     buf.extend_from_slice(initial);
     let mut cursor: usize = 0;
@@ -1234,7 +1249,7 @@ fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) ->
             }
             let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
-                return received;
+                return Err(ERR_NO_RESPONSE);
             }
             buf.extend_from_slice(&recv_buf[..n]);
         }
@@ -1246,7 +1261,7 @@ fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) ->
         while buf.len() - cursor < chunk_size {
             let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
-                return received;
+                return Err(ERR_NO_RESPONSE);
             }
             buf.extend_from_slice(&recv_buf[..n]);
         }
@@ -1264,7 +1279,7 @@ fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) ->
         while buf.len() - cursor < 2 {
             let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
-                return received;
+                return Err(ERR_NO_RESPONSE);
             }
             buf.extend_from_slice(&recv_buf[..n]);
         }
@@ -1278,7 +1293,7 @@ fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) ->
         }
     }
 
-    received
+    Ok(received)
 }
 
 // ── Header parsing helpers ──────────────────────────────────────────────────
