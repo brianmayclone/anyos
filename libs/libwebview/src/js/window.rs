@@ -387,9 +387,16 @@ pub fn make_window(
 
     // Performance (W3C Performance Timeline §4).
     let perf = JsValue::new_object();
+    perf.set_hidden_property(
+        String::from("__surfPerformanceEntries"),
+        JsValue::new_array(Vec::new()),
+    );
     perf.set_property(String::from("now"), native_fn("now", win_performance_now));
-    perf.set_property(String::from("mark"), native_fn("mark", win_noop));
-    perf.set_property(String::from("measure"), native_fn("measure", win_noop));
+    perf.set_property(String::from("mark"), native_fn("mark", win_performance_mark));
+    perf.set_property(
+        String::from("measure"),
+        native_fn("measure", win_performance_measure),
+    );
     let timing = JsValue::new_object();
     for key in [
         "navigationStart",
@@ -414,11 +421,23 @@ pub fn make_window(
     perf.set_property(String::from("timing"), timing);
     perf.set_property(
         String::from("getEntriesByName"),
-        native_fn("getEntriesByName", |_, _| make_array(Vec::new())),
+        native_fn("getEntriesByName", win_performance_get_entries_by_name),
     );
     perf.set_property(
         String::from("getEntriesByType"),
-        native_fn("getEntriesByType", |_, _| make_array(Vec::new())),
+        native_fn("getEntriesByType", win_performance_get_entries_by_type),
+    );
+    perf.set_property(
+        String::from("getEntries"),
+        native_fn("getEntries", win_performance_get_entries),
+    );
+    perf.set_property(
+        String::from("clearMarks"),
+        native_fn("clearMarks", win_performance_clear_marks),
+    );
+    perf.set_property(
+        String::from("clearMeasures"),
+        native_fn("clearMeasures", win_performance_clear_measures),
     );
     perf.set_property(String::from("timeOrigin"), JsValue::Number(0.0));
     obj.set(String::from("performance"), perf);
@@ -2768,6 +2787,185 @@ fn win_btoa(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 /// so React Scheduler can measure elapsed time between calls.
 fn win_performance_now(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::Number(anyos_std::sys::uptime_ms() as f64)
+}
+
+fn performance_target(vm: &mut Vm) -> JsValue {
+    if !vm
+        .current_this
+        .get_property("__surfPerformanceEntries")
+        .is_undefined()
+    {
+        return vm.current_this.clone();
+    }
+    vm.get_global("performance")
+}
+
+fn performance_entries(perf: &JsValue) -> JsValue {
+    let entries = perf.get_property("__surfPerformanceEntries");
+    if !entries.is_undefined() {
+        return entries;
+    }
+    let entries = JsValue::new_array(Vec::new());
+    perf.set_hidden_property(String::from("__surfPerformanceEntries"), entries.clone());
+    entries
+}
+
+fn performance_entry(name: String, entry_type: &str, start_time: f64, duration: f64) -> JsValue {
+    let entry = JsValue::new_object();
+    entry.set_property(String::from("name"), JsValue::String(name));
+    entry.set_property(
+        String::from("entryType"),
+        JsValue::String(String::from(entry_type)),
+    );
+    entry.set_property(String::from("startTime"), JsValue::Number(start_time));
+    entry.set_property(String::from("duration"), JsValue::Number(duration.max(0.0)));
+    entry
+}
+
+fn push_performance_entry(perf: &JsValue, entry: JsValue) {
+    let entries = performance_entries(perf);
+    if let JsValue::Array(arr) = entries {
+        arr.borrow_mut().push(entry);
+    }
+}
+
+fn latest_performance_mark(perf: &JsValue, name: &str) -> Option<f64> {
+    let entries = performance_entries(perf);
+    let JsValue::Array(arr) = entries else {
+        return None;
+    };
+    let arr = arr.borrow();
+    for index in (0..arr.len()).rev() {
+        let entry = arr.get(index);
+        if entry.get_property("entryType").to_js_string() == "mark"
+            && entry.get_property("name").to_js_string() == name
+        {
+            return Some(entry.get_property("startTime").to_number());
+        }
+    }
+    None
+}
+
+fn filtered_performance_entries(
+    perf: &JsValue,
+    name_filter: Option<&str>,
+    type_filter: Option<&str>,
+) -> JsValue {
+    let entries = performance_entries(perf);
+    let mut out = Vec::new();
+    if let JsValue::Array(arr) = entries {
+        let arr = arr.borrow();
+        for index in 0..arr.len() {
+            let entry = arr.get(index);
+            let name_matches = name_filter
+                .map(|name| entry.get_property("name").to_js_string() == name)
+                .unwrap_or(true);
+            let type_matches = type_filter
+                .map(|entry_type| entry.get_property("entryType").to_js_string() == entry_type)
+                .unwrap_or(true);
+            if name_matches && type_matches {
+                out.push(entry);
+            }
+        }
+    }
+    make_array(out)
+}
+
+fn clear_performance_entries(perf: &JsValue, entry_type: &str, name_filter: Option<&str>) {
+    let entries = performance_entries(perf);
+    let JsValue::Array(arr) = entries else {
+        return;
+    };
+    let mut keep = Vec::new();
+    {
+        let arr = arr.borrow();
+        for index in 0..arr.len() {
+            let entry = arr.get(index);
+            let is_target_type = entry.get_property("entryType").to_js_string() == entry_type;
+            let is_target_name = name_filter
+                .map(|name| entry.get_property("name").to_js_string() == name)
+                .unwrap_or(true);
+            if !(is_target_type && is_target_name) {
+                keep.push(entry);
+            }
+        }
+    }
+    *arr.borrow_mut() = libjs::value::JsArray::from_vec(keep);
+}
+
+fn win_performance_mark(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args
+        .first()
+        .map(|v| v.to_js_string())
+        .unwrap_or_else(|| String::from(""));
+    let perf = performance_target(vm);
+    let now = win_performance_now(vm, &[]).to_number();
+    let entry = performance_entry(name, "mark", now, 0.0);
+    push_performance_entry(&perf, entry.clone());
+    entry
+}
+
+fn win_performance_measure(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args
+        .first()
+        .map(|v| v.to_js_string())
+        .unwrap_or_else(|| String::from(""));
+    let perf = performance_target(vm);
+    let now = win_performance_now(vm, &[]).to_number();
+    let start = args
+        .get(1)
+        .filter(|v| !v.is_undefined() && !v.is_null())
+        .and_then(|v| latest_performance_mark(&perf, &v.to_js_string()))
+        .unwrap_or(0.0);
+    let end = args
+        .get(2)
+        .filter(|v| !v.is_undefined() && !v.is_null())
+        .and_then(|v| latest_performance_mark(&perf, &v.to_js_string()))
+        .unwrap_or(now);
+    let entry = performance_entry(name, "measure", start, (end - start).max(0.0));
+    push_performance_entry(&perf, entry.clone());
+    entry
+}
+
+fn win_performance_get_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let perf = performance_target(vm);
+    filtered_performance_entries(&perf, None, None)
+}
+
+fn win_performance_get_entries_by_name(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = arg_string(args, 0);
+    let entry_type = args
+        .get(1)
+        .filter(|v| !v.is_undefined() && !v.is_null())
+        .map(|v| v.to_js_string());
+    let perf = performance_target(vm);
+    filtered_performance_entries(&perf, Some(&name), entry_type.as_deref())
+}
+
+fn win_performance_get_entries_by_type(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let entry_type = arg_string(args, 0);
+    let perf = performance_target(vm);
+    filtered_performance_entries(&perf, None, Some(&entry_type))
+}
+
+fn win_performance_clear_marks(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args
+        .first()
+        .filter(|v| !v.is_undefined() && !v.is_null())
+        .map(|v| v.to_js_string());
+    let perf = performance_target(vm);
+    clear_performance_entries(&perf, "mark", name.as_deref());
+    JsValue::Undefined
+}
+
+fn win_performance_clear_measures(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args
+        .first()
+        .filter(|v| !v.is_undefined() && !v.is_null())
+        .map(|v| v.to_js_string());
+    let perf = performance_target(vm);
+    clear_performance_entries(&perf, "measure", name.as_deref());
+    JsValue::Undefined
 }
 
 fn document_cookie_string(vm: &mut Vm) -> String {

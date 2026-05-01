@@ -111,8 +111,7 @@ pub fn resolve(ip: Ipv4Addr, timeout_ticks: u32) -> Option<MacAddr> {
             return None;
         }
 
-        // Small delay to avoid spinning too fast
-        core::hint::spin_loop();
+        super::wait_for_poll_progress();
     }
 }
 

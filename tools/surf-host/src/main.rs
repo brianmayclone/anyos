@@ -620,6 +620,18 @@ fn load_page_inner(
         if rasterize_inline_svgs(wv, &base_url, image_backend) {
             wv.relayout();
         }
+        let mut loaded_frames = HashSet::new();
+        if load_iframe_snapshots(
+            wv,
+            &base_url,
+            js_enabled,
+            image_backend,
+            load_web_fonts,
+            cookies,
+            &mut loaded_frames,
+        ) {
+            wv.relayout();
+        }
         if std::env::var_os("SURF_DEBUG_DOM_ELEMENTS_AFTER_JS").is_some() {
             if let Some(dom) = wv.dom() {
                 debug_dump_dom_elements(dom);
@@ -890,6 +902,7 @@ struct BrowserHostApp {
     js_enabled: bool,
     load_web_fonts: bool,
     image_backend: ImageBackend,
+    loaded_frames: HashSet<String>,
     screenshot_count: u32,
     status: String,
     needs_redraw: bool,
@@ -933,6 +946,7 @@ impl BrowserHostApp {
             js_enabled,
             load_web_fonts,
             image_backend,
+            loaded_frames: HashSet::new(),
             screenshot_count: 0,
             status: String::from("ready"),
             needs_redraw: true,
@@ -953,6 +967,7 @@ impl BrowserHostApp {
         self.current_url = abs.clone();
         self.url_input = abs.clone();
         self.focused_control = None;
+        self.loaded_frames.clear();
         self.pending = load_page(
             &mut self.wv,
             &abs,
@@ -1046,6 +1061,17 @@ impl BrowserHostApp {
                 return;
             }
             self.wv.tick(16);
+            if load_iframe_snapshots(
+                &mut self.wv,
+                &self.current_url,
+                self.js_enabled,
+                self.image_backend,
+                self.load_web_fonts,
+                &mut self.cookies,
+                &mut self.loaded_frames,
+            ) {
+                self.wv.relayout();
+            }
             self.wv.relayout();
             self.needs_redraw = true;
             for line in self.wv.js_console() {

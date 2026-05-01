@@ -85,7 +85,7 @@ pub fn ping(target: Ipv4Addr, seq: u16, timeout_ticks: u32) -> Option<(u32, u8)>
             return None;
         }
 
-        core::hint::spin_loop();
+        super::wait_for_poll_progress();
     }
 }
 

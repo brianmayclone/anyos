@@ -163,3 +163,18 @@ pub fn poll_rx() {
         }
     }
 }
+
+/// Yield briefly between polling attempts in blocking network helpers.
+///
+/// Normal syscall/kernel-thread callers should not busy-spin while waiting for
+/// ARP/NDP/DNS/ICMP/DHCP progress. If interrupts are currently disabled, we may
+/// be in an IRQ or another non-preemptible section, so falling back to a CPU
+/// pause is safer than entering the scheduler.
+pub(crate) fn wait_for_poll_progress() {
+    if crate::arch::hal::interrupts_enabled() {
+        let wake_at = crate::arch::hal::timer_current_ticks().wrapping_add(1);
+        crate::task::scheduler::sleep_until(wake_at);
+    } else {
+        core::hint::spin_loop();
+    }
+}

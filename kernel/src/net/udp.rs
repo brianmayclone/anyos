@@ -221,7 +221,7 @@ pub fn recv_timeout(port: u16, timeout_ticks: u32) -> Option<UdpDatagram> {
             return None;
         }
 
-        core::hint::spin_loop();
+        super::wait_for_poll_progress();
     }
 }
 

@@ -264,6 +264,10 @@ pub fn is_synthetic_condensed_font_id(font_id: u32) -> bool {
     )
 }
 
+pub fn iframe_snapshot_key(node_id: usize) -> String {
+    format!("__iframe_{}__", node_id)
+}
+
 pub fn synthetic_font_width_scale_percent(font_id: u32) -> i32 {
     match font_id {
         SYNTHETIC_EXTRA_CONDENSED_FONT_ID => 62,

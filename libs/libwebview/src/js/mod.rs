@@ -4193,6 +4193,41 @@ mod tests {
     }
 
     #[test]
+    fn performance_timeline_records_marks_and_measures() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        let script = r#"
+            performance.mark('start');
+            performance.mark('end');
+            const measure = performance.measure('total', 'start', 'end');
+            const marks = performance.getEntriesByName('start', 'mark');
+            const measures = performance.getEntriesByType('measure');
+            performance.clearMarks('start');
+            globalThis.__performance_timeline_ok =
+                marks.length === 1 &&
+                measures.length === 1 &&
+                measures[0].name === 'total' &&
+                measure.entryType === 'measure' &&
+                performance.getEntriesByName('start', 'mark').length === 0;
+        "#;
+
+        runtime.execute_script_sources(&dom, "https://browserbench.org/", &[script.to_string()]);
+
+        assert!(
+            runtime.engine.vm().last_exception.is_none(),
+            "unexpected JS exception: {:?}",
+            runtime.engine.vm().last_exception
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__performance_timeline_ok"),
+                JsValue::Bool(true)
+            ),
+            "performance timeline API did not retain mark/measure entries"
+        );
+    }
+
+    #[test]
     fn class_name_property_assignment_updates_virtual_node_attribute() {
         let mut dom = html::parse("<html><body><div id=\"root\"></div></body></html>");
         let mut runtime = JsRuntime::new();

@@ -692,6 +692,93 @@ fn collect_inline_fragments(
                 return;
             }
 
+            // Handle inline <iframe> as a replaced element backed by a host
+            // rendered snapshot image.
+            if *tag == Tag::Iframe {
+                let mut frame = build_empty_inline_visual_box(node_id, style);
+                let (margin_top, margin_right, margin_bottom, margin_left) =
+                    resolve_margins(style, available_width);
+                frame.box_type = BoxType::Inline;
+                frame.margin.left = margin_left;
+                frame.margin.right = margin_right;
+                frame.margin.top = margin_top;
+                frame.margin.bottom = margin_bottom;
+                frame.x = frame.margin.left;
+                frame.y = frame.margin.top;
+                let horizontal_border = frame.border_left_width + frame.border_right_width;
+                let vertical_border = frame.border_top_width + frame.border_bottom_width;
+                let horizontal_non_content =
+                    frame.padding.left + frame.padding.right + horizontal_border;
+                let vertical_non_content = frame.padding.top + frame.padding.bottom + vertical_border;
+                let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
+                let resolve_specified_width = |w: i32| {
+                    if is_border_box {
+                        (w - horizontal_non_content).max(0)
+                    } else {
+                        w.max(0)
+                    }
+                };
+                let resolve_specified_height = |h: i32| {
+                    if is_border_box {
+                        (h - vertical_non_content).max(0)
+                    } else {
+                        h.max(0)
+                    }
+                };
+                let content_w = style
+                    .width
+                    .map(resolve_specified_width)
+                    .or_else(|| {
+                        style.width_pct.map(|pct| {
+                            let border_box =
+                                (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
+                            resolve_specified_width(border_box)
+                        })
+                    })
+                    .or_else(|| {
+                        style.width_calc.map(|(px100, pct100)| {
+                            let border_box = px100 / 100
+                                + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            resolve_specified_width(border_box)
+                        })
+                    })
+                    .or_else(|| {
+                        dom.attr(node_id, "width")
+                            .and_then(|v| v.parse::<i32>().ok())
+                            .map(resolve_specified_width)
+                    })
+                    .unwrap_or(300)
+                    .max(1);
+                let content_h = style
+                    .height
+                    .map(resolve_specified_height)
+                    .or_else(|| {
+                        style
+                            .height_calc
+                            .map(|(px100, _)| resolve_specified_height(px100 / 100))
+                    })
+                    .or_else(|| {
+                        dom.attr(node_id, "height")
+                            .and_then(|v| v.parse::<i32>().ok())
+                            .map(resolve_specified_height)
+                    })
+                    .unwrap_or(150)
+                    .max(1);
+                frame.width = content_w + horizontal_non_content;
+                frame.height = content_h + vertical_non_content;
+                frame.image_src = Some(crate::iframe_snapshot_key(node_id));
+                frame.image_width = Some(content_w);
+                frame.image_height = Some(content_h);
+                frame.object_fit = style.object_fit;
+                out.push(InlineFragment {
+                    width: frame.width + frame.margin.left + frame.margin.right,
+                    height: frame.height + frame.margin.top + frame.margin.bottom,
+                    layout_box: frame,
+                    breaks_after: false,
+                });
+                continue;
+            }
+
             // Handle inline <img> — use available_width instead of hardcoded 300
             if *tag == Tag::Img || dom.has_tag_name(node_id, "a-img") {
                 let (iw, ih) = image_dimensions(dom, node_id, available_width, images);

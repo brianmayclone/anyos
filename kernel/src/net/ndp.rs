@@ -129,7 +129,7 @@ pub fn resolve(ip: Ipv6Addr, timeout_ticks: u32) -> Option<MacAddr> {
             return None;
         }
 
-        core::hint::spin_loop();
+        super::wait_for_poll_progress();
     }
 }
 

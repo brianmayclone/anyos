@@ -201,7 +201,10 @@ pub fn resolve(hostname: &str) -> Result<Ipv4Addr, &'static str> {
     let src_port = bind_query_port().ok_or("DNS: no free UDP source port")?;
 
     // Send query
-    super::udp::send(cfg.dns, src_port, DNS_PORT, &query);
+    if !super::udp::send(cfg.dns, src_port, DNS_PORT, &query) {
+        super::udp::unbind(src_port);
+        return Err("DNS send failed");
+    }
 
     // Wait for response
     let result = match super::udp::recv_timeout(src_port, 500) {
@@ -245,7 +248,10 @@ pub fn resolve_v6(hostname: &str) -> Result<Ipv6Addr, &'static str> {
 
     let src_port = bind_query_port().ok_or("DNS: no free UDP source port")?;
 
-    super::udp::send(dns_server, src_port, DNS_PORT, &query);
+    if !super::udp::send(dns_server, src_port, DNS_PORT, &query) {
+        super::udp::unbind(src_port);
+        return Err("DNS send failed");
+    }
 
     let result = match super::udp::recv_timeout(src_port, 500) {
         Some(dgram) => parse_response_v6(&dgram.data, txid),

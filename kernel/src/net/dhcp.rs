@@ -45,8 +45,13 @@ pub fn discover() -> Result<DhcpResult, &'static str> {
     crate::serial_verbose_println!("  DHCP: DISCOVER sent");
 
     // --- Wait for OFFER ---
-    let offer = wait_dhcp_response(DHCP_OFFER, 500)
-        .map_err(|_| "no DHCP OFFER (no server responded to DISCOVER)")?;
+    let offer = match wait_dhcp_response(DHCP_OFFER, 500) {
+        Ok(offer) => offer,
+        Err(_) => {
+            super::udp::unbind(DHCP_CLIENT_PORT);
+            return Err("no DHCP OFFER (no server responded to DISCOVER)");
+        }
+    };
     crate::serial_verbose_println!("  DHCP: OFFER received - IP {}", offer.ip);
 
     // --- Send REQUEST ---
@@ -63,8 +68,13 @@ pub fn discover() -> Result<DhcpResult, &'static str> {
     crate::serial_verbose_println!("  DHCP: REQUEST sent for {}", offer.ip);
 
     // --- Wait for ACK ---
-    let ack = wait_dhcp_response(DHCP_ACK, 500)
-        .map_err(|_| "no DHCP ACK after REQUEST")?;
+    let ack = match wait_dhcp_response(DHCP_ACK, 500) {
+        Ok(ack) => ack,
+        Err(_) => {
+            super::udp::unbind(DHCP_CLIENT_PORT);
+            return Err("no DHCP ACK after REQUEST");
+        }
+    };
     crate::serial_verbose_println!("  DHCP: ACK received");
 
     super::udp::unbind(DHCP_CLIENT_PORT);
@@ -89,7 +99,7 @@ fn wait_dhcp_response(expected_type: u8, timeout_ticks: u32) -> Result<DhcpResul
             return Err("DHCP timeout");
         }
 
-        core::hint::spin_loop();
+        super::wait_for_poll_progress();
     }
 }
 

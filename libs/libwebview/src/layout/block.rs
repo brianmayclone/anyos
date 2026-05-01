@@ -554,6 +554,73 @@ fn build_block_internal(
         return bx;
     }
 
+    // Handle <iframe> as a replaced element.  The browser host can render the
+    // subdocument into the image cache under this synthetic key.
+    if tag == Some(Tag::Iframe) {
+        let horizontal_non_content = bx.padding.left + bx.padding.right + horizontal_border;
+        let vertical_non_content = bx.padding.top + bx.padding.bottom + vertical_border;
+        let resolve_specified_width = |w: i32| {
+            if is_border_box {
+                (w - horizontal_non_content).max(0)
+            } else {
+                w.max(0)
+            }
+        };
+        let resolve_specified_height = |h: i32| {
+            if is_border_box {
+                (h - vertical_non_content).max(0)
+            } else {
+                h.max(0)
+            }
+        };
+        let content_w = style
+            .width
+            .map(resolve_specified_width)
+            .or_else(|| {
+                style.width_pct.map(|pct| {
+                    let border_box = (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
+                    resolve_specified_width(border_box)
+                })
+            })
+            .or_else(|| {
+                style.width_calc.map(|(px100, pct100)| {
+                    let border_box = px100 / 100
+                        + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                    resolve_specified_width(border_box)
+                })
+            })
+            .or_else(|| {
+                dom.attr(node_id, "width")
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .map(resolve_specified_width)
+            })
+            .unwrap_or(300)
+            .max(1);
+        let content_h = style
+            .height
+            .map(resolve_specified_height)
+            .or_else(|| {
+                style
+                    .height_calc
+                    .map(|(px100, _)| resolve_specified_height(px100 / 100))
+            })
+            .or_else(|| {
+                dom.attr(node_id, "height")
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .map(resolve_specified_height)
+            })
+            .unwrap_or(150)
+            .max(1);
+
+        bx.image_src = Some(crate::iframe_snapshot_key(node_id));
+        bx.image_width = Some(content_w);
+        bx.image_height = Some(content_h);
+        bx.object_fit = style.object_fit;
+        bx.height = content_h + bx.padding.top + bx.padding.bottom + vertical_border;
+        bx.width = content_w + bx.padding.left + bx.padding.right + horizontal_border;
+        return bx;
+    }
+
     // Handle <img> as block/inline-block replaced element.
     if tag == Some(Tag::Img) || dom.has_tag_name(node_id, "a-img") {
         let (natural_w, natural_h) = image_dimensions(dom, node_id, available_width, images);
