@@ -8,6 +8,7 @@ use crate::repo::{Error, Repository, Result};
 use crate::sha1;
 use alloc::string::String;
 use alloc::vec::Vec;
+use std::io::Write;
 
 /// An entry in the git index.
 #[derive(Debug, Clone)]
@@ -76,7 +77,7 @@ impl Index {
 
     /// Parse index data.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < 12 {
+        if data.len() < 32 {
             return Err(Error::InvalidIndex);
         }
 
@@ -84,17 +85,25 @@ impl Index {
         if &data[0..4] != b"DIRC" {
             return Err(Error::InvalidIndex);
         }
-        let _version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        if version != 2 && version != 3 {
+            return Err(Error::InvalidIndex);
+        }
         let count = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
+        let checksum_pos = data.len() - 20;
+        let expected = sha1::hash(&data[..checksum_pos]);
+        if expected.as_slice() != &data[checksum_pos..] {
+            return Err(Error::InvalidIndex);
+        }
 
         let mut entries = Vec::with_capacity(count);
         let mut pos = 12;
-        let entries_end = data.len().saturating_sub(20);
+        let entries_end = checksum_pos;
 
         for _ in 0..count {
             let entry_start = pos;
             if entry_start + 62 > entries_end {
-                break;
+                return Err(Error::InvalidIndex);
             }
 
             let ctime_s = read_u32(&data[entry_start..]);
@@ -164,7 +173,10 @@ impl Index {
     /// Write the index to .git/index.
     pub fn write(&self, repo: &Repository) -> Result<()> {
         let data = self.serialize();
-        std::fs::write(&repo.gitdir.join("index"), &data).map_err(|_| Error::IoError)
+        let path = repo.gitdir.join("index");
+        let mut file = std::fs::File::create(&path).map_err(|_| Error::IoError)?;
+        file.write_all(&data).map_err(|_| Error::IoError)?;
+        file.sync_all().map_err(|_| Error::IoError)
     }
 
     /// Serialize the index to bytes.
@@ -231,4 +243,55 @@ impl Index {
 
 fn read_u32(data: &[u8]) -> u32 {
     u32::from_be_bytes([data[0], data[1], data[2], data[3]])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Index, IndexEntry};
+    use crate::oid::Oid;
+
+    #[test]
+    fn parses_serialized_index() {
+        let mut index = Index::new();
+        index.add(IndexEntry::new(
+            "corefs-core/src/services/versioning.rs",
+            Oid::from_hex("20ec4845296dd46da3d87ba1acef27b3ceb4f8a5").unwrap(),
+            0o100644,
+            4915,
+        ));
+        index.add(IndexEntry::new(
+            "perf-history/2026-04-23_134445_windows-mount-deferred-after-writethrough.tsv",
+            Oid::from_hex("7f9cbb555a632b2cf06d90fef7c7791a30d965a1").unwrap(),
+            0o100644,
+            1,
+        ));
+
+        let parsed = Index::parse(&index.serialize()).unwrap();
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(
+            parsed.entries[1].name,
+            "perf-history/2026-04-23_134445_windows-mount-deferred-after-writethrough.tsv"
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_index_instead_of_returning_partial_entries() {
+        let mut index = Index::new();
+        index.add(IndexEntry::new(
+            "corefs-core/src/services/versioning.rs",
+            Oid::from_hex("20ec4845296dd46da3d87ba1acef27b3ceb4f8a5").unwrap(),
+            0o100644,
+            4915,
+        ));
+        index.add(IndexEntry::new(
+            "perf-history/2026-04-23_134445_windows-mount-deferred-after-writethrough.tsv",
+            Oid::from_hex("7f9cbb555a632b2cf06d90fef7c7791a30d965a1").unwrap(),
+            0o100644,
+            1,
+        ));
+
+        let mut data = index.serialize();
+        data.truncate(data.len() - 30);
+        assert!(Index::parse(&data).is_err());
+    }
 }

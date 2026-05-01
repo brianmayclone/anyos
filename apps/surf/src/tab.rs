@@ -250,6 +250,8 @@ pub(crate) struct TabState {
     pub(crate) deferred_fonts_inflight: usize,
     /// Deferred image requests that are intentionally not submitted yet.
     pub(crate) deferred_images: Vec<DeferredImageRequest>,
+    /// Image `src` keys already submitted or deferred during this navigation.
+    pub(crate) requested_image_urls: Vec<String>,
     /// Number of deferred image requests currently in flight.
     pub(crate) deferred_images_inflight: usize,
     /// External CSS has completed and background images should be discovered
@@ -284,6 +286,7 @@ impl TabState {
             requested_font_urls: Vec::new(),
             deferred_fonts_inflight: 0,
             deferred_images: Vec::new(),
+            requested_image_urls: Vec::new(),
             deferred_images_inflight: 0,
             css_background_scan_pending: false,
             js_console_logged_len: 0,

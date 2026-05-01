@@ -11,21 +11,40 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+pub(crate) enum JsWorkerJob {
+    Script {
+        slot: usize,
+        label: String,
+        script_label: String,
+        script: String,
+    },
+    Timer {
+        delta_ms: u64,
+        callback_budget: usize,
+    },
+}
+
 pub(crate) struct JsWorkerRequest {
     pub(crate) tab_index: usize,
-    pub(crate) slot: usize,
-    pub(crate) label: String,
-    pub(crate) script_label: String,
-    pub(crate) script: String,
+    pub(crate) job: JsWorkerJob,
     pub(crate) state: libwebview::JsExecutionState,
     pub(crate) generation: u32,
 }
 
+pub(crate) enum JsWorkerResultKind {
+    Script {
+        slot: usize,
+        label: String,
+        script_label: String,
+    },
+    Timer {
+        fired: usize,
+    },
+}
+
 pub(crate) struct JsWorkerResult {
     pub(crate) tab_index: usize,
-    pub(crate) slot: usize,
-    pub(crate) label: String,
-    pub(crate) script_label: String,
+    pub(crate) kind: JsWorkerResultKind,
     pub(crate) state: libwebview::JsExecutionState,
     pub(crate) exec_ms: u32,
     pub(crate) generation: u32,
@@ -173,14 +192,33 @@ fn worker_entry() {
         idle_loops = 0;
         BUSY_WORKERS.fetch_add(1, Ordering::SeqCst);
         let start_ms = anyos_std::sys::uptime_ms();
-        req.state.execute_script_source(req.script);
+        let kind = match req.job {
+            JsWorkerJob::Script {
+                slot,
+                label,
+                script_label,
+                script,
+            } => {
+                req.state.execute_script_source(script);
+                JsWorkerResultKind::Script {
+                    slot,
+                    label,
+                    script_label,
+                }
+            }
+            JsWorkerJob::Timer {
+                delta_ms,
+                callback_budget,
+            } => {
+                let fired = req.state.run_timers_with_budget(delta_ms, callback_budget);
+                JsWorkerResultKind::Timer { fired }
+            }
+        };
         let exec_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
         BUSY_WORKERS.fetch_sub(1, Ordering::SeqCst);
         push_result(JsWorkerResult {
             tab_index: req.tab_index,
-            slot: req.slot,
-            label: req.label,
-            script_label: req.script_label,
+            kind,
             state: req.state,
             exec_ms,
             generation: req.generation,

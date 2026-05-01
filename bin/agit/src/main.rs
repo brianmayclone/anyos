@@ -406,7 +406,13 @@ fn cmd_status(tokens: &[String]) {
         Err(_) => anyos_std::println!("On branch (unknown)"),
     }
 
-    let index = Index::read(&repo).unwrap_or_else(|_| Index::new());
+    let index = match Index::read(&repo) {
+        Ok(index) => index,
+        Err(e) => {
+            anyos_std::println!("fatal: failed to read index: {}", e);
+            return;
+        }
+    };
     let head_tree = status::head_tree_flat(&repo);
     let gitignore = GitIgnore::load(&repo).with_defaults();
 

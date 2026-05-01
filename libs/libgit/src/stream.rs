@@ -466,7 +466,7 @@ impl HttpStream {
                     if self.eof {
                         return 0;
                     }
-                    return self.read(out); // Retry with new chunk
+                    return self.read_body(out, count_decoded); // Retry with new chunk
                 }
                 out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
                 self.buf_pos += n;

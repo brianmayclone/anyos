@@ -89,6 +89,11 @@ impl JsExecutionState {
     pub fn execute_script_source(&mut self, script: String) {
         self.runtime.execute_script_sources(&self.dom, &self.url, &[script]);
     }
+
+    pub fn run_timers_with_budget(&mut self, delta_ms: u64, callback_budget: usize) -> usize {
+        self.runtime
+            .tick_with_budget(&self.dom, delta_ms, callback_budget)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1030,6 +1035,10 @@ impl WebView {
         self.js_runtime.timers.len()
     }
 
+    pub fn next_timer_delay_ms(&self) -> Option<u64> {
+        self.js_runtime.next_timer_delay_ms()
+    }
+
     /// Get the page title from the current DOM (if any).
     pub fn get_title(&self) -> Option<String> {
         self.dom_val.as_ref().and_then(|d| d.find_title())
@@ -1294,11 +1303,22 @@ impl WebView {
     ///
     /// Returns `true` if any visual change occurred or pending tiles remain.
     pub fn tick(&mut self, delta_ms: u64) -> bool {
+        self.tick_internal(delta_ms, true)
+    }
+
+    /// Advance only visual work (CSS animations/transitions, smooth scrolling,
+    /// viewport tiles). Surf runs JS timers on its JavaScript worker so the UI
+    /// thread stays a renderer/input loop instead of becoming a script pump.
+    pub fn tick_visual_only(&mut self, delta_ms: u64) -> bool {
+        self.tick_internal(delta_ms, false)
+    }
+
+    fn tick_internal(&mut self, delta_ms: u64, run_js_timers: bool) -> bool {
         let mut changed = false;
 
         // ── 1. Advance JS timers (setTimeout / setInterval / requestAnimationFrame). ──
         // Short-circuits internally when no timers exist (zero allocation).
-        if !self.js_runtime.timers.is_empty() {
+        if run_js_timers && !self.js_runtime.timers.is_empty() {
             let quiet_throttled =
                 self.js_quiet_timer_ticks >= JS_QUIET_TIMER_TICKS_BEFORE_THROTTLE;
             let mut timer_delta_ms = delta_ms;
@@ -1355,7 +1375,7 @@ impl WebView {
                 }
                 self.dom_val = Some(dom);
             }
-        } else {
+        } else if run_js_timers {
             self.js_quiet_timer_ticks = 0;
             self.js_timer_throttle_accum_ms = 0;
         }

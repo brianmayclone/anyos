@@ -3126,6 +3126,13 @@ impl JsRuntime {
         fired
     }
 
+    pub fn next_timer_delay_ms(&self) -> Option<u64> {
+        self.timers
+            .iter()
+            .map(|timer| timer.delay_ms.saturating_sub(timer.elapsed_ms))
+            .min()
+    }
+
     /// Apply pending removeEventListener requests collected during JS execution.
     fn apply_remove_listeners(&mut self, removals: &[(usize, String, JsValue, bool)]) {
         for (node_id, event, callback, capture) in removals {

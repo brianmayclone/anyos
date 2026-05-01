@@ -354,18 +354,37 @@ pub fn fetch_pack_streamed_with_caps(
     repo: &crate::repo::Repository,
     caps: &Capabilities,
 ) -> Result<u32> {
-    match fetch_pack_streamed_attempt(url, wants, haves, repo, caps) {
-        Err(Error::Other(message))
-            if (caps.side_band_64k || caps.side_band) && message == "EOF before PACK header" =>
-        {
+    let mut result = fetch_pack_streamed_attempt(url, wants, haves, repo, caps);
+
+    if let Err(Error::Other(message)) = &result {
+        if (caps.side_band_64k || caps.side_band) && message == "EOF before PACK header" {
             anyos_std::println!("warning: side-band ended before PACK; retrying without side-band");
             let mut raw_caps = caps.clone();
             raw_caps.side_band = false;
             raw_caps.side_band_64k = false;
-            fetch_pack_streamed_attempt(url, wants, haves, repo, &raw_caps)
+            result = fetch_pack_streamed_attempt(url, wants, haves, repo, &raw_caps);
+        }
+    }
+
+    match result {
+        Err(Error::Other(message))
+            if caps.ofs_delta && is_missing_ofs_delta_base(&message) =>
+        {
+            anyos_std::println!(
+                "warning: OFS delta base missing; retrying without ofs-delta"
+            );
+            let mut compat_caps = caps.clone();
+            compat_caps.side_band = false;
+            compat_caps.side_band_64k = false;
+            compat_caps.ofs_delta = false;
+            fetch_pack_streamed_attempt(url, wants, haves, repo, &compat_caps)
         }
         result => result,
     }
+}
+
+fn is_missing_ofs_delta_base(message: &str) -> bool {
+    message.starts_with("missing OFS_DELTA base")
 }
 
 fn fetch_pack_streamed_attempt(

@@ -154,7 +154,16 @@ pub fn checkout_head(repo: &Repository) -> Result<u32> {
     // Update index to match
     let index = build_index_from_tree(repo, &commit.tree)?;
     remove_tracked_paths_not_in_target(repo, &old_index, &index);
+    let entry_count = index.entries.len();
     index.write(repo)?;
+    let reread_index = crate::index::Index::read(repo)?;
+    if reread_index.entries.len() != entry_count {
+        return Err(Error::Other(format!(
+            "index verification failed after checkout: wrote {} entries, read {}",
+            entry_count,
+            reread_index.entries.len()
+        )));
+    }
 
     Ok(count)
 }

@@ -7,7 +7,13 @@ use libgit::tree::parse_tree;
 use libgit::{Commit, Index, Object, Oid, Repository};
 
 pub fn print_porcelain(repo: &Repository) {
-    let index = Index::read(repo).unwrap_or_else(|_| Index::new());
+    let index = match Index::read(repo) {
+        Ok(index) => index,
+        Err(e) => {
+            anyos_std::println!("fatal: failed to read index: {}", e);
+            return;
+        }
+    };
     let head_tree = head_tree_flat(repo);
     let gitignore = GitIgnore::load(repo).with_defaults();
 

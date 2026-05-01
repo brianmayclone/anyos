@@ -13,6 +13,38 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+fn image_already_queued_or_decoded(tab_index: usize, src: &str) -> bool {
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return true;
+    }
+    let tab = &st.tabs[tab_index];
+    tab.webview.has_decoded_image(src)
+        || tab.requested_image_urls
+            .iter()
+            .any(|existing| existing == src)
+        || tab.deferred_images.iter().any(|req| req.src == src)
+}
+
+fn mark_image_requested(tab_index: usize, src: &str) -> bool {
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return false;
+    }
+    let tab = &mut st.tabs[tab_index];
+    if tab.webview.has_decoded_image(src)
+        || tab
+            .requested_image_urls
+            .iter()
+            .any(|existing| existing == src)
+        || tab.deferred_images.iter().any(|req| req.src == src)
+    {
+        return false;
+    }
+    tab.requested_image_urls.push(String::from(src));
+    true
+}
+
 pub(crate) fn resolve_css_resource_urls(css: &str, css_url: &crate::http::Url) -> String {
     let bytes = css.as_bytes();
     let mut out = String::with_capacity(css.len());
@@ -761,15 +793,10 @@ pub(crate) fn queue_images(
                     continue;
                 }
 
-                let img_url = crate::http::resolve_url(base_url, &src);
-                {
-                    let st = crate::state();
-                    if tab_index < st.tabs.len()
-                        && st.tabs[tab_index].webview.has_decoded_image(&src)
-                    {
-                        continue;
-                    }
+                if image_already_queued_or_decoded(tab_index, &src) {
+                    continue;
                 }
+                let img_url = crate::http::resolve_url(base_url, &src);
                 let loading = dom.attr(i, "loading").unwrap_or("");
                 let fetchpriority = dom.attr(i, "fetchpriority").unwrap_or("");
                 let lazy_requested = loading.eq_ignore_ascii_case("lazy");
@@ -825,6 +852,9 @@ pub(crate) fn queue_images(
                 };
 
                 if should_start_immediately {
+                    if !mark_image_requested(tab_index, &src) {
+                        continue;
+                    }
                     crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
                         tab_index,
                         src,
@@ -836,6 +866,9 @@ pub(crate) fn queue_images(
                     });
                     immediate_count += 1;
                 } else {
+                    if !mark_image_requested(tab_index, &src) {
+                        continue;
+                    }
                     let priority = if high_priority || (!lazy_requested && i < 24) {
                         crate::net_worker::ImagePriority::Viewport
                     } else {
@@ -885,12 +918,9 @@ pub(crate) fn queue_images(
                     }
                     continue;
                 }
-                if tab_index < st.tabs.len()
-                    && st.tabs[tab_index].webview.has_decoded_image(bg_src)
+                if image_already_queued_or_decoded(tab_index, bg_src)
+                    || deferred.iter().any(|(_, req)| req.src == *bg_src)
                 {
-                    continue;
-                }
-                if deferred.iter().any(|(_, req)| req.src == *bg_src) {
                     continue;
                 }
                 let img_url = crate::http::resolve_url(base_url, bg_src);
@@ -905,6 +935,9 @@ pub(crate) fn queue_images(
                 };
                 if initial_viewport_hit && immediate_budget > 0 {
                     immediate_budget -= 1;
+                    if !mark_image_requested(tab_index, bg_src) {
+                        continue;
+                    }
                     crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
                         tab_index,
                         src: bg_src.clone(),
@@ -916,6 +949,9 @@ pub(crate) fn queue_images(
                     });
                     immediate_count += 1;
                     count += 1;
+                    continue;
+                }
+                if !mark_image_requested(tab_index, bg_src) {
                     continue;
                 }
                 let rank = deferred_image_rank(i, None, None, false, true);
@@ -943,8 +979,9 @@ pub(crate) fn queue_images(
 
     let st = crate::state();
     if tab_index < st.tabs.len() {
-        st.tabs[tab_index].deferred_images = deferred.into_iter().map(|(_, req)| req).collect();
-        st.tabs[tab_index].deferred_images_inflight = 0;
+        st.tabs[tab_index]
+            .deferred_images
+            .extend(deferred.into_iter().map(|(_, req)| req));
     }
 
     if count > 0 {
@@ -998,6 +1035,10 @@ pub(crate) fn queue_background_images(
             }
             if webview.has_decoded_image(bg_src)
                 || st.tabs[tab_index]
+                    .requested_image_urls
+                    .iter()
+                    .any(|existing| existing == bg_src)
+                || st.tabs[tab_index]
                     .deferred_images
                     .iter()
                     .any(|req| req.src == *bg_src)
@@ -1034,9 +1075,13 @@ pub(crate) fn queue_background_images(
 
     candidates.sort_by(|a, b| b.0.cmp(&a.0));
     let immediate_count = core::cmp::min(immediate_budget, candidates.len());
+    let mut submitted_immediate = 0usize;
     let mut deferred = Vec::new();
     for (idx, (_, req)) in candidates.into_iter().enumerate() {
         if idx < immediate_count {
+            if !mark_image_requested(tab_index, &req.src) {
+                continue;
+            }
             crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
                 tab_index,
                 src: req.src,
@@ -1046,7 +1091,11 @@ pub(crate) fn queue_background_images(
                 priority: crate::net_worker::ImagePriority::Viewport,
                 generation,
             });
+            submitted_immediate += 1;
         } else {
+            if !mark_image_requested(tab_index, &req.src) {
+                continue;
+            }
             deferred.push(req);
         }
     }
@@ -1060,13 +1109,13 @@ pub(crate) fn queue_background_images(
     }
     crate::surf_log!(
         "[surf] background image queue summary: total={} immediate={} deferred={} tab={}",
-        immediate_count + deferred_count,
-        immediate_count,
+        submitted_immediate + deferred_count,
+        submitted_immediate,
         deferred_count,
         tab_index
     );
     crate::ensure_net_poll_timer();
-    immediate_count + deferred_count
+    submitted_immediate + deferred_count
 }
 
 pub(crate) fn submit_deferred_images(tab_index: usize, max_batch: usize) -> usize {
