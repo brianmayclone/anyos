@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    resolve_inset, AlignItems, ClearVal, ComputedStyle, Direction, Display, FlexDirection,
+    resolve_inset, resolve_margins, AlignItems, ClearVal, ComputedStyle, Direction, Display, FlexDirection,
     FloatVal, FontStyleVal, FontWeight, InlineAxisAlignment, ListStyle, ListStylePosition,
     OverflowVal, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
 };
@@ -2347,6 +2347,20 @@ pub(super) fn layout_children_ex_with_budget(
             for lb in line_boxes {
                 let h = lb.height;
                 let mut placed = lb;
+                if flow_width > 0 && placed.width > flow_width {
+                    let overflow = placed.width - flow_width;
+                    let correction = match parent_align {
+                        TextAlignVal::Center => overflow / 2,
+                        TextAlignVal::Right => overflow,
+                        _ => 0,
+                    };
+                    if correction != 0 {
+                        for child in &mut placed.children {
+                            child.x -= correction;
+                        }
+                    }
+                    placed.width = flow_width;
+                }
                 placed.y = cursor_y;
                 cursor_y += h;
                 parent.children.push(placed);
@@ -2927,7 +2941,10 @@ pub(super) fn shrink_to_fit_width(
         + style.border_left.width
         + style.border_right.width
         + style.border_width * 2;
-    (mc + pad_border).max(1).min(max_width)
+    let (_, margin_right, _, margin_left) = resolve_margins(style, max_width);
+    (mc + pad_border + margin_left + margin_right)
+        .max(1)
+        .min(max_width)
 }
 
 fn shrink_abs_box_to_contents(abs_box: &mut LayoutBox) {

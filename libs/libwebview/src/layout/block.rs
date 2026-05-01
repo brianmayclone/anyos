@@ -26,6 +26,67 @@ fn resolve_definite_block_calc(calc: (i32, i32), containing_height: i32) -> Opti
     Some((px100 / 100 + (containing_height.max(0) as i64 * pct100 as i64 / 10000) as i32).max(0))
 }
 
+fn clamp_auto_width_children_to_parent_content(parent: &mut LayoutBox, styles: &[ComputedStyle]) {
+    let horizontal_border = if parent.border_left_width != 0 || parent.border_right_width != 0 {
+        parent.border_left_width + parent.border_right_width
+    } else {
+        parent.border_width * 2
+    };
+    let content_w =
+        (parent.width - parent.padding.left - parent.padding.right - horizontal_border).max(0);
+    if content_w > 0 {
+        for child in &mut parent.children {
+            let auto_width = if matches!(child.box_type, BoxType::LineBox | BoxType::Anonymous) {
+                true
+            } else if let Some(node_id) = child.node_id {
+                styles
+                    .get(node_id)
+                    .map(|style| {
+                        let auto_or_parent_relative_width = style.width.is_none()
+                            && (style.width_pct.is_none()
+                                || style.width_pct.map(|pct| pct <= 10_000).unwrap_or(false))
+                            && (style.width_calc.is_none()
+                                || style
+                                    .width_calc
+                                    .map(|(_, pct)| pct > 0 && pct <= 10_000)
+                                    .unwrap_or(false));
+                        auto_or_parent_relative_width
+                            && !style.width_max_content
+                            && !style.width_min_content
+                            && !style.width_fit_content
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if auto_width && !child.is_out_of_flow && child.width > content_w {
+                let overflow = child.width - content_w;
+                let correction = match child.text_align {
+                    crate::style::TextAlignVal::Center => overflow / 2,
+                    crate::style::TextAlignVal::Right => overflow,
+                    _ => 0,
+                };
+                if correction != 0 {
+                    for grandchild in &mut child.children {
+                        grandchild.x -= correction;
+                    }
+                }
+                child.width = content_w;
+            } else if !child.is_out_of_flow
+                && child.x > 0
+                && child.width <= content_w
+                && child.x + child.width > content_w
+            {
+                let overflow = child.x + child.width - content_w;
+                child.x -= overflow;
+            }
+        }
+    }
+    for child in &mut parent.children {
+        clamp_auto_width_children_to_parent_content(child, styles);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::resolve_definite_block_calc;
@@ -995,6 +1056,11 @@ fn build_block_internal(
             outer_h.max(0)
         }
     });
+    if bx.height == 0 {
+        if let Some(content_h_hint) = definite_parent_content_h {
+            bx.height = content_h_hint.max(0);
+        }
+    }
     // Lay out children — dispatch to flex, grid, or block flow.
     // Inject ::before / ::after block-level pseudo-element boxes.
     // Inline pseudo-elements are injected into the inline run by layout_children / layout_inline_content.
@@ -1252,6 +1318,7 @@ fn build_block_internal(
             dom, styles, pseudo, node_id, inner_w, &mut bx, images, viewport_w,
         );
     }
+    clamp_auto_width_children_to_parent_content(&mut bx, styles);
 
     // Apply position:relative offset (does not affect child layout).
     if style.position == Position::Relative {

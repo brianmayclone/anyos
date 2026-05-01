@@ -274,6 +274,11 @@ pub fn layout_grid(
 
     let row_templates = &parent_style.grid_template_rows;
     let auto_row = &parent_style.grid_auto_rows;
+    let single_row_definite_height = if total_rows == 1 && parent.height > 0 {
+        definite_grid_content_height(parent_style, parent.height, 0)
+    } else {
+        0
+    };
 
     // ── 7. Measure each item at its column span width ─────────────────────
     for item in &mut items {
@@ -308,7 +313,7 @@ pub fn layout_grid(
             item_avail,
             images,
             viewport_w,
-            0,
+            single_row_definite_height,
         );
         relayout_subgrid_columns_if_needed(
             dom,
