@@ -73,7 +73,20 @@ impl DisplayList {
             bx.border_bottom_left_radius,
         ];
         let has_radius = radii.iter().any(|&r| r > 0);
-        if has_radius {
+        let has_css_visuals = bx.bg_color != 0
+            || bx.border_top_width > 0
+            || bx.border_right_width > 0
+            || bx.border_bottom_width > 0
+            || bx.border_left_width > 0
+            || has_radius
+            || !bx.box_shadows.is_empty()
+            || !matches!(bx.background_image, crate::style::BackgroundImageVal::None);
+        let paint_default_chrome = !bx.appearance_none && !has_css_visuals;
+        if !paint_default_chrome {
+            // Author CSS already painted the control box during normal box
+            // rendering.  Keep the form text/cursor layer transparent so
+            // modern rounded search bars and button containers remain intact.
+        } else if has_radius {
             self.push(
                 x,
                 y,
@@ -152,19 +165,20 @@ impl DisplayList {
         };
         if let Some((txt, color)) = text {
             let font_size = bx.font_size.max(1) as u16;
-            let tx = x + 4;
+            let font_id = crate::layout::resolve_font_id(bx.custom_font_id, bx.bold, bx.italic);
+            let tx = x + bx.padding.left.max(4);
             let ty = y + (bx.height - font_size as i32) / 2;
             self.push(
                 tx,
                 ty,
-                bx.width - 8,
+                (bx.width - bx.padding.left.max(4) - bx.padding.right.max(4)).max(0),
                 font_size as i32,
                 DrawKind::Text {
                     color,
-                    font_id: 0,
+                    font_id,
                     font_size,
                     scale_x_percent: 100,
-                    synthetic_bold: false,
+                    synthetic_bold: bx.bold && bx.custom_font_id != 0,
                     text: txt,
                 },
             );

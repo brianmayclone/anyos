@@ -431,8 +431,7 @@ impl DisplayList {
                     }
 
                     for i in 0..stripe_count {
-                        let cy =
-                            (i * bg_h / stripe_count) as f32 + stripe_h as f32 / 2.0 - half_h;
+                        let cy = (i * bg_h / stripe_count) as f32 + stripe_h as f32 / 2.0 - half_h;
                         let cx = 0.0_f32; // center of scanline
                         let proj = (cx * dx + cy * dy) / grad_len + 0.5;
                         let t = (proj * 10000.0).max(0.0).min(10000.0) as i32;
@@ -518,7 +517,9 @@ impl DisplayList {
         }
     }
 
-    fn default_accent_color(&self) -> u32 { 0xFF0A84FF }
+    fn default_accent_color(&self) -> u32 {
+        0xFF0A84FF
+    }
 
     fn effective_accent_color(&self, bx: &LayoutBox) -> u32 {
         if bx.accent_color != 0 {
@@ -549,14 +550,23 @@ impl DisplayList {
     }
 
     fn default_control_border(&self, bx: &LayoutBox) -> u32 {
-        if bx.uses_dark_color_scheme {
+        if bx.border_color != 0 {
+            bx.border_color
+        } else if bx.border_top_color != 0 {
+            bx.border_top_color
+        } else if bx.uses_dark_color_scheme {
             0xFF8A8A8A
         } else {
             0xFF767676
         }
     }
 
-    fn background_paint_rect(&self, abs_x: i32, abs_y: i32, bx: &LayoutBox) -> (i32, i32, i32, i32) {
+    fn background_paint_rect(
+        &self,
+        abs_x: i32,
+        abs_y: i32,
+        bx: &LayoutBox,
+    ) -> (i32, i32, i32, i32) {
         self.box_area_rect(abs_x, abs_y, bx, bx.background_clip)
     }
 
