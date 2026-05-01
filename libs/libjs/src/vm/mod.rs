@@ -22,6 +22,20 @@ fn dump_exception_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::Undefined
 }
 
+fn async_await_fulfill_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let id = args.first().map(|v| v.to_number() as usize).unwrap_or(usize::MAX);
+    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    vm.resume_async_continuation(id, value, false);
+    JsValue::Undefined
+}
+
+fn async_await_reject_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let id = args.first().map(|v| v.to_number() as usize).unwrap_or(usize::MAX);
+    let reason = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    vm.resume_async_continuation(id, reason, true);
+    JsValue::Undefined
+}
+
 pub mod builtins;
 pub mod call;
 pub mod event_loop;
@@ -92,6 +106,7 @@ impl LocalSlot {
 }
 
 /// Call frame for function invocations.
+#[derive(Clone)]
 pub struct CallFrame {
     pub chunk: Rc<Chunk>,
     pub ip: usize,
@@ -119,10 +134,19 @@ pub struct CallFrame {
 }
 
 /// Exception handler for try-catch.
+#[derive(Clone)]
 pub struct TryHandler {
     pub catch_ip: usize,
     pub stack_depth: usize,
     pub frame_depth: usize,
+}
+
+#[derive(Clone)]
+struct AsyncContinuation {
+    frame: CallFrame,
+    stack_snapshot: Vec<JsValue>,
+    try_handlers: Vec<TryHandler>,
+    target_promise: JsValue,
 }
 
 // ── The VM ──
@@ -184,6 +208,7 @@ pub struct Vm {
     /// Needed because native built-ins like `String` are callable both as
     /// functions and constructors, so `current_this` alone is not enough.
     pub native_constructor_depth: usize,
+    async_continuations: Vec<Option<AsyncContinuation>>,
 }
 
 impl Vm {
@@ -221,6 +246,7 @@ impl Vm {
             module_registry: BTreeMap::new(),
             module_sources: BTreeMap::new(),
             native_constructor_depth: 0,
+            async_continuations: Vec::new(),
         };
         vm.init_prototypes();
         vm.init_globals();
@@ -234,6 +260,82 @@ impl Vm {
 
     pub fn is_in_constructor_call(&self) -> bool {
         self.native_constructor_depth > 0
+    }
+
+    fn make_bound_native_callback(
+        name: &str,
+        native: fn(&mut Vm, &[JsValue]) -> JsValue,
+        bound_args: Vec<JsValue>,
+    ) -> JsValue {
+        JsValue::Function(Rc::new(RefCell::new(JsFunction {
+            name: Some(String::from(name)),
+            params: Vec::new(),
+            kind: FnKind::Native(native),
+            object_proto: None,
+            this_binding: None,
+            bound_args,
+            upvalues: Vec::new(),
+            with_scopes: Vec::new(),
+            prototype: None,
+            own_props: BTreeMap::new(),
+            arity: None,
+            super_class: None,
+        })))
+    }
+
+    fn register_async_continuation(
+        &mut self,
+        frame: CallFrame,
+        stack_snapshot: Vec<JsValue>,
+        try_handlers: Vec<TryHandler>,
+        target_promise: JsValue,
+    ) -> usize {
+        let id = self.async_continuations.len();
+        self.async_continuations.push(Some(AsyncContinuation {
+            frame,
+            stack_snapshot,
+            try_handlers,
+            target_promise,
+        }));
+        id
+    }
+
+    fn resume_async_continuation(&mut self, id: usize, value: JsValue, rejected: bool) {
+        let Some(slot) = self.async_continuations.get_mut(id) else {
+            return;
+        };
+        let Some(mut cont) = slot.take() else {
+            return;
+        };
+
+        let saved_stack = core::mem::take(&mut self.stack);
+        let saved_frames = core::mem::take(&mut self.frames);
+        let saved_try_handlers = core::mem::take(&mut self.try_handlers);
+        let saved_target = self.run_target_depth;
+
+        cont.frame.stack_base = 0;
+        self.stack = cont.stack_snapshot;
+        self.try_handlers = cont.try_handlers;
+        self.frames.push(cont.frame);
+        self.run_target_depth = 0;
+
+        let result = if rejected {
+            if self.handle_exception(value) {
+                self.run()
+            } else {
+                let exc = self.last_exception.take().unwrap_or(JsValue::Undefined);
+                native_promise::make_rejected_promise(exc)
+            }
+        } else {
+            self.stack.push(value);
+            self.run()
+        };
+        native_promise::settle_chained_result(self, &cont.target_promise, result);
+
+        self.stack = saved_stack;
+        self.frames = saved_frames;
+        self.try_handlers = saved_try_handlers;
+        self.run_target_depth = saved_target;
     }
 
     fn coerce_property_key(&mut self, val: JsValue) -> Option<String> {
@@ -3152,9 +3254,63 @@ impl Vm {
                                     return JsValue::Undefined;
                                 }
                             } else {
-                                // Still pending after draining — push undefined
-                                // (best-effort in single-threaded VM).
-                                self.stack.push(JsValue::Undefined);
+                                // Suspend async functions at real asynchronous
+                                // boundaries. Continuing with `undefined` here
+                                // corrupts modern promise-heavy apps: `await`
+                                // would skip iframe loads, timers, fetches, and
+                                // benchmark/test state machines.
+                                let current_frame_is_async = self
+                                    .frames
+                                    .last()
+                                    .map(|frame| frame.chunk.is_async)
+                                    .unwrap_or(false);
+                                if current_frame_is_async {
+                                    let target_promise = native_promise::make_pending_promise(self);
+                                    let Some(mut frame) = self.frames.pop() else {
+                                        self.stack.push(JsValue::Undefined);
+                                        continue;
+                                    };
+                                    let original_stack_base = frame.stack_base;
+                                    frame.stack_base = 0;
+                                    let stack_snapshot = if original_stack_base <= self.stack.len() {
+                                        self.stack.split_off(original_stack_base)
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    let continuation_id = self.register_async_continuation(
+                                        frame,
+                                        stack_snapshot,
+                                        self.try_handlers.clone(),
+                                        target_promise.clone(),
+                                    );
+                                    let id_arg = JsValue::Number(continuation_id as f64);
+                                    let on_fulfilled = Self::make_bound_native_callback(
+                                        "__async_await_fulfill__",
+                                        async_await_fulfill_runner,
+                                        vec![id_arg.clone()],
+                                    );
+                                    let on_rejected = Self::make_bound_native_callback(
+                                        "__async_await_reject__",
+                                        async_await_reject_runner,
+                                        vec![id_arg],
+                                    );
+                                    let then_fn = self.get_property_with_proto(&val, "then");
+                                    if then_fn.is_function() {
+                                        let _ = self.call_value(
+                                            &then_fn,
+                                            &[on_fulfilled, on_rejected],
+                                            val.clone(),
+                                        );
+                                    }
+                                    self.stack.push(target_promise.clone());
+                                    if self.frames.is_empty()
+                                        || self.frames.len() <= self.run_target_depth
+                                    {
+                                        return target_promise;
+                                    }
+                                } else {
+                                    self.stack.push(JsValue::Undefined);
+                                }
                             }
                         } else {
                             // Non-promise object: wrap in Promise.resolve semantics.

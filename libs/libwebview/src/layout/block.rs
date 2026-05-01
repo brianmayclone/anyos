@@ -1512,6 +1512,15 @@ fn append_out_of_flow_children(
 }
 
 fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
+    // Modern sites style even text-only <button>s through classes. Treating
+    // those as fixed native controls gives them the wrong intrinsic height and
+    // ignores CSS padding/line-height (CoreVM nav, Speedometer start button).
+    if dom.attr(node_id, "class").is_some_and(|class| !class.trim().is_empty())
+        || dom.attr(node_id, "style").is_some_and(|style| !style.trim().is_empty())
+    {
+        return false;
+    }
+
     let children = &dom.get(node_id).children;
     if children.is_empty() {
         return true;

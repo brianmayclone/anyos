@@ -120,12 +120,18 @@ pub(super) enum DrawKind {
         gap_len: i32,
         vertical: bool,
     },
+    RadialGradient {
+        center_x: i32,
+        center_y: i32,
+        stops: Vec<crate::style::GradientStop>,
+    },
     /// Draw a text string.
     Text {
         color: u32,
         font_id: u32,
         font_size: u16,
         scale_x_percent: i32,
+        synthetic_bold: bool,
         text: String,
     },
     /// Blit an image (looked up from ImageCache by src URL at rasterize time).

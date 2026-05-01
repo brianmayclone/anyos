@@ -6,7 +6,8 @@
 //! explicitly set by any declaration are inherited from the parent node.
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -662,8 +663,8 @@ fn apply_decl_with_vars(
     set_flags: &mut u32,
 ) {
     if let Property::CustomProperty(ref name) = decl.property {
-        if let CssValue::Keyword(ref val) = decl.value {
-            store_custom_prop(node_cp, name, val);
+        if let Some(val) = custom_property_value_to_string(&decl.value) {
+            store_custom_prop(node_cp, name, &val);
         }
     } else if let CssValue::Var(_, _) = &decl.value {
         let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
@@ -689,8 +690,8 @@ fn apply_custom_props_from_decls(
             continue;
         }
         if let Property::CustomProperty(ref name) = decl.property {
-            if let CssValue::Keyword(ref val) = decl.value {
-                store_custom_prop(node_cp, name, val);
+            if let Some(val) = custom_property_value_to_string(&decl.value) {
+                store_custom_prop(node_cp, name, &val);
             }
         }
     }
@@ -2815,6 +2816,69 @@ fn store_custom_prop(cp: &mut Vec<(String, String)>, name: &str, val: &str) {
         existing.1.push_str(val);
     } else {
         cp.push((String::from(name), String::from(val)));
+    }
+}
+
+fn custom_property_value_to_string(value: &CssValue) -> Option<String> {
+    match value {
+        CssValue::Keyword(s) => Some(s.clone()),
+        CssValue::Color(c) => {
+            let a = (c >> 24) & 0xff;
+            let r = (c >> 16) & 0xff;
+            let g = (c >> 8) & 0xff;
+            let b = c & 0xff;
+            if a == 255 {
+                Some(format!("#{:02x}{:02x}{:02x}", r, g, b))
+            } else {
+                Some(format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, a))
+            }
+        }
+        CssValue::Length(v, unit) => Some(format!("{}{}", v, unit_suffix(*unit))),
+        CssValue::Percentage(v) => Some(format!("{}%", v / 100)),
+        CssValue::Number(v) => Some(v.to_string()),
+        CssValue::Auto => Some(String::from("auto")),
+        CssValue::None => Some(String::from("none")),
+        CssValue::Inherit => Some(String::from("inherit")),
+        CssValue::CurrentColor => Some(String::from("currentColor")),
+        CssValue::Calc(px, pct) => {
+            if *pct == 0 {
+                Some(format!("{}px", px))
+            } else {
+                Some(format!("calc({}px + {}%)", px, pct / 100))
+            }
+        }
+        CssValue::Var(name, fallback) => {
+            let mut out = String::from("var(");
+            out.push_str(name);
+            if let Some(fallback) = fallback {
+                if let Some(fallback_text) = custom_property_value_to_string(fallback) {
+                    out.push_str(", ");
+                    out.push_str(&fallback_text);
+                }
+            }
+            out.push(')');
+            Some(out)
+        }
+    }
+}
+
+fn unit_suffix(unit: Unit) -> &'static str {
+    match unit {
+        Unit::Px => "px",
+        Unit::Em => "em",
+        Unit::Rem => "rem",
+        Unit::In => "in",
+        Unit::Cm => "cm",
+        Unit::Mm => "mm",
+        Unit::Pt => "pt",
+        Unit::Pc => "pc",
+        Unit::Q => "q",
+        Unit::Percent => "%",
+        Unit::Fr => "fr",
+        Unit::Vw => "vw",
+        Unit::Vh => "vh",
+        Unit::Vmin => "vmin",
+        Unit::Vmax => "vmax",
     }
 }
 
@@ -6535,6 +6599,12 @@ fn parse_background_image_val(s: &str) -> Option<BackgroundImageVal> {
             .trim_end_matches(')');
         return parse_linear_gradient(inner);
     }
+    if lower.starts_with("radial-gradient(") {
+        let inner = lower
+            .trim_start_matches("radial-gradient(")
+            .trim_end_matches(')');
+        return parse_radial_gradient(inner);
+    }
     None
 }
 
@@ -6620,6 +6690,161 @@ fn parse_linear_gradient(inner: &str) -> Option<BackgroundImageVal> {
     }
 
     Some(BackgroundImageVal::LinearGradient { angle_deg, stops })
+}
+
+fn parse_radial_gradient(inner: &str) -> Option<BackgroundImageVal> {
+    let parts: Vec<&str> = split_comma_respecting_parens(inner);
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let mut center_x = 5000;
+    let mut center_y = 5000;
+    let mut start_idx = 0;
+    let first = parts[0].trim();
+    if !looks_like_color_stop(first) {
+        if let Some((cx, cy)) = parse_radial_position(first) {
+            center_x = cx;
+            center_y = cy;
+        }
+        start_idx = 1;
+    }
+
+    let mut stops = Vec::new();
+    for part in parts.iter().skip(start_idx) {
+        let part = part.trim();
+        let (color_str, position_str) = split_gradient_stop(part);
+        let color = crate::css::try_parse_color_pub(color_str)
+            .or_else(|| crate::css::named_color_pub(&color_str.to_ascii_lowercase()))?;
+        let position = if let Some(pos) = position_str {
+            parse_gradient_position(pos)
+        } else {
+            -1
+        };
+        stops.push(GradientStop { color, position });
+    }
+    distribute_gradient_positions(&mut stops);
+    Some(BackgroundImageVal::RadialGradient {
+        center_x,
+        center_y,
+        stops,
+    })
+}
+
+fn looks_like_color_stop(s: &str) -> bool {
+    let lower = s.trim().to_ascii_lowercase();
+    lower.starts_with('#')
+        || lower.starts_with("rgb(")
+        || lower.starts_with("rgba(")
+        || lower.starts_with("hsl(")
+        || lower.starts_with("hsla(")
+        || lower == "transparent"
+        || crate::css::named_color_pub(&lower).is_some()
+}
+
+fn parse_radial_position(s: &str) -> Option<(i32, i32)> {
+    let lower = s.replace('_', " ");
+    let lower = lower.to_ascii_lowercase();
+    let after_at = lower
+        .split_once(" at ")
+        .map(|(_, pos)| pos.trim())
+        .unwrap_or_else(|| lower.trim());
+    if after_at.is_empty() || after_at == "circle" || after_at == "ellipse" {
+        return Some((5000, 5000));
+    }
+
+    let mut cx = 5000;
+    let mut cy = 5000;
+    let mut saw_pos = false;
+    for token in after_at.split_whitespace() {
+        match token {
+            "left" => {
+                cx = 0;
+                saw_pos = true;
+            }
+            "right" => {
+                cx = 10000;
+                saw_pos = true;
+            }
+            "top" => {
+                cy = 0;
+                saw_pos = true;
+            }
+            "bottom" => {
+                cy = 10000;
+                saw_pos = true;
+            }
+            "center" => saw_pos = true,
+            _ if token.ends_with('%') => {
+                let pct = parse_i32_prefix(&token[..token.len().saturating_sub(1)]).unwrap_or(50);
+                if cx == 5000 {
+                    cx = (pct * 100).clamp(0, 10000);
+                } else {
+                    cy = (pct * 100).clamp(0, 10000);
+                }
+                saw_pos = true;
+            }
+            _ => {}
+        }
+    }
+    if saw_pos {
+        Some((cx, cy))
+    } else {
+        Some((5000, 5000))
+    }
+}
+
+fn parse_i32_prefix(s: &str) -> Option<i32> {
+    let mut sign = 1;
+    let mut value = 0i32;
+    let mut saw_digit = false;
+    for (idx, ch) in s.trim().chars().enumerate() {
+        if idx == 0 && ch == '-' {
+            sign = -1;
+            continue;
+        }
+        if let Some(digit) = ch.to_digit(10) {
+            saw_digit = true;
+            value = value.saturating_mul(10).saturating_add(digit as i32);
+        } else {
+            break;
+        }
+    }
+    saw_digit.then_some(value.saturating_mul(sign))
+}
+
+fn distribute_gradient_positions(stops: &mut [GradientStop]) {
+    if stops.is_empty() {
+        return;
+    }
+    let len = stops.len();
+    if stops[0].position < 0 {
+        stops[0].position = 0;
+    }
+    if len > 1 && stops[len - 1].position < 0 {
+        stops[len - 1].position = 10000;
+    }
+    let mut i = 1;
+    while i < len.saturating_sub(1) {
+        if stops[i].position < 0 {
+            let mut j = i + 1;
+            while j < len && stops[j].position < 0 {
+                j += 1;
+            }
+            if j < len {
+                let start_pos = stops[i - 1].position;
+                let end_pos = stops[j].position;
+                let span = j - i + 1;
+                for k in i..j {
+                    stops[k].position =
+                        start_pos + (end_pos - start_pos) * (k - i + 1) as i32 / span as i32;
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
 }
 
 fn split_gradient_stop(part: &str) -> (&str, Option<&str>) {
@@ -7823,6 +8048,40 @@ mod layout_regression_tests {
         assert_eq!(style.margin_left, -10);
         assert_eq!(style.padding_left, 20);
         assert_eq!(style.padding_bottom, 20);
+    }
+
+    #[test]
+    fn calc_division_by_negative_number_after_var_resolution() {
+        let dom = crate::html::parse(r#"<section id="home"></section>"#);
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            :root {
+                --viewport-width: 800px;
+                --viewport-height: 600px;
+                --padding-width: 15px;
+                --border-width: 6px;
+            }
+            section {
+                width: var(--viewport-width);
+                height: var(--viewport-height);
+                margin-top: calc(var(--viewport-height) / -2 - var(--padding-width) - var(--border-width));
+                margin-left: calc(var(--viewport-width) / -2 - var(--padding-width) - var(--border-width));
+            }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 900, &mut inline_style_cache);
+        let section_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Section, .. }))
+            .expect("section node");
+        let style = &styles[section_id];
+
+        assert_eq!(style.width, Some(800));
+        assert_eq!(style.height, Some(600));
+        assert_eq!(style.margin_top, -321);
+        assert_eq!(style.margin_left, -421);
     }
 
     #[test]

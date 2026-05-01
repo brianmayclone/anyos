@@ -792,6 +792,11 @@ pub fn layout_flex(
             // forgetting to resolve the percentage here clamps every img flex
             // item to a negative width and produces a 0×0 box.
             let st = &styles[items[i].node_id];
+            let main_margins = if is_row {
+                st.margin_left + st.margin_right
+            } else {
+                st.margin_top + st.margin_bottom
+            };
             let resolve_pct_constraint = |raw: i32, basis: i32| -> i32 {
                 if raw < 0 {
                     (basis.max(0) as i64 * (-raw) as i64 / 10000) as i32
@@ -802,20 +807,20 @@ pub fn layout_flex(
             let clamped = if is_row {
                 let mut s = final_size;
                 if st.min_width > 0 {
-                    s = s.max(st.min_width);
+                    s = s.max(st.min_width + main_margins);
                 }
                 if let Some(mw) = st.max_width {
-                    s = s.min(resolve_pct_constraint(mw, available_width));
+                    s = s.min(resolve_pct_constraint(mw, available_width) + main_margins);
                 }
                 s
             } else {
                 let mut s = final_size;
                 if st.min_height > 0 {
-                    s = s.max(st.min_height);
+                    s = s.max(st.min_height + main_margins);
                 }
                 if let Some(mh) = st.max_height {
                     let basis = definite_container_height.unwrap_or(0);
-                    s = s.min(resolve_pct_constraint(mh, basis));
+                    s = s.min(resolve_pct_constraint(mh, basis) + main_margins);
                 }
                 s
             };

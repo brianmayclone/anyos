@@ -1427,6 +1427,25 @@ impl JsValue {
         }
     }
 
+    /// Set a non-enumerable own property.
+    pub fn set_hidden_property(&self, key: String, value: JsValue) {
+        match self {
+            JsValue::Object(obj) => obj.borrow_mut().set_hidden(key, value),
+            JsValue::Array(arr) => {
+                arr.borrow_mut().properties.insert(key, Property::hidden(value));
+            }
+            JsValue::Function(func) => {
+                let mut f = func.borrow_mut();
+                f.own_props.insert(key.clone(), value);
+                f.own_props.insert(
+                    alloc::format!("__desc_enumerable_{}", key),
+                    JsValue::Bool(false),
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// Delete a property.
     pub fn delete_property(&self, key: &str) -> bool {
         match self {

@@ -15,7 +15,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-BINARY="target/x86_64-unknown-linux-gnu/release/surf-host"
+BINARY="target/release/surf-host"
 
 build() {
     echo "[build] compiling surf-host (release)..."

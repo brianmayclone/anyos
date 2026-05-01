@@ -713,6 +713,7 @@ impl DisplayList {
                         font_id: 0,
                         font_size,
                         scale_x_percent: 100,
+                        synthetic_bold: false,
                         text: marker.clone(),
                     },
                 );
@@ -728,6 +729,7 @@ impl DisplayList {
                         font_id: 0,
                         font_size,
                         scale_x_percent: 100,
+                        synthetic_bold: false,
                         text: marker.clone(),
                     },
                 );
@@ -774,6 +776,7 @@ impl DisplayList {
                             font_id,
                             font_size,
                             scale_x_percent,
+                            synthetic_bold: bx.bold && bx.custom_font_id != 0,
                             text: text.clone(),
                         },
                     );
@@ -812,7 +815,17 @@ impl DisplayList {
                                 + (((measured_x + char_w) as i64 * target) / total) as i32;
                             let w = (x1 - x0).max(1);
                             let midpoint = measured_x + char_w / 2;
-                            let t = ((midpoint as i64 * 10000) / total) as i32;
+                            let t = if bx.text_clip_width > 1 {
+                                let fragment_midpoint =
+                                    ((midpoint as i64 * target) / total) as i32;
+                                let run_midpoint =
+                                    bx.x - bx.text_clip_origin_x + fragment_midpoint;
+                                ((run_midpoint as i64 * 10000)
+                                    / bx.text_clip_width.max(1) as i64)
+                                    .clamp(0, 10000) as i32
+                            } else {
+                                ((midpoint as i64 * 10000) / total) as i32
+                            };
                             let mut s = String::new();
                             s.push(ch);
                             self.push(
@@ -825,6 +838,7 @@ impl DisplayList {
                                     font_id,
                                     font_size,
                                     scale_x_percent,
+                                    synthetic_bold: bx.bold && bx.custom_font_id != 0,
                                     text: s,
                                 },
                             );
@@ -841,6 +855,7 @@ impl DisplayList {
                                 font_id,
                                 font_size,
                                 scale_x_percent,
+                                synthetic_bold: bx.bold && bx.custom_font_id != 0,
                                 text: text.clone(),
                             },
                         );
@@ -856,6 +871,7 @@ impl DisplayList {
                             font_id,
                             font_size,
                             scale_x_percent,
+                            synthetic_bold: bx.bold && bx.custom_font_id != 0,
                             text: text.clone(),
                         },
                     );

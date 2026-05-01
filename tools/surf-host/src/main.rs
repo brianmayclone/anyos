@@ -43,6 +43,9 @@ struct Args {
     height: u32,
     screenshot: Option<String>,
     fullpage: bool,
+    bottom: bool,
+    click: Option<(i32, i32)>,
+    eval_sources: Vec<String>,
     delay_ms: u64,
     y_range: Option<(u32, u32)>, // (start, end) in pixels
     minifb: bool,
@@ -218,6 +221,7 @@ fn parse_args() -> Args {
         eprintln!("Options:");
         eprintln!("  --screenshot <path.png>   Save screenshot and exit");
         eprintln!("  --fullpage                Capture entire page height (not just viewport)");
+        eprintln!("  --bottom                  Capture the bottom viewport after laying out the page");
         eprintln!("  -y <start-end>            Capture Y range, e.g. -y 400-900");
         eprintln!("  --delay <ms>              Wait before screenshot (default: 0)");
         eprintln!("  --width <px>              Viewport width (default: 1024)");
@@ -228,6 +232,7 @@ fn parse_args() -> Args {
         eprintln!("  --anyos-image-path        Decode images/SVGs through libimage/libsvg only");
         eprintln!("  --libimage-only           Alias for --anyos-image-path");
         eprintln!("  --remote-listen <addr>    Listen for text commands (default: 127.0.0.1:8787)");
+        eprintln!("  --eval <js>               Evaluate JavaScript before screenshot capture");
         eprintln!();
         eprintln!("Remote commands: open <url>, reload, scroll <y>, screenshot <path>, fullpage <path>, status");
         std::process::exit(1);
@@ -246,6 +251,9 @@ fn parse_args() -> Args {
         height: 768,
         screenshot: None,
         fullpage: false,
+        bottom: false,
+        click: None,
+        eval_sources: Vec::new(),
         delay_ms: 0,
         y_range: None,
         minifb: false,
@@ -272,6 +280,30 @@ fn parse_args() -> Args {
                 a.fullpage = true;
                 i += 1;
                 continue;
+            }
+            "--bottom" => {
+                a.bottom = true;
+                i += 1;
+                continue;
+            }
+            "--click" => {
+                i += 1;
+                if let Some(spec) = args.get(i) {
+                    a.click = parse_click_point(spec);
+                    if a.click.is_none() {
+                        eprintln!("--click expects x,y, e.g. --click 660,482");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "--eval" => {
+                i += 1;
+                if let Some(source) = args.get(i) {
+                    a.eval_sources.push(source.clone());
+                } else {
+                    eprintln!("--eval requires a JavaScript source string");
+                    std::process::exit(1);
+                }
             }
             "-y" => {
                 i += 1;
@@ -331,6 +363,11 @@ fn parse_args() -> Args {
         i += 1;
     }
     a
+}
+
+fn parse_click_point(s: &str) -> Option<(i32, i32)> {
+    let (x, y) = s.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
 // ── System Font Registration ──────────────────────────────────────────────────
@@ -578,6 +615,9 @@ fn load_page_inner(
                     });
                 run_js_timers(wv, &base_url, cookies, timer_ms);
             }
+        }
+        if rasterize_inline_svgs(wv, &base_url, image_backend) {
+            wv.relayout();
         }
         if std::env::var_os("SURF_DEBUG_DOM_ELEMENTS_AFTER_JS").is_some() {
             if let Some(dom) = wv.dom() {
@@ -1618,6 +1658,17 @@ fn main() {
         let mut results = pending.drain();
         results.sort_by(|a, b| b.node_id.cmp(&a.node_id));
         wv.relayout();
+        let capture_window = if args.fullpage {
+            None
+        } else if let Some((y_start, y_end)) = args.y_range {
+            Some((y_start as i32, y_end as i32))
+        } else if args.bottom {
+            let doc_h = wv.total_height().max(1);
+            let start = (doc_h - height as i32).max(0);
+            Some((start, doc_h))
+        } else {
+            Some((0, (height as i32).saturating_add(512)))
+        };
         let debug_heise = std::env::var("SURF_DEBUG_HEISE").ok().as_deref() == Some("1");
         let mut added_images = 0usize;
         let mut skipped_images = 0usize;
@@ -1626,9 +1677,15 @@ fn main() {
                 .node_bounds(r.node_id)
                 .map(|(_, y, _, _)| y)
                 .unwrap_or(r.priority_y);
-            if priority_y != i32::MAX && priority_y > (height as i32).saturating_add(512) {
-                skipped_images += 1;
-                continue;
+            if let Some((y_start, y_end)) = capture_window {
+                let preload_top = y_start.saturating_sub(768);
+                let preload_bottom = y_end.saturating_add(768);
+                if priority_y != i32::MAX
+                    && (priority_y < preload_top || priority_y > preload_bottom)
+                {
+                    skipped_images += 1;
+                    continue;
+                }
             }
             if debug_heise && added_images < 8 {
                 eprintln!(
@@ -1656,6 +1713,52 @@ fn main() {
 
     // ── Screenshot-only mode ─────────────────────────────────────────────
     if let Some(ref path) = args.screenshot {
+        if let Some((x, y)) = args.click {
+            let mut hit_info = String::from("<none>");
+            let hit_node_id = wv.hit_test_node_viewport(x, y, 0);
+            if let Some(node_id) = hit_node_id {
+                if let Some(dom) = wv.dom() {
+                    let tag = dom
+                        .tag(node_id)
+                        .map(|tag| tag.tag_name())
+                        .unwrap_or("<text>");
+                    let class = dom.attr(node_id, "class").unwrap_or("");
+                    hit_info = format!("node={} tag={} class={}", node_id, tag, class);
+                }
+            }
+            let click_listener_count = wv
+                .js_runtime()
+                .event_listeners
+                .iter()
+                .filter(|listener| listener.event == "click")
+                .count();
+            let hit_click_listener_count = hit_node_id
+                .map(|node_id| {
+                    wv.js_runtime()
+                        .event_listeners
+                        .iter()
+                        .filter(|listener| listener.node_id == node_id && listener.event == "click")
+                        .count()
+                })
+                .unwrap_or(0);
+            let allowed = wv.dispatch_click_at_viewport(x, y, 0);
+            eprintln!(
+                "[surf-host] scripted click x={} y={} hit={} click_listeners={} hit_click_listeners={} default_allowed={}",
+                x, y, hit_info, click_listener_count, hit_click_listener_count, allowed
+            );
+            wv.run_timers(250);
+            wv.tick(250);
+            wv.relayout();
+            render_viewport_bounded(&mut wv, 0, "after scripted click");
+        }
+        for source in &args.eval_sources {
+            let changed = wv.eval_js_for_devtools(source);
+            eprintln!("[surf-host] eval changed_dom={} source={}", changed, source);
+            if changed {
+                wv.relayout();
+                render_viewport_bounded(&mut wv, 0, "after eval");
+            }
+        }
         if args.delay_ms > 0 {
             eprintln!(
                 "[surf-host] waiting {}ms before screenshot (running timers)...",
@@ -1722,6 +1825,16 @@ fn main() {
             save_range_screenshot(&mut wv, width, y_start, y_end, path);
         } else if args.fullpage {
             save_fullpage_screenshot(&mut wv, width, path);
+        } else if args.bottom {
+            let doc_h = wv.total_height().max(1);
+            let scroll_y = (doc_h - height as i32).max(0);
+            eprintln!(
+                "[surf-host] bottom: doc_h={} viewport={} scroll_y={}",
+                doc_h, height, scroll_y
+            );
+            render_viewport_bounded(&mut wv, scroll_y, "bottom screenshot");
+            extract_pixels(&wv, &mut framebuffer, width as usize, height as usize, scroll_y);
+            save_screenshot(&framebuffer, width, height, path);
         } else {
             save_screenshot(&framebuffer, width, height, path);
         }
@@ -2961,6 +3074,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         "Header-Navigation-Icon",
         "ho-scroll-container-teaser-list",
         "scroll-container",
+        "start-tests-button",
     ];
 
     for (node_id, _) in dom.nodes.iter().enumerate() {
@@ -3143,6 +3257,7 @@ fn debug_dump_named_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom)
             libwebview::style::BackgroundImageVal::None => "none",
             libwebview::style::BackgroundImageVal::Url(_) => "url",
             libwebview::style::BackgroundImageVal::LinearGradient { .. } => "linear-gradient",
+            libwebview::style::BackgroundImageVal::RadialGradient { .. } => "radial-gradient",
         };
         eprintln!(
             "[surf-host] named-style node={} id={} bounds={:?} top={:?}/{:?} left={:?}/{:?} right={:?}/{:?} bottom={:?}/{:?} padding=({}, {}, {}, {}) margin=({}, {}, {}, {}) bg_pos=({}, {}) bg_image={}",
@@ -3404,12 +3519,57 @@ fn load_resources(
     // 3. Images: loaded asynchronously via start_image_loading()
 
     // 4. Inline SVGs: <svg>...</svg> — rasterise via resvg and cache under __svg_N__
+    rasterize_inline_svgs(wv, base_url, image_backend);
+
+    // Re-layout with all resources loaded (images not yet available — placeholders used)
+    wv.relayout();
+    if std::env::var_os("SURF_DEBUG_LAYOUT_TEXT").is_some() {
+        if let Some(root) = wv.layout_root_ref() {
+            debug_dump_text_runs(root, 0);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_LAYOUT_BOXES").is_some() {
+        if let (Some(root), Some(dom)) = (wv.layout_root_ref(), wv.dom()) {
+            debug_dump_boxes(dom, root, 0, 0, 0);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_PRE_TEXT").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_pre_text(dom);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_DOM_ELEMENTS").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_dom_elements(dom);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_INTERESTING_STYLES").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_interesting_styles(wv, dom);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_TABLE_STYLES").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_table_styles(wv, dom);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_NAMED_STYLES").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_named_styles(wv, dom);
+        }
+    }
+}
+
+fn rasterize_inline_svgs(
+    wv: &mut libwebview::WebView,
+    base_url: &str,
+    image_backend: ImageBackend,
+) -> bool {
     let svg_nodes: Vec<(usize, String, Vec<(String, String)>)> = {
         let dom = match wv.dom() {
             Some(d) => d,
             None => {
-                wv.relayout();
-                return;
+                return false;
             }
         };
         let mut svgs = Vec::new();
@@ -3432,6 +3592,7 @@ fn load_resources(
         svgs
     };
 
+    let mut rasterized_any = false;
     for (node_id, inner, attrs) in &svg_nodes {
         // Reconstruct full SVG markup from the stored inner content and attributes.
         let mut svg_markup = String::from("<svg");
@@ -3480,46 +3641,10 @@ fn load_resources(
                 node_id, w, h
             );
             wv.add_image(&key, pixels, w, h);
+            rasterized_any = true;
         }
     }
-
-    // Re-layout with all resources loaded (images not yet available — placeholders used)
-    wv.relayout();
-    if std::env::var_os("SURF_DEBUG_LAYOUT_TEXT").is_some() {
-        if let Some(root) = wv.layout_root_ref() {
-            debug_dump_text_runs(root, 0);
-        }
-    }
-    if std::env::var_os("SURF_DEBUG_LAYOUT_BOXES").is_some() {
-        if let (Some(root), Some(dom)) = (wv.layout_root_ref(), wv.dom()) {
-            debug_dump_boxes(dom, root, 0, 0, 0);
-        }
-    }
-    if std::env::var_os("SURF_DEBUG_PRE_TEXT").is_some() {
-        if let Some(dom) = wv.dom() {
-            debug_dump_pre_text(dom);
-        }
-    }
-    if std::env::var_os("SURF_DEBUG_DOM_ELEMENTS").is_some() {
-        if let Some(dom) = wv.dom() {
-            debug_dump_dom_elements(dom);
-        }
-    }
-    if std::env::var_os("SURF_DEBUG_INTERESTING_STYLES").is_some() {
-        if let Some(dom) = wv.dom() {
-            debug_dump_interesting_styles(wv, dom);
-        }
-    }
-    if std::env::var_os("SURF_DEBUG_TABLE_STYLES").is_some() {
-        if let Some(dom) = wv.dom() {
-            debug_dump_table_styles(wv, dom);
-        }
-    }
-    if std::env::var_os("SURF_DEBUG_NAMED_STYLES").is_some() {
-        if let Some(dom) = wv.dom() {
-            debug_dump_named_styles(wv, dom);
-        }
-    }
+    rasterized_any
 }
 
 // ── Parallel image loading ──────────────────────────────────────────────────

@@ -2155,6 +2155,16 @@ impl JsRuntime {
                 &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
         }
         let result = self.engine.eval(source);
+        if let Some(exc) = self.engine.vm().last_exception.take() {
+            self.console
+                .push(alloc::format!("[exception] {}", js_exception_summary(&exc)));
+        }
+        if let Some(exc) = self.engine.vm().pending_exception.take() {
+            self.console.push(alloc::format!(
+                "[pending exception] {}",
+                js_exception_summary(&exc)
+            ));
+        }
         unsafe {
             MUTATION_TARGET = core::ptr::null_mut();
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();

@@ -56,6 +56,7 @@ impl DisplayList {
                 font_id,
                 font_size,
                 scale_x_percent: 100,
+                synthetic_bold: bx.bold && bx.custom_font_id != 0,
                 text: label_text,
             },
         );
@@ -132,6 +133,7 @@ impl DisplayList {
                     font_id: 0,
                     font_size,
                     scale_x_percent: 100,
+                    synthetic_bold: false,
                     text: txt,
                 },
             );
@@ -259,6 +261,7 @@ impl DisplayList {
                         font_id: 0,
                         font_size,
                         scale_x_percent: 100,
+                        synthetic_bold: false,
                         text: String::from(text),
                     },
                 );
@@ -542,6 +545,7 @@ impl DisplayList {
                     font_id: 0,
                     font_size,
                     scale_x_percent: 100,
+                    synthetic_bold: false,
                     text: txt.clone(),
                 },
             );

@@ -97,6 +97,7 @@ fn draw_scaled_text_buf(
     font_id: u32,
     font_size: u16,
     scale_x_percent: i32,
+    synthetic_bold: bool,
     text: &str,
 ) {
     let scale = scale_x_percent.clamp(10, 400);
@@ -115,6 +116,21 @@ fn draw_scaled_text_buf(
         font_size,
         text,
     );
+    if synthetic_bold {
+        for offset in 1..=synthetic_bold_passes(font_size) {
+            libfont_client::draw_string_buf(
+                tmp.as_mut_ptr(),
+                src_w,
+                src_h,
+                offset,
+                0,
+                color,
+                font_id,
+                font_size,
+                text,
+            );
+        }
+    }
 
     let dst_w = ((src_w as i32 * scale + 50) / 100).max(1);
     let stride_usize = stride as usize;
@@ -144,6 +160,14 @@ fn draw_scaled_text_buf(
                 *buf.add(dst_idx) = blend_src_over(dst, src);
             }
         }
+    }
+}
+
+fn synthetic_bold_passes(font_size: u16) -> i32 {
+    match font_size {
+        0..=23 => 1,
+        24..=55 => 2,
+        _ => 3,
     }
 }
 
@@ -188,11 +212,21 @@ fn rasterize_draw_cmd_basic(
                 *vertical,
             );
         }
+        DrawKind::RadialGradient {
+            center_x,
+            center_y,
+            stops,
+        } => {
+            fill_radial_gradient_buf(
+                buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *center_x, *center_y, stops,
+            );
+        }
         DrawKind::Text {
             color,
             font_id,
             font_size,
             scale_x_percent,
+            synthetic_bold,
             text,
         } => {
             #[cfg(feature = "host")]
@@ -228,12 +262,28 @@ fn rasterize_draw_cmd_basic(
                     *font_id,
                     *font_size,
                     *scale_x_percent,
+                    *synthetic_bold,
                     text,
                 );
             } else {
                 libfont_client::draw_string_buf(
                     buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_id, *font_size, text,
                 );
+                if *synthetic_bold {
+                    for offset in 1..=synthetic_bold_passes(*font_size) {
+                        libfont_client::draw_string_buf(
+                            buf,
+                            stride,
+                            buf_h,
+                            cmd.src_x + offset,
+                            draw_y,
+                            *color,
+                            *font_id,
+                            *font_size,
+                            text,
+                        );
+                    }
+                }
             }
         }
         DrawKind::Image {
@@ -334,17 +384,28 @@ pub(super) fn rasterize_draw_cmd(
                 gap_len: *gap_len,
                 vertical: *vertical,
             },
+            DrawKind::RadialGradient {
+                center_x,
+                center_y,
+                stops,
+            } => DrawKind::RadialGradient {
+                center_x: *center_x,
+                center_y: *center_y,
+                stops: stops.clone(),
+            },
             DrawKind::Text {
                 color,
                 font_id,
                 font_size,
                 scale_x_percent,
+                synthetic_bold,
                 text,
             } => DrawKind::Text {
                 color: *color,
                 font_id: *font_id,
                 font_size: *font_size,
                 scale_x_percent: *scale_x_percent,
+                synthetic_bold: *synthetic_bold,
                 text: text.clone(),
             },
             DrawKind::Image {
@@ -570,6 +631,25 @@ fn sample_mask_alpha(images: &ImageCache, mask: &MaskLayer, doc_x: i32, doc_y: i
             let tiled_x = wrap_repeat(rel_x, mw);
             let tiled_y = wrap_repeat(rel_y, mh);
             let t = gradient_position(angle_deg, tiled_x, tiled_y, mw, mh);
+            (interpolate_gradient_color(stops, t) >> 24) & 0xFF
+        }
+        BackgroundImageVal::RadialGradient {
+            center_x,
+            center_y,
+            stops,
+        } => {
+            let (mx, my, mw, mh) = resolve_mask_image_rect(mask, None);
+            if mw <= 0 || mh <= 0 {
+                return 0;
+            }
+            let rel_x = doc_x - mx;
+            let rel_y = doc_y - my;
+            if !mask_repeats_at(mask.repeat, rel_x, rel_y, mw, mh) {
+                return 0;
+            }
+            let tiled_x = wrap_repeat(rel_x, mw);
+            let tiled_y = wrap_repeat(rel_y, mh);
+            let t = radial_gradient_position(*center_x, *center_y, tiled_x, tiled_y, mw, mh);
             (interpolate_gradient_color(stops, t) >> 24) & 0xFF
         }
     }
@@ -844,6 +924,120 @@ pub(super) fn fill_rect_buf(
                 }
             }
         }
+    }
+}
+
+fn fill_radial_gradient_buf(
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    center_x: i32,
+    center_y: i32,
+    stops: &[crate::style::GradientStop],
+) {
+    if w <= 0 || h <= 0 || buf.is_null() || stops.len() < 2 {
+        return;
+    }
+    let s = stride as i32;
+    let bh = buf_h as i32;
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(s);
+    let y1 = (y + h).min(bh);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    let cx = x + ((w as i64 * center_x as i64) / 10000) as i32;
+    let cy = y + ((h as i64 * center_y as i64) / 10000) as i32;
+    let corners = [
+        ((x - cx) as i64, (y - cy) as i64),
+        ((x + w - cx) as i64, (y - cy) as i64),
+        ((x - cx) as i64, (y + h - cy) as i64),
+        ((x + w - cx) as i64, (y + h - cy) as i64),
+    ];
+    let mut radius_sq = 1i64;
+    for (dx, dy) in corners {
+        radius_sq = radius_sq.max(dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)));
+    }
+    let radius = isqrt_i64(radius_sq).max(1);
+
+    unsafe {
+        for py in y0..y1 {
+            let dy = (py - cy) as i64;
+            let row = buf.add(py as usize * stride as usize);
+            for px in x0..x1 {
+                let dx = (px - cx) as i64;
+                let dist = isqrt_i64(dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)));
+                let t = ((dist.saturating_mul(10000)) / radius).min(10000) as i32;
+                let color = interpolate_gradient_color(stops, t);
+                blend_pixel(row.add(px as usize), color);
+            }
+        }
+    }
+}
+
+fn isqrt_i64(n: i64) -> i64 {
+    if n <= 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
+fn radial_gradient_position(
+    center_x: i32,
+    center_y: i32,
+    rel_x: i32,
+    rel_y: i32,
+    w: i32,
+    h: i32,
+) -> i32 {
+    let cx = ((w as i64 * center_x as i64) / 10000) as i32;
+    let cy = ((h as i64 * center_y as i64) / 10000) as i32;
+    let corners = [
+        (-cx as i64, -cy as i64),
+        ((w - cx) as i64, -cy as i64),
+        (-cx as i64, (h - cy) as i64),
+        ((w - cx) as i64, (h - cy) as i64),
+    ];
+    let mut radius_sq = 1i64;
+    for (dx, dy) in corners {
+        radius_sq = radius_sq.max(dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)));
+    }
+    let radius = isqrt_i64(radius_sq).max(1);
+    let dx = (rel_x - cx) as i64;
+    let dy = (rel_y - cy) as i64;
+    let dist = isqrt_i64(dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)));
+    ((dist.saturating_mul(10000)) / radius).min(10000) as i32
+}
+
+unsafe fn blend_pixel(ptr: *mut u32, color: u32) {
+    let alpha = (color >> 24) & 0xFF;
+    if alpha >= 255 {
+        *ptr = color;
+    } else if alpha > 0 {
+        let inv_a = 255 - alpha;
+        let dst = *ptr;
+        let sr = (color >> 16) & 0xFF;
+        let sg = (color >> 8) & 0xFF;
+        let sb = color & 0xFF;
+        let dr = (dst >> 16) & 0xFF;
+        let dg = (dst >> 8) & 0xFF;
+        let db = dst & 0xFF;
+        let r = (sr * alpha + dr * inv_a) / 255;
+        let g = (sg * alpha + dg * inv_a) / 255;
+        let b = (sb * alpha + db * inv_a) / 255;
+        *ptr = 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 }
 

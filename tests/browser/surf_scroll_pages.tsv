@@ -1,0 +1,10 @@
+# Surf scroll/bottom regression targets.
+# Created: 2026-05-01.
+# Purpose: catch pages that render a plausible first viewport but cannot scroll/render to the bottom.
+name	url	focus
+heise	https://www.heise.de/	news,bottom-scroll,carousel,images
+corevm	https://corevm.io/	spa,bottom-scroll,tailwind,css-gradients,svg-icons
+bild	https://www.bild.de/	news,bottom-scroll,lazy-images,ads
+chip	https://www.chip.de/	news,bottom-scroll,crash-regression,ads
+nytimes	https://www.nytimes.com/	news,bottom-scroll,js,paywall-shell
+speedometer31	https://browserbench.org/Speedometer3.1/	benchmark,js,dom,cssom

@@ -188,7 +188,7 @@ fn adopt_thenable(vm: &mut Vm, target: &JsValue, thenable: &JsValue) -> bool {
     true
 }
 
-fn settle_chained_result(vm: &mut Vm, target: &JsValue, result: JsValue) {
+pub(crate) fn settle_chained_result(vm: &mut Vm, target: &JsValue, result: JsValue) {
     if adopt_thenable(vm, target, &result) {
         return;
     }
@@ -322,7 +322,7 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 /// Create a pending promise with all required methods.
-fn make_pending_promise(vm: &Vm) -> JsValue {
+pub(crate) fn make_pending_promise(vm: &Vm) -> JsValue {
     let mut obj = JsObject::new();
     attach_promise_shape(&mut obj, promise_proto(vm), "pending", JsValue::Undefined);
     JsValue::Object(Rc::new(RefCell::new(obj)))

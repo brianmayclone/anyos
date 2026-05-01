@@ -2092,6 +2092,30 @@ impl WebView {
         self.hit_test_node_document(vx, scroll_y + vy)
     }
 
+    /// Dispatch a DOM click at viewport position `(vx, vy)`.
+    pub fn dispatch_click_at_viewport(&mut self, vx: i32, vy: i32, scroll_y: i32) -> bool {
+        let Some(node_id) = self.hit_test_node_viewport(vx, vy, scroll_y) else {
+            return true;
+        };
+        let data = js::EventData::Mouse {
+            client_x: vx as f64,
+            client_y: vy as f64,
+            page_x: vx as f64,
+            page_y: (scroll_y + vy) as f64,
+            screen_x: vx as f64,
+            screen_y: vy as f64,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            button: 0,
+            buttons: 1,
+            ctrl_key: false,
+            shift_key: false,
+            alt_key: false,
+            meta_key: false,
+        };
+        self.dispatch_dom_event_and_apply(node_id, "click", &data)
+    }
+
     /// Find the topmost DOM node hit on a tile canvas control.
     pub fn hit_test_node_canvas(&self, canvas_ctrl_id: u32) -> Option<usize> {
         let (mx, doc_y) = self.renderer.tile_hit_coords(canvas_ctrl_id)?;
@@ -2948,10 +2972,13 @@ impl WebView {
     }
 
     fn attribute_change_requires_style_recalc(name: &str) -> bool {
-        matches!(
-            name.trim().to_ascii_lowercase().as_str(),
-            "class" | "id" | "style" | "hidden" | "align" | "type"
-        )
+        let _ = name;
+        // Attribute selectors are central to modern pages:
+        //   [data-state=open], [aria-expanded=true], :root[data-theme=dark], ...
+        // A changed attribute may therefore affect any selector, even when the
+        // attribute is not class/id/style. Be conservative here; a stale style
+        // cache is much worse than one extra restyle after a DOM mutation.
+        true
     }
 
     fn mutations_dirty_inline_style_cache(mutations: &[js::DomMutation]) -> bool {

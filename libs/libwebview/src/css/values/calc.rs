@@ -55,8 +55,7 @@ fn eval_calc_components(s: &str) -> (i32, i32) {
             b')' => depth += 1,
             b'(' => depth -= 1,
             b'+' | b'-' if depth == 0 && i > 0 => {
-                let prev = bytes[i - 1];
-                if prev == b' ' || prev.is_ascii_digit() || prev == b')' || prev == b'%' {
+                if calc_is_binary_add_sub(bytes, i) {
                     split_i = Some(i);
                     split_op = bytes[i];
                     break;
@@ -116,6 +115,23 @@ fn eval_calc_components(s: &str) -> (i32, i32) {
     }
 
     parse_calc_operand(s)
+}
+
+fn calc_is_binary_add_sub(bytes: &[u8], op_index: usize) -> bool {
+    let mut i = op_index;
+    while i > 0 {
+        i -= 1;
+        let b = bytes[i];
+        if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
+            continue;
+        }
+        return b.is_ascii_digit()
+            || matches!(
+                b,
+                b')' | b'%' | b'x' | b'm' | b'h' | b'w' | b'n' | b't' | b'c'
+            );
+    }
+    false
 }
 
 fn split_calc_expr(s: &str) -> Option<(&str, u8, &str)> {

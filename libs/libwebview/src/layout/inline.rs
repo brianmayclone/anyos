@@ -456,7 +456,55 @@ pub fn layout_inline_content_with_pseudo(
         }
     }
 
+    annotate_text_clip_gradient_runs(&mut lines);
+
     lines
+}
+
+fn is_text_clip_linear_gradient(bx: &LayoutBox) -> bool {
+    bx.text.is_some()
+        && matches!(
+            bx.background_clip,
+            crate::style::BackgroundClipVal::Text
+        )
+        && matches!(
+            bx.background_image,
+            crate::style::BackgroundImageVal::LinearGradient { .. }
+        )
+}
+
+fn annotate_text_clip_gradient_runs(lines: &mut [LayoutBox]) {
+    for line in lines {
+        let mut i = 0usize;
+        while i < line.children.len() {
+            if !is_text_clip_linear_gradient(&line.children[i]) {
+                i += 1;
+                continue;
+            }
+
+            let bg = line.children[i].background_image.clone();
+            let mut min_x = line.children[i].x;
+            let mut max_x = line.children[i].x + line.children[i].width;
+            let mut end = i + 1;
+
+            while end < line.children.len()
+                && is_text_clip_linear_gradient(&line.children[end])
+                && line.children[end].background_image == bg
+            {
+                min_x = min_x.min(line.children[end].x);
+                max_x = max_x.max(line.children[end].x + line.children[end].width);
+                end += 1;
+            }
+
+            let run_width = (max_x - min_x).max(1);
+            for child in &mut line.children[i..end] {
+                child.text_clip_origin_x = min_x;
+                child.text_clip_width = run_width;
+            }
+
+            i = end;
+        }
+    }
 }
 
 /// Recursively collect inline fragments from a node and its inline children.
@@ -2074,6 +2122,15 @@ fn emit_button_fragment(
 }
 
 fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
+    // Only use the native form-control fallback for unstyled buttons. Styled
+    // text buttons need the normal CSS box model so their padding and
+    // line-height match author styles.
+    if dom.attr(node_id, "class").is_some_and(|class| !class.trim().is_empty())
+        || dom.attr(node_id, "style").is_some_and(|style| !style.trim().is_empty())
+    {
+        return false;
+    }
+
     let children = &dom.get(node_id).children;
     if children.is_empty() {
         return true;

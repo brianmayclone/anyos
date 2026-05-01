@@ -130,11 +130,16 @@ pub fn make_window(
     );
     nav.set_property(
         String::from("language"),
-        JsValue::String(String::from("en-US")),
+        JsValue::String(String::from("de-DE")),
     );
     nav.set_property(
         String::from("languages"),
-        make_array(vec![JsValue::String(String::from("en-US"))]),
+        make_array(vec![
+            JsValue::String(String::from("de-DE")),
+            JsValue::String(String::from("de")),
+            JsValue::String(String::from("en-US")),
+            JsValue::String(String::from("en")),
+        ]),
     );
     nav.set_property(
         String::from("platform"),
@@ -2878,9 +2883,9 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             pair
         })
         .collect();
-    params.set_property(String::from("__entries"), JsValue::new_array(entries_arr));
+    params.set_hidden_property(String::from("__entries"), JsValue::new_array(entries_arr));
 
-    params.set_property(
+    params.set_hidden_property(
         String::from("get"),
         native_fn("get", |vm, args| {
             let key = super::arg_string(args, 0);
@@ -2899,7 +2904,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }),
     );
 
-    params.set_property(
+    params.set_hidden_property(
         String::from("has"),
         native_fn("has", |vm, args| {
             let key = super::arg_string(args, 0);
@@ -2917,7 +2922,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }),
     );
 
-    params.set_property(
+    params.set_hidden_property(
         String::from("getAll"),
         native_fn("getAll", |vm, args| {
             let key = super::arg_string(args, 0);
@@ -2937,7 +2942,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }),
     );
 
-    params.set_property(
+    params.set_hidden_property(
         String::from("toString"),
         native_fn("toString", |vm, _| {
             let entries = vm.current_this.get_property("__entries");
@@ -2959,7 +2964,7 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }),
     );
 
-    params.set_property(
+    params.set_hidden_property(
         String::from("forEach"),
         native_fn("forEach", |vm, args| {
             let cb = args.first().cloned().unwrap_or(JsValue::Undefined);
@@ -2981,15 +2986,15 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }),
     );
 
-    params.set_property(
+    params.set_hidden_property(
         String::from("entries"),
         native_fn("entries", |vm, _| vm.current_this.get_property("__entries")),
     );
 
-    params.set_property(String::from("set"), native_fn("set", win_noop));
-    params.set_property(String::from("delete"), native_fn("delete", win_noop));
-    params.set_property(String::from("append"), native_fn("append", win_noop));
-    params.set_property(String::from("sort"), native_fn("sort", win_noop));
+    params.set_hidden_property(String::from("set"), native_fn("set", win_noop));
+    params.set_hidden_property(String::from("delete"), native_fn("delete", win_noop));
+    params.set_hidden_property(String::from("append"), native_fn("append", win_noop));
+    params.set_hidden_property(String::from("sort"), native_fn("sort", win_noop));
 
     params
 }

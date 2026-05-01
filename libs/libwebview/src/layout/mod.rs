@@ -161,6 +161,14 @@ pub struct LayoutBox {
     pub background_size: crate::style::BackgroundSizeVal,
     pub background_repeat: crate::style::BackgroundRepeatVal,
     pub background_clip: crate::style::BackgroundClipVal,
+    /// Inline-run bounds for `background-clip:text` gradients.
+    ///
+    /// Text layout splits inline text into fragments (usually words).  CSS paints
+    /// a text-clipped background over the inline box/line run, not independently
+    /// over every emitted word fragment, so the renderer needs these sibling-run
+    /// coordinates to sample gradients continuously.
+    pub text_clip_origin_x: i32,
+    pub text_clip_width: i32,
     pub background_position_x: i32,
     pub background_position_y: i32,
     pub mask_size: crate::style::BackgroundSizeVal,
@@ -394,6 +402,8 @@ impl LayoutBox {
             background_size: crate::style::BackgroundSizeVal::Auto,
             background_repeat: crate::style::BackgroundRepeatVal::Repeat,
             background_clip: crate::style::BackgroundClipVal::BorderBox,
+            text_clip_origin_x: 0,
+            text_clip_width: 0,
             background_position_x: 0,
             background_position_y: 0,
             mask_size: crate::style::BackgroundSizeVal::Auto,
