@@ -696,7 +696,7 @@ pub fn object_freeze(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
 
-pub fn object_create(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn object_create(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let proto = args.first().cloned().unwrap_or(JsValue::Undefined);
     let mut o = JsObject::new();
     match proto {
@@ -709,7 +709,13 @@ pub fn object_create(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         _ => {}
     }
-    JsValue::Object(Rc::new(RefCell::new(o)))
+    let obj = JsValue::Object(Rc::new(RefCell::new(o)));
+    if let Some(properties) = args.get(1) {
+        if !properties.is_undefined() {
+            object_define_properties(vm, &[obj.clone(), properties.clone()]);
+        }
+    }
+    obj
 }
 
 pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {

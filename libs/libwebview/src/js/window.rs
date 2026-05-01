@@ -122,11 +122,16 @@ pub fn make_window(
     let loc = document.get_property("location");
     obj.set(String::from("location"), loc);
 
-    // navigator.
+    // navigator. Keep these values aligned with Surf's HTTP User-Agent.  Modern
+    // sites compare the network and JS-visible browser identity during feature
+    // checks; reporting "anyOS Surf" here while the request uses a Chrome-like
+    // UA makes otherwise valid sessions look inconsistent.
     let nav = JsValue::new_object();
     nav.set_property(
         String::from("userAgent"),
-        JsValue::String(String::from("anyOS Surf/1.0")),
+        JsValue::String(String::from(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Surf/1.0",
+        )),
     );
     nav.set_property(
         String::from("language"),
@@ -143,8 +148,15 @@ pub fn make_window(
     );
     nav.set_property(
         String::from("platform"),
-        JsValue::String(String::from("anyOS")),
+        JsValue::String(String::from("Linux x86_64")),
     );
+    nav.set_property(
+        String::from("product"),
+        JsValue::String(String::from("Gecko")),
+    );
+    nav.set_property(String::from("webdriver"), JsValue::Bool(false));
+    nav.set_property(String::from("hardwareConcurrency"), JsValue::Number(8.0));
+    nav.set_property(String::from("deviceMemory"), JsValue::Number(8.0));
     nav.set_property(String::from("cookieEnabled"), JsValue::Bool(true));
     nav.set_property(String::from("onLine"), JsValue::Bool(true));
     let connection = JsValue::new_object();
@@ -166,15 +178,17 @@ pub fn make_window(
     nav.set_property(String::from("connection"), connection);
     nav.set_property(
         String::from("vendor"),
-        JsValue::String(String::from("anyOS")),
+        JsValue::String(String::from("Google Inc.")),
     );
     nav.set_property(
         String::from("appName"),
-        JsValue::String(String::from("Surf")),
+        JsValue::String(String::from("Netscape")),
     );
     nav.set_property(
         String::from("appVersion"),
-        JsValue::String(String::from("1.0")),
+        JsValue::String(String::from(
+            "5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Surf/1.0",
+        )),
     );
     let permissions = JsValue::new_object();
     permissions.set_property(
@@ -238,6 +252,10 @@ pub fn make_window(
     );
     nav.set_property(String::from("serviceWorker"), service_worker);
     obj.set(String::from("navigator"), nav);
+
+    let chrome = JsValue::new_object();
+    chrome.set_property(String::from("runtime"), JsValue::new_object());
+    obj.set(String::from("chrome"), chrome);
 
     // screen.
     let screen = JsValue::new_object();
@@ -392,7 +410,10 @@ pub fn make_window(
         JsValue::new_array(Vec::new()),
     );
     perf.set_property(String::from("now"), native_fn("now", win_performance_now));
-    perf.set_property(String::from("mark"), native_fn("mark", win_performance_mark));
+    perf.set_property(
+        String::from("mark"),
+        native_fn("mark", win_performance_mark),
+    );
     perf.set_property(
         String::from("measure"),
         native_fn("measure", win_performance_measure),
@@ -712,6 +733,8 @@ pub fn make_window(
         JsValue::Function(func) => func.borrow().prototype.clone(),
         _ => element_proto.clone(),
     };
+    let node_list_ctor = make_native_constructor(vm, "NodeList", win_dom_ctor, None);
+    let html_collection_ctor = make_native_constructor(vm, "HTMLCollection", win_dom_ctor, None);
     let attr_ctor = make_native_constructor(vm, "Attr", win_attr_ctor, node_proto.clone());
     let custom_element_registry_ctor = make_native_constructor(
         vm,
@@ -753,6 +776,8 @@ pub fn make_window(
     obj.set(String::from("Comment"), comment_ctor);
     obj.set(String::from("Element"), element_ctor);
     obj.set(String::from("HTMLElement"), html_element_ctor);
+    obj.set(String::from("NodeList"), node_list_ctor);
+    obj.set(String::from("HTMLCollection"), html_collection_ctor);
     install_html_element_constructor(
         vm,
         &mut obj,
@@ -2748,14 +2773,26 @@ fn win_atob(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             buf &= (1 << bits) - 1;
         }
     }
-    let text = String::from_utf8_lossy(&out);
-    JsValue::String(String::from(text.as_ref()))
+    let mut text = String::with_capacity(out.len());
+    for byte in out {
+        text.push(byte as char);
+    }
+    JsValue::String(text)
 }
 
 /// `btoa(data)` — encode a binary string to Base64 ASCII.
-fn win_btoa(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+fn win_btoa(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let input = arg_string(args, 0);
-    let bytes = input.as_bytes();
+    let mut bytes = Vec::with_capacity(input.len());
+    for ch in input.chars() {
+        let code = ch as u32;
+        if code > 0xFF {
+            let err = vm.make_type_error("String contains an invalid character");
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+        bytes.push(code as u8);
+    }
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as u32;

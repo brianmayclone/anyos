@@ -62,49 +62,80 @@ impl DisplayList {
         );
     }
 
-    /// Draw a text input / search / password field as a simple rectangle with border.
+    /// Draw a text input / search / password field.
     fn emit_text_input(&mut self, x: i32, y: i32, bx: &LayoutBox) {
         let bg = self.default_control_bg(bx);
         let border_color = self.default_control_border(bx);
-        // Background fill.
-        self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
-        // 1px border.
-        self.push(
-            x,
-            y,
-            bx.width,
-            1,
-            DrawKind::Rect {
-                color: border_color,
-            },
-        );
-        self.push(
-            x,
-            y + bx.height - 1,
-            bx.width,
-            1,
-            DrawKind::Rect {
-                color: border_color,
-            },
-        );
-        self.push(
-            x,
-            y,
-            1,
-            bx.height,
-            DrawKind::Rect {
-                color: border_color,
-            },
-        );
-        self.push(
-            x + bx.width - 1,
-            y,
-            1,
-            bx.height,
-            DrawKind::Rect {
-                color: border_color,
-            },
-        );
+        let radii = [
+            bx.border_top_left_radius,
+            bx.border_top_right_radius,
+            bx.border_bottom_right_radius,
+            bx.border_bottom_left_radius,
+        ];
+        let has_radius = radii.iter().any(|&r| r > 0);
+        if has_radius {
+            self.push(
+                x,
+                y,
+                bx.width,
+                bx.height,
+                DrawKind::RoundedRect { color: bg, radii },
+            );
+            self.push(
+                x,
+                y,
+                bx.width,
+                bx.height,
+                DrawKind::RoundedBorder {
+                    color: border_color,
+                    radii,
+                    widths: [
+                        bx.border_top_width.max(1),
+                        bx.border_right_width.max(1),
+                        bx.border_bottom_width.max(1),
+                        bx.border_left_width.max(1),
+                    ],
+                },
+            );
+        } else {
+            self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
+            self.push(
+                x,
+                y,
+                bx.width,
+                1,
+                DrawKind::Rect {
+                    color: border_color,
+                },
+            );
+            self.push(
+                x,
+                y + bx.height - 1,
+                bx.width,
+                1,
+                DrawKind::Rect {
+                    color: border_color,
+                },
+            );
+            self.push(
+                x,
+                y,
+                1,
+                bx.height,
+                DrawKind::Rect {
+                    color: border_color,
+                },
+            );
+            self.push(
+                x + bx.width - 1,
+                y,
+                1,
+                bx.height,
+                DrawKind::Rect {
+                    color: border_color,
+                },
+            );
+        }
         // Show placeholder or value text.
         let text = if let Some(ref v) = bx.form_value {
             if !v.is_empty() {
@@ -164,11 +195,35 @@ impl DisplayList {
         if bx.form_checked && sz >= 10 {
             let check = 0xFFFFFFFF;
             self.push(cx + 3, cy + sz / 2, 2, 1, DrawKind::Rect { color: check });
-            self.push(cx + 4, cy + sz / 2 + 1, 2, 1, DrawKind::Rect { color: check });
-            self.push(cx + 5, cy + sz / 2 + 2, 2, 1, DrawKind::Rect { color: check });
-            self.push(cx + 6, cy + sz / 2 + 1, 2, 1, DrawKind::Rect { color: check });
+            self.push(
+                cx + 4,
+                cy + sz / 2 + 1,
+                2,
+                1,
+                DrawKind::Rect { color: check },
+            );
+            self.push(
+                cx + 5,
+                cy + sz / 2 + 2,
+                2,
+                1,
+                DrawKind::Rect { color: check },
+            );
+            self.push(
+                cx + 6,
+                cy + sz / 2 + 1,
+                2,
+                1,
+                DrawKind::Rect { color: check },
+            );
             self.push(cx + 7, cy + sz / 2, 2, 1, DrawKind::Rect { color: check });
-            self.push(cx + 8, cy + sz / 2 - 1, 1, 1, DrawKind::Rect { color: check });
+            self.push(
+                cx + 8,
+                cy + sz / 2 - 1,
+                1,
+                1,
+                DrawKind::Rect { color: check },
+            );
         }
     }
 
@@ -306,7 +361,11 @@ impl DisplayList {
             w,
             track_h,
             DrawKind::RoundedRect {
-                color: if bx.uses_dark_color_scheme { 0xFF3A3A3A } else { 0xFFE0E0E0 },
+                color: if bx.uses_dark_color_scheme {
+                    0xFF3A3A3A
+                } else {
+                    0xFFE0E0E0
+                },
                 radii: [r, r, r, r],
             },
         );
@@ -401,7 +460,11 @@ impl DisplayList {
             w,
             h,
             DrawKind::RoundedRect {
-                color: if bx.uses_dark_color_scheme { 0xFF3A3A3A } else { 0xFFE0E0E0 },
+                color: if bx.uses_dark_color_scheme {
+                    0xFF3A3A3A
+                } else {
+                    0xFFE0E0E0
+                },
                 radii: [r, r, r, r],
             },
         );
@@ -464,7 +527,11 @@ impl DisplayList {
             w,
             h,
             DrawKind::RoundedRect {
-                color: if bx.uses_dark_color_scheme { 0xFF3A3A3A } else { 0xFFE0E0E0 },
+                color: if bx.uses_dark_color_scheme {
+                    0xFF3A3A3A
+                } else {
+                    0xFFE0E0E0
+                },
                 radii: [r, r, r, r],
             },
         );
@@ -480,7 +547,16 @@ impl DisplayList {
         let fill_w = ((w as f32) * pct) as i32;
         if fill_w > 0 {
             let fr = if pct >= 0.99 { r } else { 0 };
-            self.push(x, y, fill_w, h, DrawKind::RoundedRect { color: fill_color, radii: [r, fr, fr, r] });
+            self.push(
+                x,
+                y,
+                fill_w,
+                h,
+                DrawKind::RoundedRect {
+                    color: fill_color,
+                    radii: [r, fr, fr, r],
+                },
+            );
         }
     }
 

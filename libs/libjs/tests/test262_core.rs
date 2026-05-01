@@ -74,6 +74,112 @@ fn try_catch_catches_exception_from_comma_call_argument() {
 }
 
 #[test]
+fn assignment_to_inherited_getter_without_setter_does_not_shadow() {
+    assert_eq!(
+        eval_str(
+            r#"
+            var hit = 0;
+            var proto = Object.create(Object.prototype, {
+                create: { get: function(){ hit++; return 41; } }
+            });
+            var obj = Object.create(proto);
+            var expr = (obj.create = 7);
+            [expr, obj.hasOwnProperty('create'), obj.create, hit].join(':');
+            "#
+        ),
+        "7:false:41:1"
+    );
+}
+
+#[test]
+fn var_redeclaration_inside_if_updates_parameter_binding() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                function f(b, flag) {
+                    var w = 33;
+                    while (w != 13) {
+                        if (w == 33) w = flag ? 46 : 76;
+                        else if (w == 46) var b = [1, 2, (w = 84, arguments)];
+                        else if (w == 84) w = 7;
+                        else if (w == 7) return Array.isArray(b) + ':' + b[0];
+                        else return 'bad:' + typeof b;
+                    }
+                }
+                return f(function(){}, true);
+            })();
+            "#
+        ),
+        "true:1"
+    );
+}
+
+#[test]
+fn var_redeclaration_inside_function_constructor_updates_parameter_binding() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (Function('b', `
+                var w = 46;
+                while (w != 13) {
+                    if (w == 46) var b = [1, 2, (w = 84, arguments)];
+                    else if (w == 84) w = 7;
+                    else if (w == 7) return Array.isArray(b) + ':' + b[0];
+                    else return 'bad:' + typeof b;
+                }
+            `))(function(){});
+            "#
+        ),
+        "true:1"
+    );
+}
+
+#[test]
+fn bound_native_array_methods_keep_bound_receiver() {
+    assert_eq!(
+        eval_str(
+            r#"
+            var a = [1, 2, 3];
+            var pop = Array.prototype.pop.bind(a);
+            var push = Array.prototype.push.bind(a, 9);
+            pop() + ":" + push(10) + ":" + a.join(",")
+            "#
+        ),
+        "3:4:1,2,9,10"
+    );
+}
+
+#[test]
+fn bound_function_prototype_call_keeps_target_receiver() {
+    assert_eq!(
+        eval_str(
+            r#"
+            var read = Function.prototype.call.bind(Array.prototype.join);
+            read([1, 2, 3], "-")
+            "#
+        ),
+        "1-2-3"
+    );
+}
+
+#[test]
+fn strict_assignment_to_inherited_getter_without_setter_throws() {
+    assert!(eval_throws(
+        r#"
+        (function(){
+            'use strict';
+            var proto = Object.create(Object.prototype, {
+                create: { get: function(){ return 41; } }
+            });
+            var obj = Object.create(proto);
+            obj.create = 7;
+        })();
+        "#
+    ));
+}
+
+#[test]
 fn for_in_enumerates_first_static_object_property_with_children_array() {
     assert_eq!(
         eval_str(
@@ -186,6 +292,27 @@ fn assignment_expression_preserves_nested_member_value() {
             "#,
         ),
         "function:ok:#fff"
+    );
+}
+
+#[test]
+fn assignment_expression_preserves_accessor_set_value() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function(){
+                var obj = {};
+                Object.defineProperty(obj, 'x', {
+                    configurable: true,
+                    get: function(){ return this.y; },
+                    set: function(v){ this.y = v; }
+                });
+                var assigned = (obj.x = { ok: 1 });
+                return typeof assigned + ':' + (assigned === obj.x) + ':' + obj.x.ok;
+            })()
+            "#,
+        ),
+        "object:true:1"
     );
 }
 
@@ -1190,14 +1317,8 @@ fn template_literal_expr() {
 fn optional_chaining() {
     assert_eq!(eval_str("let obj = {a: {b: 42}}; obj?.a?.b"), "42");
     assert_eq!(eval_str("let obj = null; obj?.a?.b"), "undefined");
-    assert_eq!(
-        eval_str("let obj = null; obj?.a.b"),
-        "undefined"
-    );
-    assert_eq!(
-        eval_str("let obj = {a: {b: {c: 7}}}; obj?.a.b.c"),
-        "7"
-    );
+    assert_eq!(eval_str("let obj = null; obj?.a.b"), "undefined");
+    assert_eq!(eval_str("let obj = {a: {b: {c: 7}}}; obj?.a.b.c"), "7");
     assert_eq!(
         eval_str("let called = 0; let obj = {}; obj.missing?.callMe(called = 1); called"),
         "0"
@@ -2503,83 +2624,65 @@ fn async_multiple_awaits() {
 
 #[test]
 fn regexp_positive_lookahead() {
-    assert_eq!(
-        eval_str(r#"/foo(?=bar)/.test("foobar")"#),
-        "true"
-    );
-    assert_eq!(
-        eval_str(r#"/foo(?=bar)/.test("foobaz")"#),
-        "false"
-    );
+    assert_eq!(eval_str(r#"/foo(?=bar)/.test("foobar")"#), "true");
+    assert_eq!(eval_str(r#"/foo(?=bar)/.test("foobaz")"#), "false");
 }
 
 #[test]
 fn regexp_positive_lookahead_zero_width() {
     // Lookahead should not consume characters.
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var m = /foo(?=bar)/.exec("foobar");
         m[0]
-    "#),
+    "#
+        ),
         "foo" // NOT "foobar"
     );
 }
 
 #[test]
 fn regexp_negative_lookahead() {
-    assert_eq!(
-        eval_str(r#"/foo(?!bar)/.test("foobaz")"#),
-        "true"
-    );
-    assert_eq!(
-        eval_str(r#"/foo(?!bar)/.test("foobar")"#),
-        "false"
-    );
+    assert_eq!(eval_str(r#"/foo(?!bar)/.test("foobaz")"#), "true");
+    assert_eq!(eval_str(r#"/foo(?!bar)/.test("foobar")"#), "false");
 }
 
 #[test]
 fn regexp_positive_lookbehind() {
-    assert_eq!(
-        eval_str(r#"/(?<=foo)bar/.test("foobar")"#),
-        "true"
-    );
-    assert_eq!(
-        eval_str(r#"/(?<=foo)bar/.test("bazbar")"#),
-        "false"
-    );
+    assert_eq!(eval_str(r#"/(?<=foo)bar/.test("foobar")"#), "true");
+    assert_eq!(eval_str(r#"/(?<=foo)bar/.test("bazbar")"#), "false");
 }
 
 #[test]
 fn regexp_positive_lookbehind_match() {
     // Lookbehind should not consume characters.
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var m = /(?<=foo)bar/.exec("foobar");
         m[0]
-    "#),
+    "#
+        ),
         "bar" // NOT "foobar"
     );
 }
 
 #[test]
 fn regexp_negative_lookbehind() {
-    assert_eq!(
-        eval_str(r#"/(?<!foo)bar/.test("bazbar")"#),
-        "true"
-    );
-    assert_eq!(
-        eval_str(r#"/(?<!foo)bar/.test("foobar")"#),
-        "false"
-    );
+    assert_eq!(eval_str(r#"/(?<!foo)bar/.test("bazbar")"#), "true");
+    assert_eq!(eval_str(r#"/(?<!foo)bar/.test("foobar")"#), "false");
 }
 
 #[test]
 fn regexp_named_group_basic() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var m = /(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})/.exec("2024-03-15");
         m.groups.year + "/" + m.groups.month + "/" + m.groups.day
-    "#),
+    "#
+        ),
         "2024/03/15"
     );
 }
@@ -2588,10 +2691,12 @@ fn regexp_named_group_basic() {
 fn regexp_named_group_in_replace() {
     // Named groups should also be available as numbered captures.
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var m = /(?<first>\w+) (?<last>\w+)/.exec("John Doe");
         m[1] + " " + m[2]
-    "#),
+    "#
+        ),
         "John Doe"
     );
 }
@@ -2638,10 +2743,12 @@ fn module_basic_export_import() {
         "math",
         "export function add(a, b) { return a + b; }\nexport const PI = 3.14;",
     );
-    let result = engine.eval(r#"
+    let result = engine.eval(
+        r#"
         import { add, PI } from 'math';
         add(2, 3) + ":" + PI
-    "#);
+    "#,
+    );
     assert_eq!(result.to_js_string(), "5:3.14");
 }
 
@@ -2653,10 +2760,12 @@ fn module_default_export() {
         "greeter",
         "export default function(name) { return 'Hello ' + name; }",
     );
-    let result = engine.eval(r#"
+    let result = engine.eval(
+        r#"
         import greet from 'greeter';
         greet("World")
-    "#);
+    "#,
+    );
     assert_eq!(result.to_js_string(), "Hello World");
 }
 
@@ -2668,10 +2777,12 @@ fn module_namespace_import() {
         "utils",
         "export function upper(s) { return s.toUpperCase(); }\nexport function lower(s) { return s.toLowerCase(); }",
     );
-    let result = engine.eval(r#"
+    let result = engine.eval(
+        r#"
         import * as utils from 'utils';
         utils.upper("hello") + ":" + utils.lower("WORLD")
-    "#);
+    "#,
+    );
     assert_eq!(result.to_js_string(), "HELLO:world");
 }
 
@@ -2684,11 +2795,13 @@ fn module_caching() {
         "counter",
         "var count = 0; count++; export function get() { return count; }",
     );
-    let result = engine.eval(r#"
+    let result = engine.eval(
+        r#"
         import { get as get1 } from 'counter';
         import { get as get2 } from 'counter';
         get1() + ":" + get2()
-    "#);
+    "#,
+    );
     assert_eq!(result.to_js_string(), "1:1"); // not 1:2
 }
 
@@ -2709,10 +2822,12 @@ fn module_native_object() {
         JsValue::String(alloc::string::String::from("1.0")),
     );
     engine.register_module_object("config", ns);
-    let result = engine.eval(r#"
+    let result = engine.eval(
+        r#"
         import { version } from 'config';
         version
-    "#);
+    "#,
+    );
     assert_eq!(result.to_js_string(), "1.0");
 }
 
@@ -2722,20 +2837,24 @@ fn module_native_object() {
 
 #[test]
 fn strict_undeclared_var_throws() {
-    assert!(eval_throws(r#"
+    assert!(eval_throws(
+        r#"
         "use strict";
         undeclaredVar = 42;
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn strict_declared_var_ok() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         "use strict";
         var x = 42;
         x
-    "#),
+    "#
+        ),
         "42"
     );
 }
@@ -2743,11 +2862,13 @@ fn strict_declared_var_ok() {
 #[test]
 fn strict_function_decl_ok() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         "use strict";
         function foo() { return 7; }
         foo()
-    "#),
+    "#
+        ),
         "7"
     );
 }
@@ -2816,23 +2937,39 @@ fn bigint_large_numbers() {
 
 #[test]
 fn error_stack_has_function_name() {
-    let result = eval_str(r#"
+    let result = eval_str(
+        r#"
         var s = "";
         try { throw new Error("oops"); } catch(e) { s = e.stack; }
         s
-    "#);
-    assert!(result.contains("Error"), "stack should contain 'Error': {}", result);
+    "#,
+    );
+    assert!(
+        result.contains("Error"),
+        "stack should contain 'Error': {}",
+        result
+    );
 }
 
 #[test]
 fn error_stack_format() {
-    let result = eval_str(r#"
+    let result = eval_str(
+        r#"
         var s = "";
         try { throw new Error("test"); } catch(e) { s = e.stack; }
         s
-    "#);
-    assert!(result.contains("Error: test"), "stack should start with error: {}", result);
-    assert!(result.contains("at "), "stack should have 'at' frames: {}", result);
+    "#,
+    );
+    assert!(
+        result.contains("Error: test"),
+        "stack should start with error: {}",
+        result
+    );
+    assert!(
+        result.contains("at "),
+        "stack should have 'at' frames: {}",
+        result
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2841,10 +2978,7 @@ fn error_stack_format() {
 
 #[test]
 fn iterator_to_array() {
-    assert_eq!(
-        eval_str("[1,2,3].values().toArray().join(',')"),
-        "1,2,3"
-    );
+    assert_eq!(eval_str("[1,2,3].values().toArray().join(',')"), "1,2,3");
 }
 
 #[test]
@@ -2914,12 +3048,14 @@ fn iterator_flat_map() {
 #[test]
 fn set_union() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var a = new Set([1, 2, 3]);
         var b = new Set([3, 4, 5]);
         var u = a.union(b);
         Array.from(u).sort().join(",")
-    "#),
+    "#
+        ),
         "1,2,3,4,5"
     );
 }
@@ -2927,12 +3063,14 @@ fn set_union() {
 #[test]
 fn set_intersection() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var a = new Set([1, 2, 3, 4]);
         var b = new Set([3, 4, 5, 6]);
         var i = a.intersection(b);
         Array.from(i).sort().join(",")
-    "#),
+    "#
+        ),
         "3,4"
     );
 }
@@ -2940,12 +3078,14 @@ fn set_intersection() {
 #[test]
 fn set_difference() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var a = new Set([1, 2, 3, 4]);
         var b = new Set([3, 4, 5]);
         var d = a.difference(b);
         Array.from(d).sort().join(",")
-    "#),
+    "#
+        ),
         "1,2"
     );
 }
@@ -2953,22 +3093,36 @@ fn set_difference() {
 #[test]
 fn set_symmetric_difference() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var a = new Set([1, 2, 3]);
         var b = new Set([2, 3, 4]);
         var sd = a.symmetricDifference(b);
         Array.from(sd).sort().join(",")
-    "#),
+    "#
+        ),
         "1,4"
     );
 }
 
 #[test]
 fn set_subset_superset_disjoint() {
-    assert_eq!(eval_str("new Set([1,2]).isSubsetOf(new Set([1,2,3]))"), "true");
-    assert_eq!(eval_str("new Set([1,2,3]).isSupersetOf(new Set([1,2]))"), "true");
-    assert_eq!(eval_str("new Set([1,2]).isDisjointFrom(new Set([3,4]))"), "true");
-    assert_eq!(eval_str("new Set([1,2]).isDisjointFrom(new Set([2,3]))"), "false");
+    assert_eq!(
+        eval_str("new Set([1,2]).isSubsetOf(new Set([1,2,3]))"),
+        "true"
+    );
+    assert_eq!(
+        eval_str("new Set([1,2,3]).isSupersetOf(new Set([1,2]))"),
+        "true"
+    );
+    assert_eq!(
+        eval_str("new Set([1,2]).isDisjointFrom(new Set([3,4]))"),
+        "true"
+    );
+    assert_eq!(
+        eval_str("new Set([1,2]).isDisjointFrom(new Set([2,3]))"),
+        "false"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2978,11 +3132,13 @@ fn set_subset_superset_disjoint() {
 #[test]
 fn date_set_full_year() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var d = new Date(0);
         d.setFullYear(2000);
         d.getFullYear()
-    "#),
+    "#
+        ),
         "2000"
     );
 }
@@ -2990,11 +3146,13 @@ fn date_set_full_year() {
 #[test]
 fn date_set_month() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var d = new Date(0);
         d.setMonth(5);
         d.getMonth()
-    "#),
+    "#
+        ),
         "5"
     );
 }
@@ -3002,25 +3160,21 @@ fn date_set_month() {
 #[test]
 fn date_set_hours_minutes_seconds() {
     assert_eq!(
-        eval_str(r#"
+        eval_str(
+            r#"
         var d = new Date(0);
         d.setHours(15, 30, 45);
         d.getHours() + ":" + d.getMinutes() + ":" + d.getSeconds()
-    "#),
+    "#
+        ),
         "15:30:45"
     );
 }
 
 #[test]
 fn date_utc_static() {
-    assert_eq!(
-        eval_str("Date.UTC(1970, 0, 1)"),
-        "0"
-    );
-    assert_eq!(
-        eval_str("Date.UTC(2000, 0, 1)"),
-        "946684800000"
-    );
+    assert_eq!(eval_str("Date.UTC(1970, 0, 1)"), "0");
+    assert_eq!(eval_str("Date.UTC(2000, 0, 1)"), "946684800000");
 }
 
 #[test]

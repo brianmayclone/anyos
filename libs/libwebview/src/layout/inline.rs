@@ -776,7 +776,7 @@ fn collect_inline_fragments(
                     layout_box: frame,
                     breaks_after: false,
                 });
-                continue;
+                return;
             }
 
             // Handle inline <img> — use available_width instead of hardcoded 300
@@ -1096,6 +1096,19 @@ fn collect_inline_fragments(
                 let h = (rows * 18).max(28).min(400);
                 let mut ta = LayoutBox::new(Some(node_id), BoxType::Inline);
                 ta.form_field = Some(FormFieldKind::Textarea);
+                ta.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
+                ta.form_value = dom
+                    .attr(node_id, "value")
+                    .map(String::from)
+                    .or_else(|| {
+                        let text = dom.text_content(node_id);
+                        let trimmed = text.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(String::from(trimmed))
+                        }
+                    });
                 if node_id < styles.len() {
                     ta.bg_color = styles[node_id].background_color;
                     ta.color = styles[node_id].color;

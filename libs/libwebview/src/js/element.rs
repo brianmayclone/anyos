@@ -493,6 +493,12 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("nextSibling"), next_any);
     obj.set(String::from("previousElementSibling"), prev_sib);
     obj.set(String::from("nextElementSibling"), next_sib);
+    if matches!(
+        tag_name.as_str(),
+        "INPUT" | "TEXTAREA" | "SELECT" | "BUTTON" | "FIELDSET" | "OUTPUT"
+    ) {
+        obj.set(String::from("form"), form_owner_element(vm, node_id));
+    }
 
     // Style — CSSStyleDeclaration (W3C CSSOM §6.7.2).
     // Properties set on this object trigger SetStyleProperty mutations via set_hook.
@@ -1414,7 +1420,10 @@ fn make_synthetic_iframe_context(vm: &mut Vm) -> (JsValue, JsValue) {
     let document_element = make_synthetic_frame_element(vm, document.clone());
 
     document.set_property(String::from("nodeType"), JsValue::Number(9.0));
-    document.set_property(String::from("nodeName"), JsValue::String(String::from("#document")));
+    document.set_property(
+        String::from("nodeName"),
+        JsValue::String(String::from("#document")),
+    );
     document.set_property(String::from("body"), body.clone());
     document.set_property(String::from("documentElement"), document_element);
     document.set_property(String::from("defaultView"), window.clone());
@@ -1554,8 +1563,14 @@ fn iframe_return_element(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 fn make_synthetic_frame_element(vm: &mut Vm, owner_document: JsValue) -> JsValue {
     let obj = JsValue::Object(Rc::new(RefCell::new(JsObject::new())));
     obj.set_property(String::from("nodeType"), JsValue::Number(1.0));
-    obj.set_property(String::from("nodeName"), JsValue::String(String::from("DIV")));
-    obj.set_property(String::from("tagName"), JsValue::String(String::from("DIV")));
+    obj.set_property(
+        String::from("nodeName"),
+        JsValue::String(String::from("DIV")),
+    );
+    obj.set_property(
+        String::from("tagName"),
+        JsValue::String(String::from("DIV")),
+    );
     obj.set_property(String::from("ownerDocument"), owner_document);
     obj.set_property(String::from("value"), JsValue::String(String::new()));
     obj.set_property(String::from("textContent"), JsValue::String(String::new()));
@@ -1578,7 +1593,10 @@ fn make_synthetic_frame_element(vm: &mut Vm, owner_document: JsValue) -> JsValue
     );
     obj.set_property(
         String::from("getBoundingClientRect"),
-        native_fn("getBoundingClientRect", iframe_element_get_bounding_client_rect),
+        native_fn(
+            "getBoundingClientRect",
+            iframe_element_get_bounding_client_rect,
+        ),
     );
     obj.set_property(
         String::from("dispatchEvent"),
@@ -1797,6 +1815,21 @@ fn queue_click_default_action(vm: &mut Vm, node_id: usize) {
 }
 
 fn find_form_for_click_default(vm: &mut Vm, node_id: usize) -> Option<usize> {
+    find_form_owner_id(vm, node_id as i64)
+}
+
+fn form_owner_element(vm: &mut Vm, node_id: i64) -> JsValue {
+    let Some(form_id) = find_form_owner_id(vm, node_id) else {
+        return JsValue::Null;
+    };
+    make_element_impl(vm, form_id as i64, false)
+}
+
+fn find_form_owner_id(vm: &mut Vm, node_id: i64) -> Option<usize> {
+    if node_id < 0 {
+        return None;
+    }
+    let node_id = node_id as usize;
     if let JsValue::String(form_attr) = read_attribute(vm, node_id as i64, "form") {
         if let Some(bridge) = get_bridge(vm) {
             let dom = bridge.dom();

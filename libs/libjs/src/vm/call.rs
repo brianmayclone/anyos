@@ -443,7 +443,7 @@ impl Vm {
                     && !is_strict_fn
                     && matches!(effective_this, JsValue::Undefined | JsValue::Null)
                 {
-                    JsValue::Object(self.globals.clone())
+                    self.global_this_value()
                 } else {
                     effective_this
                 };
@@ -685,6 +685,15 @@ impl Vm {
                 } else {
                     alloc::format!("{} is not a function", context.trim())
                 };
+                #[cfg(feature = "host")]
+                if std::env::var_os("LIBJS_DEBUG_NONCALLABLE").is_some() {
+                    std::eprintln!(
+                        "[libjs-debug] non-callable call: {} callee_type={} stack=[{}]",
+                        desc,
+                        callee.type_of(),
+                        stack
+                    );
+                }
                 let exc = self.make_type_error(&desc);
                 if !self.handle_exception(exc) {
                     self.stack.push(JsValue::Undefined);

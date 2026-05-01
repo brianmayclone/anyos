@@ -1713,7 +1713,18 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
     let chunk = compiler.compile_eval(&program);
 
-    // Run inline in the current VM
+    // Run inline in the current VM. Browser pages also rely on indirect eval
+    // (`(0, eval)(...)`) observing the global object as `this`; using the
+    // configured `globalThis` here keeps generated bootstraps such as Google's
+    // challenge loader from evaluating into an undefined receiver.
+    let eval_this = {
+        let global_this = vm.get_global("globalThis");
+        if global_this.is_undefined() {
+            JsValue::Object(vm.globals.clone())
+        } else {
+            global_this
+        }
+    };
     let result = vm.call_value(
         &JsValue::Function(alloc::rc::Rc::new(core::cell::RefCell::new(
             crate::value::JsFunction {
@@ -1732,7 +1743,7 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             },
         ))),
         &[],
-        JsValue::Undefined,
+        eval_this,
     );
     result
 }

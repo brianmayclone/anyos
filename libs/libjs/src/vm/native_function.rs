@@ -128,6 +128,22 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
             let bound_args = func_rc.borrow().bound_args.clone();
 
             let effective_this = this_bind.unwrap_or_else(|| this_val.clone());
+            let is_arrow = match &kind {
+                FnKind::Bytecode(chunk) => chunk.is_arrow,
+                _ => false,
+            };
+            let is_strict_fn = match &kind {
+                FnKind::Bytecode(chunk) => chunk.strict,
+                _ => false,
+            };
+            let effective_this = if !is_arrow
+                && !is_strict_fn
+                && matches!(effective_this, JsValue::Undefined | JsValue::Null)
+            {
+                vm.global_this_value()
+            } else {
+                effective_this
+            };
             let saved_current_this = vm.current_this.clone();
             vm.current_this = effective_this.clone();
 

@@ -29,9 +29,10 @@ use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const SURF_HOST_USER_AGENT: &str =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36";
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Surf/1.0";
 const HOST_SYNC_WEB_FONT_LIMIT: usize = 6;
 const HOST_VIEWPORT_RENDER_PASS_LIMIT: usize = 128;
 const HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET: usize = 64;
@@ -101,6 +102,14 @@ impl HostCookieJar {
         let name = name.trim();
         if name.is_empty() {
             return;
+        }
+        if std::env::var_os("SURF_HOST_DEBUG_COOKIES").is_some() {
+            eprintln!(
+                "[surf-host] document.cookie set {}={} ({} bytes)",
+                name,
+                value.trim(),
+                value.trim().len()
+            );
         }
         let mut domain = request_host.to_ascii_lowercase();
         let mut path = default_cookie_path(request_path);
@@ -222,7 +231,9 @@ fn parse_args() -> Args {
         eprintln!("Options:");
         eprintln!("  --screenshot <path.png>   Save screenshot and exit");
         eprintln!("  --fullpage                Capture entire page height (not just viewport)");
-        eprintln!("  --bottom                  Capture the bottom viewport after laying out the page");
+        eprintln!(
+            "  --bottom                  Capture the bottom viewport after laying out the page"
+        );
         eprintln!("  -y <start-end>            Capture Y range, e.g. -y 400-900");
         eprintln!("  --delay <ms>              Wait before screenshot (default: 0)");
         eprintln!("  --width <px>              Viewport width (default: 1024)");
@@ -586,6 +597,21 @@ fn load_page_inner(
         wv.js_runtime().set_cookies(&cookie_hdr);
     }
     wv.set_html_no_js(&html);
+    if redirect_depth < 3 {
+        if let Some(refresh_url) = wv.immediate_meta_refresh_url() {
+            let abs = resolve_url(&base_url, &refresh_url);
+            eprintln!("[meta-refresh] to {}", abs);
+            return load_page_inner(
+                wv,
+                &abs,
+                js_enabled,
+                image_backend,
+                load_web_fonts,
+                cookies,
+                redirect_depth + 1,
+            );
+        }
+    }
     load_resources(wv, &base_url, image_backend, load_web_fonts); // CSS, fonts, SVGs (sync) + initial relayout
     let mut pending = if js_enabled {
         PendingImages::empty()
@@ -872,6 +898,208 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
     }
 }
 
+fn load_iframe_snapshots(
+    wv: &mut libwebview::WebView,
+    base_url: &str,
+    js_enabled: bool,
+    image_backend: ImageBackend,
+    load_web_fonts: bool,
+    cookies: &mut HostCookieJar,
+    loaded_frames: &mut HashSet<String>,
+) -> bool {
+    let frames = {
+        let Some(dom) = wv.dom() else {
+            return false;
+        };
+        let mut frames = Vec::new();
+        for (node_id, node) in dom.nodes.iter().enumerate() {
+            if !matches!(
+                node.node_type,
+                NodeType::Element {
+                    tag: Tag::Iframe,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            let Some(src) = dom.attr(node_id, "src") else {
+                continue;
+            };
+            if src.is_empty() || src.starts_with("about:") || src.starts_with("javascript:") {
+                continue;
+            }
+            let url = resolve_url(base_url, src);
+            let (mut w, mut h) = wv
+                .node_bounds(node_id)
+                .map(|(_, _, w, h)| (w, h))
+                .unwrap_or((300, 150));
+            let (style_w, style_h) = iframe_style_dimensions(dom.attr(node_id, "style"));
+            if w <= 300 {
+                if let Some(style_w) = style_w {
+                    w = style_w;
+                }
+            }
+            if h <= 150 {
+                if let Some(style_h) = style_h {
+                    h = style_h;
+                }
+            }
+            if w <= 0 {
+                w = dom
+                    .attr(node_id, "width")
+                    .and_then(parse_pxish_i32)
+                    .unwrap_or(300);
+            }
+            if h <= 0 {
+                h = dom
+                    .attr(node_id, "height")
+                    .and_then(parse_pxish_i32)
+                    .unwrap_or(150);
+            }
+            frames.push((
+                node_id,
+                url,
+                w.max(1).min(1920) as u32,
+                h.max(1).min(1200) as u32,
+            ));
+        }
+        frames
+    };
+
+    let mut changed = false;
+    for (node_id, url, width, height) in frames {
+        let cache_key = format!("{}:{}", node_id, url);
+        if !loaded_frames.insert(cache_key) {
+            continue;
+        }
+        let image_key = libwebview::iframe_snapshot_key(node_id);
+        if wv.has_decoded_image(&image_key) {
+            continue;
+        }
+        eprintln!(
+            "[surf-host] loading iframe snapshot: node={} {}x{} {}",
+            node_id, width, height, url
+        );
+        if let Some((pixels, w, h)) = render_iframe_snapshot(
+            &url,
+            width,
+            height,
+            js_enabled,
+            image_backend,
+            load_web_fonts,
+            cookies,
+        ) {
+            wv.add_image(&image_key, pixels, w, h);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn iframe_style_dimensions(style: Option<&str>) -> (Option<i32>, Option<i32>) {
+    let Some(style) = style else {
+        return (None, None);
+    };
+    let mut width = None;
+    let mut height = None;
+    for decl in style.split(';') {
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let name = name.trim().to_ascii_lowercase();
+        let parsed = parse_pxish_i32(value.trim());
+        match name.as_str() {
+            "width" => width = parsed.or(width),
+            "height" => height = parsed.or(height),
+            _ => {}
+        }
+    }
+    (width, height)
+}
+
+fn parse_pxish_i32(value: &str) -> Option<i32> {
+    let value = value.trim();
+    if value.is_empty() || value.ends_with('%') || value.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    let value = value.strip_suffix("px").unwrap_or(value).trim();
+    let mut end = 0usize;
+    let mut seen_digit = false;
+    for (idx, ch) in value.char_indices() {
+        if ch.is_ascii_digit() {
+            seen_digit = true;
+            end = idx + ch.len_utf8();
+            continue;
+        }
+        if ch == '.' {
+            end = idx;
+            break;
+        }
+        if idx == 0 && (ch == '+' || ch == '-') {
+            end = ch.len_utf8();
+            continue;
+        }
+        break;
+    }
+    if !seen_digit {
+        return None;
+    }
+    value[..end].parse::<i32>().ok()
+}
+
+fn render_iframe_snapshot(
+    url: &str,
+    width: u32,
+    height: u32,
+    js_enabled: bool,
+    image_backend: ImageBackend,
+    load_web_fonts: bool,
+    cookies: &mut HostCookieJar,
+) -> Option<(Vec<u32>, u32, u32)> {
+    let width = width.max(1);
+    let height = height.max(1);
+    let (html, base_url) = fetch_page(url, cookies);
+    let mut frame = libwebview::WebView::new(width, height);
+    frame.set_url(&base_url);
+    if let Some(cookie_hdr) = cookies.cookie_header_for_url(&base_url) {
+        frame.js_runtime().set_cookies(&cookie_hdr);
+    }
+    frame.set_html_no_js(&html);
+    load_resources(&mut frame, &base_url, image_backend, load_web_fonts);
+    let run_snapshot_js = js_enabled && std::env::var_os("SURF_HOST_IFRAME_SNAPSHOT_JS").is_some();
+    if run_snapshot_js {
+        if run_javascript(&mut frame, &base_url, cookies) {
+            frame.relayout();
+        }
+        if frame.has_timers() {
+            run_js_timers(&mut frame, &base_url, cookies, 250);
+            frame.relayout();
+        }
+    }
+    let mut pending = start_image_loading(&frame, &base_url, image_backend);
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    let mut images = Vec::new();
+    while !pending.is_done() && Instant::now() < deadline {
+        images.extend(pending.poll());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    images.extend(pending.poll());
+    images.sort_by(|a, b| b.node_id.cmp(&a.node_id));
+    for image in images {
+        frame.add_image(&image.src_attr, image.pixels, image.width, image.height);
+    }
+    frame.relayout();
+    let mut pending_tiles = true;
+    let mut passes = 0usize;
+    while pending_tiles && passes < HOST_VIEWPORT_RENDER_PASS_LIMIT {
+        pending_tiles = frame.render_viewport_at(0);
+        passes += 1;
+    }
+    let mut pixels = vec![0xFFFFFFFFu32; (width * height) as usize];
+    extract_pixels(&frame, &mut pixels, width as usize, height as usize, 0);
+    Some((pixels, width, height))
+}
+
 // ── egui host shell ─────────────────────────────────────────────────────────
 
 enum RemoteCommand {
@@ -1081,7 +1309,13 @@ impl BrowserHostApp {
     }
 
     fn drain_js_side_effects(&mut self) -> bool {
-        apply_host_js_mutations(&mut self.wv, &self.current_url, &mut self.cookies);
+        if let Some(abs) =
+            apply_host_js_mutations(&mut self.wv, &self.current_url, &mut self.cookies)
+        {
+            eprintln!("[js-nav] form submit to {}", abs);
+            self.navigate(&abs);
+            return true;
+        }
         if let Some(nav) = self.wv.take_pending_navigation_requests().pop() {
             let abs = resolve_url(&self.current_url, &nav.url);
             eprintln!(
@@ -1371,7 +1605,11 @@ impl BrowserHostApp {
                     if self.wv.eval_js_for_devtools(&source) {
                         self.needs_redraw = true;
                     }
-                    apply_host_js_mutations(&mut self.wv, &self.current_url, &mut self.cookies);
+                    if let Some(abs) =
+                        apply_host_js_mutations(&mut self.wv, &self.current_url, &mut self.cookies)
+                    {
+                        self.navigate(&abs);
+                    }
                     self.devtools_console_input.clear();
                 }
             }
@@ -1781,6 +2019,24 @@ fn main() {
         for source in &args.eval_sources {
             let changed = wv.eval_js_for_devtools(source);
             eprintln!("[surf-host] eval changed_dom={} source={}", changed, source);
+            if let Some(abs) = apply_host_js_mutations(&mut wv, &current_url, &mut cookies) {
+                eprintln!("[surf-host] eval navigation: {}", abs);
+                current_url = abs.clone();
+                pending = load_page(
+                    &mut wv,
+                    &abs,
+                    args.js_enabled,
+                    args.image_backend,
+                    args.load_web_fonts,
+                    &mut cookies,
+                );
+                for r in pending.drain() {
+                    wv.add_image(&r.src_attr, r.pixels, r.width, r.height);
+                }
+                wv.relayout();
+                render_viewport_bounded(&mut wv, 0, "after eval navigation");
+                continue;
+            }
             if changed {
                 wv.relayout();
                 render_viewport_bounded(&mut wv, 0, "after eval");
@@ -1800,6 +2056,23 @@ fn main() {
             while waited < args.delay_ms {
                 if run_screenshot_timers && wv.has_timers() {
                     wv.run_timers_with_budget(step, HOST_SCREENSHOT_TIMER_CALLBACK_BUDGET);
+                    if let Some(abs) = apply_host_js_mutations(&mut wv, &current_url, &mut cookies)
+                    {
+                        eprintln!("[surf-host] timer navigation: {}", abs);
+                        current_url = abs.clone();
+                        pending = load_page(
+                            &mut wv,
+                            &abs,
+                            args.js_enabled,
+                            args.image_backend,
+                            args.load_web_fonts,
+                            &mut cookies,
+                        );
+                        for r in pending.drain() {
+                            wv.add_image(&r.src_attr, r.pixels, r.width, r.height);
+                        }
+                        wv.relayout();
+                    }
                     wv.tick(step);
                 }
                 waited += step;
@@ -1860,7 +2133,13 @@ fn main() {
                 doc_h, height, scroll_y
             );
             render_viewport_bounded(&mut wv, scroll_y, "bottom screenshot");
-            extract_pixels(&wv, &mut framebuffer, width as usize, height as usize, scroll_y);
+            extract_pixels(
+                &wv,
+                &mut framebuffer,
+                width as usize,
+                height as usize,
+                scroll_y,
+            );
             save_screenshot(&framebuffer, width, height, path);
         } else {
             save_screenshot(&framebuffer, width, height, path);
@@ -2317,18 +2596,30 @@ fn submit_form_node_host(
     node_id: usize,
 ) -> Option<String> {
     if !wv.dispatch_submit_for_node(node_id) {
-        apply_host_js_mutations(wv, current_url, cookies);
+        if let Some(nav_url) = apply_host_js_mutations(wv, current_url, cookies) {
+            return Some(nav_url);
+        }
         return wv
             .take_pending_navigation_requests()
             .pop()
             .map(|nav| resolve_url(current_url, &nav.url));
     }
 
-    apply_host_js_mutations(wv, current_url, cookies);
+    if let Some(nav_url) = apply_host_js_mutations(wv, current_url, cookies) {
+        return Some(nav_url);
+    }
     if let Some(nav) = wv.take_pending_navigation_requests().pop() {
         return Some(resolve_url(current_url, &nav.url));
     }
 
+    submit_form_node_host_no_event(wv, current_url, node_id)
+}
+
+fn submit_form_node_host_no_event(
+    wv: &mut libwebview::WebView,
+    current_url: &str,
+    node_id: usize,
+) -> Option<String> {
     let (action, method, _enctype) = wv.form_action_for_node(node_id)?;
     let data = wv.collect_form_data_for_node(node_id);
     let query = form_encode(&data);
@@ -2489,7 +2780,7 @@ fn url_cache_key(url: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn fetch_page(url: &str, cookies: &HostCookieJar) -> (String, String) {
+fn fetch_page(url: &str, cookies: &mut HostCookieJar) -> (String, String) {
     if url == "about:blank" {
         (
             String::from("<!doctype html><title>Surf Host</title><style>body{font:16px sans-serif;padding:32px;color:#202124} input{font:inherit;padding:8px;width:24em}</style><h1>Surf Host</h1><p>Enter a URL in the toolbar to start browsing.</p>"),
@@ -2521,6 +2812,11 @@ fn fetch_page(url: &str, cookies: &HostCookieJar) -> (String, String) {
             Ok(response) => {
                 let final_url = response.get_url().to_string();
                 let content_type = response.header("Content-Type").map(str::to_string);
+                if let Some(parts) = parse_host_url(&final_url) {
+                    for set_cookie in response.all("set-cookie") {
+                        cookies.store(set_cookie, &parts.host, &parts.path);
+                    }
+                }
                 let mut bytes = Vec::new();
                 let _ = response.into_reader().read_to_end(&mut bytes);
                 let body = decode_html_bytes(&bytes, content_type.as_deref());
@@ -3560,9 +3856,7 @@ fn load_resources(
                         eprintln!("[surf-host] fetching font: {}", font_url);
                         if let Some(font_data) = fetch_resource(&font_url) {
                             if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
-                                wv.register_web_font_with_style(
-                                    &family, *weight, *italic, font_id,
-                                );
+                                wv.register_web_font_with_style(&family, *weight, *italic, font_id);
                             }
                         }
                     }
@@ -3861,8 +4155,14 @@ fn start_image_loading(
                 let abs_url = resolve_url(base_url, &src);
                 let bounds = wv.node_bounds(i);
                 let priority_y = bounds.map(|(_, y, _, _)| y).unwrap_or(i32::MAX);
-                let has_attr_w = dom.attr(i, "width").and_then(parse_positive_px_attr).is_some();
-                let has_attr_h = dom.attr(i, "height").and_then(parse_positive_px_attr).is_some();
+                let has_attr_w = dom
+                    .attr(i, "width")
+                    .and_then(parse_positive_px_attr)
+                    .is_some();
+                let has_attr_h = dom
+                    .attr(i, "height")
+                    .and_then(parse_positive_px_attr)
+                    .is_some();
                 let (css_w, css_h) = explicit_image_decode_hints(wv, i, bounds);
                 let attr_bounds = bounds.and_then(|(_, _, w, h)| {
                     if w > 0 && h > 0 && (has_attr_w || has_attr_h) {
@@ -4053,16 +4353,24 @@ fn apply_host_js_mutations(
     wv: &mut libwebview::WebView,
     base_url: &str,
     cookies: &mut HostCookieJar,
-) {
+) -> Option<String> {
     let mutations = wv.js_runtime().take_mutations();
+    let mut nav_url = None;
     for mutation in mutations {
-        if let libwebview::js::DomMutation::SetCookie { value } = mutation {
-            cookies.store_from_document_cookie(&value, base_url);
-            if let Some(cookie_hdr) = cookies.cookie_header_for_url(base_url) {
-                wv.js_runtime().set_cookies(&cookie_hdr);
+        match mutation {
+            libwebview::js::DomMutation::SetCookie { value } => {
+                cookies.store_from_document_cookie(&value, base_url);
+                if let Some(cookie_hdr) = cookies.cookie_header_for_url(base_url) {
+                    wv.js_runtime().set_cookies(&cookie_hdr);
+                }
             }
+            libwebview::js::DomMutation::FormSubmit { form_node_id } => {
+                nav_url = submit_form_node_host_no_event(wv, base_url, form_node_id);
+            }
+            _ => {}
         }
     }
+    nav_url
 }
 
 fn prefetch_module_sources(
@@ -4148,6 +4456,7 @@ fn run_javascript(
     prepend_debug_script(&mut scripts, &mut script_urls);
     patch_debug_event_target_errors(&mut scripts);
     patch_debug_gbar_dump_exception(&mut scripts);
+    patch_debug_google_search_gate(&mut scripts);
     dump_debug_script_indexes(&scripts, &script_urls);
 
     let mut seen_modules = HashSet::new();
@@ -4215,6 +4524,13 @@ fn patch_debug_gbar_dump_exception(scripts: &mut [String]) {
             *script = script.replacen(needle, replacement, 1);
         }
     }
+}
+
+fn patch_debug_google_search_gate(scripts: &mut [String]) {
+    if std::env::var_os("SURF_HOST_DEBUG_GOOGLE_SEARCH_GATE").is_none() {
+        return;
+    }
+    let _ = scripts;
 }
 
 fn dump_debug_script_indexes(scripts: &[String], script_urls: &[Option<String>]) {

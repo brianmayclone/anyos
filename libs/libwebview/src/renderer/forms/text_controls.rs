@@ -29,6 +29,12 @@ impl Renderer {
             ctrl.set_color(bg);
             ctrl.set_text_color(fg);
             ctrl.set_font_size(font_size);
+            if let Some(ref val) = bx.form_value {
+                let mut buf = [0u8; 8];
+                if ctrl.get_text(&mut buf) == 0 && !val.is_empty() {
+                    ctrl.set_text(val);
+                }
+            }
             ctrl.set_enabled(!bx.form_disabled);
             fc.seen = true;
             fc.doc_x = x;
@@ -155,6 +161,9 @@ impl Renderer {
         ta.set_color(bg);
         ta.set_text_color(fg);
         ta.set_font_size(font_size);
+        if let Some(ref val) = bx.form_value {
+            ta.set_text(val);
+        }
         ta.set_enabled(!bx.form_disabled);
         parent.add(&ta);
         let id = ta.id();

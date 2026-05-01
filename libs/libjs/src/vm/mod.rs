@@ -23,14 +23,20 @@ fn dump_exception_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn async_await_fulfill_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let id = args.first().map(|v| v.to_number() as usize).unwrap_or(usize::MAX);
+    let id = args
+        .first()
+        .map(|v| v.to_number() as usize)
+        .unwrap_or(usize::MAX);
     let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     vm.resume_async_continuation(id, value, false);
     JsValue::Undefined
 }
 
 fn async_await_reject_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let id = args.first().map(|v| v.to_number() as usize).unwrap_or(usize::MAX);
+    let id = args
+        .first()
+        .map(|v| v.to_number() as usize)
+        .unwrap_or(usize::MAX);
     let reason = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     vm.resume_async_continuation(id, reason, true);
     JsValue::Undefined
@@ -382,7 +388,18 @@ impl Vm {
     }
 
     fn is_nullish_safe_probe_key(name: &str) -> bool {
-        name.starts_with("__symbol__") || matches!(name, "valueOf" | "toString")
+        name.starts_with("__symbol__")
+            || matches!(
+                name,
+                "valueOf"
+                    | "toString"
+                    | "addEventListener"
+                    | "removeEventListener"
+                    | "attachEvent"
+                    | "detachEvent"
+                    | "addListener"
+                    | "removeListener"
+            )
     }
 
     fn close_iterator_on_abrupt(&mut self, iter: &JsValue, original_exc: JsValue) -> JsValue {
@@ -2121,7 +2138,25 @@ impl Vm {
                             }
                         }
                     } else if let Some(setter) = self.find_setter(&obj, &key_str) {
-                        self.invoke_function(&setter, &[val.clone()], obj.clone());
+                        let _ = self.call_value(&setter, &[val.clone()], obj.clone());
+                        if let Some(exc) = self.last_exception.take() {
+                            self.stack.push(val);
+                            if !self.handle_exception(exc) {
+                                return JsValue::Undefined;
+                            }
+                            continue;
+                        }
+                    } else if self.assignment_target_rejects_set(&obj, &key_str) {
+                        if self.frames[frame_idx].chunk.strict {
+                            let msg =
+                                alloc::format!("Cannot assign to read only property '{}'", key_str);
+                            let exc = self.make_type_error(&msg);
+                            self.stack.push(val);
+                            if !self.handle_exception(exc) {
+                                return JsValue::Undefined;
+                            }
+                            continue;
+                        }
                     } else if let JsValue::Object(ref o) = obj {
                         if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
                             native_proxy::proxy_set(self, &obj, &key_str, &val);
@@ -2445,7 +2480,14 @@ impl Vm {
                             }
                             // Check for setter (accessor property)
                             if let Some(setter) = self.find_setter(&obj, &private_name) {
-                                self.invoke_function(&setter, &[val.clone()], obj.clone());
+                                let _ = self.call_value(&setter, &[val.clone()], obj.clone());
+                                if let Some(exc) = self.last_exception.take() {
+                                    self.stack.push(val);
+                                    if !self.handle_exception(exc) {
+                                        return JsValue::Undefined;
+                                    }
+                                    continue;
+                                }
                             } else {
                                 obj.set_property(private_name.clone(), val.clone());
                             }
@@ -2465,7 +2507,14 @@ impl Vm {
                             }
                             // Check for setter on prototype
                             if let Some(setter) = self.find_setter(&obj, &private_name) {
-                                self.invoke_function(&setter, &[val.clone()], obj.clone());
+                                let _ = self.call_value(&setter, &[val.clone()], obj.clone());
+                                if let Some(exc) = self.last_exception.take() {
+                                    self.stack.push(val);
+                                    if !self.handle_exception(exc) {
+                                        return JsValue::Undefined;
+                                    }
+                                    continue;
+                                }
                             } else {
                                 let msg = alloc::format!(
                                     "Cannot write private member {} to an object whose class did not declare it",
@@ -2533,51 +2582,28 @@ impl Vm {
                     } else {
                         // Check for setter (accessor property)
                         if let Some(setter) = self.find_setter(&obj, &name) {
-                            self.invoke_function(&setter, &[val.clone()], obj.clone());
-                        } else {
-                            // Strict mode checks
-                            if self.frames[frame_idx].chunk.strict {
-                                let reject = if let JsValue::Object(obj_rc) = &obj {
-                                    let o = obj_rc.borrow();
-                                    if let Some(prop) = o.properties.get(&name) {
-                                        if prop.is_accessor() {
-                                            // Accessor without setter → TypeError
-                                            true
-                                        } else if !prop.writable {
-                                            // Non-writable data property → TypeError
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        // Property doesn't exist on own object.
-                                        // Check if object is non-extensible (preventExtensions/seal/freeze).
-                                        let non_extensible =
-                                            o.properties.contains_key("__non_extensible__");
-                                        if non_extensible {
-                                            true
-                                        } else {
-                                            // Check prototype chain for accessor without setter
-                                            drop(o);
-                                            self.proto_has_readonly_or_setter_undef(&obj, &name)
-                                        }
-                                    }
-                                } else {
-                                    false
-                                };
-                                if reject {
-                                    let msg = alloc::format!(
-                                        "Cannot assign to read only property '{}'",
-                                        name
-                                    );
-                                    let exc = self.make_type_error(&msg);
-                                    self.stack.push(val);
-                                    if !self.handle_exception(exc) {
-                                        return JsValue::Undefined;
-                                    }
-                                    continue;
+                            let _ = self.call_value(&setter, &[val.clone()], obj.clone());
+                            if let Some(exc) = self.last_exception.take() {
+                                self.stack.push(val);
+                                if !self.handle_exception(exc) {
+                                    return JsValue::Undefined;
                                 }
+                                continue;
                             }
+                        } else if self.assignment_target_rejects_set(&obj, &name) {
+                            if self.frames[frame_idx].chunk.strict {
+                                let msg = alloc::format!(
+                                    "Cannot assign to read only property '{}'",
+                                    name
+                                );
+                                let exc = self.make_type_error(&msg);
+                                self.stack.push(val);
+                                if !self.handle_exception(exc) {
+                                    return JsValue::Undefined;
+                                }
+                                continue;
+                            }
+                        } else {
                             obj.set_property(name, val.clone());
                         }
                     }
@@ -3298,7 +3324,8 @@ impl Vm {
                                     };
                                     let original_stack_base = frame.stack_base;
                                     frame.stack_base = 0;
-                                    let stack_snapshot = if original_stack_base <= self.stack.len() {
+                                    let stack_snapshot = if original_stack_base <= self.stack.len()
+                                    {
                                         self.stack.split_off(original_stack_base)
                                     } else {
                                         Vec::new()
@@ -4244,6 +4271,48 @@ impl Vm {
             }
         }
         false
+    }
+
+    /// Ordinary [[Set]] rejection cases shared by bytecode assignment ops.
+    ///
+    /// In sloppy mode these writes are ignored but the assignment expression
+    /// still evaluates to the right-hand side. In strict mode the caller turns
+    /// the rejection into a TypeError. This matters for inherited accessor
+    /// descriptors: assigning through a prototype getter without a setter must
+    /// not create a shadowing own property.
+    fn assignment_target_rejects_set(&self, val: &JsValue, key: &str) -> bool {
+        match val {
+            JsValue::Object(obj) => {
+                let o = obj.borrow();
+                if let Some(prop) = o.properties.get(key) {
+                    return prop.is_accessor() || !prop.writable;
+                }
+                if o.properties.contains_key("__non_extensible__") {
+                    return true;
+                }
+                if let Some(ref proto) = o.prototype {
+                    let proto_val = JsValue::Object(proto.clone());
+                    drop(o);
+                    return self.proto_has_readonly_or_setter_undef(&proto_val, key);
+                }
+                false
+            }
+            JsValue::Array(arr) => {
+                let a = arr.borrow();
+                if let Some(prop) = a.properties.get(key) {
+                    return prop.is_accessor() || !prop.writable;
+                }
+                a.properties.contains_key("__non_extensible__")
+            }
+            JsValue::Function(func) => {
+                let f = func.borrow();
+                if key == "name" || key == "length" {
+                    return !f.own_props.contains_key(key);
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     pub fn find_setter(&self, val: &JsValue, key: &str) -> Option<JsValue> {

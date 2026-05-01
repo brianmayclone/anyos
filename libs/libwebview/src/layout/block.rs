@@ -1043,6 +1043,19 @@ fn build_block_internal(
         };
         bx.width = ta_w + bx.padding.left + bx.padding.right + horizontal_border;
         bx.height = ta_h + bx.padding.top + bx.padding.bottom + vertical_border;
+        bx.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
+        bx.form_value = dom
+            .attr(node_id, "value")
+            .map(String::from)
+            .or_else(|| {
+                let text = dom.text_content(node_id);
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(String::from(trimmed))
+                }
+            });
         bx.form_field = Some(FormFieldKind::Textarea);
         return bx;
     }

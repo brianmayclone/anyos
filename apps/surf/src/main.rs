@@ -1933,6 +1933,15 @@ fn handle_nav_done(
         st.tabs[tab_idx].webview.get_title().is_some(),
         st.tabs[tab_idx].webview.dom().is_some()
     );
+    if let Some(refresh_url) = st.tabs[tab_idx].webview.immediate_meta_refresh_url() {
+        let resolved = http::resolve_url(&base_url, &refresh_url);
+        let target = ui::format_url(&resolved);
+        crate::surf_log!("[surf] meta refresh: tab={} to {}", tab_idx, target);
+        if tab_idx == st.active_tab {
+            tab::navigate(&target);
+        }
+        return;
+    }
 
     // Extract page title.
     let title = st.tabs[tab_idx]

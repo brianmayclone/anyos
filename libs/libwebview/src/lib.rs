@@ -1035,6 +1035,40 @@ impl WebView {
         self.dom_val.as_ref().and_then(|d| d.find_title())
     }
 
+    /// Return an immediate `<meta http-equiv="refresh" content="0;url=...">`
+    /// target, if the current document declares one.
+    pub fn immediate_meta_refresh_url(&self) -> Option<String> {
+        let dom = self.dom_val.as_ref()?;
+        for (node_id, _) in dom.nodes.iter().enumerate() {
+            if dom.tag(node_id) != Some(dom::Tag::Meta) {
+                continue;
+            }
+            let http_equiv = dom.attr(node_id, "http-equiv").unwrap_or("");
+            if !http_equiv.eq_ignore_ascii_case("refresh") {
+                continue;
+            }
+            let content = dom.attr(node_id, "content").unwrap_or("").trim();
+            let (delay_part, rest) = content.split_once(';').unwrap_or((content, ""));
+            let delay = delay_part.trim().parse::<u32>().unwrap_or(0);
+            if delay != 0 {
+                continue;
+            }
+            for part in rest.split(';') {
+                let part = part.trim();
+                let Some((key, value)) = part.split_once('=') else {
+                    continue;
+                };
+                if key.trim().eq_ignore_ascii_case("url") {
+                    let value = value.trim().trim_matches('"').trim_matches('\'');
+                    if !value.is_empty() {
+                        return Some(String::from(value));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Get the total document height in pixels.
     pub fn total_height(&self) -> i32 {
         self.total_height_val
@@ -4123,18 +4157,18 @@ impl WebView {
 
     fn flush_pending_mutations(&mut self, dom: &mut dom::Dom) -> MutationImpact {
         let impact = self.classify_pending_mutations();
-        let pending_mutations = if impact != MutationImpact::None {
-            self.js_runtime.mutations.clone()
-        } else {
-            Vec::new()
-        };
+        let pending_mutations = self.js_runtime.mutations.clone();
         if impact == MutationImpact::None {
-            self.js_runtime.apply_mutations(dom);
+            let id_map = self.js_runtime.apply_mutations(dom);
+            Self::repair_detached_iframes(dom, &pending_mutations, &id_map);
+            self.sync_dom_value_mutations_into_native_controls(dom, &pending_mutations, &id_map);
             return MutationImpact::None;
         }
 
         self.extract_scroll_offsets();
-        self.js_runtime.apply_mutations(dom);
+        let id_map = self.js_runtime.apply_mutations(dom);
+        Self::repair_detached_iframes(dom, &pending_mutations, &id_map);
+        self.sync_dom_value_mutations_into_native_controls(dom, &pending_mutations, &id_map);
 
         match impact {
             MutationImpact::LayoutReuseStyles => {
@@ -4163,6 +4197,64 @@ impl WebView {
         }
 
         impact
+    }
+
+    fn sync_dom_value_mutations_into_native_controls(
+        &self,
+        dom: &dom::Dom,
+        mutations: &[js::DomMutation],
+        id_map: &alloc::collections::BTreeMap<i64, usize>,
+    ) {
+        fn resolve_id(
+            id: i64,
+            id_map: &alloc::collections::BTreeMap<i64, usize>,
+        ) -> Option<usize> {
+            if id >= 0 {
+                Some(id as usize)
+            } else {
+                id_map.get(&id).copied()
+            }
+        }
+
+        for mutation in mutations {
+            let (node_id, value) = match mutation {
+                js::DomMutation::SetAttribute {
+                    node_id,
+                    name,
+                    value,
+                } if name.eq_ignore_ascii_case("value") => {
+                    let Some(real_id) = resolve_id(*node_id, id_map) else {
+                        continue;
+                    };
+                    (real_id, value.as_str())
+                }
+                js::DomMutation::SetTextContent { node_id, text } => {
+                    let Some(real_id) = resolve_id(*node_id, id_map) else {
+                        continue;
+                    };
+                    if !matches!(dom.tag(real_id), Some(dom::Tag::Textarea)) {
+                        continue;
+                    }
+                    (real_id, text.as_str())
+                }
+                _ => continue,
+            };
+
+            for fc in &self.renderer.form_controls {
+                if fc.node_id != node_id || fc.control_id == 0 {
+                    continue;
+                }
+                if matches!(
+                    fc.kind,
+                    FormFieldKind::TextInput
+                        | FormFieldKind::Password
+                        | FormFieldKind::Number
+                        | FormFieldKind::Textarea
+                ) {
+                    ui::Control::from_id(fc.control_id).set_text(value);
+                }
+            }
+        }
     }
 
     /// Internal: collect stylesheets, resolve styles, layout, and render controls.
@@ -4541,6 +4633,84 @@ impl WebView {
                 ty.is_empty() || ty == "submit"
             }
             _ => false,
+        }
+    }
+
+    fn repair_detached_iframes(
+        dom: &mut dom::Dom,
+        mutations: &[js::DomMutation],
+        id_map: &alloc::collections::BTreeMap<i64, usize>,
+    ) {
+        fn resolve_id(id: i64, id_map: &alloc::collections::BTreeMap<i64, usize>) -> Option<usize> {
+            if id >= 0 {
+                Some(id as usize)
+            } else {
+                id_map.get(&id).copied()
+            }
+        }
+
+        let Some(body_id) = dom.find_body() else {
+            return;
+        };
+
+        let mut inserted = alloc::vec::Vec::new();
+        let mut removed = alloc::vec::Vec::new();
+        for mutation in mutations {
+            match mutation {
+                js::DomMutation::AppendChild { child_id, .. }
+                | js::DomMutation::InsertBefore {
+                    new_child_id: child_id,
+                    ..
+                } => {
+                    if let Some(id) = resolve_id(*child_id, id_map) {
+                        inserted.push(id);
+                    }
+                }
+                js::DomMutation::ReplaceChild {
+                    new_child_id,
+                    old_child_id,
+                    ..
+                } => {
+                    if let Some(id) = resolve_id(*new_child_id, id_map) {
+                        inserted.push(id);
+                    }
+                    if let Some(id) = resolve_id(*old_child_id, id_map) {
+                        removed.push(id);
+                    }
+                }
+                js::DomMutation::RemoveChild { child_id, .. }
+                | js::DomMutation::RemoveNode { node_id: child_id } => {
+                    if let Some(id) = resolve_id(*child_id, id_map) {
+                        removed.push(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        inserted.sort_unstable();
+        inserted.dedup();
+        removed.sort_unstable();
+        removed.dedup();
+
+        for node_id in inserted {
+            if node_id == 0
+                || node_id == body_id
+                || node_id >= dom.nodes.len()
+                || removed.binary_search(&node_id).is_ok()
+                || dom.nodes[node_id].parent.is_some()
+            {
+                continue;
+            }
+            if matches!(
+                dom.nodes[node_id].node_type,
+                dom::NodeType::Element {
+                    tag: dom::Tag::Iframe,
+                    ..
+                }
+            ) {
+                dom.append_child(body_id, node_id);
+            }
         }
     }
 

@@ -1951,6 +1951,8 @@ impl JsRuntime {
             "Comment",
             "Element",
             "HTMLElement",
+            "NodeList",
+            "HTMLCollection",
             "HTMLAnchorElement",
             "HTMLAreaElement",
             "HTMLBodyElement",
@@ -2381,6 +2383,8 @@ impl JsRuntime {
             .collect();
         let mut id_map: BTreeMap<i64, usize> = BTreeMap::new();
         let mut created_ids: Vec<usize> = Vec::new();
+        let mut expected_parents: Vec<(usize, usize)> = Vec::new();
+        let mut explicitly_detached: Vec<usize> = Vec::new();
 
         for m in &mutations {
             match m {
@@ -2507,6 +2511,7 @@ impl JsRuntime {
                     }
                     if let (Some(p), Some(c)) = (real_parent, real_child) {
                         dom.append_child(p, c);
+                        expected_parents.push((c, p));
                     }
                 }
                 DomMutation::RemoveChild {
@@ -2517,6 +2522,7 @@ impl JsRuntime {
                     let real_child = resolve_id(*child_id, &id_map, &self.real_node_ids);
                     if let (Some(p), Some(c)) = (real_parent, real_child) {
                         dom.remove_child(p, c);
+                        explicitly_detached.push(c);
                     }
                 }
                 DomMutation::InsertBefore {
@@ -2536,6 +2542,7 @@ impl JsRuntime {
                     }
                     if let (Some(p), Some(n), Some(r)) = (real_parent, real_new, real_ref) {
                         dom.insert_before(p, n, r);
+                        expected_parents.push((n, p));
                     }
                 }
                 DomMutation::ReplaceChild {
@@ -2548,7 +2555,9 @@ impl JsRuntime {
                     let real_old = resolve_id(*old_child_id, &id_map, &self.real_node_ids);
                     if let (Some(p), Some(n), Some(o)) = (real_parent, real_new, real_old) {
                         dom.remove_child(p, o);
+                        explicitly_detached.push(o);
                         dom.append_child(p, n);
+                        expected_parents.push((n, p));
                     }
                 }
                 DomMutation::RemoveNode { node_id } => {
@@ -2557,6 +2566,7 @@ impl JsRuntime {
                         if let Some(pid) = dom.nodes.get(real_id).and_then(|n| n.parent) {
                             dom.remove_child(pid, real_id);
                         }
+                        explicitly_detached.push(real_id);
                     }
                 }
                 DomMutation::SetInnerHTML { node_id, html } => {
@@ -2607,6 +2617,24 @@ impl JsRuntime {
                     // Form actions do not modify the DOM tree.
                     // They are consumed by WebView::drain_form_submits/resets().
                 }
+            }
+        }
+        for (child, parent) in expected_parents {
+            if explicitly_detached.iter().any(|&id| id == child) {
+                continue;
+            }
+            if child >= dom.nodes.len() || parent >= dom.nodes.len() {
+                continue;
+            }
+            if dom.nodes[child].parent != Some(parent) {
+                if debug_dom_apply_enabled() {
+                    #[cfg(feature = "host")]
+                    eprintln!(
+                        "[js-dom-apply] repairing parent link child={} parent={}",
+                        child, parent
+                    );
+                }
+                dom.append_child(parent, child);
             }
         }
         self.adopt_detached_framework_roots(dom, &created_ids);
@@ -4099,6 +4127,8 @@ mod tests {
               headers: new Headers({ Foo: 'Bar' }).get('foo') === 'Bar',
               image: typeof new Image().addEventListener === 'function',
               formData: typeof new FormData().append === 'function',
+              nodeList: typeof NodeList === 'function' && !!NodeList.prototype,
+              htmlCollection: typeof HTMLCollection === 'function' && !!HTMLCollection.prototype,
             };
             globalThis.__ctor_smoke_ok = Object.values(smoke).every(Boolean);
             globalThis.__ctor_smoke_count = Object.keys(smoke).length;
@@ -4164,6 +4194,40 @@ mod tests {
     }
 
     #[test]
+    fn btoa_encodes_binary_string_code_units() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        let script = r#"
+            globalThis.__btoa_ascii = btoa(String.fromCharCode(0x8a, 0xb6, 0xba));
+            globalThis.__btoa_roundtrip =
+                btoa(atob('ira6')) === 'ira6';
+        "#;
+
+        runtime.execute_script_sources(&dom, "https://example.com/", &[script.to_string()]);
+
+        assert!(
+            runtime.engine.vm().last_exception.is_none(),
+            "unexpected JS exception: {:?}",
+            runtime.engine.vm().last_exception
+        );
+        assert_eq!(
+            runtime
+                .engine
+                .vm()
+                .get_global("__btoa_ascii")
+                .to_js_string(),
+            "ira6"
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__btoa_roundtrip"),
+                JsValue::Bool(true)
+            ),
+            "atob/btoa did not preserve binary string bytes"
+        );
+    }
+
+    #[test]
     fn browser_global_functions_are_window_properties() {
         let dom = html::parse("<html><body></body></html>");
         let mut runtime = JsRuntime::new();
@@ -4185,7 +4249,10 @@ mod tests {
         );
         assert!(
             matches!(
-                runtime.engine.vm().get_global("__global_function_window_ok"),
+                runtime
+                    .engine
+                    .vm()
+                    .get_global("__global_function_window_ok"),
                 JsValue::Bool(true)
             ),
             "browser global functions were not visible through window/globalThis"
