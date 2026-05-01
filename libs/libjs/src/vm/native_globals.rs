@@ -95,6 +95,15 @@ pub fn global_is_finite(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn global_encode_uri_component(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    JsValue::String(percent_encode_uri(&s, true))
+}
+
+pub fn global_encode_uri(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    JsValue::String(percent_encode_uri(&s, false))
+}
+
+fn percent_encode_uri(s: &str, component: bool) -> String {
     let mut result = String::new();
     for b in s.bytes() {
         match b {
@@ -112,6 +121,11 @@ pub fn global_encode_uri_component(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             | b')' => {
                 result.push(b as char);
             }
+            b';' | b',' | b'/' | b'?' | b':' | b'@' | b'&' | b'=' | b'+' | b'$' | b'#'
+                if !component =>
+            {
+                result.push(b as char);
+            }
             _ => {
                 result.push('%');
                 result.push(hex_digit(b >> 4));
@@ -119,18 +133,34 @@ pub fn global_encode_uri_component(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             }
         }
     }
-    JsValue::String(result)
+    result
 }
 
 pub fn global_decode_uri_component(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    JsValue::String(percent_decode_uri(&s, false))
+}
+
+pub fn global_decode_uri(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    JsValue::String(percent_decode_uri(&s, true))
+}
+
+fn percent_decode_uri(s: &str, preserve_reserved: bool) -> String {
     let bytes = s.as_bytes();
     let mut result = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
             if let (Some(h), Some(l)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
-                result.push(h << 4 | l);
+                let decoded = h << 4 | l;
+                if preserve_reserved && is_uri_reserved(decoded) {
+                    result.push(bytes[i]);
+                    result.push(bytes[i + 1]);
+                    result.push(bytes[i + 2]);
+                } else {
+                    result.push(decoded);
+                }
                 i += 3;
                 continue;
             }
@@ -138,7 +168,14 @@ pub fn global_decode_uri_component(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         result.push(bytes[i]);
         i += 1;
     }
-    JsValue::String(String::from_utf8(result).unwrap_or_default())
+    String::from_utf8(result).unwrap_or_default()
+}
+
+fn is_uri_reserved(b: u8) -> bool {
+    matches!(
+        b,
+        b';' | b',' | b'/' | b'?' | b':' | b'@' | b'&' | b'=' | b'+' | b'$' | b'#'
+    )
 }
 
 // ═══════════════════════════════════════════════════════════

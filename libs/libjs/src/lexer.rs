@@ -217,7 +217,7 @@ impl<'a> Lexer<'a> {
         }
 
         // Identifiers and keywords
-        if is_ident_start(ch) {
+        if is_ident_start(ch) || ch >= 0x80 || (ch == b'\\' && self.peek2() == b'u') {
             return self.read_ident();
         }
 
@@ -685,9 +685,22 @@ impl<'a> Lexer<'a> {
         let line = self.line;
         let mut name = String::new();
 
-        while self.pos < self.src.len() && is_ident_continue(self.src[self.pos]) {
-            name.push(self.src[self.pos] as char);
-            self.pos += 1;
+        while self.pos < self.src.len() {
+            let ch = self.src[self.pos];
+            if is_ident_continue(ch) {
+                name.push(ch as char);
+                self.pos += 1;
+            } else if ch == b'\\'
+                && self.pos + 1 < self.src.len()
+                && self.src[self.pos + 1] == b'u'
+            {
+                self.pos += 2;
+                name.push(self.read_unicode_escape());
+            } else if ch >= 0x80 {
+                name.push(self.read_utf8_char());
+            } else {
+                break;
+            }
         }
 
         let kind = match name.as_str() {

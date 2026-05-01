@@ -536,6 +536,14 @@ pub fn make_window(
         String::from("AbortController"),
         native_ctor_fn("AbortController", win_abort_controller),
     );
+    let abort_signal_ctor = native_ctor_fn("AbortSignal", win_abort_signal);
+    abort_signal_ctor.set_property(String::from("abort"), native_fn("abort", win_abort_signal_abort));
+    abort_signal_ctor.set_property(
+        String::from("timeout"),
+        native_fn("timeout", win_abort_signal_timeout),
+    );
+    abort_signal_ctor.set_property(String::from("any"), native_fn("any", win_abort_signal_any));
+    obj.set(String::from("AbortSignal"), abort_signal_ctor);
     obj.set(String::from("Blob"), native_ctor_fn("Blob", win_blob));
     let dom_string_map_ctor = make_native_constructor(vm, "DOMStringMap", win_dom_ctor, None);
     obj.set(String::from("DOMStringMap"), dom_string_map_ctor);
@@ -2345,9 +2353,63 @@ fn win_text_decoder_stream(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     make_text_codec_stream("utf-8")
 }
 
-fn win_abort_controller(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+fn make_abort_signal(aborted: bool, reason: JsValue) -> JsValue {
     let sig = JsValue::new_object();
-    sig.set_property(String::from("aborted"), JsValue::Bool(false));
+    sig.set_property(String::from("aborted"), JsValue::Bool(aborted));
+    sig.set_property(String::from("reason"), reason);
+    sig.set_property(String::from("onabort"), JsValue::Null);
+    sig.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", win_noop),
+    );
+    sig.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", win_noop),
+    );
+    sig.set_property(
+        String::from("dispatchEvent"),
+        native_fn("dispatchEvent", |_, _| JsValue::Bool(true)),
+    );
+    sig.set_property(
+        String::from("throwIfAborted"),
+        native_fn("throwIfAborted", |vm, _| {
+            if vm.current_this.get_property("aborted").to_boolean() {
+                let err = vm.make_type_error("operation aborted");
+                vm.throw_native(err);
+                return JsValue::Undefined;
+            }
+            JsValue::Undefined
+        }),
+    );
+    sig
+}
+
+fn win_abort_signal(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    make_abort_signal(false, JsValue::Undefined)
+}
+
+fn win_abort_signal_abort(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let reason = args.first().cloned().unwrap_or_else(|| JsValue::String(String::from("AbortError")));
+    make_abort_signal(true, reason)
+}
+
+fn win_abort_signal_timeout(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    make_abort_signal(false, JsValue::Undefined)
+}
+
+fn win_abort_signal_any(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if let Some(JsValue::Array(arr)) = args.first() {
+        for (_idx, signal) in arr.borrow().elements.iter() {
+            if signal.get_property("aborted").to_boolean() {
+                return make_abort_signal(true, signal.get_property("reason"));
+            }
+        }
+    }
+    make_abort_signal(false, JsValue::Undefined)
+}
+
+fn win_abort_controller(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let sig = make_abort_signal(false, JsValue::Undefined);
     let ctrl = JsValue::new_object();
     ctrl.set_property(String::from("signal"), sig);
     ctrl.set_property(
@@ -2356,6 +2418,7 @@ fn win_abort_controller(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
             if let JsValue::Object(o) = &vm.current_this {
                 let sig = o.borrow().get("signal");
                 sig.set_property(String::from("aborted"), JsValue::Bool(true));
+                sig.set_property(String::from("reason"), JsValue::String(String::from("AbortError")));
             }
             JsValue::Undefined
         }),

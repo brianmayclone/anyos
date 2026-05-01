@@ -29,6 +29,26 @@ fn function_expression_body_is_lazy() {
 }
 
 #[test]
+fn unicode_escape_identifier_property_name() {
+    assert_eq!(num(r#"var o = {}; o.\u0275prov = 41; o.\u0275prov + 1"#), 42.0);
+}
+
+#[test]
+fn parenthesized_iife_receives_multiple_arguments() {
+    assert_eq!(
+        num("(function(){ var G = {}; (function(y, v){ y.answer = v; })(G, 42); return G.answer; })()"),
+        42.0
+    );
+}
+
+#[test]
+fn uri_globals_preserve_reserved_decode_uri() {
+    assert_eq!(str_(r#"decodeURI("https%3A%2F%2Fx.test%2Fa%20b?x%3D1")"#), "https%3A%2F%2Fx.test%2Fa b?x%3D1");
+    assert_eq!(str_(r#"decodeURIComponent("https%3A%2F%2Fx.test%2Fa%20b")"#), "https://x.test/a b");
+    assert_eq!(str_(r#"encodeURI("https://x.test/a b?x=1")"#), "https://x.test/a%20b?x=1");
+}
+
+#[test]
 fn apply_return_value_can_be_called() {
     assert_eq!(
         num("function id(x){ return x; } id.apply(null, [function(){ return 42; }])()"),

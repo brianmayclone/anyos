@@ -491,14 +491,40 @@ impl Parser {
                     .unwrap_or(&TokenKind::Eof),
                 TokenKind::LParen
             );
-        let exact_has_parenthesized_tail = exact
-            .and_then(|idx| self.tokens.get(idx + 1).map(|t| &t.kind))
-            .map(|kind| matches!(kind, TokenKind::RParen))
-            .unwrap_or(false);
         let is_top_level_iife_shape = parenthesized && function_pos < 64;
-        let close_pos = if is_top_level_iife_shape && !exact_has_parenthesized_tail {
-            self.find_recoverable_parenthesized_function_rbrace(open_pos)
-                .or(exact)
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_IIFE").is_some() && parenthesized {
+            let exact_tail = exact
+                .map(|idx| {
+                    (
+                        idx,
+                        self.tokens.get(idx + 1).map(|t| &t.kind),
+                        self.tokens.get(idx + 2).map(|t| &t.kind),
+                    )
+                });
+            let recovered = self.find_recoverable_parenthesized_function_rbrace(open_pos);
+            let recovered_tail = recovered.map(|idx| {
+                (
+                    idx,
+                    self.tokens.get(idx + 1).map(|t| &t.kind),
+                    self.tokens.get(idx + 2).map(|t| &t.kind),
+                    self.tokens.get(idx + 3).map(|t| &t.kind),
+                )
+            });
+            std::eprintln!(
+                "[libjs-parser] iife? fn_pos={} open_pos={} top={} exact={:?} recovered={:?}",
+                function_pos,
+                open_pos,
+                is_top_level_iife_shape,
+                exact_tail,
+                recovered_tail
+            );
+        }
+        let close_pos = if is_top_level_iife_shape {
+            exact.or_else(|| {
+                self.find_recoverable_parenthesized_call_rbrace(open_pos)
+                    .or_else(|| self.find_recoverable_parenthesized_function_rbrace(open_pos))
+            })
         } else {
             exact.or_else(|| self.find_recoverable_function_rbrace(open_pos))
         };
@@ -599,6 +625,26 @@ impl Parser {
                         | TokenKind::RBracket
                         | TokenKind::Eof
                 )
+            {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn find_recoverable_parenthesized_call_rbrace(&self, open_pos: usize) -> Option<usize> {
+        let mut i = self.tokens.len();
+        while i > open_pos.saturating_add(1) {
+            i -= 1;
+            if !matches!(self.tokens[i].kind, TokenKind::RBrace) {
+                continue;
+            }
+            let next = self.tokens.get(i + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let next2 = self.tokens.get(i + 2).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let next3 = self.tokens.get(i + 3).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            if matches!(next, TokenKind::RParen)
+                && matches!(next2, TokenKind::Dot)
+                && matches!(next3, TokenKind::Ident(name) if name == "call" || name == "apply")
             {
                 return Some(i);
             }

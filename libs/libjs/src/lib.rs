@@ -59,6 +59,18 @@ impl JsEngine {
     pub fn eval(&mut self, source: &str) -> JsValue {
         // Tokenize
         let tokens = lexer::Lexer::tokenize(source);
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_PARSE").is_some() {
+            if let Some(last) = tokens.last() {
+                std::eprintln!(
+                    "[libjs-parse] tokens={} last_span={}..{} line={}",
+                    tokens.len(),
+                    last.span.start,
+                    last.span.end,
+                    last.span.line
+                );
+            }
+        }
 
         // Parse
         let mut parser = parser::Parser::new(tokens);

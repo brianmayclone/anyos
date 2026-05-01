@@ -646,11 +646,19 @@ impl Vm {
             ),
         );
         self.set_global(
+            "encodeURI",
+            native_fn("encodeURI", native_globals::global_encode_uri),
+        );
+        self.set_global(
             "decodeURIComponent",
             native_fn(
                 "decodeURIComponent",
                 native_globals::global_decode_uri_component,
             ),
+        );
+        self.set_global(
+            "decodeURI",
+            native_fn("decodeURI", native_globals::global_decode_uri),
         );
         self.set_global("eval", native_fn("eval", global_eval));
 
