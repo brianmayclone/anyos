@@ -27,6 +27,16 @@ fn resolve_definite_block_calc(calc: (i32, i32), containing_height: i32) -> Opti
 }
 
 fn clamp_auto_width_children_to_parent_content(parent: &mut LayoutBox, styles: &[ComputedStyle]) {
+    let parent_tracks_inline_positions = parent
+        .node_id
+        .and_then(|id| styles.get(id))
+        .map(|style| {
+            matches!(
+                style.display,
+                Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+            )
+        })
+        .unwrap_or(false);
     let horizontal_border = if parent.border_left_width != 0 || parent.border_right_width != 0 {
         parent.border_left_width + parent.border_right_width
     } else {
@@ -72,7 +82,8 @@ fn clamp_auto_width_children_to_parent_content(parent: &mut LayoutBox, styles: &
                     }
                 }
                 child.width = content_w;
-            } else if !child.is_out_of_flow
+            } else if !parent_tracks_inline_positions
+                && !child.is_out_of_flow
                 && child.x > 0
                 && child.width <= content_w
                 && child.x + child.width > content_w

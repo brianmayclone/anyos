@@ -559,13 +559,25 @@ fn load_page_inner(
             wv.relayout();
         }
         run_js_debug_probes(wv);
-        if std::env::var_os("SURF_HOST_RUN_INITIAL_TIMERS").is_some() {
-            run_js_timers(wv, &base_url, cookies, 5000);
-        } else if wv.has_timers() {
-            eprintln!(
-                "[js] skipping initial timer drain ({} timer(s) pending; set SURF_HOST_RUN_INITIAL_TIMERS=1 to enable)",
-                wv.timer_count()
-            );
+        if wv.has_timers() {
+            if std::env::var_os("SURF_HOST_SKIP_INITIAL_TIMERS").is_some() {
+                eprintln!(
+                    "[js] skipping initial timer drain ({} timer(s) pending; SURF_HOST_SKIP_INITIAL_TIMERS set)",
+                    wv.timer_count()
+                );
+            } else {
+                let timer_ms = std::env::var("SURF_HOST_INITIAL_TIMER_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or_else(|| {
+                        if std::env::var_os("SURF_HOST_RUN_INITIAL_TIMERS").is_some() {
+                            5000
+                        } else {
+                            500
+                        }
+                    });
+                run_js_timers(wv, &base_url, cookies, timer_ms);
+            }
         }
         if std::env::var_os("SURF_DEBUG_DOM_ELEMENTS_AFTER_JS").is_some() {
             if let Some(dom) = wv.dom() {
@@ -1652,7 +1664,7 @@ fn main() {
             // Run timers in steps during the wait period so setTimeout/setInterval
             // callbacks fire (e.g. boot sequences, animations).
             let run_screenshot_timers =
-                std::env::var_os("SURF_HOST_RUN_SCREENSHOT_TIMERS").is_some();
+                std::env::var_os("SURF_HOST_SKIP_SCREENSHOT_TIMERS").is_none();
             let step = 50u64;
             let mut waited = 0u64;
             while waited < args.delay_ms {
@@ -2947,6 +2959,8 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         "Header-Navigation-First-Level",
         "Header-Navigation-All",
         "Header-Navigation-Icon",
+        "ho-scroll-container-teaser-list",
+        "scroll-container",
     ];
 
     for (node_id, _) in dom.nodes.iter().enumerate() {

@@ -878,6 +878,12 @@ fn finish_script_slot(result: js_worker::JsWorkerResult) {
     if any_script_work_pending() {
         schedule_script_pump();
     }
+    {
+        let st = state();
+        if result.tab_index < st.tabs.len() && st.tabs[result.tab_index].webview.has_timers() {
+            ensure_anim_timer();
+        }
+    }
 }
 
 fn process_js_worker_results() -> bool {

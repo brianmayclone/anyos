@@ -8040,6 +8040,42 @@ mod layout_regression_tests {
     }
 
     #[test]
+    fn custom_element_property_var_resolves_for_overflow_x() {
+        let dom = crate::html::parse(
+            r#"
+            <a-scroll-container>
+                <div id="scroller" class="scroll-container"></div>
+            </a-scroll-container>
+            "#,
+        );
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            a-scroll-container {
+                --ho-scroll-container-overflow-x: scroll;
+            }
+            a-scroll-container .scroll-container {
+                overflow-x: var(--ho-scroll-container-overflow-x);
+            }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 700, &mut inline_style_cache);
+        let scroller = dom
+            .nodes
+            .iter()
+            .position(|node| {
+                matches!(
+                    &node.node_type,
+                    NodeType::Element { attrs, .. }
+                        if attrs.iter().any(|a| a.name == "id" && a.value == "scroller")
+                )
+            })
+            .expect("scroller node");
+
+        assert!(matches!(styles[scroller].overflow_x, OverflowVal::Scroll));
+    }
+
+    #[test]
     fn layered_root_custom_properties_resolve_for_tailwind_utilities() {
         let dom = crate::html::parse(
             r#"
