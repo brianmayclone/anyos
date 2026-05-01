@@ -123,7 +123,9 @@ struct IncrementalRelayoutPlan {
 /// layout tree without a full CSS resolve or relayout.
 /// Global web font map pointer — set before layout, read by the renderer.
 /// Points to the current WebView's web_fonts Vec. Only valid during relayout.
-static mut WEB_FONT_MAP: *const Vec<(String, u32)> = core::ptr::null();
+///
+/// Entries are `(family_lowercase, css_weight, italic, font_id)`.
+static mut WEB_FONT_MAP: *const Vec<(String, u32, bool, u32)> = core::ptr::null();
 const SYNTHETIC_AHEM_FONT_ID: u32 = u32::MAX - 1;
 const SYNTHETIC_CONDENSED_FONT_ID: u32 = u32::MAX - 2;
 const SYNTHETIC_NARROW_FONT_ID: u32 = u32::MAX - 3;
@@ -169,6 +171,14 @@ fn synthetic_condensed_font_for_family(family: &str) -> Option<u32> {
 /// like `"Georgia, 'Times New Roman', serif"`.
 /// Tries each name in order; returns the first registered match.
 pub fn lookup_web_font(family: &str) -> Option<u32> {
+    lookup_web_font_variant(family, false, false)
+}
+
+/// Look up a web font ID by CSS family list and coarse style.  Modern pages
+/// commonly register many @font-face rules for one family (Inter 300..900,
+/// Roboto 400/700, etc.).  Keeping only the first face makes bold text render
+/// with a light cut plus synthetic emboldening, which is visibly wrong.
+pub fn lookup_web_font_variant(family: &str, bold: bool, italic: bool) -> Option<u32> {
     unsafe {
         if font_family_contains_ahem(family) {
             return Some(SYNTHETIC_AHEM_FONT_ID);
@@ -177,13 +187,10 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
             return synthetic_condensed_font_for_family(family);
         }
         let map = &*WEB_FONT_MAP;
+        let target_weight = if bold { 700 } else { 400 };
         // Try the whole string first (fastest path for single-name entries).
         let lower = family.to_ascii_lowercase();
-        if let Some(id) = map
-            .iter()
-            .find(|(f, _)| f.as_str() == lower.as_str())
-            .map(|(_, id)| *id)
-        {
+        if let Some(id) = choose_web_font(map, lower.as_str(), target_weight, italic) {
             return Some(id);
         }
         // Parse comma-separated list and try each entry.
@@ -192,11 +199,7 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
             if name.is_empty() {
                 continue;
             }
-            if let Some(id) = map
-                .iter()
-                .find(|(f, _)| f.as_str() == name)
-                .map(|(_, id)| *id)
-            {
+            if let Some(id) = choose_web_font(map, name, target_weight, italic) {
                 return Some(id);
             }
             // If a page asks for a narrow/condensed family that we could not
@@ -211,6 +214,31 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
     }
 }
 
+fn choose_web_font(
+    map: &[(String, u32, bool, u32)],
+    family: &str,
+    target_weight: u32,
+    italic: bool,
+) -> Option<u32> {
+    let mut best: Option<(u32, u32)> = None;
+    for (entry_family, entry_weight, entry_italic, font_id) in map {
+        if entry_family.as_str() != family {
+            continue;
+        }
+        let italic_penalty = if *entry_italic == italic { 0 } else { 10_000 };
+        let weight_delta = if *entry_weight > target_weight {
+            *entry_weight - target_weight
+        } else {
+            target_weight - *entry_weight
+        };
+        let score = italic_penalty + weight_delta;
+        if best.map(|(best_score, _)| score < best_score).unwrap_or(true) {
+            best = Some((score, *font_id));
+        }
+    }
+    best.map(|(_, font_id)| font_id)
+}
+
 pub fn is_ahem_font_id(font_id: u32) -> bool {
     if font_id == SYNTHETIC_AHEM_FONT_ID {
         return true;
@@ -223,7 +251,7 @@ pub fn is_ahem_font_id(font_id: u32) -> bool {
             return false;
         }
         let map = &*WEB_FONT_MAP;
-        map.iter().any(|(family, id)| {
+        map.iter().any(|(family, _, _, id)| {
             *id == font_id && family.trim_matches('\'').trim_matches('"') == "ahem"
         })
     }
@@ -324,8 +352,8 @@ pub struct WebView {
     deferred_style_node_budget: usize,
     /// Last expansion time for the staged first render budgets.
     deferred_budget_last_expand_ms: u64,
-    /// Web font mapping: (family_name_lowercase, font_id from libfont).
-    web_fonts: Vec<(String, u32)>,
+    /// Web font mapping: (family_name_lowercase, css_weight, italic, font_id from libfont).
+    web_fonts: Vec<(String, u32, bool, u32)>,
     /// Previous resolved styles — kept for CSS transition change detection.
     prev_styles: Vec<style::ComputedStyle>,
     /// Last fully resolved styles used for layout. Reused for safe local DOM
@@ -494,22 +522,53 @@ impl WebView {
     /// `family` is the CSS font-family name (will be lowercased for matching).
     /// `font_id` is the ID returned by `libfont_client::load_data()`.
     pub fn register_web_font(&mut self, family: &str, font_id: u32) {
+        self.register_web_font_with_style(family, 400, false, font_id);
+    }
+
+    /// Register a style-specific web font loaded from @font-face.
+    pub fn register_web_font_with_style(
+        &mut self,
+        family: &str,
+        weight: u32,
+        italic: bool,
+        font_id: u32,
+    ) {
         let lower = family.to_ascii_lowercase();
-        // Replace existing entry for the same family.
-        if let Some(existing) = self.web_fonts.iter_mut().find(|(f, _)| f == &lower) {
-            existing.1 = font_id;
+        let weight = weight.clamp(100, 900);
+        // Replace existing entry for the same family/style.
+        if let Some(existing) = self
+            .web_fonts
+            .iter_mut()
+            .find(|(f, w, i, _)| f == &lower && *w == weight && *i == italic)
+        {
+            existing.3 = font_id;
         } else {
-            self.web_fonts.push((lower, font_id));
+            self.web_fonts.push((lower, weight, italic, font_id));
         }
     }
 
     /// Look up a web font ID by family name. Returns None if not registered.
     pub fn web_font_id(&self, family: &str) -> Option<u32> {
+        self.web_font_id_for_style(family, 400, false)
+    }
+
+    /// Look up a style-specific web font ID by family name.
+    pub fn web_font_id_for_style(&self, family: &str, weight: u32, italic: bool) -> Option<u32> {
         let lower = family.to_ascii_lowercase();
+        choose_web_font(&self.web_fonts, &lower, weight.clamp(100, 900), italic)
+    }
+
+    /// Return whether an exact @font-face style is already registered.
+    ///
+    /// This is intentionally stricter than `web_font_id_for_style()`: layout
+    /// should choose the nearest available face, but the font loader must not
+    /// skip Inter 700 just because Inter 300 was loaded first.
+    pub fn has_web_font_style(&self, family: &str, weight: u32, italic: bool) -> bool {
+        let lower = family.to_ascii_lowercase();
+        let weight = weight.clamp(100, 900);
         self.web_fonts
             .iter()
-            .find(|(f, _)| f == &lower)
-            .map(|(_, id)| *id)
+            .any(|(f, w, i, _)| f == &lower && *w == weight && *i == italic)
     }
 
     /// Return all `@font-face` rules across all stylesheets (inline + external + default).

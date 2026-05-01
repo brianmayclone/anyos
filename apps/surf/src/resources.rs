@@ -13,6 +13,96 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+pub(crate) fn resolve_css_resource_urls(css: &str, css_url: &crate::http::Url) -> String {
+    let bytes = css.as_bytes();
+    let mut out = String::with_capacity(css.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !rest_starts_with_ci(bytes, i, b"url(") {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+
+        out.push_str("url(");
+        i += 4;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+
+        let quote = match bytes.get(i).copied() {
+            Some(b'"') | Some(b'\'') => {
+                let q = bytes[i];
+                out.push(q as char);
+                i += 1;
+                Some(q)
+            }
+            _ => None,
+        };
+
+        let url_start = i;
+        while i < bytes.len() {
+            if let Some(q) = quote {
+                if bytes[i] == q {
+                    break;
+                }
+            } else if bytes[i] == b')' || bytes[i].is_ascii_whitespace() {
+                break;
+            }
+            i += 1;
+        }
+
+        let raw_url = &css[url_start..i];
+        out.push_str(&resolve_css_url(css_url, raw_url));
+
+        if let Some(q) = quote {
+            if i < bytes.len() && bytes[i] == q {
+                out.push(q as char);
+                i += 1;
+            }
+        }
+        while i < bytes.len() && bytes[i] != b')' {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        if i < bytes.len() {
+            out.push(')');
+            i += 1;
+        }
+    }
+    out
+}
+
+fn resolve_css_url(css_url: &crate::http::Url, raw_url: &str) -> String {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || starts_with_ignore_case(trimmed, "data:")
+        || starts_with_ignore_case(trimmed, "blob:")
+        || starts_with_ignore_case(trimmed, "http://")
+        || starts_with_ignore_case(trimmed, "https://")
+        || trimmed.starts_with("//")
+    {
+        return String::from(raw_url);
+    }
+    let resolved = crate::http::resolve_url(css_url, trimmed);
+    crate::ui::format_url(&resolved)
+}
+
+fn rest_starts_with_ci(haystack: &[u8], pos: usize, needle: &[u8]) -> bool {
+    haystack
+        .get(pos..pos.saturating_add(needle.len()))
+        .is_some_and(|slice| slice.eq_ignore_ascii_case(needle))
+}
+
+fn starts_with_ignore_case(value: &str, prefix: &str) -> bool {
+    value
+        .as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|slice| slice.eq_ignore_ascii_case(prefix.as_bytes()))
+}
+
 fn parse_dimension_attr(value: &str) -> Option<i32> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -244,10 +334,18 @@ pub(crate) fn queue_font_faces(
     tab_index: usize,
 ) {
     let generation = crate::net_worker::current_generation();
-    let font_faces: Vec<(String, String, libwebview::css::FontDisplay)> = webview
+    let font_faces: Vec<(String, String, u32, bool, libwebview::css::FontDisplay)> = webview
         .all_font_faces()
         .iter()
-        .map(|ff| (ff.family.clone(), ff.src_url.clone(), ff.display))
+        .map(|ff| {
+            (
+                ff.family.clone(),
+                ff.src_url.clone(),
+                ff.weight,
+                ff.italic,
+                ff.display,
+            )
+        })
         .collect();
     queue_font_face_batch(tab_index, generation, base_url, &font_faces);
 }
@@ -256,7 +354,7 @@ pub(crate) fn queue_font_face_batch(
     tab_index: usize,
     generation: u32,
     base_url: &crate::http::Url,
-    font_faces: &[(String, String, libwebview::css::FontDisplay)],
+    font_faces: &[(String, String, u32, bool, libwebview::css::FontDisplay)],
 ) {
     let st = crate::state();
     if tab_index >= st.tabs.len() {
@@ -265,23 +363,31 @@ pub(crate) fn queue_font_face_batch(
 
     let mut immediate = 0u32;
     let mut deferred = 0u32;
-    let mut queued_families: Vec<String> = Vec::new();
+    let mut queued_faces: Vec<(String, u32, bool)> = Vec::new();
 
-    for (family, src_url, display) in font_faces {
+    for (family, src_url, weight, italic, display) in font_faces {
         if src_url.is_empty() {
             continue;
         }
-        if st.tabs[tab_index].webview.web_font_id(family).is_some() {
+        if st.tabs[tab_index]
+            .webview
+            .has_web_font_style(family, *weight, *italic)
+        {
             continue;
         }
-        if queued_families.iter().any(|f| f == family) {
+        if queued_faces
+            .iter()
+            .any(|(f, w, i)| f == family && *w == *weight && *i == *italic)
+        {
             continue;
         }
-        queued_families.push(family.clone());
+        queued_faces.push((family.clone(), *weight, *italic));
         if src_url.starts_with("data:") {
             if let Some(font_data) = decode_font_data_uri(src_url) {
                 if let Some(font_id) = load_valid_web_font_data(family, &font_data) {
-                    st.tabs[tab_index].webview.register_web_font(family, font_id);
+                    st.tabs[tab_index].webview.register_web_font_with_style(
+                        family, *weight, *italic, font_id,
+                    );
                     immediate += 1;
                     crate::surf_log!(
                         "[surf] loaded inline data font '{}' -> id {} ({} bytes)",
@@ -310,6 +416,8 @@ pub(crate) fn queue_font_face_batch(
                 .deferred_fonts
                 .push(crate::tab::DeferredFontRequest {
                     family: family.clone(),
+                    weight: *weight,
+                    italic: *italic,
                     url: resolved,
                     display: *display,
                     generation,
@@ -319,6 +427,8 @@ pub(crate) fn queue_font_face_batch(
             crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
                 tab_index,
                 family: family.clone(),
+                weight: *weight,
+                italic: *italic,
                 url: resolved,
                 display: *display,
                 generation,
@@ -999,6 +1109,8 @@ pub(crate) fn submit_deferred_fonts(tab_index: usize, max_batch: usize) -> usize
         crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
             tab_index,
             family: req.family,
+            weight: req.weight,
+            italic: req.italic,
             url: req.url,
             display: req.display,
             generation: req.generation,

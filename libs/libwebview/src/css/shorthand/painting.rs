@@ -12,7 +12,11 @@ fn expand_border_shorthand(value_str: &str) -> Vec<Declaration> {
         } else if lower == "currentcolor" {
             color_val = Some(CssValue::CurrentColor);
         } else if lower.starts_with("var(") {
-            color_val = Some(parse_var_value(&Property::BorderColor, part));
+            if border_var_looks_like_width(part) && width_val.is_none() {
+                width_val = Some(parse_var_value(&Property::BorderWidth, part));
+            } else {
+                color_val = Some(parse_var_value(&Property::BorderColor, part));
+            }
         } else if let Some(c) = try_parse_color(part) {
             color_val = Some(CssValue::Color(c));
         } else if let Some(c) = named_color(&lower) {
@@ -206,7 +210,11 @@ fn expand_border_side_shorthand(value_str: &str, width_prop: Property, style_pro
         } else if lower == "currentcolor" {
             decls.push(Declaration { property: color_prop.clone(), value: CssValue::CurrentColor, important: false });
         } else if lower.starts_with("var(") {
-            decls.push(Declaration { property: color_prop.clone(), value: parse_var_value(&color_prop, part), important: false });
+            if border_var_looks_like_width(part) {
+                decls.push(Declaration { property: width_prop.clone(), value: parse_var_value(&width_prop, part), important: false });
+            } else {
+                decls.push(Declaration { property: color_prop.clone(), value: parse_var_value(&color_prop, part), important: false });
+            }
         } else if let Some(c) = try_parse_color(part) {
             decls.push(Declaration { property: color_prop.clone(), value: CssValue::Color(c), important: false });
         } else if let Some(c) = named_color(&lower) {
@@ -218,6 +226,32 @@ fn expand_border_side_shorthand(value_str: &str, width_prop: Property, style_pro
         }
     }
     decls
+}
+
+fn border_var_looks_like_width(part: &str) -> bool {
+    let mut s = part.trim();
+    if s.len() >= 4 && s[..4].eq_ignore_ascii_case("var(") {
+        s = &s[4..];
+    }
+    if let Some(comma) = s.find(',') {
+        s = &s[..comma];
+    }
+    let name = to_ascii_lower(s.trim().trim_end_matches(')').trim());
+    if name.contains("color")
+        || name.contains("colour")
+        || name.contains("foreground")
+        || name.contains("background")
+        || name.contains("accent")
+    {
+        return false;
+    }
+    name.contains("width")
+        || name.contains("size")
+        || name.contains("thickness")
+        || name.contains("border-sm")
+        || name.contains("border-md")
+        || name.contains("border-lg")
+        || (name.contains("border") && !name.contains("radius"))
 }
 
 fn expand_outline_shorthand(value_str: &str) -> Vec<Declaration> {

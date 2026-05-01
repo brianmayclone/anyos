@@ -501,6 +501,7 @@ impl DisplayList {
                         img_h,
                         DrawKind::Image {
                             src: src.clone(),
+                            radii: self.background_clip_radii(bx, bg_w, bg_h),
                             object_fit,
                             object_position_x: 0,
                             object_position_x_is_percent: false,

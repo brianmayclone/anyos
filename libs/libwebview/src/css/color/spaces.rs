@@ -279,10 +279,17 @@ fn parse_color_mix_func(args: &str) -> Option<u32> {
     let r2 = (c2 >> 16) & 0xFF;
     let g2 = (c2 >> 8) & 0xFF;
     let b2 = c2 & 0xFF;
+    let wa1 = a1 as i64 * p1 as i64;
+    let wa2 = a2 as i64 * p2 as i64;
+    let out_a = ((wa1 + wa2) / total as i64).max(0).min(255) as u32;
+    if out_a == 0 {
+        return Some(0);
+    }
+    let premul_total = (wa1 + wa2).max(1);
     let mix = |v1: u32, v2: u32| -> u32 {
-        ((v1 as i64 * p1 as i64 + v2 as i64 * p2 as i64) / total as i64).max(0).min(255) as u32
+        ((v1 as i64 * wa1 + v2 as i64 * wa2) / premul_total).max(0).min(255) as u32
     };
-    Some((mix(a1, a2) << 24) | (mix(r1, r2) << 16) | (mix(g1, g2) << 8) | mix(b1, b2))
+    Some((out_a << 24) | (mix(r1, r2) << 16) | (mix(g1, g2) << 8) | mix(b1, b2))
 }
 
 fn parse_color_mix_part(s: &str) -> Option<(u32, i32)> {
@@ -340,4 +347,21 @@ fn oklab_to_srgb(l: f64, a: f64, b: f64) -> (u32, u32, u32) {
         (g * 255.0 + 0.5).max(0.0).min(255.0) as u32
     };
     (gamma(rl), gamma(gl), gamma(bl))
+}
+
+#[cfg(test)]
+mod color_mix_tests {
+    use super::try_parse_color;
+
+    #[test]
+    fn color_mix_with_transparent_preserves_unpremultiplied_rgb() {
+        assert_eq!(
+            try_parse_color("color-mix(in oklab, #7e14ff 10%, transparent)"),
+            Some(0x197e14ff)
+        );
+        assert_eq!(
+            try_parse_color("color-mix(in oklab, #ffffff 5%, transparent)"),
+            Some(0x0cffffff)
+        );
+    }
 }

@@ -216,7 +216,7 @@ pub(super) fn measure_max_content(
         let custom_font_id = st
             .font_family
             .as_ref()
-            .and_then(|family| crate::lookup_web_font(family))
+            .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
             .unwrap_or(0);
         let tw = super::measure_collapsed_text_width(
             measured,
@@ -526,11 +526,12 @@ pub fn layout_flex(
     // Text nodes (anonymous flex items) are measured directly via text measurement.
     let parent_font_size = parent_style.font_size.max(1);
     let parent_bold = matches!(parent_style.font_weight, crate::style::FontWeight::Bold);
+    let parent_italic = matches!(parent_style.font_style, crate::style::FontStyleVal::Italic);
     let parent_color = parent_style.color;
     let parent_custom_font_id = parent_style
         .font_family
         .as_ref()
-        .and_then(|family| crate::lookup_web_font(family))
+        .and_then(|family| crate::lookup_web_font_variant(family, parent_bold, parent_italic))
         .unwrap_or(0);
 
     for item in &mut items {

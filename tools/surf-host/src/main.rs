@@ -2622,9 +2622,17 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
         return decode_data_uri(url);
     }
 
+    let user_agent = if url.starts_with("https://fonts.googleapis.com/")
+        || url.starts_with("http://fonts.googleapis.com/")
+    {
+        "curl/8.0"
+    } else {
+        SURF_HOST_USER_AGENT
+    };
+
     // Check disk cache — fresh entries (< 24h) are served directly.
     let dir = disk_cache_dir();
-    let key = url_cache_key(url);
+    let key = url_cache_key(&format!("{}\n{}", url, user_agent));
     let data_path = dir.join(format!("{}.data", key));
 
     if let Ok(meta) = std::fs::metadata(&data_path) {
@@ -2641,7 +2649,7 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
 
     // Network fetch
     match ureq::get(url)
-        .set("User-Agent", SURF_HOST_USER_AGENT)
+        .set("User-Agent", user_agent)
         .set("Accept", "*/*")
         .timeout(std::time::Duration::from_secs(8))
         .call()
@@ -2764,6 +2772,87 @@ fn normalize_http_path(url: &str) -> String {
     }
     out.push_str(suffix);
     out
+}
+
+fn resolve_css_resource_urls(css: &str, css_url: &str) -> String {
+    let bytes = css.as_bytes();
+    let mut out = String::with_capacity(css.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !rest_starts_with_ci(bytes, i, b"url(") {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+
+        out.push_str("url(");
+        i += 4;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+
+        let quote = match bytes.get(i).copied() {
+            Some(b'"') | Some(b'\'') => {
+                let q = bytes[i];
+                out.push(q as char);
+                i += 1;
+                Some(q)
+            }
+            _ => None,
+        };
+
+        let url_start = i;
+        while i < bytes.len() {
+            if let Some(q) = quote {
+                if bytes[i] == q {
+                    break;
+                }
+            } else if bytes[i] == b')' || bytes[i].is_ascii_whitespace() {
+                break;
+            }
+            i += 1;
+        }
+        let raw_url = &css[url_start..i];
+        out.push_str(&resolve_css_url(css_url, raw_url));
+
+        if let Some(q) = quote {
+            if i < bytes.len() && bytes[i] == q {
+                out.push(q as char);
+                i += 1;
+            }
+        }
+        while i < bytes.len() && bytes[i] != b')' {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        if i < bytes.len() {
+            out.push(')');
+            i += 1;
+        }
+    }
+    out
+}
+
+fn resolve_css_url(css_url: &str, raw_url: &str) -> String {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("data:")
+        || trimmed.starts_with("blob:")
+        || trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("//")
+    {
+        return String::from(raw_url);
+    }
+    resolve_url(css_url, trimmed)
+}
+
+fn rest_starts_with_ci(haystack: &[u8], pos: usize, needle: &[u8]) -> bool {
+    haystack
+        .get(pos..pos.saturating_add(needle.len()))
+        .is_some_and(|slice| slice.eq_ignore_ascii_case(needle))
 }
 
 fn base64_decode(input: &[u8]) -> Vec<u8> {
@@ -3318,7 +3407,7 @@ fn load_resources(
         links
     };
     let mut fetched_font_urls: Vec<String> = Vec::new();
-    let mut fetched_font_families: Vec<String> = Vec::new();
+    let mut fetched_font_keys: Vec<(String, u32, bool)> = Vec::new();
     let mut sync_font_attempts = 0usize;
     let mut sync_font_limit_logged = false;
 
@@ -3326,6 +3415,7 @@ fn load_resources(
         eprintln!("[surf-host] fetching CSS: {}", css_url);
         if let Some(css_body) = fetch_resource(css_url) {
             if let Ok(css_text) = String::from_utf8(css_body) {
+                let css_text = resolve_css_resource_urls(&css_text, css_url);
                 let sheet = libwebview::css::parse_stylesheet(&css_text);
                 if std::env::var("SURF_DEBUG_HEISE").ok().as_deref() == Some("1") {
                     eprintln!(
@@ -3376,12 +3466,13 @@ fn load_resources(
                 let imports: Vec<String> = wv
                     .last_stylesheet_imports()
                     .iter()
-                    .map(|u| resolve_url(base_url, u))
+                    .map(|u| resolve_url(css_url, u))
                     .collect();
                 for import_url in &imports {
                     eprintln!("[surf-host] fetching @import CSS: {}", import_url);
                     if let Some(import_body) = fetch_resource(import_url) {
                         if let Ok(import_text) = String::from_utf8(import_body) {
+                            let import_text = resolve_css_resource_urls(&import_text, import_url);
                             wv.add_stylesheet(&import_text);
                         }
                     }
@@ -3392,14 +3483,16 @@ fn load_resources(
                     let font_faces: Vec<_> = wv
                         .last_stylesheet_font_faces()
                         .iter()
-                        .map(|ff| (ff.family.clone(), ff.src_url.clone()))
+                        .map(|ff| (ff.family.clone(), ff.src_url.clone(), ff.weight, ff.italic))
                         .collect();
-                    for (family, src) in &font_faces {
+                    for (family, src, weight, italic) in &font_faces {
                         if src.is_empty() {
                             continue;
                         }
-                        if wv.web_font_id(family).is_some()
-                            || fetched_font_families.iter().any(|f| f == family)
+                        if wv.has_web_font_style(family, *weight, *italic)
+                            || fetched_font_keys
+                                .iter()
+                                .any(|(f, w, i)| f == family && *w == *weight && *i == *italic)
                         {
                             continue;
                         }
@@ -3412,8 +3505,10 @@ fn load_resources(
                                         family,
                                         font_data.len()
                                     );
-                                    wv.register_web_font(&family, font_id);
-                                    fetched_font_families.push(family.clone());
+                                    wv.register_web_font_with_style(
+                                        &family, *weight, *italic, font_id,
+                                    );
+                                    fetched_font_keys.push((family.clone(), *weight, *italic));
                                 }
                             }
                             continue;
@@ -3428,17 +3523,19 @@ fn load_resources(
                             }
                             continue;
                         }
-                        let font_url = resolve_url(base_url, src);
+                        let font_url = resolve_url(css_url, src);
                         if fetched_font_urls.iter().any(|url| url == &font_url) {
                             continue;
                         }
                         fetched_font_urls.push(font_url.clone());
-                        fetched_font_families.push(family.clone());
+                        fetched_font_keys.push((family.clone(), *weight, *italic));
                         sync_font_attempts += 1;
                         eprintln!("[surf-host] fetching font: {}", font_url);
                         if let Some(font_data) = fetch_resource(&font_url) {
                             if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
-                                wv.register_web_font(&family, font_id);
+                                wv.register_web_font_with_style(
+                                    &family, *weight, *italic, font_id,
+                                );
                             }
                         }
                     }
@@ -3464,16 +3561,19 @@ fn load_resources(
         let font_faces: Vec<_> = wv
             .all_font_faces()
             .iter()
-            .map(|ff| (ff.family.clone(), ff.src_url.clone()))
+            .map(|ff| (ff.family.clone(), ff.src_url.clone(), ff.weight, ff.italic))
             .collect();
-        for (family, src) in &font_faces {
+        for (family, src, weight, italic) in &font_faces {
             if src.is_empty() {
                 continue;
             }
-            if wv.web_font_id(&family).is_some() {
+            if wv.has_web_font_style(&family, *weight, *italic) {
                 continue;
             } // already loaded
-            if fetched_font_families.iter().any(|f| f == family) {
+            if fetched_font_keys
+                .iter()
+                .any(|(f, w, i)| f == family && *w == *weight && *i == *italic)
+            {
                 continue;
             }
             if src.starts_with("data:") {
@@ -3484,8 +3584,8 @@ fn load_resources(
                             family,
                             font_data.len()
                         );
-                        wv.register_web_font(&family, font_id);
-                        fetched_font_families.push(family.clone());
+                        wv.register_web_font_with_style(&family, *weight, *italic, font_id);
+                        fetched_font_keys.push((family.clone(), *weight, *italic));
                     }
                 }
                 continue;
@@ -3505,12 +3605,12 @@ fn load_resources(
                 continue;
             }
             fetched_font_urls.push(font_url.clone());
-            fetched_font_families.push(family.clone());
+            fetched_font_keys.push((family.clone(), *weight, *italic));
             sync_font_attempts += 1;
             eprintln!("[surf-host] fetching inline font: {}", font_url);
             if let Some(font_data) = fetch_resource(&font_url) {
                 if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
-                    wv.register_web_font(&family, font_id);
+                    wv.register_web_font_with_style(&family, *weight, *italic, font_id);
                 }
             }
         }

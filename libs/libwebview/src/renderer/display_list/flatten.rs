@@ -454,6 +454,34 @@ impl DisplayList {
         let (bg_x, bg_y, bg_w, bg_h) = self.background_paint_rect(abs_x, abs_y, bx);
         let bg_radii = self.background_clip_radii(bx, bg_w, bg_h);
         let has_bg_radius = bg_radii.iter().any(|&r| r > 0);
+        let blurred_bg = bx.filter.blur_px > 0
+            && bx.bg_color != 0
+            && bx.bg_color != 0x00000000
+            && bg_w > 0
+            && bg_h > 0;
+
+        if blurred_bg {
+            let blur = bx.filter.blur_px.min(160);
+            let steps = (blur / 16).max(3).min(8);
+            let alpha_frac = (220 / (steps + 2)).max(12) as u32;
+            for s in (0..steps).rev() {
+                let ext = (s + 1) * blur / steps;
+                let color = alpha_blend(bx.bg_color, alpha_frac);
+                let radii = [
+                    bg_radii[0] + ext,
+                    bg_radii[1] + ext,
+                    bg_radii[2] + ext,
+                    bg_radii[3] + ext,
+                ];
+                self.push(
+                    bg_x - ext,
+                    bg_y - ext,
+                    bg_w + ext * 2,
+                    bg_h + ext * 2,
+                    DrawKind::RoundedRect { color, radii },
+                );
+            }
+        }
 
         let pushed_bg_clip = if self.should_clip_background(bx) && bg_w > 0 && bg_h > 0 {
             self.push_clip_rect((bg_x, bg_y, bg_w, bg_h))
@@ -462,7 +490,7 @@ impl DisplayList {
         };
 
         // Background.
-        if bx.bg_color != 0 && bx.bg_color != 0x00000000 && bg_w > 0 && bg_h > 0 {
+        if !blurred_bg && bx.bg_color != 0 && bx.bg_color != 0x00000000 && bg_w > 0 && bg_h > 0 {
             if has_bg_radius {
                 self.push(
                     bg_x,
@@ -943,6 +971,12 @@ impl DisplayList {
                 dh,
                 DrawKind::Image {
                     src: src.clone(),
+                    radii: [
+                        bx.border_top_left_radius,
+                        bx.border_top_right_radius,
+                        bx.border_bottom_right_radius,
+                        bx.border_bottom_left_radius,
+                    ],
                     object_fit: bx.object_fit,
                     object_position_x: bx.object_position_x,
                     object_position_x_is_percent: bx.object_position_x_is_percent,

@@ -3237,7 +3237,10 @@ fn style_property_hook(data: *mut u8, key: &str, value: &JsValue) {
         // those mount-only states as their reduced-motion final state.
         if css_prop == "opacity" && val_str.trim() == "0" {
             val_str = String::from("1");
-        } else if css_prop == "transform" && val_str.trim_start().starts_with("translate") {
+        } else if css_prop == "transform"
+            && val_str.trim_start().starts_with("translate")
+            && !val_str.contains('%')
+        {
             val_str = String::from("translate(0px, 0px)");
         }
     }

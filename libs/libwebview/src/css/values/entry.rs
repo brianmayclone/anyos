@@ -70,6 +70,13 @@ pub fn parse_value(property: &Property, value_str: &str) -> CssValue {
             | Property::GridTemplateAreas
             | Property::FontFamily
             | Property::Content
+            | Property::Background
+            | Property::BackgroundImage
+            | Property::MaskImage
+            | Property::Filter
+            | Property::BackdropFilter
+            | Property::ClipPath
+            | Property::Cursor
     );
     if is_case_sensitive {
         CssValue::Keyword(String::from(s))

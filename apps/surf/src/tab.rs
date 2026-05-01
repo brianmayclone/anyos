@@ -116,6 +116,8 @@ pub(crate) struct DeferredImageRequest {
 #[derive(Clone)]
 pub(crate) struct DeferredFontRequest {
     pub(crate) family: String,
+    pub(crate) weight: u32,
+    pub(crate) italic: bool,
     pub(crate) url: crate::http::Url,
     pub(crate) display: libwebview::css::FontDisplay,
     pub(crate) generation: u32,

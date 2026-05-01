@@ -987,7 +987,9 @@ pub(super) fn intrinsic_form_control_width(
     let custom_font_id = style
         .font_family
         .as_ref()
-        .and_then(|family| crate::lookup_web_font(family))
+        .and_then(|family| {
+            crate::lookup_web_font_variant(family, is_bold(style), is_italic(style))
+        })
         .unwrap_or(0);
     let measured_label_width = |label: &str| {
         let (w, _) = measure_text(
@@ -2884,14 +2886,14 @@ fn measure_min_content(
         // Find the longest word (non-breaking run).
         let fs = st.font_size.max(1);
         let bold = matches!(st.font_weight, crate::style::FontWeight::Bold);
+        let italic = matches!(st.font_style, crate::style::FontStyleVal::Italic);
         let mut max_w = 0i32;
         for word in text.split_whitespace() {
             let custom_font_id = st
                 .font_family
                 .as_ref()
-                .and_then(|family| crate::lookup_web_font(family))
+                .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                 .unwrap_or(0);
-            let italic = matches!(st.font_style, crate::style::FontStyleVal::Italic);
             let (w, _) = measure_text(word, fs, custom_font_id, bold, italic);
             if w > max_w {
                 max_w = w;
@@ -3007,7 +3009,7 @@ fn measure_abs_auto_width(
             let font_id = style
                 .font_family
                 .as_ref()
-                .and_then(|family| crate::lookup_web_font(family))
+                .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                 .unwrap_or(0);
             let tw = measure_collapsed_text_width(
                 measured,

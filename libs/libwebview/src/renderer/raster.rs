@@ -288,6 +288,7 @@ fn rasterize_draw_cmd_basic(
         }
         DrawKind::Image {
             src,
+            radii,
             object_fit,
             object_position_x,
             object_position_x_is_percent,
@@ -307,6 +308,7 @@ fn rasterize_draw_cmd_basic(
                     cmd.src_w,
                     cmd.src_h,
                     clip,
+                    *radii,
                     &entry.pixels,
                     entry.width,
                     entry.height,
@@ -410,6 +412,7 @@ pub(super) fn rasterize_draw_cmd(
             },
             DrawKind::Image {
                 src,
+                radii,
                 object_fit,
                 object_position_x,
                 object_position_x_is_percent,
@@ -417,6 +420,7 @@ pub(super) fn rasterize_draw_cmd(
                 object_position_y_is_percent,
             } => DrawKind::Image {
                 src: src.clone(),
+                radii: *radii,
                 object_fit: *object_fit,
                 object_position_x: *object_position_x,
                 object_position_x_is_percent: *object_position_x_is_percent,
@@ -1186,6 +1190,7 @@ pub(super) fn blit_image_buf_clipped(
     dw: i32,
     dh: i32,
     clip: (i32, i32, i32, i32),
+    radii: [i32; 4],
     src: &[u32],
     src_w: u32,
     src_h: u32,
@@ -1213,6 +1218,10 @@ pub(super) fn blit_image_buf_clipped(
             let dst_offset = row as usize * stride as usize;
             let src_row = sy * src_w as usize;
             for col in x0..x1 {
+                let coverage = rounded_rect_coverage(col, row, dx, dy, dw, dh, radii);
+                if coverage == 0 {
+                    continue;
+                }
                 let sx = ((col - dx) as u64 * src_w as u64 / dw as u64) as usize;
                 if sx >= src_w as usize {
                     continue;
@@ -1222,7 +1231,7 @@ pub(super) fn blit_image_buf_clipped(
                     continue;
                 }
                 let pixel = src[src_idx];
-                let alpha = (pixel >> 24) & 0xFF;
+                let alpha = ((pixel >> 24) & 0xFF) * coverage / 4;
                 let dst_idx = dst_offset + col as usize;
                 if alpha >= 255 {
                     *buf.add(dst_idx) = pixel;
@@ -1237,4 +1246,69 @@ pub(super) fn blit_image_buf_clipped(
             }
         }
     }
+}
+
+fn rounded_rect_coverage(px: i32, py: i32, x: i32, y: i32, w: i32, h: i32, radii: [i32; 4]) -> u32 {
+    if radii.iter().all(|r| *r <= 0) {
+        return 4;
+    }
+    let samples = [(25, 25), (75, 25), (25, 75), (75, 75)];
+    let mut inside = 0u32;
+    for (sx, sy) in samples {
+        if rounded_rect_sample_inside(px, py, sx, sy, x, y, w, h, radii) {
+            inside += 1;
+        }
+    }
+    inside
+}
+
+fn rounded_rect_sample_inside(
+    px: i32,
+    py: i32,
+    sample_x: i32,
+    sample_y: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    radii: [i32; 4],
+) -> bool {
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let max_r = (w.min(h).max(0) as i64 * 100) / 2;
+    let lx = (px - x) as i64 * 100 + sample_x as i64;
+    let ly = (py - y) as i64 * 100 + sample_y as i64;
+    let ww = w as i64 * 100;
+    let hh = h as i64 * 100;
+    if lx < 0 || ly < 0 || lx >= ww || ly >= hh {
+        return false;
+    }
+
+    let tl = (radii[0].max(0) as i64 * 100).min(max_r);
+    let tr = (radii[1].max(0) as i64 * 100).min(max_r);
+    let br = (radii[2].max(0) as i64 * 100).min(max_r);
+    let bl = (radii[3].max(0) as i64 * 100).min(max_r);
+
+    if tl > 0 && lx < tl && ly < tl {
+        let dx = lx - tl;
+        let dy = ly - tl;
+        return dx * dx + dy * dy <= tl * tl;
+    }
+    if tr > 0 && lx >= ww - tr && ly < tr {
+        let dx = lx - (ww - tr);
+        let dy = ly - tr;
+        return dx * dx + dy * dy <= tr * tr;
+    }
+    if br > 0 && lx >= ww - br && ly >= hh - br {
+        let dx = lx - (ww - br);
+        let dy = ly - (hh - br);
+        return dx * dx + dy * dy <= br * br;
+    }
+    if bl > 0 && lx < bl && ly >= hh - bl {
+        let dx = lx - bl;
+        let dy = ly - (hh - bl);
+        return dx * dx + dy * dy <= bl * bl;
+    }
+    true
 }

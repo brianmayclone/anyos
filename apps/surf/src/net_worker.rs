@@ -78,6 +78,8 @@ pub(crate) enum FetchRequest {
     Font {
         tab_index: usize,
         family: String,
+        weight: u32,
+        italic: bool,
         url: Url,
         display: libwebview::css::FontDisplay,
         generation: u32,
@@ -156,6 +158,8 @@ pub(crate) enum FetchResult {
     FontDone {
         tab_index: usize,
         family: String,
+        weight: u32,
+        italic: bool,
         url: Url,
         body: Vec<u8>,
         display: libwebview::css::FontDisplay,
@@ -1304,6 +1308,9 @@ fn cache_key(url: &http::Url) -> String {
     }
     key.push((b'0' + (port % 10) as u8) as char);
     key.push_str(&url.path);
+    if url.host.eq_ignore_ascii_case("fonts.googleapis.com") {
+        key.push_str("#ua=curl8");
+    }
     key
 }
 
@@ -1416,6 +1423,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             if let Some((body_vec, headers_string)) = cache_get(&key) {
                 surf_net_log!("CSS cache hit: {}", href);
                 let css_text = crate::resources::decode_http_body(&body_vec, &headers_string);
+                let css_text = crate::resources::resolve_css_resource_urls(&css_text, &url);
                 let parsed = Some(DecodedCss {
                     sheet: libwebview::css::parse_stylesheet(&css_text),
                 });
@@ -1440,6 +1448,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     // Cache the response for future requests.
                     cache_put(key, resp.body.clone(), resp.headers.clone());
                     let css_text = crate::resources::decode_http_body(&resp.body, &resp.headers);
+                    let css_text = crate::resources::resolve_css_resource_urls(&css_text, &url);
                     let parsed = Some(DecodedCss {
                         sheet: libwebview::css::parse_stylesheet(&css_text),
                     });
@@ -1598,6 +1607,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
         FetchRequest::Font {
             tab_index,
             family,
+            weight,
+            italic,
             url,
             display,
             generation,
@@ -1613,6 +1624,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                 enqueue_result(FetchResult::FontDone {
                     tab_index,
                     family,
+                    weight,
+                    italic,
                     url,
                     body,
                     display,
@@ -1629,6 +1642,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     enqueue_result(FetchResult::FontDone {
                         tab_index,
                         family,
+                        weight,
+                        italic,
                         url,
                         body: resp.body,
                         display,
@@ -1647,6 +1662,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     enqueue_result(FetchResult::FontDone {
                         tab_index,
                         family,
+                        weight,
+                        italic,
                         url,
                         body: Vec::new(),
                         display,
@@ -1659,6 +1676,8 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     enqueue_result(FetchResult::FontDone {
                         tab_index,
                         family,
+                        weight,
+                        italic,
                         url,
                         body: Vec::new(),
                         display,

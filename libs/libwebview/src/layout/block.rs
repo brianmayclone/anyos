@@ -237,7 +237,7 @@ fn build_block_internal(
     bx.text_decoration = style.text_decoration;
     // Resolve web font ID from font-family.
     if let Some(ref family) = style.font_family {
-        if let Some(wf_id) = crate::lookup_web_font(family) {
+        if let Some(wf_id) = crate::lookup_web_font_variant(family, bx.bold, bx.italic) {
             bx.custom_font_id = wf_id;
         }
     }
@@ -1787,7 +1787,7 @@ pub(super) fn build_pseudo_element_box(
             tb.custom_font_id = ps
                 .font_family
                 .as_ref()
-                .and_then(|family| crate::lookup_web_font(family))
+                .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                 .unwrap_or(0);
             tb.bg_color = 0;
             tb.text_decoration = ps.text_decoration;
@@ -1826,7 +1826,7 @@ pub(super) fn build_pseudo_element_box(
         tb.custom_font_id = ps
             .font_family
             .as_ref()
-            .and_then(|family| crate::lookup_web_font(family))
+            .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
             .unwrap_or(0);
         tb.bg_color = ps.background_color;
         tb.text_decoration = ps.text_decoration;

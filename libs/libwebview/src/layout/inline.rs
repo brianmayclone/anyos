@@ -86,7 +86,7 @@ fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> Layo
     bx.border_bottom_right_radius = style.border_bottom_right_radius;
     bx.border_bottom_left_radius = style.border_bottom_left_radius;
     if let Some(ref family) = style.font_family {
-        if let Some(wf_id) = crate::lookup_web_font(family) {
+        if let Some(wf_id) = crate::lookup_web_font_variant(family, bx.bold, bx.italic) {
             bx.custom_font_id = wf_id;
         }
     }
@@ -178,7 +178,7 @@ pub fn layout_inline_content_with_pseudo(
                 let custom_font_id = bps
                     .font_family
                     .as_ref()
-                    .and_then(|family| crate::lookup_web_font(family))
+                    .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                     .unwrap_or(0);
                 let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                 let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, bps.color);
@@ -224,7 +224,7 @@ pub fn layout_inline_content_with_pseudo(
                 let custom_font_id = aps
                     .font_family
                     .as_ref()
-                    .and_then(|family| crate::lookup_web_font(family))
+                    .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                     .unwrap_or(0);
                 let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                 let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, aps.color);
@@ -590,7 +590,7 @@ fn collect_inline_fragments(
             let custom_font_id = style
                 .font_family
                 .as_ref()
-                .and_then(|family| crate::lookup_web_font(family))
+                .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                 .unwrap_or(0);
             let start_idx = out.len();
             let preserve_pre_ws = style.white_space == WhiteSpace::Pre
@@ -1123,7 +1123,7 @@ fn collect_inline_fragments(
                 let custom_font_id = style
                     .font_family
                     .as_ref()
-                    .and_then(|family| crate::lookup_web_font(family))
+                    .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                     .unwrap_or(0);
                 let (tw, _) = measure_text(selected_text, fs, custom_font_id, bold, italic);
                 // Width: max of all option widths + padding for arrow
@@ -1397,7 +1397,7 @@ fn collect_inline_fragments(
                             let custom_font_id = ps
                                 .font_family
                                 .as_ref()
-                                .and_then(|family| crate::lookup_web_font(family))
+                                .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                                 .unwrap_or(0);
                             let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                             let mut tb =
@@ -1516,7 +1516,7 @@ fn collect_inline_fragments(
                             let custom_font_id = ps
                                 .font_family
                                 .as_ref()
-                                .and_then(|family| crate::lookup_web_font(family))
+                                .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                                 .unwrap_or(0);
                             let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                             let mut tb =
@@ -2089,7 +2089,7 @@ fn emit_button_fragment(
     let custom_font_id = style
         .font_family
         .as_ref()
-        .and_then(|family| crate::lookup_web_font(family))
+        .and_then(|family| crate::lookup_web_font_variant(family, is_bold(style), is_italic(style)))
         .unwrap_or(0);
     let (bw, _) = measure_text(
         label,

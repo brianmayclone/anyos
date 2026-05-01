@@ -8085,6 +8085,35 @@ mod layout_regression_tests {
     }
 
     #[test]
+    fn border_shorthand_resolves_var_width_and_var_color() {
+        let dom = crate::html::parse(r#"<section id="home"></section>"#);
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            :root {
+                --border-width: 6px;
+                --foreground: rgb(235, 235, 235);
+            }
+            section {
+                border: var(--border-width) solid var(--foreground);
+            }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 1365, 900, &mut inline_style_cache);
+        let section_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Section, .. }))
+            .expect("section node");
+        let style = &styles[section_id];
+
+        assert_eq!(style.border_width, 6);
+        assert_eq!(style.border_top.width, 6);
+        assert!(matches!(style.border_top.style, BorderStyleVal::Solid));
+        assert_eq!(style.border_top.color, 0xFFEBEBEB);
+    }
+
+    #[test]
     fn picture_defaults_to_inline_like_replaced_media_container() {
         let dom = crate::html::parse(r#"<picture><img src="x"></picture>"#);
         let stylesheet = crate::css::parse_stylesheet("");

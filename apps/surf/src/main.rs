@@ -1559,6 +1559,8 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
         net_worker::FetchResult::FontDone {
             tab_index,
             family,
+            weight,
+            italic,
             url,
             body,
             display,
@@ -1577,7 +1579,8 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
                 devtools::record_request_done(&url.host, &url.path, 200, body.len() as u64);
             }
             let start_ms = anyos_std::sys::uptime_ms();
-            let needs_layout = handle_font_done(tab_index, family, body, display, generation);
+            let needs_layout =
+                handle_font_done(tab_index, family, weight, italic, body, display, generation);
             log_main_phase_elapsed("handle_font_done", start_ms);
             if needs_layout {
                 request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
@@ -2205,11 +2208,19 @@ fn handle_css_done(
         }
 
         // Process @font-face rules — queue font downloads.
-        let font_faces: Vec<(String, String, libwebview::css::FontDisplay)> = st.tabs[tab_index]
+        let font_faces: Vec<(String, String, u32, bool, libwebview::css::FontDisplay)> = st.tabs[tab_index]
             .webview
             .last_stylesheet_font_faces()
             .iter()
-            .map(|ff| (ff.family.clone(), ff.src_url.clone(), ff.display))
+            .map(|ff| {
+                (
+                    ff.family.clone(),
+                    ff.src_url.clone(),
+                    ff.weight,
+                    ff.italic,
+                    ff.display,
+                )
+            })
             .collect();
         resources::queue_font_face_batch(tab_index, generation, &base_url, &font_faces);
     }
@@ -2239,6 +2250,8 @@ fn handle_css_done(
 fn handle_font_done(
     tab_index: usize,
     family: String,
+    weight: u32,
+    italic: bool,
     body: Vec<u8>,
     display: libwebview::css::FontDisplay,
     generation: u32,
@@ -2261,9 +2274,9 @@ fn handle_font_done(
 
     // Try loading the font data (supports TTF/sfnt and WOFF2 TrueType outlines).
     if let Some(font_id) = resources::load_valid_web_font_data(&family, &body) {
-        st.tabs[tab_index]
-            .webview
-            .register_web_font(&family, font_id);
+        st.tabs[tab_index].webview.register_web_font_with_style(
+            &family, weight, italic, font_id,
+        );
         if matches!(
             display,
             libwebview::css::FontDisplay::Swap

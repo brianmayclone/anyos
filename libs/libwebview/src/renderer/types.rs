@@ -137,6 +137,7 @@ pub(super) enum DrawKind {
     /// Blit an image (looked up from ImageCache by src URL at rasterize time).
     Image {
         src: String,
+        radii: [i32; 4],
         object_fit: crate::style::ObjectFit,
         object_position_x: i32,
         object_position_x_is_percent: bool,
