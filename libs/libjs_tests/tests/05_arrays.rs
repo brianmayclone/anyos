@@ -137,6 +137,21 @@ fn sort_numbers_with_comparator() {
 }
 
 #[test]
+fn sort_comparator_uses_n_log_n_calls() {
+    let mut e = JsEngine::new();
+    e.eval(
+        "var calls = 0; \
+         var a = []; \
+         for (var i = 127; i >= 0; i--) a.push(i); \
+         a.sort(function(x, y) { calls++; return x - y; });",
+    );
+    let a = e.get_global("a");
+    assert_eq!(a.get_index(0).to_number(), 0.0);
+    assert_eq!(a.get_index(127).to_number(), 127.0);
+    assert!(e.get_global("calls").to_number() < 1600.0);
+}
+
+#[test]
 fn sort_strings_default() {
     let mut e = JsEngine::new();
     e.eval(r#"var a = ["banana","apple","cherry"]; a.sort();"#);

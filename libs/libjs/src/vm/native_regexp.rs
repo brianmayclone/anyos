@@ -286,11 +286,7 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 ///
 /// Returns Some(result) if dispatched (caller should return immediately).
 /// Returns None if no custom method was found and the caller should continue.
-fn dispatch_well_known(
-    vm: &mut Vm,
-    args: &[JsValue],
-    sym_key: &str,
-) -> Option<JsValue> {
+fn dispatch_well_known(vm: &mut Vm, args: &[JsValue], sym_key: &str) -> Option<JsValue> {
     let arg = args.first()?;
     if matches!(arg, JsValue::Null | JsValue::Undefined) {
         return None;

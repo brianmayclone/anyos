@@ -37,7 +37,8 @@ impl Vm {
                 let mut obj = JsObject::new();
                 obj.prototype = Some(self.function_proto.clone());
                 for (key, val) in &func.own_props {
-                    obj.properties.insert(key.clone(), Property::data(val.clone()));
+                    obj.properties
+                        .insert(key.clone(), Property::data(val.clone()));
                 }
                 Some(Rc::new(RefCell::new(obj)))
             }
@@ -148,8 +149,10 @@ impl Vm {
                     let f = func_rc.borrow();
                     f.own_props.get("prototype").cloned()
                 };
-                if let Some(proto_val @ (JsValue::Array(_) | JsValue::Function(_))) = own_proto_val {
-                    if let Some(proto_obj) = self.materialize_prototype_object_from_value(&proto_val)
+                if let Some(proto_val @ (JsValue::Array(_) | JsValue::Function(_))) = own_proto_val
+                {
+                    if let Some(proto_obj) =
+                        self.materialize_prototype_object_from_value(&proto_val)
                     {
                         func_rc.borrow_mut().prototype = Some(proto_obj.clone());
                         return Some(proto_obj);
@@ -401,7 +404,11 @@ impl Vm {
                     let name = func_rc.borrow().name.clone().unwrap_or_default();
                     let msg = alloc::format!(
                         "Class constructor {} cannot be invoked without 'new'",
-                        if name.is_empty() { "(anonymous)".into() } else { name }
+                        if name.is_empty() {
+                            "(anonymous)".into()
+                        } else {
+                            name
+                        }
                     );
                     let exc = self.make_type_error(&msg);
                     if !self.handle_exception(exc) {
@@ -638,7 +645,11 @@ impl Vm {
                                     if let Some(crate::bytecode::Constant::String(s)) =
                                         consts.get(ci as usize)
                                     {
-                                        ops.push_str(&alloc::format!("{:?}({})", code[check_ip], s));
+                                        ops.push_str(&alloc::format!(
+                                            "{:?}({})",
+                                            code[check_ip],
+                                            s
+                                        ));
                                     } else {
                                         ops.push_str(&alloc::format!("{:?}", code[check_ip]));
                                     }

@@ -15,7 +15,8 @@ fn this_number_value(vm: &mut Vm) -> Option<f64> {
             match o.primitive_value.as_deref() {
                 Some(JsValue::Number(n)) => Some(*n),
                 _ => {
-                    let err = vm.make_type_error("Number.prototype method called on incompatible receiver");
+                    let err = vm
+                        .make_type_error("Number.prototype method called on incompatible receiver");
                     drop(o);
                     vm.throw_native(err);
                     None

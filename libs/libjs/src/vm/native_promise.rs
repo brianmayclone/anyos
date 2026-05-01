@@ -69,13 +69,19 @@ fn attach_promise_shape(
 ) {
     obj.internal_tag = Some(String::from("__promise__"));
     obj.prototype = proto;
-    obj.set(String::from("__state"), JsValue::String(String::from(state)));
+    obj.set(
+        String::from("__state"),
+        JsValue::String(String::from(state)),
+    );
     obj.set(String::from("__value"), value);
     obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
     obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
     obj.set(String::from("then"), native_fn("then", promise_then));
     obj.set(String::from("catch"), native_fn("catch", promise_catch));
-    obj.set(String::from("finally"), native_fn("finally", promise_finally));
+    obj.set(
+        String::from("finally"),
+        native_fn("finally", promise_finally),
+    );
 }
 
 fn make_promise(vm: &Vm, state: &str, value: JsValue) -> JsValue {
@@ -595,7 +601,10 @@ pub fn promise_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let state = JsValue::new_object();
     state.set_property(String::from("target"), target.clone());
     state.set_property(String::from("values"), JsValue::new_array(Vec::new()));
-    state.set_property(String::from("remaining"), JsValue::Number(promises.len() as f64));
+    state.set_property(
+        String::from("remaining"),
+        JsValue::Number(promises.len() as f64),
+    );
     state.set_property(String::from("settled"), JsValue::Bool(false));
 
     for (i, p) in promises.into_iter().enumerate() {

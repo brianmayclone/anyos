@@ -5,6 +5,7 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::RefCell;
 
+use super::iter;
 use super::native_array;
 use super::native_console;
 use super::native_date;
@@ -26,7 +27,6 @@ use super::native_symbol;
 use super::native_timer;
 use super::native_typed_array;
 use super::native_weakref;
-use super::iter;
 use super::{native_ctor_fn, native_fn, native_fn_with_length, Vm};
 use crate::value::*;
 
@@ -200,10 +200,7 @@ impl Vm {
                 String::from("keys"),
                 native_fn_with_length("keys", native_array::array_keys, 0),
             );
-            p.set_hidden(
-                String::from("values"),
-                values_fn.clone(),
-            );
+            p.set_hidden(String::from("values"), values_fn.clone());
             p.set_hidden(
                 String::from("at"),
                 native_fn_with_length("at", native_array::array_at, 1),
@@ -213,10 +210,7 @@ impl Vm {
                 native_fn_with_length("toString", native_array::array_to_string, 0),
             );
             // Symbol.iterator — returns an array iterator
-            p.set_hidden(
-                String::from(native_symbol::WELL_KNOWN_ITERATOR),
-                values_fn,
-            );
+            p.set_hidden(String::from(native_symbol::WELL_KNOWN_ITERATOR), values_fn);
             let unscopables = JsValue::new_object();
             for key in [
                 "at",
@@ -663,7 +657,10 @@ impl Vm {
         self.set_global("eval", native_fn("eval", global_eval));
 
         // ── Constructors ──
-        self.set_global("Object", native_ctor_fn("Object", native_globals::ctor_object));
+        self.set_global(
+            "Object",
+            native_ctor_fn("Object", native_globals::ctor_object),
+        );
         // Wire Object.prototype to the VM's object_proto so `instanceof` works.
         if let JsValue::Function(f) = self.globals.borrow().get("Object") {
             f.borrow_mut().prototype = Some(self.object_proto.clone());
@@ -673,8 +670,14 @@ impl Vm {
         if let JsValue::Function(f) = self.globals.borrow().get("Array") {
             f.borrow_mut().prototype = Some(self.array_proto.clone());
         }
-        self.set_global("String", native_ctor_fn("String", native_globals::ctor_string));
-        self.set_global("Number", native_ctor_fn("Number", native_globals::ctor_number));
+        self.set_global(
+            "String",
+            native_ctor_fn("String", native_globals::ctor_string),
+        );
+        self.set_global(
+            "Number",
+            native_ctor_fn("Number", native_globals::ctor_number),
+        );
         self.set_global(
             "Boolean",
             native_ctor_fn("Boolean", native_globals::ctor_boolean),
@@ -728,21 +731,26 @@ impl Vm {
         self.init_object_statics();
 
         // ── Set constructor properties on prototypes (must happen AFTER globals) ──
-        self.array_proto
-            .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.borrow().get("Array"));
-        self.string_proto
-            .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.borrow().get("String"));
-        self.number_proto
-            .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.borrow().get("Number"));
-        self.object_proto
-            .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.borrow().get("Object"));
-        self.boolean_proto
-            .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.borrow().get("Boolean"));
+        self.array_proto.borrow_mut().set_hidden(
+            String::from("constructor"),
+            self.globals.borrow().get("Array"),
+        );
+        self.string_proto.borrow_mut().set_hidden(
+            String::from("constructor"),
+            self.globals.borrow().get("String"),
+        );
+        self.number_proto.borrow_mut().set_hidden(
+            String::from("constructor"),
+            self.globals.borrow().get("Number"),
+        );
+        self.object_proto.borrow_mut().set_hidden(
+            String::from("constructor"),
+            self.globals.borrow().get("Object"),
+        );
+        self.boolean_proto.borrow_mut().set_hidden(
+            String::from("constructor"),
+            self.globals.borrow().get("Boolean"),
+        );
 
         // ── Array static methods ──
         self.init_array_statics();
@@ -1117,10 +1125,7 @@ impl Vm {
         );
 
         // ── ES Modules runtime ──
-        self.set_global(
-            "__import__",
-            native_fn("__import__", module_import_fn),
-        );
+        self.set_global("__import__", native_fn("__import__", module_import_fn));
         self.set_global("__exports__", JsValue::new_object());
 
         // ── BigInt constructor ──
@@ -1615,7 +1620,8 @@ impl Vm {
             let ctor = JsValue::Function(f.clone());
             let proto = Rc::new(RefCell::new(JsObject::new()));
             proto.borrow_mut().prototype = Some(self.object_proto.clone());
-            proto.borrow_mut()
+            proto
+                .borrow_mut()
                 .set(String::from("constructor"), ctor.clone());
             native_date::install_date_instance_methods(&mut proto.borrow_mut());
             ctor.set_property(String::from("prototype"), JsValue::Object(proto));
@@ -1624,10 +1630,7 @@ impl Vm {
                 String::from("parse"),
                 native_fn("parse", native_date::date_parse),
             );
-            ctor.set_property(
-                String::from("UTC"),
-                native_fn("UTC", native_date::date_utc),
-            );
+            ctor.set_property(String::from("UTC"), native_fn("UTC", native_date::date_utc));
         }
     }
 
@@ -1745,8 +1748,7 @@ fn bigint_constructor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::Number(n) => {
             let n = *n;
             if n.is_nan() || n.is_infinite() || n != (n as i64 as f64) {
-                let err =
-                    vm.make_range_error("The number is not safe to convert to a BigInt");
+                let err = vm.make_range_error("The number is not safe to convert to a BigInt");
                 vm.throw_native(err);
                 return JsValue::Undefined;
             }
@@ -1832,8 +1834,7 @@ fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         // (Named exports via `export { a, b }` already wrote to __exports__.)
 
         // Cache the module namespace.
-        vm.module_registry
-            .insert(specifier, final_exports.clone());
+        vm.module_registry.insert(specifier, final_exports.clone());
         return final_exports;
     }
 

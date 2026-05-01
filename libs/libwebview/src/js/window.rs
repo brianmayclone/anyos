@@ -76,6 +76,21 @@ fn make_native_constructor(
     ctor
 }
 
+fn install_event_target_noop_methods(obj: &JsValue) {
+    obj.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", win_noop),
+    );
+    obj.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", win_noop),
+    );
+    obj.set_property(
+        String::from("dispatchEvent"),
+        native_fn("dispatchEvent", |_, _| JsValue::Bool(true)),
+    );
+}
+
 /// Create the native `window` host object.
 ///
 /// * `origin` — the page origin (e.g. `"https://example.com"`) used to key
@@ -94,7 +109,10 @@ pub fn make_window(
     node_filter.set_property(String::from("FILTER_ACCEPT"), JsValue::Number(1.0));
     node_filter.set_property(String::from("FILTER_REJECT"), JsValue::Number(2.0));
     node_filter.set_property(String::from("FILTER_SKIP"), JsValue::Number(3.0));
-    node_filter.set_property(String::from("SHOW_ALL"), JsValue::Number(0xFFFF_FFFFu32 as f64));
+    node_filter.set_property(
+        String::from("SHOW_ALL"),
+        JsValue::Number(0xFFFF_FFFFu32 as f64),
+    );
     node_filter.set_property(String::from("SHOW_ELEMENT"), JsValue::Number(0x1 as f64));
     node_filter.set_property(String::from("SHOW_TEXT"), JsValue::Number(0x4 as f64));
     node_filter.set_property(String::from("SHOW_COMMENT"), JsValue::Number(0x80 as f64));
@@ -200,7 +218,10 @@ pub fn make_window(
     );
     service_worker.set_property(
         String::from("getRegistrations"),
-        native_fn("getRegistrations", navigator_service_worker_get_registrations),
+        native_fn(
+            "getRegistrations",
+            navigator_service_worker_get_registrations,
+        ),
     );
     service_worker.set_property(
         String::from("addEventListener"),
@@ -258,6 +279,18 @@ pub fn make_window(
     obj.set(String::from("pageYOffset"), JsValue::Number(0.0));
     obj.set(String::from("scrollX"), JsValue::Number(0.0));
     obj.set(String::from("scrollY"), JsValue::Number(0.0));
+    let visual_viewport = JsValue::new_object();
+    visual_viewport.set_property(String::from("width"), JsValue::Number(viewport_w as f64));
+    visual_viewport.set_property(String::from("height"), JsValue::Number(viewport_h as f64));
+    visual_viewport.set_property(String::from("offsetLeft"), JsValue::Number(0.0));
+    visual_viewport.set_property(String::from("offsetTop"), JsValue::Number(0.0));
+    visual_viewport.set_property(String::from("pageLeft"), JsValue::Number(0.0));
+    visual_viewport.set_property(String::from("pageTop"), JsValue::Number(0.0));
+    visual_viewport.set_property(String::from("scale"), JsValue::Number(1.0));
+    visual_viewport.set_property(String::from("onresize"), JsValue::Null);
+    visual_viewport.set_property(String::from("onscroll"), JsValue::Null);
+    install_event_target_noop_methods(&visual_viewport);
+    obj.set(String::from("visualViewport"), visual_viewport);
 
     // Timer functions (backed by real timer infrastructure in mod.rs).
     obj.set(String::from("alert"), native_fn("alert", native_alert));
@@ -343,10 +376,7 @@ pub fn make_window(
         native_fn("fetch", fetch::native_fetch),
     );
     obj.set(String::from("XMLHttpRequest"), xhr::make_xhr_constructor());
-    obj.set(
-        String::from("Headers"),
-        fetch::make_headers_constructor(),
-    );
+    obj.set(String::from("Headers"), fetch::make_headers_constructor());
     obj.set(String::from("Request"), fetch::make_request_constructor());
     obj.set(String::from("Response"), fetch::make_response_constructor());
 
@@ -442,6 +472,17 @@ pub fn make_window(
         String::from("getSelection"),
         native_fn("getSelection", win_get_selection),
     );
+    let css = JsValue::new_object();
+    css.set_property(
+        String::from("supports"),
+        native_fn("supports", win_css_supports),
+    );
+    css.set_property(String::from("escape"), native_fn("escape", win_css_escape));
+    css.set_property(
+        String::from("registerProperty"),
+        native_fn("registerProperty", win_noop),
+    );
+    obj.set(String::from("CSS"), css);
 
     // Observer stubs.
     obj.set(
@@ -537,7 +578,10 @@ pub fn make_window(
         native_ctor_fn("AbortController", win_abort_controller),
     );
     let abort_signal_ctor = native_ctor_fn("AbortSignal", win_abort_signal);
-    abort_signal_ctor.set_property(String::from("abort"), native_fn("abort", win_abort_signal_abort));
+    abort_signal_ctor.set_property(
+        String::from("abort"),
+        native_fn("abort", win_abort_signal_abort),
+    );
     abort_signal_ctor.set_property(
         String::from("timeout"),
         native_fn("timeout", win_abort_signal_timeout),
@@ -664,7 +708,12 @@ pub fn make_window(
     obj.set(String::from("CharacterData"), character_data_ctor);
     obj.set(
         String::from("CDATASection"),
-        make_native_constructor(vm, "CDATASection", win_dom_ctor, character_data_proto.clone()),
+        make_native_constructor(
+            vm,
+            "CDATASection",
+            win_dom_ctor,
+            character_data_proto.clone(),
+        ),
     );
     obj.set(
         String::from("ProcessingInstruction"),
@@ -680,18 +729,43 @@ pub fn make_window(
     obj.set(String::from("Comment"), comment_ctor);
     obj.set(String::from("Element"), element_ctor);
     obj.set(String::from("HTMLElement"), html_element_ctor);
-    install_html_element_constructor(vm, &mut obj, "HTMLAnchorElement", html_element_proto.clone());
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLAnchorElement",
+        html_element_proto.clone(),
+    );
     install_html_element_constructor(vm, &mut obj, "HTMLAreaElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLBodyElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLBRElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLButtonElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLCanvasElement", html_element_proto.clone());
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLButtonElement",
+        html_element_proto.clone(),
+    );
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLCanvasElement",
+        html_element_proto.clone(),
+    );
     install_html_element_constructor(vm, &mut obj, "HTMLDivElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLFormElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLHeadElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLHeadingElement", html_element_proto.clone());
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLHeadingElement",
+        html_element_proto.clone(),
+    );
     install_html_element_constructor(vm, &mut obj, "HTMLHtmlElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLIFrameElement", html_element_proto.clone());
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLIFrameElement",
+        html_element_proto.clone(),
+    );
     install_html_element_constructor(vm, &mut obj, "HTMLImageElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLInputElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLLabelElement", html_element_proto.clone());
@@ -701,20 +775,65 @@ pub fn make_window(
     install_html_element_constructor(vm, &mut obj, "HTMLMetaElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLAudioElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLVideoElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLSourceElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLPictureElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLOptionElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLParagraphElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLScriptElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLSelectElement", html_element_proto.clone());
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLSourceElement",
+        html_element_proto.clone(),
+    );
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLPictureElement",
+        html_element_proto.clone(),
+    );
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLOptionElement",
+        html_element_proto.clone(),
+    );
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLParagraphElement",
+        html_element_proto.clone(),
+    );
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLScriptElement",
+        html_element_proto.clone(),
+    );
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLSelectElement",
+        html_element_proto.clone(),
+    );
     install_html_element_constructor(vm, &mut obj, "HTMLSlotElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLSpanElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLStyleElement", html_element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "HTMLTableElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLTemplateElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLTextAreaElement", html_element_proto.clone());
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLTemplateElement",
+        html_element_proto.clone(),
+    );
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLTextAreaElement",
+        html_element_proto.clone(),
+    );
     install_html_element_constructor(vm, &mut obj, "HTMLUListElement", html_element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLUnknownElement", html_element_proto.clone());
+    install_html_element_constructor(
+        vm,
+        &mut obj,
+        "HTMLUnknownElement",
+        html_element_proto.clone(),
+    );
     install_html_element_constructor(vm, &mut obj, "SVGElement", element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "SVGSVGElement", element_proto.clone());
     install_html_element_constructor(vm, &mut obj, "SVGGraphicsElement", element_proto.clone());
@@ -1146,6 +1265,65 @@ fn win_match_media(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         native_fn("removeEventListener", win_noop),
     );
     mql
+}
+
+fn win_css_supports(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let prop = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let value = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    if prop.is_empty() {
+        return JsValue::Bool(false);
+    }
+    let prop = prop.trim().to_ascii_lowercase();
+    let value = value.trim().to_ascii_lowercase();
+    let supported = match prop.as_str() {
+        "display" => matches!(
+            value.as_str(),
+            "block"
+                | "inline"
+                | "inline-block"
+                | "none"
+                | "flex"
+                | "inline-flex"
+                | "grid"
+                | "inline-grid"
+        ),
+        "position" => matches!(
+            value.as_str(),
+            "static" | "relative" | "absolute" | "fixed" | "sticky"
+        ),
+        "animation-timing-function" => {
+            value.starts_with("linear(")
+                || value.starts_with("cubic-bezier(")
+                || matches!(
+                    value.as_str(),
+                    "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out"
+                )
+        }
+        "color" | "background-color" | "opacity" | "transform" | "filter" => !value.is_empty(),
+        _ => false,
+    };
+    JsValue::Bool(supported)
+}
+
+fn win_css_escape(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let input = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    if input.is_empty() {
+        return JsValue::String(String::new());
+    }
+    let mut out = String::new();
+    for (idx, ch) in input.chars().enumerate() {
+        let is_ident = ch == '_' || ch == '-' || ch.is_ascii_alphanumeric() || (ch as u32) >= 0x80;
+        if idx == 0 && ch.is_ascii_digit() {
+            out.push('\\');
+            out.push(ch);
+        } else if is_ident {
+            out.push(ch);
+        } else {
+            out.push('\\');
+            out.push(ch);
+        }
+    }
+    JsValue::String(out)
 }
 
 fn current_viewport(vm: &mut Vm) -> (u32, u32) {
@@ -2058,16 +2236,19 @@ fn win_message_channel(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
             // by creating a wrapper native function that calls the peer callback.
             // Simpler: just fire the callback immediately — React only needs
             // the deferral, and our tick() runs on the next frame anyway.
-            super::push_pending_timer(&mut bridge.timers, super::PendingTimer {
-                id,
-                callback,
-                this_arg: peer,
-                args: alloc::vec![msg_evt],
-                delay_ms: 0,
-                repeat: false,
-                elapsed_ms: 0,
-                is_raf: false,
-            });
+            super::push_pending_timer(
+                &mut bridge.timers,
+                super::PendingTimer {
+                    id,
+                    callback,
+                    this_arg: peer,
+                    args: alloc::vec![msg_evt],
+                    delay_ms: 0,
+                    repeat: false,
+                    elapsed_ms: 0,
+                    is_raf: false,
+                },
+            );
         }
         JsValue::Undefined
     }
@@ -2140,8 +2321,14 @@ fn make_readable_stream_object() -> JsValue {
         String::from("getReader"),
         native_fn("getReader", |_vm, _args| {
             let reader = JsValue::new_object();
-            reader.set_property(String::from("closed"), promise_resolve_value(_vm, JsValue::Undefined));
-            reader.set_property(String::from("read"), native_fn("read", readable_reader_read));
+            reader.set_property(
+                String::from("closed"),
+                promise_resolve_value(_vm, JsValue::Undefined),
+            );
+            reader.set_property(
+                String::from("read"),
+                native_fn("read", readable_reader_read),
+            );
             reader.set_property(
                 String::from("releaseLock"),
                 native_fn("releaseLock", win_noop),
@@ -2202,12 +2389,15 @@ fn make_writable_stream_object() -> JsValue {
         String::from("getWriter"),
         native_fn("getWriter", |vm, _args| {
             let writer = JsValue::new_object();
-            writer.set_property(String::from("closed"), promise_resolve_value(vm, JsValue::Undefined));
-            writer.set_property(String::from("ready"), promise_resolve_value(vm, JsValue::Undefined));
             writer.set_property(
-                String::from("desiredSize"),
-                JsValue::Number(1.0),
+                String::from("closed"),
+                promise_resolve_value(vm, JsValue::Undefined),
             );
+            writer.set_property(
+                String::from("ready"),
+                promise_resolve_value(vm, JsValue::Undefined),
+            );
+            writer.set_property(String::from("desiredSize"), JsValue::Number(1.0));
             writer.set_property(
                 String::from("write"),
                 native_fn("write", stream_resolved_undefined),
@@ -2389,7 +2579,10 @@ fn win_abort_signal(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn win_abort_signal_abort(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let reason = args.first().cloned().unwrap_or_else(|| JsValue::String(String::from("AbortError")));
+    let reason = args
+        .first()
+        .cloned()
+        .unwrap_or_else(|| JsValue::String(String::from("AbortError")));
     make_abort_signal(true, reason)
 }
 
@@ -2418,7 +2611,10 @@ fn win_abort_controller(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
             if let JsValue::Object(o) = &vm.current_this {
                 let sig = o.borrow().get("signal");
                 sig.set_property(String::from("aborted"), JsValue::Bool(true));
-                sig.set_property(String::from("reason"), JsValue::String(String::from("AbortError")));
+                sig.set_property(
+                    String::from("reason"),
+                    JsValue::String(String::from("AbortError")),
+                );
             }
             JsValue::Undefined
         }),
@@ -2441,11 +2637,15 @@ fn win_blob(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     blob.set_property(String::from("type"), JsValue::String(typ));
     blob.set_property(
         String::from("text"),
-        native_fn("text", |vm, _| promise_resolve_value(vm, JsValue::String(String::new()))),
+        native_fn("text", |vm, _| {
+            promise_resolve_value(vm, JsValue::String(String::new()))
+        }),
     );
     blob.set_property(
         String::from("arrayBuffer"),
-        native_fn("arrayBuffer", |vm, _| promise_resolve_value(vm, JsValue::new_array(Vec::new()))),
+        native_fn("arrayBuffer", |vm, _| {
+            promise_resolve_value(vm, JsValue::new_array(Vec::new()))
+        }),
     );
     blob.set_property(
         String::from("slice"),

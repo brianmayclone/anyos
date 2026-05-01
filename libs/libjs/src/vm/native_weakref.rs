@@ -265,9 +265,7 @@ pub fn fr_unregister(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         token,
         JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
     ) {
-        let err = vm.make_type_error(
-            "FinalizationRegistry.unregister token must be an object",
-        );
+        let err = vm.make_type_error("FinalizationRegistry.unregister token must be an object");
         vm.throw_native(err);
         return JsValue::Undefined;
     }

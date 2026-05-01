@@ -174,15 +174,16 @@ fn this_string_value(vm: &mut Vm) -> Option<String> {
                 Some(prim) => match *prim {
                     JsValue::String(s) => Some(s),
                     _ => {
-                        let err =
-                            vm.make_type_error("String.prototype method called on incompatible receiver");
+                        let err = vm.make_type_error(
+                            "String.prototype method called on incompatible receiver",
+                        );
                         vm.throw_native(err);
                         None
                     }
                 },
                 _ => {
-                    let err =
-                        vm.make_type_error("String.prototype method called on incompatible receiver");
+                    let err = vm
+                        .make_type_error("String.prototype method called on incompatible receiver");
                     vm.throw_native(err);
                     None
                 }
@@ -610,7 +611,11 @@ pub fn string_substr(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         0
     } else if raw_start < 0.0 {
         let from_end = len as f64 + raw_start;
-        if from_end <= 0.0 { 0 } else { from_end as usize }
+        if from_end <= 0.0 {
+            0
+        } else {
+            from_end as usize
+        }
     } else {
         (raw_start as usize).min(len)
     };
@@ -772,7 +777,8 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn string_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // Per ES §22.1.3.17: GetMethod(searchValue, @@replace).
-    if let Some(r) = dispatch_string_well_known(vm, args, super::native_symbol::WELL_KNOWN_REPLACE) {
+    if let Some(r) = dispatch_string_well_known(vm, args, super::native_symbol::WELL_KNOWN_REPLACE)
+    {
         return r;
     }
     // Check if search is a RegExp
@@ -820,7 +826,8 @@ pub fn string_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn string_replace_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // Per ES §22.1.3.18: GetMethod(searchValue, @@replace).
-    if let Some(r) = dispatch_string_well_known(vm, args, super::native_symbol::WELL_KNOWN_REPLACE) {
+    if let Some(r) = dispatch_string_well_known(vm, args, super::native_symbol::WELL_KNOWN_REPLACE)
+    {
         return r;
     }
     // Check if search is a RegExp (must have global flag)

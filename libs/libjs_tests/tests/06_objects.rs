@@ -99,6 +99,16 @@ fn has_own_property() {
     assert!(!bool_("({ a: 1 }).hasOwnProperty('toString')"));
 }
 
+#[test]
+fn object_prototype_chain_terminates_at_null() {
+    assert!(bool_("Object.getPrototypeOf({}) === Object.prototype"));
+    assert!(bool_("Object.getPrototypeOf(Object.prototype) === null"));
+    assert_eq!(
+        num("var p = {}; var n = 0; while (p && n < 10) { p = Object.getPrototypeOf(p); n++; } n"),
+        2.0
+    );
+}
+
 // ── spread in object literals ─────────────────────────────────────────────────
 
 #[test]

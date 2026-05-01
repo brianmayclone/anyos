@@ -133,8 +133,14 @@ pub fn make_request_constructor() -> JsValue {
 /// Create the `Response` constructor function, including common static helpers.
 pub fn make_response_constructor() -> JsValue {
     let ctor = native_ctor_fn("Response", native_response_ctor);
-    ctor.set_property(String::from("json"), native_fn("json", response_static_json));
-    ctor.set_property(String::from("error"), native_fn("error", response_static_error));
+    ctor.set_property(
+        String::from("json"),
+        native_fn("json", response_static_json),
+    );
+    ctor.set_property(
+        String::from("error"),
+        native_fn("error", response_static_error),
+    );
     ctor.set_property(
         String::from("redirect"),
         native_fn("redirect", response_static_redirect),
@@ -177,19 +183,34 @@ pub fn native_request_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     obj.set(String::from("url"), JsValue::String(base_url));
     obj.set(String::from("__body"), JsValue::String(body));
     obj.set(String::from("bodyUsed"), JsValue::Bool(false));
-    obj.set(String::from("cache"), request_option(&init, "cache", "default"));
+    obj.set(
+        String::from("cache"),
+        request_option(&init, "cache", "default"),
+    );
     obj.set(
         String::from("credentials"),
         request_option(&init, "credentials", "same-origin"),
     );
     obj.set(String::from("destination"), JsValue::String(String::new()));
-    obj.set(String::from("integrity"), request_option(&init, "integrity", ""));
+    obj.set(
+        String::from("integrity"),
+        request_option(&init, "integrity", ""),
+    );
     obj.set(String::from("keepalive"), JsValue::Bool(false));
     obj.set(String::from("mode"), request_option(&init, "mode", "cors"));
-    obj.set(String::from("redirect"), request_option(&init, "redirect", "follow"));
-    obj.set(String::from("referrer"), request_option(&init, "referrer", "about:client"));
+    obj.set(
+        String::from("redirect"),
+        request_option(&init, "redirect", "follow"),
+    );
+    obj.set(
+        String::from("referrer"),
+        request_option(&init, "referrer", "about:client"),
+    );
     obj.set(String::from("signal"), request_signal(&init));
-    obj.set(String::from("headers"), native_headers_ctor(_vm, &[headers_init]));
+    obj.set(
+        String::from("headers"),
+        native_headers_ctor(_vm, &[headers_init]),
+    );
     obj.set(String::from("clone"), native_fn("clone", request_clone));
     obj.set(String::from("text"), native_fn("text", request_text));
     obj.set(String::from("json"), native_fn("json", request_json));
@@ -255,7 +276,10 @@ pub fn native_response_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     } else {
         JsValue::Undefined
     };
-    resp.set_property(String::from("headers"), native_headers_ctor(_vm, &[headers_init]));
+    resp.set_property(
+        String::from("headers"),
+        native_headers_ctor(_vm, &[headers_init]),
+    );
     resp
 }
 

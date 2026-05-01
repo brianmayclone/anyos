@@ -4,11 +4,11 @@
 //! - `GetIterator(val)`: calls `val[Symbol.iterator]()` to get an iterator object
 //! - `IteratorNext(iter)`: calls `iter.next()` to get `{ value, done }`
 
+use alloc::collections::BTreeSet;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use alloc::collections::BTreeSet;
 use core::cell::RefCell;
 
 use super::native_fn;
@@ -60,10 +60,16 @@ impl Vm {
             JsValue::Function(func) => {
                 let f = func.borrow();
                 for (key, val) in &f.own_props {
-                    if key.starts_with("__get_") || key.starts_with("__set_") || key.starts_with("__desc_") {
+                    if key.starts_with("__get_")
+                        || key.starts_with("__set_")
+                        || key.starts_with("__desc_")
+                    {
                         continue;
                     }
-                    let enumerable = match f.own_props.get(&alloc::format!("__desc_enumerable_{}", key)) {
+                    let enumerable = match f
+                        .own_props
+                        .get(&alloc::format!("__desc_enumerable_{}", key))
+                    {
                         Some(JsValue::Bool(v)) => *v,
                         _ => true,
                     };
@@ -136,8 +142,9 @@ impl Vm {
                     if has_next || is_internal {
                         return iterator;
                     }
-                    let exc =
-                        self.make_type_error("Symbol.iterator returned an object without a callable next method");
+                    let exc = self.make_type_error(
+                        "Symbol.iterator returned an object without a callable next method",
+                    );
                     self.pending_exception = Some(exc);
                     return self.make_internal_iterator(Vec::new());
                 }
@@ -156,8 +163,9 @@ impl Vm {
                     if next.is_function() {
                         return iterator;
                     }
-                    let exc =
-                        self.make_type_error("Symbol.iterator returned an object without a callable next method");
+                    let exc = self.make_type_error(
+                        "Symbol.iterator returned an object without a callable next method",
+                    );
                     self.pending_exception = Some(exc);
                     return self.make_internal_iterator(Vec::new());
                 }
@@ -248,7 +256,9 @@ impl Vm {
                     }
                     if !next_fn.is_function() {
                         self.pending_exception =
-                            Some(self.make_type_error("Iterator protocol violation: missing next method"));
+                            Some(self.make_type_error(
+                                "Iterator protocol violation: missing next method",
+                            ));
                         return (JsValue::Undefined, false);
                     }
                     // Call next() with this=iterator
@@ -265,9 +275,9 @@ impl Vm {
                         return (JsValue::Undefined, false);
                     }
                     if !result.is_object() && !result.is_array() && !result.is_function() {
-                        self.pending_exception = Some(
-                            self.make_type_error("Iterator protocol violation: next() returned a non-object value"),
-                        );
+                        self.pending_exception = Some(self.make_type_error(
+                            "Iterator protocol violation: next() returned a non-object value",
+                        ));
                         return (JsValue::Undefined, false);
                     }
 
@@ -350,7 +360,9 @@ impl Vm {
                     }
                     if !next_fn.is_function() {
                         self.pending_exception =
-                            Some(self.make_type_error("Iterator protocol violation: missing next method"));
+                            Some(self.make_type_error(
+                                "Iterator protocol violation: missing next method",
+                            ));
                         return (JsValue::Undefined, false);
                     }
                     let result = self.call_value(&next_fn, &[], iter.clone());
@@ -365,9 +377,9 @@ impl Vm {
                         return (JsValue::Undefined, false);
                     }
                     if !result.is_object() && !result.is_array() && !result.is_function() {
-                        self.pending_exception = Some(
-                            self.make_type_error("Iterator protocol violation: next() returned a non-object value"),
-                        );
+                        self.pending_exception = Some(self.make_type_error(
+                            "Iterator protocol violation: next() returned a non-object value",
+                        ));
                         return (JsValue::Undefined, false);
                     }
                     let done_val = self.get_property_invoking_getter(&result, "done");
@@ -412,8 +424,14 @@ pub(crate) fn init_iterator_proto(vm: &mut Vm) {
         native_fn("[Symbol.iterator]", iterator_self),
     );
     p.set(String::from("next"), native_fn("next", iterator_next));
-    p.set(String::from("toArray"), native_fn("toArray", iterator_to_array));
-    p.set(String::from("forEach"), native_fn("forEach", iterator_for_each));
+    p.set(
+        String::from("toArray"),
+        native_fn("toArray", iterator_to_array),
+    );
+    p.set(
+        String::from("forEach"),
+        native_fn("forEach", iterator_for_each),
+    );
     p.set(String::from("map"), native_fn("map", iterator_map));
     p.set(String::from("filter"), native_fn("filter", iterator_filter));
     p.set(String::from("take"), native_fn("take", iterator_take));
@@ -422,7 +440,10 @@ pub(crate) fn init_iterator_proto(vm: &mut Vm) {
     p.set(String::from("every"), native_fn("every", iterator_every));
     p.set(String::from("find"), native_fn("find", iterator_find));
     p.set(String::from("reduce"), native_fn("reduce", iterator_reduce));
-    p.set(String::from("flatMap"), native_fn("flatMap", iterator_flat_map));
+    p.set(
+        String::from("flatMap"),
+        native_fn("flatMap", iterator_flat_map),
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -445,9 +466,7 @@ fn drain_iterator(vm: &mut Vm, iter: &JsValue) -> Vec<JsValue> {
                 if let JsValue::Array(arr) = &p.value {
                     let a = arr.borrow();
                     let len = a.length;
-                    let remaining: Vec<JsValue> = (index..len)
-                        .map(|i| a.get(i))
-                        .collect();
+                    let remaining: Vec<JsValue> = (index..len).map(|i| a.get(i)).collect();
                     drop(a);
                     drop(o);
                     // Advance index to end.
@@ -477,9 +496,9 @@ fn drain_iterator(vm: &mut Vm, iter: &JsValue) -> Vec<JsValue> {
             break;
         }
         if !result.is_object() && !result.is_array() && !result.is_function() {
-            vm.pending_exception = Some(
-                vm.make_type_error("Iterator protocol violation: next() returned a non-object value"),
-            );
+            vm.pending_exception = Some(vm.make_type_error(
+                "Iterator protocol violation: next() returned a non-object value",
+            ));
             break;
         }
         let done = vm.get_property_with_proto(&result, "done").to_boolean();
@@ -540,7 +559,11 @@ pub fn iterator_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iter = vm.current_this.clone();
     let items = drain_iterator(vm, &iter);
     for (i, v) in items.iter().enumerate() {
-        vm.call_value(&callback, &[v.clone(), JsValue::Number(i as f64)], JsValue::Undefined);
+        vm.call_value(
+            &callback,
+            &[v.clone(), JsValue::Number(i as f64)],
+            JsValue::Undefined,
+        );
     }
     JsValue::Undefined
 }
@@ -553,7 +576,13 @@ pub fn iterator_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mapped: Vec<JsValue> = items
         .iter()
         .enumerate()
-        .map(|(i, v)| vm.call_value(&callback, &[v.clone(), JsValue::Number(i as f64)], JsValue::Undefined))
+        .map(|(i, v)| {
+            vm.call_value(
+                &callback,
+                &[v.clone(), JsValue::Number(i as f64)],
+                JsValue::Undefined,
+            )
+        })
         .collect();
     vm.make_internal_iterator(mapped)
 }
@@ -567,8 +596,12 @@ pub fn iterator_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         .into_iter()
         .enumerate()
         .filter(|(i, v)| {
-            vm.call_value(&callback, &[v.clone(), JsValue::Number(*i as f64)], JsValue::Undefined)
-                .to_boolean()
+            vm.call_value(
+                &callback,
+                &[v.clone(), JsValue::Number(*i as f64)],
+                JsValue::Undefined,
+            )
+            .to_boolean()
         })
         .map(|(_, v)| v)
         .collect();
@@ -599,7 +632,14 @@ pub fn iterator_some(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iter = vm.current_this.clone();
     let items = drain_iterator(vm, &iter);
     for (i, v) in items.iter().enumerate() {
-        if vm.call_value(&callback, &[v.clone(), JsValue::Number(i as f64)], JsValue::Undefined).to_boolean() {
+        if vm
+            .call_value(
+                &callback,
+                &[v.clone(), JsValue::Number(i as f64)],
+                JsValue::Undefined,
+            )
+            .to_boolean()
+        {
             return JsValue::Bool(true);
         }
     }
@@ -612,7 +652,14 @@ pub fn iterator_every(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iter = vm.current_this.clone();
     let items = drain_iterator(vm, &iter);
     for (i, v) in items.iter().enumerate() {
-        if !vm.call_value(&callback, &[v.clone(), JsValue::Number(i as f64)], JsValue::Undefined).to_boolean() {
+        if !vm
+            .call_value(
+                &callback,
+                &[v.clone(), JsValue::Number(i as f64)],
+                JsValue::Undefined,
+            )
+            .to_boolean()
+        {
             return JsValue::Bool(false);
         }
     }
@@ -625,7 +672,14 @@ pub fn iterator_find(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iter = vm.current_this.clone();
     let items = drain_iterator(vm, &iter);
     for (i, v) in items.iter().enumerate() {
-        if vm.call_value(&callback, &[v.clone(), JsValue::Number(i as f64)], JsValue::Undefined).to_boolean() {
+        if vm
+            .call_value(
+                &callback,
+                &[v.clone(), JsValue::Number(i as f64)],
+                JsValue::Undefined,
+            )
+            .to_boolean()
+        {
             return v.clone();
         }
     }
@@ -646,7 +700,11 @@ pub fn iterator_reduce(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     });
     let start = if args.len() >= 2 { 0 } else { 1 };
     for (i, v) in items.iter().enumerate().skip(start) {
-        acc = vm.call_value(&callback, &[acc, v.clone(), JsValue::Number(i as f64)], JsValue::Undefined);
+        acc = vm.call_value(
+            &callback,
+            &[acc, v.clone(), JsValue::Number(i as f64)],
+            JsValue::Undefined,
+        );
     }
     acc
 }
@@ -658,7 +716,11 @@ pub fn iterator_flat_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let items = drain_iterator(vm, &iter);
     let mut result = Vec::new();
     for (i, v) in items.iter().enumerate() {
-        let mapped = vm.call_value(&callback, &[v.clone(), JsValue::Number(i as f64)], JsValue::Undefined);
+        let mapped = vm.call_value(
+            &callback,
+            &[v.clone(), JsValue::Number(i as f64)],
+            JsValue::Undefined,
+        );
         match &mapped {
             JsValue::Array(arr) => {
                 result.extend(arr.borrow().to_dense_vec());

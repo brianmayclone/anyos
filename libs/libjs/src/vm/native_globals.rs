@@ -298,7 +298,9 @@ fn strict_code_contains_with(stmts: &[Stmt], inherited_strict: bool) -> bool {
             is_strict = true;
         }
     }
-    stmts.iter().any(|stmt| stmt_contains_strict_with(stmt, is_strict))
+    stmts
+        .iter()
+        .any(|stmt| stmt_contains_strict_with(stmt, is_strict))
 }
 
 fn stmt_contains_strict_with(stmt: &Stmt, is_strict: bool) -> bool {
@@ -316,12 +318,12 @@ fn stmt_contains_strict_with(stmt: &Stmt, is_strict: bool) -> bool {
                     .map(|alt| stmt_contains_strict_with(alt, is_strict))
                     .unwrap_or(false)
         }
-        Stmt::While { body, .. }
-        | Stmt::DoWhile { body, .. }
-        | Stmt::Labeled { body, .. } => stmt_contains_strict_with(body, is_strict),
-        Stmt::For { body, .. }
-        | Stmt::ForIn { body, .. }
-        | Stmt::ForOf { body, .. } => stmt_contains_strict_with(body, is_strict),
+        Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::Labeled { body, .. } => {
+            stmt_contains_strict_with(body, is_strict)
+        }
+        Stmt::For { body, .. } | Stmt::ForIn { body, .. } | Stmt::ForOf { body, .. } => {
+            stmt_contains_strict_with(body, is_strict)
+        }
         Stmt::Switch { cases, .. } => cases
             .iter()
             .flat_map(|c| c.consequent.iter())
@@ -355,9 +357,11 @@ fn stmt_contains_strict_with(stmt: &Stmt, is_strict: bool) -> bool {
 
 fn expr_contains_strict_with(expr: &Expr, is_strict: bool) -> bool {
     match expr {
-        Expr::FunctionExpr { body, .. } | Expr::Arrow { body: ArrowBody::Block(body), .. } => {
-            strict_code_contains_with(body, is_strict)
-        }
+        Expr::FunctionExpr { body, .. }
+        | Expr::Arrow {
+            body: ArrowBody::Block(body),
+            ..
+        } => strict_code_contains_with(body, is_strict),
         Expr::Arrow {
             body: ArrowBody::Expr(expr),
             ..
@@ -383,8 +387,7 @@ fn expr_contains_strict_with(expr: &Expr, is_strict: bool) -> bool {
         | Expr::Void(expr)
         | Expr::Typeof(expr)
         | Expr::Delete(expr) => expr_contains_strict_with(expr, is_strict),
-        Expr::Call { callee, arguments }
-        | Expr::New { callee, arguments } => {
+        Expr::Call { callee, arguments } | Expr::New { callee, arguments } => {
             expr_contains_strict_with(callee, is_strict)
                 || arguments
                     .iter()
@@ -419,7 +422,9 @@ fn expr_contains_strict_with(expr: &Expr, is_strict: bool) -> bool {
                 || expr_contains_strict_with(consequent, is_strict)
                 || expr_contains_strict_with(alternate, is_strict)
         }
-        Expr::Sequence(exprs) => exprs.iter().any(|e| expr_contains_strict_with(e, is_strict)),
+        Expr::Sequence(exprs) => exprs
+            .iter()
+            .any(|e| expr_contains_strict_with(e, is_strict)),
         Expr::ClassExpr { body, .. } => body.iter().any(|member| {
             let key_has_with = match &member.key {
                 PropKey::Computed(expr) => expr_contains_strict_with(expr, true),

@@ -21,7 +21,10 @@ pub fn json_stringify(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // before any value serialization runs.
     let mut replacer_fn: Option<JsValue> = None;
     let mut property_list: Option<alloc::vec::Vec<String>> = None;
-    if matches!(replacer, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+    if matches!(
+        replacer,
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
+    ) {
         if matches!(replacer, JsValue::Function(_)) {
             replacer_fn = Some(replacer.clone());
         } else {
@@ -483,8 +486,7 @@ pub fn json_parse(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if matches!(reviver, JsValue::Function(_)) {
         let root = JsValue::new_object();
         root.set_property(String::new(), val);
-        return internalize_json_property(vm, &root, "", &reviver)
-            .unwrap_or(JsValue::Undefined);
+        return internalize_json_property(vm, &root, "", &reviver).unwrap_or(JsValue::Undefined);
     }
     val
 }
@@ -523,8 +525,7 @@ fn internalize_json_property(
             };
             for i in 0..len {
                 let key = alloc::format!("{}", i);
-                let new_element =
-                    internalize_json_property(vm, &val, &key, reviver)?;
+                let new_element = internalize_json_property(vm, &val, &key, reviver)?;
                 if matches!(new_element, JsValue::Undefined) {
                     if !vm.delete_property_or_throw(&val, &key) {
                         return None;
@@ -547,8 +548,7 @@ fn internalize_json_property(
                 return None;
             }
             for key in keys {
-                let new_element =
-                    internalize_json_property(vm, &val, &key, reviver)?;
+                let new_element = internalize_json_property(vm, &val, &key, reviver)?;
                 if matches!(new_element, JsValue::Undefined) {
                     if !vm.delete_property_or_throw(&val, &key) {
                         return None;

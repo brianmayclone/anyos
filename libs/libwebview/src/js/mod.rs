@@ -537,26 +537,26 @@ fn apply_react_motion_final_styles(
     let y = final_style.get_property("y");
     let final_transform =
         if (!x.is_undefined() && !x.is_null()) || (!y.is_undefined() && !y.is_null()) {
-        let tx = if x.is_undefined() || x.is_null() {
-            0.0
+            let tx = if x.is_undefined() || x.is_null() {
+                0.0
+            } else {
+                x.to_number()
+            };
+            let ty = if y.is_undefined() || y.is_null() {
+                0.0
+            } else {
+                y.to_number()
+            };
+            let value = alloc::format!("translate({}px, {}px)", tx as i32, ty as i32);
+            mutations.push(DomMutation::SetStyleProperty {
+                node_id,
+                property: String::from("transform"),
+                value: value.clone(),
+            });
+            Some(value)
         } else {
-            x.to_number()
+            None
         };
-        let ty = if y.is_undefined() || y.is_null() {
-            0.0
-        } else {
-            y.to_number()
-        };
-        let value = alloc::format!("translate({}px, {}px)", tx as i32, ty as i32);
-        mutations.push(DomMutation::SetStyleProperty {
-            node_id,
-            property: String::from("transform"),
-            value: value.clone(),
-        });
-        Some(value)
-    } else {
-        None
-    };
 
     if final_opacity.is_some() || final_transform.is_some() {
         let final_styles = unsafe {
@@ -567,7 +567,10 @@ fn apply_react_motion_final_styles(
             }
         };
         if let Some(final_styles) = final_styles {
-            if let Some(existing) = final_styles.iter_mut().find(|entry| entry.node_id == node_id) {
+            if let Some(existing) = final_styles
+                .iter_mut()
+                .find(|entry| entry.node_id == node_id)
+            {
                 if final_opacity.is_some() {
                     existing.opacity = final_opacity;
                 }
@@ -1465,7 +1468,12 @@ impl JsRuntime {
     /// * `url` — the current page URL, used to populate `window.location` /
     ///   `document.location` inside the JS environment.
     pub fn execute_script_sources(&mut self, dom: &Dom, url: &str, scripts: &[String]) {
-        self.execute_script_sources_with_limits(dom, url, scripts, ScriptExecutionLimits::default());
+        self.execute_script_sources_with_limits(
+            dom,
+            url,
+            scripts,
+            ScriptExecutionLimits::default(),
+        );
     }
 
     pub fn execute_script_sources_with_limits(
@@ -1994,10 +2002,24 @@ impl JsRuntime {
             "sessionStorage",
             "navigator",
             "screen",
+            "visualViewport",
             "matchMedia",
+            "CSS",
             "getSelection",
             "scrollTo",
             "scrollBy",
+            "addEventListener",
+            "removeEventListener",
+            "dispatchEvent",
+            "__shady_native_addEventListener",
+            "__shady_native_removeEventListener",
+            "__shady_native_dispatchEvent",
+            "setTimeout",
+            "setInterval",
+            "clearTimeout",
+            "clearInterval",
+            "requestAnimationFrame",
+            "cancelAnimationFrame",
             "atob",
             "btoa",
             "fetch",
@@ -2048,7 +2070,10 @@ impl JsRuntime {
         js_trace!("[js] setup native api: timer globals begin");
         vm.set_global("setTimeout", native_fn("setTimeout", native_set_timeout));
         vm.set_global("setInterval", native_fn("setInterval", native_set_interval));
-        vm.set_global("setImmediate", native_fn("setImmediate", native_set_immediate));
+        vm.set_global(
+            "setImmediate",
+            native_fn("setImmediate", native_set_immediate),
+        );
         vm.set_global(
             "clearTimeout",
             native_fn("clearTimeout", native_clear_timeout),
@@ -2624,11 +2649,12 @@ impl JsRuntime {
             .event_listeners
             .iter()
             .any(|l| l.node_id == usize::MAX && l.event == event_name);
-        let has_any = has_window || path.iter().any(|&nid| {
-            self.event_listeners
-                .iter()
-                .any(|l| l.node_id == nid && l.event == event_name)
-        });
+        let has_any = has_window
+            || path.iter().any(|&nid| {
+                self.event_listeners
+                    .iter()
+                    .any(|l| l.node_id == nid && l.event == event_name)
+            });
         if !has_any {
             return true;
         }
@@ -2865,12 +2891,7 @@ impl JsRuntime {
     /// Advance timers by `delta_ms`, executing at most `max_callbacks` due
     /// callbacks. Due timers beyond the budget remain queued for the next host
     /// tick so timer-heavy pages cannot monopolize the UI thread.
-    pub fn tick_with_budget(
-        &mut self,
-        dom: &Dom,
-        delta_ms: u64,
-        max_callbacks: usize,
-    ) -> usize {
+    pub fn tick_with_budget(&mut self, dom: &Dom, delta_ms: u64, max_callbacks: usize) -> usize {
         self.total_elapsed_ms += delta_ms;
 
         // Short-circuit: no allocation or work when there are no timers.
@@ -2916,18 +2937,17 @@ impl JsRuntime {
                     pending_ws_sends: Vec::new(),
                     pending_ws_closes: Vec::new(),
                     ws_registry: Vec::new(),
-            remove_listeners: Vec::new(),
-            pending_style_animations: Vec::new(),
-            motion_final_styles: Vec::new(),
-        };
+                    remove_listeners: Vec::new(),
+                    pending_style_animations: Vec::new(),
+                    motion_final_styles: Vec::new(),
+                };
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
                 unsafe {
                     MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
                     VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
-                    NAVIGATION_TARGET =
-                        &mut bridge.pending_navigation_requests as *mut Vec<PendingNavigationRequest>;
-                    EVENT_LISTENERS_TARGET =
-                        &mut bridge.event_listeners as *mut Vec<EventListener>;
+                    NAVIGATION_TARGET = &mut bridge.pending_navigation_requests
+                        as *mut Vec<PendingNavigationRequest>;
+                    EVENT_LISTENERS_TARGET = &mut bridge.event_listeners as *mut Vec<EventListener>;
                     MOTION_FINAL_STYLES_TARGET =
                         &mut bridge.motion_final_styles as *mut Vec<MotionFinalStyle>;
                 }
@@ -4551,16 +4571,19 @@ fn native_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
             eprintln!("[js-dom-debug] setTimeout id={} delay={}", id, delay);
         }
-        push_pending_timer(&mut bridge.timers, PendingTimer {
-            id,
-            callback,
-            this_arg: JsValue::Undefined,
-            args: args.iter().skip(2).cloned().collect(),
-            delay_ms: delay,
-            repeat: false,
-            elapsed_ms: 0,
-            is_raf: false,
-        });
+        push_pending_timer(
+            &mut bridge.timers,
+            PendingTimer {
+                id,
+                callback,
+                this_arg: JsValue::Undefined,
+                args: args.iter().skip(2).cloned().collect(),
+                delay_ms: delay,
+                repeat: false,
+                elapsed_ms: 0,
+                is_raf: false,
+            },
+        );
         return JsValue::Number(id as f64);
     }
     JsValue::Number(0.0)
@@ -4579,16 +4602,19 @@ fn native_set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
             eprintln!("[js-dom-debug] setInterval id={} delay={}", id, delay);
         }
-        push_pending_timer(&mut bridge.timers, PendingTimer {
-            id,
-            callback,
-            this_arg: JsValue::Undefined,
-            args: args.iter().skip(2).cloned().collect(),
-            delay_ms: delay,
-            repeat: true,
-            elapsed_ms: 0,
-            is_raf: false,
-        });
+        push_pending_timer(
+            &mut bridge.timers,
+            PendingTimer {
+                id,
+                callback,
+                this_arg: JsValue::Undefined,
+                args: args.iter().skip(2).cloned().collect(),
+                delay_ms: delay,
+                repeat: true,
+                elapsed_ms: 0,
+                is_raf: false,
+            },
+        );
         return JsValue::Number(id as f64);
     }
     JsValue::Number(0.0)
@@ -4603,16 +4629,19 @@ fn native_set_immediate(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
             eprintln!("[js-dom-debug] setImmediate id={}", id);
         }
-        push_pending_timer(&mut bridge.timers, PendingTimer {
-            id,
-            callback,
-            this_arg: JsValue::Undefined,
-            args: args.iter().skip(1).cloned().collect(),
-            delay_ms: 0,
-            repeat: false,
-            elapsed_ms: 0,
-            is_raf: false,
-        });
+        push_pending_timer(
+            &mut bridge.timers,
+            PendingTimer {
+                id,
+                callback,
+                this_arg: JsValue::Undefined,
+                args: args.iter().skip(1).cloned().collect(),
+                delay_ms: 0,
+                repeat: false,
+                elapsed_ms: 0,
+                is_raf: false,
+            },
+        );
         return JsValue::Number(id as f64);
     }
     JsValue::Number(0.0)
@@ -4640,16 +4669,19 @@ fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if std::env::var_os("SURF_DEBUG_TIMERS").is_some() {
             eprintln!("[js-dom-debug] requestAnimationFrame id={}", id);
         }
-        push_pending_timer(&mut bridge.timers, PendingTimer {
-            id,
-            callback,
-            this_arg: JsValue::Undefined,
-            args: Vec::new(),
-            delay_ms: 16,
-            repeat: false,
-            elapsed_ms: 0,
-            is_raf: true,
-        });
+        push_pending_timer(
+            &mut bridge.timers,
+            PendingTimer {
+                id,
+                callback,
+                this_arg: JsValue::Undefined,
+                args: Vec::new(),
+                delay_ms: 16,
+                repeat: false,
+                elapsed_ms: 0,
+                is_raf: true,
+            },
+        );
         return JsValue::Number(id as f64);
     }
     JsValue::Number(0.0)
@@ -4884,12 +4916,14 @@ fn parse_transform_parts(s: &str) -> Option<TransformParts> {
                 }
             }
             "translatex" => {
-                let (px, pct) = parse_transform_length_component(parts.first().copied().unwrap_or("0"))?;
+                let (px, pct) =
+                    parse_transform_length_component(parts.first().copied().unwrap_or("0"))?;
                 out.tx += px;
                 out.tx_pct += pct;
             }
             "translatey" => {
-                let (px, pct) = parse_transform_length_component(parts.first().copied().unwrap_or("0"))?;
+                let (px, pct) =
+                    parse_transform_length_component(parts.first().copied().unwrap_or("0"))?;
                 out.ty += px;
                 out.ty_pct += pct;
             }
@@ -4903,8 +4937,14 @@ fn parse_transform_parts(s: &str) -> Option<TransformParts> {
                 out.sx = out.sx * sx / 1000;
                 out.sy = out.sy * sy / 1000;
             }
-            "scalex" => out.sx = out.sx * parse_scale_component(parts.first().copied().unwrap_or("1"))? / 1000,
-            "scaley" => out.sy = out.sy * parse_scale_component(parts.first().copied().unwrap_or("1"))? / 1000,
+            "scalex" => {
+                out.sx =
+                    out.sx * parse_scale_component(parts.first().copied().unwrap_or("1"))? / 1000
+            }
+            "scaley" => {
+                out.sy =
+                    out.sy * parse_scale_component(parts.first().copied().unwrap_or("1"))? / 1000
+            }
             "rotate" | "rotatez" => {
                 out.rotate += parse_angle_component(parts.first().copied().unwrap_or("0"))?;
             }

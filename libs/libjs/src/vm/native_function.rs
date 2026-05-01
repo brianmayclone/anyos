@@ -147,8 +147,7 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
                 }
                 FnKind::Bytecode(chunk) => {
                     #[cfg(feature = "host")]
-                    if std::env::var_os("LIBJS_DEBUG_CALLS").is_some() && chunk.code.len() > 1000
-                    {
+                    if std::env::var_os("LIBJS_DEBUG_CALLS").is_some() && chunk.code.len() > 1000 {
                         eprintln!(
                             "[libjs-call] function.call/apply bytecode name={} ops={} args={} this={}",
                             chunk.name.as_deref().unwrap_or("<anon>"),

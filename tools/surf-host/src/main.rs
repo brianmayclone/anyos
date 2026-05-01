@@ -989,15 +989,7 @@ impl BrowserHostApp {
         }
         if self.wv.has_timers() {
             self.wv.run_timers(16);
-            apply_host_js_mutations(&mut self.wv, &self.current_url, &mut self.cookies);
-            if let Some(nav) = self.wv.take_pending_navigation_requests().pop() {
-                let abs = resolve_url(&self.current_url, &nav.url);
-                eprintln!(
-                    "[js-nav] {} to {}",
-                    if nav.replace { "replace" } else { "navigate" },
-                    abs
-                );
-                self.navigate(&abs);
+            if self.drain_js_side_effects() {
                 return;
             }
             self.wv.tick(16);
@@ -1006,6 +998,109 @@ impl BrowserHostApp {
             for line in self.wv.js_console() {
                 eprintln!("[js:console:egui] {}", line);
             }
+        }
+    }
+
+    fn drain_js_side_effects(&mut self) -> bool {
+        apply_host_js_mutations(&mut self.wv, &self.current_url, &mut self.cookies);
+        if let Some(nav) = self.wv.take_pending_navigation_requests().pop() {
+            let abs = resolve_url(&self.current_url, &nav.url);
+            eprintln!(
+                "[js-nav] {} to {}",
+                if nav.replace { "replace" } else { "navigate" },
+                abs
+            );
+            self.navigate(&abs);
+            return true;
+        }
+        false
+    }
+
+    fn submit_form_node(&mut self, node_id: usize) {
+        if !self.wv.dispatch_submit_for_node(node_id) {
+            let _ = self.drain_js_side_effects();
+            return;
+        }
+        if self.drain_js_side_effects() {
+            return;
+        }
+        let Some((action, method, _enctype)) = self.wv.form_action_for_node(node_id) else {
+            return;
+        };
+        let data = self.wv.collect_form_data_for_node(node_id);
+        let query = form_encode(&data);
+        let base = if action.is_empty() {
+            self.current_url.clone()
+        } else {
+            resolve_url(&self.current_url, &action)
+        };
+        let nav_url = if method == "GET" && !query.is_empty() {
+            format!("{}?{}", base, query)
+        } else {
+            base
+        };
+        self.navigate(&nav_url);
+    }
+
+    fn submit_form_control(&mut self, ctrl_id: u32) {
+        let node_id = self
+            .wv
+            .form_controls()
+            .iter()
+            .find(|fc| fc.control_id == ctrl_id)
+            .map(|fc| fc.node_id);
+        if let Some(node_id) = node_id {
+            self.submit_form_node(node_id);
+        }
+    }
+
+    fn handle_page_keyboard(&mut self, ctx: &egui::Context) {
+        let Some((ctrl_id, mut text)) = self.focused_control.take() else {
+            return;
+        };
+        let events = ctx.input(|i| i.events.clone());
+        let mut changed = false;
+        let mut submit = false;
+        for event in events {
+            match event {
+                egui::Event::Text(s) => {
+                    for ch in s.chars() {
+                        if ch != '\r' && ch != '\n' {
+                            text.push(ch);
+                            changed = true;
+                        }
+                    }
+                }
+                egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    pressed: true,
+                    ..
+                } => {
+                    text.pop();
+                    changed = true;
+                }
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                } => {
+                    submit = true;
+                }
+                _ => {}
+            }
+        }
+        if changed {
+            self.wv.set_form_control_text(ctrl_id, &text);
+            self.needs_redraw = true;
+        }
+        if submit {
+            if self.wv.dispatch_enter_for_control(ctrl_id) {
+                self.submit_form_control(ctrl_id);
+            } else {
+                let _ = self.drain_js_side_effects();
+            }
+        } else {
+            self.focused_control = Some((ctrl_id, text));
         }
     }
 
@@ -1083,21 +1178,7 @@ impl BrowserHostApp {
             self.needs_redraw = true;
         } else if let Some(node_id) = self.wv.hit_test_submit_viewport(mx, my, self.scroll_y) {
             self.focused_control = None;
-            if let Some((action, method, _enctype)) = self.wv.form_action_for_node(node_id) {
-                let data = self.wv.collect_form_data_for_node(node_id);
-                let query = form_encode(&data);
-                let base = if action.is_empty() {
-                    self.current_url.clone()
-                } else {
-                    resolve_url(&self.current_url, &action)
-                };
-                let nav_url = if method == "GET" && !query.is_empty() {
-                    format!("{}?{}", base, query)
-                } else {
-                    base
-                };
-                self.navigate(&nav_url);
-            }
+            self.submit_form_node(node_id);
         } else if let Some(href) = self.wv.hit_test_link_viewport(mx, my, self.scroll_y) {
             let href = href.to_string();
             self.focused_control = None;
@@ -1128,7 +1209,11 @@ impl BrowserHostApp {
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.devtools_tab, DevToolsTab::Inspector, "Inspector");
+                    ui.selectable_value(
+                        &mut self.devtools_tab,
+                        DevToolsTab::Inspector,
+                        "Inspector",
+                    );
                     ui.selectable_value(&mut self.devtools_tab, DevToolsTab::Console, "Konsole");
                     ui.selectable_value(&mut self.devtools_tab, DevToolsTab::Network, "Netzwerk");
                 });
@@ -1232,6 +1317,7 @@ impl eframe::App for BrowserHostApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_remote(ctx);
         self.poll_page_work();
+        self.handle_page_keyboard(ctx);
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -3180,7 +3266,8 @@ fn load_resources(
                         }
                         if src.starts_with("data:") {
                             if let Some(font_data) = decode_font_data_uri(src) {
-                                if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
+                                if let Some(font_id) = load_valid_web_font_data(&family, &font_data)
+                                {
                                     eprintln!(
                                         "[surf-host] loaded data font: {} ({} bytes)",
                                         family,
@@ -3755,6 +3842,9 @@ fn run_javascript(
         inline_count,
         external_count
     );
+    prepend_debug_script(&mut scripts, &mut script_urls);
+    patch_debug_event_target_errors(&mut scripts);
+    patch_debug_gbar_dump_exception(&mut scripts);
     dump_debug_script_indexes(&scripts, &script_urls);
 
     let mut seen_modules = HashSet::new();
@@ -3784,6 +3874,44 @@ fn run_javascript(
         eprintln!("[js:console] {}", line);
     }
     changed
+}
+
+fn prepend_debug_script(scripts: &mut Vec<String>, script_urls: &mut Vec<Option<String>>) {
+    let Some(source) = std::env::var_os("SURF_HOST_PRE_SCRIPT") else {
+        return;
+    };
+    let source = source.to_string_lossy().into_owned();
+    if source.trim().is_empty() {
+        return;
+    }
+    scripts.insert(0, source);
+    script_urls.insert(0, None);
+}
+
+fn patch_debug_event_target_errors(scripts: &mut [String]) {
+    if std::env::var_os("SURF_HOST_DEBUG_EVENT_TARGET_ERRORS").is_none() {
+        return;
+    }
+    let needle = "else throw Error(\"la\");";
+    let replacement = "else { var __surfKeys=\"\"; try{__surfKeys=Object.keys(a||{}).slice(0,20).join(\",\")}catch(__surfE){} var __surfCtor=\"\"; try{__surfCtor=a&&a.constructor&&a.constructor.name||typeof a}catch(__surfE){} throw Error(\"la:\"+__surfCtor+\":\"+__surfKeys); }";
+    for script in scripts {
+        if script.contains(needle) {
+            *script = script.replace(needle, replacement);
+        }
+    }
+}
+
+fn patch_debug_gbar_dump_exception(scripts: &mut [String]) {
+    if std::env::var_os("SURF_HOST_DEBUG_GBAR_DUMP_EXCEPTION").is_none() {
+        return;
+    }
+    let needle = "this.gbar_=this.gbar_||{};";
+    let replacement = "this.gbar_=this.gbar_||{};this.gbar_._DumpException=function(e){throw e;};";
+    for script in scripts {
+        if script.contains(needle) {
+            *script = script.replacen(needle, replacement, 1);
+        }
+    }
 }
 
 fn dump_debug_script_indexes(scripts: &[String], script_urls: &[Option<String>]) {

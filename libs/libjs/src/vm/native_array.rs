@@ -6,6 +6,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::cmp::Ordering;
 
 use super::native_proxy;
 use super::native_symbol;
@@ -93,8 +94,7 @@ fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
         0
     } else if !n.is_finite() {
         MAX_SAFE_INTEGER_LEN
-    }
-    else {
+    } else {
         (n as u64).min(MAX_SAFE_INTEGER_LEN as u64) as usize
     }
 }
@@ -138,7 +138,6 @@ pub(crate) fn array_effective_proto_value(vm: &Vm, arr: &JsArray) -> JsValue {
         None => JsValue::Object(vm.array_proto.clone()),
     }
 }
-
 
 /// Coerce `this` to an object and read its `length` once.
 fn this_array_like_len(vm: &mut Vm) -> Option<(JsValue, usize)> {
@@ -530,16 +529,7 @@ pub fn array_sort(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if let Some(cmp) = &comparefn {
             if matches!(cmp, JsValue::Function(_)) {
                 let cmp = cmp.clone();
-                let len = values.len();
-                for i in 0..len {
-                    for j in 0..len.saturating_sub(1 + i) {
-                        let result =
-                            call_callback(vm, &cmp, &[values[j].clone(), values[j + 1].clone()]);
-                        if result.to_number() > 0.0 {
-                            values.swap(j, j + 1);
-                        }
-                    }
-                }
+                sort_values_with_compare(vm, &mut values, &cmp);
             }
         } else {
             values.sort_by(|a, b| {
@@ -563,6 +553,100 @@ pub fn array_sort(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::Array(arr)
     } else {
         JsValue::Undefined
+    }
+}
+
+fn sort_values_with_compare(vm: &mut Vm, values: &mut Vec<JsValue>, cmp: &JsValue) {
+    let len = values.len();
+    if len < 2 {
+        return;
+    }
+    let mut scratch = values.clone();
+    merge_sort_values(vm, values, &mut scratch, 0, len, cmp);
+}
+
+fn merge_sort_values(
+    vm: &mut Vm,
+    values: &mut [JsValue],
+    scratch: &mut [JsValue],
+    lo: usize,
+    hi: usize,
+    cmp: &JsValue,
+) {
+    let len = hi - lo;
+    if len <= 16 {
+        for i in (lo + 1)..hi {
+            let item = values[i].clone();
+            let mut j = i;
+            while j > lo && compare_sort_values(vm, cmp, &values[j - 1], &item) == Ordering::Greater
+            {
+                if vm.pending_exception.is_some() {
+                    return;
+                }
+                values[j] = values[j - 1].clone();
+                j -= 1;
+            }
+            values[j] = item;
+            if vm.pending_exception.is_some() {
+                return;
+            }
+        }
+        return;
+    }
+
+    let mid = lo + len / 2;
+    merge_sort_values(vm, values, scratch, lo, mid, cmp);
+    if vm.pending_exception.is_some() {
+        return;
+    }
+    merge_sort_values(vm, values, scratch, mid, hi, cmp);
+    if vm.pending_exception.is_some() {
+        return;
+    }
+
+    let mut left = lo;
+    let mut right = mid;
+    let mut out = lo;
+    while left < mid && right < hi {
+        if compare_sort_values(vm, cmp, &values[left], &values[right]) != Ordering::Greater {
+            scratch[out] = values[left].clone();
+            left += 1;
+        } else {
+            scratch[out] = values[right].clone();
+            right += 1;
+        }
+        if vm.pending_exception.is_some() {
+            return;
+        }
+        out += 1;
+    }
+    while left < mid {
+        scratch[out] = values[left].clone();
+        left += 1;
+        out += 1;
+    }
+    while right < hi {
+        scratch[out] = values[right].clone();
+        right += 1;
+        out += 1;
+    }
+    for idx in lo..hi {
+        values[idx] = scratch[idx].clone();
+    }
+}
+
+fn compare_sort_values(vm: &mut Vm, cmp: &JsValue, a: &JsValue, b: &JsValue) -> Ordering {
+    let result = call_callback(vm, cmp, &[a.clone(), b.clone()]);
+    if vm.pending_exception.is_some() {
+        return Ordering::Equal;
+    }
+    let n = result.to_number();
+    if n.is_nan() || n == 0.0 {
+        Ordering::Equal
+    } else if n < 0.0 {
+        Ordering::Less
+    } else {
+        Ordering::Greater
     }
 }
 
@@ -917,7 +1001,10 @@ fn observe_array_species_create(vm: &mut Vm, original: &JsValue) -> bool {
         vm.pending_exception = Some(exc);
         return false;
     }
-    if matches!(ctor, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+    if matches!(
+        ctor,
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
+    ) {
         let _species = vm.get_property_invoking_getter(&ctor, native_symbol::WELL_KNOWN_SPECIES);
         if vm.pending_exception.is_some() {
             return false;
@@ -1041,12 +1128,14 @@ fn has_concat_property(vm: &mut Vm, value: &JsValue, key: &str) -> Option<bool> 
                     return Some(true);
                 }
                 let proto = array_effective_proto_value(vm, &arr);
-                return Some(!proto.is_null() && !vm.get_property_with_proto(&proto, key).is_undefined());
+                return Some(
+                    !proto.is_null() && !vm.get_property_with_proto(&proto, key).is_undefined(),
+                );
             }
             Some(
                 key == "length"
-                || arr.borrow().properties.contains_key(key)
-                || vm.array_proto.borrow().has(key),
+                    || arr.borrow().properties.contains_key(key)
+                    || vm.array_proto.borrow().has(key),
             )
         }
         JsValue::Object(obj) if obj.borrow().primitive_value.is_some() => {
@@ -1055,8 +1144,9 @@ fn has_concat_property(vm: &mut Vm, value: &JsValue, key: &str) -> Option<bool> 
                 if let JsValue::String(s) = prim.as_ref() {
                     return Some(
                         key == "length"
-                        || super::try_parse_index(key).is_some_and(|idx| idx < s.chars().count())
-                        || o.has(key),
+                            || super::try_parse_index(key)
+                                .is_some_and(|idx| idx < s.chars().count())
+                            || o.has(key),
                     );
                 }
             }
@@ -1090,8 +1180,10 @@ fn has_concat_property(vm: &mut Vm, value: &JsValue, key: &str) -> Option<bool> 
 fn is_concat_spreadable(vm: &mut Vm, value: &JsValue) -> Option<bool> {
     match value {
         JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
-            let spreadable =
-                vm.get_property_invoking_getter(value, native_symbol::WELL_KNOWN_IS_CONCAT_SPREADABLE);
+            let spreadable = vm.get_property_invoking_getter(
+                value,
+                native_symbol::WELL_KNOWN_IS_CONCAT_SPREADABLE,
+            );
             if vm.pending_exception.is_some() {
                 return None;
             }
@@ -1195,7 +1287,10 @@ fn concat_define_result_index(vm: &mut Vm, target: &JsValue, index: usize, value
         JsValue::Function(f) => {
             let mut func = f.borrow_mut();
             if !func.own_props.contains_key(&key)
-                && matches!(func.own_props.get("__non_extensible__"), Some(JsValue::Bool(true)))
+                && matches!(
+                    func.own_props.get("__non_extensible__"),
+                    Some(JsValue::Bool(true))
+                )
             {
                 let err = vm.make_type_error("Cannot define property on non-extensible object");
                 vm.throw_native(err);
@@ -1216,9 +1311,10 @@ fn concat_set_result_length(target: &JsValue, length: usize) {
     match target {
         JsValue::Array(arr) => arr.borrow_mut().length = length,
         JsValue::Object(obj) => {
-            obj.borrow_mut()
-                .properties
-                .insert(String::from("length"), Property::data(JsValue::Number(length as f64)));
+            obj.borrow_mut().properties.insert(
+                String::from("length"),
+                Property::data(JsValue::Number(length as f64)),
+            );
         }
         JsValue::Function(f) => {
             f.borrow_mut()
@@ -1229,11 +1325,7 @@ fn concat_set_result_length(target: &JsValue, length: usize) {
     }
 }
 
-fn collect_numeric_keys_from_object(
-    obj: &Rc<RefCell<JsObject>>,
-    len: usize,
-    out: &mut Vec<usize>,
-) {
+fn collect_numeric_keys_from_object(obj: &Rc<RefCell<JsObject>>, len: usize, out: &mut Vec<usize>) {
     let o = obj.borrow();
     for key in o.properties.keys() {
         if let Some(idx) = super::try_parse_index(key) {
@@ -1323,7 +1415,12 @@ fn concat_sparse_indices(vm: &mut Vm, value: &JsValue, len: usize) -> Option<Vec
     Some(indices)
 }
 
-fn concat_append_spread(vm: &mut Vm, result: &JsValue, next_index: &mut usize, value: &JsValue) -> bool {
+fn concat_append_spread(
+    vm: &mut Vm,
+    result: &JsValue,
+    next_index: &mut usize,
+    value: &JsValue,
+) -> bool {
     let len_val = vm.get_property_invoking_getter(value, "length");
     if let Some(exc) = vm.last_exception.take() {
         vm.pending_exception = Some(exc);

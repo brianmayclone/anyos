@@ -185,10 +185,7 @@ pub fn compare_primary(a: &str, b: &str) -> core::cmp::Ordering {
 /// Pull the next non-ignorable primary weight from `iter`. If a codepoint
 /// expands into two weights, the second is stashed into `extra` and
 /// returned by the next call.
-fn next_weight(
-    iter: &mut core::str::Chars<'_>,
-    extra: &mut Option<u16>,
-) -> Option<u16> {
+fn next_weight(iter: &mut core::str::Chars<'_>, extra: &mut Option<u16>) -> Option<u16> {
     for ch in iter.by_ref() {
         let (p1, p2) = lookup_primary(ch as u32);
         if p1 == 0 {

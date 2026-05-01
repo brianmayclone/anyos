@@ -1539,9 +1539,9 @@ fn queue_click_default_action(vm: &mut Vm, node_id: usize) {
     };
     if let Some(bridge) = get_bridge(vm) {
         if is_reset {
-            bridge
-                .mutations
-                .push(crate::js::DomMutation::FormReset { form_node_id: form_id });
+            bridge.mutations.push(crate::js::DomMutation::FormReset {
+                form_node_id: form_id,
+            });
         } else {
             bridge.mutations.push(crate::js::DomMutation::FormSubmit {
                 form_node_id: form_id,
@@ -2859,7 +2859,10 @@ fn el_animate(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let Some(keyframes) = args.first() else {
         #[cfg(feature = "host")]
         if std::env::var_os("SURF_DEBUG_ANIMATIONS").is_some() {
-            eprintln!("[js-dom-debug] Element.animate node={} without keyframes", node_id);
+            eprintln!(
+                "[js-dom-debug] Element.animate node={} without keyframes",
+                node_id
+            );
         }
         return make_animation_object();
     };
@@ -2950,7 +2953,10 @@ fn el_animate(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn make_animation_object() -> JsValue {
     let obj = JsValue::new_object();
-    obj.set_property(String::from("playState"), JsValue::String(String::from("running")));
+    obj.set_property(
+        String::from("playState"),
+        JsValue::String(String::from("running")),
+    );
     obj.set_property(String::from("play"), native_fn("play", el_noop));
     obj.set_property(String::from("pause"), native_fn("pause", el_noop));
     obj.set_property(String::from("cancel"), native_fn("cancel", el_noop));
@@ -3008,7 +3014,10 @@ fn read_keyframe_value(keyframes: &JsValue, name: &str, last: bool) -> Option<Js
             if a.length == 0 {
                 return None;
             }
-            Some(a.get(if last { a.length - 1 } else { 0 }).get_property(name))
+            Some(
+                a.get(if last { a.length - 1 } else { 0 })
+                    .get_property(name),
+            )
         }
         JsValue::Object(obj) => {
             let value = obj.borrow().get(name);
@@ -3856,7 +3865,11 @@ fn parse_canvas_color(s: &str) -> Option<(u8, u8, u8, u8)> {
                 let r = parse_hex_byte(&hex[0..2])?;
                 let g = parse_hex_byte(&hex[2..4])?;
                 let b = parse_hex_byte(&hex[4..6])?;
-                let a = if hex.len() == 8 { parse_hex_byte(&hex[6..8])? } else { 255 };
+                let a = if hex.len() == 8 {
+                    parse_hex_byte(&hex[6..8])?
+                } else {
+                    255
+                };
                 Some((r, g, b, a))
             }
             _ => None,
@@ -3867,7 +3880,10 @@ fn parse_canvas_color(s: &str) -> Option<(u8, u8, u8, u8)> {
     if let Some(args) = lower.strip_prefix("rgb(").and_then(|v| v.strip_suffix(')')) {
         return parse_rgb_components(args, false);
     }
-    if let Some(args) = lower.strip_prefix("rgba(").and_then(|v| v.strip_suffix(')')) {
+    if let Some(args) = lower
+        .strip_prefix("rgba(")
+        .and_then(|v| v.strip_suffix(')'))
+    {
         return parse_rgb_components(args, true);
     }
     match lower.as_str() {

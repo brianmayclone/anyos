@@ -111,8 +111,7 @@ pub fn array_find_last(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_find_last_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     if matches!(this, JsValue::Null | JsValue::Undefined) {
-        let err =
-            vm.make_type_error("Array.prototype.findLastIndex called on null or undefined");
+        let err = vm.make_type_error("Array.prototype.findLastIndex called on null or undefined");
         vm.throw_native(err);
         return JsValue::Undefined;
     }

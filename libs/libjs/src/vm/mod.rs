@@ -39,12 +39,12 @@ pub mod native_promise;
 pub mod native_proxy;
 pub mod native_regexp;
 pub mod native_string;
-pub mod uca;
-mod uca_latin_table;
 pub mod native_symbol;
 pub mod native_timer;
 pub mod native_typed_array;
 pub mod native_weakref;
+pub mod uca;
+mod uca_latin_table;
 
 // ── Internal structures ──
 
@@ -307,7 +307,10 @@ impl Vm {
         if let Some(close_exc) = close_threw {
             return close_exc;
         }
-        if !matches!(result, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+        if !matches!(
+            result,
+            JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
+        ) {
             return self.make_type_error("IteratorClose return() must return an object");
         }
         original_exc
@@ -420,10 +423,7 @@ impl Vm {
         let stack_str = self.make_stack_trace("Error", message);
         let mut obj = JsObject::new();
         obj.prototype = Some(self.error_proto.clone());
-        obj.set(
-            String::from("name"),
-            JsValue::String(String::from("Error")),
-        );
+        obj.set(String::from("name"), JsValue::String(String::from("Error")));
         obj.set(
             String::from("message"),
             JsValue::String(String::from(message)),
@@ -722,7 +722,10 @@ impl Vm {
 
     fn active_with_scope_get(&self, frame_idx: usize, name: &str) -> Option<JsValue> {
         let frame = self.frames.get(frame_idx)?;
-        for scope in frame.with_scopes[frame.captured_with_scope_len..].iter().rev() {
+        for scope in frame.with_scopes[frame.captured_with_scope_len..]
+            .iter()
+            .rev()
+        {
             let obj = scope.borrow();
             if obj.has(name) {
                 return Some(obj.get(name));
@@ -733,7 +736,10 @@ impl Vm {
 
     fn captured_with_scope_get(&self, frame_idx: usize, name: &str) -> Option<JsValue> {
         let frame = self.frames.get(frame_idx)?;
-        for scope in frame.with_scopes[..frame.captured_with_scope_len].iter().rev() {
+        for scope in frame.with_scopes[..frame.captured_with_scope_len]
+            .iter()
+            .rev()
+        {
             let obj = scope.borrow();
             if obj.has(name) {
                 return Some(obj.get(name));
@@ -746,7 +752,10 @@ impl Vm {
         let Some(frame) = self.frames.get(frame_idx) else {
             return false;
         };
-        for scope in frame.with_scopes[frame.captured_with_scope_len..].iter().rev() {
+        for scope in frame.with_scopes[frame.captured_with_scope_len..]
+            .iter()
+            .rev()
+        {
             if scope.borrow().has(name) {
                 scope.borrow_mut().set(String::from(name), val.clone());
                 return true;
@@ -759,7 +768,10 @@ impl Vm {
         let Some(frame) = self.frames.get(frame_idx) else {
             return false;
         };
-        for scope in frame.with_scopes[..frame.captured_with_scope_len].iter().rev() {
+        for scope in frame.with_scopes[..frame.captured_with_scope_len]
+            .iter()
+            .rev()
+        {
             if scope.borrow().has(name) {
                 scope.borrow_mut().set(String::from(name), val.clone());
                 return true;
@@ -822,6 +834,10 @@ impl Vm {
             self.steps += 1;
             if (self.steps & STEP_CHECK_MASK) == 0 && self.steps > self.step_limit {
                 self.log_engine("[libjs] WARN: step limit reached — aborting execution");
+                #[cfg(feature = "host")]
+                if std::env::var_os("LIBJS_PROFILE_STEPS").is_some() {
+                    self.dump_step_limit_profile();
+                }
                 return JsValue::Undefined;
             }
 
@@ -1058,8 +1074,7 @@ impl Vm {
                         self.stack.push(val);
                     } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
-                    } else if let Some(val) =
-                        self.try_load_global_ic(frame_idx, ip, name.as_str())
+                    } else if let Some(val) = self.try_load_global_ic(frame_idx, ip, name.as_str())
                     {
                         self.stack.push(val);
                     } else if self.globals.borrow().has(&name) {
@@ -1155,8 +1170,7 @@ impl Vm {
                         self.stack.push(val);
                     } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
-                    } else if let Some(val) =
-                        self.try_load_global_ic(frame_idx, ip, name.as_str())
+                    } else if let Some(val) = self.try_load_global_ic(frame_idx, ip, name.as_str())
                     {
                         self.stack.push(val);
                     } else {
@@ -1267,8 +1281,10 @@ impl Vm {
                             continue;
                         }
                         if !mutable && !matches!(current, JsValue::Empty) {
-                            let err = self
-                                .make_type_error(&format!("Assignment to constant variable '{}'", name));
+                            let err = self.make_type_error(&format!(
+                                "Assignment to constant variable '{}'",
+                                name
+                            ));
                             if !self.handle_exception(err) {
                                 return JsValue::Undefined;
                             }
@@ -1281,29 +1297,33 @@ impl Vm {
                             .get(idx as usize)
                             .map(|c| c.borrow().clone())
                             .unwrap_or(JsValue::Undefined);
-                    let mutable = self.frames[frame_idx]
-                        .chunk
-                        .upvalue_mutable
-                        .get(idx as usize)
-                        .copied()
-                        .unwrap_or(true);
-                    let starts_tdz = self.frames[frame_idx]
-                        .chunk
-                        .upvalue_starts_tdz
-                        .get(idx as usize)
-                        .copied()
-                        .unwrap_or(false);
-                    if starts_tdz && matches!(current, JsValue::Empty) {
-                        let err = self
-                            .make_reference_error(&format!("Cannot access '{}' before initialization", name));
-                        if !self.handle_exception(err) {
-                            return JsValue::Undefined;
+                        let mutable = self.frames[frame_idx]
+                            .chunk
+                            .upvalue_mutable
+                            .get(idx as usize)
+                            .copied()
+                            .unwrap_or(true);
+                        let starts_tdz = self.frames[frame_idx]
+                            .chunk
+                            .upvalue_starts_tdz
+                            .get(idx as usize)
+                            .copied()
+                            .unwrap_or(false);
+                        if starts_tdz && matches!(current, JsValue::Empty) {
+                            let err = self.make_reference_error(&format!(
+                                "Cannot access '{}' before initialization",
+                                name
+                            ));
+                            if !self.handle_exception(err) {
+                                return JsValue::Undefined;
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                    if !mutable && !matches!(current, JsValue::Empty) {
-                        let err = self
-                            .make_type_error(&format!("Assignment to constant variable '{}'", name));
+                        if !mutable && !matches!(current, JsValue::Empty) {
+                            let err = self.make_type_error(&format!(
+                                "Assignment to constant variable '{}'",
+                                name
+                            ));
                             if !self.handle_exception(err) {
                                 return JsValue::Undefined;
                             }
@@ -1348,9 +1368,8 @@ impl Vm {
                     let obj_rc = match obj {
                         JsValue::Object(rc) => rc,
                         JsValue::Null | JsValue::Undefined => {
-                            let err = self.make_type_error(
-                                "Cannot convert undefined or null to object",
-                            );
+                            let err =
+                                self.make_type_error("Cannot convert undefined or null to object");
                             if !self.handle_exception(err) {
                                 return JsValue::Undefined;
                             }
@@ -1369,7 +1388,10 @@ impl Vm {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let mut deleted = false;
                     let frame = &self.frames[frame_idx];
-                    for scope in frame.with_scopes[frame.captured_with_scope_len..].iter().rev() {
+                    for scope in frame.with_scopes[frame.captured_with_scope_len..]
+                        .iter()
+                        .rev()
+                    {
                         if scope.borrow().has(&name) {
                             scope.borrow_mut().delete(&name);
                             deleted = true;
@@ -1377,7 +1399,10 @@ impl Vm {
                         }
                     }
                     if !deleted {
-                        for scope in frame.with_scopes[..frame.captured_with_scope_len].iter().rev() {
+                        for scope in frame.with_scopes[..frame.captured_with_scope_len]
+                            .iter()
+                            .rev()
+                        {
                             if scope.borrow().has(&name) {
                                 scope.borrow_mut().delete(&name);
                                 deleted = true;
@@ -1480,8 +1505,10 @@ impl Vm {
                             .get(idx as usize)
                             .cloned()
                             .unwrap_or_else(|| format!("<upvalue:{}>", idx));
-                        let err =
-                            self.make_type_error(&format!("Assignment to constant variable '{}'", name));
+                        let err = self.make_type_error(&format!(
+                            "Assignment to constant variable '{}'",
+                            name
+                        ));
                         if !self.handle_exception(err) {
                             return JsValue::Undefined;
                         }
@@ -1555,9 +1582,7 @@ impl Vm {
                     // Perform addition
                     let result = match (&a_prim, &b_prim) {
                         // BigInt + BigInt
-                        (JsValue::BigInt(a), JsValue::BigInt(b)) => {
-                            JsValue::BigInt(a.add(b))
-                        }
+                        (JsValue::BigInt(a), JsValue::BigInt(b)) => JsValue::BigInt(a.add(b)),
                         // BigInt + Number or Number + BigInt → TypeError
                         (JsValue::BigInt(_), JsValue::Number(_))
                         | (JsValue::Number(_), JsValue::BigInt(_)) => {
@@ -1758,9 +1783,11 @@ impl Vm {
                                     // Fallback: promote Direct → Cell on the fly
                                     // (should not happen if compiler marks correctly,
                                     //  but be safe for edge cases)
-                                    let val = self.frames[frame_idx].locals[uv_ref.index as usize].get();
+                                    let val =
+                                        self.frames[frame_idx].locals[uv_ref.index as usize].get();
                                     let c = Rc::new(RefCell::new(val));
-                                    self.frames[frame_idx].locals[uv_ref.index as usize] = LocalSlot::Cell(c.clone());
+                                    self.frames[frame_idx].locals[uv_ref.index as usize] =
+                                        LocalSlot::Cell(c.clone());
                                     c
                                 }
                                 None => Rc::new(RefCell::new(JsValue::Undefined)),
@@ -1917,12 +1944,8 @@ impl Vm {
                             // setPrototypeOf trap so handler exceptions propagate.
                             let is_proxy = obj_rc.borrow().internal_tag.as_deref()
                                 == Some(native_proxy::PROXY_TAG);
-                            if is_proxy
-                                && matches!(val, JsValue::Object(_) | JsValue::Null)
-                            {
-                                let _ = native_proxy::proxy_set_prototype_of(
-                                    self, &obj, &val,
-                                );
+                            if is_proxy && matches!(val, JsValue::Object(_) | JsValue::Null) {
+                                let _ = native_proxy::proxy_set_prototype_of(self, &obj, &val);
                                 if let Some(exc) = self.pending_exception.take() {
                                     self.stack.push(val);
                                     if !self.handle_exception(exc) {
@@ -1938,8 +1961,7 @@ impl Vm {
                                             obj_rc,
                                             Some(proto_rc.clone()),
                                         ) {
-                                            let exc =
-                                                self.make_type_error("Cannot set prototype");
+                                            let exc = self.make_type_error("Cannot set prototype");
                                             self.stack.push(val);
                                             if !self.handle_exception(exc) {
                                                 return JsValue::Undefined;
@@ -1951,8 +1973,7 @@ impl Vm {
                                         if !native_object::set_prototype_of_internal(
                                             self, obj_rc, None,
                                         ) {
-                                            let exc =
-                                                self.make_type_error("Cannot set prototype");
+                                            let exc = self.make_type_error("Cannot set prototype");
                                             self.stack.push(val);
                                             if !self.handle_exception(exc) {
                                                 return JsValue::Undefined;
@@ -1990,8 +2011,7 @@ impl Vm {
                             let is_proxy = obj_rc.borrow().internal_tag.as_deref()
                                 == Some(native_proxy::PROXY_TAG);
                             if !is_proxy {
-                                let ic_table =
-                                    self.frames[frame_idx].chunk.inline_caches.clone();
+                                let ic_table = self.frames[frame_idx].chunk.inline_caches.clone();
                                 let cached = {
                                     let ics = ic_table.borrow();
                                     ics.get(ip).cloned()
@@ -2014,7 +2034,11 @@ impl Vm {
                             continue;
                         }
                         #[cfg(feature = "host")]
-                        if name == "prototype" && std::env::var_os("LIBJS_DEBUG_PROTOTYPE").is_some()
+                        if (name == "prototype"
+                            && std::env::var_os("LIBJS_DEBUG_PROTOTYPE").is_some())
+                            || std::env::var("LIBJS_DEBUG_NULLISH_PROP")
+                                .map(|filter| filter.is_empty() || filter == name)
+                                .unwrap_or(false)
                         {
                             let mut ctx = String::new();
                             let frame = &self.frames[frame_idx];
@@ -2033,7 +2057,8 @@ impl Vm {
                                         {
                                             ctx.push_str(&alloc::format!(
                                                 "{:?}({})",
-                                                frame.chunk.code[check_ip], s
+                                                frame.chunk.code[check_ip],
+                                                s
                                             ));
                                         } else {
                                             ctx.push_str(&alloc::format!(
@@ -2056,12 +2081,13 @@ impl Vm {
                                 .map(|v| v.get().type_of())
                                 .unwrap_or("<none>");
                             std::eprintln!(
-                                "[libjs-debug] undefined.prototype context: {} local0={} local2={}",
+                                "[libjs-debug] nullish.{} context: {} local0={} local2={}",
+                                name,
                                 ctx,
                                 local0,
                                 local2
                             );
-                            self.log_engine(&alloc::format!("undefined.prototype context: {}", ctx));
+                            self.log_engine(&alloc::format!("nullish.{} context: {}", name, ctx));
                         }
                         let msg = alloc::format!(
                             "Cannot read properties of {} (reading '{}')",
@@ -2119,13 +2145,11 @@ impl Vm {
                             // Slow-path lookup that also walks the prototype
                             // chain so the IC slot can be repopulated for
                             // future iterations of the same call site.
-                            let (val, holder_opt) =
-                                lookup_property_with_holder(o, name.as_str());
+                            let (val, holder_opt) = lookup_property_with_holder(o, name.as_str());
                             if let Some(holder) = holder_opt {
                                 let recv_shape = o.borrow().shape_id;
                                 let holder_shape = holder.borrow().shape_id;
-                                let ic_table =
-                                    self.frames[frame_idx].chunk.inline_caches.clone();
+                                let ic_table = self.frames[frame_idx].chunk.inline_caches.clone();
                                 if let Some(slot) = ic_table.borrow_mut().get_mut(ip) {
                                     slot.recv_shape = recv_shape;
                                     slot.holder_shape = holder_shape;
@@ -2137,8 +2161,7 @@ impl Vm {
                                 // edge cases (`primitive_value` String wrapper,
                                 // typed-array index access, etc.) that the IC
                                 // helper does not understand.
-                                let val =
-                                    self.get_property_with_proto(&obj, name.as_str());
+                                let val = self.get_property_with_proto(&obj, name.as_str());
                                 self.stack.push(val);
                             }
                         }
@@ -2181,7 +2204,10 @@ impl Vm {
                             let is_method = match &obj {
                                 JsValue::Object(o) => {
                                     matches!(o.borrow().get(&private_name), JsValue::Function(_))
-                                        && !o.borrow().properties.get(&private_name)
+                                        && !o
+                                            .borrow()
+                                            .properties
+                                            .get(&private_name)
                                             .map_or(false, |p| p.writable)
                                 }
                                 JsValue::Function(f) => {
@@ -2196,10 +2222,8 @@ impl Vm {
                                 _ => false,
                             };
                             if is_method {
-                                let msg = alloc::format!(
-                                    "Private method '{}' is not writable",
-                                    name
-                                );
+                                let msg =
+                                    alloc::format!("Private method '{}' is not writable", name);
                                 let exc = self.make_type_error(&msg);
                                 self.stack.push(val);
                                 if !self.handle_exception(exc) {
@@ -2218,10 +2242,8 @@ impl Vm {
                             let proto_val = self.get_property_with_proto(&obj, &private_name);
                             if matches!(proto_val, JsValue::Function(_)) {
                                 // Trying to write to a private method — TypeError
-                                let msg = alloc::format!(
-                                    "Private method '{}' is not writable",
-                                    name
-                                );
+                                let msg =
+                                    alloc::format!("Private method '{}' is not writable", name);
                                 let exc = self.make_type_error(&msg);
                                 self.stack.push(val);
                                 if !self.handle_exception(exc) {
@@ -2255,12 +2277,8 @@ impl Vm {
                             // setPrototypeOf trap so handler exceptions propagate.
                             let is_proxy = obj_rc.borrow().internal_tag.as_deref()
                                 == Some(native_proxy::PROXY_TAG);
-                            if is_proxy
-                                && matches!(val, JsValue::Object(_) | JsValue::Null)
-                            {
-                                let _ = native_proxy::proxy_set_prototype_of(
-                                    self, &obj, &val,
-                                );
+                            if is_proxy && matches!(val, JsValue::Object(_) | JsValue::Null) {
+                                let _ = native_proxy::proxy_set_prototype_of(self, &obj, &val);
                                 if let Some(exc) = self.pending_exception.take() {
                                     self.stack.push(val);
                                     if !self.handle_exception(exc) {
@@ -2276,8 +2294,7 @@ impl Vm {
                                             obj_rc,
                                             Some(proto_rc.clone()),
                                         ) {
-                                            let exc =
-                                                self.make_type_error("Cannot set prototype");
+                                            let exc = self.make_type_error("Cannot set prototype");
                                             self.stack.push(val);
                                             if !self.handle_exception(exc) {
                                                 return JsValue::Undefined;
@@ -2289,8 +2306,7 @@ impl Vm {
                                         if !native_object::set_prototype_of_internal(
                                             self, obj_rc, None,
                                         ) {
-                                            let exc =
-                                                self.make_type_error("Cannot set prototype");
+                                            let exc = self.make_type_error("Cannot set prototype");
                                             self.stack.push(val);
                                             if !self.handle_exception(exc) {
                                                 return JsValue::Undefined;
@@ -2425,8 +2441,10 @@ impl Vm {
                         }
                         // SuperClass.prototype must be an object or null.
                         let proto = self.get_property_invoking_getter(&super_val, "prototype");
-                        if !matches!(proto, JsValue::Object(_) | JsValue::Null | JsValue::Function(_))
-                            && !proto.is_array()
+                        if !matches!(
+                            proto,
+                            JsValue::Object(_) | JsValue::Null | JsValue::Function(_)
+                        ) && !proto.is_array()
                         {
                             // Undefined prototype means bound function without prototype — TypeError
                             let exc = self.make_type_error(
@@ -2458,11 +2476,12 @@ impl Vm {
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
                     // ES2023 §13.5.1.2: ToObject on null/undefined throws TypeError
                     if matches!(obj, JsValue::Null | JsValue::Undefined) {
-                        let type_str = if matches!(obj, JsValue::Null) { "null" } else { "undefined" };
-                        let msg = alloc::format!(
-                            "Cannot convert {} to object",
-                            type_str
-                        );
+                        let type_str = if matches!(obj, JsValue::Null) {
+                            "null"
+                        } else {
+                            "undefined"
+                        };
+                        let msg = alloc::format!("Cannot convert {} to object", type_str);
                         let exc = self.make_type_error(&msg);
                         self.stack.push(JsValue::Bool(false));
                         if !self.handle_exception(exc) {
@@ -2546,7 +2565,8 @@ impl Vm {
                             let func = f.borrow();
                             let builtin_deleted = |name: &str| {
                                 matches!(
-                                    func.own_props.get(&alloc::format!("__deleted_builtin_{}", name)),
+                                    func.own_props
+                                        .get(&alloc::format!("__deleted_builtin_{}", name)),
                                     Some(JsValue::Bool(true))
                                 )
                             };
@@ -2666,8 +2686,9 @@ impl Vm {
                         continue;
                     }
                     if !return_fn.is_function() {
-                        self.pending_exception =
-                            Some(self.make_type_error("IteratorClose return method is not callable"));
+                        self.pending_exception = Some(
+                            self.make_type_error("IteratorClose return method is not callable"),
+                        );
                     } else {
                         let result = self.call_value(&return_fn, &[], iter.clone());
                         if let Some(exc) = self.last_exception.take() {
@@ -2676,9 +2697,10 @@ impl Vm {
                             result,
                             JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
                         ) {
-                            self.pending_exception = Some(
-                                self.make_type_error("IteratorClose return() must return an object"),
-                            );
+                            self.pending_exception =
+                                Some(self.make_type_error(
+                                    "IteratorClose return() must return an object",
+                                ));
                         }
                     }
                     if let Some(exc) = self.pending_exception.take() {
@@ -2768,11 +2790,10 @@ impl Vm {
                                 }
                             }
                             JsValue::Object(src_rc) => {
-                                if src_rc.borrow().internal_tag.as_deref() == Some("__arguments__") {
-                                    let len = src
-                                        .get_property("length")
-                                        .to_number()
-                                        .max(0.0) as usize;
+                                if src_rc.borrow().internal_tag.as_deref() == Some("__arguments__")
+                                {
+                                    let len =
+                                        src.get_property("length").to_number().max(0.0) as usize;
                                     let mut tgt_a = tgt_rc.borrow_mut();
                                     for idx in 0..len {
                                         tgt_a.push(src.get_property(&alloc::format!("{}", idx)));
@@ -2943,10 +2964,8 @@ impl Vm {
                             Property::data(JsValue::Number(all.len() as f64)),
                         );
                         for (idx, arg) in all.into_iter().enumerate() {
-                            o.properties.insert(
-                                alloc::format!("{}", idx),
-                                Property::data(arg),
-                            );
+                            o.properties
+                                .insert(alloc::format!("{}", idx), Property::data(arg));
                         }
                     }
                     self.stack.push(obj);
@@ -3033,11 +3052,7 @@ impl Vm {
                                     break; // No timers can advance this further
                                 }
                                 for task in fired {
-                                    self.call_value(
-                                        &task.callback,
-                                        &task.args,
-                                        JsValue::Undefined,
-                                    );
+                                    self.call_value(&task.callback, &task.args, JsValue::Undefined);
                                 }
                                 self.drain_microtasks();
                                 await_rounds += 1;
@@ -3063,11 +3078,7 @@ impl Vm {
                             let then_fn = val.get_property("then");
                             if then_fn.is_function() {
                                 // It's a thenable — call .then and await
-                                let result = self.call_value(
-                                    &then_fn,
-                                    &[],
-                                    val.clone(),
-                                );
+                                let result = self.call_value(&then_fn, &[], val.clone());
                                 self.drain_microtasks();
                                 self.stack.push(result);
                             } else {
@@ -3187,11 +3198,8 @@ impl Vm {
                         }
                         JsValue::Array(arr) => {
                             let a = arr.borrow();
-                            let mut keys: Vec<String> = a
-                                .elements
-                                .keys()
-                                .map(|i| format!("{}", i))
-                                .collect();
+                            let mut keys: Vec<String> =
+                                a.elements.keys().map(|i| format!("{}", i)).collect();
                             for (key, prop) in a.properties.iter() {
                                 if prop.enumerable && !keys.contains(key) {
                                     keys.push(key.clone());
@@ -3395,6 +3403,188 @@ impl Vm {
         }
     }
 
+    #[cfg(feature = "host")]
+    fn dump_step_limit_profile(&self) {
+        std::eprintln!(
+            "[libjs-profile] step_limit={} steps={} frames={} stack={}",
+            self.step_limit,
+            self.steps,
+            self.frames.len(),
+            self.stack.len()
+        );
+        for (depth, frame) in self.frames.iter().enumerate().rev().take(8) {
+            let chunk = &frame.chunk;
+            let ip = frame.ip.min(chunk.code.len());
+            let name = chunk.name.as_deref().unwrap_or("<script>");
+            let line = if ip == 0 {
+                chunk.line_map.get(0).copied().unwrap_or(0)
+            } else {
+                chunk
+                    .line_map
+                    .get(ip.saturating_sub(1))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            std::eprintln!(
+                "[libjs-profile] frame depth={} name={} ip={}/{} line={} locals={} base={}",
+                depth,
+                name,
+                ip,
+                chunk.code.len(),
+                line,
+                frame.locals.len(),
+                frame.stack_base
+            );
+            let start = ip.saturating_sub(8);
+            let end = (ip + 8).min(chunk.code.len());
+            for idx in start..end {
+                let marker = if idx == ip { "=>" } else { "  " };
+                let line = chunk.line_map.get(idx).copied().unwrap_or(0);
+                std::eprintln!(
+                    "[libjs-profile] {} {:06} line={} {}",
+                    marker,
+                    idx,
+                    line,
+                    self.describe_frame_op(frame, chunk.code[idx])
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "host")]
+    fn describe_frame_op(&self, frame: &CallFrame, op: Op) -> String {
+        match op {
+            Op::LoadLocal(slot) => {
+                return format!(
+                    "LoadLocal({}) {}",
+                    slot,
+                    frame
+                        .chunk
+                        .local_names
+                        .get(slot as usize)
+                        .map(|s| s.as_str())
+                        .unwrap_or("<unnamed>")
+                );
+            }
+            Op::InitLocal(slot) => {
+                return format!(
+                    "InitLocal({}) {}",
+                    slot,
+                    frame
+                        .chunk
+                        .local_names
+                        .get(slot as usize)
+                        .map(|s| s.as_str())
+                        .unwrap_or("<unnamed>")
+                );
+            }
+            Op::StoreLocal(slot) => {
+                return format!(
+                    "StoreLocal({}) {}",
+                    slot,
+                    frame
+                        .chunk
+                        .local_names
+                        .get(slot as usize)
+                        .map(|s| s.as_str())
+                        .unwrap_or("<unnamed>")
+                );
+            }
+            Op::CloneLocal(slot) => {
+                return format!(
+                    "CloneLocal({}) {}",
+                    slot,
+                    frame
+                        .chunk
+                        .local_names
+                        .get(slot as usize)
+                        .map(|s| s.as_str())
+                        .unwrap_or("<unnamed>")
+                );
+            }
+            _ => {}
+        }
+        self.describe_op(&frame.chunk, op)
+    }
+
+    #[cfg(feature = "host")]
+    fn describe_op(&self, chunk: &Chunk, op: Op) -> String {
+        let const_str = |idx: u16| -> Option<&str> {
+            match chunk.constants.get(idx as usize) {
+                Some(Constant::String(s)) => Some(s.as_str()),
+                _ => None,
+            }
+        };
+        match op {
+            Op::LoadConst(idx) => match chunk.constants.get(idx as usize) {
+                Some(Constant::String(s)) => format!("LoadConst({}) \"{}\"", idx, s),
+                Some(Constant::Number(n)) => format!("LoadConst({}) {}", idx, n),
+                Some(Constant::Function(f)) => {
+                    format!(
+                        "LoadConst({}) <fn {}>",
+                        idx,
+                        f.name.as_deref().unwrap_or("<anon>")
+                    )
+                }
+                Some(_) => format!("LoadConst({}) <const>", idx),
+                None => format!("LoadConst({}) <missing>", idx),
+            },
+            Op::LoadGlobal(idx) => format!(
+                "LoadGlobal({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::LoadGlobalSafe(idx) => format!(
+                "LoadGlobalSafe({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::StoreGlobal(idx) => format!(
+                "StoreGlobal({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::StoreGlobalDirect(idx) => format!(
+                "StoreGlobalDirect({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::GetPropNamed(idx) => format!(
+                "GetPropNamed({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::SetPropNamed(idx) => format!(
+                "SetPropNamed({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::DefineMethod(idx) => format!(
+                "DefineMethod({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::DefineGetter(idx) => format!(
+                "DefineGetter({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::DefineSetter(idx) => format!(
+                "DefineSetter({}) {}",
+                idx,
+                const_str(idx).unwrap_or("<non-string>")
+            ),
+            Op::NewRegExp(pattern, flags) => format!(
+                "NewRegExp({},{}) /{}/{}",
+                pattern,
+                flags,
+                const_str(pattern).unwrap_or("<non-string>"),
+                const_str(flags).unwrap_or("<non-string>")
+            ),
+            _ => format!("{:?}", op),
+        }
+    }
+
     // ── Helpers ──
 
     pub fn load_constant(&self, frame_idx: usize, idx: u16) -> JsValue {
@@ -3483,11 +3673,17 @@ impl Vm {
             JsValue::Array(arr) => {
                 let a = arr.borrow();
                 if let Some(idx) = try_parse_index(key) {
-                    a.has(idx) || a.properties.contains_key(key) || !crate::vm::native_array::array_effective_proto_value(self, &a).get_property(key).is_undefined()
+                    a.has(idx)
+                        || a.properties.contains_key(key)
+                        || !crate::vm::native_array::array_effective_proto_value(self, &a)
+                            .get_property(key)
+                            .is_undefined()
                 } else {
                     key == "length"
                         || a.properties.contains_key(key)
-                        || !crate::vm::native_array::array_effective_proto_value(self, &a).get_property(key).is_undefined()
+                        || !crate::vm::native_array::array_effective_proto_value(self, &a)
+                            .get_property(key)
+                            .is_undefined()
                 }
             }
             JsValue::Function(f) => {
@@ -3495,8 +3691,7 @@ impl Vm {
                 func.own_props.contains_key(key) || self.function_proto.borrow().has(key)
             }
             JsValue::String(s) => {
-                key == "length"
-                    || try_parse_index(key).is_some_and(|idx| idx < s.chars().count())
+                key == "length" || try_parse_index(key).is_some_and(|idx| idx < s.chars().count())
             }
             _ => false,
         };
@@ -3530,7 +3725,8 @@ impl Vm {
             JsValue::Object(o) => {
                 if let Some(prim) = o.borrow().primitive_value.as_deref() {
                     if let JsValue::String(s) = prim {
-                        let is_index = try_parse_index(key).is_some_and(|idx| idx < s.chars().count());
+                        let is_index =
+                            try_parse_index(key).is_some_and(|idx| idx < s.chars().count());
                         if key == "length" || is_index {
                             let err = self.make_type_error("Cannot assign to property");
                             self.throw_native(err);
@@ -3594,8 +3790,10 @@ impl Vm {
                     || key == "name"
                     || key == "length"
                     || (key == "prototype" && !borrowed.kind.is_arrow());
-                let non_extensible =
-                    matches!(borrowed.own_props.get("__non_extensible__"), Some(JsValue::Bool(true)));
+                let non_extensible = matches!(
+                    borrowed.own_props.get("__non_extensible__"),
+                    Some(JsValue::Bool(true))
+                );
                 drop(borrowed);
                 if !exists && non_extensible {
                     let err = self.make_type_error("Cannot assign to property");
@@ -3625,7 +3823,10 @@ impl Vm {
                 let desc = JsValue::new_object();
                 desc.set_property(alloc::string::String::from("value"), value);
                 desc.set_property(alloc::string::String::from("writable"), JsValue::Bool(true));
-                desc.set_property(alloc::string::String::from("enumerable"), JsValue::Bool(true));
+                desc.set_property(
+                    alloc::string::String::from("enumerable"),
+                    JsValue::Bool(true),
+                );
                 desc.set_property(
                     alloc::string::String::from("configurable"),
                     JsValue::Bool(true),
@@ -3658,9 +3859,8 @@ impl Vm {
         }
         if let JsValue::Array(arr) = obj {
             let a = arr.borrow();
-            let mut keys: alloc::vec::Vec<alloc::string::String> = (0..a.length)
-                .map(|i| alloc::format!("{}", i))
-                .collect();
+            let mut keys: alloc::vec::Vec<alloc::string::String> =
+                (0..a.length).map(|i| alloc::format!("{}", i)).collect();
             for k in a.properties.keys() {
                 if !keys.contains(k) {
                     keys.push(k.clone());
@@ -3945,7 +4145,8 @@ impl Vm {
                 };
                 let builtin_deleted = |name: &str| {
                     matches!(
-                        func.own_props.get(&alloc::format!("__deleted_builtin_{}", name)),
+                        func.own_props
+                            .get(&alloc::format!("__deleted_builtin_{}", name)),
                         Some(JsValue::Bool(true))
                     )
                 };
@@ -4155,13 +4356,13 @@ impl Vm {
         }
         // BigInt operands not supported for this op (e.g. **)
         if matches!((&a, &b), (JsValue::BigInt(_), _) | (_, JsValue::BigInt(_))) {
-            let err = self.make_type_error(
-                "Cannot mix BigInt and other types, use explicit conversions",
-            );
+            let err =
+                self.make_type_error("Cannot mix BigInt and other types, use explicit conversions");
             self.handle_exception(err);
             return;
         }
-        self.stack.push(JsValue::Number(f(a.to_number(), b.to_number())));
+        self.stack
+            .push(JsValue::Number(f(a.to_number(), b.to_number())));
     }
 
     fn binary_num_or_bigint_op(
@@ -4176,9 +4377,8 @@ impl Vm {
                 self.stack.push(JsValue::BigInt(big_f(ba, bb)));
             }
             (JsValue::BigInt(_), _) | (_, JsValue::BigInt(_)) => {
-                let err = self.make_type_error(
-                    "Cannot mix BigInt and other types, use explicit conversions",
-                );
+                let err = self
+                    .make_type_error("Cannot mix BigInt and other types, use explicit conversions");
                 self.handle_exception(err);
             }
             (JsValue::Number(an), JsValue::Number(bn)) => {

@@ -7,6 +7,7 @@ use core::cell::RefCell;
 
 use libjs::value::{JsArray, JsObject, Property};
 use libjs::vm::native_fn;
+use libjs::vm::native_promise;
 use libjs::JsValue;
 use libjs::Vm;
 
@@ -153,10 +154,7 @@ fn location_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 fn location_reload(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let href = vm
-        .current_this
-        .get_property("href")
-        .to_js_string();
+    let href = vm.current_this.get_property("href").to_js_string();
     queue_navigation(vm, href, true)
 }
 
@@ -239,6 +237,7 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
         String::from("compatMode"),
         JsValue::String(String::from("CSS1Compat")),
     );
+    obj.set(String::from("fonts"), make_font_face_set());
     obj.set(String::from("defaultView"), JsValue::Null);
 
     // location sub-object — all fields populated from the current URL.
@@ -252,18 +251,12 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     loc.set_property(String::from("search"), JsValue::String(search));
     loc.set_property(String::from("hash"), JsValue::String(hash));
     loc.set_property(String::from("origin"), JsValue::String(origin));
-    loc.set_property(
-        String::from("assign"),
-        native_fn("assign", location_assign),
-    );
+    loc.set_property(String::from("assign"), native_fn("assign", location_assign));
     loc.set_property(
         String::from("replace"),
         native_fn("replace", location_replace),
     );
-    loc.set_property(
-        String::from("reload"),
-        native_fn("reload", location_reload),
-    );
+    loc.set_property(String::from("reload"), native_fn("reload", location_reload));
     if let JsValue::Object(o) = &loc {
         let mut borrowed = o.borrow_mut();
         borrowed.set_hook = Some(location_property_hook);
@@ -379,6 +372,47 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
 // ═══════════════════════════════════════════════════════════
 // Document methods
 // ═══════════════════════════════════════════════════════════
+
+fn make_font_face_set() -> JsValue {
+    let mut obj = JsObject::new();
+    obj.set(
+        String::from("status"),
+        JsValue::String(String::from("loaded")),
+    );
+    obj.set(
+        String::from("ready"),
+        native_promise::make_resolved_promise(JsValue::Undefined),
+    );
+    obj.set(String::from("load"), native_fn("load", font_face_set_load));
+    obj.set(
+        String::from("check"),
+        native_fn("check", |_, _| JsValue::Bool(true)),
+    );
+    obj.set(String::from("add"), native_fn("add", font_face_set_add));
+    obj.set(
+        String::from("delete"),
+        native_fn("delete", |_, _| JsValue::Bool(true)),
+    );
+    obj.set(
+        String::from("clear"),
+        native_fn("clear", |_, _| JsValue::Undefined),
+    );
+    obj.set(
+        String::from("forEach"),
+        native_fn("forEach", |_, _| JsValue::Undefined),
+    );
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+fn font_face_set_load(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    native_promise::make_resolved_promise(make_array(Vec::new()))
+}
+
+fn font_face_set_add(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    args.first()
+        .cloned()
+        .unwrap_or_else(|| vm.current_this.clone())
+}
 
 fn doc_get_document_element(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if let Some(bridge) = get_bridge(vm) {

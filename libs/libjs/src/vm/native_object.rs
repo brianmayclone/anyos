@@ -18,7 +18,10 @@ fn object_prototype_value(vm: &Vm, obj: &JsObject) -> JsValue {
     if let Some(proto) = &obj.prototype {
         return JsValue::Object(proto.clone());
     }
-    if matches!(obj.properties.get(HIDDEN_NULL_PROTO).map(|p| &p.value), Some(JsValue::Bool(true))) {
+    if matches!(
+        obj.properties.get(HIDDEN_NULL_PROTO).map(|p| &p.value),
+        Some(JsValue::Bool(true))
+    ) {
         return JsValue::Null;
     }
     JsValue::Object(vm.object_proto.clone())
@@ -90,7 +93,10 @@ fn function_public_own_prop_names(func: &JsFunction) -> Vec<String> {
         .cloned()
         .collect();
     for raw in func.own_props.keys() {
-        if let Some(name) = raw.strip_prefix("__get_").or_else(|| raw.strip_prefix("__set_")) {
+        if let Some(name) = raw
+            .strip_prefix("__get_")
+            .or_else(|| raw.strip_prefix("__set_"))
+        {
             if !keys.iter().any(|k| k == name) {
                 keys.push(String::from(name));
             }
@@ -158,7 +164,9 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 JsValue::Bool(key == "length" || a.properties.contains_key(&key))
             }
         }
-        JsValue::String(s) => JsValue::Bool(string_exotic_own_property_descriptor(s, &key).is_some()),
+        JsValue::String(s) => {
+            JsValue::Bool(string_exotic_own_property_descriptor(s, &key).is_some())
+        }
         // Function values: check own_props AND built-in properties (name, length, prototype).
         JsValue::Function(f) => {
             let func = f.borrow();
@@ -170,7 +178,9 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 ),
             };
             JsValue::Bool(
-                function_public_own_prop_names(&func).iter().any(|k| k == &key)
+                function_public_own_prop_names(&func)
+                    .iter()
+                    .any(|k| k == &key)
                     || (key == "name" && !function_builtin_deleted(&func, "name"))
                     || (key == "length" && !function_builtin_deleted(&func, "length"))
                     || (key == "prototype"
@@ -248,7 +258,8 @@ pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
     // §20.1.3.6 step 16: Let tag be Get(O, @@toStringTag). Must invoke
     // accessors and propagate any abrupt completion.
-    let tag_value = vm.get_property_invoking_getter(&this, super::native_symbol::WELL_KNOWN_TO_STRING_TAG);
+    let tag_value =
+        vm.get_property_invoking_getter(&this, super::native_symbol::WELL_KNOWN_TO_STRING_TAG);
     if vm.pending_exception.is_some() {
         return JsValue::Undefined;
     }
@@ -562,19 +573,25 @@ pub fn object_freeze(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             for idx in element_keys {
                 let key = format_usize(idx);
                 let value = a.elements.get(&idx).cloned().unwrap_or(JsValue::Undefined);
-                let prop = a.properties.entry(key).or_insert_with(|| Property::data(value));
+                let prop = a
+                    .properties
+                    .entry(key)
+                    .or_insert_with(|| Property::data(value));
                 prop.writable = false;
                 prop.configurable = false;
             }
             let current_len = a.length;
-            let len_prop = a.properties.entry(String::from("length")).or_insert(Property {
-                value: JsValue::Number(current_len as f64),
-                writable: true,
-                enumerable: false,
-                configurable: false,
-                getter: None,
-                setter: None,
-            });
+            let len_prop = a
+                .properties
+                .entry(String::from("length"))
+                .or_insert(Property {
+                    value: JsValue::Number(current_len as f64),
+                    writable: true,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                });
             len_prop.value = JsValue::Number(current_len as f64);
             len_prop.writable = false;
             len_prop.configurable = false;
@@ -775,12 +792,15 @@ pub fn object_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(v @ JsValue::Object(obj)) => {
             // Proxy receivers must dispatch through the getPrototypeOf trap
             // (or fall through to the target object).
-            let is_proxy = obj.borrow().internal_tag.as_deref()
-                == Some(super::native_proxy::PROXY_TAG);
+            let is_proxy =
+                obj.borrow().internal_tag.as_deref() == Some(super::native_proxy::PROXY_TAG);
             if is_proxy {
                 let v_clone = v.clone();
                 return super::native_proxy::proxy_get_prototype_of(vm, &v_clone)
                     .unwrap_or(JsValue::Undefined);
+            }
+            if Rc::ptr_eq(obj, &vm.object_proto) {
+                return JsValue::Null;
             }
             let o = obj.borrow();
             object_prototype_value(vm, &o)
@@ -970,10 +990,8 @@ pub fn object_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 let mut a = arr.borrow_mut();
                 match new_proto {
                     Some(proto) => {
-                        a.properties.insert(
-                            String::from("__proto__"),
-                            Property::hidden(proto),
-                        );
+                        a.properties
+                            .insert(String::from("__proto__"), Property::hidden(proto));
                     }
                     None => {
                         a.properties
@@ -1211,8 +1229,7 @@ pub fn object_get_own_property_descriptors(_vm: &mut Vm, args: &[JsValue]) -> Js
             let o = obj.borrow();
             if let Some(s) = boxed_string_value(&o) {
                 for i in 0..s.chars().count() {
-                    if let Some(prop) =
-                        string_exotic_own_property_descriptor(&s, &format_usize(i))
+                    if let Some(prop) = string_exotic_own_property_descriptor(&s, &format_usize(i))
                     {
                         result.set_property(format_usize(i), prop_to_descriptor(&prop));
                     }
@@ -1385,18 +1402,24 @@ pub fn object_seal(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             for idx in element_keys {
                 let key = format_usize(idx);
                 let value = a.elements.get(&idx).cloned().unwrap_or(JsValue::Undefined);
-                let prop = a.properties.entry(key).or_insert_with(|| Property::data(value));
+                let prop = a
+                    .properties
+                    .entry(key)
+                    .or_insert_with(|| Property::data(value));
                 prop.configurable = false;
             }
             let current_len = a.length;
-            let len_prop = a.properties.entry(String::from("length")).or_insert(Property {
-                value: JsValue::Number(current_len as f64),
-                writable: true,
-                enumerable: false,
-                configurable: false,
-                getter: None,
-                setter: None,
-            });
+            let len_prop = a
+                .properties
+                .entry(String::from("length"))
+                .or_insert(Property {
+                    value: JsValue::Number(current_len as f64),
+                    writable: true,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                });
             len_prop.value = JsValue::Number(current_len as f64);
             len_prop.configurable = false;
             a.properties.insert(
@@ -1430,10 +1453,7 @@ pub fn object_is_sealed(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 let key = format_usize(*idx);
                 a.properties.get(&key).is_some_and(|p| !p.configurable)
             });
-            let length_sealed = a
-                .properties
-                .get("length")
-                .is_none_or(|p| !p.configurable);
+            let length_sealed = a.properties.get("length").is_none_or(|p| !p.configurable);
             JsValue::Bool(
                 a.properties.contains_key("__non_extensible__")
                     && all_elements_sealed
@@ -1463,7 +1483,10 @@ pub fn object_is_frozen(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     .get(&key)
                     .is_some_and(|p| !p.is_accessor() && !p.writable && !p.configurable)
             });
-            let length_frozen = a.properties.get("length").is_some_and(|p| !p.writable && !p.configurable);
+            let length_frozen = a
+                .properties
+                .get("length")
+                .is_some_and(|p| !p.writable && !p.configurable);
             JsValue::Bool(
                 a.properties.contains_key("__non_extensible__")
                     && all_elements_frozen

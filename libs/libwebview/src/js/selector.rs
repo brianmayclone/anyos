@@ -609,8 +609,18 @@ mod tests {
     fn explicit_combinators_use_the_right_hand_part() {
         let mut dom = Dom::new();
         let root = el(&mut dom, Tag::Div, vec![attr("id", "root")], None);
-        let child = el(&mut dom, Tag::Section, vec![attr("class", "child")], Some(root));
-        let grandchild = el(&mut dom, Tag::Span, vec![attr("class", "leaf")], Some(child));
+        let child = el(
+            &mut dom,
+            Tag::Section,
+            vec![attr("class", "child")],
+            Some(root),
+        );
+        let grandchild = el(
+            &mut dom,
+            Tag::Span,
+            vec![attr("class", "leaf")],
+            Some(child),
+        );
         let sibling = el(&mut dom, Tag::P, vec![attr("class", "after")], Some(root));
 
         assert!(matches_selector(&dom, child, "div > section.child"));
