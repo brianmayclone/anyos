@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
 
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec;
+use anyos_std::format;
+use anyos_std::fs;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::fs;
-use anyos_std::format;
-use alloc::string::ToString;
-use alloc::boxed::Box;
-use alloc::vec;
 
 anyos_std::entry!(main);
 
@@ -83,7 +83,11 @@ fn parse_float(s: &str) -> f64 {
         }
     }
     let result = int_part + frac_part;
-    if neg { -result } else { result }
+    if neg {
+        -result
+    } else {
+        result
+    }
 }
 
 fn format_float(n: f64) -> String {
@@ -119,27 +123,72 @@ enum Token {
     Str(String),
     Num(f64),
     Regex(String),
-    Field(u32),         // $0, $1, $NF...
+    Field(u32), // $0, $1, $NF...
     Var(String),
-    Plus, Minus, Star, Slash, Percent,
-    Eq, Ne, Lt, Gt, Le, Ge,
-    Match, NotMatch,    // ~ !~
-    And, Or, Not,
-    Assign, PlusAssign, MinusAssign, StarAssign, SlashAssign,
-    Incr, Decr,         // ++ --
-    Concat,             // implicit concatenation
-    LParen, RParen,
-    LBrace, RBrace,
-    Semi, Comma, Pipe,
-    If, Else, While, For, Do,
-    Print, Printf, Getline,
-    Begin, End,
-    Next, Exit,
-    In,                 // "in" keyword for arrays
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Match,
+    NotMatch, // ~ !~
+    And,
+    Or,
+    Not,
+    Assign,
+    PlusAssign,
+    MinusAssign,
+    StarAssign,
+    SlashAssign,
+    Incr,
+    Decr,   // ++ --
+    Concat, // implicit concatenation
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    Semi,
+    Comma,
+    Pipe,
+    If,
+    Else,
+    While,
+    For,
+    Do,
+    Print,
+    Printf,
+    Getline,
+    Begin,
+    End,
+    Next,
+    Exit,
+    In, // "in" keyword for arrays
     Delete,
-    LBracket, RBracket,
-    Length, Substr, Index, Split, Sub, Gsub, Sprintf, Tolower, Toupper,
-    Sin, Cos, Sqrt, Log, Exp, Int, Rand, Srand,
+    LBracket,
+    RBracket,
+    Length,
+    Substr,
+    Index,
+    Split,
+    Sub,
+    Gsub,
+    Sprintf,
+    Tolower,
+    Toupper,
+    Sin,
+    Cos,
+    Sqrt,
+    Log,
+    Exp,
+    Int,
+    Rand,
+    Srand,
     Eof,
 }
 
@@ -152,7 +201,10 @@ struct Lexer {
 
 impl Lexer {
     fn new(src: &str) -> Self {
-        Lexer { src: src.chars().collect(), pos: 0 }
+        Lexer {
+            src: src.chars().collect(),
+            pos: 0,
+        }
     }
 
     fn peek_char(&self) -> Option<char> {
@@ -161,7 +213,9 @@ impl Lexer {
 
     fn next_char(&mut self) -> Option<char> {
         let c = self.src.get(self.pos).copied();
-        if c.is_some() { self.pos += 1; }
+        if c.is_some() {
+            self.pos += 1;
+        }
         c
     }
 
@@ -171,7 +225,9 @@ impl Lexer {
                 self.next_char();
             } else if c == '#' {
                 while let Some(c2) = self.next_char() {
-                    if c2 == '\n' { break; }
+                    if c2 == '\n' {
+                        break;
+                    }
                 }
             } else {
                 break;
@@ -185,79 +241,177 @@ impl Lexer {
             self.skip_ws_and_comments();
             let ch = match self.peek_char() {
                 Some(c) => c,
-                None => { tokens.push(Token::Eof); break; }
+                None => {
+                    tokens.push(Token::Eof);
+                    break;
+                }
             };
 
             match ch {
-                '\n' | ';' => { self.next_char(); tokens.push(Token::Semi); }
-                '{' => { self.next_char(); tokens.push(Token::LBrace); }
-                '}' => { self.next_char(); tokens.push(Token::RBrace); }
-                '(' => { self.next_char(); tokens.push(Token::LParen); }
-                ')' => { self.next_char(); tokens.push(Token::RParen); }
-                '[' => { self.next_char(); tokens.push(Token::LBracket); }
-                ']' => { self.next_char(); tokens.push(Token::RBracket); }
-                ',' => { self.next_char(); tokens.push(Token::Comma); }
+                '\n' | ';' => {
+                    self.next_char();
+                    tokens.push(Token::Semi);
+                }
+                '{' => {
+                    self.next_char();
+                    tokens.push(Token::LBrace);
+                }
+                '}' => {
+                    self.next_char();
+                    tokens.push(Token::RBrace);
+                }
+                '(' => {
+                    self.next_char();
+                    tokens.push(Token::LParen);
+                }
+                ')' => {
+                    self.next_char();
+                    tokens.push(Token::RParen);
+                }
+                '[' => {
+                    self.next_char();
+                    tokens.push(Token::LBracket);
+                }
+                ']' => {
+                    self.next_char();
+                    tokens.push(Token::RBracket);
+                }
+                ',' => {
+                    self.next_char();
+                    tokens.push(Token::Comma);
+                }
                 '|' => {
                     self.next_char();
-                    if self.peek_char() == Some('|') { self.next_char(); tokens.push(Token::Or); }
-                    else { tokens.push(Token::Pipe); }
+                    if self.peek_char() == Some('|') {
+                        self.next_char();
+                        tokens.push(Token::Or);
+                    } else {
+                        tokens.push(Token::Pipe);
+                    }
                 }
                 '+' => {
                     self.next_char();
-                    if self.peek_char() == Some('+') { self.next_char(); tokens.push(Token::Incr); }
-                    else if self.peek_char() == Some('=') { self.next_char(); tokens.push(Token::PlusAssign); }
-                    else { tokens.push(Token::Plus); }
+                    if self.peek_char() == Some('+') {
+                        self.next_char();
+                        tokens.push(Token::Incr);
+                    } else if self.peek_char() == Some('=') {
+                        self.next_char();
+                        tokens.push(Token::PlusAssign);
+                    } else {
+                        tokens.push(Token::Plus);
+                    }
                 }
                 '-' => {
                     self.next_char();
-                    if self.peek_char() == Some('-') { self.next_char(); tokens.push(Token::Decr); }
-                    else if self.peek_char() == Some('=') { self.next_char(); tokens.push(Token::MinusAssign); }
-                    else { tokens.push(Token::Minus); }
+                    if self.peek_char() == Some('-') {
+                        self.next_char();
+                        tokens.push(Token::Decr);
+                    } else if self.peek_char() == Some('=') {
+                        self.next_char();
+                        tokens.push(Token::MinusAssign);
+                    } else {
+                        tokens.push(Token::Minus);
+                    }
                 }
                 '*' => {
                     self.next_char();
-                    if self.peek_char() == Some('=') { self.next_char(); tokens.push(Token::StarAssign); }
-                    else { tokens.push(Token::Star); }
+                    if self.peek_char() == Some('=') {
+                        self.next_char();
+                        tokens.push(Token::StarAssign);
+                    } else {
+                        tokens.push(Token::Star);
+                    }
                 }
-                '%' => { self.next_char(); tokens.push(Token::Percent); }
-                '~' => { self.next_char(); tokens.push(Token::Match); }
+                '%' => {
+                    self.next_char();
+                    tokens.push(Token::Percent);
+                }
+                '~' => {
+                    self.next_char();
+                    tokens.push(Token::Match);
+                }
                 '!' => {
                     self.next_char();
-                    if self.peek_char() == Some('=') { self.next_char(); tokens.push(Token::Ne); }
-                    else if self.peek_char() == Some('~') { self.next_char(); tokens.push(Token::NotMatch); }
-                    else { tokens.push(Token::Not); }
+                    if self.peek_char() == Some('=') {
+                        self.next_char();
+                        tokens.push(Token::Ne);
+                    } else if self.peek_char() == Some('~') {
+                        self.next_char();
+                        tokens.push(Token::NotMatch);
+                    } else {
+                        tokens.push(Token::Not);
+                    }
                 }
                 '=' => {
                     self.next_char();
-                    if self.peek_char() == Some('=') { self.next_char(); tokens.push(Token::Eq); }
-                    else { tokens.push(Token::Assign); }
+                    if self.peek_char() == Some('=') {
+                        self.next_char();
+                        tokens.push(Token::Eq);
+                    } else {
+                        tokens.push(Token::Assign);
+                    }
                 }
                 '<' => {
                     self.next_char();
-                    if self.peek_char() == Some('=') { self.next_char(); tokens.push(Token::Le); }
-                    else { tokens.push(Token::Lt); }
+                    if self.peek_char() == Some('=') {
+                        self.next_char();
+                        tokens.push(Token::Le);
+                    } else {
+                        tokens.push(Token::Lt);
+                    }
                 }
                 '>' => {
                     self.next_char();
-                    if self.peek_char() == Some('=') { self.next_char(); tokens.push(Token::Ge); }
-                    else { tokens.push(Token::Gt); }
+                    if self.peek_char() == Some('=') {
+                        self.next_char();
+                        tokens.push(Token::Ge);
+                    } else {
+                        tokens.push(Token::Gt);
+                    }
                 }
                 '&' => {
                     self.next_char();
-                    if self.peek_char() == Some('&') { self.next_char(); tokens.push(Token::And); }
+                    if self.peek_char() == Some('&') {
+                        self.next_char();
+                        tokens.push(Token::And);
+                    }
                 }
                 '/' => {
                     // Determine if / starts a regex or is division
                     // Regex if preceded by nothing, operator, or keyword
                     let is_regex = if let Some(prev) = tokens.last() {
-                        matches!(prev, Token::Semi | Token::LBrace | Token::LParen
-                            | Token::Comma | Token::Not | Token::And | Token::Or
-                            | Token::Match | Token::NotMatch | Token::Eq | Token::Ne
-                            | Token::Lt | Token::Gt | Token::Le | Token::Ge
-                            | Token::Plus | Token::Minus | Token::Star | Token::Slash
-                            | Token::Percent | Token::Assign | Token::Begin | Token::End
-                            | Token::Print | Token::Printf | Token::If | Token::While
-                            | Token::For | Token::Do)
+                        matches!(
+                            prev,
+                            Token::Semi
+                                | Token::LBrace
+                                | Token::LParen
+                                | Token::Comma
+                                | Token::Not
+                                | Token::And
+                                | Token::Or
+                                | Token::Match
+                                | Token::NotMatch
+                                | Token::Eq
+                                | Token::Ne
+                                | Token::Lt
+                                | Token::Gt
+                                | Token::Le
+                                | Token::Ge
+                                | Token::Plus
+                                | Token::Minus
+                                | Token::Star
+                                | Token::Slash
+                                | Token::Percent
+                                | Token::Assign
+                                | Token::Begin
+                                | Token::End
+                                | Token::Print
+                                | Token::Printf
+                                | Token::If
+                                | Token::While
+                                | Token::For
+                                | Token::Do
+                        )
                     } else {
                         true
                     };
@@ -265,7 +419,9 @@ impl Lexer {
                         self.next_char(); // consume /
                         let mut pat = String::new();
                         while let Some(c) = self.next_char() {
-                            if c == '/' { break; }
+                            if c == '/' {
+                                break;
+                            }
                             if c == '\\' {
                                 if let Some(esc) = self.next_char() {
                                     pat.push('\\');
@@ -278,8 +434,12 @@ impl Lexer {
                         tokens.push(Token::Regex(pat));
                     } else {
                         self.next_char();
-                        if self.peek_char() == Some('=') { self.next_char(); tokens.push(Token::SlashAssign); }
-                        else { tokens.push(Token::Slash); }
+                        if self.peek_char() == Some('=') {
+                            self.next_char();
+                            tokens.push(Token::SlashAssign);
+                        } else {
+                            tokens.push(Token::Slash);
+                        }
                     }
                 }
                 '$' => {
@@ -299,14 +459,19 @@ impl Lexer {
                     self.next_char(); // consume "
                     let mut s = String::new();
                     while let Some(c) = self.next_char() {
-                        if c == '"' { break; }
+                        if c == '"' {
+                            break;
+                        }
                         if c == '\\' {
                             match self.next_char() {
                                 Some('n') => s.push('\n'),
                                 Some('t') => s.push('\t'),
                                 Some('\\') => s.push('\\'),
                                 Some('"') => s.push('"'),
-                                Some(o) => { s.push('\\'); s.push(o); }
+                                Some(o) => {
+                                    s.push('\\');
+                                    s.push(o);
+                                }
                                 None => break,
                             }
                         } else {
@@ -400,7 +565,7 @@ enum Expr {
     UnaryOp(UnaryOp, Box<Expr>),
     Assign(Box<Expr>, Box<Expr>),
     CompoundAssign(Box<Expr>, BinOp, Box<Expr>),
-    Incr(Box<Expr>, bool),  // bool = pre (true) or post (false)
+    Incr(Box<Expr>, bool), // bool = pre (true) or post (false)
     Decr(Box<Expr>, bool),
     Match(Box<Expr>, String),
     NotMatch(Box<Expr>, String),
@@ -412,20 +577,31 @@ enum Expr {
 
 #[derive(Clone, Copy)]
 enum BinOp {
-    Add, Sub, Mul, Div, Mod,
-    Eq, Ne, Lt, Gt, Le, Ge,
-    And, Or,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
 }
 
 #[derive(Clone, Copy)]
 enum UnaryOp {
-    Neg, Not,
+    Neg,
+    Not,
 }
 
 #[derive(Clone)]
 enum Stmt {
     ExprStmt(Expr),
-    Print(Vec<Expr>, Option<String>),   // exprs, optional output file
+    Print(Vec<Expr>, Option<String>), // exprs, optional output file
     Printf(Vec<Expr>, Option<String>),
     If(Expr, Box<Stmt>, Option<Box<Stmt>>),
     While(Expr, Box<Stmt>),
@@ -444,7 +620,7 @@ enum Pattern {
     End,
     Expr(Expr),
     Regex(String),
-    All,    // no pattern = match everything
+    All, // no pattern = match everything
 }
 
 #[derive(Clone)]
@@ -504,10 +680,19 @@ impl Parser {
 
     fn parse_rule(&mut self) -> Option<Rule> {
         let pattern = match self.peek().clone() {
-            Token::Begin => { self.advance(); Pattern::Begin }
-            Token::End => { self.advance(); Pattern::End }
+            Token::Begin => {
+                self.advance();
+                Pattern::Begin
+            }
+            Token::End => {
+                self.advance();
+                Pattern::End
+            }
             Token::LBrace => Pattern::All,
-            Token::Regex(r) => { self.advance(); Pattern::Regex(r) }
+            Token::Regex(r) => {
+                self.advance();
+                Pattern::Regex(r)
+            }
             _ => {
                 // Could be expression pattern or action-only
                 if *self.peek() == Token::Eof {
@@ -525,10 +710,16 @@ impl Parser {
             match &pattern {
                 Pattern::Begin | Pattern::End => {
                     // BEGIN/END require a block
-                    vec![Stmt::Print(vec![Expr::Field(Box::new(Expr::Num(0.0)))], None)]
+                    vec![Stmt::Print(
+                        vec![Expr::Field(Box::new(Expr::Num(0.0)))],
+                        None,
+                    )]
                 }
                 _ => {
-                    vec![Stmt::Print(vec![Expr::Field(Box::new(Expr::Num(0.0)))], None)]
+                    vec![Stmt::Print(
+                        vec![Expr::Field(Box::new(Expr::Num(0.0)))],
+                        None,
+                    )]
                 }
             }
         };
@@ -554,8 +745,10 @@ impl Parser {
                 self.advance();
                 let mut exprs = Vec::new();
                 let mut output_file = None;
-                if *self.peek() != Token::Semi && *self.peek() != Token::RBrace
-                    && *self.peek() != Token::Eof && *self.peek() != Token::Pipe
+                if *self.peek() != Token::Semi
+                    && *self.peek() != Token::RBrace
+                    && *self.peek() != Token::Eof
+                    && *self.peek() != Token::Pipe
                 {
                     exprs.push(self.parse_expr());
                     while *self.peek() == Token::Comma {
@@ -664,7 +857,10 @@ impl Parser {
                 let body = self.parse_stmt();
                 Stmt::For(Box::new(init), cond, Box::new(update), Box::new(body))
             }
-            Token::Next => { self.advance(); Stmt::Next }
+            Token::Next => {
+                self.advance();
+                Stmt::Next
+            }
             Token::Exit => {
                 self.advance();
                 let code = if *self.peek() != Token::Semi && *self.peek() != Token::RBrace {
@@ -707,11 +903,31 @@ impl Parser {
     fn parse_assign(&mut self) -> Expr {
         let lhs = self.parse_or();
         match self.peek().clone() {
-            Token::Assign => { self.advance(); let rhs = self.parse_assign(); Expr::Assign(Box::new(lhs), Box::new(rhs)) }
-            Token::PlusAssign => { self.advance(); let rhs = self.parse_assign(); Expr::CompoundAssign(Box::new(lhs), BinOp::Add, Box::new(rhs)) }
-            Token::MinusAssign => { self.advance(); let rhs = self.parse_assign(); Expr::CompoundAssign(Box::new(lhs), BinOp::Sub, Box::new(rhs)) }
-            Token::StarAssign => { self.advance(); let rhs = self.parse_assign(); Expr::CompoundAssign(Box::new(lhs), BinOp::Mul, Box::new(rhs)) }
-            Token::SlashAssign => { self.advance(); let rhs = self.parse_assign(); Expr::CompoundAssign(Box::new(lhs), BinOp::Div, Box::new(rhs)) }
+            Token::Assign => {
+                self.advance();
+                let rhs = self.parse_assign();
+                Expr::Assign(Box::new(lhs), Box::new(rhs))
+            }
+            Token::PlusAssign => {
+                self.advance();
+                let rhs = self.parse_assign();
+                Expr::CompoundAssign(Box::new(lhs), BinOp::Add, Box::new(rhs))
+            }
+            Token::MinusAssign => {
+                self.advance();
+                let rhs = self.parse_assign();
+                Expr::CompoundAssign(Box::new(lhs), BinOp::Sub, Box::new(rhs))
+            }
+            Token::StarAssign => {
+                self.advance();
+                let rhs = self.parse_assign();
+                Expr::CompoundAssign(Box::new(lhs), BinOp::Mul, Box::new(rhs))
+            }
+            Token::SlashAssign => {
+                self.advance();
+                let rhs = self.parse_assign();
+                Expr::CompoundAssign(Box::new(lhs), BinOp::Div, Box::new(rhs))
+            }
             _ => lhs,
         }
     }
@@ -762,12 +978,30 @@ impl Parser {
     fn parse_comparison(&mut self) -> Expr {
         let lhs = self.parse_concat();
         match self.peek().clone() {
-            Token::Eq => { self.advance(); Expr::BinOp(Box::new(lhs), BinOp::Eq, Box::new(self.parse_concat())) }
-            Token::Ne => { self.advance(); Expr::BinOp(Box::new(lhs), BinOp::Ne, Box::new(self.parse_concat())) }
-            Token::Lt => { self.advance(); Expr::BinOp(Box::new(lhs), BinOp::Lt, Box::new(self.parse_concat())) }
-            Token::Gt => { self.advance(); Expr::BinOp(Box::new(lhs), BinOp::Gt, Box::new(self.parse_concat())) }
-            Token::Le => { self.advance(); Expr::BinOp(Box::new(lhs), BinOp::Le, Box::new(self.parse_concat())) }
-            Token::Ge => { self.advance(); Expr::BinOp(Box::new(lhs), BinOp::Ge, Box::new(self.parse_concat())) }
+            Token::Eq => {
+                self.advance();
+                Expr::BinOp(Box::new(lhs), BinOp::Eq, Box::new(self.parse_concat()))
+            }
+            Token::Ne => {
+                self.advance();
+                Expr::BinOp(Box::new(lhs), BinOp::Ne, Box::new(self.parse_concat()))
+            }
+            Token::Lt => {
+                self.advance();
+                Expr::BinOp(Box::new(lhs), BinOp::Lt, Box::new(self.parse_concat()))
+            }
+            Token::Gt => {
+                self.advance();
+                Expr::BinOp(Box::new(lhs), BinOp::Gt, Box::new(self.parse_concat()))
+            }
+            Token::Le => {
+                self.advance();
+                Expr::BinOp(Box::new(lhs), BinOp::Le, Box::new(self.parse_concat()))
+            }
+            Token::Ge => {
+                self.advance();
+                Expr::BinOp(Box::new(lhs), BinOp::Ge, Box::new(self.parse_concat()))
+            }
             _ => lhs,
         }
     }
@@ -777,12 +1011,32 @@ impl Parser {
         // Concatenation: two expressions next to each other without an operator
         loop {
             match self.peek() {
-                Token::Str(_) | Token::Num(_) | Token::Var(_) | Token::Field(_)
-                | Token::LParen | Token::Not | Token::Minus
-                | Token::Length | Token::Substr | Token::Index | Token::Split
-                | Token::Sub | Token::Gsub | Token::Sprintf | Token::Tolower | Token::Toupper
-                | Token::Sin | Token::Cos | Token::Sqrt | Token::Log | Token::Exp
-                | Token::Int | Token::Rand | Token::Srand | Token::Incr | Token::Decr => {
+                Token::Str(_)
+                | Token::Num(_)
+                | Token::Var(_)
+                | Token::Field(_)
+                | Token::LParen
+                | Token::Not
+                | Token::Minus
+                | Token::Length
+                | Token::Substr
+                | Token::Index
+                | Token::Split
+                | Token::Sub
+                | Token::Gsub
+                | Token::Sprintf
+                | Token::Tolower
+                | Token::Toupper
+                | Token::Sin
+                | Token::Cos
+                | Token::Sqrt
+                | Token::Log
+                | Token::Exp
+                | Token::Int
+                | Token::Rand
+                | Token::Srand
+                | Token::Incr
+                | Token::Decr => {
                     let rhs = self.parse_add();
                     lhs = Expr::Concat(Box::new(lhs), Box::new(rhs));
                 }
@@ -796,8 +1050,14 @@ impl Parser {
         let mut lhs = self.parse_mul();
         loop {
             match self.peek() {
-                Token::Plus => { self.advance(); lhs = Expr::BinOp(Box::new(lhs), BinOp::Add, Box::new(self.parse_mul())); }
-                Token::Minus => { self.advance(); lhs = Expr::BinOp(Box::new(lhs), BinOp::Sub, Box::new(self.parse_mul())); }
+                Token::Plus => {
+                    self.advance();
+                    lhs = Expr::BinOp(Box::new(lhs), BinOp::Add, Box::new(self.parse_mul()));
+                }
+                Token::Minus => {
+                    self.advance();
+                    lhs = Expr::BinOp(Box::new(lhs), BinOp::Sub, Box::new(self.parse_mul()));
+                }
                 _ => break,
             }
         }
@@ -808,9 +1068,18 @@ impl Parser {
         let mut lhs = self.parse_unary();
         loop {
             match self.peek() {
-                Token::Star => { self.advance(); lhs = Expr::BinOp(Box::new(lhs), BinOp::Mul, Box::new(self.parse_unary())); }
-                Token::Slash => { self.advance(); lhs = Expr::BinOp(Box::new(lhs), BinOp::Div, Box::new(self.parse_unary())); }
-                Token::Percent => { self.advance(); lhs = Expr::BinOp(Box::new(lhs), BinOp::Mod, Box::new(self.parse_unary())); }
+                Token::Star => {
+                    self.advance();
+                    lhs = Expr::BinOp(Box::new(lhs), BinOp::Mul, Box::new(self.parse_unary()));
+                }
+                Token::Slash => {
+                    self.advance();
+                    lhs = Expr::BinOp(Box::new(lhs), BinOp::Div, Box::new(self.parse_unary()));
+                }
+                Token::Percent => {
+                    self.advance();
+                    lhs = Expr::BinOp(Box::new(lhs), BinOp::Mod, Box::new(self.parse_unary()));
+                }
                 _ => break,
             }
         }
@@ -819,8 +1088,14 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Expr {
         match self.peek().clone() {
-            Token::Minus => { self.advance(); Expr::UnaryOp(UnaryOp::Neg, Box::new(self.parse_unary())) }
-            Token::Not => { self.advance(); Expr::UnaryOp(UnaryOp::Not, Box::new(self.parse_unary())) }
+            Token::Minus => {
+                self.advance();
+                Expr::UnaryOp(UnaryOp::Neg, Box::new(self.parse_unary()))
+            }
+            Token::Not => {
+                self.advance();
+                Expr::UnaryOp(UnaryOp::Not, Box::new(self.parse_unary()))
+            }
             Token::Incr => {
                 self.advance();
                 let expr = self.parse_postfix();
@@ -839,8 +1114,14 @@ impl Parser {
         let mut expr = self.parse_primary();
         loop {
             match self.peek().clone() {
-                Token::Incr => { self.advance(); expr = Expr::Incr(Box::new(expr), false); }
-                Token::Decr => { self.advance(); expr = Expr::Decr(Box::new(expr), false); }
+                Token::Incr => {
+                    self.advance();
+                    expr = Expr::Incr(Box::new(expr), false);
+                }
+                Token::Decr => {
+                    self.advance();
+                    expr = Expr::Decr(Box::new(expr), false);
+                }
                 Token::LBracket => {
                     self.advance();
                     let idx = self.parse_expr();
@@ -857,9 +1138,18 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Expr {
         match self.peek().clone() {
-            Token::Num(n) => { self.advance(); Expr::Num(n) }
-            Token::Str(s) => { self.advance(); Expr::Str(s) }
-            Token::Field(n) => { self.advance(); Expr::Field(Box::new(Expr::Num(n as f64))) }
+            Token::Num(n) => {
+                self.advance();
+                Expr::Num(n)
+            }
+            Token::Str(s) => {
+                self.advance();
+                Expr::Str(s)
+            }
+            Token::Field(n) => {
+                self.advance();
+                Expr::Field(Box::new(Expr::Num(n as f64)))
+            }
             Token::Var(name) => {
                 self.advance();
                 // Check for array access
@@ -878,12 +1168,28 @@ impl Parser {
                 self.expect(&Token::RParen);
                 e
             }
-            Token::Getline => { self.advance(); Expr::Getline }
+            Token::Getline => {
+                self.advance();
+                Expr::Getline
+            }
             // Built-in functions
-            Token::Length | Token::Substr | Token::Index | Token::Split
-            | Token::Sub | Token::Gsub | Token::Sprintf | Token::Tolower | Token::Toupper
-            | Token::Sin | Token::Cos | Token::Sqrt | Token::Log | Token::Exp
-            | Token::Int | Token::Rand | Token::Srand => {
+            Token::Length
+            | Token::Substr
+            | Token::Index
+            | Token::Split
+            | Token::Sub
+            | Token::Gsub
+            | Token::Sprintf
+            | Token::Tolower
+            | Token::Toupper
+            | Token::Sin
+            | Token::Cos
+            | Token::Sqrt
+            | Token::Log
+            | Token::Exp
+            | Token::Int
+            | Token::Rand
+            | Token::Srand => {
                 let fname = match self.advance() {
                     Token::Length => "length",
                     Token::Substr => "substr",
@@ -1060,7 +1366,9 @@ fn match_char_class(ch: Option<char>, pat: &[char], pi: usize) -> (bool, usize) 
     };
     let mut i = pi + 1;
     let negate = i < pat.len() && pat[i] == '^';
-    if negate { i += 1; }
+    if negate {
+        i += 1;
+    }
     let mut matched = false;
     while i < pat.len() && pat[i] != ']' {
         if i + 2 < pat.len() && pat[i + 1] == '-' {
@@ -1119,14 +1427,18 @@ impl Interpreter {
             "FS" => Value::Str(self.fs.clone()),
             "OFS" => Value::Str(self.ofs.clone()),
             "ORS" => Value::Str(self.ors.clone()),
-            "FILENAME" => {
-                self.vars.iter().find(|(n, _)| n == "FILENAME")
-                    .map(|(_, v)| v.clone()).unwrap_or(Value::Uninit)
-            }
-            _ => {
-                self.vars.iter().find(|(n, _)| n == name)
-                    .map(|(_, v)| v.clone()).unwrap_or(Value::Uninit)
-            }
+            "FILENAME" => self
+                .vars
+                .iter()
+                .find(|(n, _)| n == "FILENAME")
+                .map(|(_, v)| v.clone())
+                .unwrap_or(Value::Uninit),
+            _ => self
+                .vars
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+                .unwrap_or(Value::Uninit),
         }
     }
 
@@ -1150,8 +1462,11 @@ impl Interpreter {
 
     fn get_array(&self, name: &str, key: &str) -> Value {
         if let Some((_, entries)) = self.arrays.iter().find(|(n, _)| n == name) {
-            entries.iter().find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone()).unwrap_or(Value::Uninit)
+            entries
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or(Value::Uninit)
         } else {
             Value::Uninit
         }
@@ -1165,7 +1480,8 @@ impl Interpreter {
                 entries.push((String::from(key), val));
             }
         } else {
-            self.arrays.push((String::from(name), alloc::vec![(String::from(key), val)]));
+            self.arrays
+                .push((String::from(name), alloc::vec![(String::from(key), val)]));
         }
     }
 
@@ -1217,7 +1533,9 @@ impl Interpreter {
             // Rebuild $0
             let mut line = String::new();
             for i in 1..self.fields.len() {
-                if i > 1 { line.push_str(&self.ofs); }
+                if i > 1 {
+                    line.push_str(&self.ofs);
+                }
                 line.push_str(&self.fields[i]);
             }
             self.fields[0] = line;
@@ -1246,11 +1564,19 @@ impl Interpreter {
                     BinOp::Mul => Value::Num(l.as_num() * r.as_num()),
                     BinOp::Div => {
                         let d = r.as_num();
-                        if d == 0.0 { Value::Num(0.0) } else { Value::Num(l.as_num() / d) }
+                        if d == 0.0 {
+                            Value::Num(0.0)
+                        } else {
+                            Value::Num(l.as_num() / d)
+                        }
                     }
                     BinOp::Mod => {
                         let d = r.as_num();
-                        if d == 0.0 { Value::Num(0.0) } else { Value::Num(l.as_num() % d) }
+                        if d == 0.0 {
+                            Value::Num(0.0)
+                        } else {
+                            Value::Num(l.as_num() % d)
+                        }
                     }
                     BinOp::Eq => {
                         // String comparison if both look like strings
@@ -1303,13 +1629,21 @@ impl Interpreter {
                 let v = self.eval_expr(e).as_num();
                 let new_v = Value::Num(v + 1.0);
                 self.assign_to(e, new_v);
-                if *pre { Value::Num(v + 1.0) } else { Value::Num(v) }
+                if *pre {
+                    Value::Num(v + 1.0)
+                } else {
+                    Value::Num(v)
+                }
             }
             Expr::Decr(e, pre) => {
                 let v = self.eval_expr(e).as_num();
                 let new_v = Value::Num(v - 1.0);
                 self.assign_to(e, new_v);
-                if *pre { Value::Num(v - 1.0) } else { Value::Num(v) }
+                if *pre {
+                    Value::Num(v - 1.0)
+                } else {
+                    Value::Num(v)
+                }
             }
             Expr::Match(e, pat) => {
                 let s = self.eval_expr(e).as_str();
@@ -1329,7 +1663,11 @@ impl Interpreter {
             Expr::In(name, idx) => {
                 let key = self.eval_expr(idx).as_str();
                 if let Some((_, entries)) = self.arrays.iter().find(|(n, _)| n == name) {
-                    Value::Num(if entries.iter().any(|(k, _)| k == &key) { 1.0 } else { 0.0 })
+                    Value::Num(if entries.iter().any(|(k, _)| k == &key) {
+                        1.0
+                    } else {
+                        0.0
+                    })
                 } else {
                     Value::Num(0.0)
                 }
@@ -1510,13 +1848,19 @@ impl Interpreter {
             Stmt::Print(exprs, output_file) => {
                 let mut out = String::new();
                 for (i, expr) in exprs.iter().enumerate() {
-                    if i > 0 { out.push_str(&self.ofs); }
+                    if i > 0 {
+                        out.push_str(&self.ofs);
+                    }
                     out.push_str(&self.eval_expr(expr).as_str());
                 }
                 out.push_str(&self.ors);
                 if let Some(file) = output_file {
                     let resolved = self.get_var(file).as_str();
-                    let target = if resolved.is_empty() { file.as_str() } else { &resolved };
+                    let target = if resolved.is_empty() {
+                        file.as_str()
+                    } else {
+                        &resolved
+                    };
                     let existing = fs::read_to_string(target).unwrap_or_default();
                     let combined = format!("{}{}", existing, out);
                     let _ = fs::write_bytes(target, combined.as_bytes());
@@ -1534,7 +1878,11 @@ impl Interpreter {
                 let out = awk_sprintf(&fmt, &vals);
                 if let Some(file) = output_file {
                     let resolved = self.get_var(file).as_str();
-                    let target = if resolved.is_empty() { file.as_str() } else { &resolved };
+                    let target = if resolved.is_empty() {
+                        file.as_str()
+                    } else {
+                        &resolved
+                    };
                     let existing = fs::read_to_string(target).unwrap_or_default();
                     let combined = format!("{}{}", existing, out);
                     let _ = fs::write_bytes(target, combined.as_bytes());
@@ -1568,14 +1916,18 @@ impl Interpreter {
             Stmt::DoWhile(body, cond) => {
                 let mut limit = 100000u32;
                 loop {
-                    if limit == 0 { break; }
+                    if limit == 0 {
+                        break;
+                    }
                     limit -= 1;
                     match self.exec_stmt(body) {
                         StmtResult::Next => return StmtResult::Next,
                         StmtResult::Exit(c) => return StmtResult::Exit(c),
                         _ => {}
                     }
-                    if !self.eval_expr(cond).is_true() { break; }
+                    if !self.eval_expr(cond).is_true() {
+                        break;
+                    }
                 }
                 StmtResult::Continue
             }
@@ -1594,11 +1946,12 @@ impl Interpreter {
                 StmtResult::Continue
             }
             Stmt::ForIn(var, arr_name, body) => {
-                let keys: Vec<String> = if let Some((_, entries)) = self.arrays.iter().find(|(n, _)| n == arr_name) {
-                    entries.iter().map(|(k, _)| k.clone()).collect()
-                } else {
-                    Vec::new()
-                };
+                let keys: Vec<String> =
+                    if let Some((_, entries)) = self.arrays.iter().find(|(n, _)| n == arr_name) {
+                        entries.iter().map(|(k, _)| k.clone()).collect()
+                    } else {
+                        Vec::new()
+                    };
                 for key in keys {
                     self.set_var(var, Value::Str(key));
                     match self.exec_stmt(body) {
@@ -1620,7 +1973,10 @@ impl Interpreter {
             }
             Stmt::Next => StmtResult::Next,
             Stmt::Exit(code) => {
-                let c = code.as_ref().map(|e| self.eval_expr(e).as_num() as u32).unwrap_or(0);
+                let c = code
+                    .as_ref()
+                    .map(|e| self.eval_expr(e).as_num() as u32)
+                    .unwrap_or(0);
                 StmtResult::Exit(c)
             }
             Stmt::Delete(name, idx) => {
@@ -1638,7 +1994,9 @@ impl Interpreter {
             if let Pattern::Begin = rule.pattern {
                 for stmt in &rule.action {
                     match self.exec_stmt(stmt) {
-                        StmtResult::Exit(c) => { anyos_std::process::exit(c); }
+                        StmtResult::Exit(c) => {
+                            anyos_std::process::exit(c);
+                        }
                         _ => {}
                     }
                 }
@@ -1683,7 +2041,9 @@ impl Interpreter {
             if let Pattern::End = rule.pattern {
                 for stmt in &rule.action {
                     match self.exec_stmt(stmt) {
-                        StmtResult::Exit(c) => { anyos_std::process::exit(c); }
+                        StmtResult::Exit(c) => {
+                            anyos_std::process::exit(c);
+                        }
                         _ => {}
                     }
                 }
@@ -1733,11 +2093,13 @@ fn regex_sub(text: &str, pattern: &str, replacement: &str, global: bool) -> (Str
 
 fn find_match_length(text: &[char], start: usize, pat: &[char]) -> usize {
     // Try to find the shortest match at position start
-    if pat.is_empty() { return 0; }
+    if pat.is_empty() {
+        return 0;
+    }
     for len in 1..=(text.len() - start) {
         if regex_match_at(text, start, pat, 0) {
             // Check if the match ends at start+len
-            let sub: String = text[start..start+len].iter().collect();
+            let sub: String = text[start..start + len].iter().collect();
             if regex_match(&sub, &pat.iter().collect::<String>()) {
                 return len;
             }
@@ -1770,8 +2132,14 @@ fn awk_sprintf(fmt: &str, vals: &[Value]) -> String {
             // Flags
             loop {
                 match chars.peek() {
-                    Some(&'-') => { left_align = true; chars.next(); }
-                    Some(&'0') => { zero_pad = true; chars.next(); }
+                    Some(&'-') => {
+                        left_align = true;
+                        chars.next();
+                    }
+                    Some(&'0') => {
+                        zero_pad = true;
+                        chars.next();
+                    }
                     _ => break,
                 }
             }
@@ -1800,7 +2168,11 @@ fn awk_sprintf(fmt: &str, vals: &[Value]) -> String {
             }
             // Conversion char
             let conv = chars.next().unwrap_or('s');
-            let val = if vi < vals.len() { &vals[vi] } else { &Value::Uninit };
+            let val = if vi < vals.len() {
+                &vals[vi]
+            } else {
+                &Value::Uninit
+            };
             vi += 1;
 
             let formatted = match conv {
@@ -1858,9 +2230,13 @@ fn awk_sprintf(fmt: &str, vals: &[Value]) -> String {
                 let padding = w - formatted.len();
                 if left_align {
                     result.push_str(&formatted);
-                    for _ in 0..padding { result.push(' '); }
+                    for _ in 0..padding {
+                        result.push(' ');
+                    }
                 } else {
-                    for _ in 0..padding { result.push(pad_char); }
+                    for _ in 0..padding {
+                        result.push(pad_char);
+                    }
                     result.push_str(&formatted);
                 }
             } else {
@@ -1871,7 +2247,10 @@ fn awk_sprintf(fmt: &str, vals: &[Value]) -> String {
                 Some('n') => result.push('\n'),
                 Some('t') => result.push('\t'),
                 Some('\\') => result.push('\\'),
-                Some(o) => { result.push('\\'); result.push(o); }
+                Some(o) => {
+                    result.push('\\');
+                    result.push(o);
+                }
                 None => result.push('\\'),
             }
         } else {
@@ -1916,8 +2295,12 @@ fn format_float_prec(n: f64, prec: usize) -> String {
 
 mod libm {
     pub fn sqrt(x: f64) -> f64 {
-        if x < 0.0 { return 0.0; }
-        if x == 0.0 { return 0.0; }
+        if x < 0.0 {
+            return 0.0;
+        }
+        if x == 0.0 {
+            return 0.0;
+        }
         let mut guess = x / 2.0;
         for _ in 0..64 {
             guess = (guess + x / guess) / 2.0;
@@ -1953,13 +2336,21 @@ mod libm {
     }
 
     pub fn log(x: f64) -> f64 {
-        if x <= 0.0 { return f64::NEG_INFINITY; }
+        if x <= 0.0 {
+            return f64::NEG_INFINITY;
+        }
         // ln(x) using series: ln(1+u) = 2*(u + u^3/3 + u^5/5 + ...)
         // where u = (x-1)/(x+1)
         let mut mantissa = x;
         let mut exp = 0i32;
-        while mantissa > 2.0 { mantissa /= 2.0; exp += 1; }
-        while mantissa < 0.5 { mantissa *= 2.0; exp -= 1; }
+        while mantissa > 2.0 {
+            mantissa /= 2.0;
+            exp += 1;
+        }
+        while mantissa < 0.5 {
+            mantissa *= 2.0;
+            exp -= 1;
+        }
         let u = (mantissa - 1.0) / (mantissa + 1.0);
         let u2 = u * u;
         let mut sum = u;
@@ -1973,8 +2364,12 @@ mod libm {
 
     pub fn exp(x: f64) -> f64 {
         // e^x using Taylor series
-        if x > 700.0 { return f64::INFINITY; }
-        if x < -700.0 { return 0.0; }
+        if x > 700.0 {
+            return f64::INFINITY;
+        }
+        if x < -700.0 {
+            return 0.0;
+        }
         let mut result = 1.0;
         let mut term = 1.0;
         for n in 1..30 {
@@ -1987,8 +2382,12 @@ mod libm {
     fn normalize_angle(x: f64) -> f64 {
         const TWO_PI: f64 = 6.283185307179586;
         let mut r = x % TWO_PI;
-        if r > core::f64::consts::PI { r -= TWO_PI; }
-        if r < -core::f64::consts::PI { r += TWO_PI; }
+        if r > core::f64::consts::PI {
+            r -= TWO_PI;
+        }
+        if r < -core::f64::consts::PI {
+            r += TWO_PI;
+        }
         r
     }
 }
@@ -2000,7 +2399,9 @@ fn read_all(fd: u32) -> Vec<u8> {
     let mut buf = [0u8; 512];
     loop {
         let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     data
@@ -2013,7 +2414,9 @@ fn main() {
     let args_str = anyos_std::process::args(&mut args_buf);
 
     if args_str.contains("--help") {
-        anyos_std::println!("awk - Pattern scanning and processing\n\nUsage: awk 'PATTERN {{ACTION}}' [FILE...]");
+        anyos_std::println!(
+            "awk - Pattern scanning and processing\n\nUsage: awk 'PATTERN {{ACTION}}' [FILE...]"
+        );
         return;
     }
 
@@ -2068,19 +2471,20 @@ fn main() {
             pi += 1;
             let assign = parts[pi];
             if let Some(eq) = assign.find('=') {
-                var_assigns.push((String::from(&assign[..eq]), String::from(&assign[eq+1..])));
+                var_assigns.push((String::from(&assign[..eq]), String::from(&assign[eq + 1..])));
             }
         } else if arg.starts_with("-v") {
             let assign = &arg[2..];
             if let Some(eq) = assign.find('=') {
-                var_assigns.push((String::from(&assign[..eq]), String::from(&assign[eq+1..])));
+                var_assigns.push((String::from(&assign[..eq]), String::from(&assign[eq + 1..])));
             }
         } else if program_text.is_none() {
             // Strip surrounding quotes if present
             let mut p = arg;
             if (p.starts_with('\'') && p.ends_with('\''))
-                || (p.starts_with('"') && p.ends_with('"')) {
-                p = &p[1..p.len()-1];
+                || (p.starts_with('"') && p.ends_with('"'))
+            {
+                p = &p[1..p.len() - 1];
             }
             program_text = Some(String::from(p));
         } else {

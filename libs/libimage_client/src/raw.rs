@@ -55,14 +55,16 @@ pub struct LibimageExports {
     pub num_exports: u32,
     pub _pad: u32,
     pub video_probe: extern "C" fn(*const u8, u32, *mut VideoInfo) -> i32,
-    pub video_decode_frame: extern "C" fn(*const u8, u32, u32, u32, *mut u32, u32, *mut u8, u32) -> i32,
+    pub video_decode_frame:
+        extern "C" fn(*const u8, u32, u32, u32, *mut u32, u32, *mut u8, u32) -> i32,
     pub image_probe: extern "C" fn(*const u8, u32, *mut ImageInfo) -> i32,
     pub image_decode: extern "C" fn(*const u8, u32, *mut u32, u32, *mut u8, u32) -> i32,
     pub scale_image: extern "C" fn(*const u32, u32, u32, *mut u32, u32, u32, u32) -> i32,
     pub ico_probe_size: extern "C" fn(*const u8, u32, u32, *mut ImageInfo) -> i32,
     pub ico_decode_size: extern "C" fn(*const u8, u32, u32, *mut u32, u32, *mut u8, u32) -> i32,
     pub image_encode: extern "C" fn(*const u32, u32, u32, *mut u8, u32) -> i32,
-    pub iconpack_render: extern "C" fn(*const u8, u32, *const u8, u32, u32, u32, u32, *mut u32) -> i32,
+    pub iconpack_render:
+        extern "C" fn(*const u8, u32, *const u8, u32, u32, u32, u32, *mut u32) -> i32,
     pub iconpack_render_cached: extern "C" fn(*const u8, u32, u32, u32, u32, *mut u32) -> i32,
     pub trim_and_scale: extern "C" fn(*const u32, u32, u32, *mut u32, u32, u32) -> i32,
 }

@@ -1,7 +1,7 @@
 //! `apkg search` — search available packages by name or description.
 
-use anyos_std::println;
 use crate::index;
+use anyos_std::println;
 
 /// Execute `apkg search <term>`.
 pub fn run(term: &str) {
@@ -25,7 +25,10 @@ pub fn run(term: &str) {
     }
 
     for pkg in &results {
-        println!("{:<20} {:<10} {}", pkg.name, pkg.version_str, pkg.description);
+        println!(
+            "{:<20} {:<10} {}",
+            pkg.name, pkg.version_str, pkg.description
+        );
     }
     println!("{} package(s) found.", results.len());
 }

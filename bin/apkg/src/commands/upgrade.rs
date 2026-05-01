@@ -1,11 +1,11 @@
 //! `apkg upgrade` — upgrade installed packages to latest versions.
 
+use crate::db::InstalledPackage;
+use crate::{archive, config, db, download, index, version::Version};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
-use anyos_std::{println, fs, crypto};
-use crate::{config, db, download, index, archive, version::Version};
-use crate::db::InstalledPackage;
+use anyos_std::{crypto, fs, println};
 
 /// Execute `apkg upgrade [name]`.
 /// If no name is given, upgrades all packages with newer versions available.
@@ -33,8 +33,11 @@ pub fn run(name: Option<&str>, yes: bool) {
             }
         };
         if let Some(avail) = idx.find(pkg_name) {
-            let inst_ver = Version::parse(&installed.version)
-                .unwrap_or(Version { major: 0, minor: 0, patch: 0 });
+            let inst_ver = Version::parse(&installed.version).unwrap_or(Version {
+                major: 0,
+                minor: 0,
+                patch: 0,
+            });
             if avail.version > inst_ver {
                 upgrades.push((
                     String::from(pkg_name),
@@ -42,7 +45,10 @@ pub fn run(name: Option<&str>, yes: bool) {
                     String::from(&avail.version_str),
                 ));
             } else {
-                println!("{} is already at the latest version ({}).", pkg_name, installed.version);
+                println!(
+                    "{} is already at the latest version ({}).",
+                    pkg_name, installed.version
+                );
                 return;
             }
         } else {
@@ -53,8 +59,11 @@ pub fn run(name: Option<&str>, yes: bool) {
         // Upgrade all packages
         for installed in &database.packages {
             if let Some(avail) = idx.find(&installed.name) {
-                let inst_ver = Version::parse(&installed.version)
-                    .unwrap_or(Version { major: 0, minor: 0, patch: 0 });
+                let inst_ver = Version::parse(&installed.version).unwrap_or(Version {
+                    major: 0,
+                    minor: 0,
+                    patch: 0,
+                });
                 if avail.version > inst_ver {
                     upgrades.push((
                         String::from(&installed.name),
@@ -83,7 +92,9 @@ pub fn run(name: Option<&str>, yes: bool) {
         let mut buf = [0u8; 16];
         let n = fs::read(0, &mut buf);
         if n > 0 && n != u32::MAX {
-            let answer = core::str::from_utf8(&buf[..n as usize]).unwrap_or("y").trim();
+            let answer = core::str::from_utf8(&buf[..n as usize])
+                .unwrap_or("y")
+                .trim();
             if answer == "n" || answer == "N" || answer == "no" {
                 println!("Aborted.");
                 return;
@@ -112,9 +123,12 @@ pub fn run(name: Option<&str>, yes: bool) {
         if pkg.pkg_type == "system" {
             if let Some(installed) = database.get(pkg_name) {
                 for file_path in &installed.files {
-                    let backup_path = format!("{}/{}.{}", config::BACKUP_DIR,
+                    let backup_path = format!(
+                        "{}/{}.{}",
+                        config::BACKUP_DIR,
                         file_path.rsplit('/').next().unwrap_or("unknown"),
-                        installed.version);
+                        installed.version
+                    );
                     // Copy file to backup (read + write)
                     if let Ok(data) = fs::read_to_vec(file_path) {
                         if let Ok(mut f) = fs::File::create(&backup_path) {

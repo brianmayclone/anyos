@@ -28,9 +28,7 @@ fn argv0() -> &'static str {
         }
         ARGV0_INIT.store(true, Ordering::Release);
     }
-    unsafe {
-        core::str::from_utf8_unchecked(&CACHED_ARGV0[..CACHED_ARGV0_LEN])
-    }
+    unsafe { core::str::from_utf8_unchecked(&CACHED_ARGV0[..CACHED_ARGV0_LEN]) }
 }
 
 /// Returns the bundle directory path if the running process is an `.app` bundle.

@@ -6,7 +6,7 @@
 
 use crate::compositor::{Compositor, Rect};
 
-use super::drawing::{fill_rect, fill_rounded_rect, draw_rounded_rect_outline};
+use super::drawing::{draw_rounded_rect_outline, fill_rect, fill_rounded_rect};
 use super::theme;
 // ── Layout Constants ──────────────────────────────────────────────────────
 
@@ -191,7 +191,9 @@ impl VolumeHud {
 
     /// Start the dismiss (slide-out) animation.
     fn start_dismiss(&mut self, compositor: &mut Compositor) {
-        if self.dismissing { return; }
+        if self.dismissing {
+            return;
+        }
         self.dismissing = true;
 
         let layer_id = match self.layer_id {
@@ -236,16 +238,38 @@ fn render_hud(pixels: &mut [u32], w: u32, h: u32, volume: u8, muted: bool) {
     // Speaker icon (simplified 10x10, left side)
     let icon_x: i32 = 14;
     let icon_y: i32 = 14;
-    let icon_color = if muted { 0xFF666666 } else { theme::color_hud_text() };
+    let icon_color = if muted {
+        0xFF666666
+    } else {
+        theme::color_hud_text()
+    };
     draw_speaker_mini(pixels, w, h, icon_x, icon_y, icon_color, volume, muted);
 
     // Volume bar background (full width)
-    fill_rect(pixels, w, h, BAR_X, BAR_Y, BAR_W, BAR_H, theme::color_hud_bar_bg());
+    fill_rect(
+        pixels,
+        w,
+        h,
+        BAR_X,
+        BAR_Y,
+        BAR_W,
+        BAR_H,
+        theme::color_hud_bar_bg(),
+    );
 
     // Volume bar filled portion
     if !muted && volume > 0 {
         let filled_w = (BAR_W as u32 * volume as u32 / 100).max(1);
-        fill_rect(pixels, w, h, BAR_X, BAR_Y, filled_w, BAR_H, theme::color_hud_bar());
+        fill_rect(
+            pixels,
+            w,
+            h,
+            BAR_X,
+            BAR_Y,
+            filled_w,
+            BAR_H,
+            theme::color_hud_bar(),
+        );
     }
 
     // Percentage text (right side)
@@ -254,8 +278,15 @@ fn render_hud(pixels: &mut [u32], w: u32, h: u32, volume: u8, muted: bool) {
     let text_x = BAR_X + BAR_W as i32 + 8;
     let text_y = (h as i32 - 11) / 2;
     anyos_std::ui::window::font_render_buf(
-        FONT_ID, FONT_SIZE, pixels, w, h,
-        text_x, text_y, theme::color_hud_text(), text,
+        FONT_ID,
+        FONT_SIZE,
+        pixels,
+        w,
+        h,
+        text_x,
+        text_y,
+        theme::color_hud_text(),
+        text,
     );
 }
 
@@ -326,15 +357,22 @@ fn fmt_percent<'a>(buf: &'a mut [u8; 5], vol: u8, muted: bool) -> &'a str {
     }
     let mut pos = 0;
     if vol >= 100 {
-        buf[pos] = b'1'; pos += 1;
-        buf[pos] = b'0'; pos += 1;
-        buf[pos] = b'0'; pos += 1;
+        buf[pos] = b'1';
+        pos += 1;
+        buf[pos] = b'0';
+        pos += 1;
+        buf[pos] = b'0';
+        pos += 1;
     } else if vol >= 10 {
-        buf[pos] = b'0' + vol / 10; pos += 1;
-        buf[pos] = b'0' + vol % 10; pos += 1;
+        buf[pos] = b'0' + vol / 10;
+        pos += 1;
+        buf[pos] = b'0' + vol % 10;
+        pos += 1;
     } else {
-        buf[pos] = b'0' + vol; pos += 1;
+        buf[pos] = b'0' + vol;
+        pos += 1;
     }
-    buf[pos] = b'%'; pos += 1;
+    buf[pos] = b'%';
+    pos += 1;
     core::str::from_utf8(&buf[..pos]).unwrap_or("?")
 }

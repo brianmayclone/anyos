@@ -6,9 +6,9 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{Vec, vec};
-use libanyui_client as anyui;
+use anyos_std::{vec, Vec};
 use anyui::Widget;
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
@@ -75,11 +75,17 @@ fn main() {
 
     let filename = path.rsplit('/').next().unwrap_or(path);
 
-    if !anyui::init() { return; }
+    if !anyui::init() {
+        return;
+    }
     anyos_std::i18n::init();
 
     let (scr_w, scr_h) = anyui::screen_size();
-    let (scr_w, scr_h) = if scr_w == 0 || scr_h == 0 { (1024, 768) } else { (scr_w, scr_h) };
+    let (scr_w, scr_h) = if scr_w == 0 || scr_h == 0 {
+        (1024, 768)
+    } else {
+        (scr_w, scr_h)
+    };
     let win_w = (vid_w as u32 + 2).min(scr_w).max(200);
     let win_h = (vid_h as u32 + CONTROLS_H + 2).min(scr_h).max(150);
 
@@ -148,74 +154,72 @@ fn main() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(anyos_std::i18n::t("File"))
-            .item(1, anyos_std::i18n::t("Quit"), 0)
+        .item(1, anyos_std::i18n::t("Quit"), 0)
         .end_menu()
         .menu(anyos_std::i18n::t("Playback"))
-            .item(10, anyos_std::i18n::t("Play/Pause"), 0)
-            .item(11, anyos_std::i18n::t("Stop"), 0)
-            .separator()
-            .item(12, anyos_std::i18n::t("Loop"), 0)
+        .item(10, anyos_std::i18n::t("Play/Pause"), 0)
+        .item(11, anyos_std::i18n::t("Stop"), 0)
+        .separator()
+        .item(12, anyos_std::i18n::t("Loop"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => anyui::quit(),
-            10 => {
-                let a = app();
-                if a.playing {
-                    a.pause_elapsed = anyos_std::sys::uptime().wrapping_sub(a.start_tick);
-                    a.playing = false;
-                    a.lbl_status.set_text(">");
-                } else {
-                    a.start_tick = anyos_std::sys::uptime().wrapping_sub(a.pause_elapsed);
-                    a.playing = true;
-                    a.lbl_status.set_text("||");
-                }
-            }
-            11 => {
-                let a = app();
+    menu.on_item(|e| match e.item_id {
+        1 => anyui::quit(),
+        10 => {
+            let a = app();
+            if a.playing {
+                a.pause_elapsed = anyos_std::sys::uptime().wrapping_sub(a.start_tick);
                 a.playing = false;
-                a.current_frame = 0;
-                a.pause_elapsed = 0;
                 a.lbl_status.set_text(">");
-                a.needs_redraw = true;
+            } else {
+                a.start_tick = anyos_std::sys::uptime().wrapping_sub(a.pause_elapsed);
+                a.playing = true;
+                a.lbl_status.set_text("||");
             }
-            12 => { app().looping = !app().looping; }
-            _ => {}
         }
+        11 => {
+            let a = app();
+            a.playing = false;
+            a.current_frame = 0;
+            a.pause_elapsed = 0;
+            a.lbl_status.set_text(">");
+            a.needs_redraw = true;
+        }
+        12 => {
+            app().looping = !app().looping;
+        }
+        _ => {}
     });
 
     // Keyboard events
-    win.on_key_down(|ke| {
-        match ke.keycode {
-            anyui::KEY_ESCAPE => anyui::quit(),
-            KEY_SPACE => {
-                let a = app();
-                if a.playing {
-                    a.pause_elapsed = anyos_std::sys::uptime().wrapping_sub(a.start_tick);
-                    a.playing = false;
-                    a.lbl_status.set_text(">");
-                } else {
-                    a.start_tick = anyos_std::sys::uptime().wrapping_sub(a.pause_elapsed);
-                    a.playing = true;
-                    a.lbl_status.set_text("||");
-                }
+    win.on_key_down(|ke| match ke.keycode {
+        anyui::KEY_ESCAPE => anyui::quit(),
+        KEY_SPACE => {
+            let a = app();
+            if a.playing {
+                a.pause_elapsed = anyos_std::sys::uptime().wrapping_sub(a.start_tick);
+                a.playing = false;
+                a.lbl_status.set_text(">");
+            } else {
+                a.start_tick = anyos_std::sys::uptime().wrapping_sub(a.pause_elapsed);
+                a.playing = true;
+                a.lbl_status.set_text("||");
             }
-            anyui::KEY_LEFT => {
-                let a = app();
-                let back = a.fps;
-                a.current_frame = a.current_frame.saturating_sub(back);
-                seek_to_current();
-            }
-            anyui::KEY_RIGHT => {
-                let a = app();
-                let fwd = a.fps;
-                a.current_frame = (a.current_frame + fwd).min(a.num_frames - 1);
-                seek_to_current();
-            }
-            _ => {}
         }
+        anyui::KEY_LEFT => {
+            let a = app();
+            let back = a.fps;
+            a.current_frame = a.current_frame.saturating_sub(back);
+            seek_to_current();
+        }
+        anyui::KEY_RIGHT => {
+            let a = app();
+            let fwd = a.fps;
+            a.current_frame = (a.current_frame + fwd).min(a.num_frames - 1);
+            seek_to_current();
+        }
+        _ => {}
     });
 
     win.on_close(|_| anyui::quit());
@@ -259,7 +263,9 @@ fn seek_to_current() {
     let a = app();
     let frame_ticks = if a.fps > 0 {
         (a.current_frame as u64 * a.tick_hz as u64 / a.fps as u64) as u32
-    } else { 0 };
+    } else {
+        0
+    };
     if a.playing {
         a.start_tick = anyos_std::sys::uptime().wrapping_sub(frame_ticks);
     } else {
@@ -273,19 +279,27 @@ fn redraw() {
 
     // Decode frame
     let _ = libimage_client::video_decode_frame(
-        &a.data, a.num_frames, a.current_frame, &mut a.pixels, &mut a.scratch,
+        &a.data,
+        a.num_frames,
+        a.current_frame,
+        &mut a.pixels,
+        &mut a.scratch,
     );
 
     let w = a.canvas.get_stride() as usize;
     let h = a.canvas.get_height() as usize;
-    if w == 0 || h == 0 { return; }
+    if w == 0 || h == 0 {
+        return;
+    }
 
     let needed = w * h;
     if a.render_buf.len() != needed {
         a.render_buf.resize(needed, BG);
     }
 
-    for p in a.render_buf.iter_mut() { *p = BG; }
+    for p in a.render_buf.iter_mut() {
+        *p = BG;
+    }
 
     // Center video in canvas
     let offset_x = if a.vid_w < w { (w - a.vid_w) / 2 } else { 0 };
@@ -305,7 +319,11 @@ fn redraw() {
 
 fn update_controls() {
     let a = app();
-    let current_sec = if a.fps > 0 { a.current_frame / a.fps } else { 0 };
+    let current_sec = if a.fps > 0 {
+        a.current_frame / a.fps
+    } else {
+        0
+    };
     let total_sec = if a.fps > 0 { a.num_frames / a.fps } else { 0 };
     let mut time_buf = [0u8; 32];
     let time_str = format_time(&mut time_buf, current_sec, total_sec);
@@ -319,46 +337,95 @@ fn update_controls() {
 
 fn read_file(path: &str) -> Option<Vec<u8>> {
     let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX { return None; }
+    if fd == u32::MAX {
+        return None;
+    }
     let mut content = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         content.extend_from_slice(&buf[..n as usize]);
     }
     anyos_std::fs::close(fd);
     Some(content)
 }
 
-fn format_title<'a>(buf: &'a mut [u8; 128], filename: &str, w: usize, h: usize, fps: u32) -> &'a str {
+fn format_title<'a>(
+    buf: &'a mut [u8; 128],
+    filename: &str,
+    w: usize,
+    h: usize,
+    fps: u32,
+) -> &'a str {
     let mut pos = 0;
-    for &b in filename.as_bytes() { if pos < 127 { buf[pos] = b; pos += 1; } }
-    for &b in b" (" { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in filename.as_bytes() {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
+    for &b in b" (" {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
     pos = write_num(buf, pos, w);
-    if pos < 127 { buf[pos] = b'x'; pos += 1; }
+    if pos < 127 {
+        buf[pos] = b'x';
+        pos += 1;
+    }
     pos = write_num(buf, pos, h);
-    for &b in b" @ " { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in b" @ " {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
     pos = write_num(buf, pos, fps as usize);
-    for &b in b" fps) - " { if pos < 127 { buf[pos] = b; pos += 1; } }
-    for &b in anyos_std::i18n::t("Video Player").as_bytes() { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in b" fps) - " {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
+    for &b in anyos_std::i18n::t("Video Player").as_bytes() {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
     unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
 
 fn format_time<'a>(buf: &'a mut [u8; 32], current: u32, total: u32) -> &'a str {
     let mut pos = 0usize;
     pos = write_num_small(buf, pos, (current / 60) as usize);
-    buf[pos] = b':'; pos += 1;
+    buf[pos] = b':';
+    pos += 1;
     let sec = (current % 60) as usize;
-    if sec < 10 { buf[pos] = b'0'; pos += 1; }
+    if sec < 10 {
+        buf[pos] = b'0';
+        pos += 1;
+    }
     pos = write_num_small(buf, pos, sec);
-    buf[pos] = b' '; pos += 1;
-    buf[pos] = b'/'; pos += 1;
-    buf[pos] = b' '; pos += 1;
+    buf[pos] = b' ';
+    pos += 1;
+    buf[pos] = b'/';
+    pos += 1;
+    buf[pos] = b' ';
+    pos += 1;
     pos = write_num_small(buf, pos, (total / 60) as usize);
-    buf[pos] = b':'; pos += 1;
+    buf[pos] = b':';
+    pos += 1;
     let sec = (total % 60) as usize;
-    if sec < 10 { buf[pos] = b'0'; pos += 1; }
+    if sec < 10 {
+        buf[pos] = b'0';
+        pos += 1;
+    }
     pos = write_num_small(buf, pos, sec);
     unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
@@ -367,21 +434,38 @@ fn write_num(buf: &mut [u8; 128], pos: usize, n: usize) -> usize {
     let mut tmp = [0u8; 10];
     let len = fmt_usize(n, &mut tmp);
     let mut p = pos;
-    for &b in &tmp[..len] { if p < 127 { buf[p] = b; p += 1; } }
+    for &b in &tmp[..len] {
+        if p < 127 {
+            buf[p] = b;
+            p += 1;
+        }
+    }
     p
 }
 
 fn write_num_small(buf: &mut [u8; 32], mut pos: usize, n: usize) -> usize {
     let mut tmp = [0u8; 10];
     let len = fmt_usize(n, &mut tmp);
-    for &b in &tmp[..len] { if pos < 31 { buf[pos] = b; pos += 1; } }
+    for &b in &tmp[..len] {
+        if pos < 31 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
     pos
 }
 
 fn fmt_usize(mut n: usize, buf: &mut [u8; 10]) -> usize {
-    if n == 0 { buf[0] = b'0'; return 1; }
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
     let mut pos = 10;
-    while n > 0 && pos > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
+    while n > 0 && pos > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
     let len = 10 - pos;
     buf.copy_within(pos..10, 0);
     len

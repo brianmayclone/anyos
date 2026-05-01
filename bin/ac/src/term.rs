@@ -12,22 +12,22 @@ use anyos_std::sys::{CON_MODE_HIDE_CURSOR, CON_MODE_NO_AUTOSCROLL};
 #[allow(dead_code)]
 pub mod color {
     // Basic ANSI foreground colors (used as fg/bg in SGR)
-    pub const BLACK:          u8 = 0;
-    pub const RED:            u8 = 1;
-    pub const GREEN:          u8 = 2;
-    pub const YELLOW:         u8 = 3;
-    pub const BLUE:           u8 = 4;
-    pub const MAGENTA:        u8 = 5;
-    pub const CYAN:           u8 = 6;
-    pub const WHITE:          u8 = 7;
-    pub const BRIGHT_BLACK:   u8 = 8;
-    pub const BRIGHT_RED:     u8 = 9;
-    pub const BRIGHT_GREEN:   u8 = 10;
-    pub const BRIGHT_YELLOW:  u8 = 11;
-    pub const BRIGHT_BLUE:    u8 = 12;
+    pub const BLACK: u8 = 0;
+    pub const RED: u8 = 1;
+    pub const GREEN: u8 = 2;
+    pub const YELLOW: u8 = 3;
+    pub const BLUE: u8 = 4;
+    pub const MAGENTA: u8 = 5;
+    pub const CYAN: u8 = 6;
+    pub const WHITE: u8 = 7;
+    pub const BRIGHT_BLACK: u8 = 8;
+    pub const BRIGHT_RED: u8 = 9;
+    pub const BRIGHT_GREEN: u8 = 10;
+    pub const BRIGHT_YELLOW: u8 = 11;
+    pub const BRIGHT_BLUE: u8 = 12;
     pub const BRIGHT_MAGENTA: u8 = 13;
-    pub const BRIGHT_CYAN:    u8 = 14;
-    pub const BRIGHT_WHITE:   u8 = 15;
+    pub const BRIGHT_CYAN: u8 = 14;
+    pub const BRIGHT_WHITE: u8 = 15;
 }
 
 // ─── Output buffer ───────────────────────────────────────────────────────────
@@ -38,12 +38,15 @@ const BUF_SIZE: usize = 65536;
 
 pub struct TermBuf {
     data: [u8; BUF_SIZE],
-    len:  usize,
+    len: usize,
 }
 
 impl TermBuf {
     pub const fn new() -> Self {
-        Self { data: [0u8; BUF_SIZE], len: 0 }
+        Self {
+            data: [0u8; BUF_SIZE],
+            len: 0,
+        }
     }
 
     /// Append raw bytes.
@@ -71,7 +74,10 @@ impl TermBuf {
 
     /// Append a decimal u32 without heap allocation.
     pub fn push_u32(&mut self, mut n: u32) {
-        if n == 0 { self.push_byte(b'0'); return; }
+        if n == 0 {
+            self.push_byte(b'0');
+            return;
+        }
         let mut tmp = [0u8; 10];
         let mut i = 10usize;
         while n > 0 {
@@ -84,14 +90,18 @@ impl TermBuf {
 
     /// Flush the buffer to the kernel text console in one syscall, then reset.
     pub fn flush(&mut self) {
-        if self.len == 0 { return; }
+        if self.len == 0 {
+            return;
+        }
         if let Ok(s) = core::str::from_utf8(&self.data[..self.len]) {
             anyos_std::sys::con_write(s);
         }
         self.len = 0;
     }
 
-    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 // ─── Terminal control ─────────────────────────────────────────────────────────
@@ -209,10 +219,14 @@ pub fn write_fixed(buf: &mut TermBuf, s: &str, width: usize) {
 
 /// Write `count` spaces.
 pub fn spaces(buf: &mut TermBuf, count: usize) {
-    for _ in 0..count { buf.push_byte(b' '); }
+    for _ in 0..count {
+        buf.push_byte(b' ');
+    }
 }
 
 /// Draw a horizontal line of `ch` repeated `width` times.
 pub fn hline(buf: &mut TermBuf, ch: u8, width: usize) {
-    for _ in 0..width { buf.push_byte(ch); }
+    for _ in 0..width {
+        buf.push_byte(ch);
+    }
 }

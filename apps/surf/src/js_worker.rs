@@ -245,4 +245,5 @@ fn worker_entry() {
     if request_pending() {
         ensure_worker();
     }
+    anyos_std::process::exit(0);
 }

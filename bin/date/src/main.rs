@@ -19,5 +19,13 @@ fn main() {
     let hour = buf[4] as u32;
     let min = buf[5] as u32;
     let sec = buf[6] as u32;
-    anyos_std::println!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hour, min, sec);
+    anyos_std::println!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year,
+        month,
+        day,
+        hour,
+        min,
+        sec
+    );
 }

@@ -33,15 +33,21 @@ pub const WIN_FLAG_FULLSCREEN_CAPABLE: u32 = 0x400;
 
 /// Menubar height in physical pixels (DPI-scaled).
 #[inline(always)]
-pub fn menubar_height() -> u32 { crate::desktop::theme::scale(24) }
+pub fn menubar_height() -> u32 {
+    crate::desktop::theme::scale(24)
+}
 
 /// Title bar height in physical pixels (DPI-scaled).
 #[inline(always)]
-pub fn title_bar_height() -> u32 { crate::desktop::theme::scale(28) }
+pub fn title_bar_height() -> u32 {
+    crate::desktop::theme::scale(28)
+}
 
 /// Minimum padding (px) between traffic-light buttons / window edge and the title text (DPI-scaled).
 #[inline(always)]
-fn title_padding() -> i32 { crate::desktop::theme::scale_i32(8) }
+fn title_padding() -> i32 {
+    crate::desktop::theme::scale_i32(8)
+}
 
 /// Right-edge of the last traffic-light button (DPI-scaled).
 #[inline(always)]
@@ -81,16 +87,26 @@ fn shortcut_btn_right() -> i32 {
 
 /// Render the shortcut button ("F1".."F12") into a pixel buffer at the title bar.
 fn render_shortcut_btn(pixels: &mut [u32], stride: u32, full_h: u32, slot: u8, focused: bool) {
-    if slot == 0 { return; }
+    if slot == 0 {
+        return;
+    }
     let x = shortcut_btn_x();
     let y = shortcut_btn_y();
     let w = shortcut_btn_w();
     let h = shortcut_btn_h();
     // Background: subtle rounded rect
     let bg = if focused {
-        if super::theme::is_light() { 0x30000000 } else { 0x30FFFFFF }
+        if super::theme::is_light() {
+            0x30000000
+        } else {
+            0x30FFFFFF
+        }
     } else {
-        if super::theme::is_light() { 0x18000000 } else { 0x18FFFFFF }
+        if super::theme::is_light() {
+            0x18000000
+        } else {
+            0x18FFFFFF
+        }
     };
     let r = crate::desktop::theme::scale(4);
     fill_rounded_rect(pixels, stride, full_h, x, y, w, h, r, bg);
@@ -102,9 +118,24 @@ fn render_shortcut_btn(pixels: &mut [u32], stride: u32, full_h: u32, slot: u8, f
             label_buf[1] = b'0' + slot;
             core::str::from_utf8(&label_buf[..2]).unwrap_or("")
         }
-        10 => { label_buf[0] = b'F'; label_buf[1] = b'1'; label_buf[2] = b'0'; core::str::from_utf8(&label_buf[..3]).unwrap_or("") }
-        11 => { label_buf[0] = b'F'; label_buf[1] = b'1'; label_buf[2] = b'1'; core::str::from_utf8(&label_buf[..3]).unwrap_or("") }
-        12 => { label_buf[0] = b'F'; label_buf[1] = b'1'; label_buf[2] = b'2'; core::str::from_utf8(&label_buf[..3]).unwrap_or("") }
+        10 => {
+            label_buf[0] = b'F';
+            label_buf[1] = b'1';
+            label_buf[2] = b'0';
+            core::str::from_utf8(&label_buf[..3]).unwrap_or("")
+        }
+        11 => {
+            label_buf[0] = b'F';
+            label_buf[1] = b'1';
+            label_buf[2] = b'1';
+            core::str::from_utf8(&label_buf[..3]).unwrap_or("")
+        }
+        12 => {
+            label_buf[0] = b'F';
+            label_buf[1] = b'1';
+            label_buf[2] = b'2';
+            core::str::from_utf8(&label_buf[..3]).unwrap_or("")
+        }
         _ => return,
     };
     let fs = crate::desktop::theme::scale_font(10);
@@ -112,7 +143,9 @@ fn render_shortcut_btn(pixels: &mut [u32], stride: u32, full_h: u32, slot: u8, f
     let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, fs, label);
     let tx = x + (w as i32 - tw as i32) / 2;
     let ty = y + (h as i32 - th as i32) / 2;
-    anyos_std::ui::window::font_render_buf(FONT_ID, fs, pixels, stride, full_h, tx, ty, text_color, label);
+    anyos_std::ui::window::font_render_buf(
+        FONT_ID, fs, pixels, stride, full_h, tx, ty, text_color, label,
+    );
 }
 
 /// Truncate a title string so that it fits within `max_width` pixels.
@@ -316,25 +349,49 @@ impl WindowInfo {
                 let right = wx >= fw - inner;
 
                 // Corner zones (inner+outer = 8px grab area on each axis)
-                if top && left { return HitTest::ResizeTopLeft; }
-                if top && right { return HitTest::ResizeTopRight; }
-                if bottom && left { return HitTest::ResizeBottomLeft; }
-                if bottom && right { return HitTest::ResizeBottomRight; }
+                if top && left {
+                    return HitTest::ResizeTopLeft;
+                }
+                if top && right {
+                    return HitTest::ResizeTopRight;
+                }
+                if bottom && left {
+                    return HitTest::ResizeBottomLeft;
+                }
+                if bottom && right {
+                    return HitTest::ResizeBottomRight;
+                }
 
                 // Edge zones (only if cursor is outside window or within inner border)
                 if wx < 0 || wy < 0 || wx >= fw || wy >= fh {
                     // Outside bounds — must be a resize edge
-                    if top || wy < 0 { return HitTest::ResizeTop; }
-                    if bottom || wy >= fh { return HitTest::ResizeBottom; }
-                    if left || wx < 0 { return HitTest::ResizeLeft; }
-                    if right || wx >= fw { return HitTest::ResizeRight; }
+                    if top || wy < 0 {
+                        return HitTest::ResizeTop;
+                    }
+                    if bottom || wy >= fh {
+                        return HitTest::ResizeBottom;
+                    }
+                    if left || wx < 0 {
+                        return HitTest::ResizeLeft;
+                    }
+                    if right || wx >= fw {
+                        return HitTest::ResizeRight;
+                    }
                 }
 
                 // Inside bounds — check inner border
-                if top { return HitTest::ResizeTop; }
-                if bottom { return HitTest::ResizeBottom; }
-                if left { return HitTest::ResizeLeft; }
-                if right { return HitTest::ResizeRight; }
+                if top {
+                    return HitTest::ResizeTop;
+                }
+                if bottom {
+                    return HitTest::ResizeBottom;
+                }
+                if left {
+                    return HitTest::ResizeLeft;
+                }
+                if right {
+                    return HitTest::ResizeRight;
+                }
             }
         }
 
@@ -576,8 +633,12 @@ impl Desktop {
         // Reassign the freed slot to the first unassigned non-borderless window
         // (exclude the window being destroyed — it's still in the list at this point)
         if let Some(slot) = freed_slot {
-            let candidate = self.windows.iter()
-                .find(|w| w.id != win_id && w.shortcut_slot == 0 && !w.is_borderless() && w.owner_tid != 0)
+            let candidate = self
+                .windows
+                .iter()
+                .find(|w| {
+                    w.id != win_id && w.shortcut_slot == 0 && !w.is_borderless() && w.owner_tid != 0
+                })
                 .map(|w| w.id);
             if let Some(cand_id) = candidate {
                 self.fkey_slots[slot as usize] = cand_id;
@@ -618,7 +679,10 @@ impl Desktop {
                     if self.menu_bar.on_focus_change(None) {
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0, 0, self.screen_width, menubar_height() + 1,
+                            0,
+                            0,
+                            self.screen_width,
+                            menubar_height() + 1,
                         ));
                     }
                 }
@@ -634,7 +698,11 @@ impl Desktop {
     pub fn on_process_exit(&mut self, tid: u32) {
         // If the exiting process owns the fullscreen window, exit fullscreen first
         if let Some(fs_id) = self.fullscreen_window {
-            if self.windows.iter().any(|w| w.id == fs_id && w.owner_tid == tid) {
+            if self
+                .windows
+                .iter()
+                .any(|w| w.id == fs_id && w.owner_tid == tid)
+            {
                 self.exit_fullscreen();
             }
         }
@@ -642,7 +710,9 @@ impl Desktop {
         // so the target doesn't keep dangling DRAG_ENTER state.
         self.drag_cancel_for_tid(tid);
 
-        let window_ids: Vec<u32> = self.windows.iter()
+        let window_ids: Vec<u32> = self
+            .windows
+            .iter()
             .filter(|w| w.owner_tid == tid)
             .map(|w| w.id)
             .collect();
@@ -686,7 +756,9 @@ impl Desktop {
     pub fn on_theme_change(&mut self) {
         self.draw_menubar();
 
-        let win_ids: Vec<u32> = self.windows.iter()
+        let win_ids: Vec<u32> = self
+            .windows
+            .iter()
             .filter(|w| !w.is_borderless())
             .map(|w| w.id)
             .collect();
@@ -703,8 +775,11 @@ impl Desktop {
         // Check if this window has a modal child — if so, redirect focus to the modal.
         // Walk the chain to find the topmost modal descendant.
         let mut target_id = id;
-        for _ in 0..16 { // prevent infinite loops
-            if let Some(modal_child_id) = self.windows.iter()
+        for _ in 0..16 {
+            // prevent infinite loops
+            if let Some(modal_child_id) = self
+                .windows
+                .iter()
                 .find(|w| w.modal_owner == target_id)
                 .map(|w| w.id)
             {
@@ -744,7 +819,10 @@ impl Desktop {
             if self.menu_bar.on_focus_change(Some(target_id)) {
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, menubar_height() + 1,
+                    0,
+                    0,
+                    self.screen_width,
+                    menubar_height() + 1,
                 ));
             }
 
@@ -784,7 +862,10 @@ impl Desktop {
             if self.menu_bar.on_focus_change(Some(id)) {
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, menubar_height() + 1,
+                    0,
+                    0,
+                    self.screen_width,
+                    menubar_height() + 1,
                 ));
             }
 
@@ -849,7 +930,8 @@ impl Desktop {
         // Stack-copy title to avoid heap allocation (title.clone())
         let mut title_buf = [0u8; 256];
         let title_len = self.windows[win_idx].title.len().min(256);
-        title_buf[..title_len].copy_from_slice(&self.windows[win_idx].title.as_bytes()[..title_len]);
+        title_buf[..title_len]
+            .copy_from_slice(&self.windows[win_idx].title.as_bytes()[..title_len]);
         let title_str = core::str::from_utf8(&title_buf[..title_len]).unwrap_or("");
 
         // Borderless IPC windows: no chrome — restore SHM content directly.
@@ -873,17 +955,39 @@ impl Desktop {
                 }
 
                 fill_rounded_rect(
-                    pixels, stride, full_h, 0, 0, cw, full_h, 8, color_window_bg(),
+                    pixels,
+                    stride,
+                    full_h,
+                    0,
+                    0,
+                    cw,
+                    full_h,
+                    8,
+                    color_window_bg(),
                 );
 
                 draw_rounded_rect_outline(
-                    pixels, stride, full_h, 0, 0, cw, full_h, 8, color_window_border(),
+                    pixels,
+                    stride,
+                    full_h,
+                    0,
+                    0,
+                    cw,
+                    full_h,
+                    8,
+                    color_window_border(),
                 );
 
                 let (tb_top, tb_bot) = if focused {
-                    (color_titlebar_focused_top(), color_titlebar_focused_bottom())
+                    (
+                        color_titlebar_focused_top(),
+                        color_titlebar_focused_bottom(),
+                    )
                 } else {
-                    (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
+                    (
+                        color_titlebar_unfocused_top(),
+                        color_titlebar_unfocused_bottom(),
+                    )
                 };
                 let tb_h = title_bar_height();
                 fill_rounded_rect_top_gradient(pixels, stride, 0, 0, cw, tb_h, 8, tb_top, tb_bot);
@@ -907,14 +1011,20 @@ impl Desktop {
                 let base_colors: [u32; 3] = if focused {
                     [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
                 } else {
-                    [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
+                    [
+                        color_btn_unfocused(),
+                        color_btn_unfocused(),
+                        color_btn_unfocused(),
+                    ]
                 };
                 let btn_sz = title_btn_size();
                 let btn_sp = title_btn_spacing();
                 let btn_y_pos = title_btn_y();
                 let btn_left = crate::desktop::theme::scale_i32(8);
                 for (i, &base) in base_colors.iter().enumerate() {
-                    if btn_hidden[i] { continue; }
+                    if btn_hidden[i] {
+                        continue;
+                    }
                     let aid = button_anim_id(window_id, i as u8);
                     let color = if let Some(t) = self.btn_anims.value(aid, now) {
                         let target = if self.btn_pressed == Some((window_id, i as u8)) {
@@ -971,8 +1081,15 @@ impl Desktop {
                     }
                     let ty = ((tb_h as i32 - th as i32) / 2).max(0);
                     anyos_std::ui::window::font_render_buf(
-                        FONT_ID, fs, pixels, stride, full_h, tx, ty,
-                        color_titlebar_text(), display_str,
+                        FONT_ID,
+                        fs,
+                        pixels,
+                        stride,
+                        full_h,
+                        tx,
+                        ty,
+                        color_titlebar_text(),
+                        display_str,
                     );
                 }
             }
@@ -1000,7 +1117,8 @@ impl Desktop {
         // Stack-copy title to avoid heap allocation (title.clone())
         let mut title_buf = [0u8; 256];
         let title_len = self.windows[win_idx].title.len().min(256);
-        title_buf[..title_len].copy_from_slice(&self.windows[win_idx].title.as_bytes()[..title_len]);
+        title_buf[..title_len]
+            .copy_from_slice(&self.windows[win_idx].title.as_bytes()[..title_len]);
         let title_str = core::str::from_utf8(&title_buf[..title_len]).unwrap_or("");
 
         if self.windows[win_idx].is_borderless() {
@@ -1012,9 +1130,15 @@ impl Desktop {
             let tb_h = title_bar_height();
 
             let (tb_top, tb_bot) = if focused {
-                (color_titlebar_focused_top(), color_titlebar_focused_bottom())
+                (
+                    color_titlebar_focused_top(),
+                    color_titlebar_focused_bottom(),
+                )
             } else {
-                (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
+                (
+                    color_titlebar_unfocused_top(),
+                    color_titlebar_unfocused_bottom(),
+                )
             };
             fill_rounded_rect_top_gradient(pixels, stride, 0, 0, cw, tb_h, 8, tb_top, tb_bot);
 
@@ -1031,7 +1155,11 @@ impl Desktop {
             let base_colors: [u32; 3] = if focused {
                 [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
             } else {
-                [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
+                [
+                    color_btn_unfocused(),
+                    color_btn_unfocused(),
+                    color_btn_unfocused(),
+                ]
             };
             let btn_sz = title_btn_size();
             let btn_sp = title_btn_spacing();
@@ -1091,8 +1219,15 @@ impl Desktop {
                 }
                 let ty = ((tb_h as i32 - th as i32) / 2).max(0);
                 anyos_std::ui::window::font_render_buf(
-                    FONT_ID, fs, pixels, stride, full_h, tx, ty,
-                    color_titlebar_text(), display_str,
+                    FONT_ID,
+                    fs,
+                    pixels,
+                    stride,
+                    full_h,
+                    tx,
+                    ty,
+                    color_titlebar_text(),
+                    display_str,
                 );
             }
         }
@@ -1157,7 +1292,9 @@ impl Desktop {
             }
         }
         let count = visible_ids.len();
-        if count == 0 { return; }
+        if count == 0 {
+            return;
+        }
 
         let area_x = 0i32;
         let area_y = menubar_height() as i32 + 1;
@@ -1165,12 +1302,19 @@ impl Desktop {
         let area_h = self.screen_height - menubar_height() - 1;
 
         // Compute grid: cols x rows
-        let cols = if count <= 1 { 1u32 }
-            else if count <= 2 { 2 }
-            else if count <= 4 { 2 }
-            else if count <= 6 { 3 }
-            else if count <= 9 { 3 }
-            else { 4 };
+        let cols = if count <= 1 {
+            1u32
+        } else if count <= 2 {
+            2
+        } else if count <= 4 {
+            2
+        } else if count <= 6 {
+            3
+        } else if count <= 9 {
+            3
+        } else {
+            4
+        };
         let rows = ((count as u32) + cols - 1) / cols;
 
         let cell_w = area_w / cols;
@@ -1213,12 +1357,16 @@ impl Desktop {
     /// Toggle "show desktop": minimize all windows, or restore them.
     pub(crate) fn toggle_show_desktop(&mut self) {
         // Check if any visible framed window exists
-        let has_visible = self.windows.iter()
+        let has_visible = self
+            .windows
+            .iter()
             .any(|w| w.x >= 0 && !w.is_borderless() && w.owner_tid != 0);
 
         if has_visible {
             // Minimize all visible framed windows
-            let ids: Vec<u32> = self.windows.iter()
+            let ids: Vec<u32> = self
+                .windows
+                .iter()
                 .filter(|w| w.x >= 0 && !w.is_borderless() && w.owner_tid != 0)
                 .map(|w| w.id)
                 .collect();
@@ -1227,7 +1375,9 @@ impl Desktop {
             }
         } else {
             // Restore: un-minimize all windows that have saved bounds
-            let ids: Vec<u32> = self.windows.iter()
+            let ids: Vec<u32> = self
+                .windows
+                .iter()
                 .filter(|w| w.x < -9000 && w.saved_bounds.is_some() && w.owner_tid != 0)
                 .map(|w| w.id)
                 .collect();
@@ -1267,10 +1417,20 @@ impl Desktop {
             let tb = if borderless { 0 } else { title_bar_height() };
 
             let (wx, wy, cw, ch) = match edge {
-                0 => (0i32, area_y, area_w / 2, area_h.saturating_sub(tb)),           // left
-                1 => ((area_w / 2) as i32, area_y, area_w / 2, area_h.saturating_sub(tb)), // right
-                2 => (0i32, area_y, area_w, (area_h / 2).saturating_sub(tb)),          // top
-                _ => (0i32, area_y + (area_h / 2) as i32, area_w, (area_h / 2).saturating_sub(tb)), // bottom
+                0 => (0i32, area_y, area_w / 2, area_h.saturating_sub(tb)), // left
+                1 => (
+                    (area_w / 2) as i32,
+                    area_y,
+                    area_w / 2,
+                    area_h.saturating_sub(tb),
+                ), // right
+                2 => (0i32, area_y, area_w, (area_h / 2).saturating_sub(tb)), // top
+                _ => (
+                    0i32,
+                    area_y + (area_h / 2) as i32,
+                    area_w,
+                    (area_h / 2).saturating_sub(tb),
+                ), // bottom
             };
 
             self.windows[idx].x = wx;
@@ -1306,7 +1466,10 @@ impl Desktop {
             let layer_id = self.windows[idx].layer_id;
             self.compositor.move_layer(layer_id, -10000, -10000);
             // Focus next visible window
-            if let Some(next_id) = self.windows.iter().rev()
+            if let Some(next_id) = self
+                .windows
+                .iter()
+                .rev()
                 .find(|w| w.id != win_id && w.x >= 0)
                 .map(|w| w.id)
             {
@@ -1373,16 +1536,9 @@ impl Desktop {
             content_h + title_bar_height()
         };
 
-        let (x, y) =
-            self.resolve_initial_window_position(raw_x, raw_y, content_w, full_h, true);
+        let (x, y) = self.resolve_initial_window_position(raw_x, raw_y, content_w, full_h, true);
 
-        let layer_id = self.compositor.add_layer(
-            x,
-            y,
-            content_w,
-            full_h,
-            false,
-        );
+        let layer_id = self.compositor.add_layer(x, y, content_w, full_h, false);
 
         let force_shadow = flags & WIN_FLAG_SHADOW != 0;
         if !borderless || force_shadow {
@@ -1448,12 +1604,7 @@ impl Desktop {
             self.resolve_initial_window_position(raw_x, raw_y, content_w, content_h, false);
 
         // VRAM windows are always borderless + opaque (no title bar chrome)
-        let layer_id = self.compositor.add_vram_layer(
-            x,
-            y,
-            content_w,
-            content_h,
-        )?;
+        let layer_id = self.compositor.add_vram_layer(x, y, content_w, content_h)?;
 
         // Get the VRAM allocation info for mapping
         let stride_pixels = self.compositor.fb_pitch / 4;
@@ -1543,17 +1694,11 @@ impl Desktop {
             content_h + title_bar_height()
         };
 
-        let (x, y) =
-            self.resolve_initial_window_position(raw_x, raw_y, content_w, full_h, true);
+        let (x, y) = self.resolve_initial_window_position(raw_x, raw_y, content_w, full_h, true);
 
-        let layer_id = self.compositor.add_layer_with_pixels(
-            x,
-            y,
-            content_w,
-            full_h,
-            false,
-            pre_pixels,
-        );
+        let layer_id = self
+            .compositor
+            .add_layer_with_pixels(x, y, content_w, full_h, false, pre_pixels);
 
         let force_shadow = flags & WIN_FLAG_SHADOW != 0;
         if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
@@ -1613,7 +1758,11 @@ impl Desktop {
     /// Copy SHM content into the window layer's content area.
     /// For VRAM-direct windows (shm_ptr is null), just marks the layer dirty.
     /// If `dirty_rect` is Some, only copies that region from SHM (partial present).
-    pub fn present_ipc_window(&mut self, window_id: u32, dirty_rect: Option<crate::compositor::Rect>) {
+    pub fn present_ipc_window(
+        &mut self,
+        window_id: u32,
+        dirty_rect: Option<crate::compositor::Rect>,
+    ) {
         let win_idx = match self.windows.iter().position(|w| w.id == window_id) {
             Some(i) => i,
             None => return,
@@ -1678,8 +1827,14 @@ impl Desktop {
         let (copy_x, copy_y, copy_w, copy_h) = if let Some(ref dr) = dirty_rect {
             let rx = (dr.x.max(0) as u32).min(shm_w);
             let ry = (dr.y.max(0) as u32).min(shm_h);
-            let rw = dr.width.min(shm_w.saturating_sub(rx)).min(cw.saturating_sub(rx));
-            let rh = dr.height.min(shm_h.saturating_sub(ry)).min(ch.saturating_sub(ry));
+            let rw = dr
+                .width
+                .min(shm_w.saturating_sub(rx))
+                .min(cw.saturating_sub(rx));
+            let rh = dr
+                .height
+                .min(shm_h.saturating_sub(ry))
+                .min(ch.saturating_sub(ry));
             if rw == 0 || rh == 0 {
                 return;
             }
@@ -1725,8 +1880,7 @@ impl Desktop {
                     // Content area is always opaque — no alpha check needed
                     for dst_col in 0..cw {
                         let src_x = (src_x_fp >> 16).min(shm_w - 1) as usize;
-                        pixels[dst_off + dst_col as usize] =
-                            src_slice[src_row_off + src_x];
+                        pixels[dst_off + dst_col as usize] = src_slice[src_row_off + src_x];
                         src_x_fp += x_step;
                     }
 
@@ -1807,7 +1961,9 @@ impl Desktop {
         if self.shortcut_overlay_layer != 0 {
             self.compositor.remove_layer(self.shortcut_overlay_layer);
         }
-        let layer_id = self.compositor.add_layer(ox, oy, overlay_w, overlay_h, false);
+        let layer_id = self
+            .compositor
+            .add_layer(ox, oy, overlay_w, overlay_h, false);
         self.shortcut_overlay_layer = layer_id;
         self.shortcut_overlay_visible = true;
 
@@ -1829,7 +1985,9 @@ impl Desktop {
 
     /// Select next slot in the overlay (Tab).
     pub(crate) fn shortcut_overlay_select_next(&mut self) {
-        if !self.shortcut_overlay_visible { return; }
+        if !self.shortcut_overlay_visible {
+            return;
+        }
         let mut sel = self.shortcut_overlay_selection;
         // Find next occupied slot (wrap around)
         for _ in 0..12 {
@@ -1847,7 +2005,9 @@ impl Desktop {
 
     /// Select previous slot in the overlay (Shift+Tab).
     pub(crate) fn shortcut_overlay_select_prev(&mut self) {
-        if !self.shortcut_overlay_visible { return; }
+        if !self.shortcut_overlay_visible {
+            return;
+        }
         let mut sel = self.shortcut_overlay_selection;
         for _ in 0..12 {
             sel = if sel <= 0 { 11 } else { sel - 1 };
@@ -1881,7 +2041,9 @@ impl Desktop {
     /// Check if a screen point is inside the shortcut overlay bounds.
     pub(crate) fn is_point_in_shortcut_overlay(&self, mx: i32, my: i32) -> bool {
         let layer_id = self.shortcut_overlay_layer;
-        if layer_id == 0 { return false; }
+        if layer_id == 0 {
+            return false;
+        }
         if let Some(layer) = self.compositor.get_layer(layer_id) {
             let lx = mx - layer.x;
             let ly = my - layer.y;
@@ -1894,7 +2056,9 @@ impl Desktop {
     /// Hit test the close button on a card. Returns Some(slot_index) if an X button was clicked.
     pub(crate) fn hit_test_shortcut_overlay_close(&self, mx: i32, my: i32) -> Option<usize> {
         let layer_id = self.shortcut_overlay_layer;
-        if layer_id == 0 { return None; }
+        if layer_id == 0 {
+            return None;
+        }
         let layer = self.compositor.get_layer(layer_id)?;
         let lx = mx - layer.x;
         let ly = my - layer.y;
@@ -1908,7 +2072,9 @@ impl Desktop {
         let xbtn_sz = crate::desktop::theme::scale(18) as i32;
 
         for slot in 0..12usize {
-            if self.fkey_slots[slot] == 0 { continue; }
+            if self.fkey_slots[slot] == 0 {
+                continue;
+            }
             let col = (slot as u32) % cols;
             let row = (slot as u32) / cols;
             let cx = padding as i32 + (col * (card_w + gap)) as i32;
@@ -1925,13 +2091,17 @@ impl Desktop {
     /// Hit test the shortcut overlay. Returns Some(slot_index) if a card was clicked.
     pub(crate) fn hit_test_shortcut_overlay(&self, mx: i32, my: i32) -> Option<usize> {
         let layer_id = self.shortcut_overlay_layer;
-        if layer_id == 0 { return None; }
+        if layer_id == 0 {
+            return None;
+        }
         let layer = self.compositor.get_layer(layer_id)?;
         let ox = layer.x;
         let oy = layer.y;
         let lx = mx - ox;
         let ly = my - oy;
-        if lx < 0 || ly < 0 { return None; }
+        if lx < 0 || ly < 0 {
+            return None;
+        }
 
         let card_w = crate::desktop::theme::scale(160);
         let card_h = crate::desktop::theme::scale(100);
@@ -1965,7 +2135,9 @@ impl Desktop {
     /// Render the shortcut overlay contents.
     pub(crate) fn render_shortcut_overlay(&mut self) {
         let layer_id = self.shortcut_overlay_layer;
-        if layer_id == 0 { return; }
+        if layer_id == 0 {
+            return;
+        }
 
         let card_w = crate::desktop::theme::scale(160);
         let card_h = crate::desktop::theme::scale(100);
@@ -1981,11 +2153,33 @@ impl Desktop {
             let stride = overlay_w;
 
             // Background: dark semi-transparent rounded rect
-            for p in pixels.iter_mut() { *p = 0x00000000; }
-            let bg_color = if super::theme::is_light() { 0xE8F0F0F5 } else { 0xE8202025 };
-            let border_color = if super::theme::is_light() { 0xFFD1D1D6 } else { 0xFF4A4A4E };
-            fill_rounded_rect(pixels, stride, overlay_h, 0, 0, overlay_w, overlay_h, 12, bg_color);
-            draw_rounded_rect_outline(pixels, stride, overlay_h, 0, 0, overlay_w, overlay_h, 12, border_color);
+            for p in pixels.iter_mut() {
+                *p = 0x00000000;
+            }
+            let bg_color = if super::theme::is_light() {
+                0xE8F0F0F5
+            } else {
+                0xE8202025
+            };
+            let border_color = if super::theme::is_light() {
+                0xFFD1D1D6
+            } else {
+                0xFF4A4A4E
+            };
+            fill_rounded_rect(
+                pixels, stride, overlay_h, 0, 0, overlay_w, overlay_h, 12, bg_color,
+            );
+            draw_rounded_rect_outline(
+                pixels,
+                stride,
+                overlay_h,
+                0,
+                0,
+                overlay_w,
+                overlay_h,
+                12,
+                border_color,
+            );
 
             // Title
             let title_text = "Fenster-Shortcuts (Strg+F1..F12)";
@@ -2008,25 +2202,48 @@ impl Desktop {
 
             for slot in 0..12usize {
                 let wid = self.fkey_slots[slot];
-                if wid == 0 { continue; }
+                if wid == 0 {
+                    continue;
+                }
                 if let Some(win) = self.windows.iter().find(|w| w.id == wid) {
                     slot_has_window[slot] = true;
                     let tlen = win.title.len().min(63);
                     slot_titles[slot][..tlen].copy_from_slice(&win.title.as_bytes()[..tlen]);
                     slot_title_lens[slot] = tlen;
                     if !win.shm_ptr.is_null() && win.shm_width > 0 && win.shm_height > 0 {
-                        slot_shm_info[slot] = (win.shm_width, win.shm_height, win.shm_ptr as *const u32);
+                        slot_shm_info[slot] =
+                            (win.shm_width, win.shm_height, win.shm_ptr as *const u32);
                     }
                 }
             }
 
             // Draw 12 cards in 4×3 grid
-            let card_bg = if super::theme::is_light() { 0xFFE8E8EC } else { 0xFF2C2C30 };
-            let card_active_bg = if super::theme::is_light() { 0xFFD0D0D8 } else { 0xFF383840 };
-            let card_selected_bg = if super::theme::is_light() { 0xFFC0D0F0 } else { 0xFF2A3A60 };
-            let card_selected_border = if super::theme::is_light() { 0xFF007AFF } else { 0xFF0A84FF };
+            let card_bg = if super::theme::is_light() {
+                0xFFE8E8EC
+            } else {
+                0xFF2C2C30
+            };
+            let card_active_bg = if super::theme::is_light() {
+                0xFFD0D0D8
+            } else {
+                0xFF383840
+            };
+            let card_selected_bg = if super::theme::is_light() {
+                0xFFC0D0F0
+            } else {
+                0xFF2A3A60
+            };
+            let card_selected_border = if super::theme::is_light() {
+                0xFF007AFF
+            } else {
+                0xFF0A84FF
+            };
             let selection = self.shortcut_overlay_selection;
-            let card_border = if super::theme::is_light() { 0xFFC0C0C8 } else { 0xFF505058 };
+            let card_border = if super::theme::is_light() {
+                0xFFC0C0C8
+            } else {
+                0xFF505058
+            };
             let label_fs = crate::desktop::theme::scale_font(10);
             let title_fs = crate::desktop::theme::scale_font(9);
             let badge_h = crate::desktop::theme::scale(20);
@@ -2047,12 +2264,28 @@ impl Desktop {
                 } else {
                     card_bg
                 };
-                let border = if is_selected { card_selected_border } else { card_border };
+                let border = if is_selected {
+                    card_selected_border
+                } else {
+                    card_border
+                };
                 fill_rounded_rect(pixels, stride, overlay_h, cx, cy, card_w, card_h, 6, bg);
-                draw_rounded_rect_outline(pixels, stride, overlay_h, cx, cy, card_w, card_h, 6, border);
+                draw_rounded_rect_outline(
+                    pixels, stride, overlay_h, cx, cy, card_w, card_h, 6, border,
+                );
                 // Double border for selected card
                 if is_selected {
-                    draw_rounded_rect_outline(pixels, stride, overlay_h, cx + 1, cy + 1, card_w - 2, card_h - 2, 5, border);
+                    draw_rounded_rect_outline(
+                        pixels,
+                        stride,
+                        overlay_h,
+                        cx + 1,
+                        cy + 1,
+                        card_w - 2,
+                        card_h - 2,
+                        5,
+                        border,
+                    );
                 }
 
                 // F-key label badge
@@ -2067,11 +2300,25 @@ impl Desktop {
                     lbl[2] = b'0' + (slot as u8 - 9);
                     core::str::from_utf8(&lbl[..3]).unwrap_or("")
                 };
-                let badge_color = if super::theme::is_light() { 0xFF007AFF } else { 0xFF0A84FF };
+                let badge_color = if super::theme::is_light() {
+                    0xFF007AFF
+                } else {
+                    0xFF0A84FF
+                };
                 let badge_w = crate::desktop::theme::scale(32);
                 let bx = cx + crate::desktop::theme::scale_i32(6);
                 let by = cy + crate::desktop::theme::scale_i32(4);
-                fill_rounded_rect(pixels, stride, overlay_h, bx, by, badge_w, badge_h, 4, badge_color);
+                fill_rounded_rect(
+                    pixels,
+                    stride,
+                    overlay_h,
+                    bx,
+                    by,
+                    badge_w,
+                    badge_h,
+                    4,
+                    badge_color,
+                );
                 let (lw, lh) = anyos_std::ui::window::font_measure(FONT_ID, label_fs, lbl_str);
                 let ltx = bx + (badge_w as i32 - lw as i32) / 2;
                 let lty = by + (badge_h as i32 - lh as i32) / 2;
@@ -2082,17 +2329,28 @@ impl Desktop {
                 // Close button (X) — top-right of card, only for occupied slots
                 if slot_has_window[slot] {
                     let xbtn_sz = crate::desktop::theme::scale(18);
-                    let xbtn_x = cx + card_w as i32 - xbtn_sz as i32 - crate::desktop::theme::scale_i32(4);
+                    let xbtn_x =
+                        cx + card_w as i32 - xbtn_sz as i32 - crate::desktop::theme::scale_i32(4);
                     let xbtn_y = cy + crate::desktop::theme::scale_i32(4);
-                    let xbtn_bg = if super::theme::is_light() { 0x40000000 } else { 0x40FFFFFF };
-                    fill_rounded_rect(pixels, stride, overlay_h, xbtn_x, xbtn_y, xbtn_sz, xbtn_sz, 4, xbtn_bg);
+                    let xbtn_bg = if super::theme::is_light() {
+                        0x40000000
+                    } else {
+                        0x40FFFFFF
+                    };
+                    fill_rounded_rect(
+                        pixels, stride, overlay_h, xbtn_x, xbtn_y, xbtn_sz, xbtn_sz, 4, xbtn_bg,
+                    );
                     // Draw "×" character
                     let xfs = crate::desktop::theme::scale_font(11);
                     let xstr = "\u{00D7}"; // ×
                     let (xw, xh) = anyos_std::ui::window::font_measure(FONT_ID, xfs, xstr);
                     let xtx = xbtn_x + (xbtn_sz as i32 - xw as i32) / 2;
                     let xty = xbtn_y + (xbtn_sz as i32 - xh as i32) / 2;
-                    let xcolor = if super::theme::is_light() { 0xFF666666 } else { 0xFFAAAAAA };
+                    let xcolor = if super::theme::is_light() {
+                        0xFF666666
+                    } else {
+                        0xFFAAAAAA
+                    };
                     anyos_std::ui::window::font_render_buf(
                         FONT_ID, xfs, pixels, stride, overlay_h, xtx, xty, xcolor, xstr,
                     );
@@ -2100,7 +2358,8 @@ impl Desktop {
 
                 // Window title (next to badge)
                 if slot_has_window[slot] {
-                    let tstr = core::str::from_utf8(&slot_titles[slot][..slot_title_lens[slot]]).unwrap_or("");
+                    let tstr = core::str::from_utf8(&slot_titles[slot][..slot_title_lens[slot]])
+                        .unwrap_or("");
                     let max_tw = card_w.saturating_sub(badge_w + crate::desktop::theme::scale(18));
                     let tlen = title_display_len(tstr, max_tw);
                     let display = if tlen < tstr.len() && tlen > 0 {
@@ -2110,10 +2369,12 @@ impl Desktop {
                     };
                     if !display.is_empty() {
                         let ttx = bx + badge_w as i32 + crate::desktop::theme::scale_i32(6);
-                        let (_, tth) = anyos_std::ui::window::font_measure(FONT_ID, title_fs, display);
+                        let (_, tth) =
+                            anyos_std::ui::window::font_measure(FONT_ID, title_fs, display);
                         let tty = by + (badge_h as i32 - tth as i32) / 2;
                         anyos_std::ui::window::font_render_buf(
-                            FONT_ID, title_fs, pixels, stride, overlay_h, ttx, tty, text_color, display,
+                            FONT_ID, title_fs, pixels, stride, overlay_h, ttx, tty, text_color,
+                            display,
                         );
                     }
 
@@ -2131,7 +2392,8 @@ impl Desktop {
                             let tx = cx + (card_w as i32 - tw_px as i32) / 2;
                             let ty = cy + thumb_top as i32;
                             // Simple nearest-neighbor scale blit
-                            let src = unsafe { core::slice::from_raw_parts(sptr, (sw * sh) as usize) };
+                            let src =
+                                unsafe { core::slice::from_raw_parts(sptr, (sw * sh) as usize) };
                             for dy in 0..th_px {
                                 let src_y = (dy * sh / th_px).min(sh - 1);
                                 for dx in 0..tw_px {
@@ -2141,7 +2403,8 @@ impl Desktop {
                                     if px_x >= 0 && px_y >= 0 {
                                         let di = px_y as u32 * stride + px_x as u32;
                                         let si = src_y * sw + src_x;
-                                        if (di as usize) < pixels.len() && (si as usize) < src.len() {
+                                        if (di as usize) < pixels.len() && (si as usize) < src.len()
+                                        {
                                             pixels[di as usize] = src[si as usize] | 0xFF000000;
                                         }
                                     }
@@ -2155,7 +2418,11 @@ impl Desktop {
                     let (ew, eh) = anyos_std::ui::window::font_measure(FONT_ID, fs, empty);
                     let ex = cx + (card_w as i32 - ew as i32) / 2;
                     let ey = cy + (card_h as i32 - eh as i32) / 2 + badge_h as i32 / 2;
-                    let dim_color = if super::theme::is_light() { 0xFF999999 } else { 0xFF666666 };
+                    let dim_color = if super::theme::is_light() {
+                        0xFF999999
+                    } else {
+                        0xFF666666
+                    };
                     anyos_std::ui::window::font_render_buf(
                         FONT_ID, fs, pixels, stride, overlay_h, ex, ey, dim_color, empty,
                     );
@@ -2174,13 +2441,7 @@ impl Desktop {
 // ── Pre-render Chrome (called OUTSIDE lock) ────────────────────────────────
 
 /// Pre-render window chrome (title bar, buttons, body) into a pixel buffer.
-pub fn pre_render_chrome(
-    pixels: &mut [u32],
-    stride: u32,
-    full_h: u32,
-    title: &str,
-    focused: bool,
-) {
+pub fn pre_render_chrome(pixels: &mut [u32], stride: u32, full_h: u32, title: &str, focused: bool) {
     pre_render_chrome_ex(pixels, stride, full_h, title, focused, 0);
 }
 
@@ -2197,14 +2458,40 @@ pub fn pre_render_chrome_ex(
         *p = 0x00000000;
     }
 
-    fill_rounded_rect(pixels, stride, full_h, 0, 0, stride, full_h, 8, color_window_bg());
-    draw_rounded_rect_outline(pixels, stride, full_h, 0, 0, stride, full_h, 8, color_window_border());
+    fill_rounded_rect(
+        pixels,
+        stride,
+        full_h,
+        0,
+        0,
+        stride,
+        full_h,
+        8,
+        color_window_bg(),
+    );
+    draw_rounded_rect_outline(
+        pixels,
+        stride,
+        full_h,
+        0,
+        0,
+        stride,
+        full_h,
+        8,
+        color_window_border(),
+    );
 
     let tb_h = title_bar_height();
     let (tb_top, tb_bot) = if focused {
-        (color_titlebar_focused_top(), color_titlebar_focused_bottom())
+        (
+            color_titlebar_focused_top(),
+            color_titlebar_focused_bottom(),
+        )
     } else {
-        (color_titlebar_unfocused_top(), color_titlebar_unfocused_bottom())
+        (
+            color_titlebar_unfocused_top(),
+            color_titlebar_unfocused_bottom(),
+        )
     };
     fill_rounded_rect_top_gradient(pixels, stride, 0, 0, stride, tb_h, 8, tb_top, tb_bot);
 
@@ -2224,14 +2511,20 @@ pub fn pre_render_chrome_ex(
     let base_colors: [u32; 3] = if focused {
         [COLOR_CLOSE_BTN, COLOR_MIN_BTN, COLOR_MAX_BTN]
     } else {
-        [color_btn_unfocused(), color_btn_unfocused(), color_btn_unfocused()]
+        [
+            color_btn_unfocused(),
+            color_btn_unfocused(),
+            color_btn_unfocused(),
+        ]
     };
     let btn_sz = title_btn_size();
     let btn_sp = title_btn_spacing();
     let btn_y_pos = title_btn_y();
     let btn_left = crate::desktop::theme::scale_i32(8);
     for (i, &color) in base_colors.iter().enumerate() {
-        if btn_hidden[i] { continue; }
+        if btn_hidden[i] {
+            continue;
+        }
         let cx = btn_left + i as i32 * btn_sp as i32 + btn_sz as i32 / 2;
         let cy = btn_y_pos as i32 + btn_sz as i32 / 2;
         fill_circle(pixels, stride, full_h, cx, cy, (btn_sz / 2) as i32, color);
@@ -2267,8 +2560,15 @@ pub fn pre_render_chrome_ex(
         }
         let ty = ((tb_h as i32 - th as i32) / 2).max(0);
         anyos_std::ui::window::font_render_buf(
-            FONT_ID, fs, pixels, stride, full_h, tx, ty,
-            color_titlebar_text(), display_str,
+            FONT_ID,
+            fs,
+            pixels,
+            stride,
+            full_h,
+            tx,
+            ty,
+            color_titlebar_text(),
+            display_str,
         );
     }
 }

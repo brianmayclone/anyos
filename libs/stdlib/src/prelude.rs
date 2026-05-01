@@ -3,9 +3,11 @@
 //! Usage: `use anyos_std::prelude::*;`
 
 pub use crate::error::{Error, Result};
-pub use crate::fs::{File, Read, Write, DirEntry, ReadDir, read_dir, read_to_string, read_to_vec, write_bytes};
-pub use crate::process::{Thread, Child};
-pub use crate::io::{Stdout, stdout};
+pub use crate::fs::{
+    read_dir, read_to_string, read_to_vec, write_bytes, DirEntry, File, Read, ReadDir, Write,
+};
+pub use crate::io::{stdout, Stdout};
+pub use crate::process::{Child, Thread};
 pub use crate::{print, println};
 pub use alloc::string::String;
 pub use alloc::vec::Vec;

@@ -64,7 +64,9 @@ impl AmiClient {
             return Err(AmiError::InvalidArgument("service must not be empty"));
         }
         if !is_valid_token(service) {
-            return Err(AmiError::InvalidArgument("service contains invalid characters"));
+            return Err(AmiError::InvalidArgument(
+                "service contains invalid characters",
+            ));
         }
 
         #[cfg(feature = "host")]
@@ -209,7 +211,9 @@ impl AmiClient {
         if line.starts_with("OK hello ") {
             Ok(())
         } else {
-            Err(AmiError::Protocol(String::from("expected HELLO acknowledgement")))
+            Err(AmiError::Protocol(String::from(
+                "expected HELLO acknowledgement",
+            )))
         }
     }
 
@@ -304,14 +308,26 @@ fn parse_set_or_del_ok(
     if parts.next() != Some("OK") || parts.next() != Some(kind) {
         return Err(AmiError::Protocol(String::from("unexpected OK response")));
     }
-    let key = String::from(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing key")))?);
+    let key = String::from(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing key")))?,
+    );
     if key != expected_key {
         return Err(AmiError::Protocol(String::from("response key mismatch")));
     }
-    let version = parse_u64(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing version")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid version")))?;
-    let updated_at = parse_u64(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing updated_at")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid updated_at")))?;
+    let version = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing version")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid version")))?;
+    let updated_at = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing updated_at")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid updated_at")))?;
     Ok(AmiItem {
         key,
         value: value.unwrap_or(AmiValue::Bool(false)),
@@ -340,13 +356,29 @@ fn parse_item_fields<'a, I>(mut parts: I) -> Result<AmiItem, AmiError>
 where
     I: Iterator<Item = &'a str>,
 {
-    let key = String::from(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing key")))?);
-    let ty = parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing type")))?;
-    let raw = parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing value")))?;
-    let version = parse_u64(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing version")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid version")))?;
-    let updated_at = parse_u64(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing updated_at")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid updated_at")))?;
+    let key = String::from(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing key")))?,
+    );
+    let ty = parts
+        .next()
+        .ok_or_else(|| AmiError::Protocol(String::from("missing type")))?;
+    let raw = parts
+        .next()
+        .ok_or_else(|| AmiError::Protocol(String::from("missing value")))?;
+    let version = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing version")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid version")))?;
+    let updated_at = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing updated_at")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid updated_at")))?;
     let value = decode_value(ty, raw)?;
     Ok(AmiItem {
         key,
@@ -367,25 +399,39 @@ fn parse_list_response(resp: &str) -> Result<Vec<AmiItem>, AmiError> {
         }
         items.push(parse_item_line(line)?);
     }
-    Err(AmiError::Protocol(String::from("missing END in LIST response")))
+    Err(AmiError::Protocol(String::from(
+        "missing END in LIST response",
+    )))
 }
 
 fn parse_watch_ok(line: &str) -> Result<u32, AmiError> {
     let mut parts = line.split(' ');
     if parts.next() != Some("OK") || parts.next() != Some("watch") {
-        return Err(AmiError::Protocol(String::from("expected watch acknowledgement")));
+        return Err(AmiError::Protocol(String::from(
+            "expected watch acknowledgement",
+        )));
     }
-    parse_u32(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing watch id")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid watch id")))
+    parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing watch id")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid watch id")))
 }
 
 fn parse_unwatch_ok(line: &str, expected_watch_id: u32) -> Result<(), AmiError> {
     let mut parts = line.split(' ');
     if parts.next() != Some("OK") || parts.next() != Some("unwatch") {
-        return Err(AmiError::Protocol(String::from("expected unwatch acknowledgement")));
+        return Err(AmiError::Protocol(String::from(
+            "expected unwatch acknowledgement",
+        )));
     }
-    let watch_id = parse_u32(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing watch id")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid watch id")))?;
+    let watch_id = parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing watch id")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid watch id")))?;
     if watch_id != expected_watch_id {
         return Err(AmiError::Protocol(String::from("watch id mismatch")));
     }
@@ -397,20 +443,43 @@ fn parse_event_line(line: &str) -> Result<AmiEvent, AmiError> {
     if parts.next() != Some("EVENT") {
         return Err(AmiError::Protocol(String::from("expected EVENT")));
     }
-    let watch_id = parse_u32(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing watch id")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid watch id")))?;
-    let kind = match parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing event kind")))? {
+    let watch_id = parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing watch id")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid watch id")))?;
+    let kind = match parts
+        .next()
+        .ok_or_else(|| AmiError::Protocol(String::from("missing event kind")))?
+    {
         "set" => AmiEventKind::Set,
         "delete" => AmiEventKind::Delete,
         _ => return Err(AmiError::Protocol(String::from("invalid event kind"))),
     };
-    let key = String::from(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing key")))?);
-    let ty = parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing type")))?;
-    let raw = parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing value")))?;
-    let version = parse_u64(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing version")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid version")))?;
-    let updated_at = parse_u64(parts.next().ok_or_else(|| AmiError::Protocol(String::from("missing updated_at")))?)
-        .ok_or_else(|| AmiError::Protocol(String::from("invalid updated_at")))?;
+    let key = String::from(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing key")))?,
+    );
+    let ty = parts
+        .next()
+        .ok_or_else(|| AmiError::Protocol(String::from("missing type")))?;
+    let raw = parts
+        .next()
+        .ok_or_else(|| AmiError::Protocol(String::from("missing value")))?;
+    let version = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing version")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid version")))?;
+    let updated_at = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| AmiError::Protocol(String::from("missing updated_at")))?,
+    )
+    .ok_or_else(|| AmiError::Protocol(String::from("invalid updated_at")))?;
     let value = if kind == AmiEventKind::Delete {
         None
     } else {
@@ -430,12 +499,21 @@ fn encode_value(value: &AmiValue) -> Result<(&'static str, String), AmiError> {
     match value {
         AmiValue::String(s) => {
             if s.contains('\n') || s.contains('\t') {
-                return Err(AmiError::InvalidArgument("string values must not contain tabs or newlines"));
+                return Err(AmiError::InvalidArgument(
+                    "string values must not contain tabs or newlines",
+                ));
             }
             Ok(("string", s.clone()))
         }
         AmiValue::Int(v) => Ok(("int", v.to_string())),
-        AmiValue::Bool(v) => Ok(("bool", if *v { String::from("true") } else { String::from("false") })),
+        AmiValue::Bool(v) => Ok((
+            "bool",
+            if *v {
+                String::from("true")
+            } else {
+                String::from("false")
+            },
+        )),
     }
 }
 
@@ -469,13 +547,17 @@ fn validate_prefix(prefix: &str) -> Result<(), AmiError> {
         return Ok(());
     }
     if !prefix.bytes().all(is_valid_key_byte) {
-        return Err(AmiError::InvalidArgument("prefix contains invalid characters"));
+        return Err(AmiError::InvalidArgument(
+            "prefix contains invalid characters",
+        ));
     }
     Ok(())
 }
 
 fn is_valid_token(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
 fn is_valid_key_byte(b: u8) -> bool {
@@ -524,7 +606,11 @@ fn parse_i64(s: &str) -> Option<i64> {
         return None;
     }
     let bytes = s.as_bytes();
-    let (neg, start) = if bytes[0] == b'-' { (true, 1usize) } else { (false, 0usize) };
+    let (neg, start) = if bytes[0] == b'-' {
+        (true, 1usize)
+    } else {
+        (false, 0usize)
+    };
     if start >= bytes.len() {
         return None;
     }

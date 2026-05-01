@@ -3,8 +3,8 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{net, process, sys};
 use anyos_std::format;
+use anyos_std::{net, process, sys};
 
 fn main() -> u32 {
     let mut args_buf = [0u8; 256];
@@ -67,8 +67,12 @@ fn cmd_scan() -> u32 {
         };
         let line = format!(
             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}  {:<32} {:>3}  {:>4}  {}\n",
-            bss.bssid[0], bss.bssid[1], bss.bssid[2],
-            bss.bssid[3], bss.bssid[4], bss.bssid[5],
+            bss.bssid[0],
+            bss.bssid[1],
+            bss.bssid[2],
+            bss.bssid[3],
+            bss.bssid[4],
+            bss.bssid[5],
             ssid_str,
             bss.channel,
             bss.rssi,
@@ -82,11 +86,11 @@ fn cmd_scan() -> u32 {
 fn cmd_status() -> u32 {
     let status = net::wifi_status();
     let state_str = match status.state {
-        net::WifiState::Disconnected   => "Disconnected",
-        net::WifiState::Scanning       => "Scanning",
-        net::WifiState::Associating    => "Associating",
+        net::WifiState::Disconnected => "Disconnected",
+        net::WifiState::Scanning => "Scanning",
+        net::WifiState::Associating => "Associating",
         net::WifiState::Authenticating => "Authenticating (WPA2 handshake)",
-        net::WifiState::Connected      => "Connected",
+        net::WifiState::Connected => "Connected",
     };
     let line = format!("State: {}\n", state_str);
     sys::con_write(&line);
@@ -96,8 +100,12 @@ fn cmd_status() -> u32 {
         let ssid_line = format!("SSID:  {}\n", ssid_str);
         let bssid_line = format!(
             "BSSID: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
-            status.bssid[0], status.bssid[1], status.bssid[2],
-            status.bssid[3], status.bssid[4], status.bssid[5],
+            status.bssid[0],
+            status.bssid[1],
+            status.bssid[2],
+            status.bssid[3],
+            status.bssid[4],
+            status.bssid[5],
         );
         let ch_line = format!("Ch:    {}\n", status.channel);
         sys::con_write(&ssid_line);
@@ -114,7 +122,11 @@ fn cmd_connect(args: &anyos_std::args::ParsedArgs) -> u32 {
         return 1;
     }
     let ssid = args.positional[1];
-    let password = if args.pos_count >= 3 { args.positional[2] } else { "" };
+    let password = if args.pos_count >= 3 {
+        args.positional[2]
+    } else {
+        ""
+    };
 
     let ssid_line = format!("Connecting to \"{}\"...\n", ssid);
     sys::con_write(&ssid_line);

@@ -7,7 +7,7 @@ use anyos_std::env;
 use anyos_std::json::Value;
 
 use crate::block;
-use crate::inventory::{HOTBAR_SLOTS, Inventory};
+use crate::inventory::{Inventory, HOTBAR_SLOTS};
 use crate::world::World;
 
 #[derive(Clone)]
@@ -96,7 +96,11 @@ pub fn load_world_summaries() -> Vec<WorldSummary> {
 
 pub fn create_world(name: &str, seed: u32) -> Option<WorldSummary> {
     let trimmed = name.trim();
-    let display_name = if trimmed.is_empty() { "Neue Welt" } else { trimmed };
+    let display_name = if trimmed.is_empty() {
+        "Neue Welt"
+    } else {
+        trimmed
+    };
     mkdir_p(&worlds_root());
 
     let existing = load_world_summaries();
@@ -252,7 +256,10 @@ fn save_world_snapshot(snapshot: &WorldSnapshot) -> bool {
     }
     inventory.set("counts", counts);
     inventory.set("hotbar", hotbar);
-    inventory.set("selected_slot", (snapshot.inventory_selected_slot as u32).into());
+    inventory.set(
+        "selected_slot",
+        (snapshot.inventory_selected_slot as u32).into(),
+    );
     root.set("inventory", inventory);
 
     let mut modifications = Value::new_array();
@@ -266,7 +273,11 @@ fn save_world_snapshot(snapshot: &WorldSnapshot) -> bool {
     }
     root.set("modifications", modifications);
 
-    anyos_std::fs::write_bytes(&world_file_path(&snapshot.summary.id), root.to_json_string_pretty().as_bytes()).is_ok()
+    anyos_std::fs::write_bytes(
+        &world_file_path(&snapshot.summary.id),
+        root.to_json_string_pretty().as_bytes(),
+    )
+    .is_ok()
 }
 
 fn save_world_index(items: &[WorldSummary]) {

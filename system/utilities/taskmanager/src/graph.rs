@@ -1,10 +1,15 @@
-use libanyui_client as ui;
 use crate::types::CpuHistory;
+use libanyui_client as ui;
 
 pub fn draw_cpu_graph(
     cv: &ui::Canvas,
-    x: i32, y: i32, w: u32, h: u32,
-    core: usize, _current_pct: u32, history: &CpuHistory,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    core: usize,
+    _current_pct: u32,
+    history: &CpuHistory,
 ) {
     let graph_bg = 0xFF1A1A2E;
     let grid_color = 0xFF2A2A3E;
@@ -18,7 +23,9 @@ pub fn draw_cpu_graph(
     // Draw graph area below label
     let gy = y + label_h as i32;
     let gh = h.saturating_sub(label_h);
-    if gh < 8 { return; }
+    if gh < 8 {
+        return;
+    }
 
     // Grid lines at 25%, 50%, 75%
     for pct in [25u32, 50, 75] {
@@ -28,7 +35,9 @@ pub fn draw_cpu_graph(
 
     // Line graph
     let sample_count = history.count;
-    if sample_count < 2 { return; }
+    if sample_count < 2 {
+        return;
+    }
     let num_pts = (w as usize).min(sample_count);
 
     let mut prev_vy: i32 = -1;

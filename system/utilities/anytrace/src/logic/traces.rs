@@ -3,8 +3,8 @@
 //! Records a sequence of executed instructions (via repeated single-step)
 //! for post-mortem analysis of execution flow.
 
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// A single trace entry (one executed instruction).
 #[derive(Clone)]

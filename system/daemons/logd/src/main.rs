@@ -97,7 +97,11 @@ fn parse_u32(s: &str, default: u32) -> u32 {
             break;
         }
     }
-    if found { val } else { default }
+    if found {
+        val
+    } else {
+        default
+    }
 }
 
 // ─── Timestamp ──────────────────────────────────────────────────────────────
@@ -363,8 +367,13 @@ fn main() {
         let _ = lifecycle.set_health("starting");
     }
 
-    anyos_std::println!("logd: starting (log_dir={}, max_size={}, max_files={}, flush={}ms)",
-        cfg.log_dir, cfg.max_size, cfg.max_files, cfg.flush_interval);
+    anyos_std::println!(
+        "logd: starting (log_dir={}, max_size={}, max_files={}, flush={}ms)",
+        cfg.log_dir,
+        cfg.max_size,
+        cfg.max_files,
+        cfg.flush_interval
+    );
 
     // Create the log pipe for applications
     let pipe_id = anyos_std::ipc::pipe_create(LOG_PIPE_NAME);
@@ -377,7 +386,11 @@ fn main() {
     }
 
     let mut writer = LogWriter::new(&cfg);
-    let mut dmesg = if cfg.kernel { Some(DmesgTracker::new()) } else { None };
+    let mut dmesg = if cfg.kernel {
+        Some(DmesgTracker::new())
+    } else {
+        None
+    };
     let mut pipe_buf = [0u8; 4096];
     let mut last_flush = anyos_std::sys::uptime_ms();
 

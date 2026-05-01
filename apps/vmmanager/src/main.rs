@@ -910,7 +910,8 @@ fn rebuild_sidebar() {
     // Add folders and their VMs.
     for (fi, fname, vm_indices) in &folder_ops {
         let folder_node = a.sidebar_tree.add_child(root, fname);
-        a.sidebar_tree.set_node_style(folder_node, anyui::STYLE_BOLD);
+        a.sidebar_tree
+            .set_node_style(folder_node, anyui::STYLE_BOLD);
         a.sidebar_tree.set_expanded(folder_node, true);
         a.node_map.push(NodeKind::Folder(*fi));
 
@@ -934,7 +935,7 @@ fn add_vm_node(a: &mut AppState, parent: u32, vm_idx: usize) -> u32 {
 
     let color = match entry.state {
         VmState::Running => 0xFF00DD66u32,
-        VmState::Paused  => 0xFFFFCC00u32,
+        VmState::Paused => 0xFFFFCC00u32,
         VmState::Stopped => 0xFFAABBCCu32,
     };
     a.sidebar_tree.set_node_text_color(node, color);
@@ -1511,7 +1512,9 @@ fn render_graphics_mode(canvas: &anyui::Canvas, fb: &[u8], width: u32, height: u
                     let g = fb[off + 1] as u32;
                     let r = fb[off + 2] as u32;
                     0xFF000000 | (r << 16) | (g << 8) | b
-                } else { 0xFF000000 }
+                } else {
+                    0xFF000000
+                }
             }
             24 => {
                 let off = ((sy * width + sx) * 3) as usize;
@@ -1520,18 +1523,23 @@ fn render_graphics_mode(canvas: &anyui::Canvas, fb: &[u8], width: u32, height: u
                     let g = fb[off + 1] as u32;
                     let r = fb[off + 2] as u32;
                     0xFF000000 | (r << 16) | (g << 8) | b
-                } else { 0xFF000000 }
+                } else {
+                    0xFF000000
+                }
             }
             8 => {
                 let off = (sy * width + sx) as usize;
                 if off < fb.len() {
                     let idx = fb[off] as usize;
-                    if idx < 16 { VGA_COLORS[idx] }
-                    else {
+                    if idx < 16 {
+                        VGA_COLORS[idx]
+                    } else {
                         let g = (idx as u32) & 0xFF;
                         0xFF000000 | (g << 16) | (g << 8) | g
                     }
-                } else { 0xFF000000 }
+                } else {
+                    0xFF000000
+                }
             }
             4 => {
                 // CoreVM exports 4bpp legacy mode as 1 byte per pixel index.
@@ -1551,11 +1559,15 @@ fn render_graphics_mode(canvas: &anyui::Canvas, fb: &[u8], width: u32, height: u
     for dy in 0..render_h {
         let sy = ((dy as f32 / scale) as u32).min(height - 1);
         let dst_y = oy + dy;
-        if dst_y >= ch { break; }
+        if dst_y >= ch {
+            break;
+        }
         for dx in 0..render_w {
             let sx = ((dx as f32 / scale) as u32).min(width - 1);
             let dst_x = ox + dx;
-            if dst_x >= cw { break; }
+            if dst_x >= cw {
+                break;
+            }
             let color = get_color(sx, sy);
             unsafe {
                 let dst = buf_ptr.add((dst_y * stride + dst_x) as usize);
@@ -1579,29 +1591,29 @@ fn render_graphics_mode(canvas: &anyui::Canvas, fb: &[u8], width: u32, height: u
 fn keycode_to_scancode(keycode: u32) -> u8 {
     // Special keys (KEY_* constants from compositor, >= 0x100)
     match keycode {
-        anyui::KEY_ENTER     => return 0x1C,
+        anyui::KEY_ENTER => return 0x1C,
         anyui::KEY_BACKSPACE => return 0x0E,
-        anyui::KEY_TAB       => return 0x0F,
-        anyui::KEY_ESCAPE    => return 0x01,
-        anyui::KEY_SPACE     => return 0x39,
-        anyui::KEY_UP        => return 0x48,
-        anyui::KEY_DOWN      => return 0x50,
-        anyui::KEY_LEFT      => return 0x4B,
-        anyui::KEY_RIGHT     => return 0x4D,
-        anyui::KEY_DELETE    => return 0x53,
-        anyui::KEY_HOME      => return 0x47,
-        anyui::KEY_END       => return 0x4F,
-        anyui::KEY_PAGE_UP   => return 0x49,
+        anyui::KEY_TAB => return 0x0F,
+        anyui::KEY_ESCAPE => return 0x01,
+        anyui::KEY_SPACE => return 0x39,
+        anyui::KEY_UP => return 0x48,
+        anyui::KEY_DOWN => return 0x50,
+        anyui::KEY_LEFT => return 0x4B,
+        anyui::KEY_RIGHT => return 0x4D,
+        anyui::KEY_DELETE => return 0x53,
+        anyui::KEY_HOME => return 0x47,
+        anyui::KEY_END => return 0x4F,
+        anyui::KEY_PAGE_UP => return 0x49,
         anyui::KEY_PAGE_DOWN => return 0x51,
-        anyui::KEY_F1  => return 0x3B,
-        anyui::KEY_F2  => return 0x3C,
-        anyui::KEY_F3  => return 0x3D,
-        anyui::KEY_F4  => return 0x3E,
-        anyui::KEY_F5  => return 0x3F,
-        anyui::KEY_F6  => return 0x40,
-        anyui::KEY_F7  => return 0x41,
-        anyui::KEY_F8  => return 0x42,
-        anyui::KEY_F9  => return 0x43,
+        anyui::KEY_F1 => return 0x3B,
+        anyui::KEY_F2 => return 0x3C,
+        anyui::KEY_F3 => return 0x3D,
+        anyui::KEY_F4 => return 0x3E,
+        anyui::KEY_F5 => return 0x3F,
+        anyui::KEY_F6 => return 0x40,
+        anyui::KEY_F7 => return 0x41,
+        anyui::KEY_F8 => return 0x42,
+        anyui::KEY_F9 => return 0x43,
         anyui::KEY_F10 => return 0x44,
         anyui::KEY_F11 => return 0x57,
         anyui::KEY_F12 => return 0x58,
@@ -2403,19 +2415,26 @@ fn vm_tick() {
                             } else {
                                 anyos_std::println!(
                                     "vmmanager: invalid SHM frame size w={} h={} bpp={} len={}",
-                                    width, height, bpp, byte_len
+                                    width,
+                                    height,
+                                    bpp,
+                                    byte_len
                                 );
                             }
                         } else {
                             anyos_std::println!(
                                 "vmmanager: SHM frame size overflow w={} h={} bpp={}",
-                                width, height, bpp
+                                width,
+                                height,
+                                bpp
                             );
                         }
                     } else {
                         anyos_std::println!(
                             "vmmanager: unsupported SHM bpp={} (w={} h={})",
-                            bpp, width, height
+                            bpp,
+                            width,
+                            height
                         );
                     }
                 }
@@ -2514,28 +2533,26 @@ fn main() {
 
     let mut mb = anyui::MenuBarBuilder::new()
         .menu("File")
-            .item(1, "New VM", 0)
-            .separator()
-            .item(2, "Quit", 0)
+        .item(1, "New VM", 0)
+        .separator()
+        .item(2, "Quit", 0)
         .end_menu()
         .menu("VM")
-            .item(10, "Start", 0)
-            .item(11, "Stop", 0)
-            .separator()
-            .item(12, "Settings", 0)
+        .item(10, "Start", 0)
+        .item(11, "Stop", 0)
+        .separator()
+        .item(12, "Settings", 0)
         .end_menu();
     let menu_data = mb.build();
 
     let menu_bar = anyui::MenuBar::set(win.id(), menu_data);
-    menu_bar.on_item(|e| {
-        match e.item_id {
-            1  => create_new_vm(),
-            2  => anyui::quit(),
-            10 => start_selected_vm(),
-            11 => stop_selected_vm(),
-            12 => open_settings_dialog(),
-            _  => {}
-        }
+    menu_bar.on_item(|e| match e.item_id {
+        1 => create_new_vm(),
+        2 => anyui::quit(),
+        10 => start_selected_vm(),
+        11 => stop_selected_vm(),
+        12 => open_settings_dialog(),
+        _ => {}
     });
 
     // ── Status bar (DOCK_BOTTOM) ───────────────────────────────────
@@ -2615,9 +2632,7 @@ fn main() {
             canvas,
             toolbar,
             status_label,
-            info: VmInfoLabels {
-                label: info_label,
-            },
+            info: VmInfoLabels { label: info_label },
             content_view,
             sidebar_tree,
             tree_root: 0,
@@ -2666,15 +2681,13 @@ fn main() {
         }
     });
 
-    sidebar_ctx_menu.on_item_click(|e| {
-        match e.index {
-            0 => create_new_vm(),
-            2 if sidebar_selection_is_vm() => start_selected_vm(),
-            3 if sidebar_selection_is_vm() => stop_selected_vm(),
-            4 if sidebar_selection_is_vm() => open_settings_dialog(),
-            6 if sidebar_selection_is_vm() => delete_selected_vm(),
-            _ => {}
-        }
+    sidebar_ctx_menu.on_item_click(|e| match e.index {
+        0 => create_new_vm(),
+        2 if sidebar_selection_is_vm() => start_selected_vm(),
+        3 if sidebar_selection_is_vm() => stop_selected_vm(),
+        4 if sidebar_selection_is_vm() => open_settings_dialog(),
+        6 if sidebar_selection_is_vm() => delete_selected_vm(),
+        _ => {}
     });
 
     // Toolbar button: New VM.

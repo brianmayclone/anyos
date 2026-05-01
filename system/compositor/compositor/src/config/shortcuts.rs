@@ -87,7 +87,9 @@ fn parse_key_name(name: &str) -> Option<u32> {
     if name.len() == 1 {
         let ch = name.as_bytes()[0];
         match ch {
-            b'A'..=b'Z' | b'a'..=b'z' => return Some(letter_to_scancode(ch.to_ascii_uppercase())? as u32),
+            b'A'..=b'Z' | b'a'..=b'z' => {
+                return Some(letter_to_scancode(ch.to_ascii_uppercase())? as u32)
+            }
             b'0'..=b'9' => return Some(digit_to_scancode(ch)? as u32),
             _ => return None,
         }
@@ -126,23 +128,48 @@ fn parse_key_name(name: &str) -> Option<u32> {
 
 fn letter_to_scancode(ch: u8) -> Option<u8> {
     match ch {
-        b'Q' => Some(0x10), b'W' => Some(0x11), b'E' => Some(0x12), b'R' => Some(0x13),
-        b'T' => Some(0x14), b'Y' => Some(0x15), b'U' => Some(0x16), b'I' => Some(0x17),
-        b'O' => Some(0x18), b'P' => Some(0x19),
-        b'A' => Some(0x1E), b'S' => Some(0x1F), b'D' => Some(0x20), b'F' => Some(0x21),
-        b'G' => Some(0x22), b'H' => Some(0x23), b'J' => Some(0x24), b'K' => Some(0x25),
+        b'Q' => Some(0x10),
+        b'W' => Some(0x11),
+        b'E' => Some(0x12),
+        b'R' => Some(0x13),
+        b'T' => Some(0x14),
+        b'Y' => Some(0x15),
+        b'U' => Some(0x16),
+        b'I' => Some(0x17),
+        b'O' => Some(0x18),
+        b'P' => Some(0x19),
+        b'A' => Some(0x1E),
+        b'S' => Some(0x1F),
+        b'D' => Some(0x20),
+        b'F' => Some(0x21),
+        b'G' => Some(0x22),
+        b'H' => Some(0x23),
+        b'J' => Some(0x24),
+        b'K' => Some(0x25),
         b'L' => Some(0x26),
-        b'Z' => Some(0x2C), b'X' => Some(0x2D), b'C' => Some(0x2E), b'V' => Some(0x2F),
-        b'B' => Some(0x30), b'N' => Some(0x31), b'M' => Some(0x32),
+        b'Z' => Some(0x2C),
+        b'X' => Some(0x2D),
+        b'C' => Some(0x2E),
+        b'V' => Some(0x2F),
+        b'B' => Some(0x30),
+        b'N' => Some(0x31),
+        b'M' => Some(0x32),
         _ => None,
     }
 }
 
 fn digit_to_scancode(ch: u8) -> Option<u8> {
     match ch {
-        b'1' => Some(0x02), b'2' => Some(0x03), b'3' => Some(0x04), b'4' => Some(0x05),
-        b'5' => Some(0x06), b'6' => Some(0x07), b'7' => Some(0x08), b'8' => Some(0x09),
-        b'9' => Some(0x0A), b'0' => Some(0x0B),
+        b'1' => Some(0x02),
+        b'2' => Some(0x03),
+        b'3' => Some(0x04),
+        b'4' => Some(0x05),
+        b'5' => Some(0x06),
+        b'6' => Some(0x07),
+        b'7' => Some(0x08),
+        b'8' => Some(0x09),
+        b'9' => Some(0x0A),
+        b'0' => Some(0x0B),
         _ => None,
     }
 }

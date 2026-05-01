@@ -4,13 +4,13 @@
 #![no_main]
 
 use anyos_std::format;
-use anyos_std::String;
+use anyos_std::fs;
+use anyos_std::process;
+use anyos_std::sys;
 use anyos_std::vec;
+use anyos_std::String;
 use anyos_std::Vec;
 use anyos_std::{print, println};
-use anyos_std::fs;
-use anyos_std::sys;
-use anyos_std::process;
 
 anyos_std::entry!(main);
 
@@ -18,12 +18,12 @@ anyos_std::entry!(main);
 
 const SECTOR_SIZE: u32 = 512;
 const PARTITION_START: u32 = 128; // exFAT partition starts at sector 128
-const FAT_OFFSET: u32 = 32;      // FAT starts at sector 32 within partition
-const SPC: u32 = 8;              // sectors per cluster (4 KB clusters)
-const SPC_SHIFT: u8 = 3;         // log2(SPC)
+const FAT_OFFSET: u32 = 32; // FAT starts at sector 32 within partition
+const SPC: u32 = 8; // sectors per cluster (4 KB clusters)
+const SPC_SHIFT: u8 = 3; // log2(SPC)
 const CLUSTER_SIZE: u32 = SPC * SECTOR_SIZE; // 4096
 
-const FS_TYPE_EXFAT: u32 = 7;    // fs_type for mount syscall
+const FS_TYPE_EXFAT: u32 = 7; // fs_type for mount syscall
 
 // ── Disk listing helpers ───────────────────────────────────────────────────
 
@@ -46,14 +46,32 @@ fn list_block_devices() -> Vec<DiskInfo> {
         let disk_id = buf[off + 1];
         let partition = buf[off + 2];
         let start_lba = u64::from_le_bytes([
-            buf[off+8], buf[off+9], buf[off+10], buf[off+11],
-            buf[off+12], buf[off+13], buf[off+14], buf[off+15],
+            buf[off + 8],
+            buf[off + 9],
+            buf[off + 10],
+            buf[off + 11],
+            buf[off + 12],
+            buf[off + 13],
+            buf[off + 14],
+            buf[off + 15],
         ]);
         let size_sectors = u64::from_le_bytes([
-            buf[off+16], buf[off+17], buf[off+18], buf[off+19],
-            buf[off+20], buf[off+21], buf[off+22], buf[off+23],
+            buf[off + 16],
+            buf[off + 17],
+            buf[off + 18],
+            buf[off + 19],
+            buf[off + 20],
+            buf[off + 21],
+            buf[off + 22],
+            buf[off + 23],
         ]);
-        devices.push(DiskInfo { device_id, disk_id, partition, start_lba, size_sectors });
+        devices.push(DiskInfo {
+            device_id,
+            disk_id,
+            partition,
+            start_lba,
+            size_sectors,
+        });
     }
     devices
 }
@@ -90,9 +108,9 @@ fn write_le64(buf: &mut [u8], off: usize, val: u64) {
 }
 
 struct ExFatParams {
-    fs_start: u32,      // absolute LBA on disk
-    fs_sectors: u32,    // total sectors in partition
-    fat_length: u32,    // FAT size in sectors
+    fs_start: u32,   // absolute LBA on disk
+    fs_sectors: u32, // total sectors in partition
+    fat_length: u32, // FAT size in sectors
     cluster_heap_offset: u32,
     cluster_count: u32,
     root_cluster: u32,
@@ -115,40 +133,54 @@ fn compute_exfat_params(fs_start: u32, fs_sectors: u32) -> ExFatParams {
     let root_cluster = 4;
 
     ExFatParams {
-        fs_start, fs_sectors, fat_length, cluster_heap_offset,
-        cluster_count, root_cluster,
+        fs_start,
+        fs_sectors,
+        fat_length,
+        cluster_heap_offset,
+        cluster_count,
+        root_cluster,
     }
 }
 
 /// Format an exFAT filesystem on the given disk, starting at `fs_start` LBA.
 fn format_exfat(disk_id: u8, fs_start: u32, fs_sectors: u32) -> bool {
     let p = compute_exfat_params(fs_start, fs_sectors);
-    println!("  exFAT: {} clusters, {} bytes/cluster", p.cluster_count, CLUSTER_SIZE);
-    println!("  exFAT: FAT at +{}, data at +{}", FAT_OFFSET, p.cluster_heap_offset);
+    println!(
+        "  exFAT: {} clusters, {} bytes/cluster",
+        p.cluster_count, CLUSTER_SIZE
+    );
+    println!(
+        "  exFAT: FAT at +{}, data at +{}",
+        FAT_OFFSET, p.cluster_heap_offset
+    );
 
     // ── Build VBR ──
     let mut vbr = [0u8; 512];
-    vbr[0] = 0xEB; vbr[1] = 0x76; vbr[2] = 0x90;
+    vbr[0] = 0xEB;
+    vbr[1] = 0x76;
+    vbr[2] = 0x90;
     vbr[3..11].copy_from_slice(b"EXFAT   ");
-    write_le64(&mut vbr, 64, p.fs_start as u64);  // PartitionOffset
+    write_le64(&mut vbr, 64, p.fs_start as u64); // PartitionOffset
     write_le64(&mut vbr, 72, p.fs_sectors as u64); // VolumeLength
-    write_le32(&mut vbr, 80, FAT_OFFSET);          // FatOffset
-    write_le32(&mut vbr, 84, p.fat_length);        // FatLength
+    write_le32(&mut vbr, 80, FAT_OFFSET); // FatOffset
+    write_le32(&mut vbr, 84, p.fat_length); // FatLength
     write_le32(&mut vbr, 88, p.cluster_heap_offset); // ClusterHeapOffset
-    write_le32(&mut vbr, 92, p.cluster_count);     // ClusterCount
-    write_le32(&mut vbr, 96, p.root_cluster);      // FirstClusterOfRootDirectory
-    write_le32(&mut vbr, 100, 0x414E594F);         // VolumeSerialNumber "ANYO"
-    write_le16(&mut vbr, 104, 0x0100);             // FileSystemRevision
-    write_le16(&mut vbr, 106, 0);                  // VolumeFlags
-    vbr[108] = 9;                                   // BytesPerSectorShift
-    vbr[109] = SPC_SHIFT;                           // SectorsPerClusterShift
-    vbr[110] = 1;                                   // NumberOfFats
-    vbr[111] = 0x80;                                // DriveSelect
-    vbr[112] = 0xFF;                                // PercentInUse
-    vbr[510] = 0x55; vbr[511] = 0xAA;
+    write_le32(&mut vbr, 92, p.cluster_count); // ClusterCount
+    write_le32(&mut vbr, 96, p.root_cluster); // FirstClusterOfRootDirectory
+    write_le32(&mut vbr, 100, 0x414E594F); // VolumeSerialNumber "ANYO"
+    write_le16(&mut vbr, 104, 0x0100); // FileSystemRevision
+    write_le16(&mut vbr, 106, 0); // VolumeFlags
+    vbr[108] = 9; // BytesPerSectorShift
+    vbr[109] = SPC_SHIFT; // SectorsPerClusterShift
+    vbr[110] = 1; // NumberOfFats
+    vbr[111] = 0x80; // DriveSelect
+    vbr[112] = 0xFF; // PercentInUse
+    vbr[510] = 0x55;
+    vbr[511] = 0xAA;
 
     let mut ext = [0u8; 512];
-    ext[510] = 0x55; ext[511] = 0xAA;
+    ext[510] = 0x55;
+    ext[511] = 0xAA;
 
     let oem = [0u8; 512];
     let reserved = [0u8; 512];
@@ -156,8 +188,17 @@ fn format_exfat(disk_id: u8, fs_start: u32, fs_sectors: u32) -> bool {
     // Compute boot region checksum over sectors 0-10
     let mut checksum: u32 = 0;
     let regions: [&[u8; 512]; 11] = [
-        &vbr, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &ext,
-        array_ref_512(&oem), array_ref_512(&reserved),
+        &vbr,
+        &ext,
+        &ext,
+        &ext,
+        &ext,
+        &ext,
+        &ext,
+        &ext,
+        &ext,
+        array_ref_512(&oem),
+        array_ref_512(&reserved),
     ];
     for (sec_idx, sector) in regions.iter().enumerate() {
         for (byte_idx, &b) in sector.iter().enumerate() {
@@ -219,7 +260,9 @@ fn format_exfat(disk_id: u8, fs_start: u32, fs_sectors: u32) -> bool {
     // Compute upcase checksum
     let mut upcase_checksum: u32 = 0;
     for i in 0..upcase_len as usize {
-        upcase_checksum = upcase_checksum.rotate_right(1).wrapping_add(upcase[i] as u32);
+        upcase_checksum = upcase_checksum
+            .rotate_right(1)
+            .wrapping_add(upcase[i] as u32);
     }
 
     // Write upcase to cluster 3
@@ -270,7 +313,9 @@ fn format_exfat(disk_id: u8, fs_start: u32, fs_sectors: u32) -> bool {
     true
 }
 
-fn array_ref_512(arr: &[u8; 512]) -> &[u8; 512] { arr }
+fn array_ref_512(arr: &[u8; 512]) -> &[u8; 512] {
+    arr
+}
 
 fn disk_write_sector(device_id: u32, lba: u32, data: &[u8; 512]) {
     sys::disk_write(device_id, lba as u64, 1, data);
@@ -325,13 +370,17 @@ fn install_bootloader_with_fd(dev: u32, stage1_fd: u32) -> bool {
             return false;
         }
         fd
-    } else { stage2_fd };
+    } else {
+        stage2_fd
+    };
 
     let mut stage2 = vec![0u8; 63 * 512]; // max 63 sectors
     let mut total = 0usize;
     loop {
         let n = fs::read(stage2_fd, &mut stage2[total..]);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         total += n as usize;
     }
     fs::close(stage2_fd);
@@ -363,7 +412,10 @@ fn install_bootloader_with_fd(dev: u32, stage1_fd: u32) -> bool {
         sys::disk_write(dev, (1 + s) as u64, 1, &sector);
     }
 
-    println!("  Bootloader: stage1 (440 bytes) + stage2 ({} sectors)", stage2_sectors);
+    println!(
+        "  Bootloader: stage1 (440 bytes) + stage2 ({} sectors)",
+        stage2_sectors
+    );
     true
 }
 
@@ -372,10 +424,10 @@ fn install_bootloader_with_fd(dev: u32, stage1_fd: u32) -> bool {
 fn create_partition(disk_id: u32, total_sectors: u64) {
     let part_size = total_sectors - PARTITION_START as u64;
     let mut entry = [0u8; 16];
-    entry[0] = 0;     // index (partition 0)
-    entry[1] = 0x07;  // type: exFAT
-    entry[2] = 0x80;  // bootable
-    entry[3] = 0;     // reserved
+    entry[0] = 0; // index (partition 0)
+    entry[1] = 0x07; // type: exFAT
+    entry[2] = 0x80; // bootable
+    entry[3] = 0; // reserved
     write_le32(&mut entry, 4, PARTITION_START);
     write_le32(&mut entry, 8, part_size as u32);
     sys::partition_create(disk_id, &entry);
@@ -445,18 +497,24 @@ fn capitalize_words(s: &str) -> String {
 // ── Recursive file copy ────────────────────────────────────────────────────
 
 fn copy_recursive(src: &str, dst: &str, depth: u32) -> u32 {
-    if depth > 16 { return 0; }
+    if depth > 16 {
+        return 0;
+    }
 
     let mut buf = [0u8; 256 * 64]; // max 256 entries
     let count = fs::readdir(src, &mut buf);
-    if count == u32::MAX { return 0; }
+    if count == u32::MAX {
+        return 0;
+    }
 
     let mut copied = 0u32;
     for i in 0..count as usize {
         let off = i * 64;
         let entry_type = buf[off];
         let name_len = buf[off + 1] as usize;
-        if name_len == 0 || name_len > 56 { continue; }
+        if name_len == 0 || name_len > 56 {
+            continue;
+        }
 
         let name = match core::str::from_utf8(&buf[off + 8..off + 8 + name_len]) {
             Ok(s) => s,
@@ -464,9 +522,13 @@ fn copy_recursive(src: &str, dst: &str, depth: u32) -> u32 {
         };
 
         // Skip . and ..
-        if name == "." || name == ".." { continue; }
+        if name == "." || name == ".." {
+            continue;
+        }
         // Skip some paths we don't need on the installed system
-        if depth == 0 && (name == "src" || name == "apps") { continue; }
+        if depth == 0 && (name == "src" || name == "apps") {
+            continue;
+        }
 
         let fixed_name = fix_case(name);
         let child_src = format!("{}/{}", src, name);
@@ -488,14 +550,18 @@ fn copy_recursive(src: &str, dst: &str, depth: u32) -> u32 {
 
 fn copy_file(src: &str, dst: &str) -> bool {
     let src_fd = fs::open(src, 0);
-    if src_fd == u32::MAX { return false; }
+    if src_fd == u32::MAX {
+        return false;
+    }
 
     // Read in chunks to handle large files
     let mut data = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
         let n = fs::read(src_fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     fs::close(src_fd);
@@ -516,7 +582,6 @@ fn main() {
     let mut args_buf = [0u8; 256];
     let raw = process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"l");
-
 
     if args.has(b'l') {
         cmd_list();
@@ -558,15 +623,25 @@ fn cmd_list() {
     println!("Available block devices:");
     println!("");
     for dev in &devices {
-        let kind = if dev.partition == 0xFF { "disk" } else { "part" };
+        let kind = if dev.partition == 0xFF {
+            "disk"
+        } else {
+            "part"
+        };
         let part_str = if dev.partition == 0xFF {
             String::from("-")
         } else {
             format!("p{}", dev.partition)
         };
-        println!("  ID={:<3} disk={} {}  start={:<10} size={} ({})",
-            dev.device_id, dev.disk_id, part_str,
-            dev.start_lba, dev.size_sectors, format_size(dev.size_sectors));
+        println!(
+            "  ID={:<3} disk={} {}  start={:<10} size={} ({})",
+            dev.device_id,
+            dev.disk_id,
+            part_str,
+            dev.start_lba,
+            dev.size_sectors,
+            format_size(dev.size_sectors)
+        );
         let _ = kind;
     }
 }
@@ -577,31 +652,52 @@ fn cmd_install(target_disk: u8) {
 
     // Find the whole-disk device
     let devices = list_block_devices();
-    let disk_dev = devices.iter().find(|d| d.disk_id == target_disk && d.partition == 0xFF);
+    let disk_dev = devices
+        .iter()
+        .find(|d| d.disk_id == target_disk && d.partition == 0xFF);
     let disk = match disk_dev {
         Some(d) => d,
         None => {
-            println!("ERROR: Disk {} not found. Use 'install -l' to list devices.", target_disk);
+            println!(
+                "ERROR: Disk {} not found. Use 'install -l' to list devices.",
+                target_disk
+            );
             return;
         }
     };
 
     let total_sectors = disk.size_sectors;
-    if total_sectors < 1024 * 64 { // min ~32 MB
-        println!("ERROR: Disk {} is too small ({}).", target_disk, format_size(total_sectors));
+    if total_sectors < 1024 * 64 {
+        // min ~32 MB
+        println!(
+            "ERROR: Disk {} is too small ({}).",
+            target_disk,
+            format_size(total_sectors)
+        );
         return;
     }
 
-    println!("Target: Disk {} ({}, {} sectors)", target_disk, format_size(total_sectors), total_sectors);
+    println!(
+        "Target: Disk {} ({}, {} sectors)",
+        target_disk,
+        format_size(total_sectors),
+        total_sectors
+    );
 
     // Check for partitions
-    let partitions: Vec<&DiskInfo> = devices.iter()
+    let partitions: Vec<&DiskInfo> = devices
+        .iter()
         .filter(|d| d.disk_id == target_disk && d.partition != 0xFF)
         .collect();
     if !partitions.is_empty() {
         println!("  Existing partitions: {}", partitions.len());
         for p in &partitions {
-            println!("    Partition {}: start={} size={}", p.partition, p.start_lba, format_size(p.size_sectors));
+            println!(
+                "    Partition {}: start={} size={}",
+                p.partition,
+                p.start_lba,
+                format_size(p.size_sectors)
+            );
         }
     }
 
@@ -611,7 +707,9 @@ fn cmd_install(target_disk: u8) {
 
     let mut confirm_buf = [0u8; 16];
     let confirm_len = sys::con_read_line(&mut confirm_buf);
-    let confirm = core::str::from_utf8(&confirm_buf[..confirm_len]).unwrap_or("").trim();
+    let confirm = core::str::from_utf8(&confirm_buf[..confirm_len])
+        .unwrap_or("")
+        .trim();
     if confirm != "yes" {
         println!("Aborted.");
         return;
@@ -649,7 +747,9 @@ fn cmd_install(target_disk: u8) {
     sys::partition_rescan(disk_dev_id);
     // Find the new partition device
     let new_devices = list_block_devices();
-    let part_dev = new_devices.iter().find(|d| d.disk_id == target_disk && d.partition == 0);
+    let part_dev = new_devices
+        .iter()
+        .find(|d| d.disk_id == target_disk && d.partition == 0);
     let part_dev_id = match part_dev {
         Some(d) => d.device_id,
         None => {

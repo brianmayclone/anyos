@@ -6,7 +6,7 @@
 //! treated as global flags.
 
 pub const MAX_LINES: usize = 256;
-pub const MAX_LINE:  usize = 128;
+pub const MAX_LINE: usize = 128;
 
 // ─── Line ─────────────────────────────────────────────────────────────────────
 
@@ -18,7 +18,10 @@ pub struct Line {
 
 impl Line {
     pub const fn empty() -> Self {
-        Line { buf: [0u8; MAX_LINE], len: 0 }
+        Line {
+            buf: [0u8; MAX_LINE],
+            len: 0,
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -43,7 +46,10 @@ pub struct Config {
 
 impl Config {
     pub fn new() -> Self {
-        Config { lines: [Line::empty(); MAX_LINES], count: 0 }
+        Config {
+            lines: [Line::empty(); MAX_LINES],
+            count: 0,
+        }
     }
 
     pub fn push(&mut self, s: &str) {
@@ -54,17 +60,27 @@ impl Config {
     }
 
     pub fn insert(&mut self, pos: usize, s: &str) {
-        if self.count >= MAX_LINES { return; }
+        if self.count >= MAX_LINES {
+            return;
+        }
         let mut i = self.count;
-        while i > pos { self.lines[i] = self.lines[i - 1]; i -= 1; }
+        while i > pos {
+            self.lines[i] = self.lines[i - 1];
+            i -= 1;
+        }
         self.lines[pos] = Line::from_str(s);
         self.count += 1;
     }
 
     pub fn remove_line(&mut self, pos: usize) {
-        if pos >= self.count { return; }
+        if pos >= self.count {
+            return;
+        }
         let mut i = pos;
-        while i + 1 < self.count { self.lines[i] = self.lines[i + 1]; i += 1; }
+        while i + 1 < self.count {
+            self.lines[i] = self.lines[i + 1];
+            i += 1;
+        }
         self.count -= 1;
     }
 }
@@ -77,7 +93,9 @@ pub fn find_section(cfg: &Config, name: &str) -> usize {
     let len = make_header(name, &mut hdr);
     let needle = core::str::from_utf8(&hdr[..len]).unwrap_or("");
     for i in 0..cfg.count {
-        if cfg.lines[i].as_str() == needle { return i; }
+        if cfg.lines[i].as_str() == needle {
+            return i;
+        }
     }
     MAX_LINES
 }
@@ -88,7 +106,9 @@ pub fn section_end(cfg: &Config, start: usize) -> usize {
     let mut i = start + 1;
     while i < cfg.count {
         let s = cfg.lines[i].as_str();
-        if is_section_header(s) { return i; }
+        if is_section_header(s) {
+            return i;
+        }
         i += 1;
     }
     cfg.count
@@ -97,7 +117,9 @@ pub fn section_end(cfg: &Config, start: usize) -> usize {
 /// Index of the first `[section]` header, or `MAX_LINES` if none.
 pub fn first_section(cfg: &Config) -> usize {
     for i in 0..cfg.count {
-        if is_section_header(cfg.lines[i].as_str()) { return i; }
+        if is_section_header(cfg.lines[i].as_str()) {
+            return i;
+        }
     }
     MAX_LINES
 }
@@ -106,29 +128,37 @@ pub fn first_section(cfg: &Config) -> usize {
 pub fn find_key_in(cfg: &Config, start: usize, end: usize, key: &str) -> usize {
     for i in start..end {
         let s = cfg.lines[i].as_str();
-        if s.len() > key.len()
-            && s.as_bytes()[key.len()] == b'='
-            && &s[..key.len()] == key
-        { return i; }
+        if s.len() > key.len() && s.as_bytes()[key.len()] == b'=' && &s[..key.len()] == key {
+            return i;
+        }
     }
     MAX_LINES
 }
 
 /// Extract the value from a `key=value` line.
 pub fn line_value(line: &str) -> &str {
-    if let Some(pos) = line.find('=') { &line[pos + 1..] } else { "" }
+    if let Some(pos) = line.find('=') {
+        &line[pos + 1..]
+    } else {
+        ""
+    }
 }
 
 /// Extract the name from a `[name]` line.
 pub fn section_name(line: &str) -> &str {
     if line.len() >= 2 && line.starts_with('[') && line.ends_with(']') {
         &line[1..line.len() - 1]
-    } else { line }
+    } else {
+        line
+    }
 }
 
 /// Count how many `[section]` headers exist.
 pub fn count_entries(cfg: &Config) -> usize {
-    cfg.lines[..cfg.count].iter().filter(|l| is_section_header(l.as_str())).count()
+    cfg.lines[..cfg.count]
+        .iter()
+        .filter(|l| is_section_header(l.as_str()))
+        .count()
 }
 
 /// True when `s` is a `[…]` section header.
@@ -154,7 +184,9 @@ pub fn make_kv(key: &str, value: &str, buf: &mut [u8; MAX_LINE]) -> usize {
     let kb = key.as_bytes();
     let vb = value.as_bytes();
     let total = kb.len() + 1 + vb.len();
-    if total >= MAX_LINE { return 0; }
+    if total >= MAX_LINE {
+        return 0;
+    }
     buf[..kb.len()].copy_from_slice(kb);
     buf[kb.len()] = b'=';
     buf[kb.len() + 1..kb.len() + 1 + vb.len()].copy_from_slice(vb);

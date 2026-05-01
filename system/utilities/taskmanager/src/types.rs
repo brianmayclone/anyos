@@ -105,7 +105,11 @@ pub struct CpuHistory {
 
 impl CpuHistory {
     pub fn new() -> Self {
-        CpuHistory { samples: [[0; GRAPH_SAMPLES]; MAX_CPUS], pos: 0, count: 0 }
+        CpuHistory {
+            samples: [[0; GRAPH_SAMPLES]; MAX_CPUS],
+            pos: 0,
+            count: 0,
+        }
     }
 
     pub fn push(&mut self, cpu: &CpuState) {
@@ -113,11 +117,15 @@ impl CpuHistory {
             self.samples[i][self.pos] = cpu.core_pct[i].min(100) as u8;
         }
         self.pos = (self.pos + 1) % GRAPH_SAMPLES;
-        if self.count < GRAPH_SAMPLES { self.count += 1; }
+        if self.count < GRAPH_SAMPLES {
+            self.count += 1;
+        }
     }
 
     pub fn get(&self, core: usize, age: usize) -> u8 {
-        if age >= self.count { return 0; }
+        if age >= self.count {
+            return 0;
+        }
         let idx = (self.pos + GRAPH_SAMPLES - 1 - age) % GRAPH_SAMPLES;
         self.samples[core][idx]
     }

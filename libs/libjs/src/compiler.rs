@@ -191,15 +191,13 @@ impl Compiler {
             Stmt::FunctionDecl { name, .. } | Stmt::ClassDecl { name, .. } => {
                 vec![name.clone()]
             }
-            Stmt::VarDecl { decls, .. } => {
-                decls
-                    .iter()
-                    .filter_map(|d| match &d.name {
-                        crate::ast::Pattern::Ident(name) => Some(name.clone()),
-                        _ => None,
-                    })
-                    .collect()
-            }
+            Stmt::VarDecl { decls, .. } => decls
+                .iter()
+                .filter_map(|d| match &d.name {
+                    crate::ast::Pattern::Ident(name) => Some(name.clone()),
+                    _ => None,
+                })
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -357,7 +355,9 @@ impl Compiler {
 
         let mut eval_completion_slot: Option<u16> = None;
         if is_eval {
-            let slot = self.scope_mut().add_local(String::from("__eval_completion__"));
+            let slot = self
+                .scope_mut()
+                .add_local(String::from("__eval_completion__"));
             self.emit(Op::LoadEmpty);
             self.emit(Op::StoreLocal(slot));
             self.emit(Op::Pop);
@@ -479,7 +479,9 @@ impl Compiler {
                 }
             }
             Stmt::While { condition, body } => {
-                let slot = self.scope_mut().add_local(String::from("__while_completion__"));
+                let slot = self
+                    .scope_mut()
+                    .add_local(String::from("__while_completion__"));
                 self.emit(Op::LoadEmpty);
                 self.emit(Op::StoreLocal(slot));
                 self.emit(Op::Pop);
@@ -504,7 +506,9 @@ impl Compiler {
                 self.emit(Op::LoadLocal(slot));
             }
             Stmt::DoWhile { body, condition } => {
-                let slot = self.scope_mut().add_local(String::from("__do_completion__"));
+                let slot = self
+                    .scope_mut()
+                    .add_local(String::from("__do_completion__"));
                 self.emit(Op::LoadEmpty);
                 self.emit(Op::StoreLocal(slot));
                 self.emit(Op::Pop);
@@ -533,7 +537,9 @@ impl Compiler {
                 body,
             } => {
                 self.begin_scope();
-                let slot = self.scope_mut().add_local(String::from("__for_completion__"));
+                let slot = self
+                    .scope_mut()
+                    .add_local(String::from("__for_completion__"));
                 self.emit(Op::LoadEmpty);
                 self.emit(Op::StoreLocal(slot));
                 self.emit(Op::Pop);
@@ -629,7 +635,9 @@ impl Compiler {
             }
             Stmt::With { object, body } => {
                 if self.is_strict {
-                    self.emit_throw_syntax_error("Strict mode code may not include a with statement");
+                    self.emit_throw_syntax_error(
+                        "Strict mode code may not include a with statement",
+                    );
                     return;
                 }
                 self.compile_expr(object);
@@ -834,14 +842,7 @@ impl Compiler {
                 .get(local_slot as usize)
                 .map(|l| l.starts_tdz)
                 .unwrap_or(false);
-            return Some(self.add_upvalue(
-                scope_idx,
-                name,
-                true,
-                local_slot,
-                mutable,
-                starts_tdz,
-            ));
+            return Some(self.add_upvalue(scope_idx, name, true, local_slot, mutable, starts_tdz));
         }
         // Recurse: try as an upvalue of the immediately enclosing scope.
         if let Some(outer_uv) = self.resolve_upvalue_in_scope(scope_idx - 1, name) {
@@ -855,14 +856,7 @@ impl Compiler {
                 .get(outer_uv as usize)
                 .map(|uv| uv.starts_tdz)
                 .unwrap_or(false);
-            return Some(self.add_upvalue(
-                scope_idx,
-                name,
-                false,
-                outer_uv,
-                mutable,
-                starts_tdz,
-            ));
+            return Some(self.add_upvalue(scope_idx, name, false, outer_uv, mutable, starts_tdz));
         }
         None
     }
@@ -1314,7 +1308,9 @@ impl Compiler {
             }
             Stmt::With { object, body } => {
                 if self.is_strict {
-                    self.emit_throw_syntax_error("Strict mode code may not include a with statement");
+                    self.emit_throw_syntax_error(
+                        "Strict mode code may not include a with statement",
+                    );
                     return;
                 }
                 self.compile_expr(object);
@@ -1858,7 +1854,7 @@ impl Compiler {
         self.emit(Op::IterNext);
         // Stack: [..., iterator, value, has_more_bool]
         let exit_jump = self.emit(Op::JumpIfFalse(0)); // done flag
-        // Stack: [..., iterator, value]
+                                                       // Stack: [..., iterator, value]
 
         // Bind the iteration value to the loop variable.
         // The current iteration value is on top of the stack.
@@ -2343,7 +2339,9 @@ impl Compiler {
         catch: &Option<CatchClause>,
         finally: &Option<Vec<Stmt>>,
     ) {
-        let slot = self.scope_mut().add_local(String::from("__try_completion__"));
+        let slot = self
+            .scope_mut()
+            .add_local(String::from("__try_completion__"));
         self.emit(Op::LoadEmpty);
         self.emit(Op::StoreLocal(slot));
         self.emit(Op::Pop);
@@ -2834,13 +2832,14 @@ impl Compiler {
         func_chunk.local_starts_tdz = func_scope.locals.iter().map(|l| l.starts_tdz).collect();
         func_chunk.local_names = func_scope.locals.iter().map(|l| l.name.clone()).collect();
         // Copy upvalue descriptors into the chunk so the VM knows how to capture them.
-        func_chunk.upvalue_names = func_scope.upvalues.iter().map(|uv| uv.name.clone()).collect();
-        func_chunk.upvalue_mutable = func_scope.upvalues.iter().map(|uv| uv.mutable).collect();
-        func_chunk.upvalue_starts_tdz = func_scope
+        func_chunk.upvalue_names = func_scope
             .upvalues
             .iter()
-            .map(|uv| uv.starts_tdz)
+            .map(|uv| uv.name.clone())
             .collect();
+        func_chunk.upvalue_mutable = func_scope.upvalues.iter().map(|uv| uv.mutable).collect();
+        func_chunk.upvalue_starts_tdz =
+            func_scope.upvalues.iter().map(|uv| uv.starts_tdz).collect();
         func_chunk.upvalues = func_scope
             .upvalues
             .iter()
@@ -2956,12 +2955,10 @@ impl Compiler {
                             left: Box::new(Expr::Index {
                                 object: Box::new(Expr::This),
                                 index: Box::new(Expr::Ident(
-                                    computed_key_locals[member_idx]
-                                        .clone()
-                                        .unwrap_or_else(|| {
-                                            let _ = expr;
-                                            String::from("__missing_class_key__")
-                                        }),
+                                    computed_key_locals[member_idx].clone().unwrap_or_else(|| {
+                                        let _ = expr;
+                                        String::from("__missing_class_key__")
+                                    }),
                                 )),
                             }),
                             right: rhs,
@@ -3308,9 +3305,11 @@ impl Compiler {
             // return super(...arguments);
             Stmt::Return(Some(expr)) => Self::expr_contains_super_call(expr),
             // const x = super();  /  let x = super();
-            Stmt::VarDecl { decls, .. } => {
-                decls.iter().any(|d| d.init.as_ref().map_or(false, Self::expr_contains_super_call))
-            }
+            Stmt::VarDecl { decls, .. } => decls.iter().any(|d| {
+                d.init
+                    .as_ref()
+                    .map_or(false, Self::expr_contains_super_call)
+            }),
             _ => false,
         }
     }
@@ -4464,7 +4463,7 @@ impl Compiler {
                 self.compile_expr(right);
                 self.emit(Op::Dup); // keep RHS value as result of the assignment expression
                 self.emit(Op::GetIterator); // convert to iterator
-                // Stack: [..., rhs_value, iterator]
+                                            // Stack: [..., rhs_value, iterator]
                 let has_rest = matches!(elements.last(), Some(Some(Expr::Spread(_))));
                 let done_slot = self
                     .scope_mut()

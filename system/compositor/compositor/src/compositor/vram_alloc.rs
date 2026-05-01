@@ -81,7 +81,11 @@ impl VramAllocator {
         // Align start offset to pitch boundary
         let align_to_pitch = |off: u32| -> u32 {
             let rem = off % self.pitch;
-            if rem == 0 { off } else { off + self.pitch - rem }
+            if rem == 0 {
+                off
+            } else {
+                off + self.pitch - rem
+            }
         };
 
         let mut candidate = align_to_pitch(off_screen_start);
@@ -110,7 +114,10 @@ impl VramAllocator {
         };
 
         // Insert sorted by offset
-        let pos = self.allocs.iter().position(|a| a.offset > candidate)
+        let pos = self
+            .allocs
+            .iter()
+            .position(|a| a.offset > candidate)
             .unwrap_or(self.allocs.len());
         self.allocs.insert(pos, entry);
 

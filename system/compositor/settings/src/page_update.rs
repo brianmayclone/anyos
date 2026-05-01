@@ -32,7 +32,9 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     ver_lbl.set_margin(24, 16, 24, 0);
     card.add(&ver_lbl);
 
-    let desc_lbl = ui::Label::new(i18n::t("Open the Software Update app to check for and install available updates."));
+    let desc_lbl = ui::Label::new(i18n::t(
+        "Open the Software Update app to check for and install available updates.",
+    ));
     desc_lbl.set_dock(ui::DOCK_TOP);
     desc_lbl.set_size(400, 18);
     desc_lbl.set_font_size(12);

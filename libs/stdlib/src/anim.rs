@@ -216,9 +216,7 @@ impl AnimSet {
 
     /// Check whether a specific animation is still running.
     pub fn is_active(&self, id: u32, now: u32) -> bool {
-        self.anims
-            .iter()
-            .any(|(k, a)| *k == id && !a.done(now))
+        self.anims.iter().any(|(k, a)| *k == id && !a.done(now))
     }
 
     /// Returns `true` if **any** animation in the set is still running.

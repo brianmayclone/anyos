@@ -19,7 +19,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{ipc, net, process, println};
+use anyos_std::{ipc, net, println, process};
 use libsvc::ServiceLifecycle;
 
 mod clipboard;
@@ -95,8 +95,10 @@ fn main() {
             println!("vncd: tcp_listen failed on port {}", cfg.port);
             u32::MAX
         } else {
-            println!("vncd: listening on {}.{}.{}.{}:{}",
-                local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port);
+            println!(
+                "vncd: listening on {}.{}.{}.{}:{}",
+                local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port
+            );
             l
         }
     } else {
@@ -150,8 +152,10 @@ fn main() {
                             if current_listener == u32::MAX {
                                 println!("vncd: tcp_listen failed on port {}", cfg.port);
                             } else {
-                                println!("vncd: listening on {}.{}.{}.{}:{}",
-                                    local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port);
+                                println!(
+                                    "vncd: listening on {}.{}.{}.{}:{}",
+                                    local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port
+                                );
                             }
                         } else {
                             println!("vncd: disabled after reload");

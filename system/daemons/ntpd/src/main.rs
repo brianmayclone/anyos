@@ -18,7 +18,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{fs, ipc, net, process, sys, println};
+use anyos_std::{fs, ipc, net, println, process, sys};
 
 mod config;
 mod ntp;
@@ -57,7 +57,10 @@ impl SyncState {
 
 fn print_config(cfg: &config::NtpdConfig) {
     println!("ntpd: --- config ---");
-    println!("ntpd:   enabled       = {}", if cfg.enabled { "yes" } else { "no" });
+    println!(
+        "ntpd:   enabled       = {}",
+        if cfg.enabled { "yes" } else { "no" }
+    );
     println!("ntpd:   poll_interval = {}s", cfg.poll_interval);
     println!("ntpd:   servers ({}):", cfg.server_count);
     for i in 0..cfg.server_count {
@@ -81,15 +84,19 @@ fn resolve_servers(cfg: &mut config::NtpdConfig) {
         if let Some(ip) = parse_ip(hostname) {
             cfg.servers[i].ip = ip;
             cfg.servers[i].resolved = true;
-            println!("ntpd: server {} -> {}.{}.{}.{}",
-                hostname, ip[0], ip[1], ip[2], ip[3]);
+            println!(
+                "ntpd: server {} -> {}.{}.{}.{}",
+                hostname, ip[0], ip[1], ip[2], ip[3]
+            );
         } else {
             let mut resolved = [0u8; 4];
             if net::dns(hostname, &mut resolved) == 0 {
                 cfg.servers[i].ip = resolved;
                 cfg.servers[i].resolved = true;
-                println!("ntpd: server {} -> {}.{}.{}.{}",
-                    hostname, resolved[0], resolved[1], resolved[2], resolved[3]);
+                println!(
+                    "ntpd: server {} -> {}.{}.{}.{}",
+                    hostname, resolved[0], resolved[1], resolved[2], resolved[3]
+                );
             } else {
                 println!("ntpd: failed to resolve {}", hostname);
             }
@@ -115,9 +122,14 @@ fn do_sync(cfg: &config::NtpdConfig, state: &mut SyncState) {
 
                 let abs_offset = if offset < 0 { -offset } else { offset };
                 let sign = if offset < 0 { '-' } else { '+' };
-                println!("ntpd: synced with {} (stratum {}): offset {}{}ms, delay {}ms",
-                    cfg.servers[i].hostname_str(), stratum,
-                    sign, abs_offset, delay);
+                println!(
+                    "ntpd: synced with {} (stratum {}): offset {}{}ms, delay {}ms",
+                    cfg.servers[i].hostname_str(),
+                    stratum,
+                    sign,
+                    abs_offset,
+                    delay
+                );
 
                 // Set system clock if offset exceeds 100ms.
                 if abs_offset > 100 {
@@ -134,8 +146,7 @@ fn do_sync(cfg: &config::NtpdConfig, state: &mut SyncState) {
                 return;
             }
             None => {
-                println!("ntpd: query to {} failed",
-                    cfg.servers[i].hostname_str());
+                println!("ntpd: query to {} failed", cfg.servers[i].hostname_str());
             }
         }
     }
@@ -159,14 +170,21 @@ fn write_status(cfg: &config::NtpdConfig, state: &SyncState) {
     macro_rules! append_i64 {
         ($v:expr) => {{
             let mut v = $v;
-            if v < 0 { append!(b"-"); v = -v; }
+            if v < 0 {
+                append!(b"-");
+                v = -v;
+            }
             let mut nbuf = [0u8; 20];
             let s = fmt_u64(v as u64, &mut nbuf);
             append!(s);
         }};
     }
 
-    append!(if state.synced { b"synced=yes\n" } else { b"synced=no\n" });
+    append!(if state.synced {
+        b"synced=yes\n"
+    } else {
+        b"synced=no\n"
+    });
     append!(b"offset_ms=");
     append_i64!(state.offset_ms);
     append!(b"\n");
@@ -201,9 +219,16 @@ fn write_status(cfg: &config::NtpdConfig, state: &SyncState) {
 }
 
 fn fmt_u64(mut v: u64, buf: &mut [u8; 20]) -> &[u8] {
-    if v == 0 { buf[0] = b'0'; return &buf[..1]; }
+    if v == 0 {
+        buf[0] = b'0';
+        return &buf[..1];
+    }
     let mut i = 20usize;
-    while v > 0 { i -= 1; buf[i] = b'0' + (v % 10) as u8; v /= 10; }
+    while v > 0 {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
     &buf[i..]
 }
 
@@ -216,11 +241,15 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
         match b {
             b'0'..=b'9' => {
                 num = num * 10 + (b - b'0') as u32;
-                if num > 255 { return None; }
+                if num > 255 {
+                    return None;
+                }
                 has_digit = true;
             }
             b'.' => {
-                if !has_digit || idx >= 3 { return None; }
+                if !has_digit || idx >= 3 {
+                    return None;
+                }
                 parts[idx] = num as u8;
                 idx += 1;
                 num = 0;
@@ -229,7 +258,9 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
             _ => return None,
         }
     }
-    if !has_digit || idx != 3 { return None; }
+    if !has_digit || idx != 3 {
+        return None;
+    }
     parts[3] = num as u8;
     Some(parts)
 }
@@ -245,7 +276,9 @@ fn ensure_dir_exists(path: &str) {
             cur.push('/');
             continue;
         }
-        if !cur.ends_with('/') { cur.push('/'); }
+        if !cur.ends_with('/') {
+            cur.push('/');
+        }
         cur.push_str(part);
         if fs::stat(&cur, &mut st) == u32::MAX {
             fs::mkdir(&cur);

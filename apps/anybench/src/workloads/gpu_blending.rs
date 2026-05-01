@@ -4,15 +4,17 @@
 //! Offscreen uses per-pixel alpha blending; onscreen uses opaque rects
 //! (Canvas API has no alpha support). Returns total rectangles composited.
 
+use super::{alpha_blend, GPU_TEST_MS};
 use alloc::vec;
 use libanyui_client as anyui;
-use super::{GPU_TEST_MS, alpha_blend};
 
 /// Alpha-blended rectangle compositing benchmark.
 pub fn bench_gpu_blending(canvas: &anyui::Canvas, offscreen: bool) -> u64 {
     let w = canvas.get_stride();
     let h = canvas.get_height();
-    if w == 0 || h == 0 { return 0; }
+    if w == 0 || h == 0 {
+        return 0;
+    }
 
     if offscreen {
         let buf_size = (w * h) as usize;

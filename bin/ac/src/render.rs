@@ -10,9 +10,9 @@
 //!   Row H-1        : Command line / mini-shell input
 //!   Row H          : Function key labels (F1 Help … F10 Quit)
 
-use crate::term::{self, TermBuf, color};
+use crate::fs::{fmt_size, DirEntry, EntryKind};
 use crate::panel::Panel;
-use crate::fs::{DirEntry, EntryKind, fmt_size};
+use crate::term::{self, color, TermBuf};
 
 // ─── Color palette ────────────────────────────────────────────────────────────
 
@@ -21,32 +21,32 @@ mod pal {
     use crate::term::color;
 
     // Menu bar
-    pub const MENU_FG:         u8 = color::BLACK;
-    pub const MENU_BG:         u8 = color::BRIGHT_WHITE; // light gray
-    pub const MENU_HOT_FG:     u8 = color::BRIGHT_RED;
+    pub const MENU_FG: u8 = color::BLACK;
+    pub const MENU_BG: u8 = color::BRIGHT_WHITE; // light gray
+    pub const MENU_HOT_FG: u8 = color::BRIGHT_RED;
 
     // Panel
     pub const PANEL_BORDER_FG: u8 = color::BRIGHT_CYAN;
-    pub const PANEL_TITLE_FG:  u8 = color::BRIGHT_WHITE;
-    pub const PANEL_BG:        u8 = color::BLUE;
-    pub const PANEL_FILE_FG:   u8 = color::BRIGHT_WHITE;
-    pub const PANEL_DIR_FG:    u8 = color::BRIGHT_CYAN;
-    pub const PANEL_LINK_FG:   u8 = color::BRIGHT_MAGENTA;
-    pub const PANEL_EXEC_FG:   u8 = color::BRIGHT_GREEN;
-    pub const PANEL_SEL_FG:    u8 = color::BRIGHT_YELLOW;
-    pub const CURSOR_FG:       u8 = color::BLACK;
-    pub const CURSOR_BG:       u8 = color::BRIGHT_CYAN;
-    pub const MARKED_FG:       u8 = color::BRIGHT_YELLOW;
+    pub const PANEL_TITLE_FG: u8 = color::BRIGHT_WHITE;
+    pub const PANEL_BG: u8 = color::BLUE;
+    pub const PANEL_FILE_FG: u8 = color::BRIGHT_WHITE;
+    pub const PANEL_DIR_FG: u8 = color::BRIGHT_CYAN;
+    pub const PANEL_LINK_FG: u8 = color::BRIGHT_MAGENTA;
+    pub const PANEL_EXEC_FG: u8 = color::BRIGHT_GREEN;
+    pub const PANEL_SEL_FG: u8 = color::BRIGHT_YELLOW;
+    pub const CURSOR_FG: u8 = color::BLACK;
+    pub const CURSOR_BG: u8 = color::BRIGHT_CYAN;
+    pub const MARKED_FG: u8 = color::BRIGHT_YELLOW;
 
     // Status bar
-    pub const STATUS_FG:       u8 = color::BLACK;
-    pub const STATUS_BG:       u8 = color::BRIGHT_CYAN;
+    pub const STATUS_FG: u8 = color::BLACK;
+    pub const STATUS_BG: u8 = color::BRIGHT_CYAN;
 
     // Function key bar — gray background like classic MC
-    pub const FNBAR_NUM_FG:    u8 = color::BLACK;
-    pub const FNBAR_NUM_BG:    u8 = color::BRIGHT_WHITE;
-    pub const FNBAR_LBL_FG:    u8 = color::BLACK;
-    pub const FNBAR_LBL_BG:    u8 = color::WHITE;  // gray background
+    pub const FNBAR_NUM_FG: u8 = color::BLACK;
+    pub const FNBAR_NUM_BG: u8 = color::BRIGHT_WHITE;
+    pub const FNBAR_LBL_FG: u8 = color::BLACK;
+    pub const FNBAR_LBL_BG: u8 = color::WHITE; // gray background
 }
 
 use pal::*;
@@ -54,8 +54,7 @@ use pal::*;
 // ─── Function key labels ──────────────────────────────────────────────────────
 
 const FN_LABELS: &[&str] = &[
-    "Help", "Menu", "View", "Edit", "Copy",
-    "Move", "MkDir","Del ", "PMenu","Quit",
+    "Help", "Menu", "View", "Edit", "Copy", "Move", "MkDir", "Del ", "PMenu", "Quit",
 ];
 
 // ─── Main render entry point ──────────────────────────────────────────────────
@@ -68,7 +67,7 @@ pub fn render_all(
     buf: &mut TermBuf,
     cols: u32,
     rows: u32,
-    left:  &Panel,
+    left: &Panel,
     right: &Panel,
     cmdline: &[u8],
     cmdline_len: usize,
@@ -125,28 +124,36 @@ fn panel_rows(rows: u32) -> u32 {
 
 fn render_panels(buf: &mut TermBuf, cols: u32, rows: u32, left: &Panel, right: &Panel) {
     let p_rows = panel_rows(rows);
-    if p_rows < 3 { return; }
+    if p_rows < 3 {
+        return;
+    }
 
     // Split evenly: left gets floor(cols/2), right gets the rest
-    let left_w  = cols / 2;
+    let left_w = cols / 2;
     let right_w = cols - left_w;
 
-    render_panel(buf, 1,          2, left_w,  p_rows, left,  left.focused);
+    render_panel(buf, 1, 2, left_w, p_rows, left, left.focused);
     render_panel(buf, left_w + 1, 2, right_w, p_rows, right, right.focused);
 }
 
 fn render_panel(
-    buf:     &mut TermBuf,
-    col:     u32,
-    row:     u32,
-    width:   u32,
-    height:  u32,
-    panel:   &Panel,
+    buf: &mut TermBuf,
+    col: u32,
+    row: u32,
+    width: u32,
+    height: u32,
+    panel: &Panel,
     focused: bool,
 ) {
-    if width < 5 || height < 3 { return; }
+    if width < 5 || height < 3 {
+        return;
+    }
 
-    let border_bg = if focused { PANEL_BORDER_FG } else { color::CYAN };
+    let border_bg = if focused {
+        PANEL_BORDER_FG
+    } else {
+        color::CYAN
+    };
 
     // ── Top border: solid colored bar (spaces with border background color) ──
     term::goto(buf, col, row);
@@ -165,7 +172,9 @@ fn render_panel(
     term::goto(buf, title_col, row);
     term::fg16(buf, color::BLACK);
     term::bg16(buf, border_bg);
-    if focused { term::bold(buf); }
+    if focused {
+        term::bold(buf);
+    }
     buf.push_str("[ ");
     buf.push_bytes(title_str.as_bytes());
     buf.push_str(" ]");
@@ -174,7 +183,7 @@ fn render_panel(
     // ── Column header ─────────────────────────────────────────────────────────
     let content_row = row + 1;
     let content_col = col + 1;
-    let content_w   = width.saturating_sub(2) as usize;
+    let content_w = width.saturating_sub(2) as usize;
 
     term::goto(buf, content_col, content_row);
     term::fg16(buf, color::BRIGHT_YELLOW);
@@ -187,15 +196,17 @@ fn render_panel(
     term::reset(buf);
 
     // ── File list ─────────────────────────────────────────────────────────────
-    let list_row     = content_row + 1;
-    let list_height  = height.saturating_sub(4); // top + header + bottom + status
+    let list_row = content_row + 1;
+    let list_height = height.saturating_sub(4); // top + header + bottom + status
     let visible_rows = list_height as usize;
 
     // Adjust panel scroll for current visible_rows
     // (we can't call panel.ensure_visible_with() here since panel is &Panel)
     let scroll = {
         let mut sc = panel.scroll;
-        if panel.cursor < sc { sc = panel.cursor; }
+        if panel.cursor < sc {
+            sc = panel.cursor;
+        }
         if panel.entry_count > 0 && panel.cursor >= sc + visible_rows {
             sc = panel.cursor + 1 - visible_rows;
         }
@@ -215,8 +226,8 @@ fn render_panel(
             continue;
         }
 
-        let entry    = &panel.entries[ei];
-        let is_cur   = ei == panel.cursor;
+        let entry = &panel.entries[ei];
+        let is_cur = ei == panel.cursor;
         let is_marked = panel.marked[ei];
 
         // Choose colors
@@ -254,7 +265,9 @@ fn render_panel(
         let mut sbuf = [0u8; 16];
         let mut total_marked: u64 = 0;
         for i in 0..panel.entry_count {
-            if panel.marked[i] { total_marked += panel.entries[i].size; }
+            if panel.marked[i] {
+                total_marked += panel.entries[i].size;
+            }
         }
         let size_s = fmt_size(&mut sbuf, total_marked);
         // Build status string
@@ -270,7 +283,11 @@ fn render_panel(
     } else if let Some(e) = panel.current() {
         // Show current file info
         let mut sbuf = [0u8; 16];
-        let size_s = if e.is_dir() { "DIR" } else { fmt_size(&mut sbuf, e.size) };
+        let size_s = if e.is_dir() {
+            "DIR"
+        } else {
+            fmt_size(&mut sbuf, e.size)
+        };
         let avail = content_w.saturating_sub(2);
         let name = e.name_str();
         let nlen = name.len().min(avail.saturating_sub(size_s.len() + 1));
@@ -286,14 +303,26 @@ fn render_panel(
 
 fn entry_fg(e: &DirEntry) -> u8 {
     match e.kind {
-        EntryKind::Dir     => PANEL_DIR_FG,
+        EntryKind::Dir => PANEL_DIR_FG,
         EntryKind::Symlink => PANEL_LINK_FG,
-        EntryKind::File    => if e.is_exec { PANEL_EXEC_FG } else { PANEL_FILE_FG },
+        EntryKind::File => {
+            if e.is_exec {
+                PANEL_EXEC_FG
+            } else {
+                PANEL_FILE_FG
+            }
+        }
         EntryKind::Unknown => color::WHITE,
     }
 }
 
-fn render_entry_row(buf: &mut TermBuf, entry: &DirEntry, width: usize, marked: bool, _cursor: bool) {
+fn render_entry_row(
+    buf: &mut TermBuf,
+    entry: &DirEntry,
+    width: usize,
+    marked: bool,
+    _cursor: bool,
+) {
     // Layout: [mark] name ... size ext
     // size column: 7 chars right-aligned, ext: 4 chars
     let name_w = width.saturating_sub(13);
@@ -331,7 +360,9 @@ fn render_entry_row(buf: &mut TermBuf, entry: &DirEntry, width: usize, marked: b
         let mut sbuf = [0u8; 16];
         let size_s = fmt_size(&mut sbuf, entry.size);
         let sl = size_s.len().min(6);
-        for _ in sl..6 { buf.push_byte(b' '); }
+        for _ in sl..6 {
+            buf.push_byte(b' ');
+        }
         buf.push_bytes(&size_s.as_bytes()[..sl]);
         buf.push_byte(b' ');
     }
@@ -340,7 +371,9 @@ fn render_entry_row(buf: &mut TermBuf, entry: &DirEntry, width: usize, marked: b
     let ext = get_ext(entry.name_str());
     let elen = ext.len().min(4);
     buf.push_bytes(&ext.as_bytes()[..elen]);
-    for _ in elen..4 { buf.push_byte(b' '); }
+    for _ in elen..4 {
+        buf.push_byte(b' ');
+    }
 }
 
 fn get_ext(name: &str) -> &str {
@@ -361,7 +394,11 @@ fn render_cmdline(buf: &mut TermBuf, cols: u32, rows: u32, cmdline: &[u8], cmdli
     term::bg16(buf, color::BLUE);
     buf.push_str("ac:$ ");
     let vis_w = (cols as usize).saturating_sub(6);
-    let start = if cmdline_len > vis_w { cmdline_len - vis_w } else { 0 };
+    let start = if cmdline_len > vis_w {
+        cmdline_len - vis_w
+    } else {
+        0
+    };
     let shown = cmdline_len.saturating_sub(start);
     if shown > 0 {
         buf.push_bytes(&cmdline[start..start + shown]);
@@ -379,7 +416,7 @@ fn render_fnbar(buf: &mut TermBuf, cols: u32, rows: u32) {
 
     // Distribute width as evenly as possible; last cell gets the remainder.
     let base_w = cols / n;
-    let extra   = cols % n;  // first `extra` cells get one more column
+    let extra = cols % n; // first `extra` cells get one more column
 
     let mut col = 0usize;
     for (i, label) in FN_LABELS.iter().enumerate() {
@@ -410,8 +447,15 @@ fn render_fnbar(buf: &mut TermBuf, cols: u32, rows: u32) {
 // ─── Util ────────────────────────────────────────────────────────────────────
 
 fn u32_to_str<'a>(buf: &'a mut [u8; 8], mut n: u32) -> &'a [u8] {
-    if n == 0 { buf[0] = b'0'; return &buf[..1]; }
+    if n == 0 {
+        buf[0] = b'0';
+        return &buf[..1];
+    }
     let mut i = 8usize;
-    while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+    while n > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
     &buf[i..]
 }

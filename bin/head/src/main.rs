@@ -8,12 +8,16 @@ fn head_lines(fd: u32, max_lines: u32) {
     let mut read_buf = [0u8; 512];
     'outer: loop {
         let n = anyos_std::fs::read(fd, &mut read_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         for &b in &read_buf[..n as usize] {
             anyos_std::print!("{}", b as char);
             if b == b'\n' {
                 lines_printed += 1;
-                if lines_printed >= max_lines { break 'outer; }
+                if lines_printed >= max_lines {
+                    break 'outer;
+                }
             }
         }
     }
@@ -24,11 +28,15 @@ fn head_bytes(fd: u32, max_bytes: u32) {
     let mut read_buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut read_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         for &b in &read_buf[..n as usize] {
             anyos_std::print!("{}", b as char);
             printed += 1;
-            if printed >= max_bytes { return; }
+            if printed >= max_bytes {
+                return;
+            }
         }
     }
 }

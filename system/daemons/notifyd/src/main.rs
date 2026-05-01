@@ -23,7 +23,7 @@ mod framebuffer;
 mod render;
 
 use framebuffer::Framebuffer;
-use render::{BANNER_W, BANNER_H, STACK_GAP, MARGIN_TOP, MAX_VISIBLE, MARGIN_RIGHT};
+use render::{BANNER_H, BANNER_W, MARGIN_RIGHT, MARGIN_TOP, MAX_VISIBLE, STACK_GAP};
 
 // ── Notification History Persistence ──────────────────────────────────────
 
@@ -59,12 +59,16 @@ fn persist_notification(title: &str, msg: &str, sender_tid: u32) {
 
 fn load_history() -> Vec<anyos_std::json::Value> {
     let fd = anyos_std::fs::open(HISTORY_FILE, 0);
-    if fd == u32::MAX { return Vec::new(); }
+    if fd == u32::MAX {
+        return Vec::new();
+    }
     let mut content = Vec::new();
     let mut buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         content.extend_from_slice(&buf[..n as usize]);
     }
     anyos_std::fs::close(fd);
@@ -96,8 +100,15 @@ fn now_string() -> String {
     let hour = buf[4];
     let min = buf[5];
     let sec = buf[6];
-    anyos_std::format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, month, day, hour, min, sec)
+    anyos_std::format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year,
+        month,
+        day,
+        hour,
+        min,
+        sec
+    )
 }
 
 // ── IPC Constants ───────────────────────────────────────────────────────────
@@ -224,9 +235,8 @@ fn main() {
     }
 
     // Create borderless, always-on-top, non-resizable window
-    let flags = anyui::WIN_FLAG_BORDERLESS
-        | anyui::WIN_FLAG_NOT_RESIZABLE
-        | anyui::WIN_FLAG_ALWAYS_ON_TOP;
+    let flags =
+        anyui::WIN_FLAG_BORDERLESS | anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_ALWAYS_ON_TOP;
 
     // Create at a positive off-screen position (negative coords become CW_USEDEFAULT
     // due to u16 packing in libcompositor). Then immediately move_to off-screen.
@@ -234,7 +244,9 @@ fn main() {
         "notifyd",
         screen_width as i32 + 1000,
         screen_height as i32 + 1000,
-        WIN_W, WIN_H, flags,
+        WIN_W,
+        WIN_H,
+        flags,
     );
     win.move_to(screen_width as i32 + 1000, screen_height as i32 + 1000);
 
@@ -277,7 +289,9 @@ fn main() {
     });
 
     // Start with idle timer
-    app().timer_id = anyui::set_timer(TIMER_IDLE_MS, || { tick(); });
+    app().timer_id = anyui::set_timer(TIMER_IDLE_MS, || {
+        tick();
+    });
 
     app().win.on_close(|_| {
         anyui::quit();
@@ -320,7 +334,8 @@ fn tick() {
         a.win.move_to(wx, wy);
         a.on_screen = true;
     } else if !has_active && a.on_screen {
-        a.win.move_to(a.screen_width as i32 + 1000, a.screen_height as i32 + 1000);
+        a.win
+            .move_to(a.screen_width as i32 + 1000, a.screen_height as i32 + 1000);
         a.on_screen = false;
     }
 
@@ -334,17 +349,22 @@ fn tick() {
 
     // Adaptive timer
     let a = app();
-    let needs_fast = a.notifications.iter().any(|n| {
-        n.visible && (n.x_offset != n.target_x || n.dismissing)
-    });
+    let needs_fast = a
+        .notifications
+        .iter()
+        .any(|n| n.visible && (n.x_offset != n.target_x || n.dismissing));
 
     if needs_fast && !a.fast_timer {
         anyui::kill_timer(a.timer_id);
-        a.timer_id = anyui::set_timer(TIMER_FAST_MS, || { tick(); });
+        a.timer_id = anyui::set_timer(TIMER_FAST_MS, || {
+            tick();
+        });
         a.fast_timer = true;
     } else if !needs_fast && a.fast_timer {
         anyui::kill_timer(a.timer_id);
-        a.timer_id = anyui::set_timer(TIMER_IDLE_MS, || { tick(); });
+        a.timer_id = anyui::set_timer(TIMER_IDLE_MS, || {
+            tick();
+        });
         a.fast_timer = false;
     }
 }
@@ -403,15 +423,17 @@ fn poll_system_events() {
 
 /// Process a CMD_SHOW_NOTIFICATION event: map SHM, parse data, create notification.
 fn handle_show_notification(sender_tid: u32, shm_id: u32, timeout_ms: u32) {
-    if shm_id == 0 { return; }
+    if shm_id == 0 {
+        return;
+    }
 
     let shm_addr = anyos_std::ipc::shm_map(shm_id);
-    if shm_addr == 0 { return; }
+    if shm_addr == 0 {
+        return;
+    }
 
     // Parse SHM layout: [title_len:u16, msg_len:u16, has_icon:u8, pad:3, title..., msg..., icon...]
-    let data = unsafe {
-        core::slice::from_raw_parts(shm_addr as *const u8, 4096)
-    };
+    let data = unsafe { core::slice::from_raw_parts(shm_addr as *const u8, 4096) };
 
     let title_len = (data[0] as u16 | ((data[1] as u16) << 8)).min(64) as usize;
     let msg_len = (data[2] as u16 | ((data[3] as u16) << 8)).min(128) as usize;
@@ -439,10 +461,7 @@ fn handle_show_notification(sender_tid: u32, shm_id: u32, timeout_ms: u32) {
         let icon_start = (msg_end + 3) & !3;
         if icon_start + 1024 <= 4096 {
             let icon_slice = unsafe {
-                core::slice::from_raw_parts(
-                    (shm_addr as usize + icon_start) as *const u32,
-                    256,
-                )
+                core::slice::from_raw_parts((shm_addr as usize + icon_start) as *const u32, 256)
             };
             let mut icon_buf = [0u32; 256];
             icon_buf.copy_from_slice(icon_slice);
@@ -468,11 +487,19 @@ fn handle_show_notification(sender_tid: u32, shm_id: u32, timeout_ms: u32) {
 
     let now = anyos_std::sys::uptime();
     let hz = anyos_std::sys::tick_hz().max(1);
-    let timeout = if timeout_ms == 0 { DEFAULT_TIMEOUT_MS } else { timeout_ms };
+    let timeout = if timeout_ms == 0 {
+        DEFAULT_TIMEOUT_MS
+    } else {
+        timeout_ms
+    };
     let timeout_ticks = timeout * hz / 1000;
 
     // Slot = number of currently active (non-dismissing) notifications
-    let slot = a.notifications.iter().filter(|n| n.visible && !n.dismissing).count();
+    let slot = a
+        .notifications
+        .iter()
+        .filter(|n| n.visible && !n.dismissing)
+        .count();
 
     a.notifications.push(Notification {
         id,
@@ -482,8 +509,8 @@ fn handle_show_notification(sender_tid: u32, shm_id: u32, timeout_ms: u32) {
         msg_len: mlen,
         icon,
         dismiss_at: now.wrapping_add(timeout_ticks),
-        x_offset: BANNER_W as i32,  // start off-screen right
-        target_x: 0,                 // slide to visible position
+        x_offset: BANNER_W as i32, // start off-screen right
+        target_x: 0,               // slide to visible position
         slot,
         anim_start: now,
         anim_start_x: BANNER_W as i32,
@@ -503,7 +530,9 @@ fn handle_show_notification(sender_tid: u32, shm_id: u32, timeout_ms: u32) {
     // Switch to fast timer for animation
     if !a.fast_timer {
         anyui::kill_timer(a.timer_id);
-        a.timer_id = anyui::set_timer(TIMER_FAST_MS, || { tick(); });
+        a.timer_id = anyui::set_timer(TIMER_FAST_MS, || {
+            tick();
+        });
         a.fast_timer = true;
     }
 
@@ -515,7 +544,11 @@ fn dismiss_notification(notif_id: u32) {
     let a = app();
     let now = anyos_std::sys::uptime();
 
-    if let Some(notif) = a.notifications.iter_mut().find(|n| n.id == notif_id && n.visible) {
+    if let Some(notif) = a
+        .notifications
+        .iter_mut()
+        .find(|n| n.id == notif_id && n.visible)
+    {
         notif.dismissing = true;
         notif.anim_start = now;
         notif.anim_start_x = notif.x_offset;
@@ -532,8 +565,12 @@ fn update_animations(now: u32, hz: u32) {
     let a = app();
 
     for notif in a.notifications.iter_mut() {
-        if !notif.visible { continue; }
-        if notif.x_offset == notif.target_x { continue; }
+        if !notif.visible {
+            continue;
+        }
+        if notif.x_offset == notif.target_x {
+            continue;
+        }
 
         let elapsed_ticks = now.wrapping_sub(notif.anim_start);
         let elapsed_ms = elapsed_ticks * 1000 / hz;
@@ -589,7 +626,9 @@ fn recompute_slots() {
     let mut slot = 0usize;
 
     for notif in a.notifications.iter_mut() {
-        if !notif.visible || notif.dismissing { continue; }
+        if !notif.visible || notif.dismissing {
+            continue;
+        }
 
         if notif.slot != slot {
             notif.slot = slot;
@@ -607,7 +646,9 @@ fn handle_click(y: i32) {
 
     let mut clicked_id = None;
     for notif in a.notifications.iter() {
-        if !notif.visible || notif.dismissing { continue; }
+        if !notif.visible || notif.dismissing {
+            continue;
+        }
         let ny = notif.y_pos();
         if y >= ny && y < ny + BANNER_H as i32 {
             clicked_id = Some(notif.id);

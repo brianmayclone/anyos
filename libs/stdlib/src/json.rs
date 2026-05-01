@@ -27,10 +27,10 @@
 //! let pretty = obj.to_string_pretty(); // indented
 //! ```
 
+use crate::hashmap::HashMap;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
-use crate::hashmap::HashMap;
 
 // ── Value ────────────────────────────────────────────────────────────────
 
@@ -85,7 +85,9 @@ impl Object {
 
     /// Get a value by key.
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.index.get(&String::from(key)).map(|&idx| &self.entries[idx].1)
+        self.index
+            .get(&String::from(key))
+            .map(|&idx| &self.entries[idx].1)
     }
 
     /// Get a mutable value by key.
@@ -170,17 +172,32 @@ impl Value {
 
     // ── Type checks ──
 
-    pub fn is_null(&self) -> bool { matches!(self, Value::Null) }
-    pub fn is_bool(&self) -> bool { matches!(self, Value::Bool(_)) }
-    pub fn is_number(&self) -> bool { matches!(self, Value::Number(_)) }
-    pub fn is_string(&self) -> bool { matches!(self, Value::String(_)) }
-    pub fn is_array(&self) -> bool { matches!(self, Value::Array(_)) }
-    pub fn is_object(&self) -> bool { matches!(self, Value::Object(_)) }
+    pub fn is_null(&self) -> bool {
+        matches!(self, Value::Null)
+    }
+    pub fn is_bool(&self) -> bool {
+        matches!(self, Value::Bool(_))
+    }
+    pub fn is_number(&self) -> bool {
+        matches!(self, Value::Number(_))
+    }
+    pub fn is_string(&self) -> bool {
+        matches!(self, Value::String(_))
+    }
+    pub fn is_array(&self) -> bool {
+        matches!(self, Value::Array(_))
+    }
+    pub fn is_object(&self) -> bool {
+        matches!(self, Value::Object(_))
+    }
 
     // ── Accessors ──
 
     pub fn as_bool(&self) -> Option<bool> {
-        match self { Value::Bool(b) => Some(*b), _ => None }
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
     }
 
     pub fn as_i64(&self) -> Option<i64> {
@@ -208,23 +225,38 @@ impl Value {
     }
 
     pub fn as_str(&self) -> Option<&str> {
-        match self { Value::String(s) => Some(s.as_str()), _ => None }
+        match self {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        }
     }
 
     pub fn as_array(&self) -> Option<&Vec<Value>> {
-        match self { Value::Array(a) => Some(a), _ => None }
+        match self {
+            Value::Array(a) => Some(a),
+            _ => None,
+        }
     }
 
     pub fn as_array_mut(&mut self) -> Option<&mut Vec<Value>> {
-        match self { Value::Array(a) => Some(a), _ => None }
+        match self {
+            Value::Array(a) => Some(a),
+            _ => None,
+        }
     }
 
     pub fn as_object(&self) -> Option<&Object> {
-        match self { Value::Object(o) => Some(o), _ => None }
+        match self {
+            Value::Object(o) => Some(o),
+            _ => None,
+        }
     }
 
     pub fn as_object_mut(&mut self) -> Option<&mut Object> {
-        match self { Value::Object(o) => Some(o), _ => None }
+        match self {
+            Value::Object(o) => Some(o),
+            _ => None,
+        }
     }
 
     // ── Object convenience ──
@@ -332,28 +364,44 @@ impl core::fmt::Display for Number {
 // ── From impls for convenient construction ───────────────────────────────
 
 impl From<bool> for Value {
-    fn from(b: bool) -> Self { Value::Bool(b) }
+    fn from(b: bool) -> Self {
+        Value::Bool(b)
+    }
 }
 impl From<i32> for Value {
-    fn from(n: i32) -> Self { Value::Number(Number::Int(n as i64)) }
+    fn from(n: i32) -> Self {
+        Value::Number(Number::Int(n as i64))
+    }
 }
 impl From<i64> for Value {
-    fn from(n: i64) -> Self { Value::Number(Number::Int(n)) }
+    fn from(n: i64) -> Self {
+        Value::Number(Number::Int(n))
+    }
 }
 impl From<u32> for Value {
-    fn from(n: u32) -> Self { Value::Number(Number::Int(n as i64)) }
+    fn from(n: u32) -> Self {
+        Value::Number(Number::Int(n as i64))
+    }
 }
 impl From<u64> for Value {
-    fn from(n: u64) -> Self { Value::Number(Number::Int(n as i64)) }
+    fn from(n: u64) -> Self {
+        Value::Number(Number::Int(n as i64))
+    }
 }
 impl From<f64> for Value {
-    fn from(f: f64) -> Self { Value::Number(Number::Float(f)) }
+    fn from(f: f64) -> Self {
+        Value::Number(Number::Float(f))
+    }
 }
 impl From<&str> for Value {
-    fn from(s: &str) -> Self { Value::String(String::from(s)) }
+    fn from(s: &str) -> Self {
+        Value::String(String::from(s))
+    }
 }
 impl From<String> for Value {
-    fn from(s: String) -> Self { Value::String(s) }
+    fn from(s: String) -> Self {
+        Value::String(s)
+    }
 }
 impl<T: Into<Value>> From<Vec<T>> for Value {
     fn from(v: Vec<T>) -> Self {
@@ -377,10 +425,14 @@ impl core::fmt::Display for ParseError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ParseError::UnexpectedEnd => write!(f, "unexpected end of input"),
-            ParseError::UnexpectedChar(pos, ch) => write!(f, "unexpected '{}' at position {}", ch, pos),
+            ParseError::UnexpectedChar(pos, ch) => {
+                write!(f, "unexpected '{}' at position {}", ch, pos)
+            }
             ParseError::InvalidNumber(pos) => write!(f, "invalid number at position {}", pos),
             ParseError::InvalidEscape(pos) => write!(f, "invalid escape at position {}", pos),
-            ParseError::InvalidUnicode(pos) => write!(f, "invalid unicode escape at position {}", pos),
+            ParseError::InvalidUnicode(pos) => {
+                write!(f, "invalid unicode escape at position {}", pos)
+            }
             ParseError::TrailingData(pos) => write!(f, "trailing data at position {}", pos),
         }
     }
@@ -395,7 +447,10 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
-        Parser { input: input.as_bytes(), pos: 0 }
+        Parser {
+            input: input.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -404,7 +459,9 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> Option<u8> {
         let b = self.input.get(self.pos).copied();
-        if b.is_some() { self.pos += 1; }
+        if b.is_some() {
+            self.pos += 1;
+        }
         b
     }
 
@@ -517,7 +574,10 @@ impl<'a> Parser<'a> {
                             Some(cont) if cont & 0xC0 == 0x80 => {
                                 cp = (cp << 6) | (cont & 0x3F) as u32;
                             }
-                            _ => { valid = false; break; }
+                            _ => {
+                                valid = false;
+                                break;
+                            }
                         }
                     }
                     if valid {
@@ -561,11 +621,17 @@ impl<'a> Parser<'a> {
 
         // Integer part
         match self.peek() {
-            Some(b'0') => { self.pos += 1; }
+            Some(b'0') => {
+                self.pos += 1;
+            }
             Some(b) if b >= b'1' && b <= b'9' => {
                 self.pos += 1;
                 while let Some(b) = self.peek() {
-                    if b.is_ascii_digit() { self.pos += 1; } else { break; }
+                    if b.is_ascii_digit() {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
                 }
             }
             _ => return Err(ParseError::InvalidNumber(start)),
@@ -577,7 +643,11 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             let digit_start = self.pos;
             while let Some(b) = self.peek() {
-                if b.is_ascii_digit() { self.pos += 1; } else { break; }
+                if b.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
             }
             if self.pos == digit_start {
                 return Err(ParseError::InvalidNumber(start));
@@ -593,7 +663,11 @@ impl<'a> Parser<'a> {
             }
             let digit_start = self.pos;
             while let Some(b) = self.peek() {
-                if b.is_ascii_digit() { self.pos += 1; } else { break; }
+                if b.is_ascii_digit() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
             }
             if self.pos == digit_start {
                 return Err(ParseError::InvalidNumber(start));
@@ -637,8 +711,13 @@ impl<'a> Parser<'a> {
 
             self.skip_whitespace();
             match self.peek() {
-                Some(b',') => { self.pos += 1; }
-                Some(b'}') => { self.pos += 1; return Ok(obj); }
+                Some(b',') => {
+                    self.pos += 1;
+                }
+                Some(b'}') => {
+                    self.pos += 1;
+                    return Ok(obj);
+                }
                 Some(b) => return Err(ParseError::UnexpectedChar(self.pos, b as char)),
                 None => return Err(ParseError::UnexpectedEnd),
             }
@@ -661,8 +740,13 @@ impl<'a> Parser<'a> {
 
             self.skip_whitespace();
             match self.peek() {
-                Some(b',') => { self.pos += 1; }
-                Some(b']') => { self.pos += 1; return Ok(arr); }
+                Some(b',') => {
+                    self.pos += 1;
+                }
+                Some(b']') => {
+                    self.pos += 1;
+                    return Ok(arr);
+                }
                 Some(b) => return Err(ParseError::UnexpectedChar(self.pos, b as char)),
                 None => return Err(ParseError::UnexpectedEnd),
             }
@@ -674,26 +758,46 @@ impl<'a> Parser<'a> {
 
 fn parse_i64(s: &str) -> Option<i64> {
     let bytes = s.as_bytes();
-    if bytes.is_empty() { return None; }
+    if bytes.is_empty() {
+        return None;
+    }
 
-    let (negative, start) = if bytes[0] == b'-' { (true, 1) } else { (false, 0) };
-    if start >= bytes.len() { return None; }
+    let (negative, start) = if bytes[0] == b'-' {
+        (true, 1)
+    } else {
+        (false, 0)
+    };
+    if start >= bytes.len() {
+        return None;
+    }
 
     let mut n: i64 = 0;
     for &b in &bytes[start..] {
-        if !b.is_ascii_digit() { return None; }
+        if !b.is_ascii_digit() {
+            return None;
+        }
         n = n.checked_mul(10)?.checked_add((b - b'0') as i64)?;
     }
-    if negative { Some(-n) } else { Some(n) }
+    if negative {
+        Some(-n)
+    } else {
+        Some(n)
+    }
 }
 
 fn parse_f64(s: &str) -> Option<f64> {
     // Simple float parser for JSON numbers.
     // Handles: [-]digits[.digits][e[+-]digits]
     let bytes = s.as_bytes();
-    if bytes.is_empty() { return None; }
+    if bytes.is_empty() {
+        return None;
+    }
 
-    let (negative, mut pos) = if bytes[0] == b'-' { (true, 1) } else { (false, 0) };
+    let (negative, mut pos) = if bytes[0] == b'-' {
+        (true, 1)
+    } else {
+        (false, 0)
+    };
 
     // Integer part
     let mut int_part: f64 = 0.0;
@@ -732,7 +836,9 @@ fn parse_f64(s: &str) -> Option<f64> {
             exp = exp * 10 + (bytes[pos] - b'0') as i32;
             pos += 1;
         }
-        if exp_neg { exp = -exp; }
+        if exp_neg {
+            exp = -exp;
+        }
         // Apply exponent via repeated multiply (no libm pow)
         if exp > 0 {
             for _ in 0..exp.min(308) {
@@ -745,7 +851,9 @@ fn parse_f64(s: &str) -> Option<f64> {
         }
     }
 
-    if negative { result = -result; }
+    if negative {
+        result = -result;
+    }
     Some(result)
 }
 

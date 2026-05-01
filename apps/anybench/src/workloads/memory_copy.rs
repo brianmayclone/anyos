@@ -3,8 +3,8 @@
 //! Sequential volatile copy of a 256 KB buffer, repeated for [`CPU_TEST_MS`]
 //! milliseconds. Returns total bytes copied.
 
-use alloc::vec;
 use super::CPU_TEST_MS;
+use alloc::vec;
 
 /// Sequential volatile buffer copy benchmark.
 pub fn bench_memory_copy() -> u64 {

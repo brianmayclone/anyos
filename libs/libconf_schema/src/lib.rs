@@ -31,7 +31,10 @@ pub const fn default_bool(path: &'static str, value: bool) -> DefaultEntry<'stat
     }
 }
 
-pub const fn default_external_ref(path: &'static str, value: &'static str) -> DefaultEntry<'static> {
+pub const fn default_external_ref(
+    path: &'static str,
+    value: &'static str,
+) -> DefaultEntry<'static> {
     DefaultEntry {
         path,
         value: ConfValueRef::ExternalRef(value),
@@ -58,7 +61,11 @@ pub const fn migration_int(version: u32, path: &'static str, value: i64) -> Migr
     })
 }
 
-pub const fn migration_bool(version: u32, path: &'static str, value: bool) -> MigrationStep<'static> {
+pub const fn migration_bool(
+    version: u32,
+    path: &'static str,
+    value: bool,
+) -> MigrationStep<'static> {
     MigrationStep::Set(MigrationEntry {
         version,
         path,

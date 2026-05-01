@@ -39,10 +39,18 @@ fn main() {
     let mut remaining = if limit > 0 { limit } else { u32::MAX };
 
     loop {
-        if remaining == 0 { break; }
-        let to_read = if remaining < 16 { remaining as usize } else { 16 };
+        if remaining == 0 {
+            break;
+        }
+        let to_read = if remaining < 16 {
+            remaining as usize
+        } else {
+            16
+        };
         let n = anyos_std::fs::read(fd, &mut read_buf[..to_read]);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         let n = n as usize;
 
         anyos_std::print!("{:08X}  ", offset);
@@ -53,7 +61,9 @@ fn main() {
             } else {
                 anyos_std::print!("   ");
             }
-            if i == 7 { anyos_std::print!(" "); }
+            if i == 7 {
+                anyos_std::print!(" ");
+            }
         }
 
         anyos_std::print!(" |");

@@ -3,8 +3,10 @@
 
 anyos_std::entry!(main);
 
-use libcompositor_client::{TrayClient, WindowHandle, EVT_STATUS_ICON_CLICK,
-    EVT_MOUSE_DOWN, EVT_WINDOW_CLOSE, EVT_FOCUS_LOST};
+use libcompositor_client::{
+    TrayClient, WindowHandle, EVT_FOCUS_LOST, EVT_MOUSE_DOWN, EVT_STATUS_ICON_CLICK,
+    EVT_WINDOW_CLOSE,
+};
 use libconf_schema::{default_int, manifest, RegistryScope, ServiceSchema};
 
 use librender_client::Surface;
@@ -30,7 +32,8 @@ const COLOR_RADIO_DOT: u32 = 0xFFFFFFFF;
 const FONT_SIZE_LARGE: u16 = 16;
 const FONT_SIZE_NORMAL: u16 = 13;
 const INPUTMON_DIRS: &[&str] = &["config"];
-const INPUTMON_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[default_int("config/layout", 1)];
+const INPUTMON_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
+    &[default_int("config/layout", 1)];
 const INPUTMON_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
 const INPUTMON_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "profile/input",
@@ -45,37 +48,91 @@ const INPUTMON_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("inputmon", &
 // ── Minimal 5x7 bitmap font for tray icon ────────────────────────────────────
 
 static MINI_FONT: [[u8; 7]; 26] = [
-    [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-    [0b11110, 0b10001, 0b11110, 0b10001, 0b10001, 0b10001, 0b11110],
-    [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-    [0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100],
-    [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-    [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-    [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
-    [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-    [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-    [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
-    [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-    [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-    [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-    [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-    [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-    [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-    [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
-    [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-    [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
-    [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-    [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-    [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-    [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
-    [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
-    [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-    [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+    [
+        0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+    ],
+    [
+        0b11110, 0b10001, 0b11110, 0b10001, 0b10001, 0b10001, 0b11110,
+    ],
+    [
+        0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+    ],
+    [
+        0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100,
+    ],
+    [
+        0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+    ],
+    [
+        0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+    ],
+    [
+        0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
+    ],
+    [
+        0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+    ],
+    [
+        0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+    ],
+    [
+        0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100,
+    ],
+    [
+        0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+    ],
+    [
+        0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+    ],
+    [
+        0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+    ],
+    [
+        0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+    ],
+    [
+        0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+    ],
+    [
+        0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+    ],
+    [
+        0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+    ],
+    [
+        0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+    ],
+    [
+        0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+    ],
+    [
+        0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+    ],
+    [
+        0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+    ],
+    [
+        0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+    ],
+    [
+        0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
+    ],
+    [
+        0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+    ],
+    [
+        0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+    ],
+    [
+        0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+    ],
 ];
 
 fn draw_mini_char(pixels: &mut [u32; 256], x0: usize, y0: usize, ch: u8, color: u32) {
     let c = ch.to_ascii_uppercase();
-    if c < b'A' || c > b'Z' { return; }
+    if c < b'A' || c > b'Z' {
+        return;
+    }
     let idx = (c - b'A') as usize;
     let glyph = &MINI_FONT[idx];
     for (dy, &row) in glyph.iter().enumerate() {
@@ -93,11 +150,21 @@ fn draw_mini_char(pixels: &mut [u32; 256], x0: usize, y0: usize, ch: u8, color: 
 
 // ── Icon drawing ─────────────────────────────────────────────────────────────
 
-fn draw_layout_icon(pixels: &mut [u32; 256], layouts: &[anyos_std::kbd::LayoutInfo], current_id: u32) {
-    for p in pixels.iter_mut() { *p = 0; }
+fn draw_layout_icon(
+    pixels: &mut [u32; 256],
+    layouts: &[anyos_std::kbd::LayoutInfo],
+    current_id: u32,
+) {
+    for p in pixels.iter_mut() {
+        *p = 0;
+    }
     let label = find_label(layouts, current_id);
-    if label.len() >= 1 { draw_mini_char(pixels, 2, 5, label[0], 0xFFE0E0E0); }
-    if label.len() >= 2 { draw_mini_char(pixels, 9, 5, label[1], 0xFFE0E0E0); }
+    if label.len() >= 1 {
+        draw_mini_char(pixels, 2, 5, label[0], 0xFFE0E0E0);
+    }
+    if label.len() >= 2 {
+        draw_mini_char(pixels, 9, 5, label[1], 0xFFE0E0E0);
+    }
 }
 
 fn find_label(layouts: &[anyos_std::kbd::LayoutInfo], id: u32) -> &[u8] {
@@ -128,7 +195,12 @@ fn popup_height(layout_count: usize) -> u32 {
     (PAD + 28 + 8 + (layout_count as i32) * ROW_H + PAD) as u32
 }
 
-fn draw_popup(win: &WindowHandle, layouts: &[anyos_std::kbd::LayoutInfo], layout_count: usize, current_id: u32) {
+fn draw_popup(
+    win: &WindowHandle,
+    layouts: &[anyos_std::kbd::LayoutInfo],
+    layout_count: usize,
+    current_id: u32,
+) {
     let h = popup_height(layout_count);
     let buf = win.surface();
     let mut surface = unsafe { Surface::from_raw(buf, POPUP_W, h) };
@@ -140,7 +212,17 @@ fn draw_popup(win: &WindowHandle, layouts: &[anyos_std::kbd::LayoutInfo], layout
     let mut y = PAD;
 
     // Title
-    libfont_client::draw_string_buf(buf, POPUP_W, h, PAD, y + 4, COLOR_TEXT_TITLE, 0, FONT_SIZE_LARGE, "Keyboard");
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        h,
+        PAD,
+        y + 4,
+        COLOR_TEXT_TITLE,
+        0,
+        FONT_SIZE_LARGE,
+        "Keyboard",
+    );
     y += 28;
 
     // Divider
@@ -167,7 +249,17 @@ fn draw_popup(win: &WindowHandle, layouts: &[anyos_std::kbd::LayoutInfo], layout
         let mut text_buf = [0u8; 16];
         let tlen = fmt_layout_text(label_text, code, &mut text_buf);
         let text = core::str::from_utf8(&text_buf[..tlen]).unwrap_or("");
-        libfont_client::draw_string_buf(buf, POPUP_W, h, PAD + 28, y + 8, COLOR_TEXT, 0, FONT_SIZE_NORMAL, text);
+        libfont_client::draw_string_buf(
+            buf,
+            POPUP_W,
+            h,
+            PAD + 28,
+            y + 8,
+            COLOR_TEXT,
+            0,
+            FONT_SIZE_NORMAL,
+            text,
+        );
 
         y += ROW_H;
     }
@@ -175,11 +267,32 @@ fn draw_popup(win: &WindowHandle, layouts: &[anyos_std::kbd::LayoutInfo], layout
 
 fn fmt_layout_text<'a>(label: &str, code: &str, buf: &'a mut [u8; 16]) -> usize {
     let mut pos = 0;
-    for &b in label.as_bytes() { if pos < 16 { buf[pos] = b; pos += 1; } }
-    while pos < 4 { if pos < 16 { buf[pos] = b' '; pos += 1; } }
-    if pos < 16 { buf[pos] = b' '; pos += 1; }
-    if pos < 16 { buf[pos] = b' '; pos += 1; }
-    for &b in code.as_bytes() { if pos < 16 { buf[pos] = b; pos += 1; } }
+    for &b in label.as_bytes() {
+        if pos < 16 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
+    while pos < 4 {
+        if pos < 16 {
+            buf[pos] = b' ';
+            pos += 1;
+        }
+    }
+    if pos < 16 {
+        buf[pos] = b' ';
+        pos += 1;
+    }
+    if pos < 16 {
+        buf[pos] = b' ';
+        pos += 1;
+    }
+    for &b in code.as_bytes() {
+        if pos < 16 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
     pos
 }
 
@@ -202,7 +315,11 @@ fn main() {
 
     load_config();
 
-    let mut layouts = [anyos_std::kbd::LayoutInfo { id: 0, code: [0; 8], label: [0; 4] }; 8];
+    let mut layouts = [anyos_std::kbd::LayoutInfo {
+        id: 0,
+        code: [0; 8],
+        label: [0; 4],
+    }; 8];
     let layout_count = anyos_std::kbd::list_layouts(&mut layouts) as usize;
     let mut current_id = anyos_std::kbd::get_layout();
 
@@ -217,10 +334,18 @@ fn main() {
             match event.event_type {
                 EVT_STATUS_ICON_CLICK if event.arg1 == ICON_ID => {
                     if popup.is_some() {
-                        if let Some(ref p) = popup { client.destroy_window(p); }
+                        if let Some(ref p) = popup {
+                            client.destroy_window(p);
+                        }
                         popup = None;
                     } else {
-                        open_popup(&client, &mut popup, &layouts[..layout_count], layout_count, current_id);
+                        open_popup(
+                            &client,
+                            &mut popup,
+                            &layouts[..layout_count],
+                            layout_count,
+                            current_id,
+                        );
                     }
                 }
                 EVT_MOUSE_DOWN => {
@@ -236,7 +361,11 @@ fn main() {
                                     current_id = new_id;
                                     save_config(new_id);
 
-                                    draw_layout_icon(&mut icon_pixels, &layouts[..layout_count], new_id);
+                                    draw_layout_icon(
+                                        &mut icon_pixels,
+                                        &layouts[..layout_count],
+                                        new_id,
+                                    );
                                     client.set_icon(ICON_ID, &icon_pixels);
 
                                     draw_popup(win, &layouts[..layout_count], layout_count, new_id);

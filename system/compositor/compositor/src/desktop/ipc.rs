@@ -29,7 +29,9 @@ impl Desktop {
             if win.owner_tid == 0 {
                 continue;
             }
-            let target_sub = self.app_subs.iter()
+            let target_sub = self
+                .app_subs
+                .iter()
                 .find(|(t, _)| *t == win.owner_tid)
                 .map(|(_, target)| *target);
 
@@ -73,7 +75,10 @@ impl Desktop {
     }
 
     /// Process an IPC command from an app.
-    pub fn handle_ipc_command(&mut self, cmd: &[u32; 5]) -> Option<(Option<AppIpcTarget>, [u32; 5])> {
+    pub fn handle_ipc_command(
+        &mut self,
+        cmd: &[u32; 5],
+    ) -> Option<(Option<AppIpcTarget>, [u32; 5])> {
         match cmd[0] {
             proto::CMD_CREATE_WINDOW => {
                 let app_tid = cmd[1];
@@ -88,7 +93,12 @@ impl Desktop {
                 let flags = shm_id_and_flags & 0xFFFF;
 
                 if shm_id == 0 || !self.validate_window_surface(width, height, flags) {
-                    anyos_std::println!("[ipc] CREATE_WINDOW rejected: shm={} w={} h={}", shm_id, width, height);
+                    anyos_std::println!(
+                        "[ipc] CREATE_WINDOW rejected: shm={} w={} h={}",
+                        shm_id,
+                        width,
+                        height
+                    );
                     return None;
                 }
 
@@ -110,7 +120,10 @@ impl Desktop {
                 );
 
                 let target = self.get_ipc_target_for_tid(app_tid);
-                Some((target, [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0]))
+                Some((
+                    target,
+                    [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0],
+                ))
             }
             proto::CMD_DESTROY_WINDOW => {
                 let window_id = cmd[1];
@@ -130,9 +143,22 @@ impl Desktop {
                         anyos_std::ipc::shm_unmap(shm_id);
                     }
                     self.destroy_window(window_id);
-                    let remaining = self.windows.iter().filter(|w| w.owner_tid == app_tid).count() as u32;
+                    let remaining = self
+                        .windows
+                        .iter()
+                        .filter(|w| w.owner_tid == app_tid)
+                        .count() as u32;
                     let target = self.get_ipc_target_for_tid(app_tid);
-                    Some((target, [proto::RESP_WINDOW_DESTROYED, window_id, app_tid, remaining, 0]))
+                    Some((
+                        target,
+                        [
+                            proto::RESP_WINDOW_DESTROYED,
+                            window_id,
+                            app_tid,
+                            remaining,
+                            0,
+                        ],
+                    ))
                 } else {
                     None
                 }
@@ -204,11 +230,11 @@ impl Desktop {
                     anyos_std::println!("[ipc] SET_MENU shm_map failed for shm_id={}", shm_id);
                     return None;
                 }
-                let data = unsafe {
-                    core::slice::from_raw_parts(shm_addr as *const u8, 4096)
-                };
+                let data = unsafe { core::slice::from_raw_parts(shm_addr as *const u8, 4096) };
                 if let Some(def) = MenuBarDef::parse(data) {
-                    let app_name = self.windows.iter()
+                    let app_name = self
+                        .windows
+                        .iter()
                         .find(|w| w.id == window_id)
                         .map(|w| w.title.as_str())
                         .unwrap_or("App");
@@ -217,12 +243,17 @@ impl Desktop {
                     if self.focused_window == Some(window_id) {
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0, 0, self.screen_width, menubar_height() + 1,
+                            0,
+                            0,
+                            self.screen_width,
+                            menubar_height() + 1,
                         ));
                     }
                 }
                 anyos_std::ipc::shm_unmap(shm_id);
-                let owner_tid = self.windows.iter()
+                let owner_tid = self
+                    .windows
+                    .iter()
                     .find(|w| w.id == window_id)
                     .map(|w| w.owner_tid)
                     .unwrap_or(0);
@@ -239,16 +270,24 @@ impl Desktop {
                 }
                 let shm_addr = anyos_std::ipc::shm_map(shm_id);
                 if shm_addr == 0 {
-                    anyos_std::println!("[ipc] ADD_STATUS_ICON shm_map failed for shm_id={}", shm_id);
+                    anyos_std::println!(
+                        "[ipc] ADD_STATUS_ICON shm_map failed for shm_id={}",
+                        shm_id
+                    );
                     return None;
                 }
-                let pixel_data = unsafe {
-                    core::slice::from_raw_parts(shm_addr as *const u32, 256)
-                };
-                if self.menu_bar.add_status_icon(app_tid, icon_id, pixel_data, self.screen_width) {
+                let pixel_data =
+                    unsafe { core::slice::from_raw_parts(shm_addr as *const u32, 256) };
+                if self
+                    .menu_bar
+                    .add_status_icon(app_tid, icon_id, pixel_data, self.screen_width)
+                {
                     self.draw_menubar();
                     self.compositor.add_damage(Rect::new(
-                        0, 0, self.screen_width, menubar_height() + 1,
+                        0,
+                        0,
+                        self.screen_width,
+                        menubar_height() + 1,
                     ));
                 }
                 anyos_std::ipc::shm_unmap(shm_id);
@@ -257,10 +296,16 @@ impl Desktop {
             proto::CMD_REMOVE_STATUS_ICON => {
                 let app_tid = cmd[1];
                 let icon_id = cmd[2];
-                if self.menu_bar.remove_status_icon(app_tid, icon_id, self.screen_width) {
+                if self
+                    .menu_bar
+                    .remove_status_icon(app_tid, icon_id, self.screen_width)
+                {
                     self.draw_menubar();
                     self.compositor.add_damage(Rect::new(
-                        0, 0, self.screen_width, menubar_height() + 1,
+                        0,
+                        0,
+                        self.screen_width,
+                        menubar_height() + 1,
                     ));
                 }
                 None
@@ -269,11 +314,17 @@ impl Desktop {
                 let window_id = cmd[1];
                 let item_id = cmd[2];
                 let new_flags = cmd[3];
-                if self.menu_bar.update_item_flags(window_id, item_id, new_flags) {
+                if self
+                    .menu_bar
+                    .update_item_flags(window_id, item_id, new_flags)
+                {
                     if self.focused_window == Some(window_id) {
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0, 0, self.screen_width, menubar_height() + 1,
+                            0,
+                            0,
+                            self.screen_width,
+                            menubar_height() + 1,
                         ));
                     }
                     if let Some(ref dd) = self.menu_bar.open_dropdown {
@@ -290,12 +341,20 @@ impl Desktop {
                 let new_w = cmd[3];
                 let new_h = cmd[4];
 
-                let flags = self.windows.iter()
+                let flags = self
+                    .windows
+                    .iter()
                     .find(|w| w.id == window_id)
                     .map(|w| w.flags)
                     .unwrap_or(0);
                 if new_shm_id == 0 || !self.validate_window_surface(new_w, new_h, flags) {
-                    anyos_std::println!("[ipc] RESIZE_SHM rejected: shm={} w={} h={} win={}", new_shm_id, new_w, new_h, window_id);
+                    anyos_std::println!(
+                        "[ipc] RESIZE_SHM rejected: shm={} w={} h={} win={}",
+                        new_shm_id,
+                        new_w,
+                        new_h,
+                        window_id
+                    );
                     return None;
                 }
 
@@ -305,7 +364,10 @@ impl Desktop {
 
                     let new_shm_addr = anyos_std::ipc::shm_map(new_shm_id);
                     if new_shm_addr == 0 {
-                        anyos_std::println!("[ipc] RESIZE_SHM shm_map failed for shm_id={}", new_shm_id);
+                        anyos_std::println!(
+                            "[ipc] RESIZE_SHM shm_map failed for shm_id={}",
+                            new_shm_id
+                        );
                         return None;
                     }
 
@@ -342,7 +404,9 @@ impl Desktop {
             }
             proto::CMD_FOCUS_BY_TID => {
                 let owner_tid = cmd[1];
-                if let Some(win_id) = self.windows.iter()
+                if let Some(win_id) = self
+                    .windows
+                    .iter()
                     .find(|w| w.owner_tid == owner_tid)
                     .map(|w| w.id)
                 {
@@ -376,7 +440,10 @@ impl Desktop {
                     }
                 }
                 // Focus next visible window
-                if let Some(next_id) = self.windows.iter().rev()
+                if let Some(next_id) = self
+                    .windows
+                    .iter()
+                    .rev()
                     .find(|w| w.owner_tid != owner_tid && w.x >= 0)
                     .map(|w| w.id)
                 {
@@ -489,15 +556,7 @@ impl Desktop {
                     .map(|w| w.owner_tid)
                     .unwrap_or(0);
                 if source_tid != 0 && shm_id != 0 {
-                    self.drag_set_image(
-                        source_tid,
-                        source_window_id,
-                        shm_id,
-                        w,
-                        h,
-                        hot_x,
-                        hot_y,
-                    );
+                    self.drag_set_image(source_tid, source_window_id, shm_id, w, h, hot_x, hot_y);
                 }
                 None
             }
@@ -540,7 +599,9 @@ impl Desktop {
                 }
 
                 // Try to allocate VRAM and create the window
-                if let Some(result) = self.create_vram_window(app_tid, width, height, flags, raw_x, raw_y) {
+                if let Some(result) =
+                    self.create_vram_window(app_tid, width, height, flags, raw_x, raw_y)
+                {
                     let target = self.get_ipc_target_for_tid(app_tid);
                     Some((target, result))
                 } else {
@@ -562,14 +623,13 @@ impl Desktop {
                     anyos_std::println!("[clipboard] SET shm_map failed for shm_id={}", shm_id);
                     return None;
                 }
-                let data = unsafe {
-                    core::slice::from_raw_parts(shm_addr as *const u8, len)
-                };
+                let data = unsafe { core::slice::from_raw_parts(shm_addr as *const u8, len) };
                 self.clipboard_data = data.to_vec();
                 self.clipboard_format = format;
                 anyos_std::ipc::shm_unmap(shm_id);
                 let preview_len = len.min(40);
-                let preview = core::str::from_utf8(&self.clipboard_data[..preview_len]).unwrap_or("(binary)");
+                let preview =
+                    core::str::from_utf8(&self.clipboard_data[..preview_len]).unwrap_or("(binary)");
                 anyos_std::println!("[clipboard] SET ok: {} bytes, preview='{}'", len, preview);
                 None
             }
@@ -580,9 +640,21 @@ impl Desktop {
                 let requester_tid = cmd[3];
                 let target = self.get_ipc_target_for_tid(requester_tid);
 
-                let copy_len = self.clipboard_data.len().min(if capacity > 0 { capacity } else { 65536 });
+                let copy_len =
+                    self.clipboard_data
+                        .len()
+                        .min(if capacity > 0 { capacity } else { 65536 });
                 if copy_len == 0 {
-                    return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, self.clipboard_format, requester_tid]));
+                    return Some((
+                        target,
+                        [
+                            proto::RESP_CLIPBOARD_DATA,
+                            0,
+                            0,
+                            self.clipboard_format,
+                            requester_tid,
+                        ],
+                    ));
                 }
 
                 // Ensure compositor-owned clipboard SHM is large enough.
@@ -599,7 +671,10 @@ impl Desktop {
                         self.clipboard_shm_id = 0;
                         self.clipboard_shm_addr = 0;
                         self.clipboard_shm_cap = 0;
-                        return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
+                        return Some((
+                            target,
+                            [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid],
+                        ));
                     }
                     let addr = anyos_std::ipc::shm_map(id);
                     if addr == 0 {
@@ -607,7 +682,10 @@ impl Desktop {
                         self.clipboard_shm_id = 0;
                         self.clipboard_shm_addr = 0;
                         self.clipboard_shm_cap = 0;
-                        return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
+                        return Some((
+                            target,
+                            [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid],
+                        ));
                     }
                     self.clipboard_shm_id = id;
                     self.clipboard_shm_addr = addr;
@@ -622,7 +700,16 @@ impl Desktop {
                         copy_len,
                     );
                 }
-                Some((target, [proto::RESP_CLIPBOARD_DATA, self.clipboard_shm_id, copy_len as u32, self.clipboard_format, requester_tid]))
+                Some((
+                    target,
+                    [
+                        proto::RESP_CLIPBOARD_DATA,
+                        self.clipboard_shm_id,
+                        copy_len as u32,
+                        self.clipboard_format,
+                        requester_tid,
+                    ],
+                ))
             }
             proto::CMD_SET_WALLPAPER => {
                 let shm_id = cmd[1];
@@ -635,9 +722,7 @@ impl Desktop {
                     anyos_std::println!("[ipc] SET_WALLPAPER shm_map failed for shm_id={}", shm_id);
                     return None;
                 }
-                let data = unsafe {
-                    core::slice::from_raw_parts(shm_addr as *const u8, 256)
-                };
+                let data = unsafe { core::slice::from_raw_parts(shm_addr as *const u8, 256) };
                 let path_len = data.iter().position(|&b| b == 0).unwrap_or(256);
                 let path_len = path_len.min(127);
                 if path_len > 0 {
@@ -677,10 +762,22 @@ impl Desktop {
                         win.y + title_bar_height() as i32
                     };
                     let target = self.get_ipc_target_for_tid(requester_tid);
-                    Some((target, [proto::RESP_WINDOW_POS, window_id, content_x as u32, content_y as u32, requester_tid]))
+                    Some((
+                        target,
+                        [
+                            proto::RESP_WINDOW_POS,
+                            window_id,
+                            content_x as u32,
+                            content_y as u32,
+                            requester_tid,
+                        ],
+                    ))
                 } else {
                     let target = self.get_ipc_target_for_tid(requester_tid);
-                    Some((target, [proto::RESP_WINDOW_POS, window_id, 0, 0, requester_tid]))
+                    Some((
+                        target,
+                        [proto::RESP_WINDOW_POS, window_id, 0, 0, requester_tid],
+                    ))
                 }
             }
             proto::CMD_INJECT_KEY => {
@@ -726,7 +823,6 @@ impl Desktop {
             }
 
             // ── Fullscreen Commands ──────────────────────────────────────────
-
             proto::CMD_SET_FULLSCREEN_CAP => {
                 let window_id = cmd[1];
                 let owner_tid = cmd[2];
@@ -746,13 +842,16 @@ impl Desktop {
                         if let Some(resp) = self.enter_fullscreen(window_id, false) {
                             // Push as a window event so libanyui receives it as EVT_FULLSCREEN_ENTER
                             // resp = [RESP, win_id, (sw<<16)|sh, stride, fb_ptr]
-                            self.push_event(window_id, [
-                                EVENT_FULLSCREEN_ENTER,
-                                resp[2], // (sw<<16)|sh
-                                resp[3], // stride
-                                resp[4], // fb_ptr
-                                0,
-                            ]);
+                            self.push_event(
+                                window_id,
+                                [
+                                    EVENT_FULLSCREEN_ENTER,
+                                    resp[2], // (sw<<16)|sh
+                                    resp[3], // stride
+                                    resp[4], // fb_ptr
+                                    0,
+                                ],
+                            );
                         }
                     }
                 }
@@ -775,13 +874,16 @@ impl Desktop {
                         return None;
                     }
                     if let Some(resp) = self.enter_fullscreen(window_id, want_direct_fb) {
-                        self.push_event(window_id, [
-                            EVENT_FULLSCREEN_ENTER,
-                            resp[2], // (sw<<16)|sh
-                            resp[3], // stride
-                            resp[4], // fb_ptr
-                            0,
-                        ]);
+                        self.push_event(
+                            window_id,
+                            [
+                                EVENT_FULLSCREEN_ENTER,
+                                resp[2], // (sw<<16)|sh
+                                resp[3], // stride
+                                resp[4], // fb_ptr
+                                0,
+                            ],
+                        );
                     }
                 }
                 None
@@ -798,7 +900,9 @@ impl Desktop {
                     return None;
                 }
                 if self.fullscreen_window == Some(window_id) {
-                    let tid = self.windows.iter()
+                    let tid = self
+                        .windows
+                        .iter()
                         .find(|w| w.id == window_id)
                         .map(|w| w.owner_tid)
                         .unwrap_or(0);
@@ -881,7 +985,10 @@ impl Desktop {
         );
 
         let target = self.get_ipc_target_for_tid(app_tid);
-        Some((target, [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0]))
+        Some((
+            target,
+            [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0],
+        ))
     }
 
     // ── Fullscreen Implementation ──────────────────────────────────────
@@ -1032,11 +1139,16 @@ impl Desktop {
         let new_w = cmd[3];
         let new_h = cmd[4];
 
-        let flags = self.windows.iter()
+        let flags = self
+            .windows
+            .iter()
             .find(|w| w.id == window_id)
             .map(|w| w.flags)
             .unwrap_or(0);
-        if new_shm_id == 0 || new_shm_addr == 0 || !self.validate_window_surface(new_w, new_h, flags) {
+        if new_shm_id == 0
+            || new_shm_addr == 0
+            || !self.validate_window_surface(new_w, new_h, flags)
+        {
             return None;
         }
 

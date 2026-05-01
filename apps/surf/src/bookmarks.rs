@@ -43,7 +43,9 @@ fn selected_idx() -> i32 {
 }
 
 fn set_selected(idx: i32) {
-    unsafe { BM_SELECTED = idx; }
+    unsafe {
+        BM_SELECTED = idx;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -136,7 +138,10 @@ fn resolve_parent_and_index<'a>(
 }
 
 /// Get the children vec that a path points into for insertion.
-fn resolve_folder<'a>(roots: &'a mut Vec<BookmarkItem>, path: &[usize]) -> &'a mut Vec<BookmarkItem> {
+fn resolve_folder<'a>(
+    roots: &'a mut Vec<BookmarkItem>,
+    path: &[usize],
+) -> &'a mut Vec<BookmarkItem> {
     match path.split_first() {
         None => roots,
         Some((&idx, rest)) => {
@@ -157,7 +162,11 @@ fn resolve_folder<'a>(roots: &'a mut Vec<BookmarkItem>, path: &[usize]) -> &'a m
 fn open_add_dialog(is_folder: bool) {
     let st = state();
 
-    let title_text = if is_folder { "New Folder" } else { "Add Bookmark" };
+    let title_text = if is_folder {
+        "New Folder"
+    } else {
+        "Add Bookmark"
+    };
     let win = ui_lib::Window::new(title_text, -1, -1, 440, if is_folder { 130 } else { 170 });
 
     let panel = ui_lib::View::new();
@@ -292,7 +301,13 @@ fn open_edit_dialog() {
         }
     };
 
-    let win = ui_lib::Window::new("Edit Bookmark", -1, -1, 440, if is_folder { 130 } else { 170 });
+    let win = ui_lib::Window::new(
+        "Edit Bookmark",
+        -1,
+        -1,
+        440,
+        if is_folder { 130 } else { 170 },
+    );
 
     let panel = ui_lib::View::new();
     panel.set_dock(ui_lib::DOCK_FILL);
@@ -361,8 +376,7 @@ fn open_edit_dialog() {
         };
 
         let st = state();
-        if let Some((parent, idx)) =
-            resolve_parent_and_index(&mut st.bookmarks.roots, &path_clone)
+        if let Some((parent, idx)) = resolve_parent_and_index(&mut st.bookmarks.roots, &path_clone)
         {
             parent[idx].title = new_name;
             if !parent[idx].is_folder {
@@ -468,8 +482,7 @@ pub fn add_current_page() {
         return;
     }
 
-    let (icon, icon_w, icon_h) =
-        config::fetch_favicon(&url).unwrap_or((Vec::new(), 0, 0));
+    let (icon, icon_w, icon_h) = config::fetch_favicon(&url).unwrap_or((Vec::new(), 0, 0));
 
     st.bookmarks.roots.push(BookmarkItem {
         title,
@@ -567,9 +580,7 @@ pub fn open_bookmark_manager() {
         if idx < map.len() && !map[idx].is_folder {
             let path = map[idx].path.clone();
             let st = state();
-            if let Some((parent, i)) =
-                resolve_parent_and_index(&mut st.bookmarks.roots, &path)
-            {
+            if let Some((parent, i)) = resolve_parent_and_index(&mut st.bookmarks.roots, &path) {
                 let lbl = ui_lib::Control::from_id(status_id);
                 lbl.set_text(&parent[i].url);
             }
@@ -585,13 +596,13 @@ pub fn open_bookmark_manager() {
 
     ctx.on_item_click(|e| {
         match e.index {
-            0 => open_selected(),           // Open
+            0 => open_selected(),            // Open
             1 => open_selected_in_new_tab(), // Open in New Tab
             // 2 = separator
-            3 => open_edit_dialog(),         // Edit
-            4 => delete_selected(),          // Delete
+            3 => open_edit_dialog(), // Edit
+            4 => delete_selected(),  // Delete
             // 5 = separator
-            6 => open_add_dialog(true),      // New Folder
+            6 => open_add_dialog(true), // New Folder
             _ => {}
         }
     });
@@ -609,10 +620,8 @@ pub fn open_bookmark_manager() {
         delete_selected();
     });
 
-    win.on_close(move |_| {
-        unsafe {
-            BM_WIN_ID = 0;
-            BM_TREE_ID = 0;
-        }
+    win.on_close(move |_| unsafe {
+        BM_WIN_ID = 0;
+        BM_TREE_ID = 0;
     });
 }

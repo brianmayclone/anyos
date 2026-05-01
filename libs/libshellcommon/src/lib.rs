@@ -10,19 +10,18 @@
 
 pub mod interpreter;
 
-use anyos_std::{String, Vec, format};
 use anyos_std::fs;
+use anyos_std::{format, String, Vec};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /// Standard POSIX-like builtin command names for completion.
 pub const BUILTIN_COMMANDS: &[&str] = &[
-    ".", "alias", "bg", "break", "cd", "clear", "command", "continue",
-    "echo", "eval", "exec", "exit", "export", "false",
-    "fg", "getopts", "hash", "help", "jobs", "kill", "local",
-    "printf", "pwd", "read", "readonly", "reboot", "return", "set",
-    "shift", "shutdown", "source", "su", "test", "times", "trap", "true",
-    "type", "ulimit", "umask", "uname", "unalias", "unset", "wait",
+    ".", "alias", "bg", "break", "cd", "clear", "command", "continue", "echo", "eval", "exec",
+    "exit", "export", "false", "fg", "getopts", "hash", "help", "jobs", "kill", "local", "printf",
+    "pwd", "read", "readonly", "reboot", "return", "set", "shift", "shutdown", "source", "su",
+    "test", "times", "trap", "true", "type", "ulimit", "umask", "uname", "unalias", "unset",
+    "wait",
 ];
 
 /// Maximum history entries before oldest are dropped.
@@ -53,9 +52,17 @@ pub fn split_logical_operators(line: &str) -> Option<Vec<(LogicalOp, String)>> {
 
     while i < len {
         match bytes[i] {
-            b'\'' if !in_double_quote => { in_single_quote = !in_single_quote; i += 1; }
-            b'"' if !in_single_quote => { in_double_quote = !in_double_quote; i += 1; }
-            b'\\' if !in_single_quote => { i += 2; }
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                i += 1;
+            }
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                i += 1;
+            }
+            b'\\' if !in_single_quote => {
+                i += 2;
+            }
             b'&' if !in_single_quote && !in_double_quote && i + 1 < len && bytes[i + 1] == b'&' => {
                 result.push((current_op, String::from(line[start..i].trim())));
                 current_op = LogicalOp::And;
@@ -207,7 +214,9 @@ pub trait ScriptExecutor {
         if len == u32::MAX {
             return None;
         }
-        core::str::from_utf8(&buf[..len as usize]).ok().map(String::from)
+        core::str::from_utf8(&buf[..len as usize])
+            .ok()
+            .map(String::from)
     }
     fn expand_words(&mut self, words: &str) -> Vec<String>;
     fn error(&mut self, message: &str);
@@ -275,10 +284,10 @@ pub fn load_shell_script(path: &str, cwd: &str) -> Result<ShellScript, ScriptErr
         return Err(ScriptError::IsDirectory(resolved));
     }
 
-    let bytes = read_file_to_vec(&resolved)
-        .ok_or_else(|| ScriptError::ReadFailed(resolved.clone()))?;
-    let text = core::str::from_utf8(&bytes)
-        .map_err(|_| ScriptError::InvalidUtf8(resolved.clone()))?;
+    let bytes =
+        read_file_to_vec(&resolved).ok_or_else(|| ScriptError::ReadFailed(resolved.clone()))?;
+    let text =
+        core::str::from_utf8(&bytes).map_err(|_| ScriptError::InvalidUtf8(resolved.clone()))?;
     Ok(ShellScript {
         path: resolved,
         commands: parse_shell_script(text),
@@ -378,7 +387,10 @@ fn run_shell_block(
             _ => return result,
         }
     }
-    ScriptExecResult { status, control: ScriptControl::None }
+    ScriptExecResult {
+        status,
+        control: ScriptControl::None,
+    }
 }
 
 fn run_shell_stmt(
@@ -403,7 +415,10 @@ fn run_shell_stmt(
                 _ => result,
             }
         }
-        ShellStmt::If { branches, else_branch } => {
+        ShellStmt::If {
+            branches,
+            else_branch,
+        } => {
             for (condition, body) in branches {
                 let cond = executor.run_command(condition);
                 if matches!(cond.control, ScriptControl::Exit | ScriptControl::Return) {
@@ -423,14 +438,22 @@ fn run_shell_stmt(
                     return cond;
                 }
                 if cond.status != 0 {
-                    return ScriptExecResult { status, control: ScriptControl::None };
+                    return ScriptExecResult {
+                        status,
+                        control: ScriptControl::None,
+                    };
                 }
                 let result = run_shell_block(body, executor, functions);
                 status = result.status;
                 match result.control {
                     ScriptControl::None => {}
                     ScriptControl::Continue => continue,
-                    ScriptControl::Break => return ScriptExecResult { status: 0, control: ScriptControl::None },
+                    ScriptControl::Break => {
+                        return ScriptExecResult {
+                            status: 0,
+                            control: ScriptControl::None,
+                        }
+                    }
                     ScriptControl::Exit => return result,
                     ScriptControl::Return => return result,
                 }
@@ -444,14 +467,22 @@ fn run_shell_stmt(
                     return cond;
                 }
                 if cond.status == 0 {
-                    return ScriptExecResult { status, control: ScriptControl::None };
+                    return ScriptExecResult {
+                        status,
+                        control: ScriptControl::None,
+                    };
                 }
                 let result = run_shell_block(body, executor, functions);
                 status = result.status;
                 match result.control {
                     ScriptControl::None => {}
                     ScriptControl::Continue => continue,
-                    ScriptControl::Break => return ScriptExecResult { status: 0, control: ScriptControl::None },
+                    ScriptControl::Break => {
+                        return ScriptExecResult {
+                            status: 0,
+                            control: ScriptControl::None,
+                        }
+                    }
                     ScriptControl::Exit | ScriptControl::Return => return result,
                 }
             }
@@ -466,12 +497,20 @@ fn run_shell_stmt(
                 match result.control {
                     ScriptControl::None => {}
                     ScriptControl::Continue => continue,
-                    ScriptControl::Break => return ScriptExecResult { status: 0, control: ScriptControl::None },
+                    ScriptControl::Break => {
+                        return ScriptExecResult {
+                            status: 0,
+                            control: ScriptControl::None,
+                        }
+                    }
                     ScriptControl::Exit => return result,
                     ScriptControl::Return => return result,
                 }
             }
-            ScriptExecResult { status, control: ScriptControl::None }
+            ScriptExecResult {
+                status,
+                control: ScriptControl::None,
+            }
         }
         ShellStmt::Case { word, arms } => {
             let expanded = executor.expand_words(word);
@@ -483,36 +522,62 @@ fn run_shell_stmt(
                 subject_buf.as_str()
             };
             for (patterns, body) in arms {
-                if patterns.iter().any(|p| shell_pattern_match(subject, p.trim())) {
+                if patterns
+                    .iter()
+                    .any(|p| shell_pattern_match(subject, p.trim()))
+                {
                     return run_shell_block(body, executor, functions);
                 }
             }
-            ScriptExecResult { status: 0, control: ScriptControl::None }
+            ScriptExecResult {
+                status: 0,
+                control: ScriptControl::None,
+            }
         }
         ShellStmt::Function { name, body } => {
             if let Some(existing) = functions.iter_mut().find(|f| f.name == *name) {
                 existing.body = body.clone();
             } else {
-                functions.push(ShellFunction { name: name.clone(), body: body.clone() });
+                functions.push(ShellFunction {
+                    name: name.clone(),
+                    body: body.clone(),
+                });
             }
-            ScriptExecResult { status: 0, control: ScriptControl::None }
+            ScriptExecResult {
+                status: 0,
+                control: ScriptControl::None,
+            }
         }
         ShellStmt::Group(body) => run_shell_block(body, executor, functions),
         ShellStmt::Subshell(body) => {
             let mut local_functions = functions.clone();
             run_shell_block(body, executor, &mut local_functions)
         }
-        ShellStmt::Break => ScriptExecResult { status: 0, control: ScriptControl::Break },
-        ShellStmt::Continue => ScriptExecResult { status: 0, control: ScriptControl::Continue },
+        ShellStmt::Break => ScriptExecResult {
+            status: 0,
+            control: ScriptControl::Break,
+        },
+        ShellStmt::Continue => ScriptExecResult {
+            status: 0,
+            control: ScriptControl::Continue,
+        },
         ShellStmt::Return(arg) => {
             let status = if arg.trim().is_empty() {
-                executor.get_var("?").and_then(|s| s.parse::<u32>().ok()).unwrap_or(0)
+                executor
+                    .get_var("?")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0)
             } else {
-                executor.expand_words(arg).first()
+                executor
+                    .expand_words(arg)
+                    .first()
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(0)
             };
-            ScriptExecResult { status, control: ScriptControl::Return }
+            ScriptExecResult {
+                status,
+                control: ScriptControl::Return,
+            }
         }
     }
 }
@@ -545,11 +610,12 @@ fn parse_shell_block(
             while let Some(stop_word) = current_stop {
                 if stop_word == "elif" {
                     let elif_line = commands[*idx].trim();
-                    let elif_condition = parse_header(elif_line, "elif", "then")
-                        .unwrap_or_else(|| String::from(""));
+                    let elif_condition =
+                        parse_header(elif_line, "elif", "then").unwrap_or_else(|| String::from(""));
                     *idx += 1;
                     skip_standalone_terminator(commands, idx, "then");
-                    let (branch, next_stop) = parse_shell_block(commands, idx, &["elif", "else", "fi"]);
+                    let (branch, next_stop) =
+                        parse_shell_block(commands, idx, &["elif", "else", "fi"]);
                     branches.push((elif_condition, branch));
                     current_stop = next_stop;
                     continue;
@@ -568,7 +634,10 @@ fn parse_shell_block(
                 break;
             }
 
-            program.push(ShellStmt::If { branches, else_branch });
+            program.push(ShellStmt::If {
+                branches,
+                else_branch,
+            });
             continue;
         }
 
@@ -686,7 +755,8 @@ fn run_function_call(
     if name.is_empty() {
         return None;
     }
-    let body = functions.iter()
+    let body = functions
+        .iter()
         .find(|f| f.name == name)
         .map(|f| f.body.clone())?;
 
@@ -697,7 +767,10 @@ fn run_function_call(
     restore_positional_args(executor, frame);
 
     Some(match result.control {
-        ScriptControl::Return => ScriptExecResult { status: result.status, control: ScriptControl::None },
+        ScriptControl::Return => ScriptExecResult {
+            status: result.status,
+            control: ScriptControl::None,
+        },
         _ => result,
     })
 }
@@ -823,9 +896,17 @@ fn parse_case_arm_header(line: &str) -> Option<(Vec<String>, String)> {
     let mut i = 0usize;
     while i < bytes.len() {
         match bytes[i] {
-            b'\'' if !in_double => { in_single = !in_single; i += 1; }
-            b'"' if !in_single => { in_double = !in_double; i += 1; }
-            b'\\' if !in_single => { i += 2; }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'\\' if !in_single => {
+                i += 2;
+            }
             b')' if !in_single && !in_double => {
                 let mut pat = line[..i].trim();
                 if let Some(stripped) = pat.strip_prefix('(') {
@@ -849,9 +930,17 @@ fn split_case_patterns(patterns: &str) -> Vec<String> {
     let mut in_double = false;
     while i < bytes.len() {
         match bytes[i] {
-            b'\'' if !in_double => { in_single = !in_single; i += 1; }
-            b'"' if !in_single => { in_double = !in_double; i += 1; }
-            b'\\' if !in_single => { i += 2; }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'\\' if !in_single => {
+                i += 2;
+            }
             b'|' if !in_single && !in_double => {
                 out.push(String::from(patterns[start..i].trim()));
                 start = i + 1;
@@ -874,9 +963,17 @@ fn split_case_terminator(line: &str) -> Option<(&str, &str)> {
     let mut in_double = false;
     while i + 1 < bytes.len() {
         match bytes[i] {
-            b'\'' if !in_double => { in_single = !in_single; i += 1; }
-            b'"' if !in_single => { in_double = !in_double; i += 1; }
-            b'\\' if !in_single => { i += 2; }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'\\' if !in_single => {
+                i += 2;
+            }
             b';' if !in_single && !in_double && bytes[i + 1] == b';' => {
                 return Some((&line[..i], ";;"));
             }
@@ -1024,9 +1121,17 @@ fn split_script_semicolons(line: &str) -> Vec<String> {
     let mut in_double = false;
     while i < bytes.len() {
         match bytes[i] {
-            b'\'' if !in_double => { in_single = !in_single; i += 1; }
-            b'"' if !in_single => { in_double = !in_double; i += 1; }
-            b'\\' if !in_single => { i += 2; }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'\\' if !in_single => {
+                i += 2;
+            }
             b';' if !in_single && !in_double => {
                 let part = line[start..i].trim();
                 if !part.is_empty() {
@@ -1102,7 +1207,9 @@ fn get_env_string(name: &str) -> Option<String> {
     if len == u32::MAX {
         return None;
     }
-    core::str::from_utf8(&buf[..len as usize]).ok().map(String::from)
+    core::str::from_utf8(&buf[..len as usize])
+        .ok()
+        .map(String::from)
 }
 
 /// Return KEY=VALUE assignments that are valid standalone shell statements.
@@ -1150,9 +1257,17 @@ fn strip_inline_comment(line: &str) -> &str {
     let mut in_double = false;
     while i < bytes.len() {
         match bytes[i] {
-            b'\'' if !in_double => { in_single = !in_single; i += 1; }
-            b'"' if !in_single => { in_double = !in_double; i += 1; }
-            b'\\' if !in_single => { i += 2; }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'\\' if !in_single => {
+                i += 2;
+            }
             b'#' if !in_single && !in_double => {
                 if i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t' {
                     return &line[..i];
@@ -1171,7 +1286,11 @@ fn line_has_continuation(line: &str) -> bool {
     let mut i = bytes.len();
     while i > 0 {
         i -= 1;
-        if bytes[i] == b'\\' { count += 1; } else { break; }
+        if bytes[i] == b'\\' {
+            count += 1;
+        } else {
+            break;
+        }
     }
     count % 2 == 1
 }
@@ -1227,7 +1346,8 @@ fn shell_pattern_match(text: &str, pattern: &str) -> bool {
             } else {
                 return false;
             }
-        } else if pi < pat.len() && pat[pi] == b'\\' && pi + 1 < pat.len() && pat[pi + 1] == txt[ti] {
+        } else if pi < pat.len() && pat[pi] == b'\\' && pi + 1 < pat.len() && pat[pi + 1] == txt[ti]
+        {
             pi += 2;
             ti += 1;
         } else if pi < pat.len() && pat[pi] == txt[ti] {
@@ -1294,7 +1414,9 @@ fn normalize_path(path: &str) -> String {
     for seg in path.split('/') {
         match seg {
             "" | "." => {}
-            ".." => { parts.pop(); }
+            ".." => {
+                parts.pop();
+            }
             s => parts.push(s),
         }
     }
@@ -1321,7 +1443,9 @@ pub fn longest_common_prefix(items: &[String]) -> String {
     for item in &items[1..] {
         len = len.min(item.len());
         for (i, (a, b)) in first.bytes().zip(item.bytes()).enumerate() {
-            if i >= len { break; }
+            if i >= len {
+                break;
+            }
             if a != b {
                 len = i;
                 break;
@@ -1353,7 +1477,9 @@ pub fn complete_command(prefix: &str, builtins: &[&str]) -> Vec<String> {
         if let Ok(path_str) = core::str::from_utf8(&path_buf[..plen as usize]) {
             for dir in path_str.split(':') {
                 let dir = dir.trim();
-                if dir.is_empty() { continue; }
+                if dir.is_empty() {
+                    continue;
+                }
                 for (name, _) in list_dir_entries(dir) {
                     if name.starts_with(prefix) && !matches.iter().any(|m| *m == name) {
                         matches.push(name);
@@ -1390,7 +1516,11 @@ pub fn complete_path(word: &str, cwd: &str) -> Vec<String> {
         String::from(cwd)
     } else if dir_prefix.starts_with('/') {
         let p = dir_prefix.trim_end_matches('/');
-        if p.is_empty() { String::from("/") } else { String::from(p) }
+        if p.is_empty() {
+            String::from("/")
+        } else {
+            String::from(p)
+        }
     } else {
         if cwd == "/" {
             format!("/{}", dir_prefix.trim_end_matches('/'))
@@ -1454,7 +1584,11 @@ pub fn complete(before_cursor: &str, cwd: &str, builtins: &[&str]) -> Completion
         return CompletionResult::None;
     }
 
-    let match_len = if prefix_len > 0 { stripped.len() } else { word.len() };
+    let match_len = if prefix_len > 0 {
+        stripped.len()
+    } else {
+        word.len()
+    };
 
     if completions.len() == 1 {
         let completion = &completions[0];
@@ -1543,7 +1677,10 @@ pub fn source_env_file(path: &str, depth: u32, mut aliases: Option<&mut Vec<Alia
                         if let Some(existing) = al.iter_mut().find(|a| a.name == name) {
                             existing.value = String::from(val);
                         } else {
-                            al.push(AliasDef { name: String::from(name), value: String::from(val) });
+                            al.push(AliasDef {
+                                name: String::from(name),
+                                value: String::from(val),
+                            });
                         }
                     }
                 }
@@ -1620,7 +1757,11 @@ impl History {
         if trimmed.is_empty() {
             return;
         }
-        if self.entries.last().map_or(false, |last| last.as_str() == trimmed) {
+        if self
+            .entries
+            .last()
+            .map_or(false, |last| last.as_str() == trimmed)
+        {
             return;
         }
         self.entries.push(String::from(trimmed));
@@ -1749,7 +1890,8 @@ impl InputLine {
 
     /// Convert character-index cursor to byte-index in the UTF-8 string.
     pub fn cursor_byte_pos(&self) -> usize {
-        self.text.char_indices()
+        self.text
+            .char_indices()
             .nth(self.cursor)
             .map(|(i, _)| i)
             .unwrap_or(self.text.len())

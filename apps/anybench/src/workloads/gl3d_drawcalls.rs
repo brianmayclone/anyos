@@ -5,15 +5,14 @@
 //! per-draw-call overhead including uniform updates, buffer binding, and
 //! pipeline dispatch. Returns total draw calls executed.
 
+use super::gl3d_common::*;
+use super::GL3D_TEST_MS;
 use libanyui_client as anyui;
 use libgl_client as gl;
-use super::GL3D_TEST_MS;
-use super::gl3d_common::*;
 
 const NUM_OBJECTS: u32 = 50;
 
-const VS_SRC: &str =
-"attribute vec3 aPosition;
+const VS_SRC: &str = "attribute vec3 aPosition;
 attribute vec3 aNormal;
 attribute vec2 aTexCoord;
 uniform mat4 uMVP;
@@ -25,8 +24,7 @@ void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
 }";
 
-const FS_SRC: &str =
-"varying vec3 vColor;
+const FS_SRC: &str = "varying vec3 vColor;
 uniform vec4 uObjColor;
 void main() {
     gl_FragColor = vec4(vColor * uObjColor.rgb, 1.0);
@@ -36,7 +34,9 @@ void main() {
 pub fn bench_gl3d_drawcalls(canvas: &anyui::Canvas) -> u64 {
     let w = canvas.get_stride();
     let h = canvas.get_height();
-    if !ensure_gl_init(w, h) { return 0; }
+    if !ensure_gl_init(w, h) {
+        return 0;
+    }
 
     let (program, vs, fs) = match compile_program(VS_SRC, FS_SRC) {
         Some(p) => p,
@@ -56,7 +56,11 @@ pub fn bench_gl3d_drawcalls(canvas: &anyui::Canvas) -> u64 {
     let mut ebo = [0u32; 1];
     gl::gen_buffers(1, &mut ebo);
     gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, ebo[0]);
-    gl::buffer_data_u16(gl::GL_ELEMENT_ARRAY_BUFFER, &cube_indices, gl::GL_STATIC_DRAW);
+    gl::buffer_data_u16(
+        gl::GL_ELEMENT_ARRAY_BUFFER,
+        &cube_indices,
+        gl::GL_STATIC_DRAW,
+    );
 
     setup_vertex_attribs(program);
 
@@ -92,7 +96,9 @@ pub fn bench_gl3d_drawcalls(canvas: &anyui::Canvas) -> u64 {
         let mut obj_idx: u32 = 0;
         for row in 0..grid_side {
             for col in 0..grid_side {
-                if obj_idx >= NUM_OBJECTS { break; }
+                if obj_idx >= NUM_OBJECTS {
+                    break;
+                }
                 let x = col as f32 * spacing - offset;
                 let y = row as f32 * spacing - offset;
 
@@ -100,10 +106,7 @@ pub fn bench_gl3d_drawcalls(canvas: &anyui::Canvas) -> u64 {
                 let rot_speed = 0.5 + obj_idx as f32 * 0.03;
                 let model = mat4_mul(
                     &mat4_translate(x, y, 0.0),
-                    &mat4_mul(
-                        &mat4_rotate_y(t * rot_speed),
-                        &mat4_scale(0.4, 0.4, 0.4),
-                    ),
+                    &mat4_mul(&mat4_rotate_y(t * rot_speed), &mat4_scale(0.4, 0.4, 0.4)),
                 );
                 let mvp = mat4_mul(&proj, &mat4_mul(&view, &model));
                 gl::uniform_matrix4fv(loc_mvp, false, &mvp);
@@ -118,7 +121,9 @@ pub fn bench_gl3d_drawcalls(canvas: &anyui::Canvas) -> u64 {
                 count += 1;
                 obj_idx += 1;
             }
-            if obj_idx >= NUM_OBJECTS { break; }
+            if obj_idx >= NUM_OBJECTS {
+                break;
+            }
         }
 
         gl::swap_buffers();

@@ -1,7 +1,7 @@
 //! `apkg mirror` — manage the mirror URL list.
 
-use anyos_std::println;
 use crate::config;
+use anyos_std::println;
 
 /// Execute `apkg mirror <subcommand> [args]`.
 pub fn run(subcmd: &str, arg: &str) {

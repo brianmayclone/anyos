@@ -11,7 +11,12 @@ pub struct Rect {
 
 impl Rect {
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Rect { x, y, width, height }
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn right(&self) -> i32 {
@@ -32,7 +37,8 @@ impl Rect {
 
     /// Returns true if this rect fully contains `other`.
     pub fn fully_contains(&self, other: &Rect) -> bool {
-        !self.is_empty() && !other.is_empty()
+        !self.is_empty()
+            && !other.is_empty()
             && self.x <= other.x
             && self.y <= other.y
             && self.right() >= other.right()

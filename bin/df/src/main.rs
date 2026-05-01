@@ -95,8 +95,12 @@ fn format_dev_name<'a>(
     for d in disks {
         if d.id as u32 == dev_id {
             let mut i = 0;
-            for &b in b"/dev/sd" { buf[i] = b; i += 1; }
-            buf[i] = b'a' + d.disk_id; i += 1;
+            for &b in b"/dev/sd" {
+                buf[i] = b;
+                i += 1;
+            }
+            buf[i] = b'a' + d.disk_id;
+            i += 1;
             if d.partition != 0xFF {
                 i += fmt_u32((d.partition + 1) as u32, &mut buf[i..]);
             }
@@ -135,11 +139,22 @@ fn main() {
     }
 
     // Load block-device table once for dev_id → /dev/sd<letter><part> resolution.
-    let mut disks = [DiskEntry { id: 0, disk_id: 0, partition: 0xFF }; 32];
+    let mut disks = [DiskEntry {
+        id: 0,
+        disk_id: 0,
+        partition: 0xFF,
+    }; 32];
     let disk_count = load_disks(&mut disks);
 
-    anyos_std::println!("{:<20}{:>8}  {:>8}  {:>8}  {:>5}  {}",
-        t("Filesystem"), t("Size"), t("Used"), t("Avail"), t("Use%"), t("Mounted on"));
+    anyos_std::println!(
+        "{:<20}{:>8}  {:>8}  {:>8}  {:>5}  {}",
+        t("Filesystem"),
+        t("Size"),
+        t("Used"),
+        t("Avail"),
+        t("Use%"),
+        t("Mounted on")
+    );
 
     let mnt_str = match core::str::from_utf8(&mnt_buf[..mnt_len as usize]) {
         Ok(s) => s,
@@ -148,7 +163,9 @@ fn main() {
 
     for line in mnt_str.split('\n') {
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let mut parts = line.splitn(3, '\t');
         let mount_path = match parts.next() {
             Some(p) => p,
@@ -158,7 +175,9 @@ fn main() {
         let dev_id: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
 
         // Skip devfs
-        if fs_type == "devfs" { continue; }
+        if fs_type == "devfs" {
+            continue;
+        }
 
         let mut name_buf = [0u8; 20];
         let dev_name = format_dev_name(dev_id, fs_type, &disks[..disk_count], &mut name_buf);
@@ -167,7 +186,11 @@ fn main() {
             let total_kb = (st.total_bytes / 1024) as u32;
             let used_kb = (st.used_bytes / 1024) as u32;
             let free_kb = (st.free_bytes / 1024) as u32;
-            let use_pct = if total_kb > 0 { used_kb as u64 * 100 / total_kb as u64 } else { 0 };
+            let use_pct = if total_kb > 0 {
+                used_kb as u64 * 100 / total_kb as u64
+            } else {
+                0
+            };
 
             if human {
                 let mut b1 = [0u8; 16];
@@ -176,16 +199,37 @@ fn main() {
                 let s_total = format_human(st.total_bytes, &mut b1);
                 let s_used = format_human(st.used_bytes, &mut b2);
                 let s_free = format_human(st.free_bytes, &mut b3);
-                anyos_std::println!("{:<20}{:>8}  {:>8}  {:>8}  {:>3}%  {}",
-                    dev_name, s_total, s_used, s_free, use_pct, mount_path);
+                anyos_std::println!(
+                    "{:<20}{:>8}  {:>8}  {:>8}  {:>3}%  {}",
+                    dev_name,
+                    s_total,
+                    s_used,
+                    s_free,
+                    use_pct,
+                    mount_path
+                );
             } else {
-                anyos_std::println!("{:<20}{:>7}K {:>8}K {:>8}K  {:>3}%  {}",
-                    dev_name, total_kb, used_kb, free_kb, use_pct, mount_path);
+                anyos_std::println!(
+                    "{:<20}{:>7}K {:>8}K {:>8}K  {:>3}%  {}",
+                    dev_name,
+                    total_kb,
+                    used_kb,
+                    free_kb,
+                    use_pct,
+                    mount_path
+                );
             }
         } else {
             // No statfs (e.g. corefs, fuse) — show mount without size info.
-            anyos_std::println!("{:<20}{:>8}  {:>8}  {:>8}  {:>4}  {}",
-                dev_name, "-", "-", "-", "-", mount_path);
+            anyos_std::println!(
+                "{:<20}{:>8}  {:>8}  {:>8}  {:>4}  {}",
+                dev_name,
+                "-",
+                "-",
+                "-",
+                "-",
+                mount_path
+            );
         }
     }
 }

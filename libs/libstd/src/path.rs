@@ -3,12 +3,12 @@
 //! Provides Path, PathBuf, and Components for anyOS.
 //! anyOS uses forward-slash paths only (no Windows prefixes/drive letters).
 
-use core::fmt;
-use core::hash::{Hash, Hasher};
-use core::ops::Deref;
 use alloc::borrow::{Cow, ToOwned};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt;
+use core::hash::{Hash, Hasher};
+use core::ops::Deref;
 
 // ── Path ────────────────────────────────────────────────────────────────────
 
@@ -38,7 +38,9 @@ impl Path {
 
     /// Convert to an owned PathBuf.
     pub fn to_path_buf(&self) -> PathBuf {
-        PathBuf { inner: String::from(&self.inner) }
+        PathBuf {
+            inner: String::from(&self.inner),
+        }
     }
 
     /// Check if the path is absolute.
@@ -79,7 +81,11 @@ impl Path {
         match s.rfind('/') {
             Some(i) => {
                 let name = &s[i + 1..];
-                if name.is_empty() { None } else { Some(name) }
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name)
+                }
             }
             None => Some(s),
         }
@@ -169,7 +175,11 @@ impl Path {
         }
         self.inner.ends_with(child_str)
             && (child_str.starts_with('/')
-                || self.inner.as_bytes().get(self.inner.len() - child_str.len() - 1) == Some(&b'/'))
+                || self
+                    .inner
+                    .as_bytes()
+                    .get(self.inner.len() - child_str.len() - 1)
+                    == Some(&b'/'))
     }
 
     /// Iterate over path components.
@@ -248,19 +258,27 @@ impl fmt::Display for Path {
 }
 
 impl AsRef<Path> for Path {
-    fn as_ref(&self) -> &Path { self }
+    fn as_ref(&self) -> &Path {
+        self
+    }
 }
 
 impl AsRef<str> for Path {
-    fn as_ref(&self) -> &str { &self.inner }
+    fn as_ref(&self) -> &str {
+        &self.inner
+    }
 }
 
 impl AsRef<Path> for str {
-    fn as_ref(&self) -> &Path { Path::new(self) }
+    fn as_ref(&self) -> &Path {
+        Path::new(self)
+    }
 }
 
 impl AsRef<Path> for String {
-    fn as_ref(&self) -> &Path { Path::new(self.as_str()) }
+    fn as_ref(&self) -> &Path {
+        Path::new(self.as_str())
+    }
 }
 
 impl ToOwned for Path {
@@ -306,7 +324,9 @@ pub struct PathBuf {
 
 impl PathBuf {
     pub fn new() -> Self {
-        PathBuf { inner: String::new() }
+        PathBuf {
+            inner: String::new(),
+        }
     }
 
     pub fn from<S: Into<String>>(s: S) -> Self {
@@ -422,7 +442,9 @@ impl From<String> for PathBuf {
 
 impl From<&str> for PathBuf {
     fn from(s: &str) -> Self {
-        PathBuf { inner: String::from(s) }
+        PathBuf {
+            inner: String::from(s),
+        }
     }
 }
 
@@ -489,7 +511,9 @@ impl OsStr {
     }
 
     pub fn to_os_string(&self) -> OsString {
-        OsString { inner: String::from(&self.inner) }
+        OsString {
+            inner: String::from(&self.inner),
+        }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -498,27 +522,39 @@ impl OsStr {
 }
 
 impl AsRef<str> for OsStr {
-    fn as_ref(&self) -> &str { &self.inner }
+    fn as_ref(&self) -> &str {
+        &self.inner
+    }
 }
 
 impl AsRef<Path> for OsStr {
-    fn as_ref(&self) -> &Path { Path::new(&self.inner) }
+    fn as_ref(&self) -> &Path {
+        Path::new(&self.inner)
+    }
 }
 
 impl AsRef<OsStr> for str {
-    fn as_ref(&self) -> &OsStr { OsStr::new(self) }
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(self)
+    }
 }
 
 impl AsRef<OsStr> for String {
-    fn as_ref(&self) -> &OsStr { OsStr::new(self.as_str()) }
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(self.as_str())
+    }
 }
 
 impl AsRef<OsStr> for Path {
-    fn as_ref(&self) -> &OsStr { OsStr::new(&self.inner) }
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(&self.inner)
+    }
 }
 
 impl AsRef<OsStr> for PathBuf {
-    fn as_ref(&self) -> &OsStr { OsStr::new(&self.inner) }
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(&self.inner)
+    }
 }
 
 impl ToOwned for OsStr {
@@ -535,13 +571,17 @@ impl core::borrow::Borrow<OsStr> for OsString {
 }
 
 impl PartialEq for OsStr {
-    fn eq(&self, other: &OsStr) -> bool { self.inner == other.inner }
+    fn eq(&self, other: &OsStr) -> bool {
+        self.inner == other.inner
+    }
 }
 
 impl Eq for OsStr {}
 
 impl Hash for OsStr {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.inner.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
 }
 
 impl fmt::Debug for OsStr {
@@ -557,7 +597,9 @@ impl fmt::Display for OsStr {
 }
 
 impl PartialEq<str> for OsStr {
-    fn eq(&self, other: &str) -> bool { self.inner == *other }
+    fn eq(&self, other: &str) -> bool {
+        self.inner == *other
+    }
 }
 
 /// Owned OS string. On anyOS, always valid UTF-8.
@@ -568,7 +610,9 @@ pub struct OsString {
 
 impl OsString {
     pub fn new() -> Self {
-        OsString { inner: String::new() }
+        OsString {
+            inner: String::new(),
+        }
     }
 
     pub fn from<S: Into<String>>(s: S) -> Self {
@@ -605,36 +649,54 @@ impl OsString {
 }
 
 impl Default for OsString {
-    fn default() -> Self { OsString::new() }
+    fn default() -> Self {
+        OsString::new()
+    }
 }
 
 impl Deref for OsString {
     type Target = OsStr;
-    fn deref(&self) -> &OsStr { OsStr::new(&self.inner) }
+    fn deref(&self) -> &OsStr {
+        OsStr::new(&self.inner)
+    }
 }
 
 impl AsRef<OsStr> for OsString {
-    fn as_ref(&self) -> &OsStr { OsStr::new(&self.inner) }
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(&self.inner)
+    }
 }
 
 impl AsRef<Path> for OsString {
-    fn as_ref(&self) -> &Path { Path::new(&self.inner) }
+    fn as_ref(&self) -> &Path {
+        Path::new(&self.inner)
+    }
 }
 
 impl From<String> for OsString {
-    fn from(s: String) -> Self { OsString { inner: s } }
+    fn from(s: String) -> Self {
+        OsString { inner: s }
+    }
 }
 
 impl From<&str> for OsString {
-    fn from(s: &str) -> Self { OsString { inner: String::from(s) } }
+    fn from(s: &str) -> Self {
+        OsString {
+            inner: String::from(s),
+        }
+    }
 }
 
 impl From<PathBuf> for OsString {
-    fn from(p: PathBuf) -> Self { OsString { inner: p.inner } }
+    fn from(p: PathBuf) -> Self {
+        OsString { inner: p.inner }
+    }
 }
 
 impl From<OsString> for PathBuf {
-    fn from(s: OsString) -> Self { PathBuf { inner: s.inner } }
+    fn from(s: OsString) -> Self {
+        PathBuf { inner: s.inner }
+    }
 }
 
 impl fmt::Display for OsString {

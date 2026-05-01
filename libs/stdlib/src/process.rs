@@ -1,7 +1,7 @@
 //! Process management — exit, spawn, wait, sleep, etc.
 
-use core::arch::asm;
 use crate::raw::*;
+use core::arch::asm;
 
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
@@ -50,7 +50,9 @@ pub fn getpid() -> u32 {
 fn thread_exit_stub() {
     kill(getpid());
     // If kill doesn't terminate us immediately, loop forever.
-    loop { yield_cpu(); }
+    loop {
+        yield_cpu();
+    }
 }
 
 /// Return the address of the thread exit stub, for use as a return address
@@ -239,7 +241,11 @@ pub fn launch_app(path: &str, args: &str) -> u32 {
 
     // Write "path\x1Fargs" into shared memory
     let total_len = path.len() + 1 + args.len() + 1; // +1 separator, +1 null
-    let shm_size = if total_len < 512 { 512 } else { total_len as u32 };
+    let shm_size = if total_len < 512 {
+        512
+    } else {
+        total_len as u32
+    };
     let shm_id = ipc::shm_create(shm_size);
     if shm_id == 0 {
         crate::println!("[launch_app] shm_create failed");
@@ -259,18 +265,26 @@ pub fn launch_app(path: &str, args: &str) -> u32 {
     let dst = addr as *mut u8;
     let mut pos = 0usize;
     for &b in path.as_bytes() {
-        unsafe { dst.add(pos).write_volatile(b); }
+        unsafe {
+            dst.add(pos).write_volatile(b);
+        }
         pos += 1;
     }
     if !args.is_empty() {
-        unsafe { dst.add(pos).write_volatile(0x1F); }
+        unsafe {
+            dst.add(pos).write_volatile(0x1F);
+        }
         pos += 1;
         for &b in args.as_bytes() {
-            unsafe { dst.add(pos).write_volatile(b); }
+            unsafe {
+                dst.add(pos).write_volatile(b);
+            }
             pos += 1;
         }
     }
-    unsafe { dst.add(pos).write_volatile(0); }
+    unsafe {
+        dst.add(pos).write_volatile(0);
+    }
 
     ipc::shm_unmap(shm_id);
     crate::println!("[launch_app] request prepared shm_id={}", shm_id);
@@ -278,7 +292,11 @@ pub fn launch_app(path: &str, args: &str) -> u32 {
     // Send CMD_LAUNCH_APP: [cmd, our_sub_id, shm_id, 0, 0]
     let request = [CMD_LAUNCH_APP, sub, shm_id, 0, 0];
     ipc::evt_chan_emit(chan, &request);
-    crate::println!("[launch_app] request emitted shm_id={} requester_sub={}", shm_id, sub);
+    crate::println!(
+        "[launch_app] request emitted shm_id={} requester_sub={}",
+        shm_id,
+        sub
+    );
 
     // Wait for response (with timeout)
     let mut evt = [0u32; 5];
@@ -287,7 +305,11 @@ pub fn launch_app(path: &str, args: &str) -> u32 {
         if ipc::evt_chan_poll(chan, sub, &mut evt) {
             crate::println!(
                 "[launch_app] response evt={} arg1={} arg2={} arg3={} arg4={}",
-                evt[0], evt[1], evt[2], evt[3], evt[4]
+                evt[0],
+                evt[1],
+                evt[2],
+                evt[3],
+                evt[4]
             );
             if evt[0] == EVT_LAUNCH_RESULT {
                 ipc::evt_chan_unsubscribe(chan, sub);
@@ -317,8 +339,17 @@ pub fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32 {
     args_buf[..alen].copy_from_slice(&args.as_bytes()[..alen]);
     args_buf[alen] = 0;
 
-    let args_ptr = if args.is_empty() { 0u64 } else { args_buf.as_ptr() as u64 };
-    syscall3(SYS_SPAWN, path_buf.as_ptr() as u64, pipe_id as u64, args_ptr)
+    let args_ptr = if args.is_empty() {
+        0u64
+    } else {
+        args_buf.as_ptr() as u64
+    };
+    syscall3(
+        SYS_SPAWN,
+        path_buf.as_ptr() as u64,
+        pipe_id as u64,
+        args_ptr,
+    )
 }
 
 /// Spawn a new process with both stdout and stdin redirected to pipes.
@@ -335,8 +366,18 @@ pub fn spawn_piped_full(path: &str, args: &str, stdout_pipe: u32, stdin_pipe: u3
     args_buf[..alen].copy_from_slice(&args.as_bytes()[..alen]);
     args_buf[alen] = 0;
 
-    let args_ptr = if args.is_empty() { 0u64 } else { args_buf.as_ptr() as u64 };
-    syscall4(SYS_SPAWN, path_buf.as_ptr() as u64, stdout_pipe as u64, args_ptr, stdin_pipe as u64)
+    let args_ptr = if args.is_empty() {
+        0u64
+    } else {
+        args_buf.as_ptr() as u64
+    };
+    syscall4(
+        SYS_SPAWN,
+        path_buf.as_ptr() as u64,
+        stdout_pipe as u64,
+        args_ptr,
+        stdin_pipe as u64,
+    )
 }
 
 /// Create a new thread in the current process, sharing the same address space.
@@ -365,7 +406,9 @@ pub fn thread_create_with_priority(entry: fn(), stack_top: usize, name: &str, pr
         let kernel_lr_slot = trampoline_sp.saturating_sub(8);
         (kernel_lr_slot as *mut usize).write(thread_exit_stub_addr());
         (trampoline_sp as *mut usize).write(entry as usize);
-        (trampoline_sp as *mut usize).add(1).write(thread_exit_stub_addr());
+        (trampoline_sp as *mut usize)
+            .add(1)
+            .write(thread_exit_stub_addr());
         return syscall5(
             SYS_THREAD_CREATE,
             anyos_thread_entry_trampoline as usize as u64,
@@ -426,7 +469,12 @@ pub fn authenticate(username: &str, password: &str) -> bool {
 
 /// Get username for a given uid. Returns the number of bytes written, or u32::MAX.
 pub fn getusername(uid: u16, buf: &mut [u8]) -> u32 {
-    syscall3(SYS_GETUSERNAME, uid as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall3(
+        SYS_GETUSERNAME,
+        uid as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Root-only: Set the calling process's identity to the given uid.
@@ -500,13 +548,19 @@ impl Thread {
         // the thread via iretq rather than a CALL, so returning from entry()
         // reads the word currently at RSP as the return PC.
         #[cfg(target_arch = "x86_64")]
-        unsafe { *(user_sp as *mut usize) = thread_exit_stub as usize; }
+        unsafe {
+            *(user_sp as *mut usize) = thread_exit_stub as usize;
+        }
         let tid = thread_create(entry, user_sp, name);
         if tid == 0 {
             munmap(stack_ptr, stack_size);
             return Err(error::Error::Other(0));
         }
-        Ok(Thread { tid, stack_ptr, stack_size })
+        Ok(Thread {
+            tid,
+            stack_ptr,
+            stack_size,
+        })
     }
 
     /// Get the thread ID.

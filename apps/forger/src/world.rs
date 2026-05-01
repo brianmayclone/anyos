@@ -1,6 +1,6 @@
-use alloc::collections::BTreeMap;
 use crate::block;
-use crate::noise::{noise2d, noise3d, fbm2d};
+use crate::noise::{fbm2d, noise2d, noise3d};
+use alloc::collections::BTreeMap;
 
 const CHUNK_X: usize = 16;
 const CHUNK_Y: usize = 256;
@@ -30,8 +30,11 @@ fn terrain_height(wx: i32, wz: i32, seed: u32) -> i32 {
     let ridge = ridge_base * ridge_base * ridge_base * 42.0;
     let mask_base = ((fbm2d(mask_x, mask_z, 3, 0.58) + 1.0) * 0.5).max(0.0);
     let mountain_mask = mask_base * mask_base;
-    let plateau_base =
-        noise2d(world_x * 0.0018 + seed_fx * 0.021, world_z * 0.0018 - seed_fz * 0.025).max(0.0);
+    let plateau_base = noise2d(
+        world_x * 0.0018 + seed_fx * 0.021,
+        world_z * 0.0018 - seed_fz * 0.025,
+    )
+    .max(0.0);
     let plateau = plateau_base * plateau_base * 18.0;
 
     let mut height = base + rolling + ridge * mountain_mask + plateau;
@@ -58,7 +61,11 @@ fn hash(mut x: u32) -> u32 {
 }
 
 fn chunk_coord(v: i32) -> i32 {
-    if v < 0 { (v + 1) / 16 - 1 } else { v / 16 }
+    if v < 0 {
+        (v + 1) / 16 - 1
+    } else {
+        v / 16
+    }
 }
 
 fn local_coord(v: i32) -> usize {
@@ -232,11 +239,7 @@ impl World {
                     if y as usize >= CHUNK_Y {
                         break;
                     }
-                    let cave_val = noise3d(
-                        wx as f32 * 0.05,
-                        y as f32 * 0.05,
-                        wz as f32 * 0.05,
-                    );
+                    let cave_val = noise3d(wx as f32 * 0.05, y as f32 * 0.05, wz as f32 * 0.05);
                     if cave_val > 0.55 {
                         chunk.set(lx, y as usize, lz, block::AIR);
                     }
@@ -251,8 +254,7 @@ impl World {
                         continue;
                     }
                     let h = hash(
-                        (wx as u32)
-                            .wrapping_mul(73856093)
+                        (wx as u32).wrapping_mul(73856093)
                             ^ (y as u32).wrapping_mul(19349663)
                             ^ (wz as u32).wrapping_mul(83492791)
                             ^ self.seed,
@@ -282,8 +284,7 @@ impl World {
                     let wx = cx * 16 + lx as i32;
                     let wz = cz * 16 + lz as i32;
                     let h = hash(
-                        (wx as u32)
-                            .wrapping_mul(48611)
+                        (wx as u32).wrapping_mul(48611)
                             ^ (wz as u32).wrapping_mul(95467)
                             ^ self.seed.wrapping_mul(31337),
                     );

@@ -36,7 +36,12 @@ pub fn get(key: &str, buf: &mut [u8]) -> u32 {
     key_buf[..klen].copy_from_slice(&key.as_bytes()[..klen]);
     key_buf[klen] = 0;
 
-    syscall3(SYS_GETENV, key_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall3(
+        SYS_GETENV,
+        key_buf.as_ptr() as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// List all environment variables into buf as "KEY=VALUE\0KEY2=VALUE2\0..." entries.

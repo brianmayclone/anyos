@@ -3,8 +3,8 @@
 //! 64×64 integer matrix multiply (C = A × B), repeated for [`CPU_TEST_MS`]
 //! milliseconds. Returns total multiply-add operations performed.
 
-use alloc::vec;
 use super::CPU_TEST_MS;
+use alloc::vec;
 
 /// Dense 64×64 integer matrix multiplication benchmark.
 pub fn bench_matrix_multiply() -> u64 {

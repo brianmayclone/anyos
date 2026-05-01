@@ -3,12 +3,12 @@
 //! Provides Mutex, RwLock, Arc, Once, and mpsc channels.
 //! Uses spinlocks since anyOS has no futex syscalls.
 
-use core::cell::UnsafeCell;
-use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
+use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 // Re-export Arc from alloc
 pub use alloc::sync::Arc as ArcImpl;
@@ -60,7 +60,11 @@ impl<T: ?Sized> Mutex<T> {
     }
 
     pub fn try_lock(&self) -> Result<MutexGuard<'_, T>, TryLockError<MutexGuard<'_, T>>> {
-        if self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             let guard = MutexGuard { mutex: self };
             if self.poisoned.load(Ordering::Relaxed) {
                 Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -87,7 +91,11 @@ impl<T: ?Sized> Mutex<T> {
 
     fn raw_lock(&self) {
         let mut spins = 0u32;
-        while self.locked.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             spins += 1;
             if spins > 100 {
                 anyos_std::process::yield_cpu();
@@ -173,7 +181,11 @@ impl<T: ?Sized> RwLock<T> {
         loop {
             let state = self.state.load(Ordering::Relaxed);
             if state != u32::MAX {
-                if self.state.compare_exchange_weak(state, state + 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                if self
+                    .state
+                    .compare_exchange_weak(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
                     let guard = RwLockReadGuard { lock: self };
                     return if self.poisoned.load(Ordering::Relaxed) {
                         Err(PoisonError::new(guard))
@@ -195,7 +207,11 @@ impl<T: ?Sized> RwLock<T> {
     pub fn write(&self) -> Result<RwLockWriteGuard<'_, T>, PoisonError<RwLockWriteGuard<'_, T>>> {
         let mut spins = 0u32;
         loop {
-            if self.state.compare_exchange_weak(0, u32::MAX, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            if self
+                .state
+                .compare_exchange_weak(0, u32::MAX, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
                 let guard = RwLockWriteGuard { lock: self };
                 return if self.poisoned.load(Ordering::Relaxed) {
                     Err(PoisonError::new(guard))
@@ -216,7 +232,11 @@ impl<T: ?Sized> RwLock<T> {
     pub fn try_read(&self) -> Result<RwLockReadGuard<'_, T>, TryLockError<RwLockReadGuard<'_, T>>> {
         let state = self.state.load(Ordering::Relaxed);
         if state != u32::MAX {
-            if self.state.compare_exchange(state, state + 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            if self
+                .state
+                .compare_exchange(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
                 let guard = RwLockReadGuard { lock: self };
                 return if self.poisoned.load(Ordering::Relaxed) {
                     Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -228,8 +248,14 @@ impl<T: ?Sized> RwLock<T> {
         Err(TryLockError::WouldBlock)
     }
 
-    pub fn try_write(&self) -> Result<RwLockWriteGuard<'_, T>, TryLockError<RwLockWriteGuard<'_, T>>> {
-        if self.state.compare_exchange(0, u32::MAX, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+    pub fn try_write(
+        &self,
+    ) -> Result<RwLockWriteGuard<'_, T>, TryLockError<RwLockWriteGuard<'_, T>>> {
+        if self
+            .state
+            .compare_exchange(0, u32::MAX, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             let guard = RwLockWriteGuard { lock: self };
             if self.poisoned.load(Ordering::Relaxed) {
                 Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -316,7 +342,9 @@ pub struct Once {
 
 impl Once {
     pub const fn new() -> Self {
-        Once { state: AtomicU32::new(0) }
+        Once {
+            state: AtomicU32::new(0),
+        }
     }
 
     pub fn call_once<F: FnOnce()>(&self, f: F) {
@@ -329,7 +357,10 @@ impl Once {
     #[cold]
     fn call_once_slow<F: FnOnce()>(&self, f: F) {
         loop {
-            match self.state.compare_exchange(0, 1, Ordering::Acquire, Ordering::Acquire) {
+            match self
+                .state
+                .compare_exchange(0, 1, Ordering::Acquire, Ordering::Acquire)
+            {
                 Ok(_) => {
                     f();
                     self.state.store(2, Ordering::Release);
@@ -383,8 +414,8 @@ impl<T> OnceLock<T> {
 
     pub fn set(&self, value: T) -> Result<(), T> {
         let mut val = Some(value);
-        self.once.call_once(|| {
-            unsafe { *self.value.get() = val.take(); }
+        self.once.call_once(|| unsafe {
+            *self.value.get() = val.take();
         });
         match val {
             Some(v) => Err(v), // Already initialized
@@ -393,8 +424,8 @@ impl<T> OnceLock<T> {
     }
 
     pub fn get_or_init<F: FnOnce() -> T>(&self, f: F) -> &T {
-        self.once.call_once(|| {
-            unsafe { *self.value.get() = Some(f()); }
+        self.once.call_once(|| unsafe {
+            *self.value.get() = Some(f());
         });
         unsafe { (*self.value.get()).as_ref().unwrap() }
     }
@@ -413,10 +444,15 @@ pub struct Condvar {
 
 impl Condvar {
     pub const fn new() -> Self {
-        Condvar { seq: AtomicU32::new(0) }
+        Condvar {
+            seq: AtomicU32::new(0),
+        }
     }
 
-    pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> Result<MutexGuard<'a, T>, PoisonError<MutexGuard<'a, T>>> {
+    pub fn wait<'a, T>(
+        &self,
+        guard: MutexGuard<'a, T>,
+    ) -> Result<MutexGuard<'a, T>, PoisonError<MutexGuard<'a, T>>> {
         let seq = self.seq.load(Ordering::Acquire);
         let mutex = guard.mutex;
         drop(guard);
@@ -542,7 +578,9 @@ pub mod mpsc {
 
     impl<T> Clone for Sender<T> {
         fn clone(&self) -> Self {
-            Sender { inner: Arc::clone(&self.inner) }
+            Sender {
+                inner: Arc::clone(&self.inner),
+            }
         }
     }
 
@@ -668,7 +706,9 @@ pub mod mpsc {
             has_data: AtomicBool::new(false),
         });
         (
-            Sender { inner: inner.clone() },
+            Sender {
+                inner: inner.clone(),
+            },
             Receiver { inner },
         )
     }
@@ -682,7 +722,9 @@ pub mod mpsc {
             count: AtomicUsize::new(0),
         });
         (
-            SyncSender { inner: inner.clone() },
+            SyncSender {
+                inner: inner.clone(),
+            },
             Receiver {
                 inner: Arc::new(Inner {
                     queue: Mutex::new(Vec::new()),
@@ -707,7 +749,9 @@ pub mod mpsc {
 
     impl<T> Clone for SyncSender<T> {
         fn clone(&self) -> Self {
-            SyncSender { inner: Arc::clone(&self.inner) }
+            SyncSender {
+                inner: Arc::clone(&self.inner),
+            }
         }
     }
 
@@ -787,7 +831,9 @@ impl<T> core::fmt::Display for TryLockError<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             TryLockError::Poisoned(_) => f.write_str("poisoned lock"),
-            TryLockError::WouldBlock => f.write_str("try_lock failed because the operation would block"),
+            TryLockError::WouldBlock => {
+                f.write_str("try_lock failed because the operation would block")
+            }
         }
     }
 }

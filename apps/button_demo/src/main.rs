@@ -34,7 +34,7 @@ fn main() {
     // Button 1: Auto-sized with short text
     let btn1 = anyui::Button::new("OK");
     btn1.set_position(20, 60);
-    btn1.auto_size();  // Width adapts to text
+    btn1.auto_size(); // Width adapts to text
     content.add(&btn1);
 
     let lbl1 = anyui::Label::new("Short text button (auto-sized)");
@@ -45,7 +45,7 @@ fn main() {
     // Button 2: Auto-sized with longer text
     let btn2 = anyui::Button::new("Save All Changes");
     btn2.set_position(20, 100);
-    btn2.auto_size();  // Width adapts to longer text
+    btn2.auto_size(); // Width adapts to longer text
     content.add(&btn2);
 
     let lbl2 = anyui::Label::new("Longer text button (auto-sized)");
@@ -56,7 +56,7 @@ fn main() {
     // Button 3: Fixed size for comparison
     let btn3 = anyui::Button::new("Fixed");
     btn3.set_position(20, 140);
-    btn3.set_size(100, 32);  // Fixed size
+    btn3.set_size(100, 32); // Fixed size
     content.add(&btn3);
 
     let lbl3 = anyui::Label::new("Fixed size button (100x32)");

@@ -4,8 +4,6 @@
 anyos_std::entry!(main);
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
 
@@ -13,7 +11,6 @@ fn main() {
         anyos_std::println!("strings - Extract printable strings from files\n\nUsage: strings FILE\n\nOptions:\n  -n LEN         Minimum string length (default: 4)");
         return;
     }
-
 
     let mut min_len: usize = 4;
     let mut path = "";
@@ -29,7 +26,9 @@ fn main() {
                     val = val * 10 + (b - b'0') as usize;
                 }
             }
-            if val > 0 { min_len = val; }
+            if val > 0 {
+                min_len = val;
+            }
             i += 2;
         } else {
             path = parts[i];
@@ -55,7 +54,9 @@ fn main() {
 
     loop {
         let n = anyos_std::fs::read(fd, &mut read_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         for i in 0..n as usize {
             let b = read_buf[i];
             if b >= 0x20 && b < 0x7F {

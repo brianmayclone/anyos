@@ -22,11 +22,11 @@
 //! All other commands are looked up on `$PATH` and executed via
 //! [`runner::run_external`] or [`runner::run_pipeline`].
 
-use anyos_std::{env, fs, process};
+use anyos_std::format;
 use anyos_std::shell;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::format;
+use anyos_std::{env, fs, process};
 use libshellcommon;
 
 use crate::io::println;
@@ -78,8 +78,13 @@ pub fn shell_loop(username: &str) {
 
         // ── Read input ─────────────────────────────────────────────────────
         let line = read_line_interactive(&prompt, &cwd);
-        if line.is_empty() { continue; }
-        if matches!(execute_command_line(line.trim(), &mut cwd, &mut pipe_counter, 0), ExecResult::Exit(_)) {
+        if line.is_empty() {
+            continue;
+        }
+        if matches!(
+            execute_command_line(line.trim(), &mut cwd, &mut pipe_counter, 0),
+            ExecResult::Exit(_)
+        ) {
             return;
         }
     }
@@ -115,7 +120,7 @@ fn execute_command_line(
     }
 
     // ── Parse redirects ────────────────────────────────────────────────────
-    let (line_no_out, redirect)    = shell::parse_redirects(line_trimmed, cwd);
+    let (line_no_out, redirect) = shell::parse_redirects(line_trimmed, cwd);
     let (cmd_line, input_redirect) = shell::parse_input_redirect(&line_no_out, cwd);
     let cmd_line = cmd_line.trim();
     if cmd_line.is_empty() {
@@ -135,9 +140,8 @@ fn execute_command_line(
     }
 
     // ── Input redirect data ────────────────────────────────────────────────
-    let stdin_data: Option<String> = input_redirect.and_then(|ir| {
-        fs::read_to_string(&ir.source).ok()
-    });
+    let stdin_data: Option<String> =
+        input_redirect.and_then(|ir| fs::read_to_string(&ir.source).ok());
 
     // ── Expand arguments ───────────────────────────────────────────────────
     let expanded = shell::expand_args(cmd_line, cwd);
@@ -151,7 +155,8 @@ fn execute_command_line(
     match cmd {
         "exit" | "logout" => {
             println("Logout.");
-            let status = args_expanded.first()
+            let status = args_expanded
+                .first()
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0);
             return ExecResult::Exit(status);
@@ -159,21 +164,30 @@ fn execute_command_line(
 
         "cd" => return ExecResult::Continue(builtin_cd(cwd, args_expanded)),
 
-        "clear" => { anyos_std::sys::con_write("\x1b[2J\x1b[H"); return ExecResult::Continue(0); },
+        "clear" => {
+            anyos_std::sys::con_write("\x1b[2J\x1b[H");
+            return ExecResult::Continue(0);
+        }
 
         "true" => return ExecResult::Continue(0),
 
         "false" => return ExecResult::Continue(1),
 
-        "export" | "set" => { builtin_export(args_expanded); return ExecResult::Continue(0); },
+        "export" | "set" => {
+            builtin_export(args_expanded);
+            return ExecResult::Continue(0);
+        }
 
         "unset" => {
-            for arg in args_expanded { env::unset(arg.as_str()); }
+            for arg in args_expanded {
+                env::unset(arg.as_str());
+            }
             return ExecResult::Continue(0);
         }
 
         "shift" => {
-            let count = args_expanded.first()
+            let count = args_expanded
+                .first()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(1);
             let status = libshellcommon::shift_positional_args(count);
@@ -188,7 +202,13 @@ fn execute_command_line(
                 println("sh: missing script path");
                 return ExecResult::Continue(2);
             } else {
-                return run_shell_script(args_expanded[0].as_str(), &args_expanded[1..], cwd, pipe_counter, script_depth);
+                return run_shell_script(
+                    args_expanded[0].as_str(),
+                    &args_expanded[1..],
+                    cwd,
+                    pipe_counter,
+                    script_depth,
+                );
             }
         }
 
@@ -227,7 +247,7 @@ fn execute_command_line(
                 effective_args.push(cwd.clone());
             }
 
-            let args_str  = shell::join(&effective_args);
+            let args_str = shell::join(&effective_args);
             let full_args = if args_str.is_empty() {
                 String::from(cmd)
             } else {
@@ -237,17 +257,18 @@ fn execute_command_line(
 
             if background {
                 let tid = process::spawn(&prog_path, &full_args);
-                    if tid == u32::MAX {
-                        let msg = format!("{}: command not found", cmd);
-                        println(&msg);
-                        return ExecResult::Continue(127);
-                    } else {
-                        let msg = format!("[bg] pid={}", tid);
-                        println(&msg);
-                        return ExecResult::Continue(0);
-                    }
+                if tid == u32::MAX {
+                    let msg = format!("{}: command not found", cmd);
+                    println(&msg);
+                    return ExecResult::Continue(127);
                 } else {
-                let status = run_external(&prog_path, &full_args, redirect, stdin_data, pipe_counter);
+                    let msg = format!("[bg] pid={}", tid);
+                    println(&msg);
+                    return ExecResult::Continue(0);
+                }
+            } else {
+                let status =
+                    run_external(&prog_path, &full_args, redirect, stdin_data, pipe_counter);
                 sync_term_size();
                 return ExecResult::Continue(status);
             }
@@ -285,7 +306,11 @@ fn run_shell_script(
             return ExecResult::Continue(2);
         }
     };
-    let mut executor = TextScriptExecutor { cwd, pipe_counter, script_depth: script_depth + 1 };
+    let mut executor = TextScriptExecutor {
+        cwd,
+        pipe_counter,
+        script_depth: script_depth + 1,
+    };
     let result = libshellcommon::run_shell_program(&program, &mut executor);
     match result.control {
         libshellcommon::ScriptControl::Exit => ExecResult::Exit(result.status),
@@ -306,7 +331,12 @@ struct TextScriptExecutor<'a> {
 
 impl<'a> libshellcommon::ScriptExecutor for TextScriptExecutor<'a> {
     fn run_command(&mut self, command: &str) -> libshellcommon::ScriptExecResult {
-        match execute_command_line(command.trim(), self.cwd, self.pipe_counter, self.script_depth) {
+        match execute_command_line(
+            command.trim(),
+            self.cwd,
+            self.pipe_counter,
+            self.script_depth,
+        ) {
             ExecResult::Continue(status) => libshellcommon::ScriptExecResult {
                 status,
                 control: libshellcommon::ScriptControl::None,
@@ -388,7 +418,9 @@ fn builtin_export(args: &[String]) {
             if let Some(eq) = a.find('=') {
                 let key = &a[..eq];
                 let val = &a[eq + 1..];
-                if !key.is_empty() { env::set(key, val); }
+                if !key.is_empty() {
+                    env::set(key, val);
+                }
             }
             // `export KEY` (without `=`) is accepted silently.
         }

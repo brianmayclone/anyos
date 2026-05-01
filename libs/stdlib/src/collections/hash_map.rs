@@ -218,12 +218,16 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
     /// Iterate over key-value pairs.
     pub fn iter(&self) -> Iter<'_, K, V> {
-        Iter { inner: self.buckets.iter() }
+        Iter {
+            inner: self.buckets.iter(),
+        }
     }
 
     /// Iterate over key-value pairs (mutable values).
     pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
-        IterMut { inner: self.buckets.iter_mut() }
+        IterMut {
+            inner: self.buckets.iter_mut(),
+        }
     }
 
     /// Iterate over keys.
@@ -238,7 +242,9 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
 
     /// Iterate over mutable values.
     pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
-        ValuesMut { inner: self.buckets.iter_mut() }
+        ValuesMut {
+            inner: self.buckets.iter_mut(),
+        }
     }
 
     /// Get or insert a value using the `Entry` API.
@@ -261,7 +267,11 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
                     idx = (idx + 1) & mask;
                 }
                 None => {
-                    return Entry::Vacant(VacantEntry { map: self, key, idx });
+                    return Entry::Vacant(VacantEntry {
+                        map: self,
+                        key,
+                        idx,
+                    });
                 }
             }
         }
@@ -421,7 +431,9 @@ impl<K, V> IntoIterator for HashMap<K, V> {
     type IntoIter = IntoIter<K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
-        IntoIter { inner: self.buckets.into_iter() }
+        IntoIter {
+            inner: self.buckets.into_iter(),
+        }
     }
 }
 

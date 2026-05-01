@@ -5,7 +5,9 @@ anyos_std::entry!(main);
 
 fn parse_i32(s: &str) -> Option<i32> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let (neg, digits) = if s.as_bytes()[0] == b'-' {
         (true, &s[1..])
     } else {
@@ -13,23 +15,24 @@ fn parse_i32(s: &str) -> Option<i32> {
     };
     let mut val: i32 = 0;
     for &b in digits.as_bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         val = val.wrapping_mul(10).wrapping_add((b - b'0') as i32);
     }
     Some(if neg { -val } else { val })
 }
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
 
     if args.contains("--help") {
-        anyos_std::println!("seq - Print a sequence of numbers\n\nUsage: seq [FIRST [INCREMENT]] LAST");
+        anyos_std::println!(
+            "seq - Print a sequence of numbers\n\nUsage: seq [FIRST [INCREMENT]] LAST"
+        );
         return;
     }
-
 
     let parts: alloc::vec::Vec<&str> = args.split_ascii_whitespace().collect();
 

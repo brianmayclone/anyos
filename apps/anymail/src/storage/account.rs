@@ -295,7 +295,11 @@ impl MailConfig {
 }
 
 fn load_structured_from_confd() -> Option<MailConfig> {
-    if schema().read_i64("config/accounts_schema_version").unwrap_or(0) < 1 {
+    if schema()
+        .read_i64("config/accounts_schema_version")
+        .unwrap_or(0)
+        < 1
+    {
         return None;
     }
 
@@ -303,11 +307,12 @@ fn load_structured_from_confd() -> Option<MailConfig> {
     config.check_on_startup = schema()
         .read_bool("config/check_on_startup")
         .unwrap_or(config.check_on_startup);
-    config.theme = schema()
-        .read_string("config/theme")
-        .unwrap_or(config.theme);
+    config.theme = schema().read_string("config/theme").unwrap_or(config.theme);
 
-    let count = schema().read_i64("config/accounts_count").unwrap_or(0).max(0) as usize;
+    let count = schema()
+        .read_i64("config/accounts_count")
+        .unwrap_or(0)
+        .max(0) as usize;
     for index in 0..count {
         if let Some(account) = load_structured_account(index) {
             config.accounts.push(account);
@@ -331,9 +336,7 @@ fn load_legacy_blob_from_confd() -> Option<MailConfig> {
     config.check_on_startup = schema()
         .read_bool("config/check_on_startup")
         .unwrap_or(config.check_on_startup);
-    config.theme = schema()
-        .read_string("config/theme")
-        .unwrap_or(config.theme);
+    config.theme = schema().read_string("config/theme").unwrap_or(config.theme);
     config.active_account = schema()
         .read_i64("config/active_account")
         .unwrap_or(config.active_account as i64)
@@ -346,7 +349,9 @@ fn load_structured_account(index: usize) -> Option<Account> {
     let mut acc = Account::new();
     let prefix = account_prefix(index);
 
-    acc.id = schema().read_string(&join_path(&prefix, "id")).unwrap_or_default();
+    acc.id = schema()
+        .read_string(&join_path(&prefix, "id"))
+        .unwrap_or_default();
     acc.display_name = schema()
         .read_string(&join_path(&prefix, "display_name"))
         .unwrap_or_default();
@@ -504,7 +509,10 @@ fn delete_legacy_accounts_blob() {
         Ok(client) => client,
         Err(_) => return,
     };
-    let _ = client.del(RegistryScope::User, &schema().full_path("config/accounts_json"));
+    let _ = client.del(
+        RegistryScope::User,
+        &schema().full_path("config/accounts_json"),
+    );
 }
 
 fn parse_security(s: &str) -> Security {

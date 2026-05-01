@@ -2485,7 +2485,12 @@ impl<'a> CodeEmitter<'a> {
                 self.asm.xor_rr(Reg::RAX, Reg::RAX);
                 self.asm.mov_mr(Reg::RBP, slot, Reg::RAX);
                 if let Some(arg) = args.first() {
-                    self.store_operand_to_stack_offset(arg, Reg::RBP, slot + 8, size.saturating_sub(8).max(8));
+                    self.store_operand_to_stack_offset(
+                        arg,
+                        Reg::RBP,
+                        slot + 8,
+                        size.saturating_sub(8).max(8),
+                    );
                 } else {
                     for off in (0..size).step_by(8) {
                         self.asm.mov_mr(Reg::RBP, slot + off, Reg::RAX);

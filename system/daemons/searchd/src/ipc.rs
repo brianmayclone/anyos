@@ -27,7 +27,12 @@ use alloc::string::String;
 use libdb_client::Database;
 
 /// Handle incoming pipe requests. Non-blocking — returns true if work was done.
-pub fn handle_requests(db: &Database, pipe_id: u32, buf: &mut [u8], reindex_flag: &mut bool) -> bool {
+pub fn handle_requests(
+    db: &Database,
+    pipe_id: u32,
+    buf: &mut [u8],
+    reindex_flag: &mut bool,
+) -> bool {
     let n = anyos_std::ipc::pipe_read(pipe_id, buf);
     if n == 0 || n == u32::MAX {
         return false;
@@ -71,7 +76,9 @@ fn handle_single_request(db: &Database, line: &[u8], reindex_flag: &mut bool) {
         Ok(s) => s.trim(),
         Err(_) => return,
     };
-    if cmd.is_empty() { return; }
+    if cmd.is_empty() {
+        return;
+    }
 
     anyos_std::println!("searchd: [query] tid={} cmd='{}'", tid, cmd);
     let response = dispatch(db, cmd, reindex_flag);
@@ -146,7 +153,9 @@ fn cmd_search(db: &Database, query: &str) -> String {
         if let Ok(result) = db.query(&content_sql) {
             for row in 0..result.row_count() {
                 let path = result.get_text(row, 0).unwrap_or_default();
-                if results.contains(&path) { continue; }
+                if results.contains(&path) {
+                    continue;
+                }
                 let file_sql = format!(
                     "SELECT name, kind, size FROM files WHERE path = '{}'",
                     sql_escape(&path)
@@ -364,5 +373,9 @@ fn parse_u32(s: &str) -> Option<u32> {
             break;
         }
     }
-    if found { Some(val) } else { None }
+    if found {
+        Some(val)
+    } else {
+        None
+    }
 }

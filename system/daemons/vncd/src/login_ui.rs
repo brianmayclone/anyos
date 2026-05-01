@@ -30,21 +30,21 @@ pub const LOGIN_PIXELS: usize = LOGIN_W * LOGIN_H;
 
 // ── Color palette ─────────────────────────────────────────────────────────────
 
-const BG_DARK: u32 = 0xFF1C1C1E;     // macOS dark background
-const BOX_BG: u32 = 0xFF2C2C2E;      // dialog box background
-const BOX_BORDER: u32 = 0xFF3A3A3C;  // box border
-const TEXT_WHITE: u32 = 0xFFFFFFFF;  // primary text
-const TEXT_GRAY: u32 = 0xFF8E8E93;   // label text
-const TEXT_RED: u32 = 0xFFFF453A;    // error message
-const TEXT_BLUE: u32 = 0xFF0A84FF;   // title accent
+const BG_DARK: u32 = 0xFF1C1C1E; // macOS dark background
+const BOX_BG: u32 = 0xFF2C2C2E; // dialog box background
+const BOX_BORDER: u32 = 0xFF3A3A3C; // box border
+const TEXT_WHITE: u32 = 0xFFFFFFFF; // primary text
+const TEXT_GRAY: u32 = 0xFF8E8E93; // label text
+const TEXT_RED: u32 = 0xFFFF453A; // error message
+const TEXT_BLUE: u32 = 0xFF0A84FF; // title accent
 const CURSOR_COLOR: u32 = 0xFF0A84FF; // text cursor
 
 // ── Box geometry ──────────────────────────────────────────────────────────────
 
 const BOX_W: usize = 360;
 const BOX_H: usize = 220;
-const BOX_X: usize = (LOGIN_W - BOX_W) / 2;  // 140
-const BOX_Y: usize = (LOGIN_H - BOX_H) / 2;  // 130
+const BOX_X: usize = (LOGIN_W - BOX_W) / 2; // 140
+const BOX_Y: usize = (LOGIN_H - BOX_H) / 2; // 130
 
 /// State passed to [`render`] each time a new frame is needed.
 pub struct LoginState<'a> {
@@ -93,7 +93,7 @@ fn draw_field(
     y: usize,
     w: usize,
     content: &[u8],
-    masked: bool,       // true → show asterisks
+    masked: bool, // true → show asterisks
     has_cursor: bool,
     cursor_visible: bool,
 ) -> usize {
@@ -152,7 +152,15 @@ pub fn render(fb: &mut [u32], state: &LoginState<'_>) {
     font::draw_str(fb, LOGIN_W, title, title_x, title_y, TEXT_BLUE, BOX_BG);
 
     // Separator line below title.
-    fill_rect(fb, LOGIN_W, BOX_X + 16, title_y + font::GLYPH_H + 6, BOX_W - 32, 1, BOX_BORDER);
+    fill_rect(
+        fb,
+        LOGIN_W,
+        BOX_X + 16,
+        title_y + font::GLYPH_H + 6,
+        BOX_W - 32,
+        1,
+        BOX_BORDER,
+    );
 
     // 4. "Username:" label.
     let label_x = BOX_X + 24;
@@ -160,7 +168,15 @@ pub fn render(fb: &mut [u32], state: &LoginState<'_>) {
     let field_w = BOX_W - 24 - 10 * font::GLYPH_W - 10;
 
     let uname_label_y = title_y + font::GLYPH_H + 18;
-    font::draw_str(fb, LOGIN_W, b"Username:", label_x, uname_label_y, TEXT_GRAY, BOX_BG);
+    font::draw_str(
+        fb,
+        LOGIN_W,
+        b"Username:",
+        label_x,
+        uname_label_y,
+        TEXT_GRAY,
+        BOX_BG,
+    );
     draw_field(
         fb,
         field_x,
@@ -174,7 +190,15 @@ pub fn render(fb: &mut [u32], state: &LoginState<'_>) {
 
     // 5. "Password:" label.
     let pass_label_y = uname_label_y + font::GLYPH_H + 20;
-    font::draw_str(fb, LOGIN_W, b"Password:", label_x, pass_label_y, TEXT_GRAY, BOX_BG);
+    font::draw_str(
+        fb,
+        LOGIN_W,
+        b"Password:",
+        label_x,
+        pass_label_y,
+        TEXT_GRAY,
+        BOX_BG,
+    );
 
     // Build a slice of the right length for the masked field.
     let star_buf = [b'*'; 128];
@@ -194,14 +218,22 @@ pub fn render(fb: &mut [u32], state: &LoginState<'_>) {
     if !state.error_msg.is_empty() {
         let err_y = pass_label_y + font::GLYPH_H + 20;
         let err_px = state.error_msg.len() * font::GLYPH_W;
-        let err_x = if err_px < BOX_W { BOX_X + (BOX_W - err_px) / 2 } else { BOX_X + 8 };
+        let err_x = if err_px < BOX_W {
+            BOX_X + (BOX_W - err_px) / 2
+        } else {
+            BOX_X + 8
+        };
         font::draw_str(fb, LOGIN_W, state.error_msg, err_x, err_y, TEXT_RED, BOX_BG);
     }
 
     // 7. Hint text at the bottom of the box.
     let hint = b"Press Enter to login, Esc to cancel";
     let hint_px = hint.len() * font::GLYPH_W;
-    let hint_x = if hint_px < BOX_W { BOX_X + (BOX_W - hint_px) / 2 } else { BOX_X + 4 };
+    let hint_x = if hint_px < BOX_W {
+        BOX_X + (BOX_W - hint_px) / 2
+    } else {
+        BOX_X + 4
+    };
     let hint_y = BOX_Y + BOX_H - font::GLYPH_H - 10;
     font::draw_str(fb, LOGIN_W, hint, hint_x, hint_y, TEXT_GRAY, BOX_BG);
 }

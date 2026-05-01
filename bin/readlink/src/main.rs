@@ -11,7 +11,6 @@ fn main() {
         return;
     }
 
-
     let mut args_buf = [0u8; 256];
     let path = anyos_std::process::args(&mut args_buf).trim();
 

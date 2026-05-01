@@ -5,11 +5,9 @@ pub(crate) mod rendering;
 pub(crate) mod types;
 
 pub use types::{
-    MenuBarDef, MenuBarHit, MenuItem, Menu, OpenDropdown, StatusIcon,
-    MENU_FLAG_SEPARATOR,
-    APP_MENU_ABOUT, APP_MENU_HIDE, APP_MENU_QUIT,
-    SYS_MENU_ABOUT, SYS_MENU_SETTINGS, SYS_MENU_LOGOUT,
-    SYS_MENU_SLEEP, SYS_MENU_RESTART, SYS_MENU_SHUTDOWN,
+    Menu, MenuBarDef, MenuBarHit, MenuItem, OpenDropdown, StatusIcon, APP_MENU_ABOUT,
+    APP_MENU_HIDE, APP_MENU_QUIT, MENU_FLAG_SEPARATOR, SYS_MENU_ABOUT, SYS_MENU_LOGOUT,
+    SYS_MENU_RESTART, SYS_MENU_SETTINGS, SYS_MENU_SHUTDOWN, SYS_MENU_SLEEP,
 };
 
 use alloc::string::String;
@@ -63,16 +61,40 @@ impl MenuBar {
         let app_menu = Menu {
             title: String::from(app_name),
             items: Vec::from([
-                MenuItem { item_id: APP_MENU_ABOUT, flags: 0, label: String::from("About") },
-                MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
-                MenuItem { item_id: APP_MENU_HIDE, flags: 0, label: String::from("Hide") },
-                MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
-                MenuItem { item_id: APP_MENU_QUIT, flags: 0, label: String::from("Quit") },
+                MenuItem {
+                    item_id: APP_MENU_ABOUT,
+                    flags: 0,
+                    label: String::from("About"),
+                },
+                MenuItem {
+                    item_id: 0,
+                    flags: MENU_FLAG_SEPARATOR,
+                    label: String::new(),
+                },
+                MenuItem {
+                    item_id: APP_MENU_HIDE,
+                    flags: 0,
+                    label: String::from("Hide"),
+                },
+                MenuItem {
+                    item_id: 0,
+                    flags: MENU_FLAG_SEPARATOR,
+                    label: String::new(),
+                },
+                MenuItem {
+                    item_id: APP_MENU_QUIT,
+                    flags: 0,
+                    label: String::from("Quit"),
+                },
             ]),
         };
         def.menus.insert(0, app_menu);
 
-        if let Some(entry) = self.window_menus.iter_mut().find(|(id, _)| *id == window_id) {
+        if let Some(entry) = self
+            .window_menus
+            .iter_mut()
+            .find(|(id, _)| *id == window_id)
+        {
             entry.1 = def;
         } else {
             self.window_menus.push((window_id, def));
@@ -94,7 +116,11 @@ impl MenuBar {
     /// Update the flags for a specific item_id in a window's menu.
     /// Returns true if the item was found and flags changed.
     pub fn update_item_flags(&mut self, window_id: u32, item_id: u32, new_flags: u32) -> bool {
-        if let Some(entry) = self.window_menus.iter_mut().find(|(id, _)| *id == window_id) {
+        if let Some(entry) = self
+            .window_menus
+            .iter_mut()
+            .find(|(id, _)| *id == window_id)
+        {
             for menu in &mut entry.1.menus {
                 if let Some(item) = menu.items.iter_mut().find(|i| i.item_id == item_id) {
                     if item.flags != new_flags {
@@ -194,12 +220,7 @@ impl MenuBar {
     }
 
     /// Remove a status icon. Returns true if removed.
-    pub fn remove_status_icon(
-        &mut self,
-        owner_tid: u32,
-        icon_id: u32,
-        screen_width: u32,
-    ) -> bool {
+    pub fn remove_status_icon(&mut self, owner_tid: u32, icon_id: u32, screen_width: u32) -> bool {
         let before = self.status_icons.len();
         self.status_icons
             .retain(|i| !(i.owner_tid == owner_tid && i.icon_id == icon_id));

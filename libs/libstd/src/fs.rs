@@ -2,7 +2,7 @@
 //!
 //! Wraps anyos_std::fs with std-compatible types and traits.
 
-use crate::io::{self, Read, Write, Seek, SeekFrom, BufReader};
+use crate::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use crate::path::{Path, PathBuf};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -54,13 +54,19 @@ impl File {
     /// Set the file length.
     pub fn set_len(&self, _size: u64) -> io::Result<()> {
         // anyOS doesn't have ftruncate, but truncate exists for paths
-        Err(io::Error::new(io::ErrorKind::Other, "set_len not supported on fd"))
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "set_len not supported on fd",
+        ))
     }
 
     /// Try to clone this file handle.
     pub fn try_clone(&self) -> io::Result<File> {
         // anyOS doesn't have dup() — open the same fd
-        Err(io::Error::new(io::ErrorKind::Other, "try_clone not supported"))
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "try_clone not supported",
+        ))
     }
 }
 
@@ -121,12 +127,30 @@ impl OpenOptions {
         }
     }
 
-    pub fn read(&mut self, read: bool) -> &mut Self { self.read = read; self }
-    pub fn write(&mut self, write: bool) -> &mut Self { self.write = write; self }
-    pub fn append(&mut self, append: bool) -> &mut Self { self.append = append; self }
-    pub fn truncate(&mut self, truncate: bool) -> &mut Self { self.truncate = truncate; self }
-    pub fn create(&mut self, create: bool) -> &mut Self { self.create = create; self }
-    pub fn create_new(&mut self, create_new: bool) -> &mut Self { self.create_new = create_new; self }
+    pub fn read(&mut self, read: bool) -> &mut Self {
+        self.read = read;
+        self
+    }
+    pub fn write(&mut self, write: bool) -> &mut Self {
+        self.write = write;
+        self
+    }
+    pub fn append(&mut self, append: bool) -> &mut Self {
+        self.append = append;
+        self
+    }
+    pub fn truncate(&mut self, truncate: bool) -> &mut Self {
+        self.truncate = truncate;
+        self
+    }
+    pub fn create(&mut self, create: bool) -> &mut Self {
+        self.create = create;
+        self
+    }
+    pub fn create_new(&mut self, create_new: bool) -> &mut Self {
+        self.create_new = create_new;
+        self
+    }
 
     pub fn open<P: AsRef<Path>>(&self, path: P) -> io::Result<File> {
         let mut flags = 0u32;
@@ -153,8 +177,8 @@ impl OpenOptions {
             }
         }
 
-        let inner = anyos_std::fs::File::open_with(path_str, flags)
-            .map_err(io::Error::from_anyos)?;
+        let inner =
+            anyos_std::fs::File::open_with(path_str, flags).map_err(io::Error::from_anyos)?;
         Ok(File { inner })
     }
 }
@@ -189,12 +213,22 @@ impl Metadata {
         }
     }
 
-    pub fn is_file(&self) -> bool { self.file_type == 0 }
-    pub fn is_dir(&self) -> bool { self.file_type == 1 }
-    pub fn is_symlink(&self) -> bool { self.file_type == 2 }
+    pub fn is_file(&self) -> bool {
+        self.file_type == 0
+    }
+    pub fn is_dir(&self) -> bool {
+        self.file_type == 1
+    }
+    pub fn is_symlink(&self) -> bool {
+        self.file_type == 2
+    }
 
-    pub fn len(&self) -> u64 { self.size }
-    pub fn is_empty(&self) -> bool { self.size == 0 }
+    pub fn len(&self) -> u64 {
+        self.size
+    }
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
 
     pub fn file_type(&self) -> FileType {
         FileType { ty: self.file_type }
@@ -216,9 +250,15 @@ pub struct FileType {
 }
 
 impl FileType {
-    pub fn is_file(&self) -> bool { self.ty == 0 }
-    pub fn is_dir(&self) -> bool { self.ty == 1 }
-    pub fn is_symlink(&self) -> bool { self.ty == 2 }
+    pub fn is_file(&self) -> bool {
+        self.ty == 0
+    }
+    pub fn is_dir(&self) -> bool {
+        self.ty == 1
+    }
+    pub fn is_symlink(&self) -> bool {
+        self.ty == 2
+    }
 }
 
 /// File permissions.
@@ -269,7 +309,9 @@ impl DirEntry {
     }
 
     pub fn file_type(&self) -> io::Result<FileType> {
-        Ok(FileType { ty: self.file_type as u32 })
+        Ok(FileType {
+            ty: self.file_type as u32,
+        })
     }
 }
 
@@ -286,12 +328,15 @@ impl Iterator for ReadDir {
         if self.index < self.entries.len() {
             let i = self.index;
             self.index += 1;
-            let entry = core::mem::replace(&mut self.entries[i], DirEntry {
-                path: PathBuf::new(),
-                name: String::new(),
-                file_type: 0,
-                size: 0,
-            });
+            let entry = core::mem::replace(
+                &mut self.entries[i],
+                DirEntry {
+                    path: PathBuf::new(),
+                    name: String::new(),
+                    file_type: 0,
+                    size: 0,
+                },
+            );
             Some(Ok(entry))
         } else {
             None

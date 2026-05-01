@@ -23,9 +23,9 @@
 //! 2. `/System/settings/language.conf` file contents
 //! 3. Fallback: `"en"`
 
-use alloc::string::String;
 use crate::hashmap::HashMap;
 use crate::{env, fs, json};
+use alloc::string::String;
 
 /// Path to the system-wide language preference file.
 const LANG_CONF_PATH: &str = "/System/settings/language.conf";

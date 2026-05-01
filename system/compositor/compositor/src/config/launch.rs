@@ -1,8 +1,8 @@
 //! Login and autostart launch sections.
 
+use alloc::vec::Vec;
 use anyos_std::println;
 use anyos_std::process;
-use alloc::vec::Vec;
 
 use super::file::{read_string, register_manifest};
 
@@ -37,7 +37,10 @@ pub fn launch_required_services() -> (Vec<u32>, bool) {
     for path in REQUIRED_SESSION_PROGRAMS {
         let tid = process::spawn(path, "");
         if tid != 0 && tid != u32::MAX {
-            println!("compositor: required service launched '{}' (TID={})", path, tid);
+            println!(
+                "compositor: required service launched '{}' (TID={})",
+                path, tid
+            );
             tids.push(tid);
         } else {
             println!("compositor: FATAL — required service failed '{}'", path);

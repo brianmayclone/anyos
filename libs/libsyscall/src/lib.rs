@@ -349,7 +349,11 @@ pub fn exit(code: u32) -> ! {
 /// can live anywhere in the canonical-low half.
 pub fn sbrk(increment: u32) -> u64 {
     let ret = syscall1(SYS_SBRK, increment as u64);
-    if ret == u64::MAX { u64::MAX } else { ret }
+    if ret == u64::MAX {
+        u64::MAX
+    } else {
+        ret
+    }
 }
 
 /// Map anonymous pages. Returns address or `u64::MAX` on failure.
@@ -359,7 +363,11 @@ pub fn sbrk(increment: u32) -> u64 {
 /// well above 4 GiB) or u64::MAX on error.
 pub fn mmap(size: u32) -> u64 {
     let ret = syscall1(SYS_MMAP, size as u64);
-    if ret == u64::MAX { u64::MAX } else { ret }
+    if ret == u64::MAX {
+        u64::MAX
+    } else {
+        ret
+    }
 }
 
 /// Unmap pages previously mapped with `mmap`. Returns 0 on success.
@@ -370,13 +378,26 @@ pub fn munmap(addr: u64, size: u32) -> u64 {
 /// Write bytes to a file descriptor. Returns bytes written, or `u32::MAX` on error.
 pub fn write(fd: u32, buf: &[u8]) -> u32 {
     let ret = syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Read from fd into buffer. Returns bytes read, or `u32::MAX` on error.
 pub fn read(fd: u32, buf: &mut [u8]) -> u32 {
-    let ret = syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    let ret = syscall3(
+        SYS_READ,
+        fd as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    );
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Open a file by path. Returns fd on success, `u32::MAX` on error.
@@ -386,7 +407,11 @@ pub fn open(path: &str, flags: u32) -> u32 {
     buf[..len].copy_from_slice(&path.as_bytes()[..len]);
     buf[len] = 0;
     let ret = syscall3(SYS_OPEN, buf.as_ptr() as u64, flags as u64, 0);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Open a file from a byte slice path. Returns fd on success, `u32::MAX` on error.
@@ -396,7 +421,11 @@ pub fn open_bytes(path: &[u8]) -> u32 {
     buf[..len].copy_from_slice(&path[..len]);
     buf[len] = 0;
     let ret = syscall3(SYS_OPEN, buf.as_ptr() as u64, 0, 0);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Close a file descriptor.
@@ -410,26 +439,42 @@ pub fn close(fd: u32) {
 /// Seek within an open file. Returns new position or `u32::MAX` on error.
 pub fn lseek(fd: u32, offset: i32, whence: u32) -> u32 {
     let ret = syscall3(SYS_LSEEK, fd as u64, offset as i64 as u64, whence as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Get file size via fstat. Returns file size or 0 on error.
 pub fn file_size(fd: u32) -> u32 {
     let mut stat_buf = [0u32; 4];
     let ret = syscall2(SYS_FSTAT, fd as u64, stat_buf.as_mut_ptr() as u64);
-    if (ret as i64) < 0 { 0 } else { stat_buf[1] }
+    if (ret as i64) < 0 {
+        0
+    } else {
+        stat_buf[1]
+    }
 }
 
 /// Get file stats. Returns 0 on success.
 pub fn fstat(fd: u32, stat_buf: &mut [u32; 4]) -> u32 {
     let ret = syscall2(SYS_FSTAT, fd as u64, stat_buf.as_mut_ptr() as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Flush deferred metadata for a specific open file to disk.
 pub fn fsync(fd: u32) -> u32 {
     let ret = syscall1(SYS_FSYNC, fd as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Sleep for `ms` milliseconds.
@@ -469,7 +514,12 @@ pub fn dll_load(path: &[u8]) -> u64 {
 /// Read directory entries.
 /// Returns number of entries, or `u32::MAX` on error.
 pub fn readdir(path: &[u8], buf: &mut [u8]) -> u32 {
-    syscall3(SYS_READDIR, path.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as u32
+    syscall3(
+        SYS_READDIR,
+        path.as_ptr() as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ) as u32
 }
 
 /// Create a directory (str path). Returns 0 on success.
@@ -484,7 +534,11 @@ pub fn mkdir_bytes(path: &[u8]) -> u32 {
     buf[..len].copy_from_slice(&path[..len]);
     buf[len] = 0;
     let ret = syscall1(SYS_MKDIR, buf.as_ptr() as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Get current working directory. Returns length or `u32::MAX` on error.
@@ -499,7 +553,11 @@ pub fn stat(path: &str, stat_buf: &mut [u32; 7]) -> u32 {
     buf[..len].copy_from_slice(&path.as_bytes()[..len]);
     buf[len] = 0;
     let ret = syscall2(SYS_STAT, buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Fill buffer with random bytes. Returns bytes written.
@@ -561,15 +619,30 @@ pub fn evt_chan_emit(channel_id: u32, event: *const [u32; 5]) {
 }
 
 pub fn evt_chan_poll(channel_id: u32, sub_id: u32, buf: *mut [u32; 5]) -> bool {
-    syscall3(SYS_EVT_CHAN_POLL, channel_id as u64, sub_id as u64, buf as u64) != 0
+    syscall3(
+        SYS_EVT_CHAN_POLL,
+        channel_id as u64,
+        sub_id as u64,
+        buf as u64,
+    ) != 0
 }
 
 pub fn evt_chan_emit_to(channel_id: u32, sub_id: u32, event: *const [u32; 5]) {
-    syscall3(SYS_EVT_CHAN_EMIT_TO, channel_id as u64, sub_id as u64, event as u64);
+    syscall3(
+        SYS_EVT_CHAN_EMIT_TO,
+        channel_id as u64,
+        sub_id as u64,
+        event as u64,
+    );
 }
 
 pub fn evt_chan_wait(channel_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
-    syscall3(SYS_EVT_CHAN_WAIT, channel_id as u64, sub_id as u64, timeout_ms as u64) as u32
+    syscall3(
+        SYS_EVT_CHAN_WAIT,
+        channel_id as u64,
+        sub_id as u64,
+        timeout_ms as u64,
+    ) as u32
 }
 
 // ── Fullscreen Framebuffer Access (Compositor-only) ─────────────────
@@ -578,7 +651,11 @@ pub fn evt_chan_wait(channel_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
 /// out_info_ptr receives [fb_va: u32, width: u32, height: u32, pitch: u32].
 /// Returns 0 on success, u32::MAX on failure.
 pub fn grant_framebuffer(target_tid: u32, out_info_ptr: *mut u32) -> u32 {
-    syscall2(SYS_GRANT_FRAMEBUFFER, target_tid as u64, out_info_ptr as u64) as u32
+    syscall2(
+        SYS_GRANT_FRAMEBUFFER,
+        target_tid as u64,
+        out_info_ptr as u64,
+    ) as u32
 }
 
 /// Revoke direct framebuffer access from a target app.
@@ -595,7 +672,11 @@ pub fn dns_resolve(hostname: &str, result: &mut [u8; 4]) -> u32 {
     let len = hostname.len().min(256);
     host_buf[..len].copy_from_slice(&hostname.as_bytes()[..len]);
     host_buf[len] = 0;
-    let ret = syscall2(SYS_NET_DNS, host_buf.as_ptr() as u64, result.as_mut_ptr() as u64);
+    let ret = syscall2(
+        SYS_NET_DNS,
+        host_buf.as_ptr() as u64,
+        result.as_mut_ptr() as u64,
+    );
     ret as u32
 }
 
@@ -615,19 +696,41 @@ pub fn tcp_connect(ip: &[u8; 4], port: u16, timeout_ms: u32) -> u32 {
         timeout: timeout_ms,
     };
     let ret = syscall1(SYS_TCP_CONNECT, &params as *const _ as u64);
-    if (ret as i64) < 0 || ret == u64::MAX { u32::MAX } else { ret as u32 }
+    if (ret as i64) < 0 || ret == u64::MAX {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Send data over a TCP socket. Returns bytes sent, or `u32::MAX` on error.
 pub fn tcp_send(sock: u32, data: &[u8]) -> u32 {
-    let ret = syscall3(SYS_TCP_SEND, sock as u64, data.as_ptr() as u64, data.len() as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    let ret = syscall3(
+        SYS_TCP_SEND,
+        sock as u64,
+        data.as_ptr() as u64,
+        data.len() as u64,
+    );
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Receive data from a TCP socket. Returns bytes received, or `u32::MAX` on error.
 pub fn tcp_recv(sock: u32, buf: &mut [u8]) -> u32 {
-    let ret = syscall3(SYS_TCP_RECV, sock as u64, buf.as_mut_ptr() as u64, buf.len() as u64);
-    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+    let ret = syscall3(
+        SYS_TCP_RECV,
+        sock as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    );
+    if (ret as i64) < 0 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Close a TCP socket.
@@ -659,7 +762,9 @@ pub fn gpu_3d_hw_version() -> u32 {
 
 /// Submit raw SVGA3D command words to the GPU. Returns 0 on success.
 pub fn gpu_3d_submit(words: &[u32]) -> u32 {
-    if words.is_empty() { return 0; }
+    if words.is_empty() {
+        return 0;
+    }
     syscall2(SYS_GPU_3D_SUBMIT, words.as_ptr() as u64, words.len() as u64) as u32
 }
 
@@ -670,7 +775,9 @@ pub fn gpu_3d_sync() {
 
 /// Upload data to a GPU surface via kernel-mediated DMA. Returns 0 on success.
 pub fn gpu_3d_surface_dma(sid: u32, data: &[u8], width: u32, height: u32) -> u32 {
-    if data.is_empty() { return 0; }
+    if data.is_empty() {
+        return 0;
+    }
     syscall5(
         SYS_GPU_3D_SURFACE_DMA,
         sid as u64,
@@ -683,7 +790,9 @@ pub fn gpu_3d_surface_dma(sid: u32, data: &[u8], width: u32, height: u32) -> u32
 
 /// Read back data from a GPU surface via kernel-mediated DMA. Returns 0 on success.
 pub fn gpu_3d_surface_dma_read(sid: u32, buf: &mut [u8], width: u32, height: u32) -> u32 {
-    if buf.is_empty() { return 0; }
+    if buf.is_empty() {
+        return 0;
+    }
     syscall5(
         SYS_GPU_3D_SURFACE_DMA_READ,
         sid as u64,
@@ -697,7 +806,14 @@ pub fn gpu_3d_surface_dma_read(sid: u32, buf: &mut [u8], width: u32, height: u32
 /// Create a virgl 3D resource via the control plane.
 /// Returns the allocated resource ID, or u32::MAX on failure.
 pub fn gpu_3d_resource_create(target: u32, format: u32, bind: u32, width: u32, height: u32) -> u32 {
-    syscall5(SYS_GPU_3D_RESOURCE_CREATE, target as u64, format as u64, bind as u64, width as u64, height as u64) as u32
+    syscall5(
+        SYS_GPU_3D_RESOURCE_CREATE,
+        target as u64,
+        format as u64,
+        bind as u64,
+        width as u64,
+        height as u64,
+    ) as u32
 }
 
 /// Destroy a virgl 3D resource. Returns 0 on success, u32::MAX on failure.
@@ -708,8 +824,14 @@ pub fn gpu_3d_resource_destroy(resource_id: u32) -> u32 {
 /// Query the GPU driver type name (e.g. "svga3d", "virgl", "none").
 /// Writes the name into `buf` and returns the length.
 pub fn gpu_query_type(buf: &mut [u8]) -> u32 {
-    if buf.is_empty() { return 0; }
-    syscall2(SYS_GPU_QUERY_TYPE, buf.as_mut_ptr() as u64, buf.len() as u64) as u32
+    if buf.is_empty() {
+        return 0;
+    }
+    syscall2(
+        SYS_GPU_QUERY_TYPE,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ) as u32
 }
 
 // ── Monitor detection ─────────────────────────────────────────────────
@@ -727,13 +849,23 @@ pub fn monitor_info(id: u32, buf: &mut [u8]) -> bool {
 
 /// Get raw EDID bytes for monitor `id`. Returns number of bytes written.
 pub fn monitor_edid(id: u32, buf: &mut [u8]) -> usize {
-    syscall3(SYS_MONITOR_EDID, id as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as usize
+    syscall3(
+        SYS_MONITOR_EDID,
+        id as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ) as usize
 }
 
 /// Get supported modes for monitor `id`. Each mode is 16 bytes (4×u32).
 /// Returns number of modes written.
 pub fn monitor_modes(id: u32, buf: &mut [u8]) -> usize {
-    syscall3(SYS_MONITOR_MODES, id as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as usize
+    syscall3(
+        SYS_MONITOR_MODES,
+        id as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ) as usize
 }
 
 // ── Serial print (for DLLs without anyos_std) ────────────────────────

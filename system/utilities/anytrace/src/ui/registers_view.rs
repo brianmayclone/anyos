@@ -1,10 +1,10 @@
 //! Register display using DataGrid.
 
-use libanyui_client as ui;
-use ui::Widget;
-use ui::ColumnDef;
+use crate::util::format::{fmt_u64, hex64, REG_NAMES};
 use anyos_std::debug::DebugRegs;
-use crate::util::format::{hex64, fmt_u64, REG_NAMES};
+use libanyui_client as ui;
+use ui::ColumnDef;
+use ui::Widget;
 
 /// Register view panel.
 pub struct RegistersView {
@@ -61,8 +61,7 @@ impl RegistersView {
 /// Extract register values as an array for iteration.
 fn regs_to_array(r: &DebugRegs) -> [u64; 19] {
     [
-        r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rbp,
-        r.r8, r.r9, r.r10, r.r11, r.r12, r.r13, r.r14, r.r15,
-        r.rsp, r.rip, r.rflags, r.cr3,
+        r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rbp, r.r8, r.r9, r.r10, r.r11, r.r12, r.r13,
+        r.r14, r.r15, r.rsp, r.rip, r.rflags, r.cr3,
     ]
 }

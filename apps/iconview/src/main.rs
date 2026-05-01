@@ -3,11 +3,11 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::i18n;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::i18n;
-use libanyui_client as anyui;
 use anyui::Widget;
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
@@ -18,8 +18,8 @@ const CELL_W: u32 = 80;
 const CELL_H: u32 = 72;
 const ICON_SIZE: u32 = 32;
 const ICO_PAK_PATH: &str = "/System/media/ico.pak";
-const CELLS_PER_TICK: usize = 3;  // cells created per timer tick during init
-const ICONS_PER_TICK: usize = 3;  // icons rendered per timer tick
+const CELLS_PER_TICK: usize = 3; // cells created per timer tick during init
+const ICONS_PER_TICK: usize = 3; // icons rendered per timer tick
 
 // ── Data model ───────────────────────────────────────────────────────────────
 
@@ -231,7 +231,9 @@ fn select_cell(cell_idx: usize) {
         let matched = matches.len();
         s.status_label.set_text(&anyos_std::format!(
             "Selected: {} | {} of {} icons",
-            name, matched, total
+            name,
+            matched,
+            total
         ));
         s.selected_icon_name = name;
     }
@@ -307,12 +309,17 @@ fn init_tick() {
 
         s.flow.add(&container);
 
-        s.cells.push(IconCell { container, image, label });
+        s.cells.push(IconCell {
+            container,
+            image,
+            label,
+        });
     }
 
     s.status_label.set_text(&anyos_std::format!(
         "Loading... {}/{}",
-        s.cells.len(), MAX_DISPLAY
+        s.cells.len(),
+        MAX_DISPLAY
     ));
 
     if s.cells.len() >= MAX_DISPLAY {
@@ -374,7 +381,9 @@ fn refresh_display() {
     } else {
         anyos_std::format!(
             "Showing {} of {} matches ({} total)",
-            display_count, matched, total
+            display_count,
+            matched,
+            total
         )
     };
     s.status_label.set_text(&status);
@@ -457,7 +466,12 @@ fn main() {
 
     toolbar.add_separator();
 
-    let seg_str = anyos_std::format!("{}|{}|{}", i18n::t("Filled"), i18n::t("Outline"), i18n::t("Both"));
+    let seg_str = anyos_std::format!(
+        "{}|{}|{}",
+        i18n::t("Filled"),
+        i18n::t("Outline"),
+        i18n::t("Both")
+    );
     let seg = anyui::SegmentedControl::new(&seg_str);
     seg.set_size(200, 28);
     seg.set_state(2);
@@ -483,15 +497,13 @@ fn main() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("Quit"), 0)
+        .item(1, i18n::t("Quit"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => anyui::quit(),
-            _ => {}
-        }
+    menu.on_item(|e| match e.item_id {
+        1 => anyui::quit(),
+        _ => {}
     });
 
     let status_bar = anyui::View::new();
@@ -565,7 +577,9 @@ fn main() {
         let name = app().selected_icon_name.clone();
         if !name.is_empty() {
             anyui::clipboard_set(name.as_str());
-            app().status_label.set_text(&anyos_std::format!("Copied: {}", name));
+            app()
+                .status_label
+                .set_text(&anyos_std::format!("Copied: {}", name));
         }
     });
 

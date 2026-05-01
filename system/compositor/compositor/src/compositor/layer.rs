@@ -1,7 +1,7 @@
 //! Layer and shadow data structures for the compositor.
 
-use alloc::vec::Vec;
 use super::rect::Rect;
+use alloc::vec::Vec;
 
 // ── Shadow Constants ────────────────────────────────────────────────────────
 
@@ -9,11 +9,15 @@ pub(crate) const SHADOW_OFFSET_X: i32 = 0;
 
 /// Vertical shadow offset in physical pixels (DPI-scaled).
 #[inline(always)]
-pub(crate) fn shadow_offset_y() -> i32 { crate::desktop::theme::scale_i32(6) }
+pub(crate) fn shadow_offset_y() -> i32 {
+    crate::desktop::theme::scale_i32(6)
+}
 
 /// Total spread (number of concentric rings) for the soft shadow (DPI-scaled).
 #[inline(always)]
-pub(crate) fn shadow_spread() -> i32 { crate::desktop::theme::scale_i32(16) }
+pub(crate) fn shadow_spread() -> i32 {
+    crate::desktop::theme::scale_i32(16)
+}
 /// Shadow alpha for the focused window (innermost ring).
 pub(crate) const SHADOW_ALPHA_FOCUSED: u32 = 50;
 /// Shadow alpha for unfocused windows (innermost ring).
@@ -154,12 +158,7 @@ pub(crate) fn subtract_rects(a: &Rect, b: &Rect) -> [Rect; 4] {
         }
         // Left strip (between top and bottom strips)
         if overlap.x > a.x {
-            result[2] = Rect::new(
-                a.x,
-                overlap.y,
-                (overlap.x - a.x) as u32,
-                overlap.height,
-            );
+            result[2] = Rect::new(a.x, overlap.y, (overlap.x - a.x) as u32, overlap.height);
         }
         // Right strip (between top and bottom strips)
         if overlap.right() < a.right() {

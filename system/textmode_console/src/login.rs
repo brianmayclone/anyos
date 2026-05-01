@@ -7,9 +7,9 @@
 //!    authentication succeeds, then call [`setup_environment`].
 //! 3. Return the authenticated username to the caller (the shell loop).
 
-use anyos_std::{env, fs, process, sys};
-use anyos_std::String;
 use anyos_std::format;
+use anyos_std::String;
+use anyos_std::{env, fs, process, sys};
 
 use crate::io::{print, println, read_line, read_password};
 use crate::runner::run_external;
@@ -57,19 +57,19 @@ pub fn setup_environment(username: &str) {
         format!("/Users/{}", username)
     };
 
-    env::set("USER",    username);
+    env::set("USER", username);
     env::set("LOGNAME", username);
-    env::set("HOME",    &home);
-    env::set("PWD",     &home);
-    env::set("SHELL",   "/System/bin/sh");
-    env::set("PATH",    "/System/bin:/System/sbin:/bin:/usr/bin");
-    env::set("TERM",    "ansi");
-    env::set("UID",     &format!("{}", uid));
+    env::set("HOME", &home);
+    env::set("PWD", &home);
+    env::set("SHELL", "/System/bin/sh");
+    env::set("PATH", "/System/bin:/System/sbin:/bin:/usr/bin");
+    env::set("TERM", "ansi");
+    env::set("UID", &format!("{}", uid));
 
     let (cols, rows) = sys::con_get_size();
     if cols > 0 && rows > 0 {
         env::set("COLUMNS", &format!("{}", cols));
-        env::set("LINES",   &format!("{}", rows));
+        env::set("LINES", &format!("{}", rows));
     }
 
     // Overlay with values from /System/env, then ~/.env (optional).
@@ -77,7 +77,9 @@ pub fn setup_environment(username: &str) {
         if let Ok(content) = fs::read_to_string(path) {
             for line in content.split('\n') {
                 let line = line.trim();
-                if line.is_empty() || line.starts_with('#') { continue; }
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
                 let line = line.strip_prefix("export ").unwrap_or(line);
                 if let Some(eq) = line.find('=') {
                     let key = &line[..eq];
@@ -85,8 +87,11 @@ pub fn setup_environment(username: &str) {
                     // Never let config files overwrite identity-critical variables
                     // that were set from the authenticated session above.
                     if !key.is_empty()
-                        && key != "USER" && key != "LOGNAME" && key != "HOME"
-                        && key != "PWD"  && key != "UID"
+                        && key != "USER"
+                        && key != "LOGNAME"
+                        && key != "HOME"
+                        && key != "PWD"
+                        && key != "UID"
                     {
                         env::set(key, val);
                     }
@@ -109,7 +114,9 @@ pub fn login_loop() -> String {
     loop {
         print("login: ");
         let username = read_line();
-        if username.is_empty() { continue; }
+        if username.is_empty() {
+            continue;
+        }
 
         print("Password: ");
         let password = read_password();

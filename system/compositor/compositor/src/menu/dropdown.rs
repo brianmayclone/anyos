@@ -4,8 +4,8 @@ use alloc::vec::Vec;
 
 use crate::compositor::{Compositor, Rect};
 
-use super::MenuBar;
 use super::types::*;
+use super::MenuBar;
 
 impl MenuBar {
     // ── Hit Testing ──────────────────────────────────────────────────────
@@ -81,10 +81,7 @@ impl MenuBar {
     /// Check if a point is within the open dropdown bounds.
     pub fn is_in_dropdown(&self, mx: i32, my: i32) -> bool {
         if let Some(ref dd) = self.open_dropdown {
-            mx >= dd.x
-                && mx < dd.x + dd.width as i32
-                && my >= dd.y
-                && my < dd.y + dd.height as i32
+            mx >= dd.x && mx < dd.x + dd.width as i32 && my >= dd.y && my < dd.y + dd.height as i32
         } else {
             false
         }
@@ -116,8 +113,7 @@ impl MenuBar {
             if item.is_separator() {
                 total_h += SEPARATOR_HEIGHT as i32;
             } else {
-                let (tw, _) =
-                    anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &item.label);
+                let (tw, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &item.label);
                 max_w = max_w.max(tw + 40); // label + padding + checkmark space
                 total_h += ITEM_HEIGHT as i32;
             }
@@ -158,11 +154,7 @@ impl MenuBar {
             None => return false,
         };
 
-        if mx < dd.x
-            || mx >= dd.x + dd.width as i32
-            || my < dd.y
-            || my >= dd.y + dd.height as i32
-        {
+        if mx < dd.x || mx >= dd.x + dd.width as i32 || my < dd.y || my >= dd.y + dd.height as i32 {
             if dd.hover_idx.is_some() {
                 dd.hover_idx = None;
                 return true;
@@ -230,7 +222,11 @@ impl MenuBar {
             (SYS_MENU_SHUTDOWN, false),
         ];
         let (id, is_sep) = SYS_ITEMS.get(item_idx)?;
-        if *is_sep { None } else { Some(*id) }
+        if *is_sep {
+            None
+        } else {
+            Some(*id)
+        }
     }
 
     /// Open the system menu (logo dropdown) — "About anyOS", "Settings...", etc.
@@ -242,17 +238,61 @@ impl MenuBar {
         self.close_dropdown_with_compositor(compositor);
 
         let items = Vec::from([
-            super::MenuItem { item_id: SYS_MENU_ABOUT, flags: 0, label: String::from("About anyOS") },
-            super::MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
-            super::MenuItem { item_id: SYS_MENU_SETTINGS, flags: 0, label: String::from("System Settings...") },
-            super::MenuItem { item_id: SYS_MENU_NOTIFICATIONS, flags: 0, label: String::from("Notifications...") },
-            super::MenuItem { item_id: SYS_MENU_TILE_WINDOWS, flags: 0, label: String::from("Fenster anordnen") },
-            super::MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
-            super::MenuItem { item_id: SYS_MENU_LOGOUT, flags: 0, label: String::from("Log Out") },
-            super::MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
-            super::MenuItem { item_id: SYS_MENU_SLEEP, flags: 0, label: String::from("Sleep") },
-            super::MenuItem { item_id: SYS_MENU_RESTART, flags: 0, label: String::from("Restart") },
-            super::MenuItem { item_id: SYS_MENU_SHUTDOWN, flags: 0, label: String::from("Shut Down") },
+            super::MenuItem {
+                item_id: SYS_MENU_ABOUT,
+                flags: 0,
+                label: String::from("About anyOS"),
+            },
+            super::MenuItem {
+                item_id: 0,
+                flags: MENU_FLAG_SEPARATOR,
+                label: String::new(),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_SETTINGS,
+                flags: 0,
+                label: String::from("System Settings..."),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_NOTIFICATIONS,
+                flags: 0,
+                label: String::from("Notifications..."),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_TILE_WINDOWS,
+                flags: 0,
+                label: String::from("Fenster anordnen"),
+            },
+            super::MenuItem {
+                item_id: 0,
+                flags: MENU_FLAG_SEPARATOR,
+                label: String::new(),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_LOGOUT,
+                flags: 0,
+                label: String::from("Log Out"),
+            },
+            super::MenuItem {
+                item_id: 0,
+                flags: MENU_FLAG_SEPARATOR,
+                label: String::new(),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_SLEEP,
+                flags: 0,
+                label: String::from("Sleep"),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_RESTART,
+                flags: 0,
+                label: String::from("Restart"),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_SHUTDOWN,
+                flags: 0,
+                label: String::from("Shut Down"),
+            },
         ]);
 
         // Compute dropdown dimensions
@@ -265,8 +305,7 @@ impl MenuBar {
             if item.is_separator() {
                 total_h += SEPARATOR_HEIGHT as i32;
             } else {
-                let (tw, _) =
-                    anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &item.label);
+                let (tw, _) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &item.label);
                 max_w = max_w.max(tw + 40);
                 total_h += ITEM_HEIGHT as i32;
             }
@@ -301,8 +340,8 @@ impl MenuBar {
 
     /// Render the system menu dropdown.
     fn render_system_dropdown(&self, compositor: &mut Compositor, items: &[super::MenuItem]) {
-        use crate::desktop::drawing::{fill_rect, fill_rounded_rect};
         use super::rendering::draw_rect_outline;
+        use crate::desktop::drawing::{fill_rect, fill_rounded_rect};
 
         let dd = match &self.open_dropdown {
             Some(d) => d,
@@ -313,7 +352,9 @@ impl MenuBar {
             let w = dd.width;
             let h = dd.height;
 
-            for p in pixels.iter_mut() { *p = 0x00000000; }
+            for p in pixels.iter_mut() {
+                *p = 0x00000000;
+            }
             fill_rounded_rect(pixels, w, h, 0, 0, w, h, 6, color_dropdown_bg());
             draw_rect_outline(pixels, w, 0, 0, w, h, color_dropdown_border());
 
@@ -326,7 +367,9 @@ impl MenuBar {
                         for x in 8i32..(w as i32 - 8) {
                             if x >= 0 && (x as u32) < w {
                                 let idx = (line_y as u32 * w + x as u32) as usize;
-                                if idx < pixels.len() { pixels[idx] = color_separator(); }
+                                if idx < pixels.len() {
+                                    pixels[idx] = color_separator();
+                                }
                             }
                         }
                     }
@@ -348,7 +391,15 @@ impl MenuBar {
                     color_menubar_text()
                 };
                 anyos_std::ui::window::font_render_buf(
-                    FONT_ID, FONT_SIZE, pixels, w, h, text_x, text_y, text_color, &item.label,
+                    FONT_ID,
+                    FONT_SIZE,
+                    pixels,
+                    w,
+                    h,
+                    text_x,
+                    text_y,
+                    text_color,
+                    &item.label,
                 );
             }
         }
@@ -360,17 +411,27 @@ impl MenuBar {
 
     /// Hit test within the system menu dropdown. Returns Some(item_id) if a clickable item was hit.
     pub fn hit_test_system_menu(&self, mx: i32, my: i32) -> Option<u32> {
-        if !self.system_menu_open { return None; }
+        if !self.system_menu_open {
+            return None;
+        }
         let dd = self.open_dropdown.as_ref()?;
 
-        if mx < dd.x || mx >= dd.x + dd.width as i32 { return None; }
-        if my < dd.y || my >= dd.y + dd.height as i32 { return None; }
+        if mx < dd.x || mx >= dd.x + dd.width as i32 {
+            return None;
+        }
+        if my < dd.y || my >= dd.y + dd.height as i32 {
+            return None;
+        }
 
         let local_y = my - dd.y;
         let items = Self::system_menu_items();
         for (i, item) in items.iter().enumerate() {
             let item_y = dd.items_y.get(i).copied().unwrap_or(0);
-            let item_h = if item.is_separator() { SEPARATOR_HEIGHT } else { ITEM_HEIGHT };
+            let item_h = if item.is_separator() {
+                SEPARATOR_HEIGHT
+            } else {
+                ITEM_HEIGHT
+            };
             if local_y >= item_y && local_y < item_y + item_h as i32 {
                 if !item.is_disabled() && !item.is_separator() {
                     return Some(item.item_id);
@@ -385,17 +446,61 @@ impl MenuBar {
     pub fn system_menu_items() -> Vec<super::MenuItem> {
         use alloc::string::String;
         Vec::from([
-            super::MenuItem { item_id: SYS_MENU_ABOUT, flags: 0, label: String::from("About anyOS") },
-            super::MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
-            super::MenuItem { item_id: SYS_MENU_SETTINGS, flags: 0, label: String::from("System Settings...") },
-            super::MenuItem { item_id: SYS_MENU_NOTIFICATIONS, flags: 0, label: String::from("Notifications...") },
-            super::MenuItem { item_id: SYS_MENU_TILE_WINDOWS, flags: 0, label: String::from("Fenster anordnen") },
-            super::MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
-            super::MenuItem { item_id: SYS_MENU_LOGOUT, flags: 0, label: String::from("Log Out") },
-            super::MenuItem { item_id: 0, flags: MENU_FLAG_SEPARATOR, label: String::new() },
-            super::MenuItem { item_id: SYS_MENU_SLEEP, flags: 0, label: String::from("Sleep") },
-            super::MenuItem { item_id: SYS_MENU_RESTART, flags: 0, label: String::from("Restart") },
-            super::MenuItem { item_id: SYS_MENU_SHUTDOWN, flags: 0, label: String::from("Shut Down") },
+            super::MenuItem {
+                item_id: SYS_MENU_ABOUT,
+                flags: 0,
+                label: String::from("About anyOS"),
+            },
+            super::MenuItem {
+                item_id: 0,
+                flags: MENU_FLAG_SEPARATOR,
+                label: String::new(),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_SETTINGS,
+                flags: 0,
+                label: String::from("System Settings..."),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_NOTIFICATIONS,
+                flags: 0,
+                label: String::from("Notifications..."),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_TILE_WINDOWS,
+                flags: 0,
+                label: String::from("Fenster anordnen"),
+            },
+            super::MenuItem {
+                item_id: 0,
+                flags: MENU_FLAG_SEPARATOR,
+                label: String::new(),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_LOGOUT,
+                flags: 0,
+                label: String::from("Log Out"),
+            },
+            super::MenuItem {
+                item_id: 0,
+                flags: MENU_FLAG_SEPARATOR,
+                label: String::new(),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_SLEEP,
+                flags: 0,
+                label: String::from("Sleep"),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_RESTART,
+                flags: 0,
+                label: String::from("Restart"),
+            },
+            super::MenuItem {
+                item_id: SYS_MENU_SHUTDOWN,
+                flags: 0,
+                label: String::from("Shut Down"),
+            },
         ])
     }
 

@@ -52,7 +52,11 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
 
     let base_x = cx * CHUNK_X as i32;
     let base_z = cz * CHUNK_Z as i32;
-    let max_y = world.chunks.get(&(cx, cz)).map_or(0, |c| c.max_y + 1).min(CHUNK_Y);
+    let max_y = world
+        .chunks
+        .get(&(cx, cz))
+        .map_or(0, |c| c.max_y + 1)
+        .min(CHUNK_Y);
 
     if max_y == 0 {
         return ChunkMesh {
@@ -79,10 +83,28 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
         }
 
         greedy_mask(CHUNK_X, CHUNK_Z, &top_mask, |x, z, w, h, cell| {
-            emit_top_quad(&mut vertices, &mut vertex_count, base_x + x as i32, wy, base_z + z as i32, w, h, cell);
+            emit_top_quad(
+                &mut vertices,
+                &mut vertex_count,
+                base_x + x as i32,
+                wy,
+                base_z + z as i32,
+                w,
+                h,
+                cell,
+            );
         });
         greedy_mask(CHUNK_X, CHUNK_Z, &bottom_mask, |x, z, w, h, cell| {
-            emit_bottom_quad(&mut vertices, &mut vertex_count, base_x + x as i32, wy, base_z + z as i32, w, h, cell);
+            emit_bottom_quad(
+                &mut vertices,
+                &mut vertex_count,
+                base_x + x as i32,
+                wy,
+                base_z + z as i32,
+                w,
+                h,
+                cell,
+            );
         });
     }
 
@@ -103,10 +125,28 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
         }
 
         greedy_mask(CHUNK_Z, max_y, &east_mask, |z, y, d, h, cell| {
-            emit_east_quad(&mut vertices, &mut vertex_count, wx, y as i32, base_z + z as i32, d, h, cell);
+            emit_east_quad(
+                &mut vertices,
+                &mut vertex_count,
+                wx,
+                y as i32,
+                base_z + z as i32,
+                d,
+                h,
+                cell,
+            );
         });
         greedy_mask(CHUNK_Z, max_y, &west_mask, |z, y, d, h, cell| {
-            emit_west_quad(&mut vertices, &mut vertex_count, wx, y as i32, base_z + z as i32, d, h, cell);
+            emit_west_quad(
+                &mut vertices,
+                &mut vertex_count,
+                wx,
+                y as i32,
+                base_z + z as i32,
+                d,
+                h,
+                cell,
+            );
         });
     }
 
@@ -127,10 +167,28 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
         }
 
         greedy_mask(CHUNK_X, max_y, &south_mask, |x, y, w, h, cell| {
-            emit_south_quad(&mut vertices, &mut vertex_count, base_x + x as i32, y as i32, wz, w, h, cell);
+            emit_south_quad(
+                &mut vertices,
+                &mut vertex_count,
+                base_x + x as i32,
+                y as i32,
+                wz,
+                w,
+                h,
+                cell,
+            );
         });
         greedy_mask(CHUNK_X, max_y, &north_mask, |x, y, w, h, cell| {
-            emit_north_quad(&mut vertices, &mut vertex_count, base_x + x as i32, y as i32, wz, w, h, cell);
+            emit_north_quad(
+                &mut vertices,
+                &mut vertex_count,
+                base_x + x as i32,
+                y as i32,
+                wz,
+                w,
+                h,
+                cell,
+            );
         });
     }
 
@@ -240,14 +298,7 @@ fn emit_quad(
     cell: MaskCell,
 ) {
     let (u0, v0, u1, v1) = textures::block_uv(cell.tex_id);
-    let uvs = [
-        (u0, v0),
-        (u1, v1),
-        (u1, v0),
-        (u0, v0),
-        (u0, v1),
-        (u1, v1),
-    ];
+    let uvs = [(u0, v0), (u1, v1), (u1, v0), (u0, v0), (u0, v1), (u1, v1)];
     let light = FACE_LIGHT[cell.face];
     let normal = FACE_NORMALS[cell.face];
     let translucency = block::translucency(cell.block_id);

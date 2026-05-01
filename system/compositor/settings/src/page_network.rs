@@ -20,7 +20,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_auto_size(true);
     panel.set_color(layout::bg());
 
-    layout::build_page_header(&panel, i18n::t("Network"), i18n::t("Connection status and interface configuration"));
+    layout::build_page_header(
+        &panel,
+        i18n::t("Network"),
+        i18n::t("Connection status and interface configuration"),
+    );
 
     // ── Live connection status ───────────────────────────────────
     let mut net_buf = [0u8; 24];
@@ -30,7 +34,14 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let mask = [net_buf[4], net_buf[5], net_buf[6], net_buf[7]];
     let gw = [net_buf[8], net_buf[9], net_buf[10], net_buf[11]];
     let dns_addr = [net_buf[12], net_buf[13], net_buf[14], net_buf[15]];
-    let mac = [net_buf[16], net_buf[17], net_buf[18], net_buf[19], net_buf[20], net_buf[21]];
+    let mac = [
+        net_buf[16],
+        net_buf[17],
+        net_buf[18],
+        net_buf[19],
+        net_buf[20],
+        net_buf[21],
+    ];
     let link_up = net_buf[22] != 0;
 
     let status_card = layout::build_auto_card(&panel);
@@ -39,15 +50,31 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     } else {
         (i18n::t("Disconnected"), ui::theme::colors().destructive)
     };
-    layout::build_info_row_colored(&status_card, i18n::t("Status"), status_text, status_color, true);
+    layout::build_info_row_colored(
+        &status_card,
+        i18n::t("Status"),
+        status_text,
+        status_color,
+        true,
+    );
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, i18n::t("IP Address"), fmt_ip(&mut b, &ip), false);
+    layout::build_info_row(
+        &status_card,
+        i18n::t("IP Address"),
+        fmt_ip(&mut b, &ip),
+        false,
+    );
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, i18n::t("Subnet Mask"), fmt_ip(&mut b, &mask), false);
+    layout::build_info_row(
+        &status_card,
+        i18n::t("Subnet Mask"),
+        fmt_ip(&mut b, &mask),
+        false,
+    );
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
@@ -55,11 +82,21 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, i18n::t("DNS Server"), fmt_ip(&mut b, &dns_addr), false);
+    layout::build_info_row(
+        &status_card,
+        i18n::t("DNS Server"),
+        fmt_ip(&mut b, &dns_addr),
+        false,
+    );
     layout::build_separator(&status_card);
 
     let mut b = [0u8; 20];
-    layout::build_info_row(&status_card, i18n::t("MAC Address"), fmt_mac(&mut b, &mac), false);
+    layout::build_info_row(
+        &status_card,
+        i18n::t("MAC Address"),
+        fmt_mac(&mut b, &mac),
+        false,
+    );
 
     // ── Detected interfaces card ─────────────────────────────────
     let nic_available = net::is_nic_available();
@@ -80,7 +117,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         // Determine current method for eth0
         let (method_str, cur_method) = if iface_count > 0 && iface_count != u32::MAX {
             let m = iface_buf[0]; // method of first interface
-            if m == 1 { (i18n::t("Static"), 1u8) } else { ("DHCP", 0u8) }
+            if m == 1 {
+                (i18n::t("Static"), 1u8)
+            } else {
+                ("DHCP", 0u8)
+            }
         } else {
             ("DHCP", 0u8)
         };
@@ -113,7 +154,12 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         row.add(&btn);
     } else {
         let no_nic_card = layout::build_auto_card(&panel);
-        layout::build_info_row(&no_nic_card, i18n::t("Interfaces"), i18n::t("No network adapter detected"), true);
+        layout::build_info_row(
+            &no_nic_card,
+            i18n::t("Interfaces"),
+            i18n::t("No network adapter detected"),
+            true,
+        );
     }
 
     parent.add(&panel);
@@ -227,10 +273,18 @@ fn open_configure_dialog(
         entry[2..2 + name_len as usize].copy_from_slice(&name_bytes[..name_len as usize]);
 
         if method_idx == 1 {
-            if let Some(a) = read_ip_field(ip_id) { entry[18..22].copy_from_slice(&a); }
-            if let Some(a) = read_ip_field(mask_id) { entry[22..26].copy_from_slice(&a); }
-            if let Some(a) = read_ip_field(gw_id) { entry[26..30].copy_from_slice(&a); }
-            if let Some(a) = read_ip_field(dns_id) { entry[30..34].copy_from_slice(&a); }
+            if let Some(a) = read_ip_field(ip_id) {
+                entry[18..22].copy_from_slice(&a);
+            }
+            if let Some(a) = read_ip_field(mask_id) {
+                entry[22..26].copy_from_slice(&a);
+            }
+            if let Some(a) = read_ip_field(gw_id) {
+                entry[26..30].copy_from_slice(&a);
+            }
+            if let Some(a) = read_ip_field(dns_id) {
+                entry[30..34].copy_from_slice(&a);
+            }
         }
 
         // Syscall buffer: [count:u32, entries...]
@@ -241,7 +295,11 @@ fn open_configure_dialog(
         net::set_interfaces(&syscall_buf);
 
         // Update the method label in the main settings page
-        let new_text = if method_idx == 1 { i18n::t("Static") } else { "DHCP" };
+        let new_text = if method_idx == 1 {
+            i18n::t("Static")
+        } else {
+            "DHCP"
+        };
         ui::Control::from_id(mlbl_id).set_text(new_text);
 
         // Close the dialog
@@ -271,7 +329,12 @@ fn open_configure_dialog(
 }
 
 /// Build a labeled IP text field row inside a dialog.
-fn build_dialog_ip_row(parent: &ui::View, label: &str, ip_bytes: &[u8], enabled: bool) -> ui::TextField {
+fn build_dialog_ip_row(
+    parent: &ui::View,
+    label: &str,
+    ip_bytes: &[u8],
+    enabled: bool,
+) -> ui::TextField {
     let row = ui::View::new();
     row.set_dock(ui::DOCK_TOP);
     row.set_size(380, 36);
@@ -291,7 +354,10 @@ fn build_dialog_ip_row(parent: &ui::View, label: &str, ip_bytes: &[u8], enabled:
 
     if ip_bytes.len() >= 4 && ip_bytes[..4] != [0, 0, 0, 0] {
         let mut buf = [0u8; 20];
-        let s = fmt_ip(&mut buf, &[ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
+        let s = fmt_ip(
+            &mut buf,
+            &[ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]],
+        );
         tf.set_text(s);
     }
 
@@ -324,11 +390,15 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
         match b {
             b'0'..=b'9' => {
                 num = num * 10 + (b - b'0') as u32;
-                if num > 255 { return None; }
+                if num > 255 {
+                    return None;
+                }
                 has_digit = true;
             }
             b'.' => {
-                if !has_digit || idx >= 3 { return None; }
+                if !has_digit || idx >= 3 {
+                    return None;
+                }
                 parts[idx] = num as u8;
                 idx += 1;
                 num = 0;
@@ -338,7 +408,9 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
         }
     }
 
-    if !has_digit || idx != 3 { return None; }
+    if !has_digit || idx != 3 {
+        return None;
+    }
     parts[3] = num as u8;
     Some(parts)
 }

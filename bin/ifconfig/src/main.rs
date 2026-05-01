@@ -37,7 +37,14 @@ fn main() {
     let nic_mask = [nic_buf[4], nic_buf[5], nic_buf[6], nic_buf[7]];
     let nic_gw = [nic_buf[8], nic_buf[9], nic_buf[10], nic_buf[11]];
     let nic_dns = [nic_buf[12], nic_buf[13], nic_buf[14], nic_buf[15]];
-    let nic_mac = [nic_buf[16], nic_buf[17], nic_buf[18], nic_buf[19], nic_buf[20], nic_buf[21]];
+    let nic_mac = [
+        nic_buf[16],
+        nic_buf[17],
+        nic_buf[18],
+        nic_buf[19],
+        nic_buf[20],
+        nic_buf[21],
+    ];
     let nic_link = nic_buf[22];
 
     // Read IPv6 config
@@ -57,8 +64,7 @@ fn main() {
             let off = i * 128;
             let method = iface_buf[off];
             let name_len = (iface_buf[off + 1] as usize).min(16);
-            let name = core::str::from_utf8(&iface_buf[off + 2..off + 2 + name_len])
-                .unwrap_or("?");
+            let name = core::str::from_utf8(&iface_buf[off + 2..off + 2 + name_len]).unwrap_or("?");
 
             // Apply filter if specified
             if let Some((ref fbuf, flen)) = filter {
@@ -138,8 +144,14 @@ fn print_loopback(name: &str, entry: &[u8]) {
     anyos_std::println!("{}: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536", name);
     anyos_std::println!(
         "        inet {}.{}.{}.{}  netmask {}.{}.{}.{}",
-        ip[0], ip[1], ip[2], ip[3],
-        mask[0], mask[1], mask[2], mask[3],
+        ip[0],
+        ip[1],
+        ip[2],
+        ip[3],
+        mask[0],
+        mask[1],
+        mask[2],
+        mask[3],
     );
 
     // IPv6 loopback (::1)
@@ -181,20 +193,25 @@ fn print_physical(
             name,
         );
     } else {
-        anyos_std::println!(
-            "{}: flags=4098<BROADCAST,MULTICAST>  mtu 1500",
-            name,
-        );
+        anyos_std::println!("{}: flags=4098<BROADCAST,MULTICAST>  mtu 1500", name,);
     }
 
     // IPv4
     let prefix = netmask_to_prefix(mask);
     anyos_std::println!(
         "        inet {}.{}.{}.{}  netmask {}.{}.{}.{}  broadcast {}.{}.{}.{}",
-        ip[0], ip[1], ip[2], ip[3],
-        mask[0], mask[1], mask[2], mask[3],
-        broadcast_addr(ip, mask, 0), broadcast_addr(ip, mask, 1),
-        broadcast_addr(ip, mask, 2), broadcast_addr(ip, mask, 3),
+        ip[0],
+        ip[1],
+        ip[2],
+        ip[3],
+        mask[0],
+        mask[1],
+        mask[2],
+        mask[3],
+        broadcast_addr(ip, mask, 0),
+        broadcast_addr(ip, mask, 1),
+        broadcast_addr(ip, mask, 2),
+        broadcast_addr(ip, mask, 3),
     );
 
     // IPv6
@@ -220,7 +237,12 @@ fn print_physical(
     // Ethernet / MAC
     anyos_std::println!(
         "        ether {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}  txqueuelen 1000",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5],
     );
 
     // RX/TX statistics
@@ -229,20 +251,20 @@ fn print_physical(
         let (tx_val, tx_unit) = human_bytes(s.tx_bytes);
         anyos_std::println!(
             "        RX packets {}  bytes {} ({} {})",
-            s.rx_packets, s.rx_bytes, rx_val, rx_unit,
+            s.rx_packets,
+            s.rx_bytes,
+            rx_val,
+            rx_unit,
         );
-        anyos_std::println!(
-            "        RX errors {}  dropped 0  overruns 0",
-            s.rx_errors,
-        );
+        anyos_std::println!("        RX errors {}  dropped 0  overruns 0", s.rx_errors,);
         anyos_std::println!(
             "        TX packets {}  bytes {} ({} {})",
-            s.tx_packets, s.tx_bytes, tx_val, tx_unit,
+            s.tx_packets,
+            s.tx_bytes,
+            tx_val,
+            tx_unit,
         );
-        anyos_std::println!(
-            "        TX errors {}  dropped 0  overruns 0",
-            s.tx_errors,
-        );
+        anyos_std::println!("        TX errors {}  dropped 0  overruns 0", s.tx_errors,);
     }
 
     // Extra info
@@ -252,8 +274,14 @@ fn print_physical(
     if ip[0] != 0 {
         anyos_std::println!(
             "        gateway {}.{}.{}.{}  dns {}.{}.{}.{}",
-            gw[0], gw[1], gw[2], gw[3],
-            dns[0], dns[1], dns[2], dns[3],
+            gw[0],
+            gw[1],
+            gw[2],
+            gw[3],
+            dns[0],
+            dns[1],
+            dns[2],
+            dns[3],
         );
     }
 }
@@ -316,8 +344,10 @@ fn print_ipv6(addr: &[u8]) {
 }
 
 fn netmask_to_prefix(mask: &[u8; 4]) -> u32 {
-    let val = ((mask[0] as u32) << 24) | ((mask[1] as u32) << 16)
-        | ((mask[2] as u32) << 8) | (mask[3] as u32);
+    let val = ((mask[0] as u32) << 24)
+        | ((mask[1] as u32) << 16)
+        | ((mask[2] as u32) << 8)
+        | (mask[3] as u32);
     val.count_ones()
 }
 

@@ -41,7 +41,13 @@ impl StatusBar {
         lbl_uptime.set_size(150, 18);
         view.add(&lbl_uptime);
 
-        Self { view, lbl_state, lbl_cpu, lbl_memory, lbl_uptime }
+        Self {
+            view,
+            lbl_state,
+            lbl_cpu,
+            lbl_memory,
+            lbl_uptime,
+        }
     }
 
     /// Update the state label.
@@ -55,10 +61,7 @@ impl StatusBar {
         let secs = ms / 1000;
         let mins = secs / 60;
         let hours = mins / 60;
-        let text = alloc::format!(
-            "Uptime: {:02}:{:02}:{:02}",
-            hours, mins % 60, secs % 60
-        );
+        let text = alloc::format!("Uptime: {:02}:{:02}:{:02}", hours, mins % 60, secs % 60);
         self.lbl_uptime.set_text(&text);
     }
 }

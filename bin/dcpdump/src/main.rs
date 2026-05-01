@@ -3,7 +3,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{net, process, println};
+use anyos_std::{net, println, process};
 
 struct Options {
     show_tcp: bool,
@@ -45,7 +45,9 @@ fn main() {
         let count = net::net_trace_read(&mut raw);
         for i in 0..count as usize {
             let off = i * net::NET_TRACE_ENTRY_SIZE;
-            if let Some(entry) = net::NetTraceEntry::from_bytes(&raw[off..off + net::NET_TRACE_ENTRY_SIZE]) {
+            if let Some(entry) =
+                net::NetTraceEntry::from_bytes(&raw[off..off + net::NET_TRACE_ENTRY_SIZE])
+            {
                 if !matches_filters(&entry, &opts) {
                     continue;
                 }
@@ -127,7 +129,11 @@ fn matches_filters(entry: &net::NetTraceEntry, opts: &Options) -> bool {
 }
 
 fn print_entry(entry: &net::NetTraceEntry) {
-    let dir = if entry.direction == net::NET_TRACE_DIR_TX { "TX" } else { "RX" };
+    let dir = if entry.direction == net::NET_TRACE_DIR_TX {
+        "TX"
+    } else {
+        "RX"
+    };
     if entry.ethertype == 0x0806 {
         println!("[{}] {} ARP len={}", entry.timestamp_ms, dir, entry.length);
         return;
@@ -136,7 +142,11 @@ fn print_entry(entry: &net::NetTraceEntry) {
     let proto = match entry.protocol {
         6 => "TCP",
         17 => {
-            if entry.is_dns() { "DNS" } else { "UDP" }
+            if entry.is_dns() {
+                "DNS"
+            } else {
+                "UDP"
+            }
         }
         1 => "ICMP",
         _ => "IP",
@@ -147,8 +157,16 @@ fn print_entry(entry: &net::NetTraceEntry) {
         entry.timestamp_ms,
         dir,
         proto,
-        entry.src_ip[0], entry.src_ip[1], entry.src_ip[2], entry.src_ip[3], entry.src_port,
-        entry.dst_ip[0], entry.dst_ip[1], entry.dst_ip[2], entry.dst_ip[3], entry.dst_port,
+        entry.src_ip[0],
+        entry.src_ip[1],
+        entry.src_ip[2],
+        entry.src_ip[3],
+        entry.src_port,
+        entry.dst_ip[0],
+        entry.dst_ip[1],
+        entry.dst_ip[2],
+        entry.dst_ip[3],
+        entry.dst_port,
         entry.length
     );
 }

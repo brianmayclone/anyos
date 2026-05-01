@@ -40,9 +40,15 @@ fn main() {
         }
     }
     // Also check if flags were passed with dash (e.g. -v -a -x)
-    if args.has(b'v') { flag_v = true; }
-    if args.has(b'a') { flag_a = true; }
-    if args.has(b'x') { flag_x = true; }
+    if args.has(b'v') {
+        flag_v = true;
+    }
+    if args.has(b'a') {
+        flag_a = true;
+    }
+    if args.has(b'x') {
+        flag_x = true;
+    }
 
     // Get own PID and UID
     let my_pid = anyos_std::process::getpid();
@@ -63,10 +69,12 @@ fn main() {
     let mut uids = [0u16; MAX_THREADS];
     for i in 0..n {
         let off = i * ENTRY_SIZE;
-        if off + ENTRY_SIZE > buf.len() { break; }
-        tids[i] = u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]);
+        if off + ENTRY_SIZE > buf.len() {
+            break;
+        }
+        tids[i] = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         uids[i] = u16::from_le_bytes([buf[off + 56], buf[off + 57]]);
-        ppids[i] = u32::from_le_bytes([buf[off+60], buf[off+61], buf[off+62], buf[off+63]]);
+        ppids[i] = u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
     }
 
     // For default mode: find the terminal session root.
@@ -85,7 +93,9 @@ fn main() {
                     break;
                 }
             }
-            if cur_idx == usize::MAX { break; } // current not in list
+            if cur_idx == usize::MAX {
+                break;
+            } // current not in list
 
             // Check if current process is named "Terminal" — that's our session root
             let off = cur_idx * ENTRY_SIZE;
@@ -98,7 +108,9 @@ fn main() {
             }
 
             let parent = ppids[cur_idx];
-            if parent == 0 || parent == current { break; }
+            if parent == 0 || parent == current {
+                break;
+            }
 
             // Check if parent exists in the process list
             let mut parent_found = false;
@@ -108,7 +120,9 @@ fn main() {
                     break;
                 }
             }
-            if !parent_found { break; } // parent gone, stop here
+            if !parent_found {
+                break;
+            } // parent gone, stop here
 
             session_root = parent;
             current = parent;
@@ -120,14 +134,18 @@ fn main() {
     if !flag_a && !flag_x {
         // Mark session root
         for i in 0..n {
-            if tids[i] == session_root { visible[i] = true; }
+            if tids[i] == session_root {
+                visible[i] = true;
+            }
         }
         // Iteratively mark all descendants (breadth-first, multiple passes)
         let mut changed = true;
         while changed {
             changed = false;
             for i in 0..n {
-                if visible[i] { continue; }
+                if visible[i] {
+                    continue;
+                }
                 // Check if parent is visible
                 for j in 0..n {
                     if visible[j] && tids[j] == ppids[i] {
@@ -150,7 +168,11 @@ fn main() {
         if !found && uid_cache_len < 16 {
             let mut name_buf = [0u8; 16];
             let nlen = anyos_std::process::getusername(uid, &mut name_buf);
-            let len = if nlen != u32::MAX && nlen > 0 { (nlen as u8).min(15) } else { 0 };
+            let len = if nlen != u32::MAX && nlen > 0 {
+                (nlen as u8).min(15)
+            } else {
+                0
+            };
             uid_cache[uid_cache_len] = (uid, name_buf, len);
             uid_cache_len += 1;
         }
@@ -160,19 +182,43 @@ fn main() {
     if flag_v {
         anyos_std::println!(
             "{:<6} {:<6} {:<10} {:<6} {:<8} {:<8} {:<10} {:<10} {}",
-            "TID", "PPID", "USER", "PRI", "STATE", "PAGES", "IO-R", "IO-W", "NAME"
+            "TID",
+            "PPID",
+            "USER",
+            "PRI",
+            "STATE",
+            "PAGES",
+            "IO-R",
+            "IO-W",
+            "NAME"
         );
-        anyos_std::println!("{}", "------------------------------------------------------------------------------------");
+        anyos_std::println!(
+            "{}",
+            "------------------------------------------------------------------------------------"
+        );
     } else {
-        anyos_std::println!("{:<6} {:<6} {:<10} {:<6} {:<8} {}", "TID", "PPID", "USER", "PRI", "STATE", "NAME");
-        anyos_std::println!("{}", "------------------------------------------------------");
+        anyos_std::println!(
+            "{:<6} {:<6} {:<10} {:<6} {:<8} {}",
+            "TID",
+            "PPID",
+            "USER",
+            "PRI",
+            "STATE",
+            "NAME"
+        );
+        anyos_std::println!(
+            "{}",
+            "------------------------------------------------------"
+        );
     }
 
     let mut shown = 0u32;
 
     for i in 0..n {
         let off = i * ENTRY_SIZE;
-        if off + ENTRY_SIZE > buf.len() { break; }
+        if off + ENTRY_SIZE > buf.len() {
+            break;
+        }
 
         let tid = tids[i];
         let prio = buf[off + 4];
@@ -180,15 +226,29 @@ fn main() {
         let name_bytes = &buf[off + 8..off + 32];
         let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(24);
         let name = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("???");
-        let user_pages = u32::from_le_bytes([buf[off+32], buf[off+33], buf[off+34], buf[off+35]]);
-        let _cpu_ticks = u32::from_le_bytes([buf[off+36], buf[off+37], buf[off+38], buf[off+39]]);
+        let user_pages =
+            u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
+        let _cpu_ticks =
+            u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
         let io_read = u64::from_le_bytes([
-            buf[off+40], buf[off+41], buf[off+42], buf[off+43],
-            buf[off+44], buf[off+45], buf[off+46], buf[off+47],
+            buf[off + 40],
+            buf[off + 41],
+            buf[off + 42],
+            buf[off + 43],
+            buf[off + 44],
+            buf[off + 45],
+            buf[off + 46],
+            buf[off + 47],
         ]);
         let io_write = u64::from_le_bytes([
-            buf[off+48], buf[off+49], buf[off+50], buf[off+51],
-            buf[off+52], buf[off+53], buf[off+54], buf[off+55],
+            buf[off + 48],
+            buf[off + 49],
+            buf[off + 50],
+            buf[off + 51],
+            buf[off + 52],
+            buf[off + 53],
+            buf[off + 54],
+            buf[off + 55],
         ]);
         let uid = uids[i];
         let parent_tid = ppids[i];
@@ -201,15 +261,21 @@ fn main() {
 
         if !flag_a && !flag_x {
             // Default: only processes in our terminal session tree
-            if !visible[i] { continue; }
+            if !visible[i] {
+                continue;
+            }
         } else if flag_a && !flag_x {
             // 'a': all users, but exclude system threads (uid=0, no parent)
             let is_system = uid == 0 && parent_tid == 0 && tid <= 4;
-            if is_system { continue; }
+            if is_system {
+                continue;
+            }
         } else if !flag_a && flag_x {
             // 'x': own UID + system/kernel threads
             let is_system = uid == 0 && parent_tid == 0 && tid <= 4;
-            if uid != my_uid && !is_system { continue; }
+            if uid != my_uid && !is_system {
+                continue;
+            }
         }
         // 'ax': show everything (no filter)
 
@@ -238,13 +304,25 @@ fn main() {
         if flag_v {
             anyos_std::println!(
                 "{:<6} {:<6} {:<10} {:<6} {:<8} {:<8} {:<10} {:<10} {}",
-                tid, parent_tid, username, prio, state_str,
-                user_pages, format_bytes(io_read), format_bytes(io_write), name
+                tid,
+                parent_tid,
+                username,
+                prio,
+                state_str,
+                user_pages,
+                format_bytes(io_read),
+                format_bytes(io_write),
+                name
             );
         } else {
             anyos_std::println!(
                 "{:<6} {:<6} {:<10} {:<6} {:<8} {}",
-                tid, parent_tid, username, prio, state_str, name
+                tid,
+                parent_tid,
+                username,
+                prio,
+                state_str,
+                name
             );
         }
         shown += 1;
@@ -317,7 +395,9 @@ fn write_u64_digits(buf: &mut [u8; 16], val: u64, start: usize) -> usize {
     }
     let mut pos = start;
     for i in (0..len).rev() {
-        if pos >= 16 { break; }
+        if pos >= 16 {
+            break;
+        }
         buf[pos] = tmp[i];
         pos += 1;
     }

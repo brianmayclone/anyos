@@ -14,11 +14,7 @@
 
 anyos_std::entry!(main);
 
-const MODES: [(u32, u32); 3] = [
-    ( 80, 25),
-    (120, 37),
-    (160, 50),
-];
+const MODES: [(u32, u32); 3] = [(80, 25), (120, 37), (160, 50)];
 
 fn main() {
     let mut args_buf = [0u8; 256];

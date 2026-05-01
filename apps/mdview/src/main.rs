@@ -3,11 +3,11 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::i18n;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::i18n;
-use libanyui_client as anyui;
 use anyui::Widget;
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
@@ -72,8 +72,12 @@ fn basename(path: &str) -> &str {
 fn tab_labels(files: &[OpenFile]) -> String {
     let mut s = String::new();
     for (i, f) in files.iter().enumerate() {
-        if i > 0 { s.push('|'); }
-        if f.modified { s.push('*'); }
+        if i > 0 {
+            s.push('|');
+        }
+        if f.modified {
+            s.push('*');
+        }
         s.push_str(basename(&f.path));
     }
     s
@@ -86,7 +90,9 @@ fn word_wrap(text: &str, max_chars: usize) -> String {
     let mut col = 0usize;
 
     for word in text.split(' ') {
-        if word.is_empty() { continue; }
+        if word.is_empty() {
+            continue;
+        }
         let wlen = word.len();
         if col > 0 && col + 1 + wlen > max_chars {
             result.push('\n');
@@ -215,10 +221,15 @@ fn emoji_for_shortcode(code: &str) -> Option<&'static str> {
 /// Returns the number of bytes consumed.
 fn push_utf8(out: &mut String, bytes: &[u8], pos: usize) -> usize {
     let b = bytes[pos];
-    let seq_len = if b < 0x80 { 1 }
-        else if b < 0xE0 { 2 }
-        else if b < 0xF0 { 3 }
-        else { 4 };
+    let seq_len = if b < 0x80 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    };
     let end = (pos + seq_len).min(bytes.len());
     if let Ok(s) = core::str::from_utf8(&bytes[pos..end]) {
         out.push_str(s);
@@ -250,19 +261,31 @@ fn replace_typographic(text: &str) -> String {
             }
         }
         // (c) (C) → ©
-        if i + 2 < len && bytes[i] == b'(' && (bytes[i + 1] == b'c' || bytes[i + 1] == b'C') && bytes[i + 2] == b')' {
+        if i + 2 < len
+            && bytes[i] == b'('
+            && (bytes[i + 1] == b'c' || bytes[i + 1] == b'C')
+            && bytes[i + 2] == b')'
+        {
             out.push('\u{00A9}');
             i += 3;
             continue;
         }
         // (r) (R) → ®
-        if i + 2 < len && bytes[i] == b'(' && (bytes[i + 1] == b'r' || bytes[i + 1] == b'R') && bytes[i + 2] == b')' {
+        if i + 2 < len
+            && bytes[i] == b'('
+            && (bytes[i + 1] == b'r' || bytes[i + 1] == b'R')
+            && bytes[i + 2] == b')'
+        {
             out.push('\u{00AE}');
             i += 3;
             continue;
         }
         // (p) (P) → §
-        if i + 2 < len && bytes[i] == b'(' && (bytes[i + 1] == b'p' || bytes[i + 1] == b'P') && bytes[i + 2] == b')' {
+        if i + 2 < len
+            && bytes[i] == b'('
+            && (bytes[i + 1] == b'p' || bytes[i + 1] == b'P')
+            && bytes[i + 2] == b')'
+        {
             out.push('\u{00A7}');
             i += 3;
             continue;
@@ -302,31 +325,31 @@ fn match_emoticon(bytes: &[u8], i: usize) -> Option<(&'static str, usize)> {
     // 3-char emoticons
     if rem >= 3 {
         match &bytes[i..i + 3] {
-            b":-)" => return Some(("\u{1F642}", 3)),  // slightly smiling face
-            b":-(" => return Some(("\u{1F61E}", 3)),  // disappointed face
-            b":-D" => return Some(("\u{1F600}", 3)),  // grinning face
-            b":-P" => return Some(("\u{1F61B}", 3)),  // tongue out
-            b":-O" => return Some(("\u{1F62E}", 3)),  // open mouth
-            b":-/" => return Some(("\u{1F615}", 3)),  // confused
-            b":-|" => return Some(("\u{1F610}", 3)),  // neutral
-            b":-*" => return Some(("\u{1F618}", 3)),  // kissing
-            b"8-)" => return Some(("\u{1F60E}", 3)),  // sunglasses
-            b";-)" => return Some(("\u{1F609}", 3)),  // winking
-            b">:(" => return Some(("\u{1F620}", 3)),  // angry
-            b">:)" => return Some(("\u{1F608}", 3)),  // devil
+            b":-)" => return Some(("\u{1F642}", 3)), // slightly smiling face
+            b":-(" => return Some(("\u{1F61E}", 3)), // disappointed face
+            b":-D" => return Some(("\u{1F600}", 3)), // grinning face
+            b":-P" => return Some(("\u{1F61B}", 3)), // tongue out
+            b":-O" => return Some(("\u{1F62E}", 3)), // open mouth
+            b":-/" => return Some(("\u{1F615}", 3)), // confused
+            b":-|" => return Some(("\u{1F610}", 3)), // neutral
+            b":-*" => return Some(("\u{1F618}", 3)), // kissing
+            b"8-)" => return Some(("\u{1F60E}", 3)), // sunglasses
+            b";-)" => return Some(("\u{1F609}", 3)), // winking
+            b">:(" => return Some(("\u{1F620}", 3)), // angry
+            b">:)" => return Some(("\u{1F608}", 3)), // devil
             _ => {}
         }
     }
     // 2-char emoticons
     if rem >= 2 {
         match &bytes[i..i + 2] {
-            b":)" => return Some(("\u{1F642}", 2)),   // slightly smiling
-            b":(" => return Some(("\u{1F61E}", 2)),   // disappointed
-            b":D" => return Some(("\u{1F600}", 2)),   // grinning
-            b":P" => return Some(("\u{1F61B}", 2)),   // tongue out
-            b":O" => return Some(("\u{1F62E}", 2)),   // open mouth
-            b";)" => return Some(("\u{1F609}", 2)),   // winking
-            b"<3" => return Some(("\u{2764}", 2)),    // heart
+            b":)" => return Some(("\u{1F642}", 2)), // slightly smiling
+            b":(" => return Some(("\u{1F61E}", 2)), // disappointed
+            b":D" => return Some(("\u{1F600}", 2)), // grinning
+            b":P" => return Some(("\u{1F61B}", 2)), // tongue out
+            b":O" => return Some(("\u{1F62E}", 2)), // open mouth
+            b";)" => return Some(("\u{1F609}", 2)), // winking
+            b"<3" => return Some(("\u{2764}", 2)),  // heart
             _ => {}
         }
     }
@@ -358,7 +381,8 @@ fn replace_emojis(text: &str) -> String {
         }
         // Emoticon shortcuts (:-) 8-) ;) etc.)
         // Only match if preceded by whitespace/start or follows whitespace
-        let at_boundary = i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\n' || bytes[i - 1] == b'\t';
+        let at_boundary =
+            i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\n' || bytes[i - 1] == b'\t';
         if at_boundary {
             if let Some((emoji, consumed)) = match_emoticon(bytes, i) {
                 // Check that emoticon ends at boundary (space, newline, end, or punctuation)
@@ -399,24 +423,36 @@ fn extract_links(text: &str) -> Vec<LinkInfo> {
 
     while i < len {
         // ![alt](url) — skip images
-        if bytes[i] == b'!' && i + 1 < len && bytes[i+1] == b'[' {
+        if bytes[i] == b'!' && i + 1 < len && bytes[i + 1] == b'[' {
             i += 2;
-            while i < len && bytes[i] != b']' { i += 1; }
-            if i < len { i += 1; }
+            while i < len && bytes[i] != b']' {
+                i += 1;
+            }
+            if i < len {
+                i += 1;
+            }
             if i < len && bytes[i] == b'(' {
                 i += 1;
-                while i < len && bytes[i] != b')' { i += 1; }
-                if i < len { i += 1; }
+                while i < len && bytes[i] != b')' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
             }
             continue;
         }
         // [text](url)
-        if bytes[i] == b'[' && (i == 0 || bytes[i-1] != b'!') {
+        if bytes[i] == b'[' && (i == 0 || bytes[i - 1] != b'!') {
             let bracket_start = i;
             i += 1;
             let text_start = i;
-            while i < len && bytes[i] != b']' { i += 1; }
-            if i >= len { continue; }
+            while i < len && bytes[i] != b']' {
+                i += 1;
+            }
+            if i >= len {
+                continue;
+            }
             let link_text = &text[text_start..i];
             i += 1; // skip ]
             if i < len && bytes[i] == b'(' {
@@ -425,9 +461,15 @@ fn extract_links(text: &str) -> Vec<LinkInfo> {
                 // Handle optional title: [text](url "title")
                 let mut paren_depth = 1;
                 while i < len && paren_depth > 0 {
-                    if bytes[i] == b'(' { paren_depth += 1; }
-                    if bytes[i] == b')' { paren_depth -= 1; }
-                    if paren_depth > 0 { i += 1; }
+                    if bytes[i] == b'(' {
+                        paren_depth += 1;
+                    }
+                    if bytes[i] == b')' {
+                        paren_depth -= 1;
+                    }
+                    if paren_depth > 0 {
+                        i += 1;
+                    }
                 }
                 let url_raw = &text[url_start..i];
                 // Strip title if present
@@ -436,7 +478,9 @@ fn extract_links(text: &str) -> Vec<LinkInfo> {
                 } else {
                     url_raw.trim()
                 };
-                if i < len { i += 1; } // skip )
+                if i < len {
+                    i += 1;
+                } // skip )
                 if !url.is_empty() && (url.starts_with("http://") || url.starts_with("https://")) {
                     links.push(LinkInfo {
                         display: String::from(link_text),
@@ -449,7 +493,12 @@ fn extract_links(text: &str) -> Vec<LinkInfo> {
         // Bare URL: http:// or https://
         if i + 7 < len && (text[i..].starts_with("http://") || text[i..].starts_with("https://")) {
             let url_start = i;
-            while i < len && bytes[i] != b' ' && bytes[i] != b'\n' && bytes[i] != b')' && bytes[i] != b'>' {
+            while i < len
+                && bytes[i] != b' '
+                && bytes[i] != b'\n'
+                && bytes[i] != b')'
+                && bytes[i] != b'>'
+            {
                 i += 1;
             }
             let url = &text[url_start..i];
@@ -461,7 +510,15 @@ fn extract_links(text: &str) -> Vec<LinkInfo> {
         }
         // Skip one full UTF-8 character
         let b = bytes[i];
-        i += if b < 0x80 { 1 } else if b < 0xE0 { 2 } else if b < 0xF0 { 3 } else { 4 };
+        i += if b < 0x80 {
+            1
+        } else if b < 0xE0 {
+            2
+        } else if b < 0xF0 {
+            3
+        } else {
+            4
+        };
     }
     links
 }
@@ -473,16 +530,24 @@ fn extract_links(text: &str) -> Vec<LinkInfo> {
 fn try_strip_link(text: &str, bytes: &[u8], i: usize, out: &mut String) -> Option<usize> {
     let len = bytes.len();
     // ![alt](url) → [Image: alt]
-    if bytes[i] == b'!' && i + 1 < len && bytes[i+1] == b'[' {
+    if bytes[i] == b'!' && i + 1 < len && bytes[i + 1] == b'[' {
         let mut j = i + 2;
         let start = j;
-        while j < len && bytes[j] != b']' { j += 1; }
+        while j < len && bytes[j] != b']' {
+            j += 1;
+        }
         let alt = &text[start..j];
-        if j < len { j += 1; }
+        if j < len {
+            j += 1;
+        }
         if j < len && bytes[j] == b'(' {
             j += 1;
-            while j < len && bytes[j] != b')' { j += 1; }
-            if j < len { j += 1; }
+            while j < len && bytes[j] != b')' {
+                j += 1;
+            }
+            if j < len {
+                j += 1;
+            }
         }
         out.push_str("[Image: ");
         out.push_str(alt);
@@ -491,16 +556,26 @@ fn try_strip_link(text: &str, bytes: &[u8], i: usize, out: &mut String) -> Optio
     }
     // [text](url) → text  or  [text] → text
     if bytes[i] == b'[' {
-        if i + 1 < len && bytes[i+1] == b'^' { return None; }
+        if i + 1 < len && bytes[i + 1] == b'^' {
+            return None;
+        }
         let mut j = i + 1;
         let start = j;
-        while j < len && bytes[j] != b']' { j += 1; }
+        while j < len && bytes[j] != b']' {
+            j += 1;
+        }
         let link_text = &text[start..j];
-        if j < len { j += 1; }
+        if j < len {
+            j += 1;
+        }
         if j < len && bytes[j] == b'(' {
             j += 1;
-            while j < len && bytes[j] != b')' { j += 1; }
-            if j < len { j += 1; }
+            while j < len && bytes[j] != b')' {
+                j += 1;
+            }
+            if j < len {
+                j += 1;
+            }
         }
         out.push_str(link_text);
         return Some(j);
@@ -517,35 +592,53 @@ fn strip_inline(text: &str) -> String {
 
     while i < len {
         // ~~strikethrough~~
-        if i + 1 < len && bytes[i] == b'~' && bytes[i+1] == b'~' {
+        if i + 1 < len && bytes[i] == b'~' && bytes[i + 1] == b'~' {
             i += 2;
-            while i + 1 < len && !(bytes[i] == b'~' && bytes[i+1] == b'~') {
-                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) { i = ni; continue; }
+            while i + 1 < len && !(bytes[i] == b'~' && bytes[i + 1] == b'~') {
+                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) {
+                    i = ni;
+                    continue;
+                }
                 i += push_utf8(&mut out, bytes, i);
             }
-            if i + 1 < len { i += 2; }
+            if i + 1 < len {
+                i += 2;
+            }
             continue;
         }
         // **bold** or __bold__
-        if i + 1 < len && ((bytes[i] == b'*' && bytes[i+1] == b'*') || (bytes[i] == b'_' && bytes[i+1] == b'_')) {
+        if i + 1 < len
+            && ((bytes[i] == b'*' && bytes[i + 1] == b'*')
+                || (bytes[i] == b'_' && bytes[i + 1] == b'_'))
+        {
             let marker = bytes[i];
             i += 2;
-            while i + 1 < len && !(bytes[i] == marker && bytes[i+1] == marker) {
-                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) { i = ni; continue; }
+            while i + 1 < len && !(bytes[i] == marker && bytes[i + 1] == marker) {
+                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) {
+                    i = ni;
+                    continue;
+                }
                 i += push_utf8(&mut out, bytes, i);
             }
-            if i + 1 < len { i += 2; }
+            if i + 1 < len {
+                i += 2;
+            }
             continue;
         }
         // *italic* or _italic_ (single)
-        if (bytes[i] == b'*' || bytes[i] == b'_') && i + 1 < len && bytes[i+1] != b' ' {
+        if (bytes[i] == b'*' || bytes[i] == b'_') && i + 1 < len && bytes[i + 1] != b' ' {
             let marker = bytes[i];
             i += 1;
             while i < len && bytes[i] != marker {
-                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) { i = ni; continue; }
+                if let Some(ni) = try_strip_link(text, bytes, i, &mut out) {
+                    i = ni;
+                    continue;
+                }
                 i += push_utf8(&mut out, bytes, i);
             }
-            if i < len { i += 1; }
+            if i < len {
+                i += 1;
+            }
             continue;
         }
         // `inline code` — push content verbatim (no link processing)
@@ -554,11 +647,16 @@ fn strip_inline(text: &str) -> String {
             while i < len && bytes[i] != b'`' {
                 i += push_utf8(&mut out, bytes, i);
             }
-            if i < len { i += 1; }
+            if i < len {
+                i += 1;
+            }
             continue;
         }
         // Links and images
-        if let Some(ni) = try_strip_link(text, bytes, i, &mut out) { i = ni; continue; }
+        if let Some(ni) = try_strip_link(text, bytes, i, &mut out) {
+            i = ni;
+            continue;
+        }
         i += push_utf8(&mut out, bytes, i);
     }
     let typographic = replace_typographic(&out);
@@ -640,7 +738,9 @@ fn add_code_block(panel: &anyui::StackPanel, lines: &[&str]) {
     let code_text = {
         let mut s = String::new();
         for (i, line) in lines.iter().enumerate() {
-            if i > 0 { s.push('\n'); }
+            if i > 0 {
+                s.push('\n');
+            }
             s.push_str(line);
         }
         s
@@ -662,7 +762,13 @@ fn add_code_block(panel: &anyui::StackPanel, lines: &[&str]) {
     panel.add(&container);
 }
 
-fn add_list_item(panel: &anyui::StackPanel, text: &str, ordered: bool, number: usize, indent_level: usize) {
+fn add_list_item(
+    panel: &anyui::StackPanel,
+    text: &str,
+    ordered: bool,
+    number: usize,
+    indent_level: usize,
+) {
     let stripped = strip_inline(text);
     // Build indent prefix: 2 spaces per indent level
     let mut prefix = String::new();
@@ -674,9 +780,9 @@ fn add_list_item(panel: &anyui::StackPanel, text: &str, ordered: bool, number: u
         anyos_std::format!("{}{}. {}", prefix, number, stripped)
     } else {
         let bullet = match indent_level {
-            0 => "\u{2022}",  // •
-            1 => "\u{25E6}",  // ◦
-            _ => "\u{2023}",  // ‣
+            0 => "\u{2022}", // •
+            1 => "\u{25E6}", // ◦
+            _ => "\u{2023}", // ‣
         };
         anyos_std::format!("{}{} {}", prefix, bullet, stripped)
     };
@@ -730,11 +836,15 @@ fn add_horizontal_rule(panel: &anyui::StackPanel) {
 
 fn is_table_separator(line: &str) -> bool {
     let trimmed = line.trim();
-    if !trimmed.starts_with('|') { return false; }
+    if !trimmed.starts_with('|') {
+        return false;
+    }
     // Check if all cells are separator cells like ---, :---, ---:, :---:
     for cell in trimmed.split('|') {
         let c = cell.trim();
-        if c.is_empty() { continue; }
+        if c.is_empty() {
+            continue;
+        }
         let stripped = c.trim_start_matches(':').trim_end_matches(':');
         if stripped.is_empty() || !stripped.as_bytes().iter().all(|&b| b == b'-') {
             return false;
@@ -747,18 +857,23 @@ fn parse_table_row(line: &str) -> Vec<String> {
     let trimmed = line.trim();
     // Strip leading/trailing |
     let inner = if trimmed.starts_with('|') && trimmed.ends_with('|') {
-        &trimmed[1..trimmed.len()-1]
+        &trimmed[1..trimmed.len() - 1]
     } else if trimmed.starts_with('|') {
         &trimmed[1..]
     } else {
         trimmed
     };
-    inner.split('|').map(|cell| String::from(strip_inline(cell.trim()))).collect()
+    inner
+        .split('|')
+        .map(|cell| String::from(strip_inline(cell.trim())))
+        .collect()
 }
 
 fn add_table(panel: &anyui::StackPanel, header: &[String], rows: &[Vec<String>]) {
     let num_cols = header.len();
-    if num_cols == 0 { return; }
+    if num_cols == 0 {
+        return;
+    }
 
     // Calculate column widths (char-based, minimum 6)
     let mut col_widths: Vec<usize> = header.iter().map(|h| h.len().max(6)).collect();
@@ -775,28 +890,48 @@ fn add_table(panel: &anyui::StackPanel, header: &[String], rows: &[Vec<String>])
 
     // Header row
     for (c, h) in header.iter().enumerate() {
-        if c > 0 { table_text.push_str(" \u{2502} "); }
+        if c > 0 {
+            table_text.push_str(" \u{2502} ");
+        }
         table_text.push_str(h);
-        let pad = col_widths.get(c).copied().unwrap_or(0).saturating_sub(h.len());
-        for _ in 0..pad { table_text.push(' '); }
+        let pad = col_widths
+            .get(c)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(h.len());
+        for _ in 0..pad {
+            table_text.push(' ');
+        }
     }
     table_text.push('\n');
 
     // Separator
     for (c, w) in col_widths.iter().enumerate() {
-        if c > 0 { table_text.push_str("\u{2500}\u{253C}\u{2500}"); }
-        for _ in 0..*w { table_text.push('\u{2500}'); }
+        if c > 0 {
+            table_text.push_str("\u{2500}\u{253C}\u{2500}");
+        }
+        for _ in 0..*w {
+            table_text.push('\u{2500}');
+        }
     }
     table_text.push('\n');
 
     // Data rows
     for row in rows {
         for c in 0..num_cols {
-            if c > 0 { table_text.push_str(" \u{2502} "); }
+            if c > 0 {
+                table_text.push_str(" \u{2502} ");
+            }
             let cell = row.get(c).map(|s| s.as_str()).unwrap_or("");
             table_text.push_str(cell);
-            let pad = col_widths.get(c).copied().unwrap_or(0).saturating_sub(cell.len());
-            for _ in 0..pad { table_text.push(' '); }
+            let pad = col_widths
+                .get(c)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(cell.len());
+            for _ in 0..pad {
+                table_text.push(' ');
+            }
         }
         table_text.push('\n');
     }
@@ -820,10 +955,14 @@ fn add_table(panel: &anyui::StackPanel, header: &[String], rows: &[Vec<String>])
 
 fn is_hr_line(line: &str) -> bool {
     let trimmed = line.trim();
-    if trimmed.len() < 3 { return false; }
+    if trimmed.len() < 3 {
+        return false;
+    }
     let bytes = trimmed.as_bytes();
     let ch = bytes[0];
-    if ch != b'-' && ch != b'*' && ch != b'_' { return false; }
+    if ch != b'-' && ch != b'*' && ch != b'_' {
+        return false;
+    }
     bytes.iter().all(|&b| b == ch || b == b' ')
 }
 
@@ -846,7 +985,9 @@ fn list_item_text(line: &str) -> Option<(bool, &str, usize)> {
     let indent_level = indent / 2;
     let trimmed = line.trim_start();
     // Unordered: - item, * item, + item
-    if trimmed.len() >= 2 && (trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ")) {
+    if trimmed.len() >= 2
+        && (trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ "))
+    {
         return Some((false, &trimmed[2..], indent_level));
     }
     // Ordered: 1. item, 12. item
@@ -904,7 +1045,9 @@ fn render_markdown(md: &str, panel: &anyui::StackPanel) {
                 code_lines.push(lines[i]);
                 i += 1;
             }
-            if i < total { i += 1; } // skip closing ```
+            if i < total {
+                i += 1;
+            } // skip closing ```
             add_code_block(panel, &code_lines);
             continue;
         }
@@ -929,7 +1072,9 @@ fn render_markdown(md: &str, panel: &anyui::StackPanel) {
                             has_more = true;
                             break;
                         }
-                        if !lines[j].trim().is_empty() { break; }
+                        if !lines[j].trim().is_empty() {
+                            break;
+                        }
                         j += 1;
                     }
                     if has_more {
@@ -1104,7 +1249,9 @@ fn open_file(path: &str) {
 
 fn close_tab(index: usize) {
     let s = app();
-    if index >= s.files.len() { return; }
+    if index >= s.files.len() {
+        return;
+    }
 
     // Remove panel and source editor from scroll view
     s.files[index].panel.remove();
@@ -1139,7 +1286,9 @@ fn close_tab(index: usize) {
 
 fn switch_tab(index: usize) {
     let s = app();
-    if index >= s.files.len() { return; }
+    if index >= s.files.len() {
+        return;
+    }
 
     // Hide all panels and source editors, show target
     for (i, f) in s.files.iter().enumerate() {
@@ -1170,7 +1319,9 @@ fn switch_tab(index: usize) {
 /// Re-render the markdown panel for the active file from its `content`.
 fn rerender_active() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let idx = s.active;
 
     // Remove old rendered panel
@@ -1190,7 +1341,9 @@ fn rerender_active() {
 /// Read editor text back into `content`, mark modified if changed.
 fn sync_editor_to_content() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let idx = s.active;
     let file = &mut s.files[idx];
     if let Some(ref editor) = file.source_editor {
@@ -1206,7 +1359,9 @@ fn sync_editor_to_content() {
 
 fn toggle_source() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let idx = s.active;
 
     if s.files[idx].showing_source {
@@ -1234,7 +1389,9 @@ fn toggle_source() {
             editor.on_key_down(|ke| {
                 if ke.ctrl() {
                     match ke.char_code {
-                        0x63 | 0x43 => { app().status_label.set_text("Copied selection"); }
+                        0x63 | 0x43 => {
+                            app().status_label.set_text("Copied selection");
+                        }
                         0x78 | 0x58 => {
                             app().status_label.set_text("Cut selection");
                             let s = app();
@@ -1258,7 +1415,11 @@ fn toggle_source() {
             s.scroll.add(&editor);
             s.files[idx].source_editor = Some(editor);
         } else {
-            s.files[idx].source_editor.as_ref().unwrap().set_visible(true);
+            s.files[idx]
+                .source_editor
+                .as_ref()
+                .unwrap()
+                .set_visible(true);
         }
         s.files[idx].showing_source = true;
     }
@@ -1272,7 +1433,9 @@ fn update_tab_labels() {
 
 fn save_file() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let idx = s.active;
 
     // If source editor is visible, sync content first
@@ -1291,7 +1454,9 @@ fn save_file() {
 
 fn save_file_as() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let idx = s.active;
 
     // If source editor is visible, sync content first
@@ -1316,7 +1481,9 @@ fn save_file_as() {
 /// Copy: in source mode → editor.copy(). In rendered mode → copy full markdown content.
 fn clipboard_copy() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let file = &s.files[s.active];
     if file.showing_source {
         if let Some(ref editor) = file.source_editor {
@@ -1334,7 +1501,9 @@ fn clipboard_copy() {
 /// Cut: only works in source mode.
 fn clipboard_cut() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let file = &mut s.files[s.active];
     if file.showing_source {
         if let Some(ref editor) = file.source_editor {
@@ -1350,7 +1519,9 @@ fn clipboard_cut() {
 /// Paste: only works in source mode.
 fn clipboard_paste() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let file = &mut s.files[s.active];
     if file.showing_source {
         if let Some(ref editor) = file.source_editor {
@@ -1367,7 +1538,9 @@ fn clipboard_paste() {
 /// Select all: in source mode → editor.select_all(). In rendered mode → copy all.
 fn select_all() {
     let s = app();
-    if s.files.is_empty() { return; }
+    if s.files.is_empty() {
+        return;
+    }
     let file = &s.files[s.active];
     if file.showing_source {
         if let Some(ref editor) = file.source_editor {
@@ -1376,7 +1549,8 @@ fn select_all() {
     } else {
         // Rendered view: copy all content to clipboard as convenience
         anyui::clipboard_set(&file.content);
-        s.status_label.set_text(i18n::t("All content copied to clipboard"));
+        s.status_label
+            .set_text(i18n::t("All content copied to clipboard"));
     }
 }
 
@@ -1486,35 +1660,33 @@ fn main() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("Open..."), 0)
-            .item(2, i18n::t("Close Tab"), 0)
-            .separator()
-            .item(3, i18n::t("Quit"), 0)
+        .item(1, i18n::t("Open..."), 0)
+        .item(2, i18n::t("Close Tab"), 0)
+        .separator()
+        .item(3, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("View"))
-            .item(10, i18n::t("Toggle Source"), 0)
+        .item(10, i18n::t("Toggle Source"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(app().win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => {
-                if let Some(path) = anyui::FileDialog::open_file() {
-                    open_file(&path);
-                }
+    menu.on_item(|e| match e.item_id {
+        1 => {
+            if let Some(path) = anyui::FileDialog::open_file() {
+                open_file(&path);
             }
-            2 => {
-                let idx = app().active;
-                close_tab(idx);
-            }
-            3 => {
-                anyui::quit();
-            }
-            10 => {
-                toggle_source();
-            }
-            _ => {}
         }
+        2 => {
+            let idx = app().active;
+            close_tab(idx);
+        }
+        3 => {
+            anyui::quit();
+        }
+        10 => {
+            toggle_source();
+        }
+        _ => {}
     });
 
     // ── Wire events ──
@@ -1544,7 +1716,9 @@ fn main() {
         close_tab(e.index as usize);
     });
 
-    app().win.on_close(|_| { anyui::quit(); });
+    app().win.on_close(|_| {
+        anyui::quit();
+    });
 
     // ── Keyboard shortcuts ──
     // Note: Ctrl+C/V/X/A are handled by TextEditor when it has focus in source mode.
@@ -1553,23 +1727,25 @@ fn main() {
     app().win.on_key_down(|ke| {
         if ke.ctrl() && ke.shift() {
             match ke.char_code {
-                0x53 | 0x73 => save_file_as(),          // Ctrl+Shift+S
+                0x53 | 0x73 => save_file_as(), // Ctrl+Shift+S
                 _ => {}
             }
         } else if ke.ctrl() {
             match ke.char_code {
-                0x63 => clipboard_copy(),                // Ctrl+C (rendered view)
-                0x78 => clipboard_cut(),                 // Ctrl+X (rendered view)
-                0x76 => clipboard_paste(),               // Ctrl+V (rendered view)
-                0x61 => select_all(),                    // Ctrl+A (rendered view)
-                0x73 => save_file(),                     // Ctrl+S
-                0x6F => {                                // Ctrl+O
+                0x63 => clipboard_copy(),  // Ctrl+C (rendered view)
+                0x78 => clipboard_cut(),   // Ctrl+X (rendered view)
+                0x76 => clipboard_paste(), // Ctrl+V (rendered view)
+                0x61 => select_all(),      // Ctrl+A (rendered view)
+                0x73 => save_file(),       // Ctrl+S
+                0x6F => {
+                    // Ctrl+O
                     if let Some(path) = anyui::FileDialog::open_file() {
                         open_file(&path);
                     }
                 }
-                0x65 => toggle_source(),                 // Ctrl+E (toggle editor)
-                0x77 => {                                // Ctrl+W (close tab)
+                0x65 => toggle_source(), // Ctrl+E (toggle editor)
+                0x77 => {
+                    // Ctrl+W (close tab)
                     let idx = app().active;
                     close_tab(idx);
                 }

@@ -1,7 +1,7 @@
 //! `apkg list` — list installed or available packages.
 
-use anyos_std::println;
 use crate::{config, db, index};
+use anyos_std::println;
 
 /// Execute `apkg list [-a]`.
 /// `-a` = list all available packages instead of installed ones.
@@ -21,11 +21,17 @@ fn list_installed() {
         return;
     }
 
-    println!("{:<20} {:<10} {:<10} {}", "Package", "Version", "Type", "Auto");
+    println!(
+        "{:<20} {:<10} {:<10} {}",
+        "Package", "Version", "Type", "Auto"
+    );
     println!("{}", "-".repeat(55));
     for pkg in &database.packages {
         let auto_str = if pkg.auto { "yes" } else { "" };
-        println!("{:<20} {:<10} {:<10} {}", pkg.name, pkg.version, pkg.pkg_type, auto_str);
+        println!(
+            "{:<20} {:<10} {:<10} {}",
+            pkg.name, pkg.version, pkg.pkg_type, auto_str
+        );
     }
     println!("{} package(s) installed.", database.packages.len());
 }
@@ -50,11 +56,21 @@ fn list_available() {
 
     let db = db::Database::load();
 
-    println!("{:<20} {:<10} {:<10} {}", "Package", "Version", "Type", "Status");
+    println!(
+        "{:<20} {:<10} {:<10} {}",
+        "Package", "Version", "Type", "Status"
+    );
     println!("{}", "-".repeat(60));
     for pkg in &packages {
-        let status = if db.is_installed(&pkg.name) { "installed" } else { "" };
-        println!("{:<20} {:<10} {:<10} {}", pkg.name, pkg.version_str, pkg.pkg_type, status);
+        let status = if db.is_installed(&pkg.name) {
+            "installed"
+        } else {
+            ""
+        };
+        println!(
+            "{:<20} {:<10} {:<10} {}",
+            pkg.name, pkg.version_str, pkg.pkg_type, status
+        );
     }
     println!("{} package(s) available.", packages.len());
 }

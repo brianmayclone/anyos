@@ -66,23 +66,16 @@ struct DllExports {
     ) -> u32,
     destroy_window: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32),
     present: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32),
-    poll_event: extern "C" fn(
-        channel_id: u32,
-        sub_id: u32,
-        window_id: u32,
-        buf: *mut [u32; 5],
-    ) -> u32,
-    set_title:
-        extern "C" fn(channel_id: u32, window_id: u32, title_ptr: *const u8, title_len: u32),
+    poll_event:
+        extern "C" fn(channel_id: u32, sub_id: u32, window_id: u32, buf: *mut [u32; 5]) -> u32,
+    set_title: extern "C" fn(channel_id: u32, window_id: u32, title_ptr: *const u8, title_len: u32),
     screen_size: extern "C" fn(out_w: *mut u32, out_h: *mut u32),
     set_wallpaper: extern "C" fn(channel_id: u32, path_ptr: *const u8, path_len: u32),
     move_window: extern "C" fn(channel_id: u32, window_id: u32, x: i32, y: i32),
-    set_menu:
-        extern "C" fn(channel_id: u32, window_id: u32, menu_data: *const u8, menu_len: u32),
+    set_menu: extern "C" fn(channel_id: u32, window_id: u32, menu_data: *const u8, menu_len: u32),
     add_status_icon: extern "C" fn(channel_id: u32, icon_id: u32, pixels: *const u32),
     remove_status_icon: extern "C" fn(channel_id: u32, icon_id: u32),
-    update_menu_item:
-        extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
+    update_menu_item: extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
     resize_shm: extern "C" fn(
         channel_id: u32,
         window_id: u32,
@@ -99,13 +92,22 @@ struct DllExports {
     _create_vram_window: usize,
     _present_rect: usize,
     set_clipboard: extern "C" fn(channel_id: u32, data_ptr: *const u8, data_len: u32, format: u32),
-    get_clipboard: extern "C" fn(channel_id: u32, sub_id: u32, out_ptr: *mut u8, out_cap: u32, out_format: *mut u32) -> u32,
+    get_clipboard: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        out_ptr: *mut u8,
+        out_cap: u32,
+        out_format: *mut u32,
+    ) -> u32,
     show_notification: extern "C" fn(
         channel_id: u32,
-        title_ptr: *const u8, title_len: u32,
-        msg_ptr: *const u8, msg_len: u32,
+        title_ptr: *const u8,
+        title_len: u32,
+        msg_ptr: *const u8,
+        msg_len: u32,
         icon_ptr: *const u32,
-        timeout_ms: u32, flags: u32,
+        timeout_ms: u32,
+        flags: u32,
     ),
 }
 
@@ -248,9 +250,13 @@ static mut FONT_DRAW: Option<DrawBufFn> = None;
 /// Ensure libfont.so is loaded and symbols are resolved.
 fn ensure_libfont() {
     unsafe {
-        if FONT_MEASURE.is_some() { return; }
+        if FONT_MEASURE.is_some() {
+            return;
+        }
         let base = crate::dll::dll_load("/Libraries/libfont.so") as u64;
-        if base == 0 { return; }
+        if base == 0 {
+            return;
+        }
         FONT_LOAD = resolve_sym(base, b"font_load");
         FONT_UNLOAD = resolve_sym(base, b"font_unload");
         FONT_MEASURE = resolve_sym(base, b"font_measure_string");
@@ -275,15 +281,23 @@ unsafe fn resolve_sym<T: Copy>(base: u64, name: &[u8]) -> Option<T> {
         if p_type == 1 {
             // PT_LOAD — track lowest p_vaddr
             let p_vaddr = *(ph.add(16) as *const u64);
-            if p_vaddr < link_base { link_base = p_vaddr; }
+            if p_vaddr < link_base {
+                link_base = p_vaddr;
+            }
         }
         if p_type == 2 {
             dynamic_va = *(ph.add(16) as *const u64);
         }
     }
-    if dynamic_va == 0 { return None; }
+    if dynamic_va == 0 {
+        return None;
+    }
     // For base-0 .so files, p_vaddr is a link-time offset — add load_bias
-    let load_bias = if link_base != u64::MAX { base - link_base } else { 0 };
+    let load_bias = if link_base != u64::MAX {
+        base - link_base
+    } else {
+        0
+    };
     dynamic_va += load_bias;
 
     let mut symtab: u64 = 0;
@@ -302,7 +316,9 @@ unsafe fn resolve_sym<T: Copy>(base: u64, name: &[u8]) -> Option<T> {
             _ => {}
         }
     }
-    if symtab == 0 || strtab == 0 || hash == 0 { return None; }
+    if symtab == 0 || strtab == 0 || hash == 0 {
+        return None;
+    }
 
     let nbuckets = *(hash as *const u32);
     let buckets = (hash as *const u32).add(2);
@@ -327,7 +343,9 @@ fn elf_hash_sym(name: &[u8]) -> u32 {
     for &b in name {
         h = (h << 4).wrapping_add(b as u32);
         let g = h & 0xF000_0000;
-        if g != 0 { h ^= g >> 24; }
+        if g != 0 {
+            h ^= g >> 24;
+        }
         h &= !g;
     }
     h
@@ -336,7 +354,9 @@ fn elf_hash_sym(name: &[u8]) -> u32 {
 unsafe fn cstr_eq_sym(strtab: *const u8, offset: usize, name: &[u8]) -> bool {
     let s = strtab.add(offset);
     for (i, &b) in name.iter().enumerate() {
-        if *s.add(i) != b { return false; }
+        if *s.add(i) != b {
+            return false;
+        }
     }
     *s.add(name.len()) == 0
 }
@@ -423,7 +443,12 @@ pub fn set_title(window_id: u32, title: &str) -> u32 {
     let st = state();
     if let Some(win) = st.windows.iter().find(|w| w.ext_id == window_id) {
         let bytes = title.as_bytes();
-        (dll().set_title)(st.channel_id, win.comp_id, bytes.as_ptr(), bytes.len() as u32);
+        (dll().set_title)(
+            st.channel_id,
+            win.comp_id,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+        );
         0
     } else {
         u32::MAX
@@ -535,7 +560,7 @@ pub fn draw_text(window_id: u32, x: i16, y: i16, color: u32, text: &str) -> u32 
     let pixel_count = (win.surface.width as usize) * (win.surface.height as usize);
     let buf = unsafe { core::slice::from_raw_parts_mut(win.surface.pixels, pixel_count) };
     font_render_buf(
-        0, // system font
+        0,  // system font
         13, // default size
         buf,
         win.surface.width,
@@ -654,16 +679,24 @@ pub fn blit_alpha(window_id: u32, x: i16, y: i16, w: u16, h: u16, data: &[u32]) 
     let stride = win.surface.width;
     for row in 0..h as i32 {
         let py = y as i32 + row;
-        if py < 0 || py >= sh { continue; }
+        if py < 0 || py >= sh {
+            continue;
+        }
         let x0 = (x as i32).max(0);
         let x1 = (x as i32 + w as i32).min(sw);
-        if x0 >= x1 { continue; }
+        if x0 >= x1 {
+            continue;
+        }
         for col in x0..x1 {
             let src_idx = (row * w as i32 + (col - x as i32)) as usize;
-            if src_idx >= data.len() { break; }
+            if src_idx >= data.len() {
+                break;
+            }
             let src = data[src_idx];
             let a = (src >> 24) & 0xFF;
-            if a == 0 { continue; }
+            if a == 0 {
+                continue;
+            }
             let dst_idx = (py as u32 * stride + col as u32) as usize;
             unsafe {
                 if a >= 255 {
@@ -729,8 +762,11 @@ pub fn set_resolution(width: u32, height: u32) -> bool {
 /// List supported display resolutions.
 pub fn list_resolutions() -> alloc::vec::Vec<(u32, u32)> {
     let mut buf = [0u32; 32];
-    let count =
-        syscall2(SYS_LIST_RESOLUTIONS, buf.as_mut_ptr() as u64, (buf.len() * 4) as u64);
+    let count = syscall2(
+        SYS_LIST_RESOLUTIONS,
+        buf.as_mut_ptr() as u64,
+        (buf.len() * 4) as u64,
+    );
     let mut modes = alloc::vec::Vec::new();
     for i in 0..count as usize {
         if i * 2 + 1 < buf.len() {
@@ -749,7 +785,9 @@ pub fn get_theme() -> u32 {
 /// Set the system theme. Sends CMD_SET_THEME (0x100D) to compositor.
 /// theme: 0 = dark, 1 = light.
 pub fn set_theme(theme: u32) {
-    if !ensure_init() { return; }
+    if !ensure_init() {
+        return;
+    }
     let st = state();
     crate::ipc::evt_chan_emit(st.channel_id, &[0x100D, theme, 0, 0, 0]);
 }
@@ -781,9 +819,12 @@ pub fn font_measure(font_id: u16, size: u16, text: &str) -> (u32, u32) {
     let mut out_h: u32 = 0;
     if let Some(measure) = unsafe { FONT_MEASURE } {
         measure(
-            font_id as u32, size,
-            text.as_ptr(), text.len() as u32,
-            &mut out_w, &mut out_h,
+            font_id as u32,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
+            &mut out_w,
+            &mut out_h,
         );
     }
     (out_w, out_h)
@@ -833,10 +874,16 @@ pub fn font_render_buf(
     ensure_libfont();
     if let Some(draw) = unsafe { FONT_DRAW } {
         draw(
-            buf.as_mut_ptr(), buf_w, buf_h,
-            x, y, color,
-            font_id as u32, size,
-            text.as_ptr(), text.len() as u32,
+            buf.as_mut_ptr(),
+            buf_w,
+            buf_h,
+            x,
+            y,
+            color,
+            font_id as u32,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
         );
     }
     0
@@ -923,7 +970,9 @@ pub fn gpu_has_hw_cursor() -> bool {
 /// Set the desktop wallpaper by file path.
 /// The compositor loads and scales the image to fit the screen.
 pub fn set_wallpaper(path: &str) -> u32 {
-    if !ensure_init() { return u32::MAX; }
+    if !ensure_init() {
+        return u32::MAX;
+    }
     let st = state();
     let bytes = path.as_bytes();
     (dll().set_wallpaper)(st.channel_id, bytes.as_ptr(), bytes.len() as u32);
@@ -937,22 +986,33 @@ pub const CLIPBOARD_URI_LIST: u32 = 1;
 
 /// Set clipboard contents (text).
 pub fn clipboard_set(text: &str) {
-    if !ensure_init() { return; }
+    if !ensure_init() {
+        return;
+    }
     let st = state();
     let bytes = text.as_bytes();
-    (dll().set_clipboard)(st.channel_id, bytes.as_ptr(), bytes.len() as u32, CLIPBOARD_TEXT);
+    (dll().set_clipboard)(
+        st.channel_id,
+        bytes.as_ptr(),
+        bytes.len() as u32,
+        CLIPBOARD_TEXT,
+    );
 }
 
 /// Set clipboard contents with explicit format.
 pub fn clipboard_set_with_format(data: &[u8], format: u32) {
-    if !ensure_init() { return; }
+    if !ensure_init() {
+        return;
+    }
     let st = state();
     (dll().set_clipboard)(st.channel_id, data.as_ptr(), data.len() as u32, format);
 }
 
 /// Get clipboard contents as a String. Returns None if clipboard is empty.
 pub fn clipboard_get() -> Option<alloc::string::String> {
-    if !ensure_init() { return None; }
+    if !ensure_init() {
+        return None;
+    }
     let st = state();
     let mut buf = [0u8; 4096];
     let mut format: u32 = 0;
@@ -975,14 +1035,19 @@ pub fn clipboard_get() -> Option<alloc::string::String> {
 /// Show a desktop notification banner via the compositor.
 /// `timeout_ms` = 0 means default (5 seconds).
 pub fn show_notification(title: &str, message: &str, timeout_ms: u32) {
-    if !ensure_init() { return; }
+    if !ensure_init() {
+        return;
+    }
     let st = state();
     (dll().show_notification)(
         st.channel_id,
-        title.as_ptr(), title.len() as u32,
-        message.as_ptr(), message.len() as u32,
+        title.as_ptr(),
+        title.len() as u32,
+        message.as_ptr(),
+        message.len() as u32,
         core::ptr::null(),
-        timeout_ms, 0,
+        timeout_ms,
+        0,
     );
 }
 

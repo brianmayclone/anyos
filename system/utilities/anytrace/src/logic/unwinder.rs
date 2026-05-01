@@ -49,12 +49,24 @@ pub fn unwind(tid: u32, rip: u64, rbp: u64, max_depth: usize) -> Vec<StackFrame>
         }
 
         let next_rbp = u64::from_le_bytes([
-            frame_data[0], frame_data[1], frame_data[2], frame_data[3],
-            frame_data[4], frame_data[5], frame_data[6], frame_data[7],
+            frame_data[0],
+            frame_data[1],
+            frame_data[2],
+            frame_data[3],
+            frame_data[4],
+            frame_data[5],
+            frame_data[6],
+            frame_data[7],
         ]);
         let ret_addr = u64::from_le_bytes([
-            frame_data[8], frame_data[9], frame_data[10], frame_data[11],
-            frame_data[12], frame_data[13], frame_data[14], frame_data[15],
+            frame_data[8],
+            frame_data[9],
+            frame_data[10],
+            frame_data[11],
+            frame_data[12],
+            frame_data[13],
+            frame_data[14],
+            frame_data[15],
         ]);
 
         // Sanity check: return address should be in user space

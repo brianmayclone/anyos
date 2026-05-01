@@ -3,11 +3,11 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::i18n;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::i18n;
-use libanyui_client as anyui;
 use anyui::Widget;
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
@@ -62,8 +62,15 @@ fn now_string() -> String {
     let hour = buf[4];
     let min = buf[5];
     let sec = buf[6];
-    anyos_std::format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, month, day, hour, min, sec)
+    anyos_std::format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year,
+        month,
+        day,
+        hour,
+        min,
+        sec
+    )
 }
 
 fn now_days() -> u32 {
@@ -79,7 +86,9 @@ fn now_days() -> u32 {
 fn timestamp_to_days(ts: &str) -> u32 {
     // Parse "YYYY-MM-DD HH:MM:SS"
     let bytes = ts.as_bytes();
-    if bytes.len() < 10 { return 0; }
+    if bytes.len() < 10 {
+        return 0;
+    }
     let year = parse_num(&bytes[0..4]);
     let month = parse_num(&bytes[5..7]);
     let day = parse_num(&bytes[8..10]);
@@ -164,12 +173,16 @@ fn save_history(s: &AppState) {
 
 fn read_file(path: &str) -> Option<Vec<u8>> {
     let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX { return None; }
+    if fd == u32::MAX {
+        return None;
+    }
     let mut content = Vec::new();
     let mut buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         content.extend_from_slice(&buf[..n as usize]);
     }
     anyos_std::fs::close(fd);
@@ -179,11 +192,15 @@ fn read_file(path: &str) -> Option<Vec<u8>> {
 // ── Cleanup ──────────────────────────────────────────────────────────────────
 
 fn cleanup_old_entries(s: &mut AppState) {
-    if s.retention_days == 0 { return; } // 0 = never delete
+    if s.retention_days == 0 {
+        return;
+    } // 0 = never delete
     let today = now_days();
     s.entries.retain(|e| {
         let entry_days = timestamp_to_days(&e.time);
-        if entry_days == 0 { return true; } // keep unparseable entries
+        if entry_days == 0 {
+            return true;
+        } // keep unparseable entries
         today.saturating_sub(entry_days) < s.retention_days
     });
 }
@@ -263,7 +280,12 @@ fn update_status(s: &AppState) {
     } else if s.retention_days == 1 {
         anyos_std::format!("{}: 1 {}", i18n::t("Retention"), i18n::t("day"))
     } else {
-        anyos_std::format!("{}: {} {}", i18n::t("Retention"), s.retention_days, i18n::t("days"))
+        anyos_std::format!(
+            "{}: {} {}",
+            i18n::t("Retention"),
+            s.retention_days,
+            i18n::t("days")
+        )
     };
     s.retention_label.set_text(&retention);
 }
@@ -272,11 +294,15 @@ fn update_status(s: &AppState) {
 
 fn poll_clipboard() {
     let s = app();
-    if s.paused { return; }
+    if s.paused {
+        return;
+    }
 
     let mut buf = [0u8; 4096];
     let len = anyui::clipboard_get(&mut buf);
-    if len == 0 { return; }
+    if len == 0 {
+        return;
+    }
 
     let text = match core::str::from_utf8(&buf[..len as usize]) {
         Ok(s) => s,
@@ -284,11 +310,15 @@ fn poll_clipboard() {
     };
 
     // Skip if same as last known
-    if text == s.last_clipboard.as_str() { return; }
+    if text == s.last_clipboard.as_str() {
+        return;
+    }
     s.last_clipboard = String::from(text);
 
     // Skip empty
-    if text.trim().is_empty() { return; }
+    if text.trim().is_empty() {
+        return;
+    }
 
     // Deduplicate: remove existing entry with same text
     let text_owned = String::from(text);
@@ -296,10 +326,13 @@ fn poll_clipboard() {
 
     // Insert at front (newest first)
     let preview = make_preview(text);
-    s.entries.insert(0, ClipEntry {
-        text: text_owned,
-        time: now_string(),
-    });
+    s.entries.insert(
+        0,
+        ClipEntry {
+            text: text_owned,
+            time: now_string(),
+        },
+    );
 
     save_history(s);
     populate_grid(s);
@@ -315,9 +348,13 @@ fn poll_clipboard() {
 fn copy_to_clipboard() {
     let s = app();
     let row = s.grid.selected_row();
-    if row == u32::MAX { return; }
+    if row == u32::MAX {
+        return;
+    }
     let row = row as usize;
-    if row >= s.entries.len() { return; }
+    if row >= s.entries.len() {
+        return;
+    }
 
     let text = s.entries[row].text.clone();
     // Pause polling briefly to avoid re-adding the same entry
@@ -337,9 +374,13 @@ fn copy_to_clipboard() {
 fn delete_selected() {
     let s = app();
     let row = s.grid.selected_row();
-    if row == u32::MAX { return; }
+    if row == u32::MAX {
+        return;
+    }
     let row = row as usize;
-    if row >= s.entries.len() { return; }
+    if row >= s.entries.len() {
+        return;
+    }
 
     s.entries.remove(row);
     save_history(s);
@@ -348,7 +389,9 @@ fn delete_selected() {
 
 fn clear_all() {
     let s = app();
-    if s.entries.is_empty() { return; }
+    if s.entries.is_empty() {
+        return;
+    }
     s.entries.clear();
     save_history(s);
     populate_grid(s);
@@ -366,7 +409,9 @@ fn toggle_settings() {
 
 fn open_settings() {
     let s = app();
-    if s.add_active { close_add_panel(); }
+    if s.add_active {
+        close_add_panel();
+    }
     s.settings_active = true;
     s.settings_panel.set_visible(true);
     let val = anyos_std::format!("{}", s.retention_days);
@@ -412,14 +457,18 @@ fn copy_file_to_clipboard() {
     let data = match read_file(&path) {
         Some(d) => d,
         None => {
-            app().status_label.set_text(i18n::t("Error: Could not read file"));
+            app()
+                .status_label
+                .set_text(i18n::t("Error: Could not read file"));
             return;
         }
     };
     let text = match core::str::from_utf8(&data) {
         Ok(s) => s,
         Err(_) => {
-            app().status_label.set_text(i18n::t("Error: File is not a text file"));
+            app()
+                .status_label
+                .set_text(i18n::t("Error: File is not a text file"));
             return;
         }
     };
@@ -436,10 +485,13 @@ fn copy_file_to_clipboard() {
     // Add to history
     let text_owned = String::from(text);
     s.entries.retain(|e| e.text != text_owned);
-    s.entries.insert(0, ClipEntry {
-        text: text_owned,
-        time: now_string(),
-    });
+    s.entries.insert(
+        0,
+        ClipEntry {
+            text: text_owned,
+            time: now_string(),
+        },
+    );
     save_history(s);
     populate_grid(s);
     s.grid.set_selected_row(0);
@@ -449,7 +501,9 @@ fn copy_file_to_clipboard() {
     let msg = anyos_std::format!("{}: {}", i18n::t("File copied"), filename);
     s.status_label.set_text(&msg);
 
-    anyui::set_timer(1000, || { app().paused = false; });
+    anyui::set_timer(1000, || {
+        app().paused = false;
+    });
 }
 
 fn toggle_add_panel() {
@@ -463,7 +517,9 @@ fn toggle_add_panel() {
 
 fn open_add_panel() {
     let s = app();
-    if s.settings_active { close_settings(); }
+    if s.settings_active {
+        close_settings();
+    }
     s.add_active = true;
     s.add_panel.set_visible(true);
     s.add_field.set_text("");
@@ -486,7 +542,10 @@ fn submit_add_text() {
     }
     let text = match core::str::from_utf8(&buf[..len as usize]) {
         Ok(t) => t,
-        Err(_) => { close_add_panel(); return; }
+        Err(_) => {
+            close_add_panel();
+            return;
+        }
     };
     if text.trim().is_empty() {
         close_add_panel();
@@ -500,10 +559,13 @@ fn submit_add_text() {
     let text_owned = String::from(text);
     let preview = make_preview(text);
     s.entries.retain(|e| e.text != text_owned);
-    s.entries.insert(0, ClipEntry {
-        text: text_owned,
-        time: now_string(),
-    });
+    s.entries.insert(
+        0,
+        ClipEntry {
+            text: text_owned,
+            time: now_string(),
+        },
+    );
     save_history(s);
     populate_grid(s);
     s.grid.set_selected_row(0);
@@ -512,7 +574,9 @@ fn submit_add_text() {
     s.status_label.set_text(&msg);
 
     close_add_panel();
-    anyui::set_timer(1000, || { app().paused = false; });
+    anyui::set_timer(1000, || {
+        app().paused = false;
+    });
 }
 
 // ── Keyboard handler ─────────────────────────────────────────────────────────
@@ -586,10 +650,13 @@ fn main() {
     let last_clipboard = if clip_len > 0 {
         let text = String::from(core::str::from_utf8(&clip_buf[..clip_len as usize]).unwrap_or(""));
         if !text.trim().is_empty() && !entries.iter().any(|e| e.text == text) {
-            entries.insert(0, ClipEntry {
-                text: text.clone(),
-                time: now_string(),
-            });
+            entries.insert(
+                0,
+                ClipEntry {
+                    text: text.clone(),
+                    time: now_string(),
+                },
+            );
         }
         text
     } else {
@@ -603,13 +670,13 @@ fn main() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("Quit"), 0)
+        .item(1, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("Edit"))
-            .item(10, i18n::t("Paste Selected"), 0)
-            .item(11, i18n::t("Delete Selected"), 0)
-            .separator()
-            .item(12, i18n::t("Clear History"), 0)
+        .item(10, i18n::t("Paste Selected"), 0)
+        .item(11, i18n::t("Delete Selected"), 0)
+        .separator()
+        .item(12, i18n::t("Clear History"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
@@ -736,16 +803,22 @@ fn main() {
     grid.set_row_height(22);
     grid.set_header_height(24);
     grid.set_columns(&[
-        anyui::ColumnDef::new("#").width(40).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new("#")
+            .width(40)
+            .align(anyui::ALIGN_RIGHT),
         anyui::ColumnDef::new(i18n::t("Content")).width(400),
         anyui::ColumnDef::new(i18n::t("Time")).width(140),
     ]);
 
     // Context menu
-    let ctx_items = anyos_std::format!("{}|-|{}|{}|-|{}|{}",
+    let ctx_items = anyos_std::format!(
+        "{}|-|{}|{}|-|{}|{}",
         i18n::t("Copy to Clipboard"),
-        i18n::t("Delete Entry"), i18n::t("Delete All"),
-        i18n::t("Add Text"), i18n::t("Load from File"));
+        i18n::t("Delete Entry"),
+        i18n::t("Delete All"),
+        i18n::t("Add Text"),
+        i18n::t("Load from File")
+    );
     let ctx_menu = anyui::ContextMenu::new(&ctx_items);
     grid.set_context_menu(&ctx_menu);
 
@@ -756,7 +829,9 @@ fn main() {
     if retention_days > 0 {
         entries.retain(|e| {
             let entry_days = timestamp_to_days(&e.time);
-            if entry_days == 0 { return true; }
+            if entry_days == 0 {
+                return true;
+            }
             today.saturating_sub(entry_days) < retention_days
         });
     }
@@ -787,41 +862,66 @@ fn main() {
     populate_grid(s);
 
     // ── Register callbacks ──
-    btn_copy.on_click(|_| { copy_to_clipboard(); });
-    btn_delete.on_click(|_| { delete_selected(); });
-    btn_clear.on_click(|_| { clear_all(); });
-    btn_settings.on_click(|_| { toggle_settings(); });
-    btn_refresh.on_click(|_| { refresh(); });
-    btn_add_text.on_click(|_| { toggle_add_panel(); });
-    btn_from_file.on_click(|_| { copy_file_to_clipboard(); });
-    btn_apply.on_click(|_| { apply_settings(); });
-    btn_cancel.on_click(|_| { close_settings(); });
-    retention_field.on_submit(|_| { apply_settings(); });
-    btn_add_ok.on_click(|_| { submit_add_text(); });
-    btn_add_cancel.on_click(|_| { close_add_panel(); });
-    add_field.on_submit(|_| { submit_add_text(); });
+    btn_copy.on_click(|_| {
+        copy_to_clipboard();
+    });
+    btn_delete.on_click(|_| {
+        delete_selected();
+    });
+    btn_clear.on_click(|_| {
+        clear_all();
+    });
+    btn_settings.on_click(|_| {
+        toggle_settings();
+    });
+    btn_refresh.on_click(|_| {
+        refresh();
+    });
+    btn_add_text.on_click(|_| {
+        toggle_add_panel();
+    });
+    btn_from_file.on_click(|_| {
+        copy_file_to_clipboard();
+    });
+    btn_apply.on_click(|_| {
+        apply_settings();
+    });
+    btn_cancel.on_click(|_| {
+        close_settings();
+    });
+    retention_field.on_submit(|_| {
+        apply_settings();
+    });
+    btn_add_ok.on_click(|_| {
+        submit_add_text();
+    });
+    btn_add_cancel.on_click(|_| {
+        close_add_panel();
+    });
+    add_field.on_submit(|_| {
+        submit_add_text();
+    });
 
     // Context menu
-    ctx_menu.on_item_click(|e| {
-        match e.index {
-            0 => copy_to_clipboard(),
-            2 => delete_selected(),
-            3 => clear_all(),
-            5 => toggle_add_panel(),
-            6 => copy_file_to_clipboard(),
-            _ => {}
-        }
+    ctx_menu.on_item_click(|e| match e.index {
+        0 => copy_to_clipboard(),
+        2 => delete_selected(),
+        3 => clear_all(),
+        5 => toggle_add_panel(),
+        6 => copy_file_to_clipboard(),
+        _ => {}
     });
 
     // Menu bar
-    menu.on_item(move |e| {
-        match e.item_id {
-            1 => { save_history(app()); anyui::quit(); },
-            10 => copy_to_clipboard(),
-            11 => delete_selected(),
-            12 => clear_all(),
-            _ => {}
+    menu.on_item(move |e| match e.item_id {
+        1 => {
+            save_history(app());
+            anyui::quit();
         }
+        10 => copy_to_clipboard(),
+        11 => delete_selected(),
+        12 => clear_all(),
+        _ => {}
     });
 
     // Double-click to copy
@@ -836,7 +936,9 @@ fn main() {
     });
 
     // Keyboard shortcuts
-    win.on_key_down(|ke| { handle_key(ke); });
+    win.on_key_down(|ke| {
+        handle_key(ke);
+    });
 
     // ── Start clipboard polling timer ──
     anyui::set_timer(POLL_INTERVAL_MS, || {

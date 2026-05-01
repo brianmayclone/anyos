@@ -1,7 +1,7 @@
 //! `apkg info` — show detailed package information.
 
-use anyos_std::println;
 use crate::{db, index};
+use anyos_std::println;
 
 /// Execute `apkg info <name>`.
 pub fn run(name: &str) {

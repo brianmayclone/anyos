@@ -39,7 +39,8 @@ pub struct LibrenderExports {
     pub fill_surface: extern "C" fn(*mut u32, u32, u32, u32),
     pub put_pixel: extern "C" fn(*mut u32, u32, u32, i32, i32, u32),
     pub get_pixel: extern "C" fn(*const u32, u32, u32, i32, i32) -> u32,
-    pub blit_rect: extern "C" fn(*mut u32, u32, u32, i32, i32, *const u32, u32, u32, i32, i32, u32, u32, u32),
+    pub blit_rect:
+        extern "C" fn(*mut u32, u32, u32, i32, i32, *const u32, u32, u32, i32, i32, u32, u32, u32),
     pub put_pixel_subpixel: extern "C" fn(*mut u32, u32, u32, i32, i32, u8, u8, u8, u32),
     // Renderer primitives
     pub fill_rounded_rect: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, i32, u32),

@@ -16,11 +16,13 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{String, Vec, format};
-use anyos_std::net::{self, BssInfo, WifiState, WifiSecurity};
+use anyos_std::net::{self, BssInfo, WifiSecurity, WifiState};
 use anyos_std::process;
-use libcompositor_client::{TrayClient, WindowHandle,
-    EVT_STATUS_ICON_CLICK, EVT_MOUSE_DOWN, EVT_WINDOW_CLOSE, EVT_FOCUS_LOST};
+use anyos_std::{format, String, Vec};
+use libcompositor_client::{
+    TrayClient, WindowHandle, EVT_FOCUS_LOST, EVT_MOUSE_DOWN, EVT_STATUS_ICON_CLICK,
+    EVT_WINDOW_CLOSE,
+};
 use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 use librender_client::Surface;
 
@@ -85,11 +87,14 @@ impl WifiMonState {
     }
 
     fn is_known(&self, ssid: &[u8]) -> bool {
-        self.known_networks.iter().any(|(s, _)| s.as_slice() == ssid)
+        self.known_networks
+            .iter()
+            .any(|(s, _)| s.as_slice() == ssid)
     }
 
     fn get_password(&self, ssid: &[u8]) -> Option<&[u8]> {
-        self.known_networks.iter()
+        self.known_networks
+            .iter()
             .find(|(s, _)| s.as_slice() == ssid)
             .map(|(_, p)| p.as_slice())
     }
@@ -164,22 +169,37 @@ fn parse_known_networks_blob(blob: &str, result: &mut Vec<(Vec<u8>, Vec<u8>)>) {
 // ── WiFi signal icon (16x16) ────────────────────────────────────────────────
 
 fn draw_wifi_icon(pixels: &mut [u32; 256], connected: bool, signal: i8) {
-    for p in pixels.iter_mut() { *p = 0; }
+    for p in pixels.iter_mut() {
+        *p = 0;
+    }
     let color = if connected { 0xFFE6E6E6 } else { 0xFF888888 };
-    let bars = if signal > -50 { 4 } else if signal > -65 { 3 }
-              else if signal > -75 { 2 } else if signal > -85 { 1 } else { 0 };
+    let bars = if signal > -50 {
+        4
+    } else if signal > -65 {
+        3
+    } else if signal > -75 {
+        2
+    } else if signal > -85 {
+        1
+    } else {
+        0
+    };
 
     // Draw signal arcs (simplified as horizontal bars of increasing width)
     // Bottom to top: wider = closer to center
     let bar_data: [(i32, i32, u32); 4] = [
-        (7, 13, 2),  // bottom: narrow dot
-        (5, 10, 6),  // 2nd arc
-        (3, 7, 10),  // 3rd arc
-        (1, 4, 14),  // top arc: widest
+        (7, 13, 2), // bottom: narrow dot
+        (5, 10, 6), // 2nd arc
+        (3, 7, 10), // 3rd arc
+        (1, 4, 14), // top arc: widest
     ];
 
     for (i, &(x_off, y, w)) in bar_data.iter().enumerate() {
-        let c = if (i as i8) < (4 - bars) as i8 { 0xFF555555 } else { color };
+        let c = if (i as i8) < (4 - bars) as i8 {
+            0xFF555555
+        } else {
+            color
+        };
         for dx in 0..w {
             let px = x_off + dx as i32;
             if px >= 0 && px < 16 && y >= 0 && y < 16 {
@@ -209,8 +229,17 @@ fn draw_popup(win: &WindowHandle, state: &WifiMonState) {
     let toggle_text = if state.enabled { "On" } else { "Off" };
     let (tw, _) = libfont_client::measure(0, FONT_NORMAL, toggle_text);
     let toggle_color = if state.enabled { GREEN_CHECK } else { TEXT_DIM };
-    libfont_client::draw_string_buf(buf, POPUP_W, h,
-        POPUP_W as i32 - PAD - tw as i32, y + 10, toggle_color, 0, FONT_NORMAL, toggle_text);
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        h,
+        POPUP_W as i32 - PAD - tw as i32,
+        y + 10,
+        toggle_color,
+        0,
+        FONT_NORMAL,
+        toggle_text,
+    );
     y += HEADER_H as i32;
 
     // Separator
@@ -232,7 +261,17 @@ fn draw_popup(win: &WindowHandle, state: &WifiMonState) {
         // SSID name
         let name_x = PAD + 16;
         let text_col = if is_connected { TEXT } else { TEXT };
-        libfont_client::draw_string_buf(buf, POPUP_W, h, name_x, y + 6, text_col, 0, FONT_NORMAL, ssid);
+        libfont_client::draw_string_buf(
+            buf,
+            POPUP_W,
+            h,
+            name_x,
+            y + 6,
+            text_col,
+            0,
+            FONT_NORMAL,
+            ssid,
+        );
 
         // Right side: lock icon (if secured) + checkmark (if connected)
         let mut right_x = POPUP_W as i32 - PAD;
@@ -240,17 +279,44 @@ fn draw_popup(win: &WindowHandle, state: &WifiMonState) {
         if is_connected {
             // Checkmark ✓
             right_x -= 16;
-            libfont_client::draw_string_buf(buf, POPUP_W, h, right_x, y + 6, GREEN_CHECK, 0, FONT_NORMAL, "\u{2713}");
+            libfont_client::draw_string_buf(
+                buf,
+                POPUP_W,
+                h,
+                right_x,
+                y + 6,
+                GREEN_CHECK,
+                0,
+                FONT_NORMAL,
+                "\u{2713}",
+            );
         }
 
         if is_secure {
             right_x -= 14;
-            libfont_client::draw_string_buf(buf, POPUP_W, h, right_x, y + 7, LOCK_COLOR, 0, FONT_SMALL, "\u{1F512}");
+            libfont_client::draw_string_buf(
+                buf,
+                POPUP_W,
+                h,
+                right_x,
+                y + 7,
+                LOCK_COLOR,
+                0,
+                FONT_SMALL,
+                "\u{1F512}",
+            );
         }
 
         // Signal strength bars (right of lock)
-        let bars = if net_info.rssi > -50 { 3 } else if net_info.rssi > -65 { 2 }
-                  else if net_info.rssi > -80 { 1 } else { 0 };
+        let bars = if net_info.rssi > -50 {
+            3
+        } else if net_info.rssi > -65 {
+            2
+        } else if net_info.rssi > -80 {
+            1
+        } else {
+            0
+        };
         let bar_x = POPUP_W as i32 - PAD - 40;
         for b in 0..3i32 {
             let bh = (4 + b * 3) as u32;
@@ -267,7 +333,17 @@ fn draw_popup(win: &WindowHandle, state: &WifiMonState) {
     y += SEP_H as i32;
 
     // Footer: "Network Settings..."
-    libfont_client::draw_string_buf(buf, POPUP_W, h, PAD, y + 8, TEXT_DIM, 0, FONT_NORMAL, "Network Settings...");
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        h,
+        PAD,
+        y + 8,
+        TEXT_DIM,
+        0,
+        FONT_NORMAL,
+        "Network Settings...",
+    );
 }
 
 // ── Network click handler ───────────────────────────────────────────────────
@@ -275,10 +351,14 @@ fn draw_popup(win: &WindowHandle, state: &WifiMonState) {
 fn handle_network_click(state: &mut WifiMonState, y_offset: i32) -> bool {
     let list_start = (HEADER_H + SEP_H) as i32;
     let rel_y = y_offset - list_start;
-    if rel_y < 0 { return false; }
+    if rel_y < 0 {
+        return false;
+    }
 
     let idx = (rel_y / ROW_H as i32) as usize;
-    if idx >= state.networks.len() { return false; }
+    if idx >= state.networks.len() {
+        return false;
+    }
 
     let net_info = &state.networks[idx];
     let ssid = &net_info.ssid[..net_info.ssid_len];
@@ -338,7 +418,9 @@ fn main() {
         return;
     }
 
-    if !libfont_client::init() { return; }
+    if !libfont_client::init() {
+        return;
+    }
 
     let client = match TrayClient::init() {
         Some(c) => c,
@@ -355,11 +437,15 @@ fn main() {
 
     // Draw initial icon
     let rssi = if state.connected {
-        state.networks.iter()
+        state
+            .networks
+            .iter()
             .find(|n| n.ssid[..n.ssid_len] == *state.connected_ssid)
             .map(|n| n.rssi)
             .unwrap_or(-80)
-    } else { -100 };
+    } else {
+        -100
+    };
     let mut icon_pixels = [0u32; 256];
     draw_wifi_icon(&mut icon_pixels, state.connected, rssi);
     client.set_icon(ICON_ID, &icon_pixels);
@@ -372,7 +458,9 @@ fn main() {
             match event.event_type {
                 EVT_STATUS_ICON_CLICK if event.arg1 == ICON_ID => {
                     if popup.is_some() {
-                        if let Some(ref p) = popup { client.destroy_window(p); }
+                        if let Some(ref p) = popup {
+                            client.destroy_window(p);
+                        }
                         popup = None;
                     } else {
                         // Refresh before showing

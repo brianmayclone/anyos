@@ -12,10 +12,10 @@
 //! - SITE CHMOD command
 //! - 64-bit file sizes (needs kernel stat64/lseek64 support)
 
-use anyos_std::{net, fs, process, sys, log_info, log_warn};
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::config::FtpdConfig;
+use alloc::string::String;
+use alloc::vec::Vec;
+use anyos_std::{fs, log_info, log_warn, net, process, sys};
 
 const BUF_SIZE: usize = 4096;
 const CMD_BUF: usize = 512;
@@ -140,10 +140,11 @@ impl<'a> Session<'a> {
             }
             let root = self.cfg.anonymous_root_str();
             // Anonymous: read-only within anonymous_root (with proper boundary)
-            if write { return false; }
+            if write {
+                return false;
+            }
             return path == root
-                || (path.starts_with(root)
-                    && path.as_bytes().get(root.len()) == Some(&b'/'));
+                || (path.starts_with(root) && path.as_bytes().get(root.len()) == Some(&b'/'));
         }
         // Share permissions are always enforced.
         // chroot_users only controls whether the user can navigate *outside*
@@ -172,7 +173,11 @@ impl<'a> Session<'a> {
     /// Open a PASV listener on a port from the configured range.
     /// Sends the 227 reply and returns (listener_socket) if successful.
     fn open_pasv_listener(&mut self) -> Option<u32> {
-        let range = self.cfg.passive_port_max.saturating_sub(self.cfg.passive_port_min).max(1);
+        let range = self
+            .cfg
+            .passive_port_max
+            .saturating_sub(self.cfg.passive_port_min)
+            .max(1);
 
         // Try up to `range` ports starting from the current counter offset,
         // so concurrent sessions don't all collide on port 50000.
@@ -263,10 +268,14 @@ impl<'a> Session<'a> {
                         let line_bytes: Vec<u8> = acc[..end].to_vec();
                         acc.drain(..end + 2);
                         let line = core::str::from_utf8(&line_bytes).unwrap_or("").trim();
-                        if line.is_empty() { continue; }
+                        if line.is_empty() {
+                            continue;
+                        }
                         let (cmd, arg) = split_cmd(line);
                         let done = self.dispatch(cmd, arg);
-                        if done { return; }
+                        if done {
+                            return;
+                        }
                     }
                 }
             }
@@ -284,7 +293,10 @@ impl<'a> Session<'a> {
                 self.reply("221", "Goodbye.");
                 return true;
             }
-            "SYST" => { self.reply("215", "UNIX Type: L8"); return false; }
+            "SYST" => {
+                self.reply("215", "UNIX Type: L8");
+                return false;
+            }
             "FEAT" => {
                 self.send_raw(b"211-Features:\r\n SIZE\r\n MDTM\r\n MLSD\r\n MLST type*;size*;modify*;\r\n PASV\r\n EPSV\r\n EPRT\r\n REST STREAM\r\n UTF8\r\n211 End\r\n");
                 return false;
@@ -298,8 +310,14 @@ impl<'a> Session<'a> {
                 }
                 return false;
             }
-            "NOOP" => { self.reply("200", "NOOP ok."); return false; }
-            "ACCT" => { self.reply("202", "ACCT not needed."); return false; }
+            "NOOP" => {
+                self.reply("200", "NOOP ok.");
+                return false;
+            }
+            "ACCT" => {
+                self.reply("202", "ACCT not needed.");
+                return false;
+            }
             "HELP" => {
                 self.send_raw(b"214-The following commands are supported:\r\n USER PASS QUIT SYST FEAT OPTS NOOP TYPE ACCT HELP REIN\r\n STRU MODE PWD CWD CDUP LIST NLST MLSD MLST STAT\r\n RETR STOR STOU APPE DELE MKD RMD RNFR RNTO\r\n SIZE MDTM PASV EPSV PORT EPRT REST ABOR\r\n214 Help OK.\r\n");
                 return false;
@@ -407,7 +425,9 @@ impl<'a> Session<'a> {
                 self.log_info("ABOR received");
             }
             "STAT" => self.cmd_stat(arg),
-            _ => { self.reply("502", "Command not implemented."); }
+            _ => {
+                self.reply("502", "Command not implemented.");
+            }
         }
         false
     }
@@ -472,7 +492,11 @@ impl<'a> Session<'a> {
         } else {
             self.login_attempts += 1;
             self.reply("530", "Login incorrect.");
-            self.log_warn(&alloc::format!("login failed (attempt {}/{})", self.login_attempts, MAX_LOGIN_ATTEMPTS));
+            self.log_warn(&alloc::format!(
+                "login failed (attempt {}/{})",
+                self.login_attempts,
+                MAX_LOGIN_ATTEMPTS
+            ));
             self.username_len = 0;
         }
         false
@@ -530,13 +554,18 @@ impl<'a> Session<'a> {
         }
         let (cmd, arg) = split_cmd_owned(&next);
         match cmd.as_str() {
-            "LIST"          => self.do_list_pasv(listener, &arg),
-            "NLST"          => self.do_nlst_pasv(listener, &arg),
-            "MLSD"          => self.do_mlsd_pasv(listener, &arg),
-            "RETR"          => self.do_retr_pasv(listener, &arg),
-            "STOR"          => self.do_stor_pasv(listener, &arg),
-            "STOU"          => { self.stou_filename = self.resolve_stou("STOU", &arg); let p = self.stou_filename.clone(); self.do_stor_pasv(listener, &p); self.finish_stou(); }
-            "APPE"          => self.do_appe_pasv(listener, &arg),
+            "LIST" => self.do_list_pasv(listener, &arg),
+            "NLST" => self.do_nlst_pasv(listener, &arg),
+            "MLSD" => self.do_mlsd_pasv(listener, &arg),
+            "RETR" => self.do_retr_pasv(listener, &arg),
+            "STOR" => self.do_stor_pasv(listener, &arg),
+            "STOU" => {
+                self.stou_filename = self.resolve_stou("STOU", &arg);
+                let p = self.stou_filename.clone();
+                self.do_stor_pasv(listener, &p);
+                self.finish_stou();
+            }
+            "APPE" => self.do_appe_pasv(listener, &arg),
             _ => {
                 net::tcp_close(listener);
                 self.reply("503", "Bad sequence of commands.");
@@ -547,7 +576,11 @@ impl<'a> Session<'a> {
 
     /// Open a PASV listener and send 229 (EPSV) — port only, no IP.
     fn open_epsv_listener(&mut self) -> Option<(u32, u16)> {
-        let range = self.cfg.passive_port_max.saturating_sub(self.cfg.passive_port_min).max(1);
+        let range = self
+            .cfg
+            .passive_port_max
+            .saturating_sub(self.cfg.passive_port_min)
+            .max(1);
         let start_offset = self.pasv_port_counter % range;
         let mut listener = u32::MAX;
         let mut chosen_port = self.cfg.passive_port_min;
@@ -603,13 +636,18 @@ impl<'a> Session<'a> {
         }
         let (cmd, arg) = split_cmd_owned(&next);
         match cmd.as_str() {
-            "LIST"          => self.do_list_pasv(listener, &arg),
-            "NLST"          => self.do_nlst_pasv(listener, &arg),
-            "MLSD"          => self.do_mlsd_pasv(listener, &arg),
-            "RETR"          => self.do_retr_pasv(listener, &arg),
-            "STOR"          => self.do_stor_pasv(listener, &arg),
-            "STOU"          => { self.stou_filename = self.resolve_stou("STOU", &arg); let p = self.stou_filename.clone(); self.do_stor_pasv(listener, &p); self.finish_stou(); }
-            "APPE"          => self.do_appe_pasv(listener, &arg),
+            "LIST" => self.do_list_pasv(listener, &arg),
+            "NLST" => self.do_nlst_pasv(listener, &arg),
+            "MLSD" => self.do_mlsd_pasv(listener, &arg),
+            "RETR" => self.do_retr_pasv(listener, &arg),
+            "STOR" => self.do_stor_pasv(listener, &arg),
+            "STOU" => {
+                self.stou_filename = self.resolve_stou("STOU", &arg);
+                let p = self.stou_filename.clone();
+                self.do_stor_pasv(listener, &p);
+                self.finish_stou();
+            }
+            "APPE" => self.do_appe_pasv(listener, &arg),
             _ => {
                 net::tcp_close(listener);
                 self.reply("503", "Bad sequence of commands.");
@@ -632,7 +670,10 @@ impl<'a> Session<'a> {
     fn cmd_port_list(&mut self, arg: &str) {
         let (port_ip, port) = match parse_port_arg(arg) {
             Some(v) => v,
-            None => { self.reply("501", "Syntax error in PORT."); return; }
+            None => {
+                self.reply("501", "Syntax error in PORT.");
+                return;
+            }
         };
         // If the client reports a loopback or unspecified address (common when the
         // client itself is behind NAT and sees its own connection as 127.x), use the
@@ -644,7 +685,11 @@ impl<'a> Session<'a> {
         };
         self.log_info(&alloc::format!(
             "active mode: connecting to {}.{}.{}.{}:{}",
-            ip[0], ip[1], ip[2], ip[3], port
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3],
+            port
         ));
         self.reply("200", "PORT command successful.");
         let next = self.read_one_command();
@@ -655,12 +700,17 @@ impl<'a> Session<'a> {
             return;
         }
         match cmd.as_str() {
-            "LIST"          => self.do_list(data_sock, &darg),
-            "NLST"          => self.do_nlst(data_sock, &darg),
-            "MLSD"          => self.do_mlsd(data_sock, &darg),
+            "LIST" => self.do_list(data_sock, &darg),
+            "NLST" => self.do_nlst(data_sock, &darg),
+            "MLSD" => self.do_mlsd(data_sock, &darg),
             "RETR" => self.do_retr(data_sock, &darg),
             "STOR" => self.do_stor(data_sock, &darg),
-            "STOU" => { self.stou_filename = self.resolve_stou("STOU", &darg); let p = self.stou_filename.clone(); self.do_stor(data_sock, &p); self.finish_stou(); }
+            "STOU" => {
+                self.stou_filename = self.resolve_stou("STOU", &darg);
+                let p = self.stou_filename.clone();
+                self.do_stor(data_sock, &p);
+                self.finish_stou();
+            }
             "APPE" => self.do_appe(data_sock, &darg),
             _ => {
                 net::tcp_close(data_sock);
@@ -686,7 +736,11 @@ impl<'a> Session<'a> {
     fn finish_stou(&mut self) {
         if !self.stou_filename.is_empty() {
             // Extract just the filename part (after last /)
-            let name = self.stou_filename.rsplit('/').next().unwrap_or(&self.stou_filename);
+            let name = self
+                .stou_filename
+                .rsplit('/')
+                .next()
+                .unwrap_or(&self.stou_filename);
             let mut msg = String::from("FILE: ");
             msg.push_str(name);
             self.reply("250", &msg);
@@ -772,9 +826,7 @@ impl<'a> Session<'a> {
             self.reply("503", "Need RNFR first.");
             return;
         }
-        let old = String::from(
-            core::str::from_utf8(&self.rnfr[..self.rnfr_len]).unwrap_or("")
-        );
+        let old = String::from(core::str::from_utf8(&self.rnfr[..self.rnfr_len]).unwrap_or(""));
         let new_path = self.resolve_path(arg);
         self.rnfr_len = 0;
         if fs::rename(&old, &new_path) == 0 {
@@ -794,13 +846,20 @@ impl<'a> Session<'a> {
             resp.push_str(" Connected to ");
             let ip = self.remote_ip;
             let mut buf = [0u8; 4];
-            resp.push_str(core::str::from_utf8(fmt_u32(ip[0] as u32, &mut buf)).unwrap_or("0")); resp.push('.');
-            resp.push_str(core::str::from_utf8(fmt_u32(ip[1] as u32, &mut buf)).unwrap_or("0")); resp.push('.');
-            resp.push_str(core::str::from_utf8(fmt_u32(ip[2] as u32, &mut buf)).unwrap_or("0")); resp.push('.');
+            resp.push_str(core::str::from_utf8(fmt_u32(ip[0] as u32, &mut buf)).unwrap_or("0"));
+            resp.push('.');
+            resp.push_str(core::str::from_utf8(fmt_u32(ip[1] as u32, &mut buf)).unwrap_or("0"));
+            resp.push('.');
+            resp.push_str(core::str::from_utf8(fmt_u32(ip[2] as u32, &mut buf)).unwrap_or("0"));
+            resp.push('.');
             resp.push_str(core::str::from_utf8(fmt_u32(ip[3] as u32, &mut buf)).unwrap_or("0"));
             resp.push_str("\r\n Logged in as ");
             resp.push_str(self.username_str());
-            let type_str = if self.transfer_type == TransferType::Binary { "Binary" } else { "ASCII" };
+            let type_str = if self.transfer_type == TransferType::Binary {
+                "Binary"
+            } else {
+                "ASCII"
+            };
             resp.push_str("\r\n TYPE: ");
             resp.push_str(type_str);
             resp.push_str("; STRUcture: File; MODE: Stream\r\n");
@@ -832,7 +891,9 @@ impl<'a> Session<'a> {
                 resp.push_str("-rw-r--r--  1 ftp  ftp  ");
                 let mut sbuf = [0u8; 12];
                 let s = fmt_u32(size, &mut sbuf);
-                for _ in s.len()..8 { resp.push(' '); }
+                for _ in s.len()..8 {
+                    resp.push(' ');
+                }
                 resp.push_str(core::str::from_utf8(s).unwrap_or("0"));
                 resp.push(' ');
             }
@@ -879,11 +940,17 @@ impl<'a> Session<'a> {
         for i in 0..count as usize {
             // readdir entry layout: [type:u8, name_len:u8, flags:u8, pad:u8, size:u32, name:56bytes]
             let entry_offset = i * 64;
-            if entry_offset + 8 > dir_buf.len() { break; }
+            if entry_offset + 8 > dir_buf.len() {
+                break;
+            }
             let entry_type = dir_buf[entry_offset];
             let name_len = dir_buf[entry_offset + 1] as usize;
-            if name_len == 0 || name_len > 56 { break; }
-            if entry_offset + 8 + name_len > dir_buf.len() { break; }
+            if name_len == 0 || name_len > 56 {
+                break;
+            }
+            if entry_offset + 8 + name_len > dir_buf.len() {
+                break;
+            }
 
             let size_bytes = [
                 dir_buf[entry_offset + 4],
@@ -892,18 +959,28 @@ impl<'a> Session<'a> {
                 dir_buf[entry_offset + 7],
             ];
             let size = u32::from_le_bytes(size_bytes);
-            let name = match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len]) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-            if name.is_empty() { break; }
+            let name =
+                match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len])
+                {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+            if name.is_empty() {
+                break;
+            }
 
             // Get mtime via stat
             let mut child_path = String::from(cwd.as_str());
-            if !child_path.ends_with('/') { child_path.push('/'); }
+            if !child_path.ends_with('/') {
+                child_path.push('/');
+            }
             child_path.push_str(name);
             let mut st = [0u32; 7];
-            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX { st[6] } else { 0 };
+            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX {
+                st[6]
+            } else {
+                0
+            };
             let date_str = format_list_timestamp(mtime);
 
             if entry_type == 1 {
@@ -912,7 +989,9 @@ impl<'a> Session<'a> {
                 output.extend_from_slice(b"-rw-r--r--  1 ftp  ftp  ");
                 let mut size_buf = [0u8; 12];
                 let s = fmt_u32(size, &mut size_buf);
-                for _ in s.len()..8 { output.push(b' '); }
+                for _ in s.len()..8 {
+                    output.push(b' ');
+                }
                 output.extend_from_slice(s);
                 output.push(b' ');
             }
@@ -953,7 +1032,9 @@ impl<'a> Session<'a> {
         }
         self.reply("150", "Opening data connection for name list.");
         let data_sock = self.accept_pasv_listener(listener);
-        if data_sock == u32::MAX { return; }
+        if data_sock == u32::MAX {
+            return;
+        }
         let output = self.build_nlst_output(&cwd);
         let _ = arg;
         net::tcp_send(data_sock, &output);
@@ -966,17 +1047,30 @@ impl<'a> Session<'a> {
         let mut output: Vec<u8> = Vec::new();
         let mut dir_buf = [0u8; 64 * 256];
         let count = fs::readdir(dir, &mut dir_buf);
-        if count == u32::MAX { return output; }
+        if count == u32::MAX {
+            return output;
+        }
         for i in 0..count as usize {
             let entry_offset = i * 64;
-            if entry_offset + 8 > dir_buf.len() { break; }
+            if entry_offset + 8 > dir_buf.len() {
+                break;
+            }
             let name_len = dir_buf[entry_offset + 1] as usize;
-            if name_len == 0 || name_len > 56 { break; }
-            if entry_offset + 8 + name_len > dir_buf.len() { break; }
-            let name = match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len]) {
-                Ok(n) => n, Err(_) => continue,
-            };
-            if name.is_empty() { break; }
+            if name_len == 0 || name_len > 56 {
+                break;
+            }
+            if entry_offset + 8 + name_len > dir_buf.len() {
+                break;
+            }
+            let name =
+                match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len])
+                {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+            if name.is_empty() {
+                break;
+            }
             output.extend_from_slice(name.as_bytes());
             output.push(b'\r');
             output.push(b'\n');
@@ -1010,21 +1104,32 @@ impl<'a> Session<'a> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let n = fs::read(fd, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             let chunk = &buf[..n as usize];
             if ascii {
                 let encoded = ascii_encode(chunk);
                 total += encoded.len() as u64;
-                if net::tcp_send(data_sock, &encoded) == u32::MAX { break; }
+                if net::tcp_send(data_sock, &encoded) == u32::MAX {
+                    break;
+                }
             } else {
                 total += n as u64;
-                if net::tcp_send(data_sock, chunk) == u32::MAX { break; }
+                if net::tcp_send(data_sock, chunk) == u32::MAX {
+                    break;
+                }
             }
         }
         fs::close(fd);
         net::tcp_close(data_sock);
         self.reply("226", "Transfer complete.");
-        self.log_info(&alloc::format!("download: {} ({} bytes, offset {})", abs, total, offset));
+        self.log_info(&alloc::format!(
+            "download: {} ({} bytes, offset {})",
+            abs,
+            total,
+            offset
+        ));
     }
 
     fn do_stor(&mut self, data_sock: u32, path: &str) {
@@ -1080,15 +1185,21 @@ impl<'a> Session<'a> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             let chunk = &buf[..n as usize];
             if ascii {
                 let decoded = ascii_decode(chunk);
                 total += decoded.len() as u64;
-                if fs::write(fd, &decoded) == u32::MAX { break; }
+                if fs::write(fd, &decoded) == u32::MAX {
+                    break;
+                }
             } else {
                 total += n as u64;
-                if fs::write(fd, chunk) == u32::MAX { break; }
+                if fs::write(fd, chunk) == u32::MAX {
+                    break;
+                }
             }
         }
         fs::close(fd);
@@ -1114,32 +1225,53 @@ impl<'a> Session<'a> {
         // Send 150 *before* accepting — this is what triggers the client to connect.
         self.reply("150", "Opening data connection for directory listing.");
         let data_sock = self.accept_pasv_listener(listener);
-        if data_sock == u32::MAX { return; }
+        if data_sock == u32::MAX {
+            return;
+        }
 
         let mut dir_buf = [0u8; 64 * 256];
         let count = fs::readdir(&cwd, &mut dir_buf);
         let mut output: Vec<u8> = Vec::new();
         for i in 0..count as usize {
             let entry_offset = i * 64;
-            if entry_offset + 8 > dir_buf.len() { break; }
+            if entry_offset + 8 > dir_buf.len() {
+                break;
+            }
             let entry_type = dir_buf[entry_offset];
             let name_len = dir_buf[entry_offset + 1] as usize;
-            if name_len == 0 || name_len > 56 { break; }
-            if entry_offset + 8 + name_len > dir_buf.len() { break; }
+            if name_len == 0 || name_len > 56 {
+                break;
+            }
+            if entry_offset + 8 + name_len > dir_buf.len() {
+                break;
+            }
             let size = u32::from_le_bytes([
-                dir_buf[entry_offset + 4], dir_buf[entry_offset + 5],
-                dir_buf[entry_offset + 6], dir_buf[entry_offset + 7],
+                dir_buf[entry_offset + 4],
+                dir_buf[entry_offset + 5],
+                dir_buf[entry_offset + 6],
+                dir_buf[entry_offset + 7],
             ]);
-            let name = match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len]) {
-                Ok(n) => n, Err(_) => continue,
-            };
-            if name.is_empty() { break; }
+            let name =
+                match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len])
+                {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+            if name.is_empty() {
+                break;
+            }
             // Get mtime via stat
             let mut child_path = String::from(cwd.as_str());
-            if !child_path.ends_with('/') { child_path.push('/'); }
+            if !child_path.ends_with('/') {
+                child_path.push('/');
+            }
             child_path.push_str(name);
             let mut st = [0u32; 7];
-            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX { st[6] } else { 0 };
+            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX {
+                st[6]
+            } else {
+                0
+            };
             let date_str = format_list_timestamp(mtime);
 
             if entry_type == 1 {
@@ -1148,7 +1280,9 @@ impl<'a> Session<'a> {
                 output.extend_from_slice(b"-rw-r--r--  1 ftp  ftp  ");
                 let mut size_buf = [0u8; 12];
                 let s = fmt_u32(size, &mut size_buf);
-                for _ in s.len()..8 { output.push(b' '); }
+                for _ in s.len()..8 {
+                    output.push(b' ');
+                }
                 output.extend_from_slice(s);
                 output.push(b' ');
             }
@@ -1187,27 +1321,41 @@ impl<'a> Session<'a> {
         // Send 150 first, then accept — client connects after 150.
         self.reply("150", "Opening data connection.");
         let data_sock = self.accept_pasv_listener(listener);
-        if data_sock == u32::MAX { fs::close(fd); return; }
+        if data_sock == u32::MAX {
+            fs::close(fd);
+            return;
+        }
         let ascii = self.transfer_type == TransferType::Ascii;
         let mut total: u64 = 0;
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let n = fs::read(fd, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             let chunk = &buf[..n as usize];
             if ascii {
                 let encoded = ascii_encode(chunk);
                 total += encoded.len() as u64;
-                if net::tcp_send(data_sock, &encoded) == u32::MAX { break; }
+                if net::tcp_send(data_sock, &encoded) == u32::MAX {
+                    break;
+                }
             } else {
                 total += n as u64;
-                if net::tcp_send(data_sock, chunk) == u32::MAX { break; }
+                if net::tcp_send(data_sock, chunk) == u32::MAX {
+                    break;
+                }
             }
         }
         fs::close(fd);
         net::tcp_close(data_sock);
         self.reply("226", "Transfer complete.");
-        self.log_info(&alloc::format!("download: {} ({} bytes, offset {})", abs, total, offset));
+        self.log_info(&alloc::format!(
+            "download: {} ({} bytes, offset {})",
+            abs,
+            total,
+            offset
+        ));
     }
 
     fn do_stor_pasv(&mut self, listener: u32, path: &str) {
@@ -1259,21 +1407,30 @@ impl<'a> Session<'a> {
         // Send 150 first, then accept — client connects after 150.
         self.reply("150", "Opening data connection.");
         let data_sock = self.accept_pasv_listener(listener);
-        if data_sock == u32::MAX { fs::close(fd); return; }
+        if data_sock == u32::MAX {
+            fs::close(fd);
+            return;
+        }
         let ascii = self.transfer_type == TransferType::Ascii;
         let mut total: u64 = 0;
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             let chunk = &buf[..n as usize];
             if ascii {
                 let decoded = ascii_decode(chunk);
                 total += decoded.len() as u64;
-                if fs::write(fd, &decoded) == u32::MAX { break; }
+                if fs::write(fd, &decoded) == u32::MAX {
+                    break;
+                }
             } else {
                 total += n as u64;
-                if fs::write(fd, chunk) == u32::MAX { break; }
+                if fs::write(fd, chunk) == u32::MAX {
+                    break;
+                }
             }
         }
         fs::close(fd);
@@ -1362,7 +1519,9 @@ impl<'a> Session<'a> {
         }
         self.reply("150", "Opening data connection for MLSD.");
         let data_sock = self.accept_pasv_listener(listener);
-        if data_sock == u32::MAX { return; }
+        if data_sock == u32::MAX {
+            return;
+        }
         let output = self.build_mlsd_output(&dir);
         net::tcp_send(data_sock, &output);
         net::tcp_close(data_sock);
@@ -1381,30 +1540,51 @@ impl<'a> Session<'a> {
 
         let mut dir_buf = [0u8; 64 * 256];
         let count = fs::readdir(dir, &mut dir_buf);
-        if count == u32::MAX { return output; }
+        if count == u32::MAX {
+            return output;
+        }
 
         for i in 0..count as usize {
             let entry_offset = i * 64;
-            if entry_offset + 8 > dir_buf.len() { break; }
+            if entry_offset + 8 > dir_buf.len() {
+                break;
+            }
             let entry_type = dir_buf[entry_offset];
             let name_len = dir_buf[entry_offset + 1] as usize;
-            if name_len == 0 || name_len > 56 { break; }
-            if entry_offset + 8 + name_len > dir_buf.len() { break; }
+            if name_len == 0 || name_len > 56 {
+                break;
+            }
+            if entry_offset + 8 + name_len > dir_buf.len() {
+                break;
+            }
             let size = u32::from_le_bytes([
-                dir_buf[entry_offset + 4], dir_buf[entry_offset + 5],
-                dir_buf[entry_offset + 6], dir_buf[entry_offset + 7],
+                dir_buf[entry_offset + 4],
+                dir_buf[entry_offset + 5],
+                dir_buf[entry_offset + 6],
+                dir_buf[entry_offset + 7],
             ]);
-            let name = match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len]) {
-                Ok(n) => n, Err(_) => continue,
-            };
-            if name.is_empty() { break; }
+            let name =
+                match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len])
+                {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+            if name.is_empty() {
+                break;
+            }
 
             // Get mtime via stat for each entry
             let mut child_path = String::from(dir);
-            if !child_path.ends_with('/') { child_path.push('/'); }
+            if !child_path.ends_with('/') {
+                child_path.push('/');
+            }
             child_path.push_str(name);
             let mut st = [0u32; 7];
-            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX { st[6] } else { 0 };
+            let mtime = if fs::stat(&child_path, &mut st) != u32::MAX {
+                st[6]
+            } else {
+                0
+            };
 
             let entry = format_mlsd_entry(name, entry_type as u32, size, mtime);
             output.extend_from_slice(entry.as_bytes());
@@ -1421,7 +1601,10 @@ impl<'a> Session<'a> {
         // Example: EPRT |1|192.168.1.2|50000|
         let (ip, port) = match parse_eprt_arg(arg) {
             Some(v) => v,
-            None => { self.reply("501", "Syntax error in EPRT."); return; }
+            None => {
+                self.reply("501", "Syntax error in EPRT.");
+                return;
+            }
         };
         // Loopback fix (same as PORT)
         let connect_ip = if ip[0] == 127 || ip == [0, 0, 0, 0] {
@@ -1431,7 +1614,11 @@ impl<'a> Session<'a> {
         };
         self.log_info(&alloc::format!(
             "eprt: connecting to {}.{}.{}.{}:{}",
-            connect_ip[0], connect_ip[1], connect_ip[2], connect_ip[3], port
+            connect_ip[0],
+            connect_ip[1],
+            connect_ip[2],
+            connect_ip[3],
+            port
         ));
         self.reply("200", "EPRT command successful.");
         let next = self.read_one_command();
@@ -1442,12 +1629,17 @@ impl<'a> Session<'a> {
             return;
         }
         match cmd.as_str() {
-            "LIST"          => self.do_list(data_sock, &darg),
-            "NLST"          => self.do_nlst(data_sock, &darg),
-            "MLSD"          => self.do_mlsd(data_sock, &darg),
+            "LIST" => self.do_list(data_sock, &darg),
+            "NLST" => self.do_nlst(data_sock, &darg),
+            "MLSD" => self.do_mlsd(data_sock, &darg),
             "RETR" => self.do_retr(data_sock, &darg),
             "STOR" => self.do_stor(data_sock, &darg),
-            "STOU" => { self.stou_filename = self.resolve_stou("STOU", &darg); let p = self.stou_filename.clone(); self.do_stor(data_sock, &p); self.finish_stou(); }
+            "STOU" => {
+                self.stou_filename = self.resolve_stou("STOU", &darg);
+                let p = self.stou_filename.clone();
+                self.do_stor(data_sock, &p);
+                self.finish_stou();
+            }
             "APPE" => self.do_appe(data_sock, &darg),
             _ => {
                 net::tcp_close(data_sock);
@@ -1467,9 +1659,7 @@ impl<'a> Session<'a> {
             }
             acc.extend_from_slice(&buf[..n as usize]);
             if let Some(end) = find_crlf(&acc) {
-                let line = String::from(
-                    core::str::from_utf8(&acc[..end]).unwrap_or("").trim()
-                );
+                let line = String::from(core::str::from_utf8(&acc[..end]).unwrap_or("").trim());
                 return line;
             }
         }
@@ -1546,7 +1736,9 @@ fn normalize_path(path: &str) -> String {
     for seg in path.split('/') {
         match seg {
             "" | "." => {}
-            ".." => { parts.pop(); }
+            ".." => {
+                parts.pop();
+            }
             s => parts.push(s),
         }
     }
@@ -1575,15 +1767,25 @@ fn parse_port_arg(arg: &str) -> Option<([u8; 4], u16)> {
     let mut cur = 0u32;
     for b in arg.bytes() {
         match b {
-            b'0'..=b'9' => { cur = cur * 10 + (b - b'0') as u32; }
+            b'0'..=b'9' => {
+                cur = cur * 10 + (b - b'0') as u32;
+            }
             b',' => {
-                if idx >= 6 { return None; }
-                nums[idx] = cur; idx += 1; cur = 0;
+                if idx >= 6 {
+                    return None;
+                }
+                nums[idx] = cur;
+                idx += 1;
+                cur = 0;
             }
             _ => {}
         }
     }
-    if idx == 5 { nums[5] = cur; } else { return None; }
+    if idx == 5 {
+        nums[5] = cur;
+    } else {
+        return None;
+    }
     let ip = [nums[0] as u8, nums[1] as u8, nums[2] as u8, nums[3] as u8];
     let port = (nums[4] as u16) * 256 + nums[5] as u16;
     Some((ip, port))
@@ -1591,11 +1793,16 @@ fn parse_port_arg(arg: &str) -> Option<([u8; 4], u16)> {
 
 fn format_227(ip: &[u8; 4], p1: u8, p2: u8) -> String {
     let mut s = String::from("227 Entering Passive Mode (");
-    push_u8_str(&mut s, ip[0]); s.push(',');
-    push_u8_str(&mut s, ip[1]); s.push(',');
-    push_u8_str(&mut s, ip[2]); s.push(',');
-    push_u8_str(&mut s, ip[3]); s.push(',');
-    push_u8_str(&mut s, p1); s.push(',');
+    push_u8_str(&mut s, ip[0]);
+    s.push(',');
+    push_u8_str(&mut s, ip[1]);
+    s.push(',');
+    push_u8_str(&mut s, ip[2]);
+    s.push(',');
+    push_u8_str(&mut s, ip[3]);
+    s.push(',');
+    push_u8_str(&mut s, p1);
+    s.push(',');
     push_u8_str(&mut s, p2);
     s.push_str(")\r\n");
     s
@@ -1608,9 +1815,16 @@ fn push_u8_str(s: &mut String, v: u8) {
 }
 
 fn fmt_u32(mut v: u32, buf: &mut [u8]) -> &[u8] {
-    if v == 0 { buf[0] = b'0'; return &buf[..1]; }
+    if v == 0 {
+        buf[0] = b'0';
+        return &buf[..1];
+    }
     let mut i = buf.len();
-    while v > 0 && i > 0 { i -= 1; buf[i] = b'0' + (v % 10) as u8; v /= 10; }
+    while v > 0 && i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
     &buf[i..]
 }
 
@@ -1621,25 +1835,48 @@ fn format_mdtm_timestamp(ts: u32) -> String {
     }
     // Simple UTC breakdown (no leap seconds, assumes Unix epoch)
     let mut secs = ts;
-    let sec = secs % 60; secs /= 60;
-    let min = secs % 60; secs /= 60;
-    let hour = secs % 24; secs /= 24;
+    let sec = secs % 60;
+    secs /= 60;
+    let min = secs % 60;
+    secs /= 60;
+    let hour = secs % 24;
+    secs /= 24;
     // Days since epoch → year/month/day
     let mut days = secs;
     let mut year = 1970u32;
     loop {
         let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year { break; }
+        if days < days_in_year {
+            break;
+        }
         days -= days_in_year;
         year += 1;
     }
     let leap = is_leap(year);
-    let months: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let months: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 0u32;
     for m in 0..12 {
-        if days < months[m] { month = m as u32; break; }
+        if days < months[m] {
+            month = m as u32;
+            break;
+        }
         days -= months[m];
-        if m == 11 { month = 11; }
+        if m == 11 {
+            month = 11;
+        }
     }
     let day = days + 1;
     month += 1;
@@ -1659,16 +1896,24 @@ fn is_leap(y: u32) -> bool {
 }
 
 fn push_pad2(s: &mut String, v: u32) {
-    if v < 10 { s.push('0'); }
+    if v < 10 {
+        s.push('0');
+    }
     let mut buf = [0u8; 4];
     let slice = fmt_u32(v, &mut buf);
     s.push_str(core::str::from_utf8(slice).unwrap_or("0"));
 }
 
 fn push_pad4(s: &mut String, v: u32) {
-    if v < 1000 { s.push('0'); }
-    if v < 100 { s.push('0'); }
-    if v < 10 { s.push('0'); }
+    if v < 1000 {
+        s.push('0');
+    }
+    if v < 100 {
+        s.push('0');
+    }
+    if v < 10 {
+        s.push('0');
+    }
     let mut buf = [0u8; 6];
     let slice = fmt_u32(v, &mut buf);
     s.push_str(core::str::from_utf8(slice).unwrap_or("0"));
@@ -1680,7 +1925,9 @@ fn generate_unique_name(dir: &str, hint: &str) -> String {
     let base = if hint.is_empty() { "stou" } else { hint };
     // Try the original name first
     let mut path = String::from(dir);
-    if !path.ends_with('/') { path.push('/'); }
+    if !path.ends_with('/') {
+        path.push('/');
+    }
     path.push_str(base);
     let mut stat_buf = [0u32; 7];
     if fs::stat(&path, &mut stat_buf) == u32::MAX {
@@ -1694,7 +1941,9 @@ fn generate_unique_name(dir: &str, hint: &str) -> String {
         let s = fmt_u32(i, &mut buf);
         name.push_str(core::str::from_utf8(s).unwrap_or("1"));
         let mut full = String::from(dir);
-        if !full.ends_with('/') { full.push('/'); }
+        if !full.ends_with('/') {
+            full.push('/');
+        }
         full.push_str(&name);
         if fs::stat(&full, &mut stat_buf) == u32::MAX {
             return name;
@@ -1709,12 +1958,18 @@ fn generate_unique_name(dir: &str, hint: &str) -> String {
 /// Parse a decimal u32 from a string (for REST offset).
 fn parse_u32_decimal(s: &str) -> Option<u32> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut val: u64 = 0;
     for b in s.bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         val = val * 10 + (b - b'0') as u64;
-        if val > u32::MAX as u64 { return None; }
+        if val > u32::MAX as u64 {
+            return None;
+        }
     }
     Some(val as u32)
 }
@@ -1736,7 +1991,20 @@ fn current_unix_timestamp() -> u32 {
         days += if is_leap(y) { 366 } else { 365 };
     }
     let leap = is_leap(year);
-    let month_days: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     for m in 0..(month.saturating_sub(1) as usize).min(12) {
         days += month_days[m];
     }
@@ -1750,26 +2018,51 @@ fn format_list_timestamp(ts: u32) -> String {
     if ts == 0 {
         return String::from("Jan 01  1970");
     }
-    let months_short = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    let months_short = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let mut secs = ts;
-    let _sec = secs % 60; secs /= 60;
-    let min = secs % 60; secs /= 60;
-    let hour = secs % 24; secs /= 24;
+    let _sec = secs % 60;
+    secs /= 60;
+    let min = secs % 60;
+    secs /= 60;
+    let hour = secs % 24;
+    secs /= 24;
     let mut days = secs;
     let mut year = 1970u32;
     loop {
         let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year { break; }
+        if days < days_in_year {
+            break;
+        }
         days -= days_in_year;
         year += 1;
     }
     let leap = is_leap(year);
-    let month_days: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 0usize;
     for m in 0..12 {
-        if days < month_days[m] { month = m; break; }
+        if days < month_days[m] {
+            month = m;
+            break;
+        }
         days -= month_days[m];
-        if m == 11 { month = 11; }
+        if m == 11 {
+            month = 11;
+        }
     }
     let day = days + 1;
 
@@ -1780,7 +2073,9 @@ fn format_list_timestamp(ts: u32) -> String {
 
     let mut s = String::from(months_short[month]);
     s.push(' ');
-    if day < 10 { s.push('0'); }
+    if day < 10 {
+        s.push('0');
+    }
     let mut buf = [0u8; 4];
     let ds = fmt_u32(day, &mut buf);
     s.push_str(core::str::from_utf8(ds).unwrap_or("01"));
@@ -1825,9 +2120,11 @@ fn format_mlsd_entry(name: &str, entry_type: u32, size: u32, mtime: u32) -> Stri
 /// net-prt: 1=IPv4, 2=IPv6 (only IPv4 supported)
 fn parse_eprt_arg(arg: &str) -> Option<([u8; 4], u16)> {
     let bytes = arg.as_bytes();
-    if bytes.is_empty() { return None; }
+    if bytes.is_empty() {
+        return None;
+    }
     let delim = bytes[0]; // Usually '|'
-    // Split by delimiter, skipping first empty part
+                          // Split by delimiter, skipping first empty part
     let mut parts: [&str; 4] = [""; 4];
     let mut idx = 0;
     let mut start = 1; // skip first delimiter
@@ -1840,9 +2137,13 @@ fn parse_eprt_arg(arg: &str) -> Option<([u8; 4], u16)> {
             start = i + 1;
         }
     }
-    if idx < 3 { return None; }
+    if idx < 3 {
+        return None;
+    }
     // parts[0] = net-prt ("1"), parts[1] = address, parts[2] = port
-    if parts[0] != "1" { return None; } // Only IPv4
+    if parts[0] != "1" {
+        return None;
+    } // Only IPv4
     let ip = parse_ip_str(parts[1])?;
     let port = parse_u16(parts[2])?;
     Some((ip, port))
@@ -1855,15 +2156,25 @@ fn parse_ip_str(s: &str) -> Option<[u8; 4]> {
     let mut has = false;
     for b in s.bytes() {
         match b {
-            b'0'..=b'9' => { num = num * 10 + (b - b'0') as u32; has = true; }
+            b'0'..=b'9' => {
+                num = num * 10 + (b - b'0') as u32;
+                has = true;
+            }
             b'.' => {
-                if !has || idx >= 3 || num > 255 { return None; }
-                parts[idx] = num as u8; idx += 1; num = 0; has = false;
+                if !has || idx >= 3 || num > 255 {
+                    return None;
+                }
+                parts[idx] = num as u8;
+                idx += 1;
+                num = 0;
+                has = false;
             }
             _ => return None,
         }
     }
-    if !has || idx != 3 || num > 255 { return None; }
+    if !has || idx != 3 || num > 255 {
+        return None;
+    }
     parts[3] = num as u8;
     Some(parts)
 }
@@ -1871,9 +2182,13 @@ fn parse_ip_str(s: &str) -> Option<[u8; 4]> {
 fn parse_u16(s: &str) -> Option<u16> {
     let mut val: u32 = 0;
     for b in s.bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         val = val * 10 + (b - b'0') as u32;
-        if val > 65535 { return None; }
+        if val > 65535 {
+            return None;
+        }
     }
     Some(val as u16)
 }

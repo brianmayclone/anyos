@@ -1,9 +1,9 @@
 //! Process/thread tree view.
 
-use libanyui_client as ui;
-use ui::Widget;
 use crate::logic::process_list::ProcessEntry;
 use crate::util::format;
+use libanyui_client as ui;
+use ui::Widget;
 
 /// Process tree panel.
 pub struct ProcessTreeView {
@@ -17,7 +17,10 @@ impl ProcessTreeView {
     pub fn new(_parent: &impl Widget) -> Self {
         let tree = ui::TreeView::new(300, 800);
         tree.set_dock(ui::DOCK_FILL);
-        Self { tree, tids: alloc::vec::Vec::new() }
+        Self {
+            tree,
+            tids: alloc::vec::Vec::new(),
+        }
     }
 
     /// Build the label for a process entry.
@@ -48,12 +51,14 @@ impl ProcessTreeView {
             if i >= self.tids.len() || self.tids[i] != proc.tid {
                 let label = Self::make_label(proc);
                 self.tree.set_node_text(i as u32, &label);
-                self.tree.set_node_text_color(i as u32, format::thread_state_color(proc.state));
+                self.tree
+                    .set_node_text_color(i as u32, format::thread_state_color(proc.state));
             } else {
                 // Same TID — still update text (state/cpu_ticks may have changed)
                 let label = Self::make_label(proc);
                 self.tree.set_node_text(i as u32, &label);
-                self.tree.set_node_text_color(i as u32, format::thread_state_color(proc.state));
+                self.tree
+                    .set_node_text_color(i as u32, format::thread_state_color(proc.state));
             }
         }
 
@@ -69,7 +74,8 @@ impl ProcessTreeView {
             let proc = &processes[i];
             let label = Self::make_label(proc);
             let node_id = self.tree.add_root(&label);
-            self.tree.set_node_text_color(node_id, format::thread_state_color(proc.state));
+            self.tree
+                .set_node_text_color(node_id, format::thread_state_color(proc.state));
         }
 
         // Update cached TID list

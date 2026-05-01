@@ -37,7 +37,9 @@ fn main() {
         let mut skipped: u32 = 0;
         while skipped < skip {
             let n = anyos_std::fs::read(fd, &mut discard);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             skipped += n;
         }
     }
@@ -48,10 +50,18 @@ fn main() {
     let mut remaining = if limit > 0 { limit } else { u32::MAX };
 
     loop {
-        if remaining == 0 { break; }
-        let to_read = if remaining < 16 { remaining as usize } else { 16 };
+        if remaining == 0 {
+            break;
+        }
+        let to_read = if remaining < 16 {
+            remaining as usize
+        } else {
+            16
+        };
         let n = anyos_std::fs::read(fd, &mut read_buf[..to_read]);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         let n = n as usize;
 
         anyos_std::print!("{:08x}: ", offset);
@@ -87,5 +97,7 @@ fn main() {
         }
     }
 
-    if fd != 0 { anyos_std::fs::close(fd); }
+    if fd != 0 {
+        anyos_std::fs::close(fd);
+    }
 }

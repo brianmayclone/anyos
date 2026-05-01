@@ -12,11 +12,8 @@ pub mod window;
 
 // Re-export public API used by main.rs and other crates
 pub use cursors::CursorShape;
-pub use theme::{set_theme, set_font_smoothing};
-pub use window::{
-    pre_render_chrome_ex,
-    menubar_height, title_bar_height, WIN_FLAG_BORDERLESS,
-};
+pub use theme::{set_font_smoothing, set_theme};
+pub use window::{menubar_height, pre_render_chrome_ex, title_bar_height, WIN_FLAG_BORDERLESS};
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -237,8 +234,6 @@ pub struct Desktop {
     pub(crate) shortcut_overlay_layer: u32,
     /// Currently selected slot in the shortcut overlay (0..11), or -1 for none.
     pub(crate) shortcut_overlay_selection: i32,
-
-
 }
 
 impl Desktop {
@@ -359,13 +354,26 @@ impl Desktop {
         self.has_hw_cursor
     }
 
-    pub(crate) fn validate_window_surface(&self, content_w: u32, content_h: u32, flags: u32) -> bool {
+    pub(crate) fn validate_window_surface(
+        &self,
+        content_w: u32,
+        content_h: u32,
+        flags: u32,
+    ) -> bool {
         if content_w == 0 || content_h == 0 {
             return false;
         }
 
-        let max_w = self.screen_width.saturating_mul(2).max(2048).min(MAX_WINDOW_DIM);
-        let max_h = self.screen_height.saturating_mul(2).max(2048).min(MAX_WINDOW_DIM);
+        let max_w = self
+            .screen_width
+            .saturating_mul(2)
+            .max(2048)
+            .min(MAX_WINDOW_DIM);
+        let max_h = self
+            .screen_height
+            .saturating_mul(2)
+            .max(2048)
+            .min(MAX_WINDOW_DIM);
         if content_w > max_w || content_h > max_h {
             return false;
         }
@@ -447,7 +455,9 @@ impl Desktop {
 
         anyos_std::println!("compositor: load_logo open '{}'", path);
         let fd = fs::open(path, 0);
-        if fd == u32::MAX { return; }
+        if fd == u32::MAX {
+            return;
+        }
         let mut stat_buf = [0u32; 4];
         if fs::fstat(fd, &mut stat_buf) == u32::MAX {
             fs::close(fd);
@@ -462,7 +472,9 @@ impl Desktop {
         let mut data = vec![0u8; file_size];
         let n = fs::read(fd, &mut data) as usize;
         fs::close(fd);
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
 
         anyos_std::println!("compositor: load_logo decode '{}' ({} bytes)", path, n);
         #[cfg(target_arch = "aarch64")]
@@ -498,7 +510,10 @@ impl Desktop {
             let mut scratch = vec![0u8; info.scratch_needed as usize];
             anyos_std::println!(
                 "compositor: load_logo decode '{}' ({}x{}, scratch={})",
-                path, src_w, src_h, info.scratch_needed
+                path,
+                src_w,
+                src_h,
+                info.scratch_needed
             );
             if libimage_client::decode(&data[..n], &mut pixels, &mut scratch).is_err() {
                 return;
@@ -513,14 +528,18 @@ impl Desktop {
         // Scale to fit menubar (14px height — compact, like macOS Apple logo)
         let target_h: u32 = 14;
         let target_w = (src_w * target_h + src_h / 2) / src_h.max(1);
-        if target_w == 0 { return; }
+        if target_w == 0 {
+            return;
+        }
 
         // Use a local scaler for the tiny menubar logos to keep this path
         // deterministic and avoid depending on the general image scaler for a
         // very small fixed-size asset.
         anyos_std::println!(
             "compositor: load_logo scale '{}' -> {}x{}",
-            path, target_w, target_h
+            path,
+            target_w,
+            target_h
         );
         let scaled = scale_logo_rgba(&pixels, src_w, src_h, target_w, target_h);
         if scaled.len() != (target_w * target_h) as usize {
@@ -535,8 +554,14 @@ impl Desktop {
         self.logo_w = target_w;
         self.logo_h = target_h;
 
-        anyos_std::println!("compositor: loaded menu logo '{}' ({}x{} → {}x{})",
-            path, src_w, src_h, target_w, target_h);
+        anyos_std::println!(
+            "compositor: loaded menu logo '{}' ({}x{} → {}x{})",
+            path,
+            src_w,
+            src_h,
+            target_w,
+            target_h
+        );
     }
 
     // ── Wallpaper ──────────────────────────────────────────────────────
@@ -558,8 +583,11 @@ impl Desktop {
             let data = &buf[..n];
             let mut pos = 0;
             while pos < data.len() {
-                let line_end = data[pos..].iter().position(|&b| b == b'\n')
-                    .map(|p| pos + p).unwrap_or(data.len());
+                let line_end = data[pos..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map(|p| pos + p)
+                    .unwrap_or(data.len());
                 let line = &data[pos..line_end];
                 pos = line_end + 1;
 
@@ -639,8 +667,11 @@ impl Desktop {
             let data = &existing[..existing_len];
             let mut pos = 0;
             while pos < data.len() {
-                let line_end = data[pos..].iter().position(|&b| b == b'\n')
-                    .map(|p| pos + p).unwrap_or(data.len());
+                let line_end = data[pos..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map(|p| pos + p)
+                    .unwrap_or(data.len());
                 let line = &data[pos..line_end];
                 pos = line_end + 1;
 
@@ -735,7 +766,9 @@ impl Desktop {
         }
 
         let fd = fs::open(path, 0);
-        if fd == u32::MAX { return false; }
+        if fd == u32::MAX {
+            return false;
+        }
 
         let mut stat_buf = [0u32; 4];
         if fs::fstat(fd, &mut stat_buf) == u32::MAX {
@@ -751,7 +784,9 @@ impl Desktop {
         let mut data = vec![0u8; file_size];
         let bytes_read = fs::read(fd, &mut data) as usize;
         fs::close(fd);
-        if bytes_read == 0 { return false; }
+        if bytes_read == 0 {
+            return false;
+        }
 
         let (src_w, src_h, pixels, format_name) = {
             #[cfg(target_arch = "aarch64")]
@@ -771,10 +806,17 @@ impl Desktop {
                         }
                         let mut pixels = vec![0u32; pixel_count];
                         let mut scratch = vec![0u8; info.scratch_needed as usize];
-                        if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+                        if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch)
+                            .is_err()
+                        {
                             return false;
                         }
-                        (info.width, info.height, pixels, libimage_client::format_name(info.format))
+                        (
+                            info.width,
+                            info.height,
+                            pixels,
+                            libimage_client::format_name(info.format),
+                        )
                     }
                 } else {
                     let info = match libimage_client::probe(&data[..bytes_read]) {
@@ -787,10 +829,17 @@ impl Desktop {
                     }
                     let mut pixels = vec![0u32; pixel_count];
                     let mut scratch = vec![0u8; info.scratch_needed as usize];
-                    if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+                    if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch)
+                        .is_err()
+                    {
                         return false;
                     }
-                    (info.width, info.height, pixels, libimage_client::format_name(info.format))
+                    (
+                        info.width,
+                        info.height,
+                        pixels,
+                        libimage_client::format_name(info.format),
+                    )
                 }
             }
             #[cfg(not(target_arch = "aarch64"))]
@@ -805,10 +854,16 @@ impl Desktop {
                 }
                 let mut pixels = vec![0u32; pixel_count];
                 let mut scratch = vec![0u8; info.scratch_needed as usize];
-                if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+                if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err()
+                {
                     return false;
                 }
-                (info.width, info.height, pixels, libimage_client::format_name(info.format))
+                (
+                    info.width,
+                    info.height,
+                    pixels,
+                    libimage_client::format_name(info.format),
+                )
             }
         };
 
@@ -827,8 +882,12 @@ impl Desktop {
             let dst_count = (sw * sh) as usize;
             let mut dst = vec![0u32; dst_count];
             if !libimage_client::scale_image(
-                &pixels, src_w, src_h,
-                &mut dst, sw, sh,
+                &pixels,
+                src_w,
+                src_h,
+                &mut dst,
+                sw,
+                sh,
                 libimage_client::MODE_COVER,
             ) {
                 return false;
@@ -841,8 +900,12 @@ impl Desktop {
             self.wallpaper_pixel_cache = dst;
         }
 
-        anyos_std::println!("compositor: wallpaper loaded ({}x{} {})",
-            src_w, src_h, format_name);
+        anyos_std::println!(
+            "compositor: wallpaper loaded ({}x{} {})",
+            src_w,
+            src_h,
+            format_name
+        );
         true
     }
 
@@ -886,19 +949,29 @@ impl Desktop {
             }
 
             // Render logo (white for dark mode, black for light mode)
-            let logo = if is_light() { &self.logo_black } else { &self.logo_white };
+            let logo = if is_light() {
+                &self.logo_black
+            } else {
+                &self.logo_white
+            };
             if !logo.is_empty() && self.logo_w > 0 && self.logo_h > 0 {
                 let lx = 10i32;
                 let ly = ((mb_h as i32 - self.logo_h as i32) / 2).max(0);
                 for row in 0..self.logo_h {
                     let py = ly + row as i32;
-                    if py < 0 || py >= mb_h as i32 { continue; }
+                    if py < 0 || py >= mb_h as i32 {
+                        continue;
+                    }
                     for col in 0..self.logo_w {
                         let px = lx + col as i32;
-                        if px < 0 || px >= w as i32 { continue; }
+                        if px < 0 || px >= w as i32 {
+                            continue;
+                        }
                         let src = logo[(row * self.logo_w + col) as usize];
                         let a = (src >> 24) & 0xFF;
-                        if a == 0 { continue; }
+                        if a == 0 {
+                            continue;
+                        }
                         let didx = (py as u32 * w + px as u32) as usize;
                         if didx < pixels.len() {
                             if a >= 255 {
@@ -915,7 +988,15 @@ impl Desktop {
                 let (_, fh) = anyos_std::ui::window::font_measure(FONT_ID_BOLD, fs, "anyOS");
                 let fy = ((mb_h as i32 - fh as i32) / 2).max(0);
                 anyos_std::ui::window::font_render_buf(
-                    FONT_ID_BOLD, fs, pixels, w, h, 10, fy, color_menubar_text(), "anyOS",
+                    FONT_ID_BOLD,
+                    fs,
+                    pixels,
+                    w,
+                    h,
+                    10,
+                    fy,
+                    color_menubar_text(),
+                    "anyOS",
                 );
             }
 
@@ -927,7 +1008,8 @@ impl Desktop {
                         let idx = (y * w + x) as usize;
                         if idx < pixels.len() {
                             pixels[idx] = crate::compositor::alpha_blend(
-                                crate::menu::types::color_menubar_highlight(), pixels[idx],
+                                crate::menu::types::color_menubar_highlight(),
+                                pixels[idx],
                             );
                         }
                     }
@@ -943,7 +1025,8 @@ impl Desktop {
 
     /// Show or hide the menubar layer.
     pub fn set_menubar_visible(&mut self, visible: bool) {
-        self.compositor.set_layer_visible(self.menubar_layer_id, visible);
+        self.compositor
+            .set_layer_visible(self.menubar_layer_id, visible);
     }
 
     /// Update the clock display. Returns `true` if the minute changed and
@@ -980,7 +1063,10 @@ impl Desktop {
         }
         anyos_std::println!(
             "compositor: resolution changed {}x{} -> {}x{}",
-            self.screen_width, self.screen_height, new_w, new_h
+            self.screen_width,
+            self.screen_height,
+            new_w,
+            new_h
         );
 
         let pitch = match anyos_std::ipc::map_framebuffer() {
@@ -1069,13 +1155,8 @@ impl Desktop {
         // ghost trails remain when the cursor moves).
         if let Some(img) = self.compositor.drag_image.as_ref() {
             if img.last_drawn {
-                let r = Rect::new(
-                    img.last_x,
-                    img.last_y,
-                    img.image_w,
-                    img.image_h,
-                )
-                .clip_to_screen(self.screen_width, self.screen_height);
+                let r = Rect::new(img.last_x, img.last_y, img.image_w, img.image_h)
+                    .clip_to_screen(self.screen_width, self.screen_height);
                 if !r.is_empty() {
                     self.compositor.add_damage(r);
                 }
@@ -1110,18 +1191,13 @@ impl Desktop {
         if !self.compositor.has_hw_cursor() {
             // Only redraw + flush SW cursor if something changed:
             // cursor moved, or compositing updated the back buffer
-            let cursor_moved = self.mouse_x != self.prev_cursor_x
-                || self.mouse_y != self.prev_cursor_y;
+            let cursor_moved =
+                self.mouse_x != self.prev_cursor_x || self.mouse_y != self.prev_cursor_y;
 
             if cursor_moved || had_damage {
                 self.draw_sw_cursor();
-                let rect = Rect::new(
-                    self.mouse_x,
-                    self.mouse_y,
-                    CURSOR_W + 1,
-                    CURSOR_H + 1,
-                )
-                .clip_to_screen(self.screen_width, self.screen_height);
+                let rect = Rect::new(self.mouse_x, self.mouse_y, CURSOR_W + 1, CURSOR_H + 1)
+                    .clip_to_screen(self.screen_width, self.screen_height);
                 if !rect.is_empty() {
                     self.compositor.flush_cursor_region(&rect);
                     // flush_cursor_region() may call flush_gpu() internally for non-double-buffer
@@ -1137,7 +1213,9 @@ impl Desktop {
         if had_damage {
             for win in &mut self.windows {
                 if win.needs_frame_ack && win.owner_tid != 0 {
-                    if let Some((_, target)) = self.app_subs.iter().find(|(t, _)| *t == win.owner_tid) {
+                    if let Some((_, target)) =
+                        self.app_subs.iter().find(|(t, _)| *t == win.owner_tid)
+                    {
                         self.frame_ack_queue.push((*target, win.id));
                     }
                     win.needs_frame_ack = false;
@@ -1199,7 +1277,15 @@ fn draw_clock_to_menubar(pixels: &mut [u32], stride: u32) {
         }
 
         anyos_std::ui::window::font_render_buf(
-            FONT_ID, fs, pixels, stride, h, tx, fy, color_menubar_text(), s,
+            FONT_ID,
+            fs,
+            pixels,
+            stride,
+            h,
+            tx,
+            fy,
+            color_menubar_text(),
+            s,
         );
     }
 }

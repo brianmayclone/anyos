@@ -48,7 +48,8 @@ impl Inventory {
     pub fn select_next_filled(&mut self, delta: i32) {
         let dir = if delta < 0 { -1 } else { 1 };
         for step in 0..HOTBAR_SLOTS {
-            let idx = ((self.selected_slot as i32 + dir * step as i32).rem_euclid(HOTBAR_SLOTS as i32)) as usize;
+            let idx = ((self.selected_slot as i32 + dir * step as i32)
+                .rem_euclid(HOTBAR_SLOTS as i32)) as usize;
             if self.slot_count(idx) > 0 {
                 self.selected_slot = idx;
                 return;

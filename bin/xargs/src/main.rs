@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::String;
-use anyos_std::Vec;
+use anyos_std::format;
 use anyos_std::fs;
 use anyos_std::process;
-use anyos_std::format;
+use anyos_std::String;
+use anyos_std::Vec;
 
 anyos_std::entry!(main);
 
@@ -35,7 +35,9 @@ fn resolve_command(cmd: &str) -> String {
             let mut stat_buf = [0u32; 7];
             for dir in path_str.split(':') {
                 let dir = dir.trim();
-                if dir.is_empty() { continue; }
+                if dir.is_empty() {
+                    continue;
+                }
                 let candidate = format!("{}/{}", dir, cmd);
                 if fs::stat(&candidate, &mut stat_buf) == 0 && stat_buf[0] == 0 {
                     return candidate;
@@ -95,8 +97,6 @@ fn split_items(input: &str) -> Vec<&str> {
 }
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args_str = anyos_std::process::args(&mut args_buf);
     let parsed = anyos_std::args::parse(args_str, b"ndIPs");
@@ -105,7 +105,6 @@ fn main() {
         anyos_std::println!("xargs - Build commands from stdin\n\nUsage: xargs COMMAND [ARGS...]\n\nOptions:\n  -n NUM         Max arguments per command\n  -d DELIM       Input delimiter\n  -I STR         Replace string\n  -P NUM         Max parallel processes\n  -0             Null-delimited input");
         return;
     }
-
 
     // Options:
     // -n N  max args per command invocation
@@ -145,7 +144,8 @@ fn main() {
     // Split input into items
     let items = if let Some(d) = delimiter {
         let d_char = d.chars().next().unwrap_or('\n');
-        stdin_str.split(d_char)
+        stdin_str
+            .split(d_char)
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .collect::<Vec<&str>>()

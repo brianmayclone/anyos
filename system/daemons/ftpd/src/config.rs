@@ -118,7 +118,8 @@ impl FtpdConfig {
     }
 
     pub fn anonymous_root_str(&self) -> &str {
-        core::str::from_utf8(&self.anonymous_root[..self.anonymous_root_len]).unwrap_or("/users/shared/ftp")
+        core::str::from_utf8(&self.anonymous_root[..self.anonymous_root_len])
+            .unwrap_or("/users/shared/ftp")
     }
 
     /// Find the first share that matches username and contains the given path.
@@ -139,7 +140,11 @@ impl FtpdConfig {
                 path.starts_with(share_root) && path.as_bytes().get(share_root.len()) == Some(&b'/')
             };
             if under {
-                return if write { share.can_write } else { share.can_read };
+                return if write {
+                    share.can_write
+                } else {
+                    share.can_read
+                };
             }
         }
         false
@@ -170,12 +175,19 @@ impl FtpdConfig {
 
 fn trim(s: &[u8]) -> &[u8] {
     let start = s.iter().position(|&b| b > b' ').unwrap_or(s.len());
-    let end = s.iter().rposition(|&b| b > b' ').map(|i| i + 1).unwrap_or(start);
+    let end = s
+        .iter()
+        .rposition(|&b| b > b' ')
+        .map(|i| i + 1)
+        .unwrap_or(start);
     &s[start..end]
 }
 
 fn is_yes(s: &[u8]) -> bool {
-    matches!(s, b"yes" | b"Yes" | b"YES" | b"1" | b"true" | b"True" | b"TRUE")
+    matches!(
+        s,
+        b"yes" | b"Yes" | b"YES" | b"1" | b"true" | b"True" | b"TRUE"
+    )
 }
 
 fn parse_u16(s: &[u8]) -> Option<u16> {
@@ -184,13 +196,19 @@ fn parse_u16(s: &[u8]) -> Option<u16> {
     for &b in s {
         if b >= b'0' && b <= b'9' {
             val = val * 10 + (b - b'0') as u32;
-            if val > 65535 { return None; }
+            if val > 65535 {
+                return None;
+            }
             any = true;
         } else {
             break;
         }
     }
-    if any { Some(val as u16) } else { None }
+    if any {
+        Some(val as u16)
+    } else {
+        None
+    }
 }
 
 // ── Main config loader ────────────────────────────────────────────────────────

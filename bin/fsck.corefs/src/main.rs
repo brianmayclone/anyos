@@ -78,7 +78,11 @@ impl Report for CombinedReport {
             self.fsck.count(Severity::Error),
             self.fsck.count(Severity::Warning),
             self.fsck.count(Severity::Info),
-            if self.fsck.is_clean() { "CLEAN" } else { "DIRTY" },
+            if self.fsck.is_clean() {
+                "CLEAN"
+            } else {
+                "DIRTY"
+            },
         );
         out.push_str(&issues_to_text(&self.fsck.issues));
         if let Some(r) = &self.repair {
@@ -152,9 +156,7 @@ impl Report for CombinedReport {
 }
 
 fn usage() {
-    anyos_std::println!(
-        "Usage: fsck.corefs --device <id> --capacity <bytes> [--repair] [--json]"
-    );
+    anyos_std::println!("Usage: fsck.corefs --device <id> --capacity <bytes> [--repair] [--json]");
 }
 
 fn main() -> u32 {
@@ -210,7 +212,9 @@ fn main() -> u32 {
     };
 
     let clean = fsck_report.is_clean()
-        && repair_report.as_ref().map_or(true, |r| r.unfixable.is_empty());
+        && repair_report
+            .as_ref()
+            .map_or(true, |r| r.unfixable.is_empty());
 
     let combined = CombinedReport {
         device_id,

@@ -22,27 +22,22 @@ const MAX_CHAIN: usize = 24; // max hash chain depth (speed vs ratio tradeoff)
 // ─── Fixed Huffman tables ───────────────────────────────────────────────────
 
 const LENGTH_BASE: [u16; 29] = [
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13,
-    15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
-    67, 83, 99, 115, 131, 163, 195, 227, 258,
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
 ];
 
 const LENGTH_EXTRA: [u8; 29] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
-    1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
-    4, 4, 4, 4, 5, 5, 5, 5, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
 ];
 
 const DIST_BASE: [u16; 30] = [
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25,
-    33, 49, 65, 97, 129, 193, 257, 385, 513, 769,
-    1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 
 const DIST_EXTRA: [u8; 30] = [
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3,
-    4, 4, 5, 5, 6, 6, 7, 7, 8, 8,
-    9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
 ];
 
 // ─── Bit helpers ────────────────────────────────────────────────────────────
@@ -76,10 +71,11 @@ fn find_distance_code(dist: u16) -> (u8, u8, u16) {
 }
 
 fn hash3(data: &[u8], pos: usize) -> usize {
-    if pos + 2 >= data.len() { return 0; }
-    let h = (data[pos] as usize)
-        ^ ((data[pos + 1] as usize) << 4)
-        ^ ((data[pos + 2] as usize) << 8);
+    if pos + 2 >= data.len() {
+        return 0;
+    }
+    let h =
+        (data[pos] as usize) ^ ((data[pos + 1] as usize) << 4) ^ ((data[pos + 2] as usize) << 8);
     h & HASH_MASK
 }
 
@@ -136,8 +132,12 @@ impl ZlibEncoder {
 
         // Reset hash chains (fresh dictionary per call — simpler than
         // maintaining a sliding window across calls, still effective)
-        for x in self.head.iter_mut() { *x = u32::MAX; }
-        for x in self.prev.iter_mut() { *x = u32::MAX; }
+        for x in self.head.iter_mut() {
+            *x = u32::MAX;
+        }
+        for x in self.prev.iter_mut() {
+            *x = u32::MAX;
+        }
 
         // ── DEFLATE block: BFINAL=0, BTYPE=01 (fixed Huffman) ──
 
@@ -150,8 +150,7 @@ impl ZlibEncoder {
 
             if match_len >= MIN_MATCH {
                 // Emit length/distance pair
-                let (len_code, len_extra_bits, len_extra_val) =
-                    find_length_code(match_len as u16);
+                let (len_code, len_extra_bits, len_extra_val) = find_length_code(match_len as u16);
                 self.emit_lit_len(out, len_code);
                 if len_extra_bits > 0 {
                     self.write_bits(out, len_extra_val as u32, len_extra_bits);
@@ -257,7 +256,9 @@ impl ZlibEncoder {
             if len >= MIN_MATCH && len > best_len {
                 best_len = len;
                 best_dist = dist;
-                if len == MAX_MATCH { break; }
+                if len == MAX_MATCH {
+                    break;
+                }
             }
             chain = self.prev[candidate % WINDOW_SIZE];
             chain_limit -= 1;

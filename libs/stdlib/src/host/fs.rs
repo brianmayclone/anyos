@@ -121,7 +121,11 @@ pub fn readdir(_path: &str, _buf: &mut [u8]) -> u32 {
     for entry in entries.flatten().take(max_entries) {
         let file_type = match entry.file_type() {
             Ok(ft) => {
-                if ft.is_dir() { 1u8 } else { 0u8 }
+                if ft.is_dir() {
+                    1u8
+                } else {
+                    0u8
+                }
             }
             Err(_) => 0u8,
         };
@@ -145,7 +149,11 @@ pub fn readdir(_path: &str, _buf: &mut [u8]) -> u32 {
 }
 
 pub fn mkdir(path: &str) -> u32 {
-    if std::fs::create_dir_all(path).is_ok() { 0 } else { u32::MAX }
+    if std::fs::create_dir_all(path).is_ok() {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 pub fn unlink(path: &str) -> u32 {
@@ -170,9 +178,17 @@ pub fn getcwd(buf: &mut [u8]) -> u32 {
 }
 
 pub fn isatty(fd: u32) -> u32 {
-    if fd <= 2 { 1 } else { 0 }
+    if fd <= 2 {
+        1
+    } else {
+        0
+    }
 }
 
 pub fn rename(old: &str, new: &str) -> u32 {
-    if std::fs::rename(old, new).is_ok() { 0 } else { u32::MAX }
+    if std::fs::rename(old, new).is_ok() {
+        0
+    } else {
+        u32::MAX
+    }
 }

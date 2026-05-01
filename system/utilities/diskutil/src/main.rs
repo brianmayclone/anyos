@@ -3,10 +3,10 @@
 #![no_std]
 #![no_main]
 
-use libanyui_client as ui;
-use ui::{Widget, ColumnDef, ALIGN_LEFT, ALIGN_RIGHT, DOCK_TOP, DOCK_BOTTOM, DOCK_LEFT, DOCK_FILL};
-use anyos_std::{format, i18n, vec, String, Vec};
 use anyos_std::sys;
+use anyos_std::{format, i18n, vec, String, Vec};
+use libanyui_client as ui;
+use ui::{ColumnDef, Widget, ALIGN_LEFT, ALIGN_RIGHT, DOCK_BOTTOM, DOCK_FILL, DOCK_LEFT, DOCK_TOP};
 
 anyos_std::entry!(main);
 
@@ -19,11 +19,11 @@ const COL_EXFAT: u32 = 0xFF5856D6;
 const COL_FAT32: u32 = 0xFF34C759;
 const COL_FAT16: u32 = 0xFFFF9500;
 const COL_LINUX: u32 = 0xFFFF3B30;
-const COL_ESP: u32   = 0xFFFFCC00;
-const COL_FREE: u32  = 0xFF6E6E73;
-const COL_NTFS: u32  = 0xFF30B0C7;
-const COL_SWAP: u32  = 0xFFAF52DE;
-const ACCENT: u32    = 0xFF007AFF;
+const COL_ESP: u32 = 0xFFFFCC00;
+const COL_FREE: u32 = 0xFF6E6E73;
+const COL_NTFS: u32 = 0xFF30B0C7;
+const COL_SWAP: u32 = 0xFFAF52DE;
+const ACCENT: u32 = 0xFF007AFF;
 
 const MAX_SIDEBAR_DISKS: usize = 8;
 const MAX_MOUNTS: usize = 32;
@@ -31,8 +31,16 @@ const MAX_MOUNTS: usize = 32;
 // ── Data ────────────────────────────────────────────────────────────────────
 
 fn read_u64_le(buf: &[u8], off: usize) -> u64 {
-    u64::from_le_bytes([buf[off],buf[off+1],buf[off+2],buf[off+3],
-                        buf[off+4],buf[off+5],buf[off+6],buf[off+7]])
+    u64::from_le_bytes([
+        buf[off],
+        buf[off + 1],
+        buf[off + 2],
+        buf[off + 3],
+        buf[off + 4],
+        buf[off + 5],
+        buf[off + 6],
+        buf[off + 7],
+    ])
 }
 
 fn type_name(t: u8) -> &'static str {
@@ -65,7 +73,11 @@ fn type_color(t: u8) -> u32 {
 
 /// Convert disk_id to Linux-style device letter: 0 → 'a', 1 → 'b', …
 fn disk_letter(disk_id: u8) -> char {
-    if disk_id < 26 { (b'a' + disk_id) as char } else { '?' }
+    if disk_id < 26 {
+        (b'a' + disk_id) as char
+    } else {
+        '?'
+    }
 }
 
 fn format_size(sectors: u64) -> String {
@@ -174,7 +186,9 @@ fn load_mounts() -> Vec<(String, String)> {
     }
     let text = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
     for line in text.split('\n') {
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let mut parts = line.splitn(3, '\t');
         let path = parts.next().unwrap_or("");
         let fs = parts.next().unwrap_or("");
@@ -186,7 +200,11 @@ fn load_mounts() -> Vec<(String, String)> {
 }
 
 /// Build display rows: partitions + unallocated gaps between them.
-fn build_display_rows(disk: &DiskInfo, parts: &[PartInfo], mounts: &[(String, String)]) -> Vec<DisplayRow> {
+fn build_display_rows(
+    disk: &DiskInfo,
+    parts: &[PartInfo],
+    mounts: &[(String, String)],
+) -> Vec<DisplayRow> {
     let mut rows = Vec::new();
     let total = disk.total_sectors;
     // Start cursor at the first partition's start or standard 2048 alignment
@@ -220,7 +238,8 @@ fn build_display_rows(disk: &DiskInfo, parts: &[PartInfo], mounts: &[(String, St
         let dev_path = format!("/dev/sd{}{}", disk_letter(disk.disk_id), p.index + 1);
 
         // Find mount point
-        let mp = mounts.iter()
+        let mp = mounts
+            .iter()
             .find(|(_, _)| {
                 // Simple heuristic: check if any mount contains our device name
                 // Real implementation would match device to mount
@@ -273,14 +292,25 @@ fn build_display_rows(disk: &DiskInfo, parts: &[PartInfo], mounts: &[(String, St
 fn find_free_space(disk: &DiskInfo, parts: &[PartInfo]) -> Option<(u64, u64)> {
     let start: u64 = 2048;
     let end = disk.total_sectors;
-    let mut used: Vec<(u64, u64)> = parts.iter().map(|p| (p.start_lba, p.start_lba + p.size_sectors)).collect();
+    let mut used: Vec<(u64, u64)> = parts
+        .iter()
+        .map(|p| (p.start_lba, p.start_lba + p.size_sectors))
+        .collect();
     used.sort_by_key(|&(s, _)| s);
     let mut c = start;
     for &(s, e) in &used {
-        if c < s { return Some((c, s - c)); }
-        if e > c { c = e; }
+        if c < s {
+            return Some((c, s - c));
+        }
+        if e > c {
+            c = e;
+        }
     }
-    if c < end { Some((c, end - c)) } else { None }
+    if c < end {
+        Some((c, end - c))
+    } else {
+        None
+    }
 }
 
 // ── Draw ────────────────────────────────────────────────────────────────────
@@ -290,7 +320,14 @@ fn draw_bar(canvas: &ui::Canvas, w: u32, h: u32, disk: &DiskInfo, rows: &[Displa
     canvas.clear(tc.window_bg);
     if rows.is_empty() {
         canvas.fill_rect(4, 4, w - 8, h - 8, COL_FREE);
-        canvas.draw_text((w / 2 - 40) as i32, (h / 2 - 6) as i32, 0xFFCCCCCC, 0, 11, "No partitions");
+        canvas.draw_text(
+            (w / 2 - 40) as i32,
+            (h / 2 - 6) as i32,
+            0xFFCCCCCC,
+            0,
+            11,
+            "No partitions",
+        );
         return;
     }
     let total = disk.total_sectors.max(1);
@@ -326,7 +363,11 @@ fn draw_bar(canvas: &ui::Canvas, w: u32, h: u32, disk: &DiskInfo, rows: &[Displa
             // Split into two lines
             let line1_end = label.find('\n').unwrap_or(label.len());
             let line1 = &label[..line1_end];
-            let line2 = if line1_end < label.len() { &label[line1_end + 1..] } else { "" };
+            let line2 = if line1_end < label.len() {
+                &label[line1_end + 1..]
+            } else {
+                ""
+            };
 
             let text_color = if row.is_free { 0xFFAAAAAA } else { 0xFFFFFFFF };
             let tx = px + 6;
@@ -338,8 +379,14 @@ fn draw_bar(canvas: &ui::Canvas, w: u32, h: u32, disk: &DiskInfo, rows: &[Displa
         } else if pw > 30 {
             // Just show size
             let text_color = if row.is_free { 0xFFAAAAAA } else { 0xFFFFFFFF };
-            canvas.draw_text(px + 4, m as i32 + (ih as i32 / 2) - 5, text_color, 2, 9,
-                &format_size_short(row.size_sectors));
+            canvas.draw_text(
+                px + 4,
+                m as i32 + (ih as i32 / 2) - 5,
+                text_color,
+                2,
+                9,
+                &format_size_short(row.size_sectors),
+            );
         }
     }
 }
@@ -385,7 +432,9 @@ fn write_le64_buf(b: &mut [u8], o: usize, v: u64) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    if !ui::init() { return; }
+    if !ui::init() {
+        return;
+    }
     i18n::init();
     let tc = ui::theme::colors();
     let win = ui::Window::new("Disk Utility", -1, -1, WIN_W, WIN_H);
@@ -393,22 +442,22 @@ fn main() {
     // ── Menu ──
     let mut mb = ui::MenuBarBuilder::new()
         .menu("File")
-            .item(1, "Refresh", 0)
-            .separator()
-            .item(2, "Quit", 0)
+        .item(1, "Refresh", 0)
+        .separator()
+        .item(2, "Quit", 0)
         .end_menu()
         .menu("Partition")
-            .item(10, "New...", 0)
-            .item(11, "Delete", 0)
-            .separator()
-            .item(12, "Format as exFAT", 0)
-            .item(13, "Format as FAT32", 0)
-            .separator()
-            .item(14, "Set Boot Flag", 0)
-            .item(15, "Clear Boot Flag", 0)
+        .item(10, "New...", 0)
+        .item(11, "Delete", 0)
+        .separator()
+        .item(12, "Format as exFAT", 0)
+        .item(13, "Format as FAT32", 0)
+        .separator()
+        .item(14, "Set Boot Flag", 0)
+        .item(15, "Clear Boot Flag", 0)
         .end_menu()
         .menu("Device")
-            .item(20, "Rescan Disks", 0)
+        .item(20, "Rescan Disks", 0)
         .end_menu();
     let menu = ui::MenuBar::set(win.id(), mb.build());
 
@@ -683,17 +732,39 @@ fn main() {
     static mut FREE_SECTORS: u64 = 0;
 
     let disks = load_disks();
-    let parts = if !disks.is_empty() { load_partitions(disks[0].disk_id as u32) } else { Vec::new() };
+    let parts = if !disks.is_empty() {
+        load_partitions(disks[0].disk_id as u32)
+    } else {
+        Vec::new()
+    };
     let mounts = load_mounts();
     let bar_w = cw - 32;
 
-    update_sidebar(&disk_buttons, &disk_info_labels, &disks, &parts, 0, sidebar_bg, selected_bg);
+    update_sidebar(
+        &disk_buttons,
+        &disk_info_labels,
+        &disks,
+        &parts,
+        0,
+        sidebar_bg,
+        selected_bg,
+    );
     let drows = if !disks.is_empty() {
         build_display_rows(&disks[0], &parts, &mounts)
     } else {
         Vec::new()
     };
-    update_ui(&info_label, &canvas, &grid, bar_w, BAR_H, &disks, 0, &parts, &drows);
+    update_ui(
+        &info_label,
+        &canvas,
+        &grid,
+        bar_w,
+        BAR_H,
+        &disks,
+        0,
+        &parts,
+        &drows,
+    );
 
     unsafe {
         DISKS = Some(disks);
@@ -703,99 +774,139 @@ fn main() {
 
     // ── Sidebar disk click handlers ──
     for i in 0..MAX_SIDEBAR_DISKS {
-        disk_buttons[i].on_click(move |_| {
-            unsafe {
-                let d = DISKS.as_ref().unwrap();
-                if i < d.len() {
-                    DISK_IDX = i;
-                    let p = load_partitions(d[i].disk_id as u32);
-                    let m = load_mounts();
-                    let drows = build_display_rows(&d[i], &p, &m);
-                    update_sidebar(&disk_buttons, &disk_info_labels, d, &p, i, sidebar_bg, selected_bg);
-                    update_ui(&info_label, &canvas, &grid, bar_w, BAR_H, d, i, &p, &drows);
-                    DISPLAY_ROWS = Some(drows);
-                    PARTS = Some(p);
-                }
+        disk_buttons[i].on_click(move |_| unsafe {
+            let d = DISKS.as_ref().unwrap();
+            if i < d.len() {
+                DISK_IDX = i;
+                let p = load_partitions(d[i].disk_id as u32);
+                let m = load_mounts();
+                let drows = build_display_rows(&d[i], &p, &m);
+                update_sidebar(
+                    &disk_buttons,
+                    &disk_info_labels,
+                    d,
+                    &p,
+                    i,
+                    sidebar_bg,
+                    selected_bg,
+                );
+                update_ui(&info_label, &canvas, &grid, bar_w, BAR_H, d, i, &p, &drows);
+                DISPLAY_ROWS = Some(drows);
+                PARTS = Some(p);
             }
         });
     }
 
     // ── Rescan ──
-    let rescan = move || {
-        unsafe {
-            let new = load_disks();
-            if DISK_IDX >= new.len() { DISK_IDX = 0; }
-            let p = if !new.is_empty() {
-                sys::partition_rescan(new[DISK_IDX].disk_id as u32);
-                load_partitions(new[DISK_IDX].disk_id as u32)
-            } else {
-                Vec::new()
-            };
-            let m = load_mounts();
-            let drows = if !new.is_empty() {
-                build_display_rows(&new[DISK_IDX], &p, &m)
-            } else {
-                Vec::new()
-            };
-            DISKS = Some(new);
-            let d = DISKS.as_ref().unwrap();
-            update_sidebar(&disk_buttons, &disk_info_labels, d, &p, DISK_IDX, sidebar_bg, selected_bg);
-            update_ui(&info_label, &canvas, &grid, bar_w, BAR_H, d, DISK_IDX, &p, &drows);
-            DISPLAY_ROWS = Some(drows);
-            PARTS = Some(p);
+    let rescan = move || unsafe {
+        let new = load_disks();
+        if DISK_IDX >= new.len() {
+            DISK_IDX = 0;
         }
+        let p = if !new.is_empty() {
+            sys::partition_rescan(new[DISK_IDX].disk_id as u32);
+            load_partitions(new[DISK_IDX].disk_id as u32)
+        } else {
+            Vec::new()
+        };
+        let m = load_mounts();
+        let drows = if !new.is_empty() {
+            build_display_rows(&new[DISK_IDX], &p, &m)
+        } else {
+            Vec::new()
+        };
+        DISKS = Some(new);
+        let d = DISKS.as_ref().unwrap();
+        update_sidebar(
+            &disk_buttons,
+            &disk_info_labels,
+            d,
+            &p,
+            DISK_IDX,
+            sidebar_bg,
+            selected_bg,
+        );
+        update_ui(
+            &info_label,
+            &canvas,
+            &grid,
+            bar_w,
+            BAR_H,
+            d,
+            DISK_IDX,
+            &p,
+            &drows,
+        );
+        DISPLAY_ROWS = Some(drows);
+        PARTS = Some(p);
     };
-    btn_rescan.on_click(move |_| { rescan(); });
+    btn_rescan.on_click(move |_| {
+        rescan();
+    });
 
     // ── New partition: show create panel ──
-    let show_create_panel = move || {
-        unsafe {
-            let disks = DISKS.as_ref().unwrap();
-            let parts = PARTS.as_ref().unwrap();
-            if disks.is_empty() { return; }
-            if parts.len() >= 4 {
-                ui::MessageBox::show(ui::MessageBoxType::Warning,
-                    "Maximum 4 partitions (MBR limit).", None);
-                return;
+    let show_create_panel = move || unsafe {
+        let disks = DISKS.as_ref().unwrap();
+        let parts = PARTS.as_ref().unwrap();
+        if disks.is_empty() {
+            return;
+        }
+        if parts.len() >= 4 {
+            ui::MessageBox::show(
+                ui::MessageBoxType::Warning,
+                "Maximum 4 partitions (MBR limit).",
+                None,
+            );
+            return;
+        }
+        let disk = &disks[DISK_IDX];
+        match find_free_space(disk, parts) {
+            Some((start, size)) => {
+                FREE_START = start;
+                FREE_SECTORS = size;
+                let mb = size * 512 / (1024 * 1024);
+                ui::marshal_set_text(
+                    cp_free_label_id,
+                    &format!(
+                        "Free space: {} (starting at LBA {})",
+                        format_size(size),
+                        start
+                    ),
+                );
+                ui::marshal_set_text(cp_size_value_id, &format!("{} MB", mb));
+                ui::marshal_set_state(cp_slider_id, 100);
+                cp_size_input.set_text(&format!("{}", mb));
+                ui::marshal_set_visible(grid_card_id, false);
+                ui::marshal_set_visible(create_panel_id, true);
             }
-            let disk = &disks[DISK_IDX];
-            match find_free_space(disk, parts) {
-                Some((start, size)) => {
-                    FREE_START = start;
-                    FREE_SECTORS = size;
-                    let mb = size * 512 / (1024 * 1024);
-                    ui::marshal_set_text(cp_free_label_id,
-                        &format!("Free space: {} (starting at LBA {})", format_size(size), start));
-                    ui::marshal_set_text(cp_size_value_id, &format!("{} MB", mb));
-                    ui::marshal_set_state(cp_slider_id, 100);
-                    cp_size_input.set_text(&format!("{}", mb));
-                    ui::marshal_set_visible(grid_card_id, false);
-                    ui::marshal_set_visible(create_panel_id, true);
-                }
-                None => {
-                    ui::MessageBox::show(ui::MessageBoxType::Warning,
-                        "No free space available on this disk.", None);
-                }
+            None => {
+                ui::MessageBox::show(
+                    ui::MessageBoxType::Warning,
+                    "No free space available on this disk.",
+                    None,
+                );
             }
         }
     };
-    btn_new.on_click(move |_| { show_create_panel(); });
+    btn_new.on_click(move |_| {
+        show_create_panel();
+    });
 
     // ── Slider changes update size display ──
-    cp_slider.on_value_changed(move |e| {
-        unsafe {
-            let max_mb = FREE_SECTORS * 512 / (1024 * 1024);
-            let mb = (max_mb as u64 * e.value as u64 / 100).max(1);
-            ui::marshal_set_text(cp_size_value_id, &format!("{} MB", mb));
-            cp_size_input.set_text(&format!("{}", mb));
-        }
+    cp_slider.on_value_changed(move |e| unsafe {
+        let max_mb = FREE_SECTORS * 512 / (1024 * 1024);
+        let mb = (max_mb as u64 * e.value as u64 / 100).max(1);
+        ui::marshal_set_text(cp_size_value_id, &format!("{} MB", mb));
+        cp_size_input.set_text(&format!("{}", mb));
     });
 
     // ── Create button ──
     cp_btn_create.on_click(move |_| {
         unsafe {
             let disks = DISKS.as_ref().unwrap();
-            if disks.is_empty() { return; }
+            if disks.is_empty() {
+                return;
+            }
             let disk = &disks[DISK_IDX];
 
             let mut input_buf = [0u8; 32];
@@ -803,13 +914,18 @@ fn main() {
             let input_str = core::str::from_utf8(&input_buf[..input_len as usize]).unwrap_or("");
             let mb: u64 = input_str.trim().parse().unwrap_or(0);
             if mb == 0 {
-                ui::MessageBox::show(ui::MessageBoxType::Warning,
-                    "Enter a valid size in MB.", None);
+                ui::MessageBox::show(
+                    ui::MessageBoxType::Warning,
+                    "Enter a valid size in MB.",
+                    None,
+                );
                 return;
             }
 
             let sectors = (mb * (1024 * 1024) / 512).min(FREE_SECTORS);
-            if sectors == 0 { return; }
+            if sectors == 0 {
+                return;
+            }
 
             let ptype: u8 = match cp_type_seg.get_state() {
                 1 => 0x0C, // FAT32
@@ -821,21 +937,26 @@ fn main() {
             let parts = PARTS.as_ref().unwrap();
             let mut used_slots = [false; 4];
             for p in parts.iter() {
-                if (p.index as usize) < 4 { used_slots[p.index as usize] = true; }
+                if (p.index as usize) < 4 {
+                    used_slots[p.index as usize] = true;
+                }
             }
             let slot = match used_slots.iter().position(|&u| !u) {
                 Some(s) => s as u8,
                 None => {
-                    ui::MessageBox::show(ui::MessageBoxType::Warning,
-                        "No free MBR partition slots (max 4).", None);
+                    ui::MessageBox::show(
+                        ui::MessageBoxType::Warning,
+                        "No free MBR partition slots (max 4).",
+                        None,
+                    );
                     return;
                 }
             };
 
             let mut entry = [0u8; 16];
-            entry[0] = slot;          // partition index (0-3)
-            entry[1] = ptype;         // filesystem type
-            entry[2] = 0x01;          // bootable flag (1=yes, kernel checks != 0)
+            entry[0] = slot; // partition index (0-3)
+            entry[1] = ptype; // filesystem type
+            entry[2] = 0x01; // bootable flag (1=yes, kernel checks != 0)
             write_le32_buf(&mut entry, 4, FREE_START as u32);
             write_le32_buf(&mut entry, 8, sectors as u32);
             sys::partition_create(disk.disk_id as u32, &entry);
@@ -849,7 +970,17 @@ fn main() {
             ui::marshal_set_visible(grid_card_id, true);
 
             let d = DISKS.as_ref().unwrap();
-            update_ui(&info_label, &canvas, &grid, bar_w, BAR_H, d, DISK_IDX, &p, &drows);
+            update_ui(
+                &info_label,
+                &canvas,
+                &grid,
+                bar_w,
+                BAR_H,
+                d,
+                DISK_IDX,
+                &p,
+                &drows,
+            );
             DISPLAY_ROWS = Some(drows);
             PARTS = Some(p);
         }
@@ -862,80 +993,111 @@ fn main() {
     });
 
     // ── Delete partition ──
-    let do_delete = move || {
-        unsafe {
-            let disks = DISKS.as_ref().unwrap();
-            let parts = PARTS.as_ref().unwrap();
-            let drows = DISPLAY_ROWS.as_ref().unwrap();
-            if disks.is_empty() || parts.is_empty() { return; }
-            let disk = &disks[DISK_IDX];
-            let sel = grid.selected_row();
-            if sel == u32::MAX || (sel as usize) >= drows.len() {
-                ui::MessageBox::show(ui::MessageBoxType::Warning,
-                    "Select a partition to delete.", None);
-                return;
-            }
-            let row = &drows[sel as usize];
-            if row.is_free {
-                ui::MessageBox::show(ui::MessageBoxType::Warning,
-                    "Cannot delete unallocated space.", None);
-                return;
-            }
-            let pidx = match row.part_index {
-                Some(i) => i,
-                None => return,
-            };
-
-            let msg = format!(
-                "Delete partition {} ({})?\n\nAll data will be permanently lost!",
-                row.name, format_size(row.size_sectors)
-            );
-            ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Delete"));
-
-            sys::partition_delete(disk.disk_id as u32, pidx as u32);
-            sys::partition_rescan(disk.disk_id as u32);
-
-            let p = load_partitions(disk.disk_id as u32);
-            let m = load_mounts();
-            let dr = build_display_rows(disk, &p, &m);
-            let d = DISKS.as_ref().unwrap();
-            update_ui(&info_label, &canvas, &grid, bar_w, BAR_H, d, DISK_IDX, &p, &dr);
-            DISPLAY_ROWS = Some(dr);
-            PARTS = Some(p);
+    let do_delete = move || unsafe {
+        let disks = DISKS.as_ref().unwrap();
+        let parts = PARTS.as_ref().unwrap();
+        let drows = DISPLAY_ROWS.as_ref().unwrap();
+        if disks.is_empty() || parts.is_empty() {
+            return;
         }
+        let disk = &disks[DISK_IDX];
+        let sel = grid.selected_row();
+        if sel == u32::MAX || (sel as usize) >= drows.len() {
+            ui::MessageBox::show(
+                ui::MessageBoxType::Warning,
+                "Select a partition to delete.",
+                None,
+            );
+            return;
+        }
+        let row = &drows[sel as usize];
+        if row.is_free {
+            ui::MessageBox::show(
+                ui::MessageBoxType::Warning,
+                "Cannot delete unallocated space.",
+                None,
+            );
+            return;
+        }
+        let pidx = match row.part_index {
+            Some(i) => i,
+            None => return,
+        };
+
+        let msg = format!(
+            "Delete partition {} ({})?\n\nAll data will be permanently lost!",
+            row.name,
+            format_size(row.size_sectors)
+        );
+        ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Delete"));
+
+        sys::partition_delete(disk.disk_id as u32, pidx as u32);
+        sys::partition_rescan(disk.disk_id as u32);
+
+        let p = load_partitions(disk.disk_id as u32);
+        let m = load_mounts();
+        let dr = build_display_rows(disk, &p, &m);
+        let d = DISKS.as_ref().unwrap();
+        update_ui(
+            &info_label,
+            &canvas,
+            &grid,
+            bar_w,
+            BAR_H,
+            d,
+            DISK_IDX,
+            &p,
+            &dr,
+        );
+        DISPLAY_ROWS = Some(dr);
+        PARTS = Some(p);
     };
-    btn_delete.on_click(move |_| { do_delete(); });
+    btn_delete.on_click(move |_| {
+        do_delete();
+    });
 
     // ── Format partition ──
-    let do_format_exfat = move || {
-        unsafe {
-            let disks = DISKS.as_ref().unwrap();
-            let drows = DISPLAY_ROWS.as_ref().unwrap();
-            if disks.is_empty() { return; }
-            let disk = &disks[DISK_IDX];
-            let sel = grid.selected_row();
-            if sel == u32::MAX || (sel as usize) >= drows.len() {
-                ui::MessageBox::show(ui::MessageBoxType::Warning,
-                    "Select a partition to format.", None);
-                return;
-            }
-            let row = &drows[sel as usize];
-            if row.is_free {
-                ui::MessageBox::show(ui::MessageBoxType::Warning,
-                    "Cannot format unallocated space. Create a partition first.", None);
-                return;
-            }
-            let msg = format!(
-                "Format {} ({}) as exFAT?\n\nAll data on this partition will be permanently erased!",
-                row.name, format_size(row.size_sectors)
-            );
-            ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Format as exFAT"));
-            format_partition_exfat(disk.disk_id, row.start_lba as u32, row.size_sectors as u32);
-            ui::MessageBox::show(ui::MessageBoxType::Info,
-                "Partition formatted successfully as exFAT.", None);
+    let do_format_exfat = move || unsafe {
+        let disks = DISKS.as_ref().unwrap();
+        let drows = DISPLAY_ROWS.as_ref().unwrap();
+        if disks.is_empty() {
+            return;
         }
+        let disk = &disks[DISK_IDX];
+        let sel = grid.selected_row();
+        if sel == u32::MAX || (sel as usize) >= drows.len() {
+            ui::MessageBox::show(
+                ui::MessageBoxType::Warning,
+                "Select a partition to format.",
+                None,
+            );
+            return;
+        }
+        let row = &drows[sel as usize];
+        if row.is_free {
+            ui::MessageBox::show(
+                ui::MessageBoxType::Warning,
+                "Cannot format unallocated space. Create a partition first.",
+                None,
+            );
+            return;
+        }
+        let msg = format!(
+            "Format {} ({}) as exFAT?\n\nAll data on this partition will be permanently erased!",
+            row.name,
+            format_size(row.size_sectors)
+        );
+        ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Format as exFAT"));
+        format_partition_exfat(disk.disk_id, row.start_lba as u32, row.size_sectors as u32);
+        ui::MessageBox::show(
+            ui::MessageBoxType::Info,
+            "Partition formatted successfully as exFAT.",
+            None,
+        );
     };
-    btn_format.on_click(move |_| { do_format_exfat(); });
+    btn_format.on_click(move |_| {
+        do_format_exfat();
+    });
 
     // ── Toggle boot flag ──
     let do_toggle_boot = move || {
@@ -943,16 +1105,19 @@ fn main() {
             let disks = DISKS.as_ref().unwrap();
             let parts = PARTS.as_ref().unwrap();
             let drows = DISPLAY_ROWS.as_ref().unwrap();
-            if disks.is_empty() { return; }
+            if disks.is_empty() {
+                return;
+            }
             let disk = &disks[DISK_IDX];
             let sel = grid.selected_row();
             if sel == u32::MAX || (sel as usize) >= drows.len() {
-                ui::MessageBox::show(ui::MessageBoxType::Warning,
-                    "Select a partition.", None);
+                ui::MessageBox::show(ui::MessageBoxType::Warning, "Select a partition.", None);
                 return;
             }
             let row = &drows[sel as usize];
-            if row.is_free { return; }
+            if row.is_free {
+                return;
+            }
             let pidx = match row.part_index {
                 Some(i) => i,
                 None => return,
@@ -972,12 +1137,24 @@ fn main() {
             let m = load_mounts();
             let dr = build_display_rows(disk, &p, &m);
             let d = DISKS.as_ref().unwrap();
-            update_ui(&info_label, &canvas, &grid, bar_w, BAR_H, d, DISK_IDX, &p, &dr);
+            update_ui(
+                &info_label,
+                &canvas,
+                &grid,
+                bar_w,
+                BAR_H,
+                d,
+                DISK_IDX,
+                &p,
+                &dr,
+            );
             DISPLAY_ROWS = Some(dr);
             PARTS = Some(p);
         }
     };
-    btn_boot.on_click(move |_| { do_toggle_boot(); });
+    btn_boot.on_click(move |_| {
+        do_toggle_boot();
+    });
 
     // ── Info button ──
     btn_info.on_click(move |_| {
@@ -1012,32 +1189,54 @@ fn main() {
     // ── Context menu handler ──
     ctx_menu.on_item_click(move |e| {
         match e.index {
-            0 => show_create_panel(),    // New Partition
-            1 => do_format_exfat(),      // Format as exFAT
-            2 => {                       // Format as FAT32
+            0 => show_create_panel(), // New Partition
+            1 => do_format_exfat(),   // Format as exFAT
+            2 => {
+                // Format as FAT32
                 // TODO: Implement FAT32 formatting
-                ui::MessageBox::show(ui::MessageBoxType::Info,
-                    "FAT32 formatting is not yet implemented.", None);
+                ui::MessageBox::show(
+                    ui::MessageBoxType::Info,
+                    "FAT32 formatting is not yet implemented.",
+                    None,
+                );
             }
-            3 => do_delete(),            // Delete Partition
-            4 => do_toggle_boot(),       // Toggle Boot Flag
-            5 => {                       // Partition Info
+            3 => do_delete(),      // Delete Partition
+            4 => do_toggle_boot(), // Toggle Boot Flag
+            5 => {
+                // Partition Info
                 unsafe {
                     let disks = DISKS.as_ref().unwrap();
                     let drows = DISPLAY_ROWS.as_ref().unwrap();
-                    if disks.is_empty() { return; }
+                    if disks.is_empty() {
+                        return;
+                    }
                     let disk = &disks[DISK_IDX];
                     let sel = grid.selected_row();
-                    if sel == u32::MAX || (sel as usize) >= drows.len() { return; }
+                    if sel == u32::MAX || (sel as usize) >= drows.len() {
+                        return;
+                    }
                     let row = &drows[sel as usize];
                     let msg = if row.is_free {
-                        format!("Unallocated Space\n\nStart: {}\nEnd: {}\nSize: {}",
-                            row.start_lba, row.end_lba, format_size(row.size_sectors))
+                        format!(
+                            "Unallocated Space\n\nStart: {}\nEnd: {}\nSize: {}",
+                            row.start_lba,
+                            row.end_lba,
+                            format_size(row.size_sectors)
+                        )
                     } else {
-                        format!("{}\nType: {}\nFlags: {}\nStart: {} End: {}\nSize: {}",
-                            row.name, row.fs_type,
-                            if row.flags.is_empty() { "none" } else { row.flags.as_str() },
-                            row.start_lba, row.end_lba, format_size(row.size_sectors))
+                        format!(
+                            "{}\nType: {}\nFlags: {}\nStart: {} End: {}\nSize: {}",
+                            row.name,
+                            row.fs_type,
+                            if row.flags.is_empty() {
+                                "none"
+                            } else {
+                                row.flags.as_str()
+                            },
+                            row.start_lba,
+                            row.end_lba,
+                            format_size(row.size_sectors)
+                        )
                     };
                     ui::MessageBox::show(ui::MessageBoxType::Info, &msg, None);
                 }
@@ -1055,8 +1254,11 @@ fn main() {
             11 => do_delete(),
             12 => do_format_exfat(),
             13 => {
-                ui::MessageBox::show(ui::MessageBoxType::Info,
-                    "FAT32 formatting is not yet implemented.", None);
+                ui::MessageBox::show(
+                    ui::MessageBoxType::Info,
+                    "FAT32 formatting is not yet implemented.",
+                    None,
+                );
             }
             14 => do_toggle_boot(),
             15 => do_toggle_boot(), // same handler toggles
@@ -1072,8 +1274,11 @@ fn main() {
 fn update_sidebar(
     buttons: &[ui::Button; MAX_SIDEBAR_DISKS],
     info_labels: &[ui::Label; MAX_SIDEBAR_DISKS],
-    disks: &[DiskInfo], parts: &[PartInfo],
-    selected: usize, normal_bg: u32, sel_bg: u32,
+    disks: &[DiskInfo],
+    parts: &[PartInfo],
+    selected: usize,
+    normal_bg: u32,
+    sel_bg: u32,
 ) {
     for i in 0..MAX_SIDEBAR_DISKS {
         if i < disks.len() {
@@ -1086,7 +1291,11 @@ fn update_sidebar(
             // Show size and partition count for selected disk
             let pcount = if i == selected { parts.len() } else { 0 };
             let info_text = if i == selected {
-                format!("{} \u{2022} {} partition(s)", format_size(d.total_sectors), pcount)
+                format!(
+                    "{} \u{2022} {} partition(s)",
+                    format_size(d.total_sectors),
+                    pcount
+                )
             } else {
                 format_size(d.total_sectors)
             };
@@ -1103,9 +1312,15 @@ fn update_sidebar(
 // ── Update main UI ──────────────────────────────────────────────────────────
 
 fn update_ui(
-    info: &ui::Label, canvas: &ui::Canvas, grid: &ui::DataGrid,
-    bar_w: u32, bar_h: u32, disks: &[DiskInfo], idx: usize,
-    parts: &[PartInfo], display_rows: &[DisplayRow],
+    info: &ui::Label,
+    canvas: &ui::Canvas,
+    grid: &ui::DataGrid,
+    bar_w: u32,
+    bar_h: u32,
+    disks: &[DiskInfo],
+    idx: usize,
+    parts: &[PartInfo],
+    display_rows: &[DisplayRow],
 ) {
     if disks.is_empty() {
         canvas.clear(ui::theme::colors().window_bg);
@@ -1125,14 +1340,19 @@ fn update_ui(
         rows.push([
             r.name.clone(),
             r.fs_type.clone(),
-            if r.mount_point.is_empty() { String::new() } else { r.mount_point.clone() },
+            if r.mount_point.is_empty() {
+                String::new()
+            } else {
+                r.mount_point.clone()
+            },
             r.flags.clone(),
             format_size(r.size_sectors),
             format!("{}", r.start_lba),
             format!("{}", r.end_lba),
         ]);
     }
-    let refs: Vec<Vec<&str>> = rows.iter()
+    let refs: Vec<Vec<&str>> = rows
+        .iter()
         .map(|r| r.iter().map(|s| s.as_str()).collect())
         .collect();
     grid.set_data(&refs);
@@ -1205,7 +1425,9 @@ fn format_partition_exfat(disk_id: u8, fs_start: u32, fs_sectors: u32) {
     let rc: u32 = 4;
 
     let mut vbr = [0u8; 512];
-    vbr[0] = 0xEB; vbr[1] = 0x76; vbr[2] = 0x90;
+    vbr[0] = 0xEB;
+    vbr[1] = 0x76;
+    vbr[2] = 0x90;
     vbr[3..11].copy_from_slice(b"EXFAT   ");
     write_le64_buf(&mut vbr, 64, fs_start as u64);
     write_le64_buf(&mut vbr, 72, fs_sectors as u64);
@@ -1216,20 +1438,30 @@ fn format_partition_exfat(disk_id: u8, fs_start: u32, fs_sectors: u32) {
     write_le32_buf(&mut vbr, 96, rc);
     write_le32_buf(&mut vbr, 100, 0x414E594F);
     write_le16_buf(&mut vbr, 104, 0x0100);
-    vbr[108] = 9; vbr[109] = SPC_SHIFT; vbr[110] = 1; vbr[111] = 0x80; vbr[112] = 0xFF;
-    vbr[510] = 0x55; vbr[511] = 0xAA;
+    vbr[108] = 9;
+    vbr[109] = SPC_SHIFT;
+    vbr[110] = 1;
+    vbr[111] = 0x80;
+    vbr[112] = 0xFF;
+    vbr[510] = 0x55;
+    vbr[511] = 0xAA;
 
     let mut ext = [0u8; 512];
-    ext[510] = 0x55; ext[511] = 0xAA;
+    ext[510] = 0x55;
+    ext[511] = 0xAA;
     let oem = [0u8; 512];
     let res = [0u8; 512];
 
     let mut ck: u32 = 0;
-    let regs: [&[u8; 512]; 11] = [&vbr, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &oem, &res];
+    let regs: [&[u8; 512]; 11] = [
+        &vbr, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &oem, &res,
+    ];
     for (si, sec) in regs.iter().enumerate() {
         for (bi, &b) in sec.iter().enumerate() {
             let a = si * 512 + bi;
-            if a == 106 || a == 107 || a == 112 { continue; }
+            if a == 106 || a == 107 || a == 112 {
+                continue;
+            }
             ck = ck.rotate_right(1).wrapping_add(b as u32);
         }
     }
@@ -1262,7 +1494,12 @@ fn format_partition_exfat(disk_id: u8, fs_start: u32, fs_sectors: u32) {
         let n = (1u32 + 32).min(fl);
         let zb = [0u8; 32 * 512];
         if n > 1 {
-            sys::disk_write(disk_id as u32, (fa + 1) as u64, n - 1, &zb[..((n - 1) as usize * 512)]);
+            sys::disk_write(
+                disk_id as u32,
+                (fa + 1) as u64,
+                n - 1,
+                &zb[..((n - 1) as usize * 512)],
+            );
         }
     }
 

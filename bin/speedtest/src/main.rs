@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{print, println, Vec};
 use anyos_std::{args, net, process, sys};
+use anyos_std::{print, println, Vec};
 
 anyos_std::entry!(main);
 
@@ -83,8 +83,13 @@ extern "C" fn progress_callback(received: u32, total: u32, _userdata: u64) {
         };
         if total > 0 {
             let pct = (received as u64 * 100 / total as u64) as u32;
-            print!("\r  Download: {} MB / {} MB  ({}%)  {} kbit/s   ",
-                mb, total / (1024 * 1024), pct, speed_kbps);
+            print!(
+                "\r  Download: {} MB / {} MB  ({}%)  {} kbit/s   ",
+                mb,
+                total / (1024 * 1024),
+                pct,
+                speed_kbps
+            );
         } else {
             print!("\r  Download: {} MB  {} kbit/s   ", mb, speed_kbps);
         }
@@ -315,9 +320,7 @@ fn analyze(total_bytes: u32, total_ms: u32, samples: &[ChunkSample]) {
             );
         }
         if cv_x10 >= 150 {
-            println!(
-                "  Hohe Varianz: Treiber liefert ungleichmaessige Durchsatzraten."
-            );
+            println!("  Hohe Varianz: Treiber liefert ungleichmaessige Durchsatzraten.");
         }
         if drops > speeds.len() as u32 / 4 || stalls > 2 {
             println!("  Bewertung: Treiber moeglicherweise fehlerhaft oder ueberlastet.");
@@ -366,7 +369,10 @@ fn isqrt(n: u64) -> u64 {
 }
 
 fn print_usage() {
-    println!("speedtest {} — Netzwerk-Geschwindigkeitstest fuer anyOS", VERSION);
+    println!(
+        "speedtest {} — Netzwerk-Geschwindigkeitstest fuer anyOS",
+        VERSION
+    );
     println!();
     println!("Verwendung: speedtest [URL]");
     println!();
@@ -412,7 +418,10 @@ fn main() {
     match measure_latency(host) {
         Some(lat) => println!("  Latenz (TCP-Handshake): {} ms", lat),
         None => {
-            println!("speedtest: DNS-Aufloesung oder Verbindung fehlgeschlagen fuer {}", host);
+            println!(
+                "speedtest: DNS-Aufloesung oder Verbindung fehlgeschlagen fuer {}",
+                host
+            );
             return;
         }
     }
@@ -441,11 +450,7 @@ fn main() {
 
     // Drain via libhttp with progress tracking. A speed test must not include
     // filesystem write latency in the measured receive path.
-    let received = libhttp_client::drain_progress(
-        url_str,
-        progress_callback,
-        0,
-    );
+    let received = libhttp_client::drain_progress(url_str, progress_callback, 0);
 
     let end_ms = sys::uptime_ms();
     println!(); // newline after \r progress
@@ -493,7 +498,10 @@ fn main() {
     }
 
     if total_bytes < 10240 {
-        println!("speedtest: Nur {} Bytes empfangen — Server liefert keine Testdatei.", total_bytes);
+        println!(
+            "speedtest: Nur {} Bytes empfangen — Server liefert keine Testdatei.",
+            total_bytes
+        );
         println!("  Versuche eine andere URL, z.B.:");
         println!("    speedtest http://proof.ovh.net/files/10Mb.dat");
         println!("    speedtest http://speedtest.tele2.net/10MB.zip");

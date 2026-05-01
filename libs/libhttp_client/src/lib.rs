@@ -77,11 +77,7 @@ mod host {
         download(url, path)
     }
 
-    pub fn drain_progress(
-        url: &str,
-        callback: ProgressCallback,
-        userdata: u64,
-    ) -> Option<u32> {
+    pub fn drain_progress(url: &str, callback: ProgressCallback, userdata: u64) -> Option<u32> {
         let data = get(url)?;
         callback(data.len() as u32, data.len() as u32, userdata);
         Some(data.len() as u32)
@@ -272,18 +268,18 @@ mod imp {
     /// The `callback` is called after each received chunk with
     /// `(received_bytes, total_bytes, userdata)`.
     /// Returns the received byte count on success, or `None` on error.
-    pub fn drain_progress(
-        url: &str,
-        callback: ProgressCallback,
-        userdata: u64,
-    ) -> Option<u32> {
+    pub fn drain_progress(url: &str, callback: ProgressCallback, userdata: u64) -> Option<u32> {
         let result = (lib().libhttp_drain_progress)(
             url.as_ptr(),
             url.len() as u32,
             Some(callback),
             userdata,
         );
-        if result == u32::MAX { None } else { Some(result) }
+        if result == u32::MAX {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     /// Perform an HTTP(S) POST request.

@@ -85,13 +85,25 @@ fn format_size(sectors: u64, buf: &mut [u8]) -> &str {
     let bytes = sectors * 512;
     let (whole, frac, unit) = if bytes >= 1024 * 1024 * 1024 {
         let unit_size: u64 = 1024 * 1024 * 1024;
-        (bytes / unit_size, (bytes % unit_size) * 10 / unit_size, "GiB")
+        (
+            bytes / unit_size,
+            (bytes % unit_size) * 10 / unit_size,
+            "GiB",
+        )
     } else if bytes >= 1024 * 1024 {
         let unit_size: u64 = 1024 * 1024;
-        (bytes / unit_size, (bytes % unit_size) * 10 / unit_size, "MiB")
+        (
+            bytes / unit_size,
+            (bytes % unit_size) * 10 / unit_size,
+            "MiB",
+        )
     } else if bytes >= 1024 {
         let unit_size: u64 = 1024;
-        (bytes / unit_size, (bytes % unit_size) * 10 / unit_size, "KiB")
+        (
+            bytes / unit_size,
+            (bytes % unit_size) * 10 / unit_size,
+            "KiB",
+        )
     } else {
         (bytes, 0, "B")
     };
@@ -118,8 +130,10 @@ fn format_size(sectors: u64, buf: &mut [u8]) -> &str {
     }
     // one fractional digit for KiB/MiB/GiB if non-zero
     if unit != "B" && frac > 0 {
-        buf[pos] = b'.'; pos += 1;
-        buf[pos] = b'0' + frac as u8; pos += 1;
+        buf[pos] = b'.';
+        pos += 1;
+        buf[pos] = b'0' + frac as u8;
+        pos += 1;
     }
     buf[pos] = b' ';
     pos += 1;
@@ -150,8 +164,14 @@ fn type_name(t: u8) -> &'static str {
 /// Read u64 LE from buffer.
 fn read_u64_le(buf: &[u8], off: usize) -> u64 {
     u64::from_le_bytes([
-        buf[off], buf[off + 1], buf[off + 2], buf[off + 3],
-        buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7],
+        buf[off],
+        buf[off + 1],
+        buf[off + 2],
+        buf[off + 3],
+        buf[off + 4],
+        buf[off + 5],
+        buf[off + 6],
+        buf[off + 7],
     ])
 }
 
@@ -180,9 +200,14 @@ fn print_partitions(disk_id: u32) {
     }
 
     println!("Disk sd{}: {} partitions", disk_letter(disk_id), count);
-    println!("{:<6} {:<4} {:<12} {:>12} {:>12} {:>10}",
-        "Part", "Boot", "Type", "Start LBA", "Sectors", "Size");
-    println!("{}", "--------------------------------------------------------------");
+    println!(
+        "{:<6} {:<4} {:<12} {:>12} {:>12} {:>10}",
+        "Part", "Boot", "Type", "Start LBA", "Sectors", "Size"
+    );
+    println!(
+        "{}",
+        "--------------------------------------------------------------"
+    );
 
     for i in 0..count as usize {
         let off = i * 32;
@@ -197,15 +222,26 @@ fn print_partitions(disk_id: u32) {
         let mut size_buf = [0u8; 32];
         let size_str = format_size(size_sectors, &mut size_buf);
 
-        println!("sd{}{:<3} {:<4} {:<12} {:>12} {:>12} {:>10}",
-            disk_letter(disk_id), index + 1, boot_str, type_name(ptype),
-            start_lba, size_sectors, size_str);
+        println!(
+            "sd{}{:<3} {:<4} {:<12} {:>12} {:>12} {:>10}",
+            disk_letter(disk_id),
+            index + 1,
+            boot_str,
+            type_name(ptype),
+            start_lba,
+            size_sectors,
+            size_str
+        );
     }
 }
 
 /// Convert disk_id (0-25) to its Linux-style device letter: 0 → 'a', 1 → 'b', …
 fn disk_letter(disk_id: u32) -> char {
-    if disk_id < 26 { (b'a' + disk_id as u8) as char } else { '?' }
+    if disk_id < 26 {
+        (b'a' + disk_id as u8) as char
+    } else {
+        '?'
+    }
 }
 
 /// List all block devices.
@@ -238,9 +274,14 @@ fn list_all() {
         return;
     }
 
-    println!("{:<10} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
-        "Device", "ID", "Disk", "Part", "Start LBA", "Sectors", "Size");
-    println!("{}", "--------------------------------------------------------------------");
+    println!(
+        "{:<10} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
+        "Device", "ID", "Disk", "Part", "Start LBA", "Sectors", "Size"
+    );
+    println!(
+        "{}",
+        "--------------------------------------------------------------------"
+    );
 
     let mut seen_disks = [false; 8];
 
@@ -257,12 +298,29 @@ fn list_all() {
 
         if part == 0xFF {
             // Whole disk
-            println!("sd{:<8} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
-                disk_letter(disk_id as u32), id, disk_id, "-", start_lba, size_sectors, size_str);
+            println!(
+                "sd{:<8} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
+                disk_letter(disk_id as u32),
+                id,
+                disk_id,
+                "-",
+                start_lba,
+                size_sectors,
+                size_str
+            );
             seen_disks[disk_id as usize & 7] = true;
         } else {
-            println!("sd{}{:<6} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
-                disk_letter(disk_id as u32), part + 1, id, disk_id, part + 1, start_lba, size_sectors, size_str);
+            println!(
+                "sd{}{:<6} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
+                disk_letter(disk_id as u32),
+                part + 1,
+                id,
+                disk_id,
+                part + 1,
+                start_lba,
+                size_sectors,
+                size_str
+            );
         }
     }
 
@@ -393,7 +451,12 @@ fn cmd_new_partition(disk_id: u32) {
         }
     };
 
-    println!("Using partition slot {} (sd{}{})", slot, disk_letter(disk_id), slot + 1);
+    println!(
+        "Using partition slot {} (sd{}{})",
+        slot,
+        disk_letter(disk_id),
+        slot + 1
+    );
 
     // Ask for start LBA
     print!("Start LBA (default: auto): ");
@@ -487,8 +550,10 @@ fn cmd_new_partition(disk_id: u32) {
             let part_size = format_size(size_sectors as u64, &mut sb1);
             let disk_size = format_size(disk_sectors, &mut sb2);
             println!("Error: partition exceeds disk size!");
-            println!("  Partition end: LBA {} (start {} + size {})",
-                end_lba, start_lba, size_sectors);
+            println!(
+                "  Partition end: LBA {} (start {} + size {})",
+                end_lba, start_lba, size_sectors
+            );
             println!("  Disk capacity: {} sectors ({})", disk_sectors, disk_size);
             let avail = if (start_lba as u64) < disk_sectors {
                 disk_sectors - start_lba as u64
@@ -497,8 +562,10 @@ fn cmd_new_partition(disk_id: u32) {
             };
             let mut sb3 = [0u8; 32];
             let avail_str = format_size(avail, &mut sb3);
-            println!("  Available from LBA {}: {} sectors ({})",
-                start_lba, avail, avail_str);
+            println!(
+                "  Available from LBA {}: {} sectors ({})",
+                start_lba, avail, avail_str
+            );
             return;
         }
     }
@@ -511,8 +578,13 @@ fn cmd_new_partition(disk_id: u32) {
         let ex_end = ex_start + ex_size;
         let ex_idx = part_buf[off] as usize + 1;
         if (start_lba as u64) < ex_end && end_lba > ex_start {
-            println!("Error: overlaps with partition sd{}{} (LBA {}-{})!",
-                disk_letter(disk_id), ex_idx, ex_start, ex_end - 1);
+            println!(
+                "Error: overlaps with partition sd{}{} (LBA {}-{})!",
+                disk_letter(disk_id),
+                ex_idx,
+                ex_start,
+                ex_end - 1
+            );
             return;
         }
     }
@@ -529,8 +601,16 @@ fn cmd_new_partition(disk_id: u32) {
     if ret == 0 {
         let mut sb = [0u8; 32];
         let ss = format_size(size_sectors as u64, &mut sb);
-        println!("Created partition sd{}{}: type=0x{:02X} ({}) start={} size={} ({})",
-            disk_letter(disk_id), slot + 1, ptype, type_name(ptype), start_lba, size_sectors, ss);
+        println!(
+            "Created partition sd{}{}: type=0x{:02X} ({}) start={} size={} ({})",
+            disk_letter(disk_id),
+            slot + 1,
+            ptype,
+            type_name(ptype),
+            start_lba,
+            size_sectors,
+            ss
+        );
     } else {
         println!("Error creating partition.");
     }
@@ -620,7 +700,12 @@ fn cmd_change_type(disk_id: u32) {
 
     let ret = anyos_std::sys::partition_create(disk_id, &entry);
     if ret == 0 {
-        println!("Changed partition {} type to 0x{:02X} ({}).", num, ptype, type_name(ptype));
+        println!(
+            "Changed partition {} type to 0x{:02X} ({}).",
+            num,
+            ptype,
+            type_name(ptype)
+        );
     } else {
         println!("Error changing type.");
     }
@@ -628,7 +713,10 @@ fn cmd_change_type(disk_id: u32) {
 
 /// Create a new (empty) MBR disklabel.
 fn cmd_new_disklabel(disk_id: u32) {
-    println!("WARNING: This will erase all partition entries on hd{}!", disk_id);
+    println!(
+        "WARNING: This will erase all partition entries on hd{}!",
+        disk_id
+    );
     print!("Are you sure? (y/N): ");
     let mut buf = [0u8; 8];
     let len = read_line(&mut buf);

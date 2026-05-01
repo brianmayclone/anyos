@@ -1,10 +1,10 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::process;
+use anyos_std::format;
 use anyos_std::fs;
 use anyos_std::println;
-use anyos_std::format;
+use anyos_std::process;
 use anyos_std::Box;
 use libami::{AmiClient, AmiValue};
 
@@ -136,11 +136,18 @@ fn recover_pending_upgrade_if_needed() {
 
     match libinstall::recover_pending_upgrade("/") {
         Ok(restored) => {
-            println!("init: recovered interrupted upgrade ({} files restored)", restored);
+            println!(
+                "init: recovered interrupted upgrade ({} files restored)",
+                restored
+            );
             let _ = fs::mkdir("/System/Logs");
             let _ = fs::write_bytes(
                 "/System/Logs/upgrade-recovery.log",
-                format!("recovered interrupted upgrade: {} files restored\n", restored).as_bytes(),
+                format!(
+                    "recovered interrupted upgrade: {} files restored\n",
+                    restored
+                )
+                .as_bytes(),
             );
         }
         Err(err) => {
@@ -195,7 +202,10 @@ fn main() {
     let spinner_size: u32 = 28;
     let spinner = ui::Spinner::new();
     spinner.set_size(spinner_size, spinner_size);
-    spinner.set_position(((DIALOG_W as i32 - spinner_size as i32) / 2).max(0), y_cursor);
+    spinner.set_position(
+        ((DIALOG_W as i32 - spinner_size as i32) / 2).max(0),
+        y_cursor,
+    );
     win.add(&spinner);
     let _spinner_timer = spinner.start();
     y_cursor += spinner_size as i32 + 14;

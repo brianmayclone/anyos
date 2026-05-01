@@ -1,7 +1,7 @@
 //! Process/thread enumeration via SYS_SYSINFO.
 
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// Information about a single thread.
 #[derive(Clone)]
@@ -68,9 +68,12 @@ fn parse_sysinfo(buf: &[u8], count: usize) -> Vec<ProcessEntry> {
         let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(24);
         let name = String::from(core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("?"));
 
-        let user_pages  = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
-        let cpu_ticks   = u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
-        let parent_tid  = u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
+        let user_pages =
+            u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
+        let cpu_ticks =
+            u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
+        let parent_tid =
+            u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
 
         entries.push(ProcessEntry {
             tid,

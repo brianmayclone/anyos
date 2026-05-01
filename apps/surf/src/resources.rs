@@ -20,7 +20,8 @@ fn image_already_queued_or_decoded(tab_index: usize, src: &str) -> bool {
     }
     let tab = &st.tabs[tab_index];
     tab.webview.has_decoded_image(src)
-        || tab.requested_image_urls
+        || tab
+            .requested_image_urls
             .iter()
             .any(|existing| existing == src)
         || tab.deferred_images.iter().any(|req| req.src == src)
@@ -469,9 +470,9 @@ pub(crate) fn queue_font_face_batch(
         if src_url.starts_with("data:") {
             if let Some(font_data) = decode_font_data_uri(src_url) {
                 if let Some(font_id) = load_valid_web_font_data(family, &font_data) {
-                    st.tabs[tab_index].webview.register_web_font_with_style(
-                        family, *weight, *italic, font_id,
-                    );
+                    st.tabs[tab_index]
+                        .webview
+                        .register_web_font_with_style(family, *weight, *italic, font_id);
                     immediate += 1;
                     crate::surf_log!(
                         "[surf] loaded inline data font '{}' -> id {} ({} bytes)",
@@ -762,8 +763,16 @@ pub(crate) fn queue_images(
     // `loading=lazy` stays out of the startup path entirely, while explicit
     // eager/high-priority images get a small bonus budget similar to browsers'
     // visible-first behaviour.
-    let mut immediate_budget = if startup_critical_only { 4usize } else { 8usize };
-    let mut high_priority_budget = if startup_critical_only { 2usize } else { 4usize };
+    let mut immediate_budget = if startup_critical_only {
+        4usize
+    } else {
+        8usize
+    };
+    let mut high_priority_budget = if startup_critical_only {
+        2usize
+    } else {
+        4usize
+    };
     let mut deferred: Vec<(i32, crate::tab::DeferredImageRequest)> = Vec::new();
 
     for (i, node) in dom.nodes.iter().enumerate() {
@@ -862,6 +871,7 @@ pub(crate) fn queue_images(
                         target_width: width.map(|v| v.max(1) as u32),
                         target_height: height.map(|v| v.max(1) as u32),
                         priority: crate::net_worker::ImagePriority::Viewport,
+                        from_deferred: false,
                         generation,
                     });
                     immediate_count += 1;
@@ -945,6 +955,7 @@ pub(crate) fn queue_images(
                         target_width: width.map(|v| v.max(1) as u32),
                         target_height: height.map(|v| v.max(1) as u32),
                         priority,
+                        from_deferred: false,
                         generation,
                     });
                     immediate_count += 1;
@@ -1089,6 +1100,7 @@ pub(crate) fn queue_background_images(
                 target_width: req.width.map(|v| v.max(1) as u32),
                 target_height: req.height.map(|v| v.max(1) as u32),
                 priority: crate::net_worker::ImagePriority::Viewport,
+                from_deferred: false,
                 generation,
             });
             submitted_immediate += 1;
@@ -1131,8 +1143,9 @@ pub(crate) fn submit_deferred_images(tab_index: usize, max_batch: usize) -> usiz
     let viewport_h = tab.webview.viewport_height() as i32;
     let webview = &tab.webview;
     tab.deferred_images.sort_by(|a, b| {
-        deferred_image_runtime_rank(webview, b, scroll_y, viewport_h)
-            .cmp(&deferred_image_runtime_rank(webview, a, scroll_y, viewport_h))
+        deferred_image_runtime_rank(webview, b, scroll_y, viewport_h).cmp(
+            &deferred_image_runtime_rank(webview, a, scroll_y, viewport_h),
+        )
     });
     let count = core::cmp::min(max_batch, tab.deferred_images.len());
     if count == 0 {
@@ -1162,11 +1175,84 @@ pub(crate) fn submit_deferred_images(tab_index: usize, max_batch: usize) -> usiz
             target_width: req.width.map(|v| v.max(1) as u32),
             target_height: req.height.map(|v| v.max(1) as u32),
             priority: dynamic_priority,
+            from_deferred: true,
             generation: req.generation,
         });
     }
     crate::surf_log!(
         "[surf] submitted {} deferred image(s) for tab {} (remaining={} inflight={})",
+        count,
+        tab_index,
+        tab.deferred_images.len(),
+        tab.deferred_images_inflight
+    );
+    crate::ensure_net_poll_timer();
+    count
+}
+
+pub(crate) fn submit_viewport_deferred_images(tab_index: usize, max_batch: usize) -> usize {
+    if max_batch == 0 {
+        return 0;
+    }
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return 0;
+    }
+    let tab = &mut st.tabs[tab_index];
+    if tab.deferred_images.is_empty() {
+        return 0;
+    }
+
+    let scroll_y = tab.webview.scroll_view().get_state() as i32;
+    let viewport_h = tab.webview.viewport_height() as i32;
+    let mut candidates: Vec<(usize, i32)> = {
+        let webview = &tab.webview;
+        tab.deferred_images
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, req)| {
+                let (_, y, _, h) = webview.node_bounds(req.node_id)?;
+                let top = scroll_y - viewport_h / 2;
+                let bottom = scroll_y + viewport_h.max(1) + viewport_h;
+                if y < bottom && y + h > top {
+                    Some((
+                        idx,
+                        deferred_image_runtime_rank(webview, req, scroll_y, viewport_h),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    if candidates.is_empty() {
+        return 0;
+    }
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.truncate(max_batch);
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let mut requests = Vec::new();
+    for (idx, _) in candidates {
+        requests.push(tab.deferred_images.remove(idx));
+    }
+    tab.deferred_images_inflight += requests.len();
+    let count = requests.len();
+
+    for req in requests {
+        crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
+            tab_index,
+            src: req.src,
+            url: req.url,
+            target_width: req.width.map(|v| v.max(1) as u32),
+            target_height: req.height.map(|v| v.max(1) as u32),
+            priority: crate::net_worker::ImagePriority::Viewport,
+            from_deferred: true,
+            generation: req.generation,
+        });
+    }
+    crate::surf_log!(
+        "[surf] promoted {} visible deferred image(s) for tab {} (remaining={} inflight={})",
         count,
         tab_index,
         tab.deferred_images.len(),
@@ -1377,11 +1463,11 @@ fn reconstruct_inline_svg(attrs: &[libwebview::dom::Attr], inner: &str) -> Strin
                 | "style"
                 | "preserveAspectRatio"
         ) {
-        svg.push(' ');
-        svg.push_str(canonical_svg_attr_name(n));
-        svg.push_str("=\"");
-        svg.push_str(&escape_xml_attr(&attr.value));
-        svg.push('"');
+            svg.push(' ');
+            svg.push_str(canonical_svg_attr_name(n));
+            svg.push_str("=\"");
+            svg.push_str(&escape_xml_attr(&attr.value));
+            svg.push('"');
         }
     }
     if !attrs.iter().any(|a| a.name == "xmlns") {
@@ -1462,7 +1548,9 @@ fn apply_svg_inherited_color(svg: String, color: Option<u32>) -> String {
     };
     let rgb = color & 0x00FF_FFFF;
     let hex = alloc::format!("#{:06x}", rgb);
-    let mut out = svg.replace("currentColor", &hex).replace("currentcolor", &hex);
+    let mut out = svg
+        .replace("currentColor", &hex)
+        .replace("currentcolor", &hex);
     out = substitute_css_vars(out, &hex);
     out = inject_svg_root_color(&out, &hex);
     inject_default_svg_fill(&out, &hex)
@@ -1588,11 +1676,7 @@ fn svg_tag_allows_default_fill(tag: &str) -> bool {
     )
 }
 
-fn collect_external_svg_use_urls(
-    svg: &str,
-    base_url: &crate::http::Url,
-    out: &mut Vec<String>,
-) {
+fn collect_external_svg_use_urls(svg: &str, base_url: &crate::http::Url, out: &mut Vec<String>) {
     let mut cursor = 0usize;
     while let Some(rel_start) = svg[cursor..].find("<use") {
         let start = cursor + rel_start;
@@ -1635,6 +1719,7 @@ fn queue_svg_sprite_fetches(tab_index: usize, sprite_urls: Vec<String>) {
             target_width: None,
             target_height: None,
             priority: crate::net_worker::ImagePriority::Viewport,
+            from_deferred: false,
             generation,
         });
         queued += 1;
@@ -1746,8 +1831,8 @@ fn extract_svg_fragment_by_id(sprite: &str, id: &str) -> Option<String> {
     let tag_end = tag_start + sprite[tag_start..].find('>')?;
     let open_tag = &sprite[tag_start..=tag_end];
     let tag_name = svg_tag_name(open_tag)?;
-    let view_box = extract_attr_value(open_tag, "viewBox")
-        .or_else(|| extract_attr_value(open_tag, "viewbox"));
+    let view_box =
+        extract_attr_value(open_tag, "viewBox").or_else(|| extract_attr_value(open_tag, "viewbox"));
 
     if open_tag.trim_end().ends_with("/>") {
         return Some(String::from(open_tag));

@@ -690,9 +690,7 @@ impl<'a> Lexer<'a> {
             if is_ident_continue(ch) {
                 name.push(ch as char);
                 self.pos += 1;
-            } else if ch == b'\\'
-                && self.pos + 1 < self.src.len()
-                && self.src[self.pos + 1] == b'u'
+            } else if ch == b'\\' && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == b'u'
             {
                 self.pos += 2;
                 name.push(self.read_unicode_escape());

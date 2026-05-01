@@ -146,9 +146,8 @@ fn main() {
     card_title.set_text_color(tc.text);
     card.add(&card_title);
 
-    let card_text = ui::Label::new(
-        "Backups include the confd database and all reachable ExternalRef targets.",
-    );
+    let card_text =
+        ui::Label::new("Backups include the confd database and all reachable ExternalRef targets.");
     card_text.set_position(24, 50);
     card_text.set_size(560, 20);
     card_text.set_font_size(12);
@@ -209,13 +208,25 @@ fn refresh_ui() {
     }
 
     let schema = history_schema();
-    let backup_at = schema.read_string("history/last_backup_at").unwrap_or_default();
-    let backup_path = schema.read_string("history/last_backup_path").unwrap_or_default();
-    let restore_at = schema.read_string("history/last_restore_at").unwrap_or_default();
-    let restore_path = schema.read_string("history/last_restore_path").unwrap_or_default();
+    let backup_at = schema
+        .read_string("history/last_backup_at")
+        .unwrap_or_default();
+    let backup_path = schema
+        .read_string("history/last_backup_path")
+        .unwrap_or_default();
+    let restore_at = schema
+        .read_string("history/last_restore_at")
+        .unwrap_or_default();
+    let restore_path = schema
+        .read_string("history/last_restore_path")
+        .unwrap_or_default();
 
-    app().last_backup.set_text(&history_line("Last backup", &backup_at, &backup_path));
-    app().last_restore.set_text(&history_line("Last restore", &restore_at, &restore_path));
+    app()
+        .last_backup
+        .set_text(&history_line("Last backup", &backup_at, &backup_path));
+    app()
+        .last_restore
+        .set_text(&history_line("Last restore", &restore_at, &restore_path));
 }
 
 fn history_line(prefix: &str, at: &str, path: &str) -> String {
@@ -353,11 +364,15 @@ fn create_backup_archive(path: &str) -> Result<BackupOutcome, String> {
         .ok_or_else(|| String::from("Could not create the backup archive."))?;
 
     if !writer.add_file(DB_ARCHIVE_ENTRY, &db_bytes) {
-        return Err(String::from("Could not add the configuration database to the backup."));
+        return Err(String::from(
+            "Could not add the configuration database to the backup.",
+        ));
     }
 
     if !refs.is_empty() && !writer.add_dir("external/") {
-        return Err(String::from("Could not prepare the external data section in the backup."));
+        return Err(String::from(
+            "Could not prepare the external data section in the backup.",
+        ));
     }
 
     for entry in &refs {
@@ -412,7 +427,9 @@ fn restore_archive(archive_path: &str) -> Result<String, String> {
     let refs = parse_manifest(manifest_text)?;
 
     if !reader.extract_to_file(db_index, RESTORE_TMP_PATH) {
-        return Err(String::from("Could not extract the configuration database from the backup."));
+        return Err(String::from(
+            "Could not extract the configuration database from the backup.",
+        ));
     }
 
     extract_external_stage(&reader)?;
@@ -425,14 +442,18 @@ fn restore_archive(archive_path: &str) -> Result<String, String> {
         let mut stat = [0u32; 7];
         had_existing_config = fs::stat(CONF_DB_PATH, &mut stat) == 0;
         if had_existing_config && fs::rename(CONF_DB_PATH, PRE_RESTORE_PATH) != 0 {
-            return Err(String::from("Could not prepare the current configuration for restore."));
+            return Err(String::from(
+                "Could not prepare the current configuration for restore.",
+            ));
         }
 
         if fs::rename(RESTORE_TMP_PATH, CONF_DB_PATH) != 0 {
             if had_existing_config {
                 let _ = fs::rename(PRE_RESTORE_PATH, CONF_DB_PATH);
             }
-            return Err(String::from("Could not replace the current configuration database."));
+            return Err(String::from(
+                "Could not replace the current configuration database.",
+            ));
         }
         config_replaced = true;
 
@@ -499,7 +520,11 @@ fn collect_external_refs() -> Result<(Vec<ExternalRefEntry>, Vec<SkippedExternal
     for row in 0..result.row_count() {
         let logical_path = result.get_text(row, 0).unwrap_or_default();
         let target_path = result.get_text(row, 1).unwrap_or_default();
-        if target_path.is_empty() || refs.iter().any(|item: &ExternalRefEntry| item.target_path == target_path) {
+        if target_path.is_empty()
+            || refs
+                .iter()
+                .any(|item: &ExternalRefEntry| item.target_path == target_path)
+        {
             continue;
         }
 
@@ -533,13 +558,18 @@ fn add_external_ref_to_archive(
     } else {
         let root_dir = format!("{}/", entry.archive_path);
         if !writer.add_dir(&root_dir) {
-            return Err(String::from("Could not prepare a referenced file for backup."));
+            return Err(String::from(
+                "Could not prepare a referenced file for backup.",
+            ));
         }
         let bytes = fs::read_to_vec(&entry.target_path)
             .map_err(|_| format!("Could not read referenced file {}.", entry.target_path))?;
         let archive_file = format!("{}/payload", entry.archive_path);
         if !writer.add_file(&archive_file, &bytes) {
-            return Err(format!("Could not add {} to the backup.", entry.target_path));
+            return Err(format!(
+                "Could not add {} to the backup.",
+                entry.target_path
+            ));
         }
         Ok(())
     }
@@ -552,7 +582,9 @@ fn add_dir_tree_to_archive(
 ) -> Result<(), String> {
     let archive_entry = format!("{}/", archive_dir);
     if !writer.add_dir(&archive_entry) {
-        return Err(String::from("Could not prepare a referenced folder for backup."));
+        return Err(String::from(
+            "Could not prepare a referenced folder for backup.",
+        ));
     }
 
     let entries = fs::read_dir(source_dir)
@@ -651,7 +683,9 @@ fn extract_external_stage(reader: &libzip_client::TarReader) -> Result<(), Strin
         }
         ensure_parent_dirs(&stage_path);
         if !reader.extract_to_file(index, &stage_path) {
-            return Err(String::from("Could not extract external app data from the backup."));
+            return Err(String::from(
+                "Could not extract external app data from the backup.",
+            ));
         }
     }
 
@@ -665,7 +699,10 @@ fn apply_external_restore(
     let staged_path = if entry.is_dir {
         join_fs_path(RESTORE_STAGE_DIR, &entry.archive_path)
     } else {
-        join_fs_path(RESTORE_STAGE_DIR, &format!("{}/payload", entry.archive_path))
+        join_fs_path(
+            RESTORE_STAGE_DIR,
+            &format!("{}/payload", entry.archive_path),
+        )
     };
     let backup_path = backup_slot_for_target(&entry.target_path);
 
@@ -675,7 +712,9 @@ fn apply_external_restore(
         let _ = remove_tree(&backup_path);
         ensure_parent_dirs(&backup_path);
         if fs::rename(&entry.target_path, &backup_path) != 0 {
-            return Err(String::from("Could not prepare current app data for restore."));
+            return Err(String::from(
+                "Could not prepare current app data for restore.",
+            ));
         }
     }
 
@@ -714,7 +753,11 @@ fn cleanup_restore_artifacts() {
 }
 
 fn backup_slot_for_target(target_path: &str) -> String {
-    format!("{}/{}", PRE_RESTORE_EXTERNAL_ROOT, strip_leading_slash(target_path))
+    format!(
+        "{}/{}",
+        PRE_RESTORE_EXTERNAL_ROOT,
+        strip_leading_slash(target_path)
+    )
 }
 
 fn find_archive_entry(reader: &libzip_client::TarReader, wanted: &str) -> Option<u32> {
@@ -752,7 +795,8 @@ fn remove_tree(path: &str) -> Result<(), String> {
     }
 
     if stat[0] == 1 {
-        let entries = fs::read_dir(path).map_err(|_| format!("Could not read directory {}.", path))?;
+        let entries =
+            fs::read_dir(path).map_err(|_| format!("Could not read directory {}.", path))?;
         for child in entries {
             if child.name == "." || child.name == ".." {
                 continue;

@@ -73,6 +73,7 @@ pub(crate) enum FetchRequest {
         target_width: Option<u32>,
         target_height: Option<u32>,
         priority: ImagePriority,
+        from_deferred: bool,
         generation: u32,
     },
     /// Web font fetch (@font-face src).
@@ -152,6 +153,7 @@ pub(crate) enum FetchResult {
         headers: String,
         decoded_raster: Option<DecodedRaster>,
         priority: ImagePriority,
+        from_deferred: bool,
         timing: Option<http::RequestTiming>,
         generation: u32,
     },
@@ -381,7 +383,10 @@ fn ensure_worker(class: WorkerClass) {
     let target = worker_lane_target(class);
     let active = worker_active_count(class);
     let pending = queued_request_count(class);
-    let wanted = active.load(Ordering::Relaxed).saturating_add(pending).min(target);
+    let wanted = active
+        .load(Ordering::Relaxed)
+        .saturating_add(pending)
+        .min(target);
     if wanted == 0 {
         return;
     }
@@ -491,9 +496,7 @@ fn record_started(req: &FetchRequest) -> u32 {
         FetchRequest::NavigatePost { url, .. } => {
             crate::devtools::record_request_started("POST", "html", url)
         }
-        FetchRequest::Css { url, .. } => {
-            crate::devtools::record_request_started("GET", "css", url)
-        }
+        FetchRequest::Css { url, .. } => crate::devtools::record_request_started("GET", "css", url),
         FetchRequest::Image { url, .. } => {
             crate::devtools::record_request_started("GET", "img", url)
         }
@@ -837,9 +840,7 @@ fn disk_cache_get(url_key: &str) -> Option<(Vec<u8>, String)> {
 }
 
 fn disk_cache_put(url_key: &str, body: &[u8], headers: &str) {
-    if body.is_empty()
-        || body.len() > MAX_DISK_CACHEABLE_BODY_BYTES
-        || !headers_cacheable(headers)
+    if body.is_empty() || body.len() > MAX_DISK_CACHEABLE_BODY_BYTES || !headers_cacheable(headers)
     {
         return;
     }
@@ -1014,11 +1015,7 @@ fn decode_image_in_worker(
     let is_svg = crate::resources::is_svg(src, headers);
     let decoded = if is_svg {
         crate::resources::decode_svg_to_image(body).map_err(|_| {
-            surf_net_log!(
-                "worker svg decode failed: src={} bytes={}",
-                src,
-                body.len()
-            );
+            surf_net_log!("worker svg decode failed: src={} bytes={}", src, body.len());
             libimage_client::ImageError::InvalidData
         })
     } else {
@@ -1376,7 +1373,12 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
 
             match http::fetch(&url, &mut cookies, pool) {
                 Ok(mut response) => {
-                    stamp_worker_timing(&mut response.timing, request_id, submitted_ms, dequeued_ms);
+                    stamp_worker_timing(
+                        &mut response.timing,
+                        request_id,
+                        submitted_ms,
+                        dequeued_ms,
+                    );
                     enqueue_result(FetchResult::NavDone {
                         tab_index,
                         response,
@@ -1406,7 +1408,12 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
 
             match http::fetch_post(&url, &body, &mut cookies, pool) {
                 Ok(mut response) => {
-                    stamp_worker_timing(&mut response.timing, request_id, submitted_ms, dequeued_ms);
+                    stamp_worker_timing(
+                        &mut response.timing,
+                        request_id,
+                        submitted_ms,
+                        dequeued_ms,
+                    );
                     enqueue_result(FetchResult::NavDone {
                         tab_index,
                         response,
@@ -1521,6 +1528,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
             target_width,
             target_height,
             priority,
+            from_deferred,
             generation,
         } => {
             if generation != current_gen {
@@ -1549,6 +1557,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                     headers: headers_string,
                     decoded_raster,
                     priority,
+                    from_deferred,
                     timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                     generation,
                 });
@@ -1579,6 +1588,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         headers: resp.headers,
                         decoded_raster,
                         priority,
+                        from_deferred,
                         timing: Some(resp.timing),
                         generation,
                     });
@@ -1600,6 +1610,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         headers: resp.headers,
                         decoded_raster: None,
                         priority,
+                        from_deferred,
                         timing: Some(resp.timing),
                         generation,
                     });
@@ -1615,6 +1626,7 @@ fn process_request(queued: QueuedFetchRequest, dequeued_ms: u32, pool: &mut Conn
                         headers: String::new(),
                         decoded_raster: None,
                         priority,
+                        from_deferred,
                         timing: Some(instant_timing(request_id, submitted_ms, dequeued_ms)),
                         generation,
                     });

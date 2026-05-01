@@ -156,10 +156,10 @@ pub fn dl_open(path: &str) -> Option<DlHandle> {
     for i in 0..128 {
         let d = unsafe { &*dyn_ptr.add(i) };
         match d.d_tag {
-            6 => symtab_va = d.d_val,  // DT_SYMTAB
-            5 => strtab_va = d.d_val,  // DT_STRTAB
-            4 => hash_va = d.d_val,    // DT_HASH
-            0 => break,                // DT_NULL
+            6 => symtab_va = d.d_val, // DT_SYMTAB
+            5 => strtab_va = d.d_val, // DT_STRTAB
+            4 => hash_va = d.d_val,   // DT_HASH
+            0 => break,               // DT_NULL
             _ => {}
         }
     }
@@ -206,7 +206,8 @@ pub fn dl_sym(handle: &DlHandle, name: &str) -> Option<*const ()> {
     while idx != 0 {
         let sym = unsafe { &*handle.symtab.add(idx as usize) };
         if sym.st_value != 0 {
-            let sym_name = unsafe { cstr_eq(handle.strtab.add(sym.st_name as usize), name.as_bytes()) };
+            let sym_name =
+                unsafe { cstr_eq(handle.strtab.add(sym.st_name as usize), name.as_bytes()) };
             if sym_name {
                 return Some(sym.st_value as *const ());
             }

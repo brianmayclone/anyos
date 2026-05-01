@@ -3,11 +3,11 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::i18n;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::i18n;
-use libanyui_client as anyui;
 use anyui::Widget;
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
@@ -43,12 +43,16 @@ anyos_std::global_app_state!(AppState);
 
 fn read_file(path: &str) -> Option<Vec<u8>> {
     let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX { return None; }
+    if fd == u32::MAX {
+        return None;
+    }
     let mut content = Vec::new();
     let mut buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         content.extend_from_slice(&buf[..n as usize]);
     }
     anyos_std::fs::close(fd);
@@ -159,9 +163,13 @@ fn update_status(s: &AppState) {
 fn show_detail() {
     let s = app();
     let row = s.grid.selected_row();
-    if row == u32::MAX { return; }
+    if row == u32::MAX {
+        return;
+    }
     let row = row as usize;
-    if row >= s.entries.len() { return; }
+    if row >= s.entries.len() {
+        return;
+    }
 
     let entry = &s.entries[row];
     let detail = anyos_std::format!("{}\n\n{}\n\n{}", entry.title, entry.message, entry.time);
@@ -178,7 +186,9 @@ fn hide_detail() {
 
 fn clear_all() {
     let s = app();
-    if s.entries.is_empty() { return; }
+    if s.entries.is_empty() {
+        return;
+    }
     s.entries.clear();
     // Write empty history
     let mut root = anyos_std::json::Value::new_object();
@@ -187,15 +197,20 @@ fn clear_all() {
     let _ = anyos_std::fs::write_bytes(HISTORY_FILE, json.as_bytes());
     populate_grid(s);
     hide_detail();
-    s.status_label.set_text(i18n::t("All notifications cleared"));
+    s.status_label
+        .set_text(i18n::t("All notifications cleared"));
 }
 
 fn delete_selected() {
     let s = app();
     let row = s.grid.selected_row();
-    if row == u32::MAX { return; }
+    if row == u32::MAX {
+        return;
+    }
     let row = row as usize;
-    if row >= s.entries.len() { return; }
+    if row >= s.entries.len() {
+        return;
+    }
 
     s.entries.remove(row);
     save_history(s);
@@ -282,15 +297,15 @@ fn main() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("Quit"), 0)
+        .item(1, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("Edit"))
-            .item(10, i18n::t("Delete Selected"), 0)
-            .separator()
-            .item(11, i18n::t("Clear All"), 0)
+        .item(10, i18n::t("Delete Selected"), 0)
+        .separator()
+        .item(11, i18n::t("Clear All"), 0)
         .end_menu()
         .menu(i18n::t("View"))
-            .item(20, i18n::t("Refresh"), 0)
+        .item(20, i18n::t("Refresh"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
@@ -368,9 +383,12 @@ fn main() {
     ]);
 
     // Context menu
-    let ctx_items = anyos_std::format!("{}|-|{}|{}",
+    let ctx_items = anyos_std::format!(
+        "{}|-|{}|{}",
         i18n::t("Show Details"),
-        i18n::t("Delete"), i18n::t("Clear All"));
+        i18n::t("Delete"),
+        i18n::t("Clear All")
+    );
     let ctx_menu = anyui::ContextMenu::new(&ctx_items);
     grid.set_context_menu(&ctx_menu);
 
@@ -395,30 +413,34 @@ fn main() {
     populate_grid(s);
 
     // ── Register callbacks ──
-    btn_refresh.on_click(|_| { refresh(); });
-    btn_delete.on_click(|_| { delete_selected(); });
-    btn_clear.on_click(|_| { clear_all(); });
-    btn_close_detail.on_click(|_| { hide_detail(); });
+    btn_refresh.on_click(|_| {
+        refresh();
+    });
+    btn_delete.on_click(|_| {
+        delete_selected();
+    });
+    btn_clear.on_click(|_| {
+        clear_all();
+    });
+    btn_close_detail.on_click(|_| {
+        hide_detail();
+    });
 
     // Context menu
-    ctx_menu.on_item_click(|e| {
-        match e.index {
-            0 => show_detail(),
-            2 => delete_selected(),
-            3 => clear_all(),
-            _ => {}
-        }
+    ctx_menu.on_item_click(|e| match e.index {
+        0 => show_detail(),
+        2 => delete_selected(),
+        3 => clear_all(),
+        _ => {}
     });
 
     // Menu bar
-    menu.on_item(move |e| {
-        match e.item_id {
-            1 => anyui::quit(),
-            10 => delete_selected(),
-            11 => clear_all(),
-            20 => refresh(),
-            _ => {}
-        }
+    menu.on_item(move |e| match e.item_id {
+        1 => anyui::quit(),
+        10 => delete_selected(),
+        11 => clear_all(),
+        20 => refresh(),
+        _ => {}
     });
 
     // Double-click to show detail
@@ -432,7 +454,9 @@ fn main() {
     });
 
     // Keyboard shortcuts
-    win.on_key_down(|ke| { handle_key(ke); });
+    win.on_key_down(|ke| {
+        handle_key(ke);
+    });
 
     // ── Start polling timer for new notifications ──
     anyui::set_timer(POLL_INTERVAL_MS, || {

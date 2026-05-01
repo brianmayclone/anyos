@@ -7,9 +7,11 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{ipc, println, String, Vec, format, i18n};
-use libconf_schema::{default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema};
+use anyos_std::{format, i18n, ipc, println, String, Vec};
 use libanyui_client as ui;
+use libconf_schema::{
+    default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
+};
 use ui::ColumnDef;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -39,7 +41,8 @@ const FTP_SETTINGS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifes
     FTP_SETTINGS_DEFAULTS,
     FTP_SETTINGS_MIGRATIONS,
 );
-const FTP_SETTINGS_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("ftp-settings", &FTP_SETTINGS_MANIFEST);
+const FTP_SETTINGS_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("ftp-settings", &FTP_SETTINGS_MANIFEST);
 
 const MAX_SHARES: usize = 64;
 
@@ -98,16 +101,22 @@ fn load_conf() -> FtpConf {
         cfg.enabled = v;
     }
     if let Some(v) = FTP_SETTINGS_SCHEMA.read_i64("config/port") {
-        if v > 0 && v <= u16::MAX as i64 { cfg.port = v as u16; }
+        if v > 0 && v <= u16::MAX as i64 {
+            cfg.port = v as u16;
+        }
     }
     if let Some(v) = FTP_SETTINGS_SCHEMA.read_bool("config/passive_mode") {
         cfg.passive_mode = v;
     }
     if let Some(v) = FTP_SETTINGS_SCHEMA.read_i64("config/passive_port_min") {
-        if v >= 0 && v <= u16::MAX as i64 { cfg.passive_port_min = v as u16; }
+        if v >= 0 && v <= u16::MAX as i64 {
+            cfg.passive_port_min = v as u16;
+        }
     }
     if let Some(v) = FTP_SETTINGS_SCHEMA.read_i64("config/passive_port_max") {
-        if v >= 0 && v <= u16::MAX as i64 { cfg.passive_port_max = v as u16; }
+        if v >= 0 && v <= u16::MAX as i64 {
+            cfg.passive_port_max = v as u16;
+        }
     }
     if let Some(v) = FTP_SETTINGS_SCHEMA.read_bool("config/allow_anonymous") {
         cfg.allow_anonymous = v;
@@ -116,7 +125,9 @@ fn load_conf() -> FtpConf {
         cfg.anonymous_root = v;
     }
     if let Some(v) = FTP_SETTINGS_SCHEMA.read_i64("config/max_clients") {
-        if v > 0 && v <= u16::MAX as i64 { cfg.max_clients = v as u16; }
+        if v > 0 && v <= u16::MAX as i64 {
+            cfg.max_clients = v as u16;
+        }
     }
     if let Some(v) = FTP_SETTINGS_SCHEMA.read_bool("config/chroot_users") {
         cfg.chroot_users = v;
@@ -125,12 +136,16 @@ fn load_conf() -> FtpConf {
     if let Some(v) = FTP_SETTINGS_SCHEMA.read_string("config/shares_blob") {
         for line in v.split('\n') {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             let mut parts = line.splitn(3, ':');
             let user = parts.next().unwrap_or("").trim();
             let path = parts.next().unwrap_or("").trim();
             let perms = parts.next().unwrap_or("").trim();
-            if user.is_empty() || path.is_empty() { continue; }
+            if user.is_empty() || path.is_empty() {
+                continue;
+            }
             cfg.shares.push(ShareEntry {
                 user: String::from(user),
                 path: String::from(path),
@@ -159,11 +174,17 @@ fn save_conf(cfg: &FtpConf) -> bool {
         shares_out.push(':');
         shares_out.push_str(&share.path);
         shares_out.push(':');
-        if share.can_read { shares_out.push('r'); }
-        if share.can_write { shares_out.push('w'); }
+        if share.can_read {
+            shares_out.push('r');
+        }
+        if share.can_write {
+            shares_out.push('w');
+        }
         shares_out.push('\n');
     }
-    FTP_SETTINGS_SCHEMA.write_string("config/shares_blob", &shares_out).is_ok()
+    FTP_SETTINGS_SCHEMA
+        .write_string("config/shares_blob", &shares_out)
+        .is_ok()
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -191,16 +212,19 @@ anyos_std::global_app_state!(AppState);
 
 fn perm_str(can_read: bool, can_write: bool) -> &'static str {
     match (can_read, can_write) {
-        (true, true)  => "rw",
+        (true, true) => "rw",
         (true, false) => "r",
         (false, true) => "w",
-        _             => "-",
+        _ => "-",
     }
 }
 
 fn refresh_shares_grid() {
     let s = app();
-    let rows: Vec<Vec<&str>> = s.cfg.shares.iter()
+    let rows: Vec<Vec<&str>> = s
+        .cfg
+        .shares
+        .iter()
         .map(|sh| {
             let mut v: Vec<&str> = Vec::new();
             v.push(sh.user.as_str());
@@ -217,38 +241,50 @@ fn refresh_shares_grid() {
 
 fn read_form_into_cfg() {
     let s = app();
-    s.cfg.enabled       = s.toggle_enabled.get_state() != 0;
-    s.cfg.passive_mode  = s.toggle_passive.get_state() != 0;
+    s.cfg.enabled = s.toggle_enabled.get_state() != 0;
+    s.cfg.passive_mode = s.toggle_passive.get_state() != 0;
     s.cfg.allow_anonymous = s.toggle_anon.get_state() != 0;
-    s.cfg.chroot_users  = s.toggle_chroot.get_state() != 0;
+    s.cfg.chroot_users = s.toggle_chroot.get_state() != 0;
 
     let mut buf = [0u8; 16];
 
     let n = s.port_field.get_text(&mut buf);
     if n > 0 && n != u32::MAX {
         if let Ok(t) = core::str::from_utf8(&buf[..n as usize]) {
-            if let Ok(p) = t.trim().parse::<u16>() { if p > 0 { s.cfg.port = p; } }
+            if let Ok(p) = t.trim().parse::<u16>() {
+                if p > 0 {
+                    s.cfg.port = p;
+                }
+            }
         }
     }
 
     let n = s.pasv_min_field.get_text(&mut buf);
     if n > 0 && n != u32::MAX {
         if let Ok(t) = core::str::from_utf8(&buf[..n as usize]) {
-            if let Ok(p) = t.trim().parse::<u16>() { s.cfg.passive_port_min = p; }
+            if let Ok(p) = t.trim().parse::<u16>() {
+                s.cfg.passive_port_min = p;
+            }
         }
     }
 
     let n = s.pasv_max_field.get_text(&mut buf);
     if n > 0 && n != u32::MAX {
         if let Ok(t) = core::str::from_utf8(&buf[..n as usize]) {
-            if let Ok(p) = t.trim().parse::<u16>() { s.cfg.passive_port_max = p; }
+            if let Ok(p) = t.trim().parse::<u16>() {
+                s.cfg.passive_port_max = p;
+            }
         }
     }
 
     let n = s.max_clients_field.get_text(&mut buf);
     if n > 0 && n != u32::MAX {
         if let Ok(t) = core::str::from_utf8(&buf[..n as usize]) {
-            if let Ok(p) = t.trim().parse::<u16>() { if p > 0 { s.cfg.max_clients = p; } }
+            if let Ok(p) = t.trim().parse::<u16>() {
+                if p > 0 {
+                    s.cfg.max_clients = p;
+                }
+            }
         }
     }
 
@@ -257,7 +293,9 @@ fn read_form_into_cfg() {
     if n > 0 && n != u32::MAX {
         if let Ok(t) = core::str::from_utf8(&path_buf[..n as usize]) {
             let t = t.trim();
-            if !t.is_empty() { s.cfg.anonymous_root = String::from(t); }
+            if !t.is_empty() {
+                s.cfg.anonymous_root = String::from(t);
+            }
         }
     }
 }
@@ -274,13 +312,18 @@ fn apply() {
     let s = app();
     if ok {
         let status = if s.cfg.enabled {
-            format!("    {} {}", i18n::t("Saved. FTP server enabled on port"), s.cfg.port)
+            format!(
+                "    {} {}",
+                i18n::t("Saved. FTP server enabled on port"),
+                s.cfg.port
+            )
         } else {
             format!("    {}", i18n::t("Saved. FTP server disabled."))
         };
         s.status_label.set_text(&status);
     } else {
-        s.status_label.set_text(&format!("    {}", i18n::t("Error: could not save config.")));
+        s.status_label
+            .set_text(&format!("    {}", i18n::t("Error: could not save config.")));
     }
 }
 
@@ -288,9 +331,17 @@ fn apply() {
 
 /// edit_idx: None = add new share, Some(i) = edit share at index i
 fn show_share_dialog(edit_idx: Option<usize>) {
-    let title = if edit_idx.is_some() { i18n::t("Edit Share") } else { i18n::t("Add Share") };
+    let title = if edit_idx.is_some() {
+        i18n::t("Edit Share")
+    } else {
+        i18n::t("Add Share")
+    };
     let dlg = ui::Window::new_with_flags(
-        title, -1, -1, 400, 180,
+        title,
+        -1,
+        -1,
+        400,
+        180,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
     );
 
@@ -368,17 +419,23 @@ fn show_share_dialog(edit_idx: Option<usize>) {
             let mut pbuf = [0u8; 256];
             let pn = path_ref.get_text(&mut pbuf);
 
-            if un == 0 || un == u32::MAX || pn == 0 || pn == u32::MAX { return; }
+            if un == 0 || un == u32::MAX || pn == 0 || pn == u32::MAX {
+                return;
+            }
             let user_str = match core::str::from_utf8(&ubuf[..un as usize]) {
-                Ok(s) => s.trim(), Err(_) => return,
+                Ok(s) => s.trim(),
+                Err(_) => return,
             };
             let path_str = match core::str::from_utf8(&pbuf[..pn as usize]) {
-                Ok(s) => s.trim(), Err(_) => return,
+                Ok(s) => s.trim(),
+                Err(_) => return,
             };
-            if user_str.is_empty() || path_str.is_empty() { return; }
+            if user_str.is_empty() || path_str.is_empty() {
+                return;
+            }
 
             // Read checkbox states BEFORE destroying the dialog
-            let can_read  = chk_r.get_state() != 0;
+            let can_read = chk_r.get_state() != 0;
             let can_write = chk_w.get_state() != 0;
 
             let user_owned = String::from(user_str);
@@ -396,12 +453,16 @@ fn show_share_dialog(edit_idx: Option<usize>) {
                         can_read,
                         can_write,
                     };
-                    s.status_label.set_text(&format!("    {}", i18n::t("Share updated.")));
+                    s.status_label
+                        .set_text(&format!("    {}", i18n::t("Share updated.")));
                 }
             } else {
                 // Add new share
                 if s.cfg.shares.len() >= MAX_SHARES {
-                    s.status_label.set_text(&format!("    {}", i18n::t("Error: maximum number of shares reached.")));
+                    s.status_label.set_text(&format!(
+                        "    {}",
+                        i18n::t("Error: maximum number of shares reached.")
+                    ));
                     return;
                 }
                 s.cfg.shares.push(ShareEntry {
@@ -410,7 +471,8 @@ fn show_share_dialog(edit_idx: Option<usize>) {
                     can_read,
                     can_write,
                 });
-                s.status_label.set_text(&format!("    {}", i18n::t("Share added.")));
+                s.status_label
+                    .set_text(&format!("    {}", i18n::t("Share added.")));
             }
             refresh_shares_grid();
         });
@@ -418,7 +480,9 @@ fn show_share_dialog(edit_idx: Option<usize>) {
 
     {
         let dlg_cancel = dlg.clone();
-        btn_cancel.on_click(move |_| { dlg_cancel.destroy(); });
+        btn_cancel.on_click(move |_| {
+            dlg_cancel.destroy();
+        });
     }
 }
 
@@ -495,7 +559,9 @@ fn main() {
         }};
     }
     macro_rules! spacer {
-        () => {{ tl.add(&ui::Label::new("")); }};
+        () => {{
+            tl.add(&ui::Label::new(""));
+        }};
     }
 
     // Row 0: FTP Server enabled
@@ -667,7 +733,8 @@ fn main() {
         let sel = s.shares_grid.selected_row();
         if sel != u32::MAX && (sel as usize) < s.cfg.shares.len() {
             s.cfg.shares.remove(sel as usize);
-            s.status_label.set_text(&format!("    {}", i18n::t("Share removed.")));
+            s.status_label
+                .set_text(&format!("    {}", i18n::t("Share removed.")));
             refresh_shares_grid();
         }
     });

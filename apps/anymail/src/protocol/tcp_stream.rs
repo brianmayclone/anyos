@@ -28,12 +28,20 @@ mod tls {
 
     fn tcp_send(fd: u32, data: &[u8]) -> i32 {
         let n = net::tcp_send(fd, data);
-        if n == u32::MAX { -1 } else { n as i32 }
+        if n == u32::MAX {
+            -1
+        } else {
+            n as i32
+        }
     }
 
     fn tcp_recv(fd: u32, buf: &mut [u8]) -> i32 {
         let n = net::tcp_recv(fd, buf);
-        if n == u32::MAX { -1 } else { n as i32 }
+        if n == u32::MAX {
+            -1
+        } else {
+            n as i32
+        }
     }
 
     fn sleep(ms: u32) {

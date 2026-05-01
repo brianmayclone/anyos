@@ -13,11 +13,11 @@ mod protocol;
 mod storage;
 mod sync_worker;
 
+use alloc::rc::Rc;
 use anyos_std::format;
 use anyos_std::vec;
 use anyos_std::String;
 use anyos_std::Vec;
-use alloc::rc::Rc;
 use core::cell::Cell;
 
 use libanyui_client as anyui;
@@ -390,7 +390,11 @@ fn apply_provider_defaults_to_form(
         ),
         AccountProvider::Gmx => ("imap.gmx.net", "mail.gmx.net", IncomingProtocol::Imap),
         AccountProvider::WebDe => ("imap.web.de", "smtp.web.de", IncomingProtocol::Imap),
-        AccountProvider::Custom => ("imap.example.com", "smtp.example.com", IncomingProtocol::Imap),
+        AccountProvider::Custom => (
+            "imap.example.com",
+            "smtp.example.com",
+            IncomingProtocol::Imap,
+        ),
     };
 
     if provider == AccountProvider::Fastmail {
@@ -409,7 +413,11 @@ fn apply_provider_defaults_to_form(
     set_text_if_empty(smtp_host, out_host, force);
     set_text_if_empty(smtp_port, smtp_port_text, force);
     maybe_set_combo(protocol, protocol_to_index(proto), force);
-    maybe_set_combo(incoming_security, security_to_index(incoming_security_mode), force);
+    maybe_set_combo(
+        incoming_security,
+        security_to_index(incoming_security_mode),
+        force,
+    );
     maybe_set_combo(smtp_security, security_to_index(smtp_security_mode), force);
 
     if !email.is_empty() && get_widget_text(incoming_host).contains("example.com") {
@@ -421,7 +429,10 @@ fn apply_provider_defaults_to_form(
             }
         }
     }
-    if !email.is_empty() && get_widget_text(smtp_host).contains("example.com") && provider == AccountProvider::Custom {
+    if !email.is_empty()
+        && get_widget_text(smtp_host).contains("example.com")
+        && provider == AccountProvider::Custom
+    {
         let domain = email.split('@').nth(1).unwrap_or("");
         if !domain.is_empty() {
             set_text_if_empty(smtp_host, &format!("smtp.{}", domain), true);
@@ -590,8 +601,12 @@ fn test_account_settings(account: &Account) -> Result<(), String> {
 
     if !account.smtp_host.is_empty() {
         let mut smtp = SmtpClient::new();
-        smtp.connect(&account.smtp_host, account.smtp_port, account.smtp_use_tls())
-            .map_err(|e| format!("{:?}", e))?;
+        smtp.connect(
+            &account.smtp_host,
+            account.smtp_port,
+            account.smtp_use_tls(),
+        )
+        .map_err(|e| format!("{:?}", e))?;
         smtp.ehlo(domain_of_email(&account.email))
             .map_err(|e| format!("{:?}", e))?;
         if account.smtp_use_starttls() {
@@ -622,26 +637,43 @@ fn test_account_settings(account: &Account) -> Result<(), String> {
     Ok(())
 }
 
-fn remote_imap_apply_flag(account: &Account, folder: &str, uid: u32, flag: &str, set: bool) -> Result<(), String> {
+fn remote_imap_apply_flag(
+    account: &Account,
+    folder: &str,
+    uid: u32,
+    flag: &str,
+    set: bool,
+) -> Result<(), String> {
     let mut client = connect_imap_client(account)?;
     client.select(folder).map_err(|e| format!("{:?}", e))?;
     let action = if set { "+FLAGS" } else { "-FLAGS" };
-    client.store_flags(uid, action, flag).map_err(|e| format!("{:?}", e))?;
+    client
+        .store_flags(uid, action, flag)
+        .map_err(|e| format!("{:?}", e))?;
     client.logout();
     Ok(())
 }
 
-fn remote_imap_move(account: &Account, from_folder: &str, uid: u32, to_folder: &str) -> Result<(), String> {
+fn remote_imap_move(
+    account: &Account,
+    from_folder: &str,
+    uid: u32,
+    to_folder: &str,
+) -> Result<(), String> {
     let mut client = connect_imap_client(account)?;
     client.select(from_folder).map_err(|e| format!("{:?}", e))?;
-    client.move_message(uid, to_folder).map_err(|e| format!("{:?}", e))?;
+    client
+        .move_message(uid, to_folder)
+        .map_err(|e| format!("{:?}", e))?;
     client.logout();
     Ok(())
 }
 
 fn remote_imap_append(account: &Account, folder: &str, message: &[u8]) -> Result<(), String> {
     let mut client = connect_imap_client(account)?;
-    client.append(folder, "\\Seen", message).map_err(|e| format!("{:?}", e))?;
+    client
+        .append(folder, "\\Seen", message)
+        .map_err(|e| format!("{:?}", e))?;
     client.logout();
     Ok(())
 }
@@ -1371,12 +1403,13 @@ fn apply_filters() {
     let show_unread = a.filter_unread_on;
     let show_starred = a.filter_starred_on;
     let show_attach = a.filter_attach_on;
-    let source: Vec<MessageSummary> = if !query_lower.is_empty() && a.current_account < a.config.accounts.len() {
-        let account = &a.config.accounts[a.current_account];
-        maildir::search_messages(&a.base_dir, &account.id, Some(&a.current_folder), &query)
-    } else {
-        a.all_messages.clone()
-    };
+    let source: Vec<MessageSummary> =
+        if !query_lower.is_empty() && a.current_account < a.config.accounts.len() {
+            let account = &a.config.accounts[a.current_account];
+            maildir::search_messages(&a.base_dir, &account.id, Some(&a.current_folder), &query)
+        } else {
+            a.all_messages.clone()
+        };
 
     a.messages = source
         .into_iter()
@@ -1574,7 +1607,8 @@ fn mark_message_seen(idx: usize) {
     if a.current_account < a.config.accounts.len() {
         let account = a.config.accounts[a.current_account].clone();
         if account.is_imap() && a.current_folder != "Sent" && a.current_folder != "Drafts" {
-            remote_err = remote_imap_apply_flag(&account, &a.current_folder, uid, "\\Seen", true).err();
+            remote_err =
+                remote_imap_apply_flag(&account, &a.current_folder, uid, "\\Seen", true).err();
         }
     }
 
@@ -1640,7 +1674,13 @@ fn move_selected_message_to(target_folder: &str, extra_flags: u32, status_text: 
         target_messages.retain(|m| m.uid != uid);
         target_messages.push(moved.clone());
         maildir::save_index(&target_path, &target_messages);
-        maildir::move_message(&a.base_dir, &account.id, &current_folder, target_folder, uid);
+        maildir::move_message(
+            &a.base_dir,
+            &account.id,
+            &current_folder,
+            target_folder,
+            uid,
+        );
     }
 
     a.all_messages.remove(existing_idx);
@@ -1684,7 +1724,11 @@ fn on_delete() {
                 apply_filters();
                 set_status(anyos_std::i18n::t("Message deleted"));
             } else {
-                move_selected_message_to("Trash", FLAG_DELETED, anyos_std::i18n::t("Message moved to Trash"));
+                move_selected_message_to(
+                    "Trash",
+                    FLAG_DELETED,
+                    anyos_std::i18n::t("Message moved to Trash"),
+                );
             }
         }
     }
@@ -1710,7 +1754,8 @@ fn on_mark_junk() {
                 let account = a.config.accounts[a.current_account].clone();
                 if account.is_imap() {
                     if is_junk_now && a.current_folder != "Spam" {
-                        if let Err(err) = remote_imap_move(&account, &a.current_folder, uid, "Spam") {
+                        if let Err(err) = remote_imap_move(&account, &a.current_folder, uid, "Spam")
+                        {
                             set_status(&format!("Marked junk locally, IMAP pending: {}", err));
                         }
                     }
@@ -1790,7 +1835,9 @@ fn mark_message_flag(idx: usize, flag: u32, set: bool) {
         if account.is_imap() {
             remote_err = match flag {
                 FLAG_SEEN => remote_imap_apply_flag(&account, &folder, uid, "\\Seen", set).err(),
-                FLAG_FLAGGED => remote_imap_apply_flag(&account, &folder, uid, "\\Flagged", set).err(),
+                FLAG_FLAGGED => {
+                    remote_imap_apply_flag(&account, &folder, uid, "\\Flagged", set).err()
+                }
                 _ => None,
             };
         }
@@ -2958,7 +3005,15 @@ fn open_account_setup(first_run: bool) {
             if current > 0 {
                 let next = current - 1;
                 step.set(next);
-                update_wizard_step(next, &page_provider, &page_login, &page_review, &btn_back, &btn_next, &btn_test);
+                update_wizard_step(
+                    next,
+                    &page_provider,
+                    &page_login,
+                    &page_review,
+                    &btn_back,
+                    &btn_next,
+                    &btn_test,
+                );
             }
         }
     });
@@ -2983,95 +3038,112 @@ fn open_account_setup(first_run: bool) {
         let smtp_sec = smtp_sec.clone();
         let name_field = name_field.clone();
         let pass_field = pass_field.clone();
-        move |_| {
-            match step.get() {
-                0 => {
-                    step.set(1);
-                    update_wizard_step(1, &page_provider, &page_login, &page_review, &btn_back, &btn_next, &btn_test);
-                    email_field.focus();
-                }
-                1 => {
-                    let email = get_widget_text(&email_field);
-                    if email.is_empty() {
-                        anyui::MessageBox::show(
-                            anyui::MessageBoxType::Warning,
-                            "Please enter an email address before continuing.",
-                            Some("OK"),
-                        );
-                        return;
-                    }
-                    let provider = provider_from_selector(&provider_list);
-                    let force_defaults = editing_index.is_none();
-                    apply_provider_defaults_to_form(
-                        provider,
-                        &email,
-                        &proto_combo,
-                        &in_host,
-                        &in_port,
-                        &in_sec,
-                        &smtp_host,
-                        &smtp_port,
-                        &smtp_sec,
-                        force_defaults,
-                    );
-                    if get_widget_text(&name_field).is_empty() {
-                        let local_part = email.split('@').next().unwrap_or("");
-                        if !local_part.is_empty() {
-                            name_field.set_text(local_part);
-                        }
-                    }
-                    if get_widget_text(&pass_field).is_empty() {
-                        set_status("Enter your password, then test and save the account.");
-                    }
-                    step.set(2);
-                    update_wizard_step(2, &page_provider, &page_login, &page_review, &btn_back, &btn_next, &btn_test);
-                }
-                _ => {
-                    let acc = build_account_from_form(
-                        &name_field,
-                        &email_field,
-                        &user_field,
-                        &pass_field,
-                        &proto_combo,
-                        &in_host,
-                        &in_port,
-                        &in_sec,
-                        &smtp_host,
-                        &smtp_port,
-                        &smtp_sec,
-                    );
-                    if acc.email.is_empty() {
-                        anyui::MessageBox::show(
-                            anyui::MessageBoxType::Warning,
-                            "Please complete the email address before saving.",
-                            Some("OK"),
-                        );
-                        return;
-                    }
-                    let a = app();
-                    let target_idx = editing_index.or_else(|| {
-                        a.config.accounts.iter().position(|existing| existing.id == acc.id)
-                    });
-                    if let Some(idx) = target_idx {
-                        a.config.accounts[idx] = acc.clone();
-                        a.current_account = idx;
-                    } else {
-                        a.config.accounts.push(acc.clone());
-                        a.current_account = a.config.accounts.len().saturating_sub(1);
-                    }
-                    a.current_folder = String::from("INBOX");
-                    a.config.active_account = a.current_account;
-                    a.config.save();
-                    maildir::ensure_dirs(&a.base_dir, &acc.id);
-                    populate_folder_tree();
-                    load_folder_messages();
-                    set_status(anyos_std::i18n::t("Account saved"));
+        move |_| match step.get() {
+            0 => {
+                step.set(1);
+                update_wizard_step(
+                    1,
+                    &page_provider,
+                    &page_login,
+                    &page_review,
+                    &btn_back,
+                    &btn_next,
+                    &btn_test,
+                );
+                email_field.focus();
+            }
+            1 => {
+                let email = get_widget_text(&email_field);
+                if email.is_empty() {
                     anyui::MessageBox::show(
-                        anyui::MessageBoxType::Info,
-                        anyos_std::i18n::t("Account saved successfully."),
+                        anyui::MessageBoxType::Warning,
+                        "Please enter an email address before continuing.",
                         Some("OK"),
                     );
+                    return;
                 }
+                let provider = provider_from_selector(&provider_list);
+                let force_defaults = editing_index.is_none();
+                apply_provider_defaults_to_form(
+                    provider,
+                    &email,
+                    &proto_combo,
+                    &in_host,
+                    &in_port,
+                    &in_sec,
+                    &smtp_host,
+                    &smtp_port,
+                    &smtp_sec,
+                    force_defaults,
+                );
+                if get_widget_text(&name_field).is_empty() {
+                    let local_part = email.split('@').next().unwrap_or("");
+                    if !local_part.is_empty() {
+                        name_field.set_text(local_part);
+                    }
+                }
+                if get_widget_text(&pass_field).is_empty() {
+                    set_status("Enter your password, then test and save the account.");
+                }
+                step.set(2);
+                update_wizard_step(
+                    2,
+                    &page_provider,
+                    &page_login,
+                    &page_review,
+                    &btn_back,
+                    &btn_next,
+                    &btn_test,
+                );
+            }
+            _ => {
+                let acc = build_account_from_form(
+                    &name_field,
+                    &email_field,
+                    &user_field,
+                    &pass_field,
+                    &proto_combo,
+                    &in_host,
+                    &in_port,
+                    &in_sec,
+                    &smtp_host,
+                    &smtp_port,
+                    &smtp_sec,
+                );
+                if acc.email.is_empty() {
+                    anyui::MessageBox::show(
+                        anyui::MessageBoxType::Warning,
+                        "Please complete the email address before saving.",
+                        Some("OK"),
+                    );
+                    return;
+                }
+                let a = app();
+                let target_idx = editing_index.or_else(|| {
+                    a.config
+                        .accounts
+                        .iter()
+                        .position(|existing| existing.id == acc.id)
+                });
+                if let Some(idx) = target_idx {
+                    a.config.accounts[idx] = acc.clone();
+                    a.current_account = idx;
+                } else {
+                    a.config.accounts.push(acc.clone());
+                    a.current_account = a.config.accounts.len().saturating_sub(1);
+                }
+                a.current_folder = String::from("INBOX");
+                a.config.active_account = a.current_account;
+                a.config.save();
+                maildir::ensure_dirs(&a.base_dir, &acc.id);
+                populate_folder_tree();
+                load_folder_messages();
+                set_status(anyos_std::i18n::t("Account saved"));
+                anyui::MessageBox::show(
+                    anyui::MessageBoxType::Info,
+                    anyos_std::i18n::t("Account saved successfully."),
+                    Some("OK"),
+                );
             }
         }
     });
@@ -3128,7 +3200,15 @@ fn open_account_setup(first_run: bool) {
         }
     });
 
-    update_wizard_step(0, &page_provider, &page_login, &page_review, &btn_back, &btn_next, &btn_test);
+    update_wizard_step(
+        0,
+        &page_provider,
+        &page_login,
+        &page_review,
+        &btn_back,
+        &btn_next,
+        &btn_test,
+    );
     setup_win.on_close(|_| {});
 }
 

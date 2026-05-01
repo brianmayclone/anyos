@@ -187,9 +187,15 @@ impl Command {
         self // Not directly supported per-child
     }
 
-    pub fn stdin(&mut self, _cfg: Stdio) -> &mut Self { self }
-    pub fn stdout(&mut self, _cfg: Stdio) -> &mut Self { self }
-    pub fn stderr(&mut self, _cfg: Stdio) -> &mut Self { self }
+    pub fn stdin(&mut self, _cfg: Stdio) -> &mut Self {
+        self
+    }
+    pub fn stdout(&mut self, _cfg: Stdio) -> &mut Self {
+        self
+    }
+    pub fn stderr(&mut self, _cfg: Stdio) -> &mut Self {
+        self
+    }
 }
 
 /// Stdio configuration.
@@ -197,26 +203,46 @@ impl Command {
 pub struct Stdio(u8);
 
 impl Stdio {
-    pub fn piped() -> Self { Stdio(0) }
-    pub fn inherit() -> Self { Stdio(1) }
-    pub fn null() -> Self { Stdio(2) }
+    pub fn piped() -> Self {
+        Stdio(0)
+    }
+    pub fn inherit() -> Self {
+        Stdio(1)
+    }
+    pub fn null() -> Self {
+        Stdio(2)
+    }
 }
 
 /// Child stdin handle.
-pub struct ChildStdin { _private: () }
+pub struct ChildStdin {
+    _private: (),
+}
 impl Write for ChildStdin {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Child stdout handle.
-pub struct ChildStdout { _private: () }
+pub struct ChildStdout {
+    _private: (),
+}
 impl Read for ChildStdout {
-    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> { Ok(0) }
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        Ok(0)
+    }
 }
 
 /// Child stderr handle.
-pub struct ChildStderr { _private: () }
+pub struct ChildStderr {
+    _private: (),
+}
 impl Read for ChildStderr {
-    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> { Ok(0) }
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        Ok(0)
+    }
 }

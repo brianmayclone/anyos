@@ -1,8 +1,8 @@
 //! Small utility functions: disk detection, size formatting, text helpers, OS detection.
 
-use anyos_std::{format, String, Vec};
-use anyos_std::sys;
 use crate::state::DiskEntry;
+use anyos_std::sys;
+use anyos_std::{format, String, Vec};
 
 /// Scan the kernel block-device list and return entries for both whole disks
 /// and their partitions.  Uses the 64-byte entry format to retrieve labels.
@@ -18,8 +18,14 @@ pub fn detect_disks() -> Vec<DiskEntry> {
         let disk_id = buf[off + 1];
         let partition = buf[off + 2];
         let size_sectors = u64::from_le_bytes([
-            buf[off + 12], buf[off + 13], buf[off + 14], buf[off + 15],
-            buf[off + 16], buf[off + 17], buf[off + 18], buf[off + 19],
+            buf[off + 12],
+            buf[off + 13],
+            buf[off + 14],
+            buf[off + 15],
+            buf[off + 16],
+            buf[off + 17],
+            buf[off + 18],
+            buf[off + 19],
         ]);
 
         // Read label (bytes 20..60, NUL-padded)
@@ -129,19 +135,18 @@ pub fn detect_existing_os(device_id: u8) -> Option<String> {
         let off = 446 + i * 16;
         let ptype = mbr[off + 4];
         match ptype {
-            0x07 => has_ntfs = true,      // NTFS / exFAT
-            0x83 => has_linux = true,      // Linux native
-            0x82 => has_linux = true,      // Linux swap
+            0x07 => has_ntfs = true,                     // NTFS / exFAT
+            0x83 => has_linux = true,                    // Linux native
+            0x82 => has_linux = true,                    // Linux swap
             0x0B | 0x0C | 0x06 | 0x0E => has_fat = true, // FAT32/FAT16
-            0xEE => has_efi = true,        // GPT protective MBR
+            0xEE => has_efi = true,                      // GPT protective MBR
             _ => {}
         }
     }
 
     // Check bootloader signature in first bytes
     // anyOS stage1 starts with EB 76 90 (same as exFAT but with "ANYO" at offset 100)
-    let has_anyo_sig = mbr[3..7] == *b"ANYO"
-        || (mbr.len() > 103 && mbr[100..104] == *b"ANYO");
+    let has_anyo_sig = mbr[3..7] == *b"ANYO" || (mbr.len() > 103 && mbr[100..104] == *b"ANYO");
 
     // Check for NTFS signature in VBR of first partition
     let ntfs_oem = &mbr[3..11];
@@ -168,7 +173,8 @@ pub fn detect_existing_os(device_id: u8) -> Option<String> {
             if vbr[3..11] == *b"EXFAT   " {
                 // Check exFAT volume serial for anyOS signature
                 let serial = u32::from_le_bytes([vbr[100], vbr[101], vbr[102], vbr[103]]);
-                if serial == 0x414E594F { // "ANYO"
+                if serial == 0x414E594F {
+                    // "ANYO"
                     return Some(String::from("anyOS"));
                 }
             }
@@ -182,17 +188,26 @@ pub fn detect_existing_os(device_id: u8) -> Option<String> {
 // ── Case-fix helpers for target filesystem ─────────────────────────────────
 
 const CASE_MAP: &[(&str, &str)] = &[
-    ("system", "System"), ("applications", "Applications"),
-    ("users", "Users"), ("libraries", "Libraries"),
-    ("info.conf", "Info.conf"), ("icon.ico", "Icon.ico"),
+    ("system", "System"),
+    ("applications", "Applications"),
+    ("users", "Users"),
+    ("libraries", "Libraries"),
+    ("info.conf", "Info.conf"),
+    ("icon.ico", "Icon.ico"),
 ];
 
 pub fn fix_case(name: &str) -> String {
     for &(lower, proper) in CASE_MAP {
-        if name == lower { return String::from(proper); }
+        if name == lower {
+            return String::from(proper);
+        }
     }
-    if name.ends_with(".app") { return capitalize_words(name); }
-    if name.ends_with(".dlib") { return capitalize_first(name); }
+    if name.ends_with(".app") {
+        return capitalize_words(name);
+    }
+    if name.ends_with(".dlib") {
+        return capitalize_first(name);
+    }
     String::from(name)
 }
 
@@ -200,8 +215,11 @@ fn capitalize_first(s: &str) -> String {
     let mut r = String::with_capacity(s.len());
     let mut first = true;
     for ch in s.chars() {
-        if first && ch.is_ascii_lowercase() { r.push((ch as u8 - 32) as char); }
-        else { r.push(ch); }
+        if first && ch.is_ascii_lowercase() {
+            r.push((ch as u8 - 32) as char);
+        } else {
+            r.push(ch);
+        }
         first = false;
     }
     r
@@ -211,9 +229,16 @@ fn capitalize_words(s: &str) -> String {
     let mut r = String::with_capacity(s.len());
     let mut cap = true;
     for ch in s.chars() {
-        if ch == ' ' || ch == '-' || ch == '_' { r.push(ch); cap = true; }
-        else if cap && ch.is_ascii_lowercase() { r.push((ch as u8 - 32) as char); cap = false; }
-        else { r.push(ch); cap = false; }
+        if ch == ' ' || ch == '-' || ch == '_' {
+            r.push(ch);
+            cap = true;
+        } else if cap && ch.is_ascii_lowercase() {
+            r.push((ch as u8 - 32) as char);
+            cap = false;
+        } else {
+            r.push(ch);
+            cap = false;
+        }
     }
     r
 }

@@ -367,12 +367,8 @@ pub fn fetch_pack_streamed_with_caps(
     }
 
     match result {
-        Err(Error::Other(message))
-            if caps.ofs_delta && is_missing_ofs_delta_base(&message) =>
-        {
-            anyos_std::println!(
-                "warning: OFS delta base missing; retrying without ofs-delta"
-            );
+        Err(Error::Other(message)) if caps.ofs_delta && is_missing_ofs_delta_base(&message) => {
+            anyos_std::println!("warning: OFS delta base missing; retrying without ofs-delta");
             let mut compat_caps = caps.clone();
             compat_caps.side_band = false;
             compat_caps.side_band_64k = false;
@@ -615,7 +611,11 @@ fn stream_parse_objects(
                     data: result.clone(),
                 };
                 repo.write_object(&obj).map_err(|e| {
-                    Error::Other(format!("failed to write delta object {}: {}", oid.to_hex(), e))
+                    Error::Other(format!(
+                        "failed to write delta object {}: {}",
+                        oid.to_hex(),
+                        e
+                    ))
                 })?;
                 push_delta_cache(
                     &mut resolved,
@@ -664,7 +664,11 @@ fn stream_parse_objects(
                     data: result.clone(),
                 };
                 repo.write_object(&obj).map_err(|e| {
-                    Error::Other(format!("failed to write delta object {}: {}", oid.to_hex(), e))
+                    Error::Other(format!(
+                        "failed to write delta object {}: {}",
+                        oid.to_hex(),
+                        e
+                    ))
                 })?;
                 push_delta_cache(
                     &mut resolved,

@@ -8,7 +8,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use anyos_std::{fs, net, println, process, sys};
-use libconf_schema::{default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema};
+use libconf_schema::{
+    default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
+};
 use libsvc::ServiceLifecycle;
 
 anyos_std::entry!(main);
@@ -29,8 +31,14 @@ const DNSD_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     ),
 ];
 const DNSD_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
-const DNSD_MANIFEST: libconf_schema::RegistryManifest<'static> =
-    manifest("services/dnsd", RegistryScope::System, 1, DNSD_DIRS, DNSD_DEFAULTS, DNSD_MIGRATIONS);
+const DNSD_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "services/dnsd",
+    RegistryScope::System,
+    1,
+    DNSD_DIRS,
+    DNSD_DEFAULTS,
+    DNSD_MIGRATIONS,
+);
 const DNSD_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("dnsd", &DNSD_MANIFEST);
 
 #[derive(Clone, Copy)]
@@ -105,7 +113,8 @@ impl DnsService {
         }
 
         let now = sys::uptime_ms();
-        self.entries.retain(|entry| !is_expired(entry.expires_at, now));
+        self.entries
+            .retain(|entry| !is_expired(entry.expires_at, now));
 
         if let Some(entry) = self.entries.iter().find(|entry| entry.host == normalized) {
             self.cache_hits = self.cache_hits.wrapping_add(1);

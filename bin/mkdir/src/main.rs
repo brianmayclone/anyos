@@ -7,7 +7,9 @@ fn mkdir_parents(path: &str) {
     // Create each component: /a -> /a/b -> /a/b/c
     let bytes = path.as_bytes();
     let mut i = 0;
-    if !bytes.is_empty() && bytes[0] == b'/' { i = 1; }
+    if !bytes.is_empty() && bytes[0] == b'/' {
+        i = 1;
+    }
     while i <= bytes.len() {
         if i == bytes.len() || bytes[i] == b'/' {
             if i > 0 {
@@ -43,7 +45,10 @@ fn main() {
             mkdir_parents(path);
         } else {
             if anyos_std::fs::mkdir(path) == u32::MAX {
-                anyos_std::println!("mkdir: cannot create directory '{}': File exists or error", path);
+                anyos_std::println!(
+                    "mkdir: cannot create directory '{}': File exists or error",
+                    path
+                );
             }
         }
     }

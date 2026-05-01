@@ -114,7 +114,11 @@ pub fn index_url(mirror_url: &str) -> String {
 /// Get the current architecture string.
 pub fn arch() -> &'static str {
     #[cfg(target_arch = "x86_64")]
-    { "x86_64" }
+    {
+        "x86_64"
+    }
     #[cfg(target_arch = "aarch64")]
-    { "aarch64" }
+    {
+        "aarch64"
+    }
 }

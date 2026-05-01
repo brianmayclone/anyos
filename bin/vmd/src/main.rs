@@ -127,8 +127,11 @@ fn mgmt_thread_entry() {
 
         let n = ipc::pipe_read(pipe_id, &mut buf);
         if n > 0 && n != u32::MAX {
-            anyos_std::println!("[vmd-mgmt] received {} bytes: {}", n,
-                core::str::from_utf8(&buf[..n as usize]).unwrap_or("(invalid utf8)"));
+            anyos_std::println!(
+                "[vmd-mgmt] received {} bytes: {}",
+                n,
+                core::str::from_utf8(&buf[..n as usize]).unwrap_or("(invalid utf8)")
+            );
             // Wait for main thread to consume the previous command.
             while CMD_PENDING.load(Ordering::Acquire) {
                 if MGMT_STOP.load(Ordering::Relaxed) {
@@ -248,7 +251,9 @@ fn update_shm_framebuffer(inst: &VmInstance) {
 /// Update the SHM state field.
 fn update_shm_state(inst: &VmInstance, state: u32) {
     if !inst.shm_ptr.is_null() {
-        unsafe { shm_write_u32(inst.shm_ptr, 16, state); }
+        unsafe {
+            shm_write_u32(inst.shm_ptr, 16, state);
+        }
     }
 }
 
@@ -371,7 +376,8 @@ fn read_vm_config(uuid: &str) -> Option<VmConfigInfo> {
             if let Some(eq_pos) = line.find('=') {
                 let key = &line[..eq_pos];
                 let val = &line[eq_pos + 1..];
-                if key.len() > 4 && key[4..].chars().all(|c| c.is_ascii_digit()) && !val.is_empty() {
+                if key.len() > 4 && key[4..].chars().all(|c| c.is_ascii_digit()) && !val.is_empty()
+                {
                     extra_disks.push(String::from(val));
                 }
             }
@@ -482,7 +488,11 @@ fn cmd_create(uuid: &str) {
     // Create shared memory for VGA framebuffer.
     let shm_id = ipc::shm_create(SHM_SIZE);
     let shm_addr = if shm_id != 0 { ipc::shm_map(shm_id) } else { 0 };
-    let shm_ptr = if shm_addr != 0 { shm_addr as *mut u8 } else { core::ptr::null_mut() };
+    let shm_ptr = if shm_addr != 0 {
+        shm_addr as *mut u8
+    } else {
+        core::ptr::null_mut()
+    };
 
     // Zero out SHM header.
     if !shm_ptr.is_null() {
@@ -501,7 +511,13 @@ fn cmd_create(uuid: &str) {
         handle.setup_e1000(&mac);
         anyos_std::println!(
             "[vmd] E1000 NIC enabled (mode={}, mac={:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
-            config.net_mode, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            config.net_mode,
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
         );
     }
 
@@ -533,18 +549,26 @@ fn cmd_create(uuid: &str) {
         let fd = fs::open(&config.disk_image, 0);
         if fd != u32::MAX {
             let size = fs::lseek(fd, 0, 2) as u64; // seek to end
-            fs::lseek(fd, 0, 0);                    // seek back to start
+            fs::lseek(fd, 0, 0); // seek back to start
             if size > 0 {
                 if let Some(ref inst) = d.vm {
                     inst.handle.ahci_attach_disk(0, fd as i32, size);
                 }
-                anyos_std::println!("[vmd] attached disk on AHCI port 0 (fd={}): {} ({} bytes)", fd, config.disk_image, size);
+                anyos_std::println!(
+                    "[vmd] attached disk on AHCI port 0 (fd={}): {} ({} bytes)",
+                    fd,
+                    config.disk_image,
+                    size
+                );
             } else {
                 fs::close(fd);
                 send_status(&format!("error 0 disk image empty: {}", config.disk_image));
             }
         } else {
-            send_status(&format!("error 0 failed to open disk image: {}", config.disk_image));
+            send_status(&format!(
+                "error 0 failed to open disk image: {}",
+                config.disk_image
+            ));
         }
     }
 
@@ -558,7 +582,12 @@ fn cmd_create(uuid: &str) {
                 if let Some(ref inst) = d.vm {
                     inst.handle.ahci_attach_cdrom(1, fd as i32, size);
                 }
-                anyos_std::println!("[vmd] attached ISO on AHCI port 1 (fd={}): {} ({} bytes)", fd, config.iso_image, size);
+                anyos_std::println!(
+                    "[vmd] attached ISO on AHCI port 1 (fd={}): {} ({} bytes)",
+                    fd,
+                    config.iso_image,
+                    size
+                );
             } else {
                 fs::close(fd);
             }
@@ -567,7 +596,9 @@ fn cmd_create(uuid: &str) {
 
     // Attach extra disk images as AHCI port 2, 3, ... (HDD).
     for (i, disk_path) in config.extra_disks.iter().enumerate() {
-        if disk_path.is_empty() { continue; }
+        if disk_path.is_empty() {
+            continue;
+        }
         let port = (2 + i) as u32;
         let fd = fs::open(disk_path, 0);
         if fd != u32::MAX {
@@ -577,7 +608,13 @@ fn cmd_create(uuid: &str) {
                 if let Some(ref inst) = d.vm {
                     inst.handle.ahci_attach_disk(port, fd as i32, size);
                 }
-                anyos_std::println!("[vmd] attached disk on AHCI port {} (fd={}): {} ({} bytes)", port, fd, disk_path, size);
+                anyos_std::println!(
+                    "[vmd] attached disk on AHCI port {} (fd={}): {} ({} bytes)",
+                    port,
+                    fd,
+                    disk_path,
+                    size
+                );
             } else {
                 fs::close(fd);
             }
@@ -608,7 +645,8 @@ fn cmd_start() {
             // For a 256 KB BIOS: load at 0xFFFC0000 (4G - 256K).
             inst.handle.load_binary(0xFFFC_0000, &bios_data);
             anyos_std::println!(
-                "[vmd] SeaBIOS loaded at 0xFFFC0000 ({} bytes)", bios_data.len()
+                "[vmd] SeaBIOS loaded at 0xFFFC0000 ({} bytes)",
+                bios_data.len()
             );
 
             // Also shadow into low memory for real-mode BIOS calls.
@@ -633,14 +671,13 @@ fn cmd_start() {
             let bios_data = read_file(BIOS_PATH_COREVM);
             if bios_data.is_empty() {
                 send_status("error 0 BIOS not found");
-                anyos_std::println!(
-                    "[vmd] ERROR: CoreVM BIOS not found at {}", BIOS_PATH_COREVM
-                );
+                anyos_std::println!("[vmd] ERROR: CoreVM BIOS not found at {}", BIOS_PATH_COREVM);
                 return;
             }
             inst.handle.load_binary(0xF0000, &bios_data);
             anyos_std::println!(
-                "[vmd] loaded CoreVM BIOS ({} bytes at 0xF0000)", bios_data.len()
+                "[vmd] loaded CoreVM BIOS ({} bytes at 0xF0000)",
+                bios_data.len()
             );
         }
 
@@ -682,8 +719,11 @@ fn cmd_start() {
         inst.exit_count = 0;
         update_shm_state(inst, STATE_RUNNING);
         send_status("state 0 running");
-        anyos_std::println!("[vmd] VM '{}' started (uptime_ms={})",
-            inst.name, sys::uptime_ms());
+        anyos_std::println!(
+            "[vmd] VM '{}' started (uptime_ms={})",
+            inst.name,
+            sys::uptime_ms()
+        );
     }
 }
 
@@ -834,29 +874,39 @@ fn run_vm_step() -> bool {
     match exit {
         VmExitReason::IoIn { port, size } => {
             let mut data = [0u8; 4];
-            inst.handle.handle_io_exit(port, 0, size, &mut data[..size as usize]);
+            inst.handle
+                .handle_io_exit(port, 0, size, &mut data[..size as usize]);
         }
         VmExitReason::IoOut { port, size, data } => {
             let bytes = data.to_le_bytes();
             let mut buf = [0u8; 4];
             buf[..size as usize].copy_from_slice(&bytes[..size as usize]);
-            inst.handle.handle_io_exit(port, 1, size, &mut buf[..size as usize]);
+            inst.handle
+                .handle_io_exit(port, 1, size, &mut buf[..size as usize]);
         }
         VmExitReason::MmioRead { addr, size } => {
             let mut data = [0u8; 8];
-            inst.handle.handle_mmio_exit(addr, 0, size, &mut data[..size as usize], 0, 0);
+            inst.handle
+                .handle_mmio_exit(addr, 0, size, &mut data[..size as usize], 0, 0);
         }
         VmExitReason::MmioWrite { addr, size, data } => {
             let bytes = data.to_le_bytes();
             let mut buf = [0u8; 8];
             buf[..size as usize].copy_from_slice(&bytes[..size as usize]);
-            inst.handle.handle_mmio_exit(addr, 1, size, &mut buf[..size as usize], 0, 0);
+            inst.handle
+                .handle_mmio_exit(addr, 1, size, &mut buf[..size as usize], 0, 0);
         }
-        VmExitReason::StringIo { port, size, is_out, count } => {
+        VmExitReason::StringIo {
+            port,
+            size,
+            is_out,
+            count,
+        } => {
             let direction = if is_out { 1u8 } else { 0u8 };
             let total = (count as usize) * (size as usize);
             let mut buf = alloc::vec![0u8; total.min(4096)];
-            inst.handle.handle_string_io_exit(port, direction, size, &mut buf, count);
+            inst.handle
+                .handle_string_io_exit(port, direction, size, &mut buf, count);
         }
         VmExitReason::Halted => {
             // HLT pauses until the next interrupt. Sleep briefly so the
@@ -883,8 +933,10 @@ fn run_vm_step() -> bool {
             anyos_std::println!("[vmd] VM execution error");
             return false;
         }
-        VmExitReason::MsrRead { .. } | VmExitReason::MsrWrite { .. } |
-        VmExitReason::CpuidExit { .. } | VmExitReason::Debug => {
+        VmExitReason::MsrRead { .. }
+        | VmExitReason::MsrWrite { .. }
+        | VmExitReason::CpuidExit { .. }
+        | VmExitReason::Debug => {
             // These are handled internally or can be ignored.
         }
     }
@@ -985,14 +1037,22 @@ fn parse_i16(s: &str) -> i16 {
     if bytes.is_empty() {
         return 0;
     }
-    let (neg, start) = if bytes[0] == b'-' { (true, 1) } else { (false, 0) };
+    let (neg, start) = if bytes[0] == b'-' {
+        (true, 1)
+    } else {
+        (false, 0)
+    };
     let mut val: i32 = 0;
     for &b in &bytes[start..] {
         if b >= b'0' && b <= b'9' {
             val = val * 10 + (b - b'0') as i32;
         }
     }
-    if neg { -val as i16 } else { val as i16 }
+    if neg {
+        -val as i16
+    } else {
+        val as i16
+    }
 }
 
 // ── Entry point ────────────────────────────────────────────────────────
@@ -1036,7 +1096,11 @@ fn main() {
         anyos_std::process::exit(1);
     }
 
-    anyos_std::println!("[vmd] IPC pipes connected (cmd={}, status={})", cmd_pipe, status_pipe);
+    anyos_std::println!(
+        "[vmd] IPC pipes connected (cmd={}, status={})",
+        cmd_pipe,
+        status_pipe
+    );
 
     unsafe {
         DAEMON = Some(DaemonState {
@@ -1047,7 +1111,9 @@ fn main() {
     }
 
     // Spawn management thread for IPC command reception.
-    unsafe { MGMT_CMD_PIPE = cmd_pipe; }
+    unsafe {
+        MGMT_CMD_PIPE = cmd_pipe;
+    }
     let _mgmt = Thread::spawn(mgmt_thread_entry, "vmd-mgmt");
     anyos_std::println!("[vmd] management thread spawned");
 

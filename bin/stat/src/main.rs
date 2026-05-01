@@ -53,10 +53,16 @@ fn main() {
     let mode = stat_buf[5];
 
     if file_type == 1 {
-        anyos_std::println!("  Type: directory{}", if is_symlink { " (symlink)" } else { "" });
+        anyos_std::println!(
+            "  Type: directory{}",
+            if is_symlink { " (symlink)" } else { "" }
+        );
         anyos_std::println!("  Entries: {}", size);
     } else {
-        anyos_std::println!("  Type: regular file{}", if is_symlink { " (symlink)" } else { "" });
+        anyos_std::println!(
+            "  Type: regular file{}",
+            if is_symlink { " (symlink)" } else { "" }
+        );
         anyos_std::println!("  Size: {} bytes", size);
         if size >= 1024 {
             anyos_std::println!("        ({} KiB)", size / 1024);
@@ -74,9 +80,15 @@ fn main() {
             0x3 => "rm--",
             0x1 => "r---",
             0x0 => "----",
-            _ => "????"
+            _ => "????",
         }
     };
-    anyos_std::println!("  Mode: 0x{:03X} ({}|{}|{})", mode, perm_str(owner), perm_str(group), perm_str(others));
+    anyos_std::println!(
+        "  Mode: 0x{:03X} ({}|{}|{})",
+        mode,
+        perm_str(owner),
+        perm_str(group),
+        perm_str(others)
+    );
     anyos_std::println!("   Uid: {}    Gid: {}", uid, gid);
 }

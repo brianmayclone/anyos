@@ -6,7 +6,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::layer::{ShadowCache, shadow_spread, SHADOW_ALPHA_FOCUSED, SHADOW_ALPHA_UNFOCUSED};
+use super::layer::{shadow_spread, ShadowCache, SHADOW_ALPHA_FOCUSED, SHADOW_ALPHA_UNFOCUSED};
 
 /// Fast exact division by 255 using bit manipulation.
 /// Exact for all x in 0..=65025 (255*255), which covers every possible
@@ -38,7 +38,9 @@ pub fn alpha_blend(src: u32, dst: u32) -> u32 {
 /// Specialized fast path: skips source RGB extraction (always 0).
 #[inline(always)]
 pub(crate) fn shadow_blend(alpha: u32, dst: u32) -> u32 {
-    if alpha == 0 { return dst; }
+    if alpha == 0 {
+        return dst;
+    }
     let inv = 255 - alpha;
     let r = div255(((dst >> 16) & 0xFF) * inv);
     let g = div255(((dst >> 8) & 0xFF) * inv);
@@ -66,7 +68,15 @@ pub(crate) fn isqrt_u32(n: u32) -> u32 {
 /// Returns negative values inside, positive outside, 0 on the edge.
 /// Uses integer arithmetic (no floating point).
 #[inline]
-pub(crate) fn rounded_rect_sdf(px: i32, py: i32, rx: i32, ry: i32, rw: i32, rh: i32, r: i32) -> i32 {
+pub(crate) fn rounded_rect_sdf(
+    px: i32,
+    py: i32,
+    rx: i32,
+    ry: i32,
+    rw: i32,
+    rh: i32,
+    r: i32,
+) -> i32 {
     // Clamp r to half the smallest dimension
     let r = r.min(rw / 2).min(rh / 2).max(0);
 
@@ -174,17 +184,27 @@ pub(crate) fn compute_shadow_cache(layer_w: u32, layer_h: u32) -> ShadowCache {
 /// `passes` iterations: 1=box, 2=triangle, 3~=gaussian.
 /// `temp` is a reusable scratch buffer (avoids per-call heap allocation).
 pub(crate) fn blur_back_buffer_region(
-    bb: &mut [u32], fb_w: u32, fb_h: u32,
-    rx: i32, ry: i32, rw: u32, rh: u32,
-    radius: u32, passes: u32,
+    bb: &mut [u32],
+    fb_w: u32,
+    fb_h: u32,
+    rx: i32,
+    ry: i32,
+    rw: u32,
+    rh: u32,
+    radius: u32,
+    passes: u32,
     temp: &mut Vec<u32>,
 ) {
-    if rw == 0 || rh == 0 || radius == 0 || passes == 0 { return; }
+    if rw == 0 || rh == 0 || radius == 0 || passes == 0 {
+        return;
+    }
     let x0 = rx.max(0) as usize;
     let y0 = ry.max(0) as usize;
     let x1 = ((rx + rw as i32) as usize).min(fb_w as usize);
     let y1 = ((ry + rh as i32) as usize).min(fb_h as usize);
-    if x0 >= x1 || y0 >= y1 { return; }
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
     let w = x1 - x0;
     let h = y1 - y0;
     let stride = fb_w as usize;
@@ -206,7 +226,9 @@ pub(crate) fn blur_back_buffer_region(
             let row_off = row * stride;
             let (mut sr, mut sg, mut sb) = (0u32, 0u32, 0u32);
             for i in 0..=(2 * r) {
-                let sx = (x0 as i32 + i as i32 - r as i32).max(0).min(fb_w as i32 - 1) as usize;
+                let sx = (x0 as i32 + i as i32 - r as i32)
+                    .max(0)
+                    .min(fb_w as i32 - 1) as usize;
                 let px = bb[row_off + sx];
                 sr += (px >> 16) & 0xFF;
                 sg += (px >> 8) & 0xFF;
@@ -234,7 +256,9 @@ pub(crate) fn blur_back_buffer_region(
         for col in x0..x1 {
             let (mut sr, mut sg, mut sb) = (0u32, 0u32, 0u32);
             for i in 0..=(2 * r) {
-                let sy = (y0 as i32 + i as i32 - r as i32).max(0).min(fb_h as i32 - 1) as usize;
+                let sy = (y0 as i32 + i as i32 - r as i32)
+                    .max(0)
+                    .min(fb_h as i32 - 1) as usize;
                 let px = bb[sy * stride + col];
                 sr += (px >> 16) & 0xFF;
                 sg += (px >> 8) & 0xFF;

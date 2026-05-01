@@ -1,14 +1,14 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::ui::window;
-use anyos_std::ui::filedialog;
-use anyos_std::sys;
+use anyos_std::format;
 use anyos_std::fs;
 use anyos_std::process;
-use anyos_std::Vec;
+use anyos_std::sys;
+use anyos_std::ui::filedialog;
+use anyos_std::ui::window;
 use anyos_std::String;
-use anyos_std::format;
+use anyos_std::Vec;
 
 anyos_std::entry!(main);
 
@@ -35,9 +35,27 @@ struct BtnDef {
 }
 
 const BTNS: [BtnDef; 3] = [
-    BtnDef { label: "Full Screen",     x: 20,  y: 80, w: 140, h: 36 },
-    BtnDef { label: "Selection",       x: 20,  y: 124, w: 140, h: 36 },
-    BtnDef { label: "Save to File...", x: 180, y: 80, w: 140, h: 36 },
+    BtnDef {
+        label: "Full Screen",
+        x: 20,
+        y: 80,
+        w: 140,
+        h: 36,
+    },
+    BtnDef {
+        label: "Selection",
+        x: 20,
+        y: 124,
+        w: 140,
+        h: 36,
+    },
+    BtnDef {
+        label: "Save to File...",
+        x: 180,
+        y: 80,
+        w: 140,
+        h: 36,
+    },
 ];
 
 // ---- PNG Encoder ----
@@ -116,8 +134,8 @@ fn encode_png(width: u32, height: u32, pixels: &[u32]) -> Vec<u8> {
     let mut ihdr = [0u8; 13];
     ihdr[0..4].copy_from_slice(&width.to_be_bytes());
     ihdr[4..8].copy_from_slice(&height.to_be_bytes());
-    ihdr[8] = 8;  // bit depth
-    ihdr[9] = 2;  // color type: RGB
+    ihdr[8] = 8; // bit depth
+    ihdr[9] = 2; // color type: RGB
     write_chunk(&mut out, &crc_table, b"IHDR", &ihdr);
 
     // IDAT chunk — build data inline
@@ -226,7 +244,9 @@ fn write_chunk(out: &mut Vec<u8>, crc_table: &[u32; 256], chunk_type: &[u8; 4], 
 fn capture_screen() -> Option<(u32, u32, Vec<u32>)> {
     // Get screen size to know buffer size
     let (sw, sh) = window::screen_size();
-    if sw == 0 || sh == 0 { return None; }
+    if sw == 0 || sh == 0 {
+        return None;
+    }
 
     let pixel_count = sw as usize * sh as usize;
     let mut buf: Vec<u32> = Vec::with_capacity(pixel_count);
@@ -253,7 +273,9 @@ fn save_png(width: u32, height: u32, pixels: &[u32]) -> bool {
             let png_data = encode_png(width, height, pixels);
 
             let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
-            if fd == u32::MAX { return false; }
+            if fd == u32::MAX {
+                return false;
+            }
             fs::write(fd, &png_data);
             fs::close(fd);
             true
@@ -268,7 +290,15 @@ fn render(win: u32, has_capture: bool, pressed: Option<usize>) {
 
     // Title
     window::draw_text_ex(win, 20, 16, TEXT, window::FONT_BOLD, 18, "Screenshot");
-    window::draw_text_ex(win, 20, 42, TEXT_DIM, 0, 13, "Capture the screen or a selection.");
+    window::draw_text_ex(
+        win,
+        20,
+        42,
+        TEXT_DIM,
+        0,
+        13,
+        "Capture the screen or a selection.",
+    );
 
     // Divider
     window::fill_rect(win, 20, 68, WIN_W - 40, 1, BORDER);
@@ -277,9 +307,9 @@ fn render(win: u32, has_capture: bool, pressed: Option<usize>) {
     for (i, btn) in BTNS.iter().enumerate() {
         // Skip "Save" if no capture, skip "Selection" (not yet implemented)
         let enabled = match i {
-            0 => true,              // Full Screen always enabled
-            1 => false,             // Selection not yet implemented
-            2 => has_capture,       // Save only when capture exists
+            0 => true,        // Full Screen always enabled
+            1 => false,       // Selection not yet implemented
+            2 => has_capture, // Save only when capture exists
             _ => false,
         };
 
@@ -302,7 +332,15 @@ fn render(win: u32, has_capture: bool, pressed: Option<usize>) {
 
     // Status
     if has_capture {
-        window::draw_text_ex(win, 20, 172, TEXT_DIM, 0, 11, "Screenshot captured. Click Save to export as PNG.");
+        window::draw_text_ex(
+            win,
+            20,
+            172,
+            TEXT_DIM,
+            0,
+            11,
+            "Screenshot captured. Click Save to export as PNG.",
+        );
     }
 }
 
@@ -318,19 +356,25 @@ fn hit_test(mx: i16, my: i16) -> Option<usize> {
 // ---- Main ----
 fn main() {
     let win = window::create_ex(
-        "Screenshot", 200, 200, WIN_W, WIN_H,
+        "Screenshot",
+        200,
+        200,
+        WIN_W,
+        WIN_H,
         window::WIN_FLAG_NOT_RESIZABLE,
     );
-    if win == u32::MAX { return; }
+    if win == u32::MAX {
+        return;
+    }
 
     let mut mb = window::MenuBarBuilder::new()
         .menu("Screenshot")
-            .item(100, "About Screenshot", 0)
-            .separator()
-            .item(199, "Quit", 0)
+        .item(100, "About Screenshot", 0)
+        .separator()
+        .item(199, "Quit", 0)
         .end_menu()
         .menu("Capture")
-            .item(200, "Full Screen", 0)
+        .item(200, "Full Screen", 0)
         .end_menu();
     window::set_menu(win, mb.build());
 
@@ -364,19 +408,25 @@ fn main() {
 
                                 // Recreate window
                                 let new_win = window::create_ex(
-                                    "Screenshot", 200, 200, WIN_W, WIN_H,
+                                    "Screenshot",
+                                    200,
+                                    200,
+                                    WIN_W,
+                                    WIN_H,
                                     window::WIN_FLAG_NOT_RESIZABLE,
                                 );
-                                if new_win == u32::MAX { return; }
+                                if new_win == u32::MAX {
+                                    return;
+                                }
                                 // Re-set menu
                                 let mut mb2 = window::MenuBarBuilder::new()
                                     .menu("Screenshot")
-                                        .item(100, "About Screenshot", 0)
-                                        .separator()
-                                        .item(199, "Quit", 0)
+                                    .item(100, "About Screenshot", 0)
+                                    .separator()
+                                    .item(199, "Quit", 0)
                                     .end_menu()
                                     .menu("Capture")
-                                        .item(200, "Full Screen", 0)
+                                    .item(200, "Full Screen", 0)
                                     .end_menu();
                                 window::set_menu(new_win, mb2.build());
 
@@ -402,7 +452,10 @@ fn main() {
                 }
                 window::EVENT_MENU_ITEM => {
                     match event[1] {
-                        199 | 0xFFF2 => { window::destroy(win); return; }
+                        199 | 0xFFF2 => {
+                            window::destroy(win);
+                            return;
+                        }
                         200 => {
                             // Full screen via menu — capture immediately
                             if let Some(cap) = capture_screen() {
@@ -413,7 +466,10 @@ fn main() {
                         _ => {}
                     }
                 }
-                window::EVENT_WINDOW_CLOSE => { window::destroy(win); return; }
+                window::EVENT_WINDOW_CLOSE => {
+                    window::destroy(win);
+                    return;
+                }
                 _ => {}
             }
         }
@@ -424,6 +480,8 @@ fn main() {
             dirty = false;
         }
         let elapsed = sys::uptime_ms().wrapping_sub(t0);
-        if elapsed < 16 { process::sleep(16 - elapsed); }
+        if elapsed < 16 {
+            process::sleep(16 - elapsed);
+        }
     }
 }

@@ -18,13 +18,15 @@ mod util;
 
 use alloc::format;
 use alloc::string::String;
-use libanyui_client as anyui;
 use anyui::Widget;
+use libanyui_client as anyui;
 
-use crate::logic::{debugger, breakpoints, sampler, snapshots, traces, process_list, unwinder, disasm};
+use crate::logic::{
+    breakpoints, debugger, disasm, process_list, sampler, snapshots, traces, unwinder,
+};
 use crate::ui::{
-    toolbar, process_tree, registers_view, stack_view, disasm_view,
-    memory_view, timeline_view, output_panel, snapshot_view, trace_view, status_bar,
+    disasm_view, memory_view, output_panel, process_tree, registers_view, snapshot_view,
+    stack_view, status_bar, timeline_view, toolbar, trace_view,
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -130,7 +132,12 @@ fn main() {
 
     // Manual tab switching (heterogeneous control types)
     {
-        let ids = [disasm_v.editor.id(), regs_v.grid.id(), mem_v.editor.id(), snap_v.grid.id()];
+        let ids = [
+            disasm_v.editor.id(),
+            regs_v.grid.id(),
+            mem_v.editor.id(),
+            snap_v.grid.id(),
+        ];
         // Initially show first panel, hide others
         for i in 1..ids.len() {
             anyui::Control::from_id(ids[i]).set_visible(false);
@@ -167,7 +174,12 @@ fn main() {
 
     // Manual tab switching (heterogeneous control types)
     {
-        let ids = [stack_v.tree.id(), timeline_v.canvas.id(), output_p.text_area.id(), trace_v.grid.id()];
+        let ids = [
+            stack_v.tree.id(),
+            timeline_v.canvas.id(),
+            output_p.text_area.id(),
+            trace_v.grid.id(),
+        ];
         for i in 1..ids.len() {
             anyui::Control::from_id(ids[i]).set_visible(false);
         }
@@ -218,23 +230,23 @@ fn main() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu("File")
-            .item(1, "Quit", 0)
+        .item(1, "Quit", 0)
         .end_menu()
         .menu("Debug")
-            .item(10, "Attach", 0)
-            .item(11, "Detach", 0)
-            .separator()
-            .item(12, "Continue", 0)
-            .item(13, "Step Over", 0)
-            .item(14, "Step Into", 0)
-            .item(15, "Break", 0)
+        .item(10, "Attach", 0)
+        .item(11, "Detach", 0)
+        .separator()
+        .item(12, "Continue", 0)
+        .item(13, "Step Over", 0)
+        .item(14, "Step Into", 0)
+        .item(15, "Break", 0)
         .end_menu()
         .menu("View")
-            .item(20, "Registers", 0)
-            .item(21, "Stack", 0)
-            .item(22, "Memory", 0)
-            .item(23, "Disassembly", 0)
-            .item(24, "Timeline", 0)
+        .item(20, "Registers", 0)
+        .item(21, "Stack", 0)
+        .item(22, "Memory", 0)
+        .item(23, "Disassembly", 0)
+        .item(24, "Timeline", 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
@@ -244,7 +256,7 @@ fn main() {
             10 => on_attach(),
             11 => on_detach(),
             12 => on_resume(),
-            13 => on_step_into(),  // Step Over (same as step into for now)
+            13 => on_step_into(), // Step Over (same as step into for now)
             14 => on_step_into(),
             15 => on_suspend(),
             20 => { /* Registers tab — could switch top_tabs in the future */ }
@@ -341,7 +353,8 @@ fn on_attach() {
         return;
     }
     if s.debugger.attach(tid) {
-        s.output_panel.log(&format!("Attached to TID {} (suspended).", tid));
+        s.output_panel
+            .log(&format!("Attached to TID {} (suspended).", tid));
         s.output_panel.log(&format!(
             "  RIP={} RSP={} RBP={}",
             crate::util::format::hex64(s.debugger.regs.rip),
@@ -353,7 +366,8 @@ fn on_attach() {
         s.sampler.start();
         update_all_views();
     } else {
-        s.output_panel.log(&format!("Failed to attach to TID {}.", tid));
+        s.output_panel
+            .log(&format!("Failed to attach to TID {}.", tid));
     }
     update_toolbar_state();
 }
@@ -405,7 +419,10 @@ fn on_snapshot() {
         return;
     }
     let tid = s.debugger.target_tid;
-    let label = format!("Snap @ RIP={}", crate::util::format::hex64(s.debugger.regs.rip));
+    let label = format!(
+        "Snap @ RIP={}",
+        crate::util::format::hex64(s.debugger.regs.rip)
+    );
     let idx = s.snapshots.take(tid, &s.debugger.regs, &label);
     s.output_panel.log(&format!("Snapshot #{} taken.", idx));
     s.snapshot_view.update(&s.snapshots.snapshots);
@@ -460,13 +477,20 @@ fn update_all_views() {
     let read = s.debugger.read_mem(rip, &mut code);
     if read > 0 {
         s.disasm_view.update(&code[..read], rip, rip);
-        s.output_panel.log(&format!("Disasm: {} bytes at RIP={}", read, crate::util::format::hex64(rip)));
+        s.output_panel.log(&format!(
+            "Disasm: {} bytes at RIP={}",
+            read,
+            crate::util::format::hex64(rip)
+        ));
     } else {
         s.disasm_view.show_message(&format!(
             "Cannot read memory at RIP={}\n(page may be unmapped)",
             crate::util::format::hex64(rip),
         ));
-        s.output_panel.log(&format!("read_mem returned 0 at RIP={}", crate::util::format::hex64(rip)));
+        s.output_panel.log(&format!(
+            "read_mem returned 0 at RIP={}",
+            crate::util::format::hex64(rip)
+        ));
     }
 
     // Memory: show stack area (RSP - 64)
@@ -497,7 +521,8 @@ fn update_all_views() {
         let instr_read = s.debugger.read_mem(rip, &mut instr_code);
         if instr_read > 0 {
             if let Some(instr) = disasm::decode(&instr_code[..instr_read], rip) {
-                s.traces.record(tid, rip, instr.mnemonic_str(), instr.operands_str());
+                s.traces
+                    .record(tid, rip, instr.mnemonic_str(), instr.operands_str());
                 s.trace_view.update(&s.traces.entries);
             }
         }
@@ -507,7 +532,8 @@ fn update_all_views() {
 /// Update toolbar button enabled states.
 fn update_toolbar_state() {
     let s = app();
-    s.toolbar.update_state(s.debugger.is_attached(), s.debugger.is_suspended());
+    s.toolbar
+        .update_state(s.debugger.is_attached(), s.debugger.is_suspended());
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -525,8 +551,14 @@ fn poll_timer_callback() {
                 let etype = event.event_type;
                 let addr = event.addr;
                 match etype {
-                    1 => s.output_panel.log(&format!("Breakpoint hit at {}", crate::util::format::hex64(addr))),
-                    2 => s.output_panel.log(&format!("Single step at {}", crate::util::format::hex64(addr))),
+                    1 => s.output_panel.log(&format!(
+                        "Breakpoint hit at {}",
+                        crate::util::format::hex64(addr)
+                    )),
+                    2 => s.output_panel.log(&format!(
+                        "Single step at {}",
+                        crate::util::format::hex64(addr)
+                    )),
                     3 => s.output_panel.log("Target exited."),
                     _ => {}
                 }
@@ -552,7 +584,12 @@ fn status_timer_callback() {
     // Update status bar state text
     if s.debugger.is_attached() {
         let tid = s.debugger.target_tid;
-        let state_str = if s.debugger.is_suspended() { "Suspended" } else { "Running" };
-        s.status_bar.set_state(&format!("TID {} — {}", tid, state_str));
+        let state_str = if s.debugger.is_suspended() {
+            "Suspended"
+        } else {
+            "Running"
+        };
+        s.status_bar
+            .set_state(&format!("TID {} — {}", tid, state_str));
     }
 }

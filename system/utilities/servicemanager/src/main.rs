@@ -436,8 +436,16 @@ fn reload_snapshot() {
     match load_services() {
         Ok(services) => {
             a.services = services;
-            a.connection.set_text(if a.ami.is_some() { "Live" } else { "confd only" });
-            a.connection.set_text_color(if a.ami.is_some() { tc.success } else { tc.warning });
+            a.connection.set_text(if a.ami.is_some() {
+                "Live"
+            } else {
+                "confd only"
+            });
+            a.connection.set_text_color(if a.ami.is_some() {
+                tc.success
+            } else {
+                tc.warning
+            });
             refresh_visible();
             if a.selected_name.is_empty() && !a.visible.is_empty() {
                 let idx = a.visible[0];
@@ -478,7 +486,10 @@ fn load_services() -> Result<Vec<ServiceEntry>, String> {
         if name.is_empty() || name.contains('/') {
             continue;
         }
-        if names.iter().any(|existing: &String| existing.as_str() == name) {
+        if names
+            .iter()
+            .any(|existing: &String| existing.as_str() == name)
+        {
             continue;
         }
         names.push(String::from(name));
@@ -528,7 +539,11 @@ fn conf_path(name: &str, field: &str) -> String {
     format!("services/{}/config/{}", name, field)
 }
 
-fn conf_item_value<'a>(items: &'a [libconf::ConfItem], name: &str, field: &str) -> Option<&'a ConfValue> {
+fn conf_item_value<'a>(
+    items: &'a [libconf::ConfItem],
+    name: &str,
+    field: &str,
+) -> Option<&'a ConfValue> {
     let path = conf_path(name, field);
     items.iter().find(|item| item.path == path)?.value.as_ref()
 }
@@ -579,7 +594,10 @@ fn load_runtime_entries() -> Vec<RuntimeEntry> {
             continue;
         }
 
-        let idx = if let Some(idx) = runtime.iter().position(|entry: &RuntimeEntry| entry.name == name) {
+        let idx = if let Some(idx) = runtime
+            .iter()
+            .position(|entry: &RuntimeEntry| entry.name == name)
+        {
             idx
         } else {
             runtime.push(RuntimeEntry {
@@ -630,8 +648,15 @@ fn refresh_visible() {
         let service = &a.services[*service_idx];
         a.grid.set_cell(row as u32, 0, &service.name);
         a.grid.set_cell(row as u32, 1, &service.state);
-        a.grid
-            .set_cell(row as u32, 2, if service.enabled { "Enabled" } else { "Disabled" });
+        a.grid.set_cell(
+            row as u32,
+            2,
+            if service.enabled {
+                "Enabled"
+            } else {
+                "Disabled"
+            },
+        );
         a.grid.set_cell(row as u32, 3, &service.exec);
         a.grid.set_cell(row as u32, 4, &service.args);
     }
@@ -667,7 +692,11 @@ fn selected_name_for_row(row: u32) -> Option<String> {
 
 fn show_selected_service() {
     let a = app();
-    if let Some(service) = a.services.iter().find(|service| service.name == a.selected_name) {
+    if let Some(service) = a
+        .services
+        .iter()
+        .find(|service| service.name == a.selected_name)
+    {
         a.heading
             .set_text(&format!("Service Details — {}", service.name));
         a.name_field.set_text(&service.name);
@@ -678,9 +707,17 @@ fn show_selected_service() {
         a.after_field.set_text(&service.after);
         a.timeout_field
             .set_text(&format!("{}", service.startup_timeout_ms));
-        a.autostart_toggle.set_state(if service.enabled { 1 } else { 0 });
-        a.runtime_label
-            .set_text(&format!("Runtime: {} | Startup: {}", service.state, if service.enabled { "enabled" } else { "disabled" }));
+        a.autostart_toggle
+            .set_state(if service.enabled { 1 } else { 0 });
+        a.runtime_label.set_text(&format!(
+            "Runtime: {} | Startup: {}",
+            service.state,
+            if service.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ));
         let error_text = if service.error.is_empty() {
             String::from("Last error: -")
         } else {
@@ -735,7 +772,10 @@ fn save_current_service(force_enable: bool) -> bool {
         return false;
     };
 
-    for path in [format!("services/{}", name), format!("services/{}/config", name)] {
+    for path in [
+        format!("services/{}", name),
+        format!("services/{}/config", name),
+    ] {
         if client.mkdir(RegistryScope::System, &path).is_err()
             && client
                 .get(RegistryScope::System, &path)
@@ -750,10 +790,18 @@ fn save_current_service(force_enable: bool) -> bool {
 
     let mut ok = true;
     ok &= client
-        .set(RegistryScope::System, &conf_path(&name, "exec"), ConfValue::String(exec))
+        .set(
+            RegistryScope::System,
+            &conf_path(&name, "exec"),
+            ConfValue::String(exec),
+        )
         .is_ok();
     ok &= client
-        .set(RegistryScope::System, &conf_path(&name, "args"), ConfValue::String(args))
+        .set(
+            RegistryScope::System,
+            &conf_path(&name, "args"),
+            ConfValue::String(args),
+        )
         .is_ok();
     ok &= client
         .set(

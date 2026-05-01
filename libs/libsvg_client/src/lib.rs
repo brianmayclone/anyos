@@ -45,7 +45,11 @@ pub fn probe(data: &[u8]) -> Option<(f32, f32)> {
     let mut w: f32 = 0.0;
     let mut h: f32 = 0.0;
     let rc = (lib().svg_probe)(data.as_ptr(), data.len() as u32, &mut w, &mut h);
-    if rc == 0 { Some((w, h)) } else { None }
+    if rc == 0 {
+        Some((w, h))
+    } else {
+        None
+    }
 }
 
 /// Render an SVG document into an ARGB8888 pixel buffer.
@@ -63,8 +67,11 @@ pub fn render(data: &[u8], pixels: &mut [u32], out_w: u32, out_h: u32) -> bool {
         return false;
     }
     let rc = (lib().svg_render)(
-        data.as_ptr(), data.len() as u32,
-        pixels.as_mut_ptr(), out_w, out_h,
+        data.as_ptr(),
+        data.len() as u32,
+        pixels.as_mut_ptr(),
+        out_w,
+        out_h,
     );
     rc == 0
 }
@@ -89,8 +96,11 @@ pub fn render_to_size(
         return false;
     }
     let rc = (lib().svg_render_to_size)(
-        data.as_ptr(), data.len() as u32,
-        pixels.as_mut_ptr(), out_w, out_h,
+        data.as_ptr(),
+        data.len() as u32,
+        pixels.as_mut_ptr(),
+        out_w,
+        out_h,
         bg_color,
     );
     rc == 0

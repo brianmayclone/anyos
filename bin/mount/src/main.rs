@@ -10,8 +10,6 @@ const FS_TYPE_SMB: u32 = 5;
 const FS_TYPE_COREFS: u32 = 6;
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
 
@@ -29,17 +27,24 @@ fn main() {
         anyos_std::println!("              corefs        CoreFS filesystem");
         anyos_std::println!("");
         anyos_std::println!("Examples:");
-        anyos_std::println!("  mount -t corefs 3 /mnt/data         Mount CoreFS partition (device ID)");
-        anyos_std::println!("  mount -t corefs /dev/sdc1 /mnt/data Mount CoreFS partition (device path)");
-        anyos_std::println!("  mount -t fat 2 /mnt/usb             Mount FAT partition (device ID)");
-        anyos_std::println!("  mount -t fat /dev/sdb1 /mnt/usb     Mount FAT partition (device path)");
+        anyos_std::println!(
+            "  mount -t corefs 3 /mnt/data         Mount CoreFS partition (device ID)"
+        );
+        anyos_std::println!(
+            "  mount -t corefs /dev/sdc1 /mnt/data Mount CoreFS partition (device path)"
+        );
+        anyos_std::println!(
+            "  mount -t fat 2 /mnt/usb             Mount FAT partition (device ID)"
+        );
+        anyos_std::println!(
+            "  mount -t fat /dev/sdb1 /mnt/usb     Mount FAT partition (device path)"
+        );
         anyos_std::println!("  mount -t smb //10.0.0.1/share /mnt/share");
         anyos_std::println!("");
         anyos_std::println!("Devices can be given as numeric IDs ('lsblk', 'sysinfo --disks')");
         anyos_std::println!("or as paths like /dev/sda1, /dev/sdc, /dev/hd0p1.");
         return;
     }
-
 
     if args.is_empty() {
         // No arguments: list all mount points
@@ -56,7 +61,9 @@ fn main() {
         // Parse and display "path\tfstype\tdev_id\n" entries
         if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
             for line in text.lines() {
-                if line.is_empty() { continue; }
+                if line.is_empty() {
+                    continue;
+                }
                 let mut parts = line.splitn(3, '\t');
                 let path = parts.next().unwrap_or("");
                 let fstype = parts.next().unwrap_or("unknown");
@@ -151,7 +158,9 @@ struct TokenIter<'a> {
 
 impl<'a> TokenIter<'a> {
     fn new(s: &'a str) -> Self {
-        Self { remaining: s.trim() }
+        Self {
+            remaining: s.trim(),
+        }
     }
 
     fn next(&mut self) -> Option<&'a str> {
@@ -161,7 +170,7 @@ impl<'a> TokenIter<'a> {
         }
         if let Some(pos) = s.find(' ') {
             let token = &s[..pos];
-            self.remaining = &s[pos+1..];
+            self.remaining = &s[pos + 1..];
             Some(token)
         } else {
             let token = s;

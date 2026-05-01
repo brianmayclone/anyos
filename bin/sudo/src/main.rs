@@ -3,9 +3,9 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{env, ipc, process, sys};
-use anyos_std::shell;
 use anyos_std::format;
+use anyos_std::shell;
+use anyos_std::{env, ipc, process, sys};
 
 fn main() -> u32 {
     let mut args_buf = [0u8; 256];
@@ -83,7 +83,9 @@ fn main() -> u32 {
     'pump: loop {
         loop {
             let n = ipc::pipe_read(out_pipe, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             if let Ok(s) = core::str::from_utf8(&buf[..n as usize]) {
                 sys::con_write(s);
             }
@@ -117,7 +119,9 @@ fn main() -> u32 {
 fn drain(pipe: u32, buf: &mut [u8]) {
     loop {
         let n = ipc::pipe_read(pipe, buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         if let Ok(s) = core::str::from_utf8(&buf[..n as usize]) {
             sys::con_write(s);
         }

@@ -79,7 +79,8 @@ fn run_ingame_tick(s: &mut crate::state::GameState) {
 
     let (px, _, pz) = s.player.position();
     let view_chunks = (s.renderer.fog_distance / 16.0) as i32 + 1;
-    s.world.ensure_chunks_around(px as i32, pz as i32, view_chunks.min(3));
+    s.world
+        .ensure_chunks_around(px as i32, pz as i32, view_chunks.min(3));
 
     let mut rebuilt = 0;
     let keys: alloc::vec::Vec<(i32, i32)> = s.world.chunks.keys().copied().collect();
@@ -103,7 +104,8 @@ fn run_ingame_tick(s: &mut crate::state::GameState) {
     update_mining(s, ray_hit.as_ref());
     s.renderer.yaw = s.player.yaw;
     s.renderer.pitch = s.player.pitch;
-    s.renderer.render(ex, ey, ez, s.fb_w, s.fb_h, s.shadows_enabled);
+    s.renderer
+        .render(ex, ey, ez, s.fb_w, s.fb_h, s.shadows_enabled);
     blit_frame_to_canvas(s, true);
 
     s.fps_frame_count += 1;
@@ -129,7 +131,12 @@ fn run_ingame_tick(s: &mut crate::state::GameState) {
     let mode = if s.player.is_flying() { "FLY" } else { "WALK" };
     let debug_text = alloc::format!(
         "FPS: {} | X: {:.1} Y: {:.1} Z: {:.1} | {} | {}x",
-        s.fps_display, ex, ey, ez, mode, s.render_divisor
+        s.fps_display,
+        ex,
+        ey,
+        ez,
+        mode,
+        s.render_divisor
     );
     s.fps_label.set_text(&debug_text);
 

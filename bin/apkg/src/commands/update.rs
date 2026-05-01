@@ -1,7 +1,7 @@
 //! `apkg update` — download the latest index.json from mirrors.
 
-use anyos_std::println;
 use crate::{config, download};
+use anyos_std::println;
 
 /// Execute `apkg update`.
 pub fn run() {

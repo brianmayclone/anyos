@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{println, vec, String, Vec};
 use anyos_std::{fs, ipc, process, sys};
+use anyos_std::{println, vec, String, Vec};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 anyos_std::entry!(main);
@@ -266,8 +266,11 @@ fn print_sysinfo() {
 
     // Filesystem
     if let Some(st) = fs::statfs("/") {
-        println!("  Disk /:     {} KB total, {} KB frei",
-            st.total_bytes / 1024, st.free_bytes / 1024);
+        println!(
+            "  Disk /:     {} KB total, {} KB frei",
+            st.total_bytes / 1024,
+            st.free_bytes / 1024
+        );
     }
 }
 
@@ -301,11 +304,18 @@ fn test_scheduler() -> (u32, u32) {
         let done = THREAD_COUNTER.load(Ordering::SeqCst);
         let errs = THREAD_ERRORS.load(Ordering::SeqCst);
         let ok = done == count && errs == 0;
-        print_result("Thread spawn/join (16x)", ok,
-            if ok { "" } else { "Threads nicht komplett" });
+        print_result(
+            "Thread spawn/join (16x)",
+            ok,
+            if ok { "" } else { "Threads nicht komplett" },
+        );
         print_metric("Dauer", dt, "ms");
         print_metric("Abgeschlossen", done, "");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 1b: Yield-Stress — viele schnelle Context-Switches
@@ -331,7 +341,11 @@ fn test_scheduler() -> (u32, u32) {
         if dt > 0 {
             print_metric("Yields/ms", yields / dt.max(1), "");
         }
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 1c: Sleep-Genauigkeit
@@ -342,7 +356,11 @@ fn test_scheduler() -> (u32, u32) {
         let ok = dt >= 90 && dt <= 200;
         print_result("Sleep 100ms Genauigkeit", ok, "");
         print_metric("Gemessen", dt, "ms (soll: 100)");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 1d: Viele Threads gleichzeitig
@@ -371,7 +389,11 @@ fn test_scheduler() -> (u32, u32) {
         print_metric("Erstellt", done, "");
         print_metric("Fehler", errs, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     (pass, fail)
@@ -424,10 +446,17 @@ fn test_memory() -> (u32, u32) {
         drop(vecs);
         let dt = elapsed_ms(t0);
         let ok = errors == 0;
-        print_result("Kleine Alloc (1000x 64B)", ok,
-            if ok { "" } else { "Datenkorruption!" });
+        print_result(
+            "Kleine Alloc (1000x 64B)",
+            ok,
+            if ok { "" } else { "Datenkorruption!" },
+        );
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 2b: Grosse Allokation
@@ -449,10 +478,17 @@ fn test_memory() -> (u32, u32) {
         drop(big);
         let dt = elapsed_ms(t0);
         let ok = errors == 0;
-        print_result("Grosse Alloc (1 MB)", ok,
-            if ok { "" } else { "Datenkorruption!" });
+        print_result(
+            "Grosse Alloc (1 MB)",
+            ok,
+            if ok { "" } else { "Datenkorruption!" },
+        );
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 2c: mmap/munmap Stress
@@ -486,10 +522,17 @@ fn test_memory() -> (u32, u32) {
         }
         let dt = elapsed_ms(t0);
         let ok = errors == 0;
-        print_result("mmap/munmap (50 Seiten)", ok,
-            if ok { "" } else { "Fehler bei mmap" });
+        print_result(
+            "mmap/munmap (50 Seiten)",
+            ok,
+            if ok { "" } else { "Fehler bei mmap" },
+        );
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 2d: Fragmentierungs-Stress
@@ -535,7 +578,11 @@ fn test_memory() -> (u32, u32) {
         print_metric("Realloc", realloc, "von");
         print_metric("Erwartet", freed, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 2e: Memory-Leak-Check
@@ -551,7 +598,11 @@ fn test_memory() -> (u32, u32) {
         print_metric("Vorher frei", free_before, "Seiten");
         print_metric("Nachher frei", free_after, "Seiten");
         print_metric("Differenz", leaked, "Seiten");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 2f: Multi-Thread Heap-Stress
@@ -573,12 +624,19 @@ fn test_memory() -> (u32, u32) {
         let ok_count = MEM_ALLOC_OK.load(Ordering::SeqCst);
         let fail_count = MEM_ALLOC_FAIL.load(Ordering::SeqCst);
         let ok = fail_count == 0;
-        print_result("Multi-Thread Heap (8 Threads)", ok,
-            if ok { "" } else { "Alloc-Fehler unter Last!" });
+        print_result(
+            "Multi-Thread Heap (8 Threads)",
+            ok,
+            if ok { "" } else { "Alloc-Fehler unter Last!" },
+        );
         print_metric("Erfolgreiche Allocs", ok_count, "");
         print_metric("Fehlgeschlagen", fail_count, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     (pass, fail)
@@ -662,14 +720,26 @@ fn test_vfs() -> (u32, u32) {
 
         let dt = elapsed_ms(t0);
         let ok = write_ok && read_ok && match_ok;
-        print_result("Datei schreiben/lesen (64 KB)", ok,
-            if !write_ok { "Schreiben fehlgeschlagen" }
-            else if !read_ok { "Lesen fehlgeschlagen" }
-            else if !match_ok { "Daten stimmen nicht ueberein!" }
-            else { "" });
+        print_result(
+            "Datei schreiben/lesen (64 KB)",
+            ok,
+            if !write_ok {
+                "Schreiben fehlgeschlagen"
+            } else if !read_ok {
+                "Lesen fehlgeschlagen"
+            } else if !match_ok {
+                "Daten stimmen nicht ueberein!"
+            } else {
+                ""
+            },
+        );
         print_metric("Dauer", dt, "ms");
         fs::unlink(path);
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 3b: Viele kleine Dateien
@@ -720,7 +790,11 @@ fn test_vfs() -> (u32, u32) {
         print_metric("Erstell-Fehler", create_errors, "");
         print_metric("Verif.-Fehler", verify_errors, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 3c: Verzeichnis-Operationen
@@ -770,7 +844,11 @@ fn test_vfs() -> (u32, u32) {
         print_metric("Readdir-Eintraege", entries, "");
         print_metric("Fehler", errors, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 3d: Seek-Test
@@ -822,7 +900,11 @@ fn test_vfs() -> (u32, u32) {
         print_metric("Fehler", errors, "");
         print_metric("Dauer", dt, "ms");
         fs::unlink(path);
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 3e: Grosser sequentieller Write
@@ -847,13 +929,21 @@ fn test_vfs() -> (u32, u32) {
         }
 
         let dt = elapsed_ms(t0);
-        let speed = if dt > 0 { (chunks * 4) as u32 * 1000 / dt } else { 0 };
+        let speed = if dt > 0 {
+            (chunks * 4) as u32 * 1000 / dt
+        } else {
+            0
+        };
         let ok = write_ok;
         print_result("Seq. Write 1 MB", ok, "");
         print_metric("Dauer", dt, "ms");
         print_metric("Durchsatz", speed, "KB/s");
         fs::unlink(path);
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // Cleanup
@@ -905,7 +995,11 @@ fn test_ipc() -> (u32, u32) {
         let ok = errors == 0;
         print_result("Pipe create/write/read", ok, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 4b: Pipe-Durchsatz
@@ -938,13 +1032,21 @@ fn test_ipc() -> (u32, u32) {
         }
 
         let dt = elapsed_ms(t0);
-        let throughput = if dt > 0 { total_bytes * 1000 / dt / 1024 } else { 0 };
+        let throughput = if dt > 0 {
+            total_bytes * 1000 / dt / 1024
+        } else {
+            0
+        };
         let ok = errors == 0 && total_bytes == 500 * 256;
         print_result("Pipe-Durchsatz (500x 256B)", ok, "");
         print_metric("Uebertragen", total_bytes / 1024, "KB");
         print_metric("Dauer", dt, "ms");
         print_metric("Durchsatz", throughput, "KB/s");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 4c: Event Channel
@@ -981,7 +1083,11 @@ fn test_ipc() -> (u32, u32) {
         let ok = errors == 0;
         print_result("Event Channel (emit/poll)", ok, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 4d: Shared Memory
@@ -1022,7 +1128,11 @@ fn test_ipc() -> (u32, u32) {
         let ok = errors == 0;
         print_result("Shared Memory (4 KB)", ok, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     (pass, fail)
@@ -1054,7 +1164,11 @@ fn test_timer() -> (u32, u32) {
         let ok = violations == 0;
         print_result("uptime_ms Monotonie (10K)", ok, "");
         print_metric("Verletzungen", violations, "");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 5b: Timer-Aufloesung
@@ -1075,8 +1189,12 @@ fn test_timer() -> (u32, u32) {
         let mut max_d = 0u32;
         let mut sum = 0u32;
         for &d in deltas.iter() {
-            if d < min_d { min_d = d; }
-            if d > max_d { max_d = d; }
+            if d < min_d {
+                min_d = d;
+            }
+            if d > max_d {
+                max_d = d;
+            }
             sum += d;
         }
         let avg = sum / deltas.len() as u32;
@@ -1085,7 +1203,11 @@ fn test_timer() -> (u32, u32) {
         print_metric("Min", min_d, "ms");
         print_metric("Max", max_d, "ms");
         print_metric("Avg", avg, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 5c: Sleep-Jitter — wiederholte kurze Sleeps
@@ -1113,7 +1235,11 @@ fn test_timer() -> (u32, u32) {
         print_result("Sleep-Jitter (20x 50ms)", ok, "");
         print_metric("Avg Jitter", avg_jitter, "ms");
         print_metric("Max Jitter", max_jitter, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 5d: Syscall-Latenz
@@ -1133,7 +1259,11 @@ fn test_timer() -> (u32, u32) {
         print_result("Syscall-Latenz (uptime_ms 5K)", ok, "");
         print_metric("Gesamt", dt, "ms");
         print_metric("Pro Aufruf", per_call, "us");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     (pass, fail)
@@ -1160,7 +1290,11 @@ fn test_process() -> (u32, u32) {
             print_result("Prozess spawn/wait (echo)", ok2, "");
             print_metric("Exit-Code", exit_code, "");
             print_metric("Dauer", dt, "ms");
-            if ok2 { pass += 1; } else { fail += 1; }
+            if ok2 {
+                pass += 1;
+            } else {
+                fail += 1;
+            }
         } else {
             print_result("Prozess spawn/wait (echo)", false, "spawn fehlgeschlagen");
             fail += 1;
@@ -1194,7 +1328,11 @@ fn test_process() -> (u32, u32) {
         print_metric("Spawn-Fehler", spawn_fail, "");
         print_metric("Exit-Fehler", exit_errors, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 6c: getpid
@@ -1203,7 +1341,11 @@ fn test_process() -> (u32, u32) {
         let ok = pid > 0;
         print_result("getpid() > 0", ok, "");
         print_metric("PID", pid, "");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     (pass, fail)
@@ -1258,18 +1400,29 @@ fn test_combined_stress() -> (u32, u32) {
     let ops = STRESS_OPS.load(Ordering::SeqCst);
     let errors = STRESS_ERRORS.load(Ordering::SeqCst);
     let free_after = get_free_pages();
-    let leaked = if free_before > free_after { free_before - free_after } else { 0 };
+    let leaked = if free_before > free_after {
+        free_before - free_after
+    } else {
+        0
+    };
 
     let ok = errors == 0 && spawned == 8;
-    print_result("8 Threads (Heap+IO+Yield)", ok,
-        if errors > 0 { "Fehler unter Last!" } else { "" });
+    print_result(
+        "8 Threads (Heap+IO+Yield)",
+        ok,
+        if errors > 0 { "Fehler unter Last!" } else { "" },
+    );
     print_metric("Threads", spawned, "");
     print_metric("Operationen", ops, "");
     print_metric("Fehler", errors, "");
     print_metric("Dauer", dt, "ms");
     print_metric("Ops/s", if dt > 0 { ops * 1000 / dt } else { 0 }, "");
     print_metric("Mem-Leak", leaked, "Seiten");
-    if ok { pass += 1; } else { fail += 1; }
+    if ok {
+        pass += 1;
+    } else {
+        fail += 1;
+    }
 
     (pass, fail)
 }
@@ -1377,7 +1530,11 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
         print_metric("Threads", spawned, "");
         print_metric("Spawn-Fehler", spawn_fail, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 8b: Hoher mmap-Speicherdruck. kstress ist absichtlich aggressiv:
@@ -1430,7 +1587,11 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
 
         let dt = elapsed_ms(t0);
         let free_after = get_free_pages();
-        let leaked = if free_before > free_after { free_before - free_after } else { 0 };
+        let leaked = if free_before > free_after {
+            free_before - free_after
+        } else {
+            0
+        };
         let ok = alloc_fail == 0 && verify_errors == 0 && leaked == 0;
         print_result("Hoher mmap-Druck", ok, "");
         print_metric("Ziel", target_mb, "MiB");
@@ -1439,7 +1600,11 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
         print_metric("Verify-Fehler", verify_errors, "");
         print_metric("Mem-Leak", leaked, "Seiten");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 8c: Prozesswellen. Das belastet Loader, Prozesslisten, Waitpid und
@@ -1472,7 +1637,11 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
         print_metric("Spawn-Fehler", spawn_fail, "");
         print_metric("Exit-Fehler", exit_errors, "");
         print_metric("Dauer", dt, "ms");
-        if ok { pass += 1; } else { fail += 1; }
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     // 8d: Gemischter Parallelstress. Mehrere Worker-Typen laufen gleichzeitig
@@ -1520,8 +1689,20 @@ fn test_deep_stress(cfg: Config) -> (u32, u32) {
         print_metric("IPC-Fehler", DEEP_IPC_ERRORS.load(Ordering::SeqCst), "");
         print_metric("Sched-Fehler", DEEP_SCHED_ERRORS.load(Ordering::SeqCst), "");
         print_metric("Dauer", dt, "ms");
-        print_metric("Ops/s", if dt > 0 { ops.saturating_mul(1000) / dt } else { 0 }, "");
-        if ok { pass += 1; } else { fail += 1; }
+        print_metric(
+            "Ops/s",
+            if dt > 0 {
+                ops.saturating_mul(1000) / dt
+            } else {
+                0
+            },
+            "",
+        );
+        if ok {
+            pass += 1;
+        } else {
+            fail += 1;
+        }
     }
 
     (pass, fail)
@@ -1752,7 +1933,11 @@ fn main() {
             break;
         }
         println!();
-        println!("Weiter: Durchlauf {}, elapsed {}s", passes_done + 1, elapsed_s);
+        println!(
+            "Weiter: Durchlauf {}, elapsed {}s",
+            passes_done + 1,
+            elapsed_s
+        );
     }
 
     let total_time = elapsed_ms(t_global);
@@ -1766,7 +1951,11 @@ fn main() {
     println!("  Fehlgeschlagen: {}", total_fail);
     println!("  Gesamt: {}", total_pass + total_fail);
     println!("  Durchlaeufe: {}", passes_done);
-    println!("  Dauer: {}.{} s", total_time / 1000, (total_time % 1000) / 100);
+    println!(
+        "  Dauer: {}.{} s",
+        total_time / 1000,
+        (total_time % 1000) / 100
+    );
     println!();
 
     if total_fail == 0 {

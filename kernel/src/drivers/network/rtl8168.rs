@@ -396,10 +396,9 @@ pub fn poll_rx() {
 // ── IRQ Handler ─────────────────────────────────────────────────────────────
 
 fn rtl_irq_handler(_irq: u8) {
-    if let Some(rtl) =
-        RTL_STATE
-            .try_lock()
-            .and_then(|mut g| if g.is_some() { Some(g) } else { None })
+    if let Some(rtl) = RTL_STATE
+        .try_lock()
+        .and_then(|mut g| if g.is_some() { Some(g) } else { None })
     {
         // We need to use try_lock properly
         drop(rtl);

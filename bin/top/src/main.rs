@@ -11,7 +11,7 @@ const REFRESH_MS: u32 = 2000;
 // ─── Per-thread previous tick tracking for CPU% delta ────────────────────────
 
 struct PrevTicks {
-    entries: [(u32, u32); MAX_TASKS], // (tid, cpu_ticks)
+    entries: [(u32, u32); MAX_TASKS],     // (tid, cpu_ticks)
     net_entries: [(u32, u64); MAX_TASKS], // (tid, net_total_bytes)
     count: usize,
     prev_total: u32,
@@ -44,11 +44,19 @@ fn get_terminal_size() -> (usize, usize) {
     let mut buf = [0u8; 8];
     let rows = {
         let n = anyos_std::env::get("LINES", &mut buf);
-        if n != u32::MAX && n > 0 { parse_uint(&buf[..n as usize]).unwrap_or(24) } else { 24 }
+        if n != u32::MAX && n > 0 {
+            parse_uint(&buf[..n as usize]).unwrap_or(24)
+        } else {
+            24
+        }
     };
     let cols = {
         let n = anyos_std::env::get("COLUMNS", &mut buf);
-        if n != u32::MAX && n > 0 { parse_uint(&buf[..n as usize]).unwrap_or(80) } else { 80 }
+        if n != u32::MAX && n > 0 {
+            parse_uint(&buf[..n as usize]).unwrap_or(80)
+        } else {
+            80
+        }
     };
     (rows.max(8), cols.max(40))
 }
@@ -65,12 +73,16 @@ fn parse_uint(bytes: &[u8]) -> Option<usize> {
             break;
         }
     }
-    if any { Some(val) } else { None }
+    if any {
+        Some(val)
+    } else {
+        None
+    }
 }
 
 // ─── Formatting helpers ──────────────────────────────────────────────────────
 
-use anyos_std::fmt::{fmt_u32, fmt_pct, fmt_mem_pages as fmt_mem};
+use anyos_std::fmt::{fmt_mem_pages as fmt_mem, fmt_pct, fmt_u32};
 
 /// Format kbit/s as "X.X Mbit" string (right-aligned in 9 chars).
 fn fmt_net_mbit<'a>(buf: &'a mut [u8; 16], kbit: u32) -> &'a str {
@@ -83,15 +95,24 @@ fn fmt_net_mbit<'a>(buf: &'a mut [u8; 16], kbit: u32) -> &'a str {
     let mut pos = 0usize;
     let mut tmp = [0u8; 10];
     let mut tpos = 10;
-    if whole == 0 { tpos -= 1; tmp[tpos] = b'0'; } else {
+    if whole == 0 {
+        tpos -= 1;
+        tmp[tpos] = b'0';
+    } else {
         let mut v = whole;
-        while v > 0 { tpos -= 1; tmp[tpos] = b'0' + (v % 10) as u8; v /= 10; }
+        while v > 0 {
+            tpos -= 1;
+            tmp[tpos] = b'0' + (v % 10) as u8;
+            v /= 10;
+        }
     }
     let int_len = 10 - tpos;
     buf[pos..pos + int_len].copy_from_slice(&tmp[tpos..10]);
     pos += int_len;
-    buf[pos] = b'.'; pos += 1;
-    buf[pos] = b'0' + frac as u8; pos += 1;
+    buf[pos] = b'.';
+    pos += 1;
+    buf[pos] = b'0' + frac as u8;
+    pos += 1;
     buf[pos..pos + 5].copy_from_slice(b" Mbit");
     pos += 5;
     core::str::from_utf8(&buf[..pos]).unwrap_or("?")
@@ -121,18 +142,32 @@ fn fetch_tasks(
         let mut name = [0u8; 24];
         name.copy_from_slice(&raw[off + 8..off + 32]);
         let name_len = name.iter().position(|&b| b == 0).unwrap_or(24);
-        let user_pages = u32::from_le_bytes([raw[off + 32], raw[off + 33], raw[off + 34], raw[off + 35]]);
-        let cpu_ticks = u32::from_le_bytes([raw[off + 36], raw[off + 37], raw[off + 38], raw[off + 39]]);
+        let user_pages =
+            u32::from_le_bytes([raw[off + 32], raw[off + 33], raw[off + 34], raw[off + 35]]);
+        let cpu_ticks =
+            u32::from_le_bytes([raw[off + 36], raw[off + 37], raw[off + 38], raw[off + 39]]);
         let uid = u16::from_le_bytes([raw[off + 56], raw[off + 57]]);
 
         // Network bytes (tx at offset 64, rx at offset 72)
         let net_tx = u64::from_le_bytes([
-            raw[off+64], raw[off+65], raw[off+66], raw[off+67],
-            raw[off+68], raw[off+69], raw[off+70], raw[off+71],
+            raw[off + 64],
+            raw[off + 65],
+            raw[off + 66],
+            raw[off + 67],
+            raw[off + 68],
+            raw[off + 69],
+            raw[off + 70],
+            raw[off + 71],
         ]);
         let net_rx = u64::from_le_bytes([
-            raw[off+72], raw[off+73], raw[off+74], raw[off+75],
-            raw[off+76], raw[off+77], raw[off+78], raw[off+79],
+            raw[off + 72],
+            raw[off + 73],
+            raw[off + 74],
+            raw[off + 75],
+            raw[off + 76],
+            raw[off + 77],
+            raw[off + 78],
+            raw[off + 79],
         ]);
         let net_total = net_tx.wrapping_add(net_rx);
 
@@ -151,13 +186,28 @@ fn fetch_tasks(
 
         // Network rate: delta bytes over REFRESH_MS → kbit/s
         let prev_net = prev.net_entries[..prev.count]
-            .iter().find(|e| e.0 == tid).map(|e| e.1).unwrap_or(net_total);
+            .iter()
+            .find(|e| e.0 == tid)
+            .map(|e| e.1)
+            .unwrap_or(net_total);
         let d_net = net_total.wrapping_sub(prev_net);
         let net_kbit = if d_net > 0 {
             (d_net * 8 / REFRESH_MS as u64).min(u32::MAX as u64) as u32
-        } else { 0 };
+        } else {
+            0
+        };
 
-        out[i] = TaskEntry { tid, name, name_len, state, priority: prio, uid, user_pages, cpu_pct_x10, net_kbit };
+        out[i] = TaskEntry {
+            tid,
+            name,
+            name_len,
+            state,
+            priority: prio,
+            uid,
+            user_pages,
+            cpu_pct_x10,
+            net_kbit,
+        };
     }
 
     // Save current ticks for next delta
@@ -165,14 +215,27 @@ fn fetch_tasks(
     for i in 0..n {
         let off = i * THREAD_ENTRY_SIZE;
         let tid = u32::from_le_bytes([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]);
-        let cpu_ticks = u32::from_le_bytes([raw[off + 36], raw[off + 37], raw[off + 38], raw[off + 39]]);
+        let cpu_ticks =
+            u32::from_le_bytes([raw[off + 36], raw[off + 37], raw[off + 38], raw[off + 39]]);
         let net_tx = u64::from_le_bytes([
-            raw[off+64], raw[off+65], raw[off+66], raw[off+67],
-            raw[off+68], raw[off+69], raw[off+70], raw[off+71],
+            raw[off + 64],
+            raw[off + 65],
+            raw[off + 66],
+            raw[off + 67],
+            raw[off + 68],
+            raw[off + 69],
+            raw[off + 70],
+            raw[off + 71],
         ]);
         let net_rx = u64::from_le_bytes([
-            raw[off+72], raw[off+73], raw[off+74], raw[off+75],
-            raw[off+76], raw[off+77], raw[off+78], raw[off+79],
+            raw[off + 72],
+            raw[off + 73],
+            raw[off + 74],
+            raw[off + 75],
+            raw[off + 76],
+            raw[off + 77],
+            raw[off + 78],
+            raw[off + 79],
         ]);
         prev.entries[i] = (tid, cpu_ticks);
         prev.net_entries[i] = (tid, net_tx.wrapping_add(net_rx));
@@ -234,12 +297,22 @@ fn main() {
         count: 0,
         prev_total: 0,
     };
-    let mut cpu_prev = CpuPrev { prev_total: 0, prev_idle: 0 };
+    let mut cpu_prev = CpuPrev {
+        prev_total: 0,
+        prev_idle: 0,
+    };
 
     // Default task entry for array init
     const EMPTY_TASK: TaskEntry = TaskEntry {
-        tid: 0, name: [0; 24], name_len: 0, state: 0,
-        priority: 0, uid: 0, user_pages: 0, cpu_pct_x10: 0, net_kbit: 0,
+        tid: 0,
+        name: [0; 24],
+        name_len: 0,
+        state: 0,
+        priority: 0,
+        uid: 0,
+        user_pages: 0,
+        cpu_pct_x10: 0,
+        net_kbit: 0,
     };
     let mut tasks = [EMPTY_TASK; MAX_TASKS];
 
@@ -266,7 +339,11 @@ fn main() {
             if !found && uid_cache_len < 16 {
                 let mut name_buf = [0u8; 16];
                 let nlen = anyos_std::process::getusername(uid, &mut name_buf);
-                let len = if nlen != u32::MAX && nlen > 0 { (nlen as u8).min(15) } else { 0 };
+                let len = if nlen != u32::MAX && nlen > 0 {
+                    (nlen as u8).min(15)
+                } else {
+                    0
+                };
                 uid_cache[uid_cache_len] = (uid, name_buf, len);
                 uid_cache_len += 1;
             }
@@ -292,7 +369,11 @@ fn main() {
         let heap_total = u32::from_le_bytes([mem_buf[12], mem_buf[13], mem_buf[14], mem_buf[15]]);
         let used_kb = total_frames.saturating_sub(free_frames) * 4;
         let total_kb = total_frames * 4;
-        let mem_pct = if total_kb > 0 { used_kb as u64 * 100 / total_kb as u64 } else { 0 };
+        let mem_pct = if total_kb > 0 {
+            used_kb as u64 * 100 / total_kb as u64
+        } else {
+            0
+        };
 
         // Uptime
         let ticks = anyos_std::sys::uptime();
@@ -349,12 +430,24 @@ fn main() {
         // Fixed columns before NAME: "TID"(5) + " "(1) + "USER"(10) + " "(1) + "NET"(9) + " "(1) + "PRI"(3) + " "(1)
         //   + "STATE"(8) + " "(1) + "CPU%"(5) + " "(1) + "MEM"(6) + " "(1) = 53 chars
         let name_col_width = term_cols.saturating_sub(53).max(4);
-        anyos_std::print!("{:>5} {:<10} {:>9} {:>3} {:<8} {:>5} {:>6} {}", "TID", "USER", "NET", "PRI", "STATE", "CPU%", "MEM", "NAME");
+        anyos_std::print!(
+            "{:>5} {:<10} {:>9} {:>3} {:<8} {:>5} {:>6} {}",
+            "TID",
+            "USER",
+            "NET",
+            "PRI",
+            "STATE",
+            "CPU%",
+            "MEM",
+            "NAME"
+        );
         anyos_std::println!("\x1B[K");
         line_count += 1;
         // Dynamic separator spanning the terminal width
         let sep_len = term_cols.min(256);
-        for _ in 0..sep_len { anyos_std::print!("-"); }
+        for _ in 0..sep_len {
+            anyos_std::print!("-");
+        }
         anyos_std::println!("\x1B[K");
         line_count += 1;
 
@@ -401,8 +494,17 @@ fn main() {
             let mut nbuf = [0u8; 16];
             let net_str = fmt_net_mbit(&mut nbuf, task.net_kbit);
 
-            anyos_std::print!("{:>5} {:<10} {:>9} {:>3} {:<8} {:>5} {:>6} {}",
-                task.tid, username, net_str, task.priority, state_str, cpu_str, mem_str, name);
+            anyos_std::print!(
+                "{:>5} {:<10} {:>9} {:>3} {:<8} {:>5} {:>6} {}",
+                task.tid,
+                username,
+                net_str,
+                task.priority,
+                state_str,
+                cpu_str,
+                mem_str,
+                name
+            );
             anyos_std::println!("\x1B[K");
             line_count += 1;
         }

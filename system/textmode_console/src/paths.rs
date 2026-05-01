@@ -4,9 +4,9 @@
 //! path manipulation logic in one place so it can be unit-tested and reused
 //! without pulling in the full shell context.
 
+use anyos_std::format;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::format;
 
 /// Resolve `rel` against `cwd` and return a canonical absolute path.
 ///
@@ -14,7 +14,9 @@ use anyos_std::format;
 ///   directly.
 /// - Relative paths are joined to `cwd` first, then normalised.
 pub fn resolve_path(cwd: &str, rel: &str) -> String {
-    if rel.starts_with('/') { return normalize_path(rel); }
+    if rel.starts_with('/') {
+        return normalize_path(rel);
+    }
     let base = if cwd.ends_with('/') {
         format!("{}{}", cwd, rel)
     } else {
@@ -31,12 +33,19 @@ pub fn normalize_path(path: &str) -> String {
     for seg in path.split('/') {
         match seg {
             "" | "." => {}
-            ".."     => { parts.pop(); }
-            s        => parts.push(s),
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
         }
     }
-    if parts.is_empty() { return String::from("/"); }
+    if parts.is_empty() {
+        return String::from("/");
+    }
     let mut out = String::new();
-    for p in &parts { out.push('/'); out.push_str(p); }
+    for p in &parts {
+        out.push('/');
+        out.push_str(p);
+    }
     out
 }

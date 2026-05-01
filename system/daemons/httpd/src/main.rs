@@ -3,12 +3,12 @@
 
 anyos_std::entry!(main);
 
+use anyos_std::fs;
 use anyos_std::ipc;
 use anyos_std::net;
-use anyos_std::process;
 use anyos_std::println;
-use anyos_std::fs;
-use anyos_std::{String, Vec, format, vec};
+use anyos_std::process;
+use anyos_std::{format, vec, String, Vec};
 use libconf::{ConfClient, ConfValue, NodeKind, RegistryScope};
 use libconf_schema::{default_bool, default_int, default_string, manifest, ServiceSchema};
 use libsvc::ServiceLifecycle;
@@ -346,7 +346,10 @@ fn parse_request(buf: &[u8], len: usize) -> Option<HttpRequest<'_>> {
     let mut host = "";
     for line in text.split('\n') {
         let line = line.trim_end_matches('\r');
-        if let Some(val) = line.strip_prefix("Host:").or_else(|| line.strip_prefix("host:")) {
+        if let Some(val) = line
+            .strip_prefix("Host:")
+            .or_else(|| line.strip_prefix("host:"))
+        {
             host = val.trim();
             // Strip port from host
             if let Some(colon) = host.rfind(':') {
@@ -438,7 +441,10 @@ fn send_error(sock: u32, code: u16, reason: &str) {
          Content-Length: {}\r\n\
          Server: {}\r\n\
          Connection: close\r\n\r\n",
-        code, reason, body.len(), SERVER_NAME
+        code,
+        reason,
+        body.len(),
+        SERVER_NAME
     );
     net::tcp_send(sock, header.as_bytes());
     net::tcp_send(sock, body.as_bytes());
@@ -457,7 +463,9 @@ fn send_redirect(sock: u32, location: &str) {
          Content-Length: {}\r\n\
          Server: {}\r\n\
          Connection: close\r\n\r\n",
-        location, body.len(), SERVER_NAME
+        location,
+        body.len(),
+        SERVER_NAME
     );
     net::tcp_send(sock, header.as_bytes());
     net::tcp_send(sock, body.as_bytes());
@@ -549,7 +557,8 @@ fn handle_request(sock: u32, sites: &[SiteConfig], port: u16) {
         }
         // If there's only one site on this port, always match
         // Otherwise match by host header
-        request.host.is_empty() || sites.iter().filter(|x| x.port == port).count() == 1
+        request.host.is_empty()
+            || sites.iter().filter(|x| x.port == port).count() == 1
             || request.host.eq_ignore_ascii_case(&s.name)
     });
 
@@ -733,11 +742,15 @@ fn main() {
                 root: s.root.clone(),
                 index_files: s.index_files.clone(),
                 enabled: s.enabled,
-                rewrites: s.rewrites.iter().map(|r| RewriteRule {
-                    pattern: r.pattern.clone(),
-                    target: r.target.clone(),
-                    is_prefix: r.is_prefix,
-                }).collect(),
+                rewrites: s
+                    .rewrites
+                    .iter()
+                    .map(|r| RewriteRule {
+                        pattern: r.pattern.clone(),
+                        target: r.target.clone(),
+                        is_prefix: r.is_prefix,
+                    })
+                    .collect(),
             })
             .collect();
 
@@ -804,11 +817,15 @@ fn main() {
                                     root: s.root.clone(),
                                     index_files: s.index_files.clone(),
                                     enabled: s.enabled,
-                                    rewrites: s.rewrites.iter().map(|r| RewriteRule {
-                                        pattern: r.pattern.clone(),
-                                        target: r.target.clone(),
-                                        is_prefix: r.is_prefix,
-                                    }).collect(),
+                                    rewrites: s
+                                        .rewrites
+                                        .iter()
+                                        .map(|r| RewriteRule {
+                                            pattern: r.pattern.clone(),
+                                            target: r.target.clone(),
+                                            is_prefix: r.is_prefix,
+                                        })
+                                        .collect(),
                                 })
                                 .collect();
 
@@ -842,8 +859,10 @@ fn main() {
         while i < workers.len() {
             let ret = process::try_waitpid(workers[i].tid);
             if ret != u32::MAX && ret != u32::MAX - 1 {
-                println!("httpd: worker for port {} (pid {}) exited (code {})",
-                    workers[i].port, workers[i].tid, ret);
+                println!(
+                    "httpd: worker for port {} (pid {}) exited (code {})",
+                    workers[i].port, workers[i].tid, ret
+                );
                 workers.remove(i);
             } else {
                 i += 1;

@@ -72,7 +72,11 @@ fn format_u32(buf: &mut [u8], val: u32, min_width: usize) -> usize {
 }
 
 fn to_lower(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
+    if b >= b'A' && b <= b'Z' {
+        b + 32
+    } else {
+        b
+    }
 }
 
 fn cmp_name_ci(a: &[u8], a_len: usize, b: &[u8], b_len: usize) -> core::cmp::Ordering {
@@ -80,8 +84,12 @@ fn cmp_name_ci(a: &[u8], a_len: usize, b: &[u8], b_len: usize) -> core::cmp::Ord
     for i in 0..min {
         let la = to_lower(a[i]);
         let lb = to_lower(b[i]);
-        if la < lb { return core::cmp::Ordering::Less; }
-        if la > lb { return core::cmp::Ordering::Greater; }
+        if la < lb {
+            return core::cmp::Ordering::Less;
+        }
+        if la > lb {
+            return core::cmp::Ordering::Greater;
+        }
     }
     a_len.cmp(&b_len)
 }
@@ -96,8 +104,17 @@ fn build_path(parent: &str, name: &str) -> anyos_std::String {
 }
 
 /// List the contents of a single directory, optionally recursing into subdirectories.
-fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
-                  human: bool, sort_size: bool, reverse: bool, recursive: bool, color: bool) {
+fn list_directory(
+    path: &str,
+    long: bool,
+    all: bool,
+    one_per_line: bool,
+    human: bool,
+    sort_size: bool,
+    reverse: bool,
+    recursive: bool,
+    color: bool,
+) {
     let mut buf = [0u8; 64 * 128];
     let count = anyos_std::fs::readdir(path, &mut buf);
 
@@ -138,16 +155,23 @@ fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
             (0, 0, 0)
         };
 
-        entries.push(Entry { name, name_len: nlen, size, entry_type, is_symlink, uid, gid, mode });
+        entries.push(Entry {
+            name,
+            name_len: nlen,
+            size,
+            entry_type,
+            is_symlink,
+            uid,
+            gid,
+            mode,
+        });
     }
 
     // Sort
     if sort_size {
         entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
     } else {
-        entries.sort_unstable_by(|a, b| {
-            cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len)
-        });
+        entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
     }
     if reverse {
         entries.reverse();
@@ -160,10 +184,22 @@ fn list_directory(path: &str, long: bool, all: bool, one_per_line: bool,
         for e in &entries {
             if e.entry_type == 1 {
                 let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("");
-                if name_str == "." || name_str == ".." { continue; }
+                if name_str == "." || name_str == ".." {
+                    continue;
+                }
                 let child = build_path(path, name_str);
                 anyos_std::println!("\n{}:", child);
-                list_directory(&child, long, all, one_per_line, human, sort_size, reverse, recursive, color);
+                list_directory(
+                    &child,
+                    long,
+                    all,
+                    one_per_line,
+                    human,
+                    sort_size,
+                    reverse,
+                    recursive,
+                    color,
+                );
             }
         }
     }
@@ -234,15 +270,30 @@ fn format_mode(buf: &mut [u8; 9], mode: u32) {
 
 /// Return the ANSI color prefix for an entry, or "" if color is off.
 fn entry_color(e: &Entry, color: bool) -> &'static str {
-    if !color { return ""; }
-    if e.is_symlink { return ANSI_CYAN; }
-    if e.entry_type == 1 { return ANSI_BLUE; }
-    if e.mode & 0o111 != 0 { return ANSI_GREEN; }
+    if !color {
+        return "";
+    }
+    if e.is_symlink {
+        return ANSI_CYAN;
+    }
+    if e.entry_type == 1 {
+        return ANSI_BLUE;
+    }
+    if e.mode & 0o111 != 0 {
+        return ANSI_GREEN;
+    }
     ""
 }
 
 /// Print a list of entries in the requested format.
-fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: bool, human: bool, color: bool) {
+fn print_entries(
+    entries: &[Entry],
+    base_path: &str,
+    long: bool,
+    one_per_line: bool,
+    human: bool,
+    color: bool,
+) {
     if long {
         // Pre-load group list once for all entries
         let mut groups_raw = [0u8; 1024];
@@ -250,7 +301,15 @@ fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: b
         let groups_len = groups_len.min(groups_raw.len());
 
         for e in entries {
-            let type_char = if e.is_symlink { 'l' } else { match e.entry_type { 1 => 'd', 2 => 'c', _ => '-' } };
+            let type_char = if e.is_symlink {
+                'l'
+            } else {
+                match e.entry_type {
+                    1 => 'd',
+                    2 => 'c',
+                    _ => '-',
+                }
+            };
             let name_str = core::str::from_utf8(&e.name[..e.name_len]).unwrap_or("???");
             let col = entry_color(e, color);
             let rst = if col.is_empty() { "" } else { ANSI_RESET };
@@ -275,18 +334,29 @@ fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: b
                 let mut full_len = 0usize;
                 let path_bytes = base_path.as_bytes();
                 for &b in path_bytes {
-                    if full_len < 511 { full[full_len] = b; full_len += 1; }
+                    if full_len < 511 {
+                        full[full_len] = b;
+                        full_len += 1;
+                    }
                 }
                 if full_len > 0 && full[full_len - 1] != b'/' {
-                    if full_len < 511 { full[full_len] = b'/'; full_len += 1; }
+                    if full_len < 511 {
+                        full[full_len] = b'/';
+                        full_len += 1;
+                    }
                 }
                 for j in 0..e.name_len {
-                    if full_len < 511 { full[full_len] = e.name[j]; full_len += 1; }
+                    if full_len < 511 {
+                        full[full_len] = e.name[j];
+                        full_len += 1;
+                    }
                 }
                 full[full_len] = 0;
                 let full_str = core::str::from_utf8(&full[..full_len]).unwrap_or("");
                 let n = anyos_std::fs::readlink(full_str, &mut link_target);
-                if n != u32::MAX { link_len = n as usize; }
+                if n != u32::MAX {
+                    link_len = n as usize;
+                }
             }
 
             if human {
@@ -295,16 +365,58 @@ fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: b
                 let size_str = core::str::from_utf8(&sbuf[..slen]).unwrap_or("?");
                 if link_len > 0 {
                     let tgt = core::str::from_utf8(&link_target[..link_len]).unwrap_or("?");
-                    anyos_std::println!("{}{} {:<8} {:<8} {:>6}  {}{}{} -> {}", type_char, mode_str, user_name, group_name, size_str, col, name_str, rst, tgt);
+                    anyos_std::println!(
+                        "{}{} {:<8} {:<8} {:>6}  {}{}{} -> {}",
+                        type_char,
+                        mode_str,
+                        user_name,
+                        group_name,
+                        size_str,
+                        col,
+                        name_str,
+                        rst,
+                        tgt
+                    );
                 } else {
-                    anyos_std::println!("{}{} {:<8} {:<8} {:>6}  {}{}{}", type_char, mode_str, user_name, group_name, size_str, col, name_str, rst);
+                    anyos_std::println!(
+                        "{}{} {:<8} {:<8} {:>6}  {}{}{}",
+                        type_char,
+                        mode_str,
+                        user_name,
+                        group_name,
+                        size_str,
+                        col,
+                        name_str,
+                        rst
+                    );
                 }
             } else {
                 if link_len > 0 {
                     let tgt = core::str::from_utf8(&link_target[..link_len]).unwrap_or("?");
-                    anyos_std::println!("{}{} {:<8} {:<8} {:>8}  {}{}{} -> {}", type_char, mode_str, user_name, group_name, e.size, col, name_str, rst, tgt);
+                    anyos_std::println!(
+                        "{}{} {:<8} {:<8} {:>8}  {}{}{} -> {}",
+                        type_char,
+                        mode_str,
+                        user_name,
+                        group_name,
+                        e.size,
+                        col,
+                        name_str,
+                        rst,
+                        tgt
+                    );
                 } else {
-                    anyos_std::println!("{}{} {:<8} {:<8} {:>8}  {}{}{}", type_char, mode_str, user_name, group_name, e.size, col, name_str, rst);
+                    anyos_std::println!(
+                        "{}{} {:<8} {:<8} {:>8}  {}{}{}",
+                        type_char,
+                        mode_str,
+                        user_name,
+                        group_name,
+                        e.size,
+                        col,
+                        name_str,
+                        rst
+                    );
                 }
             }
         }
@@ -333,15 +445,28 @@ fn print_entries(entries: &[Entry], base_path: &str, long: bool, one_per_line: b
 }
 
 /// List paths as entries without descending into directories (for -d flag).
-fn list_as_entries(paths: &[&str], long: bool, one_per_line: bool,
-                   human: bool, sort_size: bool, reverse: bool, color: bool) {
+fn list_as_entries(
+    paths: &[&str],
+    long: bool,
+    one_per_line: bool,
+    human: bool,
+    sort_size: bool,
+    reverse: bool,
+    color: bool,
+) {
     let mut entries = anyos_std::Vec::new();
     for &p in paths {
         let mut stat_buf = [0u32; 7];
         let ret = anyos_std::fs::stat(p, &mut stat_buf);
         let (etype, size, is_sym, uid, gid, mode) = if ret == 0 {
-            (stat_buf[0] as u8, stat_buf[1], stat_buf[2] & 1 != 0,
-             stat_buf[3] as u16, stat_buf[4] as u16, stat_buf[5])
+            (
+                stat_buf[0] as u8,
+                stat_buf[1],
+                stat_buf[2] & 1 != 0,
+                stat_buf[3] as u16,
+                stat_buf[4] as u16,
+                stat_buf[5],
+            )
         } else {
             anyos_std::println!("ls: cannot access '{}': No such file or directory", p);
             continue;
@@ -350,20 +475,38 @@ fn list_as_entries(paths: &[&str], long: bool, one_per_line: bool,
         let mut name = [0u8; 56];
         let nlen = p.len().min(56);
         name[..nlen].copy_from_slice(&p.as_bytes()[..nlen]);
-        entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym, uid, gid, mode });
+        entries.push(Entry {
+            name,
+            name_len: nlen,
+            size,
+            entry_type: etype,
+            is_symlink: is_sym,
+            uid,
+            gid,
+            mode,
+        });
     }
     if sort_size {
         entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
     } else {
         entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
     }
-    if reverse { entries.reverse(); }
+    if reverse {
+        entries.reverse();
+    }
     print_entries(&entries, ".", long, one_per_line, human, color);
 }
 
 /// List individual files (from glob expansion or explicit file args).
-fn list_files(args: &anyos_std::args::ParsedArgs, long: bool, one_per_line: bool,
-              human: bool, sort_size: bool, reverse: bool, color: bool) {
+fn list_files(
+    args: &anyos_std::args::ParsedArgs,
+    long: bool,
+    one_per_line: bool,
+    human: bool,
+    sort_size: bool,
+    reverse: bool,
+    color: bool,
+) {
     let mut entries = anyos_std::Vec::new();
 
     for idx in 0..args.pos_count {
@@ -372,8 +515,14 @@ fn list_files(args: &anyos_std::args::ParsedArgs, long: bool, one_per_line: bool
         let mut stat_buf = [0u32; 7];
         let ret = anyos_std::fs::stat(name_str, &mut stat_buf);
         let (etype, size, is_sym, uid, gid, mode) = if ret == 0 {
-            (stat_buf[0] as u8, stat_buf[1], stat_buf[2] & 1 != 0,
-             stat_buf[3] as u16, stat_buf[4] as u16, stat_buf[5])
+            (
+                stat_buf[0] as u8,
+                stat_buf[1],
+                stat_buf[2] & 1 != 0,
+                stat_buf[3] as u16,
+                stat_buf[4] as u16,
+                stat_buf[5],
+            )
         } else {
             (0u8, 0u32, false, 0u16, 0u16, 0u32)
         };
@@ -390,20 +539,30 @@ fn list_files(args: &anyos_std::args::ParsedArgs, long: bool, one_per_line: bool
         name[..nlen].copy_from_slice(&display_name.as_bytes()[..nlen]);
 
         if ret != 0 {
-            anyos_std::println!("ls: cannot access '{}': No such file or directory", name_str);
+            anyos_std::println!(
+                "ls: cannot access '{}': No such file or directory",
+                name_str
+            );
             continue;
         }
 
-        entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym, uid, gid, mode });
+        entries.push(Entry {
+            name,
+            name_len: nlen,
+            size,
+            entry_type: etype,
+            is_symlink: is_sym,
+            uid,
+            gid,
+            mode,
+        });
     }
 
     // Sort
     if sort_size {
         entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
     } else {
-        entries.sort_unstable_by(|a, b| {
-            cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len)
-        });
+        entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
     }
     if reverse {
         entries.reverse();
@@ -413,9 +572,9 @@ fn list_files(args: &anyos_std::args::ParsedArgs, long: bool, one_per_line: bool
 }
 
 // ANSI color codes for --color output
-const ANSI_BLUE: &str = "\x1B[1;34m";    // directories
-const ANSI_CYAN: &str = "\x1B[1;36m";    // symlinks
-const ANSI_GREEN: &str = "\x1B[1;32m";   // executables
+const ANSI_BLUE: &str = "\x1B[1;34m"; // directories
+const ANSI_CYAN: &str = "\x1B[1;36m"; // symlinks
+const ANSI_GREEN: &str = "\x1B[1;32m"; // executables
 const ANSI_RESET: &str = "\x1B[0m";
 
 fn main() {
@@ -443,9 +602,14 @@ fn main() {
             if i + 7 <= src.len() && &src[i..i + 7] == b"--color" {
                 i += 7;
                 // skip trailing space
-                if i < src.len() && src[i] == b' ' { i += 1; }
+                if i < src.len() && src[i] == b' ' {
+                    i += 1;
+                }
             } else {
-                if dst < cleaned_buf.len() { cleaned_buf[dst] = src[i]; dst += 1; }
+                if dst < cleaned_buf.len() {
+                    cleaned_buf[dst] = src[i];
+                    dst += 1;
+                }
                 i += 1;
             }
         }
@@ -462,14 +626,26 @@ fn main() {
     let sort_size = args.has(b'S');
     let reverse = args.has(b'r');
     let dir_itself = args.has(b'd'); // -d: list directories themselves, not contents
-    let recursive = args.has(b'R');  // -R: list subdirectories recursively
+    let recursive = args.has(b'R'); // -R: list subdirectories recursively
 
     if args.pos_count == 0 {
         if dir_itself {
             list_as_entries(&["."], long, one_per_line, human, sort_size, reverse, color);
         } else {
-            if recursive { anyos_std::println!(".:");}
-            list_directory(".", long, all, one_per_line, human, sort_size, reverse, recursive, color);
+            if recursive {
+                anyos_std::println!(".:");
+            }
+            list_directory(
+                ".",
+                long,
+                all,
+                one_per_line,
+                human,
+                sort_size,
+                reverse,
+                recursive,
+                color,
+            );
         }
     } else if dir_itself {
         let mut paths: anyos_std::Vec<&str> = anyos_std::Vec::new();
@@ -482,8 +658,20 @@ fn main() {
         let mut buf = [0u8; 64 * 4];
         let count = anyos_std::fs::readdir(path, &mut buf);
         if count != u32::MAX {
-            if recursive { anyos_std::println!("{}:", path); }
-            list_directory(path, long, all, one_per_line, human, sort_size, reverse, recursive, color);
+            if recursive {
+                anyos_std::println!("{}:", path);
+            }
+            list_directory(
+                path,
+                long,
+                all,
+                one_per_line,
+                human,
+                sort_size,
+                reverse,
+                recursive,
+                color,
+            );
         } else {
             list_files(&args, long, one_per_line, human, sort_size, reverse, color);
         }
@@ -508,10 +696,19 @@ fn main() {
                 let mut stat_buf = [0u32; 7];
                 let ret = anyos_std::fs::stat(name_str, &mut stat_buf);
                 let (etype, size, is_sym, uid, gid, mode) = if ret == 0 {
-                    (stat_buf[0] as u8, stat_buf[1], stat_buf[2] & 1 != 0,
-                     stat_buf[3] as u16, stat_buf[4] as u16, stat_buf[5])
+                    (
+                        stat_buf[0] as u8,
+                        stat_buf[1],
+                        stat_buf[2] & 1 != 0,
+                        stat_buf[3] as u16,
+                        stat_buf[4] as u16,
+                        stat_buf[5],
+                    )
                 } else {
-                    anyos_std::println!("ls: cannot access '{}': No such file or directory", name_str);
+                    anyos_std::println!(
+                        "ls: cannot access '{}': No such file or directory",
+                        name_str
+                    );
                     continue;
                 };
                 let display = if let Some(pos) = name_str.rfind('/') {
@@ -522,14 +719,26 @@ fn main() {
                 let mut name = [0u8; 56];
                 let nlen = display.len().min(56);
                 name[..nlen].copy_from_slice(&display.as_bytes()[..nlen]);
-                entries.push(Entry { name, name_len: nlen, size, entry_type: etype, is_symlink: is_sym, uid, gid, mode });
+                entries.push(Entry {
+                    name,
+                    name_len: nlen,
+                    size,
+                    entry_type: etype,
+                    is_symlink: is_sym,
+                    uid,
+                    gid,
+                    mode,
+                });
             }
             if sort_size {
                 entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
             } else {
-                entries.sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
+                entries
+                    .sort_unstable_by(|a, b| cmp_name_ci(&a.name, a.name_len, &b.name, b.name_len));
             }
-            if reverse { entries.reverse(); }
+            if reverse {
+                entries.reverse();
+            }
             print_entries(&entries, ".", long, one_per_line, human, color);
         }
 
@@ -540,7 +749,17 @@ fn main() {
             if dirs.len() > 1 || !files.is_empty() || recursive {
                 anyos_std::println!("{}:", dir);
             }
-            list_directory(dir, long, all, one_per_line, human, sort_size, reverse, recursive, color);
+            list_directory(
+                dir,
+                long,
+                all,
+                one_per_line,
+                human,
+                sort_size,
+                reverse,
+                recursive,
+                color,
+            );
         }
     }
 }

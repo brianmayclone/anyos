@@ -7,20 +7,20 @@ use alloc::vec::Vec;
 use libanyui_client as ui;
 use ui::Widget;
 
-mod types;
-mod module_loader;
 mod layout;
+mod module_loader;
+mod page_apps;
 mod page_dashboard;
-mod page_general;
-mod page_profile;
+mod page_devices;
 mod page_display;
 mod page_dock;
-mod page_sound;
-mod page_apps;
-mod page_devices;
+mod page_general;
 mod page_keyboard;
 mod page_network;
+mod page_profile;
+mod page_sound;
 mod page_update;
+mod types;
 
 use types::*;
 
@@ -199,15 +199,13 @@ fn main() {
     // ── Menu bar ─────────────────────────────────────────────────
     let mut mb = ui::MenuBarBuilder::new()
         .menu(t("File"))
-            .item(1, t("Quit"), 0)
+        .item(1, t("Quit"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = ui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => ui::quit(),
-            _ => {}
-        }
+    menu.on_item(|e| match e.item_id {
+        1 => ui::quit(),
+        _ => {}
     });
 
     // Build the first page (Dashboard)

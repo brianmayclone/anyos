@@ -114,10 +114,7 @@ pub enum Stmt {
     Debugger,
 
     /// With statement: `with (expr) stmt`
-    With {
-        object: Expr,
-        body: Box<Stmt>,
-    },
+    With { object: Expr, body: Box<Stmt> },
 
     /// Import declaration: `import { a, b } from 'module'`
     Import {
@@ -317,10 +314,7 @@ pub enum Expr {
     OptionalChain { object: Box<Expr>, property: String },
 
     /// Optional computed chaining: `a?.[expr]`
-    OptionalIndex {
-        object: Box<Expr>,
-        index: Box<Expr>,
-    },
+    OptionalIndex { object: Box<Expr>, index: Box<Expr> },
 
     /// Optional call: `a?.(args)`
     OptionalCall {

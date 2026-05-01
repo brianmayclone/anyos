@@ -35,12 +35,30 @@ struct PermGroup {
 }
 
 const PERM_GROUPS: &[PermGroup] = &[
-    PermGroup { mask: CAP_FILESYSTEM, name: "Files & Storage" },
-    PermGroup { mask: CAP_NETWORK, name: "Internet & Network" },
-    PermGroup { mask: CAP_AUDIO, name: "Audio" },
-    PermGroup { mask: CAP_DISPLAY | CAP_COMPOSITOR, name: "Display" },
-    PermGroup { mask: CAP_DEVICE, name: "Devices" },
-    PermGroup { mask: CAP_PROCESS | CAP_SYSTEM, name: "System" },
+    PermGroup {
+        mask: CAP_FILESYSTEM,
+        name: "Files & Storage",
+    },
+    PermGroup {
+        mask: CAP_NETWORK,
+        name: "Internet & Network",
+    },
+    PermGroup {
+        mask: CAP_AUDIO,
+        name: "Audio",
+    },
+    PermGroup {
+        mask: CAP_DISPLAY | CAP_COMPOSITOR,
+        name: "Display",
+    },
+    PermGroup {
+        mask: CAP_DEVICE,
+        name: "Devices",
+    },
+    PermGroup {
+        mask: CAP_PROCESS | CAP_SYSTEM,
+        name: "System",
+    },
 ];
 
 // Note: PERM_GROUPS names are translated at the point of use via i18n::t()
@@ -69,7 +87,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_color(layout::bg());
 
     // ── Page header ─────────────────────────────────────────────────────
-    layout::build_page_header(&panel, i18n::t("Apps"), i18n::t("Manage installed applications and permissions"));
+    layout::build_page_header(
+        &panel,
+        i18n::t("Apps"),
+        i18n::t("Manage installed applications and permissions"),
+    );
 
     // ── Scan apps ───────────────────────────────────────────────────────
     let apps = scan_apps();

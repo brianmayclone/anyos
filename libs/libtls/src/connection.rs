@@ -1,12 +1,14 @@
 //! TLS connection state machine.
 
-use alloc::vec::Vec;
-use crate::error::TlsError;
 use crate::cipher_suite::CipherSuite;
-use crate::record::{ContentType, ProtocolVersion, RecordHeader, MAX_RECORD_PAYLOAD, RECORD_HEADER_SIZE};
-use crate::crypto::{gcm, chacha20poly1305};
-use crate::handshake::{tls13, tls12, extensions, NegotiatedVersion};
-use crate::{transport_send, transport_recv, transport_sleep, transport_random};
+use crate::crypto::{chacha20poly1305, gcm};
+use crate::error::TlsError;
+use crate::handshake::{extensions, tls12, tls13, NegotiatedVersion};
+use crate::record::{
+    ContentType, ProtocolVersion, RecordHeader, MAX_RECORD_PAYLOAD, RECORD_HEADER_SIZE,
+};
+use crate::{transport_random, transport_recv, transport_send, transport_sleep};
+use alloc::vec::Vec;
 
 /// Connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,8 +75,13 @@ impl TlsConnection {
             NegotiatedVersion::Tls13 => {
                 // Continue TLS 1.3 handshake from the ServerHello we already received.
                 let hs = do_tls13_continuation(
-                    fd, &private_key, &public_key, &client_random,
-                    &client_hello, &server_hello, host,
+                    fd,
+                    &private_key,
+                    &public_key,
+                    &client_random,
+                    &client_hello,
+                    &server_hello,
+                    host,
                 )?;
 
                 Ok(Self {
@@ -102,7 +109,9 @@ impl TlsConnection {
                     &client_hello,
                     &server_hello,
                     cipher_suite,
-                    transport_send, transport_recv, transport_random,
+                    transport_send,
+                    transport_recv,
+                    transport_random,
                 )?;
 
                 Ok(Self {
@@ -137,21 +146,21 @@ impl TlsConnection {
             let chunk = &data[offset..offset + chunk_len];
 
             let record = match self.version {
-                NegotiatedVersion::Tls13 => {
-                    tls13::encrypt_record(
-                        self.cipher_suite,
-                        &self.client_key, &self.client_iv,
-                        self.send_seq, chunk,
-                        ContentType::ApplicationData as u8,
-                    )
-                }
-                NegotiatedVersion::Tls12 => {
-                    encrypt_tls12_app_record(
-                        self.cipher_suite,
-                        &self.client_key, &self.client_iv,
-                        self.send_seq, chunk,
-                    )
-                }
+                NegotiatedVersion::Tls13 => tls13::encrypt_record(
+                    self.cipher_suite,
+                    &self.client_key,
+                    &self.client_iv,
+                    self.send_seq,
+                    chunk,
+                    ContentType::ApplicationData as u8,
+                ),
+                NegotiatedVersion::Tls12 => encrypt_tls12_app_record(
+                    self.cipher_suite,
+                    &self.client_key,
+                    &self.client_iv,
+                    self.send_seq,
+                    chunk,
+                ),
             };
 
             if send_all(self.fd, &record).is_err() {
@@ -217,8 +226,11 @@ impl TlsConnection {
             let pt = match self.version {
                 NegotiatedVersion::Tls13 => {
                     match decrypt_tls13_app_record(
-                        self.cipher_suite, &self.server_key, &self.server_iv,
-                        self.recv_seq, &record_body,
+                        self.cipher_suite,
+                        &self.server_key,
+                        &self.server_iv,
+                        self.recv_seq,
+                        &record_body,
                     ) {
                         Ok(pt) => pt,
                         Err(_) => return -1,
@@ -226,8 +238,12 @@ impl TlsConnection {
                 }
                 NegotiatedVersion::Tls12 => {
                     match decrypt_tls12_record(
-                        self.cipher_suite, &self.server_key, &self.server_iv,
-                        self.recv_seq, header.content_type, &record_body,
+                        self.cipher_suite,
+                        &self.server_key,
+                        &self.server_iv,
+                        self.recv_seq,
+                        header.content_type,
+                        &record_body,
                     ) {
                         Ok(pt) => pt,
                         Err(_) => return -1,
@@ -263,8 +279,10 @@ impl TlsConnection {
                 NegotiatedVersion::Tls13 => {
                     let record = tls13::encrypt_record(
                         self.cipher_suite,
-                        &self.client_key, &self.client_iv,
-                        self.send_seq, &alert,
+                        &self.client_key,
+                        &self.client_iv,
+                        self.send_seq,
+                        &alert,
                         ContentType::Alert as u8,
                     );
                     let _ = transport_send(self.fd, &record);
@@ -450,12 +468,33 @@ fn do_tls13_continuation(
     let derived1 = derive_secret(cipher_suite, &early_secret, b"derived", &empty_hash);
     let handshake_secret = hkdf_extract(cipher_suite, &derived1, &shared_secret);
 
-    let s_hs_secret = derive_secret(cipher_suite, &handshake_secret, b"s hs traffic", &transcript_hash);
-    let c_hs_secret = derive_secret(cipher_suite, &handshake_secret, b"c hs traffic", &transcript_hash);
+    let s_hs_secret = derive_secret(
+        cipher_suite,
+        &handshake_secret,
+        b"s hs traffic",
+        &transcript_hash,
+    );
+    let c_hs_secret = derive_secret(
+        cipher_suite,
+        &handshake_secret,
+        b"c hs traffic",
+        &transcript_hash,
+    );
 
-    let s_hs_key = hkdf_expand_label(cipher_suite, &s_hs_secret, b"key", &[], cipher_suite.key_len());
-    let s_hs_iv = hkdf_expand_label(cipher_suite, &s_hs_secret, b"iv", &[], cipher_suite.iv_len());
-
+    let s_hs_key = hkdf_expand_label(
+        cipher_suite,
+        &s_hs_secret,
+        b"key",
+        &[],
+        cipher_suite.key_len(),
+    );
+    let s_hs_iv = hkdf_expand_label(
+        cipher_suite,
+        &s_hs_secret,
+        b"iv",
+        &[],
+        cipher_suite.iv_len(),
+    );
 
     // Receive encrypted server handshake messages
     let mut server_seq: u64 = 0;
@@ -477,7 +516,8 @@ fn do_tls13_continuation(
             continue; // Ignore CCS in TLS 1.3
         }
 
-        let plaintext = decrypt_tls13_record_raw(cipher_suite, &s_hs_key, &s_hs_iv, server_seq, &record_body)?;
+        let plaintext =
+            decrypt_tls13_record_raw(cipher_suite, &s_hs_key, &s_hs_iv, server_seq, &record_body)?;
         server_seq += 1;
 
         if plaintext.is_empty() {
@@ -490,18 +530,22 @@ fn do_tls13_continuation(
         if real_ct == ContentType::Handshake as u8 {
             let mut pos = 0;
             while pos < msg_data.len() {
-                if pos + 4 > msg_data.len() { break; }
+                if pos + 4 > msg_data.len() {
+                    break;
+                }
                 let msg_type = msg_data[pos];
                 let msg_len = ((msg_data[pos + 1] as usize) << 16)
                     | ((msg_data[pos + 2] as usize) << 8)
                     | (msg_data[pos + 3] as usize);
                 let msg_end = pos + 4 + msg_len;
-                if msg_end > msg_data.len() { break; }
-
+                if msg_end > msg_data.len() {
+                    break;
+                }
 
                 transcript.extend_from_slice(&msg_data[pos..msg_end]);
 
-                if msg_type == 20 { // Finished
+                if msg_type == 20 {
+                    // Finished
                     server_finished_received = true;
                 }
                 pos = msg_end;
@@ -513,8 +557,20 @@ fn do_tls13_continuation(
 
     // Send client Finished
     let transcript_hash_finished = compute_hash(&transcript, cipher_suite);
-    let c_hs_key = hkdf_expand_label(cipher_suite, &c_hs_secret, b"key", &[], cipher_suite.key_len());
-    let c_hs_iv = hkdf_expand_label(cipher_suite, &c_hs_secret, b"iv", &[], cipher_suite.iv_len());
+    let c_hs_key = hkdf_expand_label(
+        cipher_suite,
+        &c_hs_secret,
+        b"key",
+        &[],
+        cipher_suite.key_len(),
+    );
+    let c_hs_iv = hkdf_expand_label(
+        cipher_suite,
+        &c_hs_secret,
+        b"iv",
+        &[],
+        cipher_suite.iv_len(),
+    );
 
     let finished_key = hkdf_expand_label(cipher_suite, &c_hs_secret, b"finished", &[], hash_len);
     let verify_data = compute_hmac(cipher_suite, &finished_key, &transcript_hash_finished);
@@ -527,7 +583,14 @@ fn do_tls13_continuation(
     finished_msg.push(vlen as u8);
     finished_msg.extend_from_slice(&verify_data);
 
-    let encrypted = tls13::encrypt_record(cipher_suite, &c_hs_key, &c_hs_iv, 0, &finished_msg, ContentType::Handshake as u8);
+    let encrypted = tls13::encrypt_record(
+        cipher_suite,
+        &c_hs_key,
+        &c_hs_iv,
+        0,
+        &finished_msg,
+        ContentType::Handshake as u8,
+    );
     send_all(fd, &encrypted)?;
 
     // Derive application traffic secrets BEFORE adding client Finished to transcript.
@@ -540,14 +603,36 @@ fn do_tls13_continuation(
     let derived2 = derive_secret(cipher_suite, &handshake_secret, b"derived", &empty_hash);
     let master_secret = hkdf_extract(cipher_suite, &derived2, &zero_key);
 
-    let c_app = derive_secret(cipher_suite, &master_secret, b"c ap traffic", &transcript_hash_for_app);
-    let s_app = derive_secret(cipher_suite, &master_secret, b"s ap traffic", &transcript_hash_for_app);
+    let c_app = derive_secret(
+        cipher_suite,
+        &master_secret,
+        b"c ap traffic",
+        &transcript_hash_for_app,
+    );
+    let s_app = derive_secret(
+        cipher_suite,
+        &master_secret,
+        b"s ap traffic",
+        &transcript_hash_for_app,
+    );
 
     Ok(tls13::Tls13Handshake {
         cipher_suite,
-        client_app_key: hkdf_expand_label(cipher_suite, &c_app, b"key", &[], cipher_suite.key_len()),
+        client_app_key: hkdf_expand_label(
+            cipher_suite,
+            &c_app,
+            b"key",
+            &[],
+            cipher_suite.key_len(),
+        ),
         client_app_iv: hkdf_expand_label(cipher_suite, &c_app, b"iv", &[], cipher_suite.iv_len()),
-        server_app_key: hkdf_expand_label(cipher_suite, &s_app, b"key", &[], cipher_suite.key_len()),
+        server_app_key: hkdf_expand_label(
+            cipher_suite,
+            &s_app,
+            b"key",
+            &[],
+            cipher_suite.key_len(),
+        ),
         server_app_iv: hkdf_expand_label(cipher_suite, &s_app, b"iv", &[], cipher_suite.iv_len()),
     })
 }
@@ -604,7 +689,9 @@ fn compute_hmac(suite: CipherSuite, key: &[u8], data: &[u8]) -> Vec<u8> {
 
 fn hkdf_extract(suite: CipherSuite, salt: &[u8], ikm: &[u8]) -> Vec<u8> {
     match suite {
-        CipherSuite::Aes256GcmSha384 => crate::crypto::hkdf::hkdf_extract_sha384(salt, ikm).to_vec(),
+        CipherSuite::Aes256GcmSha384 => {
+            crate::crypto::hkdf::hkdf_extract_sha384(salt, ikm).to_vec()
+        }
         _ => crate::crypto::hkdf::hkdf_extract_sha256(salt, ikm).to_vec(),
     }
 }
@@ -612,16 +699,26 @@ fn hkdf_extract(suite: CipherSuite, salt: &[u8], ikm: &[u8]) -> Vec<u8> {
 fn derive_secret(suite: CipherSuite, secret: &[u8], label: &[u8], hash: &[u8]) -> Vec<u8> {
     let mut out = alloc::vec![0u8; suite.hash_len()];
     match suite {
-        CipherSuite::Aes256GcmSha384 => crate::crypto::hkdf::tls13_hkdf_expand_label_sha384(secret, label, hash, &mut out),
+        CipherSuite::Aes256GcmSha384 => {
+            crate::crypto::hkdf::tls13_hkdf_expand_label_sha384(secret, label, hash, &mut out)
+        }
         _ => crate::crypto::hkdf::tls13_hkdf_expand_label_sha256(secret, label, hash, &mut out),
     }
     out
 }
 
-fn hkdf_expand_label(suite: CipherSuite, secret: &[u8], label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
+fn hkdf_expand_label(
+    suite: CipherSuite,
+    secret: &[u8],
+    label: &[u8],
+    context: &[u8],
+    length: usize,
+) -> Vec<u8> {
     let mut out = alloc::vec![0u8; length];
     match suite {
-        CipherSuite::Aes256GcmSha384 => crate::crypto::hkdf::tls13_hkdf_expand_label_sha384(secret, label, context, &mut out),
+        CipherSuite::Aes256GcmSha384 => {
+            crate::crypto::hkdf::tls13_hkdf_expand_label_sha384(secret, label, context, &mut out)
+        }
         _ => crate::crypto::hkdf::tls13_hkdf_expand_label_sha256(secret, label, context, &mut out),
     }
     out
@@ -640,7 +737,13 @@ fn build_nonce(iv: &[u8], seq: u64) -> [u8; 12] {
 
 /// Decrypt a TLS 1.3 record and return the plaintext WITH the content type
 /// byte still at the end. Used by both handshake and application data paths.
-fn decrypt_tls13_record_raw(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, ciphertext: &[u8]) -> Result<Vec<u8>, TlsError> {
+fn decrypt_tls13_record_raw(
+    suite: CipherSuite,
+    key: &[u8],
+    iv: &[u8],
+    seq: u64,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, TlsError> {
     if ciphertext.len() < 17 {
         // Need at least 1 byte plaintext + 16 byte tag
         return Err(TlsError::DecryptionFailed);
@@ -669,7 +772,13 @@ fn decrypt_tls13_record_raw(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64,
 /// Decrypt a TLS 1.3 application-data record.
 /// Returns only ApplicationData content. Post-handshake messages
 /// (NewSessionTicket etc.) return empty Vec to signal "read next record".
-fn decrypt_tls13_app_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, ciphertext: &[u8]) -> Result<Vec<u8>, TlsError> {
+fn decrypt_tls13_app_record(
+    suite: CipherSuite,
+    key: &[u8],
+    iv: &[u8],
+    seq: u64,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, TlsError> {
     let mut data = decrypt_tls13_record_raw(suite, key, iv, seq, ciphertext)?;
     if data.is_empty() {
         return Ok(Vec::new());
@@ -691,7 +800,14 @@ fn decrypt_tls13_app_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64,
     }
 }
 
-fn decrypt_tls12_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, content_type: u8, record_body: &[u8]) -> Result<Vec<u8>, TlsError> {
+fn decrypt_tls12_record(
+    suite: CipherSuite,
+    key: &[u8],
+    iv: &[u8],
+    seq: u64,
+    content_type: u8,
+    record_body: &[u8],
+) -> Result<Vec<u8>, TlsError> {
     // TLS 1.2 GCM: explicit_nonce(8) + ciphertext + tag(16)
     if record_body.len() < 8 + 16 {
         return Err(TlsError::DecryptionFailed);
@@ -711,7 +827,8 @@ fn decrypt_tls12_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, con
     let mut aad = [0u8; 13];
     aad[..8].copy_from_slice(&seq.to_be_bytes());
     aad[8] = content_type;
-    aad[9] = 0x03; aad[10] = 0x03;
+    aad[9] = 0x03;
+    aad[10] = 0x03;
     aad[11] = (pt_len >> 8) as u8;
     aad[12] = pt_len as u8;
 
@@ -722,7 +839,13 @@ fn decrypt_tls12_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, con
     Ok(data)
 }
 
-fn encrypt_tls12_app_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, plaintext: &[u8]) -> Vec<u8> {
+fn encrypt_tls12_app_record(
+    suite: CipherSuite,
+    key: &[u8],
+    iv: &[u8],
+    seq: u64,
+    plaintext: &[u8],
+) -> Vec<u8> {
     let explicit_nonce = seq.to_be_bytes();
     let mut nonce = [0u8; 12];
     nonce[..4].copy_from_slice(&iv[..iv.len().min(4)]);
@@ -732,7 +855,8 @@ fn encrypt_tls12_app_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64,
     let mut aad = [0u8; 13];
     aad[..8].copy_from_slice(&seq.to_be_bytes());
     aad[8] = ContentType::ApplicationData as u8;
-    aad[9] = 0x03; aad[10] = 0x03;
+    aad[9] = 0x03;
+    aad[10] = 0x03;
     aad[11] = (pt_len >> 8) as u8;
     aad[12] = pt_len as u8;
 
@@ -743,44 +867,70 @@ fn encrypt_tls12_app_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64,
     let record_len = 8 + data.len() + 16;
     let mut record = Vec::with_capacity(5 + record_len);
     record.push(ContentType::ApplicationData as u8);
-    record.push(0x03); record.push(0x03);
-    record.push((record_len >> 8) as u8); record.push(record_len as u8);
+    record.push(0x03);
+    record.push(0x03);
+    record.push((record_len >> 8) as u8);
+    record.push(record_len as u8);
     record.extend_from_slice(&explicit_nonce);
     record.extend_from_slice(&data);
     record.extend_from_slice(&tag);
     record
 }
 
-fn aead_decrypt(suite: CipherSuite, key: &[u8], nonce: &[u8; 12], aad: &[u8], data: &mut [u8], tag: &[u8; 16]) -> Result<bool, TlsError> {
+fn aead_decrypt(
+    suite: CipherSuite,
+    key: &[u8],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    data: &mut [u8],
+    tag: &[u8; 16],
+) -> Result<bool, TlsError> {
     Ok(match suite {
         CipherSuite::Chacha20Poly1305Sha256 | CipherSuite::EcdheRsaChacha20Poly1305Sha256 => {
-            let mut k = [0u8; 32]; k.copy_from_slice(key);
+            let mut k = [0u8; 32];
+            k.copy_from_slice(key);
             chacha20poly1305::decrypt(&k, nonce, aad, data, tag)
         }
-        CipherSuite::Aes128GcmSha256 | CipherSuite::EcdheRsaAes128GcmSha256 | CipherSuite::EcdheEcdsaAes128GcmSha256 => {
-            let mut k = [0u8; 16]; k.copy_from_slice(key);
+        CipherSuite::Aes128GcmSha256
+        | CipherSuite::EcdheRsaAes128GcmSha256
+        | CipherSuite::EcdheEcdsaAes128GcmSha256 => {
+            let mut k = [0u8; 16];
+            k.copy_from_slice(key);
             gcm::AesGcm::new_128(&k).decrypt(nonce, aad, data, tag)
         }
         CipherSuite::Aes256GcmSha384 => {
-            let mut k = [0u8; 32]; k.copy_from_slice(key);
+            let mut k = [0u8; 32];
+            k.copy_from_slice(key);
             gcm::AesGcm::new_256(&k).decrypt(nonce, aad, data, tag)
         }
         _ => return Err(TlsError::NoCipherSuite),
     })
 }
 
-fn aead_encrypt(suite: CipherSuite, key: &[u8], nonce: &[u8; 12], aad: &[u8], data: &mut [u8], tag: &mut [u8; 16]) {
+fn aead_encrypt(
+    suite: CipherSuite,
+    key: &[u8],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    data: &mut [u8],
+    tag: &mut [u8; 16],
+) {
     match suite {
         CipherSuite::Chacha20Poly1305Sha256 | CipherSuite::EcdheRsaChacha20Poly1305Sha256 => {
-            let mut k = [0u8; 32]; k.copy_from_slice(key);
+            let mut k = [0u8; 32];
+            k.copy_from_slice(key);
             chacha20poly1305::encrypt(&k, nonce, aad, data, tag);
         }
-        CipherSuite::Aes128GcmSha256 | CipherSuite::EcdheRsaAes128GcmSha256 | CipherSuite::EcdheEcdsaAes128GcmSha256 => {
-            let mut k = [0u8; 16]; k.copy_from_slice(key);
+        CipherSuite::Aes128GcmSha256
+        | CipherSuite::EcdheRsaAes128GcmSha256
+        | CipherSuite::EcdheEcdsaAes128GcmSha256 => {
+            let mut k = [0u8; 16];
+            k.copy_from_slice(key);
             gcm::AesGcm::new_128(&k).encrypt(nonce, aad, data, tag);
         }
         CipherSuite::Aes256GcmSha384 => {
-            let mut k = [0u8; 32]; k.copy_from_slice(key);
+            let mut k = [0u8; 32];
+            k.copy_from_slice(key);
             gcm::AesGcm::new_256(&k).encrypt(nonce, aad, data, tag);
         }
         _ => {}

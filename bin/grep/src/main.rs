@@ -4,20 +4,41 @@
 anyos_std::entry!(main);
 
 fn to_lower(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
+    if b >= b'A' && b <= b'Z' {
+        b + 32
+    } else {
+        b
+    }
 }
 
 fn find_needle(haystack: &[u8], needle: &[u8], ignore_case: bool) -> Option<usize> {
-    if needle.is_empty() { return Some(0); }
-    if needle.len() > haystack.len() { return None; }
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > haystack.len() {
+        return None;
+    }
     for i in 0..=haystack.len() - needle.len() {
         let mut ok = true;
         for j in 0..needle.len() {
-            let a = if ignore_case { to_lower(haystack[i + j]) } else { haystack[i + j] };
-            let b = if ignore_case { to_lower(needle[j]) } else { needle[j] };
-            if a != b { ok = false; break; }
+            let a = if ignore_case {
+                to_lower(haystack[i + j])
+            } else {
+                haystack[i + j]
+            };
+            let b = if ignore_case {
+                to_lower(needle[j])
+            } else {
+                needle[j]
+            };
+            if a != b {
+                ok = false;
+                break;
+            }
         }
-        if ok { return Some(i); }
+        if ok {
+            return Some(i);
+        }
     }
     None
 }
@@ -38,10 +59,15 @@ fn matches_line(line: &[u8], needle: &[u8], ignore_case: bool, whole_word: bool)
             Some(pos) => {
                 let abs = start + pos;
                 let before_ok = abs == 0 || !is_word_char(line[abs - 1]);
-                let after_ok = abs + needle.len() >= line.len() || !is_word_char(line[abs + needle.len()]);
-                if before_ok && after_ok { return true; }
+                let after_ok =
+                    abs + needle.len() >= line.len() || !is_word_char(line[abs + needle.len()]);
+                if before_ok && after_ok {
+                    return true;
+                }
                 start = abs + 1;
-                if start + needle.len() > line.len() { return false; }
+                if start + needle.len() > line.len() {
+                    return false;
+                }
             }
         }
     }
@@ -53,9 +79,13 @@ fn read_file(fd: u32) -> anyos_std::Vec<u8> {
     let mut read_buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut read_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         let n = n as usize;
-        if total + n > file_buf.len() { break; }
+        if total + n > file_buf.len() {
+            break;
+        }
         file_buf[total..total + n].copy_from_slice(&read_buf[..n]);
         total += n;
     }
@@ -63,16 +93,26 @@ fn read_file(fd: u32) -> anyos_std::Vec<u8> {
     file_buf
 }
 
-fn grep_data(data: &[u8], needle: &[u8], ignore_case: bool, invert: bool,
-             show_num: bool, count_only: bool, list_only: bool, whole_word: bool,
-             prefix: &str) -> bool {
+fn grep_data(
+    data: &[u8],
+    needle: &[u8],
+    ignore_case: bool,
+    invert: bool,
+    show_num: bool,
+    count_only: bool,
+    list_only: bool,
+    whole_word: bool,
+    prefix: &str,
+) -> bool {
     let mut match_count: u32 = 0;
     let mut line_no: u32 = 0;
 
     for line in data.split(|&b| b == b'\n') {
         line_no += 1;
         let mut hit = matches_line(line, needle, ignore_case, whole_word);
-        if invert { hit = !hit; }
+        if invert {
+            hit = !hit;
+        }
         if hit {
             match_count += 1;
             if !count_only && !list_only {
@@ -129,7 +169,17 @@ fn main() {
     if args.pos_count == 1 {
         // Read from stdin
         let data = read_file(0);
-        grep_data(&data, needle, ignore_case, invert, show_num, count_only, list_only, whole_word, "");
+        grep_data(
+            &data,
+            needle,
+            ignore_case,
+            invert,
+            show_num,
+            count_only,
+            list_only,
+            whole_word,
+            "",
+        );
         return;
     }
 
@@ -144,7 +194,17 @@ fn main() {
         anyos_std::fs::close(fd);
 
         let prefix = if multi { path } else { "" };
-        let found = grep_data(&data, needle, ignore_case, invert, show_num, count_only, list_only, whole_word, prefix);
+        let found = grep_data(
+            &data,
+            needle,
+            ignore_case,
+            invert,
+            show_num,
+            count_only,
+            list_only,
+            whole_word,
+            prefix,
+        );
         if list_only && found {
             anyos_std::println!("{}", path);
         }

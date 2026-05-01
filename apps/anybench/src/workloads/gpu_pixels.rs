@@ -3,15 +3,17 @@
 //! Writes individual pixels at random positions for [`GPU_TEST_MS`]
 //! milliseconds. Returns total pixels written.
 
+use super::GPU_TEST_MS;
 use alloc::vec;
 use libanyui_client as anyui;
-use super::GPU_TEST_MS;
 
 /// Individual pixel write throughput benchmark.
 pub fn bench_gpu_pixels(canvas: &anyui::Canvas, offscreen: bool) -> u64 {
     let w = canvas.get_stride();
     let h = canvas.get_height();
-    if w == 0 || h == 0 { return 0; }
+    if w == 0 || h == 0 {
+        return 0;
+    }
 
     if offscreen {
         let buf_size = (w * h) as usize;

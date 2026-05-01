@@ -316,7 +316,7 @@ pub enum InlineAxisAlignment {
     LastBaseline,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct SelectorState {
     pub hovered_node: Option<NodeId>,
     pub active_node: Option<NodeId>,

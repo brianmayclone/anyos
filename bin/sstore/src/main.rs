@@ -25,12 +25,16 @@ fn read_store(buf: &mut [u8; MAX_STORE]) -> usize {
     }
     let n = anyos_std::fs::read(fd, buf);
     anyos_std::fs::close(fd);
-    if n == u32::MAX { 0 } else { n as usize }
+    if n == u32::MAX {
+        0
+    } else {
+        n as usize
+    }
 }
 
 /// Write `data` to the store file (truncate + create).
 fn write_store(data: &[u8]) {
-    use anyos_std::fs::{O_WRITE, O_CREATE, O_TRUNC};
+    use anyos_std::fs::{O_CREATE, O_TRUNC, O_WRITE};
     let fd = anyos_std::fs::open(STORE_PATH, O_WRITE | O_CREATE | O_TRUNC);
     if fd == u32::MAX {
         anyos_std::println!("sstore: cannot write {}", STORE_PATH);
@@ -71,7 +75,7 @@ fn main() {
         return;
     }
 
-    let key   = args.positional[0];
+    let key = args.positional[0];
     let value = args.positional[1];
 
     if key.contains('=') || key.contains('\n') {

@@ -4,22 +4,31 @@
 //! [`read_line_interactive`] is the main entry point used by the shell loop.
 //! It blocks until the user presses Enter and returns the trimmed input.
 
-use anyos_std::{process, sys};
 use anyos_std::String;
+use anyos_std::{process, sys};
 
-use crate::history::{history_load, history_append};
 use crate::completion::handle_tab;
+use crate::history::{history_append, history_load};
 
 // ─── Number formatting ───────────────────────────────────────────────────────
 
 /// Write the decimal representation of `n` into `buf` and return the number of
 /// bytes written.  Used to build ANSI escape sequences without heap allocation.
 pub fn format_usize_into(buf: &mut [u8], mut n: usize) -> usize {
-    if n == 0 { buf[0] = b'0'; return 1; }
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
     let mut tmp = [0u8; 20];
     let mut len = 0;
-    while n > 0 { tmp[len] = b'0' + (n % 10) as u8; len += 1; n /= 10; }
-    for i in 0..len { buf[i] = tmp[len - 1 - i]; }
+    while n > 0 {
+        tmp[len] = b'0' + (n % 10) as u8;
+        len += 1;
+        n /= 10;
+    }
+    for i in 0..len {
+        buf[i] = tmp[len - 1 - i];
+    }
     len
 }
 
@@ -56,19 +65,21 @@ pub fn redraw_from_cursor(line: &[u8], line_len: usize, cursor: usize) {
 pub fn read_line_interactive(prompt: &str, cwd: &str) -> String {
     let history = history_load();
     // `hist_idx == history.len()` means "current (unsaved) input".
-    let mut hist_idx  = history.len();
+    let mut hist_idx = history.len();
     let mut saved_line = [0u8; 512];
-    let mut saved_len  = 0usize;
+    let mut saved_len = 0usize;
 
-    let mut line     = [0u8; 512];
+    let mut line = [0u8; 512];
     let mut line_len = 0usize;
-    let mut cursor   = 0usize;
+    let mut cursor = 0usize;
 
     loop {
         // Poll until a key is available.
         let key = loop {
             let k = sys::con_poll_key();
-            if k != 0 { break k; }
+            if k != 0 {
+                break k;
+            }
             process::sleep(5);
         };
 
@@ -98,9 +109,11 @@ pub fn read_line_interactive(prompt: &str, cwd: &str) -> String {
             // ── Backspace ────────────────────────────────────────────────────
             0x08 | 0x7F => {
                 if cursor > 0 {
-                    for i in cursor - 1..line_len - 1 { line[i] = line[i + 1]; }
+                    for i in cursor - 1..line_len - 1 {
+                        line[i] = line[i + 1];
+                    }
                     line_len -= 1;
-                    cursor   -= 1;
+                    cursor -= 1;
                     sys::con_write("\x08");
                     redraw_from_cursor(&line, line_len, cursor);
                 }
@@ -109,7 +122,9 @@ pub fn read_line_interactive(prompt: &str, cwd: &str) -> String {
             // ── Delete (forward) ─────────────────────────────────────────────
             sys::KEY_DELETE => {
                 if cursor < line_len {
-                    for i in cursor..line_len - 1 { line[i] = line[i + 1]; }
+                    for i in cursor..line_len - 1 {
+                        line[i] = line[i + 1];
+                    }
                     line_len -= 1;
                     redraw_from_cursor(&line, line_len, cursor);
                 }
@@ -117,10 +132,16 @@ pub fn read_line_interactive(prompt: &str, cwd: &str) -> String {
 
             // ── Cursor movement ───────────────────────────────────────────────
             sys::KEY_LEFT => {
-                if cursor > 0 { cursor -= 1; sys::con_write("\x1b[D"); }
+                if cursor > 0 {
+                    cursor -= 1;
+                    sys::con_write("\x1b[D");
+                }
             }
             sys::KEY_RIGHT => {
-                if cursor < line_len { cursor += 1; sys::con_write("\x1b[C"); }
+                if cursor < line_len {
+                    cursor += 1;
+                    sys::con_write("\x1b[C");
+                }
             }
             sys::KEY_HOME => {
                 if cursor > 0 {
@@ -167,7 +188,12 @@ pub fn read_line_interactive(prompt: &str, cwd: &str) -> String {
                         line[..saved_len].copy_from_slice(&saved_line[..saved_len]);
                         line_len = saved_len;
                     } else {
-                        load_history_entry(&history[hist_idx], &mut line, &mut line_len, &mut cursor);
+                        load_history_entry(
+                            &history[hist_idx],
+                            &mut line,
+                            &mut line_len,
+                            &mut cursor,
+                        );
                     }
                     cursor = line_len;
                     redraw_whole_line(&line, line_len, prompt);
@@ -186,10 +212,9 @@ pub fn read_line_interactive(prompt: &str, cwd: &str) -> String {
                             for i in (cursor..line_len).rev() {
                                 line[i + enc_len] = line[i];
                             }
-                            line[cursor..cursor + enc_len]
-                                .copy_from_slice(encoded.as_bytes());
+                            line[cursor..cursor + enc_len].copy_from_slice(encoded.as_bytes());
                             line_len += enc_len;
-                            cursor   += enc_len;
+                            cursor += enc_len;
                             sys::con_write(encoded);
                             if cursor < line_len {
                                 redraw_from_cursor(&line, line_len, cursor);
@@ -212,7 +237,7 @@ fn load_history_entry(entry: &str, line: &mut [u8], line_len: &mut usize, cursor
     let copy_len = bytes.len().min(line.len());
     line[..copy_len].copy_from_slice(&bytes[..copy_len]);
     *line_len = copy_len;
-    *cursor   = copy_len;
+    *cursor = copy_len;
 }
 
 /// Redraw the entire line (`prompt + content`) and leave the terminal cursor

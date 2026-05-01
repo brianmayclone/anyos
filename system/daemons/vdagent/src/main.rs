@@ -24,7 +24,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{fs, ipc, process, println, Vec};
+use anyos_std::{fs, ipc, println, process, Vec};
 use libsvc::ServiceLifecycle;
 
 // ── VDAgent Protocol Constants ───────────────────────────────────────────────
@@ -63,7 +63,7 @@ const MAX_CLIPBOARD_SIZE: usize = 65536;
 // VDI chunk header: [port:u32, size:u32] = 8 bytes
 // VDAgent message header: [protocol:u32, type:u32, opaque:u64, size:u32] = 20 bytes
 
-const VDI_CHUNK_HDR_SIZE: usize = 8;  // port(4) + size(4)
+const VDI_CHUNK_HDR_SIZE: usize = 8; // port(4) + size(4)
 const VD_AGENT_MSG_HDR_SIZE: usize = 20; // protocol(4) + type(4) + opaque(8) + size(4)
 
 // ── Clipboard IPC (same as vncd/clipboard.rs) ────────────────────────────────
@@ -74,7 +74,9 @@ fn set_compositor_clipboard(comp_chan: u32, text: &[u8]) {
     }
     let data_len = text.len() as u32;
     let shm_id = ipc::shm_create(data_len);
-    if shm_id == 0 { return; }
+    if shm_id == 0 {
+        return;
+    }
     let shm_addr = ipc::shm_map(shm_id);
     if shm_addr == 0 {
         ipc::shm_destroy(shm_id);
@@ -91,7 +93,9 @@ fn set_compositor_clipboard(comp_chan: u32, text: &[u8]) {
 }
 
 fn get_compositor_clipboard(comp_chan: u32, reply_chan: u32, sub_id: u32, buf: &mut [u8]) -> usize {
-    if buf.is_empty() { return 0; }
+    if buf.is_empty() {
+        return 0;
+    }
     let cap = buf.len().min(MAX_CLIPBOARD_SIZE) as u32;
     let tid = process::getpid();
     // shm_id field is 0 — compositor provides its own persistent SHM.
@@ -111,7 +115,9 @@ fn get_compositor_clipboard(comp_chan: u32, reply_chan: u32, sub_id: u32, buf: &
                     if shm_addr != 0 {
                         unsafe {
                             core::ptr::copy_nonoverlapping(
-                                shm_addr as *const u8, buf.as_mut_ptr(), copy_len,
+                                shm_addr as *const u8,
+                                buf.as_mut_ptr(),
+                                copy_len,
                             );
                         }
                         ipc::shm_unmap(comp_shm_id);
@@ -158,8 +164,8 @@ fn send_capabilities(fd: u32) {
     // request = 1 (we are announcing, not replying)
     payload.extend_from_slice(&1u32.to_le_bytes());
     // capability word 0: set bits for CLIPBOARD_BY_DEMAND and CLIPBOARD_SELECTION
-    let cap_word: u32 = (1 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND)
-        | (1 << VD_AGENT_CAP_CLIPBOARD_SELECTION);
+    let cap_word: u32 =
+        (1 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND) | (1 << VD_AGENT_CAP_CLIPBOARD_SELECTION);
     payload.extend_from_slice(&cap_word.to_le_bytes());
 
     let msg = build_message(VD_AGENT_ANNOUNCE_CAPABILITIES, &payload);
@@ -195,15 +201,30 @@ fn send_clipboard_release(fd: u32) {
 // ── Message Parsing ──────────────────────────────────────────────────────────
 
 fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
-    if offset + 4 > buf.len() { return 0; }
-    u32::from_le_bytes([buf[offset], buf[offset+1], buf[offset+2], buf[offset+3]])
+    if offset + 4 > buf.len() {
+        return 0;
+    }
+    u32::from_le_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ])
 }
 
 fn read_u64_le(buf: &[u8], offset: usize) -> u64 {
-    if offset + 8 > buf.len() { return 0; }
+    if offset + 8 > buf.len() {
+        return 0;
+    }
     u64::from_le_bytes([
-        buf[offset], buf[offset+1], buf[offset+2], buf[offset+3],
-        buf[offset+4], buf[offset+5], buf[offset+6], buf[offset+7],
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+        buf[offset + 4],
+        buf[offset + 5],
+        buf[offset + 6],
+        buf[offset + 7],
     ])
 }
 
@@ -358,11 +379,17 @@ fn main() {
                     let msg_size = read_u32_le(chunk_data, 16) as usize;
 
                     let payload_start = VD_AGENT_MSG_HDR_SIZE;
-                    let payload_end = payload_start + msg_size.min(chunk_size - VD_AGENT_MSG_HDR_SIZE);
+                    let payload_end =
+                        payload_start + msg_size.min(chunk_size - VD_AGENT_MSG_HDR_SIZE);
                     let payload = &chunk_data[payload_start..payload_end];
 
                     handle_agent_message(
-                        fd, comp_chan, reply_chan, sub_id, msg_type, payload,
+                        fd,
+                        comp_chan,
+                        reply_chan,
+                        sub_id,
+                        msg_type,
+                        payload,
                         &mut host_has_clipboard,
                     );
                 }

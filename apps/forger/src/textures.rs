@@ -61,7 +61,12 @@ pub fn gen_pixel(id: u8, px: usize, py: usize) -> (u8, u8, u8, u8) {
 
         block::SAND => {
             let base = clamp_u8(210 + v);
-            (base, clamp_u8(base as i16 - 15), clamp_u8(base as i16 - 70), 255)
+            (
+                base,
+                clamp_u8(base as i16 - 15),
+                clamp_u8(base as i16 - 70),
+                255,
+            )
         }
 
         block::GRAVEL => {
@@ -72,7 +77,12 @@ pub fn gen_pixel(id: u8, px: usize, py: usize) -> (u8, u8, u8, u8) {
         block::WOOD_LOG => {
             let grain: i16 = if px % 3 == 0 { 10 } else { 0 };
             let base = clamp_u8(120 + v + grain);
-            (base, clamp_u8(base as i16 * 3 / 4), clamp_u8(base as i16 / 2), 255)
+            (
+                base,
+                clamp_u8(base as i16 * 3 / 4),
+                clamp_u8(base as i16 / 2),
+                255,
+            )
         }
 
         block::LEAVES => {
@@ -128,17 +138,26 @@ pub fn gen_pixel(id: u8, px: usize, py: usize) -> (u8, u8, u8, u8) {
         block::WOOD_PLANKS => {
             let grain: i16 = if py % 4 == 0 { -10 } else { 0 };
             let base = clamp_u8(180 + v + grain);
-            (base, clamp_u8(base as i16 * 3 / 4), clamp_u8(base as i16 / 2), 255)
+            (
+                base,
+                clamp_u8(base as i16 * 3 / 4),
+                clamp_u8(base as i16 / 2),
+                255,
+            )
         }
 
         block::BRICK => {
-            let mortar =
-                py % 4 == 0 || (px + if (py / 4) % 2 == 0 { 0 } else { 4 }) % 8 == 0;
+            let mortar = py % 4 == 0 || (px + if (py / 4) % 2 == 0 { 0 } else { 4 }) % 8 == 0;
             if mortar {
                 (200, 200, 190, 255)
             } else {
                 let base = clamp_u8(160 + v);
-                (base, clamp_u8(base as i16 / 2), clamp_u8(base as i16 / 3), 255)
+                (
+                    base,
+                    clamp_u8(base as i16 / 2),
+                    clamp_u8(base as i16 / 3),
+                    255,
+                )
             }
         }
 
@@ -159,7 +178,12 @@ pub fn gen_pixel(id: u8, px: usize, py: usize) -> (u8, u8, u8, u8) {
 
         block::CLAY => {
             let base = clamp_u8(160 + v);
-            (base, clamp_u8(base as i16 - 10), clamp_u8(base as i16 - 20), 255)
+            (
+                base,
+                clamp_u8(base as i16 - 10),
+                clamp_u8(base as i16 - 20),
+                255,
+            )
         }
 
         block::TORCH => {
@@ -171,7 +195,12 @@ pub fn gen_pixel(id: u8, px: usize, py: usize) -> (u8, u8, u8, u8) {
                 (r, g, 50, 255)
             } else {
                 let base = clamp_u8(140 + v);
-                (base, clamp_u8(base as i16 * 3 / 4), clamp_u8(base as i16 / 2), 255)
+                (
+                    base,
+                    clamp_u8(base as i16 * 3 / 4),
+                    clamp_u8(base as i16 / 2),
+                    255,
+                )
             }
         }
 

@@ -6,8 +6,8 @@
 //! Zero-allocation where possible — `basename`, `parent`, and `extension`
 //! return borrowed slices. Only `join` allocates.
 
-use alloc::string::String;
 use alloc::format;
+use alloc::string::String;
 
 /// Extract the last component of a path (filename or directory name).
 ///

@@ -9,8 +9,13 @@ use anyos_std::String;
 
 // ─── Output ──────────────────────────────────────────────────────────────────
 
-pub fn print(s: &str)   { sys::con_write(s); }
-pub fn println(s: &str) { sys::con_write(s); sys::con_write("\n"); }
+pub fn print(s: &str) {
+    sys::con_write(s);
+}
+pub fn println(s: &str) {
+    sys::con_write(s);
+    sys::con_write("\n");
+}
 
 // ─── Input ───────────────────────────────────────────────────────────────────
 

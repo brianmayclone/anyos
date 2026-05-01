@@ -18,9 +18,14 @@ enum Key {
     Delete,
     Tab,
     Escape,
-    Up, Down, Left, Right,
-    Home, End,
-    PageUp, PageDown,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
     Ctrl(u8), // 'a'..'z'
 }
 
@@ -36,7 +41,9 @@ fn read_key() -> Key {
         b'\t' => Key::Tab,
         0x7f => Key::Backspace,
         0x1b => {
-            if n == 1 { return Key::Escape; }
+            if n == 1 {
+                return Key::Escape;
+            }
             if n >= 3 && buf[1] == b'[' {
                 match buf[2] {
                     b'A' => Key::Up,
@@ -69,13 +76,22 @@ fn out(data: &[u8]) {
 }
 
 fn out_u32(n: usize) {
-    if n == 0 { out(b"0"); return; }
+    if n == 0 {
+        out(b"0");
+        return;
+    }
     let mut buf = [0u8; 10];
     let mut val = n;
     let mut len = 0;
-    while val > 0 { buf[len] = b'0' + (val % 10) as u8; val /= 10; len += 1; }
+    while val > 0 {
+        buf[len] = b'0' + (val % 10) as u8;
+        val /= 10;
+        len += 1;
+    }
     let mut rev = [0u8; 10];
-    for i in 0..len { rev[i] = buf[len - 1 - i]; }
+    for i in 0..len {
+        rev[i] = buf[len - 1 - i];
+    }
     out(&rev[..len]);
 }
 
@@ -135,8 +151,10 @@ impl Editor {
     fn new() -> Self {
         Editor {
             lines: alloc::vec![Vec::new()],
-            cx: 0, cy: 0,
-            row_off: 0, col_off: 0,
+            cx: 0,
+            cy: 0,
+            row_off: 0,
+            col_off: 0,
             filename: Vec::new(),
             modified: false,
             mode: Mode::Normal,
@@ -156,7 +174,11 @@ impl Editor {
     }
 
     fn screen_rows(&self) -> usize {
-        if ROWS > 2 { ROWS - 2 } else { 1 } // status line + command/message line
+        if ROWS > 2 {
+            ROWS - 2
+        } else {
+            1
+        } // status line + command/message line
     }
 
     fn load_file(&mut self, path: &[u8]) {
@@ -172,10 +194,13 @@ impl Editor {
         let mut read_buf = [0u8; 512];
         loop {
             let n = anyos_std::fs::read(fd, &mut read_buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             for i in 0..n as usize {
                 if read_buf[i] == b'\n' {
-                    self.lines.push(core::mem::replace(&mut current_line, Vec::new()));
+                    self.lines
+                        .push(core::mem::replace(&mut current_line, Vec::new()));
                 } else if read_buf[i] != b'\r' {
                     current_line.push(read_buf[i]);
                 }
@@ -200,8 +225,10 @@ impl Editor {
             return false;
         }
         let path_str = core::str::from_utf8(&self.filename).unwrap_or("");
-        let fd = anyos_std::fs::open(path_str,
-            anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC);
+        let fd = anyos_std::fs::open(
+            path_str,
+            anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
+        );
         if fd == u32::MAX {
             self.set_message(b"Error: cannot write file");
             return false;
@@ -241,7 +268,9 @@ impl Editor {
     }
 
     fn restore_undo(&mut self) {
-        if self.undo_lines.is_empty() { return; }
+        if self.undo_lines.is_empty() {
+            return;
+        }
         let old_lines = core::mem::replace(&mut self.undo_lines, self.lines.clone());
         let old_cx = self.undo_cx;
         let old_cy = self.undo_cy;
@@ -257,7 +286,9 @@ impl Editor {
     fn current_line_len(&self) -> usize {
         if self.cy < self.lines.len() {
             self.lines[self.cy].len()
-        } else { 0 }
+        } else {
+            0
+        }
     }
 
     fn clamp_cx_normal(&mut self) {
@@ -271,12 +302,18 @@ impl Editor {
 
     fn clamp_cx_insert(&mut self) {
         let len = self.current_line_len();
-        if self.cx > len { self.cx = len; }
+        if self.cx > len {
+            self.cx = len;
+        }
     }
 
     fn clamp_cursor(&mut self) {
         if self.cy >= self.lines.len() {
-            self.cy = if self.lines.is_empty() { 0 } else { self.lines.len() - 1 };
+            self.cy = if self.lines.is_empty() {
+                0
+            } else {
+                self.lines.len() - 1
+            };
         }
         if self.mode == Mode::Insert {
             self.clamp_cx_insert();
@@ -287,10 +324,18 @@ impl Editor {
 
     fn scroll(&mut self) {
         let sr = self.screen_rows();
-        if self.cy < self.row_off { self.row_off = self.cy; }
-        if self.cy >= self.row_off + sr { self.row_off = self.cy - sr + 1; }
-        if self.cx < self.col_off { self.col_off = self.cx; }
-        if self.cx >= self.col_off + COLS { self.col_off = self.cx - COLS + 1; }
+        if self.cy < self.row_off {
+            self.row_off = self.cy;
+        }
+        if self.cy >= self.row_off + sr {
+            self.row_off = self.cy - sr + 1;
+        }
+        if self.cx < self.col_off {
+            self.col_off = self.cx;
+        }
+        if self.cx >= self.col_off + COLS {
+            self.col_off = self.cx - COLS + 1;
+        }
     }
 
     // ── Text manipulation ───────────────────────────────────────────────────
@@ -321,7 +366,9 @@ impl Editor {
     }
 
     fn delete_char_back(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         if self.cx > 0 {
             self.cx -= 1;
             self.lines[self.cy].remove(self.cx);
@@ -336,7 +383,9 @@ impl Editor {
     }
 
     fn delete_char_at_cursor(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         let len = self.lines[self.cy].len();
         if len > 0 && self.cx < len {
             self.lines[self.cy].remove(self.cx);
@@ -365,7 +414,9 @@ impl Editor {
     }
 
     fn delete_to_end_of_line(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         let len = self.lines[self.cy].len();
         if self.cx < len {
             self.yank_buf.clear();
@@ -373,26 +424,38 @@ impl Editor {
             self.yank_is_line = false;
             self.lines[self.cy].truncate(self.cx);
             self.modified = true;
-            if self.cx > 0 { self.cx -= 1; }
+            if self.cx > 0 {
+                self.cx -= 1;
+            }
         }
     }
 
     fn delete_word(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         let line = &self.lines[self.cy];
         let start = self.cx;
         let mut end = start;
         let len = line.len();
-        if end >= len { return; }
+        if end >= len {
+            return;
+        }
 
         // Skip current word characters
         if is_word_char(line[end]) {
-            while end < len && is_word_char(line[end]) { end += 1; }
+            while end < len && is_word_char(line[end]) {
+                end += 1;
+            }
         } else {
-            while end < len && !is_word_char(line[end]) && line[end] != b' ' { end += 1; }
+            while end < len && !is_word_char(line[end]) && line[end] != b' ' {
+                end += 1;
+            }
         }
         // Skip trailing whitespace
-        while end < len && line[end] == b' ' { end += 1; }
+        while end < len && line[end] == b' ' {
+            end += 1;
+        }
 
         self.yank_buf.clear();
         self.yank_buf.push(self.lines[self.cy][start..end].to_vec());
@@ -412,7 +475,9 @@ impl Editor {
     }
 
     fn paste_after(&mut self) {
-        if self.yank_buf.is_empty() { return; }
+        if self.yank_buf.is_empty() {
+            return;
+        }
         self.save_undo();
         if self.yank_is_line {
             // Insert line(s) below
@@ -437,7 +502,9 @@ impl Editor {
     }
 
     fn paste_before(&mut self) {
-        if self.yank_buf.is_empty() { return; }
+        if self.yank_buf.is_empty() {
+            return;
+        }
         self.save_undo();
         if self.yank_is_line {
             for (i, line) in self.yank_buf.clone().iter().enumerate() {
@@ -459,7 +526,9 @@ impl Editor {
     // ── Movement ────────────────────────────────────────────────────────────
 
     fn move_word_forward(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         let line = &self.lines[self.cy];
         let len = line.len();
         if len == 0 {
@@ -480,12 +549,18 @@ impl Editor {
         }
         // Skip current word
         if is_word_char(line[x]) {
-            while x < len && is_word_char(line[x]) { x += 1; }
+            while x < len && is_word_char(line[x]) {
+                x += 1;
+            }
         } else {
-            while x < len && !is_word_char(line[x]) && line[x] != b' ' { x += 1; }
+            while x < len && !is_word_char(line[x]) && line[x] != b' ' {
+                x += 1;
+            }
         }
         // Skip whitespace
-        while x < len && line[x] == b' ' { x += 1; }
+        while x < len && line[x] == b' ' {
+            x += 1;
+        }
         if x >= len {
             if self.cy + 1 < self.lines.len() {
                 self.cy += 1;
@@ -497,7 +572,9 @@ impl Editor {
     }
 
     fn move_word_backward(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         if self.cx == 0 {
             if self.cy > 0 {
                 self.cy -= 1;
@@ -509,12 +586,18 @@ impl Editor {
         let line = &self.lines[self.cy];
         let mut x = self.cx;
         // Skip whitespace backward
-        while x > 0 && line[x - 1] == b' ' { x -= 1; }
+        while x > 0 && line[x - 1] == b' ' {
+            x -= 1;
+        }
         // Skip word backward
         if x > 0 && is_word_char(line[x - 1]) {
-            while x > 0 && is_word_char(line[x - 1]) { x -= 1; }
+            while x > 0 && is_word_char(line[x - 1]) {
+                x -= 1;
+            }
         } else {
-            while x > 0 && !is_word_char(line[x - 1]) && line[x - 1] != b' ' { x -= 1; }
+            while x > 0 && !is_word_char(line[x - 1]) && line[x - 1] != b' ' {
+                x -= 1;
+            }
         }
         self.cx = x;
     }
@@ -522,12 +605,20 @@ impl Editor {
     // ── Search ──────────────────────────────────────────────────────────────
 
     fn search_next(&mut self) {
-        if self.search_buf.is_empty() { return; }
+        if self.search_buf.is_empty() {
+            return;
+        }
         let total = self.lines.len();
-        if total == 0 { return; }
+        if total == 0 {
+            return;
+        }
 
         let start_y = self.cy;
-        let start_x = if self.search_dir > 0 { self.cx + 1 } else { self.cx };
+        let start_x = if self.search_dir > 0 {
+            self.cx + 1
+        } else {
+            self.cx
+        };
 
         if self.search_dir > 0 {
             // Forward search
@@ -554,9 +645,17 @@ impl Editor {
                 let y = (start_y + total - dy) % total;
                 let line = &self.lines[y];
                 let max_x = if dy == 0 {
-                    if start_x > 0 { start_x - 1 } else { continue; }
+                    if start_x > 0 {
+                        start_x - 1
+                    } else {
+                        continue;
+                    }
                 } else {
-                    if line.len() >= self.search_buf.len() { line.len() - self.search_buf.len() } else { continue; }
+                    if line.len() >= self.search_buf.len() {
+                        line.len() - self.search_buf.len()
+                    } else {
+                        continue;
+                    }
                 };
                 if line.len() >= self.search_buf.len() {
                     let mut x = max_x.min(line.len() - self.search_buf.len());
@@ -566,7 +665,9 @@ impl Editor {
                             self.cx = x;
                             return;
                         }
-                        if x == 0 { break; }
+                        if x == 0 {
+                            break;
+                        }
                         x -= 1;
                     }
                 }
@@ -581,7 +682,7 @@ impl Editor {
         self.scroll();
 
         out(b"\x1b[?25l"); // hide cursor
-        out(b"\x1b[H");    // top-left
+        out(b"\x1b[H"); // top-left
 
         // Text area
         let sr = self.screen_rows();
@@ -605,12 +706,21 @@ impl Editor {
         if self.filename.is_empty() {
             out(b"[No Name]");
         } else {
-            let show = if self.filename.len() > 30 { &self.filename[self.filename.len()-30..] } else { &self.filename };
+            let show = if self.filename.len() > 30 {
+                &self.filename[self.filename.len() - 30..]
+            } else {
+                &self.filename
+            };
             out(show);
         }
-        if self.modified { out(b" [+]"); }
-        let left_used = if self.filename.is_empty() { 9 } else { self.filename.len().min(30) }
-            + if self.modified { 4 } else { 0 };
+        if self.modified {
+            out(b" [+]");
+        }
+        let left_used = if self.filename.is_empty() {
+            9
+        } else {
+            self.filename.len().min(30)
+        } + if self.modified { 4 } else { 0 };
 
         // Right side: mode + line/total
         let mut right_buf = [0u8; 64];
@@ -623,24 +733,41 @@ impl Editor {
             Mode::Search => b"SEARCH",
         };
         for &b in mode_str {
-            if rlen < 64 { right_buf[rlen] = b; rlen += 1; }
+            if rlen < 64 {
+                right_buf[rlen] = b;
+                rlen += 1;
+            }
         }
-        if rlen < 64 { right_buf[rlen] = b' '; rlen += 1; }
+        if rlen < 64 {
+            right_buf[rlen] = b' ';
+            rlen += 1;
+        }
         // line/total
         let cy_str = usize_to_buf(self.cy + 1);
         for &b in &cy_str.0[..cy_str.1] {
-            if rlen < 64 { right_buf[rlen] = b; rlen += 1; }
+            if rlen < 64 {
+                right_buf[rlen] = b;
+                rlen += 1;
+            }
         }
-        if rlen < 64 { right_buf[rlen] = b'/'; rlen += 1; }
+        if rlen < 64 {
+            right_buf[rlen] = b'/';
+            rlen += 1;
+        }
         let total_str = usize_to_buf(self.lines.len());
         for &b in &total_str.0[..total_str.1] {
-            if rlen < 64 { right_buf[rlen] = b; rlen += 1; }
+            if rlen < 64 {
+                right_buf[rlen] = b;
+                rlen += 1;
+            }
         }
 
         // Pad between left and right
         let total_used = left_used + rlen;
         if total_used < COLS {
-            for _ in 0..(COLS - total_used) { out(b" "); }
+            for _ in 0..(COLS - total_used) {
+                out(b" ");
+            }
         }
         out(&right_buf[..rlen]);
         out(b"\x1b[0m\r\n");
@@ -666,7 +793,11 @@ impl Editor {
                     let elapsed = anyos_std::sys::uptime().wrapping_sub(self.msg_time);
                     let hz = anyos_std::sys::tick_hz();
                     if hz > 0 && elapsed < hz * 5 {
-                        let show = if self.message.len() > COLS { &self.message[..COLS] } else { &self.message };
+                        let show = if self.message.len() > COLS {
+                            &self.message[..COLS]
+                        } else {
+                            &self.message
+                        };
                         out(show);
                     } else {
                         self.message.clear();
@@ -719,7 +850,9 @@ impl Editor {
                     self.delete_word();
                     return;
                 }
-                _ => { return; }
+                _ => {
+                    return;
+                }
             }
         }
         if self.pending == b'g' {
@@ -731,7 +864,9 @@ impl Editor {
                     self.cx = 0;
                     return;
                 }
-                _ => { return; }
+                _ => {
+                    return;
+                }
             }
         }
 
@@ -739,7 +874,9 @@ impl Editor {
             Key::None => {}
             // Movement
             Key::Char(b'h') | Key::Left => {
-                if self.cx > 0 { self.cx -= 1; }
+                if self.cx > 0 {
+                    self.cx -= 1;
+                }
             }
             Key::Char(b'j') | Key::Down => {
                 if self.cy + 1 < self.lines.len() {
@@ -755,9 +892,13 @@ impl Editor {
             }
             Key::Char(b'l') | Key::Right => {
                 let len = self.current_line_len();
-                if len > 0 && self.cx + 1 < len { self.cx += 1; }
+                if len > 0 && self.cx + 1 < len {
+                    self.cx += 1;
+                }
             }
-            Key::Char(b'0') | Key::Home => { self.cx = 0; }
+            Key::Char(b'0') | Key::Home => {
+                self.cx = 0;
+            }
             Key::Char(b'$') | Key::End => {
                 let len = self.current_line_len();
                 self.cx = if len > 0 { len - 1 } else { 0 };
@@ -767,18 +908,33 @@ impl Editor {
                 if self.cy < self.lines.len() {
                     let line = &self.lines[self.cy];
                     self.cx = 0;
-                    while self.cx < line.len() && line[self.cx] == b' ' { self.cx += 1; }
-                    if self.cx >= line.len() && self.cx > 0 { self.cx -= 1; }
+                    while self.cx < line.len() && line[self.cx] == b' ' {
+                        self.cx += 1;
+                    }
+                    if self.cx >= line.len() && self.cx > 0 {
+                        self.cx -= 1;
+                    }
                 }
             }
-            Key::Char(b'w') => { self.move_word_forward(); self.clamp_cx_normal(); }
-            Key::Char(b'b') => { self.move_word_backward(); }
+            Key::Char(b'w') => {
+                self.move_word_forward();
+                self.clamp_cx_normal();
+            }
+            Key::Char(b'b') => {
+                self.move_word_backward();
+            }
             Key::Char(b'G') => {
                 // Go to last line
-                self.cy = if self.lines.is_empty() { 0 } else { self.lines.len() - 1 };
+                self.cy = if self.lines.is_empty() {
+                    0
+                } else {
+                    self.lines.len() - 1
+                };
                 self.cx = 0;
             }
-            Key::Char(b'g') => { self.pending = b'g'; }
+            Key::Char(b'g') => {
+                self.pending = b'g';
+            }
             Key::PageUp | Key::Ctrl(b'b') => {
                 let sr = self.screen_rows();
                 self.cy = self.cy.saturating_sub(sr);
@@ -797,7 +953,9 @@ impl Editor {
             Key::Char(b'a') => {
                 self.mode = Mode::Insert;
                 let len = self.current_line_len();
-                if len > 0 { self.cx = (self.cx + 1).min(len); }
+                if len > 0 {
+                    self.cx = (self.cx + 1).min(len);
+                }
             }
             Key::Char(b'A') => {
                 self.mode = Mode::Insert;
@@ -809,7 +967,9 @@ impl Editor {
                 if self.cy < self.lines.len() {
                     let line = &self.lines[self.cy];
                     self.cx = 0;
-                    while self.cx < line.len() && line[self.cx] == b' ' { self.cx += 1; }
+                    while self.cx < line.len() && line[self.cx] == b' ' {
+                        self.cx += 1;
+                    }
                 }
             }
             Key::Char(b'o') => {
@@ -846,7 +1006,9 @@ impl Editor {
                     self.delete_char_at_cursor();
                 }
             }
-            Key::Char(b'd') => { self.pending = b'd'; }
+            Key::Char(b'd') => {
+                self.pending = b'd';
+            }
             Key::Char(b'D') => {
                 self.save_undo();
                 self.delete_to_end_of_line();
@@ -941,14 +1103,18 @@ impl Editor {
             Key::Escape => {
                 self.mode = Mode::Normal;
                 // Move cursor back one (vi convention)
-                if self.cx > 0 { self.cx -= 1; }
+                if self.cx > 0 {
+                    self.cx -= 1;
+                }
                 self.clamp_cx_normal();
             }
             Key::Enter => {
                 self.save_undo();
                 self.insert_newline();
             }
-            Key::Backspace => { self.delete_char_back(); }
+            Key::Backspace => {
+                self.delete_char_back();
+            }
             Key::Delete => {
                 if self.cy < self.lines.len() && self.cx < self.lines[self.cy].len() {
                     self.lines[self.cy].remove(self.cx);
@@ -956,22 +1122,38 @@ impl Editor {
                 }
             }
             Key::Tab => {
-                for _ in 0..4 { self.insert_char(b' '); }
+                for _ in 0..4 {
+                    self.insert_char(b' ');
+                }
             }
             Key::Up => {
-                if self.cy > 0 { self.cy -= 1; self.clamp_cx_insert(); }
+                if self.cy > 0 {
+                    self.cy -= 1;
+                    self.clamp_cx_insert();
+                }
             }
             Key::Down => {
-                if self.cy + 1 < self.lines.len() { self.cy += 1; self.clamp_cx_insert(); }
+                if self.cy + 1 < self.lines.len() {
+                    self.cy += 1;
+                    self.clamp_cx_insert();
+                }
             }
             Key::Left => {
-                if self.cx > 0 { self.cx -= 1; }
+                if self.cx > 0 {
+                    self.cx -= 1;
+                }
             }
             Key::Right => {
-                if self.cx < self.current_line_len() { self.cx += 1; }
+                if self.cx < self.current_line_len() {
+                    self.cx += 1;
+                }
             }
-            Key::Home => { self.cx = 0; }
-            Key::End => { self.cx = self.current_line_len(); }
+            Key::Home => {
+                self.cx = 0;
+            }
+            Key::End => {
+                self.cx = self.current_line_len();
+            }
             Key::PageUp => {
                 let sr = self.screen_rows();
                 self.cy = self.cy.saturating_sub(sr);
@@ -982,10 +1164,14 @@ impl Editor {
                 self.cy = (self.cy + sr).min(self.lines.len().saturating_sub(1));
                 self.clamp_cx_insert();
             }
-            Key::Char(c) => { self.insert_char(c); }
+            Key::Char(c) => {
+                self.insert_char(c);
+            }
             Key::Ctrl(b'c') => {
                 self.mode = Mode::Normal;
-                if self.cx > 0 { self.cx -= 1; }
+                if self.cx > 0 {
+                    self.cx -= 1;
+                }
                 self.clamp_cx_normal();
             }
             _ => {}
@@ -1040,7 +1226,9 @@ impl Editor {
 
     fn execute_command(&mut self, cmd: &[u8]) {
         let cmd = trim(cmd);
-        if cmd.is_empty() { return; }
+        if cmd.is_empty() {
+            return;
+        }
 
         if cmd == b"q" {
             if self.modified {
@@ -1087,9 +1275,13 @@ fn is_word_char(c: u8) -> bool {
 
 fn trim(s: &[u8]) -> &[u8] {
     let mut start = 0;
-    while start < s.len() && s[start] == b' ' { start += 1; }
+    while start < s.len() && s[start] == b' ' {
+        start += 1;
+    }
     let mut end = s.len();
-    while end > start && s[end - 1] == b' ' { end -= 1; }
+    while end > start && s[end - 1] == b' ' {
+        end -= 1;
+    }
     &s[start..end]
 }
 
@@ -1109,14 +1301,25 @@ fn parse_usize(s: &[u8]) -> usize {
 
 fn usize_to_buf(n: usize) -> ([u8; 10], usize) {
     let mut buf = [0u8; 10];
-    if n == 0 { buf[0] = b'0'; return (buf, 1); }
+    if n == 0 {
+        buf[0] = b'0';
+        return (buf, 1);
+    }
     let mut val = n;
     let mut len = 0;
-    while val > 0 { buf[len] = b'0' + (val % 10) as u8; val /= 10; len += 1; }
+    while val > 0 {
+        buf[len] = b'0' + (val % 10) as u8;
+        val /= 10;
+        len += 1;
+    }
     // Reverse
     let mut i = 0;
     let mut j = len - 1;
-    while i < j { buf.swap(i, j); i += 1; j -= 1; }
+    while i < j {
+        buf.swap(i, j);
+        i += 1;
+        j -= 1;
+    }
     (buf, len)
 }
 

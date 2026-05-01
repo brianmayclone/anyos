@@ -129,7 +129,10 @@ macro_rules! global_app_state {
 
         #[inline(always)]
         fn app() -> &'static mut $ty {
-            unsafe { APP.as_mut().expect(concat!(stringify!($ty), " not initialized")) }
+            unsafe {
+                APP.as_mut()
+                    .expect(concat!(stringify!($ty), " not initialized"))
+            }
         }
     };
 }
@@ -139,8 +142,8 @@ pub use alloc::boxed::Box;
 pub use alloc::string::String;
 pub use alloc::vec::Vec;
 pub use alloc::{format, vec};
-pub use hashmap::HashMap;
 pub use collections::HashSet;
+pub use hashmap::HashMap;
 
 /// Trait for main function return types (() or u32 exit code).
 pub trait MainReturn {
@@ -148,11 +151,15 @@ pub trait MainReturn {
 }
 
 impl MainReturn for () {
-    fn to_exit_code(self) -> u32 { 0 }
+    fn to_exit_code(self) -> u32 {
+        0
+    }
 }
 
 impl MainReturn for u32 {
-    fn to_exit_code(self) -> u32 { self }
+    fn to_exit_code(self) -> u32 {
+        self
+    }
 }
 
 impl MainReturn for error::Result<()> {
@@ -161,10 +168,7 @@ impl MainReturn for error::Result<()> {
             Ok(()) => 0,
             Err(e) => {
                 io::_print_str("Error: ");
-                let _ = core::fmt::Write::write_fmt(
-                    &mut io::Stdout,
-                    format_args!("{}\n", e),
-                );
+                let _ = core::fmt::Write::write_fmt(&mut io::Stdout, format_args!("{}\n", e));
                 1
             }
         }

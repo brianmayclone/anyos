@@ -32,14 +32,22 @@ dynlink::dll_exports! {
 /// Load a font from a file path.
 pub fn load(path: &str) -> Option<u32> {
     let id = (lib().font_load)(path.as_ptr(), path.len() as u32);
-    if id != u32::MAX { Some(id) } else { None }
+    if id != u32::MAX {
+        Some(id)
+    } else {
+        None
+    }
 }
 
 #[cfg(not(feature = "host"))]
 /// Load a font from raw TTF data in memory.
 pub fn load_data(data: &[u8]) -> Option<u32> {
     let id = (lib().font_load_data)(data.as_ptr(), data.len() as u32);
-    if id != u32::MAX { Some(id) } else { None }
+    if id != u32::MAX {
+        Some(id)
+    } else {
+        None
+    }
 }
 
 #[cfg(not(feature = "host"))]
@@ -53,18 +61,42 @@ pub fn unload(font_id: u32) {
 pub fn measure(font_id: u32, size: u16, text: &str) -> (u32, u32) {
     let mut w: u32 = 0;
     let mut h: u32 = 0;
-    (lib().font_measure_string)(font_id, size, text.as_ptr(), text.len() as u32, &mut w, &mut h);
+    (lib().font_measure_string)(
+        font_id,
+        size,
+        text.as_ptr(),
+        text.len() as u32,
+        &mut w,
+        &mut h,
+    );
     (w, h)
 }
 
 #[cfg(not(feature = "host"))]
 /// Render text into an ARGB pixel buffer.
 pub fn draw_string_buf(
-    buf: *mut u32, buf_w: u32, buf_h: u32,
-    x: i32, y: i32, color: u32,
-    font_id: u32, size: u16, text: &str,
+    buf: *mut u32,
+    buf_w: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    color: u32,
+    font_id: u32,
+    size: u16,
+    text: &str,
 ) {
-    (lib().font_draw_string_buf)(buf, buf_w, buf_h, x, y, color, font_id, size, text.as_ptr(), text.len() as u32);
+    (lib().font_draw_string_buf)(
+        buf,
+        buf_w,
+        buf_h,
+        x,
+        y,
+        color,
+        font_id,
+        size,
+        text.as_ptr(),
+        text.len() as u32,
+    );
 }
 
 #[cfg(not(feature = "host"))]
@@ -89,50 +121,108 @@ extern "C" {
     fn font_load(path_ptr: *const u8, path_len: u32) -> u32;
     fn font_load_data(data_ptr: *const u8, data_len: u32) -> u32;
     fn font_unload(font_id: u32);
-    fn font_measure_string(font_id: u32, size: u16, text: *const u8, len: u32, out_w: *mut u32, out_h: *mut u32);
-    fn font_draw_string_buf(buf: *mut u32, buf_w: u32, buf_h: u32, x: i32, y: i32, color: u32, font_id: u32, size: u16, text: *const u8, len: u32);
+    fn font_measure_string(
+        font_id: u32,
+        size: u16,
+        text: *const u8,
+        len: u32,
+        out_w: *mut u32,
+        out_h: *mut u32,
+    );
+    fn font_draw_string_buf(
+        buf: *mut u32,
+        buf_w: u32,
+        buf_h: u32,
+        x: i32,
+        y: i32,
+        color: u32,
+        font_id: u32,
+        size: u16,
+        text: *const u8,
+        len: u32,
+    );
     fn font_line_height(font_id: u32, size: u16) -> u32;
     fn font_set_subpixel(enabled: u32);
 }
 
 #[cfg(feature = "host")]
 pub fn init() -> bool {
-    unsafe { font_init(); }
+    unsafe {
+        font_init();
+    }
     true
 }
 
 #[cfg(feature = "host")]
 pub fn load(path: &str) -> Option<u32> {
     let id = unsafe { font_load(path.as_ptr(), path.len() as u32) };
-    if id != u32::MAX { Some(id) } else { None }
+    if id != u32::MAX {
+        Some(id)
+    } else {
+        None
+    }
 }
 
 #[cfg(feature = "host")]
 pub fn load_data(data: &[u8]) -> Option<u32> {
     let id = unsafe { font_load_data(data.as_ptr(), data.len() as u32) };
-    if id != u32::MAX { Some(id) } else { None }
+    if id != u32::MAX {
+        Some(id)
+    } else {
+        None
+    }
 }
 
 #[cfg(feature = "host")]
 pub fn unload(font_id: u32) {
-    unsafe { font_unload(font_id); }
+    unsafe {
+        font_unload(font_id);
+    }
 }
 
 #[cfg(feature = "host")]
 pub fn measure(font_id: u32, size: u16, text: &str) -> (u32, u32) {
     let mut w: u32 = 0;
     let mut h: u32 = 0;
-    unsafe { font_measure_string(font_id, size, text.as_ptr(), text.len() as u32, &mut w, &mut h); }
+    unsafe {
+        font_measure_string(
+            font_id,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
+            &mut w,
+            &mut h,
+        );
+    }
     (w, h)
 }
 
 #[cfg(feature = "host")]
 pub fn draw_string_buf(
-    buf: *mut u32, buf_w: u32, buf_h: u32,
-    x: i32, y: i32, color: u32,
-    font_id: u32, size: u16, text: &str,
+    buf: *mut u32,
+    buf_w: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    color: u32,
+    font_id: u32,
+    size: u16,
+    text: &str,
 ) {
-    unsafe { font_draw_string_buf(buf, buf_w, buf_h, x, y, color, font_id, size, text.as_ptr(), text.len() as u32); }
+    unsafe {
+        font_draw_string_buf(
+            buf,
+            buf_w,
+            buf_h,
+            x,
+            y,
+            color,
+            font_id,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
+        );
+    }
 }
 
 #[cfg(feature = "host")]
@@ -142,5 +232,7 @@ pub fn line_height(font_id: u32, size: u16) -> u32 {
 
 #[cfg(feature = "host")]
 pub fn set_subpixel(enabled: bool) {
-    unsafe { font_set_subpixel(if enabled { 1 } else { 0 }); }
+    unsafe {
+        font_set_subpixel(if enabled { 1 } else { 0 });
+    }
 }

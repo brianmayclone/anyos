@@ -3,12 +3,12 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::i18n;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::i18n;
-use libanyui_client as anyui;
 use anyui::IconType;
 use anyui::Widget;
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
@@ -62,30 +62,63 @@ struct ColorTheme {
 }
 
 const THEME_DARK: ColorTheme = ColorTheme {
-    bg_added: BG_ADDED, bg_deleted: BG_DELETED, bg_changed: BG_CHANGED,
-    conn_added: CONN_ADDED, conn_deleted: CONN_DELETED, conn_changed: CONN_CHANGED,
-    bg_added_cur: BG_ADDED_CUR, bg_deleted_cur: BG_DELETED_CUR, bg_changed_cur: BG_CHANGED_CUR,
-    conn_added_cur: CONN_ADDED_CUR, conn_deleted_cur: CONN_DELETED_CUR, conn_changed_cur: CONN_CHANGED_CUR,
-    text_added: TEXT_ADDED, text_deleted: TEXT_DELETED, text_changed: TEXT_CHANGED,
-    text_changed_hl: TEXT_CHANGED_HL, line_num_color: LINE_NUM_COLOR,
+    bg_added: BG_ADDED,
+    bg_deleted: BG_DELETED,
+    bg_changed: BG_CHANGED,
+    conn_added: CONN_ADDED,
+    conn_deleted: CONN_DELETED,
+    conn_changed: CONN_CHANGED,
+    bg_added_cur: BG_ADDED_CUR,
+    bg_deleted_cur: BG_DELETED_CUR,
+    bg_changed_cur: BG_CHANGED_CUR,
+    conn_added_cur: CONN_ADDED_CUR,
+    conn_deleted_cur: CONN_DELETED_CUR,
+    conn_changed_cur: CONN_CHANGED_CUR,
+    text_added: TEXT_ADDED,
+    text_deleted: TEXT_DELETED,
+    text_changed: TEXT_CHANGED,
+    text_changed_hl: TEXT_CHANGED_HL,
+    line_num_color: LINE_NUM_COLOR,
 };
 
 const THEME_LIGHT: ColorTheme = ColorTheme {
-    bg_added: 0xFFD4EDDA, bg_deleted: 0xFFF8D7DA, bg_changed: 0xFFFFF3CD,
-    conn_added: 0xFF28A745, conn_deleted: 0xFFDC3545, conn_changed: 0xFFFFC107,
-    bg_added_cur: 0xFFC3E6CB, bg_deleted_cur: 0xFFF5C6CB, bg_changed_cur: 0xFFFFEEBA,
-    conn_added_cur: 0xFF1E7E34, conn_deleted_cur: 0xFFC82333, conn_changed_cur: 0xFFE0A800,
-    text_added: 0xFF155724, text_deleted: 0xFF721C24, text_changed: 0xFF856404,
-    text_changed_hl: 0xFF000000, line_num_color: 0xFF999999,
+    bg_added: 0xFFD4EDDA,
+    bg_deleted: 0xFFF8D7DA,
+    bg_changed: 0xFFFFF3CD,
+    conn_added: 0xFF28A745,
+    conn_deleted: 0xFFDC3545,
+    conn_changed: 0xFFFFC107,
+    bg_added_cur: 0xFFC3E6CB,
+    bg_deleted_cur: 0xFFF5C6CB,
+    bg_changed_cur: 0xFFFFEEBA,
+    conn_added_cur: 0xFF1E7E34,
+    conn_deleted_cur: 0xFFC82333,
+    conn_changed_cur: 0xFFE0A800,
+    text_added: 0xFF155724,
+    text_deleted: 0xFF721C24,
+    text_changed: 0xFF856404,
+    text_changed_hl: 0xFF000000,
+    line_num_color: 0xFF999999,
 };
 
 const THEME_HIGH_CONTRAST: ColorTheme = ColorTheme {
-    bg_added: 0xFF003300, bg_deleted: 0xFF330000, bg_changed: 0xFF333300,
-    conn_added: 0xFF00FF00, conn_deleted: 0xFFFF0000, conn_changed: 0xFFFFFF00,
-    bg_added_cur: 0xFF004400, bg_deleted_cur: 0xFF440000, bg_changed_cur: 0xFF444400,
-    conn_added_cur: 0xFF00FF00, conn_deleted_cur: 0xFFFF0000, conn_changed_cur: 0xFFFFFF00,
-    text_added: 0xFF00FF00, text_deleted: 0xFFFF4444, text_changed: 0xFFFFFF00,
-    text_changed_hl: 0xFFFFFFFF, line_num_color: 0xFF888888,
+    bg_added: 0xFF003300,
+    bg_deleted: 0xFF330000,
+    bg_changed: 0xFF333300,
+    conn_added: 0xFF00FF00,
+    conn_deleted: 0xFFFF0000,
+    conn_changed: 0xFFFFFF00,
+    bg_added_cur: 0xFF004400,
+    bg_deleted_cur: 0xFF440000,
+    bg_changed_cur: 0xFF444400,
+    conn_added_cur: 0xFF00FF00,
+    conn_deleted_cur: 0xFFFF0000,
+    conn_changed_cur: 0xFFFFFF00,
+    text_added: 0xFF00FF00,
+    text_deleted: 0xFFFF4444,
+    text_changed: 0xFFFFFF00,
+    text_changed_hl: 0xFFFFFFFF,
+    line_num_color: 0xFF888888,
 };
 
 // ── Syntax highlighting ─────────────────────────────────────────────────────
@@ -93,19 +126,19 @@ const THEME_HIGH_CONTRAST: ColorTheme = ColorTheme {
 #[derive(Clone, Copy, PartialEq)]
 enum SyntaxLang {
     None,
-    C,         // C/C++
+    C, // C/C++
     Rust,
     Python,
     Shell,
     JavaScript,
 }
 
-const SYN_KEYWORD: u32 = 0xFF569CD6;   // blue
-const SYN_STRING: u32 = 0xFFCE9178;    // orange
-const SYN_COMMENT: u32 = 0xFF6A9955;   // green
-const SYN_NUMBER: u32 = 0xFFB5CEA8;    // light green
-const SYN_TYPE: u32 = 0xFF4EC9B0;      // teal
-const SYN_PREPROC: u32 = 0xFFC586C0;   // purple
+const SYN_KEYWORD: u32 = 0xFF569CD6; // blue
+const SYN_STRING: u32 = 0xFFCE9178; // orange
+const SYN_COMMENT: u32 = 0xFF6A9955; // green
+const SYN_NUMBER: u32 = 0xFFB5CEA8; // light green
+const SYN_TYPE: u32 = 0xFF4EC9B0; // teal
+const SYN_PREPROC: u32 = 0xFFC586C0; // purple
 
 fn detect_language(path: &str) -> SyntaxLang {
     let ext = path.rsplit('.').next().unwrap_or("");
@@ -135,17 +168,23 @@ fn colorize_line(line: &[u8], lang: SyntaxLang) -> Vec<u32> {
     while i < n {
         // Line comments
         if i + 1 < n && line[i] == b'/' && line[i + 1] == b'/' {
-            for j in i..n { colors[j] = SYN_COMMENT; }
+            for j in i..n {
+                colors[j] = SYN_COMMENT;
+            }
             break;
         }
         // Python/Shell comments
         if line[i] == b'#' && (lang == SyntaxLang::Python || lang == SyntaxLang::Shell) {
-            for j in i..n { colors[j] = SYN_COMMENT; }
+            for j in i..n {
+                colors[j] = SYN_COMMENT;
+            }
             break;
         }
         // Preprocessor
         if i == 0 && line[i] == b'#' && (lang == SyntaxLang::C) {
-            for j in 0..n { colors[j] = SYN_PREPROC; }
+            for j in 0..n {
+                colors[j] = SYN_PREPROC;
+            }
             break;
         }
         // Strings
@@ -154,31 +193,50 @@ fn colorize_line(line: &[u8], lang: SyntaxLang) -> Vec<u32> {
             let start = i;
             i += 1;
             while i < n && line[i] != quote {
-                if line[i] == b'\\' && i + 1 < n { i += 1; }
+                if line[i] == b'\\' && i + 1 < n {
+                    i += 1;
+                }
                 i += 1;
             }
-            if i < n { i += 1; }
-            for j in start..i { colors[j] = SYN_STRING; }
+            if i < n {
+                i += 1;
+            }
+            for j in start..i {
+                colors[j] = SYN_STRING;
+            }
             continue;
         }
         // Numbers
         if line[i].is_ascii_digit() && (i == 0 || !is_ident_char(line[i - 1])) {
             let start = i;
-            while i < n && (line[i].is_ascii_alphanumeric() || line[i] == b'.' || line[i] == b'x' || line[i] == b'X') {
+            while i < n
+                && (line[i].is_ascii_alphanumeric()
+                    || line[i] == b'.'
+                    || line[i] == b'x'
+                    || line[i] == b'X')
+            {
                 i += 1;
             }
-            for j in start..i { colors[j] = SYN_NUMBER; }
+            for j in start..i {
+                colors[j] = SYN_NUMBER;
+            }
             continue;
         }
         // Identifiers / keywords
         if line[i].is_ascii_alphabetic() || line[i] == b'_' {
             let start = i;
-            while i < n && is_ident_char(line[i]) { i += 1; }
+            while i < n && is_ident_char(line[i]) {
+                i += 1;
+            }
             let word = &line[start..i];
             if is_keyword(word, lang) {
-                for j in start..i { colors[j] = SYN_KEYWORD; }
+                for j in start..i {
+                    colors[j] = SYN_KEYWORD;
+                }
             } else if is_type_word(word, lang) {
-                for j in start..i { colors[j] = SYN_TYPE; }
+                for j in start..i {
+                    colors[j] = SYN_TYPE;
+                }
             }
             continue;
         }
@@ -189,40 +247,197 @@ fn colorize_line(line: &[u8], lang: SyntaxLang) -> Vec<u32> {
 
 fn is_keyword(word: &[u8], lang: SyntaxLang) -> bool {
     match lang {
-        SyntaxLang::C => matches!(word,
-            b"if" | b"else" | b"for" | b"while" | b"do" | b"switch" | b"case" | b"break" |
-            b"continue" | b"return" | b"goto" | b"typedef" | b"struct" | b"union" | b"enum" |
-            b"const" | b"static" | b"extern" | b"inline" | b"sizeof" | b"volatile" |
-            b"class" | b"public" | b"private" | b"protected" | b"virtual" | b"override" |
-            b"template" | b"typename" | b"namespace" | b"using" | b"new" | b"delete" |
-            b"try" | b"catch" | b"throw" | b"nullptr" | b"auto" | b"constexpr"
+        SyntaxLang::C => matches!(
+            word,
+            b"if"
+                | b"else"
+                | b"for"
+                | b"while"
+                | b"do"
+                | b"switch"
+                | b"case"
+                | b"break"
+                | b"continue"
+                | b"return"
+                | b"goto"
+                | b"typedef"
+                | b"struct"
+                | b"union"
+                | b"enum"
+                | b"const"
+                | b"static"
+                | b"extern"
+                | b"inline"
+                | b"sizeof"
+                | b"volatile"
+                | b"class"
+                | b"public"
+                | b"private"
+                | b"protected"
+                | b"virtual"
+                | b"override"
+                | b"template"
+                | b"typename"
+                | b"namespace"
+                | b"using"
+                | b"new"
+                | b"delete"
+                | b"try"
+                | b"catch"
+                | b"throw"
+                | b"nullptr"
+                | b"auto"
+                | b"constexpr"
         ),
-        SyntaxLang::Rust => matches!(word,
-            b"fn" | b"let" | b"mut" | b"if" | b"else" | b"for" | b"while" | b"loop" |
-            b"match" | b"return" | b"break" | b"continue" | b"struct" | b"enum" | b"impl" |
-            b"trait" | b"pub" | b"use" | b"mod" | b"crate" | b"self" | b"super" | b"as" |
-            b"in" | b"ref" | b"move" | b"where" | b"type" | b"const" | b"static" |
-            b"unsafe" | b"extern" | b"async" | b"await" | b"dyn" | b"true" | b"false"
+        SyntaxLang::Rust => matches!(
+            word,
+            b"fn"
+                | b"let"
+                | b"mut"
+                | b"if"
+                | b"else"
+                | b"for"
+                | b"while"
+                | b"loop"
+                | b"match"
+                | b"return"
+                | b"break"
+                | b"continue"
+                | b"struct"
+                | b"enum"
+                | b"impl"
+                | b"trait"
+                | b"pub"
+                | b"use"
+                | b"mod"
+                | b"crate"
+                | b"self"
+                | b"super"
+                | b"as"
+                | b"in"
+                | b"ref"
+                | b"move"
+                | b"where"
+                | b"type"
+                | b"const"
+                | b"static"
+                | b"unsafe"
+                | b"extern"
+                | b"async"
+                | b"await"
+                | b"dyn"
+                | b"true"
+                | b"false"
         ),
-        SyntaxLang::Python => matches!(word,
-            b"def" | b"class" | b"if" | b"elif" | b"else" | b"for" | b"while" | b"return" |
-            b"import" | b"from" | b"as" | b"with" | b"try" | b"except" | b"finally" |
-            b"raise" | b"pass" | b"break" | b"continue" | b"lambda" | b"yield" | b"in" |
-            b"not" | b"and" | b"or" | b"is" | b"True" | b"False" | b"None" | b"self" |
-            b"global" | b"nonlocal" | b"assert" | b"del" | b"async" | b"await"
+        SyntaxLang::Python => matches!(
+            word,
+            b"def"
+                | b"class"
+                | b"if"
+                | b"elif"
+                | b"else"
+                | b"for"
+                | b"while"
+                | b"return"
+                | b"import"
+                | b"from"
+                | b"as"
+                | b"with"
+                | b"try"
+                | b"except"
+                | b"finally"
+                | b"raise"
+                | b"pass"
+                | b"break"
+                | b"continue"
+                | b"lambda"
+                | b"yield"
+                | b"in"
+                | b"not"
+                | b"and"
+                | b"or"
+                | b"is"
+                | b"True"
+                | b"False"
+                | b"None"
+                | b"self"
+                | b"global"
+                | b"nonlocal"
+                | b"assert"
+                | b"del"
+                | b"async"
+                | b"await"
         ),
-        SyntaxLang::Shell => matches!(word,
-            b"if" | b"then" | b"else" | b"elif" | b"fi" | b"for" | b"while" | b"do" |
-            b"done" | b"case" | b"esac" | b"function" | b"return" | b"local" | b"export" |
-            b"source" | b"in" | b"select" | b"until" | b"shift" | b"eval" | b"exec" |
-            b"exit" | b"set" | b"unset" | b"readonly" | b"declare" | b"typeset"
+        SyntaxLang::Shell => matches!(
+            word,
+            b"if"
+                | b"then"
+                | b"else"
+                | b"elif"
+                | b"fi"
+                | b"for"
+                | b"while"
+                | b"do"
+                | b"done"
+                | b"case"
+                | b"esac"
+                | b"function"
+                | b"return"
+                | b"local"
+                | b"export"
+                | b"source"
+                | b"in"
+                | b"select"
+                | b"until"
+                | b"shift"
+                | b"eval"
+                | b"exec"
+                | b"exit"
+                | b"set"
+                | b"unset"
+                | b"readonly"
+                | b"declare"
+                | b"typeset"
         ),
-        SyntaxLang::JavaScript => matches!(word,
-            b"function" | b"var" | b"let" | b"const" | b"if" | b"else" | b"for" | b"while" |
-            b"do" | b"switch" | b"case" | b"break" | b"continue" | b"return" | b"new" |
-            b"delete" | b"typeof" | b"instanceof" | b"in" | b"of" | b"class" | b"extends" |
-            b"import" | b"export" | b"default" | b"try" | b"catch" | b"finally" | b"throw" |
-            b"async" | b"await" | b"yield" | b"this" | b"super" | b"true" | b"false" | b"null"
+        SyntaxLang::JavaScript => matches!(
+            word,
+            b"function"
+                | b"var"
+                | b"let"
+                | b"const"
+                | b"if"
+                | b"else"
+                | b"for"
+                | b"while"
+                | b"do"
+                | b"switch"
+                | b"case"
+                | b"break"
+                | b"continue"
+                | b"return"
+                | b"new"
+                | b"delete"
+                | b"typeof"
+                | b"instanceof"
+                | b"in"
+                | b"of"
+                | b"class"
+                | b"extends"
+                | b"import"
+                | b"export"
+                | b"default"
+                | b"try"
+                | b"catch"
+                | b"finally"
+                | b"throw"
+                | b"async"
+                | b"await"
+                | b"yield"
+                | b"this"
+                | b"super"
+                | b"true"
+                | b"false"
+                | b"null"
         ),
         SyntaxLang::None => false,
     }
@@ -230,25 +445,98 @@ fn is_keyword(word: &[u8], lang: SyntaxLang) -> bool {
 
 fn is_type_word(word: &[u8], lang: SyntaxLang) -> bool {
     match lang {
-        SyntaxLang::C => matches!(word,
-            b"int" | b"char" | b"float" | b"double" | b"void" | b"long" | b"short" |
-            b"unsigned" | b"signed" | b"bool" | b"size_t" | b"uint8_t" | b"uint16_t" |
-            b"uint32_t" | b"uint64_t" | b"int8_t" | b"int16_t" | b"int32_t" | b"int64_t" |
-            b"string" | b"vector" | b"map" | b"set"
+        SyntaxLang::C => matches!(
+            word,
+            b"int"
+                | b"char"
+                | b"float"
+                | b"double"
+                | b"void"
+                | b"long"
+                | b"short"
+                | b"unsigned"
+                | b"signed"
+                | b"bool"
+                | b"size_t"
+                | b"uint8_t"
+                | b"uint16_t"
+                | b"uint32_t"
+                | b"uint64_t"
+                | b"int8_t"
+                | b"int16_t"
+                | b"int32_t"
+                | b"int64_t"
+                | b"string"
+                | b"vector"
+                | b"map"
+                | b"set"
         ),
-        SyntaxLang::Rust => matches!(word,
-            b"u8" | b"u16" | b"u32" | b"u64" | b"u128" | b"usize" | b"i8" | b"i16" |
-            b"i32" | b"i64" | b"i128" | b"isize" | b"f32" | b"f64" | b"bool" | b"char" |
-            b"str" | b"String" | b"Vec" | b"Option" | b"Result" | b"Box" | b"Rc" | b"Arc" |
-            b"Self" | b"Some" | b"None" | b"Ok" | b"Err"
+        SyntaxLang::Rust => matches!(
+            word,
+            b"u8"
+                | b"u16"
+                | b"u32"
+                | b"u64"
+                | b"u128"
+                | b"usize"
+                | b"i8"
+                | b"i16"
+                | b"i32"
+                | b"i64"
+                | b"i128"
+                | b"isize"
+                | b"f32"
+                | b"f64"
+                | b"bool"
+                | b"char"
+                | b"str"
+                | b"String"
+                | b"Vec"
+                | b"Option"
+                | b"Result"
+                | b"Box"
+                | b"Rc"
+                | b"Arc"
+                | b"Self"
+                | b"Some"
+                | b"None"
+                | b"Ok"
+                | b"Err"
         ),
-        SyntaxLang::Python => matches!(word,
-            b"int" | b"float" | b"str" | b"bool" | b"list" | b"dict" | b"set" | b"tuple" |
-            b"bytes" | b"type" | b"object" | b"range" | b"print" | b"len" | b"super"
+        SyntaxLang::Python => matches!(
+            word,
+            b"int"
+                | b"float"
+                | b"str"
+                | b"bool"
+                | b"list"
+                | b"dict"
+                | b"set"
+                | b"tuple"
+                | b"bytes"
+                | b"type"
+                | b"object"
+                | b"range"
+                | b"print"
+                | b"len"
+                | b"super"
         ),
-        SyntaxLang::JavaScript => matches!(word,
-            b"Array" | b"Object" | b"String" | b"Number" | b"Boolean" | b"Map" | b"Set" |
-            b"Promise" | b"undefined" | b"NaN" | b"Infinity" | b"console" | b"document" | b"window"
+        SyntaxLang::JavaScript => matches!(
+            word,
+            b"Array"
+                | b"Object"
+                | b"String"
+                | b"Number"
+                | b"Boolean"
+                | b"Map"
+                | b"Set"
+                | b"Promise"
+                | b"undefined"
+                | b"NaN"
+                | b"Infinity"
+                | b"console"
+                | b"document"
+                | b"window"
         ),
         _ => false,
     }
@@ -277,7 +565,9 @@ fn strip_comments(line: &str, lang: SyntaxLang, in_block_comment: &mut bool) -> 
             continue;
         }
         // Block comment start /* (C, Rust, JS)
-        if i + 1 < n && bytes[i] == b'/' && bytes[i + 1] == b'*'
+        if i + 1 < n
+            && bytes[i] == b'/'
+            && bytes[i + 1] == b'*'
             && (lang == SyntaxLang::C || lang == SyntaxLang::Rust || lang == SyntaxLang::JavaScript)
         {
             *in_block_comment = true;
@@ -285,7 +575,9 @@ fn strip_comments(line: &str, lang: SyntaxLang, in_block_comment: &mut bool) -> 
             continue;
         }
         // Line comment //
-        if i + 1 < n && bytes[i] == b'/' && bytes[i + 1] == b'/'
+        if i + 1 < n
+            && bytes[i] == b'/'
+            && bytes[i + 1] == b'/'
             && (lang == SyntaxLang::C || lang == SyntaxLang::Rust || lang == SyntaxLang::JavaScript)
         {
             break;
@@ -398,9 +690,7 @@ fn compute_edit_script(left: &[String], right: &[String]) -> Vec<EditOp> {
         while k <= k_max {
             let ki = (k + offset) as usize;
 
-            let mut x = if k == k_min
-                || (k != k_max && v[ki - 1] < v[ki + 1])
-            {
+            let mut x = if k == k_min || (k != k_max && v[ki - 1] < v[ki + 1]) {
                 v[ki + 1]
             } else {
                 v[ki - 1] + 1
@@ -568,9 +858,17 @@ fn match_block(
     let mut sims: Vec<usize> = Vec::new();
     sims.resize(nd * ni, 0);
     for d in 0..nd {
-        let ls = if deletes[d] < left.len() { left[deletes[d]].as_str() } else { "" };
+        let ls = if deletes[d] < left.len() {
+            left[deletes[d]].as_str()
+        } else {
+            ""
+        };
         for ins in 0..ni {
-            let rs = if inserts[ins] < right.len() { right[inserts[ins]].as_str() } else { "" };
+            let rs = if inserts[ins] < right.len() {
+                right[inserts[ins]].as_str()
+            } else {
+                ""
+            };
             sims[d * ni + ins] = line_similarity(ls, rs);
         }
     }
@@ -796,7 +1094,9 @@ fn parse_args(raw: &str) -> CliArgs {
     let mut rest = raw;
     while !rest.is_empty() {
         rest = rest.trim_start();
-        if rest.is_empty() { break; }
+        if rest.is_empty() {
+            break;
+        }
         if let Some(pos) = rest.find(' ') {
             tokens.push(&rest[..pos]);
             rest = &rest[pos + 1..];
@@ -952,10 +1252,14 @@ fn write_num(buf: &mut Vec<u8>, n: usize) {
 }
 
 fn make_title(left_path: &str, right_path: &str) -> String {
-    let left = if left_path.is_empty() { i18n::t("(none)") } else {
+    let left = if left_path.is_empty() {
+        i18n::t("(none)")
+    } else {
         left_path.rsplit('/').next().unwrap_or(left_path)
     };
-    let right = if right_path.is_empty() { i18n::t("(none)") } else {
+    let right = if right_path.is_empty() {
+        i18n::t("(none)")
+    } else {
         right_path.rsplit('/').next().unwrap_or(right_path)
     };
     anyos_std::format!("{} vs {} - {}", left, right, i18n::t("Diff"))
@@ -1053,9 +1357,22 @@ fn expand_to_word_boundaries(text: &[u8], flags: &mut [u8]) {
 }
 
 fn is_word_sep(b: u8) -> bool {
-    b == b' ' || b == b'\t' || b == b',' || b == b';' || b == b'.' || b == b':' ||
-    b == b'(' || b == b')' || b == b'[' || b == b']' || b == b'{' || b == b'}' ||
-    b == b'<' || b == b'>' || b == b'"' || b == b'\''
+    b == b' '
+        || b == b'\t'
+        || b == b','
+        || b == b';'
+        || b == b'.'
+        || b == b':'
+        || b == b'('
+        || b == b')'
+        || b == b'['
+        || b == b']'
+        || b == b'{'
+        || b == b'}'
+        || b == b'<'
+        || b == b'>'
+        || b == b'"'
+        || b == b'\''
 }
 
 // ── Tab expansion & whitespace visualization ────────────────────────────────
@@ -1256,7 +1573,9 @@ fn populate_grid(s: &AppState) {
                             syn.resize(left_text_len, 0);
                         }
                         for &pos in &left_ws_markers {
-                            if pos < syn.len() { syn[pos] = WS_DIM_COLOR; }
+                            if pos < syn.len() {
+                                syn[pos] = WS_DIM_COLOR;
+                            }
                         }
                     }
                     if !syn.is_empty() {
@@ -1267,7 +1586,9 @@ fn populate_grid(s: &AppState) {
                     let mut syn: Vec<u32> = Vec::new();
                     syn.resize(left_text_len, 0);
                     for &pos in &left_ws_markers {
-                        if pos < syn.len() { syn[pos] = WS_DIM_COLOR; }
+                        if pos < syn.len() {
+                            syn[pos] = WS_DIM_COLOR;
+                        }
                     }
                     char_color_offsets[base + 1] = char_colors.len() as u32;
                     char_colors.extend_from_slice(&syn);
@@ -1280,7 +1601,9 @@ fn populate_grid(s: &AppState) {
                             syn.resize(right_text_len, 0);
                         }
                         for &pos in &right_ws_markers {
-                            if pos < syn.len() { syn[pos] = WS_DIM_COLOR; }
+                            if pos < syn.len() {
+                                syn[pos] = WS_DIM_COLOR;
+                            }
                         }
                     }
                     if !syn.is_empty() {
@@ -1291,7 +1614,9 @@ fn populate_grid(s: &AppState) {
                     let mut syn: Vec<u32> = Vec::new();
                     syn.resize(right_text_len, 0);
                     for &pos in &right_ws_markers {
-                        if pos < syn.len() { syn[pos] = WS_DIM_COLOR; }
+                        if pos < syn.len() {
+                            syn[pos] = WS_DIM_COLOR;
+                        }
                     }
                     char_color_offsets[base + 4] = char_colors.len() as u32;
                     char_colors.extend_from_slice(&syn);
@@ -1335,12 +1660,20 @@ fn populate_grid(s: &AppState) {
                             char_colors.push(WS_DIM_COLOR);
                         } else {
                             // Approximate: same position mapping (works when only spaces expand)
-                            char_colors.push(if i < left_diff.len() && left_diff[i] != 0 { t.text_changed_hl } else { 0 });
+                            char_colors.push(if i < left_diff.len() && left_diff[i] != 0 {
+                                t.text_changed_hl
+                            } else {
+                                0
+                            });
                         }
                     }
                 } else {
                     for idx in 0..left_diff.len() {
-                        char_colors.push(if left_diff[idx] != 0 { t.text_changed_hl } else { 0 });
+                        char_colors.push(if left_diff[idx] != 0 {
+                            t.text_changed_hl
+                        } else {
+                            0
+                        });
                     }
                 }
 
@@ -1352,12 +1685,20 @@ fn populate_grid(s: &AppState) {
                         if ws_mark {
                             char_colors.push(WS_DIM_COLOR);
                         } else {
-                            char_colors.push(if i < right_diff.len() && right_diff[i] != 0 { t.text_changed_hl } else { 0 });
+                            char_colors.push(if i < right_diff.len() && right_diff[i] != 0 {
+                                t.text_changed_hl
+                            } else {
+                                0
+                            });
                         }
                     }
                 } else {
                     for idx in 0..right_diff.len() {
-                        char_colors.push(if right_diff[idx] != 0 { t.text_changed_hl } else { 0 });
+                        char_colors.push(if right_diff[idx] != 0 {
+                            t.text_changed_hl
+                        } else {
+                            0
+                        });
                     }
                 }
             }
@@ -1382,12 +1723,20 @@ fn populate_grid(s: &AppState) {
             DiffKind::Deleted => {
                 bg_colors[base + 0] = if cur { t.bg_deleted_cur } else { t.bg_deleted };
                 bg_colors[base + 1] = if cur { t.bg_deleted_cur } else { t.bg_deleted };
-                bg_colors[base + 2] = if cur { t.conn_deleted_cur } else { t.conn_deleted };
+                bg_colors[base + 2] = if cur {
+                    t.conn_deleted_cur
+                } else {
+                    t.conn_deleted
+                };
             }
             DiffKind::Changed => {
                 bg_colors[base + 0] = if cur { t.bg_changed_cur } else { t.bg_changed };
                 bg_colors[base + 1] = if cur { t.bg_changed_cur } else { t.bg_changed };
-                bg_colors[base + 2] = if cur { t.conn_changed_cur } else { t.conn_changed };
+                bg_colors[base + 2] = if cur {
+                    t.conn_changed_cur
+                } else {
+                    t.conn_changed
+                };
                 bg_colors[base + 3] = if cur { t.bg_changed_cur } else { t.bg_changed };
                 bg_colors[base + 4] = if cur { t.bg_changed_cur } else { t.bg_changed };
             }
@@ -1407,12 +1756,32 @@ fn populate_grid(s: &AppState) {
         // Determine hunk color from the first diff line kind
         let color = if hunk.start < s.diff_lines.len() {
             match s.diff_lines[hunk.start].kind {
-                DiffKind::Added => if is_cur { t.conn_added_cur } else { t.conn_added },
-                DiffKind::Deleted => if is_cur { t.conn_deleted_cur } else { t.conn_deleted },
-                DiffKind::Changed => if is_cur { t.conn_changed_cur } else { t.conn_changed },
+                DiffKind::Added => {
+                    if is_cur {
+                        t.conn_added_cur
+                    } else {
+                        t.conn_added
+                    }
+                }
+                DiffKind::Deleted => {
+                    if is_cur {
+                        t.conn_deleted_cur
+                    } else {
+                        t.conn_deleted
+                    }
+                }
+                DiffKind::Changed => {
+                    if is_cur {
+                        t.conn_changed_cur
+                    } else {
+                        t.conn_changed
+                    }
+                }
                 DiffKind::Equal => 0,
             }
-        } else { 0 };
+        } else {
+            0
+        };
         if color != 0 {
             connectors.push((hunk.start as u32, hunk.end as u32, color, 1));
         }
@@ -1425,34 +1794,61 @@ fn update_labels(s: &AppState) {
     let stats = anyos_std::format!("{}A {}D {}C", s.num_added, s.num_deleted, s.num_changed);
     s.stats_label.set_text(&stats);
 
-    let left_name = if s.left_path.is_empty() { i18n::t("(none)") } else {
+    let left_name = if s.left_path.is_empty() {
+        i18n::t("(none)")
+    } else {
         s.left_path.rsplit('/').next().unwrap_or(&s.left_path)
     };
-    let right_name = if s.right_path.is_empty() { i18n::t("(none)") } else {
+    let right_name = if s.right_path.is_empty() {
+        i18n::t("(none)")
+    } else {
         s.right_path.rsplit('/').next().unwrap_or(&s.right_path)
     };
     let lmod = if s.left_modified { "*" } else { "" };
     let rmod = if s.right_modified { "*" } else { "" };
 
-    let status = anyos_std::format!("{}A {}D {}C  |  {}{} vs {}{}  |  {} {}",
-        s.num_added, s.num_deleted, s.num_changed,
-        left_name, lmod, right_name, rmod,
-        s.diff_lines.len(), i18n::t("lines"));
+    let status = anyos_std::format!(
+        "{}A {}D {}C  |  {}{} vs {}{}  |  {} {}",
+        s.num_added,
+        s.num_deleted,
+        s.num_changed,
+        left_name,
+        lmod,
+        right_name,
+        rmod,
+        s.diff_lines.len(),
+        i18n::t("lines")
+    );
     s.status_label.set_text(&status);
 
     if !s.hunks.is_empty() {
-        let hunk_info = anyos_std::format!("{} {}/{}", i18n::t("Diff"), s.current_hunk + 1, s.hunks.len());
+        let hunk_info = anyos_std::format!(
+            "{} {}/{}",
+            i18n::t("Diff"),
+            s.current_hunk + 1,
+            s.hunks.len()
+        );
         s.hunk_label.set_text(&hunk_info);
     } else {
         s.hunk_label.set_text(i18n::t("No diffs"));
     }
 
     // File info bar
-    let left_info = anyos_std::format!("{}{} ({} {}) UTF-8",
-        left_name, lmod, s.left_lines.len(), i18n::t("lines"));
+    let left_info = anyos_std::format!(
+        "{}{} ({} {}) UTF-8",
+        left_name,
+        lmod,
+        s.left_lines.len(),
+        i18n::t("lines")
+    );
     s.left_info_label.set_text(&left_info);
-    let right_info = anyos_std::format!("{}{} ({} {}) UTF-8",
-        right_name, rmod, s.right_lines.len(), i18n::t("lines"));
+    let right_info = anyos_std::format!(
+        "{}{} ({} {}) UTF-8",
+        right_name,
+        rmod,
+        s.right_lines.len(),
+        i18n::t("lines")
+    );
     s.right_info_label.set_text(&right_info);
 }
 
@@ -1476,7 +1872,9 @@ fn push_undo() {
 
 fn undo() {
     let s = app();
-    if s.undo_stack.is_empty() { return; }
+    if s.undo_stack.is_empty() {
+        return;
+    }
     s.redo_stack.push(UndoState {
         left_lines: s.left_lines.clone(),
         right_lines: s.right_lines.clone(),
@@ -1493,7 +1891,9 @@ fn undo() {
 
 fn redo() {
     let s = app();
-    if s.redo_stack.is_empty() { return; }
+    if s.redo_stack.is_empty() {
+        return;
+    }
     s.undo_stack.push(UndoState {
         left_lines: s.left_lines.clone(),
         right_lines: s.right_lines.clone(),
@@ -1534,29 +1934,36 @@ fn normalize_for_compare(line: &str, ignore_ws: bool) -> String {
 }
 
 fn lines_for_compare(
-    lines: &[String], ignore_ws: bool, ignore_blank: bool,
-    ignore_comments: bool, lang: SyntaxLang, text_filter: &str,
+    lines: &[String],
+    ignore_ws: bool,
+    ignore_blank: bool,
+    ignore_comments: bool,
+    lang: SyntaxLang,
+    text_filter: &str,
 ) -> Vec<String> {
     let mut in_block = false;
-    lines.iter().map(|l| {
-        let mut s = if ignore_comments && lang != SyntaxLang::None {
-            strip_comments(l, lang, &mut in_block)
-        } else {
-            String::from(l.as_str())
-        };
-        if !text_filter.is_empty() {
-            // Simple substring removal filter
-            while let Some(pos) = s.find(text_filter) {
-                let end = pos + text_filter.len();
-                s = anyos_std::format!("{}{}", &s[..pos], &s[end..]);
+    lines
+        .iter()
+        .map(|l| {
+            let mut s = if ignore_comments && lang != SyntaxLang::None {
+                strip_comments(l, lang, &mut in_block)
+            } else {
+                String::from(l.as_str())
+            };
+            if !text_filter.is_empty() {
+                // Simple substring removal filter
+                while let Some(pos) = s.find(text_filter) {
+                    let end = pos + text_filter.len();
+                    s = anyos_std::format!("{}{}", &s[..pos], &s[end..]);
+                }
             }
-        }
-        if ignore_blank && s.trim().is_empty() {
-            String::from("")
-        } else {
-            normalize_for_compare(&s, ignore_ws)
-        }
-    }).collect()
+            if ignore_blank && s.trim().is_empty() {
+                String::from("")
+            } else {
+                normalize_for_compare(&s, ignore_ws)
+            }
+        })
+        .collect()
 }
 
 // ── Actions ─────────────────────────────────────────────────────────────────
@@ -1564,12 +1971,20 @@ fn lines_for_compare(
 fn recompute() {
     let s = app();
     let left_cmp = lines_for_compare(
-        &s.left_lines, s.ignore_whitespace, s.ignore_blank_lines,
-        s.ignore_comments, s.left_lang, &s.text_filter,
+        &s.left_lines,
+        s.ignore_whitespace,
+        s.ignore_blank_lines,
+        s.ignore_comments,
+        s.left_lang,
+        &s.text_filter,
     );
     let right_cmp = lines_for_compare(
-        &s.right_lines, s.ignore_whitespace, s.ignore_blank_lines,
-        s.ignore_comments, s.right_lang, &s.text_filter,
+        &s.right_lines,
+        s.ignore_whitespace,
+        s.ignore_blank_lines,
+        s.ignore_comments,
+        s.right_lang,
+        &s.text_filter,
     );
     let ops = compute_edit_script(&left_cmp, &right_cmp);
     s.diff_lines = build_diff_lines(&ops, &left_cmp, &right_cmp);
@@ -1607,7 +2022,9 @@ fn open_right() {
 
 fn save_as_left() {
     let s = app();
-    let default = if s.left_path.is_empty() { "untitled.txt" } else {
+    let default = if s.left_path.is_empty() {
+        "untitled.txt"
+    } else {
         s.left_path.rsplit('/').next().unwrap_or("untitled.txt")
     };
     if let Some(path) = anyui::FileDialog::save_file(default) {
@@ -1622,7 +2039,9 @@ fn save_as_left() {
 
 fn save_as_right() {
     let s = app();
-    let default = if s.right_path.is_empty() { "untitled.txt" } else {
+    let default = if s.right_path.is_empty() {
+        "untitled.txt"
+    } else {
         s.right_path.rsplit('/').next().unwrap_or("untitled.txt")
     };
     if let Some(path) = anyui::FileDialog::save_file(default) {
@@ -1665,7 +2084,11 @@ fn toggle_ignore_blank_lines() {
 fn toggle_ignore_comments() {
     let s = app();
     s.ignore_comments = !s.ignore_comments;
-    let state = if s.ignore_comments { i18n::t("ON") } else { i18n::t("OFF") };
+    let state = if s.ignore_comments {
+        i18n::t("ON")
+    } else {
+        i18n::t("OFF")
+    };
     let msg = anyos_std::format!("{}: {}", i18n::t("Ignore comments"), state);
     s.status_label.set_text(&msg);
     recompute();
@@ -1773,7 +2196,9 @@ fn navigate_prev() {
 
 fn merge_hunk_to_right() {
     let s = app();
-    if s.hunks.is_empty() { return; }
+    if s.hunks.is_empty() {
+        return;
+    }
     push_undo();
     let hunk_start = s.hunks[s.current_hunk].start;
     let hunk_end = s.hunks[s.current_hunk].end;
@@ -1840,7 +2265,9 @@ fn merge_hunk_to_right() {
 
 fn merge_hunk_to_left() {
     let s = app();
-    if s.hunks.is_empty() { return; }
+    if s.hunks.is_empty() {
+        return;
+    }
     push_undo();
     let hunk_start = s.hunks[s.current_hunk].start;
     let hunk_end = s.hunks[s.current_hunk].end;
@@ -1909,7 +2336,9 @@ fn merge_hunk_to_left() {
 
 fn delete_hunk_right() {
     let s = app();
-    if s.hunks.is_empty() { return; }
+    if s.hunks.is_empty() {
+        return;
+    }
     push_undo();
     let hunk_start = s.hunks[s.current_hunk].start;
     let hunk_end = s.hunks[s.current_hunk].end;
@@ -1925,7 +2354,9 @@ fn delete_hunk_right() {
         }
     }
 
-    if to_remove.is_empty() { return; }
+    if to_remove.is_empty() {
+        return;
+    }
 
     let mut new_right: Vec<String> = Vec::new();
     for (i, line) in s.right_lines.iter().enumerate() {
@@ -1941,7 +2372,9 @@ fn delete_hunk_right() {
 
 fn delete_hunk_left() {
     let s = app();
-    if s.hunks.is_empty() { return; }
+    if s.hunks.is_empty() {
+        return;
+    }
     push_undo();
     let hunk_start = s.hunks[s.current_hunk].start;
     let hunk_end = s.hunks[s.current_hunk].end;
@@ -1957,7 +2390,9 @@ fn delete_hunk_left() {
         }
     }
 
-    if to_remove.is_empty() { return; }
+    if to_remove.is_empty() {
+        return;
+    }
 
     let mut new_left: Vec<String> = Vec::new();
     for (i, line) in s.left_lines.iter().enumerate() {
@@ -1978,7 +2413,9 @@ fn delete_hunk_left() {
 /// content at the hunk location).
 fn insert_hunk_to_right_above() {
     let s = app();
-    if s.hunks.is_empty() { return; }
+    if s.hunks.is_empty() {
+        return;
+    }
     push_undo();
     let hunk_start = s.hunks[s.current_hunk].start;
     let hunk_end = s.hunks[s.current_hunk].end;
@@ -2005,12 +2442,17 @@ fn insert_hunk_to_right_above() {
     let mut to_insert: Vec<String> = Vec::new();
     for i in hunk_start..hunk_end {
         if let Some(li) = s.diff_lines[i].left_idx {
-            if li < s.left_lines.len() && (s.diff_lines[i].kind == DiffKind::Deleted || s.diff_lines[i].kind == DiffKind::Changed) {
+            if li < s.left_lines.len()
+                && (s.diff_lines[i].kind == DiffKind::Deleted
+                    || s.diff_lines[i].kind == DiffKind::Changed)
+            {
                 to_insert.push(s.left_lines[li].clone());
             }
         }
     }
-    if to_insert.is_empty() { return; }
+    if to_insert.is_empty() {
+        return;
+    }
 
     // Insert into right_lines
     let mut new_right = Vec::new();
@@ -2032,7 +2474,9 @@ fn insert_hunk_to_right_above() {
 /// corresponding position.
 fn insert_hunk_to_left_above() {
     let s = app();
-    if s.hunks.is_empty() { return; }
+    if s.hunks.is_empty() {
+        return;
+    }
     push_undo();
     let hunk_start = s.hunks[s.current_hunk].start;
     let hunk_end = s.hunks[s.current_hunk].end;
@@ -2056,12 +2500,17 @@ fn insert_hunk_to_left_above() {
     let mut to_insert: Vec<String> = Vec::new();
     for i in hunk_start..hunk_end {
         if let Some(ri) = s.diff_lines[i].right_idx {
-            if ri < s.right_lines.len() && (s.diff_lines[i].kind == DiffKind::Added || s.diff_lines[i].kind == DiffKind::Changed) {
+            if ri < s.right_lines.len()
+                && (s.diff_lines[i].kind == DiffKind::Added
+                    || s.diff_lines[i].kind == DiffKind::Changed)
+            {
                 to_insert.push(s.right_lines[ri].clone());
             }
         }
     }
-    if to_insert.is_empty() { return; }
+    if to_insert.is_empty() {
+        return;
+    }
 
     let mut new_left = Vec::new();
     for i in 0..insert_at {
@@ -2119,7 +2568,9 @@ fn update_current_hunk_for_row(row: usize) {
 
 fn save_left() {
     let s = app();
-    if s.left_path.is_empty() { return; }
+    if s.left_path.is_empty() {
+        return;
+    }
     if save_file(&s.left_path, &s.left_lines) {
         s.left_modified = false;
         update_labels(s);
@@ -2128,7 +2579,9 @@ fn save_left() {
 
 fn save_right() {
     let s = app();
-    if s.right_path.is_empty() { return; }
+    if s.right_path.is_empty() {
+        return;
+    }
     if save_file(&s.right_path, &s.right_lines) {
         s.right_modified = false;
         update_labels(s);
@@ -2139,7 +2592,9 @@ fn save_right() {
 
 fn start_edit(row: usize) {
     let s = app();
-    if row >= s.diff_lines.len() { return; }
+    if row >= s.diff_lines.len() {
+        return;
+    }
 
     s.editing_row = Some(row);
     let dl = &s.diff_lines[row];
@@ -2221,7 +2676,9 @@ fn find_left_insert_pos(row: usize) -> usize {
     // Look backwards for the nearest line with a left_idx
     let mut i = row;
     loop {
-        if i == 0 { return 0; }
+        if i == 0 {
+            return 0;
+        }
         i -= 1;
         if let Some(li) = s.diff_lines[i].left_idx {
             return li + 1;
@@ -2233,7 +2690,9 @@ fn find_right_insert_pos(row: usize) -> usize {
     let s = app();
     let mut i = row;
     loop {
-        if i == 0 { return 0; }
+        if i == 0 {
+            return 0;
+        }
         i -= 1;
         if let Some(ri) = s.diff_lines[i].right_idx {
             return ri + 1;
@@ -2322,7 +2781,9 @@ fn do_search() {
 
 fn search_next() {
     let s = app();
-    if s.search_matches.is_empty() { return; }
+    if s.search_matches.is_empty() {
+        return;
+    }
     s.search_current = (s.search_current + 1) % s.search_matches.len();
     let row = s.search_matches[s.search_current];
     s.grid.set_selected_row(row as u32);
@@ -2332,7 +2793,9 @@ fn search_next() {
 
 fn search_prev() {
     let s = app();
-    if s.search_matches.is_empty() { return; }
+    if s.search_matches.is_empty() {
+        return;
+    }
     if s.search_current == 0 {
         s.search_current = s.search_matches.len() - 1;
     } else {
@@ -2350,8 +2813,10 @@ fn toggle_fullscreen() {
     let s = app();
     if s.fullscreen {
         // Restore
-        s.win.set_position(s.pre_fullscreen_pos.0, s.pre_fullscreen_pos.1);
-        s.win.set_size(s.pre_fullscreen_size.0, s.pre_fullscreen_size.1);
+        s.win
+            .set_position(s.pre_fullscreen_pos.0, s.pre_fullscreen_pos.1);
+        s.win
+            .set_size(s.pre_fullscreen_size.0, s.pre_fullscreen_size.1);
         s.fullscreen = false;
     } else {
         // Save current size/pos and maximize
@@ -2393,11 +2858,15 @@ fn do_goto_line() {
     let s = app();
     let mut buf = [0u8; 64];
     let len = s.goto_field.get_text(&mut buf);
-    if len == 0 { return; }
+    if len == 0 {
+        return;
+    }
     let text = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
     let text = text.trim();
     if let Some(line_num) = parse_number(text) {
-        if line_num == 0 { return; }
+        if line_num == 0 {
+            return;
+        }
         // Find the diff_lines row that contains this line number (left or right)
         for (i, dl) in s.diff_lines.iter().enumerate() {
             if let Some(li) = dl.left_idx {
@@ -2431,7 +2900,11 @@ fn parse_number(s: &str) -> Option<usize> {
             break;
         }
     }
-    if any { Some(n) } else { None }
+    if any {
+        Some(n)
+    } else {
+        None
+    }
 }
 
 // ── Text filter dialog ──────────────────────────────────────────────────────
@@ -2443,18 +2916,29 @@ fn prompt_text_filter() {
     s.goto_panel.set_visible(true);
     s.goto_field.set_text(&s.text_filter);
     s.goto_field.focus();
-    s.status_label.set_text("Enter text filter (empty to clear):");
+    s.status_label
+        .set_text("Enter text filter (empty to clear):");
 }
 
 // ── Output save ─────────────────────────────────────────────────────────────
 
 fn save_output() {
     let s = app();
-    if s.output_path.is_empty() { return; }
+    if s.output_path.is_empty() {
+        return;
+    }
     // Write unified diff output
     let mut output = String::new();
-    let left_name = if s.left_label.is_empty() { &s.left_path } else { &s.left_label };
-    let right_name = if s.right_label.is_empty() { &s.right_path } else { &s.right_label };
+    let left_name = if s.left_label.is_empty() {
+        &s.left_path
+    } else {
+        &s.left_label
+    };
+    let right_name = if s.right_label.is_empty() {
+        &s.right_path
+    } else {
+        &s.right_label
+    };
     output.push_str("--- ");
     output.push_str(left_name);
     output.push('\n');
@@ -2519,9 +3003,13 @@ fn save_output() {
 fn copy_selected_line() {
     let s = app();
     let row = s.grid.selected_row();
-    if row == u32::MAX { return; }
+    if row == u32::MAX {
+        return;
+    }
     let row = row as usize;
-    if row >= s.diff_lines.len() { return; }
+    if row >= s.diff_lines.len() {
+        return;
+    }
     let dl = &s.diff_lines[row];
 
     let mut text = String::new();
@@ -2529,7 +3017,9 @@ fn copy_selected_line() {
         text.push_str(&s.left_lines[li]);
     }
     if let Some(ri) = dl.right_idx {
-        if !text.is_empty() { text.push('\t'); }
+        if !text.is_empty() {
+            text.push('\t');
+        }
         text.push_str(&s.right_lines[ri]);
     }
     anyui::clipboard_set(&text);
@@ -2603,7 +3093,9 @@ fn handle_key(ke: &anyui::KeyEvent) {
         return;
     }
     // F3 or Ctrl+G: Search next
-    if ke.keycode == anyui::KEY_F3 || (ke.ctrl() && (ke.char_code == b'g' as u32 || ke.char_code == b'G' as u32)) {
+    if ke.keycode == anyui::KEY_F3
+        || (ke.ctrl() && (ke.char_code == b'g' as u32 || ke.char_code == b'G' as u32))
+    {
         search_next();
         return;
     }
@@ -2670,13 +3162,29 @@ fn main() {
     let right_lang = detect_language(&right_path);
 
     // Load files
-    let left_lines = if !left_path.is_empty() { load_lines(&left_path) } else { Vec::new() };
-    let right_lines = if !right_path.is_empty() { load_lines(&right_path) } else { Vec::new() };
+    let left_lines = if !left_path.is_empty() {
+        load_lines(&left_path)
+    } else {
+        Vec::new()
+    };
+    let right_lines = if !right_path.is_empty() {
+        load_lines(&right_path)
+    } else {
+        Vec::new()
+    };
 
     // Create window with labels if provided
     let title = if !cli.left_label.is_empty() || !cli.right_label.is_empty() {
-        let ll = if cli.left_label.is_empty() { left_path.rsplit('/').next().unwrap_or(i18n::t("(none)")) } else { &cli.left_label };
-        let rl = if cli.right_label.is_empty() { right_path.rsplit('/').next().unwrap_or(i18n::t("(none)")) } else { &cli.right_label };
+        let ll = if cli.left_label.is_empty() {
+            left_path.rsplit('/').next().unwrap_or(i18n::t("(none)"))
+        } else {
+            &cli.left_label
+        };
+        let rl = if cli.right_label.is_empty() {
+            right_path.rsplit('/').next().unwrap_or(i18n::t("(none)"))
+        } else {
+            &cli.right_label
+        };
         anyos_std::format!("{} vs {} - {}", ll, rl, i18n::t("Diff"))
     } else {
         make_title(&left_path, &right_path)
@@ -2693,7 +3201,7 @@ fn main() {
     toolbar.set_padding(4, 4, 4, 4);
 
     let ic = tc.text_secondary; // icon color
-    let isz: u32 = 18;         // icon size
+    let isz: u32 = 18; // icon size
 
     let btn_open_left = toolbar.add_icon_button("");
     btn_open_left.set_size(34, 28);
@@ -2787,30 +3295,39 @@ fn main() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("Open Left"), 0)
-            .item(2, i18n::t("Open Right"), 0)
-            .separator()
-            .item(3, i18n::t("Quit"), 0)
+        .item(1, i18n::t("Open Left"), 0)
+        .item(2, i18n::t("Open Right"), 0)
+        .separator()
+        .item(3, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("Navigate"))
-            .item(10, i18n::t("Previous Hunk"), 0)
-            .item(11, i18n::t("Next Hunk"), 0)
-            .item(12, i18n::t("First Hunk"), 0)
-            .item(13, i18n::t("Last Hunk"), 0)
+        .item(10, i18n::t("Previous Hunk"), 0)
+        .item(11, i18n::t("Next Hunk"), 0)
+        .item(12, i18n::t("First Hunk"), 0)
+        .item(13, i18n::t("Last Hunk"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => open_left(),
-            2 => open_right(),
-            3 => anyui::quit(),
-            10 => navigate_prev(),
-            11 => navigate_next(),
-            12 => { let s = app(); if !s.hunks.is_empty() { navigate_to_hunk(0); } }
-            13 => { let s = app(); if !s.hunks.is_empty() { let last = s.hunks.len() - 1; navigate_to_hunk(last); } }
-            _ => {}
+    menu.on_item(|e| match e.item_id {
+        1 => open_left(),
+        2 => open_right(),
+        3 => anyui::quit(),
+        10 => navigate_prev(),
+        11 => navigate_next(),
+        12 => {
+            let s = app();
+            if !s.hunks.is_empty() {
+                navigate_to_hunk(0);
+            }
         }
+        13 => {
+            let s = app();
+            if !s.hunks.is_empty() {
+                let last = s.hunks.len() - 1;
+                navigate_to_hunk(last);
+            }
+        }
+        _ => {}
     });
 
     // ── Status bar (add DOCK_BOTTOM first — goes to very bottom) ──
@@ -2967,10 +3484,16 @@ fn main() {
     grid.set_row_height(20);
     grid.set_header_height(24);
     grid.set_columns(&[
-        anyui::ColumnDef::new("#").width(50).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new("#")
+            .width(50)
+            .align(anyui::ALIGN_RIGHT),
         anyui::ColumnDef::new("Left").width(330),
-        anyui::ColumnDef::new(" ").width(50).align(anyui::ALIGN_CENTER),
-        anyui::ColumnDef::new("#").width(50).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new(" ")
+            .width(50)
+            .align(anyui::ALIGN_CENTER),
+        anyui::ColumnDef::new("#")
+            .width(50)
+            .align(anyui::ALIGN_RIGHT),
         anyui::ColumnDef::new("Right").width(330),
     ]);
     // ── Context menu on grid ──
@@ -3049,39 +3572,71 @@ fn main() {
     update_labels(s);
 
     // ── Register callbacks ──
-    btn_open_left.on_click(|_| { open_left(); });
-    btn_open_right.on_click(|_| { open_right(); });
-    btn_refresh.on_click(|_| { refresh(); });
-    btn_undo.on_click(|_| { undo(); });
-    btn_redo.on_click(|_| { redo(); });
-    btn_prev.on_click(|_| { navigate_prev(); });
-    btn_next.on_click(|_| { navigate_next(); });
-    btn_merge_right.on_click(|_| { merge_hunk_to_right(); });
-    btn_merge_left.on_click(|_| { merge_hunk_to_left(); });
-    btn_del_left.on_click(|_| { delete_hunk_left(); });
-    btn_del_right.on_click(|_| { delete_hunk_right(); });
-    btn_save_left.on_click(|_| { save_left(); });
-    btn_save_right.on_click(|_| { save_right(); });
-    btn_apply.on_click(|_| { apply_edit(); });
-    btn_cancel.on_click(|_| { cancel_edit(); });
-    btn_font_up.on_click(|_| { increase_font_size(); });
-    btn_font_down.on_click(|_| { decrease_font_size(); });
+    btn_open_left.on_click(|_| {
+        open_left();
+    });
+    btn_open_right.on_click(|_| {
+        open_right();
+    });
+    btn_refresh.on_click(|_| {
+        refresh();
+    });
+    btn_undo.on_click(|_| {
+        undo();
+    });
+    btn_redo.on_click(|_| {
+        redo();
+    });
+    btn_prev.on_click(|_| {
+        navigate_prev();
+    });
+    btn_next.on_click(|_| {
+        navigate_next();
+    });
+    btn_merge_right.on_click(|_| {
+        merge_hunk_to_right();
+    });
+    btn_merge_left.on_click(|_| {
+        merge_hunk_to_left();
+    });
+    btn_del_left.on_click(|_| {
+        delete_hunk_left();
+    });
+    btn_del_right.on_click(|_| {
+        delete_hunk_right();
+    });
+    btn_save_left.on_click(|_| {
+        save_left();
+    });
+    btn_save_right.on_click(|_| {
+        save_right();
+    });
+    btn_apply.on_click(|_| {
+        apply_edit();
+    });
+    btn_cancel.on_click(|_| {
+        cancel_edit();
+    });
+    btn_font_up.on_click(|_| {
+        increase_font_size();
+    });
+    btn_font_down.on_click(|_| {
+        decrease_font_size();
+    });
 
     // Context menu
-    ctx_menu.on_item_click(|e| {
-        match e.index {
-            0 => save_as_left(),
-            1 => save_as_right(),
-            3 => toggle_ignore_whitespace(),
-            4 => toggle_ignore_blank_lines(),
-            5 => toggle_ignore_comments(),
-            7 => insert_hunk_to_right_above(),
-            8 => insert_hunk_to_left_above(),
-            10 => cycle_theme(),
-            11 => cycle_tab_width(),
-            12 => toggle_whitespace(),
-            _ => {}
-        }
+    ctx_menu.on_item_click(|e| match e.index {
+        0 => save_as_left(),
+        1 => save_as_right(),
+        3 => toggle_ignore_whitespace(),
+        4 => toggle_ignore_blank_lines(),
+        5 => toggle_ignore_comments(),
+        7 => insert_hunk_to_right_above(),
+        8 => insert_hunk_to_left_above(),
+        10 => cycle_theme(),
+        11 => cycle_tab_width(),
+        12 => toggle_whitespace(),
+        _ => {}
     });
 
     // Track current hunk on row selection; handle separator column click for merge
@@ -3109,18 +3664,34 @@ fn main() {
     });
 
     // Search callbacks
-    btn_search_next.on_click(|_| { search_next(); });
-    btn_search_prev.on_click(|_| { search_prev(); });
-    btn_search_close.on_click(|_| { close_search(); });
-    search_field.on_submit(|_| { do_search(); });
+    btn_search_next.on_click(|_| {
+        search_next();
+    });
+    btn_search_prev.on_click(|_| {
+        search_prev();
+    });
+    btn_search_close.on_click(|_| {
+        close_search();
+    });
+    search_field.on_submit(|_| {
+        do_search();
+    });
 
     // Go to Line callbacks
-    btn_goto_go.on_click(|_| { do_goto_line(); });
-    btn_goto_close.on_click(|_| { close_goto_line(); });
-    goto_field.on_submit(|_| { do_goto_line(); });
+    btn_goto_go.on_click(|_| {
+        do_goto_line();
+    });
+    btn_goto_close.on_click(|_| {
+        close_goto_line();
+    });
+    goto_field.on_submit(|_| {
+        do_goto_line();
+    });
 
     // Keyboard shortcuts (fires for unhandled keys bubbling to window)
-    win.on_key_down(|ke| { handle_key(ke); });
+    win.on_key_down(|ke| {
+        handle_key(ke);
+    });
 
     // Auto-compare: if --auto-compare flag was set and output path provided,
     // save output immediately and quit

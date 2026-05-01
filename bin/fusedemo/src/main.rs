@@ -24,8 +24,7 @@ use alloc::vec::Vec;
 
 use corefs_fuse_adapter::{FuseHandler, HandlerResult, SessionLoop, Transport};
 use corefs_fuse_proto::{
-    Attr, DirEntry, FrameHeader, PROTOCOL_VERSION, Reply, ReplyFrame, Request, RequestFrame,
-    StatFs,
+    Attr, DirEntry, FrameHeader, Reply, ReplyFrame, Request, RequestFrame, StatFs, PROTOCOL_VERSION,
 };
 
 anyos_std::entry!(main);
@@ -116,18 +115,12 @@ impl FuseHandler for HelloHandler {
                 }]))
             }
             Request::Open { ino, .. } => match ino {
-                HELLO_INO => HandlerResult::Ok(Reply::Open {
-                    fh: 1,
-                    flags: 0,
-                }),
+                HELLO_INO => HandlerResult::Ok(Reply::Open { fh: 1, flags: 0 }),
                 ROOT_INO => err(EISDIR, "cannot open directory as file"),
                 _ => err(ENOENT, "no such inode"),
             },
             Request::Read {
-                ino,
-                offset,
-                size,
-                ..
+                ino, offset, size, ..
             } => {
                 if ino != HELLO_INO {
                     return err(ENOENT, "read on non-file");
@@ -233,12 +226,10 @@ impl Transport for DevFuseTransport {
         unique_bytes.copy_from_slice(&self.scratch[0..8]);
         let unique = u64::from_le_bytes(unique_bytes);
         let body = &self.scratch[8..n];
-        let request: Request = bincode::serde::decode_from_slice::<Request, _>(
-            body,
-            bincode::config::legacy(),
-        )
-        .map(|(v, _)| v)
-        .map_err(|_| DevFuseError::DecodeFailed)?;
+        let request: Request =
+            bincode::serde::decode_from_slice::<Request, _>(body, bincode::config::legacy())
+                .map(|(v, _)| v)
+                .map_err(|_| DevFuseError::DecodeFailed)?;
         Ok(Some(RequestFrame {
             header: FrameHeader { unique },
             op: request,

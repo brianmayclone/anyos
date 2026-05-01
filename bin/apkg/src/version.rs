@@ -27,7 +27,11 @@ impl Version {
         if parts.next().is_some() {
             return None;
         }
-        Some(Version { major, minor, patch })
+        Some(Version {
+            major,
+            minor,
+            patch,
+        })
     }
 
     /// Format as `"MAJOR.MINOR.PATCH"`.

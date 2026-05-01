@@ -588,8 +588,9 @@ fn apply_js_host_mutations(tab_index: usize) {
                 }
             }
             libwebview::js::DomMutation::FormSubmit { form_node_id } => {
-                if let Some((action, method, enctype)) =
-                    st.tabs[tab_index].webview.form_action_for_node(form_node_id)
+                if let Some((action, method, enctype)) = st.tabs[tab_index]
+                    .webview
+                    .form_action_for_node(form_node_id)
                 {
                     let data = st.tabs[tab_index]
                         .webview
@@ -808,7 +809,13 @@ fn finish_script_slot(result: js_worker::JsWorkerResult) {
             script_label,
         } => (slot, label, script_label),
         js_worker::JsWorkerResultKind::Timer { fired } => {
-            finish_js_timer_job(result.tab_index, result.state, result.exec_ms, result.generation, fired);
+            finish_js_timer_job(
+                result.tab_index,
+                result.state,
+                result.exec_ms,
+                result.generation,
+                fired,
+            );
             return;
         }
     };
@@ -933,7 +940,9 @@ fn finish_js_timer_job(
     if changed {
         let base_url = {
             let st = state();
-            st.tabs.get(tab_index).and_then(|tab| tab.current_url.clone())
+            st.tabs
+                .get(tab_index)
+                .and_then(|tab| tab.current_url.clone())
         };
         if let Some(base_url) = base_url {
             let rasterized_svg = {
@@ -1516,9 +1525,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                 | net_worker::FetchResult::NavError { .. } => nav_results.push(result),
                 net_worker::FetchResult::CssDone { .. } => css_results.push(result),
                 net_worker::FetchResult::ScriptDone { .. }
-                | net_worker::FetchResult::ModuleScriptDone { .. } => {
-                    script_results.push(result)
-                }
+                | net_worker::FetchResult::ModuleScriptDone { .. } => script_results.push(result),
                 net_worker::FetchResult::FontDone { .. } => font_results.push(result),
                 net_worker::FetchResult::ImageDone { .. } => images.push(result),
             }
@@ -1653,6 +1660,7 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
             headers,
             decoded_raster,
             priority,
+            from_deferred,
             timing,
             generation,
         } => {
@@ -1676,6 +1684,7 @@ fn process_single_fetch_result(result: net_worker::FetchResult) {
                 headers,
                 decoded_raster,
                 priority,
+                from_deferred,
                 generation,
             );
             log_main_phase_elapsed("handle_image_done", start_ms);
@@ -1888,6 +1897,9 @@ fn flush_relayout_for_tab(tab_idx: usize) {
                 );
             }
         }
+    }
+    if work == RenderWork::Layout {
+        let _ = resources::submit_viewport_deferred_images(tab_idx, DEFERRED_IMAGE_BATCH_SIZE);
     }
     let elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
     crate::surf_log!(
@@ -2214,6 +2226,7 @@ fn handle_nav_done(
         let startup_critical_only =
             pending_stylesheet_count > 0 || st.tabs[tab_idx].load_state.pending_script_count > 0;
         resources::queue_images(dom, &base_url, tab_idx, startup_critical_only);
+        let _ = resources::submit_viewport_deferred_images(tab_idx, DEFERRED_IMAGE_BATCH_SIZE);
     }
     log_tab_load_state(tab_idx, "after_queue_images");
 
@@ -2347,7 +2360,8 @@ fn handle_css_done(
         }
 
         // Process @font-face rules — queue font downloads.
-        let font_faces: Vec<(String, String, u32, bool, libwebview::css::FontDisplay)> = st.tabs[tab_index]
+        let font_faces: Vec<(String, String, u32, bool, libwebview::css::FontDisplay)> = st.tabs
+            [tab_index]
             .webview
             .last_stylesheet_font_faces()
             .iter()
@@ -2413,9 +2427,9 @@ fn handle_font_done(
 
     // Try loading the font data (supports TTF/sfnt and WOFF2 TrueType outlines).
     if let Some(font_id) = resources::load_valid_web_font_data(&family, &body) {
-        st.tabs[tab_index].webview.register_web_font_with_style(
-            &family, weight, italic, font_id,
-        );
+        st.tabs[tab_index]
+            .webview
+            .register_web_font_with_style(&family, weight, italic, font_id);
         if matches!(
             display,
             libwebview::css::FontDisplay::Swap
@@ -2468,6 +2482,7 @@ fn handle_image_done(
     headers: String,
     decoded_raster: Option<net_worker::DecodedRaster>,
     priority: net_worker::ImagePriority,
+    from_deferred: bool,
     generation: u32,
 ) -> bool {
     let st = state();
@@ -2516,9 +2531,7 @@ fn handle_image_done(
     let needs_layout = st.tabs[tab_index]
         .webview
         .image_requires_layout_refresh(&src);
-    if priority == net_worker::ImagePriority::Deferred
-        && st.tabs[tab_index].deferred_images_inflight > 0
-    {
+    if from_deferred && st.tabs[tab_index].deferred_images_inflight > 0 {
         st.tabs[tab_index].deferred_images_inflight -= 1;
     }
     if matches!(

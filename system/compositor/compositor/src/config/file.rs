@@ -6,8 +6,7 @@ use alloc::string::String;
 use libconf_schema::{default_int, default_string, manifest, RegistryScope, ServiceSchema};
 
 const DEFAULT_LOGIN_PROGRAMS: &str = "/System/inputmon\n";
-const DEFAULT_AUTOSTART_PROGRAMS: &str =
-    "/System/notifyd\n/System/netmon\n/System/audiomon\n";
+const DEFAULT_AUTOSTART_PROGRAMS: &str = "/System/notifyd\n/System/netmon\n/System/audiomon\n";
 const DEFAULT_SHORTCUTS: &str = "";
 
 const COMPOSITOR_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
@@ -26,7 +25,14 @@ const COMPOSITOR_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "system/compositor",
     RegistryScope::System,
     1,
-    &["login", "autostart", "shortcuts", "display", "resolution", "theme"],
+    &[
+        "login",
+        "autostart",
+        "shortcuts",
+        "display",
+        "resolution",
+        "theme",
+    ],
     COMPOSITOR_DEFAULTS,
     COMPOSITOR_MIGRATIONS,
 );
@@ -62,7 +68,8 @@ pub(super) fn write_i64(rel_path: &str, value: i64) -> bool {
 #[allow(dead_code)]
 pub(super) fn read_conf() -> Option<String> {
     register_manifest();
-    let login = read_string("login/programs_blob").unwrap_or_else(|| String::from(DEFAULT_LOGIN_PROGRAMS));
+    let login =
+        read_string("login/programs_blob").unwrap_or_else(|| String::from(DEFAULT_LOGIN_PROGRAMS));
     let autostart = read_string("autostart/programs_blob")
         .unwrap_or_else(|| String::from(DEFAULT_AUTOSTART_PROGRAMS));
     let shortcuts = read_string("shortcuts/mappings_blob").unwrap_or_default();

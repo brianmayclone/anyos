@@ -27,7 +27,13 @@ fn main() {
         let sec = time_buf[6];
         anyos_std::println!(
             "{:<11}: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            t("Date/Time"), year, month, day, hour, min, sec
+            t("Date/Time"),
+            year,
+            month,
+            day,
+            hour,
+            min,
+            sec
         );
     }
 
@@ -36,7 +42,13 @@ fn main() {
     let hz = anyos_std::sys::tick_hz();
     let secs = if hz > 0 { ticks / hz } else { 0 };
     let mins = secs / 60;
-    anyos_std::println!("{:<11}: {}m {}s ({} ticks)", t("Uptime"), mins, secs % 60, ticks);
+    anyos_std::println!(
+        "{:<11}: {}m {}s ({} ticks)",
+        t("Uptime"),
+        mins,
+        secs % 60,
+        ticks
+    );
 
     // Memory info (cmd=0): [total_frames:u32, free_frames:u32, heap_used:u32, heap_total:u32]
     let mut mem_buf = [0u8; 16];
@@ -50,8 +62,24 @@ fn main() {
         let free_kb = free * 4;
         let used_kb = total_kb - free_kb;
         anyos_std::println!("\n{}:", t("Memory"));
-        anyos_std::println!("  {:<9}: {} KiB {}, {} KiB {}, {} KiB {}", t("Physical"), total_kb, t("total"), used_kb, t("used"), free_kb, t("free"));
-        anyos_std::println!("  {:<9}: {} KiB {} / {} KiB {}", t("Heap"), heap_used / 1024, t("used"), heap_total / 1024, t("total"));
+        anyos_std::println!(
+            "  {:<9}: {} KiB {}, {} KiB {}, {} KiB {}",
+            t("Physical"),
+            total_kb,
+            t("total"),
+            used_kb,
+            t("used"),
+            free_kb,
+            t("free")
+        );
+        anyos_std::println!(
+            "  {:<9}: {} KiB {} / {} KiB {}",
+            t("Heap"),
+            heap_used / 1024,
+            t("used"),
+            heap_total / 1024,
+            t("total")
+        );
     }
 
     // CPU info (cmd=2): [cpu_count:u32]
@@ -67,7 +95,13 @@ fn main() {
     if ret != u32::MAX {
         let count = ret;
         anyos_std::println!("\n{} ({}):", t("Threads"), count);
-        anyos_std::println!("  {:<6} {:<6} {:<10} {}", "TID", t("Prio"), t("State"), t("Name"));
+        anyos_std::println!(
+            "  {:<6} {:<6} {:<10} {}",
+            "TID",
+            t("Prio"),
+            t("State"),
+            t("Name")
+        );
         anyos_std::println!("  {}", "--------------------------------------");
 
         for i in 0..count as usize {

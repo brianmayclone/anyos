@@ -169,7 +169,11 @@ fn process_image(
         Some(h) => h,
         None => {
             let h = (info.height as u64 * out_w as u64) / (info.width as u64 * 2);
-            if h < 1 { 1 } else { h as u32 }
+            if h < 1 {
+                1
+            } else {
+                h as u32
+            }
         }
     };
 
@@ -178,8 +182,12 @@ fn process_image(
     let mut scaled = anyos_std::vec![0u32; scaled_count];
 
     if !libimage_client::scale_image(
-        &pixels, info.width, info.height,
-        &mut scaled, out_w, out_h,
+        &pixels,
+        info.width,
+        info.height,
+        &mut scaled,
+        out_w,
+        out_h,
         libimage_client::MODE_SCALE,
     ) {
         anyos_std::println!("jp2a: failed to scale image");
@@ -366,9 +374,8 @@ fn main() {
         }
 
         process_image(
-            path, out_w, out_h_opt, chars,
-            invert, flipx, flipy, border,
-            colors, colorfill, grayscale,
+            path, out_w, out_h_opt, chars, invert, flipx, flipy, border, colors, colorfill,
+            grayscale,
         );
     }
 }

@@ -295,21 +295,59 @@ fn dump_regs(handle: &VmHandle) {
     let sregs = handle.get_vcpu_sregs(0);
 
     anyos_std::println!("--- CPU REGISTERS ---");
-    anyos_std::println!("RAX={:016X}  RBX={:016X}  RCX={:016X}  RDX={:016X}",
-        regs.rax, regs.rbx, regs.rcx, regs.rdx);
-    anyos_std::println!("RSI={:016X}  RDI={:016X}  RBP={:016X}  RSP={:016X}",
-        regs.rsi, regs.rdi, regs.rbp, regs.rsp);
-    anyos_std::println!("R8 ={:016X}  R9 ={:016X}  R10={:016X}  R11={:016X}",
-        regs.r8, regs.r9, regs.r10, regs.r11);
-    anyos_std::println!("R12={:016X}  R13={:016X}  R14={:016X}  R15={:016X}",
-        regs.r12, regs.r13, regs.r14, regs.r15);
+    anyos_std::println!(
+        "RAX={:016X}  RBX={:016X}  RCX={:016X}  RDX={:016X}",
+        regs.rax,
+        regs.rbx,
+        regs.rcx,
+        regs.rdx
+    );
+    anyos_std::println!(
+        "RSI={:016X}  RDI={:016X}  RBP={:016X}  RSP={:016X}",
+        regs.rsi,
+        regs.rdi,
+        regs.rbp,
+        regs.rsp
+    );
+    anyos_std::println!(
+        "R8 ={:016X}  R9 ={:016X}  R10={:016X}  R11={:016X}",
+        regs.r8,
+        regs.r9,
+        regs.r10,
+        regs.r11
+    );
+    anyos_std::println!(
+        "R12={:016X}  R13={:016X}  R14={:016X}  R15={:016X}",
+        regs.r12,
+        regs.r13,
+        regs.r14,
+        regs.r15
+    );
     anyos_std::println!("RIP={:016X}  RFLAGS={:016X}", regs.rip, regs.rflags);
-    anyos_std::println!("CR0={:016X}  CR2={:016X}  CR3={:016X}  CR4={:016X}  EFER={:016X}",
-        sregs.cr0, sregs.cr2, sregs.cr3, sregs.cr4, sregs.efer);
-    anyos_std::println!("CS: sel={:04X} base={:016X} limit={:08X}  DS: sel={:04X} base={:016X}",
-        sregs.cs.selector, sregs.cs.base, sregs.cs.limit, sregs.ds.selector, sregs.ds.base);
-    anyos_std::println!("SS: sel={:04X} base={:016X}  ES: sel={:04X}  FS: sel={:04X}  GS: sel={:04X}",
-        sregs.ss.selector, sregs.ss.base, sregs.es.selector, sregs.fs.selector, sregs.gs.selector);
+    anyos_std::println!(
+        "CR0={:016X}  CR2={:016X}  CR3={:016X}  CR4={:016X}  EFER={:016X}",
+        sregs.cr0,
+        sregs.cr2,
+        sregs.cr3,
+        sregs.cr4,
+        sregs.efer
+    );
+    anyos_std::println!(
+        "CS: sel={:04X} base={:016X} limit={:08X}  DS: sel={:04X} base={:016X}",
+        sregs.cs.selector,
+        sregs.cs.base,
+        sregs.cs.limit,
+        sregs.ds.selector,
+        sregs.ds.base
+    );
+    anyos_std::println!(
+        "SS: sel={:04X} base={:016X}  ES: sel={:04X}  FS: sel={:04X}  GS: sel={:04X}",
+        sregs.ss.selector,
+        sregs.ss.base,
+        sregs.es.selector,
+        sregs.fs.selector,
+        sregs.gs.selector
+    );
     anyos_std::println!("--- END REGISTERS ---");
 }
 
@@ -336,13 +374,33 @@ fn ascii_to_scancode(ch: u8) -> (u8, bool) {
     match ch {
         b'a'..=b'z' => {
             let sc = match ch {
-                b'a' => 0x1E, b'b' => 0x30, b'c' => 0x2E, b'd' => 0x20,
-                b'e' => 0x12, b'f' => 0x21, b'g' => 0x22, b'h' => 0x23,
-                b'i' => 0x17, b'j' => 0x24, b'k' => 0x25, b'l' => 0x26,
-                b'm' => 0x32, b'n' => 0x31, b'o' => 0x18, b'p' => 0x19,
-                b'q' => 0x10, b'r' => 0x13, b's' => 0x1F, b't' => 0x14,
-                b'u' => 0x16, b'v' => 0x2F, b'w' => 0x11, b'x' => 0x2D,
-                b'y' => 0x15, b'z' => 0x2C, _ => 0,
+                b'a' => 0x1E,
+                b'b' => 0x30,
+                b'c' => 0x2E,
+                b'd' => 0x20,
+                b'e' => 0x12,
+                b'f' => 0x21,
+                b'g' => 0x22,
+                b'h' => 0x23,
+                b'i' => 0x17,
+                b'j' => 0x24,
+                b'k' => 0x25,
+                b'l' => 0x26,
+                b'm' => 0x32,
+                b'n' => 0x31,
+                b'o' => 0x18,
+                b'p' => 0x19,
+                b'q' => 0x10,
+                b'r' => 0x13,
+                b's' => 0x1F,
+                b't' => 0x14,
+                b'u' => 0x16,
+                b'v' => 0x2F,
+                b'w' => 0x11,
+                b'x' => 0x2D,
+                b'y' => 0x15,
+                b'z' => 0x2C,
+                _ => 0,
             };
             (sc, false)
         }
@@ -351,13 +409,19 @@ fn ascii_to_scancode(ch: u8) -> (u8, bool) {
             (sc, true)
         }
         b'0' => (0x0B, false),
-        b'1' => (0x02, false), b'2' => (0x03, false), b'3' => (0x04, false),
-        b'4' => (0x05, false), b'5' => (0x06, false), b'6' => (0x07, false),
-        b'7' => (0x08, false), b'8' => (0x09, false), b'9' => (0x0A, false),
+        b'1' => (0x02, false),
+        b'2' => (0x03, false),
+        b'3' => (0x04, false),
+        b'4' => (0x05, false),
+        b'5' => (0x06, false),
+        b'6' => (0x07, false),
+        b'7' => (0x08, false),
+        b'8' => (0x09, false),
+        b'9' => (0x0A, false),
         b' ' => (0x39, false),
-        b'\n' => (0x1C, false),  // Enter
+        b'\n' => (0x1C, false), // Enter
         b'\r' => (0x1C, false),
-        b'\t' => (0x0F, false),  // Tab
+        b'\t' => (0x0F, false), // Tab
         b'-' => (0x0C, false),
         b'=' => (0x0D, false),
         b'[' => (0x1A, false),
@@ -370,13 +434,27 @@ fn ascii_to_scancode(ch: u8) -> (u8, bool) {
         b'.' => (0x34, false),
         b'/' => (0x35, false),
         // Shifted symbols
-        b'!' => (0x02, true),  b'@' => (0x03, true),  b'#' => (0x04, true),
-        b'$' => (0x05, true),  b'%' => (0x06, true),  b'^' => (0x07, true),
-        b'&' => (0x08, true),  b'*' => (0x09, true),  b'(' => (0x0A, true),
-        b')' => (0x0B, true),  b'_' => (0x0C, true),  b'+' => (0x0D, true),
-        b'{' => (0x1A, true),  b'}' => (0x1B, true),  b':' => (0x27, true),
-        b'"' => (0x28, true),  b'~' => (0x29, true),  b'|' => (0x2B, true),
-        b'<' => (0x33, true),  b'>' => (0x34, true),  b'?' => (0x35, true),
+        b'!' => (0x02, true),
+        b'@' => (0x03, true),
+        b'#' => (0x04, true),
+        b'$' => (0x05, true),
+        b'%' => (0x06, true),
+        b'^' => (0x07, true),
+        b'&' => (0x08, true),
+        b'*' => (0x09, true),
+        b'(' => (0x0A, true),
+        b')' => (0x0B, true),
+        b'_' => (0x0C, true),
+        b'+' => (0x0D, true),
+        b'{' => (0x1A, true),
+        b'}' => (0x1B, true),
+        b':' => (0x27, true),
+        b'"' => (0x28, true),
+        b'~' => (0x29, true),
+        b'|' => (0x2B, true),
+        b'<' => (0x33, true),
+        b'>' => (0x34, true),
+        b'?' => (0x35, true),
         _ => (0, false),
     }
 }
@@ -404,8 +482,12 @@ fn cmd_run(config: VmConfig, timeout_secs: u32, show_screen: bool, show_regs: bo
     init_libcorevm();
 
     // Create VM
-    anyos_std::println!("[vmctl] Creating VM '{}' ({} MiB RAM, bios={})...",
-        config.name, config.ram_mb, config.bios_type);
+    anyos_std::println!(
+        "[vmctl] Creating VM '{}' ({} MiB RAM, bios={})...",
+        config.name,
+        config.ram_mb,
+        config.bios_type
+    );
 
     let handle = match VmHandle::new(config.ram_mb) {
         Ok(h) => h,
@@ -485,7 +567,10 @@ fn cmd_run(config: VmConfig, timeout_secs: u32, show_screen: bool, show_regs: bo
     } else {
         let bios_data = read_file(BIOS_PATH_COREVM);
         if bios_data.is_empty() {
-            anyos_std::println!("[vmctl] ERROR: CoreVM BIOS not found at {}", BIOS_PATH_COREVM);
+            anyos_std::println!(
+                "[vmctl] ERROR: CoreVM BIOS not found at {}",
+                BIOS_PATH_COREVM
+            );
             anyos_std::process::exit(1);
         }
         handle.load_binary(0xF0000, &bios_data);
@@ -519,7 +604,11 @@ fn cmd_run(config: VmConfig, timeout_secs: u32, show_screen: bool, show_regs: bo
 
     // Run the VM
     let start_ms = sys::uptime_ms();
-    let timeout_ms = if timeout_secs > 0 { timeout_secs * 1000 } else { 0u32 };
+    let timeout_ms = if timeout_secs > 0 {
+        timeout_secs * 1000
+    } else {
+        0u32
+    };
     let mut exit_count: u64 = 0;
     let mut total_serial = Vec::new();
     let mut exit_reason = "running";
@@ -593,7 +682,9 @@ fn cmd_list() {
 
     anyos_std::println!("--- VM LIST ---");
     anyos_std::println!("{:<36}  {:<20}  {:>6}  {}", "UUID", "NAME", "RAM", "DISK");
-    anyos_std::println!("--------------------------------------------------------------------------------------");
+    anyos_std::println!(
+        "--------------------------------------------------------------------------------------"
+    );
 
     let entry_size = 64usize;
     for i in 0..count as usize {
@@ -620,9 +711,17 @@ fn cmd_list() {
 
         // Read config to get name and RAM
         if let Some(config) = read_vm_config(uuid) {
-            anyos_std::println!("{:<36}  {:<20}  {:>4}MB  {}",
-                uuid, config.name, config.ram_mb,
-                if config.disk_image.is_empty() { "(none)" } else { &config.disk_image });
+            anyos_std::println!(
+                "{:<36}  {:<20}  {:>4}MB  {}",
+                uuid,
+                config.name,
+                config.ram_mb,
+                if config.disk_image.is_empty() {
+                    "(none)"
+                } else {
+                    &config.disk_image
+                }
+            );
         } else {
             anyos_std::println!("{:<36}  (invalid config)", uuid);
         }
@@ -641,12 +740,32 @@ fn cmd_info(uuid: &str) {
             anyos_std::println!("name: {}", config.name);
             anyos_std::println!("ram_mb: {}", config.ram_mb);
             anyos_std::println!("bios: {}", config.bios_type);
-            anyos_std::println!("disk: {}", if config.disk_image.is_empty() { "(none)" } else { &config.disk_image });
-            anyos_std::println!("iso: {}", if config.iso_image.is_empty() { "(none)" } else { &config.iso_image });
+            anyos_std::println!(
+                "disk: {}",
+                if config.disk_image.is_empty() {
+                    "(none)"
+                } else {
+                    &config.disk_image
+                }
+            );
+            anyos_std::println!(
+                "iso: {}",
+                if config.iso_image.is_empty() {
+                    "(none)"
+                } else {
+                    &config.iso_image
+                }
+            );
             anyos_std::println!("net_enabled: {}", config.net_enabled);
-            anyos_std::println!("mac: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-                config.mac_address[0], config.mac_address[1], config.mac_address[2],
-                config.mac_address[3], config.mac_address[4], config.mac_address[5]);
+            anyos_std::println!(
+                "mac: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                config.mac_address[0],
+                config.mac_address[1],
+                config.mac_address[2],
+                config.mac_address[3],
+                config.mac_address[4],
+                config.mac_address[5]
+            );
             anyos_std::println!("--- END INFO ---");
         }
         None => {
@@ -678,7 +797,11 @@ fn cmd_create_disk(path: &str, size_mb: u32) {
 
     while written < total_bytes {
         let remaining = total_bytes - written;
-        let to_write = if remaining > chunk_size as u64 { chunk_size } else { remaining as u32 };
+        let to_write = if remaining > chunk_size as u64 {
+            chunk_size
+        } else {
+            remaining as u32
+        };
         let n = fs::write(fd, &zeros[..to_write as usize]);
         if n == u32::MAX {
             fs::close(fd);
@@ -689,7 +812,12 @@ fn cmd_create_disk(path: &str, size_mb: u32) {
     }
 
     fs::close(fd);
-    anyos_std::println!("[vmctl] Created disk: {} ({} MB, {} bytes)", path, size_mb, total_bytes);
+    anyos_std::println!(
+        "[vmctl] Created disk: {} ({} MB, {} bytes)",
+        path,
+        size_mb,
+        total_bytes
+    );
 }
 
 // ── Subcommand: serial ───────────────────────────────────────────────────
@@ -892,7 +1020,10 @@ fn main() {
                 match read_vm_config(uuid) {
                     Some(c) => c,
                     None => {
-                        anyos_std::println!("[vmctl] ERROR: VM config not found for UUID '{}'", uuid);
+                        anyos_std::println!(
+                            "[vmctl] ERROR: VM config not found for UUID '{}'",
+                            uuid
+                        );
                         anyos_std::process::exit(1);
                     }
                 }
@@ -932,8 +1063,14 @@ fn main() {
 
                 if type_text.is_some() {
                     // Run VM with keyboard input after delay
-                    run_with_typing(config, timeout, show_screen, show_regs,
-                                    type_text.unwrap(), type_delay_ms);
+                    run_with_typing(
+                        config,
+                        timeout,
+                        show_screen,
+                        show_regs,
+                        type_text.unwrap(),
+                        type_delay_ms,
+                    );
                 } else {
                     cmd_run(config, timeout, show_screen, show_regs);
                 }
@@ -945,7 +1082,10 @@ fn main() {
                 match read_vm_config(uuid) {
                     Some(c) => c,
                     None => {
-                        anyos_std::println!("[vmctl] ERROR: VM config not found for UUID '{}'", uuid);
+                        anyos_std::println!(
+                            "[vmctl] ERROR: VM config not found for UUID '{}'",
+                            uuid
+                        );
                         anyos_std::process::exit(1);
                     }
                 }
@@ -955,7 +1095,9 @@ fn main() {
 
             if let Some(ram) = args.opt(b'r') {
                 let r = parse_u32(ram);
-                if r > 0 { config.ram_mb = r; }
+                if r > 0 {
+                    config.ram_mb = r;
+                }
             }
             if let Some(disk) = args.opt(b'd') {
                 config.disk_image = String::from(disk);
@@ -1021,12 +1163,22 @@ fn main() {
 }
 
 /// Run a VM, type text after a delay, then continue until timeout/shutdown.
-fn run_with_typing(config: VmConfig, timeout_secs: u32, show_screen: bool,
-                   show_regs: bool, text: &str, delay_ms: u32) {
+fn run_with_typing(
+    config: VmConfig,
+    timeout_secs: u32,
+    show_screen: bool,
+    show_regs: bool,
+    text: &str,
+    delay_ms: u32,
+) {
     init_libcorevm();
 
-    anyos_std::println!("[vmctl] Creating VM '{}' ({} MiB RAM, bios={})...",
-        config.name, config.ram_mb, config.bios_type);
+    anyos_std::println!(
+        "[vmctl] Creating VM '{}' ({} MiB RAM, bios={})...",
+        config.name,
+        config.ram_mb,
+        config.bios_type
+    );
 
     let handle = match VmHandle::new(config.ram_mb) {
         Ok(h) => h,
@@ -1126,14 +1278,22 @@ fn run_with_typing(config: VmConfig, timeout_secs: u32, show_screen: bool,
 
     // Run VM
     let start_ms = sys::uptime_ms();
-    let timeout_ms = if timeout_secs > 0 { timeout_secs * 1000 } else { 0u32 };
+    let timeout_ms = if timeout_secs > 0 {
+        timeout_secs * 1000
+    } else {
+        0u32
+    };
     let mut exit_count: u64 = 0;
     let mut total_serial = Vec::new();
     let mut exit_reason = "running";
     let mut typed = false;
 
-    anyos_std::println!("[vmctl] VM started (timeout={}s, type after {}ms: \"{}\")",
-        timeout_secs, delay_ms, text);
+    anyos_std::println!(
+        "[vmctl] VM started (timeout={}s, type after {}ms: \"{}\")",
+        timeout_secs,
+        delay_ms,
+        text
+    );
     anyos_std::println!("--- SERIAL OUTPUT ---");
 
     loop {

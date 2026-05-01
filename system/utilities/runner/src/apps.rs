@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 //! Application scanning, metadata, and icon loading.
 
-use anyos_std::{String, Vec};
 use anyos_std::icons;
+use anyos_std::{String, Vec};
 
 /// Icon size to load (pixels).
 pub const ICON_SIZE: u32 = 20;
@@ -24,7 +24,11 @@ pub fn scan_apps() -> Vec<AppEntry> {
         let display_name = read_app_name(&path, folder_name);
         let icon = load_icon(&path);
 
-        apps.push(AppEntry { name: display_name, path, icon });
+        apps.push(AppEntry {
+            name: display_name,
+            path,
+            icon,
+        });
     }
     apps.sort_by(|a, b| {
         let la = a.name.as_bytes();
@@ -106,10 +110,14 @@ fn load_icon(bundle_path: &str) -> Vec<u32> {
             let mut scaled = Vec::new();
             scaled.resize((ICON_SIZE * ICON_SIZE) as usize, 0u32);
             if libimage_client::scale_image(
-                &pixels, info.width, info.height,
-                &mut scaled, ICON_SIZE, ICON_SIZE,
+                &pixels,
+                info.width,
+                info.height,
+                &mut scaled,
+                ICON_SIZE,
+                ICON_SIZE,
                 libimage_client::MODE_CONTAIN,
-            ){
+            ) {
                 return scaled;
             }
         }
@@ -119,10 +127,14 @@ fn load_icon(bundle_path: &str) -> Vec<u32> {
             let mut scaled = Vec::new();
             scaled.resize((ICON_SIZE * ICON_SIZE) as usize, 0u32);
             if libimage_client::scale_image(
-                &pixels, info.width, info.height,
-                &mut scaled, ICON_SIZE, ICON_SIZE,
+                &pixels,
+                info.width,
+                info.height,
+                &mut scaled,
+                ICON_SIZE,
+                ICON_SIZE,
                 libimage_client::MODE_CONTAIN,
-            ){
+            ) {
                 return scaled;
             }
         }

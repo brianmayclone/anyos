@@ -20,7 +20,6 @@ fn main() {
         return;
     }
 
-
     let mut args_buf = [0u8; 256];
     let path = anyos_std::process::args(&mut args_buf).trim();
 
@@ -45,7 +44,9 @@ fn main() {
     let mut buf = [0u8; 4096];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     anyos_std::fs::close(fd);

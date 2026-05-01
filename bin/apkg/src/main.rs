@@ -24,14 +24,14 @@ use anyos_std::println;
 
 anyos_std::entry!(main);
 
-mod version;
+mod archive;
+mod commands;
 mod config;
-mod index;
 mod db;
 mod download;
-mod archive;
+mod index;
 mod resolve;
-mod commands;
+mod version;
 
 fn main() {
     // Initialize libzip for archive operations
@@ -71,15 +71,13 @@ fn main() {
             commands::update::run();
         }
         "install" => {
-            let names: alloc::vec::Vec<&str> = (1..args.pos_count)
-                .filter_map(|i| args.pos(i))
-                .collect();
+            let names: alloc::vec::Vec<&str> =
+                (1..args.pos_count).filter_map(|i| args.pos(i)).collect();
             commands::install::run(&names, yes);
         }
         "remove" => {
-            let names: alloc::vec::Vec<&str> = (1..args.pos_count)
-                .filter_map(|i| args.pos(i))
-                .collect();
+            let names: alloc::vec::Vec<&str> =
+                (1..args.pos_count).filter_map(|i| args.pos(i)).collect();
             commands::remove::run(&names, yes, force);
         }
         "upgrade" => {

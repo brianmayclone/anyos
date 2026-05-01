@@ -49,7 +49,10 @@ fn main() {
         if caps & 1 == 0 {
             anyos_std::println!("adduser: permission denied (root required)");
         } else {
-            anyos_std::println!("adduser: failed to create user '{}' (user may already exist)", username);
+            anyos_std::println!(
+                "adduser: failed to create user '{}' (user may already exist)",
+                username
+            );
         }
     }
 }

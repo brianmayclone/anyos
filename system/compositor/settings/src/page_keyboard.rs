@@ -8,8 +8,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::i18n;
-use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 use libanyui_client as ui;
+use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 use ui::Widget;
 
 use crate::layout;
@@ -46,7 +46,9 @@ fn read_shortcuts() -> Vec<ShortcutEntry> {
     let mut entries = Vec::new();
     for line in text.split('\n') {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         if let Some(eq) = line.find('=') {
             let combo = line[..eq].trim();
             let action = line[eq + 1..].trim();
@@ -94,16 +96,16 @@ fn action_display(action: &str) -> &str {
 // ── System shortcuts (hardcoded in compositor) ─────────────────────────────
 
 const SYSTEM_SHORTCUTS: &[(&str, &str)] = &[
-    ("Alt+Tab",           "Switch to next window"),
-    ("Alt+Shift+Tab",     "Switch to previous window"),
-    ("Alt+F4",            "Close focused window"),
-    ("Alt+Enter",         "Toggle fullscreen"),
-    ("Ctrl+Alt+Delete",   "Exit fullscreen / System dialog"),
-    ("Escape",            "Close menu / Exit fullscreen"),
-    ("F10",               "Activate menu bar"),
-    ("Super (Win)",       "Open system menu"),
-    ("Tab (no focus)",    "Focus dock"),
-    ("Volume Up/Down",    "Adjust system volume"),
+    ("Alt+Tab", "Switch to next window"),
+    ("Alt+Shift+Tab", "Switch to previous window"),
+    ("Alt+F4", "Close focused window"),
+    ("Alt+Enter", "Toggle fullscreen"),
+    ("Ctrl+Alt+Delete", "Exit fullscreen / System dialog"),
+    ("Escape", "Close menu / Exit fullscreen"),
+    ("F10", "Activate menu bar"),
+    ("Super (Win)", "Open system menu"),
+    ("Tab (no focus)", "Focus dock"),
+    ("Volume Up/Down", "Adjust system volume"),
 ];
 
 fn build_system_shortcuts_card(panel: &ui::View) {
@@ -310,11 +312,15 @@ extern "C" fn add_shortcut_handler(_id: u32, _evt: u32, packed: u64) {
 
     let mut combo_buf = [0u8; 64];
     let combo_len = combo_ctrl.get_text(&mut combo_buf);
-    let combo = core::str::from_utf8(&combo_buf[..combo_len as usize]).unwrap_or("").trim();
+    let combo = core::str::from_utf8(&combo_buf[..combo_len as usize])
+        .unwrap_or("")
+        .trim();
 
     let mut action_buf = [0u8; 256];
     let action_len = action_ctrl.get_text(&mut action_buf);
-    let action = core::str::from_utf8(&action_buf[..action_len as usize]).unwrap_or("").trim();
+    let action = core::str::from_utf8(&action_buf[..action_len as usize])
+        .unwrap_or("")
+        .trim();
 
     if combo.is_empty() || action.is_empty() {
         return;

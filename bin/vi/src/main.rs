@@ -1,10 +1,10 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::format;
+use anyos_std::vec;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::vec;
-use anyos_std::format;
 
 anyos_std::entry!(main);
 
@@ -41,7 +41,11 @@ fn parse_usize(s: &[u8]) -> Option<usize> {
             break;
         }
     }
-    if val > 0 { Some(val) } else { None }
+    if val > 0 {
+        Some(val)
+    } else {
+        None
+    }
 }
 
 // ─── Key Representation ─────────────────────────────────────────────────────
@@ -275,7 +279,11 @@ impl Editor {
             self.line_len(self.cy)
         } else {
             let len = self.line_len(self.cy);
-            if len > 0 { len - 1 } else { 0 }
+            if len > 0 {
+                len - 1
+            } else {
+                0
+            }
         };
         if self.cx > max {
             self.cx = max;
@@ -399,7 +407,9 @@ impl Editor {
     fn word_forward(&self) -> (usize, usize) {
         let mut row = self.cy;
         let mut col = self.cx;
-        if row >= self.lines.len() { return (row, col); }
+        if row >= self.lines.len() {
+            return (row, col);
+        }
         let bytes = self.lines[row].as_bytes();
 
         // Skip current word chars
@@ -430,11 +440,15 @@ impl Editor {
             if row > 0 {
                 row -= 1;
                 col = self.lines[row].len();
-                if col > 0 { col -= 1; }
+                if col > 0 {
+                    col -= 1;
+                }
             }
             return (row, col);
         }
-        if col > 0 { col -= 1; }
+        if col > 0 {
+            col -= 1;
+        }
 
         let bytes = self.lines[row].as_bytes();
         // Skip spaces/non-word backward
@@ -451,7 +465,9 @@ impl Editor {
     fn word_end(&self) -> (usize, usize) {
         let mut row = self.cy;
         let mut col = self.cx;
-        if row >= self.lines.len() { return (row, col); }
+        if row >= self.lines.len() {
+            return (row, col);
+        }
 
         if col + 1 < self.lines[row].len() {
             col += 1;
@@ -481,7 +497,9 @@ impl Editor {
         }
         let pat = self.search_pattern.clone();
         let total = self.lines.len();
-        if total == 0 { return; }
+        if total == 0 {
+            return;
+        }
 
         let start_row = self.cy;
         let start_col = self.cx + 1; // start after cursor
@@ -534,7 +552,11 @@ impl Editor {
             self.cx = self.lines[self.cy].len();
         }
         self.lines[self.cy].insert(self.cx, ch as char);
-        self.push_undo(UndoAction::InsertChar { row: self.cy, col: self.cx, ch });
+        self.push_undo(UndoAction::InsertChar {
+            row: self.cy,
+            col: self.cx,
+            ch,
+        });
         self.cx += 1;
         self.modified = true;
         self.needs_redraw = true;
@@ -560,7 +582,11 @@ impl Editor {
             self.cx -= 1;
             let ch = self.lines[self.cy].as_bytes()[self.cx];
             self.lines[self.cy].remove(self.cx);
-            self.push_undo(UndoAction::DeleteChar { row: self.cy, col: self.cx, ch });
+            self.push_undo(UndoAction::DeleteChar {
+                row: self.cy,
+                col: self.cx,
+                ch,
+            });
             self.modified = true;
             self.needs_redraw = true;
         } else if self.cy > 0 {
@@ -568,7 +594,10 @@ impl Editor {
             let current = self.lines.remove(self.cy);
             self.cy -= 1;
             self.cx = self.lines[self.cy].len();
-            self.push_undo(UndoAction::JoinLine { row: self.cy, trailing: current.clone() });
+            self.push_undo(UndoAction::JoinLine {
+                row: self.cy,
+                trailing: current.clone(),
+            });
             self.lines[self.cy].push_str(&current);
             self.modified = true;
             self.needs_redraw = true;
@@ -579,7 +608,11 @@ impl Editor {
         if self.cy < self.lines.len() && self.cx < self.lines[self.cy].len() {
             let ch = self.lines[self.cy].as_bytes()[self.cx];
             self.lines[self.cy].remove(self.cx);
-            self.push_undo(UndoAction::DeleteChar { row: self.cy, col: self.cx, ch });
+            self.push_undo(UndoAction::DeleteChar {
+                row: self.cy,
+                col: self.cx,
+                ch,
+            });
             self.modified = true;
             self.needs_redraw = true;
         }
@@ -591,7 +624,11 @@ impl Editor {
         if self.cy < self.lines.len() && self.cx < self.lines[self.cy].len() {
             let ch = self.lines[self.cy].as_bytes()[self.cx];
             self.lines[self.cy].remove(self.cx);
-            self.push_undo(UndoAction::DeleteChar { row: self.cy, col: self.cx, ch });
+            self.push_undo(UndoAction::DeleteChar {
+                row: self.cy,
+                col: self.cx,
+                ch,
+            });
             self.clamp_cx();
             self.modified = true;
             self.needs_redraw = true;
@@ -605,7 +642,10 @@ impl Editor {
         for _ in 0..n {
             if self.cy < self.lines.len() {
                 let line = self.lines.remove(self.cy);
-                batch.push(UndoAction::DeleteLine { row: self.cy, content: line.clone() });
+                batch.push(UndoAction::DeleteLine {
+                    row: self.cy,
+                    content: line.clone(),
+                });
                 yanked.push(line);
             }
         }
@@ -635,7 +675,9 @@ impl Editor {
     }
 
     fn delete_word(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         let (wr, wc) = self.word_forward();
         if wr == self.cy {
             // Delete from cx to wc
@@ -669,7 +711,9 @@ impl Editor {
     }
 
     fn yank_word(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         let (wr, wc) = self.word_forward();
         if wr == self.cy && wc > self.cx {
             let yanked = String::from(&self.lines[self.cy][self.cx..wc]);
@@ -679,13 +723,18 @@ impl Editor {
     }
 
     fn paste_after(&mut self) {
-        if self.clipboard.is_empty() { return; }
+        if self.clipboard.is_empty() {
+            return;
+        }
         if self.clipboard_line_mode {
             let row = self.cy + 1;
             let mut batch = Vec::new();
             for (i, line) in self.clipboard.clone().iter().enumerate() {
                 self.lines.insert(row + i, line.clone());
-                batch.push(UndoAction::InsertLine { row: row + i, content: line.clone() });
+                batch.push(UndoAction::InsertLine {
+                    row: row + i,
+                    content: line.clone(),
+                });
             }
             self.push_undo(UndoAction::Batch { actions: batch });
             self.cy = row;
@@ -704,13 +753,18 @@ impl Editor {
     }
 
     fn paste_before(&mut self) {
-        if self.clipboard.is_empty() { return; }
+        if self.clipboard.is_empty() {
+            return;
+        }
         if self.clipboard_line_mode {
             let row = self.cy;
             let mut batch = Vec::new();
             for (i, line) in self.clipboard.clone().iter().enumerate() {
                 self.lines.insert(row + i, line.clone());
-                batch.push(UndoAction::InsertLine { row: row + i, content: line.clone() });
+                batch.push(UndoAction::InsertLine {
+                    row: row + i,
+                    content: line.clone(),
+                });
             }
             self.push_undo(UndoAction::Batch { actions: batch });
             self.cy = row;
@@ -728,17 +782,25 @@ impl Editor {
     }
 
     fn join_lines(&mut self) {
-        if self.cy + 1 >= self.lines.len() { return; }
+        if self.cy + 1 >= self.lines.len() {
+            return;
+        }
         let next = self.lines.remove(self.cy + 1);
         let join_col = self.lines[self.cy].len();
         // Add a space between if current doesn't end with space
         if !self.lines[self.cy].is_empty() && !next.is_empty() {
             let trimmed = next.trim_start();
             self.lines[self.cy].push(' ');
-            self.push_undo(UndoAction::JoinLine { row: self.cy, trailing: format!(" {}", trimmed) });
+            self.push_undo(UndoAction::JoinLine {
+                row: self.cy,
+                trailing: format!(" {}", trimmed),
+            });
             self.lines[self.cy].push_str(trimmed);
         } else {
-            self.push_undo(UndoAction::JoinLine { row: self.cy, trailing: next.clone() });
+            self.push_undo(UndoAction::JoinLine {
+                row: self.cy,
+                trailing: next.clone(),
+            });
             self.lines[self.cy].push_str(&next);
         }
         self.cx = join_col;
@@ -747,8 +809,12 @@ impl Editor {
     }
 
     fn toggle_case(&mut self) {
-        if self.cy >= self.lines.len() { return; }
-        if self.cx >= self.lines[self.cy].len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
+        if self.cx >= self.lines[self.cy].len() {
+            return;
+        }
         let old = self.lines[self.cy].clone();
         let b = self.lines[self.cy].as_bytes()[self.cx];
         let new_b = if b.is_ascii_lowercase() {
@@ -770,8 +836,12 @@ impl Editor {
     }
 
     fn replace_char(&mut self, ch: u8) {
-        if self.cy >= self.lines.len() { return; }
-        if self.cx >= self.lines[self.cy].len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
+        if self.cx >= self.lines[self.cy].len() {
+            return;
+        }
         let old = self.lines[self.cy].clone();
         unsafe {
             self.lines[self.cy].as_bytes_mut()[self.cx] = ch;
@@ -784,7 +854,10 @@ impl Editor {
     fn open_line_below(&mut self) {
         let row = self.cy + 1;
         self.lines.insert(row, String::new());
-        self.push_undo(UndoAction::InsertLine { row, content: String::new() });
+        self.push_undo(UndoAction::InsertLine {
+            row,
+            content: String::new(),
+        });
         self.cy = row;
         self.cx = 0;
         self.mode = Mode::Insert;
@@ -795,7 +868,10 @@ impl Editor {
     fn open_line_above(&mut self) {
         let row = self.cy;
         self.lines.insert(row, String::new());
-        self.push_undo(UndoAction::InsertLine { row, content: String::new() });
+        self.push_undo(UndoAction::InsertLine {
+            row,
+            content: String::new(),
+        });
         self.cy = row;
         self.cx = 0;
         self.mode = Mode::Insert;
@@ -804,7 +880,9 @@ impl Editor {
     }
 
     fn change_line(&mut self) {
-        if self.cy >= self.lines.len() { return; }
+        if self.cy >= self.lines.len() {
+            return;
+        }
         let old = self.lines[self.cy].clone();
         self.lines[self.cy] = String::new();
         self.push_undo(UndoAction::ReplaceLine { row: self.cy, old });
@@ -831,7 +909,9 @@ impl Editor {
         self.cmd_buf.clear();
 
         let cmd = cmd.trim();
-        if cmd.is_empty() { return; }
+        if cmd.is_empty() {
+            return;
+        }
 
         if cmd == "q" {
             if self.modified {
@@ -896,7 +976,11 @@ impl Editor {
 
         let old_pat = parts[0];
         let new_pat = parts[1];
-        let _flags = if parts.len() > 1 { parts.get(2).unwrap_or(&"") } else { &"" };
+        let _flags = if parts.len() > 1 {
+            parts.get(2).unwrap_or(&"")
+        } else {
+            &""
+        };
 
         if old_pat.is_empty() {
             self.set_error("Empty search pattern");
@@ -927,7 +1011,9 @@ impl Editor {
     // ─── Rendering ──────────────────────────────────────────────────────
 
     fn render(&mut self) {
-        if !self.needs_redraw { return; }
+        if !self.needs_redraw {
+            return;
+        }
         self.needs_redraw = false;
 
         // Render text lines using absolute cursor positioning (no \n to avoid scroll)
@@ -1059,22 +1145,32 @@ impl Editor {
             Key::Char(b'h') | Key::Left => {
                 let n = self.get_count();
                 for _ in 0..n {
-                    if self.cx > 0 { self.cx -= 1; }
+                    if self.cx > 0 {
+                        self.cx -= 1;
+                    }
                 }
                 self.needs_redraw = true;
             }
             Key::Char(b'l') | Key::Right => {
                 let n = self.get_count();
                 for _ in 0..n {
-                    let max = if self.line_len(self.cy) > 0 { self.line_len(self.cy) - 1 } else { 0 };
-                    if self.cx < max { self.cx += 1; }
+                    let max = if self.line_len(self.cy) > 0 {
+                        self.line_len(self.cy) - 1
+                    } else {
+                        0
+                    };
+                    if self.cx < max {
+                        self.cx += 1;
+                    }
                 }
                 self.needs_redraw = true;
             }
             Key::Char(b'j') | Key::Down => {
                 let n = self.get_count();
                 for _ in 0..n {
-                    if self.cy + 1 < self.lines.len() { self.cy += 1; }
+                    if self.cy + 1 < self.lines.len() {
+                        self.cy += 1;
+                    }
                 }
                 self.clamp_cx();
                 self.needs_redraw = true;
@@ -1082,7 +1178,9 @@ impl Editor {
             Key::Char(b'k') | Key::Up => {
                 let n = self.get_count();
                 for _ in 0..n {
-                    if self.cy > 0 { self.cy -= 1; }
+                    if self.cy > 0 {
+                        self.cy -= 1;
+                    }
                 }
                 self.clamp_cx();
                 self.needs_redraw = true;
@@ -1090,9 +1188,15 @@ impl Editor {
             Key::Char(b'w') => {
                 if let Some(op) = self.pending_op {
                     match op {
-                        b'd' => { self.delete_word(); }
-                        b'c' => { self.change_word(); }
-                        b'y' => { self.yank_word(); }
+                        b'd' => {
+                            self.delete_word();
+                        }
+                        b'c' => {
+                            self.change_word();
+                        }
+                        b'y' => {
+                            self.yank_word();
+                        }
                         _ => {}
                     }
                     self.pending_op = None;
@@ -1139,7 +1243,9 @@ impl Editor {
                 if self.cy < self.lines.len() {
                     let bytes = self.lines[self.cy].as_bytes();
                     self.cx = 0;
-                    while self.cx < bytes.len() && (bytes[self.cx] == b' ' || bytes[self.cx] == b'\t') {
+                    while self.cx < bytes.len()
+                        && (bytes[self.cx] == b' ' || bytes[self.cx] == b'\t')
+                    {
                         self.cx += 1;
                     }
                 }
@@ -1233,7 +1339,9 @@ impl Editor {
                 if self.cy < self.lines.len() {
                     let bytes = self.lines[self.cy].as_bytes();
                     self.cx = 0;
-                    while self.cx < bytes.len() && (bytes[self.cx] == b' ' || bytes[self.cx] == b'\t') {
+                    while self.cx < bytes.len()
+                        && (bytes[self.cx] == b' ' || bytes[self.cx] == b'\t')
+                    {
                         self.cx += 1;
                     }
                 }
@@ -1407,7 +1515,9 @@ impl Editor {
         match key {
             Key::Escape => {
                 // Move cursor back one (standard vi behavior)
-                if self.cx > 0 { self.cx -= 1; }
+                if self.cx > 0 {
+                    self.cx -= 1;
+                }
                 self.mode = Mode::Normal;
                 self.needs_redraw = true;
             }
@@ -1421,19 +1531,29 @@ impl Editor {
                 self.delete_at_cursor();
             }
             Key::Up => {
-                if self.cy > 0 { self.cy -= 1; self.clamp_cx(); }
+                if self.cy > 0 {
+                    self.cy -= 1;
+                    self.clamp_cx();
+                }
                 self.needs_redraw = true;
             }
             Key::Down => {
-                if self.cy + 1 < self.lines.len() { self.cy += 1; self.clamp_cx(); }
+                if self.cy + 1 < self.lines.len() {
+                    self.cy += 1;
+                    self.clamp_cx();
+                }
                 self.needs_redraw = true;
             }
             Key::Left => {
-                if self.cx > 0 { self.cx -= 1; }
+                if self.cx > 0 {
+                    self.cx -= 1;
+                }
                 self.needs_redraw = true;
             }
             Key::Right => {
-                if self.cx < self.line_len(self.cy) { self.cx += 1; }
+                if self.cx < self.line_len(self.cy) {
+                    self.cx += 1;
+                }
                 self.needs_redraw = true;
             }
             Key::Home => {
@@ -1721,8 +1841,6 @@ impl InputReader {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
-
-
     let mut editor = Editor::new();
     let mut input = InputReader::new();
 
@@ -1734,7 +1852,6 @@ fn main() {
         anyos_std::println!("vi - Text editor\n\nUsage: vi [FILE]");
         return;
     }
-
 
     // Open file if argument provided
     let arg = args_str.trim();

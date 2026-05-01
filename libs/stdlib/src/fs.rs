@@ -17,7 +17,11 @@ pub const O_SYNC: u32 = 0x20;
 /// so all existing Rust callers (`== u32::MAX`) keep working.
 #[inline]
 fn sys_err(v: u32) -> u32 {
-    if (v as i32) < 0 { u32::MAX } else { v }
+    if (v as i32) < 0 {
+        u32::MAX
+    } else {
+        v
+    }
 }
 
 /// Resolve a path into a null-terminated absolute path in `buf`.
@@ -34,7 +38,11 @@ pub fn prepare_path(path: &str, buf: &mut [u8; 257]) -> usize {
     // Relative path — get CWD
     let mut cwd = [0u8; 256];
     let cwd_len = syscall2(SYS_GETCWD, cwd.as_mut_ptr() as u64, 256);
-    let cwd_len = if (cwd_len as i32) >= 0 { cwd_len as usize } else { 0 };
+    let cwd_len = if (cwd_len as i32) >= 0 {
+        cwd_len as usize
+    } else {
+        0
+    };
     if cwd_len == 0 {
         cwd[0] = b'/';
     }
@@ -75,11 +83,21 @@ pub fn prepare_path(path: &str, buf: &mut [u8; 257]) -> usize {
 }
 
 pub fn write(fd: u32, buf: &[u8]) -> u32 {
-    sys_err(syscall3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64))
+    sys_err(syscall3(
+        SYS_WRITE,
+        fd as u64,
+        buf.as_ptr() as u64,
+        buf.len() as u64,
+    ))
 }
 
 pub fn read(fd: u32, buf: &mut [u8]) -> u32 {
-    sys_err(syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64))
+    sys_err(syscall3(
+        SYS_READ,
+        fd as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ))
 }
 
 /// Non-blocking read from an FD.
@@ -91,7 +109,12 @@ pub fn read(fd: u32, buf: &mut [u8]) -> u32 {
 ///
 /// Callers must call [`set_fd_nonblock`] first to enable non-blocking mode.
 pub fn read_nonblock(fd: u32, buf: &mut [u8]) -> i32 {
-    let raw = syscall3(SYS_READ, fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64);
+    let raw = syscall3(
+        SYS_READ,
+        fd as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    );
     raw as i32 // EAGAIN sentinel (u32::MAX-10) becomes -11; other errors are negative; success ≥ 0
 }
 
@@ -102,7 +125,12 @@ pub fn read_nonblock(fd: u32, buf: &mut [u8]) -> i32 {
 pub fn set_fd_nonblock(fd: u32, nonblock: bool) {
     const F_SETFL: u32 = 4;
     const O_NONBLOCK: u32 = 0x800;
-    syscall3(SYS_FCNTL_SC, fd as u64, F_SETFL as u64, if nonblock { O_NONBLOCK as u64 } else { 0 });
+    syscall3(
+        SYS_FCNTL_SC,
+        fd as u64,
+        F_SETFL as u64,
+        if nonblock { O_NONBLOCK as u64 } else { 0 },
+    );
 }
 
 pub fn open(path: &str, flags: u32) -> u32 {
@@ -123,7 +151,12 @@ pub fn close(fd: u32) -> u32 {
 pub fn readdir(path: &str, buf: &mut [u8]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    sys_err(syscall3(SYS_READDIR, path_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64))
+    sys_err(syscall3(
+        SYS_READDIR,
+        path_buf.as_ptr() as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ))
 }
 
 /// Get file status (follows symlinks). Returns 0 on success.
@@ -132,7 +165,11 @@ pub fn readdir(path: &str, buf: &mut [u8]) -> u32 {
 pub fn stat(path: &str, stat_buf: &mut [u32; 7]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    sys_err(syscall2(SYS_STAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64))
+    sys_err(syscall2(
+        SYS_STAT,
+        path_buf.as_ptr() as u64,
+        stat_buf.as_mut_ptr() as u64,
+    ))
 }
 
 /// Get file status WITHOUT following final symlink. Returns 0 on success.
@@ -141,7 +178,11 @@ pub fn stat(path: &str, stat_buf: &mut [u32; 7]) -> u32 {
 pub fn lstat(path: &str, stat_buf: &mut [u32; 7]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    sys_err(syscall2(SYS_LSTAT, path_buf.as_ptr() as u64, stat_buf.as_mut_ptr() as u64))
+    sys_err(syscall2(
+        SYS_LSTAT,
+        path_buf.as_ptr() as u64,
+        stat_buf.as_mut_ptr() as u64,
+    ))
 }
 
 /// Create a symbolic link. Returns 0 on success, u32::MAX on error.
@@ -156,14 +197,23 @@ pub fn symlink(target: &str, link_path: &str) -> u32 {
     let mut link_buf = [0u8; 257];
     prepare_path(link_path, &mut link_buf);
 
-    sys_err(syscall2(SYS_SYMLINK, target_buf.as_ptr() as u64, link_buf.as_ptr() as u64))
+    sys_err(syscall2(
+        SYS_SYMLINK,
+        target_buf.as_ptr() as u64,
+        link_buf.as_ptr() as u64,
+    ))
 }
 
 /// Read the target of a symbolic link. Returns bytes written, or u32::MAX on error.
 pub fn readlink(path: &str, buf: &mut [u8]) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    sys_err(syscall3(SYS_READLINK, path_buf.as_ptr() as u64, buf.as_mut_ptr() as u64, buf.len() as u64))
+    sys_err(syscall3(
+        SYS_READLINK,
+        path_buf.as_ptr() as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ))
 }
 
 /// Create a directory. Returns 0 on success, u32::MAX on error.
@@ -186,7 +236,11 @@ pub fn rename(old_path: &str, new_path: &str) -> u32 {
     let mut new_buf = [0u8; 257];
     prepare_path(old_path, &mut old_buf);
     prepare_path(new_path, &mut new_buf);
-    sys_err(syscall2(SYS_RENAME, old_buf.as_ptr() as u64, new_buf.as_ptr() as u64))
+    sys_err(syscall2(
+        SYS_RENAME,
+        old_buf.as_ptr() as u64,
+        new_buf.as_ptr() as u64,
+    ))
 }
 
 /// Truncate a file to zero length. Returns 0 on success, u32::MAX on error.
@@ -203,7 +257,12 @@ pub const SEEK_END: u32 = 2;
 
 /// Seek within an open file. Returns new position or u32::MAX on error.
 pub fn lseek(fd: u32, offset: i32, whence: u32) -> u32 {
-    sys_err(syscall3(SYS_LSEEK, fd as u64, offset as i64 as u64, whence as u64))
+    sys_err(syscall3(
+        SYS_LSEEK,
+        fd as u64,
+        offset as i64 as u64,
+        whence as u64,
+    ))
 }
 
 /// Get file information by fd. Returns 0 on success.
@@ -214,7 +273,11 @@ pub fn fstat(fd: u32, stat_buf: &mut [u32; 4]) -> u32 {
 
 /// Get current working directory. Returns length or u32::MAX on error.
 pub fn getcwd(buf: &mut [u8]) -> u32 {
-    sys_err(syscall2(SYS_GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64))
+    sys_err(syscall2(
+        SYS_GETCWD,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ))
 }
 
 /// Change current working directory. Returns 0 on success, u32::MAX on error.
@@ -245,7 +308,12 @@ pub fn mount(mount_path: &str, device: &str, fs_type: u32) -> u32 {
     dev_buf[..dev_len].copy_from_slice(&device.as_bytes()[..dev_len]);
     dev_buf[dev_len] = 0;
 
-    sys_err(syscall3(SYS_MOUNT, mp_buf.as_ptr() as u64, dev_buf.as_ptr() as u64, fs_type as u64))
+    sys_err(syscall3(
+        SYS_MOUNT,
+        mp_buf.as_ptr() as u64,
+        dev_buf.as_ptr() as u64,
+        fs_type as u64,
+    ))
 }
 
 /// Unmount a filesystem.
@@ -274,7 +342,11 @@ pub fn fsync(fd: i32) -> bool {
 /// `sys::disk_list`) or `0` for pseudo-mounts (smb, fuse, devfs).
 /// Returns bytes written, or u32::MAX on error.
 pub fn list_mounts(buf: &mut [u8]) -> u32 {
-    sys_err(syscall2(SYS_LIST_MOUNTS, buf.as_mut_ptr() as u64, buf.len() as u64))
+    sys_err(syscall2(
+        SYS_LIST_MOUNTS,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ))
 }
 
 /// Filesystem statistics returned by [`statfs`].
@@ -296,7 +368,9 @@ pub fn statfs(path: &str) -> Option<StatFs> {
         path.len() as u64,
         out.as_mut_ptr() as u64,
     );
-    if ret == u32::MAX { return None; }
+    if ret == u32::MAX {
+        return None;
+    }
     Some(StatFs {
         total_bytes: u64::from_le_bytes(out[0..8].try_into().unwrap()),
         used_bytes: u64::from_le_bytes(out[8..16].try_into().unwrap()),
@@ -315,7 +389,12 @@ pub fn chmod(path: &str, mode: u16) -> u32 {
 pub fn chown(path: &str, uid: u16, gid: u16) -> u32 {
     let mut path_buf = [0u8; 257];
     prepare_path(path, &mut path_buf);
-    sys_err(syscall3(SYS_CHOWN, path_buf.as_ptr() as u64, uid as u64, gid as u64))
+    sys_err(syscall3(
+        SYS_CHOWN,
+        path_buf.as_ptr() as u64,
+        uid as u64,
+        gid as u64,
+    ))
 }
 
 // =========================================================================
@@ -352,9 +431,8 @@ pub trait Read {
         let mut bytes = Vec::new();
         let n = self.read_to_end(&mut bytes)?;
         // Best-effort UTF-8 — replace invalid sequences
-        let s = String::from_utf8(bytes).unwrap_or_else(|e| {
-            String::from_utf8_lossy(&e.into_bytes()).into_owned()
-        });
+        let s = String::from_utf8(bytes)
+            .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned());
         out.push_str(&s);
         Ok(n)
     }
@@ -542,7 +620,11 @@ impl Iterator for ReadDir {
             // Move out of the vec by swapping with a dummy
             Some(core::mem::replace(
                 &mut self.entries[i],
-                DirEntry { name: String::new(), file_type: 0, size: 0 },
+                DirEntry {
+                    name: String::new(),
+                    file_type: 0,
+                    size: 0,
+                },
             ))
         } else {
             None
@@ -567,12 +649,7 @@ pub fn read_dir(path: &str) -> error::Result<ReadDir> {
         }
         let entry_type = buf[base];
         let name_len = buf[base + 1] as usize;
-        let size = u32::from_le_bytes([
-            buf[base + 4],
-            buf[base + 5],
-            buf[base + 6],
-            buf[base + 7],
-        ]);
+        let size = u32::from_le_bytes([buf[base + 4], buf[base + 5], buf[base + 6], buf[base + 7]]);
         let name_start = base + 8;
         let name_end = (name_start + name_len).min(base + 64);
         let name = core::str::from_utf8(&buf[name_start..name_end])

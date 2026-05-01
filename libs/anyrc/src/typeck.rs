@@ -4756,9 +4756,11 @@ impl<'a> TypeChecker<'a> {
                             }
                             "map" if args.len() == 1 => {
                                 let mapper_ty = self.get_expr_ty_cached(&args[0]);
-                                if let Some(mapped_ty) =
-                                    self.callable_map_output_ty(&substs[0], &mapper_ty, args[0].span)
-                                {
+                                if let Some(mapped_ty) = self.callable_map_output_ty(
+                                    &substs[0],
+                                    &mapper_ty,
+                                    args[0].span,
+                                ) {
                                     return self
                                         .result_of2(mapped_ty, substs[1].clone())
                                         .unwrap_or_else(|| self.fresh_infer(InferKind::General));

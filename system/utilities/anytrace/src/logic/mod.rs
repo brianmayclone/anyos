@@ -1,10 +1,10 @@
-pub mod debugger;
 pub mod breakpoints;
-pub mod unwinder;
-pub mod symbols;
+pub mod debugger;
 pub mod disasm;
-pub mod sampler;
-pub mod snapshots;
-pub mod traces;
 pub mod memory;
 pub mod process_list;
+pub mod sampler;
+pub mod snapshots;
+pub mod symbols;
+pub mod traces;
+pub mod unwinder;

@@ -5,13 +5,12 @@
 //! computation, and the full rasterisation pipeline. Returns total lit
 //! triangles rendered.
 
+use super::gl3d_common::*;
+use super::GL3D_TEST_MS;
 use libanyui_client as anyui;
 use libgl_client as gl;
-use super::GL3D_TEST_MS;
-use super::gl3d_common::*;
 
-const VS_SRC: &str =
-"attribute vec3 aPosition;
+const VS_SRC: &str = "attribute vec3 aPosition;
 attribute vec3 aNormal;
 attribute vec2 aTexCoord;
 uniform mat4 uMVP;
@@ -35,8 +34,7 @@ void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
 }";
 
-const FS_SRC: &str =
-"varying vec3 vLighting;
+const FS_SRC: &str = "varying vec3 vLighting;
 uniform vec4 uMatColor;
 void main() {
     gl_FragColor = vec4(vLighting * uMatColor.rgb, 1.0);
@@ -46,7 +44,9 @@ void main() {
 pub fn bench_gl3d_lighting(canvas: &anyui::Canvas) -> u64 {
     let w = canvas.get_stride();
     let h = canvas.get_height();
-    if !ensure_gl_init(w, h) { return 0; }
+    if !ensure_gl_init(w, h) {
+        return 0;
+    }
 
     let (program, vs, fs) = match compile_program(VS_SRC, FS_SRC) {
         Some(p) => p,
@@ -67,7 +67,11 @@ pub fn bench_gl3d_lighting(canvas: &anyui::Canvas) -> u64 {
     let mut ebo = [0u32; 1];
     gl::gen_buffers(1, &mut ebo);
     gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, ebo[0]);
-    gl::buffer_data_u16(gl::GL_ELEMENT_ARRAY_BUFFER, &sphere_indices, gl::GL_STATIC_DRAW);
+    gl::buffer_data_u16(
+        gl::GL_ELEMENT_ARRAY_BUFFER,
+        &sphere_indices,
+        gl::GL_STATIC_DRAW,
+    );
 
     setup_vertex_attribs(program);
 

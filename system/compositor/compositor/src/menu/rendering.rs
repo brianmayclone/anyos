@@ -3,8 +3,8 @@
 use crate::compositor::{alpha_blend, Compositor, Rect};
 use crate::desktop::drawing::{fill_rect, fill_rounded_rect};
 
-use super::MenuBar;
 use super::types::*;
+use super::MenuBar;
 
 impl MenuBar {
     /// Render menu titles into the menubar pixel buffer.
@@ -32,11 +32,14 @@ impl MenuBar {
             }
 
             // App name (first menu) is bold, rest are regular
-            let font = if layout.menu_idx == 0 { FONT_ID_BOLD } else { FONT_ID };
+            let font = if layout.menu_idx == 0 {
+                FONT_ID_BOLD
+            } else {
+                FONT_ID
+            };
 
             // Render title text centered in its region
-            let (tw, th) =
-                anyos_std::ui::window::font_measure(font, FONT_SIZE, &menu.title);
+            let (tw, th) = anyos_std::ui::window::font_measure(font, FONT_SIZE, &menu.title);
             let tx = layout.x + (layout.width as i32 - tw as i32) / 2;
             let ty = ((menubar_height() as i32 - th as i32) / 2).max(0);
             anyos_std::ui::window::font_render_buf(
@@ -146,7 +149,8 @@ impl MenuBar {
                 // Checkmark if checked
                 if item.is_checked() {
                     let check_x = 8i32;
-                    let (_, ch) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, "\u{2713}");
+                    let (_, ch) =
+                        anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, "\u{2713}");
                     let check_y = iy + ((ITEM_HEIGHT as i32 - ch as i32) / 2).max(0);
                     anyos_std::ui::window::font_render_buf(
                         FONT_ID,
@@ -167,8 +171,7 @@ impl MenuBar {
 
                 // Item label
                 let text_x = 28i32;
-                let (_, th) =
-                    anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &item.label);
+                let (_, th) = anyos_std::ui::window::font_measure(FONT_ID, FONT_SIZE, &item.label);
                 let text_y = iy + ((ITEM_HEIGHT as i32 - th as i32) / 2).max(0);
                 let text_color = if item.is_disabled() {
                     color_disabled_text()

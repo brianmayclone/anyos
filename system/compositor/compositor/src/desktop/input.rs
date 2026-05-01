@@ -2,13 +2,10 @@
 
 use crate::compositor::Rect;
 use crate::keys::{
-    encode_scancode,
-    KEY_ENTER, KEY_DELETE, KEY_F4, KEY_F10, KEY_ESCAPE, KEY_TAB,
-    KEY_F1, KEY_F2, KEY_F3, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9,
-    KEY_F11, KEY_F12,
-    KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
-    KEY_VOLUME_UP, KEY_VOLUME_DOWN, KEY_VOLUME_MUTE,
-    KEY_LEFT_SUPER, KEY_RIGHT_SUPER,
+    encode_scancode, KEY_DELETE, KEY_DOWN, KEY_ENTER, KEY_ESCAPE, KEY_F1, KEY_F10, KEY_F11,
+    KEY_F12, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_LEFT,
+    KEY_LEFT_SUPER, KEY_RIGHT, KEY_RIGHT_SUPER, KEY_TAB, KEY_UP, KEY_VOLUME_DOWN, KEY_VOLUME_MUTE,
+    KEY_VOLUME_UP,
 };
 use crate::menu::MenuBarHit;
 
@@ -39,7 +36,13 @@ impl Desktop {
         self.focused_window
     }
 
-    fn topmost_hit_in_group<F>(&self, mx: i32, my: i32, ipc_only: bool, predicate: F) -> Option<(u32, HitTest)>
+    fn topmost_hit_in_group<F>(
+        &self,
+        mx: i32,
+        my: i32,
+        ipc_only: bool,
+        predicate: F,
+    ) -> Option<(u32, HitTest)>
     where
         F: Fn(&WindowInfo) -> bool,
     {
@@ -58,7 +61,12 @@ impl Desktop {
         None
     }
 
-    pub(crate) fn topmost_window_hit(&self, mx: i32, my: i32, ipc_only: bool) -> Option<(u32, HitTest)> {
+    pub(crate) fn topmost_window_hit(
+        &self,
+        mx: i32,
+        my: i32,
+        ipc_only: bool,
+    ) -> Option<(u32, HitTest)> {
         self.topmost_hit_in_group(mx, my, ipc_only, |w| w.is_always_on_top())
             .or_else(|| {
                 self.topmost_hit_in_group(mx, my, ipc_only, |w| {
@@ -164,7 +172,13 @@ impl Desktop {
             self.mouse_y += dy;
             self.push_event(
                 lock_win_id,
-                [EVENT_MOUSE_MOVE, self.mouse_x as u32, self.mouse_y as u32, 0, 0],
+                [
+                    EVENT_MOUSE_MOVE,
+                    self.mouse_x as u32,
+                    self.mouse_y as u32,
+                    0,
+                    0,
+                ],
             );
             return;
         }
@@ -228,7 +242,10 @@ impl Desktop {
                             .open_menu(menu_idx, owner_wid, &mut self.compositor);
                         self.draw_menubar();
                         self.compositor.add_damage(Rect::new(
-                            0, 0, self.screen_width, menubar_height() + 1,
+                            0,
+                            0,
+                            self.screen_width,
+                            menubar_height() + 1,
                         ));
                     }
                 }
@@ -243,11 +260,13 @@ impl Desktop {
                         MenuBarHit::SystemMenu => {
                             self.menu_bar
                                 .close_dropdown_with_compositor(&mut self.compositor);
-                            self.menu_bar
-                                .open_system_menu(&mut self.compositor);
+                            self.menu_bar.open_system_menu(&mut self.compositor);
                             self.draw_menubar();
                             self.compositor.add_damage(Rect::new(
-                                0, 0, self.screen_width, menubar_height() + 1,
+                                0,
+                                0,
+                                self.screen_width,
+                                menubar_height() + 1,
                             ));
                         }
                         MenuBarHit::MenuTitle { menu_idx } => {
@@ -261,7 +280,10 @@ impl Desktop {
                                     .open_menu(menu_idx, owner_wid, &mut self.compositor);
                                 self.draw_menubar();
                                 self.compositor.add_damage(Rect::new(
-                                    0, 0, self.screen_width, menubar_height() + 1,
+                                    0,
+                                    0,
+                                    self.screen_width,
+                                    menubar_height() + 1,
                                 ));
                             }
                         }
@@ -272,8 +294,7 @@ impl Desktop {
         }
 
         // Update HW cursor position
-        self.compositor
-            .move_hw_cursor(self.mouse_x, self.mouse_y);
+        self.compositor.move_hw_cursor(self.mouse_x, self.mouse_y);
 
         // Update cursor shape
         if self.dragging.is_some() {
@@ -309,12 +330,14 @@ impl Desktop {
                 let now = anyos_std::sys::uptime();
                 if let Some((old_wid, old_btn)) = self.btn_hover {
                     let aid = button_anim_id(old_wid, old_btn);
-                    self.btn_anims.start(aid, 1000, 0, 150, anyos_std::anim::Easing::EaseOut);
+                    self.btn_anims
+                        .start(aid, 1000, 0, 150, anyos_std::anim::Easing::EaseOut);
                     self.render_window(old_wid);
                 }
                 if let Some((new_wid, new_btn)) = new_hover {
                     let aid = button_anim_id(new_wid, new_btn);
-                    self.btn_anims.start(aid, 0, 1000, 150, anyos_std::anim::Easing::EaseOut);
+                    self.btn_anims
+                        .start(aid, 0, 1000, 150, anyos_std::anim::Easing::EaseOut);
                     self.render_window(new_wid);
                 }
                 self.btn_hover = new_hover;
@@ -339,10 +362,7 @@ impl Desktop {
                     if !win.is_borderless() {
                         ly -= title_bar_height() as i32;
                     }
-                    self.push_event(
-                        win.id,
-                        [EVENT_MOUSE_MOVE, lx as u32, ly as u32, 0, 0],
-                    );
+                    self.push_event(win.id, [EVENT_MOUSE_MOVE, lx as u32, ly as u32, 0, 0]);
                 }
             }
         }
@@ -442,7 +462,9 @@ impl Desktop {
                 let is_inside = self.is_point_in_shortcut_overlay(self.mouse_x, self.mouse_y);
                 if is_inside {
                     // Check close button (X) first
-                    if let Some(slot) = self.hit_test_shortcut_overlay_close(self.mouse_x, self.mouse_y) {
+                    if let Some(slot) =
+                        self.hit_test_shortcut_overlay_close(self.mouse_x, self.mouse_y)
+                    {
                         let win_id = self.fkey_slots[slot];
                         if win_id != 0 {
                             // Send close event to the window
@@ -460,7 +482,9 @@ impl Desktop {
                             // Un-minimize if needed
                             if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                                 if self.windows[idx].x < -9000 {
-                                    if let Some((sx, sy, _sw, _sh)) = self.windows[idx].saved_bounds.take() {
+                                    if let Some((sx, sy, _sw, _sh)) =
+                                        self.windows[idx].saved_bounds.take()
+                                    {
                                         self.windows[idx].x = sx;
                                         self.windows[idx].y = sy;
                                         let layer_id = self.windows[idx].layer_id;
@@ -485,10 +509,15 @@ impl Desktop {
                 if self.menu_bar.is_in_dropdown(self.mouse_x, self.mouse_y) {
                     if self.menu_bar.system_menu_open {
                         // System menu dropdown click
-                        if let Some(item_id) = self.menu_bar.hit_test_system_menu(self.mouse_x, self.mouse_y) {
+                        if let Some(item_id) = self
+                            .menu_bar
+                            .hit_test_system_menu(self.mouse_x, self.mouse_y)
+                        {
                             self.handle_system_menu_action(item_id);
                         }
-                    } else if let Some(item_id) = self.menu_bar.hit_test_dropdown(self.mouse_x, self.mouse_y) {
+                    } else if let Some(item_id) =
+                        self.menu_bar.hit_test_dropdown(self.mouse_x, self.mouse_y)
+                    {
                         // App menu dropdown click
                         if let Some(win_id) = self.focused_window {
                             match item_id {
@@ -496,7 +525,9 @@ impl Desktop {
                                     self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
                                 }
                                 crate::menu::APP_MENU_HIDE => {
-                                    if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                                    if let Some(idx) =
+                                        self.windows.iter().position(|w| w.id == win_id)
+                                    {
                                         let layer_id = self.windows[idx].layer_id;
                                         self.windows[idx].saved_bounds = Some((
                                             self.windows[idx].x,
@@ -506,7 +537,10 @@ impl Desktop {
                                         ));
                                         self.compositor.move_layer(layer_id, -10000, -10000);
                                     }
-                                    let next = self.windows.iter().rev()
+                                    let next = self
+                                        .windows
+                                        .iter()
+                                        .rev()
                                         .find(|w| w.id != win_id && w.x >= 0)
                                         .map(|w| w.id);
                                     if let Some(nid) = next {
@@ -514,19 +548,28 @@ impl Desktop {
                                     }
                                 }
                                 _ => {
-                                    let menu_idx = self.menu_bar.open_dropdown
+                                    let menu_idx = self
+                                        .menu_bar
+                                        .open_dropdown
                                         .as_ref()
                                         .map(|d| d.menu_idx as u32)
                                         .unwrap_or(0);
-                                    self.push_event(win_id, [EVENT_MENU_ITEM, menu_idx, item_id, 0, 0]);
+                                    self.push_event(
+                                        win_id,
+                                        [EVENT_MENU_ITEM, menu_idx, item_id, 0, 0],
+                                    );
                                 }
                             }
                         }
                     }
-                    self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+                    self.menu_bar
+                        .close_dropdown_with_compositor(&mut self.compositor);
                     self.draw_menubar();
                     self.compositor.add_damage(Rect::new(
-                        0, 0, self.screen_width, menubar_height() + 1,
+                        0,
+                        0,
+                        self.screen_width,
+                        menubar_height() + 1,
                     ));
                     return;
                 }
@@ -535,10 +578,14 @@ impl Desktop {
                     self.handle_menubar_click();
                     return;
                 }
-                self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+                self.menu_bar
+                    .close_dropdown_with_compositor(&mut self.compositor);
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, menubar_height() + 1,
+                    0,
+                    0,
+                    self.screen_width,
+                    menubar_height() + 1,
                 ));
             }
 
@@ -555,8 +602,7 @@ impl Desktop {
             if let Some((win_id, hit_test)) = self.topmost_window_hit(mx, my, false) {
                 // If the clicked window has a modal child, block the click and
                 // redirect focus to the modal child instead.
-                let has_modal_child = self.windows.iter()
-                    .any(|w| w.modal_owner == win_id);
+                let has_modal_child = self.windows.iter().any(|w| w.modal_owner == win_id);
                 if has_modal_child {
                     // focus_window will walk the chain to the topmost modal
                     self.focus_window(win_id);
@@ -569,13 +615,23 @@ impl Desktop {
 
                 match hit_test {
                     HitTest::CloseButton => {
-                        let no_close = self.windows.iter().find(|w| w.id == win_id)
-                            .map(|w| w.flags & WIN_FLAG_NO_CLOSE != 0).unwrap_or(false);
+                        let no_close = self
+                            .windows
+                            .iter()
+                            .find(|w| w.id == win_id)
+                            .map(|w| w.flags & WIN_FLAG_NO_CLOSE != 0)
+                            .unwrap_or(false);
                         if !no_close {
                             if self.has_gpu_accel {
                                 self.btn_pressed = Some((win_id, 0));
                                 let aid = button_anim_id(win_id, 0);
-                                self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                                self.btn_anims.start(
+                                    aid,
+                                    0,
+                                    1000,
+                                    100,
+                                    anyos_std::anim::Easing::EaseOut,
+                                );
                                 self.render_window(win_id);
                             }
                             self.push_event(win_id, [EVENT_WINDOW_CLOSE, 0, 0, 0, 0]);
@@ -613,26 +669,46 @@ impl Desktop {
                         }
                     }
                     HitTest::MinButton => {
-                        let no_min = self.windows.iter().find(|w| w.id == win_id)
-                            .map(|w| w.flags & WIN_FLAG_NO_MINIMIZE != 0).unwrap_or(false);
+                        let no_min = self
+                            .windows
+                            .iter()
+                            .find(|w| w.id == win_id)
+                            .map(|w| w.flags & WIN_FLAG_NO_MINIMIZE != 0)
+                            .unwrap_or(false);
                         if !no_min {
                             if self.has_gpu_accel {
                                 self.btn_pressed = Some((win_id, 1));
                                 let aid = button_anim_id(win_id, 1);
-                                self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                                self.btn_anims.start(
+                                    aid,
+                                    0,
+                                    1000,
+                                    100,
+                                    anyos_std::anim::Easing::EaseOut,
+                                );
                                 self.render_window(win_id);
                             }
                             self.minimize_window(win_id);
                         }
                     }
                     HitTest::MaxButton => {
-                        let no_max = self.windows.iter().find(|w| w.id == win_id)
-                            .map(|w| w.flags & WIN_FLAG_NO_MAXIMIZE != 0).unwrap_or(false);
+                        let no_max = self
+                            .windows
+                            .iter()
+                            .find(|w| w.id == win_id)
+                            .map(|w| w.flags & WIN_FLAG_NO_MAXIMIZE != 0)
+                            .unwrap_or(false);
                         if !no_max {
                             if self.has_gpu_accel {
                                 self.btn_pressed = Some((win_id, 2));
                                 let aid = button_anim_id(win_id, 2);
-                                self.btn_anims.start(aid, 0, 1000, 100, anyos_std::anim::Easing::EaseOut);
+                                self.btn_anims.start(
+                                    aid,
+                                    0,
+                                    1000,
+                                    100,
+                                    anyos_std::anim::Easing::EaseOut,
+                                );
                                 self.render_window(win_id);
                             }
                             self.toggle_maximize(win_id);
@@ -651,7 +727,13 @@ impl Desktop {
                             }
                             self.push_event(
                                 win_id,
-                                [EVENT_MOUSE_DOWN, lx as u32, content_ly as u32, buttons | (self.current_modifiers << 8), 0],
+                                [
+                                    EVENT_MOUSE_DOWN,
+                                    lx as u32,
+                                    content_ly as u32,
+                                    buttons | (self.current_modifiers << 8),
+                                    0,
+                                ],
                             );
                         }
                     }
@@ -703,7 +785,8 @@ impl Desktop {
             if let Some((wid, btn)) = self.btn_pressed.take() {
                 if self.has_gpu_accel {
                     let aid = button_anim_id(wid, btn);
-                    self.btn_anims.start(aid, 1000, 0, 150, anyos_std::anim::Easing::EaseOut);
+                    self.btn_anims
+                        .start(aid, 1000, 0, 150, anyos_std::anim::Easing::EaseOut);
                     self.render_window(wid);
                 }
             }
@@ -787,10 +870,7 @@ impl Desktop {
                     let full_h = self.windows[idx].full_height();
                     self.compositor.resize_layer(layer_id, nw, full_h);
                     self.render_window(win_id);
-                    self.push_event(
-                        win_id,
-                        [EVENT_RESIZE, nw, content_h, 0, 0],
-                    );
+                    self.push_event(win_id, [EVENT_RESIZE, nw, content_h, 0, 0]);
                 }
             }
 
@@ -810,7 +890,16 @@ impl Desktop {
                     if !self.windows[idx].is_borderless() {
                         ly -= title_bar_height() as i32;
                     }
-                    self.push_event(win_id, [EVENT_MOUSE_UP, lx as u32, ly as u32, self.current_modifiers << 8, 0]);
+                    self.push_event(
+                        win_id,
+                        [
+                            EVENT_MOUSE_UP,
+                            lx as u32,
+                            ly as u32,
+                            self.current_modifiers << 8,
+                            0,
+                        ],
+                    );
                 }
             }
         }
@@ -818,7 +907,10 @@ impl Desktop {
 
     fn handle_scroll(&mut self, dz: i32) {
         if let Some(win_id) = self.focused_window {
-            self.push_event(win_id, [EVENT_MOUSE_SCROLL, dz as u32, self.current_modifiers, 0, 0]);
+            self.push_event(
+                win_id,
+                [EVENT_MOUSE_SCROLL, dz as u32, self.current_modifiers, 0, 0],
+            );
         }
     }
 
@@ -830,7 +922,13 @@ impl Desktop {
 
         // Debug: log Escape key events
         if key_code == KEY_ESCAPE && down {
-            anyos_std::println!("[compositor] ESC down: scancode=0x{:x} mods=0x{:x} ctrl={} alt={}", scancode, mods, ctrl, alt);
+            anyos_std::println!(
+                "[compositor] ESC down: scancode=0x{:x} mods=0x{:x} ctrl={} alt={}",
+                scancode,
+                mods,
+                ctrl,
+                alt
+            );
         }
 
         // ESC cancels an active cross-window drag, regardless of focus.
@@ -853,7 +951,8 @@ impl Desktop {
                 // Super released without pressing any other key → toggle system menu
                 self.super_key_solo = false;
                 if self.menu_bar.is_dropdown_open() {
-                    self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+                    self.menu_bar
+                        .close_dropdown_with_compositor(&mut self.compositor);
                 } else {
                     self.menu_bar.open_system_menu(&mut self.compositor);
                     // Set hover to first non-separator item for keyboard nav
@@ -864,14 +963,15 @@ impl Desktop {
                 }
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, menubar_height() + 1,
+                    0,
+                    0,
+                    self.screen_width,
+                    menubar_height() + 1,
                 ));
                 // Also broadcast for apps that want to react
                 if self.tray_ipc_events.len() < 256 {
-                    self.tray_ipc_events.push((
-                        None,
-                        [crate::ipc_protocol::EVT_SUPER_KEY, 0, 0, 0, 0],
-                    ));
+                    self.tray_ipc_events
+                        .push((None, [crate::ipc_protocol::EVT_SUPER_KEY, 0, 0, 0, 0]));
                 }
             }
             return;
@@ -903,20 +1003,25 @@ impl Desktop {
                     self.exit_fullscreen();
                 } else if let Some(focused) = self.focused_window {
                     // Enter fullscreen — only if the app registered as fullscreen-capable
-                    let is_capable = self.windows.iter()
+                    let is_capable = self
+                        .windows
+                        .iter()
                         .find(|w| w.id == focused)
                         .map(|w| w.fullscreen_capable)
                         .unwrap_or(false);
                     if is_capable {
                         if let Some(resp) = self.enter_fullscreen(focused, false) {
                             // resp = [RESP_FULLSCREEN_ENTERED, win_id, (sw<<16)|sh, stride, fb_ptr]
-                            self.push_event(focused, [
-                                EVENT_FULLSCREEN_ENTER,
-                                resp[2], // (sw<<16)|sh
-                                resp[3], // stride
-                                resp[4], // fb_ptr (direct FB if granted, 0 otherwise)
-                                0,
-                            ]);
+                            self.push_event(
+                                focused,
+                                [
+                                    EVENT_FULLSCREEN_ENTER,
+                                    resp[2], // (sw<<16)|sh
+                                    resp[3], // stride
+                                    resp[4], // fb_ptr (direct FB if granted, 0 otherwise)
+                                    0,
+                                ],
+                            );
                         }
                     }
                 }
@@ -955,8 +1060,8 @@ impl Desktop {
             // Ctrl+F1..F12: Focus window assigned to that shortcut slot
             if ctrl && !alt {
                 let fkey_table: [u32; 12] = [
-                    KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6,
-                    KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12,
+                    KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9,
+                    KEY_F10, KEY_F11, KEY_F12,
                 ];
                 for (slot, &fk) in fkey_table.iter().enumerate() {
                     if key_code == fk {
@@ -968,7 +1073,9 @@ impl Desktop {
                             // Un-minimize if needed
                             if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                                 if self.windows[idx].x < -9000 {
-                                    if let Some((sx, sy, _sw, _sh)) = self.windows[idx].saved_bounds.take() {
+                                    if let Some((sx, sy, _sw, _sh)) =
+                                        self.windows[idx].saved_bounds.take()
+                                    {
                                         self.windows[idx].x = sx;
                                         self.windows[idx].y = sy;
                                         let layer_id = self.windows[idx].layer_id;
@@ -985,7 +1092,10 @@ impl Desktop {
 
             // Ctrl+Escape: Toggle shortcut overlay
             if ctrl && key_code == KEY_ESCAPE {
-                anyos_std::println!("[compositor] Ctrl+Esc: toggle shortcut overlay (visible={})", self.shortcut_overlay_visible);
+                anyos_std::println!(
+                    "[compositor] Ctrl+Esc: toggle shortcut overlay (visible={})",
+                    self.shortcut_overlay_visible
+                );
                 self.toggle_shortcut_overlay();
                 return;
             }
@@ -1044,9 +1154,12 @@ impl Desktop {
                             self.close_shortcut_overlay();
                             if win_id != 0 {
                                 // Un-minimize if needed
-                                if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                                if let Some(idx) = self.windows.iter().position(|w| w.id == win_id)
+                                {
                                     if self.windows[idx].x < -9000 {
-                                        if let Some((sx, sy, _sw, _sh)) = self.windows[idx].saved_bounds.take() {
+                                        if let Some((sx, sy, _sw, _sh)) =
+                                            self.windows[idx].saved_bounds.take()
+                                        {
                                             self.windows[idx].x = sx;
                                             self.windows[idx].y = sy;
                                             let layer_id = self.windows[idx].layer_id;
@@ -1075,16 +1188,22 @@ impl Desktop {
                     return;
                 }
                 if self.menu_bar.is_dropdown_open() {
-                    self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+                    self.menu_bar
+                        .close_dropdown_with_compositor(&mut self.compositor);
                     self.draw_menubar();
                     self.compositor.add_damage(Rect::new(
-                        0, 0, self.screen_width, menubar_height() + 1,
+                        0,
+                        0,
+                        self.screen_width,
+                        menubar_height() + 1,
                     ));
                     return;
                 }
                 // If the dock has focus, release focus on Escape
                 if let Some(fid) = self.focused_window {
-                    let is_dock = self.windows.iter()
+                    let is_dock = self
+                        .windows
+                        .iter()
                         .find(|w| w.id == fid)
                         .map(|w| w.is_always_on_top() && w.is_borderless() && w.title == "Dock")
                         .unwrap_or(false);
@@ -1147,16 +1266,20 @@ impl Desktop {
                     let vol = anyos_std::audio::audio_get_volume();
                     let new_vol = (vol as u32 + 5).min(100) as u8;
                     anyos_std::audio::audio_set_volume(new_vol);
-                    let (sw, sh, mb) = (self.screen_width, self.screen_height, self.menubar_layer_id);
-                    self.volume_hud.show(&mut self.compositor, sw, sh, new_vol, false, mb);
+                    let (sw, sh, mb) =
+                        (self.screen_width, self.screen_height, self.menubar_layer_id);
+                    self.volume_hud
+                        .show(&mut self.compositor, sw, sh, new_vol, false, mb);
                     return;
                 }
                 KEY_VOLUME_DOWN => {
                     let vol = anyos_std::audio::audio_get_volume();
                     let new_vol = vol.saturating_sub(5);
                     anyos_std::audio::audio_set_volume(new_vol);
-                    let (sw, sh, mb) = (self.screen_width, self.screen_height, self.menubar_layer_id);
-                    self.volume_hud.show(&mut self.compositor, sw, sh, new_vol, false, mb);
+                    let (sw, sh, mb) =
+                        (self.screen_width, self.screen_height, self.menubar_layer_id);
+                    self.volume_hud
+                        .show(&mut self.compositor, sw, sh, new_vol, false, mb);
                     return;
                 }
                 KEY_VOLUME_MUTE => {
@@ -1164,8 +1287,10 @@ impl Desktop {
                     if vol > 0 {
                         self.volume_hud.saved_volume = vol;
                         anyos_std::audio::audio_set_volume(0);
-                        let (sw, sh, mb) = (self.screen_width, self.screen_height, self.menubar_layer_id);
-                        self.volume_hud.show(&mut self.compositor, sw, sh, 0, true, mb);
+                        let (sw, sh, mb) =
+                            (self.screen_width, self.screen_height, self.menubar_layer_id);
+                        self.volume_hud
+                            .show(&mut self.compositor, sw, sh, 0, true, mb);
                     } else {
                         let restore = if self.volume_hud.saved_volume > 0 {
                             self.volume_hud.saved_volume
@@ -1173,8 +1298,10 @@ impl Desktop {
                             50
                         };
                         anyos_std::audio::audio_set_volume(restore);
-                        let (sw, sh, mb) = (self.screen_width, self.screen_height, self.menubar_layer_id);
-                        self.volume_hud.show(&mut self.compositor, sw, sh, restore, false, mb);
+                        let (sw, sh, mb) =
+                            (self.screen_width, self.screen_height, self.menubar_layer_id);
+                        self.volume_hud
+                            .show(&mut self.compositor, sw, sh, restore, false, mb);
                     }
                     return;
                 }
@@ -1188,14 +1315,15 @@ impl Desktop {
             let super_held = self.super_held;
             // Build modifier mask matching the config format:
             // bit 0 = Shift, bit 1 = Ctrl, bit 2 = Alt, bit 3 = Super
-            let effective_mods: u8 =
-                (shift as u8)
+            let effective_mods: u8 = (shift as u8)
                 | ((ctrl as u8) << 1)
                 | ((alt as u8) << 2)
                 | ((super_held as u8) << 3);
 
             for i in 0..self.shortcuts.len() {
-                if self.shortcuts[i].key_code == key_code && self.shortcuts[i].modifiers == effective_mods {
+                if self.shortcuts[i].key_code == key_code
+                    && self.shortcuts[i].modifiers == effective_mods
+                {
                     match &self.shortcuts[i].action {
                         crate::config::ShortcutAction::Launch(path) => {
                             anyos_std::process::spawn(path, "");
@@ -1223,7 +1351,9 @@ impl Desktop {
                 // Tab: only if no normal app window is focused
                 match self.focused_window {
                     None => true,
-                    Some(fid) => self.windows.iter()
+                    Some(fid) => self
+                        .windows
+                        .iter()
                         .find(|w| w.id == fid)
                         .map(|w| w.is_borderless() && w.is_always_on_top())
                         .unwrap_or(true),
@@ -1262,12 +1392,14 @@ impl Desktop {
                         .close_dropdown_with_compositor(&mut self.compositor);
                 }
                 if !was_system {
-                    self.menu_bar
-                        .open_system_menu(&mut self.compositor);
+                    self.menu_bar.open_system_menu(&mut self.compositor);
                 }
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, menubar_height() + 1,
+                    0,
+                    0,
+                    self.screen_width,
+                    menubar_height() + 1,
                 ));
             }
             MenuBarHit::MenuTitle { menu_idx } => {
@@ -1294,10 +1426,7 @@ impl Desktop {
                     menubar_height() + 1,
                 ));
             }
-            MenuBarHit::StatusIcon {
-                owner_tid,
-                icon_id,
-            } => {
+            MenuBarHit::StatusIcon { owner_tid, icon_id } => {
                 self.push_status_icon_event(owner_tid, icon_id);
             }
             MenuBarHit::None => {
@@ -1331,8 +1460,7 @@ impl Desktop {
             crate::menu::types::SYS_MENU_TILE_WINDOWS => {
                 self.tile_all_windows();
             }
-            crate::menu::SYS_MENU_SETTINGS
-            | crate::menu::SYS_MENU_SLEEP => {
+            crate::menu::SYS_MENU_SETTINGS | crate::menu::SYS_MENU_SLEEP => {
                 // Not yet implemented
             }
             crate::menu::SYS_MENU_SHUTDOWN => {
@@ -1355,7 +1483,9 @@ impl Desktop {
                 return;
             }
         }
-        let target_sub = self.app_subs.iter()
+        let target_sub = self
+            .app_subs
+            .iter()
             .find(|(t, _)| *t == owner_tid)
             .map(|(_, s)| *s);
         if self.tray_ipc_events.len() < 256 {
@@ -1414,8 +1544,11 @@ impl Desktop {
 
     /// Find the dock window (always-on-top borderless window named "Dock").
     fn find_dock_window(&self) -> Option<u32> {
-        self.windows.iter()
-            .find(|w| w.is_always_on_top() && w.is_borderless() && w.owner_tid != 0 && w.title == "Dock")
+        self.windows
+            .iter()
+            .find(|w| {
+                w.is_always_on_top() && w.is_borderless() && w.owner_tid != 0 && w.title == "Dock"
+            })
             .map(|w| w.id)
     }
 
@@ -1425,7 +1558,9 @@ impl Desktop {
     /// Alt+Shift+Tab goes in reverse (forward in the vec).
     fn cycle_window_focus(&mut self, reverse: bool) {
         // Collect visible (not minimized/hidden) windows with owner_tid != 0 (IPC windows only)
-        let visible: alloc::vec::Vec<u32> = self.windows.iter()
+        let visible: alloc::vec::Vec<u32> = self
+            .windows
+            .iter()
             .filter(|w| w.owner_tid != 0 && w.x >= -9000)
             .map(|w| w.id)
             .collect();
@@ -1454,11 +1589,11 @@ impl Desktop {
     /// Activate menubar keyboard navigation: open the first app menu.
     fn activate_menubar_keyboard(&mut self) {
         if self.menu_bar.is_dropdown_open() {
-            self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+            self.menu_bar
+                .close_dropdown_with_compositor(&mut self.compositor);
             self.draw_menubar();
-            self.compositor.add_damage(Rect::new(
-                0, 0, self.screen_width, menubar_height() + 1,
-            ));
+            self.compositor
+                .add_damage(Rect::new(0, 0, self.screen_width, menubar_height() + 1));
             return;
         }
         // Open the first menu (index 0 = app name menu)
@@ -1471,22 +1606,28 @@ impl Desktop {
             }
             self.menu_bar.render_dropdown(&mut self.compositor);
             self.draw_menubar();
-            self.compositor.add_damage(Rect::new(
-                0, 0, self.screen_width, menubar_height() + 1,
-            ));
+            self.compositor
+                .add_damage(Rect::new(0, 0, self.screen_width, menubar_height() + 1));
         }
     }
 
     /// Navigate down in the open dropdown menu.
     fn menu_navigate_down(&mut self) {
         let item_count = self.menu_dropdown_item_count();
-        if item_count == 0 { return; }
-        let cur = self.menu_bar.open_dropdown.as_ref()
+        if item_count == 0 {
+            return;
+        }
+        let cur = self
+            .menu_bar
+            .open_dropdown
+            .as_ref()
             .and_then(|dd| dd.hover_idx)
             .unwrap_or(item_count.wrapping_sub(1));
         let mut next = (cur + 1) % item_count;
         for _ in 0..item_count {
-            if !self.menu_item_is_separator(next) { break; }
+            if !self.menu_item_is_separator(next) {
+                break;
+            }
             next = (next + 1) % item_count;
         }
         if let Some(ref mut dd) = self.menu_bar.open_dropdown {
@@ -1498,13 +1639,20 @@ impl Desktop {
     /// Navigate up in the open dropdown menu.
     fn menu_navigate_up(&mut self) {
         let item_count = self.menu_dropdown_item_count();
-        if item_count == 0 { return; }
-        let cur = self.menu_bar.open_dropdown.as_ref()
+        if item_count == 0 {
+            return;
+        }
+        let cur = self
+            .menu_bar
+            .open_dropdown
+            .as_ref()
             .and_then(|dd| dd.hover_idx)
             .unwrap_or(0);
         let mut prev = if cur == 0 { item_count - 1 } else { cur - 1 };
         for _ in 0..item_count {
-            if !self.menu_item_is_separator(prev) { break; }
+            if !self.menu_item_is_separator(prev) {
+                break;
+            }
             prev = if prev == 0 { item_count - 1 } else { prev - 1 };
         }
         if let Some(ref mut dd) = self.menu_bar.open_dropdown {
@@ -1520,20 +1668,27 @@ impl Desktop {
             None => return,
         };
         let menu_count = self.menu_bar.title_layouts.len();
-        if menu_count == 0 { return; }
-        let prev = if menu_idx == 0 { menu_count - 1 } else { menu_idx - 1 };
+        if menu_count == 0 {
+            return;
+        }
+        let prev = if menu_idx == 0 {
+            menu_count - 1
+        } else {
+            menu_idx - 1
+        };
 
         let owner_wid = self.focused_window.unwrap_or(0);
-        self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
-        self.menu_bar.open_menu(prev, owner_wid, &mut self.compositor);
+        self.menu_bar
+            .close_dropdown_with_compositor(&mut self.compositor);
+        self.menu_bar
+            .open_menu(prev, owner_wid, &mut self.compositor);
         if let Some(ref mut dd) = self.menu_bar.open_dropdown {
             dd.hover_idx = Some(0);
         }
         self.menu_bar.render_dropdown(&mut self.compositor);
         self.draw_menubar();
-        self.compositor.add_damage(Rect::new(
-            0, 0, self.screen_width, menubar_height() + 1,
-        ));
+        self.compositor
+            .add_damage(Rect::new(0, 0, self.screen_width, menubar_height() + 1));
     }
 
     /// Navigate right to next menu.
@@ -1543,20 +1698,23 @@ impl Desktop {
             None => return,
         };
         let menu_count = self.menu_bar.title_layouts.len();
-        if menu_count == 0 { return; }
+        if menu_count == 0 {
+            return;
+        }
         let next = (menu_idx + 1) % menu_count;
 
         let owner_wid = self.focused_window.unwrap_or(0);
-        self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
-        self.menu_bar.open_menu(next, owner_wid, &mut self.compositor);
+        self.menu_bar
+            .close_dropdown_with_compositor(&mut self.compositor);
+        self.menu_bar
+            .open_menu(next, owner_wid, &mut self.compositor);
         if let Some(ref mut dd) = self.menu_bar.open_dropdown {
             dd.hover_idx = Some(0);
         }
         self.menu_bar.render_dropdown(&mut self.compositor);
         self.draw_menubar();
-        self.compositor.add_damage(Rect::new(
-            0, 0, self.screen_width, menubar_height() + 1,
-        ));
+        self.compositor
+            .add_damage(Rect::new(0, 0, self.screen_width, menubar_height() + 1));
     }
 
     /// Activate the currently hovered menu item.
@@ -1572,10 +1730,14 @@ impl Desktop {
 
         if is_system {
             if let Some(item_id) = self.menu_bar.get_system_menu_item_id(hover_idx) {
-                self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+                self.menu_bar
+                    .close_dropdown_with_compositor(&mut self.compositor);
                 self.draw_menubar();
                 self.compositor.add_damage(Rect::new(
-                    0, 0, self.screen_width, menubar_height() + 1,
+                    0,
+                    0,
+                    self.screen_width,
+                    menubar_height() + 1,
                 ));
                 self.handle_system_menu_action(item_id);
             }
@@ -1596,7 +1758,10 @@ impl Desktop {
                             ));
                             self.compositor.move_layer(layer_id, -10000, -10000);
                         }
-                        let next = self.windows.iter().rev()
+                        let next = self
+                            .windows
+                            .iter()
+                            .rev()
                             .find(|w| w.id != win_id && w.x >= 0)
                             .map(|w| w.id);
                         if let Some(nid) = next {
@@ -1608,11 +1773,11 @@ impl Desktop {
                     }
                 }
             }
-            self.menu_bar.close_dropdown_with_compositor(&mut self.compositor);
+            self.menu_bar
+                .close_dropdown_with_compositor(&mut self.compositor);
             self.draw_menubar();
-            self.compositor.add_damage(Rect::new(
-                0, 0, self.screen_width, menubar_height() + 1,
-            ));
+            self.compositor
+                .add_damage(Rect::new(0, 0, self.screen_width, menubar_height() + 1));
         }
     }
 
@@ -1629,7 +1794,10 @@ impl Desktop {
             Some(d) => d,
             None => return 0,
         };
-        def.menus.get(dd.menu_idx).map(|m| m.items.len()).unwrap_or(0)
+        def.menus
+            .get(dd.menu_idx)
+            .map(|m| m.items.len())
+            .unwrap_or(0)
     }
 
     /// Check if a menu item at the given index is a separator.
@@ -1646,7 +1814,8 @@ impl Desktop {
             Some(d) => d,
             None => return false,
         };
-        def.menus.get(dd.menu_idx)
+        def.menus
+            .get(dd.menu_idx)
             .and_then(|m| m.items.get(idx))
             .map(|item| item.is_separator())
             .unwrap_or(false)

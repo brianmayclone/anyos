@@ -92,11 +92,11 @@ fn build_child_path<'a>(buf: &'a mut [u8; 512], parent: &str, name: &str) -> &'a
 // ─── Core walker ──────────────────────────────────────────────────────────────
 
 struct Opts {
-    all: bool,      // -a: show files too
-    summarize: bool,// -s: only top-level total
-    human: bool,    // -h: human-readable
-    use_mb: bool,   // -m: megabytes
-    max_depth: u32, // -d N
+    all: bool,       // -a: show files too
+    summarize: bool, // -s: only top-level total
+    human: bool,     // -h: human-readable
+    use_mb: bool,    // -m: megabytes
+    max_depth: u32,  // -d N
 }
 
 /// A pending print entry: (path, bytes).
@@ -133,7 +133,7 @@ fn walk(path: &str, depth: u32, opts: &Opts, out: &mut Vec<Entry>) -> u64 {
 
     for i in 0..count as usize {
         let e = &dir_buf[i * 64..(i + 1) * 64];
-        let etype = e[0];              // 0=file 1=dir
+        let etype = e[0]; // 0=file 1=dir
         let nlen = e[1] as usize;
         let name = core::str::from_utf8(&e[8..8 + nlen.min(56)]).unwrap_or("");
         if name.is_empty() || name == "." || name == ".." {

@@ -115,7 +115,9 @@ fn main() {
     title.set_margin(40, 0, 40, 6);
     controls_content.add(&title);
 
-    let subtitle = ui::Label::new(i18n::t("Desktop controls, layouts and data views in one place"));
+    let subtitle = ui::Label::new(i18n::t(
+        "Desktop controls, layouts and data views in one place",
+    ));
     subtitle.set_color(0xFF707782);
     subtitle.set_text_color(0xFFE8ECF2);
     subtitle.set_text_align(ui::TEXT_ALIGN_CENTER);
@@ -270,7 +272,9 @@ fn main() {
     readonly.set_size(220, 28);
     readonly.set_text("/Users/demo/Documents");
     readonly.set_read_only(true);
-    readonly.set_tooltip(i18n::t("Read-only text fields still support selection and copy"));
+    readonly.set_tooltip(i18n::t(
+        "Read-only text fields still support selection and copy",
+    ));
     field_row.add(&readonly);
 
     let select_row = ui::View::new();
@@ -315,7 +319,9 @@ fn main() {
     let ta_readonly = ui::TextArea::new();
     ta_readonly.set_size(452, 56);
     ta_readonly.set_read_only(true);
-    ta_readonly.set_text("Read-only text area.\nUseful for logs, paths, generated commands and diagnostics.");
+    ta_readonly.set_text(
+        "Read-only text area.\nUseful for logs, paths, generated commands and diagnostics.",
+    );
     inp_stack.add(&ta_readonly);
 
     // ════════════════════════════════════════════════════════════════
@@ -396,7 +402,12 @@ fn main() {
     tab_stack.set_padding(4, 4, 4, 4);
     exp_tabs.add(&tab_stack);
 
-    let seg_str = alloc::format!("{}|{}|{}", i18n::t("General"), i18n::t("Appearance"), i18n::t("Privacy"));
+    let seg_str = alloc::format!(
+        "{}|{}|{}",
+        i18n::t("General"),
+        i18n::t("Appearance"),
+        i18n::t("Privacy")
+    );
     let seg = ui::SegmentedControl::new(&seg_str);
     seg.set_size(452, 28);
     seg.set_margin(0, 0, 0, 6);
@@ -451,7 +462,9 @@ fn main() {
     card_title.set_text_color(0xFF7FB7FF);
     card.add(&card_title);
 
-    let card_text = ui::Label::new(i18n::t("Updated rounded corners and softer gloss gradient."));
+    let card_text = ui::Label::new(i18n::t(
+        "Updated rounded corners and softer gloss gradient.",
+    ));
     card_text.set_position(12, 30);
     card_text.set_size(196, 28);
     card.add(&card_text);
@@ -466,7 +479,9 @@ fn main() {
     gb.set_size(220, 110);
     cards_row.add(&gb);
 
-    let gb_lbl = ui::Label::new(i18n::t("GroupBox still works for denser, classic desktop forms."));
+    let gb_lbl = ui::Label::new(i18n::t(
+        "GroupBox still works for denser, classic desktop forms.",
+    ));
     gb_lbl.set_position(10, 26);
     gb_lbl.set_size(196, 28);
     gb.add(&gb_lbl);
@@ -669,7 +684,10 @@ fn main() {
     grid.set_columns(&[
         ui::ColumnDef::new("File").width(118),
         ui::ColumnDef::new("State").width(74),
-        ui::ColumnDef::new("Lines").width(70).align(ui::ALIGN_RIGHT).numeric(),
+        ui::ColumnDef::new("Lines")
+            .width(70)
+            .align(ui::ALIGN_RIGHT)
+            .numeric(),
     ]);
     grid.set_data(&[
         alloc::vec!["main.rs", "Modified", "612"],
@@ -804,9 +822,8 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
     title.set_margin(0, 0, 0, 4);
     dnd_content.add(&title);
 
-    let subtitle = ui::Label::new(
-        "Text / URI-list / custom payloads with copy-move-link effect negotiation",
-    );
+    let subtitle =
+        ui::Label::new("Text / URI-list / custom payloads with copy-move-link effect negotiation");
     subtitle.set_color(0xFF252C38);
     subtitle.set_text_color(0xFFD8DEE8);
     subtitle.set_text_align(ui::TEXT_ALIGN_CENTER);
@@ -951,7 +968,8 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
     effect_row.add(&custom_sink);
 
     // ── Section 5: Cross-window drop receiver ────────────────────────
-    let exp_xwin = ui::Expander::new("5. Cross-window drag (drag any source into the second window)");
+    let exp_xwin =
+        ui::Expander::new("5. Cross-window drag (drag any source into the second window)");
     exp_xwin.set_size(460, 80);
     exp_xwin.set_margin(0, 0, 0, 8);
     dnd_content.add(&exp_xwin);
@@ -1013,11 +1031,7 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
         cards[i].on_drag_start(move |_| {
             // Payload is the index as 4 little-endian bytes.
             let bytes = src_idx.to_le_bytes();
-            ui::drag_set_payload(
-                ui::DND_FORMAT_CUSTOM,
-                &bytes,
-                ui::DND_EFFECT_MOVE,
-            );
+            ui::drag_set_payload(ui::DND_FORMAT_CUSTOM, &bytes, ui::DND_EFFECT_MOVE);
             // Simple ghost: a 200×30 semi-transparent rect in the card's
             // colour, with the label text drawn (compositor expects ARGB).
             let palette = [0xFFE53935u32, 0xFF24B04Au32, 0xFF167CFFu32, 0xFF7A35D8u32];
@@ -1031,7 +1045,9 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
             let g = (base >> 8) & 0xFF;
             let b = base & 0xFF;
             let argb = (alpha << 24) | (r << 16) | (g << 8) | b;
-            for px in pixels.iter_mut() { *px = argb; }
+            for px in pixels.iter_mut() {
+                *px = argb;
+            }
             ui::drag_set_image(&pixels, w, h, (w / 2) as i32, (h / 2) as i32);
             let _ = cards_ref;
         });
@@ -1044,8 +1060,7 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
             if fmt != ui::DND_FORMAT_CUSTOM || bytes.len() != 4 {
                 return;
             }
-            let src_idx = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-                as usize;
+            let src_idx = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
             if src_idx == target_idx || src_idx >= 4 {
                 return;
             }
@@ -1059,7 +1074,8 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
 
     // Section 3: URI list
     files_src.on_drag_start(move |_| {
-        let payload = b"file:///home/user/readme.md\nfile:///home/user/notes.txt\nfile:///home/user/icon.png";
+        let payload =
+            b"file:///home/user/readme.md\nfile:///home/user/notes.txt\nfile:///home/user/icon.png";
         ui::drag_set_payload(
             ui::DND_FORMAT_URI_LIST,
             payload,
@@ -1074,7 +1090,9 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
         let text = alloc::string::String::from_utf8_lossy(&bytes);
         let mut out = alloc::string::String::from("Received:\n");
         for (i, line) in text.lines().enumerate() {
-            if i >= 6 { break; }
+            if i >= 6 {
+                break;
+            }
             out.push_str(line);
             out.push('\n');
         }
@@ -1084,11 +1102,7 @@ fn build_dnd_tab(dnd_content: &ui::StackPanel) {
     // Section 4: custom with all-effects source
     effect_src.on_drag_start(move |_| {
         // Magic bytes identify this as "Widget X".
-        ui::drag_set_payload(
-            ui::DND_FORMAT_CUSTOM,
-            b"WIDGET_X",
-            ui::DND_EFFECT_ALL,
-        );
+        ui::drag_set_payload(ui::DND_FORMAT_CUSTOM, b"WIDGET_X", ui::DND_EFFECT_ALL);
     });
     // Re-negotiate effect on every over event so that holding Ctrl / Shift
     // mid-drag updates the displayed effect live.
@@ -1155,39 +1169,60 @@ fn open_xwin_receiver() {
         let mut i = buf.len();
         let mut n = fmt;
         if n == 0 {
-            i -= 1; buf[i] = b'0';
+            i -= 1;
+            buf[i] = b'0';
         } else {
-            while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+            while n > 0 {
+                i -= 1;
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+            }
         }
         msg.push_str(core::str::from_utf8(&buf[i..]).unwrap_or("?"));
         msg.push_str(", ");
         let mut i = buf.len();
         let mut n = bytes.len() as u32;
-        if n == 0 { i -= 1; buf[i] = b'0'; }
-        else { while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; } }
+        if n == 0 {
+            i -= 1;
+            buf[i] = b'0';
+        } else {
+            while n > 0 {
+                i -= 1;
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+            }
+        }
         msg.push_str(core::str::from_utf8(&buf[i..]).unwrap_or("?"));
         msg.push_str(" bytes:\n");
         // Show the payload as text when possible, else as hex prefix.
-        if bytes.iter().all(|&b| b == 0 || (b >= 0x20 && b < 0x7F) || b == b'\n') {
+        if bytes
+            .iter()
+            .all(|&b| b == 0 || (b >= 0x20 && b < 0x7F) || b == b'\n')
+        {
             msg.push_str(&alloc::string::String::from_utf8_lossy(&bytes));
         } else {
             let hex = b"0123456789ABCDEF";
             for (k, &b) in bytes.iter().take(16).enumerate() {
-                if k > 0 { msg.push(' '); }
+                if k > 0 {
+                    msg.push(' ');
+                }
                 msg.push(hex[(b >> 4) as usize] as char);
                 msg.push(hex[(b & 0xF) as usize] as char);
             }
-            if bytes.len() > 16 { msg.push_str(" …"); }
+            if bytes.len() > 16 {
+                msg.push_str(" …");
+            }
         }
         if let Some(s) = unsafe { XWIN_SINK.as_ref() } {
             s.set_text(&msg);
         }
     });
 
-    win.on_close(|_| {
-        unsafe { XWIN_SINK = None; }
+    win.on_close(|_| unsafe {
+        XWIN_SINK = None;
     });
 
-    unsafe { XWIN_SINK = Some(sink); }
+    unsafe {
+        XWIN_SINK = Some(sink);
+    }
 }
-

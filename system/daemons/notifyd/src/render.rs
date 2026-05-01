@@ -25,8 +25,8 @@ pub const MAX_VISIBLE: usize = 4;
 
 // ── Font IDs (match libfont registry) ───────────────────────────────────────
 
-const FONT_REGULAR: u16 = 0;  // SF Pro
-const FONT_BOLD: u16 = 1;     // SF Pro Bold
+const FONT_REGULAR: u16 = 0; // SF Pro
+const FONT_BOLD: u16 = 1; // SF Pro Bold
 
 // ── Theme Colors ────────────────────────────────────────────────────────────
 
@@ -37,27 +37,47 @@ fn is_light() -> bool {
 
 /// Banner background color (semi-transparent).
 fn color_banner_bg() -> u32 {
-    if is_light() { 0xF0F5F5F7 } else { 0xF02C2C2E }
+    if is_light() {
+        0xF0F5F5F7
+    } else {
+        0xF02C2C2E
+    }
 }
 
 /// Banner border color.
 fn color_banner_border() -> u32 {
-    if is_light() { 0x30000000 } else { 0x30FFFFFF }
+    if is_light() {
+        0x30000000
+    } else {
+        0x30FFFFFF
+    }
 }
 
 /// Title text color.
 fn color_title() -> u32 {
-    if is_light() { 0xFF1C1C1E } else { 0xFFFFFFFF }
+    if is_light() {
+        0xFF1C1C1E
+    } else {
+        0xFFFFFFFF
+    }
 }
 
 /// Message text color.
 fn color_message() -> u32 {
-    if is_light() { 0xFF3C3C43 } else { 0xFFAEAEB2 }
+    if is_light() {
+        0xFF3C3C43
+    } else {
+        0xFFAEAEB2
+    }
 }
 
 /// "now" label color.
 fn color_timestamp() -> u32 {
-    if is_light() { 0xFF8E8E93 } else { 0xFF8E8E93 }
+    if is_light() {
+        0xFF8E8E93
+    } else {
+        0xFF8E8E93
+    }
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────────
@@ -68,7 +88,9 @@ pub fn render_all(fb: &mut Framebuffer, notifications: &[Notification]) {
     fb.clear();
 
     for notif in notifications.iter().take(MAX_VISIBLE) {
-        if !notif.visible { continue; }
+        if !notif.visible {
+            continue;
+        }
         render_banner(fb, notif, notif.x_offset, notif.y_pos());
     }
 }
@@ -111,7 +133,14 @@ fn render_banner(fb: &mut Framebuffer, notif: &Notification, x: i32, y: i32) {
     let now_text = "now";
     let (now_w, _) = anyos_std::ui::window::font_measure(FONT_REGULAR, 11, now_text);
     let now_x = x + w as i32 - pad_x - now_w as i32;
-    fb.draw_text(FONT_REGULAR, 11, now_x, title_y + 1, color_timestamp(), now_text);
+    fb.draw_text(
+        FONT_REGULAR,
+        11,
+        now_x,
+        title_y + 1,
+        color_timestamp(),
+        now_text,
+    );
 
     // Message (regular, 11px) — below title, up to 2 lines
     let msg = if notif.msg_len > 0 {
@@ -170,7 +199,7 @@ fn wrap_text<'a>(text: &'a str, font_id: u16, font_size: u16, max_w: u32) -> (&'
     } else {
         let line1 = &text[..best_split];
         let rest = &text[best_split + 1..]; // skip the space
-        // Truncate line 2 if too long (add "..." ellipsis)
+                                            // Truncate line 2 if too long (add "..." ellipsis)
         (line1, rest)
     }
 }

@@ -1,10 +1,10 @@
 //! `apkg install` — install one or more packages with dependency resolution.
 
-use alloc::string::String;
-use alloc::format;
-use anyos_std::{println, fs, crypto};
-use crate::{config, db, download, index, resolve, archive};
 use crate::db::InstalledPackage;
+use crate::{archive, config, db, download, index, resolve};
+use alloc::format;
+use alloc::string::String;
+use anyos_std::{crypto, fs, println};
 
 /// Execute `apkg install <names>`.
 pub fn run(names: &[&str], yes: bool) {
@@ -44,8 +44,13 @@ pub fn run(names: &[&str], yes: bool) {
     for item in &plan {
         if let Some(pkg) = idx.find(&item.name) {
             let auto_str = if item.auto { " [dependency]" } else { "" };
-            println!("  {}-{} ({}){}", pkg.name, pkg.version_str,
-                     format_size(pkg.size), auto_str);
+            println!(
+                "  {}-{} ({}){}",
+                pkg.name,
+                pkg.version_str,
+                format_size(pkg.size),
+                auto_str
+            );
             total_download += pkg.size;
             total_installed += pkg.size_installed;
         }
@@ -59,7 +64,9 @@ pub fn run(names: &[&str], yes: bool) {
         let mut buf = [0u8; 16];
         let n = fs::read(0, &mut buf);
         if n > 0 && n != u32::MAX {
-            let answer = core::str::from_utf8(&buf[..n as usize]).unwrap_or("y").trim();
+            let answer = core::str::from_utf8(&buf[..n as usize])
+                .unwrap_or("y")
+                .trim();
             if answer == "n" || answer == "N" || answer == "no" {
                 println!("Aborted.");
                 return;
@@ -153,7 +160,11 @@ fn file_exists(path: &str) -> bool {
 /// Format a byte size into a human-readable string.
 fn format_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
-        format!("{}.{} MiB", bytes / (1024 * 1024), (bytes % (1024 * 1024)) * 10 / (1024 * 1024))
+        format!(
+            "{}.{} MiB",
+            bytes / (1024 * 1024),
+            (bytes % (1024 * 1024)) * 10 / (1024 * 1024)
+        )
     } else if bytes >= 1024 {
         format!("{}.{} KiB", bytes / 1024, (bytes % 1024) * 10 / 1024)
     } else {

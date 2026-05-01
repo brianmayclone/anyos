@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 //! Global application state singleton.
 
-use anyos_std::Vec;
-use libanyui_client as ui;
 use crate::apps::AppEntry;
 use crate::search::SearchResult;
+use anyos_std::Vec;
+use libanyui_client as ui;
 
 pub struct RunnerState {
     pub apps: Vec<AppEntry>,

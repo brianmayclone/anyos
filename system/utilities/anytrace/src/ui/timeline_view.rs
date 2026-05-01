@@ -3,9 +3,9 @@
 //! Shows a scrolling timeline of RIP samples collected during debugging.
 //! Each vertical bar represents a sample; color indicates the address range.
 
+use crate::logic::sampler::Sample;
 use libanyui_client as ui;
 use ui::Widget;
-use crate::logic::sampler::Sample;
 
 /// Timeline view panel.
 pub struct TimelineView {
@@ -43,7 +43,11 @@ impl TimelineView {
         // Show the most recent N samples that fit the width
         let bar_w = 4u32;
         let max_bars = (w / bar_w) as usize;
-        let start_idx = if samples.len() > max_bars { samples.len() - max_bars } else { 0 };
+        let start_idx = if samples.len() > max_bars {
+            samples.len() - max_bars
+        } else {
+            0
+        };
         let visible = &samples[start_idx..];
 
         // Find RIP range for normalization
@@ -66,7 +70,8 @@ impl TimelineView {
 
         // Draw baseline
         let baseline_y = (h - 10) as i32;
-        self.canvas.draw_line(0, baseline_y, w as i32, baseline_y, 0xFF555555);
+        self.canvas
+            .draw_line(0, baseline_y, w as i32, baseline_y, 0xFF555555);
 
         // Draw sample count label
         let count_x = (w as i32) - 120;

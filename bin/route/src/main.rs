@@ -3,7 +3,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{net, process, println};
+use anyos_std::{net, println, process};
 
 const ENTRY_SIZE: usize = 128;
 
@@ -53,8 +53,14 @@ fn show_routes() {
     println!("Destination      Gateway          Netmask          Iface");
     println!(
         "{}.{}.{}.{}      0.0.0.0          {}.{}.{}.{}      eth0",
-        ip[0] & mask[0], ip[1] & mask[1], ip[2] & mask[2], ip[3] & mask[3],
-        mask[0], mask[1], mask[2], mask[3]
+        ip[0] & mask[0],
+        ip[1] & mask[1],
+        ip[2] & mask[2],
+        ip[3] & mask[3],
+        mask[0],
+        mask[1],
+        mask[2],
+        mask[3]
     );
     println!(
         "0.0.0.0          {}.{}.{}.{}      0.0.0.0          eth0",
@@ -80,8 +86,15 @@ fn set_default_gateway(ip: [u8; 4]) {
     let persisted = update_interface_field(26, &ip);
     println!(
         "route: default gateway set to {}.{}.{}.{}{}",
-        ip[0], ip[1], ip[2], ip[3],
-        if persisted { "" } else { " (live only; DHCP interface not persisted)" }
+        ip[0],
+        ip[1],
+        ip[2],
+        ip[3],
+        if persisted {
+            ""
+        } else {
+            " (live only; DHCP interface not persisted)"
+        }
     );
 }
 
@@ -99,8 +112,15 @@ fn set_dns(ip: [u8; 4]) {
     let persisted = update_interface_field(30, &ip);
     println!(
         "route: DNS server set to {}.{}.{}.{}{}",
-        ip[0], ip[1], ip[2], ip[3],
-        if persisted { "" } else { " (live only; DHCP interface not persisted)" }
+        ip[0],
+        ip[1],
+        ip[2],
+        ip[3],
+        if persisted {
+            ""
+        } else {
+            " (live only; DHCP interface not persisted)"
+        }
     );
 }
 

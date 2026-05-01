@@ -2,13 +2,20 @@
 // SPDX-License-Identifier: MIT
 //! Search and category grouping — combines app list with searchd results.
 
-use anyos_std::{String, Vec};
 use crate::apps::AppEntry;
 use crate::searchd;
+use anyos_std::{String, Vec};
 
 pub enum SearchResult {
-    App { app_idx: usize },
-    File { name: String, path: String, kind: String, size: u32 },
+    App {
+        app_idx: usize,
+    },
+    File {
+        name: String,
+        path: String,
+        kind: String,
+        size: u32,
+    },
 }
 
 impl SearchResult {
@@ -76,7 +83,9 @@ pub fn filter_apps(apps: &[AppEntry], query: &str) -> Vec<SearchResult> {
     let mut results = Vec::new();
     let mut count = 0;
     for (i, app) in apps.iter().enumerate() {
-        if count >= MAX_APPS { break; }
+        if count >= MAX_APPS {
+            break;
+        }
         if query.is_empty() || contains_ci(app.name.as_bytes(), qb) {
             results.push(SearchResult::App { app_idx: i });
             count += 1;
@@ -104,7 +113,9 @@ pub fn filter_all(apps: &[AppEntry], query: &str) -> Vec<SearchResult> {
                 Category::Folders => &mut dir_count,
                 _ => &mut other_count,
             };
-            if *count >= MAX_PER_FILE_CAT { continue; }
+            if *count >= MAX_PER_FILE_CAT {
+                continue;
+            }
             *count += 1;
             results.push(SearchResult::File {
                 name: fr.name,
@@ -120,8 +131,12 @@ pub fn filter_all(apps: &[AppEntry], query: &str) -> Vec<SearchResult> {
 }
 
 fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() { return true; }
-    if needle.len() > haystack.len() { return false; }
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
     for i in 0..=(haystack.len() - needle.len()) {
         let mut ok = true;
         for j in 0..needle.len() {
@@ -130,7 +145,9 @@ fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
                 break;
             }
         }
-        if ok { return true; }
+        if ok {
+            return true;
+        }
     }
     false
 }

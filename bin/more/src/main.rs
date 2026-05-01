@@ -10,9 +10,13 @@ const PAGE_LINES: u32 = 24;
 fn open_kbd_pipe() -> u32 {
     let mut buf = [0u8; 64];
     let len = anyos_std::env::get("TERM_KBD_PIPE", &mut buf);
-    if len == 0 || len == u32::MAX { return 0; }
+    if len == 0 || len == u32::MAX {
+        return 0;
+    }
     let name = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
-    if name.is_empty() { return 0; }
+    if name.is_empty() {
+        return 0;
+    }
     anyos_std::ipc::pipe_open(name)
 }
 
@@ -52,7 +56,9 @@ fn page_fd(fd: u32, kbd_pipe: u32) -> bool {
 
     loop {
         let n = anyos_std::fs::read(fd, &mut buf) as usize;
-        if n == 0 || n == u32::MAX as usize { break; }
+        if n == 0 || n == u32::MAX as usize {
+            break;
+        }
 
         let mut i = 0;
         while i < n {
@@ -102,7 +108,9 @@ fn main() {
             }
             let cont = page_fd(fd, kbd_pipe);
             anyos_std::fs::close(fd);
-            if !cont { break; }
+            if !cont {
+                break;
+            }
         }
     }
 

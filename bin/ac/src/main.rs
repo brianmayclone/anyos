@@ -17,73 +17,88 @@
 
 anyos_std::entry!(main);
 
-mod term;
-mod panel;
-mod fs;
-mod render;
 mod dialog;
+mod fs;
 mod input;
+mod panel;
+mod render;
+mod term;
 
-use term::TermBuf;
-use panel::Panel;
-use input::Key;
 use dialog::input_buf_as_str;
+use input::Key;
+use panel::Panel;
+use term::TermBuf;
 
 // ─── Application state ───────────────────────────────────────────────────────
 
 /// Which panel currently has keyboard focus.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ActivePanel { Left, Right }
+enum ActivePanel {
+    Left,
+    Right,
+}
 
 /// Command-line buffer (mini-shell line at the bottom).
 const CMDLINE_MAX: usize = 512;
 
 struct AppState {
-    left:         Panel,
-    right:        Panel,
-    active:       ActivePanel,
-    cmdline:      [u8; CMDLINE_MAX],
-    cmdline_len:  usize,
-    cols:         u32,
-    rows:         u32,
+    left: Panel,
+    right: Panel,
+    active: ActivePanel,
+    cmdline: [u8; CMDLINE_MAX],
+    cmdline_len: usize,
+    cols: u32,
+    rows: u32,
     /// Set to true when screen needs a full redraw.
-    dirty:        bool,
+    dirty: bool,
     /// Set to false to exit the main loop.
-    running:      bool,
+    running: bool,
 }
 
 impl AppState {
     fn new() -> Self {
         let (cols, rows) = term::get_size();
-        let left  = Panel::new("/", true);
+        let left = Panel::new("/", true);
         let right = Panel::new("/", false);
         Self {
             left,
             right,
-            active:      ActivePanel::Left,
-            cmdline:     [0u8; CMDLINE_MAX],
+            active: ActivePanel::Left,
+            cmdline: [0u8; CMDLINE_MAX],
             cmdline_len: 0,
             cols,
             rows,
-            dirty:   true,
+            dirty: true,
             running: true,
         }
     }
 
     fn active_panel(&self) -> &Panel {
-        match self.active { ActivePanel::Left => &self.left, ActivePanel::Right => &self.right }
+        match self.active {
+            ActivePanel::Left => &self.left,
+            ActivePanel::Right => &self.right,
+        }
     }
 
     fn active_panel_mut(&mut self) -> &mut Panel {
-        match self.active { ActivePanel::Left => &mut self.left, ActivePanel::Right => &mut self.right }
+        match self.active {
+            ActivePanel::Left => &mut self.left,
+            ActivePanel::Right => &mut self.right,
+        }
     }
 
     fn inactive_panel(&self) -> &Panel {
-        match self.active { ActivePanel::Left => &self.right, ActivePanel::Right => &self.left }
+        match self.active {
+            ActivePanel::Left => &self.right,
+            ActivePanel::Right => &self.left,
+        }
     }
 
     fn inactive_panel_mut(&mut self) -> &mut Panel {
-        match self.active { ActivePanel::Left => &mut self.right, ActivePanel::Right => &mut self.left }
+        match self.active {
+            ActivePanel::Left => &mut self.right,
+            ActivePanel::Right => &mut self.left,
+        }
     }
 
     fn panel_visible_rows(&self) -> usize {
@@ -93,10 +108,10 @@ impl AppState {
     }
 
     fn switch_panel(&mut self) {
-        self.left.focused  = self.active == ActivePanel::Right;
+        self.left.focused = self.active == ActivePanel::Right;
         self.right.focused = self.active == ActivePanel::Left;
         self.active = match self.active {
-            ActivePanel::Left  => ActivePanel::Right,
+            ActivePanel::Left => ActivePanel::Right,
             ActivePanel::Right => ActivePanel::Left,
         };
         self.dirty = true;
@@ -116,7 +131,7 @@ fn main() {
     term::enter_tui_mode();
 
     let mut state = AppState::new();
-    let mut buf   = TermBuf::new();
+    let mut buf = TermBuf::new();
 
     // Initial screen size check — re-read in case env is set after entry
     let (c, r) = term::get_size();
@@ -124,7 +139,9 @@ fn main() {
     state.rows = r.max(10);
 
     loop {
-        if !state.running { break; }
+        if !state.running {
+            break;
+        }
 
         // Sync visible_rows into panels before rendering
         let vr = state.panel_visible_rows();
@@ -168,9 +185,15 @@ fn handle_key(state: &mut AppState, buf: &mut TermBuf, key: Key) {
 
     match key {
         // ── Navigation ────────────────────────────────────────────────────────
-        Key::Up    => { state.active_panel_mut().move_up(); state.dirty = true; }
-        Key::Down  => { state.active_panel_mut().move_down(); state.dirty = true; }
-        Key::Left  => {
+        Key::Up => {
+            state.active_panel_mut().move_up();
+            state.dirty = true;
+        }
+        Key::Down => {
+            state.active_panel_mut().move_down();
+            state.dirty = true;
+        }
+        Key::Left => {
             // Left arrow in inactive panel: navigate to parent
             if state.active == ActivePanel::Right {
                 go_parent(state);
@@ -185,10 +208,22 @@ fn handle_key(state: &mut AppState, buf: &mut TermBuf, key: Key) {
             }
             state.dirty = true;
         }
-        Key::PageUp   => { state.active_panel_mut().page_up(vr); state.dirty = true; }
-        Key::PageDown => { state.active_panel_mut().page_down(vr); state.dirty = true; }
-        Key::Home     => { state.active_panel_mut().move_home(); state.dirty = true; }
-        Key::End      => { state.active_panel_mut().move_end(); state.dirty = true; }
+        Key::PageUp => {
+            state.active_panel_mut().page_up(vr);
+            state.dirty = true;
+        }
+        Key::PageDown => {
+            state.active_panel_mut().page_down(vr);
+            state.dirty = true;
+        }
+        Key::Home => {
+            state.active_panel_mut().move_home();
+            state.dirty = true;
+        }
+        Key::End => {
+            state.active_panel_mut().move_end();
+            state.dirty = true;
+        }
 
         // ── Panel switch ──────────────────────────────────────────────────────
         Key::Tab => state.switch_panel(),
@@ -250,19 +285,43 @@ fn handle_key(state: &mut AppState, buf: &mut TermBuf, key: Key) {
         }
 
         // ── Function keys ─────────────────────────────────────────────────────
-        Key::F1  => { action_help(state, buf); }
-        Key::F2  => { /* user menu — not implemented */ state.dirty = true; }
-        Key::F3  => { action_view(state, buf); }
-        Key::F4  => { action_edit(state, buf); }
-        Key::F5  => { action_copy(state, buf); }
-        Key::F6  => { action_move(state, buf); }
-        Key::F7  => { action_mkdir(state, buf); }
-        Key::F8  => { action_delete(state, buf); }
-        Key::F9  => { /* menu bar — not implemented */ state.dirty = true; }
-        Key::F10 => { state.running = false; }
+        Key::F1 => {
+            action_help(state, buf);
+        }
+        Key::F2 => {
+            /* user menu — not implemented */
+            state.dirty = true;
+        }
+        Key::F3 => {
+            action_view(state, buf);
+        }
+        Key::F4 => {
+            action_edit(state, buf);
+        }
+        Key::F5 => {
+            action_copy(state, buf);
+        }
+        Key::F6 => {
+            action_move(state, buf);
+        }
+        Key::F7 => {
+            action_mkdir(state, buf);
+        }
+        Key::F8 => {
+            action_delete(state, buf);
+        }
+        Key::F9 => {
+            /* menu bar — not implemented */
+            state.dirty = true;
+        }
+        Key::F10 => {
+            state.running = false;
+        }
 
         // ── Ctrl shortcuts ────────────────────────────────────────────────────
-        Key::CtrlC | Key::CtrlD => { state.running = false; }
+        Key::CtrlC | Key::CtrlD => {
+            state.running = false;
+        }
 
         Key::Ctrl(b'r') => {
             // Ctrl+R: reload panel
@@ -277,7 +336,9 @@ fn handle_key(state: &mut AppState, buf: &mut TermBuf, key: Key) {
             // Ctrl+H: TODO toggle hidden files
             state.dirty = true;
         }
-        Key::Ctrl(b'q') => { state.running = false; }
+        Key::Ctrl(b'q') => {
+            state.running = false;
+        }
 
         Key::Escape => {
             // Clear command line
@@ -323,7 +384,14 @@ fn view_file(state: &mut AppState, buf: &mut TermBuf, path: &str) {
     // Simple pager: read file and display with scrolling
     let fd = anyos_std::fs::open(path, 0);
     if fd == u32::MAX {
-        dialog::message(buf, state.cols, state.rows, " Error ", "Cannot open file", true);
+        dialog::message(
+            buf,
+            state.cols,
+            state.rows,
+            " Error ",
+            "Cannot open file",
+            true,
+        );
         return;
     }
 
@@ -332,19 +400,25 @@ fn view_file(state: &mut AppState, buf: &mut TermBuf, path: &str) {
     const MAX_LINES: usize = 4096;
 
     // Static buffers to avoid large stack allocations (AC is single-threaded).
-    static mut VIEW_BUF:        [u8;     VIEW_MAX]  = [0u8; VIEW_MAX];
-    static mut LINE_STARTS_BUF: [usize;  MAX_LINES] = [0usize; MAX_LINES];
-    static mut LINE_ENDS_BUF:   [usize;  MAX_LINES] = [0usize; MAX_LINES];
+    static mut VIEW_BUF: [u8; VIEW_MAX] = [0u8; VIEW_MAX];
+    static mut LINE_STARTS_BUF: [usize; MAX_LINES] = [0usize; MAX_LINES];
+    static mut LINE_ENDS_BUF: [usize; MAX_LINES] = [0usize; MAX_LINES];
 
-    let (raw, line_starts, line_ends) = unsafe {
-        (&mut VIEW_BUF, &mut LINE_STARTS_BUF, &mut LINE_ENDS_BUF)
-    };
+    let (raw, line_starts, line_ends) =
+        unsafe { (&mut VIEW_BUF, &mut LINE_STARTS_BUF, &mut LINE_ENDS_BUF) };
 
     let n = anyos_std::fs::read(fd, raw);
     anyos_std::fs::close(fd);
 
     if n == u32::MAX || n == 0 {
-        dialog::message(buf, state.cols, state.rows, " Empty ", "File is empty", false);
+        dialog::message(
+            buf,
+            state.cols,
+            state.rows,
+            " Empty ",
+            "File is empty",
+            false,
+        );
         return;
     }
     let content = &raw[..n as usize];
@@ -356,7 +430,7 @@ fn view_file(state: &mut AppState, buf: &mut TermBuf, path: &str) {
         if b == b'\n' {
             if line_count < MAX_LINES {
                 line_starts[line_count] = ls;
-                line_ends[line_count]   = i;
+                line_ends[line_count] = i;
                 line_count += 1;
             }
             ls = i + 1;
@@ -364,7 +438,7 @@ fn view_file(state: &mut AppState, buf: &mut TermBuf, path: &str) {
     }
     if ls < content.len() && line_count < MAX_LINES {
         line_starts[line_count] = ls;
-        line_ends[line_count]   = content.len();
+        line_ends[line_count] = content.len();
         line_count += 1;
     }
 
@@ -401,7 +475,11 @@ fn view_file(state: &mut AppState, buf: &mut TermBuf, path: &str) {
                 let ll = line.len().min(lw);
                 // Filter non-printable (keep newline-stripped line)
                 for &b in &line[..ll] {
-                    if b >= 32 || b == b'\t' { buf.push_byte(b); } else { buf.push_byte(b'.'); }
+                    if b >= 32 || b == b'\t' {
+                        buf.push_byte(b);
+                    } else {
+                        buf.push_byte(b'.');
+                    }
                 }
             }
             term::erase_to_eol(buf);
@@ -417,17 +495,27 @@ fn view_file(state: &mut AppState, buf: &mut TermBuf, path: &str) {
         buf.flush();
 
         match input::read_key() {
-            Key::Up | Key::Char(b'k') => { if scroll > 0 { scroll -= 1; } }
-            Key::Down | Key::Char(b'j') => {
-                if scroll + visible < line_count { scroll += 1; }
+            Key::Up | Key::Char(b'k') => {
+                if scroll > 0 {
+                    scroll -= 1;
+                }
             }
-            Key::PageUp => { scroll = scroll.saturating_sub(visible); }
+            Key::Down | Key::Char(b'j') => {
+                if scroll + visible < line_count {
+                    scroll += 1;
+                }
+            }
+            Key::PageUp => {
+                scroll = scroll.saturating_sub(visible);
+            }
             Key::PageDown => {
                 let max_scroll = line_count.saturating_sub(visible);
                 scroll = (scroll + visible).min(max_scroll);
             }
-            Key::Home | Key::Char(b'g') => { scroll = 0; }
-            Key::End  | Key::Char(b'G') => {
+            Key::Home | Key::Char(b'g') => {
+                scroll = 0;
+            }
+            Key::End | Key::Char(b'G') => {
                 scroll = line_count.saturating_sub(visible);
             }
             Key::Escape | Key::Char(b'q') | Key::F3 => break,
@@ -470,16 +558,11 @@ fn action_copy(state: &mut AppState, buf: &mut TermBuf) {
     };
     let dest_str = core::str::from_utf8(&dest_path.0[..dest_path.1]).unwrap_or("/");
 
-    let result = dialog::input_line(
-        buf, state.cols, state.rows,
-        " Copy ",
-        "Copy to:",
-        dest_str,
-    );
+    let result = dialog::input_line(buf, state.cols, state.rows, " Copy ", "Copy to:", dest_str);
 
     let dst_buf = match result {
         Some(b) => b,
-        None    => return,
+        None => return,
     };
     let dst = input_buf_as_str(&dst_buf);
 
@@ -495,10 +578,16 @@ fn action_copy(state: &mut AppState, buf: &mut TermBuf) {
         let (dst_full, dl) = fs::path_join(dst, name);
         let dst_str = fs::buf_to_str(&dst_full, dl);
 
-        if !fs::copy_file(src, dst_str) { errors += 1; }
+        if !fs::copy_file(src, dst_str) {
+            errors += 1;
+        }
 
         // Show progress
-        let pct = if n > 0 { ((i + 1) as u32 * 100) / n as u32 } else { 100 };
+        let pct = if n > 0 {
+            ((i + 1) as u32 * 100) / n as u32
+        } else {
+            100
+        };
         dialog::progress(buf, state.cols, state.rows, " Copying ", name, pct);
     }
 
@@ -506,7 +595,14 @@ fn action_copy(state: &mut AppState, buf: &mut TermBuf) {
     state.active_panel_mut().reload();
 
     if errors > 0 {
-        dialog::message(buf, state.cols, state.rows, " Copy Error ", "Some files failed to copy", true);
+        dialog::message(
+            buf,
+            state.cols,
+            state.rows,
+            " Copy Error ",
+            "Some files failed to copy",
+            true,
+        );
     }
     state.dirty = true;
 }
@@ -530,14 +626,16 @@ fn action_move(state: &mut AppState, buf: &mut TermBuf) {
     let dest_str = core::str::from_utf8(&dest_path.0[..dest_path.1]).unwrap_or("/");
 
     let result = dialog::input_line(
-        buf, state.cols, state.rows,
+        buf,
+        state.cols,
+        state.rows,
         " Move / Rename ",
         "Move to:",
         dest_str,
     );
     let dst_buf = match result {
         Some(b) => b,
-        None    => return,
+        None => return,
     };
     let dst = input_buf_as_str(&dst_buf);
 
@@ -556,17 +654,22 @@ fn action_move(state: &mut AppState, buf: &mut TermBuf) {
 
 fn action_mkdir(state: &mut AppState, buf: &mut TermBuf) {
     let result = dialog::input_line(
-        buf, state.cols, state.rows,
+        buf,
+        state.cols,
+        state.rows,
         " Make Directory ",
         "Directory name:",
         "",
     );
     let name_buf = match result {
         Some(b) => b,
-        None    => return,
+        None => return,
     };
     let name = input_buf_as_str(&name_buf);
-    if name.is_empty() { state.dirty = true; return; }
+    if name.is_empty() {
+        state.dirty = true;
+        return;
+    }
 
     let panel_path = {
         let p = state.active_panel().path();
@@ -591,7 +694,10 @@ fn action_mkdir(state: &mut AppState, buf: &mut TermBuf) {
 
 fn action_delete(state: &mut AppState, buf: &mut TermBuf) {
     let (paths, n) = state.active_panel().selected_paths();
-    if n == 0 { state.dirty = true; return; }
+    if n == 0 {
+        state.dirty = true;
+        return;
+    }
 
     let first_name = {
         let (ref pb, pl) = paths[0];
@@ -599,11 +705,20 @@ fn action_delete(state: &mut AppState, buf: &mut TermBuf) {
         fs::path_basename(s)
     };
     let confirmed = dialog::confirm(
-        buf, state.cols, state.rows,
+        buf,
+        state.cols,
+        state.rows,
         " Delete ",
-        if n == 1 { first_name } else { "Delete selected files?" },
+        if n == 1 {
+            first_name
+        } else {
+            "Delete selected files?"
+        },
     );
-    if !confirmed { state.dirty = true; return; }
+    if !confirmed {
+        state.dirty = true;
+        return;
+    }
 
     let mut errors = 0u32;
     for i in 0..n {
@@ -612,12 +727,21 @@ fn action_delete(state: &mut AppState, buf: &mut TermBuf) {
             Ok(s) => s,
             Err(_) => continue,
         };
-        if !fs::delete_file(path) { errors += 1; }
+        if !fs::delete_file(path) {
+            errors += 1;
+        }
     }
 
     state.active_panel_mut().reload();
     if errors > 0 {
-        dialog::message(buf, state.cols, state.rows, " Error ", "Some files could not be deleted", true);
+        dialog::message(
+            buf,
+            state.cols,
+            state.rows,
+            " Error ",
+            "Some files could not be deleted",
+            true,
+        );
     }
     state.dirty = true;
 }

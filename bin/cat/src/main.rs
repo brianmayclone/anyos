@@ -8,7 +8,9 @@ fn cat_fd(fd: u32, number: bool, number_nonblank: bool, show_ends: bool, line_nu
     let mut at_start = true;
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         for i in 0..n as usize {
             let b = buf[i];
             if at_start {

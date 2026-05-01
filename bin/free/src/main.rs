@@ -29,9 +29,22 @@ fn main() {
     let free_kb = free * 4;
     let used_kb = total_kb - free_kb;
 
-    anyos_std::println!("         {:>12} {:>11} {:>11}", t("total"), t("used"), t("free"));
-    anyos_std::println!("{:<9}{:>8} KiB {:>8} KiB {:>8} KiB", t("Mem:"), total_kb, used_kb, free_kb);
-    anyos_std::println!("{:<9}{:>8} KiB {:>8} KiB {:>8} KiB", t("Heap:"),
+    anyos_std::println!(
+        "         {:>12} {:>11} {:>11}",
+        t("total"),
+        t("used"),
+        t("free")
+    );
+    anyos_std::println!(
+        "{:<9}{:>8} KiB {:>8} KiB {:>8} KiB",
+        t("Mem:"),
+        total_kb,
+        used_kb,
+        free_kb
+    );
+    anyos_std::println!(
+        "{:<9}{:>8} KiB {:>8} KiB {:>8} KiB",
+        t("Heap:"),
         heap_total / 1024,
         heap_used / 1024,
         (heap_total - heap_used) / 1024,

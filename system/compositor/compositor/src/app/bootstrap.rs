@@ -62,21 +62,22 @@ fn spawn_init_waiter(init_tid: u32) {
         // x86 threads return directly to the synthetic return slot at stack_top.
         *(stack_top as *mut usize) = process::thread_exit_stub_addr();
     }
-    process::thread_create_with_priority(
-        init_waiter_entry,
-        stack_top,
-        "compositor/init-wait",
-        50,
-    );
+    process::thread_create_with_priority(init_waiter_entry, stack_top, "compositor/init-wait", 50);
 }
 
 fn register_with_ami(width: u32, height: u32, setup_mode: bool) {
     for _ in 0..100 {
         match AmiClient::connect("compositor") {
             Ok(mut ami) => {
-                let _ = ami.set("compositor.status", AmiValue::String(String::from("starting")));
+                let _ = ami.set(
+                    "compositor.status",
+                    AmiValue::String(String::from("starting")),
+                );
                 let _ = ami.set("compositor.framebuffer.width", AmiValue::Int(width as i64));
-                let _ = ami.set("compositor.framebuffer.height", AmiValue::Int(height as i64));
+                let _ = ami.set(
+                    "compositor.framebuffer.height",
+                    AmiValue::Int(height as i64),
+                );
                 let _ = ami.set("compositor.setup_mode", AmiValue::Bool(setup_mode));
                 let _ = ami.set("compositor.status", AmiValue::String(String::from("ready")));
                 println!("compositor: registered with AMID");
@@ -151,7 +152,10 @@ pub fn run() {
 
     let fontd_tid = process::spawn("/System/fontd", "");
     if fontd_tid != u32::MAX {
-        println!("compositor: fontd spawned (TID={}), waiting for ready...", fontd_tid);
+        println!(
+            "compositor: fontd spawned (TID={}), waiting for ready...",
+            fontd_tid
+        );
         let mut ready = false;
         for _ in 0..100 {
             ipc::evt_chan_wait(fontd_chan, fontd_sub, 50);
@@ -176,9 +180,8 @@ pub fn run() {
     println!("compositor: libfont loaded");
 
     println!("compositor: creating desktop...");
-    let mut desktop = alloc::boxed::Box::new(desktop::Desktop::new(
-        fb_ptr, width, height, fb_info.pitch,
-    ));
+    let mut desktop =
+        alloc::boxed::Box::new(desktop::Desktop::new(fb_ptr, width, height, fb_info.pitch));
     println!("compositor: desktop created, initializing...");
     desktop.init_no_wallpaper();
     println!("compositor: desktop initialized");
@@ -198,7 +201,10 @@ pub fn run() {
                         saved.width, saved.height
                     );
                 } else {
-                    println!("compositor: failed to restore saved resolution, keeping {}x{}", width, height);
+                    println!(
+                        "compositor: failed to restore saved resolution, keeping {}x{}",
+                        width, height
+                    );
                 }
             }
         }
@@ -241,7 +247,10 @@ pub fn run() {
     desktop.set_cursor_pos(splash_x, splash_y);
     if desktop.has_hw_cursor() {
         desktop.init_hw_cursor();
-        println!("compositor: HW cursor enabled (pos={},{})", splash_x, splash_y);
+        println!(
+            "compositor: HW cursor enabled (pos={},{})",
+            splash_x, splash_y
+        );
     } else {
         println!("compositor: SW cursor (pos={},{})", splash_x, splash_y);
     }
@@ -249,10 +258,16 @@ pub fn run() {
     for attempt in 0..3u32 {
         desktop.compositor.damage_all();
         desktop.compose();
-        desktop.compositor.gpu_cmds.push([8, 0, 0, 0, 0, 0, 0, 0, 0]);
+        desktop
+            .compositor
+            .gpu_cmds
+            .push([8, 0, 0, 0, 0, 0, 0, 0, 0]);
         desktop.compositor.flush_gpu();
         if attempt == 0 {
-            println!("compositor: desktop drawn ({}x{})", desktop.screen_width, desktop.screen_height);
+            println!(
+                "compositor: desktop drawn ({}x{})",
+                desktop.screen_width, desktop.screen_height
+            );
         } else {
             println!("compositor: initial compose retry #{}", attempt);
         }
@@ -263,7 +278,10 @@ pub fn run() {
 
     let compositor_channel = ipc::evt_chan_create("compositor");
     let compositor_sub = ipc::evt_chan_subscribe(compositor_channel, 0);
-    println!("compositor: event channel created (id={})", compositor_channel);
+    println!(
+        "compositor: event channel created (id={})",
+        compositor_channel
+    );
 
     let sys_sub = ipc::evt_sys_subscribe(0);
     desktop.compositor.damage_all();
@@ -305,14 +323,21 @@ pub fn run() {
         if init_tid != u32::MAX {
             spawn_init_waiter(init_tid);
             init_pending = true;
-            println!("compositor: init spawned (TID={}), login deferred until init completes", init_tid);
+            println!(
+                "compositor: init spawned (TID={}), login deferred until init completes",
+                init_tid
+            );
         } else {
             println!("compositor: WARNING — /System/init could not be spawned");
         }
     }
 
     // Login is NOT spawned yet — will be spawned after init completes (in management_loop)
-    let mut login_tid = if setup_mode || init_pending { u32::MAX } else { process::spawn("/System/login", "") };
+    let mut login_tid = if setup_mode || init_pending {
+        u32::MAX
+    } else {
+        process::spawn("/System/login", "")
+    };
     let mut login_pending = login_tid != u32::MAX;
     let mut dock_spawned = setup_mode;
     if setup_mode {

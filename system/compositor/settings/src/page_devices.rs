@@ -68,8 +68,17 @@ fn type_icon(t: u8) -> &'static str {
 // ── Group ordering ──────────────────────────────────────────────────────────
 
 const GROUP_ORDER: &[u8] = &[
-    DEV_MONITOR, DEV_BLOCK, DEV_DISPLAY, DEV_INPUT, DEV_NETWORK, DEV_AUDIO,
-    DEV_OUTPUT, DEV_CHAR, DEV_SENSOR, DEV_BUS, 10, // 10 = Unknown
+    DEV_MONITOR,
+    DEV_BLOCK,
+    DEV_DISPLAY,
+    DEV_INPUT,
+    DEV_NETWORK,
+    DEV_AUDIO,
+    DEV_OUTPUT,
+    DEV_CHAR,
+    DEV_SENSOR,
+    DEV_BUS,
+    10, // 10 = Unknown
 ];
 
 // ── Build ───────────────────────────────────────────────────────────────────
@@ -81,7 +90,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_auto_size(true);
     panel.set_color(layout::bg());
 
-    layout::build_page_header(&panel, i18n::t("Devices"), i18n::t("Connected hardware and drivers"));
+    layout::build_page_header(
+        &panel,
+        i18n::t("Devices"),
+        i18n::t("Connected hardware and drivers"),
+    );
 
     let devices = enumerate_devices();
 
@@ -119,7 +132,12 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 
 // ── Device group card ───────────────────────────────────────────────────────
 
-fn build_device_group(panel: &ui::View, group_name: &str, devices: &[&DeviceInfo], icon_file: &str) {
+fn build_device_group(
+    panel: &ui::View,
+    group_name: &str,
+    devices: &[&DeviceInfo],
+    icon_file: &str,
+) {
     // Group header row with icon
     let header_row = ui::View::new();
     header_row.set_dock(ui::DOCK_TOP);
@@ -250,7 +268,13 @@ fn build_monitor_card(card: &ui::Card, info: &sys::MonitorInfoFlat, index: u32) 
     let nh = unsafe { core::ptr::addr_of!(info.native_height).read_unaligned() };
     let refresh = unsafe { core::ptr::addr_of!(info.native_refresh_100).read_unaligned() };
     let res_str = if refresh > 0 {
-        format!("{} x {} @ {}.{:02} Hz", nw, nh, refresh / 100, refresh % 100)
+        format!(
+            "{} x {} @ {}.{:02} Hz",
+            nw,
+            nh,
+            refresh / 100,
+            refresh % 100
+        )
     } else {
         format!("{} x {}", nw, nh)
     };
@@ -265,19 +289,33 @@ fn build_monitor_card(card: &ui::Card, info: &sys::MonitorInfoFlat, index: u32) 
         let diag_mm_sq = (wmm as u32) * (wmm as u32) + (hmm as u32) * (hmm as u32);
         let diag_mm = isqrt(diag_mm_sq);
         let diag_inch_10 = diag_mm * 10 / 254; // ×10 for one decimal
-        let size_str = format!("{} x {} mm ({}.{}\")", wmm, hmm, diag_inch_10 / 10, diag_inch_10 % 10);
+        let size_str = format!(
+            "{} x {} mm ({}.{}\")",
+            wmm,
+            hmm,
+            diag_inch_10 / 10,
+            diag_inch_10 % 10
+        );
         layout::build_info_row(card, i18n::t("Physical Size"), &size_str, false);
         layout::build_separator(card);
     }
 
     // Connection type
-    let conn = if info.is_digital != 0 { i18n::t("Digital (DVI/HDMI/DP)") } else { i18n::t("Analog (VGA)") };
+    let conn = if info.is_digital != 0 {
+        i18n::t("Digital (DVI/HDMI/DP)")
+    } else {
+        i18n::t("Analog (VGA)")
+    };
     layout::build_info_row(card, i18n::t("Connection"), conn, false);
     layout::build_separator(card);
 
     // Color depth
     let depth = info.color_depth;
-    let depth_str = if depth > 0 { format!("{} bit", depth) } else { String::from(i18n::t("Unknown")) };
+    let depth_str = if depth > 0 {
+        format!("{} bit", depth)
+    } else {
+        String::from(i18n::t("Unknown"))
+    };
     layout::build_info_row(card, i18n::t("Color Depth"), &depth_str, false);
     layout::build_separator(card);
 
@@ -290,13 +328,21 @@ fn build_monitor_card(card: &ui::Card, info: &sys::MonitorInfoFlat, index: u32) 
     }
 
     // EDID status
-    let edid_str = if info.has_edid != 0 { i18n::t("Available") } else { i18n::t("Not available") };
+    let edid_str = if info.has_edid != 0 {
+        i18n::t("Available")
+    } else {
+        i18n::t("Not available")
+    };
     let tc = ui::theme::colors();
     layout::build_info_row_colored(
         card,
         "EDID",
         edid_str,
-        if info.has_edid != 0 { tc.success } else { tc.destructive },
+        if info.has_edid != 0 {
+            tc.success
+        } else {
+            tc.destructive
+        },
         false,
     );
 
@@ -333,7 +379,9 @@ fn str_from_bytes(bytes: &[u8]) -> String {
 
 /// Integer square root (Babylonian method).
 fn isqrt(n: u32) -> u32 {
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     let mut x = n;
     let mut y = (x + 1) / 2;
     while y < x {

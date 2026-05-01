@@ -15,12 +15,16 @@ pub struct HashSet<T> {
 impl<T: Hash + Eq> HashSet<T> {
     /// Create an empty HashSet.
     pub fn new() -> Self {
-        HashSet { map: HashMap::new() }
+        HashSet {
+            map: HashMap::new(),
+        }
     }
 
     /// Create a HashSet with pre-allocated capacity.
     pub fn with_capacity(cap: usize) -> Self {
-        HashSet { map: HashMap::with_capacity(cap) }
+        HashSet {
+            map: HashMap::with_capacity(cap),
+        }
     }
 
     /// Number of elements.
@@ -57,7 +61,9 @@ impl<T: Hash + Eq> HashSet<T> {
 
     /// Iterate over values.
     pub fn iter(&self) -> Iter<'_, T> {
-        Iter { inner: self.map.keys() }
+        Iter {
+            inner: self.map.keys(),
+        }
     }
 
     /// Returns the intersection of `self` and `other` as a new set.
@@ -128,7 +134,9 @@ impl<T: Hash + Eq> IntoIterator for HashSet<T> {
     type IntoIter = IntoIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        IntoIter { inner: self.map.into_iter() }
+        IntoIter {
+            inner: self.map.into_iter(),
+        }
     }
 }
 

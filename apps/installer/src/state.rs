@@ -129,12 +129,16 @@ pub fn app() -> &'static mut InstallerApp {
 }
 
 pub fn set_app(a: InstallerApp) {
-    unsafe { APP = Some(a); }
+    unsafe {
+        APP = Some(a);
+    }
 }
 
 pub fn store_root_password(pw: &str) {
     let len = pw.len().min(127);
-    unsafe { ROOT_PASSWORD[..len].copy_from_slice(&pw.as_bytes()[..len]); }
+    unsafe {
+        ROOT_PASSWORD[..len].copy_from_slice(&pw.as_bytes()[..len]);
+    }
     ROOT_PASSWORD_LEN.store(len as u32, Ordering::Release);
 }
 

@@ -49,9 +49,15 @@ impl ModifierState {
     /// Build the modifier bitmask from current state.
     pub fn mask(&self) -> u32 {
         let mut m = 0u32;
-        if self.shift { m |= MOD_SHIFT; }
-        if self.ctrl  { m |= MOD_CTRL; }
-        if self.alt   { m |= MOD_ALT; }
+        if self.shift {
+            m |= MOD_SHIFT;
+        }
+        if self.ctrl {
+            m |= MOD_CTRL;
+        }
+        if self.alt {
+            m |= MOD_ALT;
+        }
         m
     }
 
@@ -60,14 +66,25 @@ impl ModifierState {
     pub fn update(&mut self, keysym: u32, down: bool) -> bool {
         match keysym {
             // Shift (left & right)
-            0xFFE1 | 0xFFE2 => { self.shift = down; true }
+            0xFFE1 | 0xFFE2 => {
+                self.shift = down;
+                true
+            }
             // Ctrl (left & right)
-            0xFFE3 | 0xFFE4 => { self.ctrl = down; true }
+            0xFFE3 | 0xFFE4 => {
+                self.ctrl = down;
+                true
+            }
             // Alt (left) / AltGr (right)
-            0xFFE9 | 0xFFEA | 0xFE03 => { self.alt = down; true }
+            0xFFE9 | 0xFFEA | 0xFE03 => {
+                self.alt = down;
+                true
+            }
             // Caps Lock (toggle on press only)
             0xFFE5 => {
-                if down { self.caps_lock = !self.caps_lock; }
+                if down {
+                    self.caps_lock = !self.caps_lock;
+                }
                 true
             }
             // Meta/Super/Win keys — ignore
@@ -100,7 +117,10 @@ pub fn map_keysym(keysym: u32, mods: &ModifierState) -> Option<KeyMapping> {
     if keysym >= 0x0001 && keysym <= 0x001A {
         let letter = (keysym as u8) + b'a' - 1; // 0x01→'a', 0x1A→'z'
         let scancode = char_to_scancode(letter, false)?;
-        return Some(KeyMapping { scancode, char_val: letter as u32 });
+        return Some(KeyMapping {
+            scancode,
+            char_val: letter as u32,
+        });
     }
 
     // ── ASCII printable (0x20 Space … 0x7E ~) ─────────────────────────────
@@ -108,7 +128,10 @@ pub fn map_keysym(keysym: u32, mods: &ModifierState) -> Option<KeyMapping> {
         let ch = keysym as u8;
         // Map the character to a scancode using the US-QWERTY layout.
         let scancode = char_to_scancode(ch, mods.shift || mods.caps_lock)?;
-        return Some(KeyMapping { scancode, char_val: ch as u32 });
+        return Some(KeyMapping {
+            scancode,
+            char_val: ch as u32,
+        });
     }
 
     // ── Miscellaneous extended keysyms ────────────────────────────────────
@@ -124,31 +147,31 @@ pub fn map_keysym(keysym: u32, mods: &ModifierState) -> Option<KeyMapping> {
         0xFF8D => (0x58, 0x0D),
 
         // Navigation
-        0xFF50 => (0x4A, 0),  // Home
-        0xFF57 => (0x4D, 0),  // End
-        0xFF55 => (0x4B, 0),  // Page Up
-        0xFF56 => (0x4E, 0),  // Page Down
-        0xFF63 => (0x49, 0),  // Insert
+        0xFF50 => (0x4A, 0), // Home
+        0xFF57 => (0x4D, 0), // End
+        0xFF55 => (0x4B, 0), // Page Up
+        0xFF56 => (0x4E, 0), // Page Down
+        0xFF63 => (0x49, 0), // Insert
 
         // Arrow keys
-        0xFF51 => (0x50, 0),  // Left
-        0xFF52 => (0x52, 0),  // Up
-        0xFF53 => (0x4F, 0),  // Right
-        0xFF54 => (0x51, 0),  // Down
+        0xFF51 => (0x50, 0), // Left
+        0xFF52 => (0x52, 0), // Up
+        0xFF53 => (0x4F, 0), // Right
+        0xFF54 => (0x51, 0), // Down
 
         // Function keys F1–F12
-        0xFFBE => (0x3A, 0),  // F1
-        0xFFBF => (0x3B, 0),  // F2
-        0xFFC0 => (0x3C, 0),  // F3
-        0xFFC1 => (0x3D, 0),  // F4
-        0xFFC2 => (0x3E, 0),  // F5
-        0xFFC3 => (0x3F, 0),  // F6
-        0xFFC4 => (0x40, 0),  // F7
-        0xFFC5 => (0x41, 0),  // F8
-        0xFFC6 => (0x42, 0),  // F9
-        0xFFC7 => (0x43, 0),  // F10
-        0xFFC8 => (0x44, 0),  // F11
-        0xFFC9 => (0x45, 0),  // F12
+        0xFFBE => (0x3A, 0), // F1
+        0xFFBF => (0x3B, 0), // F2
+        0xFFC0 => (0x3C, 0), // F3
+        0xFFC1 => (0x3D, 0), // F4
+        0xFFC2 => (0x3E, 0), // F5
+        0xFFC3 => (0x3F, 0), // F6
+        0xFFC4 => (0x40, 0), // F7
+        0xFFC5 => (0x41, 0), // F8
+        0xFFC6 => (0x42, 0), // F9
+        0xFFC7 => (0x43, 0), // F10
+        0xFFC8 => (0x44, 0), // F11
+        0xFFC9 => (0x45, 0), // F12
 
         // Numpad digits (with NumLock — treat as character keys)
         0xFFB0 => (0x62, b'0' as u32), // KP_0
@@ -280,12 +303,6 @@ pub fn inject_key(comp_chan: u32, keysym: u32, down: bool, mods: &ModifierState)
 /// `x`, `y` — absolute screen coordinates.
 /// `buttons` — RFB button mask: bit 0=left, bit 1=middle, bit 2=right.
 pub fn inject_pointer(comp_chan: u32, x: u16, y: u16, buttons: u8) {
-    let evt = [
-        CMD_INJECT_POINTER,
-        x as u32,
-        y as u32,
-        buttons as u32,
-        0,
-    ];
+    let evt = [CMD_INJECT_POINTER, x as u32, y as u32, buttons as u32, 0];
     ipc::evt_chan_emit(comp_chan, &evt);
 }

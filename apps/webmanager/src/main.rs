@@ -3,11 +3,11 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::process;
 use anyos_std::println;
-use anyos_std::{String, Vec, format, vec, i18n};
-use libconf::{ConfClient, ConfValue, NodeKind, RegistryScope};
+use anyos_std::process;
+use anyos_std::{format, i18n, vec, String, Vec};
 use libanyui_client as ui;
+use libconf::{ConfClient, ConfValue, NodeKind, RegistryScope};
 use ui::ColumnDef;
 
 // ─── Constants ──────────────────────────────────────────────────────
@@ -113,7 +113,11 @@ fn conf_string(client: &mut ConfClient, path: &str) -> Option<String> {
     match client.get(RegistryScope::System, path).ok()?.value {
         Some(ConfValue::String(value)) => Some(value),
         Some(ConfValue::Int(value)) => Some(format!("{}", value)),
-        Some(ConfValue::Bool(value)) => Some(if value { String::from("true") } else { String::from("false") }),
+        Some(ConfValue::Bool(value)) => Some(if value {
+            String::from("true")
+        } else {
+            String::from("false")
+        }),
         Some(ConfValue::ExternalRef(value)) => Some(value),
         None => None,
     }
@@ -180,13 +184,41 @@ fn save_site(site: &SiteConfig) {
     let base = format!("{}/{}", SITES_ROOT, site.filename);
     let _ = client.mkdir(RegistryScope::System, SITES_ROOT);
     let _ = client.mkdir(RegistryScope::System, &base);
-    let _ = client.set(RegistryScope::System, &format!("{}/name", base), ConfValue::String(site.name.clone()));
-    let _ = client.set(RegistryScope::System, &format!("{}/port", base), ConfValue::Int(site.port as i64));
-    let _ = client.set(RegistryScope::System, &format!("{}/ssl", base), ConfValue::Bool(site.ssl));
-    let _ = client.set(RegistryScope::System, &format!("{}/ssl_port", base), ConfValue::Int(site.ssl_port as i64));
-    let _ = client.set(RegistryScope::System, &format!("{}/root", base), ConfValue::String(site.root.clone()));
-    let _ = client.set(RegistryScope::System, &format!("{}/index_csv", base), ConfValue::String(site.index.clone()));
-    let _ = client.set(RegistryScope::System, &format!("{}/enabled", base), ConfValue::Bool(site.enabled));
+    let _ = client.set(
+        RegistryScope::System,
+        &format!("{}/name", base),
+        ConfValue::String(site.name.clone()),
+    );
+    let _ = client.set(
+        RegistryScope::System,
+        &format!("{}/port", base),
+        ConfValue::Int(site.port as i64),
+    );
+    let _ = client.set(
+        RegistryScope::System,
+        &format!("{}/ssl", base),
+        ConfValue::Bool(site.ssl),
+    );
+    let _ = client.set(
+        RegistryScope::System,
+        &format!("{}/ssl_port", base),
+        ConfValue::Int(site.ssl_port as i64),
+    );
+    let _ = client.set(
+        RegistryScope::System,
+        &format!("{}/root", base),
+        ConfValue::String(site.root.clone()),
+    );
+    let _ = client.set(
+        RegistryScope::System,
+        &format!("{}/index_csv", base),
+        ConfValue::String(site.index.clone()),
+    );
+    let _ = client.set(
+        RegistryScope::System,
+        &format!("{}/enabled", base),
+        ConfValue::Bool(site.enabled),
+    );
 
     let mut rewrites_blob = String::new();
     for rw in &site.rewrites {
@@ -203,7 +235,10 @@ fn delete_site_file(filename: &str) {
     let Ok(mut client) = ConfClient::connect("webmanager") else {
         return;
     };
-    let _ = client.del(RegistryScope::System, &format!("{}/{}", SITES_ROOT, filename));
+    let _ = client.del(
+        RegistryScope::System,
+        &format!("{}/{}", SITES_ROOT, filename),
+    );
 }
 
 // ─── Service Control ────────────────────────────────────────────────
@@ -225,7 +260,9 @@ fn is_httpd_running() -> bool {
         let name_start = off + 8;
         let mut len = 0;
         for j in 0..23 {
-            if buf[name_start + j] == 0 { break; }
+            if buf[name_start + j] == 0 {
+                break;
+            }
             len += 1;
         }
         if len == name_target.len() && &buf[name_start..name_start + len] == name_target {
@@ -273,7 +310,8 @@ fn refresh_tree() {
         };
         let node = s.tree.add_child(s.sites_root, &label);
         if !site.enabled {
-            s.tree.set_node_text_color(node, ui::theme::colors().text_disabled);
+            s.tree
+                .set_node_text_color(node, ui::theme::colors().text_disabled);
         }
         if s.selected_site == Some(i) {
             s.tree.set_selected(node);
@@ -370,7 +408,11 @@ fn save_form_to_site() {
 fn update_status() {
     let s = app();
     let running = is_httpd_running();
-    let status_str = if running { i18n::t("Running") } else { i18n::t("Stopped") };
+    let status_str = if running {
+        i18n::t("Running")
+    } else {
+        i18n::t("Stopped")
+    };
     let site_count = s.sites.len();
     let enabled_count = s.sites.iter().filter(|s| s.enabled).count();
 
@@ -386,7 +428,9 @@ fn update_status() {
     } else {
         let mut s = String::new();
         for (i, p) in ports.iter().enumerate() {
-            if i > 0 { s.push_str(", "); }
+            if i > 0 {
+                s.push_str(", ");
+            }
             s.push_str(&format!("{}", p));
         }
         s
@@ -488,7 +532,13 @@ fn main() {
     sidebar.add(&tree);
 
     // Context menu for tree (right-click actions)
-    let tree_menu_str = format!("{}|{}|-|{}|{}", i18n::t("New Site"), i18n::t("Delete Site"), i18n::t("Enable"), i18n::t("Disable"));
+    let tree_menu_str = format!(
+        "{}|{}|-|{}|{}",
+        i18n::t("New Site"),
+        i18n::t("Delete Site"),
+        i18n::t("Enable"),
+        i18n::t("Disable")
+    );
     let tree_menu = ui::ContextMenu::new(&tree_menu_str);
     win.add(&tree_menu);
     tree.set_context_menu(&tree_menu);

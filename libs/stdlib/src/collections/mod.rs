@@ -17,10 +17,10 @@
 pub mod hash_map;
 pub mod hash_set;
 
-pub use hash_map::{HashMap, Iter, IterMut, Keys, Values, IntoIter};
+pub use hash_map::{HashMap, IntoIter, Iter, IterMut, Keys, Values};
 pub use hash_set::HashSet;
 
 // Re-export alloc collections directly
-pub use alloc::collections::{BTreeMap, BTreeSet, BinaryHeap, LinkedList, VecDeque};
 pub use alloc::collections::btree_map;
 pub use alloc::collections::btree_set;
+pub use alloc::collections::{BTreeMap, BTreeSet, BinaryHeap, LinkedList, VecDeque};

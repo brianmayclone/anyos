@@ -29,7 +29,11 @@ const TXT_OP_ACT: u32 = 0xFFFF9500;
 
 // ---- Button definitions ----
 #[derive(Clone, Copy, PartialEq)]
-enum BKind { Num, Fn, Op }
+enum BKind {
+    Num,
+    Fn,
+    Op,
+}
 
 struct BtnDef {
     label: &'static str,
@@ -40,30 +44,149 @@ struct BtnDef {
 }
 
 const BUTTONS: [BtnDef; 19] = [
-    BtnDef { label: "AC",  col: 0, row: 0, span: 1, kind: BKind::Fn },
-    BtnDef { label: "+/-", col: 1, row: 0, span: 1, kind: BKind::Fn },
-    BtnDef { label: "%",   col: 2, row: 0, span: 1, kind: BKind::Fn },
-    BtnDef { label: "/",   col: 3, row: 0, span: 1, kind: BKind::Op },
-    BtnDef { label: "7",   col: 0, row: 1, span: 1, kind: BKind::Num },
-    BtnDef { label: "8",   col: 1, row: 1, span: 1, kind: BKind::Num },
-    BtnDef { label: "9",   col: 2, row: 1, span: 1, kind: BKind::Num },
-    BtnDef { label: "x",   col: 3, row: 1, span: 1, kind: BKind::Op },
-    BtnDef { label: "4",   col: 0, row: 2, span: 1, kind: BKind::Num },
-    BtnDef { label: "5",   col: 1, row: 2, span: 1, kind: BKind::Num },
-    BtnDef { label: "6",   col: 2, row: 2, span: 1, kind: BKind::Num },
-    BtnDef { label: "-",   col: 3, row: 2, span: 1, kind: BKind::Op },
-    BtnDef { label: "1",   col: 0, row: 3, span: 1, kind: BKind::Num },
-    BtnDef { label: "2",   col: 1, row: 3, span: 1, kind: BKind::Num },
-    BtnDef { label: "3",   col: 2, row: 3, span: 1, kind: BKind::Num },
-    BtnDef { label: "+",   col: 3, row: 3, span: 1, kind: BKind::Op },
-    BtnDef { label: "0",   col: 0, row: 4, span: 2, kind: BKind::Num },
-    BtnDef { label: ".",   col: 2, row: 4, span: 1, kind: BKind::Num },
-    BtnDef { label: "=",   col: 3, row: 4, span: 1, kind: BKind::Op },
+    BtnDef {
+        label: "AC",
+        col: 0,
+        row: 0,
+        span: 1,
+        kind: BKind::Fn,
+    },
+    BtnDef {
+        label: "+/-",
+        col: 1,
+        row: 0,
+        span: 1,
+        kind: BKind::Fn,
+    },
+    BtnDef {
+        label: "%",
+        col: 2,
+        row: 0,
+        span: 1,
+        kind: BKind::Fn,
+    },
+    BtnDef {
+        label: "/",
+        col: 3,
+        row: 0,
+        span: 1,
+        kind: BKind::Op,
+    },
+    BtnDef {
+        label: "7",
+        col: 0,
+        row: 1,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "8",
+        col: 1,
+        row: 1,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "9",
+        col: 2,
+        row: 1,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "x",
+        col: 3,
+        row: 1,
+        span: 1,
+        kind: BKind::Op,
+    },
+    BtnDef {
+        label: "4",
+        col: 0,
+        row: 2,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "5",
+        col: 1,
+        row: 2,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "6",
+        col: 2,
+        row: 2,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "-",
+        col: 3,
+        row: 2,
+        span: 1,
+        kind: BKind::Op,
+    },
+    BtnDef {
+        label: "1",
+        col: 0,
+        row: 3,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "2",
+        col: 1,
+        row: 3,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "3",
+        col: 2,
+        row: 3,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "+",
+        col: 3,
+        row: 3,
+        span: 1,
+        kind: BKind::Op,
+    },
+    BtnDef {
+        label: "0",
+        col: 0,
+        row: 4,
+        span: 2,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: ".",
+        col: 2,
+        row: 4,
+        span: 1,
+        kind: BKind::Num,
+    },
+    BtnDef {
+        label: "=",
+        col: 3,
+        row: 4,
+        span: 1,
+        kind: BKind::Op,
+    },
 ];
 
 // ---- Operator enum ----
 #[derive(Clone, Copy, PartialEq)]
-enum Op { Add, Sub, Mul, Div }
+enum Op {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
 
 // ---- Calculator state ----
 struct AppState {
@@ -88,7 +211,9 @@ fn fmt_f64(val: f64) -> String {
 
 fn parse_f64(s: &str) -> f64 {
     let s = s.trim();
-    if s.is_empty() || s == "Error" { return 0.0; }
+    if s.is_empty() || s == "Error" {
+        return 0.0;
+    }
     let neg = s.starts_with('-');
     let s = if neg { &s[1..] } else { s };
     let mut int_part: u64 = 0;
@@ -96,8 +221,13 @@ fn parse_f64(s: &str) -> f64 {
     let mut in_frac = false;
     let mut frac_div: f64 = 1.0;
     for b in s.bytes() {
-        if b == b'.' { in_frac = true; continue; }
-        if b < b'0' || b > b'9' { continue; }
+        if b == b'.' {
+            in_frac = true;
+            continue;
+        }
+        if b < b'0' || b > b'9' {
+            continue;
+        }
         let d = (b - b'0') as u64;
         if in_frac {
             frac_div *= 10.0;
@@ -107,7 +237,11 @@ fn parse_f64(s: &str) -> f64 {
         }
     }
     let val = int_part as f64 + frac_part;
-    if neg { -val } else { val }
+    if neg {
+        -val
+    } else {
+        val
+    }
 }
 
 // ---- Calculator logic ----
@@ -121,16 +255,18 @@ fn update_display() {
     a.display_label.set_text(&a.display);
     a.display_label.set_font_size(sz);
     // Update AC/C label
-    let clear_label = if a.display == "0" || a.new_input { "AC" } else { "C" };
+    let clear_label = if a.display == "0" || a.new_input {
+        "AC"
+    } else {
+        "C"
+    };
     a.btns[0].set_text(clear_label);
 }
 
 fn update_op_buttons() {
     let a = app();
     // Op button indices: / = 3, x = 7, - = 11, + = 15, = = 18
-    let op_indices: [(usize, Op); 4] = [
-        (3, Op::Div), (7, Op::Mul), (11, Op::Sub), (15, Op::Add),
-    ];
+    let op_indices: [(usize, Op); 4] = [(3, Op::Div), (7, Op::Mul), (11, Op::Sub), (15, Op::Add)];
     for &(idx, op) in &op_indices {
         let is_active = a.active_op == Some(op);
         let bg = if is_active { COL_OP_ACT } else { COL_OP };
@@ -148,7 +284,13 @@ fn evaluate() {
             Op::Add => a.acc + rhs,
             Op::Sub => a.acc - rhs,
             Op::Mul => a.acc * rhs,
-            Op::Div => if rhs == 0.0 { f64::INFINITY } else { a.acc / rhs },
+            Op::Div => {
+                if rhs == 0.0 {
+                    f64::INFINITY
+                } else {
+                    a.acc / rhs
+                }
+            }
         };
         a.acc = result;
         a.display = fmt_f64(result);
@@ -162,11 +304,15 @@ fn press_digit(d: u8) {
     update_op_buttons();
     if a.new_input {
         a.display.clear();
-        if d == 0 { a.display.push('0'); }
+        if d == 0 {
+            a.display.push('0');
+        }
         a.new_input = false;
     }
     let digits: usize = a.display.bytes().filter(|b| b.is_ascii_digit()).count();
-    if digits >= 12 { return; }
+    if digits >= 12 {
+        return;
+    }
     if a.display == "0" && d != 0 {
         a.display.clear();
     }
@@ -229,7 +375,9 @@ fn press_clear() {
 
 fn press_negate() {
     let a = app();
-    if a.display == "0" { return; }
+    if a.display == "0" {
+        return;
+    }
     if a.display.starts_with('-') {
         a.display = String::from(&a.display[1..]);
     } else {
@@ -290,40 +438,46 @@ fn handle_key(ke: &ui::KeyEvent) {
         c if c == b'*' as u32 => press_op(Op::Mul),
         c if c == b'/' as u32 => press_op(Op::Div),
         c if c == b'=' as u32 => press_equals(),
-        _ => {
-            match ke.keycode {
-                ui::KEY_ENTER => press_equals(),
-                ui::KEY_ESCAPE => press_clear(),
-                ui::KEY_BACKSPACE => {
-                    let a = app();
-                    if !a.new_input && a.display.len() > 1 {
-                        a.display.pop();
-                    } else {
-                        a.display = String::from("0");
-                        a.new_input = true;
-                    }
-                    update_display();
+        _ => match ke.keycode {
+            ui::KEY_ENTER => press_equals(),
+            ui::KEY_ESCAPE => press_clear(),
+            ui::KEY_BACKSPACE => {
+                let a = app();
+                if !a.new_input && a.display.len() > 1 {
+                    a.display.pop();
+                } else {
+                    a.display = String::from("0");
+                    a.new_input = true;
                 }
-                _ => {}
+                update_display();
             }
-        }
+            _ => {}
+        },
     }
 }
 
 // ---- Main ----
 fn main() {
-    if !ui::init() { return; }
+    if !ui::init() {
+        return;
+    }
 
-    let win = ui::Window::new_with_flags("Calculator", -1, -1, WIN_W, WIN_H,
-        ui::WIN_FLAG_NOT_RESIZABLE);
+    let win = ui::Window::new_with_flags(
+        "Calculator",
+        -1,
+        -1,
+        WIN_W,
+        WIN_H,
+        ui::WIN_FLAG_NOT_RESIZABLE,
+    );
     win.set_color(BG);
 
     // Menu
     let mut mb = ui::MenuBarBuilder::new()
         .menu("Calculator")
-            .item(100, "About Calculator", 0)
-            .separator()
-            .item(101, "Quit Calculator", 0)
+        .item(100, "About Calculator", 0)
+        .separator()
+        .item(101, "Quit Calculator", 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = ui::MenuBar::set(win.id(), menu_data);

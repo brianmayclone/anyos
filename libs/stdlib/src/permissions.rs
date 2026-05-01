@@ -28,7 +28,12 @@ pub fn perm_store(app_id: &str, granted: u32, uid: u16) -> bool {
     let len = app_id.len().min(128);
     buf[..len].copy_from_slice(&app_id.as_bytes()[..len]);
     buf[len] = 0;
-    syscall3(SYS_PERM_STORE, buf.as_ptr() as u64, granted as u64, uid as u64) == 0
+    syscall3(
+        SYS_PERM_STORE,
+        buf.as_ptr() as u64,
+        granted as u64,
+        uid as u64,
+    ) == 0
 }
 
 /// List all apps with stored permissions for the caller's uid.
@@ -52,5 +57,9 @@ pub fn perm_delete(app_id: &str) -> bool {
 /// Format: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path".
 /// Returns bytes written (0 if no pending info).
 pub fn perm_pending_info(buf: &mut [u8]) -> u32 {
-    syscall2(SYS_PERM_PENDING_INFO, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall2(
+        SYS_PERM_PENDING_INFO,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }

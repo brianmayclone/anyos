@@ -29,7 +29,9 @@ pub fn list(buf: &mut [u8]) -> u32 {
     for (key, val) in std::env::vars() {
         let entry = alloc::format!("{}={}\0", key, val);
         let bytes = entry.as_bytes();
-        if offset + bytes.len() > buf.len() { break; }
+        if offset + bytes.len() > buf.len() {
+            break;
+        }
         buf[offset..offset + bytes.len()].copy_from_slice(bytes);
         offset += bytes.len();
     }

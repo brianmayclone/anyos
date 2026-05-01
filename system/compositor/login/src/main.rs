@@ -226,7 +226,9 @@ fn main() -> u32 {
     date_shadow_soft.set_position(3, 4);
     date_shadow_soft.set_size(sw, (sh / 22).max(24));
     clock_filter.add(&date_shadow_soft);
-    unsafe { DATE_SHADOW_SOFT_ID = date_shadow_soft.id(); }
+    unsafe {
+        DATE_SHADOW_SOFT_ID = date_shadow_soft.id();
+    }
 
     let date_shadow = ui::Label::new("");
     date_shadow.set_font_size((sh / 42).clamp(15, 28));
@@ -236,7 +238,9 @@ fn main() -> u32 {
     date_shadow.set_position(1, 2);
     date_shadow.set_size(sw, (sh / 22).max(24));
     clock_filter.add(&date_shadow);
-    unsafe { DATE_SHADOW_ID = date_shadow.id(); }
+    unsafe {
+        DATE_SHADOW_ID = date_shadow.id();
+    }
 
     let date_lbl = ui::Label::new("");
     date_lbl.set_font_size((sh / 42).clamp(15, 28));
@@ -246,7 +250,9 @@ fn main() -> u32 {
     date_lbl.set_position(0, 0);
     date_lbl.set_size(sw, (sh / 22).max(24));
     clock_filter.add(&date_lbl);
-    unsafe { DATE_LBL_ID = date_lbl.id(); }
+    unsafe {
+        DATE_LBL_ID = date_lbl.id();
+    }
 
     let time_shadow_soft = ui::Label::new("");
     time_shadow_soft.set_font_size((sh / 8).clamp(58, 128));
@@ -256,7 +262,9 @@ fn main() -> u32 {
     time_shadow_soft.set_position(5, clock_time_y - clock_top + 8);
     time_shadow_soft.set_size(sw, (sh / 6).max(90));
     clock_filter.add(&time_shadow_soft);
-    unsafe { TIME_SHADOW_SOFT_ID = time_shadow_soft.id(); }
+    unsafe {
+        TIME_SHADOW_SOFT_ID = time_shadow_soft.id();
+    }
 
     let time_shadow = ui::Label::new("");
     time_shadow.set_font_size((sh / 8).clamp(58, 128));
@@ -266,7 +274,9 @@ fn main() -> u32 {
     time_shadow.set_position(2, clock_time_y - clock_top + 4);
     time_shadow.set_size(sw, (sh / 6).max(90));
     clock_filter.add(&time_shadow);
-    unsafe { TIME_SHADOW_ID = time_shadow.id(); }
+    unsafe {
+        TIME_SHADOW_ID = time_shadow.id();
+    }
 
     let time_lbl = ui::Label::new("");
     time_lbl.set_font_size((sh / 8).clamp(58, 128));
@@ -276,7 +286,9 @@ fn main() -> u32 {
     time_lbl.set_position(0, clock_time_y - clock_top);
     time_lbl.set_size(sw, (sh / 6).max(90));
     clock_filter.add(&time_lbl);
-    unsafe { TIME_LBL_ID = time_lbl.id(); }
+    unsafe {
+        TIME_LBL_ID = time_lbl.id();
+    }
     update_clock_labels();
     ui::set_timer(1000, || update_clock_labels());
 
@@ -295,17 +307,29 @@ fn main() -> u32 {
     let avatar_x = center_x - CURRENT_AVATAR_SIZE as i32 / 2;
     let current_glow_pad = 16;
     let avatar_glow_filter = ui::AntiAliasFilterContainer::new();
-    avatar_glow_filter.set_position(avatar_x - current_glow_pad as i32, avatar_y - current_glow_pad as i32);
-    avatar_glow_filter.set_size(CURRENT_AVATAR_SIZE + current_glow_pad * 2, CURRENT_AVATAR_SIZE + current_glow_pad * 2);
+    avatar_glow_filter.set_position(
+        avatar_x - current_glow_pad as i32,
+        avatar_y - current_glow_pad as i32,
+    );
+    avatar_glow_filter.set_size(
+        CURRENT_AVATAR_SIZE + current_glow_pad * 2,
+        CURRENT_AVATAR_SIZE + current_glow_pad * 2,
+    );
     avatar_glow_filter.set_visible(has_last_user);
     avatar_glow_filter.set_style(ui::STYLE_FILTER_STRENGTH, 92);
     avatar_glow_filter.set_style(ui::STYLE_FILTER_QUALITY, 1);
     win.add(&avatar_glow_filter);
     login_ids.push(avatar_glow_filter.id());
 
-    let avatar_glow = ui::Canvas::new(CURRENT_AVATAR_SIZE + current_glow_pad * 2, CURRENT_AVATAR_SIZE + current_glow_pad * 2);
+    let avatar_glow = ui::Canvas::new(
+        CURRENT_AVATAR_SIZE + current_glow_pad * 2,
+        CURRENT_AVATAR_SIZE + current_glow_pad * 2,
+    );
     avatar_glow.set_position(0, 0);
-    avatar_glow.set_size(CURRENT_AVATAR_SIZE + current_glow_pad * 2, CURRENT_AVATAR_SIZE + current_glow_pad * 2);
+    avatar_glow.set_size(
+        CURRENT_AVATAR_SIZE + current_glow_pad * 2,
+        CURRENT_AVATAR_SIZE + current_glow_pad * 2,
+    );
     draw_avatar_ring(
         &avatar_glow,
         CURRENT_AVATAR_SIZE,
@@ -319,7 +343,10 @@ fn main() -> u32 {
         AVATAR_GLOW_FILTER = Some(avatar_glow_filter);
         AVATAR_GLOW = Some(avatar_glow);
         CENTER_AVATAR_POS = (avatar_x, avatar_y);
-        CENTER_GLOW_POS = (avatar_x - current_glow_pad as i32, avatar_y - current_glow_pad as i32);
+        CENTER_GLOW_POS = (
+            avatar_x - current_glow_pad as i32,
+            avatar_y - current_glow_pad as i32,
+        );
         CENTER_GLOW_SIZE = CURRENT_AVATAR_SIZE + current_glow_pad * 2;
     }
 
@@ -329,7 +356,9 @@ fn main() -> u32 {
     avatar.set_visible(has_last_user);
     win.add(&avatar);
     login_ids.push(avatar.id());
-    unsafe { AVATAR = Some(avatar); }
+    unsafe {
+        AVATAR = Some(avatar);
+    }
     update_avatar();
 
     let name_y = avatar_y + CURRENT_AVATAR_SIZE as i32 + (sh as i32 * 2) / 100;
@@ -343,7 +372,9 @@ fn main() -> u32 {
     name_shadow_soft.set_visible(has_last_user);
     win.add(&name_shadow_soft);
     login_ids.push(name_shadow_soft.id());
-    unsafe { NAME_SHADOW_SOFT_ID = name_shadow_soft.id(); }
+    unsafe {
+        NAME_SHADOW_SOFT_ID = name_shadow_soft.id();
+    }
 
     let name_shadow = ui::Label::new("");
     name_shadow.set_font_size((sh / 38).clamp(18, 28));
@@ -355,7 +386,9 @@ fn main() -> u32 {
     name_shadow.set_visible(has_last_user);
     win.add(&name_shadow);
     login_ids.push(name_shadow.id());
-    unsafe { NAME_SHADOW_ID = name_shadow.id(); }
+    unsafe {
+        NAME_SHADOW_ID = name_shadow.id();
+    }
 
     let name_lbl = ui::Label::new("");
     name_lbl.set_font_size((sh / 38).clamp(18, 28));
@@ -367,7 +400,9 @@ fn main() -> u32 {
     name_lbl.set_visible(has_last_user);
     win.add(&name_lbl);
     login_ids.push(name_lbl.id());
-    unsafe { NAME_LBL_ID = name_lbl.id(); }
+    unsafe {
+        NAME_LBL_ID = name_lbl.id();
+    }
     update_name_label();
 
     let pass_w = (sw / 6).clamp(220, 320);
@@ -396,7 +431,9 @@ fn main() -> u32 {
     pass_field.set_visible(has_last_user);
     win.add(&pass_field);
     login_ids.push(pass_field.id());
-    unsafe { PASS_ID = pass_field.id(); }
+    unsafe {
+        PASS_ID = pass_field.id();
+    }
     pass_field.focus();
 
     let submit_btn = ui::IconButton::new("");
@@ -415,36 +452,51 @@ fn main() -> u32 {
     error_shadow_soft.set_font(1);
     error_shadow_soft.set_text_color(0x26000000);
     error_shadow_soft.set_text_align(ui::TEXT_ALIGN_CENTER);
-    error_shadow_soft.set_position(center_x - pass_w as i32 / 2 - 28, pass_y + PASS_H as i32 + 10);
+    error_shadow_soft.set_position(
+        center_x - pass_w as i32 / 2 - 28,
+        pass_y + PASS_H as i32 + 10,
+    );
     error_shadow_soft.set_size(pass_w + 60, 24);
     error_shadow_soft.set_visible(has_last_user);
     win.add(&error_shadow_soft);
     login_ids.push(error_shadow_soft.id());
-    unsafe { ERROR_SHADOW_SOFT_ID = error_shadow_soft.id(); }
+    unsafe {
+        ERROR_SHADOW_SOFT_ID = error_shadow_soft.id();
+    }
 
     let error_shadow = ui::Label::new(error_text);
     error_shadow.set_font_size((sh / 58).clamp(12, 17));
     error_shadow.set_font(1);
     error_shadow.set_text_color(0x40000000);
     error_shadow.set_text_align(ui::TEXT_ALIGN_CENTER);
-    error_shadow.set_position(center_x - pass_w as i32 / 2 - 29, pass_y + PASS_H as i32 + 8);
+    error_shadow.set_position(
+        center_x - pass_w as i32 / 2 - 29,
+        pass_y + PASS_H as i32 + 8,
+    );
     error_shadow.set_size(pass_w + 60, 24);
     error_shadow.set_visible(has_last_user);
     win.add(&error_shadow);
     login_ids.push(error_shadow.id());
-    unsafe { ERROR_SHADOW_ID = error_shadow.id(); }
+    unsafe {
+        ERROR_SHADOW_ID = error_shadow.id();
+    }
 
     let error_lbl = ui::Label::new(error_text);
     error_lbl.set_font_size((sh / 58).clamp(12, 17));
     error_lbl.set_font(1);
     error_lbl.set_text_color(error_color);
     error_lbl.set_text_align(ui::TEXT_ALIGN_CENTER);
-    error_lbl.set_position(center_x - pass_w as i32 / 2 - 30, pass_y + PASS_H as i32 + 6);
+    error_lbl.set_position(
+        center_x - pass_w as i32 / 2 - 30,
+        pass_y + PASS_H as i32 + 6,
+    );
     error_lbl.set_size(pass_w + 60, 24);
     error_lbl.set_visible(has_last_user);
     win.add(&error_lbl);
     login_ids.push(error_lbl.id());
-    unsafe { ERROR_LBL_ID = error_lbl.id(); }
+    unsafe {
+        ERROR_LBL_ID = error_lbl.id();
+    }
 
     let help = ui::Label::new(i18n::t("Your password is required to log in"));
     let help_shadow_soft = ui::Label::new(i18n::t("Your password is required to log in"));
@@ -452,7 +504,10 @@ fn main() -> u32 {
     help_shadow_soft.set_font(1);
     help_shadow_soft.set_text_color(shadow_soft);
     help_shadow_soft.set_text_align(ui::TEXT_ALIGN_CENTER);
-    help_shadow_soft.set_position(center_x - pass_w as i32 / 2 - 27, pass_y + PASS_H as i32 + 34);
+    help_shadow_soft.set_position(
+        center_x - pass_w as i32 / 2 - 27,
+        pass_y + PASS_H as i32 + 34,
+    );
     help_shadow_soft.set_size(pass_w + 60, 48);
     help_shadow_soft.set_visible(has_last_user);
     win.add(&help_shadow_soft);
@@ -463,7 +518,10 @@ fn main() -> u32 {
     help_shadow.set_font(1);
     help_shadow.set_text_color(shadow_near);
     help_shadow.set_text_align(ui::TEXT_ALIGN_CENTER);
-    help_shadow.set_position(center_x - pass_w as i32 / 2 - 29, pass_y + PASS_H as i32 + 32);
+    help_shadow.set_position(
+        center_x - pass_w as i32 / 2 - 29,
+        pass_y + PASS_H as i32 + 32,
+    );
     help_shadow.set_size(pass_w + 60, 48);
     help_shadow.set_visible(has_last_user);
     win.add(&help_shadow);
@@ -473,7 +531,10 @@ fn main() -> u32 {
     help.set_font(1);
     help.set_text_color(text);
     help.set_text_align(ui::TEXT_ALIGN_CENTER);
-    help.set_position(center_x - pass_w as i32 / 2 - 30, pass_y + PASS_H as i32 + 30);
+    help.set_position(
+        center_x - pass_w as i32 / 2 - 30,
+        pass_y + PASS_H as i32 + 30,
+    );
     help.set_size(pass_w + 60, 48);
     help.set_visible(has_last_user);
     win.add(&help);
@@ -495,7 +556,8 @@ fn main() -> u32 {
         let cell_x = picker_x + idx as i32 * cell_w as i32;
         let picker_glow_pad = 14;
         let glow_size = PICKER_AVATAR_SIZE + picker_glow_pad * 2;
-        let glow_x = cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2 - picker_glow_pad as i32;
+        let glow_x =
+            cell_x + (cell_w as i32 - PICKER_AVATAR_SIZE as i32) / 2 - picker_glow_pad as i32;
         let glow_filter = ui::AntiAliasFilterContainer::new();
         glow_filter.set_position(glow_x, picker_y - picker_glow_pad as i32);
         glow_filter.set_size(glow_size, glow_size);
@@ -785,7 +847,9 @@ fn select_user_animated(idx: usize) {
     if idx >= user_list().len() {
         return;
     }
-    unsafe { CURRENT_USER = idx; }
+    unsafe {
+        CURRENT_USER = idx;
+    }
     update_avatar();
     update_name_label();
     ui::Control::from_id(unsafe { PASS_ID }).set_text("");
@@ -795,8 +859,10 @@ fn select_user_animated(idx: usize) {
         set_controls_visible(&PICKER_CONTROLS, false);
         if let Some(list) = PICKER_AVATARS.as_ref() {
             if let Some(anim) = list.get(idx) {
-                let from_avatar_x = anim.avatar_x - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
-                let from_avatar_y = anim.avatar_y - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
+                let from_avatar_x =
+                    anim.avatar_x - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
+                let from_avatar_y =
+                    anim.avatar_y - ((CURRENT_AVATAR_SIZE - anim.avatar_size) / 2) as i32;
                 let from_glow_x = anim.glow_x - ((CENTER_GLOW_SIZE - anim.glow_size) / 2) as i32;
                 let from_glow_y = anim.glow_y - ((CENTER_GLOW_SIZE - anim.glow_size) / 2) as i32;
                 if let Some(avatar) = AVATAR {
@@ -873,7 +939,8 @@ fn tick_avatar_animation() {
                 }
                 anim.shown_pressed = anim.pressed;
                 let inset = if anim.pressed { 2 } else { 0 };
-                anim.avatar.set_position(anim.avatar_x + inset, anim.avatar_y + inset);
+                anim.avatar
+                    .set_position(anim.avatar_x + inset, anim.avatar_y + inset);
                 anim.avatar.set_size(anim.avatar_size, anim.avatar_size);
                 draw_avatar_ring(
                     &anim.glow,
@@ -916,7 +983,14 @@ fn tick_avatar_animation() {
                 if let Some(glow) = AVATAR_GLOW {
                     glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
                     let final_glow = if returning_to_picker { 0 } else { 118 };
-                    draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, final_glow);
+                    draw_avatar_ring(
+                        &glow,
+                        CURRENT_AVATAR_SIZE,
+                        16,
+                        0x22FFFFFF,
+                        0x24000000,
+                        final_glow,
+                    );
                 }
                 if let Some(filter) = AVATAR_GLOW_FILTER {
                     filter.set_position(sel.to_glow_x, sel.to_glow_y);
@@ -937,7 +1011,14 @@ fn tick_avatar_animation() {
                             anim.glow_filter.set_size(anim.glow_size, anim.glow_size);
                             anim.glow_filter.set_visible(true);
                             anim.glow.set_size(anim.glow_size, anim.glow_size);
-                            draw_avatar_ring(&anim.glow, anim.avatar_size, anim.pad, 0x22FFFFFF, 0x24000000, 0);
+                            draw_avatar_ring(
+                                &anim.glow,
+                                anim.avatar_size,
+                                anim.pad,
+                                0x22FFFFFF,
+                                0x24000000,
+                                0,
+                            );
                         }
                     }
                     set_controls_visible(&LOGIN_CONTROLS, false);
@@ -952,7 +1033,14 @@ fn tick_avatar_animation() {
                     }
                     if let Some(glow) = AVATAR_GLOW {
                         glow.set_size(CENTER_GLOW_SIZE, CENTER_GLOW_SIZE);
-                        draw_avatar_ring(&glow, CURRENT_AVATAR_SIZE, 16, 0x22FFFFFF, 0x24000000, 118);
+                        draw_avatar_ring(
+                            &glow,
+                            CURRENT_AVATAR_SIZE,
+                            16,
+                            0x22FFFFFF,
+                            0x24000000,
+                            118,
+                        );
                     }
                     if let Some(filter) = AVATAR_GLOW_FILTER {
                         filter.set_position(to_gx, to_gy);
@@ -1024,7 +1112,11 @@ fn month_name(month: u32) -> &'static str {
 }
 
 fn weekday_name(year: u32, month: u32, day: u32) -> &'static str {
-    let (y, m) = if month < 3 { (year - 1, month + 12) } else { (year, month) };
+    let (y, m) = if month < 3 {
+        (year - 1, month + 12)
+    } else {
+        (year, month)
+    };
     let k = y % 100;
     let j = y / 100;
     let h = (day + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
@@ -1041,8 +1133,7 @@ fn weekday_name(year: u32, month: u32, day: u32) -> &'static str {
 
 /// Pleasant palette for initials backgrounds (avoids reds/yellows for readability).
 const AVATAR_PALETTE: [u32; 8] = [
-    0xFF4E79A7, 0xFFF28E2B, 0xFFE15759, 0xFF76B7B2,
-    0xFF59A14F, 0xFFB07AA1, 0xFF9C755F, 0xFF5470C6,
+    0xFF4E79A7, 0xFFF28E2B, 0xFFE15759, 0xFF76B7B2, 0xFF59A14F, 0xFFB07AA1, 0xFF9C755F, 0xFF5470C6,
 ];
 
 fn avatar_color(seed: &str) -> u32 {
@@ -1054,7 +1145,11 @@ fn avatar_color(seed: &str) -> u32 {
 }
 
 fn compute_initials(display: &str, fallback: &str) -> String {
-    let src = if display.trim().is_empty() { fallback } else { display };
+    let src = if display.trim().is_empty() {
+        fallback
+    } else {
+        display
+    };
     let mut out = String::new();
     let mut prev_space = true;
     for c in src.chars() {
@@ -1086,7 +1181,13 @@ fn update_avatar() {
     let username = current_username();
     let displayname = current_displayname();
 
-    draw_avatar_for(&canvas, CURRENT_AVATAR_SIZE, current_uid(), username, displayname);
+    draw_avatar_for(
+        &canvas,
+        CURRENT_AVATAR_SIZE,
+        current_uid(),
+        username,
+        displayname,
+    );
 }
 
 fn draw_avatar_for(canvas: &ui::Canvas, size: u32, uid: u32, username: &str, displayname: &str) {
@@ -1113,7 +1214,14 @@ fn draw_avatar_for(canvas: &ui::Canvas, size: u32, uid: u32, username: &str, dis
     canvas.draw_text(tx, ty, 0xFFFFFFFF, 1, font_size, &initials);
 }
 
-fn draw_avatar_ring(canvas: &ui::Canvas, avatar_size: u32, pad: u32, outer: u32, inner: u32, glow: u16) {
+fn draw_avatar_ring(
+    canvas: &ui::Canvas,
+    avatar_size: u32,
+    pad: u32,
+    outer: u32,
+    inner: u32,
+    glow: u16,
+) {
     let size = avatar_size + pad * 2;
     let center = (size / 2) as i32;
     let avatar_r = (avatar_size as i32) / 2;
@@ -1138,7 +1246,10 @@ fn draw_avatar_ring(canvas: &ui::Canvas, avatar_size: u32, pad: u32, outer: u32,
             } else if d2 > ring_outer * ring_outer && d2 <= (ring_outer + 2) * (ring_outer + 2) {
                 let alpha = 36 + (glow_i * 76) / 255;
                 px = rgba(alpha as u32, 0, 0, 0);
-            } else if glow > 0 && d2 > (ring_outer + 2) * (ring_outer + 2) && d2 <= halo_outer * halo_outer {
+            } else if glow > 0
+                && d2 > (ring_outer + 2) * (ring_outer + 2)
+                && d2 <= halo_outer * halo_outer
+            {
                 let dist = isqrt(d2 as u32) as i32;
                 let span = (halo_outer - ring_outer - 2).max(1);
                 let falloff = ((halo_outer - dist).max(0) * 255) / span;
@@ -1178,19 +1289,25 @@ fn isqrt(n: u32) -> u32 {
 fn load_image_pixels(path: &str, max_pixels: usize) -> Option<(Vec<u32>, u32, u32)> {
     use anyos_std::fs;
     let fd = fs::open(path, 0);
-    if fd == u32::MAX { return None; }
+    if fd == u32::MAX {
+        return None;
+    }
     let mut data: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
         let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     fs::close(fd);
     let info = libimage_client::probe(&data)?;
     let w = info.width;
     let h = info.height;
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
     let pixel_count = (w as usize).saturating_mul(h as usize);
     if pixel_count == 0 || pixel_count > max_pixels {
         return None;
@@ -1215,8 +1332,12 @@ fn load_avatar_image(path: &str, target_size: u32) -> Option<(Vec<u32>, u32, u32
     }
     let mut scaled = alloc::vec![0u32; (target_size as usize) * (target_size as usize)];
     if libimage_client::scale_image(
-        &cropped, side, side,
-        &mut scaled, target_size, target_size,
+        &cropped,
+        side,
+        side,
+        &mut scaled,
+        target_size,
+        target_size,
         libimage_client::MODE_SCALE,
     ) {
         Some((scaled, target_size, target_size))
@@ -1255,7 +1376,9 @@ fn attempt_login(pf_id: u32) -> bool {
     if process::authenticate(username, password) {
         // Persist last successful user for next boot.
         let _ = login_schema().write_string("state/last_user", username);
-        unsafe { LOGIN_UID = process::getuid() as u32; }
+        unsafe {
+            LOGIN_UID = process::getuid() as u32;
+        }
         true
     } else {
         set_login_error(i18n::t("Invalid password. Please try again."));

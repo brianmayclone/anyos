@@ -2,12 +2,12 @@
 //!
 //! Reads `index.json` from cache and provides lookup by name, search, etc.
 
-use alloc::string::String;
-use alloc::vec::Vec;
-use anyos_std::json::Value;
-use anyos_std::fs;
 use crate::config;
 use crate::version::Version;
+use alloc::string::String;
+use alloc::vec::Vec;
+use anyos_std::fs;
+use anyos_std::json::Value;
 
 /// A single package entry from the repository index.
 #[derive(Debug, Clone)]
@@ -51,7 +51,11 @@ impl Index {
         for pkg in packages_arr {
             let name = pkg["name"].as_str().unwrap_or("").into();
             let version_str: String = pkg["version"].as_str().unwrap_or("0.0.0").into();
-            let version = Version::parse(&version_str).unwrap_or(Version { major: 0, minor: 0, patch: 0 });
+            let version = Version::parse(&version_str).unwrap_or(Version {
+                major: 0,
+                minor: 0,
+                patch: 0,
+            });
             let description = pkg["description"].as_str().unwrap_or("").into();
             let category = pkg["category"].as_str().unwrap_or("").into();
             let pkg_type = pkg["type"].as_str().unwrap_or("bin").into();
@@ -66,8 +70,19 @@ impl Index {
             let provides = parse_string_array(&pkg["provides"]);
 
             packages.push(PackageInfo {
-                name, version, version_str, description, category, pkg_type,
-                arch, depends, provides, size, size_installed, md5, filename,
+                name,
+                version,
+                version_str,
+                description,
+                category,
+                pkg_type,
+                arch,
+                depends,
+                provides,
+                size,
+                size_installed,
+                md5,
+                filename,
                 min_os_version,
             });
         }
@@ -90,16 +105,21 @@ impl Index {
             return Some(p);
         }
         // Check provides
-        self.packages.iter().find(|p| p.provides.iter().any(|prov| prov == name))
+        self.packages
+            .iter()
+            .find(|p| p.provides.iter().any(|prov| prov == name))
     }
 
     /// Search packages by name or description substring (case-insensitive).
     pub fn search(&self, term: &str) -> Vec<&PackageInfo> {
         let term_lower = to_lower(term);
-        self.packages.iter().filter(|p| {
-            to_lower(&p.name).contains(&term_lower)
-                || to_lower(&p.description).contains(&term_lower)
-        }).collect()
+        self.packages
+            .iter()
+            .filter(|p| {
+                to_lower(&p.name).contains(&term_lower)
+                    || to_lower(&p.description).contains(&term_lower)
+            })
+            .collect()
     }
 
     /// List all packages filtered by architecture.
@@ -111,7 +131,10 @@ impl Index {
 /// Parse a JSON array of strings.
 fn parse_string_array(val: &Value) -> Vec<String> {
     match val.as_array() {
-        Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         None => Vec::new(),
     }
 }

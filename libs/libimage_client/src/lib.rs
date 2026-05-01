@@ -11,7 +11,10 @@
 
 pub mod raw;
 
-pub use raw::{ImageInfo, VideoInfo, FMT_UNKNOWN, FMT_BMP, FMT_PNG, FMT_JPEG, FMT_GIF, FMT_ICO, FMT_WEBP, FMT_MJV};
+pub use raw::{
+    ImageInfo, VideoInfo, FMT_BMP, FMT_GIF, FMT_ICO, FMT_JPEG, FMT_MJV, FMT_PNG, FMT_UNKNOWN,
+    FMT_WEBP,
+};
 
 /// Scale mode: stretch to fill, ignoring aspect ratio.
 pub const MODE_SCALE: u32 = 0;
@@ -97,21 +100,39 @@ pub fn probe_ico_size(data: &[u8], preferred_size: u32) -> Option<ImageInfo> {
         scratch_needed: 0,
     };
     let ret = (raw::exports().ico_probe_size)(
-        data.as_ptr(), data.len() as u32, preferred_size, &mut info,
+        data.as_ptr(),
+        data.len() as u32,
+        preferred_size,
+        &mut info,
     );
-    if ret == 0 { Some(info) } else { None }
+    if ret == 0 {
+        Some(info)
+    } else {
+        None
+    }
 }
 
 /// Decode an ICO file, selecting the best entry for a preferred display size.
 pub fn decode_ico_size(
-    data: &[u8], preferred_size: u32, pixels: &mut [u32], scratch: &mut [u8],
+    data: &[u8],
+    preferred_size: u32,
+    pixels: &mut [u32],
+    scratch: &mut [u8],
 ) -> Result<(), ImageError> {
     let ret = (raw::exports().ico_decode_size)(
-        data.as_ptr(), data.len() as u32, preferred_size,
-        pixels.as_mut_ptr(), pixels.len() as u32,
-        scratch.as_mut_ptr(), scratch.len() as u32,
+        data.as_ptr(),
+        data.len() as u32,
+        preferred_size,
+        pixels.as_mut_ptr(),
+        pixels.len() as u32,
+        scratch.as_mut_ptr(),
+        scratch.len() as u32,
     );
-    if ret == 0 { Ok(()) } else { Err(err_from_code(ret)) }
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(err_from_code(ret))
+    }
 }
 
 // ── Encode API ──────────────────────────────────────
@@ -123,7 +144,12 @@ pub fn decode_ico_size(
 /// - `out`: output buffer for BMP file bytes (must be at least `54 + width*height*4` bytes)
 ///
 /// Returns the number of bytes written on success, or an error.
-pub fn encode_bmp(pixels: &[u32], width: u32, height: u32, out: &mut [u8]) -> Result<usize, ImageError> {
+pub fn encode_bmp(
+    pixels: &[u32],
+    width: u32,
+    height: u32,
+    out: &mut [u8],
+) -> Result<usize, ImageError> {
     let ret = (raw::exports().image_encode)(
         pixels.as_ptr(),
         width,
@@ -151,31 +177,53 @@ pub fn encode_bmp(pixels: &[u32], width: u32, height: u32, out: &mut [u8]) -> Re
 ///
 /// Returns `Ok(())` on success, or an error.
 pub fn iconpack_render(
-    pak: &[u8], name: &str, filled: bool, size: u32, color: u32, out: &mut [u32],
+    pak: &[u8],
+    name: &str,
+    filled: bool,
+    size: u32,
+    color: u32,
+    out: &mut [u32],
 ) -> Result<(), ImageError> {
     let ret = (raw::exports().iconpack_render)(
-        pak.as_ptr(), pak.len() as u32,
-        name.as_ptr(), name.len() as u32,
+        pak.as_ptr(),
+        pak.len() as u32,
+        name.as_ptr(),
+        name.len() as u32,
         if filled { 1 } else { 0 },
-        size, color,
+        size,
+        color,
         out.as_mut_ptr(),
     );
-    if ret == 0 { Ok(()) } else { Err(err_from_code(ret)) }
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(err_from_code(ret))
+    }
 }
 
 /// Render a system icon using the DLL's internal ico.pak cache.
 ///
 /// The DLL lazy-loads ico.pak on first call — no client-side file reads needed.
 pub fn iconpack_render_cached(
-    name: &str, filled: bool, size: u32, color: u32, out: &mut [u32],
+    name: &str,
+    filled: bool,
+    size: u32,
+    color: u32,
+    out: &mut [u32],
 ) -> Result<(), ImageError> {
     let ret = (raw::exports().iconpack_render_cached)(
-        name.as_ptr(), name.len() as u32,
+        name.as_ptr(),
+        name.len() as u32,
         if filled { 1 } else { 0 },
-        size, color,
+        size,
+        color,
         out.as_mut_ptr(),
     );
-    if ret == 0 { Ok(()) } else { Err(err_from_code(ret)) }
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(err_from_code(ret))
+    }
 }
 
 /// Get the format name as a string.
@@ -307,13 +355,7 @@ pub fn trim_and_scale(
     if (dst_w as usize) * (dst_h as usize) > dst.len() {
         return false;
     }
-    let ret = (raw::exports().trim_and_scale)(
-        src.as_ptr(),
-        src_w,
-        src_h,
-        dst.as_mut_ptr(),
-        dst_w,
-        dst_h,
-    );
+    let ret =
+        (raw::exports().trim_and_scale)(src.as_ptr(), src_w, src_h, dst.as_mut_ptr(), dst_w, dst_h);
     ret >= 0
 }

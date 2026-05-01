@@ -50,6 +50,10 @@ fn main() {
 
     let ret = anyos_std::fs::symlink(target, link_name);
     if ret != 0 {
-        anyos_std::println!("ln: failed to create symbolic link '{}' -> '{}'", link_name, target);
+        anyos_std::println!(
+            "ln: failed to create symbolic link '{}' -> '{}'",
+            link_name,
+            target
+        );
     }
 }

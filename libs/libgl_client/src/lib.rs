@@ -128,8 +128,10 @@ struct LibGl {
     gen_textures: extern "C" fn(GLsizei, *mut GLuint),
     delete_textures: extern "C" fn(GLsizei, *const GLuint),
     bind_texture: extern "C" fn(GLenum, GLuint),
-    tex_image_2d: extern "C" fn(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, *const u8),
-    tex_sub_image_2d: extern "C" fn(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, *const u8),
+    tex_image_2d:
+        extern "C" fn(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, *const u8),
+    tex_sub_image_2d:
+        extern "C" fn(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, *const u8),
     tex_parameteri: extern "C" fn(GLenum, GLenum, GLint),
     active_texture: extern "C" fn(GLenum),
     generate_mipmap: extern "C" fn(GLenum),
@@ -238,8 +240,7 @@ fn lib() -> &'static LibGl {
 
 /// Resolve a function pointer from the loaded library.
 unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
-    let ptr = dl_sym(handle, name)
-        .unwrap_or_else(|| panic!("libgl: symbol not found: {}", name));
+    let ptr = dl_sym(handle, name).unwrap_or_else(|| panic!("libgl: symbol not found: {}", name));
     unsafe { core::mem::transmute_copy::<*const (), T>(&ptr) }
 }
 
@@ -390,16 +391,24 @@ pub fn init() -> bool {
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Initialize the GL context with framebuffer dimensions.
-pub fn gl_init(width: u32, height: u32) { (lib().init)(width, height); }
+pub fn gl_init(width: u32, height: u32) {
+    (lib().init)(width, height);
+}
 
 /// Resize the GL framebuffer (preserves shaders, buffers, textures).
-pub fn gl_resize(width: u32, height: u32) { (lib().resize)(width, height); }
+pub fn gl_resize(width: u32, height: u32) {
+    (lib().resize)(width, height);
+}
 
 /// Swap buffers. Returns pointer to ARGB color data.
-pub fn swap_buffers() -> *const u32 { (lib().swap_buffers)() }
+pub fn swap_buffers() -> *const u32 {
+    (lib().swap_buffers)()
+}
 
 /// Get a pointer to the backbuffer.
-pub fn get_backbuffer() -> *const u32 { (lib().get_backbuffer)() }
+pub fn get_backbuffer() -> *const u32 {
+    (lib().get_backbuffer)()
+}
 
 /// Initialize fullscreen direct framebuffer rendering.
 /// `fb_ptr` is the mapped framebuffer address, `stride` is row stride in pixels.
@@ -408,11 +417,15 @@ pub fn gl_init_fullscreen(fb_ptr: *mut u32, width: u32, height: u32, stride: u32
 }
 
 /// Exit fullscreen mode.
-pub fn gl_exit_fullscreen() { (lib().exit_fullscreen)(); }
+pub fn gl_exit_fullscreen() {
+    (lib().exit_fullscreen)();
+}
 
 /// Swap buffers in fullscreen mode (copies directly to mapped framebuffer).
 /// Returns true (1) if copy was performed, false (0) if not in fullscreen mode.
-pub fn swap_buffers_fullscreen() -> bool { (lib().swap_buffers_fullscreen)() != 0 }
+pub fn swap_buffers_fullscreen() -> bool {
+    (lib().swap_buffers_fullscreen)() != 0
+}
 
 /// Set cursor captured state (for FPS-style mouse grab).
 /// Returns the previous state.
@@ -421,49 +434,79 @@ pub fn set_cursor_captured(captured: bool) -> bool {
 }
 
 /// Query whether the cursor is currently captured.
-pub fn get_cursor_captured() -> bool { (lib().get_cursor_captured)() != 0 }
+pub fn get_cursor_captured() -> bool {
+    (lib().get_cursor_captured)() != 0
+}
 
 /// Get the current error.
-pub fn get_error() -> GLenum { (lib().get_error)() }
+pub fn get_error() -> GLenum {
+    (lib().get_error)()
+}
 
 /// Enable a capability.
-pub fn enable(cap: GLenum) { (lib().enable)(cap); }
+pub fn enable(cap: GLenum) {
+    (lib().enable)(cap);
+}
 
 /// Disable a capability.
-pub fn disable(cap: GLenum) { (lib().disable)(cap); }
+pub fn disable(cap: GLenum) {
+    (lib().disable)(cap);
+}
 
 /// Set the blend function.
-pub fn blend_func(sfactor: GLenum, dfactor: GLenum) { (lib().blend_func)(sfactor, dfactor); }
+pub fn blend_func(sfactor: GLenum, dfactor: GLenum) {
+    (lib().blend_func)(sfactor, dfactor);
+}
 
 /// Set the depth function.
-pub fn depth_func(func: GLenum) { (lib().depth_func)(func); }
+pub fn depth_func(func: GLenum) {
+    (lib().depth_func)(func);
+}
 
 /// Enable/disable depth writes.
-pub fn depth_mask(flag: bool) { (lib().depth_mask)(if flag { 1 } else { 0 }); }
+pub fn depth_mask(flag: bool) {
+    (lib().depth_mask)(if flag { 1 } else { 0 });
+}
 
 /// Set face culling mode.
-pub fn cull_face(mode: GLenum) { (lib().cull_face)(mode); }
+pub fn cull_face(mode: GLenum) {
+    (lib().cull_face)(mode);
+}
 
 /// Set front face winding.
-pub fn front_face(mode: GLenum) { (lib().front_face)(mode); }
+pub fn front_face(mode: GLenum) {
+    (lib().front_face)(mode);
+}
 
 /// Set the viewport.
-pub fn viewport(x: i32, y: i32, w: i32, h: i32) { (lib().viewport)(x, y, w, h); }
+pub fn viewport(x: i32, y: i32, w: i32, h: i32) {
+    (lib().viewport)(x, y, w, h);
+}
 
 /// Set the clear color.
-pub fn clear_color(r: f32, g: f32, b: f32, a: f32) { (lib().clear_color)(r, g, b, a); }
+pub fn clear_color(r: f32, g: f32, b: f32, a: f32) {
+    (lib().clear_color)(r, g, b, a);
+}
 
 /// Clear buffers.
-pub fn clear(mask: GLbitfield) { (lib().clear)(mask); }
+pub fn clear(mask: GLbitfield) {
+    (lib().clear)(mask);
+}
 
 /// Generate buffer objects.
-pub fn gen_buffers(n: i32, ids: &mut [u32]) { (lib().gen_buffers)(n, ids.as_mut_ptr()); }
+pub fn gen_buffers(n: i32, ids: &mut [u32]) {
+    (lib().gen_buffers)(n, ids.as_mut_ptr());
+}
 
 /// Delete buffer objects.
-pub fn delete_buffers(ids: &[u32]) { (lib().delete_buffers)(ids.len() as i32, ids.as_ptr()); }
+pub fn delete_buffers(ids: &[u32]) {
+    (lib().delete_buffers)(ids.len() as i32, ids.as_ptr());
+}
 
 /// Bind a buffer.
-pub fn bind_buffer(target: GLenum, buffer: u32) { (lib().bind_buffer)(target, buffer); }
+pub fn bind_buffer(target: GLenum, buffer: u32) {
+    (lib().bind_buffer)(target, buffer);
+}
 
 /// Upload buffer data.
 pub fn buffer_data(target: GLenum, data: &[u8], usage: GLenum) {
@@ -472,28 +515,30 @@ pub fn buffer_data(target: GLenum, data: &[u8], usage: GLenum) {
 
 /// Upload typed buffer data.
 pub fn buffer_data_f32(target: GLenum, data: &[f32], usage: GLenum) {
-    let bytes = unsafe {
-        core::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
-    };
+    let bytes = unsafe { core::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) };
     (lib().buffer_data)(target, bytes.len() as isize, bytes.as_ptr(), usage);
 }
 
 /// Upload u16 index data.
 pub fn buffer_data_u16(target: GLenum, data: &[u16], usage: GLenum) {
-    let bytes = unsafe {
-        core::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2)
-    };
+    let bytes = unsafe { core::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2) };
     (lib().buffer_data)(target, bytes.len() as isize, bytes.as_ptr(), usage);
 }
 
 /// Generate textures.
-pub fn gen_textures(n: i32, ids: &mut [u32]) { (lib().gen_textures)(n, ids.as_mut_ptr()); }
+pub fn gen_textures(n: i32, ids: &mut [u32]) {
+    (lib().gen_textures)(n, ids.as_mut_ptr());
+}
 
 /// Delete textures.
-pub fn delete_textures(ids: &[u32]) { (lib().delete_textures)(ids.len() as i32, ids.as_ptr()); }
+pub fn delete_textures(ids: &[u32]) {
+    (lib().delete_textures)(ids.len() as i32, ids.as_ptr());
+}
 
 /// Bind a texture.
-pub fn bind_texture(target: GLenum, texture: u32) { (lib().bind_texture)(target, texture); }
+pub fn bind_texture(target: GLenum, texture: u32) {
+    (lib().bind_texture)(target, texture);
+}
 
 /// Set texture parameter.
 pub fn tex_parameteri(target: GLenum, pname: GLenum, param: i32) {
@@ -501,24 +546,49 @@ pub fn tex_parameteri(target: GLenum, pname: GLenum, param: i32) {
 }
 
 /// Upload texture image data.
-pub fn tex_image_2d(target: GLenum, level: i32, internal_format: i32,
-                    width: i32, height: i32, border: i32,
-                    format: GLenum, type_: GLenum, data: &[u8]) {
-    (lib().tex_image_2d)(target, level, internal_format, width, height, border,
-                         format, type_, data.as_ptr());
+pub fn tex_image_2d(
+    target: GLenum,
+    level: i32,
+    internal_format: i32,
+    width: i32,
+    height: i32,
+    border: i32,
+    format: GLenum,
+    type_: GLenum,
+    data: &[u8],
+) {
+    (lib().tex_image_2d)(
+        target,
+        level,
+        internal_format,
+        width,
+        height,
+        border,
+        format,
+        type_,
+        data.as_ptr(),
+    );
 }
 
 /// Set active texture unit.
-pub fn active_texture(texture: GLenum) { (lib().active_texture)(texture); }
+pub fn active_texture(texture: GLenum) {
+    (lib().active_texture)(texture);
+}
 
 /// Generate mipmaps for the currently bound texture.
-pub fn generate_mipmap(target: GLenum) { (lib().generate_mipmap)(target); }
+pub fn generate_mipmap(target: GLenum) {
+    (lib().generate_mipmap)(target);
+}
 
 /// Create a shader.
-pub fn create_shader(shader_type: GLenum) -> u32 { (lib().create_shader)(shader_type) }
+pub fn create_shader(shader_type: GLenum) -> u32 {
+    (lib().create_shader)(shader_type)
+}
 
 /// Delete a shader.
-pub fn delete_shader(shader: u32) { (lib().delete_shader)(shader); }
+pub fn delete_shader(shader: u32) {
+    (lib().delete_shader)(shader);
+}
 
 /// Set shader source from a string.
 pub fn shader_source(shader: u32, source: &str) {
@@ -528,7 +598,9 @@ pub fn shader_source(shader: u32, source: &str) {
 }
 
 /// Compile a shader.
-pub fn compile_shader(shader: u32) { (lib().compile_shader)(shader); }
+pub fn compile_shader(shader: u32) {
+    (lib().compile_shader)(shader);
+}
 
 /// Get shader compile status.
 pub fn get_shader_compile_status(shader: u32) -> bool {
@@ -547,19 +619,29 @@ pub fn get_shader_info_log(shader: u32) -> alloc::string::String {
 }
 
 /// Create a program.
-pub fn create_program() -> u32 { (lib().create_program)() }
+pub fn create_program() -> u32 {
+    (lib().create_program)()
+}
 
 /// Delete a program.
-pub fn delete_program(program: u32) { (lib().delete_program)(program); }
+pub fn delete_program(program: u32) {
+    (lib().delete_program)(program);
+}
 
 /// Attach a shader to a program.
-pub fn attach_shader(program: u32, shader: u32) { (lib().attach_shader)(program, shader); }
+pub fn attach_shader(program: u32, shader: u32) {
+    (lib().attach_shader)(program, shader);
+}
 
 /// Link a program.
-pub fn link_program(program: u32) { (lib().link_program)(program); }
+pub fn link_program(program: u32) {
+    (lib().link_program)(program);
+}
 
 /// Use a program.
-pub fn use_program(program: u32) { (lib().use_program)(program); }
+pub fn use_program(program: u32) {
+    (lib().use_program)(program);
+}
 
 /// Get program link status.
 pub fn get_program_link_status(program: u32) -> bool {
@@ -587,19 +669,29 @@ pub fn get_attrib_location(program: u32, name: &str) -> i32 {
 }
 
 /// Set 1-int uniform.
-pub fn uniform1i(location: i32, v: i32) { (lib().uniform1i)(location, v); }
+pub fn uniform1i(location: i32, v: i32) {
+    (lib().uniform1i)(location, v);
+}
 
 /// Set 1-float uniform.
-pub fn uniform1f(location: i32, v: f32) { (lib().uniform1f)(location, v); }
+pub fn uniform1f(location: i32, v: f32) {
+    (lib().uniform1f)(location, v);
+}
 
 /// Set 2-float uniform.
-pub fn uniform2f(location: i32, x: f32, y: f32) { (lib().uniform2f)(location, x, y); }
+pub fn uniform2f(location: i32, x: f32, y: f32) {
+    (lib().uniform2f)(location, x, y);
+}
 
 /// Set 3-float uniform.
-pub fn uniform3f(location: i32, x: f32, y: f32, z: f32) { (lib().uniform3f)(location, x, y, z); }
+pub fn uniform3f(location: i32, x: f32, y: f32, z: f32) {
+    (lib().uniform3f)(location, x, y, z);
+}
 
 /// Set 4-float uniform.
-pub fn uniform4f(location: i32, x: f32, y: f32, z: f32, w: f32) { (lib().uniform4f)(location, x, y, z, w); }
+pub fn uniform4f(location: i32, x: f32, y: f32, z: f32, w: f32) {
+    (lib().uniform4f)(location, x, y, z, w);
+}
 
 /// Set 4x4 matrix uniform.
 pub fn uniform_matrix4fv(location: i32, transpose: bool, value: &[f32; 16]) {
@@ -607,24 +699,38 @@ pub fn uniform_matrix4fv(location: i32, transpose: bool, value: &[f32; 16]) {
 }
 
 /// Enable a vertex attribute array.
-pub fn enable_vertex_attrib_array(index: u32) { (lib().enable_vertex_attrib_array)(index); }
+pub fn enable_vertex_attrib_array(index: u32) {
+    (lib().enable_vertex_attrib_array)(index);
+}
 
 /// Disable a vertex attribute array.
-pub fn disable_vertex_attrib_array(index: u32) { (lib().disable_vertex_attrib_array)(index); }
+pub fn disable_vertex_attrib_array(index: u32) {
+    (lib().disable_vertex_attrib_array)(index);
+}
 
 /// Set vertex attribute pointer.
 pub fn vertex_attrib_pointer(
-    index: u32, size: i32, type_: GLenum, normalized: bool, stride: i32, offset: usize,
+    index: u32,
+    size: i32,
+    type_: GLenum,
+    normalized: bool,
+    stride: i32,
+    offset: usize,
 ) {
     (lib().vertex_attrib_pointer)(
-        index, size, type_,
+        index,
+        size,
+        type_,
         if normalized { 1 } else { 0 },
-        stride, offset as *const u8,
+        stride,
+        offset as *const u8,
     );
 }
 
 /// Draw arrays.
-pub fn draw_arrays(mode: GLenum, first: i32, count: i32) { (lib().draw_arrays)(mode, first, count); }
+pub fn draw_arrays(mode: GLenum, first: i32, count: i32) {
+    (lib().draw_arrays)(mode, first, count);
+}
 
 /// Draw elements.
 pub fn draw_elements(mode: GLenum, count: i32, type_: GLenum, offset: usize) {
@@ -637,33 +743,47 @@ pub fn color_mask(r: bool, g: bool, b: bool, a: bool) {
 }
 
 /// Flush.
-pub fn flush() { (lib().flush)(); }
+pub fn flush() {
+    (lib().flush)();
+}
 
 /// Finish.
-pub fn finish() { (lib().finish)(); }
+pub fn finish() {
+    (lib().finish)();
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Anti-Aliasing
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Enable or disable FXAA post-process anti-aliasing.
-pub fn set_fxaa(enabled: bool) { (lib().set_fxaa)(if enabled { 1 } else { 0 }); }
+pub fn set_fxaa(enabled: bool) {
+    (lib().set_fxaa)(if enabled { 1 } else { 0 });
+}
 
 /// Set target refresh/frame cadence for adaptive engine LOD.
-pub fn set_target_refresh_hz(refresh_hz: u32) { (lib().set_target_refresh_hz)(refresh_hz); }
+pub fn set_target_refresh_hz(refresh_hz: u32) {
+    (lib().set_target_refresh_hz)(refresh_hz);
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Backend Selection
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Switch between hardware (SVGA3D) and software rasterizer.
-pub fn set_hw_backend(enabled: bool) { (lib().set_hw_backend)(if enabled { 1 } else { 0 }); }
+pub fn set_hw_backend(enabled: bool) {
+    (lib().set_hw_backend)(if enabled { 1 } else { 0 });
+}
 
 /// Query whether the hardware backend is currently active.
-pub fn get_hw_backend() -> bool { (lib().get_hw_backend)() != 0 }
+pub fn get_hw_backend() -> bool {
+    (lib().get_hw_backend)() != 0
+}
 
 /// Query whether SVGA3D hardware is available (even if not currently in use).
-pub fn has_hw_backend() -> bool { (lib().has_hw_backend)() != 0 }
+pub fn has_hw_backend() -> bool {
+    (lib().has_hw_backend)() != 0
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Shadow Mapping
@@ -671,27 +791,47 @@ pub fn has_hw_backend() -> bool { (lib().has_hw_backend)() != 0 }
 
 /// Begin shadow pass. Light at `(lx,ly,lz)` looking at `(tx,ty,tz)`.
 /// `radius` = shadow volume extent. Returns true if the pass was started.
-pub fn shadow_pass_begin(lx: f32, ly: f32, lz: f32, tx: f32, ty: f32, tz: f32, radius: f32) -> bool {
+pub fn shadow_pass_begin(
+    lx: f32,
+    ly: f32,
+    lz: f32,
+    tx: f32,
+    ty: f32,
+    tz: f32,
+    radius: f32,
+) -> bool {
     (lib().shadow_pass_begin)(lx, ly, lz, tx, ty, tz, radius) != 0
 }
 
 /// End shadow pass. Shadow map is now available for the main render.
-pub fn shadow_pass_end() { (lib().shadow_pass_end)(); }
+pub fn shadow_pass_end() {
+    (lib().shadow_pass_end)();
+}
 
 /// Get the light MVP matrix (16 floats). Returns null if no shadow.
-pub fn shadow_get_light_mvp() -> *const f32 { (lib().shadow_get_light_mvp)() }
+pub fn shadow_get_light_mvp() -> *const f32 {
+    (lib().shadow_get_light_mvp)()
+}
 
 /// Whether a shadow map is available this frame.
-pub fn shadow_available() -> bool { (lib().shadow_available)() != 0 }
+pub fn shadow_available() -> bool {
+    (lib().shadow_available)() != 0
+}
 
 /// Texture unit where shadow map is bound (always 7).
-pub fn shadow_get_unit() -> u32 { (lib().shadow_get_unit)() }
+pub fn shadow_get_unit() -> u32 {
+    (lib().shadow_get_unit)()
+}
 
 /// Texture id of the internally managed shadow map depth texture.
-pub fn shadow_get_texture() -> u32 { (lib().shadow_get_texture)() }
+pub fn shadow_get_texture() -> u32 {
+    (lib().shadow_get_texture)()
+}
 
 /// Resolution of the internally managed shadow map.
-pub fn shadow_get_map_size() -> u32 { (lib().shadow_get_map_size)() }
+pub fn shadow_get_map_size() -> u32 {
+    (lib().shadow_get_map_size)()
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Framebuffer Objects (ES 2.0 FBO + GL_OES_depth_texture)
@@ -706,7 +846,13 @@ pub fn delete_framebuffers(n: i32, fbs: &[u32]) {
 pub fn bind_framebuffer(target: u32, framebuffer: u32) {
     (lib().bind_framebuffer)(target, framebuffer);
 }
-pub fn framebuffer_texture_2d(target: u32, attachment: u32, textarget: u32, texture: u32, level: i32) {
+pub fn framebuffer_texture_2d(
+    target: u32,
+    attachment: u32,
+    textarget: u32,
+    texture: u32,
+    level: i32,
+) {
     (lib().framebuffer_texture_2d)(target, attachment, textarget, texture, level);
 }
 pub fn check_framebuffer_status(target: u32) -> u32 {
@@ -721,53 +867,83 @@ pub fn check_framebuffer_status(target: u32) -> u32 {
 pub const PI: f32 = 3.14159265;
 
 /// Sine via x87 `fsin` (IEEE 754 exact).
-pub fn sin(x: f32) -> f32 { (lib().math_sin)(x) }
+pub fn sin(x: f32) -> f32 {
+    (lib().math_sin)(x)
+}
 
 /// Cosine via x87 `fcos` (IEEE 754 exact).
-pub fn cos(x: f32) -> f32 { (lib().math_cos)(x) }
+pub fn cos(x: f32) -> f32 {
+    (lib().math_cos)(x)
+}
 
 /// Tangent via x87 `fptan`.
-pub fn tan(x: f32) -> f32 { (lib().math_tan)(x) }
+pub fn tan(x: f32) -> f32 {
+    (lib().math_tan)(x)
+}
 
 /// Square root via SSE2 `sqrtss` (IEEE 754 exact).
-pub fn sqrt(x: f32) -> f32 { (lib().math_sqrt)(x) }
+pub fn sqrt(x: f32) -> f32 {
+    (lib().math_sqrt)(x)
+}
 
 /// Absolute value.
-pub fn abs(x: f32) -> f32 { (lib().math_abs)(x) }
+pub fn abs(x: f32) -> f32 {
+    (lib().math_abs)(x)
+}
 
 /// Power function x^y via x87 FPU.
-pub fn pow(base: f32, exp: f32) -> f32 { (lib().math_pow)(base, exp) }
+pub fn pow(base: f32, exp: f32) -> f32 {
+    (lib().math_pow)(base, exp)
+}
 
 /// Base-2 logarithm via x87 `fyl2x`.
-pub fn log2(x: f32) -> f32 { (lib().math_log2)(x) }
+pub fn log2(x: f32) -> f32 {
+    (lib().math_log2)(x)
+}
 
 /// Base-2 exponential via x87 `f2xm1` + `fscale`.
-pub fn exp2(x: f32) -> f32 { (lib().math_exp2)(x) }
+pub fn exp2(x: f32) -> f32 {
+    (lib().math_exp2)(x)
+}
 
 /// Floor via x87 rounding.
-pub fn floor(x: f32) -> f32 { (lib().math_floor)(x) }
+pub fn floor(x: f32) -> f32 {
+    (lib().math_floor)(x)
+}
 
 /// Ceiling via x87 rounding.
-pub fn ceil(x: f32) -> f32 { (lib().math_ceil)(x) }
+pub fn ceil(x: f32) -> f32 {
+    (lib().math_ceil)(x)
+}
 
 /// Clamp to [lo, hi].
-pub fn clamp(x: f32, lo: f32, hi: f32) -> f32 { (lib().math_clamp)(x, lo, hi) }
+pub fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
+    (lib().math_clamp)(x, lo, hi)
+}
 
 /// Linear interpolation.
-pub fn lerp(a: f32, b: f32, t: f32) -> f32 { (lib().math_lerp)(a, b, t) }
+pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    (lib().math_lerp)(a, b, t)
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Physics Engine
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Create/reset the physics world.
-pub fn physics_create_world() { (lib().physics_create_world)(); }
+pub fn physics_create_world() {
+    (lib().physics_create_world)();
+}
 
 /// Set the gravity vector (default: 0, -9.81, 0).
-pub fn physics_set_gravity(gx: f32, gy: f32, gz: f32) { (lib().physics_set_gravity)(gx, gy, gz); }
+pub fn physics_set_gravity(gx: f32, gy: f32, gz: f32) {
+    (lib().physics_set_gravity)(gx, gy, gz);
+}
 
 /// Step the physics simulation by `dt` seconds.
-pub fn physics_step(dt: f32) { (lib().physics_step)(dt); }
+pub fn physics_step(dt: f32) {
+    (lib().physics_step)(dt);
+}
 
 /// Add a sphere body with given mass, radius, and position. Returns body ID.
 pub fn physics_add_sphere(mass: f32, radius: f32, x: f32, y: f32, z: f32) -> u32 {

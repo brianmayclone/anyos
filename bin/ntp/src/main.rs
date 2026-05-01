@@ -15,7 +15,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{fs, ipc, net, sys, println};
+use anyos_std::{fs, ipc, net, println, sys};
 
 const NTP_PORT: u16 = 123;
 const NTP_PACKET_SIZE: usize = 48;
@@ -24,13 +24,13 @@ const STATUS_PATH: &str = "/System/etc/ntp/ntpd.status";
 const PIPE_NAME: &str = "ntpd";
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args_raw = anyos_std::process::args(&mut args_buf);
 
     if args_raw.contains("--help") {
-        anyos_std::println!("ntp - NTP time sync client\n\nUsage: ntp [status|sync|reload|stop|query HOST]");
+        anyos_std::println!(
+            "ntp - NTP time sync client\n\nUsage: ntp [status|sync|reload|stop|query HOST]"
+        );
         return;
     }
 
@@ -88,7 +88,9 @@ fn show_status() {
 
     for line in text.split('\n') {
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         if let Some(eq) = line.find('=') {
             let key = &line[..eq];
             let val = &line[eq + 1..];
@@ -147,8 +149,10 @@ fn query_server(host: &str) {
         None => {
             let mut resolved = [0u8; 4];
             if net::dns(host, &mut resolved) == 0 {
-                println!("Resolved {} -> {}.{}.{}.{}",
-                    host, resolved[0], resolved[1], resolved[2], resolved[3]);
+                println!(
+                    "Resolved {} -> {}.{}.{}.{}",
+                    host, resolved[0], resolved[1], resolved[2], resolved[3]
+                );
                 resolved
             } else {
                 println!("Cannot resolve host: {}", host);
@@ -167,7 +171,9 @@ fn query_server(host: &str) {
 
     // Build request.
     let mut request = [0u8; NTP_PACKET_SIZE];
-    for b in request.iter_mut() { *b = 0; }
+    for b in request.iter_mut() {
+        *b = 0;
+    }
     request[0] = 0x23; // LI=0, VN=4, Mode=3
     let ts = get_system_ntp_time();
     request[40] = (ts.0 >> 24) as u8;
@@ -224,8 +230,10 @@ fn query_server(host: &str) {
 
     println!("Response from {}.{}.{}.{}:", ip[0], ip[1], ip[2], ip[3]);
     println!("  Stratum:    {}", stratum);
-    println!("  Server time: {}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
-        year, month, day, hour, min, sec);
+    println!(
+        "  Server time: {}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        year, month, day, hour, min, sec
+    );
     println!("  Offset:     {}{}ms", sign, abs_offset);
     println!("  Delay:      {}ms", delay);
 }
@@ -241,11 +249,15 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
         match b {
             b'0'..=b'9' => {
                 num = num * 10 + (b - b'0') as u32;
-                if num > 255 { return None; }
+                if num > 255 {
+                    return None;
+                }
                 has_digit = true;
             }
             b'.' => {
-                if !has_digit || idx >= 3 { return None; }
+                if !has_digit || idx >= 3 {
+                    return None;
+                }
                 parts[idx] = num as u8;
                 idx += 1;
                 num = 0;
@@ -254,15 +266,23 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
             _ => return None,
         }
     }
-    if !has_digit || idx != 3 { return None; }
+    if !has_digit || idx != 3 {
+        return None;
+    }
     parts[3] = num as u8;
     Some(parts)
 }
 
 fn parse_i64(s: &str) -> i64 {
     let bytes = s.as_bytes();
-    if bytes.is_empty() { return 0; }
-    let (neg, start) = if bytes[0] == b'-' { (true, 1) } else { (false, 0) };
+    if bytes.is_empty() {
+        return 0;
+    }
+    let (neg, start) = if bytes[0] == b'-' {
+        (true, 1)
+    } else {
+        (false, 0)
+    };
     let mut val: i64 = 0;
     for &b in &bytes[start..] {
         if b >= b'0' && b <= b'9' {
@@ -271,7 +291,11 @@ fn parse_i64(s: &str) -> i64 {
             break;
         }
     }
-    if neg { -val } else { val }
+    if neg {
+        -val
+    } else {
+        val
+    }
 }
 
 /// Get system time as (NTP seconds, fraction).
@@ -311,14 +335,19 @@ fn is_leap(year: u32) -> bool {
 }
 
 fn unix_to_date(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
-    let sec = (secs % 60) as u32; secs /= 60;
-    let min = (secs % 60) as u32; secs /= 60;
-    let hour = (secs % 24) as u32; secs /= 24;
+    let sec = (secs % 60) as u32;
+    secs /= 60;
+    let min = (secs % 60) as u32;
+    secs /= 60;
+    let hour = (secs % 24) as u32;
+    secs /= 24;
     // secs is now days since 1970-01-01.
     let mut year = 1970u32;
     loop {
         let days_in_year = if is_leap(year) { 366u64 } else { 365 };
-        if secs < days_in_year { break; }
+        if secs < days_in_year {
+            break;
+        }
         secs -= days_in_year;
         year += 1;
     }
@@ -326,8 +355,12 @@ fn unix_to_date(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let mut month = 1u32;
     for m in 0..12 {
         let mut d = month_days[m] as u64;
-        if m == 1 && is_leap(year) { d += 1; }
-        if secs < d { break; }
+        if m == 1 && is_leap(year) {
+            d += 1;
+        }
+        if secs < d {
+            break;
+        }
         secs -= d;
         month += 1;
     }

@@ -22,7 +22,7 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{String, Vec, format};
+use anyos_std::{format, String, Vec};
 
 anyos_std::entry!(main);
 
@@ -58,9 +58,15 @@ fn main() {
             }
             if let Some(pid) = parse_u32(args.positional[1]) {
                 cmd_send_recv(pid, "TREE\n", |line| {
-                    if line == "TREE_END" { return false; }
-                    if line.starts_with("CTRL\t") { anyos_std::println!("{}", fmt_ctrl(line)); }
-                    else if line.starts_with("ERR\t") { anyos_std::println!("{}", &line[4..]); return false; }
+                    if line == "TREE_END" {
+                        return false;
+                    }
+                    if line.starts_with("CTRL\t") {
+                        anyos_std::println!("{}", fmt_ctrl(line));
+                    } else if line.starts_with("ERR\t") {
+                        anyos_std::println!("{}", &line[4..]);
+                        return false;
+                    }
                     true
                 });
             } else {
@@ -74,12 +80,18 @@ fn main() {
             }
             let (pid, id) = match (parse_u32(args.positional[1]), parse_u32(args.positional[2])) {
                 (Some(p), Some(i)) => (p, i),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             let req = format!("PROPS\t{}\n", id);
             cmd_send_recv(pid, &req, |line| {
-                if line.starts_with("CTRL\t") { anyos_std::println!("{}", fmt_ctrl_verbose(line)); }
-                else { anyos_std::println!("{}", line); }
+                if line.starts_with("CTRL\t") {
+                    anyos_std::println!("{}", fmt_ctrl_verbose(line));
+                } else {
+                    anyos_std::println!("{}", line);
+                }
                 false
             });
         }
@@ -90,7 +102,10 @@ fn main() {
             }
             let (pid, id) = match (parse_u32(args.positional[1]), parse_u32(args.positional[2])) {
                 (Some(p), Some(i)) => (p, i),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             let req = format!("CLICK\t{}\n", id);
             cmd_send_recv_one(pid, &req);
@@ -102,7 +117,10 @@ fn main() {
             }
             let (pid, id) = match (parse_u32(args.positional[1]), parse_u32(args.positional[2])) {
                 (Some(p), Some(i)) => (p, i),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             let req = format!("GET_TEXT\t{}\n", id);
             cmd_send_recv(pid, &req, |line| {
@@ -123,7 +141,10 @@ fn main() {
             }
             let (pid, id) = match (parse_u32(args.positional[1]), parse_u32(args.positional[2])) {
                 (Some(p), Some(i)) => (p, i),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             // Check for optional --enter flag before the text argument
             let (press_enter, text) = if args.pos_count >= 5 && args.positional[3] == "--enter" {
@@ -145,7 +166,10 @@ fn main() {
             }
             let (pid, id) = match (parse_u32(args.positional[1]), parse_u32(args.positional[2])) {
                 (Some(p), Some(i)) => (p, i),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             let req = format!("SUBMIT\t{}\n", id);
             cmd_send_recv_one(pid, &req);
@@ -157,7 +181,10 @@ fn main() {
             }
             let (pid, id) = match (parse_u32(args.positional[1]), parse_u32(args.positional[2])) {
                 (Some(p), Some(i)) => (p, i),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             let req = format!("GET_STATE\t{}\n", id);
             cmd_send_recv(pid, &req, |line| {
@@ -180,7 +207,10 @@ fn main() {
                 parse_u32(args.positional[3]),
             ) {
                 (Some(p), Some(i), Some(v)) => (p, i, v),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             let req = format!("SET_STATE\t{}\t{}\n", id, val);
             cmd_send_recv_one(pid, &req);
@@ -192,16 +222,26 @@ fn main() {
             }
             let pid = match parse_u32(args.positional[1]) {
                 Some(p) => p,
-                None => { anyos_std::println!("Invalid pid"); return; }
+                None => {
+                    anyos_std::println!("Invalid pid");
+                    return;
+                }
             };
             let text = args.positional[2];
             let req = format!("FIND_TEXT\t{}\n", text);
             cmd_send_recv(pid, &req, |line| {
-                if line == "MATCH_END" { return false; }
+                if line == "MATCH_END" {
+                    return false;
+                }
                 if let Some(rest) = line.strip_prefix("MATCH\t") {
                     let parts: Vec<&str> = rest.splitn(3, '\t').collect();
                     if parts.len() == 3 {
-                        anyos_std::println!("  id={:<6} kind={:<24} text={}", parts[0], parts[1], unescape_tab(parts[2]));
+                        anyos_std::println!(
+                            "  id={:<6} kind={:<24} text={}",
+                            parts[0],
+                            parts[1],
+                            unescape_tab(parts[2])
+                        );
                     }
                 } else if line.starts_with("ERR\t") {
                     anyos_std::println!("{}", &line[4..]);
@@ -221,7 +261,10 @@ fn main() {
                 parse_u32(args.positional[3]),
             ) {
                 (Some(p), Some(w), Some(h)) => (p, w, h),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             let req = format!("RESIZE\t{}\t{}\n", w, h);
             cmd_send_recv_one(pid, &req);
@@ -237,7 +280,10 @@ fn main() {
                 parse_i32(args.positional[3]),
             ) {
                 (Some(p), Some(x), Some(y)) => (p, x, y),
-                _ => { anyos_std::println!("Invalid args"); return; }
+                _ => {
+                    anyos_std::println!("Invalid args");
+                    return;
+                }
             };
             let req = format!("MOVE\t{}\t{}\n", x, y);
             cmd_send_recv_one(pid, &req);
@@ -249,7 +295,10 @@ fn main() {
             }
             let pid = match parse_u32(args.positional[1]) {
                 Some(p) => p,
-                None => { anyos_std::println!("Invalid pid"); return; }
+                None => {
+                    anyos_std::println!("Invalid pid");
+                    return;
+                }
             };
             cmd_send_recv_one(pid, "FOCUS\n");
         }
@@ -265,7 +314,10 @@ fn main() {
             }
             let pid = match parse_u32(args.positional[1]) {
                 Some(p) => p,
-                None => { anyos_std::println!("Invalid pid"); return; }
+                None => {
+                    anyos_std::println!("Invalid pid");
+                    return;
+                }
             };
             let text = args.positional[2];
             let req = format!("TYPE_TEXT\t{}\n", text);
@@ -281,7 +333,15 @@ fn main() {
 // ── Command: windows ──────────────────────────────────────────────────────────
 
 fn cmd_windows() {
-    anyos_std::println!("{:<8} {:<6} {:<20} {:>5} {:>5}  {}", "PID", "PPID", "Process", "W", "H", "Title");
+    anyos_std::println!(
+        "{:<8} {:<6} {:<20} {:>5} {:>5}  {}",
+        "PID",
+        "PPID",
+        "Process",
+        "W",
+        "H",
+        "Title"
+    );
     anyos_std::println!("{}", "─".repeat(65));
 
     // Enumerate all threads and probe for accessibility pipes.
@@ -305,9 +365,11 @@ fn cmd_windows() {
 
     for i in 0..n {
         let off = i * ENTRY_SIZE;
-        if off + ENTRY_SIZE > buf.len() { break; }
-        let tid = u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]);
-        let ppid = u32::from_le_bytes([buf[off+60], buf[off+61], buf[off+62], buf[off+63]]);
+        if off + ENTRY_SIZE > buf.len() {
+            break;
+        }
+        let tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        let ppid = u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
         let name_bytes = &buf[off + 8..off + 32];
         let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(24);
         let proc_name = core::str::from_utf8(&name_bytes[..name_len]).unwrap_or("?");
@@ -359,7 +421,15 @@ fn cmd_windows() {
         anyos_std::ipc::pipe_write(req_id, b"BYE\n");
         anyos_std::ipc::pipe_close(req_id);
 
-        anyos_std::println!("{:<8} {:<6} {:<20} {:>5} {:>5}  {}", tid, ppid, proc_name, w, h, title);
+        anyos_std::println!(
+            "{:<8} {:<6} {:<20} {:>5} {:>5}  {}",
+            tid,
+            ppid,
+            proc_name,
+            w,
+            h,
+            title
+        );
     }
 
     anyos_std::ipc::pipe_close(rsp_id);
@@ -381,7 +451,10 @@ fn cmd_send_recv<F: FnMut(&str) -> bool>(pid: u32, request: &str, mut on_line: F
     let req_name = format!("uiacc-{}", pid);
     let req_id = anyos_std::ipc::pipe_open(&req_name);
     if req_id == 0 {
-        anyos_std::println!("Error: app pid={} not found or has no accessibility pipe", pid);
+        anyos_std::println!(
+            "Error: app pid={} not found or has no accessibility pipe",
+            pid
+        );
         anyos_std::ipc::pipe_close(rsp_id);
         return;
     }
@@ -432,7 +505,8 @@ fn wait_for_ready(rsp_id: u32) -> bool {
         // Scan for newline
         for i in 0..acc_len {
             if accumulated[i] == b'\n' {
-                let line = core::str::from_utf8(&accumulated[..i]).unwrap_or("")
+                let line = core::str::from_utf8(&accumulated[..i])
+                    .unwrap_or("")
                     .trim_end_matches('\r');
                 if line.starts_with("READY") {
                     return true;
@@ -477,7 +551,8 @@ fn drain_responses<F: FnMut(&str) -> bool>(rsp_id: u32, mut on_line: F) {
                 None => break,
                 Some(end) => {
                     let line_bytes = &slice[..end];
-                    let line = core::str::from_utf8(line_bytes).unwrap_or("")
+                    let line = core::str::from_utf8(line_bytes)
+                        .unwrap_or("")
                         .trim_end_matches('\r');
                     let keep = on_line(line);
                     start += end + 1;
@@ -507,17 +582,28 @@ fn fmt_ctrl(line: &str) -> String {
     if parts.len() < 12 {
         return String::from(line);
     }
-    let id    = parts[1];
-    let kind  = parts[3];
-    let x     = parts[4];
-    let y     = parts[5];
-    let w     = parts[6];
-    let h     = parts[7];
-    let vis   = if parts[8] == "1" { "" } else { " [hidden]" };
-    let dis   = if parts[9] == "1" { " [disabled]" } else { "" };
-    let text  = if parts.len() > 12 { parts[12] } else { parts.get(11).copied().unwrap_or("") };
-    let text_part = if text.is_empty() { String::new() } else { format!("  \"{}\"", unescape_tab(text)) };
-    format!("  id={:<6} {:>4},{:>4} {:>4}×{:>4}  {:<24}{}{}{}", id, x, y, w, h, kind, text_part, vis, dis)
+    let id = parts[1];
+    let kind = parts[3];
+    let x = parts[4];
+    let y = parts[5];
+    let w = parts[6];
+    let h = parts[7];
+    let vis = if parts[8] == "1" { "" } else { " [hidden]" };
+    let dis = if parts[9] == "1" { " [disabled]" } else { "" };
+    let text = if parts.len() > 12 {
+        parts[12]
+    } else {
+        parts.get(11).copied().unwrap_or("")
+    };
+    let text_part = if text.is_empty() {
+        String::new()
+    } else {
+        format!("  \"{}\"", unescape_tab(text))
+    };
+    format!(
+        "  id={:<6} {:>4},{:>4} {:>4}×{:>4}  {:<24}{}{}{}",
+        id, x, y, w, h, kind, text_part, vis, dis
+    )
 }
 
 /// Format a CTRL line for verbose (props) view.
@@ -526,17 +612,21 @@ fn fmt_ctrl_verbose(line: &str) -> String {
     if parts.len() < 12 {
         return String::from(line);
     }
-    let id    = parts[1];
+    let id = parts[1];
     let parent = parts[2];
-    let kind  = parts[3];
-    let x     = parts[4];
-    let y     = parts[5];
-    let w     = parts[6];
-    let h     = parts[7];
-    let vis   = parts[8];
-    let dis   = parts[9];
+    let kind = parts[3];
+    let x = parts[4];
+    let y = parts[5];
+    let w = parts[6];
+    let h = parts[7];
+    let vis = parts[8];
+    let dis = parts[9];
     let state = parts[10];
-    let text  = if parts.len() > 12 { parts[12] } else { parts.get(11).copied().unwrap_or("") };
+    let text = if parts.len() > 12 {
+        parts[12]
+    } else {
+        parts.get(11).copied().unwrap_or("")
+    };
     format!(
         "id:     {}\nparent: {}\nkind:   {}\npos:    {},{}\nsize:   {}×{}\nvis:    {}\ndis:    {}\nstate:  {}\ntext:   {}",
         id, parent, kind, x, y, w, h, vis, dis, state, unescape_tab(text)
@@ -575,7 +665,9 @@ fn print_usage() {
     anyos_std::println!("  uictl props <pid> <id>               Show control properties");
     anyos_std::println!("  uictl click <pid> <id>               Click a control");
     anyos_std::println!("  uictl get-text <pid> <id>            Get text of a control");
-    anyos_std::println!("  uictl set-text <pid> <id> [--enter] <text>  Set text; optionally trigger Enter");
+    anyos_std::println!(
+        "  uictl set-text <pid> <id> [--enter] <text>  Set text; optionally trigger Enter"
+    );
     anyos_std::println!("  uictl get-state <pid> <id>           Get state of a control");
     anyos_std::println!("  uictl set-state <pid> <id> <val>     Set state of a control");
     anyos_std::println!("  uictl find-text <pid> <text>         Find controls by text");

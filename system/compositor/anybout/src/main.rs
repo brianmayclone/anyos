@@ -92,9 +92,23 @@ fn main() {
     root.add(&card);
 
     // Info rows inside the card
-    add_info_row(&card, "Kernel", "anyOS Kernel", 0, tc.text, tc.text_secondary);
+    add_info_row(
+        &card,
+        "Kernel",
+        "anyOS Kernel",
+        0,
+        tc.text,
+        tc.text_secondary,
+    );
     add_info_row_divider(&card, 35);
-    add_info_row(&card, "Architecture", "x86_64", 36, tc.text, tc.text_secondary);
+    add_info_row(
+        &card,
+        "Architecture",
+        "x86_64",
+        36,
+        tc.text,
+        tc.text_secondary,
+    );
     add_info_row_divider(&card, 71);
 
     let cpus = format!("{}", cpu_count());

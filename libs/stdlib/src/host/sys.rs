@@ -14,7 +14,8 @@ pub fn random(buf: &mut [u8]) -> u32 {
         *b = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .subsec_nanos() & 0xFF) as u8;
+            .subsec_nanos()
+            & 0xFF) as u8;
     }
     buf.len() as u32
 }
@@ -25,11 +26,17 @@ pub fn time(buf: &mut [u8; 8]) -> u32 {
     0
 }
 
-pub fn set_time(_buf: &[u8; 8]) -> u32 { u32::MAX }
+pub fn set_time(_buf: &[u8; 8]) -> u32 {
+    u32::MAX
+}
 
-pub fn uptime() -> u32 { 0 }
+pub fn uptime() -> u32 {
+    0
+}
 
-pub fn tick_hz() -> u32 { 1000 }
+pub fn tick_hz() -> u32 {
+    1000
+}
 
 pub fn uptime_ms() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};

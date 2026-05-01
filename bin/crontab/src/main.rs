@@ -32,7 +32,11 @@ fn read_string(client: &mut ConfClient, target: ConfTarget, path: &str) -> Optio
     match client.get_target(target, path).ok()?.value {
         Some(ConfValue::String(value)) => Some(value),
         Some(ConfValue::Int(value)) => Some(format!("{}", value)),
-        Some(ConfValue::Bool(value)) => Some(if value { String::from("true") } else { String::from("false") }),
+        Some(ConfValue::Bool(value)) => Some(if value {
+            String::from("true")
+        } else {
+            String::from("false")
+        }),
         Some(ConfValue::ExternalRef(value)) => Some(value),
         None => None,
     }
@@ -66,15 +70,23 @@ fn format_user_crontab() -> Option<String> {
         if !enabled {
             continue;
         }
-        let minute = read_string(&mut client, target, &format!("{}/minute", base)).unwrap_or_else(|| String::from("*"));
-        let hour = read_string(&mut client, target, &format!("{}/hour", base)).unwrap_or_else(|| String::from("*"));
-        let day = read_string(&mut client, target, &format!("{}/day", base)).unwrap_or_else(|| String::from("*"));
-        let month = read_string(&mut client, target, &format!("{}/month", base)).unwrap_or_else(|| String::from("*"));
-        let weekday = read_string(&mut client, target, &format!("{}/weekday", base)).unwrap_or_else(|| String::from("*"));
+        let minute = read_string(&mut client, target, &format!("{}/minute", base))
+            .unwrap_or_else(|| String::from("*"));
+        let hour = read_string(&mut client, target, &format!("{}/hour", base))
+            .unwrap_or_else(|| String::from("*"));
+        let day = read_string(&mut client, target, &format!("{}/day", base))
+            .unwrap_or_else(|| String::from("*"));
+        let month = read_string(&mut client, target, &format!("{}/month", base))
+            .unwrap_or_else(|| String::from("*"));
+        let weekday = read_string(&mut client, target, &format!("{}/weekday", base))
+            .unwrap_or_else(|| String::from("*"));
         let Some(command) = read_string(&mut client, target, &format!("{}/command", base)) else {
             continue;
         };
-        out.push_str(&format!("{} {} {} {} {} {}\n", minute, hour, day, month, weekday, command));
+        out.push_str(&format!(
+            "{} {} {} {} {} {}\n",
+            minute, hour, day, month, weekday, command
+        ));
     }
 
     Some(out)
@@ -111,7 +123,9 @@ fn write_job(client: &mut ConfClient, target: ConfTarget, job_id: &str, line: &s
         if rest.is_empty() {
             return false;
         }
-        let end = rest.find(|c: char| c == ' ' || c == '\t').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| c == ' ' || c == '\t')
+            .unwrap_or(rest.len());
         *slot = &rest[..end];
         rest = &rest[end..];
     }
@@ -123,12 +137,36 @@ fn write_job(client: &mut ConfClient, target: ConfTarget, job_id: &str, line: &s
 
     let base = format!("{}/{}", USER_JOBS_ROOT, job_id);
     let _ = client.mkdir_target(target, &base);
-    let _ = client.set_target(target, &format!("{}/minute", base), ConfValue::String(String::from(fields[0])));
-    let _ = client.set_target(target, &format!("{}/hour", base), ConfValue::String(String::from(fields[1])));
-    let _ = client.set_target(target, &format!("{}/day", base), ConfValue::String(String::from(fields[2])));
-    let _ = client.set_target(target, &format!("{}/month", base), ConfValue::String(String::from(fields[3])));
-    let _ = client.set_target(target, &format!("{}/weekday", base), ConfValue::String(String::from(fields[4])));
-    let _ = client.set_target(target, &format!("{}/command", base), ConfValue::String(String::from(command)));
+    let _ = client.set_target(
+        target,
+        &format!("{}/minute", base),
+        ConfValue::String(String::from(fields[0])),
+    );
+    let _ = client.set_target(
+        target,
+        &format!("{}/hour", base),
+        ConfValue::String(String::from(fields[1])),
+    );
+    let _ = client.set_target(
+        target,
+        &format!("{}/day", base),
+        ConfValue::String(String::from(fields[2])),
+    );
+    let _ = client.set_target(
+        target,
+        &format!("{}/month", base),
+        ConfValue::String(String::from(fields[3])),
+    );
+    let _ = client.set_target(
+        target,
+        &format!("{}/weekday", base),
+        ConfValue::String(String::from(fields[4])),
+    );
+    let _ = client.set_target(
+        target,
+        &format!("{}/command", base),
+        ConfValue::String(String::from(command)),
+    );
     let _ = client.set_target(target, &format!("{}/enabled", base), ConfValue::Bool(true));
     true
 }

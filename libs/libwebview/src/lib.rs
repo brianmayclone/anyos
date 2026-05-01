@@ -87,7 +87,8 @@ pub struct JsExecutionState {
 
 impl JsExecutionState {
     pub fn execute_script_source(&mut self, script: String) {
-        self.runtime.execute_script_sources(&self.dom, &self.url, &[script]);
+        self.runtime
+            .execute_script_sources(&self.dom, &self.url, &[script]);
     }
 
     pub fn run_timers_with_budget(&mut self, delta_ms: u64, callback_budget: usize) -> usize {
@@ -237,7 +238,10 @@ fn choose_web_font(
             target_weight - *entry_weight
         };
         let score = italic_penalty + weight_delta;
-        if best.map(|(best_score, _)| score < best_score).unwrap_or(true) {
+        if best
+            .map(|(best_score, _)| score < best_score)
+            .unwrap_or(true)
+        {
             best = Some((score, *font_id));
         }
     }
@@ -1319,8 +1323,7 @@ impl WebView {
         // ── 1. Advance JS timers (setTimeout / setInterval / requestAnimationFrame). ──
         // Short-circuits internally when no timers exist (zero allocation).
         if run_js_timers && !self.js_runtime.timers.is_empty() {
-            let quiet_throttled =
-                self.js_quiet_timer_ticks >= JS_QUIET_TIMER_TICKS_BEFORE_THROTTLE;
+            let quiet_throttled = self.js_quiet_timer_ticks >= JS_QUIET_TIMER_TICKS_BEFORE_THROTTLE;
             let mut timer_delta_ms = delta_ms;
             let mut run_js_timers = true;
             if quiet_throttled {
@@ -1346,16 +1349,18 @@ impl WebView {
                 let pending_ws_before = self.js_runtime.pending_ws_connects.len()
                     + self.js_runtime.pending_ws_sends.len()
                     + self.js_runtime.pending_ws_closes.len();
-                let fired =
-                    self.js_runtime
-                        .tick_with_budget(&dom, timer_delta_ms, JS_TIMER_CALLBACK_BUDGET);
-                let produced_host_work =
-                    self.js_runtime.pending_http_requests.len() != pending_http_before
-                        || self.js_runtime.pending_navigation_requests.len() != pending_nav_before
-                        || (self.js_runtime.pending_ws_connects.len()
-                            + self.js_runtime.pending_ws_sends.len()
-                            + self.js_runtime.pending_ws_closes.len())
-                            != pending_ws_before;
+                let fired = self.js_runtime.tick_with_budget(
+                    &dom,
+                    timer_delta_ms,
+                    JS_TIMER_CALLBACK_BUDGET,
+                );
+                let produced_host_work = self.js_runtime.pending_http_requests.len()
+                    != pending_http_before
+                    || self.js_runtime.pending_navigation_requests.len() != pending_nav_before
+                    || (self.js_runtime.pending_ws_connects.len()
+                        + self.js_runtime.pending_ws_sends.len()
+                        + self.js_runtime.pending_ws_closes.len())
+                        != pending_ws_before;
                 if !self.js_runtime.mutations.is_empty() {
                     self.flush_pending_mutations(&mut dom);
                     self.relayout();
@@ -1738,9 +1743,7 @@ impl WebView {
                 if other_name != radio_name {
                     continue;
                 }
-                let same_form = {
-                    Self::find_form_for_node_in_dom(dom, other_id) == form_node
-                };
+                let same_form = { Self::find_form_for_node_in_dom(dom, other_id) == form_node };
                 if !same_form {
                     continue;
                 }
@@ -2242,6 +2245,33 @@ impl WebView {
         self.dispatch_dom_event_and_apply(node_id, "click", &data)
     }
 
+    /// Update CSS/JS hover state for a mouse move in viewport coordinates.
+    ///
+    /// This is deliberately cheap on steady movement: it only relayouts when
+    /// the hovered DOM node changes, and only dispatches JS events when a page
+    /// actually registered matching listeners.
+    pub fn handle_mouse_move_at_viewport(&mut self, vx: i32, vy: i32, scroll_y: i32) -> bool {
+        let new_hovered = self.hit_test_node_viewport(vx, vy, scroll_y);
+        let old_hovered = self.selector_state.hovered_node;
+        let data = js::EventData::Mouse {
+            client_x: vx as f64,
+            client_y: vy as f64,
+            page_x: vx as f64,
+            page_y: (scroll_y + vy) as f64,
+            screen_x: vx as f64,
+            screen_y: vy as f64,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            button: 0,
+            buttons: 0,
+            ctrl_key: false,
+            shift_key: false,
+            alt_key: false,
+            meta_key: false,
+        };
+        self.apply_hover_transition(old_hovered, new_hovered, &data)
+    }
+
     /// Find the topmost DOM node hit on a tile canvas control.
     pub fn hit_test_node_canvas(&self, canvas_ctrl_id: u32) -> Option<usize> {
         let (mx, doc_y) = self.renderer.tile_hit_coords(canvas_ctrl_id)?;
@@ -2276,6 +2306,75 @@ impl WebView {
             meta_key: false,
         };
         self.dispatch_dom_event_and_apply(node_id, "click", &data)
+    }
+
+    /// Update CSS/JS hover state for a rendered anyUI control or page tile.
+    pub fn handle_mouse_move_for_control(&mut self, control_id: u32) -> bool {
+        let new_hovered = self
+            .node_id_for_control(control_id)
+            .or_else(|| self.hit_test_node_canvas(control_id));
+        let old_hovered = self.selector_state.hovered_node;
+        let data = js::EventData::Mouse {
+            client_x: 0.0,
+            client_y: 0.0,
+            page_x: 0.0,
+            page_y: 0.0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            button: 0,
+            buttons: 0,
+            ctrl_key: false,
+            shift_key: false,
+            alt_key: false,
+            meta_key: false,
+        };
+        self.apply_hover_transition(old_hovered, new_hovered, &data)
+    }
+
+    fn apply_hover_transition(
+        &mut self,
+        old_hovered: Option<usize>,
+        new_hovered: Option<usize>,
+        data: &js::EventData,
+    ) -> bool {
+        let mut changed = false;
+        let dom_len = self.dom_val.as_ref().map(|d| d.nodes.len()).unwrap_or(0);
+        if old_hovered != new_hovered {
+            if let Some(old_id) = old_hovered.filter(|id| *id < dom_len) {
+                changed |= self.dispatch_mouse_event_if_listened(old_id, "mouseout", data);
+                changed |= self.dispatch_mouse_event_if_listened(old_id, "mouseleave", data);
+            }
+            changed |= self.set_hovered_node(new_hovered);
+            if let Some(new_id) = new_hovered.filter(|id| *id < dom_len) {
+                changed |= self.dispatch_mouse_event_if_listened(new_id, "mouseover", data);
+                changed |= self.dispatch_mouse_event_if_listened(new_id, "mouseenter", data);
+            }
+        }
+        if let Some(node_id) = new_hovered.filter(|id| *id < dom_len) {
+            changed |= self.dispatch_mouse_event_if_listened(node_id, "mousemove", data);
+        }
+        changed
+    }
+
+    fn dispatch_mouse_event_if_listened(
+        &mut self,
+        node_id: usize,
+        event_name: &str,
+        data: &js::EventData,
+    ) -> bool {
+        let Some(dom) = self.dom_val.as_ref() else {
+            return false;
+        };
+        if !self
+            .js_runtime
+            .has_event_listener_for_node_path(dom, node_id, event_name)
+        {
+            return false;
+        }
+        let _ = self.dispatch_dom_event_and_apply(node_id, event_name, data);
+        true
     }
 
     /// Dispatch the keyboard events produced by pressing Enter in a native
@@ -2333,7 +2432,9 @@ impl WebView {
             None => return true,
         };
         self.sync_native_form_controls_into_dom(&mut dom);
-        let default_allowed = self.js_runtime.dispatch_event(&dom, node_id, event_name, data);
+        let default_allowed = self
+            .js_runtime
+            .dispatch_event(&dom, node_id, event_name, data);
         if !self.js_runtime.mutations.is_empty() {
             self.flush_pending_mutations(&mut dom);
             self.dom_val = Some(dom);
@@ -2511,21 +2612,44 @@ impl WebView {
         None
     }
 
-    pub fn set_hovered_node(&mut self, node_id: Option<usize>) {
+    pub fn set_hovered_node(&mut self, node_id: Option<usize>) -> bool {
+        if self.selector_state.hovered_node == node_id {
+            return false;
+        }
         self.selector_state.hovered_node = node_id;
+        self.relayout();
+        true
     }
 
-    pub fn set_active_node(&mut self, node_id: Option<usize>) {
+    pub fn set_active_node(&mut self, node_id: Option<usize>) -> bool {
+        if self.selector_state.active_node == node_id {
+            return false;
+        }
         self.selector_state.active_node = node_id;
+        self.relayout();
+        true
     }
 
-    pub fn set_focused_node(&mut self, node_id: Option<usize>, focus_visible: bool) {
+    pub fn set_focused_node(&mut self, node_id: Option<usize>, focus_visible: bool) -> bool {
+        let focus_visible_node = if focus_visible { node_id } else { None };
+        if self.selector_state.focused_node == node_id
+            && self.selector_state.focus_visible_node == focus_visible_node
+        {
+            return false;
+        }
         self.selector_state.focused_node = node_id;
-        self.selector_state.focus_visible_node = if focus_visible { node_id } else { None };
+        self.selector_state.focus_visible_node = focus_visible_node;
+        self.relayout();
+        true
     }
 
-    pub fn clear_selector_state(&mut self) {
+    pub fn clear_selector_state(&mut self) -> bool {
+        if self.selector_state == style::SelectorState::default() {
+            return false;
+        }
         self.selector_state = style::SelectorState::default();
+        self.relayout();
+        true
     }
 
     fn hit_test_node_document(&self, doc_x: i32, doc_y: i32) -> Option<usize> {
@@ -2821,7 +2945,10 @@ impl WebView {
             }
         }
 
-        if matches!(dom.tag(node_id), Some(dom::Tag::Input) | Some(dom::Tag::Button)) {
+        if matches!(
+            dom.tag(node_id),
+            Some(dom::Tag::Input) | Some(dom::Tag::Button)
+        ) {
             if let Some(name) = dom.attr(node_id, "name") {
                 if !name.is_empty()
                     && data
@@ -3885,9 +4012,7 @@ impl WebView {
         if std::env::var_os("SURF_DEBUG_RENDER_REFRESH").is_some() {
             eprintln!(
                 "[libwebview] refresh render surface: doc={}x{} root_h={}",
-                doc_w,
-                doc_h,
-                root.height
+                doc_w, doc_h, root.height
             );
         }
 
@@ -4225,10 +4350,7 @@ impl WebView {
         mutations: &[js::DomMutation],
         id_map: &alloc::collections::BTreeMap<i64, usize>,
     ) {
-        fn resolve_id(
-            id: i64,
-            id_map: &alloc::collections::BTreeMap<i64, usize>,
-        ) -> Option<usize> {
+        fn resolve_id(id: i64, id_map: &alloc::collections::BTreeMap<i64, usize>) -> Option<usize> {
             if id >= 0 {
                 Some(id as usize)
             } else {
@@ -4645,11 +4767,17 @@ impl WebView {
         };
         match dom.tag(node_id) {
             Some(dom::Tag::Input) => {
-                let ty = dom.attr(node_id, "type").unwrap_or("text").to_ascii_lowercase();
+                let ty = dom
+                    .attr(node_id, "type")
+                    .unwrap_or("text")
+                    .to_ascii_lowercase();
                 ty == "submit" || ty == "image"
             }
             Some(dom::Tag::Button) => {
-                let ty = dom.attr(node_id, "type").unwrap_or("submit").to_ascii_lowercase();
+                let ty = dom
+                    .attr(node_id, "type")
+                    .unwrap_or("submit")
+                    .to_ascii_lowercase();
                 ty.is_empty() || ty == "submit"
             }
             _ => false,
@@ -5091,8 +5219,14 @@ fn build_devtools_inspector_report(webview: &WebView, dom: &dom::Dom, node_id: u
         out.push_str("\nComputed Style\n");
         out.push_str("----------------------------------------\n");
         out.push_str(&format!("  display:          {:?}\n", style.display));
-        out.push_str(&format!("  position:         {}\n", devtools_position_name(style.position)));
-        out.push_str(&format!("  color:            {}\n", devtools_css_color(style.color)));
+        out.push_str(&format!(
+            "  position:         {}\n",
+            devtools_position_name(style.position)
+        ));
+        out.push_str(&format!(
+            "  color:            {}\n",
+            devtools_css_color(style.color)
+        ));
         out.push_str(&format!(
             "  background-color: {}\n",
             devtools_css_color(style.background_color)
@@ -5103,7 +5237,10 @@ fn build_devtools_inspector_report(webview: &WebView, dom: &dom::Dom, node_id: u
         ));
         out.push_str(&format!("  font-size:        {}px\n", style.font_size));
         out.push_str(&format!("  line-height:      {}px\n", style.line_height));
-        out.push_str(&format!("  width / height:   {:?} / {:?}\n", style.width, style.height));
+        out.push_str(&format!(
+            "  width / height:   {:?} / {:?}\n",
+            style.width, style.height
+        ));
         out.push_str(&format!(
             "  margin:           {} {} {} {}\n",
             style.margin_top, style.margin_right, style.margin_bottom, style.margin_left

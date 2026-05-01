@@ -25,7 +25,7 @@ mod keys;
 mod menu;
 mod render;
 
-use render::{acquire_lock, release_lock, desktop_ref, signal_render};
+use render::{acquire_lock, desktop_ref, release_lock, signal_render};
 
 anyos_std::entry!(main);
 

@@ -30,12 +30,22 @@ pub fn pipe_create(name: &str) -> u32 {
 
 /// Read from a pipe. Returns bytes read, 0 if empty, u32::MAX if not found.
 pub fn pipe_read(pipe_id: u32, buf: &mut [u8]) -> u32 {
-    syscall3(SYS_PIPE_READ, pipe_id as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall3(
+        SYS_PIPE_READ,
+        pipe_id as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Write to a pipe. Returns bytes written, u32::MAX if not found.
 pub fn pipe_write(pipe_id: u32, data: &[u8]) -> u32 {
-    syscall3(SYS_PIPE_WRITE, pipe_id as u64, data.as_ptr() as u64, data.len() as u64)
+    syscall3(
+        SYS_PIPE_WRITE,
+        pipe_id as u64,
+        data.as_ptr() as u64,
+        data.len() as u64,
+    )
 }
 
 /// Open an existing pipe by name. Returns pipe_id or 0 if not found.
@@ -88,12 +98,22 @@ pub fn evt_chan_emit(channel_id: u32, event: &[u32; 5]) {
 
 /// Emit an event to a specific subscriber on a module channel (unicast).
 pub fn evt_chan_emit_to(channel_id: u32, sub_id: u32, event: &[u32; 5]) {
-    syscall3(SYS_EVT_CHAN_EMIT_TO, channel_id as u64, sub_id as u64, event.as_ptr() as u64);
+    syscall3(
+        SYS_EVT_CHAN_EMIT_TO,
+        channel_id as u64,
+        sub_id as u64,
+        event.as_ptr() as u64,
+    );
 }
 
 /// Poll for next event on a module channel subscription.
 pub fn evt_chan_poll(channel_id: u32, sub_id: u32, buf: &mut [u32; 5]) -> bool {
-    syscall3(SYS_EVT_CHAN_POLL, channel_id as u64, sub_id as u64, buf.as_mut_ptr() as u64) == 1
+    syscall3(
+        SYS_EVT_CHAN_POLL,
+        channel_id as u64,
+        sub_id as u64,
+        buf.as_mut_ptr() as u64,
+    ) == 1
 }
 
 /// Unsubscribe from a module channel.
@@ -111,7 +131,12 @@ pub fn evt_chan_destroy(channel_id: u32) {
 /// Returns 1 if events are available, 0 on timeout/spurious wake.
 /// `timeout_ms` = `u32::MAX` means wait indefinitely (kernel caps at 60s safety net).
 pub fn evt_chan_wait(channel_id: u32, sub_id: u32, timeout_ms: u32) -> u32 {
-    syscall3(SYS_EVT_CHAN_WAIT, channel_id as u64, sub_id as u64, timeout_ms as u64)
+    syscall3(
+        SYS_EVT_CHAN_WAIT,
+        channel_id as u64,
+        sub_id as u64,
+        timeout_ms as u64,
+    )
 }
 
 // ─── Shared Memory ──────────────────────────────────────────────────
@@ -164,16 +189,29 @@ pub struct FbMapInfo {
 /// Map the GPU framebuffer into the compositor's address space.
 /// Returns Some(FbMapInfo) on success, None on failure.
 pub fn map_framebuffer() -> Option<FbMapInfo> {
-    let mut info = FbMapInfo { fb_addr: 0, width: 0, height: 0, pitch: 0 };
+    let mut info = FbMapInfo {
+        fb_addr: 0,
+        width: 0,
+        height: 0,
+        pitch: 0,
+    };
     let ret = syscall1(SYS_MAP_FRAMEBUFFER, &mut info as *mut FbMapInfo as u64);
-    if ret == 0 { Some(info) } else { None }
+    if ret == 0 {
+        Some(info)
+    } else {
+        None
+    }
 }
 
 /// Grant a target thread direct access to the GPU framebuffer.
 /// Compositor-only. Maps the FB at VA 0x19000000 in the target process.
 /// On success, writes [fb_va, width, height, pitch] to `out_info` and returns 0.
 pub fn grant_framebuffer(target_tid: u32, out_info: &mut FbMapInfo) -> u32 {
-    syscall2(SYS_GRANT_FRAMEBUFFER, target_tid as u64, out_info as *mut FbMapInfo as u64)
+    syscall2(
+        SYS_GRANT_FRAMEBUFFER,
+        target_tid as u64,
+        out_info as *mut FbMapInfo as u64,
+    )
 }
 
 /// Revoke a target thread's direct framebuffer access.
@@ -185,7 +223,9 @@ pub fn revoke_framebuffer(target_tid: u32) -> u32 {
 /// Submit GPU acceleration commands. Returns number of commands executed.
 /// Each command is [u32; 9]: { cmd_type, args[0..8] }.
 pub fn gpu_command(cmds: &[[u32; 9]]) -> u32 {
-    if cmds.is_empty() { return 0; }
+    if cmds.is_empty() {
+        return 0;
+    }
     syscall2(SYS_GPU_COMMAND, cmds.as_ptr() as u64, cmds.len() as u64)
 }
 
@@ -198,7 +238,12 @@ pub fn gpu_vram_size() -> u32 {
 /// Map VRAM pages into a target app's address space. Compositor-only.
 /// Returns the user VA (0x18000000) on success, 0 on failure.
 pub fn vram_map(target_tid: u32, vram_byte_offset: u32, num_bytes: u32) -> u32 {
-    syscall3(SYS_VRAM_MAP, target_tid as u64, vram_byte_offset as u64, num_bytes as u64)
+    syscall3(
+        SYS_VRAM_MAP,
+        target_tid as u64,
+        vram_byte_offset as u64,
+        num_bytes as u64,
+    )
 }
 
 /// Register the compositor's back buffer for GPU DMA transfers (GMR).
@@ -211,7 +256,9 @@ pub fn gpu_register_backbuffer(buf_ptr: u32, buf_size: u32) -> u32 {
 /// Poll raw input events. Returns number of events written to buf.
 /// Each event is [u32; 5]: { event_type, arg0, arg1, arg2, arg3 }.
 pub fn input_poll(buf: &mut [[u32; 5]]) -> u32 {
-    if buf.is_empty() { return 0; }
+    if buf.is_empty() {
+        return 0;
+    }
     syscall2(SYS_INPUT_POLL, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
 

@@ -126,7 +126,13 @@ pub(crate) fn handle_ipc_commands(
 
                         responses.push((
                             target,
-                            [ipc_protocol::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0],
+                            [
+                                ipc_protocol::RESP_WINDOW_CREATED,
+                                win_id,
+                                shm_id,
+                                app_tid,
+                                0,
+                            ],
                         ));
                     }
                 }
@@ -134,11 +140,14 @@ pub(crate) fn handle_ipc_commands(
             }
             ipc_protocol::CMD_RESIZE_SHM => {
                 let new_shm_id = cmd[2];
-                let shm_addr = if new_shm_id > 0 { ipc::shm_map(new_shm_id) } else { 0 };
+                let shm_addr = if new_shm_id > 0 {
+                    ipc::shm_map(new_shm_id)
+                } else {
+                    0
+                };
                 acquire_lock();
                 let desktop = unsafe { desktop_ref() };
-                if let Some(resp) = desktop.handle_resize_shm_pre_mapped(&cmd, shm_addr as usize)
-                {
+                if let Some(resp) = desktop.handle_resize_shm_pre_mapped(&cmd, shm_addr as usize) {
                     responses.push(resp);
                 }
                 release_lock();
@@ -150,7 +159,13 @@ pub(crate) fn handle_ipc_commands(
                 if new_mode != old_mode {
                     desktop::set_font_smoothing(new_mode);
                     config::save_font_smoothing(new_mode);
-                    emit_to_registered_apps(&[ipc_protocol::EVT_FONT_SMOOTHING_CHANGED, new_mode, 0, 0, 0]);
+                    emit_to_registered_apps(&[
+                        ipc_protocol::EVT_FONT_SMOOTHING_CHANGED,
+                        new_mode,
+                        0,
+                        0,
+                        0,
+                    ]);
                     acquire_lock();
                     let desktop = unsafe { desktop_ref() };
                     desktop.compositor.damage_all();
@@ -169,7 +184,13 @@ pub(crate) fn handle_ipc_commands(
                     let desktop = unsafe { desktop_ref() };
                     desktop.on_theme_change();
                     release_lock();
-                    emit_to_registered_apps(&[ipc_protocol::EVT_THEME_CHANGED, new_theme, old_theme, 0, 0]);
+                    emit_to_registered_apps(&[
+                        ipc_protocol::EVT_THEME_CHANGED,
+                        new_theme,
+                        old_theme,
+                        0,
+                        0,
+                    ]);
                     signal_render();
                 }
                 i += 1;
@@ -180,7 +201,13 @@ pub(crate) fn handle_ipc_commands(
                 if new_scale != old_scale && (100..=300).contains(&new_scale) {
                     desktop::theme::set_scale_factor(new_scale);
                     config::save_scale_factor(new_scale);
-                    emit_to_registered_apps(&[ipc_protocol::EVT_SCALE_CHANGED, new_scale, old_scale, 0, 0]);
+                    emit_to_registered_apps(&[
+                        ipc_protocol::EVT_SCALE_CHANGED,
+                        new_scale,
+                        old_scale,
+                        0,
+                        0,
+                    ]);
                     acquire_lock();
                     let desktop = unsafe { desktop_ref() };
                     desktop.handle_scale_change();
@@ -222,7 +249,13 @@ pub(crate) fn handle_ipc_commands(
                         emit_to_target(target, &entry);
                     }
                 }
-                let end = [ipc_protocol::EVT_WINDOW_LIST_END, tids.len() as u32, 0, 0, 0];
+                let end = [
+                    ipc_protocol::EVT_WINDOW_LIST_END,
+                    tids.len() as u32,
+                    0,
+                    0,
+                    0,
+                ];
                 if let Some(target) = target {
                     emit_to_target(target, &end);
                 }
@@ -263,7 +296,13 @@ pub(crate) fn handle_ipc_commands(
         }
 
         if response[0] == ipc_protocol::RESP_WINDOW_CREATED {
-            emit_to_registered_apps(&[ipc_protocol::EVT_WINDOW_OPENED, response[3], response[1], 0, 0]);
+            emit_to_registered_apps(&[
+                ipc_protocol::EVT_WINDOW_OPENED,
+                response[3],
+                response[1],
+                0,
+                0,
+            ]);
         } else if response[0] == ipc_protocol::RESP_WINDOW_DESTROYED {
             let app_tid = response[2];
             let remaining_windows = response[3];

@@ -150,7 +150,9 @@ impl ConfClient {
             return Err(ConfError::InvalidArgument("client_name must not be empty"));
         }
         if !is_valid_token(client_name) {
-            return Err(ConfError::InvalidArgument("client_name contains invalid characters"));
+            return Err(ConfError::InvalidArgument(
+                "client_name contains invalid characters",
+            ));
         }
 
         #[cfg(feature = "host")]
@@ -209,15 +211,30 @@ impl ConfClient {
         parse_simple_ok(&line, "mkdir", target_scope(target), path)
     }
 
-    pub fn set(&mut self, scope: RegistryScope, path: &str, value: ConfValue) -> Result<ConfItem, ConfError> {
+    pub fn set(
+        &mut self,
+        scope: RegistryScope,
+        path: &str,
+        value: ConfValue,
+    ) -> Result<ConfItem, ConfError> {
         self.set_target(ConfTarget::Scope(scope), path, value)
     }
 
-    pub fn set_for_user(&mut self, uid: u16, path: &str, value: ConfValue) -> Result<ConfItem, ConfError> {
+    pub fn set_for_user(
+        &mut self,
+        uid: u16,
+        path: &str,
+        value: ConfValue,
+    ) -> Result<ConfItem, ConfError> {
         self.set_target(ConfTarget::User(uid), path, value)
     }
 
-    pub fn set_target(&mut self, target: ConfTarget, path: &str, value: ConfValue) -> Result<ConfItem, ConfError> {
+    pub fn set_target(
+        &mut self,
+        target: ConfTarget,
+        path: &str,
+        value: ConfValue,
+    ) -> Result<ConfItem, ConfError> {
         validate_path(path)?;
         let (type_name, value_text) = encode_value(&value)?;
         let mut cmd = String::from("SET ");
@@ -276,7 +293,11 @@ impl ConfClient {
         self.list_target(ConfTarget::User(uid), path)
     }
 
-    pub fn list_target(&mut self, target: ConfTarget, path: &str) -> Result<Vec<ConfItem>, ConfError> {
+    pub fn list_target(
+        &mut self,
+        target: ConfTarget,
+        path: &str,
+    ) -> Result<Vec<ConfItem>, ConfError> {
         validate_path(path)?;
         let mut cmd = String::from("LIST ");
         cmd.push_str(&target_name(target));
@@ -286,15 +307,27 @@ impl ConfClient {
         parse_list_response(&response)
     }
 
-    pub fn list_children(&mut self, scope: RegistryScope, path: &str) -> Result<Vec<ConfItem>, ConfError> {
+    pub fn list_children(
+        &mut self,
+        scope: RegistryScope,
+        path: &str,
+    ) -> Result<Vec<ConfItem>, ConfError> {
         self.list_children_target(ConfTarget::Scope(scope), path)
     }
 
-    pub fn list_children_for_user(&mut self, uid: u16, path: &str) -> Result<Vec<ConfItem>, ConfError> {
+    pub fn list_children_for_user(
+        &mut self,
+        uid: u16,
+        path: &str,
+    ) -> Result<Vec<ConfItem>, ConfError> {
         self.list_children_target(ConfTarget::User(uid), path)
     }
 
-    pub fn list_children_target(&mut self, target: ConfTarget, path: &str) -> Result<Vec<ConfItem>, ConfError> {
+    pub fn list_children_target(
+        &mut self,
+        target: ConfTarget,
+        path: &str,
+    ) -> Result<Vec<ConfItem>, ConfError> {
         validate_path(path)?;
         let mut cmd = String::from("LISTCHILDREN ");
         cmd.push_str(&target_name(target));
@@ -322,15 +355,30 @@ impl ConfClient {
         parse_watch_ok(&line)
     }
 
-    pub fn audit(&mut self, scope: RegistryScope, path: &str, limit: u32) -> Result<Vec<ConfAuditEntry>, ConfError> {
+    pub fn audit(
+        &mut self,
+        scope: RegistryScope,
+        path: &str,
+        limit: u32,
+    ) -> Result<Vec<ConfAuditEntry>, ConfError> {
         self.audit_target(ConfTarget::Scope(scope), path, limit)
     }
 
-    pub fn audit_for_user(&mut self, uid: u16, path: &str, limit: u32) -> Result<Vec<ConfAuditEntry>, ConfError> {
+    pub fn audit_for_user(
+        &mut self,
+        uid: u16,
+        path: &str,
+        limit: u32,
+    ) -> Result<Vec<ConfAuditEntry>, ConfError> {
         self.audit_target(ConfTarget::User(uid), path, limit)
     }
 
-    pub fn audit_target(&mut self, target: ConfTarget, path: &str, limit: u32) -> Result<Vec<ConfAuditEntry>, ConfError> {
+    pub fn audit_target(
+        &mut self,
+        target: ConfTarget,
+        path: &str,
+        limit: u32,
+    ) -> Result<Vec<ConfAuditEntry>, ConfError> {
         validate_path(path)?;
         let mut cmd = String::from("AUDIT ");
         cmd.push_str(&target_name(target));
@@ -349,7 +397,9 @@ impl ConfClient {
         if line == format!("OK unwatch {}", watch_id) {
             Ok(())
         } else {
-            Err(ConfError::Protocol(String::from("unexpected unwatch response")))
+            Err(ConfError::Protocol(String::from(
+                "unexpected unwatch response",
+            )))
         }
     }
 
@@ -362,7 +412,10 @@ impl ConfClient {
         }
     }
 
-    pub fn register_manifest(&mut self, manifest: &RegistryManifest<'_>) -> Result<(u32, u32), ConfError> {
+    pub fn register_manifest(
+        &mut self,
+        manifest: &RegistryManifest<'_>,
+    ) -> Result<(u32, u32), ConfError> {
         validate_path(manifest.namespace)?;
         let mut payload = String::new();
 
@@ -373,7 +426,13 @@ impl ConfClient {
         for default in manifest.defaults {
             validate_path(default.path)?;
             let (value_type, value_text) = encode_value_ref(default.value);
-            append_manifest_field(&mut payload, "K", default.path, Some(value_type), Some(&value_text));
+            append_manifest_field(
+                &mut payload,
+                "K",
+                default.path,
+                Some(value_type),
+                Some(&value_text),
+            );
         }
         for migration in manifest.migrations {
             match migration {
@@ -483,7 +542,9 @@ impl ConfClient {
         if line.starts_with("OK hello ") {
             Ok(())
         } else {
-            Err(ConfError::Protocol(String::from("expected HELLO acknowledgement")))
+            Err(ConfError::Protocol(String::from(
+                "expected HELLO acknowledgement",
+            )))
         }
     }
 
@@ -632,7 +693,14 @@ fn encode_value(value: &ConfValue) -> Result<(&'static str, String), ConfError> 
     Ok(match value {
         ConfValue::String(s) => ("string", escape_value(s)),
         ConfValue::Int(v) => ("int", format!("{}", *v)),
-        ConfValue::Bool(v) => ("bool", if *v { String::from("1") } else { String::from("0") }),
+        ConfValue::Bool(v) => (
+            "bool",
+            if *v {
+                String::from("1")
+            } else {
+                String::from("0")
+            },
+        ),
         ConfValue::ExternalRef(path) => ("external_ref", escape_value(path)),
     })
 }
@@ -641,7 +709,14 @@ fn encode_value_ref(value: ConfValueRef<'_>) -> (&'static str, String) {
     match value {
         ConfValueRef::String(s) => ("string", escape_value(s)),
         ConfValueRef::Int(v) => ("int", format!("{}", v)),
-        ConfValueRef::Bool(v) => ("bool", if v { String::from("1") } else { String::from("0") }),
+        ConfValueRef::Bool(v) => (
+            "bool",
+            if v {
+                String::from("1")
+            } else {
+                String::from("0")
+            },
+        ),
         ConfValueRef::ExternalRef(path) => ("external_ref", escape_value(path)),
     }
 }
@@ -726,7 +801,9 @@ fn parse_simple_ok(
 ) -> Result<ConfItem, ConfError> {
     let mut parts = line.split_whitespace();
     if parts.next() != Some("OK") || parts.next() != Some(verb) {
-        return Err(ConfError::Protocol(String::from("unexpected acknowledgement")));
+        return Err(ConfError::Protocol(String::from(
+            "unexpected acknowledgement",
+        )));
     }
     if parts.next() != Some(scope_name(scope)) {
         return Err(ConfError::Protocol(String::from("scope mismatch")));
@@ -734,10 +811,18 @@ fn parse_simple_ok(
     if parts.next() != Some(path) {
         return Err(ConfError::Protocol(String::from("path mismatch")));
     }
-    let version = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing version")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid version")))?;
-    let updated_at = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing timestamp")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid timestamp")))?;
+    let version = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing version")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid version")))?;
+    let updated_at = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing timestamp")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid timestamp")))?;
     Ok(ConfItem {
         scope,
         path: String::from(path),
@@ -753,27 +838,49 @@ fn parse_item_line(line: &str) -> Result<ConfItem, ConfError> {
     if parts.next() != Some("ITEM") {
         return Err(ConfError::Protocol(String::from("expected ITEM response")));
     }
-    let scope = parse_scope(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing scope")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid scope")))?;
-    let path = String::from(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing path")))?);
+    let scope = parse_scope(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing scope")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid scope")))?;
+    let path = String::from(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing path")))?,
+    );
     let kind = match parts.next() {
         Some("dir") => NodeKind::Directory,
         Some("value") => NodeKind::Value,
         _ => return Err(ConfError::Protocol(String::from("invalid kind"))),
     };
-    let value_type = parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing value type")))?;
-    let raw_value = parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing value")))?;
-    let version = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing version")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid version")))?;
-    let updated_at = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing timestamp")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid timestamp")))?;
+    let value_type = parts
+        .next()
+        .ok_or_else(|| ConfError::Protocol(String::from("missing value type")))?;
+    let raw_value = parts
+        .next()
+        .ok_or_else(|| ConfError::Protocol(String::from("missing value")))?;
+    let version = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing version")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid version")))?;
+    let updated_at = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing timestamp")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid timestamp")))?;
 
     let value = match value_type {
         "none" => None,
         "string" => Some(ConfValue::String(unescape_value(raw_value))),
-        "int" => Some(ConfValue::Int(
-            parse_i64(raw_value).ok_or_else(|| ConfError::Protocol(String::from("invalid int")))?,
-        )),
+        "int" => {
+            Some(ConfValue::Int(parse_i64(raw_value).ok_or_else(|| {
+                ConfError::Protocol(String::from("invalid int"))
+            })?))
+        }
         "bool" => Some(ConfValue::Bool(matches!(raw_value, "1" | "true" | "TRUE"))),
         "external_ref" => Some(ConfValue::ExternalRef(unescape_value(raw_value))),
         _ => return Err(ConfError::Protocol(String::from("invalid value type"))),
@@ -803,16 +910,28 @@ fn parse_list_response(response: &str) -> Result<Vec<ConfItem>, ConfError> {
 fn parse_watch_ok(line: &str) -> Result<u32, ConfError> {
     let mut parts = line.split_whitespace();
     if parts.next() != Some("OK") || parts.next() != Some("watch") {
-        return Err(ConfError::Protocol(String::from("expected watch acknowledgement")));
+        return Err(ConfError::Protocol(String::from(
+            "expected watch acknowledgement",
+        )));
     }
-    parse_u32(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing watch id")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid watch id")))
+    parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing watch id")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid watch id")))
 }
 
-fn parse_register_ok(line: &str, scope: RegistryScope, namespace: &str) -> Result<(u32, u32), ConfError> {
+fn parse_register_ok(
+    line: &str,
+    scope: RegistryScope,
+    namespace: &str,
+) -> Result<(u32, u32), ConfError> {
     let mut parts = line.split_whitespace();
     if parts.next() != Some("OK") || parts.next() != Some("register") {
-        return Err(ConfError::Protocol(String::from("expected register acknowledgement")));
+        return Err(ConfError::Protocol(String::from(
+            "expected register acknowledgement",
+        )));
     }
     if parts.next() != Some(scope_name(scope)) {
         return Err(ConfError::Protocol(String::from("scope mismatch")));
@@ -820,10 +939,18 @@ fn parse_register_ok(line: &str, scope: RegistryScope, namespace: &str) -> Resul
     if parts.next() != Some(namespace) {
         return Err(ConfError::Protocol(String::from("namespace mismatch")));
     }
-    let schema_version = parse_u32(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing schema version")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid schema version")))?;
-    let applied_version = parse_u32(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing applied version")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid applied version")))?;
+    let schema_version = parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing schema version")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid schema version")))?;
+    let applied_version = parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing applied version")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid applied version")))?;
     Ok((schema_version, applied_version))
 }
 
@@ -832,30 +959,60 @@ fn parse_event_line(line: &str) -> Result<ConfEvent, ConfError> {
     if parts.next() != Some("EVENT") {
         return Err(ConfError::Protocol(String::from("expected EVENT")));
     }
-    let watch_id = parse_u32(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing watch id")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid watch id")))?;
-    let action = String::from(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing action")))?);
-    let scope = parse_scope(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing scope")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid scope")))?;
-    let path = String::from(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing path")))?);
+    let watch_id = parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing watch id")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid watch id")))?;
+    let action = String::from(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing action")))?,
+    );
+    let scope = parse_scope(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing scope")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid scope")))?;
+    let path = String::from(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing path")))?,
+    );
     let kind = match parts.next() {
         Some("dir") => NodeKind::Directory,
         Some("value") => NodeKind::Value,
         _ => return Err(ConfError::Protocol(String::from("invalid kind"))),
     };
-    let value_type = parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing value type")))?;
-    let raw_value = parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing value")))?;
-    let version = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing version")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid version")))?;
-    let updated_at = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing timestamp")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid timestamp")))?;
+    let value_type = parts
+        .next()
+        .ok_or_else(|| ConfError::Protocol(String::from("missing value type")))?;
+    let raw_value = parts
+        .next()
+        .ok_or_else(|| ConfError::Protocol(String::from("missing value")))?;
+    let version = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing version")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid version")))?;
+    let updated_at = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing timestamp")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid timestamp")))?;
 
     let value = match value_type {
         "none" => None,
         "string" => Some(ConfValue::String(unescape_value(raw_value))),
-        "int" => Some(ConfValue::Int(
-            parse_i64(raw_value).ok_or_else(|| ConfError::Protocol(String::from("invalid int")))?,
-        )),
+        "int" => {
+            Some(ConfValue::Int(parse_i64(raw_value).ok_or_else(|| {
+                ConfError::Protocol(String::from("invalid int"))
+            })?))
+        }
         "bool" => Some(ConfValue::Bool(matches!(raw_value, "1" | "true" | "TRUE"))),
         "external_ref" => Some(ConfValue::ExternalRef(unescape_value(raw_value))),
         _ => return Err(ConfError::Protocol(String::from("invalid value type"))),
@@ -891,25 +1048,75 @@ fn parse_audit_line(line: &str) -> Result<ConfAuditEntry, ConfError> {
     if parts.next() != Some("AUDIT") {
         return Err(ConfError::Protocol(String::from("expected AUDIT response")));
     }
-    let seq = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing seq")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid seq")))?;
-    let actor_uid = parse_u32(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing actor uid")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid actor uid")))? as u16;
-    let owner_uid = parse_u32(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing owner uid")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid owner uid")))? as u16;
-    let actor_name = unescape_value(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing actor name")))?);
-    let tid = parse_u32(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing tid")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid tid")))?;
-    let action = unescape_value(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing action")))?);
-    let scope = parse_scope(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing scope")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid scope")))?;
-    let path = String::from(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing path")))?);
-    let status = unescape_value(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing status")))?);
-    let detail = unescape_value(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing detail")))?);
-    let version = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing version")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid version")))?;
-    let at_ms = parse_u64(parts.next().ok_or_else(|| ConfError::Protocol(String::from("missing timestamp")))?)
-        .ok_or_else(|| ConfError::Protocol(String::from("invalid timestamp")))?;
+    let seq = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing seq")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid seq")))?;
+    let actor_uid = parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing actor uid")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid actor uid")))?
+        as u16;
+    let owner_uid = parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing owner uid")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid owner uid")))?
+        as u16;
+    let actor_name = unescape_value(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing actor name")))?,
+    );
+    let tid = parse_u32(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing tid")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid tid")))?;
+    let action = unescape_value(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing action")))?,
+    );
+    let scope = parse_scope(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing scope")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid scope")))?;
+    let path = String::from(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing path")))?,
+    );
+    let status = unescape_value(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing status")))?,
+    );
+    let detail = unescape_value(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing detail")))?,
+    );
+    let version = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing version")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid version")))?;
+    let at_ms = parse_u64(
+        parts
+            .next()
+            .ok_or_else(|| ConfError::Protocol(String::from("missing timestamp")))?,
+    )
+    .ok_or_else(|| ConfError::Protocol(String::from("invalid timestamp")))?;
 
     Ok(ConfAuditEntry {
         seq,

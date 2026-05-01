@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 use libconf_schema::{
-    default_bool, default_external_ref, default_int, default_string, manifest, RegistryScope, ServiceSchema,
+    default_bool, default_external_ref, default_int, default_string, manifest, RegistryScope,
+    ServiceSchema,
 };
 
 const ANYMAIL_DIRS: &[&str] = &["config", "config/accounts", "state"];

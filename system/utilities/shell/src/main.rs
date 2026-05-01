@@ -1,12 +1,12 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::format;
+use anyos_std::ipc;
+use anyos_std::process;
+use anyos_std::ui::window;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::format;
-use anyos_std::process;
-use anyos_std::ipc;
-use anyos_std::ui::window;
 use libshellcommon;
 
 anyos_std::entry!(main);
@@ -84,7 +84,11 @@ struct Cell {
 
 impl Cell {
     fn blank() -> Self {
-        Cell { ch: ' ', fg: COLOR_FG, bg: 0 }
+        Cell {
+            ch: ' ',
+            fg: COLOR_FG,
+            bg: 0,
+        }
     }
 }
 
@@ -93,8 +97,8 @@ impl Cell {
 #[derive(Clone, Copy, PartialEq)]
 enum AnsiState {
     Normal,
-    Escape,    // saw \x1b
-    Csi,       // saw \x1b[
+    Escape, // saw \x1b
+    Csi,    // saw \x1b[
 }
 
 struct AnsiParser {
@@ -331,8 +335,16 @@ impl TerminalBuffer {
             }
             b'H' | b'f' => {
                 // Cursor Position
-                let row = if n > 0 && p[0] > 0 { p[0] as usize - 1 } else { 0 };
-                let col = if n > 1 && p[1] > 0 { p[1] as usize - 1 } else { 0 };
+                let row = if n > 0 && p[0] > 0 {
+                    p[0] as usize - 1
+                } else {
+                    0
+                };
+                let col = if n > 1 && p[1] > 0 {
+                    p[1] as usize - 1
+                } else {
+                    0
+                };
                 self.cursor_row = self.scroll_offset + row;
                 self.cursor_col = col.min(self.cols.saturating_sub(1));
                 self.ensure_line(self.cursor_row);
@@ -413,7 +425,11 @@ impl TerminalBuffer {
                 22 => self.bold = false,
                 30..=37 => {
                     let idx = (code - 30) as usize;
-                    self.fg_color = if self.bold { ANSI_BRIGHT[idx] } else { ANSI_COLORS[idx] };
+                    self.fg_color = if self.bold {
+                        ANSI_BRIGHT[idx]
+                    } else {
+                        ANSI_COLORS[idx]
+                    };
                 }
                 38 => {
                     // Extended foreground: 38;5;N (256-color) or 38;2;R;G;B (truecolor)
@@ -500,7 +516,12 @@ impl FontMetrics {
         // Use the measured width as cell width, height + 2 for line spacing
         let cell_w = if w > 0 { w as u16 } else { size / 2 + 1 };
         let cell_h = if h > 0 { h as u16 + 2 } else { size + 4 };
-        FontMetrics { font_id, size, cell_w, cell_h }
+        FontMetrics {
+            font_id,
+            size,
+            cell_w,
+            cell_h,
+        }
     }
 }
 
@@ -533,13 +554,25 @@ fn render(win_id: u32, buf: &TerminalBuffer, font: &FontMetrics, win_w: u32, win
 
         // Batch text by foreground color for efficient rendering
         let mut run_start = 0usize;
-        let mut run_color = if !line.is_empty() { line[0].fg } else { COLOR_FG };
+        let mut run_color = if !line.is_empty() {
+            line[0].fg
+        } else {
+            COLOR_FG
+        };
         let mut text_buf = String::new();
 
         for (col, cell) in line.iter().enumerate() {
             if cell.fg != run_color && !text_buf.is_empty() {
                 let px = TEXT_PAD as i16 + (run_start as i16) * (font.cell_w as i16);
-                window::draw_text_ex(win_id, px, py as i16, run_color, font.font_id, font.size, &text_buf);
+                window::draw_text_ex(
+                    win_id,
+                    px,
+                    py as i16,
+                    run_color,
+                    font.font_id,
+                    font.size,
+                    &text_buf,
+                );
                 text_buf.clear();
                 run_start = col;
                 run_color = cell.fg;
@@ -552,7 +585,15 @@ fn render(win_id: u32, buf: &TerminalBuffer, font: &FontMetrics, win_w: u32, win
         }
         if !text_buf.is_empty() {
             let px = TEXT_PAD as i16 + (run_start as i16) * (font.cell_w as i16);
-            window::draw_text_ex(win_id, px, py as i16, run_color, font.font_id, font.size, &text_buf);
+            window::draw_text_ex(
+                win_id,
+                px,
+                py as i16,
+                run_color,
+                font.font_id,
+                font.size,
+                &text_buf,
+            );
         }
     }
 
@@ -561,7 +602,14 @@ fn render(win_id: u32, buf: &TerminalBuffer, font: &FontMetrics, win_w: u32, win
     if cursor_screen_row >= 0 && (cursor_screen_row as usize) < buf.visible_rows {
         let cx = TEXT_PAD + (buf.cursor_col as u16) * font.cell_w;
         let cy = TEXT_PAD + (cursor_screen_row as u16) * font.cell_h;
-        window::fill_rect(win_id, cx as i16, cy as i16, font.cell_w, font.cell_h, 0xFFCCCCCC);
+        window::fill_rect(
+            win_id,
+            cx as i16,
+            cy as i16,
+            font.cell_w,
+            font.cell_h,
+            0xFFCCCCCC,
+        );
     }
 
     window::present(win_id);
@@ -602,7 +650,13 @@ impl ShellAppBuiltins {
 }
 
 impl libshellcommon::interpreter::AppBuiltins for ShellAppBuiltins {
-    fn handle(&mut self, cmd: &str, _args: &str, _shell: &mut libshellcommon::interpreter::ShellState, out: &mut dyn libshellcommon::interpreter::ShellOutput) -> bool {
+    fn handle(
+        &mut self,
+        cmd: &str,
+        _args: &str,
+        _shell: &mut libshellcommon::interpreter::ShellState,
+        out: &mut dyn libshellcommon::interpreter::ShellOutput,
+    ) -> bool {
         match cmd {
             "help" => {
                 out.write_line("anyOS Shell");
@@ -652,9 +706,8 @@ impl ForegroundProcess {
 // ─── Builtin commands list for tab completion ────────────────────────────────
 
 const SHELL_BUILTINS: &[&str] = &[
-    "alias", "bg", "cd", "clear", "echo", "eval", "exit", "export",
-    "fg", "help", "jobs", "pwd", "reboot", "set", "shutdown", "source",
-    "su", "uname", "unalias", "unset",
+    "alias", "bg", "cd", "clear", "echo", "eval", "exit", "export", "fg", "help", "jobs", "pwd",
+    "reboot", "set", "shutdown", "source", "su", "uname", "unalias", "unset",
 ];
 
 // ─── Helper: draw prompt + current input on terminal buffer ──────────────────
@@ -707,21 +760,20 @@ fn main() {
     // Menu bar
     let mut mb = window::MenuBarBuilder::new()
         .menu("Shell")
-            .item(1, "Clear", 0)
-            .separator()
-            .item(2, "Close", 0)
+        .item(1, "Clear", 0)
+        .separator()
+        .item(2, "Close", 0)
         .end_menu()
         .menu("View")
-            .item(10, "Increase Font Size", 0)
-            .item(11, "Decrease Font Size", 0)
-            .item(12, "Reset Font Size", 0)
+        .item(10, "Increase Font Size", 0)
+        .item(11, "Decrease Font Size", 0)
+        .item(12, "Reset Font Size", 0)
         .end_menu();
     let data = mb.build();
     window::set_menu(win_id, data);
 
     // Load monospace font
-    let mono_font_id = window::font_load("/System/fonts/andale-mono.ttf")
-        .unwrap_or(0) as u16; // fallback to system font 0
+    let mono_font_id = window::font_load("/System/fonts/andale-mono.ttf").unwrap_or(0) as u16; // fallback to system font 0
 
     let mut font_size_idx = DEFAULT_FONT_SIZE_IDX;
     let mut font = FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
@@ -737,7 +789,10 @@ fn main() {
 
     // Load aliases from dotenv into shell state
     for ad in &alias_defs {
-        shell.aliases.push((String::from(ad.name.as_str()), String::from(ad.value.as_str())));
+        shell.aliases.push((
+            String::from(ad.name.as_str()),
+            String::from(ad.value.as_str()),
+        ));
     }
 
     // Set initial cwd
@@ -793,7 +848,9 @@ fn main() {
                 // Drain remaining output
                 loop {
                     let n = ipc::pipe_read(fg.stdout_pipe, &mut read_buf);
-                    if n == 0 || n == u32::MAX { break; }
+                    if n == 0 || n == u32::MAX {
+                        break;
+                    }
                     buf.feed(&read_buf[..n as usize]);
                 }
 
@@ -827,17 +884,36 @@ fn main() {
                     for action in chain_actions {
                         match action {
                             libshellcommon::interpreter::ShellAction::Done => {}
-                            libshellcommon::interpreter::ShellAction::RunForeground { path, args, command, redirect, input_data } => {
-                                let pipe_name = format!("shell:fg:{}:{}", process::getpid(), shell.pipe_counter);
+                            libshellcommon::interpreter::ShellAction::RunForeground {
+                                path,
+                                args,
+                                command,
+                                redirect,
+                                input_data,
+                            } => {
+                                let pipe_name = format!(
+                                    "shell:fg:{}:{}",
+                                    process::getpid(),
+                                    shell.pipe_counter
+                                );
                                 shell.pipe_counter += 1;
                                 let stdout_pipe = ipc::pipe_create(&pipe_name);
-                                let stdin_name = format!("shell:fgin:{}:{}", process::getpid(), shell.pipe_counter);
+                                let stdin_name = format!(
+                                    "shell:fgin:{}:{}",
+                                    process::getpid(),
+                                    shell.pipe_counter
+                                );
                                 shell.pipe_counter += 1;
                                 let stdin_pipe = ipc::pipe_create(&stdin_name);
                                 if let Some(ref input) = input_data {
                                     ipc::pipe_write(stdin_pipe, input.as_bytes());
                                 }
-                                let tid = process::spawn_piped_full(&path, &args, stdout_pipe, stdin_pipe);
+                                let tid = process::spawn_piped_full(
+                                    &path,
+                                    &args,
+                                    stdout_pipe,
+                                    stdin_pipe,
+                                );
                                 if tid != u32::MAX {
                                     if let Some(redir) = redirect {
                                         process::waitpid(tid);
@@ -845,8 +921,12 @@ fn main() {
                                         let mut captured = String::new();
                                         loop {
                                             let n = ipc::pipe_read(stdout_pipe, &mut out_buf2);
-                                            if n == 0 || n == u32::MAX { break; }
-                                            if let Ok(s) = core::str::from_utf8(&out_buf2[..n as usize]) {
+                                            if n == 0 || n == u32::MAX {
+                                                break;
+                                            }
+                                            if let Ok(s) =
+                                                core::str::from_utf8(&out_buf2[..n as usize])
+                                            {
                                                 captured.push_str(s);
                                             }
                                         }
@@ -856,7 +936,9 @@ fn main() {
                                         anyos_std::shell::write_redirect(&mut redir, &captured);
                                     } else {
                                         fg_proc = Some(ForegroundProcess {
-                                            tid, stdout_pipe, stdin_pipe,
+                                            tid,
+                                            stdout_pipe,
+                                            stdin_pipe,
                                             command: String::from(command.as_str()),
                                             extra_pipes: Vec::new(),
                                         });
@@ -869,8 +951,15 @@ fn main() {
                                     ipc::pipe_close(stdin_pipe);
                                 }
                             }
-                            libshellcommon::interpreter::ShellAction::RunPipeline { line, redirect } => {
-                                if let Some(result) = anyos_std::shell::run_pipeline(&line, &shell.cwd, &mut shell.pipe_counter) {
+                            libshellcommon::interpreter::ShellAction::RunPipeline {
+                                line,
+                                redirect,
+                            } => {
+                                if let Some(result) = anyos_std::shell::run_pipeline(
+                                    &line,
+                                    &shell.cwd,
+                                    &mut shell.pipe_counter,
+                                ) {
                                     fg_proc = Some(ForegroundProcess {
                                         tid: result.last_tid,
                                         stdout_pipe: result.display_pipe,
@@ -932,9 +1021,15 @@ fn main() {
                             // Increase font size
                             if font_size_idx + 1 < FONT_SIZES.len() {
                                 font_size_idx += 1;
-                                font = FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
-                                buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_w as u32).max(1) as usize;
-                                buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_h as u32).max(1) as usize;
+                                font =
+                                    FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
+                                buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2)
+                                    / font.cell_w as u32)
+                                    .max(1) as usize;
+                                buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2)
+                                    / font.cell_h as u32)
+                                    .max(1)
+                                    as usize;
                                 dirty = true;
                             }
                         }
@@ -942,9 +1037,15 @@ fn main() {
                             // Decrease font size
                             if font_size_idx > 0 {
                                 font_size_idx -= 1;
-                                font = FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
-                                buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_w as u32).max(1) as usize;
-                                buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_h as u32).max(1) as usize;
+                                font =
+                                    FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
+                                buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2)
+                                    / font.cell_w as u32)
+                                    .max(1) as usize;
+                                buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2)
+                                    / font.cell_h as u32)
+                                    .max(1)
+                                    as usize;
                                 dirty = true;
                             }
                         }
@@ -952,8 +1053,12 @@ fn main() {
                             // Reset font size
                             font_size_idx = DEFAULT_FONT_SIZE_IDX;
                             font = FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
-                            buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_w as u32).max(1) as usize;
-                            buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_h as u32).max(1) as usize;
+                            buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2)
+                                / font.cell_w as u32)
+                                .max(1) as usize;
+                            buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2)
+                                / font.cell_h as u32)
+                                .max(1) as usize;
                             dirty = true;
                         }
                         _ => {}
@@ -962,8 +1067,11 @@ fn main() {
                 EVENT_RESIZE => {
                     win_w = event[1];
                     win_h = event[2];
-                    buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_w as u32).max(1) as usize;
-                    buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_h as u32).max(1) as usize;
+                    buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_w as u32)
+                        .max(1) as usize;
+                    buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2)
+                        / font.cell_h as u32)
+                        .max(1) as usize;
                     dirty = true;
                 }
                 EVENT_MOUSE_SCROLL => {
@@ -985,34 +1093,66 @@ fn main() {
                         if font_size_idx + 1 < FONT_SIZES.len() {
                             font_size_idx += 1;
                             font = FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
-                            buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_w as u32).max(1) as usize;
-                            buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_h as u32).max(1) as usize;
+                            buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2)
+                                / font.cell_w as u32)
+                                .max(1) as usize;
+                            buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2)
+                                / font.cell_h as u32)
+                                .max(1) as usize;
                             dirty = true;
                         }
                     } else if (mods & MOD_CTRL) != 0 && char_val == '-' as u32 {
                         if font_size_idx > 0 {
                             font_size_idx -= 1;
                             font = FontMetrics::measure(mono_font_id, FONT_SIZES[font_size_idx]);
-                            buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_w as u32).max(1) as usize;
-                            buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2) / font.cell_h as u32).max(1) as usize;
+                            buf.cols = (win_w.saturating_sub(TEXT_PAD as u32 * 2)
+                                / font.cell_w as u32)
+                                .max(1) as usize;
+                            buf.visible_rows = (win_h.saturating_sub(TEXT_PAD as u32 * 2)
+                                / font.cell_h as u32)
+                                .max(1) as usize;
                             dirty = true;
                         }
                     } else if fg_proc.is_some() {
                         // Foreground process is running — forward input to its stdin pipe
                         let fg = fg_proc.as_ref().unwrap();
                         match key_code {
-                            KEY_ENTER => { ipc::pipe_write(fg.stdin_pipe, b"\n"); }
-                            KEY_BACKSPACE => { ipc::pipe_write(fg.stdin_pipe, &[0x7f]); }
-                            KEY_ESCAPE => { ipc::pipe_write(fg.stdin_pipe, b"\x1b"); }
-                            KEY_UP => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[A"); }
-                            KEY_DOWN => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[B"); }
-                            KEY_RIGHT => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[C"); }
-                            KEY_LEFT => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[D"); }
-                            KEY_HOME => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[H"); }
-                            KEY_END => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[F"); }
-                            KEY_DELETE => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[3~"); }
-                            KEY_PAGE_UP => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[5~"); }
-                            KEY_PAGE_DOWN => { ipc::pipe_write(fg.stdin_pipe, b"\x1b[6~"); }
+                            KEY_ENTER => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\n");
+                            }
+                            KEY_BACKSPACE => {
+                                ipc::pipe_write(fg.stdin_pipe, &[0x7f]);
+                            }
+                            KEY_ESCAPE => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b");
+                            }
+                            KEY_UP => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[A");
+                            }
+                            KEY_DOWN => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[B");
+                            }
+                            KEY_RIGHT => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[C");
+                            }
+                            KEY_LEFT => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[D");
+                            }
+                            KEY_HOME => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[H");
+                            }
+                            KEY_END => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[F");
+                            }
+                            KEY_DELETE => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[3~");
+                            }
+                            KEY_PAGE_UP => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[5~");
+                            }
+                            KEY_PAGE_DOWN => {
+                                ipc::pipe_write(fg.stdin_pipe, b"\x1b[6~");
+                            }
                             _ => {
                                 if char_val > 0 {
                                     if (mods & MOD_CTRL) != 0 && char_val < 128 {
@@ -1054,7 +1194,11 @@ fn main() {
                                 buf.newline();
                                 {
                                     let mut out = BufOutput { buf: &mut buf };
-                                    libshellcommon::interpreter::ShellState::do_su(username, &password_buf, &mut out);
+                                    libshellcommon::interpreter::ShellState::do_su(
+                                        username,
+                                        &password_buf,
+                                        &mut out,
+                                    );
                                 }
                                 password_buf.clear();
                                 password_mode = None;
@@ -1271,7 +1415,11 @@ fn main() {
                             KEY_TAB => {
                                 let before = shell.line.before_cursor();
                                 let before_owned = String::from(before);
-                                match libshellcommon::complete(&before_owned, &shell.cwd, SHELL_BUILTINS) {
+                                match libshellcommon::complete(
+                                    &before_owned,
+                                    &shell.cwd,
+                                    SHELL_BUILTINS,
+                                ) {
                                     libshellcommon::CompletionResult::None => {
                                         // No matches — do nothing
                                     }
@@ -1284,7 +1432,10 @@ fn main() {
                                         }
                                         redraw_prompt_line(&mut buf, &shell);
                                     }
-                                    libshellcommon::CompletionResult::Multiple(to_insert, completions) => {
+                                    libshellcommon::CompletionResult::Multiple(
+                                        to_insert,
+                                        completions,
+                                    ) => {
                                         if !to_insert.is_empty() {
                                             shell.line.insert_str(&to_insert);
                                         }

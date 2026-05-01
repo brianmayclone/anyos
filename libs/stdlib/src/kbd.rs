@@ -24,7 +24,11 @@ pub fn set_layout(id: u32) -> u32 {
 /// List available keyboard layouts. Writes up to `buf.len()` entries.
 /// Returns the number of entries written.
 pub fn list_layouts(buf: &mut [LayoutInfo]) -> u32 {
-    syscall2(SYS_KBD_LIST_LAYOUTS, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall2(
+        SYS_KBD_LIST_LAYOUTS,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Convert a layout label ([u8; 4]) to a &str (null-terminated).

@@ -5,7 +5,9 @@ use alloc::format;
 use alloc::string::String;
 
 use anyos_std::{fs, ipc, net, println, process, sys};
-use libconf_schema::{default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema};
+use libconf_schema::{
+    default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
+};
 use libsvc::ServiceLifecycle;
 
 anyos_std::entry!(main);
@@ -45,7 +47,8 @@ const DNSD_HOSTS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     DNSD_HOSTS_DEFAULTS,
     DNSD_HOSTS_MIGRATIONS,
 );
-const DNSD_HOSTS_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("networkd", &DNSD_HOSTS_MANIFEST);
+const DNSD_HOSTS_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("networkd", &DNSD_HOSTS_MANIFEST);
 
 struct NetworkdConfig {
     poll_interval_ms: u32,
@@ -133,10 +136,19 @@ fn main() {
 
     let mut pipe_buf = [0u8; 512];
     let mut last_poll = 0u32;
-    println!("networkd: ready (pipe='{}', applied_ok={})", PIPE_NAME, applied_ok);
+    println!(
+        "networkd: ready (pipe='{}', applied_ok={})",
+        PIPE_NAME, applied_ok
+    );
 
     loop {
-        if handle_requests(pipe_id, &mut cfg, &mut state, lifecycle.as_mut(), &mut ready_announced) {
+        if handle_requests(
+            pipe_id,
+            &mut cfg,
+            &mut state,
+            lifecycle.as_mut(),
+            &mut ready_announced,
+        ) {
             process::sleep(20);
             continue;
         }
@@ -187,7 +199,8 @@ fn apply_interfaces(cfg: &NetworkdConfig, state: &mut NetworkState, force: bool)
         }
 
         let name_len = iface_buf[off + 1].min(16);
-        state.name[..name_len as usize].copy_from_slice(&iface_buf[off + 2..off + 2 + name_len as usize]);
+        state.name[..name_len as usize]
+            .copy_from_slice(&iface_buf[off + 2..off + 2 + name_len as usize]);
         state.name_len = name_len;
         state.method = method;
 
@@ -243,7 +256,10 @@ fn apply_interfaces(cfg: &NetworkdConfig, state: &mut NetworkState, force: bool)
                 "networkd: applied {} on {} -> {}.{}.{}.{}",
                 if method == 0 { "dhcp" } else { "static" },
                 state.iface_name(),
-                state.ip[0], state.ip[1], state.ip[2], state.ip[3]
+                state.ip[0],
+                state.ip[1],
+                state.ip[2],
+                state.ip[3]
             );
         }
         write_status(state, ok);

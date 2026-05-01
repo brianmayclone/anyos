@@ -56,7 +56,9 @@ fn apply_console_mode() {
 
     for line in conf.split('\n') {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         let line = line.strip_prefix("export ").unwrap_or(line);
         if let Some(val) = line.strip_prefix("CONSOLE_MODE=") {
             let val = val.trim().trim_matches('"').trim_matches('\'');

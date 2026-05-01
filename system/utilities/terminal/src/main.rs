@@ -1,20 +1,20 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::String;
-use anyos_std::Vec;
+use alloc::boxed::Box;
+use alloc::string::ToString;
 use anyos_std::format;
-use anyos_std::process;
 use anyos_std::fs;
 use anyos_std::ipc;
-use alloc::string::ToString;
-use alloc::boxed::Box;
+use anyos_std::process;
+use anyos_std::String;
+use anyos_std::Vec;
+use anyui::{
+    Control, Widget, KEY_BACKSPACE, KEY_DELETE, KEY_DOWN, KEY_END, KEY_ENTER, KEY_ESCAPE, KEY_HOME,
+    KEY_LEFT, KEY_PAGE_DOWN, KEY_PAGE_UP, KEY_RIGHT, KEY_TAB, KEY_UP, MOD_ALT, MOD_CTRL, MOD_SHIFT,
+};
 use libanyui_client as anyui;
 use libshellcommon;
-use anyui::{Widget, Control, MOD_CTRL, MOD_SHIFT, MOD_ALT,
-    KEY_ENTER, KEY_BACKSPACE, KEY_TAB, KEY_ESCAPE,
-    KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
-    KEY_DELETE, KEY_HOME, KEY_END, KEY_PAGE_UP, KEY_PAGE_DOWN};
 
 anyos_std::entry!(main);
 
@@ -73,70 +73,158 @@ struct Theme {
 const THEMES: &[Theme] = &[
     Theme {
         name: "Default",
-        bg: 0xFF1E1E28, fg: 0xFFCCCCCC, prompt: 0xFF64FF64, title: 0xFF00C8FF, dim: 0xFF969696,
-        select_bg: 0xFF3A5070, select_fg: 0xFFFFFFFF,
-        ansi_colors: [0xFF505050, 0xFFFF5555, 0xFF50FA7B, 0xFFF1FA8C, 0xFF6272A4, 0xFFFF79C6, 0xFF8BE9FD, 0xFFCCCCCC],
-        ansi_bright: [0xFF6A6A6A, 0xFFFF6E6E, 0xFF69FF94, 0xFFFFFFA5, 0xFF7B8ABD, 0xFFFF92DF, 0xFFA4F0FF, 0xFFFFFFFF],
+        bg: 0xFF1E1E28,
+        fg: 0xFFCCCCCC,
+        prompt: 0xFF64FF64,
+        title: 0xFF00C8FF,
+        dim: 0xFF969696,
+        select_bg: 0xFF3A5070,
+        select_fg: 0xFFFFFFFF,
+        ansi_colors: [
+            0xFF505050, 0xFFFF5555, 0xFF50FA7B, 0xFFF1FA8C, 0xFF6272A4, 0xFFFF79C6, 0xFF8BE9FD,
+            0xFFCCCCCC,
+        ],
+        ansi_bright: [
+            0xFF6A6A6A, 0xFFFF6E6E, 0xFF69FF94, 0xFFFFFFA5, 0xFF7B8ABD, 0xFFFF92DF, 0xFFA4F0FF,
+            0xFFFFFFFF,
+        ],
     },
     Theme {
         name: "Dracula",
-        bg: 0xFF282A36, fg: 0xFFF8F8F2, prompt: 0xFF50FA7B, title: 0xFF8BE9FD, dim: 0xFF6272A4,
-        select_bg: 0xFF44475A, select_fg: 0xFFF8F8F2,
-        ansi_colors: [0xFF21222C, 0xFFFF5555, 0xFF50FA7B, 0xFFF1FA8C, 0xFFBD93F9, 0xFFFF79C6, 0xFF8BE9FD, 0xFFF8F8F2],
-        ansi_bright: [0xFF6272A4, 0xFFFF6E6E, 0xFF69FF94, 0xFFFFFFA5, 0xFFD6ACFF, 0xFFFF92DF, 0xFFA4F0FF, 0xFFFFFFFF],
+        bg: 0xFF282A36,
+        fg: 0xFFF8F8F2,
+        prompt: 0xFF50FA7B,
+        title: 0xFF8BE9FD,
+        dim: 0xFF6272A4,
+        select_bg: 0xFF44475A,
+        select_fg: 0xFFF8F8F2,
+        ansi_colors: [
+            0xFF21222C, 0xFFFF5555, 0xFF50FA7B, 0xFFF1FA8C, 0xFFBD93F9, 0xFFFF79C6, 0xFF8BE9FD,
+            0xFFF8F8F2,
+        ],
+        ansi_bright: [
+            0xFF6272A4, 0xFFFF6E6E, 0xFF69FF94, 0xFFFFFFA5, 0xFFD6ACFF, 0xFFFF92DF, 0xFFA4F0FF,
+            0xFFFFFFFF,
+        ],
     },
     Theme {
         name: "Solarized Dark",
-        bg: 0xFF002B36, fg: 0xFF839496, prompt: 0xFF859900, title: 0xFF268BD2, dim: 0xFF586E75,
-        select_bg: 0xFF073642, select_fg: 0xFF93A1A1,
-        ansi_colors: [0xFF073642, 0xFFDC322F, 0xFF859900, 0xFFB58900, 0xFF268BD2, 0xFFD33682, 0xFF2AA198, 0xFFEEE8D5],
-        ansi_bright: [0xFF586E75, 0xFFCB4B16, 0xFF859900, 0xFFB58900, 0xFF268BD2, 0xFF6C71C4, 0xFF2AA198, 0xFFFDF6E3],
+        bg: 0xFF002B36,
+        fg: 0xFF839496,
+        prompt: 0xFF859900,
+        title: 0xFF268BD2,
+        dim: 0xFF586E75,
+        select_bg: 0xFF073642,
+        select_fg: 0xFF93A1A1,
+        ansi_colors: [
+            0xFF073642, 0xFFDC322F, 0xFF859900, 0xFFB58900, 0xFF268BD2, 0xFFD33682, 0xFF2AA198,
+            0xFFEEE8D5,
+        ],
+        ansi_bright: [
+            0xFF586E75, 0xFFCB4B16, 0xFF859900, 0xFFB58900, 0xFF268BD2, 0xFF6C71C4, 0xFF2AA198,
+            0xFFFDF6E3,
+        ],
     },
     Theme {
         name: "Solarized Light",
-        bg: 0xFFFDF6E3, fg: 0xFF657B83, prompt: 0xFF859900, title: 0xFF268BD2, dim: 0xFF93A1A1,
-        select_bg: 0xFFEEE8D5, select_fg: 0xFF073642,
-        ansi_colors: [0xFF073642, 0xFFDC322F, 0xFF859900, 0xFFB58900, 0xFF268BD2, 0xFFD33682, 0xFF2AA198, 0xFFEEE8D5],
-        ansi_bright: [0xFF586E75, 0xFFCB4B16, 0xFF859900, 0xFFB58900, 0xFF268BD2, 0xFF6C71C4, 0xFF2AA198, 0xFFFDF6E3],
+        bg: 0xFFFDF6E3,
+        fg: 0xFF657B83,
+        prompt: 0xFF859900,
+        title: 0xFF268BD2,
+        dim: 0xFF93A1A1,
+        select_bg: 0xFFEEE8D5,
+        select_fg: 0xFF073642,
+        ansi_colors: [
+            0xFF073642, 0xFFDC322F, 0xFF859900, 0xFFB58900, 0xFF268BD2, 0xFFD33682, 0xFF2AA198,
+            0xFFEEE8D5,
+        ],
+        ansi_bright: [
+            0xFF586E75, 0xFFCB4B16, 0xFF859900, 0xFFB58900, 0xFF268BD2, 0xFF6C71C4, 0xFF2AA198,
+            0xFFFDF6E3,
+        ],
     },
     Theme {
         name: "Monokai",
-        bg: 0xFF272822, fg: 0xFFF8F8F2, prompt: 0xFFA6E22E, title: 0xFF66D9EF, dim: 0xFF75715E,
-        select_bg: 0xFF49483E, select_fg: 0xFFF8F8F2,
-        ansi_colors: [0xFF272822, 0xFFF92672, 0xFFA6E22E, 0xFFF4BF75, 0xFF66D9EF, 0xFFAE81FF, 0xFFA1EFE4, 0xFFF8F8F2],
-        ansi_bright: [0xFF75715E, 0xFFF92672, 0xFFA6E22E, 0xFFF4BF75, 0xFF66D9EF, 0xFFAE81FF, 0xFFA1EFE4, 0xFFF9F8F5],
+        bg: 0xFF272822,
+        fg: 0xFFF8F8F2,
+        prompt: 0xFFA6E22E,
+        title: 0xFF66D9EF,
+        dim: 0xFF75715E,
+        select_bg: 0xFF49483E,
+        select_fg: 0xFFF8F8F2,
+        ansi_colors: [
+            0xFF272822, 0xFFF92672, 0xFFA6E22E, 0xFFF4BF75, 0xFF66D9EF, 0xFFAE81FF, 0xFFA1EFE4,
+            0xFFF8F8F2,
+        ],
+        ansi_bright: [
+            0xFF75715E, 0xFFF92672, 0xFFA6E22E, 0xFFF4BF75, 0xFF66D9EF, 0xFFAE81FF, 0xFFA1EFE4,
+            0xFFF9F8F5,
+        ],
     },
     Theme {
         name: "Nord",
-        bg: 0xFF2E3440, fg: 0xFFD8DEE9, prompt: 0xFFA3BE8C, title: 0xFF88C0D0, dim: 0xFF4C566A,
-        select_bg: 0xFF434C5E, select_fg: 0xFFECEFF4,
-        ansi_colors: [0xFF3B4252, 0xFFBF616A, 0xFFA3BE8C, 0xFFEBCB8B, 0xFF81A1C1, 0xFFB48EAD, 0xFF88C0D0, 0xFFE5E9F0],
-        ansi_bright: [0xFF4C566A, 0xFFBF616A, 0xFFA3BE8C, 0xFFEBCB8B, 0xFF81A1C1, 0xFFB48EAD, 0xFF8FBCBB, 0xFFECEFF4],
+        bg: 0xFF2E3440,
+        fg: 0xFFD8DEE9,
+        prompt: 0xFFA3BE8C,
+        title: 0xFF88C0D0,
+        dim: 0xFF4C566A,
+        select_bg: 0xFF434C5E,
+        select_fg: 0xFFECEFF4,
+        ansi_colors: [
+            0xFF3B4252, 0xFFBF616A, 0xFFA3BE8C, 0xFFEBCB8B, 0xFF81A1C1, 0xFFB48EAD, 0xFF88C0D0,
+            0xFFE5E9F0,
+        ],
+        ansi_bright: [
+            0xFF4C566A, 0xFFBF616A, 0xFFA3BE8C, 0xFFEBCB8B, 0xFF81A1C1, 0xFFB48EAD, 0xFF8FBCBB,
+            0xFFECEFF4,
+        ],
     },
     Theme {
         name: "Gruvbox",
-        bg: 0xFF282828, fg: 0xFFEBDBB2, prompt: 0xFFB8BB26, title: 0xFF83A598, dim: 0xFF928374,
-        select_bg: 0xFF3C3836, select_fg: 0xFFFBF1C7,
-        ansi_colors: [0xFF282828, 0xFFCC241D, 0xFF98971A, 0xFFD79921, 0xFF458588, 0xFFB16286, 0xFF689D6A, 0xFFA89984],
-        ansi_bright: [0xFF928374, 0xFFFB4934, 0xFFB8BB26, 0xFFFABD2F, 0xFF83A598, 0xFFD3869B, 0xFF8EC07C, 0xFFEBDBB2],
+        bg: 0xFF282828,
+        fg: 0xFFEBDBB2,
+        prompt: 0xFFB8BB26,
+        title: 0xFF83A598,
+        dim: 0xFF928374,
+        select_bg: 0xFF3C3836,
+        select_fg: 0xFFFBF1C7,
+        ansi_colors: [
+            0xFF282828, 0xFFCC241D, 0xFF98971A, 0xFFD79921, 0xFF458588, 0xFFB16286, 0xFF689D6A,
+            0xFFA89984,
+        ],
+        ansi_bright: [
+            0xFF928374, 0xFFFB4934, 0xFFB8BB26, 0xFFFABD2F, 0xFF83A598, 0xFFD3869B, 0xFF8EC07C,
+            0xFFEBDBB2,
+        ],
     },
     Theme {
         name: "One Dark",
-        bg: 0xFF282C34, fg: 0xFFABB2BF, prompt: 0xFF98C379, title: 0xFF61AFEF, dim: 0xFF5C6370,
-        select_bg: 0xFF3E4451, select_fg: 0xFFFFFFFF,
-        ansi_colors: [0xFF282C34, 0xFFE06C75, 0xFF98C379, 0xFFE5C07B, 0xFF61AFEF, 0xFFC678DD, 0xFF56B6C2, 0xFFABB2BF],
-        ansi_bright: [0xFF5C6370, 0xFFE06C75, 0xFF98C379, 0xFFE5C07B, 0xFF61AFEF, 0xFFC678DD, 0xFF56B6C2, 0xFFFFFFFF],
+        bg: 0xFF282C34,
+        fg: 0xFFABB2BF,
+        prompt: 0xFF98C379,
+        title: 0xFF61AFEF,
+        dim: 0xFF5C6370,
+        select_bg: 0xFF3E4451,
+        select_fg: 0xFFFFFFFF,
+        ansi_colors: [
+            0xFF282C34, 0xFFE06C75, 0xFF98C379, 0xFFE5C07B, 0xFF61AFEF, 0xFFC678DD, 0xFF56B6C2,
+            0xFFABB2BF,
+        ],
+        ansi_bright: [
+            0xFF5C6370, 0xFFE06C75, 0xFF98C379, 0xFFE5C07B, 0xFF61AFEF, 0xFFC678DD, 0xFF56B6C2,
+            0xFFFFFFFF,
+        ],
     },
 ];
 
 // ─── Cell Structure ─────────────────────────────────────────────────────────
 
 /// Attributes packed into a u8 bitfield.
-const ATTR_BOLD: u8       = 0x01;
-const ATTR_ITALIC: u8     = 0x02;
-const ATTR_UNDERLINE: u8  = 0x04;
-const ATTR_BLINK: u8      = 0x08;
-const ATTR_REVERSE: u8    = 0x10;
+const ATTR_BOLD: u8 = 0x01;
+const ATTR_ITALIC: u8 = 0x02;
+const ATTR_UNDERLINE: u8 = 0x04;
+const ATTR_BLINK: u8 = 0x08;
+const ATTR_REVERSE: u8 = 0x10;
 const ATTR_STRIKETHROUGH: u8 = 0x20;
 
 #[derive(Clone, Copy)]
@@ -155,7 +243,15 @@ struct Cell {
 
 impl Cell {
     fn blank(fg: u32, bg: u32) -> Self {
-        Cell { ch: ' ', fg, bg, attr: 0, width: 1, combining: '\0', link_id: 0 }
+        Cell {
+            ch: ' ',
+            fg,
+            bg,
+            attr: 0,
+            width: 1,
+            combining: '\0',
+            link_id: 0,
+        }
     }
 }
 
@@ -182,7 +278,8 @@ fn char_width(c: char) -> u8 {
         || (cp >= 0xFFE0 && cp <= 0xFFE6) // Fullwidth Signs
         || (cp >= 0x1F300 && cp <= 0x1F9FF) // Emoji (Miscellaneous Symbols, Emoticons, etc.)
         || (cp >= 0x20000 && cp <= 0x2FA1F) // CJK Unified Ext B-F, Compat Supplement
-        || (cp >= 0x30000 && cp <= 0x323AF) // CJK Unified Ext G-I
+        || (cp >= 0x30000 && cp <= 0x323AF)
+    // CJK Unified Ext G-I
     {
         return 2;
     }
@@ -247,15 +344,28 @@ fn color_256(idx: u32, colors: &[u32; 8], bright: &[u32; 8]) -> u32 {
 }
 
 /// Fill a rectangle in a raw pixel buffer.
-fn fill_rect_buf(pixels: *mut u32, stride: u32, buf_h: u32, x: i32, y: i32, w: u16, h: u16, color: u32) {
+fn fill_rect_buf(
+    pixels: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: u16,
+    h: u16,
+    color: u32,
+) {
     for row in 0..h as i32 {
         let py = y + row;
-        if py < 0 || py >= buf_h as i32 { continue; }
+        if py < 0 || py >= buf_h as i32 {
+            continue;
+        }
         for col in 0..w as i32 {
             let px = x + col;
             if px >= 0 && px < stride as i32 {
                 let di = py as usize * stride as usize + px as usize;
-                unsafe { *pixels.add(di) = color; }
+                unsafe {
+                    *pixels.add(di) = color;
+                }
             }
         }
     }
@@ -271,8 +381,8 @@ struct CellPos {
 
 struct Selection {
     dragging: bool,
-    anchor: CellPos,  // where the drag started
-    active: CellPos,  // current drag endpoint
+    anchor: CellPos, // where the drag started
+    active: CellPos, // current drag endpoint
 }
 
 impl Selection {
@@ -291,7 +401,14 @@ impl Selection {
 // ─── Selection Helpers ───────────────────────────────────────────────────────
 
 /// Convert pixel coordinates to a cell position in the buffer.
-fn pixel_to_cell_in_rect(px: u32, py: u32, buf: &TerminalBuffer, rect: Rect, cell_w: u16, cell_h: u16) -> CellPos {
+fn pixel_to_cell_in_rect(
+    px: u32,
+    py: u32,
+    buf: &TerminalBuffer,
+    rect: Rect,
+    cell_w: u16,
+    cell_h: u16,
+) -> CellPos {
     let cell_w = cell_w as u32;
     let cell_h = cell_h as u32;
     let local_x = px.saturating_sub(rect.x as u32);
@@ -315,17 +432,29 @@ fn pixel_to_cell_in_rect(px: u32, py: u32, buf: &TerminalBuffer, rect: Rect, cel
 /// Extract the word at a given cell position from the terminal buffer.
 /// A "word" is a contiguous run of non-space characters.
 fn word_at_cell(buf: &TerminalBuffer, row: usize, col: usize) -> String {
-    if row >= buf.lines.len() { return String::new(); }
+    if row >= buf.lines.len() {
+        return String::new();
+    }
     let line = &buf.lines[row];
-    if col >= line.len() { return String::new(); }
-    if line[col].ch == ' ' { return String::new(); }
+    if col >= line.len() {
+        return String::new();
+    }
+    if line[col].ch == ' ' {
+        return String::new();
+    }
     // Find word boundaries
     let mut start = col;
-    while start > 0 && line[start - 1].ch != ' ' { start -= 1; }
+    while start > 0 && line[start - 1].ch != ' ' {
+        start -= 1;
+    }
     let mut end = col;
-    while end + 1 < line.len() && line[end + 1].ch != ' ' { end += 1; }
+    while end + 1 < line.len() && line[end + 1].ch != ' ' {
+        end += 1;
+    }
     let mut word = String::new();
-    for i in start..=end { word.push(line[i].ch); }
+    for i in start..=end {
+        word.push(line[i].ch);
+    }
     word
 }
 
@@ -339,7 +468,11 @@ fn extract_selected_text(buf: &TerminalBuffer, sel: &Selection) -> String {
         }
         let line = &buf.lines[row];
         let c0 = if row == start.row { start.col } else { 0 };
-        let c1 = if row == end.row { end.col + 1 } else { line.len() };
+        let c1 = if row == end.row {
+            end.col + 1
+        } else {
+            line.len()
+        };
         let c1 = c1.min(line.len());
         let mut line_text = String::new();
         for col in c0..c1 {
@@ -359,8 +492,8 @@ fn extract_selected_text(buf: &TerminalBuffer, sel: &Selection) -> String {
 
 // ─── Output Redirect — delegated to anyos_std::shell ─────────────────────────
 
-use anyos_std::shell::Redirect;
 use anyos_std::shell::InputRedirect;
+use anyos_std::shell::Redirect;
 
 /// Parse input redirect — delegates to anyos_std::shell.
 fn parse_input_redirect(line: &str, cwd: &str) -> (String, Option<InputRedirect>) {
@@ -400,7 +533,7 @@ struct TerminalBuffer {
     current_bg: u32,
     current_attr: u8,
     // ANSI escape sequence parser state
-    ansi_state: u8,          // 0=Normal, 1=Escape(\x1B), 2=CSI([), 3=OSC(]), 4=CSI ? prefix, 5=DCS
+    ansi_state: u8, // 0=Normal, 1=Escape(\x1B), 2=CSI([), 3=OSC(]), 4=CSI ? prefix, 5=DCS
     ansi_params: [u8; 64],
     ansi_param_len: usize,
     // Capture mode: when set, write_char appends to this instead of terminal lines
@@ -425,7 +558,7 @@ struct TerminalBuffer {
     // Maximum number of lines to keep in scrollback history
     max_scrollback: usize,
     // Hyperlinks (OSC 8)
-    hyperlinks: Vec<String>,  // index 0 unused, 1..N = URLs
+    hyperlinks: Vec<String>, // index 0 unused, 1..N = URLs
     current_link_id: u16,
 }
 
@@ -472,7 +605,11 @@ impl TerminalBuffer {
 
     /// Get effective scroll bottom (0 means end of visible area).
     fn effective_scroll_bottom(&self) -> usize {
-        if self.scroll_bottom == 0 { self.visible_rows.saturating_sub(1) } else { self.scroll_bottom }
+        if self.scroll_bottom == 0 {
+            self.visible_rows.saturating_sub(1)
+        } else {
+            self.scroll_bottom
+        }
     }
 
     /// Scroll lines within the scroll region up by one.
@@ -502,7 +639,9 @@ impl TerminalBuffer {
 
     /// Enter alternate screen buffer.
     fn enter_alt_screen(&mut self) {
-        if self.alt_lines.is_some() { return; }
+        if self.alt_lines.is_some() {
+            return;
+        }
         self.alt_cursor_row = self.cursor_row;
         self.alt_cursor_col = self.cursor_col;
         self.alt_scroll_offset = self.scroll_offset;
@@ -533,9 +672,15 @@ impl TerminalBuffer {
             match self.ansi_state {
                 1 => {
                     match ch {
-                        '[' => { self.ansi_state = 2; }
-                        ']' => { self.ansi_state = 3; }
-                        _ => { self.ansi_state = 0; }
+                        '[' => {
+                            self.ansi_state = 2;
+                        }
+                        ']' => {
+                            self.ansi_state = 3;
+                        }
+                        _ => {
+                            self.ansi_state = 0;
+                        }
                     }
                     return;
                 }
@@ -549,17 +694,25 @@ impl TerminalBuffer {
                 }
                 3 => {
                     // OSC in capture mode: discard until BEL or ST
-                    if ch == '\x07' { self.ansi_state = 0; }
+                    if ch == '\x07' {
+                        self.ansi_state = 0;
+                    }
                     return;
                 }
                 _ => {}
             }
             match ch {
-                '\x1B' => { self.ansi_state = 1; }
-                '\n' => { cap.push('\n'); }
+                '\x1B' => {
+                    self.ansi_state = 1;
+                }
+                '\n' => {
+                    cap.push('\n');
+                }
                 '\r' => {}
                 '\x07' => {} // BEL
-                _ => { cap.push(ch); }
+                _ => {
+                    cap.push(ch);
+                }
             }
             return;
         }
@@ -861,12 +1014,16 @@ impl TerminalBuffer {
                         // Erase from start to cursor
                         let blank = Cell::blank(self.current_fg, 0);
                         for r in 0..self.cursor_row {
-                            if r < self.lines.len() { self.lines[r].clear(); }
+                            if r < self.lines.len() {
+                                self.lines[r].clear();
+                            }
                         }
                         self.ensure_line(self.cursor_row);
                         let line = &mut self.lines[self.cursor_row];
                         for i in 0..=self.cursor_col.min(line.len().saturating_sub(1)) {
-                            if i < line.len() { line[i] = blank; }
+                            if i < line.len() {
+                                line[i] = blank;
+                            }
                         }
                     }
                     2 | 3 => {
@@ -889,8 +1046,16 @@ impl TerminalBuffer {
                 }
             }
             'H' | 'f' => {
-                let row = if num_count > 0 && nums[0] > 0 { nums[0] as usize - 1 } else { 0 };
-                let col = if num_count > 1 && nums[1] > 0 { nums[1] as usize - 1 } else { 0 };
+                let row = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize - 1
+                } else {
+                    0
+                };
+                let col = if num_count > 1 && nums[1] > 0 {
+                    nums[1] as usize - 1
+                } else {
+                    0
+                };
                 self.cursor_row = self.scroll_offset + row;
                 self.cursor_col = col.min(self.cols.saturating_sub(1));
                 self.ensure_line(self.cursor_row);
@@ -901,60 +1066,102 @@ impl TerminalBuffer {
                 let blank = Cell::blank(self.current_fg, 0);
                 let line = &mut self.lines[self.cursor_row];
                 match mode {
-                    0 => { line.truncate(self.cursor_col); }
+                    0 => {
+                        line.truncate(self.cursor_col);
+                    }
                     1 => {
                         for i in 0..=self.cursor_col.min(line.len().saturating_sub(1)) {
-                            if i < line.len() { line[i] = blank; }
+                            if i < line.len() {
+                                line[i] = blank;
+                            }
                         }
                     }
-                    2 => { line.clear(); }
+                    2 => {
+                        line.clear();
+                    }
                     _ => {}
                 }
             }
             'A' => {
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.cursor_row = self.cursor_row.saturating_sub(n);
             }
             'B' => {
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.cursor_row += n;
                 self.ensure_line(self.cursor_row);
             }
             'C' => {
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.cursor_col = (self.cursor_col + n).min(self.cols.saturating_sub(1));
             }
             'D' => {
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.cursor_col = self.cursor_col.saturating_sub(n);
             }
             'E' => {
                 // Cursor Next Line
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.cursor_row += n;
                 self.cursor_col = 0;
                 self.ensure_line(self.cursor_row);
             }
             'F' => {
                 // Cursor Previous Line
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.cursor_row = self.cursor_row.saturating_sub(n);
                 self.cursor_col = 0;
             }
             'G' => {
                 // Cursor Horizontal Absolute
-                let col = if num_count > 0 && nums[0] > 0 { nums[0] as usize - 1 } else { 0 };
+                let col = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize - 1
+                } else {
+                    0
+                };
                 self.cursor_col = col.min(self.cols.saturating_sub(1));
             }
             'd' => {
                 // Vertical Line Position Absolute (VPA)
-                let row = if num_count > 0 && nums[0] > 0 { nums[0] as usize - 1 } else { 0 };
+                let row = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize - 1
+                } else {
+                    0
+                };
                 self.cursor_row = self.scroll_offset + row;
                 self.ensure_line(self.cursor_row);
             }
             'L' => {
                 // Insert Lines
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 let bot = self.effective_scroll_bottom() + self.scroll_offset;
                 for _ in 0..n {
                     if bot < self.lines.len() {
@@ -968,7 +1175,11 @@ impl TerminalBuffer {
             }
             'M' => {
                 // Delete Lines
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 let bot = self.effective_scroll_bottom() + self.scroll_offset;
                 for _ in 0..n {
                     if self.cursor_row < self.lines.len() {
@@ -983,7 +1194,11 @@ impl TerminalBuffer {
             }
             '@' => {
                 // Insert Characters (ICH)
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.ensure_line(self.cursor_row);
                 let blank = Cell::blank(self.current_fg, 0);
                 let line = &mut self.lines[self.cursor_row];
@@ -996,7 +1211,11 @@ impl TerminalBuffer {
             }
             'P' => {
                 // Delete Characters (DCH)
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.ensure_line(self.cursor_row);
                 let line = &mut self.lines[self.cursor_row];
                 for _ in 0..n {
@@ -1007,7 +1226,11 @@ impl TerminalBuffer {
             }
             'X' => {
                 // Erase Characters (ECH)
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
                 self.ensure_line(self.cursor_row);
                 let blank = Cell::blank(self.current_fg, 0);
                 let line = &mut self.lines[self.cursor_row];
@@ -1020,18 +1243,38 @@ impl TerminalBuffer {
             }
             'S' => {
                 // Scroll Up
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
-                for _ in 0..n { self.scroll_region_up(); }
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
+                for _ in 0..n {
+                    self.scroll_region_up();
+                }
             }
             'T' => {
                 // Scroll Down
-                let n = if num_count > 0 && nums[0] > 0 { nums[0] as usize } else { 1 };
-                for _ in 0..n { self.scroll_region_down(); }
+                let n = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize
+                } else {
+                    1
+                };
+                for _ in 0..n {
+                    self.scroll_region_down();
+                }
             }
             'r' => {
                 // DECSTBM — Set Scrolling Region
-                let top = if num_count > 0 && nums[0] > 0 { nums[0] as usize - 1 } else { 0 };
-                let bot = if num_count > 1 && nums[1] > 0 { nums[1] as usize - 1 } else { 0 };
+                let top = if num_count > 0 && nums[0] > 0 {
+                    nums[0] as usize - 1
+                } else {
+                    0
+                };
+                let bot = if num_count > 1 && nums[1] > 0 {
+                    nums[1] as usize - 1
+                } else {
+                    0
+                };
                 self.scroll_top = top;
                 self.scroll_bottom = bot;
                 // Move cursor to home
@@ -1048,40 +1291,78 @@ impl TerminalBuffer {
                     let mut idx = 0;
                     while idx < num_count {
                         match nums[idx] {
-                            0 => { self.current_fg = COLOR_FG; self.current_bg = 0; self.current_attr = 0; }
-                            1 => { self.current_attr |= ATTR_BOLD; }
-                            3 => { self.current_attr |= ATTR_ITALIC; }
-                            4 => { self.current_attr |= ATTR_UNDERLINE; }
-                            5 => { self.current_attr |= ATTR_BLINK; }
-                            7 => { self.current_attr |= ATTR_REVERSE; }
-                            9 => { self.current_attr |= ATTR_STRIKETHROUGH; }
-                            22 => { self.current_attr &= !ATTR_BOLD; }
-                            23 => { self.current_attr &= !ATTR_ITALIC; }
-                            24 => { self.current_attr &= !ATTR_UNDERLINE; }
-                            25 => { self.current_attr &= !ATTR_BLINK; }
-                            27 => { self.current_attr &= !ATTR_REVERSE; }
-                            29 => { self.current_attr &= !ATTR_STRIKETHROUGH; }
+                            0 => {
+                                self.current_fg = COLOR_FG;
+                                self.current_bg = 0;
+                                self.current_attr = 0;
+                            }
+                            1 => {
+                                self.current_attr |= ATTR_BOLD;
+                            }
+                            3 => {
+                                self.current_attr |= ATTR_ITALIC;
+                            }
+                            4 => {
+                                self.current_attr |= ATTR_UNDERLINE;
+                            }
+                            5 => {
+                                self.current_attr |= ATTR_BLINK;
+                            }
+                            7 => {
+                                self.current_attr |= ATTR_REVERSE;
+                            }
+                            9 => {
+                                self.current_attr |= ATTR_STRIKETHROUGH;
+                            }
+                            22 => {
+                                self.current_attr &= !ATTR_BOLD;
+                            }
+                            23 => {
+                                self.current_attr &= !ATTR_ITALIC;
+                            }
+                            24 => {
+                                self.current_attr &= !ATTR_UNDERLINE;
+                            }
+                            25 => {
+                                self.current_attr &= !ATTR_BLINK;
+                            }
+                            27 => {
+                                self.current_attr &= !ATTR_REVERSE;
+                            }
+                            29 => {
+                                self.current_attr &= !ATTR_STRIKETHROUGH;
+                            }
                             // Foreground colors
                             30..=37 => {
                                 let c = (nums[idx] - 30) as usize;
-                                self.current_fg = if self.current_attr & ATTR_BOLD != 0 { bright[c] } else { colors[c] };
+                                self.current_fg = if self.current_attr & ATTR_BOLD != 0 {
+                                    bright[c]
+                                } else {
+                                    colors[c]
+                                };
                             }
                             38 => {
                                 // Extended foreground: 38;5;N (256-color) or 38;2;R;G;B (true-color)
                                 if idx + 1 < num_count {
                                     if nums[idx + 1] == 5 && idx + 2 < num_count {
-                                        self.current_fg = color_256(nums[idx + 2], &colors, &bright);
+                                        self.current_fg =
+                                            color_256(nums[idx + 2], &colors, &bright);
                                         idx += 2;
                                     } else if nums[idx + 1] == 2 && idx + 4 < num_count {
                                         let r = nums[idx + 2].min(255) as u8;
                                         let g = nums[idx + 3].min(255) as u8;
                                         let b = nums[idx + 4].min(255) as u8;
-                                        self.current_fg = 0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+                                        self.current_fg = 0xFF000000
+                                            | (r as u32) << 16
+                                            | (g as u32) << 8
+                                            | b as u32;
                                         idx += 4;
                                     }
                                 }
                             }
-                            39 => { self.current_fg = COLOR_FG; }
+                            39 => {
+                                self.current_fg = COLOR_FG;
+                            }
                             // Background colors
                             40..=47 => {
                                 let c = (nums[idx] - 40) as usize;
@@ -1091,18 +1372,24 @@ impl TerminalBuffer {
                                 // Extended background: 48;5;N or 48;2;R;G;B
                                 if idx + 1 < num_count {
                                     if nums[idx + 1] == 5 && idx + 2 < num_count {
-                                        self.current_bg = color_256(nums[idx + 2], &colors, &bright);
+                                        self.current_bg =
+                                            color_256(nums[idx + 2], &colors, &bright);
                                         idx += 2;
                                     } else if nums[idx + 1] == 2 && idx + 4 < num_count {
                                         let r = nums[idx + 2].min(255) as u8;
                                         let g = nums[idx + 3].min(255) as u8;
                                         let b = nums[idx + 4].min(255) as u8;
-                                        self.current_bg = 0xFF000000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+                                        self.current_bg = 0xFF000000
+                                            | (r as u32) << 16
+                                            | (g as u32) << 8
+                                            | b as u32;
                                         idx += 4;
                                     }
                                 }
                             }
-                            49 => { self.current_bg = 0; }
+                            49 => {
+                                self.current_bg = 0;
+                            }
                             // Bright foreground
                             90..=97 => {
                                 self.current_fg = bright[(nums[idx] - 90) as usize];
@@ -1143,11 +1430,19 @@ impl TerminalBuffer {
                 }
                 1049 => {
                     // Alternate screen buffer + save/restore cursor
-                    if set { self.enter_alt_screen(); } else { self.leave_alt_screen(); }
+                    if set {
+                        self.enter_alt_screen();
+                    } else {
+                        self.leave_alt_screen();
+                    }
                 }
                 1047 | 47 => {
                     // Alternate screen buffer (without cursor save)
-                    if set { self.enter_alt_screen(); } else { self.leave_alt_screen(); }
+                    if set {
+                        self.enter_alt_screen();
+                    } else {
+                        self.leave_alt_screen();
+                    }
                 }
                 1000 => {
                     // Mouse tracking (basic)
@@ -1187,7 +1482,9 @@ impl TerminalBuffer {
     fn dispatch_osc(&mut self) {
         // OSC format: "code;data"
         let buf = &self.osc_buf;
-        if buf.is_empty() { return; }
+        if buf.is_empty() {
+            return;
+        }
         // Find the semicolon separator
         let mut sep = 0;
         for i in 0..buf.len() {
@@ -1196,7 +1493,9 @@ impl TerminalBuffer {
                 break;
             }
         }
-        if sep == 0 { return; }
+        if sep == 0 {
+            return;
+        }
         // Parse command number
         let mut cmd_num = 0u32;
         for i in 0..sep {
@@ -1248,7 +1547,9 @@ impl TerminalBuffer {
 
     /// Get the URL for a given link_id, if any.
     fn get_hyperlink(&self, link_id: u16) -> Option<&str> {
-        if link_id == 0 { return None; }
+        if link_id == 0 {
+            return None;
+        }
         self.hyperlinks.get(link_id as usize).map(|s| s.as_str())
     }
 
@@ -1388,13 +1689,34 @@ impl Profile {
         use anyos_std::json::Value;
         let mut obj = Value::new_object();
         obj.set("name", Value::from(self.name.as_str()));
-        obj.set("color_bg", Value::from(format!("{:08X}", self.color_bg).as_str()));
-        obj.set("color_fg", Value::from(format!("{:08X}", self.color_fg).as_str()));
-        obj.set("color_prompt", Value::from(format!("{:08X}", self.color_prompt).as_str()));
-        obj.set("color_title", Value::from(format!("{:08X}", self.color_title).as_str()));
-        obj.set("color_dim", Value::from(format!("{:08X}", self.color_dim).as_str()));
-        obj.set("color_select_bg", Value::from(format!("{:08X}", self.color_select_bg).as_str()));
-        obj.set("color_select_fg", Value::from(format!("{:08X}", self.color_select_fg).as_str()));
+        obj.set(
+            "color_bg",
+            Value::from(format!("{:08X}", self.color_bg).as_str()),
+        );
+        obj.set(
+            "color_fg",
+            Value::from(format!("{:08X}", self.color_fg).as_str()),
+        );
+        obj.set(
+            "color_prompt",
+            Value::from(format!("{:08X}", self.color_prompt).as_str()),
+        );
+        obj.set(
+            "color_title",
+            Value::from(format!("{:08X}", self.color_title).as_str()),
+        );
+        obj.set(
+            "color_dim",
+            Value::from(format!("{:08X}", self.color_dim).as_str()),
+        );
+        obj.set(
+            "color_select_bg",
+            Value::from(format!("{:08X}", self.color_select_bg).as_str()),
+        );
+        obj.set(
+            "color_select_fg",
+            Value::from(format!("{:08X}", self.color_select_fg).as_str()),
+        );
         obj.set("win_w", Value::from(self.win_w as i64));
         obj.set("win_h", Value::from(self.win_h as i64));
         obj.set("scrollback", Value::from(self.scrollback as i64));
@@ -1415,22 +1737,68 @@ impl Profile {
 
     fn from_json(val: &anyos_std::json::Value) -> Self {
         let mut p = Self::default_profile();
-        if let Some(s) = val["name"].as_str() { p.name = String::from(s); }
-        if let Some(s) = val["color_bg"].as_str() { if let Some(c) = parse_hex_color(s) { p.color_bg = c; } }
-        if let Some(s) = val["color_fg"].as_str() { if let Some(c) = parse_hex_color(s) { p.color_fg = c; } }
-        if let Some(s) = val["color_prompt"].as_str() { if let Some(c) = parse_hex_color(s) { p.color_prompt = c; } }
-        if let Some(s) = val["color_title"].as_str() { if let Some(c) = parse_hex_color(s) { p.color_title = c; } }
-        if let Some(s) = val["color_dim"].as_str() { if let Some(c) = parse_hex_color(s) { p.color_dim = c; } }
-        if let Some(s) = val["color_select_bg"].as_str() { if let Some(c) = parse_hex_color(s) { p.color_select_bg = c; } }
-        if let Some(s) = val["color_select_fg"].as_str() { if let Some(c) = parse_hex_color(s) { p.color_select_fg = c; } }
-        if let Some(n) = val["win_w"].as_i64() { p.win_w = n as u32; }
-        if let Some(n) = val["win_h"].as_i64() { p.win_h = n as u32; }
-        if let Some(n) = val["scrollback"].as_i64() { p.scrollback = n as usize; }
-        if let Some(b) = val["is_default"].as_bool() { p.is_default = b; }
-        if let Some(n) = val["font_size"].as_i64() { p.font_size = n as u16; }
-        if let Some(n) = val["bg_alpha"].as_i64() { p.bg_alpha = n as u8; }
-        if let Some(n) = val["cursor_blink_ms"].as_i64() { p.cursor_blink_ms = n as u32; }
-        if let Some(s) = val["theme"].as_str() { p.theme_name = String::from(s); }
+        if let Some(s) = val["name"].as_str() {
+            p.name = String::from(s);
+        }
+        if let Some(s) = val["color_bg"].as_str() {
+            if let Some(c) = parse_hex_color(s) {
+                p.color_bg = c;
+            }
+        }
+        if let Some(s) = val["color_fg"].as_str() {
+            if let Some(c) = parse_hex_color(s) {
+                p.color_fg = c;
+            }
+        }
+        if let Some(s) = val["color_prompt"].as_str() {
+            if let Some(c) = parse_hex_color(s) {
+                p.color_prompt = c;
+            }
+        }
+        if let Some(s) = val["color_title"].as_str() {
+            if let Some(c) = parse_hex_color(s) {
+                p.color_title = c;
+            }
+        }
+        if let Some(s) = val["color_dim"].as_str() {
+            if let Some(c) = parse_hex_color(s) {
+                p.color_dim = c;
+            }
+        }
+        if let Some(s) = val["color_select_bg"].as_str() {
+            if let Some(c) = parse_hex_color(s) {
+                p.color_select_bg = c;
+            }
+        }
+        if let Some(s) = val["color_select_fg"].as_str() {
+            if let Some(c) = parse_hex_color(s) {
+                p.color_select_fg = c;
+            }
+        }
+        if let Some(n) = val["win_w"].as_i64() {
+            p.win_w = n as u32;
+        }
+        if let Some(n) = val["win_h"].as_i64() {
+            p.win_h = n as u32;
+        }
+        if let Some(n) = val["scrollback"].as_i64() {
+            p.scrollback = n as usize;
+        }
+        if let Some(b) = val["is_default"].as_bool() {
+            p.is_default = b;
+        }
+        if let Some(n) = val["font_size"].as_i64() {
+            p.font_size = n as u16;
+        }
+        if let Some(n) = val["bg_alpha"].as_i64() {
+            p.bg_alpha = n as u8;
+        }
+        if let Some(n) = val["cursor_blink_ms"].as_i64() {
+            p.cursor_blink_ms = n as u32;
+        }
+        if let Some(s) = val["theme"].as_str() {
+            p.theme_name = String::from(s);
+        }
         if let Some(arr) = val["tabs"].as_array() {
             for item in arr {
                 p.saved_tabs.push(SavedTab::from_json(item));
@@ -1442,8 +1810,14 @@ impl Profile {
 
 fn parse_hex_color(s: &str) -> Option<u32> {
     let s = s.trim();
-    let s = if s.starts_with("0x") || s.starts_with("0X") { &s[2..] } else { s };
-    if s.len() != 8 { return None; }
+    let s = if s.starts_with("0x") || s.starts_with("0X") {
+        &s[2..]
+    } else {
+        s
+    };
+    if s.len() != 8 {
+        return None;
+    }
     let mut val = 0u32;
     for b in s.bytes() {
         let digit = match b {
@@ -1577,7 +1951,9 @@ fn extract_scrollback(buf: &TerminalBuffer) -> String {
 
 /// Display restored scrollback text in a terminal buffer as dim text.
 fn restore_scrollback_into(buf: &mut TerminalBuffer, scrollback: &str) {
-    if scrollback.is_empty() { return; }
+    if scrollback.is_empty() {
+        return;
+    }
 
     let saved_fg = buf.current_fg;
     buf.current_fg = 0xFF606060; // dim gray for old output
@@ -1637,7 +2013,10 @@ fn pane_to_json_with_scrollback(node: &PaneNode) -> anyos_std::json::Value {
             let mut obj = Value::new_object();
             obj.set("type", Value::from("leaf"));
             obj.set("cwd", Value::from(session.shell.cwd.as_str()));
-            obj.set("scrollback", Value::from(extract_scrollback(&session.buf).as_str()));
+            obj.set(
+                "scrollback",
+                Value::from(extract_scrollback(&session.buf).as_str()),
+            );
             obj
         }
         PaneNode::HSplit { left, right, ratio } => {
@@ -1663,13 +2042,17 @@ fn pane_to_json_with_scrollback(node: &PaneNode) -> anyos_std::json::Value {
 fn load_recovery() -> Option<Vec<SavedTab>> {
     let path = recovery_file_path();
     let fd = fs::open(&path, 0);
-    if fd == u32::MAX { return None; }
+    if fd == u32::MAX {
+        return None;
+    }
 
     // Read up to 512KB recovery data
     let mut data = alloc::vec![0u8; 512 * 1024];
     let n = fs::read(fd, &mut data);
     fs::close(fd);
-    if n == 0 || n == u32::MAX { return None; }
+    if n == 0 || n == u32::MAX {
+        return None;
+    }
 
     let text = core::str::from_utf8(&data[..n as usize]).ok()?;
     let val = anyos_std::json::Value::parse(text.trim()).ok()?;
@@ -1686,14 +2069,23 @@ fn load_recovery() -> Option<Vec<SavedTab>> {
     // Delete recovery file after loading
     fs::unlink(&path);
 
-    if tabs.is_empty() { None } else { Some(tabs) }
+    if tabs.is_empty() {
+        None
+    } else {
+        Some(tabs)
+    }
 }
 
 fn find_default_profile(profiles: &[Profile]) -> Profile {
     for p in profiles {
-        if p.is_default { return p.clone(); }
+        if p.is_default {
+            return p.clone();
+        }
     }
-    profiles.first().cloned().unwrap_or_else(Profile::default_profile)
+    profiles
+        .first()
+        .cloned()
+        .unwrap_or_else(Profile::default_profile)
 }
 
 // ─── Session ─────────────────────────────────────────────────────────────────
@@ -1701,7 +2093,7 @@ fn find_default_profile(profiles: &[Profile]) -> Profile {
 /// Here-document state: collecting lines until delimiter is seen.
 struct HereDocState {
     delimiter: String,
-    command: String,  // the command to feed the here-doc to (e.g. "cat")
+    command: String, // the command to feed the here-doc to (e.g. "cat")
     lines: Vec<String>,
 }
 
@@ -1725,13 +2117,28 @@ struct Session {
 /// Compute cell dimensions from font size by measuring the actual font metrics.
 fn cell_dims_for_font(font_size: u16) -> (u16, u16) {
     let (w, h) = anyui::measure_text("W", FONT_ID_MONO as u16, font_size);
-    let cw = if w > 0 { w as u16 } else { ((font_size as u32 * 8 + 6) / 13) as u16 };
-    let ch = if h > 0 { h as u16 } else { ((font_size as u32 * 16 + 6) / 13) as u16 };
+    let cw = if w > 0 {
+        w as u16
+    } else {
+        ((font_size as u32 * 8 + 6) / 13) as u16
+    };
+    let ch = if h > 0 {
+        h as u16
+    } else {
+        ((font_size as u32 * 16 + 6) / 13) as u16
+    };
     (cw.max(4), ch.max(8))
 }
 
 impl Session {
-    fn new(cols: usize, rows: usize, aliases: Vec<(String, String)>, font_size: u16, color_prompt: u32, color_fg: u32) -> Self {
+    fn new(
+        cols: usize,
+        rows: usize,
+        aliases: Vec<(String, String)>,
+        font_size: u16,
+        color_prompt: u32,
+        color_fg: u32,
+    ) -> Self {
         let (cell_w, cell_h) = cell_dims_for_font(font_size);
         let mut shell = Shell::new();
         shell.aliases = aliases;
@@ -1786,29 +2193,58 @@ struct Rect {
 }
 
 enum PaneNode {
-    Leaf { id: PaneId, session: Session },
-    HSplit { left: Box<PaneNode>, right: Box<PaneNode>, ratio: f32 },
-    VSplit { top: Box<PaneNode>, bottom: Box<PaneNode>, ratio: f32 },
+    Leaf {
+        id: PaneId,
+        session: Session,
+    },
+    HSplit {
+        left: Box<PaneNode>,
+        right: Box<PaneNode>,
+        ratio: f32,
+    },
+    VSplit {
+        top: Box<PaneNode>,
+        bottom: Box<PaneNode>,
+        ratio: f32,
+    },
 }
 
 impl PaneNode {
     fn find_session(&self, pane_id: PaneId) -> Option<&Session> {
         match self {
             PaneNode::Leaf { id, session } => {
-                if *id == pane_id { Some(session) } else { None }
+                if *id == pane_id {
+                    Some(session)
+                } else {
+                    None
+                }
             }
-            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
-                left.find_session(pane_id).or_else(|| right.find_session(pane_id))
-            }
+            PaneNode::HSplit { left, right, .. }
+            | PaneNode::VSplit {
+                top: left,
+                bottom: right,
+                ..
+            } => left
+                .find_session(pane_id)
+                .or_else(|| right.find_session(pane_id)),
         }
     }
 
     fn find_session_mut(&mut self, pane_id: PaneId) -> Option<&mut Session> {
         match self {
             PaneNode::Leaf { id, session } => {
-                if *id == pane_id { Some(session) } else { None }
+                if *id == pane_id {
+                    Some(session)
+                } else {
+                    None
+                }
             }
-            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+            PaneNode::HSplit { left, right, .. }
+            | PaneNode::VSplit {
+                top: left,
+                bottom: right,
+                ..
+            } => {
                 if let Some(s) = left.find_session_mut(pane_id) {
                     Some(s)
                 } else {
@@ -1821,7 +2257,12 @@ impl PaneNode {
     fn for_each_session_mut(&mut self, f: impl Fn(&mut Session) + Copy) {
         match self {
             PaneNode::Leaf { session, .. } => f(session),
-            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+            PaneNode::HSplit { left, right, .. }
+            | PaneNode::VSplit {
+                top: left,
+                bottom: right,
+                ..
+            } => {
                 left.for_each_session_mut(f);
                 right.for_each_session_mut(f);
             }
@@ -1840,7 +2281,12 @@ impl PaneNode {
     fn collect_pane_ids(&self, out: &mut Vec<PaneId>) {
         match self {
             PaneNode::Leaf { id, .. } => out.push(*id),
-            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+            PaneNode::HSplit { left, right, .. }
+            | PaneNode::VSplit {
+                top: left,
+                bottom: right,
+                ..
+            } => {
                 left.collect_pane_ids(out);
                 right.collect_pane_ids(out);
             }
@@ -1857,7 +2303,12 @@ impl PaneNode {
     fn collect_sessions_inner<'a>(&'a self, out: &mut Vec<&'a Session>) {
         match self {
             PaneNode::Leaf { session, .. } => out.push(session),
-            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+            PaneNode::HSplit { left, right, .. }
+            | PaneNode::VSplit {
+                top: left,
+                bottom: right,
+                ..
+            } => {
                 left.collect_sessions_inner(out);
                 right.collect_sessions_inner(out);
             }
@@ -1879,14 +2330,46 @@ impl PaneNode {
             PaneNode::HSplit { left, right, ratio } => {
                 let left_w = ((area.w as f32) * ratio) as u16;
                 let right_w = area.w.saturating_sub(left_w + PANE_BORDER);
-                left.layout_inner(Rect { x: area.x, y: area.y, w: left_w, h: area.h }, out);
-                right.layout_inner(Rect { x: area.x + left_w + PANE_BORDER, y: area.y, w: right_w, h: area.h }, out);
+                left.layout_inner(
+                    Rect {
+                        x: area.x,
+                        y: area.y,
+                        w: left_w,
+                        h: area.h,
+                    },
+                    out,
+                );
+                right.layout_inner(
+                    Rect {
+                        x: area.x + left_w + PANE_BORDER,
+                        y: area.y,
+                        w: right_w,
+                        h: area.h,
+                    },
+                    out,
+                );
             }
             PaneNode::VSplit { top, bottom, ratio } => {
                 let top_h = ((area.h as f32) * ratio) as u16;
                 let bottom_h = area.h.saturating_sub(top_h + PANE_BORDER);
-                top.layout_inner(Rect { x: area.x, y: area.y, w: area.w, h: top_h }, out);
-                bottom.layout_inner(Rect { x: area.x, y: area.y + top_h + PANE_BORDER, w: area.w, h: bottom_h }, out);
+                top.layout_inner(
+                    Rect {
+                        x: area.x,
+                        y: area.y,
+                        w: area.w,
+                        h: top_h,
+                    },
+                    out,
+                );
+                bottom.layout_inner(
+                    Rect {
+                        x: area.x,
+                        y: area.y + top_h + PANE_BORDER,
+                        w: area.w,
+                        h: bottom_h,
+                    },
+                    out,
+                );
             }
         }
     }
@@ -1904,16 +2387,38 @@ impl PaneNode {
             PaneNode::HSplit { left, right, ratio } => {
                 let left_w = ((area.w as f32) * ratio) as u16;
                 let right_w = area.w.saturating_sub(left_w + PANE_BORDER);
-                let left_area = Rect { x: area.x, y: area.y, w: left_w, h: area.h };
-                let right_area = Rect { x: area.x + left_w + PANE_BORDER, y: area.y, w: right_w, h: area.h };
-                left.pane_at_point(left_area, px, py).or_else(|| right.pane_at_point(right_area, px, py))
+                let left_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    w: left_w,
+                    h: area.h,
+                };
+                let right_area = Rect {
+                    x: area.x + left_w + PANE_BORDER,
+                    y: area.y,
+                    w: right_w,
+                    h: area.h,
+                };
+                left.pane_at_point(left_area, px, py)
+                    .or_else(|| right.pane_at_point(right_area, px, py))
             }
             PaneNode::VSplit { top, bottom, ratio } => {
                 let top_h = ((area.h as f32) * ratio) as u16;
                 let bottom_h = area.h.saturating_sub(top_h + PANE_BORDER);
-                let top_area = Rect { x: area.x, y: area.y, w: area.w, h: top_h };
-                let bottom_area = Rect { x: area.x, y: area.y + top_h + PANE_BORDER, w: area.w, h: bottom_h };
-                top.pane_at_point(top_area, px, py).or_else(|| bottom.pane_at_point(bottom_area, px, py))
+                let top_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    w: area.w,
+                    h: top_h,
+                };
+                let bottom_area = Rect {
+                    x: area.x,
+                    y: area.y + top_h + PANE_BORDER,
+                    w: area.w,
+                    h: bottom_h,
+                };
+                top.pane_at_point(top_area, px, py)
+                    .or_else(|| bottom.pane_at_point(bottom_area, px, py))
             }
         }
     }
@@ -2008,24 +2513,70 @@ fn rebuild_pane_tree(
             let ratio = layout["ratio"].as_i64().unwrap_or(500) as f32 / 1000.0;
             let left_cols = ((cols as f32) * ratio) as usize;
             let right_cols = cols.saturating_sub(left_cols);
-            let left = rebuild_pane_tree(&layout["left"], next_id, left_cols.max(1), rows, aliases, defaults);
-            let right = rebuild_pane_tree(&layout["right"], next_id, right_cols.max(1), rows, aliases, defaults);
-            PaneNode::HSplit { left: Box::new(left), right: Box::new(right), ratio }
+            let left = rebuild_pane_tree(
+                &layout["left"],
+                next_id,
+                left_cols.max(1),
+                rows,
+                aliases,
+                defaults,
+            );
+            let right = rebuild_pane_tree(
+                &layout["right"],
+                next_id,
+                right_cols.max(1),
+                rows,
+                aliases,
+                defaults,
+            );
+            PaneNode::HSplit {
+                left: Box::new(left),
+                right: Box::new(right),
+                ratio,
+            }
         }
         "vsplit" => {
             let ratio = layout["ratio"].as_i64().unwrap_or(500) as f32 / 1000.0;
             let top_rows = ((rows as f32) * ratio) as usize;
             let bot_rows = rows.saturating_sub(top_rows);
-            let top = rebuild_pane_tree(&layout["top"], next_id, cols, top_rows.max(1), aliases, defaults);
-            let bottom = rebuild_pane_tree(&layout["bottom"], next_id, cols, bot_rows.max(1), aliases, defaults);
-            PaneNode::VSplit { top: Box::new(top), bottom: Box::new(bottom), ratio }
+            let top = rebuild_pane_tree(
+                &layout["top"],
+                next_id,
+                cols,
+                top_rows.max(1),
+                aliases,
+                defaults,
+            );
+            let bottom = rebuild_pane_tree(
+                &layout["bottom"],
+                next_id,
+                cols,
+                bot_rows.max(1),
+                aliases,
+                defaults,
+            );
+            PaneNode::VSplit {
+                top: Box::new(top),
+                bottom: Box::new(bottom),
+                ratio,
+            }
         }
         _ => {
             // leaf
             let id = *next_id;
             *next_id += 1;
-            let aliases_vec: Vec<(String, String)> = aliases.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
-            let mut session = Session::new(cols.max(1), rows.max(1), aliases_vec, defaults.font_size, defaults.color_prompt, defaults.color_fg);
+            let aliases_vec: Vec<(String, String)> = aliases
+                .iter()
+                .map(|(a, b)| (a.clone(), b.clone()))
+                .collect();
+            let mut session = Session::new(
+                cols.max(1),
+                rows.max(1),
+                aliases_vec,
+                defaults.font_size,
+                defaults.color_prompt,
+                defaults.color_fg,
+            );
             session.buf.max_scrollback = defaults.scrollback;
             // Restore cwd if saved
             if let Some(cwd) = layout["cwd"].as_str() {
@@ -2048,58 +2599,126 @@ fn rebuild_pane_tree(
 /// Match a single pattern "atom" at the given position.
 /// Returns how many bytes were consumed, or None if no match.
 fn regex_atom_match(pattern: &[u8], pi: usize, text: &[u8], ti: usize) -> Option<usize> {
-    if pi >= pattern.len() { return Some(0); }
+    if pi >= pattern.len() {
+        return Some(0);
+    }
     if ti >= text.len() {
-        if pattern[pi] == b'$' { return Some(0); }
+        if pattern[pi] == b'$' {
+            return Some(0);
+        }
         return None;
     }
     let ch = text[ti];
     match pattern[pi] {
         b'.' => Some(1),
-        b'\\' if pi + 1 < pattern.len() => {
-            match pattern[pi + 1] {
-                b'd' => if ch >= b'0' && ch <= b'9' { Some(1) } else { None },
-                b'w' => if ch.is_ascii_alphanumeric() || ch == b'_' { Some(1) } else { None },
-                b's' => if ch == b' ' || ch == b'\t' { Some(1) } else { None },
-                b'D' => if ch < b'0' || ch > b'9' { Some(1) } else { None },
-                b'W' => if !ch.is_ascii_alphanumeric() && ch != b'_' { Some(1) } else { None },
-                b'S' => if ch != b' ' && ch != b'\t' { Some(1) } else { None },
-                other => if ch == other { Some(1) } else { None },
+        b'\\' if pi + 1 < pattern.len() => match pattern[pi + 1] {
+            b'd' => {
+                if ch >= b'0' && ch <= b'9' {
+                    Some(1)
+                } else {
+                    None
+                }
             }
-        }
+            b'w' => {
+                if ch.is_ascii_alphanumeric() || ch == b'_' {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+            b's' => {
+                if ch == b' ' || ch == b'\t' {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+            b'D' => {
+                if ch < b'0' || ch > b'9' {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+            b'W' => {
+                if !ch.is_ascii_alphanumeric() && ch != b'_' {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+            b'S' => {
+                if ch != b' ' && ch != b'\t' {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+            other => {
+                if ch == other {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+        },
         b'[' => {
             // Character class [abc] or [a-z] or [^abc]
             let mut j = pi + 1;
             let negate = j < pattern.len() && pattern[j] == b'^';
-            if negate { j += 1; }
+            if negate {
+                j += 1;
+            }
             let mut matched = false;
             while j < pattern.len() && pattern[j] != b']' {
                 if j + 2 < pattern.len() && pattern[j + 1] == b'-' {
-                    if ch >= pattern[j] && ch <= pattern[j + 2] { matched = true; }
+                    if ch >= pattern[j] && ch <= pattern[j + 2] {
+                        matched = true;
+                    }
                     j += 3;
                 } else {
-                    if ch == pattern[j] { matched = true; }
+                    if ch == pattern[j] {
+                        matched = true;
+                    }
                     j += 1;
                 }
             }
-            if negate { matched = !matched; }
-            if matched { Some(1) } else { None }
+            if negate {
+                matched = !matched;
+            }
+            if matched {
+                Some(1)
+            } else {
+                None
+            }
         }
         literal => {
-            let lc = if literal >= b'A' && literal <= b'Z' { literal + 32 } else { literal };
-            if ch == lc { Some(1) } else { None }
+            let lc = if literal >= b'A' && literal <= b'Z' {
+                literal + 32
+            } else {
+                literal
+            };
+            if ch == lc {
+                Some(1)
+            } else {
+                None
+            }
         }
     }
 }
 
 /// Get the size of a pattern atom (how many bytes it occupies in the pattern).
 fn regex_atom_size(pattern: &[u8], pi: usize) -> usize {
-    if pi >= pattern.len() { return 0; }
+    if pi >= pattern.len() {
+        return 0;
+    }
     match pattern[pi] {
         b'\\' => 2,
         b'[' => {
             let mut j = pi + 1;
-            while j < pattern.len() && pattern[j] != b']' { j += 1; }
+            while j < pattern.len() && pattern[j] != b']' {
+                j += 1;
+            }
             j + 1 - pi
         }
         _ => 1,
@@ -2115,13 +2734,17 @@ fn simple_regex_match(pattern: &str, text: &[u8], start: usize) -> Option<usize>
 
     // Handle ^ anchor
     if pi < pat.len() && pat[pi] == b'^' {
-        if start != 0 { return None; }
+        if start != 0 {
+            return None;
+        }
         pi += 1;
     }
 
     while pi < pat.len() {
         if pat[pi] == b'$' {
-            if ti == text.len() { return Some(ti - start); }
+            if ti == text.len() {
+                return Some(ti - start);
+            }
             return None;
         }
 
@@ -2139,7 +2762,9 @@ fn simple_regex_match(pattern: &str, text: &[u8], start: usize) -> Option<usize>
                     }
                     // Try from most to least (greedy)
                     while count > 0 {
-                        if let Some(rest) = simple_regex_match_inner(pat, next_pi + 1, text, ti + count) {
+                        if let Some(rest) =
+                            simple_regex_match_inner(pat, next_pi + 1, text, ti + count)
+                        {
                             return Some(ti + count + rest - start);
                         }
                         count -= 1;
@@ -2156,9 +2781,13 @@ fn simple_regex_match(pattern: &str, text: &[u8], start: usize) -> Option<usize>
                     while regex_atom_match(pat, pi, text, ti + count).is_some() {
                         count += 1;
                     }
-                    if count == 0 { return None; }
+                    if count == 0 {
+                        return None;
+                    }
                     while count > 0 {
-                        if let Some(rest) = simple_regex_match_inner(pat, next_pi + 1, text, ti + count) {
+                        if let Some(rest) =
+                            simple_regex_match_inner(pat, next_pi + 1, text, ti + count)
+                        {
                             return Some(ti + count + rest - start);
                         }
                         count -= 1;
@@ -2168,7 +2797,8 @@ fn simple_regex_match(pattern: &str, text: &[u8], start: usize) -> Option<usize>
                 b'?' => {
                     // 0 or 1
                     if let Some(_) = regex_atom_match(pat, pi, text, ti) {
-                        if let Some(rest) = simple_regex_match_inner(pat, next_pi + 1, text, ti + 1) {
+                        if let Some(rest) = simple_regex_match_inner(pat, next_pi + 1, text, ti + 1)
+                        {
                             return Some(ti + 1 + rest - start);
                         }
                     }
@@ -2194,7 +2824,9 @@ fn simple_regex_match(pattern: &str, text: &[u8], start: usize) -> Option<usize>
 }
 
 fn simple_regex_match_inner(pat: &[u8], pi: usize, text: &[u8], ti: usize) -> Option<usize> {
-    if pi >= pat.len() { return Some(0); }
+    if pi >= pat.len() {
+        return Some(0);
+    }
     let remaining = core::str::from_utf8(&pat[pi..]).unwrap_or("");
     simple_regex_match(remaining, text, ti).map(|len| len)
 }
@@ -2211,13 +2843,21 @@ struct SearchState {
 
 impl SearchState {
     fn new() -> Self {
-        Self { active: false, query: String::new(), matches: Vec::new(), current_match: 0, regex_mode: false }
+        Self {
+            active: false,
+            query: String::new(),
+            matches: Vec::new(),
+            current_match: 0,
+            regex_mode: false,
+        }
     }
 
     fn search(&mut self, buf: &TerminalBuffer) {
         self.matches.clear();
         self.current_match = 0;
-        if self.query.is_empty() { return; }
+        if self.query.is_empty() {
+            return;
+        }
 
         if self.regex_mode {
             self.search_regex(buf);
@@ -2230,14 +2870,27 @@ impl SearchState {
         let q = self.query.as_bytes();
         for (line_idx, line) in buf.lines.iter().enumerate() {
             let line_len = line.len();
-            if line_len < q.len() { continue; }
+            if line_len < q.len() {
+                continue;
+            }
             for col in 0..=line_len - q.len() {
                 let mut found = true;
                 for (i, &qb) in q.iter().enumerate() {
                     let ch = line[col + i].ch as u8;
-                    let a = if qb >= b'A' && qb <= b'Z' { qb + 32 } else { qb };
-                    let b = if ch >= b'A' && ch <= b'Z' { ch + 32 } else { ch };
-                    if a != b { found = false; break; }
+                    let a = if qb >= b'A' && qb <= b'Z' {
+                        qb + 32
+                    } else {
+                        qb
+                    };
+                    let b = if ch >= b'A' && ch <= b'Z' {
+                        ch + 32
+                    } else {
+                        ch
+                    };
+                    if a != b {
+                        found = false;
+                        break;
+                    }
                 }
                 if found {
                     self.matches.push((line_idx, col, col + q.len()));
@@ -2252,9 +2905,16 @@ impl SearchState {
         let pattern = &self.query;
         for (line_idx, line) in buf.lines.iter().enumerate() {
             let line_str: String = line.iter().map(|c| c.ch).collect();
-            let line_lower: String = line_str.chars().map(|c| {
-                if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }
-            }).collect();
+            let line_lower: String = line_str
+                .chars()
+                .map(|c| {
+                    if c >= 'A' && c <= 'Z' {
+                        (c as u8 + 32) as char
+                    } else {
+                        c
+                    }
+                })
+                .collect();
             // Try to match at each position
             let bytes = line_lower.as_bytes();
             for col in 0..bytes.len() {
@@ -2295,16 +2955,42 @@ struct ReverseSearchState {
 
 impl ReverseSearchState {
     fn new() -> Self {
-        Self { active: false, query: String::new(), result: None, result_index: None }
+        Self {
+            active: false,
+            query: String::new(),
+            result: None,
+            result_index: None,
+        }
     }
 
     fn search(&mut self, history: &[String]) {
         self.result = None;
         self.result_index = None;
-        if self.query.is_empty() { return; }
-        let q_lower: String = self.query.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect();
+        if self.query.is_empty() {
+            return;
+        }
+        let q_lower: String = self
+            .query
+            .chars()
+            .map(|c| {
+                if c >= 'A' && c <= 'Z' {
+                    (c as u8 + 32) as char
+                } else {
+                    c
+                }
+            })
+            .collect();
         for (i, entry) in history.iter().enumerate().rev() {
-            let entry_lower: String = entry.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect();
+            let entry_lower: String = entry
+                .chars()
+                .map(|c| {
+                    if c >= 'A' && c <= 'Z' {
+                        (c as u8 + 32) as char
+                    } else {
+                        c
+                    }
+                })
+                .collect();
             if entry_lower.contains(q_lower.as_str()) {
                 self.result = Some(entry.clone());
                 self.result_index = Some(i);
@@ -2325,11 +3011,11 @@ struct TerminalApp {
     active_profile: Profile,
     search: SearchState,
     reverse_search: ReverseSearchState,
-    bg_alpha: u8,           // 0-255 (255 = fully opaque)
+    bg_alpha: u8, // 0-255 (255 = fully opaque)
     theme_name: String,
-    cursor_blink_on: bool,      // current blink phase (true = visible)
-    cursor_blink_elapsed: u32,  // ms since last toggle
-    autosave_counter: u32,      // counts timer ticks for periodic scrollback save
+    cursor_blink_on: bool,     // current blink phase (true = visible)
+    cursor_blink_elapsed: u32, // ms since last toggle
+    autosave_counter: u32,     // counts timer ticks for periodic scrollback save
     /// Named keyboard pipe for pager programs (more, less) running in pipelines.
     /// Pipeline processes have stdin_pipe=0 (stdin is the data pipe), so we
     /// forward keyboard events here instead.  Pagers open this by reading TERM_KBD_PIPE env.
@@ -2401,7 +3087,14 @@ impl TerminalApp {
 
     fn new_session(&self, cols: usize, rows: usize) -> Session {
         let aliases = load_dotenv();
-        let mut sess = Session::new(cols, rows, aliases, self.active_profile.font_size, self.active_profile.color_prompt, self.active_profile.color_fg);
+        let mut sess = Session::new(
+            cols,
+            rows,
+            aliases,
+            self.active_profile.font_size,
+            self.active_profile.color_prompt,
+            self.active_profile.color_fg,
+        );
         sess.buf.max_scrollback = self.active_profile.scrollback;
         sess
     }
@@ -2420,7 +3113,9 @@ impl TerminalApp {
 
     /// Restore tabs from a profile's saved_tabs. Replaces current tabs.
     fn restore_tabs(&mut self, saved_tabs: &[SavedTab]) {
-        if saved_tabs.is_empty() { return; }
+        if saved_tabs.is_empty() {
+            return;
+        }
         let aliases = load_dotenv();
         let alias_pairs: Vec<(String, String)> = aliases;
         let (cols, rows) = self.content_cols_rows();
@@ -2434,7 +3129,14 @@ impl TerminalApp {
                 color_fg: self.active_profile.color_fg,
                 scrollback: self.active_profile.scrollback,
             };
-            let root = rebuild_pane_tree(&st.layout, &mut next_id, cols, rows, &alias_pairs, &defaults);
+            let root = rebuild_pane_tree(
+                &st.layout,
+                &mut next_id,
+                cols,
+                rows,
+                &alias_pairs,
+                &defaults,
+            );
             self.next_pane_id = next_id;
             let active_pane = root.first_pane_id();
             new_tabs.push(Tab {
@@ -2458,7 +3160,10 @@ impl TerminalApp {
         session.show_prompt();
 
         let tab = Tab {
-            root: PaneNode::Leaf { id: pane_id, session },
+            root: PaneNode::Leaf {
+                id: pane_id,
+                session,
+            },
             active_pane_id: pane_id,
             title: format!("Tab {}", self.tabs.len() + 1),
         };
@@ -2504,7 +3209,13 @@ impl TerminalApp {
         tab.active_pane_id = new_id;
     }
 
-    fn split_node(node: &mut PaneNode, target_id: PaneId, new_id: PaneId, new_session: &mut Option<Session>, horizontal: bool) -> bool {
+    fn split_node(
+        node: &mut PaneNode,
+        target_id: PaneId,
+        new_id: PaneId,
+        new_session: &mut Option<Session>,
+        horizontal: bool,
+    ) -> bool {
         match node {
             PaneNode::Leaf { id, .. } => {
                 if *id != target_id {
@@ -2514,8 +3225,17 @@ impl TerminalApp {
                     Some(s) => s,
                     None => return false,
                 };
-                let old_node = core::mem::replace(node, PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC) });
-                let new_leaf = PaneNode::Leaf { id: new_id, session: sess };
+                let old_node = core::mem::replace(
+                    node,
+                    PaneNode::Leaf {
+                        id: 0,
+                        session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC),
+                    },
+                );
+                let new_leaf = PaneNode::Leaf {
+                    id: new_id,
+                    session: sess,
+                };
                 if horizontal {
                     *node = PaneNode::HSplit {
                         left: Box::new(old_node),
@@ -2531,7 +3251,12 @@ impl TerminalApp {
                 }
                 true
             }
-            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+            PaneNode::HSplit { left, right, .. }
+            | PaneNode::VSplit {
+                top: left,
+                bottom: right,
+                ..
+            } => {
                 Self::split_node(left, target_id, new_id, new_session, horizontal)
                     || Self::split_node(right, target_id, new_id, new_session, horizontal)
             }
@@ -2562,12 +3287,23 @@ impl TerminalApp {
     fn remove_node(node: &mut PaneNode, target_id: PaneId) -> bool {
         match node {
             PaneNode::Leaf { .. } => false,
-            PaneNode::HSplit { left, right, .. } | PaneNode::VSplit { top: left, bottom: right, .. } => {
+            PaneNode::HSplit { left, right, .. }
+            | PaneNode::VSplit {
+                top: left,
+                bottom: right,
+                ..
+            } => {
                 // Check if left child is the target leaf
                 if let PaneNode::Leaf { id, .. } = left.as_ref() {
                     if *id == target_id {
                         // Replace this split with the right child
-                        let right_node = core::mem::replace(right.as_mut(), PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC) });
+                        let right_node = core::mem::replace(
+                            right.as_mut(),
+                            PaneNode::Leaf {
+                                id: 0,
+                                session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC),
+                            },
+                        );
                         *node = right_node;
                         return true;
                     }
@@ -2575,7 +3311,13 @@ impl TerminalApp {
                 // Check if right child is the target leaf
                 if let PaneNode::Leaf { id, .. } = right.as_ref() {
                     if *id == target_id {
-                        let left_node = core::mem::replace(left.as_mut(), PaneNode::Leaf { id: 0, session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC) });
+                        let left_node = core::mem::replace(
+                            left.as_mut(),
+                            PaneNode::Leaf {
+                                id: 0,
+                                session: Session::new(1, 1, Vec::new(), 14, 0xFF50FA7B, 0xFFCCCCCC),
+                            },
+                        );
                         *node = left_node;
                         return true;
                     }
@@ -2691,10 +3433,10 @@ fn resolve_cmd(cmd: &str, cwd: &str) -> String {
 
 #[derive(Clone, Copy, PartialEq)]
 enum LogicalOp {
-    None,       // first command
-    And,        // &&
-    Or,         // ||
-    Semicolon,  // ;
+    None,      // first command
+    And,       // &&
+    Or,        // ||
+    Semicolon, // ;
 }
 
 /// Split a command line on `&&`, `||`, and `;` operators.
@@ -2713,9 +3455,17 @@ fn split_logical_operators(line: &str) -> Option<Vec<(LogicalOp, String)>> {
 
     while i < len {
         match bytes[i] {
-            b'\'' if !in_double_quote => { in_single_quote = !in_single_quote; i += 1; }
-            b'"' if !in_single_quote => { in_double_quote = !in_double_quote; i += 1; }
-            b'\\' if !in_single_quote => { i += 2; } // skip escaped char
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                i += 1;
+            }
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                i += 1;
+            }
+            b'\\' if !in_single_quote => {
+                i += 2;
+            } // skip escaped char
             b'&' if !in_single_quote && !in_double_quote && i + 1 < len && bytes[i + 1] == b'&' => {
                 let cmd = String::from(line[start..i].trim());
                 result.push((current_op, cmd));
@@ -2740,7 +3490,9 @@ fn split_logical_operators(line: &str) -> Option<Vec<(LogicalOp, String)>> {
                 start = i;
                 found_op = true;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -2874,11 +3626,18 @@ impl Shell {
     }
 
     /// Execute command. Returns (should_continue, optional foreground process, optional pending su username).
-    fn submit(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
+    fn submit(
+        &mut self,
+        buf: &mut TerminalBuffer,
+    ) -> (bool, Option<ForegroundProcess>, Option<String>) {
         self.submit_with_newline(buf, true)
     }
 
-    fn submit_with_newline(&mut self, buf: &mut TerminalBuffer, echo_newline: bool) -> (bool, Option<ForegroundProcess>, Option<String>) {
+    fn submit_with_newline(
+        &mut self,
+        buf: &mut TerminalBuffer,
+        echo_newline: bool,
+    ) -> (bool, Option<ForegroundProcess>, Option<String>) {
         let raw_line = self.line.text.trim_matches(|c: char| c == ' ').to_string();
         if echo_newline {
             buf.write_char('\n');
@@ -2985,7 +3744,8 @@ impl Shell {
             "export" => self.cmd_export(args, buf),
             "unset" => self.cmd_unset(args, buf),
             "shift" => {
-                let count = tokens.first()
+                let count = tokens
+                    .first()
                     .and_then(|s| s.parse::<usize>().ok())
                     .unwrap_or(1);
                 if libshellcommon::shift_positional_args(count) != 0 {
@@ -3065,14 +3825,24 @@ impl Shell {
                     }
                     // Mark job as done in bg_jobs and re-attach as foreground
                     for job in &mut self.bg_jobs {
-                        if job.tid == tid { job.finished = true; }
+                        if job.tid == tid {
+                            job.finished = true;
+                        }
                     }
                     // Always return as ForegroundProcess so the event loop
                     // can handle Ctrl+C / Ctrl+Z while waiting for exit.
-                    return (true, Some(ForegroundProcess {
-                        tid, pipe_id, stdin_pipe, extra_pipes,
-                        redirect: None, command: cmd,
-                    }), None);
+                    return (
+                        true,
+                        Some(ForegroundProcess {
+                            tid,
+                            pipe_id,
+                            stdin_pipe,
+                            extra_pipes,
+                            redirect: None,
+                            command: cmd,
+                        }),
+                        None,
+                    );
                 } else {
                     buf.current_fg = COLOR_FG;
                     buf.write_str("fg: no current job\n");
@@ -3080,7 +3850,12 @@ impl Shell {
             }
             "bg" => {
                 // Resume last stopped job in background
-                if let Some(job) = self.bg_jobs.iter_mut().rev().find(|j| j.stopped && !j.finished) {
+                if let Some(job) = self
+                    .bg_jobs
+                    .iter_mut()
+                    .rev()
+                    .find(|j| j.stopped && !j.finished)
+                {
                     let tid = job.tid;
                     let job_id = job.job_id;
                     job.stopped = false;
@@ -3139,7 +3914,9 @@ impl Shell {
                 if libshellcommon::is_shell_script_name(bg_cmd) {
                     if background {
                         buf.current_fg = COLOR_DIM;
-                        buf.write_str("[bg] script background not supported, running in foreground\n");
+                        buf.write_str(
+                            "[bg] script background not supported, running in foreground\n",
+                        );
                     }
                     return self.execute_shell_script(bg_cmd, &bg_tokens, buf);
                 }
@@ -3247,9 +4024,31 @@ impl Shell {
                             // Don't close the pipe here — close() destroys it with all
                             // buffered data before the child can read.  The pipe will be
                             // cleaned up when the foreground process exits (poll_fg_processes).
-                            return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new(), redirect: redirect.clone(), command: String::from(cmd_line) }), None);
+                            return (
+                                true,
+                                Some(ForegroundProcess {
+                                    tid,
+                                    pipe_id,
+                                    stdin_pipe,
+                                    extra_pipes: Vec::new(),
+                                    redirect: redirect.clone(),
+                                    command: String::from(cmd_line),
+                                }),
+                                None,
+                            );
                         }
-                        return (true, Some(ForegroundProcess { tid, pipe_id, stdin_pipe, extra_pipes: Vec::new(), redirect: redirect.clone(), command: String::from(cmd_line) }), None);
+                        return (
+                            true,
+                            Some(ForegroundProcess {
+                                tid,
+                                pipe_id,
+                                stdin_pipe,
+                                extra_pipes: Vec::new(),
+                                redirect: redirect.clone(),
+                                command: String::from(cmd_line),
+                            }),
+                            None,
+                        );
                     }
                 }
             }
@@ -3286,7 +4085,10 @@ impl Shell {
     /// foreground process) or an external command needs to run (returns the
     /// `ForegroundProcess`; the remaining chain stays in `pending_chain` for
     /// `poll_fg_processes` to resume later).
-    fn resume_pending_chain(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
+    fn resume_pending_chain(
+        &mut self,
+        buf: &mut TerminalBuffer,
+    ) -> (bool, Option<ForegroundProcess>, Option<String>) {
         while !self.pending_chain.is_empty() {
             let (op, cmd_str) = self.pending_chain.remove(0);
             let should_run = match op {
@@ -3294,9 +4096,13 @@ impl Shell {
                 LogicalOp::And => self.chain_last_success,
                 LogicalOp::Or => !self.chain_last_success,
             };
-            if !should_run { continue; }
+            if !should_run {
+                continue;
+            }
             let cmd_str = cmd_str.trim().to_string();
-            if cmd_str.is_empty() { continue; }
+            if cmd_str.is_empty() {
+                continue;
+            }
 
             // Execute the sub-command directly (not via recursive submit, to
             // avoid polluting the history with partial commands).
@@ -3342,7 +4148,11 @@ impl Shell {
 
     /// Execute a single command by delegating to submit() with history suppressed.
     /// Used by resume_pending_chain to avoid duplicating all builtin handling.
-    fn execute_single_command(&mut self, raw_line: &str, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
+    fn execute_single_command(
+        &mut self,
+        raw_line: &str,
+        buf: &mut TerminalBuffer,
+    ) -> (bool, Option<ForegroundProcess>, Option<String>) {
         let saved_input = core::mem::replace(&mut self.line.text, raw_line.to_string());
         let saved_cursor = self.line.cursor;
         self.line.cursor_end();
@@ -3354,7 +4164,12 @@ impl Shell {
         result
     }
 
-    fn execute_shell_script(&mut self, path: &str, args: &[String], buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
+    fn execute_shell_script(
+        &mut self,
+        path: &str,
+        args: &[String],
+        buf: &mut TerminalBuffer,
+    ) -> (bool, Option<ForegroundProcess>, Option<String>) {
         if self.script_depth >= MAX_SCRIPT_DEPTH {
             buf.current_fg = COLOR_FG;
             buf.write_str("sh: maximum script recursion depth reached\n");
@@ -3409,13 +4224,19 @@ impl Shell {
         }
     }
 
-    fn wait_foreground_blocking(&mut self, mut fp: ForegroundProcess, buf: &mut TerminalBuffer) -> u32 {
+    fn wait_foreground_blocking(
+        &mut self,
+        mut fp: ForegroundProcess,
+        buf: &mut TerminalBuffer,
+    ) -> u32 {
         let mut read_buf = [0u8; 512];
         loop {
             if fp.pipe_id != 0 {
                 loop {
                     let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
-                    if n == 0 || n == u32::MAX { break; }
+                    if n == 0 || n == u32::MAX {
+                        break;
+                    }
                     if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
                         if let Some(ref mut redir) = fp.redirect {
                             write_redirect(redir, s);
@@ -3432,7 +4253,9 @@ impl Shell {
                 if fp.pipe_id != 0 {
                     loop {
                         let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
-                        if n == 0 || n == u32::MAX { break; }
+                        if n == 0 || n == u32::MAX {
+                            break;
+                        }
                         if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
                             if let Some(ref mut redir) = fp.redirect {
                                 write_redirect(redir, s);
@@ -3444,8 +4267,12 @@ impl Shell {
                     }
                     ipc::pipe_close(fp.pipe_id);
                 }
-                if fp.stdin_pipe != 0 { ipc::pipe_close(fp.stdin_pipe); }
-                for p in fp.extra_pipes { ipc::pipe_close(p); }
+                if fp.stdin_pipe != 0 {
+                    ipc::pipe_close(fp.stdin_pipe);
+                }
+                for p in fp.extra_pipes {
+                    ipc::pipe_close(p);
+                }
                 return status;
             }
 
@@ -3455,7 +4282,12 @@ impl Shell {
 
     /// Execute a pipeline (cmd1 | cmd2 | cmd3).
     /// Returns a ForegroundProcess tracking the last command + display pipe.
-    fn execute_pipeline(&mut self, line: &str, redirect: Option<Redirect>, buf: &mut TerminalBuffer) -> Option<ForegroundProcess> {
+    fn execute_pipeline(
+        &mut self,
+        line: &str,
+        redirect: Option<Redirect>,
+        buf: &mut TerminalBuffer,
+    ) -> Option<ForegroundProcess> {
         match anyos_std::shell::run_pipeline_err(line, &self.cwd, &mut self.pipe_counter) {
             Ok(r) => Some(ForegroundProcess {
                 tid: r.last_tid,
@@ -3484,9 +4316,17 @@ impl Shell {
                     job.finished = true;
                     job.exit_code = status;
                     // Close pipes for finished jobs
-                    if job.pipe_id != 0 { ipc::pipe_close(job.pipe_id); job.pipe_id = 0; }
-                    if job.stdin_pipe != 0 { ipc::pipe_close(job.stdin_pipe); job.stdin_pipe = 0; }
-                    for &p in &job.extra_pipes { ipc::pipe_close(p); }
+                    if job.pipe_id != 0 {
+                        ipc::pipe_close(job.pipe_id);
+                        job.pipe_id = 0;
+                    }
+                    if job.stdin_pipe != 0 {
+                        ipc::pipe_close(job.stdin_pipe);
+                        job.stdin_pipe = 0;
+                    }
+                    for &p in &job.extra_pipes {
+                        ipc::pipe_close(p);
+                    }
                     job.extra_pipes.clear();
                 }
             }
@@ -3496,12 +4336,22 @@ impl Shell {
             buf.write_str("No jobs\n");
             return;
         }
-        let last_id = self.bg_jobs.iter().rev().find(|j| !j.finished).map(|j| j.job_id).unwrap_or(0);
+        let last_id = self
+            .bg_jobs
+            .iter()
+            .rev()
+            .find(|j| !j.finished)
+            .map(|j| j.job_id)
+            .unwrap_or(0);
         for job in &self.bg_jobs {
             buf.current_fg = COLOR_FG;
             let marker = if job.job_id == last_id { "+" } else { "-" };
             let (status, suffix) = if job.finished {
-                if job.exit_code == 0 { ("Fertig", "") } else { ("Beendet", "") }
+                if job.exit_code == 0 {
+                    ("Fertig", "")
+                } else {
+                    ("Beendet", "")
+                }
             } else if job.stopped {
                 ("Angehalten", "")
             } else {
@@ -3512,7 +4362,10 @@ impl Shell {
             } else {
                 format!("{}{}", job.command, suffix)
             };
-            let line = format!("[{}]{}  {:<20}{}\n", job.job_id, marker, status, cmd_display);
+            let line = format!(
+                "[{}]{}  {:<20}{}\n",
+                job.job_id, marker, status, cmd_display
+            );
             buf.write_str(&line);
         }
         // Clean up finished jobs
@@ -3660,8 +4513,13 @@ impl Shell {
             let mut offset = 0;
             buf.current_fg = COLOR_FG;
             while offset < len {
-                let end = env_buf[offset..len].iter().position(|&b| b == 0).unwrap_or(len - offset);
-                if end == 0 { break; }
+                let end = env_buf[offset..len]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(len - offset);
+                if end == 0 {
+                    break;
+                }
                 if let Ok(entry) = core::str::from_utf8(&env_buf[offset..offset + end]) {
                     buf.write_str(entry);
                     buf.write_char('\n');
@@ -3708,8 +4566,13 @@ impl Shell {
             let mut offset = 0;
             buf.current_fg = COLOR_FG;
             while offset < len {
-                let end = env_buf[offset..len].iter().position(|&b| b == 0).unwrap_or(len - offset);
-                if end == 0 { break; }
+                let end = env_buf[offset..len]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(len - offset);
+                if end == 0 {
+                    break;
+                }
                 if let Ok(entry) = core::str::from_utf8(&env_buf[offset..offset + end]) {
                     buf.write_str("export ");
                     buf.write_str(entry);
@@ -3879,7 +4742,9 @@ impl<'a> libshellcommon::ScriptExecutor for TerminalScriptExecutor<'a> {
             };
         }
         if trimmed == "return" || trimmed.starts_with("return ") {
-            let status = trimmed.split_whitespace().nth(1)
+            let status = trimmed
+                .split_whitespace()
+                .nth(1)
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0);
             return libshellcommon::ScriptExecResult {
@@ -3888,7 +4753,9 @@ impl<'a> libshellcommon::ScriptExecutor for TerminalScriptExecutor<'a> {
             };
         }
         if trimmed == "shift" || trimmed.starts_with("shift ") {
-            let count = trimmed.split_whitespace().nth(1)
+            let count = trimmed
+                .split_whitespace()
+                .nth(1)
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(1);
             let status = libshellcommon::shift_positional_args(count);
@@ -3902,7 +4769,9 @@ impl<'a> libshellcommon::ScriptExecutor for TerminalScriptExecutor<'a> {
             };
         }
         if trimmed == "exit" || trimmed.starts_with("exit ") {
-            let status = trimmed.split_whitespace().nth(1)
+            let status = trimmed
+                .split_whitespace()
+                .nth(1)
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0);
             return libshellcommon::ScriptExecResult {
@@ -3977,10 +4846,9 @@ impl<'a> libshellcommon::ScriptExecutor for TerminalScriptExecutor<'a> {
 
 /// All builtins supported by the Terminal's embedded shell.
 const TERMINAL_BUILTINS: &[&str] = &[
-    "alias", "bg", "cd", "clear", "echo", "exit", "export", "false", "fg",
-    "help", "jobs", "kill", "poweroff", "profile", "pwd", "reboot",
-    "set", "sh", "shutdown", "source", "su", "theme", "opacity", "uname",
-    "true", "unalias", "unset",
+    "alias", "bg", "cd", "clear", "echo", "exit", "export", "false", "fg", "help", "jobs", "kill",
+    "poweroff", "profile", "pwd", "reboot", "set", "sh", "shutdown", "source", "su", "theme",
+    "opacity", "uname", "true", "unalias", "unset",
 ];
 
 /// Erase the input portion of the current display line and rewrite it.
@@ -3994,7 +4862,6 @@ fn redraw_input_line(buf: &mut TerminalBuffer, shell: &Shell) {
     buf.write_str(&shell.line.text);
     buf.cursor_col = prompt_len + shell.line.cursor;
 }
-
 
 /// Handle Tab key for autocompletion — delegates to libshellcommon::complete().
 fn handle_tab(shell: &mut Shell, buf: &mut TerminalBuffer) {
@@ -4066,13 +4933,34 @@ fn cmd_theme(args: &str, buf: &mut TerminalBuffer) {
         return;
     }
     // Find theme (case-insensitive)
-    let name_lower: String = name.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect();
+    let name_lower: String = name
+        .chars()
+        .map(|c| {
+            if c >= 'A' && c <= 'Z' {
+                (c as u8 + 32) as char
+            } else {
+                c
+            }
+        })
+        .collect();
     if let Some(theme) = THEMES.iter().find(|t| {
-        let tn: String = t.name.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect();
+        let tn: String = t
+            .name
+            .chars()
+            .map(|c| {
+                if c >= 'A' && c <= 'Z' {
+                    (c as u8 + 32) as char
+                } else {
+                    c
+                }
+            })
+            .collect();
         tn == name_lower
     }) {
         a.apply_theme(theme);
-        if a.bg_alpha < 255 { a.apply_bg_alpha(); }
+        if a.bg_alpha < 255 {
+            a.apply_bg_alpha();
+        }
         buf.current_fg = a.active_profile.color_fg;
         buf.write_str("Theme: ");
         buf.write_str(theme.name);
@@ -4185,7 +5073,9 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
                 a.set_font_size_all(profile.font_size);
                 a.bg_alpha = profile.bg_alpha;
                 a.theme_name = profile.theme_name.clone();
-                if a.bg_alpha < 255 { a.apply_bg_alpha(); }
+                if a.bg_alpha < 255 {
+                    a.apply_bg_alpha();
+                }
                 // Restore tabs if the profile has saved layout
                 if !profile.saved_tabs.is_empty() {
                     a.restore_tabs(&profile.saved_tabs);
@@ -4196,7 +5086,10 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
                 buf.write_str("Profil geladen: ");
                 buf.write_str(rest);
                 if !profile.saved_tabs.is_empty() {
-                    buf.write_str(&format!(" ({} Tabs wiederhergestellt)", profile.saved_tabs.len()));
+                    buf.write_str(&format!(
+                        " ({} Tabs wiederhergestellt)",
+                        profile.saved_tabs.len()
+                    ));
                 }
                 buf.write_char('\n');
                 redraw();
@@ -4209,7 +5102,11 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
         }
         "save" => {
             let a = app();
-            let name = if rest.is_empty() { a.active_profile.name.as_str() } else { rest };
+            let name = if rest.is_empty() {
+                a.active_profile.name.as_str()
+            } else {
+                rest
+            };
             // Snapshot current tabs into profile
             let saved_tabs = a.snapshot_tabs();
             a.active_profile.saved_tabs = saved_tabs;
@@ -4229,9 +5126,15 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
             buf.current_fg = a.active_profile.color_fg;
             buf.write_str("Profil gespeichert: ");
             buf.write_str(name);
-            buf.write_str(&format!(" ({} Tabs, {} Panes)",
+            buf.write_str(&format!(
+                " ({} Tabs, {} Panes)",
                 a.active_profile.saved_tabs.len(),
-                a.active_profile.saved_tabs.iter().map(|t| count_panes(&t.layout)).sum::<usize>()));
+                a.active_profile
+                    .saved_tabs
+                    .iter()
+                    .map(|t| count_panes(&t.layout))
+                    .sum::<usize>()
+            ));
             buf.write_char('\n');
         }
         "new" => {
@@ -4302,7 +5205,9 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
             let mut found = false;
             for p in a.profiles.iter_mut() {
                 p.is_default = p.name == rest;
-                if p.name == rest { found = true; }
+                if p.name == rest {
+                    found = true;
+                }
             }
             if found {
                 save_profiles(&a.profiles);
@@ -4347,16 +5252,56 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
             let a = app();
             let p = &mut a.active_profile;
             match key {
-                "color_bg" => { if let Some(c) = parse_hex_color(val) { p.color_bg = c; } }
-                "color_fg" => { if let Some(c) = parse_hex_color(val) { p.color_fg = c; } }
-                "color_prompt" => { if let Some(c) = parse_hex_color(val) { p.color_prompt = c; } }
-                "color_title" => { if let Some(c) = parse_hex_color(val) { p.color_title = c; } }
-                "color_dim" => { if let Some(c) = parse_hex_color(val) { p.color_dim = c; } }
-                "color_sel_bg" => { if let Some(c) = parse_hex_color(val) { p.color_select_bg = c; } }
-                "color_sel_fg" => { if let Some(c) = parse_hex_color(val) { p.color_select_fg = c; } }
-                "win_w" => { if let Ok(n) = val.parse::<u32>() { p.win_w = n; } }
-                "win_h" => { if let Ok(n) = val.parse::<u32>() { p.win_h = n; } }
-                "scrollback" => { if let Ok(n) = val.parse::<usize>() { p.scrollback = n; } }
+                "color_bg" => {
+                    if let Some(c) = parse_hex_color(val) {
+                        p.color_bg = c;
+                    }
+                }
+                "color_fg" => {
+                    if let Some(c) = parse_hex_color(val) {
+                        p.color_fg = c;
+                    }
+                }
+                "color_prompt" => {
+                    if let Some(c) = parse_hex_color(val) {
+                        p.color_prompt = c;
+                    }
+                }
+                "color_title" => {
+                    if let Some(c) = parse_hex_color(val) {
+                        p.color_title = c;
+                    }
+                }
+                "color_dim" => {
+                    if let Some(c) = parse_hex_color(val) {
+                        p.color_dim = c;
+                    }
+                }
+                "color_sel_bg" => {
+                    if let Some(c) = parse_hex_color(val) {
+                        p.color_select_bg = c;
+                    }
+                }
+                "color_sel_fg" => {
+                    if let Some(c) = parse_hex_color(val) {
+                        p.color_select_fg = c;
+                    }
+                }
+                "win_w" => {
+                    if let Ok(n) = val.parse::<u32>() {
+                        p.win_w = n;
+                    }
+                }
+                "win_h" => {
+                    if let Ok(n) = val.parse::<u32>() {
+                        p.win_h = n;
+                    }
+                }
+                "scrollback" => {
+                    if let Ok(n) = val.parse::<usize>() {
+                        p.scrollback = n;
+                    }
+                }
                 _ => {
                     buf.current_fg = p.color_fg;
                     buf.write_str("Unbekannte Einstellung: ");
@@ -4386,7 +5331,9 @@ fn cmd_profile(args: &str, buf: &mut TerminalBuffer) {
 
 /// Check if a cell is a search match and return (is_match, is_current_match).
 fn is_search_match(search: &SearchState, line_idx: usize, col: usize) -> (bool, bool) {
-    if !search.active || search.matches.is_empty() { return (false, false); }
+    if !search.active || search.matches.is_empty() {
+        return (false, false);
+    }
     for (i, &(row, start, end)) in search.matches.iter().enumerate() {
         if row == line_idx && col >= start && col < end {
             return (true, i == search.current_match);
@@ -4405,15 +5352,23 @@ fn find_url_at(line: &[Cell], col: usize) -> Option<(usize, usize)> {
     while pos < len {
         let rest = &bytes[pos..];
         let is_url = (rest.len() >= 7 && &rest[..7] == b"http://")
-                  || (rest.len() >= 8 && &rest[..8] == b"https://");
+            || (rest.len() >= 8 && &rest[..8] == b"https://");
         if is_url {
             let start = pos;
             let mut end = pos;
-            while end < len && bytes[end] > b' ' && bytes[end] != b'"' && bytes[end] != b'\'' && bytes[end] != b'>' && bytes[end] != b')' {
+            while end < len
+                && bytes[end] > b' '
+                && bytes[end] != b'"'
+                && bytes[end] != b'\''
+                && bytes[end] != b'>'
+                && bytes[end] != b')'
+            {
                 end += 1;
             }
             // Strip trailing punctuation
-            while end > start && (bytes[end-1] == b'.' || bytes[end-1] == b',' || bytes[end-1] == b';') {
+            while end > start
+                && (bytes[end - 1] == b'.' || bytes[end - 1] == b',' || bytes[end - 1] == b';')
+            {
                 end -= 1;
             }
             if col >= start && col < end {
@@ -4434,7 +5389,16 @@ fn render_scrollbar(pixels: *mut u32, stride: u32, buf_h: u32, buf: &TerminalBuf
         // No scrollbar needed — all content fits
         // Just draw a thin track background
         let track_x = (rect.x + rect.w).saturating_sub(SCROLLBAR_WIDTH as u16);
-        fill_rect_buf(pixels, stride, buf_h, track_x as i32, rect.y as i32, SCROLLBAR_WIDTH as u16, rect.h, SCROLLBAR_TRACK_COLOR);
+        fill_rect_buf(
+            pixels,
+            stride,
+            buf_h,
+            track_x as i32,
+            rect.y as i32,
+            SCROLLBAR_WIDTH as u16,
+            rect.h,
+            SCROLLBAR_TRACK_COLOR,
+        );
         return;
     }
 
@@ -4442,10 +5406,21 @@ fn render_scrollbar(pixels: *mut u32, stride: u32, buf_h: u32, buf: &TerminalBuf
     let track_h = rect.h as u32;
 
     // Draw track background
-    fill_rect_buf(pixels, stride, buf_h, track_x as i32, rect.y as i32, SCROLLBAR_WIDTH as u16, rect.h, SCROLLBAR_TRACK_COLOR);
+    fill_rect_buf(
+        pixels,
+        stride,
+        buf_h,
+        track_x as i32,
+        rect.y as i32,
+        SCROLLBAR_WIDTH as u16,
+        rect.h,
+        SCROLLBAR_TRACK_COLOR,
+    );
 
     // Calculate thumb size and position
-    let thumb_h = ((buf.visible_rows as u32 * track_h) / total_lines as u32).max(SCROLLBAR_MIN_THUMB_H).min(track_h);
+    let thumb_h = ((buf.visible_rows as u32 * track_h) / total_lines as u32)
+        .max(SCROLLBAR_MIN_THUMB_H)
+        .min(track_h);
     let scrollable = total_lines - buf.visible_rows;
     let thumb_y = if scrollable > 0 {
         (buf.scroll_offset as u32 * (track_h - thumb_h)) / scrollable as u32
@@ -4457,7 +5432,16 @@ fn render_scrollbar(pixels: *mut u32, stride: u32, buf_h: u32, buf: &TerminalBuf
     let thumb_x = track_x as i32 + 2;
     let thumb_w = (SCROLLBAR_WIDTH as u16).saturating_sub(4);
     let thumb_py = rect.y as i32 + thumb_y as i32;
-    fill_rect_buf(pixels, stride, buf_h, thumb_x, thumb_py, thumb_w, thumb_h as u16, SCROLLBAR_THUMB_COLOR);
+    fill_rect_buf(
+        pixels,
+        stride,
+        buf_h,
+        thumb_x,
+        thumb_py,
+        thumb_w,
+        thumb_h as u16,
+        SCROLLBAR_THUMB_COLOR,
+    );
 }
 
 /// Compute scrollbar geometry for hit-testing: returns (track_x, track_y, track_h, thumb_y, thumb_h).
@@ -4469,7 +5453,9 @@ fn scrollbar_geometry(buf: &TerminalBuffer, rect: Rect) -> (u16, u16, u32, u32, 
     if total_lines <= buf.visible_rows {
         return (track_x, track_y, track_h, 0, track_h);
     }
-    let thumb_h = ((buf.visible_rows as u32 * track_h) / total_lines as u32).max(SCROLLBAR_MIN_THUMB_H).min(track_h);
+    let thumb_h = ((buf.visible_rows as u32 * track_h) / total_lines as u32)
+        .max(SCROLLBAR_MIN_THUMB_H)
+        .min(track_h);
     let scrollable = total_lines - buf.visible_rows;
     let thumb_y = if scrollable > 0 {
         (buf.scroll_offset as u32 * (track_h - thumb_h)) / scrollable as u32
@@ -4480,9 +5466,20 @@ fn scrollbar_geometry(buf: &TerminalBuffer, rect: Rect) -> (u16, u16, u32, u32, 
 }
 
 /// Render a single pane's terminal content into a Canvas pixel buffer.
-fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rect, sel: Option<&Selection>, is_active: bool, font_size: u16, cell_w: u16, cell_h: u16) {
+fn render_pane_to_canvas(
+    canvas: &anyui::Canvas,
+    buf: &TerminalBuffer,
+    rect: Rect,
+    sel: Option<&Selection>,
+    is_active: bool,
+    font_size: u16,
+    cell_w: u16,
+    cell_h: u16,
+) {
     let pixels = canvas.get_buffer();
-    if pixels.is_null() { return; }
+    if pixels.is_null() {
+        return;
+    }
     let stride = canvas.get_stride();
     let buf_h = canvas.get_height();
     let a = app();
@@ -4492,7 +5489,16 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
     let sel_fg = prof.color_select_fg;
 
     // Clear pane background
-    fill_rect_buf(pixels, stride, buf_h, rect.x as i32, rect.y as i32, rect.w, rect.h, bg);
+    fill_rect_buf(
+        pixels,
+        stride,
+        buf_h,
+        rect.x as i32,
+        rect.y as i32,
+        rect.w,
+        rect.h,
+        bg,
+    );
 
     let start_row = buf.scroll_offset;
     let end_row = (start_row + buf.visible_rows).min(buf.lines.len());
@@ -4531,16 +5537,26 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
             // Apply reverse video attribute
             if attr & ATTR_REVERSE != 0 {
                 core::mem::swap(&mut fg, &mut cell_bg);
-                if cell_bg == 0 { cell_bg = bg; }
+                if cell_bg == 0 {
+                    cell_bg = bg;
+                }
             }
 
             let selected = if let Some((ref s, ref e)) = sel_range {
-                if line_idx > s.row && line_idx < e.row { true }
-                else if line_idx == s.row && line_idx == e.row { col >= s.col && col <= e.col }
-                else if line_idx == s.row { col >= s.col }
-                else if line_idx == e.row { col <= e.col }
-                else { false }
-            } else { false };
+                if line_idx > s.row && line_idx < e.row {
+                    true
+                } else if line_idx == s.row && line_idx == e.row {
+                    col >= s.col && col <= e.col
+                } else if line_idx == s.row {
+                    col >= s.col
+                } else if line_idx == e.row {
+                    col <= e.col
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
 
             let (is_match, is_current) = is_search_match(&a.search, line_idx, col);
 
@@ -4549,11 +5565,19 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
                 if run_len > 0 {
                     let rw = (run_cols as u16) * cell_w;
                     if run_bg != 0 {
-                        let rpx = rect.x as i32 + TEXT_PAD as i32 + (run_start as i32) * cell_w as i32;
+                        let rpx =
+                            rect.x as i32 + TEXT_PAD as i32 + (run_start as i32) * cell_w as i32;
                         fill_rect_buf(pixels, stride, buf_h, rpx, py, rw, cell_h, run_bg);
                     }
                     let px = rect.x as i32 + TEXT_PAD as i32 + (run_start as i32) * cell_w as i32;
-                    canvas.draw_text(px, py, run_fg, FONT_ID_MONO, font_size, core::str::from_utf8(&run_buf[..run_len]).unwrap_or(""));
+                    canvas.draw_text(
+                        px,
+                        py,
+                        run_fg,
+                        FONT_ID_MONO,
+                        font_size,
+                        core::str::from_utf8(&run_buf[..run_len]).unwrap_or(""),
+                    );
                     if run_attr & ATTR_UNDERLINE != 0 {
                         let uy = py + cell_h as i32 - 1;
                         fill_rect_buf(pixels, stride, buf_h, px, uy, rw, 1, run_fg);
@@ -4565,20 +5589,40 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
                     run_len = 0;
                     run_cols = 0;
                 }
-                let highlight_bg = if selected { sel_bg }
-                    else if is_current { COLOR_SEARCH_CURRENT_BG }
-                    else { COLOR_SEARCH_BG };
+                let highlight_bg = if selected {
+                    sel_bg
+                } else if is_current {
+                    COLOR_SEARCH_CURRENT_BG
+                } else {
+                    COLOR_SEARCH_BG
+                };
                 let highlight_fg = if selected { sel_fg } else { 0xFF000000 };
                 let px = rect.x as i32 + TEXT_PAD as i32 + (col as i32) * cell_w as i32;
                 let char_px_w = (cw as u16) * cell_w;
-                fill_rect_buf(pixels, stride, buf_h, px, py, char_px_w, cell_h, highlight_bg);
+                fill_rect_buf(
+                    pixels,
+                    stride,
+                    buf_h,
+                    px,
+                    py,
+                    char_px_w,
+                    cell_h,
+                    highlight_bg,
+                );
                 let mut tmp = [0u8; 8];
                 let mut tlen = ch.encode_utf8(&mut tmp).len();
                 if cell.combining != '\0' {
                     let clen = cell.combining.encode_utf8(&mut tmp[tlen..]).len();
                     tlen += clen;
                 }
-                canvas.draw_text(px, py, highlight_fg, FONT_ID_MONO, font_size, core::str::from_utf8(&tmp[..tlen]).unwrap_or(""));
+                canvas.draw_text(
+                    px,
+                    py,
+                    highlight_fg,
+                    FONT_ID_MONO,
+                    font_size,
+                    core::str::from_utf8(&tmp[..tlen]).unwrap_or(""),
+                );
             } else {
                 let is_url = find_url_at(line, col).is_some() || cell.link_id != 0;
                 let display_fg = if is_url { 0xFF5599FF } else { fg };
@@ -4588,15 +5632,28 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
                 let is_special = cw == 2 || cell.combining != '\0';
 
                 // Check if we need to break the run (different color, bg, attrs, or special char)
-                if run_len > 0 && (display_fg != run_fg || display_bg != run_bg || attr != run_attr || is_special) {
+                if run_len > 0
+                    && (display_fg != run_fg
+                        || display_bg != run_bg
+                        || attr != run_attr
+                        || is_special)
+                {
                     // Flush run
                     let rw = (run_cols as u16) * cell_w;
                     if run_bg != 0 {
-                        let rpx = rect.x as i32 + TEXT_PAD as i32 + (run_start as i32) * cell_w as i32;
+                        let rpx =
+                            rect.x as i32 + TEXT_PAD as i32 + (run_start as i32) * cell_w as i32;
                         fill_rect_buf(pixels, stride, buf_h, rpx, py, rw, cell_h, run_bg);
                     }
                     let px = rect.x as i32 + TEXT_PAD as i32 + (run_start as i32) * cell_w as i32;
-                    canvas.draw_text(px, py, run_fg, FONT_ID_MONO, font_size, core::str::from_utf8(&run_buf[..run_len]).unwrap_or(""));
+                    canvas.draw_text(
+                        px,
+                        py,
+                        run_fg,
+                        FONT_ID_MONO,
+                        font_size,
+                        core::str::from_utf8(&run_buf[..run_len]).unwrap_or(""),
+                    );
                     if run_attr & ATTR_UNDERLINE != 0 {
                         let uy = py + cell_h as i32 - 1;
                         fill_rect_buf(pixels, stride, buf_h, px, uy, rw, 1, run_fg);
@@ -4622,7 +5679,14 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
                         let clen = cell.combining.encode_utf8(&mut tmp[tlen..]).len();
                         tlen += clen;
                     }
-                    canvas.draw_text(px, py, display_fg, FONT_ID_MONO, font_size, core::str::from_utf8(&tmp[..tlen]).unwrap_or(""));
+                    canvas.draw_text(
+                        px,
+                        py,
+                        display_fg,
+                        FONT_ID_MONO,
+                        font_size,
+                        core::str::from_utf8(&tmp[..tlen]).unwrap_or(""),
+                    );
                     if attr & ATTR_UNDERLINE != 0 {
                         let uy = py + cell_h as i32 - 1;
                         fill_rect_buf(pixels, stride, buf_h, px, uy, char_px_w, 1, display_fg);
@@ -4668,7 +5732,14 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
                 fill_rect_buf(pixels, stride, buf_h, rpx, py, rw, cell_h, run_bg);
             }
             let px = rect.x as i32 + TEXT_PAD as i32 + (run_start as i32) * cell_w as i32;
-            canvas.draw_text(px, py, run_fg, FONT_ID_MONO, font_size, core::str::from_utf8(&run_buf[..run_len]).unwrap_or(""));
+            canvas.draw_text(
+                px,
+                py,
+                run_fg,
+                FONT_ID_MONO,
+                font_size,
+                core::str::from_utf8(&run_buf[..run_len]).unwrap_or(""),
+            );
             if run_attr & ATTR_UNDERLINE != 0 {
                 let uy = py + cell_h as i32 - 1;
                 fill_rect_buf(pixels, stride, buf_h, px, uy, rw, 1, run_fg);
@@ -4706,7 +5777,9 @@ fn render_pane_to_canvas(canvas: &anyui::Canvas, buf: &TerminalBuffer, rect: Rec
 /// Render pane borders for splits into the canvas.
 fn render_pane_borders_to_canvas(canvas: &anyui::Canvas, node: &PaneNode, area: Rect) {
     let pixels = canvas.get_buffer();
-    if pixels.is_null() { return; }
+    if pixels.is_null() {
+        return;
+    }
     let stride = canvas.get_stride();
     let buf_h = canvas.get_height();
 
@@ -4715,18 +5788,72 @@ fn render_pane_borders_to_canvas(canvas: &anyui::Canvas, node: &PaneNode, area: 
         PaneNode::HSplit { left, right, ratio } => {
             let left_w = ((area.w as f32) * ratio) as u16;
             let border_x = area.x + left_w;
-            fill_rect_buf(pixels, stride, buf_h, border_x as i32, area.y as i32, PANE_BORDER, area.h, COLOR_PANE_BORDER);
+            fill_rect_buf(
+                pixels,
+                stride,
+                buf_h,
+                border_x as i32,
+                area.y as i32,
+                PANE_BORDER,
+                area.h,
+                COLOR_PANE_BORDER,
+            );
             let right_w = area.w.saturating_sub(left_w + PANE_BORDER);
-            render_pane_borders_to_canvas(canvas, left, Rect { x: area.x, y: area.y, w: left_w, h: area.h });
-            render_pane_borders_to_canvas(canvas, right, Rect { x: area.x + left_w + PANE_BORDER, y: area.y, w: right_w, h: area.h });
+            render_pane_borders_to_canvas(
+                canvas,
+                left,
+                Rect {
+                    x: area.x,
+                    y: area.y,
+                    w: left_w,
+                    h: area.h,
+                },
+            );
+            render_pane_borders_to_canvas(
+                canvas,
+                right,
+                Rect {
+                    x: area.x + left_w + PANE_BORDER,
+                    y: area.y,
+                    w: right_w,
+                    h: area.h,
+                },
+            );
         }
         PaneNode::VSplit { top, bottom, ratio } => {
             let top_h = ((area.h as f32) * ratio) as u16;
             let border_y = area.y + top_h;
-            fill_rect_buf(pixels, stride, buf_h, area.x as i32, border_y as i32, area.w, PANE_BORDER, COLOR_PANE_BORDER);
+            fill_rect_buf(
+                pixels,
+                stride,
+                buf_h,
+                area.x as i32,
+                border_y as i32,
+                area.w,
+                PANE_BORDER,
+                COLOR_PANE_BORDER,
+            );
             let bottom_h = area.h.saturating_sub(top_h + PANE_BORDER);
-            render_pane_borders_to_canvas(canvas, top, Rect { x: area.x, y: area.y, w: area.w, h: top_h });
-            render_pane_borders_to_canvas(canvas, bottom, Rect { x: area.x, y: area.y + top_h + PANE_BORDER, w: area.w, h: bottom_h });
+            render_pane_borders_to_canvas(
+                canvas,
+                top,
+                Rect {
+                    x: area.x,
+                    y: area.y,
+                    w: area.w,
+                    h: top_h,
+                },
+            );
+            render_pane_borders_to_canvas(
+                canvas,
+                bottom,
+                Rect {
+                    x: area.x,
+                    y: area.y + top_h + PANE_BORDER,
+                    w: area.w,
+                    h: bottom_h,
+                },
+            );
         }
     }
 }
@@ -4755,14 +5882,59 @@ fn render_to_canvas(app: &TerminalApp, canvas: &anyui::Canvas) {
                 active_cell_h = sess.cell_h;
                 active_font_size = sess.font_size;
             }
-            render_pane_to_canvas(canvas, &sess.buf, *rect, sess.selection.as_ref(), is_active, sess.font_size, sess.cell_w, sess.cell_h);
+            render_pane_to_canvas(
+                canvas,
+                &sess.buf,
+                *rect,
+                sess.selection.as_ref(),
+                is_active,
+                sess.font_size,
+                sess.cell_w,
+                sess.cell_h,
+            );
 
             // Draw active pane border highlight
             if is_active && layout.len() > 1 && !pixels.is_null() {
-                fill_rect_buf(pixels, stride, buf_h, rect.x as i32, rect.y as i32, rect.w, 1, COLOR_PANE_ACTIVE_BORDER);
-                fill_rect_buf(pixels, stride, buf_h, rect.x as i32, (rect.y + rect.h - 1) as i32, rect.w, 1, COLOR_PANE_ACTIVE_BORDER);
-                fill_rect_buf(pixels, stride, buf_h, rect.x as i32, rect.y as i32, 1, rect.h, COLOR_PANE_ACTIVE_BORDER);
-                fill_rect_buf(pixels, stride, buf_h, (rect.x + rect.w - 1) as i32, rect.y as i32, 1, rect.h, COLOR_PANE_ACTIVE_BORDER);
+                fill_rect_buf(
+                    pixels,
+                    stride,
+                    buf_h,
+                    rect.x as i32,
+                    rect.y as i32,
+                    rect.w,
+                    1,
+                    COLOR_PANE_ACTIVE_BORDER,
+                );
+                fill_rect_buf(
+                    pixels,
+                    stride,
+                    buf_h,
+                    rect.x as i32,
+                    (rect.y + rect.h - 1) as i32,
+                    rect.w,
+                    1,
+                    COLOR_PANE_ACTIVE_BORDER,
+                );
+                fill_rect_buf(
+                    pixels,
+                    stride,
+                    buf_h,
+                    rect.x as i32,
+                    rect.y as i32,
+                    1,
+                    rect.h,
+                    COLOR_PANE_ACTIVE_BORDER,
+                );
+                fill_rect_buf(
+                    pixels,
+                    stride,
+                    buf_h,
+                    (rect.x + rect.w - 1) as i32,
+                    rect.y as i32,
+                    1,
+                    rect.h,
+                    COLOR_PANE_ACTIVE_BORDER,
+                );
             }
         }
     }
@@ -4774,21 +5946,63 @@ fn render_to_canvas(app: &TerminalApp, canvas: &anyui::Canvas) {
     if app.search.active && !pixels.is_null() {
         let bar_h = active_cell_h + 4;
         let bar_y = (buf_h as u16).saturating_sub(bar_h);
-        fill_rect_buf(pixels, stride, buf_h, 0, bar_y as i32, area.w, bar_h, 0xE0333333);
-        let label = format!("Suche: {}  ({}/{})", app.search.query,
-            if app.search.matches.is_empty() { 0 } else { app.search.current_match + 1 },
-            app.search.matches.len());
-        canvas.draw_text(4, bar_y as i32 + 2, 0xFFFFFFFF, FONT_ID_MONO, active_font_size, &label);
+        fill_rect_buf(
+            pixels,
+            stride,
+            buf_h,
+            0,
+            bar_y as i32,
+            area.w,
+            bar_h,
+            0xE0333333,
+        );
+        let label = format!(
+            "Suche: {}  ({}/{})",
+            app.search.query,
+            if app.search.matches.is_empty() {
+                0
+            } else {
+                app.search.current_match + 1
+            },
+            app.search.matches.len()
+        );
+        canvas.draw_text(
+            4,
+            bar_y as i32 + 2,
+            0xFFFFFFFF,
+            FONT_ID_MONO,
+            active_font_size,
+            &label,
+        );
     }
 
     // Draw reverse search indicator if active
     if app.reverse_search.active && !pixels.is_null() {
         let bar_h = active_cell_h + 4;
         let bar_y = (buf_h as u16).saturating_sub(bar_h);
-        fill_rect_buf(pixels, stride, buf_h, 0, bar_y as i32, area.w, bar_h, 0xE0333355);
+        fill_rect_buf(
+            pixels,
+            stride,
+            buf_h,
+            0,
+            bar_y as i32,
+            area.w,
+            bar_h,
+            0xE0333355,
+        );
         let result_str = app.reverse_search.result.as_deref().unwrap_or("");
-        let label = format!("(reverse-i-search)`{}': {}", app.reverse_search.query, result_str);
-        canvas.draw_text(4, bar_y as i32 + 2, 0xFFFFFFFF, FONT_ID_MONO, active_font_size, &label);
+        let label = format!(
+            "(reverse-i-search)`{}': {}",
+            app.reverse_search.query, result_str
+        );
+        canvas.draw_text(
+            4,
+            bar_y as i32 + 2,
+            0xFFFFFFFF,
+            FONT_ID_MONO,
+            active_font_size,
+            &label,
+        );
     }
 }
 
@@ -4800,7 +6014,9 @@ fn get_pane_rect(app: &TerminalApp, pane_id: PaneId) -> Rect {
     let tab = &app.tabs[app.active_tab];
     let layout = tab.root.layout(area);
     for (id, rect) in layout {
-        if id == pane_id { return rect; }
+        if id == pane_id {
+            return rect;
+        }
     }
     area
 }
@@ -4822,7 +6038,9 @@ fn poll_fg_processes(app: &mut TerminalApp) {
             if fp.pipe_id != 0 {
                 loop {
                     let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
-                    if n == 0 || n == u32::MAX { break; }
+                    if n == 0 || n == u32::MAX {
+                        break;
+                    }
                     if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
                         if let Some(ref mut redir) = fp.redirect {
                             write_redirect(redir, s);
@@ -4872,7 +6090,9 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                 if fp.pipe_id != 0 {
                     loop {
                         let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
-                        if n == 0 || n == u32::MAX { break; }
+                        if n == 0 || n == u32::MAX {
+                            break;
+                        }
                         if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
                             if let Some(ref mut redir) = fp.redirect {
                                 write_redirect(redir, s);
@@ -4888,9 +6108,15 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                 let extra_pipes: Vec<u32> = fp.extra_pipes.clone();
                 let exit_code = status;
                 sess.fg_proc = None;
-                if pipe_id != 0 { ipc::pipe_close(pipe_id); }
-                if stdin_pipe_id != 0 { ipc::pipe_close(stdin_pipe_id); }
-                for &p in &extra_pipes { ipc::pipe_close(p); }
+                if pipe_id != 0 {
+                    ipc::pipe_close(pipe_id);
+                }
+                if stdin_pipe_id != 0 {
+                    ipc::pipe_close(stdin_pipe_id);
+                }
+                for &p in &extra_pipes {
+                    ipc::pipe_close(p);
+                }
 
                 if exit_code != 0 && exit_code != u32::MAX {
                     sess.buf.current_fg = COLOR_DIM;
@@ -4922,12 +6148,7 @@ fn poll_fg_processes(app: &mut TerminalApp) {
 
                 // Notify when command finishes (only when window is in background)
                 if !app.focused {
-                    anyui::show_notification(
-                        "Terminal",
-                        "Befehl abgeschlossen",
-                        None,
-                        3000,
-                    );
+                    anyui::show_notification("Terminal", "Befehl abgeschlossen", None, 3000);
                 }
             }
         }
@@ -4941,10 +6162,16 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
     // Ctrl+C: cancel foreground process, password prompt, or clear input
     if (mods & MOD_CTRL) != 0 && char_val == 'c' as u32 {
         if let Some(fp) = sess.fg_proc.take() {
-            if fp.stdin_pipe != 0 { ipc::pipe_close(fp.stdin_pipe); }
+            if fp.stdin_pipe != 0 {
+                ipc::pipe_close(fp.stdin_pipe);
+            }
             process::kill(fp.tid);
-            if fp.pipe_id != 0 { ipc::pipe_close(fp.pipe_id); }
-            for &p in &fp.extra_pipes { ipc::pipe_close(p); }
+            if fp.pipe_id != 0 {
+                ipc::pipe_close(fp.pipe_id);
+            }
+            for &p in &fp.extra_pipes {
+                ipc::pipe_close(p);
+            }
         }
         sess.su_pending_user = None;
         sess.su_password.clear();
@@ -5003,7 +6230,9 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                     }
                 } else if sess.su_pending_user.is_none() {
                     for c in text.chars() {
-                        if !c.is_control() { sess.shell.insert_char(c); }
+                        if !c.is_control() {
+                            sess.shell.insert_char(c);
+                        }
                     }
                     redraw_input_line(&mut sess.buf, &sess.shell);
                     sess.dirty = true;
@@ -5062,8 +6291,11 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                             ipc::pipe_write(stdin_pipe, b"\n");
                             ipc::pipe_close(stdin_pipe);
                             sess.fg_proc = Some(ForegroundProcess {
-                                tid, pipe_id, stdin_pipe: 0,
-                                extra_pipes: Vec::new(), redirect: None,
+                                tid,
+                                pipe_id,
+                                stdin_pipe: 0,
+                                extra_pipes: Vec::new(),
+                                redirect: None,
                                 command: String::from(cmd),
                             });
                         } else {
@@ -5141,11 +6373,20 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
         match key_code {
             KEY_ENTER => {
                 // Check for here-document before submit
-                let trimmed_input = sess.shell.line.text.trim_matches(|c: char| c == ' ').to_string();
+                let trimmed_input = sess
+                    .shell
+                    .line
+                    .text
+                    .trim_matches(|c: char| c == ' ')
+                    .to_string();
                 if let Some(heredoc_pos) = trimmed_input.find("<<") {
                     let after = trimmed_input[heredoc_pos + 2..].trim();
-                    let delimiter = after.split_whitespace().next().unwrap_or("")
-                        .trim_matches('\'').trim_matches('"');
+                    let delimiter = after
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_matches('\'')
+                        .trim_matches('"');
                     if !delimiter.is_empty() {
                         let command = trimmed_input[..heredoc_pos].trim().to_string();
                         sess.buf.write_char('\n');
@@ -5256,7 +6497,18 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                                 let col = sess.buf.cursor_col;
                                 let color = sess.buf.current_fg;
                                 let w = char_width(c);
-                                sess.buf.lines[row].insert(col, Cell { ch: c, fg: color, bg: 0, attr: 0, width: w as u8, combining: '\0', link_id: 0 });
+                                sess.buf.lines[row].insert(
+                                    col,
+                                    Cell {
+                                        ch: c,
+                                        fg: color,
+                                        bg: 0,
+                                        attr: 0,
+                                        width: w as u8,
+                                        combining: '\0',
+                                        link_id: 0,
+                                    },
+                                );
                                 sess.buf.cursor_col += 1;
                             }
                             sess.dirty = true;
@@ -5270,31 +6522,67 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
         // For pipeline processes stdin_pipe==0 (their stdin is wired to the data
         // pipe); use term_kbd_pipe so pager programs (more/less) can receive keys.
         if let Some(ref fp) = sess.fg_proc {
-            let kbd_target = if fp.stdin_pipe != 0 { fp.stdin_pipe } else { app().term_kbd_pipe };
+            let kbd_target = if fp.stdin_pipe != 0 {
+                fp.stdin_pipe
+            } else {
+                app().term_kbd_pipe
+            };
             if kbd_target != 0 {
                 match key_code {
-                    KEY_ENTER => { ipc::pipe_write(kbd_target, b"\n"); }
-                    KEY_BACKSPACE => { ipc::pipe_write(kbd_target, &[0x7f]); }
-                    KEY_TAB => { ipc::pipe_write(kbd_target, b"\t"); }
-                    KEY_ESCAPE => { ipc::pipe_write(kbd_target, b"\x1b"); }
-                    KEY_UP => { ipc::pipe_write(kbd_target, b"\x1b[A"); }
-                    KEY_DOWN => { ipc::pipe_write(kbd_target, b"\x1b[B"); }
-                    KEY_RIGHT => { ipc::pipe_write(kbd_target, b"\x1b[C"); }
-                    KEY_LEFT => { ipc::pipe_write(kbd_target, b"\x1b[D"); }
-                    KEY_HOME => { ipc::pipe_write(kbd_target, b"\x1b[H"); }
-                    KEY_END => { ipc::pipe_write(kbd_target, b"\x1b[F"); }
-                    KEY_DELETE => { ipc::pipe_write(kbd_target, b"\x1b[3~"); }
+                    KEY_ENTER => {
+                        ipc::pipe_write(kbd_target, b"\n");
+                    }
+                    KEY_BACKSPACE => {
+                        ipc::pipe_write(kbd_target, &[0x7f]);
+                    }
+                    KEY_TAB => {
+                        ipc::pipe_write(kbd_target, b"\t");
+                    }
+                    KEY_ESCAPE => {
+                        ipc::pipe_write(kbd_target, b"\x1b");
+                    }
+                    KEY_UP => {
+                        ipc::pipe_write(kbd_target, b"\x1b[A");
+                    }
+                    KEY_DOWN => {
+                        ipc::pipe_write(kbd_target, b"\x1b[B");
+                    }
+                    KEY_RIGHT => {
+                        ipc::pipe_write(kbd_target, b"\x1b[C");
+                    }
+                    KEY_LEFT => {
+                        ipc::pipe_write(kbd_target, b"\x1b[D");
+                    }
+                    KEY_HOME => {
+                        ipc::pipe_write(kbd_target, b"\x1b[H");
+                    }
+                    KEY_END => {
+                        ipc::pipe_write(kbd_target, b"\x1b[F");
+                    }
+                    KEY_DELETE => {
+                        ipc::pipe_write(kbd_target, b"\x1b[3~");
+                    }
                     // Shift+PageUp/Down is handled globally for scrollback; only forward plain PageUp/Down
-                    KEY_PAGE_UP if (mods & MOD_SHIFT) == 0 => { ipc::pipe_write(kbd_target, b"\x1b[5~"); }
-                    KEY_PAGE_DOWN if (mods & MOD_SHIFT) == 0 => { ipc::pipe_write(kbd_target, b"\x1b[6~"); }
+                    KEY_PAGE_UP if (mods & MOD_SHIFT) == 0 => {
+                        ipc::pipe_write(kbd_target, b"\x1b[5~");
+                    }
+                    KEY_PAGE_DOWN if (mods & MOD_SHIFT) == 0 => {
+                        ipc::pipe_write(kbd_target, b"\x1b[6~");
+                    }
                     _ => {
                         if char_val > 0 {
                             if (mods & MOD_CTRL) != 0 && char_val < 128 {
                                 let c = char_val as u8;
-                                let ctrl_code = if c >= b'a' && c <= b'z' { c - b'a' + 1 }
-                                    else if c >= b'A' && c <= b'Z' { c - b'A' + 1 }
-                                    else { 0 };
-                                if ctrl_code > 0 { ipc::pipe_write(kbd_target, &[ctrl_code]); }
+                                let ctrl_code = if c >= b'a' && c <= b'z' {
+                                    c - b'a' + 1
+                                } else if c >= b'A' && c <= b'Z' {
+                                    c - b'A' + 1
+                                } else {
+                                    0
+                                };
+                                if ctrl_code > 0 {
+                                    ipc::pipe_write(kbd_target, &[ctrl_code]);
+                                }
                             } else if let Some(c) = char::from_u32(char_val) {
                                 if !c.is_control() {
                                     let mut utf8_buf = [0u8; 4];
@@ -5303,9 +6591,8 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                                 }
                             }
                         }
-                    }
-                    // (Note: local echo is NOT done here — foreground processes
-                    //  handle their own echo via stdout pipe, which poll_fg_processes reads.)
+                    } // (Note: local echo is NOT done here — foreground processes
+                      //  handle their own echo via stdout pipe, which poll_fg_processes reads.)
                 }
             }
         }
@@ -5345,20 +6632,35 @@ fn do_search_in_active_session() {
         let a = app();
         a.search.matches.clear();
         a.search.current_match = 0;
-        if query.is_empty() { return; }
+        if query.is_empty() {
+            return;
+        }
         let q = query.as_bytes();
         let pane_id = a.tabs[a.active_tab].active_pane_id;
         if let Some(sess) = a.tabs[a.active_tab].root.find_session(pane_id) {
             for (line_idx, line) in sess.buf.lines.iter().enumerate() {
                 let line_len = line.len();
-                if line_len < q.len() { continue; }
+                if line_len < q.len() {
+                    continue;
+                }
                 for col in 0..=line_len - q.len() {
                     let mut found = true;
                     for (i, &qb) in q.iter().enumerate() {
                         let ch = line[col + i].ch as u8;
-                        let a = if qb >= b'A' && qb <= b'Z' { qb + 32 } else { qb };
-                        let b = if ch >= b'A' && ch <= b'Z' { ch + 32 } else { ch };
-                        if a != b { found = false; break; }
+                        let a = if qb >= b'A' && qb <= b'Z' {
+                            qb + 32
+                        } else {
+                            qb
+                        };
+                        let b = if ch >= b'A' && ch <= b'Z' {
+                            ch + 32
+                        } else {
+                            ch
+                        };
+                        if a != b {
+                            found = false;
+                            break;
+                        }
                     }
                     if found {
                         a.search.matches.push((line_idx, col, col + q.len()));
@@ -5375,12 +6677,32 @@ fn do_reverse_search_in_active_session() {
     let query = a.reverse_search.query.clone();
     a.reverse_search.result = None;
     a.reverse_search.result_index = None;
-    if query.is_empty() { return; }
+    if query.is_empty() {
+        return;
+    }
     let pane_id = a.tabs[a.active_tab].active_pane_id;
     if let Some(sess) = a.tabs[a.active_tab].root.find_session(pane_id) {
-        let q_lower: String = query.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect();
+        let q_lower: String = query
+            .chars()
+            .map(|c| {
+                if c >= 'A' && c <= 'Z' {
+                    (c as u8 + 32) as char
+                } else {
+                    c
+                }
+            })
+            .collect();
         for (i, entry) in sess.shell.history.entries().iter().enumerate().rev() {
-            let entry_lower: String = entry.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect();
+            let entry_lower: String = entry
+                .chars()
+                .map(|c| {
+                    if c >= 'A' && c <= 'Z' {
+                        (c as u8 + 32) as char
+                    } else {
+                        c
+                    }
+                })
+                .collect();
             if entry_lower.contains(q_lower.as_str()) {
                 let a = app();
                 a.reverse_search.result = Some(entry.clone());
@@ -5395,7 +6717,9 @@ fn update_tab_labels() {
     let a = app();
     let mut labels = String::new();
     for (i, tab) in a.tabs.iter().enumerate() {
-        if i > 0 { labels.push('|'); }
+        if i > 0 {
+            labels.push('|');
+        }
         labels.push_str(&tab.title);
     }
     let tab_bar = get_tab_bar();
@@ -5418,10 +6742,12 @@ fn show_rename_tab_dialog(win_id: u32) {
     let current_title = a.tabs[a.active_tab].title.clone();
 
     let dlg = anyui::Window::new_with_flags(
-        "Tab umbenennen", -1, -1, 320, 120,
-        anyui::WIN_FLAG_NOT_RESIZABLE
-        | anyui::WIN_FLAG_NO_MINIMIZE
-        | anyui::WIN_FLAG_NO_MAXIMIZE,
+        "Tab umbenennen",
+        -1,
+        -1,
+        320,
+        120,
+        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MINIMIZE | anyui::WIN_FLAG_NO_MAXIMIZE,
     );
     dlg.set_modal(&window_from_id(win_id));
 
@@ -5467,9 +6793,13 @@ fn show_rename_tab_dialog(win_id: u32) {
     };
 
     let apply = apply_rename.clone();
-    btn_ok.on_click(move |_| { apply(); });
+    btn_ok.on_click(move |_| {
+        apply();
+    });
 
-    field.on_submit(move |_| { apply_rename(); });
+    field.on_submit(move |_| {
+        apply_rename();
+    });
 
     btn_cancel.on_click(move |_| {
         destroy_window(dlg_id);
@@ -5498,7 +6828,9 @@ fn read_ctrl_text(id: u32) -> String {
 fn build_alias_items(aliases: &[(String, String)]) -> String {
     let mut s = String::new();
     for (i, (name, _)) in aliases.iter().enumerate() {
-        if i > 0 { s.push('|'); }
+        if i > 0 {
+            s.push('|');
+        }
         s.push_str(name);
     }
     s
@@ -5513,12 +6845,16 @@ fn build_env_items() -> (String, Vec<(String, String)>) {
     if n > 0 && n != u32::MAX {
         let data = &buf[..n as usize];
         for entry in data.split(|&b| b == 0) {
-            if entry.is_empty() { continue; }
+            if entry.is_empty() {
+                continue;
+            }
             if let Ok(s) = core::str::from_utf8(entry) {
                 if let Some(eq) = s.find('=') {
                     let key = &s[..eq];
                     let val = &s[eq + 1..];
-                    if !items.is_empty() { items.push('|'); }
+                    if !items.is_empty() {
+                        items.push('|');
+                    }
                     items.push_str(key);
                     entries.push((String::from(key), String::from(val)));
                 }
@@ -5532,9 +6868,13 @@ fn build_env_items() -> (String, Vec<(String, String)>) {
 fn build_profile_items(profiles: &[Profile]) -> String {
     let mut s = String::new();
     for (i, p) in profiles.iter().enumerate() {
-        if i > 0 { s.push('|'); }
+        if i > 0 {
+            s.push('|');
+        }
         s.push_str(&p.name);
-        if p.is_default { s.push_str(" *"); }
+        if p.is_default {
+            s.push_str(" *");
+        }
     }
     s
 }
@@ -5544,9 +6884,13 @@ fn build_theme_items(current: &str) -> (String, usize) {
     let mut s = String::new();
     let mut sel = 0;
     for (i, t) in THEMES.iter().enumerate() {
-        if i > 0 { s.push('|'); }
+        if i > 0 {
+            s.push('|');
+        }
         s.push_str(t.name);
-        if t.name == current { sel = i; }
+        if t.name == current {
+            sel = i;
+        }
     }
     (s, sel)
 }
@@ -5557,10 +6901,12 @@ fn open_settings_dialog(win_id: u32) {
     let dlg_h = 480;
 
     let dlg = anyui::Window::new_with_flags(
-        "Einstellungen", -1, -1, dlg_w, dlg_h,
-        anyui::WIN_FLAG_NOT_RESIZABLE
-        | anyui::WIN_FLAG_NO_MINIMIZE
-        | anyui::WIN_FLAG_NO_MAXIMIZE,
+        "Einstellungen",
+        -1,
+        -1,
+        dlg_w,
+        dlg_h,
+        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MINIMIZE | anyui::WIN_FLAG_NO_MAXIMIZE,
     );
     dlg.set_modal(&window_from_id(win_id));
     let dlg_id = dlg.id();
@@ -5832,7 +7178,11 @@ fn open_settings_dialog(win_id: u32) {
     dd_prof.set_position(16, 40);
     dd_prof.set_size(300, 28);
     // Select active profile
-    if let Some(idx) = a.profiles.iter().position(|p| p.name == a.active_profile.name) {
+    if let Some(idx) = a
+        .profiles
+        .iter()
+        .position(|p| p.name == a.active_profile.name)
+    {
         dd_prof.set_selected_index(idx as u32);
     }
     p_profiles.add(&dd_prof);
@@ -5895,13 +7245,16 @@ fn open_settings_dialog(win_id: u32) {
             a.set_font_size_all(profile.font_size);
             a.bg_alpha = profile.bg_alpha;
             a.theme_name = profile.theme_name.clone();
-            if a.bg_alpha < 255 { a.apply_bg_alpha(); }
+            if a.bg_alpha < 255 {
+                a.apply_bg_alpha();
+            }
             if !profile.saved_tabs.is_empty() {
                 a.restore_tabs(&profile.saved_tabs);
                 a.update_pane_sizes();
                 update_tab_labels();
             }
-            anyui::Control::from_id(lbl_prof_status_id).set_text(&format!("Profil geladen: {}", profile.name));
+            anyui::Control::from_id(lbl_prof_status_id)
+                .set_text(&format!("Profil geladen: {}", profile.name));
             redraw();
         }
     });
@@ -5920,7 +7273,8 @@ fn open_settings_dialog(win_id: u32) {
             a.profiles[idx] = a.active_profile.clone();
             a.profiles[idx].name = name.clone();
             save_profiles(&a.profiles);
-            anyui::Control::from_id(lbl_prof_status_id).set_text(&format!("Profil gespeichert: {}", name));
+            anyui::Control::from_id(lbl_prof_status_id)
+                .set_text(&format!("Profil gespeichert: {}", name));
         }
     });
 
@@ -5937,7 +7291,8 @@ fn open_settings_dialog(win_id: u32) {
             save_profiles(&a.profiles);
             let items = build_profile_items(&a.profiles);
             anyui::Control::from_id(dd_prof_id).set_text(&items);
-            anyui::Control::from_id(lbl_prof_status_id).set_text(&format!("Standardprofil: {}", name));
+            anyui::Control::from_id(lbl_prof_status_id)
+                .set_text(&format!("Standardprofil: {}", name));
         }
     });
 
@@ -5945,7 +7300,8 @@ fn open_settings_dialog(win_id: u32) {
     btn_prof_delete.on_click(move |_| {
         let a = app();
         if a.profiles.len() <= 1 {
-            anyui::Control::from_id(lbl_prof_status_id).set_text("Letztes Profil kann nicht geloescht werden.");
+            anyui::Control::from_id(lbl_prof_status_id)
+                .set_text("Letztes Profil kann nicht geloescht werden.");
             return;
         }
         let idx = anyui::Control::from_id(dd_prof_id).get_state() as usize;
@@ -5959,7 +7315,8 @@ fn open_settings_dialog(win_id: u32) {
             let items = build_profile_items(&a.profiles);
             anyui::Control::from_id(dd_prof_id).set_text(&items);
             anyui::Control::from_id(dd_prof_id).set_state(0);
-            anyui::Control::from_id(lbl_prof_status_id).set_text(&format!("Profil geloescht: {}", name));
+            anyui::Control::from_id(lbl_prof_status_id)
+                .set_text(&format!("Profil geloescht: {}", name));
             redraw();
         }
     });
@@ -6013,7 +7370,11 @@ fn open_settings_dialog(win_id: u32) {
     };
 
     let alias_items = build_alias_items(&aliases);
-    let dd_alias = anyui::DropDown::new(if alias_items.is_empty() { "(keine)" } else { &alias_items });
+    let dd_alias = anyui::DropDown::new(if alias_items.is_empty() {
+        "(keine)"
+    } else {
+        &alias_items
+    });
     dd_alias.set_position(16, 40);
     dd_alias.set_size(300, 28);
     p_aliases.add(&dd_alias);
@@ -6042,7 +7403,8 @@ fn open_settings_dialog(win_id: u32) {
         if let Some(sess) = a.active_session() {
             let idx = e.index as usize;
             if idx < sess.shell.aliases.len() {
-                anyui::Control::from_id(lbl_alias_val_id).set_text(&format!("= {}", sess.shell.aliases[idx].1));
+                anyui::Control::from_id(lbl_alias_val_id)
+                    .set_text(&format!("= {}", sess.shell.aliases[idx].1));
             }
         }
     });
@@ -6101,10 +7463,15 @@ fn open_settings_dialog(win_id: u32) {
                 sess.shell.aliases.push((name.clone(), val.clone()));
             }
             let items = build_alias_items(&sess.shell.aliases);
-            anyui::Control::from_id(dd_alias_id).set_text(if items.is_empty() { "(keine)" } else { &items });
+            anyui::Control::from_id(dd_alias_id).set_text(if items.is_empty() {
+                "(keine)"
+            } else {
+                &items
+            });
             anyui::Control::from_id(tf_alias_name_id).set_text("");
             anyui::Control::from_id(tf_alias_val_id).set_text("");
-            anyui::Control::from_id(lbl_alias_status_id).set_text(&format!("Alias hinzugefuegt: {}={}", name, val));
+            anyui::Control::from_id(lbl_alias_status_id)
+                .set_text(&format!("Alias hinzugefuegt: {}={}", name, val));
         }
     });
 
@@ -6117,10 +7484,15 @@ fn open_settings_dialog(win_id: u32) {
                 let name = sess.shell.aliases[idx].0.clone();
                 sess.shell.aliases.remove(idx);
                 let items = build_alias_items(&sess.shell.aliases);
-                anyui::Control::from_id(dd_alias_id).set_text(if items.is_empty() { "(keine)" } else { &items });
+                anyui::Control::from_id(dd_alias_id).set_text(if items.is_empty() {
+                    "(keine)"
+                } else {
+                    &items
+                });
                 anyui::Control::from_id(dd_alias_id).set_state(0);
                 anyui::Control::from_id(lbl_alias_val_id).set_text("");
-                anyui::Control::from_id(lbl_alias_status_id).set_text(&format!("Alias entfernt: {}", name));
+                anyui::Control::from_id(lbl_alias_status_id)
+                    .set_text(&format!("Alias entfernt: {}", name));
             }
         }
     });
@@ -6140,7 +7512,11 @@ fn open_settings_dialog(win_id: u32) {
     p_env.add(&lbl_env);
 
     let (env_items, env_entries) = build_env_items();
-    let dd_env = anyui::DropDown::new(if env_items.is_empty() { "(keine)" } else { &env_items });
+    let dd_env = anyui::DropDown::new(if env_items.is_empty() {
+        "(keine)"
+    } else {
+        &env_items
+    });
     dd_env.set_position(16, 40);
     dd_env.set_size(300, 28);
     p_env.add(&dd_env);
@@ -6219,7 +7595,11 @@ fn open_settings_dialog(win_id: u32) {
         }
         anyos_std::env::set(&key, &val);
         let (items, _) = build_env_items();
-        anyui::Control::from_id(dd_env_id).set_text(if items.is_empty() { "(keine)" } else { &items });
+        anyui::Control::from_id(dd_env_id).set_text(if items.is_empty() {
+            "(keine)"
+        } else {
+            &items
+        });
         anyui::Control::from_id(tf_env_key_id).set_text("");
         anyui::Control::from_id(tf_env_val_id).set_text("");
         anyui::Control::from_id(lbl_env_status_id).set_text(&format!("Gesetzt: {}={}", key, val));
@@ -6233,7 +7613,11 @@ fn open_settings_dialog(win_id: u32) {
             let key = entries[idx].0.clone();
             anyos_std::env::unset(&key);
             let (items, _) = build_env_items();
-            anyui::Control::from_id(dd_env_id).set_text(if items.is_empty() { "(keine)" } else { &items });
+            anyui::Control::from_id(dd_env_id).set_text(if items.is_empty() {
+                "(keine)"
+            } else {
+                &items
+            });
             anyui::Control::from_id(dd_env_id).set_state(0);
             anyui::Control::from_id(lbl_env_val_id).set_text("");
             anyui::Control::from_id(lbl_env_status_id).set_text(&format!("Entfernt: {}", key));
@@ -6281,14 +7665,20 @@ fn open_settings_dialog(win_id: u32) {
         if let Ok(ms) = blink_str.parse::<u32>() {
             a.active_profile.cursor_blink_ms = ms;
             a.cursor_blink_elapsed = 0;
-            if ms == 0 { a.cursor_blink_on = true; }
+            if ms == 0 {
+                a.cursor_blink_on = true;
+            }
         }
 
         // Apply window size
         let ww_str = read_ctrl_text(tf_win_w_id);
         let wh_str = read_ctrl_text(tf_win_h_id);
-        if let Ok(w) = ww_str.parse::<u32>() { a.active_profile.win_w = w; }
-        if let Ok(h) = wh_str.parse::<u32>() { a.active_profile.win_h = h; }
+        if let Ok(w) = ww_str.parse::<u32>() {
+            a.active_profile.win_w = w;
+        }
+        if let Ok(h) = wh_str.parse::<u32>() {
+            a.active_profile.win_h = h;
+        }
 
         // Apply colors
         let color_setters: [(usize, fn(&mut Profile, u32)); 6] = [
@@ -6312,7 +7702,9 @@ fn open_settings_dialog(win_id: u32) {
         let theme_idx = anyui::Control::from_id(dd_theme_id).get_state() as usize;
         if theme_idx < THEMES.len() {
             a.apply_theme(&THEMES[theme_idx]);
-            if a.bg_alpha < 255 { a.apply_bg_alpha(); }
+            if a.bg_alpha < 255 {
+                a.apply_bg_alpha();
+            }
         }
 
         a.update_pane_sizes();
@@ -6450,7 +7842,14 @@ fn main() {
         let alias_pairs: Vec<(String, String)> = aliases;
         for st in restore_tabs {
             let mut next_id = term_app.next_pane_id;
-            let root = rebuild_pane_tree(&st.layout, &mut next_id, cols.max(1), rows.max(1), &alias_pairs, &init_defaults);
+            let root = rebuild_pane_tree(
+                &st.layout,
+                &mut next_id,
+                cols.max(1),
+                rows.max(1),
+                &alias_pairs,
+                &init_defaults,
+            );
             term_app.next_pane_id = next_id;
             let active_pane = root.first_pane_id();
             term_app.tabs.push(Tab {
@@ -6461,17 +7860,29 @@ fn main() {
         }
     } else {
         // Create default first session
-        let mut first_session = Session::new(cols.max(1), rows.max(1), aliases, init_defaults.font_size, init_defaults.color_prompt, init_defaults.color_fg);
+        let mut first_session = Session::new(
+            cols.max(1),
+            rows.max(1),
+            aliases,
+            init_defaults.font_size,
+            init_defaults.color_prompt,
+            init_defaults.color_fg,
+        );
         first_session.buf.max_scrollback = init_defaults.scrollback;
         let first_tab = Tab {
-            root: PaneNode::Leaf { id: 1, session: first_session },
+            root: PaneNode::Leaf {
+                id: 1,
+                session: first_session,
+            },
             active_pane_id: 1,
             title: String::from("Tab 1"),
         };
         term_app.tabs.push(first_tab);
     }
 
-    unsafe { APP = Some(term_app); }
+    unsafe {
+        APP = Some(term_app);
+    }
 
     // Write welcome message (only for fresh sessions without recovery/saved tabs)
     {
@@ -6485,7 +7896,8 @@ fn main() {
                 sess.buf.write_str(env!("ANYOS_VERSION"));
                 sess.buf.write_str("\n");
                 sess.buf.current_fg = color_dim;
-                sess.buf.write_str("Type 'help' for available commands.\n\n");
+                sess.buf
+                    .write_str("Type 'help' for available commands.\n\n");
                 sess.show_prompt();
             }
         }
@@ -6536,17 +7948,20 @@ fn main() {
     ctx_menu.on_item_click(|e| {
         let a = app();
         match e.index {
-            0 => { // Split horizontal
+            0 => {
+                // Split horizontal
                 a.split_horizontal();
                 a.update_pane_sizes();
                 redraw();
             }
-            1 => { // Split vertical
+            1 => {
+                // Split vertical
                 a.split_vertical();
                 a.update_pane_sizes();
                 redraw();
             }
-            2 => { // Close pane
+            2 => {
+                // Close pane
                 let pane_id = a.tabs[a.active_tab].active_pane_id;
                 if !a.close_pane(pane_id) {
                     if a.tabs.len() > 1 {
@@ -6560,14 +7975,16 @@ fn main() {
                 a.update_pane_sizes();
                 redraw();
             }
-            4 => { // New tab
+            4 => {
+                // New tab
                 a.new_tab();
                 a.update_pane_sizes();
                 update_tab_labels();
                 redraw();
                 get_canvas().focus();
             }
-            5 => { // Close tab
+            5 => {
+                // Close tab
                 if a.tabs.len() > 1 {
                     a.close_tab(a.active_tab);
                     a.update_pane_sizes();
@@ -6578,26 +7995,31 @@ fn main() {
                     anyui::quit();
                 }
             }
-            6 => { // Rename tab
+            6 => {
+                // Rename tab
                 show_rename_tab_dialog(a.win_id);
             }
-            8 => { // Search
+            8 => {
+                // Search
                 a.search.active = true;
                 a.search.query.clear();
                 a.search.matches.clear();
                 redraw();
             }
-            9 => { // Font +
+            9 => {
+                // Font +
                 let new_size = a.active_font_size() + 1;
                 a.set_font_size(new_size);
                 redraw();
             }
-            10 => { // Font -
+            10 => {
+                // Font -
                 let new_size = a.active_font_size().saturating_sub(1);
                 a.set_font_size(new_size);
                 redraw();
             }
-            12 => { // Einstellungen
+            12 => {
+                // Einstellungen
                 open_settings_dialog(a.win_id);
             }
             _ => {}
@@ -6633,7 +8055,14 @@ fn main() {
                             let seq = format!("\x1b[<{};{};{}M", btn, cell_x, cell_y);
                             ipc::pipe_write(fp.stdin_pipe, seq.as_bytes());
                         } else {
-                            let seq = [0x1b, b'[', b'M', btn as u8 + 32, cell_x as u8 + 32, cell_y as u8 + 32];
+                            let seq = [
+                                0x1b,
+                                b'[',
+                                b'M',
+                                btn as u8 + 32,
+                                cell_x as u8 + 32,
+                                cell_y as u8 + 32,
+                            ];
                             ipc::pipe_write(fp.stdin_pipe, &seq);
                         }
                         return;
@@ -6648,9 +8077,20 @@ fn main() {
             let tab = &a.tabs[a.active_tab];
             let active_pane = tab.active_pane_id;
             let layout = tab.root.layout(area);
-            let pane_rect = layout.iter().find(|(id, _)| *id == active_pane).map(|(_, r)| *r).unwrap_or(area);
+            let pane_rect = layout
+                .iter()
+                .find(|(id, _)| *id == active_pane)
+                .map(|(_, r)| *r)
+                .unwrap_or(area);
             if let Some(sess) = tab.root.find_session(active_pane) {
-                let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect, sess.cell_w, sess.cell_h);
+                let pos = pixel_to_cell_in_rect(
+                    x as u32,
+                    y as u32,
+                    &sess.buf,
+                    pane_rect,
+                    sess.cell_w,
+                    sess.cell_h,
+                );
                 let word = word_at_cell(&sess.buf, pos.row, pos.col);
                 if !word.is_empty() {
                     // Resolve path relative to cwd
@@ -6673,9 +8113,20 @@ fn main() {
             let tab = &a.tabs[a.active_tab];
             let active_pane = tab.active_pane_id;
             let layout = tab.root.layout(area);
-            let pane_rect = layout.iter().find(|(id, _)| *id == active_pane).map(|(_, r)| *r).unwrap_or(area);
+            let pane_rect = layout
+                .iter()
+                .find(|(id, _)| *id == active_pane)
+                .map(|(_, r)| *r)
+                .unwrap_or(area);
             if let Some(sess) = tab.root.find_session(active_pane) {
-                let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect, sess.cell_w, sess.cell_h);
+                let pos = pixel_to_cell_in_rect(
+                    x as u32,
+                    y as u32,
+                    &sess.buf,
+                    pane_rect,
+                    sess.cell_w,
+                    sess.cell_h,
+                );
                 if pos.row < sess.buf.lines.len() {
                     let line = &sess.buf.lines[pos.row];
                     // Check OSC 8 hyperlink first
@@ -6698,17 +8149,23 @@ fn main() {
             }
             return;
         }
-        if button == 1 { // Left click
+        if button == 1 {
+            // Left click
             // Change active pane if needed
             let area = a.content_area();
             let tab = &mut a.tabs[a.active_tab];
             if let Some(clicked_pane) = tab.root.pane_at_point(area, x as u16, y as u16) {
                 tab.active_pane_id = clicked_pane;
                 let layout = tab.root.layout(area);
-                let pane_rect = layout.iter().find(|(id, _)| *id == clicked_pane).map(|(_, r)| *r).unwrap_or(area);
+                let pane_rect = layout
+                    .iter()
+                    .find(|(id, _)| *id == clicked_pane)
+                    .map(|(_, r)| *r)
+                    .unwrap_or(area);
 
                 // Check if click is on scrollbar track
-                let scrollbar_x = (pane_rect.x + pane_rect.w).saturating_sub(SCROLLBAR_WIDTH as u16);
+                let scrollbar_x =
+                    (pane_rect.x + pane_rect.w).saturating_sub(SCROLLBAR_WIDTH as u16);
                 if (x as u16) >= scrollbar_x {
                     // Click on scrollbar — scroll to position
                     if let Some(sess) = tab.root.find_session_mut(clicked_pane) {
@@ -6717,7 +8174,8 @@ fn main() {
                             let rel_y = (y as u16).saturating_sub(pane_rect.y) as u32;
                             let track_h = pane_rect.h as u32;
                             let scrollable = total - sess.buf.visible_rows;
-                            sess.buf.scroll_offset = ((rel_y as usize * scrollable) / track_h as usize).min(scrollable);
+                            sess.buf.scroll_offset =
+                                ((rel_y as usize * scrollable) / track_h as usize).min(scrollable);
                             sess.scrollbar_dragging = true;
                             sess.dirty = true;
                         }
@@ -6726,7 +8184,14 @@ fn main() {
                     // Start text selection
                     if let Some(sess) = tab.root.find_session_mut(clicked_pane) {
                         sess.scrollbar_dragging = false;
-                        let pos = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect, sess.cell_w, sess.cell_h);
+                        let pos = pixel_to_cell_in_rect(
+                            x as u32,
+                            y as u32,
+                            &sess.buf,
+                            pane_rect,
+                            sess.cell_w,
+                            sess.cell_h,
+                        );
                         sess.selection = Some(Selection {
                             dragging: true,
                             anchor: pos,
@@ -6737,7 +8202,8 @@ fn main() {
                 }
             }
             redraw();
-        } else if button == 2 { // Scroll up (button 2 = scroll up in anyui)
+        } else if button == 2 {
+            // Scroll up (button 2 = scroll up in anyui)
             if (mods & MOD_SHIFT) != 0 {
                 // Shift+Scroll Up = increase font size
                 let new_size = a.active_font_size() + 1;
@@ -6750,7 +8216,8 @@ fn main() {
                 }
                 redraw();
             }
-        } else if button == 3 { // Scroll down (button 3 = scroll down in anyui)
+        } else if button == 3 {
+            // Scroll down (button 3 = scroll down in anyui)
             if (mods & MOD_SHIFT) != 0 {
                 // Shift+Scroll Down = decrease font size
                 let new_size = a.active_font_size().saturating_sub(1);
@@ -6763,7 +8230,8 @@ fn main() {
                 }
                 redraw();
             }
-        } else if button == 4 { // Middle click paste
+        } else if button == 4 {
+            // Middle click paste
             if let Some(sess) = a.active_session_mut() {
                 if sess.fg_proc.is_none() && sess.su_pending_user.is_none() {
                     let mut clip_buf = [0u8; 4096];
@@ -6771,7 +8239,9 @@ fn main() {
                     if clip_len > 0 {
                         if let Ok(text) = core::str::from_utf8(&clip_buf[..clip_len as usize]) {
                             for c in text.chars() {
-                                if c >= ' ' && (c as u32) < 128 { sess.shell.insert_char(c); }
+                                if c >= ' ' && (c as u32) < 128 {
+                                    sess.shell.insert_char(c);
+                                }
                             }
                             redraw_input_line(&mut sess.buf, &sess.shell);
                             sess.dirty = true;
@@ -6796,7 +8266,14 @@ fn main() {
                             let seq = format!("\x1b[<35;{};{}M", cell_x, cell_y);
                             ipc::pipe_write(fp.stdin_pipe, seq.as_bytes());
                         } else {
-                            let seq = [0x1b, b'[', b'M', 32 + 32, cell_x as u8 + 32, cell_y as u8 + 32];
+                            let seq = [
+                                0x1b,
+                                b'[',
+                                b'M',
+                                32 + 32,
+                                cell_x as u8 + 32,
+                                cell_y as u8 + 32,
+                            ];
                             ipc::pipe_write(fp.stdin_pipe, &seq);
                         }
                         return;
@@ -6808,7 +8285,11 @@ fn main() {
         let area = a.content_area();
         let tab = &mut a.tabs[a.active_tab];
         let layout = tab.root.layout(area);
-        let pane_rect = layout.iter().find(|(id, _)| *id == active_pane).map(|(_, r)| *r).unwrap_or(area);
+        let pane_rect = layout
+            .iter()
+            .find(|(id, _)| *id == active_pane)
+            .map(|(_, r)| *r)
+            .unwrap_or(area);
         if let Some(sess) = tab.root.find_session_mut(active_pane) {
             // Scrollbar drag
             if sess.scrollbar_dragging {
@@ -6817,7 +8298,8 @@ fn main() {
                     let rel_y = (y as u16).saturating_sub(pane_rect.y) as u32;
                     let track_h = pane_rect.h as u32;
                     let scrollable = total - sess.buf.visible_rows;
-                    sess.buf.scroll_offset = ((rel_y as usize * scrollable) / track_h as usize).min(scrollable);
+                    sess.buf.scroll_offset =
+                        ((rel_y as usize * scrollable) / track_h as usize).min(scrollable);
                     sess.dirty = true;
                     let canvas = get_canvas();
                     render_to_canvas(app(), &canvas);
@@ -6827,7 +8309,14 @@ fn main() {
             // Text selection drag
             if let Some(ref mut sel) = sess.selection {
                 if sel.dragging {
-                    sel.active = pixel_to_cell_in_rect(x as u32, y as u32, &sess.buf, pane_rect, sess.cell_w, sess.cell_h);
+                    sel.active = pixel_to_cell_in_rect(
+                        x as u32,
+                        y as u32,
+                        &sess.buf,
+                        pane_rect,
+                        sess.cell_w,
+                        sess.cell_h,
+                    );
                     sess.dirty = true;
                     let canvas = get_canvas();
                     render_to_canvas(app(), &canvas);
@@ -6843,14 +8332,23 @@ fn main() {
             if sess.buf.mouse_mode > 0 {
                 if let Some(ref fp) = sess.fg_proc {
                     if fp.stdin_pipe != 0 {
-                        let cell_x = ((_x as u16).saturating_sub(TEXT_PAD) / sess.cell_w) as u32 + 1;
-                        let cell_y = ((_y as u16).saturating_sub(TEXT_PAD) / sess.cell_h) as u32 + 1;
+                        let cell_x =
+                            ((_x as u16).saturating_sub(TEXT_PAD) / sess.cell_w) as u32 + 1;
+                        let cell_y =
+                            ((_y as u16).saturating_sub(TEXT_PAD) / sess.cell_h) as u32 + 1;
                         if sess.buf.mouse_sgr {
                             let btn = _button.saturating_sub(1);
                             let seq = format!("\x1b[<{};{};{}m", btn, cell_x, cell_y);
                             ipc::pipe_write(fp.stdin_pipe, seq.as_bytes());
                         } else {
-                            let seq = [0x1b, b'[', b'M', 3 + 32, cell_x as u8 + 32, cell_y as u8 + 32];
+                            let seq = [
+                                0x1b,
+                                b'[',
+                                b'M',
+                                3 + 32,
+                                cell_x as u8 + 32,
+                                cell_y as u8 + 32,
+                            ];
                             ipc::pipe_write(fp.stdin_pipe, &seq);
                         }
                         return;
@@ -6867,7 +8365,9 @@ fn main() {
                     sess.selection = None;
                 } else {
                     let text = extract_selected_text(&sess.buf, sel);
-                    if !text.is_empty() { anyui::clipboard_set(&text); }
+                    if !text.is_empty() {
+                        anyui::clipboard_set(&text);
+                    }
                 }
                 sess.dirty = true;
             }
@@ -6901,8 +8401,11 @@ fn main() {
                     if !a.search.matches.is_empty() {
                         let (line, _, _) = a.search.matches[a.search.current_match];
                         if let Some(sess) = a.active_session_mut() {
-                            if line < sess.buf.scroll_offset || line >= sess.buf.scroll_offset + sess.buf.visible_rows {
-                                sess.buf.scroll_offset = line.saturating_sub(sess.buf.visible_rows / 2);
+                            if line < sess.buf.scroll_offset
+                                || line >= sess.buf.scroll_offset + sess.buf.visible_rows
+                            {
+                                sess.buf.scroll_offset =
+                                    line.saturating_sub(sess.buf.visible_rows / 2);
                             }
                         }
                     }
@@ -6926,8 +8429,11 @@ fn main() {
                             if !a.search.matches.is_empty() {
                                 let (line, _, _) = a.search.matches[a.search.current_match];
                                 if let Some(sess) = a.active_session_mut() {
-                                    if line < sess.buf.scroll_offset || line >= sess.buf.scroll_offset + sess.buf.visible_rows {
-                                        sess.buf.scroll_offset = line.saturating_sub(sess.buf.visible_rows / 2);
+                                    if line < sess.buf.scroll_offset
+                                        || line >= sess.buf.scroll_offset + sess.buf.visible_rows
+                                    {
+                                        sess.buf.scroll_offset =
+                                            line.saturating_sub(sess.buf.visible_rows / 2);
                                     }
                                 }
                             }
@@ -6994,7 +8500,8 @@ fn main() {
 
         if ctrl_shift {
             match key_code {
-                0x11 => { // Ctrl+Shift+W: Close tab
+                0x11 => {
+                    // Ctrl+Shift+W: Close tab
                     if a.tabs.len() > 1 {
                         a.close_tab(a.active_tab);
                         a.update_pane_sizes();
@@ -7005,19 +8512,22 @@ fn main() {
                     }
                     return;
                 }
-                0x18 => { // Ctrl+Shift+O: Split horizontal
+                0x18 => {
+                    // Ctrl+Shift+O: Split horizontal
                     a.split_horizontal();
                     a.update_pane_sizes();
                     redraw();
                     return;
                 }
-                0x12 => { // Ctrl+Shift+E: Split vertical
+                0x12 => {
+                    // Ctrl+Shift+E: Split vertical
                     a.split_vertical();
                     a.update_pane_sizes();
                     redraw();
                     return;
                 }
-                0x2D => { // Ctrl+Shift+X: Close pane
+                0x2D => {
+                    // Ctrl+Shift+X: Close pane
                     let pane_id = a.tabs[a.active_tab].active_pane_id;
                     if !a.close_pane(pane_id) {
                         if a.tabs.len() > 1 {
@@ -7032,11 +8542,13 @@ fn main() {
                     redraw();
                     return;
                 }
-                0x13 => { // Ctrl+Shift+R: Rename tab
+                0x13 => {
+                    // Ctrl+Shift+R: Rename tab
                     show_rename_tab_dialog(a.win_id);
                     return;
                 }
-                0x21 => { // Ctrl+Shift+F: Search
+                0x21 => {
+                    // Ctrl+Shift+F: Search
                     a.search.active = true;
                     a.search.query.clear();
                     a.search.matches.clear();
@@ -7116,8 +8628,11 @@ fn main() {
         // Ctrl+Tab / Ctrl+Shift+Tab: switch tabs
         if ke.ctrl() && key_code == anyui::KEY_TAB {
             if ke.shift() {
-                if a.active_tab > 0 { a.active_tab -= 1; }
-                else { a.active_tab = a.tabs.len() - 1; }
+                if a.active_tab > 0 {
+                    a.active_tab -= 1;
+                } else {
+                    a.active_tab = a.tabs.len() - 1;
+                }
             } else {
                 a.active_tab = (a.active_tab + 1) % a.tabs.len();
             }
@@ -7136,10 +8651,19 @@ fn main() {
                     let mut ids = Vec::new();
                     tab.root.collect_pane_ids(&mut ids);
                     if ids.len() > 1 {
-                        let current_idx = ids.iter().position(|&id| id == tab.active_pane_id).unwrap_or(0);
+                        let current_idx = ids
+                            .iter()
+                            .position(|&id| id == tab.active_pane_id)
+                            .unwrap_or(0);
                         let new_idx = match key_code {
                             anyui::KEY_RIGHT | anyui::KEY_DOWN => (current_idx + 1) % ids.len(),
-                            _ => if current_idx > 0 { current_idx - 1 } else { ids.len() - 1 },
+                            _ => {
+                                if current_idx > 0 {
+                                    current_idx - 1
+                                } else {
+                                    ids.len() - 1
+                                }
+                            }
                         };
                         tab.active_pane_id = ids[new_idx];
                         redraw();
@@ -7164,11 +8688,12 @@ fn main() {
 
         // Forward to active session
         let pane_id = a.tabs[a.active_tab].active_pane_id;
-        let should_continue = if let Some(sess) = a.tabs[a.active_tab].root.find_session_mut(pane_id) {
-            handle_session_key(sess, key_code, char_val, mods)
-        } else {
-            true
-        };
+        let should_continue =
+            if let Some(sess) = a.tabs[a.active_tab].root.find_session_mut(pane_id) {
+                handle_session_key(sess, key_code, char_val, mods)
+            } else {
+                true
+            };
 
         if !should_continue {
             let pane_id = a.tabs[a.active_tab].active_pane_id;
@@ -7221,8 +8746,12 @@ fn main() {
         anyui::quit();
     });
 
-    win.on_focus(|_| { app().focused = true; });
-    win.on_blur(|_| { app().focused = false; });
+    win.on_focus(|_| {
+        app().focused = true;
+    });
+    win.on_blur(|_| {
+        app().focused = false;
+    });
 
     // ── Timer for polling subprocess pipes + cursor blink ──
     anyui::set_timer(50, || {
@@ -7256,7 +8785,10 @@ fn main() {
         let mut any_dirty = false;
         for pane_id in &ids {
             if let Some(sess) = tab.root.find_session(*pane_id) {
-                if sess.dirty { any_dirty = true; break; }
+                if sess.dirty {
+                    any_dirty = true;
+                    break;
+                }
             }
         }
 

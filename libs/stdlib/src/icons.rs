@@ -3,9 +3,9 @@
 //! Provides path resolution for app icons and file type icons,
 //! shared between the dock, finder, and other GUI programs.
 
+use crate::fs;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::fs;
 
 /// Base directory for app icons (.ico files).
 pub const APP_ICONS_DIR: &str = "/System/media/icons/apps";
@@ -102,7 +102,10 @@ pub fn collect_app_bundles() -> Vec<String> {
 pub fn find_app_bundle_by_stem(name: &str) -> Option<String> {
     let name_lower = name.to_ascii_lowercase();
     for bundle_path in collect_app_bundles() {
-        let folder = bundle_path.rsplit('/').next().unwrap_or(bundle_path.as_str());
+        let folder = bundle_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(bundle_path.as_str());
         let Some(stem) = folder.strip_suffix(".app") else {
             continue;
         };
@@ -333,7 +336,9 @@ fn load_user_overrides() -> Vec<MimeOverride> {
     let mut buf = [0u8; 512];
     loop {
         let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     fs::close(fd);

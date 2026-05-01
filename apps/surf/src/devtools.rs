@@ -837,7 +837,8 @@ fn record_request_done_inner(
             .as_ref()
             .map(|t| t.request_id != 0 && e.id == t.request_id)
             .unwrap_or(false);
-        let url_matches = matches!(e.status, NetStatus::Pending) && e.host == host && e.path == path;
+        let url_matches =
+            matches!(e.status, NetStatus::Pending) && e.host == host && e.path == path;
         if matches!(e.status, NetStatus::Pending) && (id_matches || url_matches) {
             e.status = NetStatus::from_http(status);
             e.size = size;
@@ -955,9 +956,7 @@ pub fn eval_console_input() {
     }
     crate::surf_log!("[devtools] eval: {}", expr);
     let script = alloc::format!("(function(){{return ({});}})()", expr);
-    let changed = st.tabs[st.active_tab]
-        .webview
-        .eval_js_for_devtools(&script);
+    let changed = st.tabs[st.active_tab].webview.eval_js_for_devtools(&script);
     st.devtools.console_input.set_text("");
     refresh_console();
     if changed {

@@ -2,7 +2,7 @@
 #![no_main]
 
 use anyos_std::{String, Vec};
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType, ExternCrateSpec};
+use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind, ExternCrateSpec};
 
 anyos_std::entry!(main);
 
@@ -152,16 +152,26 @@ fn main() {
                 anyos_std::println!();
                 anyos_std::println!("Options:");
                 anyos_std::println!("  -o <FILE>              Output file (default: a.out)");
-                anyos_std::println!("  --emit <TYPE>          Output type: exe, obj, rlib, mir, hir, asm");
+                anyos_std::println!(
+                    "  --emit <TYPE>          Output type: exe, obj, rlib, mir, hir, asm"
+                );
                 anyos_std::println!("  --opt-level <N>        Optimization level (0-3)");
                 anyos_std::println!("  --crate-type <TYPE>    Crate type: bin, lib, staticlib");
                 anyos_std::println!("  --crate-name <NAME>    Crate name");
-                anyos_std::println!("  --src-dir <DIR>        Source directory for module resolution");
+                anyos_std::println!(
+                    "  --src-dir <DIR>        Source directory for module resolution"
+                );
                 anyos_std::println!("  --extern <name=path>   Link against extern crate .rlib");
-                anyos_std::println!("  --cfg <SPEC>           Set cfg flag (e.g. target_arch=\"x86_64\")");
+                anyos_std::println!(
+                    "  --cfg <SPEC>           Set cfg flag (e.g. target_arch=\"x86_64\")"
+                );
                 anyos_std::println!("  -T <SCRIPT>            Linker script path");
-                anyos_std::println!("  --link-arg <ARG>       Additional linker argument (.o file)");
-                anyos_std::println!("  --env <KEY=VALUE>      Set compile-time environment variable");
+                anyos_std::println!(
+                    "  --link-arg <ARG>       Additional linker argument (.o file)"
+                );
+                anyos_std::println!(
+                    "  --env <KEY=VALUE>      Set compile-time environment variable"
+                );
                 anyos_std::println!("  --feature <NAME>       Enable feature gate");
                 anyos_std::println!("  --version              Print version");
                 anyos_std::println!("  -h, --help             Print help");
@@ -216,10 +226,7 @@ fn main() {
             write_file(output, &bytes);
         }
         Err(errors) => {
-            let source_map = anyrc::diagnostics::SourceMap::new(
-                String::from(input_file),
-                source,
-            );
+            let source_map = anyrc::diagnostics::SourceMap::new(String::from(input_file), source);
             for err in &errors {
                 anyos_std::println!("{}", err.render(&source_map));
             }
@@ -247,7 +254,10 @@ fn read_file_to_string(path: &str) -> Option<String> {
 }
 
 fn write_file(path: &str, data: &[u8]) {
-    let fd = anyos_std::fs::open(path, anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC);
+    let fd = anyos_std::fs::open(
+        path,
+        anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
+    );
     if fd == u32::MAX {
         anyos_std::println!("crust: error: cannot create {}", path);
         anyos_std::process::exit(1);

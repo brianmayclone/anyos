@@ -3,8 +3,8 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::json::Value;
 use anyos_std::fs;
+use anyos_std::json::Value;
 
 // ─── Paths (mirror bin/apkg/src/config.rs) ─────────────────────────
 
@@ -81,8 +81,15 @@ pub fn load_index() -> Vec<PackageInfo> {
         let filename: String = pkg["filename"].as_str().unwrap_or("").into();
 
         out.push(PackageInfo {
-            name, version, description, category, pkg_type,
-            size, size_installed, depends, filename,
+            name,
+            version,
+            description,
+            category,
+            pkg_type,
+            size,
+            size_installed,
+            depends,
+            filename,
         });
     }
     out
@@ -165,7 +172,10 @@ fn parse_u32(s: &str) -> Option<u32> {
 
 fn parse_string_array(val: &Value) -> Vec<String> {
     match val.as_array() {
-        Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         None => Vec::new(),
     }
 }

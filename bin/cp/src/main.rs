@@ -11,7 +11,6 @@ fn main() {
         return;
     }
 
-
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf).trim();
     let mut parts = args.splitn(2, ' ');
@@ -31,7 +30,10 @@ fn main() {
     }
 
     // Open destination for writing (create + truncate)
-    let dst_fd = anyos_std::fs::open(dst, anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC);
+    let dst_fd = anyos_std::fs::open(
+        dst,
+        anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
+    );
     if dst_fd == u32::MAX {
         anyos_std::println!("cp: cannot create '{}'", dst);
         anyos_std::fs::close(src_fd);

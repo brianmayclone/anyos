@@ -2,10 +2,10 @@
 #![no_main]
 
 use anyos_std::fs;
-use anyos_std::{Vec, String, format};
-use libanyui_client as anyui;
+use anyos_std::{format, String, Vec};
 #[allow(unused_imports)]
 use anyui::Widget;
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
@@ -16,15 +16,23 @@ const WIN_H: u32 = 650;
 
 fn f64_floor(x: f64) -> f64 {
     let i = x as i64;
-    if (i as f64) > x { (i - 1) as f64 } else { i as f64 }
+    if (i as f64) > x {
+        (i - 1) as f64
+    } else {
+        i as f64
+    }
 }
 
 fn taylor_sin(mut x: f64) -> f64 {
     const TWO_PI: f64 = 6.283185307179586;
     const PI: f64 = 3.141592653589793;
     x = x - (f64_floor(x / TWO_PI) * TWO_PI);
-    if x > PI { x -= TWO_PI; }
-    if x < -PI { x += TWO_PI; }
+    if x > PI {
+        x -= TWO_PI;
+    }
+    if x < -PI {
+        x += TWO_PI;
+    }
     let x2 = x * x;
     let x3 = x2 * x;
     let x5 = x3 * x2;
@@ -51,10 +59,8 @@ fn init_trig() {
 // ── Color palette ───────────────────────────────────────────────────────────
 
 const PALETTE: [u32; 16] = [
-    0xFFE53935, 0xFF8E24AA, 0xFF1E88E5, 0xFF00ACC1,
-    0xFF43A047, 0xFFFFB300, 0xFFFF7043, 0xFF5E35B1,
-    0xFF039BE5, 0xFF00897B, 0xFF7CB342, 0xFFFDD835,
-    0xFFF4511E, 0xFF3949AB, 0xFF00BFA5, 0xFFD81B60,
+    0xFFE53935, 0xFF8E24AA, 0xFF1E88E5, 0xFF00ACC1, 0xFF43A047, 0xFFFFB300, 0xFFFF7043, 0xFF5E35B1,
+    0xFF039BE5, 0xFF00897B, 0xFF7CB342, 0xFFFDD835, 0xFFF4511E, 0xFF3949AB, 0xFF00BFA5, 0xFFD81B60,
 ];
 
 fn darken(color: u32, factor: u32) -> u32 {
@@ -83,14 +89,20 @@ fn format_size(bytes: u64) -> String {
 }
 
 fn format_percent(part: u64, total: u64) -> String {
-    if total == 0 { return String::from("0%"); }
+    if total == 0 {
+        return String::from("0%");
+    }
     format!("{}.{}%", part * 100 / total, (part * 1000 / total) % 10)
 }
 
 fn format_items(files: u32, dirs: u32) -> String {
-    if dirs > 0 && files > 0 { format!("{} files, {} dirs", files, dirs) }
-    else if dirs > 0 { format!("{} dirs", dirs) }
-    else { format!("{} files", files) }
+    if dirs > 0 && files > 0 {
+        format!("{} files, {} dirs", files, dirs)
+    } else if dirs > 0 {
+        format!("{} dirs", dirs)
+    } else {
+        format!("{} files", files)
+    }
 }
 
 fn chart_background() -> u32 {
@@ -141,20 +153,31 @@ fn get_mounts() -> Vec<MountInfo> {
     let mut mounts = Vec::new();
     let mut buf = [0u8; 4096];
     let n = fs::list_mounts(&mut buf);
-    if n == u32::MAX { return mounts; }
+    if n == u32::MAX {
+        return mounts;
+    }
     let text = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
     for line in text.split('\n') {
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let mut parts = line.splitn(3, '\t');
         let path = parts.next().unwrap_or("");
         let fstype = parts.next().unwrap_or("");
-        if path.is_empty() { continue; }
+        if path.is_empty() {
+            continue;
+        }
         let (total, used, free) = if let Some(st) = fs::statfs(path) {
             (st.total_bytes, st.used_bytes, st.free_bytes)
-        } else { (0, 0, 0) };
+        } else {
+            (0, 0, 0)
+        };
         mounts.push(MountInfo {
-            path: String::from(path), fstype: String::from(fstype),
-            total_bytes: total, used_bytes: used, free_bytes: free,
+            path: String::from(path),
+            fstype: String::from(fstype),
+            total_bytes: total,
+            used_bytes: used,
+            free_bytes: free,
         });
     }
     mounts
@@ -168,11 +191,11 @@ fn get_mounts() -> Vec<MountInfo> {
 struct TreeNode {
     name: String,
     path: String,
-    own_size: u64,       // size of files directly in this dir (or file size)
-    total_size: u64,     // recursive total (including children)
+    own_size: u64,   // size of files directly in this dir (or file size)
+    total_size: u64, // recursive total (including children)
     is_dir: bool,
-    file_count: u32,     // recursive file count
-    dir_count: u32,      // recursive dir count (not counting self)
+    file_count: u32,      // recursive file count
+    dir_count: u32,       // recursive dir count (not counting self)
     children: Vec<usize>, // indices into the global tree vec
 }
 
@@ -184,25 +207,40 @@ struct DirTree {
 
 impl DirTree {
     fn new() -> Self {
-        DirTree { nodes: Vec::new(), root: 0 }
+        DirTree {
+            nodes: Vec::new(),
+            root: 0,
+        }
     }
 
     /// Build the complete tree rooted at `path`, recursively.
     fn build(root_path: &str, status: &anyui::Label, progress: &anyui::ProgressBar) -> Self {
-        let mut tree = DirTree { nodes: Vec::new(), root: 0 };
+        let mut tree = DirTree {
+            nodes: Vec::new(),
+            root: 0,
+        };
         let root_idx = tree.add_dir(root_path, root_path, 0, status, progress);
         tree.root = root_idx;
         tree
     }
 
-    fn add_dir(&mut self, path: &str, name: &str, depth: u32,
-               status: &anyui::Label, progress: &anyui::ProgressBar) -> usize {
+    fn add_dir(
+        &mut self,
+        path: &str,
+        name: &str,
+        depth: u32,
+        status: &anyui::Label,
+        progress: &anyui::ProgressBar,
+    ) -> usize {
         let idx = self.nodes.len();
         self.nodes.push(TreeNode {
             name: String::from(name),
             path: String::from(path),
-            own_size: 0, total_size: 0,
-            is_dir: true, file_count: 0, dir_count: 0,
+            own_size: 0,
+            total_size: 0,
+            is_dir: true,
+            file_count: 0,
+            dir_count: 0,
             children: Vec::new(),
         });
 
@@ -211,18 +249,23 @@ impl DirTree {
             status.set_text(&format!("Scanning {}...", name));
         }
 
-        if depth > 30 { return idx; } // safety limit
+        if depth > 30 {
+            return idx;
+        } // safety limit
 
         if let Ok(entries) = fs::read_dir(path) {
             for entry in entries {
-                if entry.name == "." || entry.name == ".." { continue; }
+                if entry.name == "." || entry.name == ".." {
+                    continue;
+                }
                 let child_path = if path == "/" {
                     format!("/{}", entry.name)
                 } else {
                     format!("{}/{}", path, entry.name)
                 };
                 if entry.is_dir() {
-                    let child_idx = self.add_dir(&child_path, &entry.name, depth + 1, status, progress);
+                    let child_idx =
+                        self.add_dir(&child_path, &entry.name, depth + 1, status, progress);
                     // Accumulate child stats into parent
                     let child_total = self.nodes[child_idx].total_size;
                     let child_files = self.nodes[child_idx].file_count;
@@ -237,8 +280,11 @@ impl DirTree {
                     self.nodes.push(TreeNode {
                         name: entry.name,
                         path: child_path,
-                        own_size: size, total_size: size,
-                        is_dir: false, file_count: 1, dir_count: 0,
+                        own_size: size,
+                        total_size: size,
+                        is_dir: false,
+                        file_count: 1,
+                        dir_count: 0,
                         children: Vec::new(),
                     });
                     self.nodes[idx].own_size += size;
@@ -295,7 +341,9 @@ struct ChartSegment {
 
 /// Integer atan2 returning 0..65535 (full circle). 0 = top (12 o'clock), CW.
 fn iatan2(x: i32, y: i32) -> u32 {
-    if x == 0 && y == 0 { return 0; }
+    if x == 0 && y == 0 {
+        return 0;
+    }
     let ax = if x < 0 { -x } else { x };
     let ay = if y < 0 { -y } else { y };
     let base = if ay == 0 {
@@ -306,10 +354,15 @@ fn iatan2(x: i32, y: i32) -> u32 {
         8192 - (ay as u64 * 8192 / ax as u64) as u32
     };
     let o: u32 = 8192;
-    if x >= 0 && y > 0 { base }
-    else if x > 0 && y <= 0 { 2 * o - base }
-    else if x <= 0 && y < 0 { 2 * o + base }
-    else { 4 * o - base }
+    if x >= 0 && y > 0 {
+        base
+    } else if x > 0 && y <= 0 {
+        2 * o - base
+    } else if x <= 0 && y < 0 {
+        2 * o + base
+    } else {
+        4 * o - base
+    }
 }
 
 fn angle_in_range(angle: u32, start: u32, end: u32) -> bool {
@@ -317,10 +370,19 @@ fn angle_in_range(angle: u32, start: u32, end: u32) -> bool {
 }
 
 /// Draw a filled arc between r_inner..r_outer, angle_start..angle_end.
-fn draw_arc(canvas: &anyui::Canvas, cx: i32, cy: i32,
-            r_inner: i32, r_outer: i32,
-            angle_start: u32, angle_end: u32, color: u32) {
-    if angle_end <= angle_start { return; }
+fn draw_arc(
+    canvas: &anyui::Canvas,
+    cx: i32,
+    cy: i32,
+    r_inner: i32,
+    r_outer: i32,
+    angle_start: u32,
+    angle_end: u32,
+    color: u32,
+) {
+    if angle_end <= angle_start {
+        return;
+    }
     let r = r_outer;
     let r_inner_sq = (r_inner as i64) * (r_inner as i64);
     let r_outer_sq = (r_outer as i64) * (r_outer as i64);
@@ -330,7 +392,9 @@ fn draw_arc(canvas: &anyui::Canvas, cx: i32, cy: i32,
             let dx = (px - cx) as i64;
             let dy = (py - cy) as i64;
             let dist_sq = dx * dx + dy * dy;
-            if dist_sq < r_inner_sq || dist_sq > r_outer_sq { continue; }
+            if dist_sq < r_inner_sq || dist_sq > r_outer_sq {
+                continue;
+            }
             let angle = iatan2(dx as i32, -(dy as i32));
             if angle_in_range(angle, angle_start, angle_end) {
                 canvas.set_pixel(px, py, color);
@@ -340,8 +404,14 @@ fn draw_arc(canvas: &anyui::Canvas, cx: i32, cy: i32,
 }
 
 /// Build segments list and draw the ring chart. Returns segments for hit-testing.
-fn draw_ring_chart(canvas: &anyui::Canvas, tree: &DirTree, view_node: usize,
-                   selected: i32, chart_w: u32, chart_h: u32) -> Vec<ChartSegment> {
+fn draw_ring_chart(
+    canvas: &anyui::Canvas,
+    tree: &DirTree,
+    view_node: usize,
+    selected: i32,
+    chart_w: u32,
+    chart_h: u32,
+) -> Vec<ChartSegment> {
     let cx = chart_w as i32 / 2;
     let cy = chart_h as i32 / 2;
     let mut segments = Vec::new();
@@ -371,22 +441,45 @@ fn draw_ring_chart(canvas: &anyui::Canvas, tree: &DirTree, view_node: usize,
 
     for (i, &child_idx) in children[..max_items].iter().enumerate() {
         let child = tree.node(child_idx);
-        if child.total_size == 0 { continue; }
+        if child.total_size == 0 {
+            continue;
+        }
         let span = (child.total_size * 65536 / total) as u32;
-        if span < 80 { angle += span; continue; }
+        if span < 80 {
+            angle += span;
+            continue;
+        }
 
         let base_color = PALETTE[i % PALETTE.len()];
-        let color = if selected == i as i32 { 0xFFFFFFFF } else { base_color };
+        let color = if selected == i as i32 {
+            0xFFFFFFFF
+        } else {
+            base_color
+        };
 
         draw_arc(canvas, cx, cy, r_inner, r_outer, angle, angle + span, color);
         segments.push(ChartSegment {
-            r_inner, r_outer, angle_start: angle, angle_end: angle + span, node_idx: child_idx,
+            r_inner,
+            r_outer,
+            angle_start: angle,
+            angle_end: angle + span,
+            node_idx: child_idx,
         });
 
         // Sub-rings for directory children
         if child.is_dir && span > 300 {
-            draw_sub_rings(canvas, tree, child_idx, cx, cy,
-                           angle, span, r_outer + RING_GAP, 2, &mut segments);
+            draw_sub_rings(
+                canvas,
+                tree,
+                child_idx,
+                cx,
+                cy,
+                angle,
+                span,
+                r_outer + RING_GAP,
+                2,
+                &mut segments,
+            );
         }
         angle += span;
     }
@@ -400,15 +493,30 @@ fn draw_ring_chart(canvas: &anyui::Canvas, tree: &DirTree, view_node: usize,
     segments
 }
 
-fn draw_sub_rings(canvas: &anyui::Canvas, tree: &DirTree, parent_idx: usize,
-                  cx: i32, cy: i32, parent_angle: u32, parent_span: u32,
-                  r_inner: i32, depth: u32, segments: &mut Vec<ChartSegment>) {
-    if depth > MAX_RINGS { return; }
-    if parent_span < 150 { return; }
+fn draw_sub_rings(
+    canvas: &anyui::Canvas,
+    tree: &DirTree,
+    parent_idx: usize,
+    cx: i32,
+    cy: i32,
+    parent_angle: u32,
+    parent_span: u32,
+    r_inner: i32,
+    depth: u32,
+    segments: &mut Vec<ChartSegment>,
+) {
+    if depth > MAX_RINGS {
+        return;
+    }
+    if parent_span < 150 {
+        return;
+    }
 
     let parent = tree.node(parent_idx);
     let parent_size = parent.total_size;
-    if parent_size == 0 { return; }
+    if parent_size == 0 {
+        return;
+    }
 
     let r_outer = r_inner + RING_WIDTH;
     let children = tree.children_of(parent_idx);
@@ -416,29 +524,62 @@ fn draw_sub_rings(canvas: &anyui::Canvas, tree: &DirTree, parent_idx: usize,
 
     for (i, &child_idx) in children.iter().enumerate() {
         let child = tree.node(child_idx);
-        if child.total_size == 0 { continue; }
+        if child.total_size == 0 {
+            continue;
+        }
         let span = (child.total_size * parent_span as u64 / parent_size) as u32;
-        if span < 80 { sub_angle += span; continue; }
+        if span < 80 {
+            sub_angle += span;
+            continue;
+        }
 
         let shade = 100u32.saturating_sub((depth - 1) * 15);
         let color = darken(PALETTE[(i + depth as usize * 3) % PALETTE.len()], shade);
 
-        draw_arc(canvas, cx, cy, r_inner, r_outer, sub_angle, sub_angle + span, color);
+        draw_arc(
+            canvas,
+            cx,
+            cy,
+            r_inner,
+            r_outer,
+            sub_angle,
+            sub_angle + span,
+            color,
+        );
         segments.push(ChartSegment {
-            r_inner, r_outer, angle_start: sub_angle, angle_end: sub_angle + span, node_idx: child_idx,
+            r_inner,
+            r_outer,
+            angle_start: sub_angle,
+            angle_end: sub_angle + span,
+            node_idx: child_idx,
         });
 
         if child.is_dir && depth < MAX_RINGS && span > 300 {
-            draw_sub_rings(canvas, tree, child_idx, cx, cy,
-                           sub_angle, span, r_outer + RING_GAP, depth + 1, segments);
+            draw_sub_rings(
+                canvas,
+                tree,
+                child_idx,
+                cx,
+                cy,
+                sub_angle,
+                span,
+                r_outer + RING_GAP,
+                depth + 1,
+                segments,
+            );
         }
         sub_angle += span;
     }
 }
 
 /// Hit-test: given mouse (mx, my) on chart, find which segment the cursor is over.
-fn hit_test_chart(segments: &[ChartSegment], mx: i32, my: i32,
-                  chart_w: u32, chart_h: u32) -> Option<usize> {
+fn hit_test_chart(
+    segments: &[ChartSegment],
+    mx: i32,
+    my: i32,
+    chart_w: u32,
+    chart_h: u32,
+) -> Option<usize> {
     let cx = chart_w as i32 / 2;
     let cy = chart_h as i32 / 2;
     let dx = (mx - cx) as i64;
@@ -450,7 +591,8 @@ fn hit_test_chart(segments: &[ChartSegment], mx: i32, my: i32,
     for seg in segments.iter().rev() {
         let ri_sq = (seg.r_inner as i64) * (seg.r_inner as i64);
         let ro_sq = (seg.r_outer as i64) * (seg.r_outer as i64);
-        if dist_sq >= ri_sq && dist_sq <= ro_sq
+        if dist_sq >= ri_sq
+            && dist_sq <= ro_sq
             && angle_in_range(angle, seg.angle_start, seg.angle_end)
         {
             return Some(seg.node_idx);
@@ -462,7 +604,11 @@ fn hit_test_chart(segments: &[ChartSegment], mx: i32, my: i32,
 // ── App modes ───────────────────────────────────────────────────────────────
 
 #[derive(PartialEq, Clone, Copy)]
-enum Mode { SelectMount, Scanning, Browsing }
+enum Mode {
+    SelectMount,
+    Scanning,
+    Browsing,
+}
 
 const MAX_HISTORY: usize = 64;
 
@@ -472,12 +618,12 @@ const MAX_HISTORY: usize = 64;
 struct AppState {
     mode: Mode,
     mounts: Vec<MountInfo>,
-    current_node: usize,         // current view node in tree
-    path_history: Vec<usize>,    // node index history
-    tree: DirTree,               // cached full tree
+    current_node: usize,               // current view node in tree
+    path_history: Vec<usize>,          // node index history
+    tree: DirTree,                     // cached full tree
     chart_segments: Vec<ChartSegment>, // for tooltip hit-testing
     selected_row: i32,
-    last_tooltip_node: i32,      // avoid redundant tooltip updates
+    last_tooltip_node: i32, // avoid redundant tooltip updates
 
     // UI
     win: anyui::Window,
@@ -517,7 +663,8 @@ fn apply_theme() {
     if a.mode == Mode::Browsing {
         let cw = a.chart.get_stride().max(450);
         let ch = a.chart.get_height().max(450);
-        a.chart_segments = draw_ring_chart(&a.chart, &a.tree, a.current_node, a.selected_row, cw, ch);
+        a.chart_segments =
+            draw_ring_chart(&a.chart, &a.tree, a.current_node, a.selected_row, cw, ch);
     } else {
         a.chart.clear(chart_background());
     }
@@ -564,7 +711,8 @@ fn show_mount_selection() {
         a.mount_grid.set_cell(row, 3, &format_size(m.used_bytes));
         a.mount_grid.set_cell(row, 4, &format_size(m.free_bytes));
         if m.total_bytes > 0 {
-            a.mount_grid.set_cell(row, 5, &format_percent(m.used_bytes, m.total_bytes));
+            a.mount_grid
+                .set_cell(row, 5, &format_percent(m.used_bytes, m.total_bytes));
         } else {
             a.mount_grid.set_cell(row, 5, "-");
         }
@@ -584,7 +732,8 @@ fn start_full_scan(mount_path: &str) {
     a.btn_back.set_enabled(false);
     a.btn_up.set_enabled(false);
     a.lbl_path.set_text(&format!("Analyzing {}...", mount_path));
-    a.lbl_info.set_text("Building directory tree — this may take a moment...");
+    a.lbl_info
+        .set_text("Building directory tree — this may take a moment...");
 
     // Build complete tree
     let tree = DirTree::build(mount_path, &a.status_label, &a.progress);
@@ -620,7 +769,9 @@ fn show_view() {
     let total = node.total_size;
     a.lbl_info.set_text(&format!(
         "Total: {} — {} files, {} dirs",
-        format_size(total), node.file_count, node.dir_count,
+        format_size(total),
+        node.file_count,
+        node.dir_count,
     ));
 
     // Fill DataGrid from children
@@ -633,7 +784,11 @@ fn show_view() {
     for (i, &child_idx) in children.iter().enumerate() {
         let child = a.tree.node(child_idx);
         let row = i as u32;
-        let pct = if total > 0 { child.total_size * 100 / total } else { 0 };
+        let pct = if total > 0 {
+            child.total_size * 100 / total
+        } else {
+            0
+        };
 
         if child.is_dir {
             a.grid.set_cell(row, 0, &format!("{}/", child.name));
@@ -641,16 +796,20 @@ fn show_view() {
             a.grid.set_cell(row, 0, &child.name);
         }
         a.grid.set_cell(row, 1, &format_size(child.total_size));
-        a.grid.set_cell(row, 2, &format_percent(child.total_size, total));
+        a.grid
+            .set_cell(row, 2, &format_percent(child.total_size, total));
         if child.is_dir {
-            a.grid.set_cell(row, 3, &format_items(child.file_count, child.dir_count));
+            a.grid
+                .set_cell(row, 3, &format_items(child.file_count, child.dir_count));
         } else {
             a.grid.set_cell(row, 3, "1 file");
         }
         a.grid.set_cell(row, 4, "");
 
         let color = usage_heat_color(pct);
-        for _ in 0..5 { text_colors.push(color); }
+        for _ in 0..5 {
+            text_colors.push(color);
+        }
     }
     a.grid.set_cell_colors(&text_colors);
 
@@ -662,7 +821,8 @@ fn show_view() {
     a.chart_segments = draw_ring_chart(&a.chart, &a.tree, cur, a.selected_row, chart_w, chart_h);
     a.last_tooltip_node = -1;
 
-    a.status_label.set_text(&format!("{} items — {}", count, format_size(total)));
+    a.status_label
+        .set_text(&format!("{} items — {}", count, format_size(total)));
 }
 
 // ── Navigation (instant, from cache) ────────────────────────────────────────
@@ -671,11 +831,17 @@ fn navigate_into(grid_row: u32) {
     let a = app();
     let children = a.tree.children_of(a.current_node);
     let idx = grid_row as usize;
-    if idx >= children.len() { return; }
+    if idx >= children.len() {
+        return;
+    }
     let child_idx = children[idx];
-    if !a.tree.node(child_idx).is_dir { return; }
+    if !a.tree.node(child_idx).is_dir {
+        return;
+    }
 
-    if a.path_history.len() >= MAX_HISTORY { a.path_history.remove(0); }
+    if a.path_history.len() >= MAX_HISTORY {
+        a.path_history.remove(0);
+    }
     a.path_history.push(a.current_node);
 
     a.current_node = child_idx;
@@ -685,12 +851,16 @@ fn navigate_into(grid_row: u32) {
 
 fn navigate_up() {
     let a = app();
-    if a.current_node == a.tree.root { return; }
+    if a.current_node == a.tree.root {
+        return;
+    }
 
     // Find parent by searching the tree (walk from root)
     let target = a.current_node;
     if let Some(parent_idx) = find_parent(&a.tree, a.tree.root, target) {
-        if a.path_history.len() >= MAX_HISTORY { a.path_history.remove(0); }
+        if a.path_history.len() >= MAX_HISTORY {
+            a.path_history.remove(0);
+        }
         a.path_history.push(a.current_node);
         a.current_node = parent_idx;
         a.selected_row = -1;
@@ -700,7 +870,9 @@ fn navigate_up() {
 
 fn find_parent(tree: &DirTree, node: usize, target: usize) -> Option<usize> {
     for &child in tree.children_of(node) {
-        if child == target { return Some(node); }
+        if child == target {
+            return Some(node);
+        }
         if tree.node(child).is_dir {
             if let Some(p) = find_parent(tree, child, target) {
                 return Some(p);
@@ -712,7 +884,9 @@ fn find_parent(tree: &DirTree, node: usize, target: usize) -> Option<usize> {
 
 fn navigate_back() {
     let a = app();
-    if a.path_history.is_empty() { return; }
+    if a.path_history.is_empty() {
+        return;
+    }
     let prev = a.path_history.pop().unwrap();
     a.current_node = prev;
     a.selected_row = -1;
@@ -723,17 +897,24 @@ fn navigate_back() {
 
 fn update_chart_tooltip(mx: i32, my: i32) {
     let a = app();
-    if a.mode != Mode::Browsing { return; }
+    if a.mode != Mode::Browsing {
+        return;
+    }
     let cw = a.chart.get_stride().max(450);
     let ch = a.chart.get_height().max(450);
     if let Some(node_idx) = hit_test_chart(&a.chart_segments, mx, my, cw, ch) {
-        if a.last_tooltip_node == node_idx as i32 { return; }
+        if a.last_tooltip_node == node_idx as i32 {
+            return;
+        }
         a.last_tooltip_node = node_idx as i32;
         let node = a.tree.node(node_idx);
         let parent_total = a.tree.node(a.current_node).total_size;
-        let tip = format!("{} — {} ({})",
-            node.path, format_size(node.total_size),
-            format_percent(node.total_size, parent_total));
+        let tip = format!(
+            "{} — {} ({})",
+            node.path,
+            format_size(node.total_size),
+            format_percent(node.total_size, parent_total)
+        );
         a.chart.set_tooltip(&tip);
         a.status_label.set_text(&tip);
     } else {
@@ -743,7 +924,10 @@ fn update_chart_tooltip(mx: i32, my: i32) {
             let children = a.tree.children_of(a.current_node);
             let total = a.tree.node(a.current_node).total_size;
             a.status_label.set_text(&format!(
-                "{} items — {}", children.len(), format_size(total)));
+                "{} items — {}",
+                children.len(),
+                format_size(total)
+            ));
         }
     }
 }
@@ -751,7 +935,9 @@ fn update_chart_tooltip(mx: i32, my: i32) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-    if !anyui::init() { return; }
+    if !anyui::init() {
+        return;
+    }
     init_trig();
 
     let win = anyui::Window::new("Disk Usage", -1, -1, WIN_W, WIN_H);
@@ -828,10 +1014,21 @@ fn main() {
     mount_grid.set_columns(&[
         anyui::ColumnDef::new("Mount Point").width(200),
         anyui::ColumnDef::new("Type").width(100),
-        anyui::ColumnDef::new("Total").width(100).align(anyui::ALIGN_RIGHT).numeric(),
-        anyui::ColumnDef::new("Used").width(100).align(anyui::ALIGN_RIGHT).numeric(),
-        anyui::ColumnDef::new("Free").width(100).align(anyui::ALIGN_RIGHT).numeric(),
-        anyui::ColumnDef::new("Usage").width(80).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new("Total")
+            .width(100)
+            .align(anyui::ALIGN_RIGHT)
+            .numeric(),
+        anyui::ColumnDef::new("Used")
+            .width(100)
+            .align(anyui::ALIGN_RIGHT)
+            .numeric(),
+        anyui::ColumnDef::new("Free")
+            .width(100)
+            .align(anyui::ALIGN_RIGHT)
+            .numeric(),
+        anyui::ColumnDef::new("Usage")
+            .width(80)
+            .align(anyui::ALIGN_RIGHT),
     ]);
     mount_grid.set_visible(false);
     win.add(&mount_grid);
@@ -849,8 +1046,13 @@ fn main() {
     grid.set_row_height(24);
     grid.set_columns(&[
         anyui::ColumnDef::new("Name").width(220),
-        anyui::ColumnDef::new("Size").width(90).align(anyui::ALIGN_RIGHT).numeric(),
-        anyui::ColumnDef::new("%").width(60).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new("Size")
+            .width(90)
+            .align(anyui::ALIGN_RIGHT)
+            .numeric(),
+        anyui::ColumnDef::new("%")
+            .width(60)
+            .align(anyui::ALIGN_RIGHT),
         anyui::ColumnDef::new("Contents").width(120),
         anyui::ColumnDef::new("Modified").width(80),
     ]);
@@ -875,9 +1077,23 @@ fn main() {
             chart_segments: Vec::new(),
             selected_row: -1,
             last_tooltip_node: -1,
-            win, toolbar, path_panel, info_panel, status_bar, btn_back, btn_up, btn_refresh, btn_home,
-            lbl_path, lbl_info, status_label,
-            grid, mount_grid, chart, split, progress,
+            win,
+            toolbar,
+            path_panel,
+            info_panel,
+            status_bar,
+            btn_back,
+            btn_up,
+            btn_refresh,
+            btn_home,
+            lbl_path,
+            lbl_info,
+            status_label,
+            grid,
+            mount_grid,
+            chart,
+            split,
+            progress,
             theme_timer: 0,
             last_theme_light: anyui::theme::is_light(),
         });
@@ -908,16 +1124,25 @@ fn main() {
         let ch = a.chart.get_height();
         let chart_w = if cw > 0 { cw } else { 450 };
         let chart_h = if ch > 0 { ch } else { 450 };
-        a.chart_segments = draw_ring_chart(&a.chart, &a.tree, cur, a.selected_row, chart_w, chart_h);
+        a.chart_segments =
+            draw_ring_chart(&a.chart, &a.tree, cur, a.selected_row, chart_w, chart_h);
     });
 
     // Grid: double-click → navigate
-    app().grid.on_submit(|evt| { navigate_into(evt.index); });
+    app().grid.on_submit(|evt| {
+        navigate_into(evt.index);
+    });
 
     // Chart: mouse interaction → tooltip + status bar info
-    app().chart.on_mouse_move(|mx, my| { update_chart_tooltip(mx, my); });
-    app().chart.on_draw(|mx, my, _btn| { update_chart_tooltip(mx, my); });
-    app().chart.on_mouse_down(|mx, my, _btn| { update_chart_tooltip(mx, my); });
+    app().chart.on_mouse_move(|mx, my| {
+        update_chart_tooltip(mx, my);
+    });
+    app().chart.on_draw(|mx, my, _btn| {
+        update_chart_tooltip(mx, my);
+    });
+    app().chart.on_mouse_down(|mx, my, _btn| {
+        update_chart_tooltip(mx, my);
+    });
 
     // Chart: click on segment → navigate into that directory
     app().chart.on_click(|_| {
@@ -928,7 +1153,9 @@ fn main() {
         if let Some(node_idx) = hit_test_chart(&a.chart_segments, mx, my, cw, ch) {
             let node = a.tree.node(node_idx);
             if node.is_dir {
-                if a.path_history.len() >= MAX_HISTORY { a.path_history.remove(0); }
+                if a.path_history.len() >= MAX_HISTORY {
+                    a.path_history.remove(0);
+                }
                 a.path_history.push(a.current_node);
                 a.current_node = node_idx;
                 a.selected_row = -1;
@@ -938,8 +1165,12 @@ fn main() {
     });
 
     // Toolbar
-    app().btn_back.on_click(|_| { navigate_back(); });
-    app().btn_up.on_click(|_| { navigate_up(); });
+    app().btn_back.on_click(|_| {
+        navigate_back();
+    });
+    app().btn_up.on_click(|_| {
+        navigate_up();
+    });
 
     app().btn_refresh.on_click(|_| {
         let a = app();
@@ -951,9 +1182,13 @@ fn main() {
         }
     });
 
-    btn_home.on_click(|_| { show_mount_selection(); });
+    btn_home.on_click(|_| {
+        show_mount_selection();
+    });
 
-    app().win.on_close(|_| { anyui::quit(); });
+    app().win.on_close(|_| {
+        anyui::quit();
+    });
 
     anyui::run();
 }

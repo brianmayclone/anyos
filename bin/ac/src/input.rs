@@ -7,8 +7,8 @@
 // ─── Raw key code ranges ─────────────────────────────────────────────────────
 
 const ARROW_PREFIX: u32 = 0x10_0000;
-const NAV_PREFIX:   u32 = 0x20_0000;
-const FN_PREFIX:    u32 = 0x30_0000;
+const NAV_PREFIX: u32 = 0x20_0000;
+const FN_PREFIX: u32 = 0x30_0000;
 
 // ─── Key enum ────────────────────────────────────────────────────────────────
 
@@ -23,7 +23,7 @@ pub enum Key {
     CtrlC,
     CtrlD,
     // Other Ctrl+letter combos
-    Ctrl(u8),   // raw control code 0x01–0x1A
+    Ctrl(u8), // raw control code 0x01–0x1A
 
     // Arrow keys
     Up,
@@ -60,7 +60,9 @@ pub enum Key {
 
 /// Decode a raw `con_poll_key` return value into a typed [`Key`].
 pub fn decode(raw: u32) -> Key {
-    if raw == 0 { return Key::Unknown; }
+    if raw == 0 {
+        return Key::Unknown;
+    }
 
     match raw >> 16 {
         0x10 => match (raw & 0xFF) as u8 {
@@ -68,7 +70,7 @@ pub fn decode(raw: u32) -> Key {
             b'B' => Key::Down,
             b'C' => Key::Right,
             b'D' => Key::Left,
-            _    => Key::Unknown,
+            _ => Key::Unknown,
         },
         0x20 => match (raw & 0xFF) as u8 {
             0x48 => Key::Home,
@@ -76,22 +78,22 @@ pub fn decode(raw: u32) -> Key {
             0x49 => Key::PageUp,
             0x51 => Key::PageDown,
             0x53 => Key::Delete,
-            _    => Key::Unknown,
+            _ => Key::Unknown,
         },
         0x30 => match raw & 0xFF {
-            1  => Key::F1,
-            2  => Key::F2,
-            3  => Key::F3,
-            4  => Key::F4,
-            5  => Key::F5,
-            6  => Key::F6,
-            7  => Key::F7,
-            8  => Key::F8,
-            9  => Key::F9,
+            1 => Key::F1,
+            2 => Key::F2,
+            3 => Key::F3,
+            4 => Key::F4,
+            5 => Key::F5,
+            6 => Key::F6,
+            7 => Key::F7,
+            8 => Key::F8,
+            9 => Key::F9,
             10 => Key::F10,
             11 => Key::F11,
             12 => Key::F12,
-            _  => Key::Unknown,
+            _ => Key::Unknown,
         },
         _ => {
             // Plain character / control code
@@ -104,8 +106,8 @@ pub fn decode(raw: u32) -> Key {
                 0x09 => Key::Tab,
                 0x1B => Key::Escape,
                 0x01..=0x1A => Key::Ctrl(b + b'a' - 1), // Ctrl+A = 0x01 → Ctrl('a')
-                32..=126    => Key::Char(b),
-                _           => Key::Unknown,
+                32..=126 => Key::Char(b),
+                _ => Key::Unknown,
             }
         }
     }
@@ -114,14 +116,20 @@ pub fn decode(raw: u32) -> Key {
 /// Non-blocking poll — returns `None` if no key is pending.
 pub fn poll() -> Option<Key> {
     let raw = anyos_std::sys::con_poll_key();
-    if raw == 0 { None } else { Some(decode(raw)) }
+    if raw == 0 {
+        None
+    } else {
+        Some(decode(raw))
+    }
 }
 
 /// Blocking poll — sleeps briefly between polls until a key arrives.
 pub fn read_key() -> Key {
     loop {
         let raw = anyos_std::sys::con_poll_key();
-        if raw != 0 { return decode(raw); }
+        if raw != 0 {
+            return decode(raw);
+        }
         anyos_std::process::sleep(1);
     }
 }

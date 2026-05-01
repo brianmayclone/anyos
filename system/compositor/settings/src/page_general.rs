@@ -20,7 +20,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_auto_size(true);
     panel.set_color(layout::bg());
 
-    layout::build_page_header(&panel, i18n::t("General"), i18n::t("System preferences and identity"));
+    layout::build_page_header(
+        &panel,
+        i18n::t("General"),
+        i18n::t("System preferences and identity"),
+    );
 
     build_computer_info(&panel);
     build_hostname_card(&panel);
@@ -245,7 +249,12 @@ fn build_keyboard_card(panel: &ui::View) {
     let current_id = kbd::get_layout();
 
     if count == 0 {
-        layout::build_info_row(&card, i18n::t("Keyboard"), i18n::t("No layouts available"), true);
+        layout::build_info_row(
+            &card,
+            i18n::t("Keyboard"),
+            i18n::t("No layouts available"),
+            true,
+        );
         return;
     }
 
@@ -323,7 +332,12 @@ fn build_language_card(panel: &ui::View) {
         }
     }
 
-    layout::build_info_row(&card, i18n::t("Language"), LANG_CODES[selected_idx as usize], true);
+    layout::build_info_row(
+        &card,
+        i18n::t("Language"),
+        LANG_CODES[selected_idx as usize],
+        true,
+    );
     layout::build_separator(&card);
 
     // DropDown for language selection

@@ -447,7 +447,15 @@ fn run_sed(data: &[u8], commands: &[Command], suppress: bool) {
             }
 
             match (action, cmd) {
-                ('s', Command::Substitute { pattern, replacement, global, .. }) => {
+                (
+                    's',
+                    Command::Substitute {
+                        pattern,
+                        replacement,
+                        global,
+                        ..
+                    },
+                ) => {
                     current = substitute(&current, pattern, replacement, *global);
                 }
                 ('d', _) => {
@@ -505,7 +513,9 @@ fn main() {
         return;
     }
 
-    if args.has(b'h') || (args.pos_count == 0 && args.opt(b'e').is_none() && args.opt(b'f').is_none()) {
+    if args.has(b'h')
+        || (args.pos_count == 0 && args.opt(b'e').is_none() && args.opt(b'f').is_none())
+    {
         anyos_std::println!("Usage: sed [-n] [-e script] [-f file] [script] [input...]");
         anyos_std::println!("Commands:");
         anyos_std::println!("  s/pat/rep/[g]  Substitute pattern");

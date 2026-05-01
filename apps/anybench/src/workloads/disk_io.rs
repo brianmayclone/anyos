@@ -8,9 +8,9 @@
 //!   3. Random Read      — small reads at random offsets (ops/s)
 //!   4. File Create      — create and delete many small files (ops/s)
 
-use alloc::vec;
-use alloc::format;
 use super::DISK_TEST_MS;
+use alloc::format;
+use alloc::vec;
 
 const TEST_DIR: &str = "/tmp/anybench_io";
 const LARGE_FILE: &str = "/tmp/anybench_io/seq_test.bin";
@@ -38,7 +38,7 @@ fn ensure_test_file() {
     // Create 1 MiB test file via write_bytes (single reliable call)
     setup_dir();
     let data = vec![0xAAu8; 256 * 1024]; // 256 KiB chunk
-    // Write 4 chunks = 1 MiB
+                                         // Write 4 chunks = 1 MiB
     let _ = anyos_std::fs::write_bytes(LARGE_FILE, &data);
     // Append 3 more chunks by opening in append mode
     for _ in 0..3 {
@@ -81,10 +81,14 @@ pub fn bench_seq_read() -> u64 {
 
     while anyos_std::sys::uptime_ms().wrapping_sub(start) < DISK_TEST_MS {
         let fd = anyos_std::fs::open(LARGE_FILE, 0); // O_RDONLY
-        if fd == 0 || fd == u32::MAX { break; }
+        if fd == 0 || fd == u32::MAX {
+            break;
+        }
         loop {
             let n = anyos_std::fs::read(fd, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             total_bytes += n as u64;
         }
         anyos_std::fs::close(fd);
@@ -103,7 +107,9 @@ pub fn bench_random_read() -> u64 {
 
     while anyos_std::sys::uptime_ms().wrapping_sub(start) < DISK_TEST_MS {
         let fd = anyos_std::fs::open(LARGE_FILE, 0);
-        if fd == 0 || fd == u32::MAX { break; }
+        if fd == 0 || fd == u32::MAX {
+            break;
+        }
 
         // Do 100 random reads per open (amortize open/close overhead)
         for _ in 0..100 {

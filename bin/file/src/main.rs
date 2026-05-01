@@ -16,74 +16,246 @@ anyos_std::entry!(main);
 
 struct Magic {
     offset: usize,
-    bytes:  &'static [u8],
-    desc:   &'static str,
+    bytes: &'static [u8],
+    desc: &'static str,
 }
 
 // Ordered from most-specific to least-specific.
 static MAGIC: &[Magic] = &[
     // ELF
-    Magic { offset: 0, bytes: b"\x7FELF", desc: "ELF executable" },
-
+    Magic {
+        offset: 0,
+        bytes: b"\x7FELF",
+        desc: "ELF executable",
+    },
     // Scripts / text interpreters
-    Magic { offset: 0, bytes: b"#!/bin/sh",   desc: "POSIX shell script" },
-    Magic { offset: 0, bytes: b"#!/bin/bash", desc: "Bash shell script" },
-    Magic { offset: 0, bytes: b"#!/usr/bin/env", desc: "script" },
-    Magic { offset: 0, bytes: b"#!",          desc: "script" },
-
+    Magic {
+        offset: 0,
+        bytes: b"#!/bin/sh",
+        desc: "POSIX shell script",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"#!/bin/bash",
+        desc: "Bash shell script",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"#!/usr/bin/env",
+        desc: "script",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"#!",
+        desc: "script",
+    },
     // Archives / compressed
-    Magic { offset: 0, bytes: b"PK\x03\x04",  desc: "Zip archive" },
-    Magic { offset: 0, bytes: b"PK\x05\x06",  desc: "Zip archive (empty)" },
-    Magic { offset: 0, bytes: b"\x1F\x8B",    desc: "gzip compressed data" },
-    Magic { offset: 0, bytes: b"BZh",         desc: "bzip2 compressed data" },
-    Magic { offset: 0, bytes: b"\xFD7zXZ\x00",desc: "XZ compressed data" },
-    Magic { offset: 0, bytes: b"7z\xBC\xAF\x27\x1C", desc: "7-zip archive" },
-    Magic { offset: 0, bytes: b"Rar!\x1A\x07",desc: "RAR archive" },
-    Magic { offset: 0, bytes: b"ustar",       desc: "POSIX tar archive" },
-    Magic { offset: 257, bytes: b"ustar",     desc: "POSIX tar archive" },
-
+    Magic {
+        offset: 0,
+        bytes: b"PK\x03\x04",
+        desc: "Zip archive",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"PK\x05\x06",
+        desc: "Zip archive (empty)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\x1F\x8B",
+        desc: "gzip compressed data",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"BZh",
+        desc: "bzip2 compressed data",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xFD7zXZ\x00",
+        desc: "XZ compressed data",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"7z\xBC\xAF\x27\x1C",
+        desc: "7-zip archive",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"Rar!\x1A\x07",
+        desc: "RAR archive",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"ustar",
+        desc: "POSIX tar archive",
+    },
+    Magic {
+        offset: 257,
+        bytes: b"ustar",
+        desc: "POSIX tar archive",
+    },
     // Images
-    Magic { offset: 0, bytes: b"\x89PNG\r\n\x1A\n", desc: "PNG image" },
-    Magic { offset: 0, bytes: b"\xFF\xD8\xFF",       desc: "JPEG image" },
-    Magic { offset: 0, bytes: b"GIF87a",             desc: "GIF image (87a)" },
-    Magic { offset: 0, bytes: b"GIF89a",             desc: "GIF image (89a)" },
-    Magic { offset: 0, bytes: b"BM",                 desc: "BMP image" },
-    Magic { offset: 0, bytes: b"RIFF",               desc: "RIFF data" },  // WAV/AVI
-    Magic { offset: 0, bytes: b"\x00\x00\x01\x00",   desc: "Windows ICO image" },
-    Magic { offset: 0, bytes: b"II\x2A\x00",         desc: "TIFF image (little-endian)" },
-    Magic { offset: 0, bytes: b"MM\x00\x2A",         desc: "TIFF image (big-endian)" },
-    Magic { offset: 0, bytes: b"\x00\x00\x00\x0CJXL\x20\x0D\x0A\x87\x0A", desc: "JPEG XL image" },
-    Magic { offset: 0, bytes: b"\xFF\x0A",           desc: "JPEG XL image (codestream)" },
-
+    Magic {
+        offset: 0,
+        bytes: b"\x89PNG\r\n\x1A\n",
+        desc: "PNG image",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xFF\xD8\xFF",
+        desc: "JPEG image",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"GIF87a",
+        desc: "GIF image (87a)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"GIF89a",
+        desc: "GIF image (89a)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"BM",
+        desc: "BMP image",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"RIFF",
+        desc: "RIFF data",
+    }, // WAV/AVI
+    Magic {
+        offset: 0,
+        bytes: b"\x00\x00\x01\x00",
+        desc: "Windows ICO image",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"II\x2A\x00",
+        desc: "TIFF image (little-endian)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"MM\x00\x2A",
+        desc: "TIFF image (big-endian)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\x00\x00\x00\x0CJXL\x20\x0D\x0A\x87\x0A",
+        desc: "JPEG XL image",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xFF\x0A",
+        desc: "JPEG XL image (codestream)",
+    },
     // Documents
-    Magic { offset: 0, bytes: b"%PDF-",       desc: "PDF document" },
-    Magic { offset: 0, bytes: b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", desc: "Microsoft Office document (OLE)" },
-
+    Magic {
+        offset: 0,
+        bytes: b"%PDF-",
+        desc: "PDF document",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1",
+        desc: "Microsoft Office document (OLE)",
+    },
     // Fonts
-    Magic { offset: 0, bytes: b"\x00\x01\x00\x00\x00", desc: "TrueType font" },
-    Magic { offset: 0, bytes: b"OTTO",        desc: "OpenType font" },
-    Magic { offset: 0, bytes: b"ttcf",        desc: "TrueType font collection" },
-    Magic { offset: 0, bytes: b"wOFF",        desc: "WOFF font" },
-    Magic { offset: 0, bytes: b"wOF2",        desc: "WOFF2 font" },
-
+    Magic {
+        offset: 0,
+        bytes: b"\x00\x01\x00\x00\x00",
+        desc: "TrueType font",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"OTTO",
+        desc: "OpenType font",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"ttcf",
+        desc: "TrueType font collection",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"wOFF",
+        desc: "WOFF font",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"wOF2",
+        desc: "WOFF2 font",
+    },
     // Executables / object files
-    Magic { offset: 0, bytes: b"MZ",          desc: "MS-DOS / PE executable" },
-    Magic { offset: 0, bytes: b"\xCE\xFA\xED\xFE", desc: "Mach-O binary (32-bit)" },
-    Magic { offset: 0, bytes: b"\xCF\xFA\xED\xFE", desc: "Mach-O binary (64-bit)" },
-    Magic { offset: 0, bytes: b"\xFE\xED\xFA\xCE", desc: "Mach-O binary (32-bit, BE)" },
-    Magic { offset: 0, bytes: b"\xFE\xED\xFA\xCF", desc: "Mach-O binary (64-bit, BE)" },
-
+    Magic {
+        offset: 0,
+        bytes: b"MZ",
+        desc: "MS-DOS / PE executable",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xCE\xFA\xED\xFE",
+        desc: "Mach-O binary (32-bit)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xCF\xFA\xED\xFE",
+        desc: "Mach-O binary (64-bit)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xFE\xED\xFA\xCE",
+        desc: "Mach-O binary (32-bit, BE)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xFE\xED\xFA\xCF",
+        desc: "Mach-O binary (64-bit, BE)",
+    },
     // Audio / video
-    Magic { offset: 0, bytes: b"fLaC",        desc: "FLAC audio" },
-    Magic { offset: 0, bytes: b"OggS",        desc: "Ogg data" },
-    Magic { offset: 0, bytes: b"ID3",         desc: "MP3 audio (ID3 tagged)" },
-    Magic { offset: 0, bytes: b"\xFF\xFB",    desc: "MP3 audio" },
-    Magic { offset: 0, bytes: b"\xFF\xF3",    desc: "MP3 audio" },
-    Magic { offset: 0, bytes: b"\xFF\xF2",    desc: "MP3 audio" },
-
+    Magic {
+        offset: 0,
+        bytes: b"fLaC",
+        desc: "FLAC audio",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"OggS",
+        desc: "Ogg data",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"ID3",
+        desc: "MP3 audio (ID3 tagged)",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xFF\xFB",
+        desc: "MP3 audio",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xFF\xF3",
+        desc: "MP3 audio",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\xFF\xF2",
+        desc: "MP3 audio",
+    },
     // Databases / misc
-    Magic { offset: 0, bytes: b"SQLite format 3\x00", desc: "SQLite database" },
-    Magic { offset: 0, bytes: b"\x7FANY",     desc: "anyOS binary" },
+    Magic {
+        offset: 0,
+        bytes: b"SQLite format 3\x00",
+        desc: "SQLite database",
+    },
+    Magic {
+        offset: 0,
+        bytes: b"\x7FANY",
+        desc: "anyOS binary",
+    },
 ];
 
 // ─── Read helper ─────────────────────────────────────────────────────────────
@@ -92,10 +264,16 @@ const READ_SIZE: usize = 512;
 
 fn read_header(path: &str, buf: &mut [u8; READ_SIZE]) -> usize {
     let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX { return 0; }
+    if fd == u32::MAX {
+        return 0;
+    }
     let n = anyos_std::fs::read(fd, buf);
     anyos_std::fs::close(fd);
-    if n == u32::MAX { 0 } else { n as usize }
+    if n == u32::MAX {
+        0
+    } else {
+        n as usize
+    }
 }
 
 // ─── Magic matching ──────────────────────────────────────────────────────────
@@ -125,7 +303,9 @@ enum TextKind {
 }
 
 fn classify_text(data: &[u8]) -> TextKind {
-    if data.is_empty() { return TextKind::Ascii; }
+    if data.is_empty() {
+        return TextKind::Ascii;
+    }
 
     let mut i = 0;
     let mut non_ascii = false;
@@ -141,39 +321,72 @@ fn classify_text(data: &[u8]) -> TextKind {
         }
         non_ascii = true;
         // Try to decode a UTF-8 multi-byte sequence
-        let seq_len = if b & 0xE0 == 0xC0 { 2 }
-                      else if b & 0xF0 == 0xE0 { 3 }
-                      else if b & 0xF8 == 0xF0 { 4 }
-                      else { return TextKind::Binary; };
-        if i + seq_len > data.len() { break; }
+        let seq_len = if b & 0xE0 == 0xC0 {
+            2
+        } else if b & 0xF0 == 0xE0 {
+            3
+        } else if b & 0xF8 == 0xF0 {
+            4
+        } else {
+            return TextKind::Binary;
+        };
+        if i + seq_len > data.len() {
+            break;
+        }
         for k in 1..seq_len {
-            if data[i + k] & 0xC0 != 0x80 { return TextKind::Binary; }
+            if data[i + k] & 0xC0 != 0x80 {
+                return TextKind::Binary;
+            }
         }
         i += seq_len;
     }
-    if non_ascii { TextKind::Utf8 } else { TextKind::Ascii }
+    if non_ascii {
+        TextKind::Utf8
+    } else {
+        TextKind::Ascii
+    }
 }
 
 // ─── Text content heuristics ─────────────────────────────────────────────────
 
 fn sniff_text(data: &[u8]) -> &'static str {
     // Look for common text file signatures in the first line
-    if starts_with_tag(data, b"<?xml")    { return "XML document"; }
-    if starts_with_tag(data, b"<html")    { return "HTML document"; }
-    if starts_with_tag(data, b"<HTML")    { return "HTML document"; }
-    if starts_with_tag(data, b"<!DOCTYPE html") { return "HTML document"; }
-    if starts_with_tag(data, b"<!DOCTYPE HTML") { return "HTML document"; }
-    if starts_with_tag(data, b"{")        { return "JSON data"; }
-    if starts_with_tag(data, b"[")        { return "JSON data"; }
-    if starts_with_tag(data, b"---")      { return "YAML data"; }
+    if starts_with_tag(data, b"<?xml") {
+        return "XML document";
+    }
+    if starts_with_tag(data, b"<html") {
+        return "HTML document";
+    }
+    if starts_with_tag(data, b"<HTML") {
+        return "HTML document";
+    }
+    if starts_with_tag(data, b"<!DOCTYPE html") {
+        return "HTML document";
+    }
+    if starts_with_tag(data, b"<!DOCTYPE HTML") {
+        return "HTML document";
+    }
+    if starts_with_tag(data, b"{") {
+        return "JSON data";
+    }
+    if starts_with_tag(data, b"[") {
+        return "JSON data";
+    }
+    if starts_with_tag(data, b"---") {
+        return "YAML data";
+    }
     if starts_with_tag(data, b"[package]") || starts_with_tag(data, b"[dependencies]") {
         return "TOML data";
     }
     if contains_early(data, b"fn main()") || contains_early(data, b"fn main() {") {
         return "Rust source";
     }
-    if contains_early(data, b"int main(") { return "C source"; }
-    if contains_early(data, b"#include ") { return "C source"; }
+    if contains_early(data, b"int main(") {
+        return "C source";
+    }
+    if contains_early(data, b"#include ") {
+        return "C source";
+    }
     if contains_early(data, b"package main") || contains_early(data, b"func main()") {
         return "Go source";
     }
@@ -195,8 +408,12 @@ fn sniff_text(data: &[u8]) -> &'static str {
 fn starts_with_tag(data: &[u8], tag: &[u8]) -> bool {
     // Skip leading whitespace / BOM
     let mut start = 0;
-    while start < data.len() && (data[start] == b' ' || data[start] == b'\t'
-                                || data[start] == b'\r' || data[start] == b'\n') {
+    while start < data.len()
+        && (data[start] == b' '
+            || data[start] == b'\t'
+            || data[start] == b'\r'
+            || data[start] == b'\n')
+    {
         start += 1;
     }
     let data = &data[start..];
@@ -206,7 +423,9 @@ fn starts_with_tag(data: &[u8], tag: &[u8]) -> bool {
 fn contains_early(data: &[u8], needle: &[u8]) -> bool {
     let limit = data.len().min(2048);
     let haystack = &data[..limit];
-    if needle.len() > haystack.len() { return false; }
+    if needle.len() > haystack.len() {
+        return false;
+    }
     for i in 0..=(haystack.len() - needle.len()) {
         if &haystack[i..i + needle.len()] == needle {
             return true;
@@ -218,7 +437,9 @@ fn contains_early(data: &[u8], needle: &[u8]) -> bool {
 // ─── ELF details ─────────────────────────────────────────────────────────────
 
 fn describe_elf(data: &[u8]) -> &'static str {
-    if data.len() < 18 { return "ELF executable"; }
+    if data.len() < 18 {
+        return "ELF executable";
+    }
     let class = data[4]; // 1=32-bit, 2=64-bit
     let etype = u16::from_le_bytes([data[16], data[17]]);
     match (class, etype) {
@@ -230,7 +451,7 @@ fn describe_elf(data: &[u8]) -> &'static str {
         (2, 2) => "ELF 64-bit executable",
         (2, 3) => "ELF 64-bit shared library",
         (2, 4) => "ELF 64-bit core dump",
-        _      => "ELF executable",
+        _ => "ELF executable",
     }
 }
 
@@ -242,12 +463,18 @@ fn describe_file(path: &str) -> &'static str {
     if anyos_std::fs::stat(path, &mut stat_buf) == u32::MAX {
         return "ERROR: cannot stat";
     }
-    let ftype    = stat_buf[0];
-    let is_sym   = stat_buf[2] & 1 != 0;
+    let ftype = stat_buf[0];
+    let is_sym = stat_buf[2] & 1 != 0;
 
-    if is_sym   { return "symbolic link"; }
-    if ftype == 1 { return "directory"; }
-    if ftype == 2 { return "device"; }
+    if is_sym {
+        return "symbolic link";
+    }
+    if ftype == 1 {
+        return "directory";
+    }
+    if ftype == 2 {
+        return "device";
+    }
 
     // Read header bytes
     static mut HBUF: [u8; READ_SIZE] = [0u8; READ_SIZE];
@@ -255,7 +482,9 @@ fn describe_file(path: &str) -> &'static str {
         let buf = &mut HBUF;
         read_header(path, buf)
     };
-    if n == 0 { return "empty"; }
+    if n == 0 {
+        return "empty";
+    }
     let data = unsafe { &HBUF[..n] };
 
     // ELF: give detailed description
@@ -271,13 +500,21 @@ fn describe_file(path: &str) -> &'static str {
     // Text / binary classification
     match classify_text(data) {
         TextKind::Binary => "data",
-        TextKind::Ascii  => {
+        TextKind::Ascii => {
             let t = sniff_text(data);
-            if t == "text" { "ASCII text" } else { t }
+            if t == "text" {
+                "ASCII text"
+            } else {
+                t
+            }
         }
-        TextKind::Utf8   => {
+        TextKind::Utf8 => {
             let t = sniff_text(data);
-            if t == "text" { "UTF-8 Unicode text" } else { t }
+            if t == "text" {
+                "UTF-8 Unicode text"
+            } else {
+                t
+            }
         }
     }
 }
@@ -307,7 +544,9 @@ fn main() {
 
     for i in 0..args.pos_count {
         let path = args.positional[i];
-        if path.is_empty() { continue; }
+        if path.is_empty() {
+            continue;
+        }
         let desc = describe_file(path);
         print_result(path, desc);
     }

@@ -2161,9 +2161,8 @@ impl<'a> MirBuilder<'a> {
                         TyKind::Adt(def_id, _) => self.enum_option_result_owner(*def_id),
                         _ => None,
                     };
-                    if let Some(owner @ ("Option" | "Result")) = result_owner
-                        .as_deref()
-                        .or(receiver_owner.as_deref())
+                    if let Some(owner @ ("Option" | "Result")) =
+                        result_owner.as_deref().or(receiver_owner.as_deref())
                     {
                         let fn_sym = self.interner.intern(&format!("{owner}::map"));
                         let mut all_args = vec![self.lower_expr(recv)];

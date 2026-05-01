@@ -4,8 +4,6 @@
 anyos_std::entry!(main);
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
 
@@ -13,7 +11,6 @@ fn main() {
         anyos_std::println!("env - Manage environment variables\n\nUsage: env [KEY=VALUE | KEY | -u KEY]\n\nOptions:\n  -u KEY         Unset a variable");
         return;
     }
-
 
     if args.is_empty() {
         // No args: list all environment variables
@@ -27,7 +24,11 @@ fn main() {
         let data = &buf[..(total as usize).min(buf.len())];
         let mut i = 0;
         while i < data.len() {
-            let end = data[i..].iter().position(|&b| b == 0).map(|p| i + p).unwrap_or(data.len());
+            let end = data[i..]
+                .iter()
+                .position(|&b| b == 0)
+                .map(|p| i + p)
+                .unwrap_or(data.len());
             if end > i {
                 let entry = core::str::from_utf8(&data[i..end]).unwrap_or("???");
                 anyos_std::println!("{}", entry);

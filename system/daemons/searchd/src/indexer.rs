@@ -4,12 +4,12 @@
 //! extension and content heuristics, and stores metadata + text content
 //! in the search database.
 
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::format;
-use libdb_client::Database;
 use crate::config::Config;
 use crate::schema;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use libdb_client::Database;
 
 // ── Directories to index ────────────────────────────────────────────────────
 
@@ -178,68 +178,160 @@ fn classify(name: &str, _size: u32) -> &'static str {
     }
 
     // Text documents
-    if matches!(ext.as_str(),
-        "txt" | "md" | "markdown" | "rst" | "org" | "adoc" | "tex" | "rtf"
-        | "csv" | "tsv" | "log" | "nfo" | "readme"
+    if matches!(
+        ext.as_str(),
+        "txt"
+            | "md"
+            | "markdown"
+            | "rst"
+            | "org"
+            | "adoc"
+            | "tex"
+            | "rtf"
+            | "csv"
+            | "tsv"
+            | "log"
+            | "nfo"
+            | "readme"
     ) {
         return schema::KIND_DOCUMENT;
     }
 
     // Source code / scripts
-    if matches!(ext.as_str(),
-        "rs" | "c" | "h" | "cpp" | "cxx" | "hpp" | "cc"
-        | "js" | "ts" | "jsx" | "tsx" | "mjs"
-        | "py" | "rb" | "pl" | "lua" | "go" | "java" | "kt" | "swift"
-        | "cs" | "vb" | "fs" | "hs" | "ml" | "ex" | "exs" | "erl"
-        | "zig" | "nim" | "d" | "v" | "asm" | "s" | "S"
-        | "html" | "htm" | "xhtml" | "xml" | "xsl" | "xslt"
-        | "css" | "scss" | "sass" | "less"
-        | "sql" | "graphql" | "gql"
-        | "sh" | "bash" | "zsh" | "fish" | "bat" | "cmd" | "ps1"
-        | "php" | "r" | "m" | "mm"
+    if matches!(
+        ext.as_str(),
+        "rs" | "c"
+            | "h"
+            | "cpp"
+            | "cxx"
+            | "hpp"
+            | "cc"
+            | "js"
+            | "ts"
+            | "jsx"
+            | "tsx"
+            | "mjs"
+            | "py"
+            | "rb"
+            | "pl"
+            | "lua"
+            | "go"
+            | "java"
+            | "kt"
+            | "swift"
+            | "cs"
+            | "vb"
+            | "fs"
+            | "hs"
+            | "ml"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "zig"
+            | "nim"
+            | "d"
+            | "v"
+            | "asm"
+            | "s"
+            | "S"
+            | "html"
+            | "htm"
+            | "xhtml"
+            | "xml"
+            | "xsl"
+            | "xslt"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+            | "sql"
+            | "graphql"
+            | "gql"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "bat"
+            | "cmd"
+            | "ps1"
+            | "php"
+            | "r"
+            | "m"
+            | "mm"
     ) {
         return schema::KIND_SCRIPT;
     }
 
     // Config files
-    if matches!(ext.as_str(),
-        "conf" | "cfg" | "ini" | "toml" | "yaml" | "yml" | "json" | "jsonc"
-        | "env" | "properties" | "plist" | "reg"
+    if matches!(
+        ext.as_str(),
+        "conf"
+            | "cfg"
+            | "ini"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "json"
+            | "jsonc"
+            | "env"
+            | "properties"
+            | "plist"
+            | "reg"
     ) {
         return schema::KIND_CONFIG;
     }
 
     // Images
-    if matches!(ext.as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "svg" | "webp"
-        | "tiff" | "tif" | "psd" | "xcf" | "raw" | "cr2" | "nef"
+    if matches!(
+        ext.as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "bmp"
+            | "ico"
+            | "svg"
+            | "webp"
+            | "tiff"
+            | "tif"
+            | "psd"
+            | "xcf"
+            | "raw"
+            | "cr2"
+            | "nef"
     ) {
         return schema::KIND_IMAGE;
     }
 
     // Audio
-    if matches!(ext.as_str(),
+    if matches!(
+        ext.as_str(),
         "mp3" | "wav" | "flac" | "ogg" | "aac" | "wma" | "m4a" | "opus" | "mid" | "midi"
     ) {
         return schema::KIND_AUDIO;
     }
 
     // Video
-    if matches!(ext.as_str(),
+    if matches!(
+        ext.as_str(),
         "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" | "mpg" | "mpeg"
     ) {
         return schema::KIND_VIDEO;
     }
 
     // Archives
-    if matches!(ext.as_str(),
+    if matches!(
+        ext.as_str(),
         "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "cab" | "iso" | "img" | "dmg"
     ) {
         return schema::KIND_ARCHIVE;
     }
 
     // Fonts
-    if matches!(ext.as_str(), "ttf" | "otf" | "woff" | "woff2" | "fon" | "bdf") {
+    if matches!(
+        ext.as_str(),
+        "ttf" | "otf" | "woff" | "woff2" | "fon" | "bdf"
+    ) {
         return schema::KIND_FONT;
     }
 
@@ -260,11 +352,24 @@ fn classify(name: &str, _size: u32) -> &'static str {
 
     // Well-known filenames without extension
     let base = basename(&lower_name);
-    if matches!(base.as_str(),
-        "makefile" | "cmakelists.txt" | "dockerfile" | "vagrantfile"
-        | "rakefile" | "gemfile" | "procfile" | "justfile"
-        | "license" | "licence" | "readme" | "changelog" | "authors"
-        | "todo" | "notes" | "history"
+    if matches!(
+        base.as_str(),
+        "makefile"
+            | "cmakelists.txt"
+            | "dockerfile"
+            | "vagrantfile"
+            | "rakefile"
+            | "gemfile"
+            | "procfile"
+            | "justfile"
+            | "license"
+            | "licence"
+            | "readme"
+            | "changelog"
+            | "authors"
+            | "todo"
+            | "notes"
+            | "history"
     ) {
         return schema::KIND_DOCUMENT;
     }
@@ -279,12 +384,13 @@ fn classify(name: &str, _size: u32) -> &'static str {
 
 /// Determine if a file kind should have its content indexed.
 fn should_index_content(kind: &str) -> bool {
-    matches!(kind,
+    matches!(
+        kind,
         schema::KIND_TEXT
-        | schema::KIND_DOCUMENT
-        | schema::KIND_SCRIPT
-        | schema::KIND_CONFIG
-        | schema::KIND_URL
+            | schema::KIND_DOCUMENT
+            | schema::KIND_SCRIPT
+            | schema::KIND_CONFIG
+            | schema::KIND_URL
     )
 }
 
@@ -297,7 +403,11 @@ fn index_file_content(db: &Database, path: &str, size: u32) {
         return;
     }
 
-    let read_size = if size > MAX_CONTENT_SIZE { MAX_CONTENT_SIZE } else { size };
+    let read_size = if size > MAX_CONTENT_SIZE {
+        MAX_CONTENT_SIZE
+    } else {
+        size
+    };
     let mut buf = alloc::vec![0u8; read_size as usize];
     let n = anyos_std::fs::read(fd, &mut buf);
     anyos_std::fs::close(fd);
@@ -335,7 +445,11 @@ fn index_file_content(db: &Database, path: &str, size: u32) {
             while brk > pos && bytes[brk - 1] != b' ' && bytes[brk - 1] != b'\n' {
                 brk -= 1;
             }
-            if brk == pos { pos + CHUNK_SIZE } else { brk }
+            if brk == pos {
+                pos + CHUNK_SIZE
+            } else {
+                brk
+            }
         };
 
         let chunk = match core::str::from_utf8(&bytes[pos..end]) {
@@ -376,9 +490,9 @@ fn insert_file(db: &Database, path: &str, name: &str, kind: &str, size: u32, par
         sql_escape(parent),
     );
     match db.exec(&sql) {
-        Ok(_) => {
-            unsafe { ENTRY_COUNT += 1; }
-        }
+        Ok(_) => unsafe {
+            ENTRY_COUNT += 1;
+        },
         Err(e) => {
             // Log only the first few errors to avoid flooding
             let count = unsafe { ENTRY_COUNT };
@@ -418,12 +532,14 @@ fn update_scan_time(db: &Database, dir: &str) {
     let escaped = sql_escape(dir);
     // Try update first, then insert if no rows affected
     let updated = db.exec(&format!(
-        "UPDATE state SET last_scan = {} WHERE dir = '{}'", now, escaped
+        "UPDATE state SET last_scan = {} WHERE dir = '{}'",
+        now, escaped
     ));
     match updated {
         Ok(0) => {
             let _ = db.exec(&format!(
-                "INSERT INTO state (dir, last_scan) VALUES ('{}', {})", escaped, now
+                "INSERT INTO state (dir, last_scan) VALUES ('{}', {})",
+                escaped, now
             ));
         }
         _ => {}

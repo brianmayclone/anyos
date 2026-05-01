@@ -122,7 +122,11 @@ impl Report for CreateReport {
             self.id,
             self.name,
             self.paths,
-            if self.metadata_only { ", metadata-only" } else { "" }
+            if self.metadata_only {
+                ", metadata-only"
+            } else {
+                ""
+            }
         )
     }
     fn render_text(&self) -> String {
@@ -312,9 +316,7 @@ fn main() -> u32 {
                     .active_inodes
                     .iter()
                     .map(|i| i.path.clone())
-                    .filter(|p| {
-                        scope_root == "/" || *p == scope_root || p.starts_with(&prefix)
-                    })
+                    .filter(|p| scope_root == "/" || *p == scope_root || p.starts_with(&prefix))
                     .collect();
                 let mut snap_inodes: BTreeMap<String, SnapshotInode> = BTreeMap::new();
                 for p in &paths {
@@ -396,9 +398,7 @@ fn main() -> u32 {
                 anyos_std::println!("corefs-snapshot restore: --id <n> is required");
                 return ExitCode::InvalidArgument.as_u32();
             };
-            let result = session.mutate(|state| {
-                state.restore_snapshot_at(id, Timestamp::EPOCH)
-            });
+            let result = session.mutate(|state| state.restore_snapshot_at(id, Timestamp::EPOCH));
             match result {
                 Ok((report, _flush)) => {
                     libcorefs_tools::report::print_report(

@@ -19,9 +19,9 @@
 #![no_main]
 
 mod config;
-mod schema;
 mod indexer;
 mod ipc;
+mod schema;
 
 anyos_std::entry!(main);
 
@@ -63,7 +63,10 @@ fn main() {
                 anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
             );
             if fd == u32::MAX {
-                anyos_std::println!("searchd: *** FATAL: failed to create database at {} ***", DB_PATH);
+                anyos_std::println!(
+                    "searchd: *** FATAL: failed to create database at {} ***",
+                    DB_PATH
+                );
                 anyos_std::println!("searchd: *** SEARCH DAEMON IS SHUTTING DOWN ***");
                 return;
             }
@@ -78,7 +81,10 @@ fn main() {
     let db = match libdb_client::Database::open(DB_PATH) {
         Some(db) => db,
         None => {
-            anyos_std::println!("searchd: *** FATAL: failed to open database at {} ***", DB_PATH);
+            anyos_std::println!(
+                "searchd: *** FATAL: failed to open database at {} ***",
+                DB_PATH
+            );
             anyos_std::println!("searchd: *** SEARCH DAEMON IS SHUTTING DOWN ***");
             return;
         }
@@ -90,7 +96,10 @@ fn main() {
     // Create IPC pipe
     let pipe_id = anyos_std::ipc::pipe_create(PIPE_NAME);
     if pipe_id == 0 {
-        anyos_std::println!("searchd: *** FATAL: failed to create '{}' pipe ***", PIPE_NAME);
+        anyos_std::println!(
+            "searchd: *** FATAL: failed to create '{}' pipe ***",
+            PIPE_NAME
+        );
         anyos_std::println!("searchd: *** SEARCH DAEMON IS SHUTTING DOWN ***");
         return;
     }
@@ -102,7 +111,10 @@ fn main() {
     if has_index {
         anyos_std::println!("searchd: existing index found, skipping initial full index");
     } else {
-        anyos_std::println!("searchd: no existing index, waiting {}ms before initial index", cfg.idle_timeout_ms);
+        anyos_std::println!(
+            "searchd: no existing index, waiting {}ms before initial index",
+            cfg.idle_timeout_ms
+        );
     }
 
     let boot_time = anyos_std::sys::uptime_ms();

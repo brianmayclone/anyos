@@ -74,7 +74,10 @@ impl VncConfig {
         for i in 0..self.allowed_users_count {
             let stored = &self.allowed_users[i];
             // Find the stored name length (null-terminated).
-            let len = stored.iter().position(|&b| b == 0).unwrap_or(MAX_USERNAME_LEN);
+            let len = stored
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(MAX_USERNAME_LEN);
             if len == username.len() && &stored[..len] == username {
                 return true;
             }
@@ -100,18 +103,29 @@ fn parse_u16(s: &[u8]) -> Option<u16> {
             break;
         }
     }
-    if any { Some(val as u16) } else { None }
+    if any {
+        Some(val as u16)
+    } else {
+        None
+    }
 }
 
 /// Return `true` if the byte slice equals `yes` (case-insensitive ASCII).
 fn is_yes(s: &[u8]) -> bool {
-    matches!(s, b"yes" | b"Yes" | b"YES" | b"1" | b"true" | b"True" | b"TRUE")
+    matches!(
+        s,
+        b"yes" | b"Yes" | b"YES" | b"1" | b"true" | b"True" | b"TRUE"
+    )
 }
 
 /// Trim leading and trailing ASCII whitespace from a byte slice.
 fn trim(s: &[u8]) -> &[u8] {
     let start = s.iter().position(|&b| b > b' ').unwrap_or(s.len());
-    let end = s.iter().rposition(|&b| b > b' ').map(|i| i + 1).unwrap_or(start);
+    let end = s
+        .iter()
+        .rposition(|&b| b > b' ')
+        .map(|i| i + 1)
+        .unwrap_or(start);
     &s[start..end]
 }
 

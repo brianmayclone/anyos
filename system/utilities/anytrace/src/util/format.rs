@@ -2,13 +2,12 @@
 
 use alloc::string::String;
 
-pub use anyos_std::fmt::{hex64, hex32, hex_byte, hex_bytes};
+pub use anyos_std::fmt::{hex32, hex64, hex_byte, hex_bytes};
 
 /// Register names for the DebugRegs struct (in order).
 pub const REG_NAMES: [&str; 19] = [
-    "RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP",
-    "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15",
-    "RSP", "RIP", "RFLAGS", "CR3",
+    "RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP", "R8", "R9", "R10", "R11", "R12", "R13", "R14",
+    "R15", "RSP", "RIP", "RFLAGS", "CR3",
 ];
 
 /// Format a u64 as decimal (allocating wrapper around `anyos_std::fmt::fmt_u64`).

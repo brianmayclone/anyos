@@ -10,7 +10,13 @@ fn is_leap_year(y: u32) -> bool {
 fn days_in_month(month: u32, year: u32) -> u32 {
     match month {
         1 => 31,
-        2 => if is_leap_year(year) { 29 } else { 28 },
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
         3 => 31,
         4 => 30,
         5 => 31,
@@ -41,8 +47,18 @@ fn day_of_week(year: u32, month: u32, day: u32) -> u32 {
 }
 
 const MONTH_NAMES: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 fn main() {
@@ -63,7 +79,11 @@ fn main() {
     let name = MONTH_NAMES[(month - 1) as usize];
     // Center the header in 20 chars
     let header_len = name.len() + 1 + 4; // "Month YYYY"
-    let pad = if header_len < 20 { (20 - header_len) / 2 } else { 0 };
+    let pad = if header_len < 20 {
+        (20 - header_len) / 2
+    } else {
+        0
+    };
     let mut spaces = [b' '; 20];
     anyos_std::print!("{}", core::str::from_utf8(&spaces[..pad]).unwrap_or(""));
     anyos_std::println!("{} {}", name, year);

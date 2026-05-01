@@ -3,8 +3,8 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{process, sys};
 use anyos_std::format;
+use anyos_std::{process, sys};
 
 fn main() -> u32 {
     let mut args_buf = [0u8; 256];
@@ -60,11 +60,11 @@ fn main() -> u32 {
         format!("/Users/{}", resolved)
     };
 
-    anyos_std::env::set("USER",    resolved);
+    anyos_std::env::set("USER", resolved);
     anyos_std::env::set("LOGNAME", resolved);
-    anyos_std::env::set("HOME",    &home);
-    anyos_std::env::set("PWD",     &home);
-    anyos_std::env::set("UID",     &format!("{}", uid));
+    anyos_std::env::set("HOME", &home);
+    anyos_std::env::set("PWD", &home);
+    anyos_std::env::set("UID", &format!("{}", uid));
 
     // Spawn a new textmode_console in shell-only mode as the new user.
     // It inherits the updated environment and the new UID, and skips
@@ -79,7 +79,9 @@ fn main() -> u32 {
     // Wait for the shell to exit.
     loop {
         let exit = process::try_waitpid(tid);
-        if exit != process::STILL_RUNNING { return 0; }
+        if exit != process::STILL_RUNNING {
+            return 0;
+        }
         process::sleep(10);
     }
 }

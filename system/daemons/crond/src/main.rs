@@ -88,7 +88,11 @@ fn parse_u8(s: &str) -> Option<u8> {
             break;
         }
     }
-    if found && val <= 255 { Some(val as u8) } else { None }
+    if found && val <= 255 {
+        Some(val as u8)
+    } else {
+        None
+    }
 }
 
 fn parse_u32(s: &str) -> Option<u32> {
@@ -102,11 +106,21 @@ fn parse_u32(s: &str) -> Option<u32> {
             break;
         }
     }
-    if found && val <= u32::MAX as u64 { Some(val as u32) } else { None }
+    if found && val <= u32::MAX as u64 {
+        Some(val as u32)
+    } else {
+        None
+    }
 }
 
 fn parse_u16(s: &str) -> Option<u16> {
-    parse_u32(s).and_then(|v| if v <= u16::MAX as u32 { Some(v as u16) } else { None })
+    parse_u32(s).and_then(|v| {
+        if v <= u16::MAX as u32 {
+            Some(v as u16)
+        } else {
+            None
+        }
+    })
 }
 
 fn parse_field(s: &str) -> CronField {
@@ -114,7 +128,9 @@ fn parse_field(s: &str) -> CronField {
         return CronField::Any;
     }
     if let Some(rest) = s.strip_prefix("*/") {
-        return parse_u8(rest).map(CronField::Step).unwrap_or(CronField::Any);
+        return parse_u8(rest)
+            .map(CronField::Step)
+            .unwrap_or(CronField::Any);
     }
     if let Some(dash_pos) = s.find('-') {
         let lo = &s[..dash_pos];
@@ -150,7 +166,9 @@ fn parse_cron_line(line: &str) -> Option<CronEntry> {
         if rest.is_empty() {
             return None;
         }
-        let end = rest.find(|c: char| c == ' ' || c == '\t').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| c == ' ' || c == '\t')
+            .unwrap_or(rest.len());
         fields.push(&rest[..end]);
         rest = &rest[end..];
     }
@@ -174,7 +192,11 @@ fn read_conf_string(client: &mut ConfClient, target: ConfTarget, path: &str) -> 
     match client.get_target(target, path).ok()?.value {
         Some(ConfValue::String(value)) => Some(value),
         Some(ConfValue::Int(value)) => Some(format!("{}", value)),
-        Some(ConfValue::Bool(value)) => Some(if value { String::from("true") } else { String::from("false") }),
+        Some(ConfValue::Bool(value)) => Some(if value {
+            String::from("true")
+        } else {
+            String::from("false")
+        }),
         Some(ConfValue::ExternalRef(value)) => Some(value),
         None => None,
     }
@@ -214,21 +236,31 @@ fn load_jobs_for_target(client: &mut ConfClient, target: ConfTarget, root: &str)
             continue;
         }
         let job_base = item.path;
-        let enabled = read_conf_bool(client, target, &format!("{}/enabled", job_base)).unwrap_or(true);
+        let enabled =
+            read_conf_bool(client, target, &format!("{}/enabled", job_base)).unwrap_or(true);
         if !enabled {
             continue;
         }
 
-        let minute = read_conf_string(client, target, &format!("{}/minute", job_base)).unwrap_or_else(|| String::from("*"));
-        let hour = read_conf_string(client, target, &format!("{}/hour", job_base)).unwrap_or_else(|| String::from("*"));
-        let day = read_conf_string(client, target, &format!("{}/day", job_base)).unwrap_or_else(|| String::from("*"));
-        let month = read_conf_string(client, target, &format!("{}/month", job_base)).unwrap_or_else(|| String::from("*"));
-        let weekday = read_conf_string(client, target, &format!("{}/weekday", job_base)).unwrap_or_else(|| String::from("*"));
-        let Some(command) = read_conf_string(client, target, &format!("{}/command", job_base)) else {
+        let minute = read_conf_string(client, target, &format!("{}/minute", job_base))
+            .unwrap_or_else(|| String::from("*"));
+        let hour = read_conf_string(client, target, &format!("{}/hour", job_base))
+            .unwrap_or_else(|| String::from("*"));
+        let day = read_conf_string(client, target, &format!("{}/day", job_base))
+            .unwrap_or_else(|| String::from("*"));
+        let month = read_conf_string(client, target, &format!("{}/month", job_base))
+            .unwrap_or_else(|| String::from("*"));
+        let weekday = read_conf_string(client, target, &format!("{}/weekday", job_base))
+            .unwrap_or_else(|| String::from("*"));
+        let Some(command) = read_conf_string(client, target, &format!("{}/command", job_base))
+        else {
             continue;
         };
 
-        let line = format!("{} {} {} {} {} {}", minute, hour, day, month, weekday, command);
+        let line = format!(
+            "{} {} {} {} {} {}",
+            minute, hour, day, month, weekday, command
+        );
         if let Some(entry) = parse_cron_line(&line) {
             entries.push(entry);
         }
@@ -267,9 +299,17 @@ fn load_all_crontabs() -> Vec<CronEntry> {
         return entries;
     };
 
-    entries.extend(load_jobs_for_target(&mut client, ConfTarget::Scope(RegistryScope::System), SYSTEM_JOBS_ROOT));
+    entries.extend(load_jobs_for_target(
+        &mut client,
+        ConfTarget::Scope(RegistryScope::System),
+        SYSTEM_JOBS_ROOT,
+    ));
     for uid in parse_user_uids() {
-        entries.extend(load_jobs_for_target(&mut client, ConfTarget::User(uid), USER_JOBS_ROOT));
+        entries.extend(load_jobs_for_target(
+            &mut client,
+            ConfTarget::User(uid),
+            USER_JOBS_ROOT,
+        ));
     }
     entries
 }
@@ -327,7 +367,9 @@ fn handle_control(pipe_id: u32) -> Option<&'static str> {
     if n == 0 || n == u32::MAX {
         return None;
     }
-    let cmd = core::str::from_utf8(&buf[..n as usize]).unwrap_or("").trim();
+    let cmd = core::str::from_utf8(&buf[..n as usize])
+        .unwrap_or("")
+        .trim();
     match cmd {
         "reload" => Some("reload"),
         "stop" => Some("stop"),
@@ -360,7 +402,11 @@ fn main() {
 
     let mut runtime = load_runtime_config();
     let mut entries = load_all_crontabs();
-    anyos_std::println!("crond: starting (system_root={}, user_root={})", SYSTEM_JOBS_ROOT, USER_JOBS_ROOT);
+    anyos_std::println!(
+        "crond: starting (system_root={}, user_root={})",
+        SYSTEM_JOBS_ROOT,
+        USER_JOBS_ROOT
+    );
     anyos_std::println!("crond: loaded {} entries", entries.len());
 
     if let Some(lifecycle) = lifecycle.as_mut() {
@@ -404,7 +450,9 @@ fn main() {
                 {
                     anyos_std::println!(
                         "crond: executing [{:02}:{:02}] {}",
-                        now.hour, now.minute, entry.command
+                        now.hour,
+                        now.minute,
+                        entry.command
                     );
                     execute_command(&entry.command);
                 }

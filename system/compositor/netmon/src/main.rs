@@ -3,8 +3,9 @@
 
 anyos_std::entry!(main);
 
-use libcompositor_client::{TrayClient, WindowHandle, EVT_STATUS_ICON_CLICK,
-    EVT_MOUSE_DOWN, EVT_MOUSE_UP, EVT_WINDOW_CLOSE};
+use libcompositor_client::{
+    TrayClient, WindowHandle, EVT_MOUSE_DOWN, EVT_MOUSE_UP, EVT_STATUS_ICON_CLICK, EVT_WINDOW_CLOSE,
+};
 
 use librender_client::Surface;
 
@@ -72,25 +73,43 @@ fn read_net_info() -> NetInfo {
 fn fmt_ip(ip: &[u8; 4], buf: &mut [u8; 16]) -> usize {
     let mut pos = 0;
     for (i, &octet) in ip.iter().enumerate() {
-        if i > 0 { buf[pos] = b'.'; pos += 1; }
+        if i > 0 {
+            buf[pos] = b'.';
+            pos += 1;
+        }
         pos += fmt_u8(octet, &mut buf[pos..]);
     }
     pos
 }
 
 fn fmt_u8(val: u8, buf: &mut [u8]) -> usize {
-    if val >= 100 { buf[0] = b'0' + val / 100; buf[1] = b'0' + (val / 10) % 10; buf[2] = b'0' + val % 10; 3 }
-    else if val >= 10 { buf[0] = b'0' + val / 10; buf[1] = b'0' + val % 10; 2 }
-    else { buf[0] = b'0' + val; 1 }
+    if val >= 100 {
+        buf[0] = b'0' + val / 100;
+        buf[1] = b'0' + (val / 10) % 10;
+        buf[2] = b'0' + val % 10;
+        3
+    } else if val >= 10 {
+        buf[0] = b'0' + val / 10;
+        buf[1] = b'0' + val % 10;
+        2
+    } else {
+        buf[0] = b'0' + val;
+        1
+    }
 }
 
 fn fmt_mac(mac: &[u8; 6], buf: &mut [u8; 18]) -> usize {
     let hex = b"0123456789ABCDEF";
     let mut pos = 0;
     for (i, &b) in mac.iter().enumerate() {
-        if i > 0 { buf[pos] = b':'; pos += 1; }
-        buf[pos] = hex[(b >> 4) as usize]; pos += 1;
-        buf[pos] = hex[(b & 0xF) as usize]; pos += 1;
+        if i > 0 {
+            buf[pos] = b':';
+            pos += 1;
+        }
+        buf[pos] = hex[(b >> 4) as usize];
+        pos += 1;
+        buf[pos] = hex[(b & 0xF) as usize];
+        pos += 1;
     }
     pos
 }
@@ -109,12 +128,28 @@ fn mac_str<'a>(mac: &[u8; 6], buf: &'a mut [u8; 18]) -> &'a str {
 
 fn draw_ethernet_icon(pixels: &mut [u32; 256], connected: bool) {
     let color = if connected { COLOR_GREEN } else { COLOR_GRAY };
-    for p in pixels.iter_mut() { *p = 0; }
-    for y in 3..13 { for x in 4..12 { pixels[y * 16 + x] = color; } }
-    for x in [5, 7, 9] { pixels[1 * 16 + x] = color; pixels[2 * 16 + x] = color; }
-    for y in 13..15 { pixels[y * 16 + 7] = color; pixels[y * 16 + 8] = color; }
+    for p in pixels.iter_mut() {
+        *p = 0;
+    }
+    for y in 3..13 {
+        for x in 4..12 {
+            pixels[y * 16 + x] = color;
+        }
+    }
+    for x in [5, 7, 9] {
+        pixels[1 * 16 + x] = color;
+        pixels[2 * 16 + x] = color;
+    }
+    for y in 13..15 {
+        pixels[y * 16 + 7] = color;
+        pixels[y * 16 + 8] = color;
+    }
     let inner = if connected { 0xFF1A1A1A } else { 0xFF444444 };
-    for y in 5..10 { for x in 6..10 { pixels[y * 16 + x] = inner; } }
+    for y in 5..10 {
+        for x in 6..10 {
+            pixels[y * 16 + x] = inner;
+        }
+    }
 }
 
 // ── Interactive widget state ─────────────────────────────────────────────────
@@ -145,20 +180,28 @@ impl PopupState {
     }
 
     fn hit_toggle(&self, mx: i32, my: i32) -> bool {
-        mx >= self.toggle_x && mx < self.toggle_x + 36
-            && my >= self.toggle_y && my < self.toggle_y + 20
+        mx >= self.toggle_x
+            && mx < self.toggle_x + 36
+            && my >= self.toggle_y
+            && my < self.toggle_y + 20
     }
 
     fn hit_button(&self, mx: i32, my: i32) -> bool {
-        mx >= self.btn_x && mx < self.btn_x + self.btn_w as i32
-            && my >= self.btn_y && my < self.btn_y + self.btn_h as i32
+        mx >= self.btn_x
+            && mx < self.btn_x + self.btn_w as i32
+            && my >= self.btn_y
+            && my < self.btn_y + self.btn_h as i32
     }
 }
 
 // ── Popup drawing ────────────────────────────────────────────────────────────
 
 fn draw_popup(win: &WindowHandle, info: &NetInfo, state: &mut PopupState) {
-    let popup_h = if info.nic_available { POPUP_H } else { POPUP_H_NO_DEVICE };
+    let popup_h = if info.nic_available {
+        POPUP_H
+    } else {
+        POPUP_H_NO_DEVICE
+    };
     let buf = win.surface();
     let mut surface = unsafe { Surface::from_raw(buf, POPUP_W, popup_h) };
 
@@ -166,21 +209,55 @@ fn draw_popup(win: &WindowHandle, info: &NetInfo, state: &mut PopupState) {
     surface.fill_rounded_rect_aa(0, 0, POPUP_W, popup_h, 8, COLOR_CARD_BG);
 
     if !info.nic_available {
-        libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X, PAD + 4, COLOR_TEXT, 0, FONT_LARGE, "Ethernet");
+        libfont_client::draw_string_buf(
+            buf,
+            POPUP_W,
+            popup_h,
+            LABEL_X,
+            PAD + 4,
+            COLOR_TEXT,
+            0,
+            FONT_LARGE,
+            "Ethernet",
+        );
         surface.fill_rect(PAD, PAD + 30, POPUP_W - PAD as u32 * 2, 1, COLOR_DIVIDER);
-        libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X, PAD + 38, COLOR_TEXT_DIM, 0, FONT_NORMAL, "No Network Device Found");
+        libfont_client::draw_string_buf(
+            buf,
+            POPUP_W,
+            popup_h,
+            LABEL_X,
+            PAD + 38,
+            COLOR_TEXT_DIM,
+            0,
+            FONT_NORMAL,
+            "No Network Device Found",
+        );
         return;
     }
 
     let mut y = PAD;
 
     // Title + toggle
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X, y + 4, COLOR_TEXT, 0, FONT_LARGE, "Ethernet");
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        LABEL_X,
+        y + 4,
+        COLOR_TEXT,
+        0,
+        FONT_LARGE,
+        "Ethernet",
+    );
 
     // Toggle switch
     let tx = state.toggle_x;
     let ty = state.toggle_y;
-    let track_color = if state.toggle_on { COLOR_TOGGLE_ON } else { COLOR_TOGGLE_OFF };
+    let track_color = if state.toggle_on {
+        COLOR_TOGGLE_ON
+    } else {
+        COLOR_TOGGLE_OFF
+    };
     surface.fill_rounded_rect_aa(tx, ty, 36, 20, 10, track_color);
     let thumb_x = if state.toggle_on { tx + 18 } else { tx + 2 };
     surface.fill_circle_aa(thumb_x + 8, ty + 10, 8, 0xFFFFFFFF);
@@ -200,7 +277,17 @@ fn draw_popup(win: &WindowHandle, info: &NetInfo, state: &mut PopupState) {
         ("Disconnected", COLOR_RED)
     };
     surface.fill_circle_aa(LABEL_X + 5, y + 8, 5, dot_color);
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X + 16, y + 4, COLOR_TEXT, 0, FONT_NORMAL, status_text);
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        LABEL_X + 16,
+        y + 4,
+        COLOR_TEXT,
+        0,
+        FONT_NORMAL,
+        status_text,
+    );
     y += ROW_H;
 
     // Divider
@@ -209,28 +296,128 @@ fn draw_popup(win: &WindowHandle, info: &NetInfo, state: &mut PopupState) {
 
     // Network info rows
     let mut b = [0u8; 16];
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X, y + 2, COLOR_TEXT, 0, FONT_NORMAL, "IP Address");
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, VALUE_X, y + 2, COLOR_TEXT_DIM, 0, FONT_NORMAL, ip_str(&info.ip, &mut b));
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        LABEL_X,
+        y + 2,
+        COLOR_TEXT,
+        0,
+        FONT_NORMAL,
+        "IP Address",
+    );
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        VALUE_X,
+        y + 2,
+        COLOR_TEXT_DIM,
+        0,
+        FONT_NORMAL,
+        ip_str(&info.ip, &mut b),
+    );
     y += ROW_H;
 
     let mut b = [0u8; 16];
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X, y + 2, COLOR_TEXT, 0, FONT_NORMAL, "Subnet Mask");
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, VALUE_X, y + 2, COLOR_TEXT_DIM, 0, FONT_NORMAL, ip_str(&info.mask, &mut b));
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        LABEL_X,
+        y + 2,
+        COLOR_TEXT,
+        0,
+        FONT_NORMAL,
+        "Subnet Mask",
+    );
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        VALUE_X,
+        y + 2,
+        COLOR_TEXT_DIM,
+        0,
+        FONT_NORMAL,
+        ip_str(&info.mask, &mut b),
+    );
     y += ROW_H;
 
     let mut b = [0u8; 16];
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X, y + 2, COLOR_TEXT, 0, FONT_NORMAL, "Gateway");
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, VALUE_X, y + 2, COLOR_TEXT_DIM, 0, FONT_NORMAL, ip_str(&info.gw, &mut b));
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        LABEL_X,
+        y + 2,
+        COLOR_TEXT,
+        0,
+        FONT_NORMAL,
+        "Gateway",
+    );
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        VALUE_X,
+        y + 2,
+        COLOR_TEXT_DIM,
+        0,
+        FONT_NORMAL,
+        ip_str(&info.gw, &mut b),
+    );
     y += ROW_H;
 
     let mut b = [0u8; 16];
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X, y + 2, COLOR_TEXT, 0, FONT_NORMAL, "DNS Server");
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, VALUE_X, y + 2, COLOR_TEXT_DIM, 0, FONT_NORMAL, ip_str(&info.dns, &mut b));
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        LABEL_X,
+        y + 2,
+        COLOR_TEXT,
+        0,
+        FONT_NORMAL,
+        "DNS Server",
+    );
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        VALUE_X,
+        y + 2,
+        COLOR_TEXT_DIM,
+        0,
+        FONT_NORMAL,
+        ip_str(&info.dns, &mut b),
+    );
     y += ROW_H;
 
     let mut b = [0u8; 18];
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, LABEL_X, y + 2, COLOR_TEXT, 0, FONT_NORMAL, "MAC Address");
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, VALUE_X, y + 2, COLOR_TEXT_DIM, 0, FONT_NORMAL, mac_str(&info.mac, &mut b));
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        LABEL_X,
+        y + 2,
+        COLOR_TEXT,
+        0,
+        FONT_NORMAL,
+        "MAC Address",
+    );
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        VALUE_X,
+        y + 2,
+        COLOR_TEXT_DIM,
+        0,
+        FONT_NORMAL,
+        mac_str(&info.mac, &mut b),
+    );
     y += ROW_H;
 
     // Divider
@@ -239,12 +426,26 @@ fn draw_popup(win: &WindowHandle, info: &NetInfo, state: &mut PopupState) {
 
     // DHCP button
     state.btn_y = y;
-    let btn_color = if state.btn_pressed { 0xFF005ECB } else { COLOR_BTN_BG };
+    let btn_color = if state.btn_pressed {
+        0xFF005ECB
+    } else {
+        COLOR_BTN_BG
+    };
     surface.fill_rounded_rect_aa(state.btn_x, y, state.btn_w, state.btn_h, 4, btn_color);
     // Center "Run DHCP" text in button
     let (tw, _) = libfont_client::measure(0, FONT_NORMAL, "Run DHCP");
     let text_x = state.btn_x + (state.btn_w as i32 - tw as i32) / 2;
-    libfont_client::draw_string_buf(buf, POPUP_W, popup_h, text_x, y + 8, COLOR_BTN_TEXT, 0, FONT_NORMAL, "Run DHCP");
+    libfont_client::draw_string_buf(
+        buf,
+        POPUP_W,
+        popup_h,
+        text_x,
+        y + 8,
+        COLOR_BTN_TEXT,
+        0,
+        FONT_NORMAL,
+        "Run DHCP",
+    );
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -281,7 +482,9 @@ fn main() {
             match event.event_type {
                 EVT_STATUS_ICON_CLICK if event.arg1 == ICON_ID => {
                     if popup.is_some() {
-                        if let Some(ref p) = popup { client.destroy_window(p); }
+                        if let Some(ref p) = popup {
+                            client.destroy_window(p);
+                        }
                         popup = None;
                         popup_state = None;
                     } else {
@@ -407,7 +610,11 @@ fn open_popup(
     info: &NetInfo,
 ) {
     let (sw, _sh) = client.screen_size();
-    let popup_h = if info.nic_available { POPUP_H } else { POPUP_H_NO_DEVICE };
+    let popup_h = if info.nic_available {
+        POPUP_H
+    } else {
+        POPUP_H_NO_DEVICE
+    };
     let x = sw as i32 - POPUP_W as i32 - 8;
     let y = 26;
     let win = match client.create_window(x, y, POPUP_W, popup_h, BORDERLESS) {

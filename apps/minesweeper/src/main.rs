@@ -55,83 +55,35 @@ const DIGIT_BITMAPS: [[u8; 7]; 9] = [
     [0; 7], // 0 — unused
     // 1
     [
-        0b00100,
-        0b01100,
-        0b00100,
-        0b00100,
-        0b00100,
-        0b00100,
-        0b01110,
+        0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
     ],
     // 2
     [
-        0b01110,
-        0b10001,
-        0b00001,
-        0b00110,
-        0b01000,
-        0b10000,
-        0b11111,
+        0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111,
     ],
     // 3
     [
-        0b01110,
-        0b10001,
-        0b00001,
-        0b00110,
-        0b00001,
-        0b10001,
-        0b01110,
+        0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110,
     ],
     // 4
     [
-        0b00010,
-        0b00110,
-        0b01010,
-        0b10010,
-        0b11111,
-        0b00010,
-        0b00010,
+        0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
     ],
     // 5
     [
-        0b11111,
-        0b10000,
-        0b11110,
-        0b00001,
-        0b00001,
-        0b10001,
-        0b01110,
+        0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
     ],
     // 6
     [
-        0b00110,
-        0b01000,
-        0b10000,
-        0b11110,
-        0b10001,
-        0b10001,
-        0b01110,
+        0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
     ],
     // 7
     [
-        0b11111,
-        0b00001,
-        0b00010,
-        0b00100,
-        0b01000,
-        0b01000,
-        0b01000,
+        0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
     ],
     // 8
     [
-        0b01110,
-        0b10001,
-        0b10001,
-        0b01110,
-        0b10001,
-        0b10001,
-        0b01110,
+        0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
     ],
 ];
 
@@ -187,7 +139,9 @@ fn game() -> &'static mut Game {
 static mut RNG_STATE: u32 = 0;
 
 fn rng_seed(s: u32) {
-    unsafe { RNG_STATE = s; }
+    unsafe {
+        RNG_STATE = s;
+    }
 }
 
 fn rng_next() -> u32 {
@@ -212,7 +166,11 @@ fn main() {
     let win_w = GRID_W;
     let win_h = GRID_H + 44;
     let win = ui::Window::new_with_flags(
-        i18n::t("Minesweeper"), -1, -1, win_w, win_h,
+        i18n::t("Minesweeper"),
+        -1,
+        -1,
+        win_w,
+        win_h,
         ui::WIN_FLAG_NOT_RESIZABLE,
     );
 
@@ -265,18 +223,16 @@ fn main() {
     // ── Menu bar ──────────────────────────────────────────────────────
     let mut mb = ui::MenuBarBuilder::new()
         .menu(i18n::t("Game"))
-            .item(1, i18n::t("New Game"), 0)
-            .separator()
-            .item(2, i18n::t("Quit"), 0)
+        .item(1, i18n::t("New Game"), 0)
+        .separator()
+        .item(2, i18n::t("Quit"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = ui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => new_game(),
-            2 => ui::quit(),
-            _ => {}
-        }
+    menu.on_item(|e| match e.item_id {
+        1 => new_game(),
+        2 => ui::quit(),
+        _ => {}
     });
 
     game().render();
@@ -384,8 +340,16 @@ fn place_mines(safe_row: usize, safe_col: usize) {
         // Also avoid cells immediately adjacent to safe cell
         let r = idx / COLS;
         let c = idx % COLS;
-        let dr = if r > safe_row { r - safe_row } else { safe_row - r };
-        let dc = if c > safe_col { c - safe_col } else { safe_col - c };
+        let dr = if r > safe_row {
+            r - safe_row
+        } else {
+            safe_row - r
+        };
+        let dc = if c > safe_col {
+            c - safe_col
+        } else {
+            safe_col - c
+        };
         if dr <= 1 && dc <= 1 {
             continue;
         }
@@ -568,7 +532,13 @@ impl Game {
                         canvas.draw_rect(x, y, CELL as u32, CELL as u32, COL_REVEALED_BORDER, 1);
 
                         if cell.adjacent > 0 && cell.adjacent <= 8 {
-                            draw_digit(canvas, x, y, cell.adjacent, NUM_COLORS[cell.adjacent as usize]);
+                            draw_digit(
+                                canvas,
+                                x,
+                                y,
+                                cell.adjacent,
+                                NUM_COLORS[cell.adjacent as usize],
+                            );
                         }
                     }
                 } else if cell.is_flagged {

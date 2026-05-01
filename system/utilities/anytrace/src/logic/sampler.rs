@@ -56,7 +56,11 @@ impl Sampler {
             return;
         }
         let timestamp = anyos_std::sys::uptime_ms() as u64;
-        self.samples.push(Sample { timestamp, tid, rip });
+        self.samples.push(Sample {
+            timestamp,
+            tid,
+            rip,
+        });
     }
 
     /// Clear all samples.

@@ -1,7 +1,7 @@
 //! `apkg remove` — remove installed packages.
 
-use anyos_std::{println, fs};
 use crate::db;
+use anyos_std::{fs, println};
 
 /// Execute `apkg remove <names>`.
 pub fn run(names: &[&str], yes: bool, force: bool) {
@@ -63,7 +63,9 @@ pub fn run(names: &[&str], yes: bool, force: bool) {
         let mut buf = [0u8; 16];
         let n = fs::read(0, &mut buf);
         if n > 0 && n != u32::MAX {
-            let answer = core::str::from_utf8(&buf[..n as usize]).unwrap_or("y").trim();
+            let answer = core::str::from_utf8(&buf[..n as usize])
+                .unwrap_or("y")
+                .trim();
             if answer == "n" || answer == "N" || answer == "no" {
                 println!("Aborted.");
                 return;

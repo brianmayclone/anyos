@@ -160,13 +160,22 @@ fn cmd_services(client: &mut AmiClient) {
                 return;
             }
             for service in &services {
-                let state = field_value(&items, service, "state").unwrap_or_else(|| String::from("unknown"));
-                let ready = field_value(&items, service, "ready").unwrap_or_else(|| String::from("false"));
-                let health = field_value(&items, service, "health").unwrap_or_else(|| String::new());
+                let state = field_value(&items, service, "state")
+                    .unwrap_or_else(|| String::from("unknown"));
+                let ready =
+                    field_value(&items, service, "ready").unwrap_or_else(|| String::from("false"));
+                let health =
+                    field_value(&items, service, "health").unwrap_or_else(|| String::new());
                 if health.is_empty() {
                     anyos_std::println!("{}: state={} ready={}", service, state, ready);
                 } else {
-                    anyos_std::println!("{}: state={} ready={} health={}", service, state, ready, health);
+                    anyos_std::println!(
+                        "{}: state={} ready={} health={}",
+                        service,
+                        state,
+                        ready,
+                        health
+                    );
                 }
             }
         }
@@ -199,7 +208,12 @@ fn cmd_set(client: &mut AmiClient, rest: &str) {
 
     match client.set(key, value) {
         Ok(item) => {
-            anyos_std::println!("Updated {} (v{}, t={})", item.key, item.version, item.updated_at);
+            anyos_std::println!(
+                "Updated {} (v{}, t={})",
+                item.key,
+                item.version,
+                item.updated_at
+            );
         }
         Err(err) => print_error(err),
     }
@@ -277,7 +291,11 @@ fn value_to_string(value: &AmiValue) -> String {
         AmiValue::String(s) => String::from(s.as_str()),
         AmiValue::Int(v) => format!("{}", *v),
         AmiValue::Bool(v) => {
-            if *v { String::from("true") } else { String::from("false") }
+            if *v {
+                String::from("true")
+            } else {
+                String::from("false")
+            }
         }
     }
 }
@@ -325,7 +343,11 @@ fn parse_i64(s: &str) -> Option<i64> {
         return None;
     }
     let bytes = s.as_bytes();
-    let (neg, start) = if bytes[0] == b'-' { (true, 1usize) } else { (false, 0usize) };
+    let (neg, start) = if bytes[0] == b'-' {
+        (true, 1usize)
+    } else {
+        (false, 0usize)
+    };
     if start >= bytes.len() {
         return None;
     }

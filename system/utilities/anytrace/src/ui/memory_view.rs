@@ -1,8 +1,8 @@
 //! Memory hex dump view using TextEditor.
 
+use crate::logic::memory;
 use libanyui_client as ui;
 use ui::Widget;
-use crate::logic::memory;
 
 /// Memory view panel.
 pub struct MemoryView {

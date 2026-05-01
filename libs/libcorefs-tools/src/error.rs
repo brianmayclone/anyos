@@ -43,9 +43,7 @@ pub fn exit_code_for(err: &CoreFsError) -> ExitCode {
         CoreFsError::NotFound(_) => ExitCode::NotFound,
         CoreFsError::AlreadyExists(_) => ExitCode::Generic,
         CoreFsError::PolicyViolation(_) => ExitCode::InvalidArgument,
-        CoreFsError::InvalidInput(_) | CoreFsError::InvalidCommand(_) => {
-            ExitCode::InvalidArgument
-        }
+        CoreFsError::InvalidInput(_) | CoreFsError::InvalidCommand(_) => ExitCode::InvalidArgument,
         CoreFsError::State(msg) => {
             if msg.contains("checksum")
                 || msg.contains("corrupt")

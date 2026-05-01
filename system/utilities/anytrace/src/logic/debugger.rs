@@ -1,6 +1,6 @@
 //! Debug session management — attach, detach, suspend, resume, step.
 
-use anyos_std::debug::{self, DebugRegs, DebugEvent};
+use anyos_std::debug::{self, DebugEvent, DebugRegs};
 
 /// State of a debug session.
 #[derive(Clone, Copy, PartialEq, Eq)]

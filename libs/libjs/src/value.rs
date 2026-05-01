@@ -826,9 +826,12 @@ impl JsArray {
         if new_len < self.length {
             // Truncate while honoring non-configurable numeric properties.
             let mut effective_new_len = new_len;
-            for (idx, prop) in self.properties.iter().rev().filter_map(|(k, p)| {
-                parse_index(k).map(|idx| (idx, p))
-            }) {
+            for (idx, prop) in self
+                .properties
+                .iter()
+                .rev()
+                .filter_map(|(k, p)| parse_index(k).map(|idx| (idx, p)))
+            {
                 if idx >= new_len && !prop.configurable {
                     effective_new_len = idx + 1;
                     break;
@@ -1432,7 +1435,9 @@ impl JsValue {
         match self {
             JsValue::Object(obj) => obj.borrow_mut().set_hidden(key, value),
             JsValue::Array(arr) => {
-                arr.borrow_mut().properties.insert(key, Property::hidden(value));
+                arr.borrow_mut()
+                    .properties
+                    .insert(key, Property::hidden(value));
             }
             JsValue::Function(func) => {
                 let mut f = func.borrow_mut();
@@ -1742,7 +1747,10 @@ fn find_decimal_zero_noise_cut(frac: &[u8]) -> Option<usize> {
             while i < frac.len() && frac[i] == b'0' {
                 i += 1;
             }
-            if i - start >= 6 && frac[i..].iter().all(|&b| b == b'0' || b == b'1' || b == b'2')
+            if i - start >= 6
+                && frac[i..]
+                    .iter()
+                    .all(|&b| b == b'0' || b == b'1' || b == b'2')
             {
                 return Some(start);
             }

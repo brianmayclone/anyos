@@ -66,9 +66,12 @@ impl SymbolTable {
                 break;
             }
             let sh_type = u32::from_le_bytes(data[sh_off + 4..sh_off + 8].try_into().ok()?);
-            let sh_offset = u64::from_le_bytes(data[sh_off + 24..sh_off + 32].try_into().ok()?) as usize;
-            let sh_size = u64::from_le_bytes(data[sh_off + 32..sh_off + 40].try_into().ok()?) as usize;
-            let sh_link = u32::from_le_bytes(data[sh_off + 40..sh_off + 44].try_into().ok()?) as usize;
+            let sh_offset =
+                u64::from_le_bytes(data[sh_off + 24..sh_off + 32].try_into().ok()?) as usize;
+            let sh_size =
+                u64::from_le_bytes(data[sh_off + 32..sh_off + 40].try_into().ok()?) as usize;
+            let sh_link =
+                u32::from_le_bytes(data[sh_off + 40..sh_off + 44].try_into().ok()?) as usize;
 
             if sh_type == SHT_SYMTAB && symtab_off == 0 {
                 symtab_off = sh_offset;
@@ -84,8 +87,10 @@ impl SymbolTable {
         // Get the linked string table
         let strtab_sh = e_shoff + symtab_link * e_shentsize;
         if strtab_sh + e_shentsize <= data.len() {
-            strtab_off = u64::from_le_bytes(data[strtab_sh + 24..strtab_sh + 32].try_into().ok()?) as usize;
-            strtab_size = u64::from_le_bytes(data[strtab_sh + 32..strtab_sh + 40].try_into().ok()?) as usize;
+            strtab_off =
+                u64::from_le_bytes(data[strtab_sh + 24..strtab_sh + 32].try_into().ok()?) as usize;
+            strtab_size =
+                u64::from_le_bytes(data[strtab_sh + 32..strtab_sh + 40].try_into().ok()?) as usize;
         }
 
         if strtab_off == 0 {
@@ -121,12 +126,12 @@ impl SymbolTable {
             if name_off >= data.len() {
                 continue;
             }
-            let name_end = data[name_off..].iter().position(|&b| b == 0)
+            let name_end = data[name_off..]
+                .iter()
+                .position(|&b| b == 0)
                 .map(|p| name_off + p)
                 .unwrap_or(data.len().min(name_off + 256));
-            let name = String::from(
-                core::str::from_utf8(&data[name_off..name_end]).unwrap_or("?")
-            );
+            let name = String::from(core::str::from_utf8(&data[name_off..name_end]).unwrap_or("?"));
 
             entries.push(Symbol {
                 addr: st_value,

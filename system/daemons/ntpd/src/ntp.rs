@@ -42,7 +42,9 @@ pub struct NtpResponse {
 /// Build an SNTP client request packet.
 pub fn build_request(buf: &mut [u8; NTP_PACKET_SIZE]) {
     // Zero the packet.
-    for b in buf.iter_mut() { *b = 0; }
+    for b in buf.iter_mut() {
+        *b = 0;
+    }
     // LI=0, VN=4, Mode=3 (client) → byte 0 = 0b00_100_011 = 0x23
     buf[0] = 0x23;
     // Set transmit timestamp from system clock for origin matching.
@@ -130,22 +132,40 @@ pub fn corrected_time_buf(offset_ms: i64) -> [u8; 8] {
     let unix_secs = date_to_unix(year, month, day, hour, min, sec) as i64;
     // Apply offset (positive offset = our clock is behind, so add).
     let corrected = (unix_secs * 1000 + offset_ms) / 1000;
-    let corrected = if corrected < 0 { 0u64 } else { corrected as u64 };
+    let corrected = if corrected < 0 {
+        0u64
+    } else {
+        corrected as u64
+    };
 
     let (y, mo, d, h, mi, s) = unix_to_date(corrected);
     let year_bytes = (y as u16).to_le_bytes();
-    [year_bytes[0], year_bytes[1], mo as u8, d as u8, h as u8, mi as u8, s as u8, 0]
+    [
+        year_bytes[0],
+        year_bytes[1],
+        mo as u8,
+        d as u8,
+        h as u8,
+        mi as u8,
+        s as u8,
+        0,
+    ]
 }
 
 /// Convert Unix timestamp to (year, month, day, hour, min, sec).
 fn unix_to_date(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
-    let sec = (secs % 60) as u32; secs /= 60;
-    let min = (secs % 60) as u32; secs /= 60;
-    let hour = (secs % 24) as u32; secs /= 24;
+    let sec = (secs % 60) as u32;
+    secs /= 60;
+    let min = (secs % 60) as u32;
+    secs /= 60;
+    let hour = (secs % 24) as u32;
+    secs /= 24;
     let mut year = 1970u32;
     loop {
         let days_in_year = if is_leap(year) { 366u64 } else { 365 };
-        if secs < days_in_year { break; }
+        if secs < days_in_year {
+            break;
+        }
         secs -= days_in_year;
         year += 1;
     }
@@ -153,8 +173,12 @@ fn unix_to_date(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let mut month = 1u32;
     for m in 0..12 {
         let mut d = month_days[m] as u64;
-        if m == 1 && is_leap(year) { d += 1; }
-        if secs < d { break; }
+        if m == 1 && is_leap(year) {
+            d += 1;
+        }
+        if secs < d {
+            break;
+        }
         secs -= d;
         month += 1;
     }

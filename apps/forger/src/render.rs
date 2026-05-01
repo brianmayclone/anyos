@@ -12,10 +12,7 @@ type Mat4 = [f32; 16];
 
 fn mat4_identity() -> Mat4 {
     [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
@@ -33,8 +30,7 @@ const SHADOW_WORLD_CENTER_Y: f32 = 64.0;
 // Shaders
 // ---------------------------------------------------------------------------
 
-const VS_BLOCK: &str =
-"attribute vec3 aPosition;
+const VS_BLOCK: &str = "attribute vec3 aPosition;
 attribute vec2 aTexCoord;
 attribute float aLight;
 attribute vec3 aNormal;
@@ -66,8 +62,7 @@ void main() {
 }
 ";
 
-const FS_BLOCK: &str =
-"varying vec2 vTexCoord;
+const FS_BLOCK: &str = "varying vec2 vTexCoord;
 varying float vLighting;
 varying float vDist;
 varying vec4 vShadowCoord;
@@ -112,22 +107,19 @@ void main() {
 }
 ";
 
-const VS_SHADOW: &str =
-"attribute vec3 aPosition;
+const VS_SHADOW: &str = "attribute vec3 aPosition;
 uniform mat4 uLightMVP;
 void main() {
     gl_Position = uLightMVP * vec4(aPosition, 1.0);
 }
 ";
 
-const FS_SHADOW: &str =
-"void main() {
+const FS_SHADOW: &str = "void main() {
     gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
 }
 ";
 
-const VS_SKY: &str =
-"attribute vec2 aPosition;
+const VS_SKY: &str = "attribute vec2 aPosition;
 varying vec2 vPos;
 void main() {
     vPos = aPosition;
@@ -267,8 +259,16 @@ impl Renderer {
         gl::gen_textures(1, &mut tex_ids);
         let atlas_tex = tex_ids[0];
         gl::bind_texture(gl::GL_TEXTURE_2D, atlas_tex);
-        gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, gl::GL_NEAREST as i32);
-        gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, gl::GL_NEAREST as i32);
+        gl::tex_parameteri(
+            gl::GL_TEXTURE_2D,
+            gl::GL_TEXTURE_MIN_FILTER,
+            gl::GL_NEAREST as i32,
+        );
+        gl::tex_parameteri(
+            gl::GL_TEXTURE_2D,
+            gl::GL_TEXTURE_MAG_FILTER,
+            gl::GL_NEAREST as i32,
+        );
         gl::tex_image_2d(
             gl::GL_TEXTURE_2D,
             0,
@@ -284,12 +284,7 @@ impl Renderer {
 
         // -- Sky quad VBO --
         let sky_verts: [f32; 12] = [
-            -1.0, -1.0,
-             1.0, -1.0,
-             1.0,  1.0,
-            -1.0, -1.0,
-             1.0,  1.0,
-            -1.0,  1.0,
+            -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
         ];
         let mut vbo_ids = [0u32; 1];
         gl::gen_buffers(1, &mut vbo_ids);
@@ -332,9 +327,25 @@ impl Renderer {
         let u_aspect = gl::get_uniform_location(sky_program, "uAspect");
         let a_sky_pos = gl::get_attrib_location(sky_program, "aPosition");
 
-        anyos_std::println!("forger: block prog={} sky prog={}", block_program, sky_program);
-        anyos_std::println!("forger: u_mvp={} u_fog_c={} u_fog_s={} u_fog_e={} u_tex={}", u_mvp, u_fog_color, u_fog_start, u_fog_end, u_texture);
-        anyos_std::println!("forger: a_pos={} a_uv={} a_light={}", a_position, a_texcoord, a_light);
+        anyos_std::println!(
+            "forger: block prog={} sky prog={}",
+            block_program,
+            sky_program
+        );
+        anyos_std::println!(
+            "forger: u_mvp={} u_fog_c={} u_fog_s={} u_fog_e={} u_tex={}",
+            u_mvp,
+            u_fog_color,
+            u_fog_start,
+            u_fog_end,
+            u_texture
+        );
+        anyos_std::println!(
+            "forger: a_pos={} a_uv={} a_light={}",
+            a_position,
+            a_texcoord,
+            a_light
+        );
 
         Renderer {
             block_program,
@@ -421,7 +432,15 @@ impl Renderer {
         self.chunk_vbos.insert(key, (vbo, vertex_count));
     }
 
-    pub fn render(&mut self, cam_x: f32, cam_y: f32, cam_z: f32, width: u32, height: u32, shadows_enabled: bool) {
+    pub fn render(
+        &mut self,
+        cam_x: f32,
+        cam_y: f32,
+        cam_z: f32,
+        width: u32,
+        height: u32,
+        shadows_enabled: bool,
+    ) {
         // ── Day/Night cycle ──────────────────────────────────────────
         let now = anyos_std::sys::uptime_ms();
         let day_progress = (now % DAY_CYCLE_MS) as f32 / DAY_CYCLE_MS as f32;
@@ -472,7 +491,12 @@ impl Renderer {
 
         // -- Clear --
         gl::viewport(0, 0, width as i32, height as i32);
-        gl::clear_color(sun.sky_horizon[0], sun.sky_horizon[1], sun.sky_horizon[2], 1.0);
+        gl::clear_color(
+            sun.sky_horizon[0],
+            sun.sky_horizon[1],
+            sun.sky_horizon[2],
+            1.0,
+        );
         gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 
         // -- Sky pass (depth test OFF so sky doesn't write to depth buffer) --
@@ -481,9 +505,24 @@ impl Renderer {
 
         gl::use_program(self.sky_program);
 
-        gl::uniform3f(self.u_sky_top, sun.sky_top[0], sun.sky_top[1], sun.sky_top[2]);
-        gl::uniform3f(self.u_sky_horizon, sun.sky_horizon[0], sun.sky_horizon[1], sun.sky_horizon[2]);
-        gl::uniform3f(self.u_sky_bottom, sun.sky_bottom[0], sun.sky_bottom[1], sun.sky_bottom[2]);
+        gl::uniform3f(
+            self.u_sky_top,
+            sun.sky_top[0],
+            sun.sky_top[1],
+            sun.sky_top[2],
+        );
+        gl::uniform3f(
+            self.u_sky_horizon,
+            sun.sky_horizon[0],
+            sun.sky_horizon[1],
+            sun.sky_horizon[2],
+        );
+        gl::uniform3f(
+            self.u_sky_bottom,
+            sun.sky_bottom[0],
+            sun.sky_bottom[1],
+            sun.sky_bottom[2],
+        );
         gl::uniform3f(self.u_sun_dir, sun.dir[0], sun.dir[1], sun.dir[2]);
         gl::uniform3f(self.u_sun_color, sun.color[0], sun.color[1], sun.color[2]);
         gl::uniform1f(self.u_sun_size, sun.visible_size);
@@ -531,10 +570,33 @@ impl Renderer {
         unsafe {
             if DBG_ONCE {
                 DBG_ONCE = false;
-                anyos_std::println!("forger: block_prog={} sky_prog={}", self.block_program, self.sky_program);
-                anyos_std::println!("forger: u_mvp={} a_pos={} a_uv={} a_light={}", self.u_mvp, self.a_position, self.a_texcoord, self.a_light);
-                anyos_std::println!("forger: mvp diag: {},{},{},{}", mvp[0] as i32, mvp[5] as i32, mvp[10] as i32, mvp[15] as i32);
-                anyos_std::println!("forger: cam=({},{},{}) fog_s={} fog_e={}", cam_x as i32, cam_y as i32, cam_z as i32, fog_start as i32, fog_end as i32);
+                anyos_std::println!(
+                    "forger: block_prog={} sky_prog={}",
+                    self.block_program,
+                    self.sky_program
+                );
+                anyos_std::println!(
+                    "forger: u_mvp={} a_pos={} a_uv={} a_light={}",
+                    self.u_mvp,
+                    self.a_position,
+                    self.a_texcoord,
+                    self.a_light
+                );
+                anyos_std::println!(
+                    "forger: mvp diag: {},{},{},{}",
+                    mvp[0] as i32,
+                    mvp[5] as i32,
+                    mvp[10] as i32,
+                    mvp[15] as i32
+                );
+                anyos_std::println!(
+                    "forger: cam=({},{},{}) fog_s={} fog_e={}",
+                    cam_x as i32,
+                    cam_y as i32,
+                    cam_z as i32,
+                    fog_start as i32,
+                    fog_end as i32
+                );
                 let mut total_verts = 0u32;
                 let mut drawn_chunks = 0u32;
                 for (&(cx, cz), &(_, vc)) in &self.chunk_vbos {
@@ -548,11 +610,21 @@ impl Renderer {
                         drawn_chunks += 1;
                     }
                 }
-                anyos_std::println!("forger: drawing {} chunks, {} verts (fog_dist={})", drawn_chunks, total_verts, self.fog_distance as i32);
+                anyos_std::println!(
+                    "forger: drawing {} chunks, {} verts (fog_dist={})",
+                    drawn_chunks,
+                    total_verts,
+                    self.fog_distance as i32
+                );
             }
         }
         gl::uniform_matrix4fv(self.u_mvp, false, &mvp);
-        gl::uniform3f(self.u_fog_color, sun.sky_horizon[0], sun.sky_horizon[1], sun.sky_horizon[2]);
+        gl::uniform3f(
+            self.u_fog_color,
+            sun.sky_horizon[0],
+            sun.sky_horizon[1],
+            sun.sky_horizon[2],
+        );
         gl::uniform1f(self.u_fog_start, fog_start);
         gl::uniform1f(self.u_fog_end, fog_end);
         gl::uniform1f(self.u_sun_brightness, sun.brightness);
@@ -566,7 +638,11 @@ impl Renderer {
         );
         gl::uniform1f(
             self.u_shadow_strength,
-            if shadows_ready { self.shadow_strength } else { 0.0 },
+            if shadows_ready {
+                self.shadow_strength
+            } else {
+                0.0
+            },
         );
 
         gl::active_texture(gl::GL_TEXTURE0);
@@ -574,7 +650,11 @@ impl Renderer {
         gl::active_texture(gl::GL_TEXTURE0 + gl::shadow_get_unit());
         gl::bind_texture(
             gl::GL_TEXTURE_2D,
-            if shadows_ready { gl::shadow_get_texture() } else { 0 },
+            if shadows_ready {
+                gl::shadow_get_texture()
+            } else {
+                0
+            },
         );
         gl::uniform1i(self.u_shadow_map, gl::shadow_get_unit() as i32);
         gl::active_texture(gl::GL_TEXTURE0);
@@ -601,7 +681,13 @@ impl Renderer {
         gl::disable_vertex_attrib_array(self.a_translucency as u32);
     }
 
-    fn visible_chunk_delta(&self, cx: i32, cz: i32, cam_x: f32, cam_z: f32) -> Option<(f32, f32, f32)> {
+    fn visible_chunk_delta(
+        &self,
+        cx: i32,
+        cz: i32,
+        cam_x: f32,
+        cam_z: f32,
+    ) -> Option<(f32, f32, f32)> {
         let chunk_center_x = cx as f32 * 16.0 + 8.0;
         let chunk_center_z = cz as f32 * 16.0 + 8.0;
         let dx = chunk_center_x - cam_x;
@@ -625,7 +711,14 @@ impl Renderer {
         let stride = (FLOATS_PER_VERTEX * 4) as i32;
         for (&(cx, cz), &(vbo, vert_count)) in &self.chunk_vbos {
             gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo);
-            gl::vertex_attrib_pointer(self.a_shadow_position as u32, 3, gl::GL_FLOAT, false, stride, 0);
+            gl::vertex_attrib_pointer(
+                self.a_shadow_position as u32,
+                3,
+                gl::GL_FLOAT,
+                false,
+                stride,
+                0,
+            );
             gl::draw_arrays(gl::GL_TRIANGLES, 0, vert_count as i32);
         }
         gl::disable_vertex_attrib_array(self.a_shadow_position as u32);
@@ -660,7 +753,14 @@ impl Renderer {
             gl::vertex_attrib_pointer(self.a_texcoord as u32, 2, gl::GL_FLOAT, false, stride, 12);
             gl::vertex_attrib_pointer(self.a_light as u32, 1, gl::GL_FLOAT, false, stride, 20);
             gl::vertex_attrib_pointer(self.a_normal as u32, 3, gl::GL_FLOAT, false, stride, 24);
-            gl::vertex_attrib_pointer(self.a_translucency as u32, 1, gl::GL_FLOAT, false, stride, 36);
+            gl::vertex_attrib_pointer(
+                self.a_translucency as u32,
+                1,
+                gl::GL_FLOAT,
+                false,
+                stride,
+                36,
+            );
             gl::draw_arrays(gl::GL_TRIANGLES, 0, vert_count as i32);
         }
     }
@@ -768,19 +868,19 @@ pub fn compute_sun_debug(now_ms: u32) -> SunDebugInfo {
 fn compute_sky_colors(sun_elev: f32) -> ([f32; 3], [f32; 3], [f32; 3], [f32; 3], f32) {
     // Sky palettes for different times of day
     //                 top              horizon          bottom (ground haze)
-    let day_top     = [0.25, 0.45, 0.90];
-    let day_horiz   = [0.55, 0.65, 0.90];
-    let day_bottom  = [0.40, 0.50, 0.55];
+    let day_top = [0.25, 0.45, 0.90];
+    let day_horiz = [0.55, 0.65, 0.90];
+    let day_bottom = [0.40, 0.50, 0.55];
 
-    let sunset_top    = [0.15, 0.15, 0.45];
-    let sunset_horiz  = [0.85, 0.40, 0.15];
+    let sunset_top = [0.15, 0.15, 0.45];
+    let sunset_horiz = [0.85, 0.40, 0.15];
     let sunset_bottom = [0.50, 0.25, 0.10];
 
-    let night_top     = [0.01, 0.01, 0.05];
-    let night_horiz   = [0.02, 0.02, 0.08];
-    let night_bottom  = [0.01, 0.01, 0.03];
+    let night_top = [0.01, 0.01, 0.05];
+    let night_horiz = [0.02, 0.02, 0.08];
+    let night_bottom = [0.01, 0.01, 0.03];
 
-    let sun_color_day    = [1.0, 0.95, 0.8];
+    let sun_color_day = [1.0, 0.95, 0.8];
     let sun_color_sunset = [1.0, 0.5, 0.1];
     let twilight = smoothstep(-0.28, 0.12, sun_elev);
     let daylight = smoothstep(-0.02, 0.35, sun_elev);

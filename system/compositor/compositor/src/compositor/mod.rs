@@ -272,14 +272,11 @@ impl Compositor {
     /// The app writes directly to off-screen VRAM; compositor uses GPU RECT_COPY
     /// to blit to the visible framebuffer (zero CPU pixel copies for opaque windows).
     /// Returns `Some(layer_id)` on success, `None` if VRAM allocation fails.
-    pub fn add_vram_layer(
-        &mut self,
-        x: i32,
-        y: i32,
-        w: u32,
-        h: u32,
-    ) -> Option<u32> {
-        let alloc = self.vram_allocator.as_mut()?.alloc(w, h, self.next_layer_id)?;
+    pub fn add_vram_layer(&mut self, x: i32, y: i32, w: u32, h: u32) -> Option<u32> {
+        let alloc = self
+            .vram_allocator
+            .as_mut()?
+            .alloc(w, h, self.next_layer_id)?;
         let id = self.next_layer_id;
         self.next_layer_id += 1;
         self.layers.push(Layer {
@@ -324,7 +321,10 @@ impl Compositor {
 
     /// Get the VRAM Y-offset for a layer (for RECT_COPY source).
     pub fn vram_layer_y(&self, layer_id: u32) -> Option<u32> {
-        self.layers.iter().find(|l| l.id == layer_id && l.is_vram).map(|l| l.vram_y)
+        self.layers
+            .iter()
+            .find(|l| l.id == layer_id && l.is_vram)
+            .map(|l| l.vram_y)
     }
 
     /// Get layer index by ID.
@@ -344,7 +344,10 @@ impl Compositor {
 
     /// Get mutable reference to a layer's pixel buffer.
     pub fn layer_pixels(&mut self, id: u32) -> Option<&mut Vec<u32>> {
-        self.layers.iter_mut().find(|l| l.id == id).map(|l| &mut l.pixels)
+        self.layers
+            .iter_mut()
+            .find(|l| l.id == id)
+            .map(|l| &mut l.pixels)
     }
 
     /// Move a layer to a new position.
@@ -508,15 +511,21 @@ impl Compositor {
         let y = rect.y.max(0) as usize;
         let fb_w = self.fb_width as usize;
         let fb_h = self.fb_height as usize;
-        if x >= fb_w || y >= fb_h { return; }
+        if x >= fb_w || y >= fb_h {
+            return;
+        }
         let w = (rect.width as usize).min(fb_w - x);
         let h = (rect.height as usize).min(fb_h - y);
-        if w == 0 || h == 0 { return; }
+        if w == 0 || h == 0 {
+            return;
+        }
 
         for row in 0..h {
             let src_off = (y + row) * bb_stride + x;
             let dst_off = (y + row + y_offset as usize) * fb_stride + x;
-            if src_off + w > self.back_buffer.len() { break; }
+            if src_off + w > self.back_buffer.len() {
+                break;
+            }
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     self.back_buffer.as_ptr().add(src_off),

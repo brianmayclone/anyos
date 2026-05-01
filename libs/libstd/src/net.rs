@@ -15,7 +15,9 @@ pub struct Ipv4Addr {
 
 impl Ipv4Addr {
     pub const fn new(a: u8, b: u8, c: u8, d: u8) -> Self {
-        Ipv4Addr { octets: [a, b, c, d] }
+        Ipv4Addr {
+            octets: [a, b, c, d],
+        }
     }
 
     pub const LOCALHOST: Self = Self::new(127, 0, 0, 1);
@@ -37,7 +39,11 @@ impl Ipv4Addr {
 
 impl fmt::Display for Ipv4Addr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}.{}", self.octets[0], self.octets[1], self.octets[2], self.octets[3])
+        write!(
+            f,
+            "{}.{}.{}.{}",
+            self.octets[0], self.octets[1], self.octets[2], self.octets[3]
+        )
     }
 }
 
@@ -49,7 +55,9 @@ pub struct Ipv6Addr {
 
 impl Ipv6Addr {
     pub const fn new(a: u16, b: u16, c: u16, d: u16, e: u16, f: u16, g: u16, h: u16) -> Self {
-        Ipv6Addr { segments: [a, b, c, d, e, f, g, h] }
+        Ipv6Addr {
+            segments: [a, b, c, d, e, f, g, h],
+        }
     }
 
     pub const LOCALHOST: Self = Self::new(0, 0, 0, 0, 0, 0, 0, 1);
@@ -95,8 +103,12 @@ impl SocketAddrV4 {
     pub fn new(ip: Ipv4Addr, port: u16) -> Self {
         SocketAddrV4 { ip, port }
     }
-    pub fn ip(&self) -> &Ipv4Addr { &self.ip }
-    pub fn port(&self) -> u16 { self.port }
+    pub fn ip(&self) -> &Ipv4Addr {
+        &self.ip
+    }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
 }
 
 impl fmt::Display for SocketAddrV4 {
@@ -116,8 +128,12 @@ impl SocketAddrV6 {
     pub fn new(ip: Ipv6Addr, port: u16, _flowinfo: u32, _scope_id: u32) -> Self {
         SocketAddrV6 { ip, port }
     }
-    pub fn ip(&self) -> &Ipv6Addr { &self.ip }
-    pub fn port(&self) -> u16 { self.port }
+    pub fn ip(&self) -> &Ipv6Addr {
+        &self.ip
+    }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
 }
 
 /// Socket address enum.
@@ -191,7 +207,10 @@ impl ToSocketAddrs for (&str, u16) {
         let mut result = [0u8; 4];
         let ret = anyos_std::net::dns(host, &mut result);
         if ret != 0 {
-            return Err(io::Error::new(io::ErrorKind::Other, "DNS resolution failed"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "DNS resolution failed",
+            ));
         }
         let ip = Ipv4Addr::new(result[0], result[1], result[2], result[3]);
         Ok(alloc::vec![SocketAddr::V4(SocketAddrV4::new(ip, port))].into_iter())
@@ -226,7 +245,10 @@ impl TcpStream {
     }
 
     /// Connect with a timeout.
-    pub fn connect_timeout(addr: &SocketAddr, timeout: core::time::Duration) -> io::Result<TcpStream> {
+    pub fn connect_timeout(
+        addr: &SocketAddr,
+        timeout: core::time::Duration,
+    ) -> io::Result<TcpStream> {
         let ms = timeout.as_millis() as u32;
         let addrs: alloc::vec::Vec<_> = core::iter::once(*addr).collect();
         Self::connect_timeout_inner_vec(addrs, ms)
@@ -237,14 +259,20 @@ impl TcpStream {
         Self::connect_timeout_inner_vec(addrs, timeout_ms)
     }
 
-    fn connect_timeout_inner_vec(addrs: alloc::vec::Vec<SocketAddr>, timeout_ms: u32) -> io::Result<TcpStream> {
+    fn connect_timeout_inner_vec(
+        addrs: alloc::vec::Vec<SocketAddr>,
+        timeout_ms: u32,
+    ) -> io::Result<TcpStream> {
         for addr in &addrs {
             match addr {
                 SocketAddr::V4(v4) => {
                     let ip = v4.ip().octets();
                     let sock = anyos_std::net::tcp_connect(&ip, v4.port(), timeout_ms);
                     if sock != u32::MAX {
-                        return Ok(TcpStream { socket_id: sock, peer_addr: *addr });
+                        return Ok(TcpStream {
+                            socket_id: sock,
+                            peer_addr: *addr,
+                        });
                     }
                 }
                 SocketAddr::V6(_) => continue, // IPv6 not supported
@@ -271,7 +299,10 @@ impl TcpStream {
 
     /// Try to clone this stream (not supported).
     pub fn try_clone(&self) -> io::Result<TcpStream> {
-        Err(io::Error::new(io::ErrorKind::Other, "try_clone not supported"))
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "try_clone not supported",
+        ))
     }
 
     /// Set read timeout.
@@ -343,14 +374,19 @@ pub struct TcpListener {
 impl TcpListener {
     /// Bind to a local address and start listening.
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
-        let addr = addr.to_socket_addrs()?.next()
+        let addr = addr
+            .to_socket_addrs()?
+            .next()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses"))?;
         let port = addr.port();
         let sock = anyos_std::net::tcp_listen(port, 16);
         if sock == u32::MAX {
             return Err(io::Error::from_kind(io::ErrorKind::Other));
         }
-        Ok(TcpListener { socket_id: sock, local_addr: addr })
+        Ok(TcpListener {
+            socket_id: sock,
+            local_addr: addr,
+        })
     }
 
     /// Accept a new connection.
@@ -363,7 +399,13 @@ impl TcpListener {
             Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]),
             port,
         ));
-        Ok((TcpStream { socket_id: sock_id, peer_addr: peer }, peer))
+        Ok((
+            TcpStream {
+                socket_id: sock_id,
+                peer_addr: peer,
+            },
+            peer,
+        ))
     }
 
     /// Get the local address.

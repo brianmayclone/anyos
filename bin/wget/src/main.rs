@@ -3,7 +3,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::{print, println, net, fs, sys, args};
+use anyos_std::{args, fs, net, print, println, sys};
 
 mod tls;
 
@@ -62,12 +62,16 @@ fn parse_url(url_str: &str) -> Option<Url> {
 
 fn parse_u16(s: &str) -> Option<u16> {
     let mut val: u32 = 0;
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     for b in s.bytes() {
         match b {
             b'0'..=b'9' => {
                 val = val * 10 + (b - b'0') as u32;
-                if val > 65535 { return None; }
+                if val > 65535 {
+                    return None;
+                }
             }
             _ => return None,
         }
@@ -77,7 +81,9 @@ fn parse_u16(s: &str) -> Option<u16> {
 
 fn parse_u32(s: &str) -> Option<u32> {
     let mut val: u32 = 0;
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     for b in s.bytes() {
         match b {
             b'0'..=b'9' => {
@@ -101,11 +107,15 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
         match b {
             b'0'..=b'9' => {
                 num = num * 10 + (b - b'0') as u32;
-                if num > 255 { return None; }
+                if num > 255 {
+                    return None;
+                }
                 has_digit = true;
             }
             b'.' => {
-                if !has_digit || idx >= 3 { return None; }
+                if !has_digit || idx >= 3 {
+                    return None;
+                }
                 parts[idx] = num as u8;
                 idx += 1;
                 num = 0;
@@ -114,7 +124,9 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
             _ => return None,
         }
     }
-    if !has_digit || idx != 3 { return None; }
+    if !has_digit || idx != 3 {
+        return None;
+    }
     parts[3] = num as u8;
     Some(parts)
 }
@@ -134,11 +146,17 @@ fn resolve_host(host: &str) -> Option<[u8; 4]> {
 // ── String helpers ──────────────────────────────────────────────────────────
 
 fn to_ascii_lower(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
+    if b >= b'A' && b <= b'Z' {
+        b + 32
+    } else {
+        b
+    }
 }
 
 fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
-    if s.len() < prefix.len() { return false; }
+    if s.len() < prefix.len() {
+        return false;
+    }
     let sb = s.as_bytes();
     let pb = prefix.as_bytes();
     for i in 0..pb.len() {
@@ -157,16 +175,21 @@ fn push_u32(s: &mut String, val: u32) {
 }
 
 fn push_u32_pad2(s: &mut String, val: u32) {
-    if val < 10 { s.push('0'); }
+    if val < 10 {
+        s.push('0');
+    }
     push_u32(s, val);
 }
 
 // ── HTTP header parsing ─────────────────────────────────────────────────────
 
 fn find_header_end(data: &[u8]) -> Option<usize> {
-    if data.len() < 4 { return None; }
+    if data.len() < 4 {
+        return None;
+    }
     for i in 0..data.len() - 3 {
-        if data[i] == b'\r' && data[i+1] == b'\n' && data[i+2] == b'\r' && data[i+3] == b'\n' {
+        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n'
+        {
             return Some(i + 4);
         }
     }
@@ -224,13 +247,20 @@ fn is_chunked(headers: &str) -> bool {
             // Case-insensitive substring match for "chunked".
             let bytes = v.as_bytes();
             let pat = b"chunked";
-            if bytes.len() < pat.len() { return false; }
+            if bytes.len() < pat.len() {
+                return false;
+            }
             for i in 0..=bytes.len() - pat.len() {
                 let mut ok = true;
                 for j in 0..pat.len() {
-                    if to_ascii_lower(bytes[i + j]) != pat[j] { ok = false; break; }
+                    if to_ascii_lower(bytes[i + j]) != pat[j] {
+                        ok = false;
+                        break;
+                    }
                 }
-                if ok { return true; }
+                if ok {
+                    return true;
+                }
             }
             false
         }
@@ -252,7 +282,11 @@ fn parse_hex_u32(s: &[u8]) -> Option<u32> {
         val = val.checked_mul(16)?.checked_add(d as u32)?;
         any = true;
     }
-    if any { Some(val) } else { None }
+    if any {
+        Some(val)
+    } else {
+        None
+    }
 }
 
 fn is_redirect(status: u16) -> bool {
@@ -381,7 +415,13 @@ fn fmt_speed(bps: u32, buf: &mut [u8; 16]) -> usize {
 
 // ── Progress bar ────────────────────────────────────────────────────────────
 
-fn draw_progress(filename: &str, received: u32, total: Option<u32>, elapsed_ticks: u32, tick_hz: u32) {
+fn draw_progress(
+    filename: &str,
+    received: u32,
+    total: Option<u32>,
+    elapsed_ticks: u32,
+    tick_hz: u32,
+) {
     // filename     XX%[========>          ] XXX.XK  XX.XKB/s    in Xs
     let mut line = String::new();
     line.push('\r');
@@ -400,17 +440,29 @@ fn draw_progress(filename: &str, received: u32, total: Option<u32>, elapsed_tick
     // Percentage + bar (if total known)
     if let Some(tot) = total {
         if tot > 0 {
-            let pct = if received >= tot { 100u32 } else { (received as u64 * 100 / tot as u64) as u32 };
+            let pct = if received >= tot {
+                100u32
+            } else {
+                (received as u64 * 100 / tot as u64) as u32
+            };
             // "100%" or " 42%"
-            if pct < 10 { line.push(' '); line.push(' '); }
-            else if pct < 100 { line.push(' '); }
+            if pct < 10 {
+                line.push(' ');
+                line.push(' ');
+            } else if pct < 100 {
+                line.push(' ');
+            }
             push_u32(&mut line, pct);
             line.push('%');
 
             // Bar: [====================>]
             line.push('[');
             let bar_width: u32 = 20;
-            let filled = if received >= tot { bar_width } else { (received as u64 * bar_width as u64 / tot as u64) as u32 };
+            let filled = if received >= tot {
+                bar_width
+            } else {
+                (received as u64 * bar_width as u64 / tot as u64) as u32
+            };
             for i in 0..bar_width {
                 if i < filled {
                     line.push('=');
@@ -495,7 +547,10 @@ impl Conn {
             net::tcp_close(sock);
             return None;
         }
-        Some(Conn { sock, tls: Some(h as tls::TlsHandle) })
+        Some(Conn {
+            sock,
+            tls: Some(h as tls::TlsHandle),
+        })
     }
 
     fn send(&self, data: &[u8]) -> i32 {
@@ -503,7 +558,11 @@ impl Conn {
             Some(h) => tls::send(h, data),
             None => {
                 let n = net::tcp_send(self.sock, data);
-                if n == u32::MAX { -1 } else { n as i32 }
+                if n == u32::MAX {
+                    -1
+                } else {
+                    n as i32
+                }
             }
         }
     }
@@ -513,7 +572,11 @@ impl Conn {
             Some(h) => tls::recv(h, buf),
             None => {
                 let n = net::tcp_recv(self.sock, buf);
-                if n == u32::MAX { -1 } else { n as i32 }
+                if n == u32::MAX {
+                    -1
+                } else {
+                    n as i32
+                }
             }
         }
     }
@@ -581,14 +644,26 @@ fn main() {
     // Handle --help and --version as positional args
     for i in 0..parsed.pos_count {
         match parsed.positional[i] {
-            "--help" => { print_usage(); return; }
-            "--version" => { print_version(); return; }
+            "--help" => {
+                print_usage();
+                return;
+            }
+            "--version" => {
+                print_version();
+                return;
+            }
             _ => {}
         }
     }
 
-    if parsed.has(b'h') { print_usage(); return; }
-    if parsed.has(b'V') { print_version(); return; }
+    if parsed.has(b'h') {
+        print_usage();
+        return;
+    }
+    if parsed.has(b'V') {
+        print_version();
+        return;
+    }
 
     let quiet = parsed.has(b'q');
     let resume = parsed.has(b'c');
@@ -635,8 +710,15 @@ fn main() {
         if !quiet {
             let ts = fmt_timestamp();
             let scheme = if current_url.https { "https" } else { "http" };
-            let default_port = if current_url.https { HTTPS_PORT } else { HTTP_PORT };
-            println!("--{}--  {}://{}{}", ts, scheme,
+            let default_port = if current_url.https {
+                HTTPS_PORT
+            } else {
+                HTTP_PORT
+            };
+            println!(
+                "--{}--  {}://{}{}",
+                ts,
+                scheme,
                 if current_url.port != default_port {
                     let mut h = current_url.host.clone();
                     h.push(':');
@@ -645,7 +727,8 @@ fn main() {
                 } else {
                     current_url.host.clone()
                 },
-                current_url.path);
+                current_url.path
+            );
         }
 
         // DNS resolution
@@ -662,31 +745,51 @@ fn main() {
                 ip
             }
             None => {
-                if !quiet { println!("failed: Name or service not known."); }
-                println!("wget: unable to resolve host address '{}'", current_url.host);
+                if !quiet {
+                    println!("failed: Name or service not known.");
+                }
+                println!(
+                    "wget: unable to resolve host address '{}'",
+                    current_url.host
+                );
                 return;
             }
         };
 
         // Connect (TCP + optional TLS handshake)
         if !quiet {
-            print!("Connecting to {} ({})|{}.{}.{}.{}|:{}... ",
-                current_url.host, current_url.host,
-                ip[0], ip[1], ip[2], ip[3], current_url.port);
+            print!(
+                "Connecting to {} ({})|{}.{}.{}.{}|:{}... ",
+                current_url.host, current_url.host, ip[0], ip[1], ip[2], ip[3], current_url.port
+            );
         }
         let t_conn = sys::uptime_ms();
-        let conn = match Conn::connect(&ip, current_url.port, &current_url.host, current_url.https, CONNECT_TIMEOUT) {
+        let conn = match Conn::connect(
+            &ip,
+            current_url.port,
+            &current_url.host,
+            current_url.https,
+            CONNECT_TIMEOUT,
+        ) {
             Some(c) => c,
             None => {
-                if !quiet { println!("failed: Connection refused."); }
-                println!("wget: unable to connect to {}:{}", current_url.host, current_url.port);
+                if !quiet {
+                    println!("failed: Connection refused.");
+                }
+                println!(
+                    "wget: unable to connect to {}:{}",
+                    current_url.host, current_url.port
+                );
                 return;
             }
         };
         if !quiet {
             let dt = sys::uptime_ms().wrapping_sub(t_conn);
-            if current_url.https { println!("connected. TLS established. [{}ms]", dt); }
-            else { println!("connected. [{}ms]", dt); }
+            if current_url.https {
+                println!("connected. TLS established. [{}ms]", dt);
+            } else {
+                println!("connected. [{}ms]", dt);
+            }
         }
 
         // Send request
@@ -696,7 +799,9 @@ fn main() {
         }
         let t_req = sys::uptime_ms();
         if conn.send(request.as_bytes()) < 0 {
-            if !quiet { println!("failed."); }
+            if !quiet {
+                println!("failed.");
+            }
             conn.close();
             return;
         }
@@ -708,7 +813,9 @@ fn main() {
         loop {
             let n = conn.recv(&mut recv_buf);
             if n <= 0 {
-                if !quiet { println!("no data received."); }
+                if !quiet {
+                    println!("no data received.");
+                }
                 conn.close();
                 return;
             }
@@ -718,7 +825,9 @@ fn main() {
                 break;
             }
             if response.len() > 16384 {
-                if !quiet { println!("headers too large."); }
+                if !quiet {
+                    println!("headers too large.");
+                }
                 conn.close();
                 return;
             }
@@ -739,7 +848,9 @@ fn main() {
                 if !quiet {
                     println!("Location: {} [following]", loc);
                 }
-                if starts_with_ignore_case(loc, "http://") || starts_with_ignore_case(loc, "https://") {
+                if starts_with_ignore_case(loc, "http://")
+                    || starts_with_ignore_case(loc, "https://")
+                {
                     current_url = match parse_url(loc) {
                         Some(u) => u,
                         None => {
@@ -835,14 +946,17 @@ fn main() {
 
         // Helper: ensure carry has at least `n` bytes by recv()'ing more.
         // Returns false on EOF/error before reaching n.
-        let pull_into_carry = |carry: &mut Vec<u8>, conn: &Conn, recv_buf: &mut [u8], n: usize| -> bool {
-            while carry.len() < n {
-                let r = conn.recv(recv_buf);
-                if r <= 0 { return false; }
-                carry.extend_from_slice(&recv_buf[..r as usize]);
-            }
-            true
-        };
+        let pull_into_carry =
+            |carry: &mut Vec<u8>, conn: &Conn, recv_buf: &mut [u8], n: usize| -> bool {
+                while carry.len() < n {
+                    let r = conn.recv(recv_buf);
+                    if r <= 0 {
+                        return false;
+                    }
+                    carry.extend_from_slice(&recv_buf[..r as usize]);
+                }
+                true
+            };
 
         // Show initial progress
         if !quiet && !to_stdout {
@@ -864,11 +978,17 @@ fn main() {
                             }
                         }
                     }
-                    if line_end.is_some() { break; }
+                    if line_end.is_some() {
+                        break;
+                    }
                     let r = conn.recv(&mut recv_buf);
-                    if r <= 0 { break 'chunks; }
+                    if r <= 0 {
+                        break 'chunks;
+                    }
                     carry.extend_from_slice(&recv_buf[..r as usize]);
-                    if carry.len() > 65536 { break 'chunks; } // runaway guard
+                    if carry.len() > 65536 {
+                        break 'chunks;
+                    } // runaway guard
                 }
                 let line_end = line_end.unwrap();
                 let size = match parse_hex_u32(&carry[..line_end]) {
@@ -887,7 +1007,9 @@ fn main() {
                 while to_read > 0 {
                     if carry.is_empty() {
                         let r = conn.recv(&mut recv_buf);
-                        if r <= 0 { break 'chunks; }
+                        if r <= 0 {
+                            break 'chunks;
+                        }
                         carry.extend_from_slice(&recv_buf[..r as usize]);
                     }
                     let take = carry.len().min(to_read);
@@ -900,12 +1022,20 @@ fn main() {
                         last_progress_bytes = received;
                         let elapsed = sys::uptime().wrapping_sub(start_ticks);
                         let display_received = received + existing_size;
-                        draw_progress(&out_filename, display_received, total_size, elapsed, tick_hz);
+                        draw_progress(
+                            &out_filename,
+                            display_received,
+                            total_size,
+                            elapsed,
+                            tick_hz,
+                        );
                     }
                 }
 
                 // Consume the trailing CRLF after the chunk data.
-                if !pull_into_carry(&mut carry, &conn, &mut recv_buf, 2) { break; }
+                if !pull_into_carry(&mut carry, &conn, &mut recv_buf, 2) {
+                    break;
+                }
                 carry.drain(..2);
             }
         } else {
@@ -919,10 +1049,14 @@ fn main() {
 
             loop {
                 if let Some(cl) = content_length {
-                    if received >= cl { break; }
+                    if received >= cl {
+                        break;
+                    }
                 }
                 let n = conn.recv(&mut recv_buf);
-                if n <= 0 { break; }
+                if n <= 0 {
+                    break;
+                }
                 let n = n as u32;
                 fs::write(fd, &recv_buf[..n as usize]);
                 received += n;
@@ -931,7 +1065,13 @@ fn main() {
                     last_progress_bytes = received;
                     let elapsed = sys::uptime().wrapping_sub(start_ticks);
                     let display_received = received + existing_size;
-                    draw_progress(&out_filename, display_received, total_size, elapsed, tick_hz);
+                    draw_progress(
+                        &out_filename,
+                        display_received,
+                        total_size,
+                        elapsed,
+                        tick_hz,
+                    );
                 }
             }
         }
@@ -940,7 +1080,13 @@ fn main() {
         let elapsed = sys::uptime().wrapping_sub(start_ticks);
         if !quiet && !to_stdout {
             let display_received = received + existing_size;
-            draw_progress(&out_filename, display_received, total_size, elapsed, tick_hz);
+            draw_progress(
+                &out_filename,
+                display_received,
+                total_size,
+                elapsed,
+                tick_hz,
+            );
             println!();
             println!();
         }
@@ -967,9 +1113,15 @@ fn main() {
             if to_stdout {
                 // No summary for stdout
             } else if let Some(tot) = total_size {
-                println!("{} ({}) - '{}' saved [{}/{}]", ts, speed_str, out_filename, total, tot);
+                println!(
+                    "{} ({}) - '{}' saved [{}/{}]",
+                    ts, speed_str, out_filename, total, tot
+                );
             } else {
-                println!("{} ({}) - '{}' saved [{}]", ts, speed_str, out_filename, total);
+                println!(
+                    "{} ({}) - '{}' saved [{}]",
+                    ts, speed_str, out_filename, total
+                );
             }
         }
 

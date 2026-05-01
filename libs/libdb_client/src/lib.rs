@@ -55,7 +55,11 @@ impl Database {
     /// Open (or create) a database file.
     pub fn open(path: &str) -> Option<Database> {
         let h = (lib().libdb_open)(path.as_ptr(), path.len() as u32);
-        if h == 0 { None } else { Some(Database { handle: h }) }
+        if h == 0 {
+            None
+        } else {
+            Some(Database { handle: h })
+        }
     }
 
     /// Open an ephemeral in-memory database with no backing file.

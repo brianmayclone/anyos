@@ -6,9 +6,9 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{Vec, vec};
-use libanyui_client as anyui;
+use anyos_std::{vec, Vec};
 use anyui::Widget;
+use libanyui_client as anyui;
 
 anyos_std::entry!(main);
 
@@ -34,7 +34,9 @@ struct AppState {
 }
 
 static mut APP: Option<AppState> = None;
-fn app() -> &'static mut AppState { unsafe { APP.as_mut().unwrap() } }
+fn app() -> &'static mut AppState {
+    unsafe { APP.as_mut().unwrap() }
+}
 
 fn main() {
     let mut args_buf = [0u8; 256];
@@ -79,14 +81,20 @@ fn main() {
     drop(scratch);
     drop(data);
 
-    if !anyui::init() { return; }
+    if !anyui::init() {
+        return;
+    }
     anyos_std::i18n::init();
 
     let filename = path.rsplit('/').next().unwrap_or(path);
 
     // Window dimensions: fit image, capped to screen
     let (scr_w, scr_h) = anyui::screen_size();
-    let (scr_w, scr_h) = if scr_w == 0 || scr_h == 0 { (1024, 768) } else { (scr_w, scr_h) };
+    let (scr_w, scr_h) = if scr_w == 0 || scr_h == 0 {
+        (1024, 768)
+    } else {
+        (scr_w, scr_h)
+    };
     let win_w = (img_w as u32 + 2).min(scr_w.min(1024)).max(200);
     let win_h = (img_h as u32 + 2).min(scr_h.min(768)).max(150);
 
@@ -122,25 +130,39 @@ fn main() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(anyos_std::i18n::t("File"))
-            .item(1, anyos_std::i18n::t("Quit"), 0)
+        .item(1, anyos_std::i18n::t("Quit"), 0)
         .end_menu()
         .menu(anyos_std::i18n::t("View"))
-            .item(10, anyos_std::i18n::t("Scroll Up"), 0)
-            .item(11, anyos_std::i18n::t("Scroll Down"), 0)
-            .item(12, anyos_std::i18n::t("Scroll Left"), 0)
-            .item(13, anyos_std::i18n::t("Scroll Right"), 0)
+        .item(10, anyos_std::i18n::t("Scroll Up"), 0)
+        .item(11, anyos_std::i18n::t("Scroll Down"), 0)
+        .item(12, anyos_std::i18n::t("Scroll Left"), 0)
+        .item(13, anyos_std::i18n::t("Scroll Right"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => anyui::quit(),
-            10 => { app().scroll_y -= 32; clamp_scroll(); app().needs_redraw = true; }
-            11 => { app().scroll_y += 32; clamp_scroll(); app().needs_redraw = true; }
-            12 => { app().scroll_x -= 32; clamp_scroll(); app().needs_redraw = true; }
-            13 => { app().scroll_x += 32; clamp_scroll(); app().needs_redraw = true; }
-            _ => {}
+    menu.on_item(|e| match e.item_id {
+        1 => anyui::quit(),
+        10 => {
+            app().scroll_y -= 32;
+            clamp_scroll();
+            app().needs_redraw = true;
         }
+        11 => {
+            app().scroll_y += 32;
+            clamp_scroll();
+            app().needs_redraw = true;
+        }
+        12 => {
+            app().scroll_x -= 32;
+            clamp_scroll();
+            app().needs_redraw = true;
+        }
+        13 => {
+            app().scroll_x += 32;
+            clamp_scroll();
+            app().needs_redraw = true;
+        }
+        _ => {}
     });
 
     // Mouse events for panning
@@ -168,15 +190,29 @@ fn main() {
     });
 
     // Keyboard events
-    win.on_key_down(|ke| {
-        match ke.keycode {
-            anyui::KEY_ESCAPE => anyui::quit(),
-            anyui::KEY_UP    => { app().scroll_y -= 32; clamp_scroll(); app().needs_redraw = true; }
-            anyui::KEY_DOWN  => { app().scroll_y += 32; clamp_scroll(); app().needs_redraw = true; }
-            anyui::KEY_LEFT  => { app().scroll_x -= 32; clamp_scroll(); app().needs_redraw = true; }
-            anyui::KEY_RIGHT => { app().scroll_x += 32; clamp_scroll(); app().needs_redraw = true; }
-            _ => {}
+    win.on_key_down(|ke| match ke.keycode {
+        anyui::KEY_ESCAPE => anyui::quit(),
+        anyui::KEY_UP => {
+            app().scroll_y -= 32;
+            clamp_scroll();
+            app().needs_redraw = true;
         }
+        anyui::KEY_DOWN => {
+            app().scroll_y += 32;
+            clamp_scroll();
+            app().needs_redraw = true;
+        }
+        anyui::KEY_LEFT => {
+            app().scroll_x -= 32;
+            clamp_scroll();
+            app().needs_redraw = true;
+        }
+        anyui::KEY_RIGHT => {
+            app().scroll_x += 32;
+            clamp_scroll();
+            app().needs_redraw = true;
+        }
+        _ => {}
     });
 
     win.on_close(|_| anyui::quit());
@@ -206,7 +242,9 @@ fn redraw() {
     let a = app();
     let w = a.canvas.get_stride() as usize;
     let h = a.canvas.get_height() as usize;
-    if w == 0 || h == 0 { return; }
+    if w == 0 || h == 0 {
+        return;
+    }
 
     let needed = w * h;
     if a.render_buf.len() != needed {
@@ -214,11 +252,21 @@ fn redraw() {
     }
 
     // Fill background
-    for p in a.render_buf.iter_mut() { *p = BG; }
+    for p in a.render_buf.iter_mut() {
+        *p = BG;
+    }
 
     // Calculate image position (centered if smaller than view)
-    let img_x = if (a.img_w as i32) < w as i32 { (w as i32 - a.img_w as i32) / 2 } else { -a.scroll_x };
-    let img_y = if (a.img_h as i32) < h as i32 { (h as i32 - a.img_h as i32) / 2 } else { -a.scroll_y };
+    let img_x = if (a.img_w as i32) < w as i32 {
+        (w as i32 - a.img_w as i32) / 2
+    } else {
+        -a.scroll_x
+    };
+    let img_y = if (a.img_h as i32) < h as i32 {
+        (h as i32 - a.img_h as i32) / 2
+    } else {
+        -a.scroll_y
+    };
 
     let src_x = a.scroll_x.max(0) as usize;
     let src_y = a.scroll_y.max(0) as usize;
@@ -244,10 +292,14 @@ fn redraw() {
         // Blit image pixels with alpha blending
         for row in 0..vis_h {
             let sy = src_y + row;
-            if sy >= a.img_h { break; }
+            if sy >= a.img_h {
+                break;
+            }
             for col in 0..vis_w {
                 let sx = src_x + col;
-                if sx >= a.img_w { break; }
+                if sx >= a.img_w {
+                    break;
+                }
                 let px = dst_x + col;
                 let py = dst_y + row;
                 if px < w && py < h {
@@ -283,29 +335,70 @@ fn blend(src: u32, dst: u32) -> u32 {
 
 fn read_file(path: &str) -> Option<Vec<u8>> {
     let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX { return None; }
+    if fd == u32::MAX {
+        return None;
+    }
     let mut content = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
         let n = anyos_std::fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         content.extend_from_slice(&buf[..n as usize]);
     }
     anyos_std::fs::close(fd);
     Some(content)
 }
 
-fn format_title<'a>(buf: &'a mut [u8; 128], filename: &str, fmt: &str, w: usize, h: usize) -> &'a str {
+fn format_title<'a>(
+    buf: &'a mut [u8; 128],
+    filename: &str,
+    fmt: &str,
+    w: usize,
+    h: usize,
+) -> &'a str {
     let mut pos = 0;
-    for &b in filename.as_bytes() { if pos < 127 { buf[pos] = b; pos += 1; } }
-    for &b in b" (" { if pos < 127 { buf[pos] = b; pos += 1; } }
-    for &b in fmt.as_bytes() { if pos < 127 { buf[pos] = b; pos += 1; } }
-    if pos < 127 { buf[pos] = b' '; pos += 1; }
+    for &b in filename.as_bytes() {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
+    for &b in b" (" {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
+    for &b in fmt.as_bytes() {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
+    if pos < 127 {
+        buf[pos] = b' ';
+        pos += 1;
+    }
     pos = write_num(buf, pos, w);
-    if pos < 127 { buf[pos] = b'x'; pos += 1; }
+    if pos < 127 {
+        buf[pos] = b'x';
+        pos += 1;
+    }
     pos = write_num(buf, pos, h);
-    for &b in b") - " { if pos < 127 { buf[pos] = b; pos += 1; } }
-    for &b in anyos_std::i18n::t("Image Viewer").as_bytes() { if pos < 127 { buf[pos] = b; pos += 1; } }
+    for &b in b") - " {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
+    for &b in anyos_std::i18n::t("Image Viewer").as_bytes() {
+        if pos < 127 {
+            buf[pos] = b;
+            pos += 1;
+        }
+    }
     unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
 }
 
@@ -313,14 +406,26 @@ fn write_num(buf: &mut [u8; 128], pos: usize, n: usize) -> usize {
     let mut tmp = [0u8; 10];
     let len = fmt_usize(n, &mut tmp);
     let mut p = pos;
-    for &b in &tmp[..len] { if p < 127 { buf[p] = b; p += 1; } }
+    for &b in &tmp[..len] {
+        if p < 127 {
+            buf[p] = b;
+            p += 1;
+        }
+    }
     p
 }
 
 fn fmt_usize(mut n: usize, buf: &mut [u8; 10]) -> usize {
-    if n == 0 { buf[0] = b'0'; return 1; }
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
     let mut pos = 10;
-    while n > 0 && pos > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
+    while n > 0 && pos > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
     let len = 10 - pos;
     buf.copy_within(pos..10, 0);
     len

@@ -2711,17 +2711,7 @@ impl JsRuntime {
         let target_idx = path.len().saturating_sub(1);
 
         // Fast exit: skip work entirely when no registered listener matches.
-        let has_window = self
-            .event_listeners
-            .iter()
-            .any(|l| l.node_id == usize::MAX && l.event == event_name);
-        let has_any = has_window
-            || path.iter().any(|&nid| {
-                self.event_listeners
-                    .iter()
-                    .any(|l| l.node_id == nid && l.event == event_name)
-            });
-        if !has_any {
+        if !self.has_event_listener_on_path_slice(&path, event_name) {
             return true;
         }
 
@@ -2729,7 +2719,7 @@ impl JsRuntime {
         // (focus/blur/scroll/load do not bubble — they have focused-capture semantics.)
         let bubbles = !matches!(
             event_name,
-            "focus" | "blur" | "scroll" | "load" | "unload" | "error"
+            "focus" | "blur" | "scroll" | "load" | "unload" | "error" | "mouseenter" | "mouseleave"
         );
         let cancelable = !matches!(event_name, "scroll" | "load" | "unload");
 
@@ -2946,6 +2936,32 @@ impl JsRuntime {
 
         // Return true when preventDefault() was NOT called (default action proceeds).
         !bridge.prevented
+    }
+
+    pub fn has_event_listener_for_node_path(
+        &self,
+        dom: &Dom,
+        node_id: usize,
+        event_name: &str,
+    ) -> bool {
+        let mut path = Vec::new();
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            path.push(id);
+            cur = dom.nodes.get(id).and_then(|n| n.parent);
+        }
+        self.has_event_listener_on_path_slice(&path, event_name)
+    }
+
+    fn has_event_listener_on_path_slice(&self, path: &[usize], event_name: &str) -> bool {
+        self.event_listeners
+            .iter()
+            .any(|l| l.node_id == usize::MAX && l.event == event_name)
+            || path.iter().any(|&nid| {
+                self.event_listeners
+                    .iter()
+                    .any(|l| l.node_id == nid && l.event == event_name)
+            })
     }
 
     /// Advance timers by `delta_ms` and execute any that are due.

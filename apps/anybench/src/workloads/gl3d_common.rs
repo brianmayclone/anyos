@@ -103,10 +103,7 @@ pub fn cleanup_program(program: u32, vs: u32, fs: u32) {
 /// 4×4 identity matrix.
 pub fn mat4_identity() -> [f32; 16] {
     [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
@@ -130,8 +127,8 @@ pub fn mat4_perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [f32; 1
     let f = 1.0 / gl::tan(fov_y * 0.5);
     let nf = 1.0 / (near - far);
     let mut m = [0.0f32; 16];
-    m[0]  = f / aspect;
-    m[5]  = f;
+    m[0] = f / aspect;
+    m[5] = f;
     m[10] = (far + near) * nf;
     m[11] = -1.0;
     m[14] = 2.0 * far * near * nf;
@@ -152,10 +149,10 @@ pub fn mat4_rotate_y(angle: f32) -> [f32; 16] {
     let c = gl::cos(angle);
     let s = gl::sin(angle);
     let mut m = mat4_identity();
-    m[0]  =  c;
-    m[2]  =  s;
-    m[8]  = -s;
-    m[10] =  c;
+    m[0] = c;
+    m[2] = s;
+    m[8] = -s;
+    m[10] = c;
     m
 }
 
@@ -164,18 +161,18 @@ pub fn mat4_rotate_x(angle: f32) -> [f32; 16] {
     let c = gl::cos(angle);
     let s = gl::sin(angle);
     let mut m = mat4_identity();
-    m[5]  =  c;
-    m[6]  =  s;
-    m[9]  = -s;
-    m[10] =  c;
+    m[5] = c;
+    m[6] = s;
+    m[9] = -s;
+    m[10] = c;
     m
 }
 
 /// Uniform scale matrix.
 pub fn mat4_scale(sx: f32, sy: f32, sz: f32) -> [f32; 16] {
     let mut m = [0.0f32; 16];
-    m[0]  = sx;
-    m[5]  = sy;
+    m[0] = sx;
+    m[5] = sy;
     m[10] = sz;
     m[15] = 1.0;
     m

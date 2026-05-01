@@ -5,40 +5,40 @@
 
 // ── Key Codes (must match uisys_client/src/types.rs) ─────────────────────────
 
-pub const KEY_ENTER: u32     = 0x100;
+pub const KEY_ENTER: u32 = 0x100;
 pub const KEY_BACKSPACE: u32 = 0x101;
-pub const KEY_TAB: u32       = 0x102;
-pub const KEY_ESCAPE: u32    = 0x103;
-pub const KEY_SPACE: u32     = 0x104;
-pub const KEY_UP: u32        = 0x105;
-pub const KEY_DOWN: u32      = 0x106;
-pub const KEY_LEFT: u32      = 0x107;
-pub const KEY_RIGHT: u32     = 0x108;
+pub const KEY_TAB: u32 = 0x102;
+pub const KEY_ESCAPE: u32 = 0x103;
+pub const KEY_SPACE: u32 = 0x104;
+pub const KEY_UP: u32 = 0x105;
+pub const KEY_DOWN: u32 = 0x106;
+pub const KEY_LEFT: u32 = 0x107;
+pub const KEY_RIGHT: u32 = 0x108;
 
-pub const KEY_DELETE: u32    = 0x120;
-pub const KEY_HOME: u32      = 0x121;
-pub const KEY_END: u32       = 0x122;
-pub const KEY_PAGE_UP: u32   = 0x123;
+pub const KEY_DELETE: u32 = 0x120;
+pub const KEY_HOME: u32 = 0x121;
+pub const KEY_END: u32 = 0x122;
+pub const KEY_PAGE_UP: u32 = 0x123;
 pub const KEY_PAGE_DOWN: u32 = 0x124;
 
-pub const KEY_F1: u32  = 0x140;
-pub const KEY_F2: u32  = 0x141;
-pub const KEY_F3: u32  = 0x142;
-pub const KEY_F4: u32  = 0x143;
-pub const KEY_F5: u32  = 0x144;
-pub const KEY_F6: u32  = 0x145;
-pub const KEY_F7: u32  = 0x146;
-pub const KEY_F8: u32  = 0x147;
-pub const KEY_F9: u32  = 0x148;
+pub const KEY_F1: u32 = 0x140;
+pub const KEY_F2: u32 = 0x141;
+pub const KEY_F3: u32 = 0x142;
+pub const KEY_F4: u32 = 0x143;
+pub const KEY_F5: u32 = 0x144;
+pub const KEY_F6: u32 = 0x145;
+pub const KEY_F7: u32 = 0x146;
+pub const KEY_F8: u32 = 0x147;
+pub const KEY_F9: u32 = 0x148;
 pub const KEY_F10: u32 = 0x149;
 pub const KEY_F11: u32 = 0x14A;
 pub const KEY_F12: u32 = 0x14B;
 
-pub const KEY_VOLUME_UP: u32   = 0x160;
+pub const KEY_VOLUME_UP: u32 = 0x160;
 pub const KEY_VOLUME_DOWN: u32 = 0x161;
 pub const KEY_VOLUME_MUTE: u32 = 0x162;
 
-pub const KEY_LEFT_SUPER: u32  = 0x170;
+pub const KEY_LEFT_SUPER: u32 = 0x170;
 pub const KEY_RIGHT_SUPER: u32 = 0x171;
 
 // ── Scancode Translation ─────────────────────────────────────────────────────

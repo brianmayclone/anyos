@@ -70,12 +70,17 @@ impl Report for ScrubView {
             self.report.repair_ops_committed,
             self.report.residual_issues.len(),
             self.report.data_corruptions.len(),
-            if self.report.is_clean() { "CLEAN" } else { "DIRTY" },
+            if self.report.is_clean() {
+                "CLEAN"
+            } else {
+                "DIRTY"
+            },
         );
         for (slot, domain) in &self.report.data_corruptions {
             out.push_str(&anyos_std::format!(
                 "  DATA CORRUPTION slot={} domain_id={}\n",
-                slot, domain
+                slot,
+                domain
             ));
         }
         for issue in &self.report.residual_issues {
@@ -97,7 +102,10 @@ impl Report for ScrubView {
         b.kv_u64("extents_verified", self.report.extents_verified);
         b.kv_u64("blocks_verified", self.report.blocks_verified);
         b.kv_u64("fsck_issues_before", self.report.fsck_issues_before as u64);
-        b.kv_u64("repair_ops_committed", self.report.repair_ops_committed as u64);
+        b.kv_u64(
+            "repair_ops_committed",
+            self.report.repair_ops_committed as u64,
+        );
         b.kv_bool("clean", self.report.is_clean());
         b.key("data_corruptions");
         b.begin_array();

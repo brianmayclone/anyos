@@ -5,7 +5,11 @@ use libphysics_client as physics;
 
 fn floor(x: f32) -> i32 {
     let i = x as i32;
-    if (i as f32) > x { i - 1 } else { i }
+    if (i as f32) > x {
+        i - 1
+    } else {
+        i
+    }
 }
 
 pub const EYE_HEIGHT: f32 = 1.62;
@@ -224,9 +228,21 @@ pub fn raycast(world: &World, ox: f32, oy: f32, oz: f32, yaw: f32, pitch: f32) -
     let step_y: i32 = if dir_y > 0.0 { 1 } else { -1 };
     let step_z: i32 = if dir_z > 0.0 { 1 } else { -1 };
 
-    let t_delta_x = if dir_x != 0.0 { (1.0 / dir_x).abs() } else { f32::MAX };
-    let t_delta_y = if dir_y != 0.0 { (1.0 / dir_y).abs() } else { f32::MAX };
-    let t_delta_z = if dir_z != 0.0 { (1.0 / dir_z).abs() } else { f32::MAX };
+    let t_delta_x = if dir_x != 0.0 {
+        (1.0 / dir_x).abs()
+    } else {
+        f32::MAX
+    };
+    let t_delta_y = if dir_y != 0.0 {
+        (1.0 / dir_y).abs()
+    } else {
+        f32::MAX
+    };
+    let t_delta_z = if dir_z != 0.0 {
+        (1.0 / dir_z).abs()
+    } else {
+        f32::MAX
+    };
 
     let mut t_max_x = if dir_x > 0.0 {
         ((x as f32 + 1.0) - ox) * t_delta_x

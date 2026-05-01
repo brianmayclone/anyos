@@ -3,8 +3,8 @@
 //! A snapshot captures the full register state at a point in time,
 //! allowing the user to compare states across debugging steps.
 
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use anyos_std::debug::DebugRegs;
 
 /// A snapshot of the process state.

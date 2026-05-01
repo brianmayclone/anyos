@@ -6,7 +6,9 @@ use anyos_std::json::Value;
 use crate::merge::merge_config_file;
 use crate::model::{ApplyStats, UpgradeList, UpgradeOperation};
 use crate::transaction::UpgradeTransaction;
-use crate::util::{ensure_dir, ensure_parent_dirs, is_config_path, join_root, path_exists, read_dir};
+use crate::util::{
+    ensure_dir, ensure_parent_dirs, is_config_path, join_root, path_exists, read_dir,
+};
 
 pub fn load_upgrade_list(path: &str) -> Option<UpgradeList> {
     let text = fs::read_to_string(path).ok()?;
@@ -68,7 +70,14 @@ pub fn apply_upgrade_list(root: &str, list: &UpgradeList) -> Result<ApplyStats, 
                 } => {
                     let dst = join_root(root, target);
                     ensure_dir(&dst);
-                    sync_tree(source, &dst, *merge_configs, *preserve_existing, &mut stats, &mut tx)?;
+                    sync_tree(
+                        source,
+                        &dst,
+                        *merge_configs,
+                        *preserve_existing,
+                        &mut stats,
+                        &mut tx,
+                    )?;
                 }
             }
         }
@@ -103,7 +112,14 @@ fn sync_tree(
         if entry.entry_type == 1 {
             ensure_dir(&child_dst);
             stats.dirs_created += 1;
-            sync_tree(&child_src, &child_dst, merge_configs, preserve_existing, stats, tx)?;
+            sync_tree(
+                &child_src,
+                &child_dst,
+                merge_configs,
+                preserve_existing,
+                stats,
+                tx,
+            )?;
             continue;
         }
 

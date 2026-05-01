@@ -3,15 +3,15 @@
 #![no_std]
 #![no_main]
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::format;
-use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use anyos_std::{net, fs, env};
 use anyos_std::json::Value;
-use libanyui_client as anyui;
+use anyos_std::{env, fs, net};
 use anyui::{IconType, Widget};
+use libanyui_client as anyui;
 use libconf_schema::{default_int, default_string, manifest, RegistryScope, ServiceSchema};
 
 anyos_std::entry!(main);
@@ -58,10 +58,17 @@ fn config_schema() -> ServiceSchema<'static> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum SortColumn { Name, Size, Date }
+enum SortColumn {
+    Name,
+    Size,
+    Date,
+}
 
 #[derive(Clone, Copy, PartialEq)]
-enum SortOrder { Asc, Desc }
+enum SortOrder {
+    Asc,
+    Desc,
+}
 
 #[derive(Clone)]
 struct SiteProfile {
@@ -94,8 +101,17 @@ impl SiteProfile {
         let user = val["user"].as_str().unwrap_or("anonymous").to_string();
         let pass = val["pass"].as_str().unwrap_or("").to_string();
         let remote_dir = val["remote_dir"].as_str().unwrap_or("").to_string();
-        if host.is_empty() { return None; }
-        Some(SiteProfile { name, host, port, user, pass, remote_dir })
+        if host.is_empty() {
+            return None;
+        }
+        Some(SiteProfile {
+            name,
+            host,
+            port,
+            user,
+            pass,
+            remote_dir,
+        })
     }
 }
 
@@ -195,8 +211,12 @@ fn parse_prefs_json(text: &str) -> Prefs {
         last_pass: val["last_pass"].as_str().unwrap_or("").to_string(),
     };
     // Guard against 0×0 window (can happen if prefs were saved during teardown)
-    if p.win_w < 200 { p.win_w = 1100; }
-    if p.win_h < 100 { p.win_h = 680; }
+    if p.win_w < 200 {
+        p.win_w = 1100;
+    }
+    if p.win_h < 100 {
+        p.win_h = 680;
+    }
     p
 }
 
@@ -243,7 +263,9 @@ fn read_legacy_json(path: &str) -> String {
     let mut buf = [0u8; 4096];
     loop {
         let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     fs::close(fd);
@@ -253,8 +275,12 @@ fn read_legacy_json(path: &str) -> String {
 fn sort_entries(entries: &mut [FileEntry], col: SortColumn, order: SortOrder) {
     entries.sort_by(|a, b| {
         // ".." always first
-        if a.name == ".." { return core::cmp::Ordering::Less; }
-        if b.name == ".." { return core::cmp::Ordering::Greater; }
+        if a.name == ".." {
+            return core::cmp::Ordering::Less;
+        }
+        if b.name == ".." {
+            return core::cmp::Ordering::Greater;
+        }
         // Directories before files
         match (a.is_dir, b.is_dir) {
             (true, false) => return core::cmp::Ordering::Less,
@@ -282,7 +308,9 @@ struct FtpClient {
 impl FtpClient {
     fn connect(ip: &[u8; 4], port: u16) -> Option<FtpClient> {
         let sock = net::tcp_connect(ip, port, CONNECT_TIMEOUT);
-        if sock == u32::MAX { return None; }
+        if sock == u32::MAX {
+            return None;
+        }
         let mut client = FtpClient { ctrl: sock };
         let resp = client.read_response();
         if !resp.starts_with("220") {
@@ -295,8 +323,12 @@ impl FtpClient {
     fn login(&mut self, user: &str, pass: &str) -> bool {
         self.send_command("USER ", user);
         let resp = self.read_response();
-        if resp.starts_with("230") { return true; }
-        if !resp.starts_with("331") { return false; }
+        if resp.starts_with("230") {
+            return true;
+        }
+        if !resp.starts_with("331") {
+            return false;
+        }
         self.send_command("PASS ", pass);
         let resp = self.read_response();
         resp.starts_with("230")
@@ -324,9 +356,13 @@ impl FtpClient {
         let mut buf = [0u8; 1024];
         loop {
             let n = net::tcp_recv(self.ctrl, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             result.extend_from_slice(&buf[..n as usize]);
-            if is_complete_response(&result) { break; }
+            if is_complete_response(&result) {
+                break;
+            }
         }
         String::from_utf8_lossy(&result).into_owned()
     }
@@ -335,7 +371,9 @@ impl FtpClient {
     fn pasv_addr(&mut self) -> Option<([u8; 4], u16)> {
         self.send_cmd_only("PASV");
         let resp = self.read_response();
-        if !resp.starts_with("227") { return None; }
+        if !resp.starts_with("227") {
+            return None;
+        }
         parse_pasv(&resp)
     }
 
@@ -367,7 +405,9 @@ impl FtpClient {
         let mut buf = [0u8; RECV_BUF];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             raw.extend_from_slice(&buf[..n as usize]);
         }
         net::tcp_close(data_sock);
@@ -375,7 +415,12 @@ impl FtpClient {
 
         let text = String::from_utf8_lossy(&raw).into_owned();
         let mut entries = Vec::new();
-        entries.push(FileEntry { name: "..".into(), size: 0, is_dir: true, modified: "".into() });
+        entries.push(FileEntry {
+            name: "..".into(),
+            size: 0,
+            is_dir: true,
+            modified: "".into(),
+        });
         for line in text.lines() {
             if let Some(e) = parse_list_line(line) {
                 if e.name != "." && e.name != ".." {
@@ -428,7 +473,9 @@ impl FtpClient {
     fn rename(&mut self, old: &str, new_name: &str) -> bool {
         self.send_command("RNFR ", old);
         let resp = self.read_response();
-        if !resp.starts_with("350") { return false; }
+        if !resp.starts_with("350") {
+            return false;
+        }
         self.send_command("RNTO ", new_name);
         let resp = self.read_response();
         resp.starts_with("250")
@@ -436,10 +483,15 @@ impl FtpClient {
 
     fn download(&mut self, remote_name: &str, local_path: &str) -> u32 {
         self.set_binary_mode();
-        let (ip, port) = match self.pasv_addr() { Some(v) => v, None => return 0 };
+        let (ip, port) = match self.pasv_addr() {
+            Some(v) => v,
+            None => return 0,
+        };
         self.send_command("RETR ", remote_name);
         let data_sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT);
-        if data_sock == u32::MAX { return 0; }
+        if data_sock == u32::MAX {
+            return 0;
+        }
         let resp = self.read_response();
         if !resp.starts_with("150") && !resp.starts_with("125") {
             net::tcp_close(data_sock);
@@ -454,7 +506,9 @@ impl FtpClient {
         let mut buf = [0u8; RECV_BUF];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             fs::write(fd, &buf[..n as usize]);
             total += n;
         }
@@ -467,22 +521,30 @@ impl FtpClient {
     fn upload(&mut self, local_path: &str, remote_name: &str) -> u32 {
         self.set_binary_mode();
         let fd = fs::open(local_path, 0);
-        if fd == u32::MAX { return 0; }
+        if fd == u32::MAX {
+            return 0;
+        }
         let mut file_data = Vec::new();
         let mut buf = [0u8; RECV_BUF];
         loop {
             let n = fs::read(fd, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             file_data.extend_from_slice(&buf[..n as usize]);
         }
         fs::close(fd);
         let (ip, port) = match self.pasv_addr() {
             Some(v) => v,
-            None => { return 0; }
+            None => {
+                return 0;
+            }
         };
         self.send_command("STOR ", remote_name);
         let data_sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT);
-        if data_sock == u32::MAX { return 0; }
+        if data_sock == u32::MAX {
+            return 0;
+        }
         let resp = self.read_response();
         if !resp.starts_with("150") && !resp.starts_with("125") {
             net::tcp_close(data_sock);
@@ -493,7 +555,9 @@ impl FtpClient {
         while offset < file_data.len() {
             let end = (offset + 1460).min(file_data.len());
             let sent = net::tcp_send(data_sock, &file_data[offset..end]);
-            if sent == u32::MAX { break; }
+            if sent == u32::MAX {
+                break;
+            }
             offset = end;
         }
         net::tcp_close(data_sock);
@@ -533,7 +597,9 @@ fn parse_pasv(resp: &str) -> Option<([u8; 4], u16)> {
     let end = resp.find(')')?;
     let inner = &resp[start..end];
     let parts: Vec<&str> = inner.split(',').collect();
-    if parts.len() < 6 { return None; }
+    if parts.len() < 6 {
+        return None;
+    }
     let ip = [
         parts[0].trim().parse::<u8>().ok()?,
         parts[1].trim().parse::<u8>().ok()?,
@@ -547,17 +613,28 @@ fn parse_pasv(resp: &str) -> Option<([u8; 4], u16)> {
 
 fn parse_list_line(line: &str) -> Option<FileEntry> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 9 { return None; }
+    if parts.len() < 9 {
+        return None;
+    }
     let is_dir = parts[0].starts_with('d');
     let size: u64 = parts[4].parse().ok()?;
     let modified = format!("{} {} {}", parts[5], parts[6], parts[7]);
     let name = parts[8..].join(" ");
-    if name.is_empty() { return None; }
-    Some(FileEntry { name, size, is_dir, modified })
+    if name.is_empty() {
+        return None;
+    }
+    Some(FileEntry {
+        name,
+        size,
+        is_dir,
+        modified,
+    })
 }
 
 fn format_size(bytes: u64) -> String {
-    if bytes == 0 { return "-".to_string(); }
+    if bytes == 0 {
+        return "-".to_string();
+    }
     if bytes >= 1024 * 1024 * 1024 {
         let gb = bytes / (1024 * 1024 * 1024);
         let rem = (bytes % (1024 * 1024 * 1024)) / (1024 * 1024 / 10);
@@ -576,25 +653,40 @@ fn format_size(bytes: u64) -> String {
 // ─── File Type Icons (14×14 ARGB) ─────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-enum FileIcon { ParentDir, Folder, Text, Image, Archive, Executable, Audio, Video, Default }
+enum FileIcon {
+    ParentDir,
+    Folder,
+    Text,
+    Image,
+    Archive,
+    Executable,
+    Audio,
+    Video,
+    Default,
+}
 
 fn icon_for_name(name: &str, is_dir: bool) -> FileIcon {
-    if name == ".." { return FileIcon::ParentDir; }
-    if is_dir { return FileIcon::Folder; }
+    if name == ".." {
+        return FileIcon::ParentDir;
+    }
+    if is_dir {
+        return FileIcon::Folder;
+    }
     let ext = match name.rfind('.') {
-        Some(i) => &name[i+1..],
+        Some(i) => &name[i + 1..],
         None => "",
     };
     match ext {
-        "txt" | "md" | "log" | "cfg" | "conf" | "ini" | "csv" | "json" | "xml"
-        | "yml" | "yaml" | "toml" => FileIcon::Text,
-        "rs" | "c" | "h" | "cpp" | "hpp" | "py" | "js" | "ts" | "java" | "go"
-        | "sh" | "bash" | "rb" | "php" | "css" | "html" | "htm" | "sql" | "asm"
-        | "s" | "S" => FileIcon::Text,
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "svg" | "webp"
-        | "tga" | "tiff" => FileIcon::Image,
-        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst"
-        | "deb" | "rpm" => FileIcon::Archive,
+        "txt" | "md" | "log" | "cfg" | "conf" | "ini" | "csv" | "json" | "xml" | "yml" | "yaml"
+        | "toml" => FileIcon::Text,
+        "rs" | "c" | "h" | "cpp" | "hpp" | "py" | "js" | "ts" | "java" | "go" | "sh" | "bash"
+        | "rb" | "php" | "css" | "html" | "htm" | "sql" | "asm" | "s" | "S" => FileIcon::Text,
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "svg" | "webp" | "tga" | "tiff" => {
+            FileIcon::Image
+        }
+        "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" | "zst" | "deb" | "rpm" => {
+            FileIcon::Archive
+        }
         "exe" | "elf" | "bin" | "com" | "app" | "out" => FileIcon::Executable,
         "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" => FileIcon::Audio,
         "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" => FileIcon::Video,
@@ -613,31 +705,46 @@ fn generate_icon(icon: FileIcon) -> [u32; 196] {
             // Gray up-arrow
             let c = 0xFF888888u32;
             // Arrow shaft: col 6-7, rows 4-12
-            for y in 4..12 { px[y*W+6] = c; px[y*W+7] = c; }
+            for y in 4..12 {
+                px[y * W + 6] = c;
+                px[y * W + 7] = c;
+            }
             // Arrow head: row 2-6
             for i in 0..5u32 {
                 let y = (2 + i) as usize;
                 let left = 7i32 - i as i32 - 1;
                 let right = 6i32 + i as i32 + 1;
-                if left >= 0 { px[y*W+left as usize] = c; }
-                if (right as usize) < W { px[y*W+right as usize] = c; }
+                if left >= 0 {
+                    px[y * W + left as usize] = c;
+                }
+                if (right as usize) < W {
+                    px[y * W + right as usize] = c;
+                }
             }
         }
         FileIcon::Folder => {
             let c = 0xFFDDAA44u32;
             let cd = 0xFFBB8822u32;
             // Tab: row 2, cols 1-5
-            for x in 1..6 { px[2*W+x] = c; }
+            for x in 1..6 {
+                px[2 * W + x] = c;
+            }
             // Top edge: row 3, cols 1-12
-            for x in 1..13 { px[3*W+x] = c; }
+            for x in 1..13 {
+                px[3 * W + x] = c;
+            }
             // Body: rows 4-11
             for y in 4..12 {
-                px[y*W+1] = c;
-                px[y*W+12] = c;
-                for x in 2..12 { px[y*W+x] = cd; }
+                px[y * W + 1] = c;
+                px[y * W + 12] = c;
+                for x in 2..12 {
+                    px[y * W + x] = cd;
+                }
             }
             // Bottom: row 12
-            for x in 1..13 { px[12*W+x] = c; }
+            for x in 1..13 {
+                px[12 * W + x] = c;
+            }
         }
         FileIcon::Text => {
             let border = 0xFFAAAACCu32;
@@ -645,16 +752,32 @@ fn generate_icon(icon: FileIcon) -> [u32; 196] {
             let line_c = 0xFF8888AAu32;
             // Document outline: rows 1-12, cols 2-11
             for y in 1..13 {
-                px[y*W+2] = border; px[y*W+11] = border;
+                px[y * W + 2] = border;
+                px[y * W + 11] = border;
             }
-            for x in 2..12 { px[1*W+x] = border; px[12*W+x] = border; }
+            for x in 2..12 {
+                px[1 * W + x] = border;
+                px[12 * W + x] = border;
+            }
             // Fill
-            for y in 2..12 { for x in 3..11 { px[y*W+x] = fill; } }
+            for y in 2..12 {
+                for x in 3..11 {
+                    px[y * W + x] = fill;
+                }
+            }
             // Text lines
-            for x in 4..10 { px[4*W+x] = line_c; }
-            for x in 4..9  { px[6*W+x] = line_c; }
-            for x in 4..10 { px[8*W+x] = line_c; }
-            for x in 4..7  { px[10*W+x] = line_c; }
+            for x in 4..10 {
+                px[4 * W + x] = line_c;
+            }
+            for x in 4..9 {
+                px[6 * W + x] = line_c;
+            }
+            for x in 4..10 {
+                px[8 * W + x] = line_c;
+            }
+            for x in 4..7 {
+                px[10 * W + x] = line_c;
+            }
         }
         FileIcon::Image => {
             let border = 0xFF44AA44u32;
@@ -662,13 +785,28 @@ fn generate_icon(icon: FileIcon) -> [u32; 196] {
             let mtn = 0xFF66CC66u32;
             let sun = 0xFFEEDD44u32;
             // Frame
-            for y in 1..13 { px[y*W+1] = border; px[y*W+12] = border; }
-            for x in 1..13 { px[1*W+x] = border; px[12*W+x] = border; }
-            for y in 2..12 { for x in 2..12 { px[y*W+x] = fill; } }
+            for y in 1..13 {
+                px[y * W + 1] = border;
+                px[y * W + 12] = border;
+            }
+            for x in 1..13 {
+                px[1 * W + x] = border;
+                px[12 * W + x] = border;
+            }
+            for y in 2..12 {
+                for x in 2..12 {
+                    px[y * W + x] = fill;
+                }
+            }
             // Sun (circle-ish at 4,4)
-            px[3*W+4] = sun; px[3*W+5] = sun;
-            px[4*W+3] = sun; px[4*W+4] = sun; px[4*W+5] = sun; px[4*W+6] = sun;
-            px[5*W+4] = sun; px[5*W+5] = sun;
+            px[3 * W + 4] = sun;
+            px[3 * W + 5] = sun;
+            px[4 * W + 3] = sun;
+            px[4 * W + 4] = sun;
+            px[4 * W + 5] = sun;
+            px[4 * W + 6] = sun;
+            px[5 * W + 4] = sun;
+            px[5 * W + 5] = sun;
             // Mountain
             for i in 0..5u32 {
                 let y = (11 - i) as usize;
@@ -676,8 +814,11 @@ fn generate_icon(icon: FileIcon) -> [u32; 196] {
                 let left = cx - i as usize;
                 let right = cx + i as usize;
                 if left >= 2 && right < 12 {
-                    px[y*W+left] = mtn; px[y*W+right] = mtn;
-                    for x in (left+1)..right { px[y*W+x] = mtn; }
+                    px[y * W + left] = mtn;
+                    px[y * W + right] = mtn;
+                    for x in (left + 1)..right {
+                        px[y * W + x] = mtn;
+                    }
                 }
             }
         }
@@ -686,71 +827,137 @@ fn generate_icon(icon: FileIcon) -> [u32; 196] {
             let fill = 0xFF442211u32;
             let stripe = 0xFFCC6644u32;
             // Box outline
-            for y in 2..12 { px[y*W+2] = border; px[y*W+11] = border; }
-            for x in 2..12 { px[2*W+x] = border; px[11*W+x] = border; }
-            for y in 3..11 { for x in 3..11 { px[y*W+x] = fill; } }
+            for y in 2..12 {
+                px[y * W + 2] = border;
+                px[y * W + 11] = border;
+            }
+            for x in 2..12 {
+                px[2 * W + x] = border;
+                px[11 * W + x] = border;
+            }
+            for y in 3..11 {
+                for x in 3..11 {
+                    px[y * W + x] = fill;
+                }
+            }
             // Horizontal stripes
-            for x in 3..11 { px[5*W+x] = stripe; px[8*W+x] = stripe; }
+            for x in 3..11 {
+                px[5 * W + x] = stripe;
+                px[8 * W + x] = stripe;
+            }
             // Zipper (center vertical)
-            for y in 3..11 { px[y*W+6] = stripe; px[y*W+7] = stripe; }
+            for y in 3..11 {
+                px[y * W + 6] = stripe;
+                px[y * W + 7] = stripe;
+            }
         }
         FileIcon::Executable => {
             let c = 0xFF4488CCu32;
             let fill = 0xFF223344u32;
             // Gear shape: circle with teeth
-            for y in 2..12 { for x in 2..12 {
-                let dx = x as i32 - 7;
-                let dy = y as i32 - 7;
-                let d = dx*dx + dy*dy;
-                if d <= 20 && d >= 4 { px[y*W+x] = c; }
-                else if d < 4 { px[y*W+x] = fill; }
-            }}
+            for y in 2..12 {
+                for x in 2..12 {
+                    let dx = x as i32 - 7;
+                    let dy = y as i32 - 7;
+                    let d = dx * dx + dy * dy;
+                    if d <= 20 && d >= 4 {
+                        px[y * W + x] = c;
+                    } else if d < 4 {
+                        px[y * W + x] = fill;
+                    }
+                }
+            }
             // Teeth (N/S/E/W)
-            px[1*W+6] = c; px[1*W+7] = c;
-            px[12*W+6] = c; px[12*W+7] = c;
-            px[6*W+1] = c; px[7*W+1] = c;
-            px[6*W+12] = c; px[7*W+12] = c;
+            px[1 * W + 6] = c;
+            px[1 * W + 7] = c;
+            px[12 * W + 6] = c;
+            px[12 * W + 7] = c;
+            px[6 * W + 1] = c;
+            px[7 * W + 1] = c;
+            px[6 * W + 12] = c;
+            px[7 * W + 12] = c;
         }
         FileIcon::Audio => {
             let c = 0xFF44AACC;
             // Musical note shape
             // Note head at (4,10)-(6,11)
-            for y in 9..12 { for x in 3..7 { px[y*W+x] = c; } }
+            for y in 9..12 {
+                for x in 3..7 {
+                    px[y * W + x] = c;
+                }
+            }
             // Stem: col 6, rows 3-9
-            for y in 3..10 { px[y*W+6] = c; }
+            for y in 3..10 {
+                px[y * W + 6] = c;
+            }
             // Flag: rows 3-5, cols 7-9
-            px[3*W+7] = c; px[3*W+8] = c; px[3*W+9] = c;
-            px[4*W+8] = c; px[4*W+9] = c;
-            px[5*W+9] = c;
+            px[3 * W + 7] = c;
+            px[3 * W + 8] = c;
+            px[3 * W + 9] = c;
+            px[4 * W + 8] = c;
+            px[4 * W + 9] = c;
+            px[5 * W + 9] = c;
         }
         FileIcon::Video => {
             let c = 0xFFCC44AA;
             let fill = 0xFF331133;
             // Film frame outline
-            for y in 2..12 { px[y*W+1] = c; px[y*W+12] = c; }
-            for x in 1..13 { px[2*W+x] = c; px[11*W+x] = c; }
-            for y in 3..11 { for x in 2..12 { px[y*W+x] = fill; } }
+            for y in 2..12 {
+                px[y * W + 1] = c;
+                px[y * W + 12] = c;
+            }
+            for x in 1..13 {
+                px[2 * W + x] = c;
+                px[11 * W + x] = c;
+            }
+            for y in 3..11 {
+                for x in 2..12 {
+                    px[y * W + x] = fill;
+                }
+            }
             // Play triangle in center
-            px[5*W+5] = c; px[5*W+6] = c;
-            px[6*W+5] = c; px[6*W+6] = c; px[6*W+7] = c; px[6*W+8] = c;
-            px[7*W+5] = c; px[7*W+6] = c; px[7*W+7] = c; px[7*W+8] = c;
-            px[8*W+5] = c; px[8*W+6] = c;
+            px[5 * W + 5] = c;
+            px[5 * W + 6] = c;
+            px[6 * W + 5] = c;
+            px[6 * W + 6] = c;
+            px[6 * W + 7] = c;
+            px[6 * W + 8] = c;
+            px[7 * W + 5] = c;
+            px[7 * W + 6] = c;
+            px[7 * W + 7] = c;
+            px[7 * W + 8] = c;
+            px[8 * W + 5] = c;
+            px[8 * W + 6] = c;
             // Sprocket holes
             for &y in &[3usize, 5, 7, 9] {
-                px[y*W+2] = c; px[y*W+11] = c;
+                px[y * W + 2] = c;
+                px[y * W + 11] = c;
             }
         }
         FileIcon::Default => {
             let border = 0xFF888888u32;
             let fill = 0xFF333333u32;
             // Generic document
-            for y in 1..13 { px[y*W+3] = border; px[y*W+10] = border; }
-            for x in 3..11 { px[1*W+x] = border; px[12*W+x] = border; }
-            for y in 2..12 { for x in 4..10 { px[y*W+x] = fill; } }
+            for y in 1..13 {
+                px[y * W + 3] = border;
+                px[y * W + 10] = border;
+            }
+            for x in 3..11 {
+                px[1 * W + x] = border;
+                px[12 * W + x] = border;
+            }
+            for y in 2..12 {
+                for x in 4..10 {
+                    px[y * W + x] = fill;
+                }
+            }
             // Dog-ear at top-right
-            px[1*W+8] = 0; px[1*W+9] = 0; px[1*W+10] = 0;
-            px[2*W+9] = border; px[2*W+10] = border;
-            px[3*W+10] = border;
+            px[1 * W + 8] = 0;
+            px[1 * W + 9] = 0;
+            px[1 * W + 10] = 0;
+            px[2 * W + 9] = border;
+            px[2 * W + 10] = border;
+            px[3 * W + 10] = border;
         }
     }
 
@@ -781,15 +988,15 @@ fn get_icon_cache() -> &'static [[u32; 196]; 9] {
 
 fn icon_index(icon: FileIcon) -> usize {
     match icon {
-        FileIcon::ParentDir  => 0,
-        FileIcon::Folder     => 1,
-        FileIcon::Text       => 2,
-        FileIcon::Image      => 3,
-        FileIcon::Archive    => 4,
+        FileIcon::ParentDir => 0,
+        FileIcon::Folder => 1,
+        FileIcon::Text => 2,
+        FileIcon::Image => 3,
+        FileIcon::Archive => 4,
         FileIcon::Executable => 5,
-        FileIcon::Audio      => 6,
-        FileIcon::Video      => 7,
-        FileIcon::Default    => 8,
+        FileIcon::Audio => 6,
+        FileIcon::Video => 7,
+        FileIcon::Default => 8,
     }
 }
 
@@ -806,66 +1013,121 @@ fn apply_file_icons(grid: &anyui::DataGrid, files: &[FileEntry]) {
 // ─── Local Filesystem ─────────────────────────────────────────────────────────
 
 fn format_mtime(ts: u32) -> String {
-    if ts == 0 { return String::new(); }
-    let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    if ts == 0 {
+        return String::new();
+    }
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let mut secs = ts;
-    let sec = secs % 60; let _ = sec; secs /= 60;
-    let min = secs % 60; secs /= 60;
-    let hour = secs % 24; secs /= 24;
+    let sec = secs % 60;
+    let _ = sec;
+    secs /= 60;
+    let min = secs % 60;
+    secs /= 60;
+    let hour = secs % 24;
+    secs /= 24;
     let mut days = secs;
     let mut year = 1970u32;
     loop {
-        let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
-        if days < ydays { break; }
+        let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if days < ydays {
+            break;
+        }
         days -= ydays;
         year += 1;
     }
     let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let mdays: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 0usize;
     for m in 0..12 {
-        if days < mdays[m] { month = m; break; }
+        if days < mdays[m] {
+            month = m;
+            break;
+        }
         days -= mdays[m];
-        if m == 11 { month = 11; }
+        if m == 11 {
+            month = 11;
+        }
     }
     let day = days + 1;
-    format!("{} {:02} {:02}:{:02} {}", months[month], day, hour, min, year)
+    format!(
+        "{} {:02} {:02}:{:02} {}",
+        months[month], day, hour, min, year
+    )
 }
 
 fn list_local_dir(path: &str) -> Vec<FileEntry> {
     let show_hidden = SHOW_HIDDEN.load(Ordering::Relaxed);
     let mut buf = [0u8; 64 * 256];
     let count = fs::readdir(path, &mut buf);
-    if count == u32::MAX { return Vec::new(); }
+    if count == u32::MAX {
+        return Vec::new();
+    }
     let mut entries = Vec::new();
     if path != "/" {
-        entries.push(FileEntry { name: "..".into(), size: 0, is_dir: true, modified: "".into() });
+        entries.push(FileEntry {
+            name: "..".into(),
+            size: 0,
+            is_dir: true,
+            modified: "".into(),
+        });
     }
     for i in 0..count as usize {
         let base = i * 64;
-        if base + 64 > buf.len() { break; }
+        if base + 64 > buf.len() {
+            break;
+        }
         let entry_type = buf[base];
         let name_len = buf[base + 1] as usize;
-        let size = u32::from_le_bytes([buf[base + 4], buf[base + 5], buf[base + 6], buf[base + 7]]) as u64;
-        if name_len == 0 || name_len > 56 { continue; }
+        let size =
+            u32::from_le_bytes([buf[base + 4], buf[base + 5], buf[base + 6], buf[base + 7]]) as u64;
+        if name_len == 0 || name_len > 56 {
+            continue;
+        }
         let name_bytes = &buf[base + 8..base + 8 + name_len];
         // Trim trailing null bytes
         let trimmed = match name_bytes.iter().position(|&b| b == 0) {
             Some(pos) => &name_bytes[..pos],
             None => name_bytes,
         };
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         let name = match core::str::from_utf8(trimmed) {
             Ok(s) => s.to_string(),
             Err(_) => continue,
         };
-        if name == "." || name == ".." { continue; }
+        if name == "." || name == ".." {
+            continue;
+        }
         // Filter hidden files (starting with .)
-        if !show_hidden && name.starts_with('.') { continue; }
+        if !show_hidden && name.starts_with('.') {
+            continue;
+        }
         let is_dir = entry_type == 1;
         // Get mtime via stat
         let mut child_path = String::from(path);
-        if !child_path.ends_with('/') { child_path.push('/'); }
+        if !child_path.ends_with('/') {
+            child_path.push('/');
+        }
         child_path.push_str(&name);
         let mut st = [0u32; 7];
         let modified = if fs::stat(&child_path, &mut st) != u32::MAX && st[6] != 0 {
@@ -873,22 +1135,34 @@ fn list_local_dir(path: &str) -> Vec<FileEntry> {
         } else {
             String::new()
         };
-        entries.push(FileEntry { name, size, is_dir, modified });
+        entries.push(FileEntry {
+            name,
+            size,
+            is_dir,
+            modified,
+        });
     }
     entries
 }
 
 fn join_path(base: &str, name: &str) -> String {
     if name == ".." {
-        if base == "/" { return "/".to_string(); }
+        if base == "/" {
+            return "/".to_string();
+        }
         if let Some(pos) = base.rfind('/') {
-            if pos == 0 { return "/".to_string(); }
+            if pos == 0 {
+                return "/".to_string();
+            }
             return base[..pos].to_string();
         }
         return "/".to_string();
     }
-    if base.ends_with('/') { format!("{}{}", base, name) }
-    else { format!("{}/{}", base, name) }
+    if base.ends_with('/') {
+        format!("{}{}", base, name)
+    } else {
+        format!("{}/{}", base, name)
+    }
 }
 
 fn get_home_dir() -> String {
@@ -906,7 +1180,10 @@ fn get_field_text(field: &anyui::TextField) -> String {
     let mut buf = [0u8; 512];
     let len = field.get_text(&mut buf) as usize;
     let len = len.min(buf.len());
-    core::str::from_utf8(&buf[..len]).unwrap_or("").trim().to_string()
+    core::str::from_utf8(&buf[..len])
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn get_editor_text(editor: &anyui::TextEditor) -> String {
@@ -922,27 +1199,27 @@ fn get_editor_text(editor: &anyui::TextEditor) -> String {
 // Communication with the UI thread via atomics + a lock-free result buffer.
 //
 // CMD values:
-const CMD_IDLE: u32      = 0;
-const CMD_CONNECT: u32   = 1;
-const CMD_LIST: u32      = 2;
-const CMD_DOWNLOAD: u32  = 3;
-const CMD_UPLOAD: u32    = 4;
-const CMD_CD: u32        = 5;
-const CMD_MKDIR: u32     = 6;
-const CMD_DELETE: u32    = 7;
-const CMD_RENAME: u32    = 8;
+const CMD_IDLE: u32 = 0;
+const CMD_CONNECT: u32 = 1;
+const CMD_LIST: u32 = 2;
+const CMD_DOWNLOAD: u32 = 3;
+const CMD_UPLOAD: u32 = 4;
+const CMD_CD: u32 = 5;
+const CMD_MKDIR: u32 = 6;
+const CMD_DELETE: u32 = 7;
+const CMD_RENAME: u32 = 8;
 const CMD_DISCONNECT: u32 = 9;
-const CMD_EXIT: u32      = 10;
+const CMD_EXIT: u32 = 10;
 
 // Result codes
-const RES_NONE: u32    = 0;
-const RES_OK: u32      = 1;
-const RES_ERROR: u32   = 2;
-const RES_BUSY: u32    = 3;
+const RES_NONE: u32 = 0;
+const RES_OK: u32 = 1;
+const RES_ERROR: u32 = 2;
+const RES_BUSY: u32 = 3;
 
-static WORKER_CMD:    AtomicU32 = AtomicU32::new(CMD_IDLE);
+static WORKER_CMD: AtomicU32 = AtomicU32::new(CMD_IDLE);
 static WORKER_RESULT: AtomicU32 = AtomicU32::new(RES_NONE);
-static WORKER_BUSY:   AtomicBool = AtomicBool::new(false);
+static WORKER_BUSY: AtomicBool = AtomicBool::new(false);
 
 // Shared string buffers (64-byte aligned, max 512 chars each)
 // We use fixed-size static buffers to avoid heap allocation from multiple threads.
@@ -983,159 +1260,201 @@ fn worker_entry() {
             continue;
         }
 
-    match cmd {
-        CMD_CONNECT => {
-            let host = unsafe { read_cstr(&PARAM1) }.to_string();
-            let user = unsafe { read_cstr(&PARAM2) }.to_string();
-            let pass = unsafe { read_cstr(&PARAM3) }.to_string();
-            let port = PARAM_PORT.load(Ordering::Relaxed) as u16;
+        match cmd {
+            CMD_CONNECT => {
+                let host = unsafe { read_cstr(&PARAM1) }.to_string();
+                let user = unsafe { read_cstr(&PARAM2) }.to_string();
+                let pass = unsafe { read_cstr(&PARAM3) }.to_string();
+                let port = PARAM_PORT.load(Ordering::Relaxed) as u16;
 
-            let mut ip = [0u8; 4];
-            if net::dns(&host, &mut ip) != 0 {
-                unsafe { write_result_str(&format!("DNS-Fehler: {}", host)); }
-                WORKER_RESULT.store(RES_ERROR, Ordering::Release);
-            } else {
-                match FtpClient::connect(&ip, port) {
-                    None => {
-                        unsafe { write_result_str(&format!("Verbindungsfehler: {}:{}", host, port)); }
-                        WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                let mut ip = [0u8; 4];
+                if net::dns(&host, &mut ip) != 0 {
+                    unsafe {
+                        write_result_str(&format!("DNS-Fehler: {}", host));
                     }
-                    Some(mut ftp) => {
-                        if !ftp.login(&user, &pass) {
-                            unsafe { write_result_str("Login fehlgeschlagen"); }
-                            ftp.disconnect();
+                    WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                } else {
+                    match FtpClient::connect(&ip, port) {
+                        None => {
+                            unsafe {
+                                write_result_str(&format!("Verbindungsfehler: {}:{}", host, port));
+                            }
                             WORKER_RESULT.store(RES_ERROR, Ordering::Release);
-                        } else {
-                            // Store the connected FTP client
-                            unsafe { FTP_CLIENT = Some(ftp); }
-                            // Get initial directory listing
-                            do_list_in_worker();
-                            WORKER_RESULT.store(RES_OK, Ordering::Release);
+                        }
+                        Some(mut ftp) => {
+                            if !ftp.login(&user, &pass) {
+                                unsafe {
+                                    write_result_str("Login fehlgeschlagen");
+                                }
+                                ftp.disconnect();
+                                WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                            } else {
+                                // Store the connected FTP client
+                                unsafe {
+                                    FTP_CLIENT = Some(ftp);
+                                }
+                                // Get initial directory listing
+                                do_list_in_worker();
+                                WORKER_RESULT.store(RES_OK, Ordering::Release);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        CMD_LIST => {
-            do_list_in_worker();
-            WORKER_RESULT.store(RES_OK, Ordering::Release);
-        }
+            CMD_LIST => {
+                do_list_in_worker();
+                WORKER_RESULT.store(RES_OK, Ordering::Release);
+            }
 
-        CMD_CD => {
-            let path = unsafe { read_cstr(&PARAM1) }.to_string();
-            if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
-                if ftp.cd(&path) {
-                    do_list_in_worker();
-                    WORKER_RESULT.store(RES_OK, Ordering::Release);
-                } else {
-                    unsafe { write_result_str("Verzeichniswechsel fehlgeschlagen"); }
-                    WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+            CMD_CD => {
+                let path = unsafe { read_cstr(&PARAM1) }.to_string();
+                if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
+                    if ftp.cd(&path) {
+                        do_list_in_worker();
+                        WORKER_RESULT.store(RES_OK, Ordering::Release);
+                    } else {
+                        unsafe {
+                            write_result_str("Verzeichniswechsel fehlgeschlagen");
+                        }
+                        WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                    }
                 }
             }
-        }
 
-        CMD_DOWNLOAD => {
-            let remote_name = unsafe { read_cstr(&PARAM1) }.to_string();
-            let local_path  = unsafe { read_cstr(&PARAM2) }.to_string();
-            if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
-                let bytes = ftp.download(&remote_name, &local_path);
-                if bytes > 0 {
-                    unsafe { write_result_str(&format!("OK Download: {} ({} Bytes)", remote_name, bytes)); }
-                    do_list_in_worker();
-                    WORKER_RESULT.store(RES_OK, Ordering::Release);
-                } else {
-                    unsafe { write_result_str(&format!("FEHLER Download: {}", remote_name)); }
-                    WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+            CMD_DOWNLOAD => {
+                let remote_name = unsafe { read_cstr(&PARAM1) }.to_string();
+                let local_path = unsafe { read_cstr(&PARAM2) }.to_string();
+                if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
+                    let bytes = ftp.download(&remote_name, &local_path);
+                    if bytes > 0 {
+                        unsafe {
+                            write_result_str(&format!(
+                                "OK Download: {} ({} Bytes)",
+                                remote_name, bytes
+                            ));
+                        }
+                        do_list_in_worker();
+                        WORKER_RESULT.store(RES_OK, Ordering::Release);
+                    } else {
+                        unsafe {
+                            write_result_str(&format!("FEHLER Download: {}", remote_name));
+                        }
+                        WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                    }
                 }
             }
-        }
 
-        CMD_UPLOAD => {
-            let local_path  = unsafe { read_cstr(&PARAM1) }.to_string();
-            let remote_name = unsafe { read_cstr(&PARAM2) }.to_string();
-            if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
-                let bytes = ftp.upload(&local_path, &remote_name);
-                if bytes > 0 {
-                    unsafe { write_result_str(&format!("OK Upload: {} ({} Bytes)", remote_name, bytes)); }
-                    do_list_in_worker();
-                    WORKER_RESULT.store(RES_OK, Ordering::Release);
-                } else {
-                    unsafe { write_result_str(&format!("FEHLER Upload: {}", remote_name)); }
-                    WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+            CMD_UPLOAD => {
+                let local_path = unsafe { read_cstr(&PARAM1) }.to_string();
+                let remote_name = unsafe { read_cstr(&PARAM2) }.to_string();
+                if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
+                    let bytes = ftp.upload(&local_path, &remote_name);
+                    if bytes > 0 {
+                        unsafe {
+                            write_result_str(&format!(
+                                "OK Upload: {} ({} Bytes)",
+                                remote_name, bytes
+                            ));
+                        }
+                        do_list_in_worker();
+                        WORKER_RESULT.store(RES_OK, Ordering::Release);
+                    } else {
+                        unsafe {
+                            write_result_str(&format!("FEHLER Upload: {}", remote_name));
+                        }
+                        WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                    }
                 }
             }
-        }
 
-        CMD_MKDIR => {
-            let name = unsafe { read_cstr(&PARAM1) }.to_string();
-            if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
-                let ok = ftp.mkdir(&name);
-                if ok {
-                    unsafe { write_result_str(&format!("Ordner erstellt: {}", name)); }
-                    do_list_in_worker();
-                    WORKER_RESULT.store(RES_OK, Ordering::Release);
-                } else {
-                    unsafe { write_result_str(&format!("Ordner erstellen fehlgeschlagen: {}", name)); }
-                    WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+            CMD_MKDIR => {
+                let name = unsafe { read_cstr(&PARAM1) }.to_string();
+                if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
+                    let ok = ftp.mkdir(&name);
+                    if ok {
+                        unsafe {
+                            write_result_str(&format!("Ordner erstellt: {}", name));
+                        }
+                        do_list_in_worker();
+                        WORKER_RESULT.store(RES_OK, Ordering::Release);
+                    } else {
+                        unsafe {
+                            write_result_str(&format!("Ordner erstellen fehlgeschlagen: {}", name));
+                        }
+                        WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                    }
                 }
             }
-        }
 
-        CMD_DELETE => {
-            let name   = unsafe { read_cstr(&PARAM1) }.to_string();
-            let is_dir = PARAM_PORT.load(Ordering::Relaxed) == 1;
-            if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
-                let ok = if is_dir { ftp.delete_dir(&name) } else { ftp.delete_file(&name) };
-                if ok {
-                    unsafe { write_result_str(&format!("Geloescht: {}", name)); }
-                    do_list_in_worker();
-                    WORKER_RESULT.store(RES_OK, Ordering::Release);
-                } else {
-                    unsafe { write_result_str(&format!("Loeschen fehlgeschlagen: {}", name)); }
-                    WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+            CMD_DELETE => {
+                let name = unsafe { read_cstr(&PARAM1) }.to_string();
+                let is_dir = PARAM_PORT.load(Ordering::Relaxed) == 1;
+                if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
+                    let ok = if is_dir {
+                        ftp.delete_dir(&name)
+                    } else {
+                        ftp.delete_file(&name)
+                    };
+                    if ok {
+                        unsafe {
+                            write_result_str(&format!("Geloescht: {}", name));
+                        }
+                        do_list_in_worker();
+                        WORKER_RESULT.store(RES_OK, Ordering::Release);
+                    } else {
+                        unsafe {
+                            write_result_str(&format!("Loeschen fehlgeschlagen: {}", name));
+                        }
+                        WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                    }
                 }
             }
-        }
 
-        CMD_RENAME => {
-            let old  = unsafe { read_cstr(&PARAM1) }.to_string();
-            let new  = unsafe { read_cstr(&PARAM2) }.to_string();
-            if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
-                let ok = ftp.rename(&old, &new);
-                if ok {
-                    unsafe { write_result_str(&format!("Umbenannt: {} -> {}", old, new)); }
-                    do_list_in_worker();
-                    WORKER_RESULT.store(RES_OK, Ordering::Release);
-                } else {
-                    unsafe { write_result_str(&format!("Umbenennen fehlgeschlagen: {}", old)); }
-                    WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+            CMD_RENAME => {
+                let old = unsafe { read_cstr(&PARAM1) }.to_string();
+                let new = unsafe { read_cstr(&PARAM2) }.to_string();
+                if let Some(ftp) = unsafe { FTP_CLIENT.as_mut() } {
+                    let ok = ftp.rename(&old, &new);
+                    if ok {
+                        unsafe {
+                            write_result_str(&format!("Umbenannt: {} -> {}", old, new));
+                        }
+                        do_list_in_worker();
+                        WORKER_RESULT.store(RES_OK, Ordering::Release);
+                    } else {
+                        unsafe {
+                            write_result_str(&format!("Umbenennen fehlgeschlagen: {}", old));
+                        }
+                        WORKER_RESULT.store(RES_ERROR, Ordering::Release);
+                    }
                 }
             }
-        }
 
-        CMD_DISCONNECT => {
-            if let Some(mut ftp) = unsafe { FTP_CLIENT.take() } {
-                ftp.disconnect();
+            CMD_DISCONNECT => {
+                if let Some(mut ftp) = unsafe { FTP_CLIENT.take() } {
+                    ftp.disconnect();
+                }
+                unsafe {
+                    write_result_str("Verbindung getrennt");
+                }
+                WORKER_RESULT.store(RES_OK, Ordering::Release);
             }
-            unsafe { write_result_str("Verbindung getrennt"); }
-            WORKER_RESULT.store(RES_OK, Ordering::Release);
-        }
 
-        CMD_EXIT => {
-            if let Some(mut ftp) = unsafe { FTP_CLIENT.take() } {
-                ftp.disconnect();
+            CMD_EXIT => {
+                if let Some(mut ftp) = unsafe { FTP_CLIENT.take() } {
+                    ftp.disconnect();
+                }
+                WORKER_CMD.store(CMD_IDLE, Ordering::Release);
+                WORKER_BUSY.store(false, Ordering::Release);
+                return; // exit worker thread
             }
-            WORKER_CMD.store(CMD_IDLE, Ordering::Release);
-            WORKER_BUSY.store(false, Ordering::Release);
-            return; // exit worker thread
+
+            _ => {}
         }
 
-        _ => {}
-    }
-
-    WORKER_CMD.store(CMD_IDLE, Ordering::Release);
-    WORKER_BUSY.store(false, Ordering::Release);
+        WORKER_CMD.store(CMD_IDLE, Ordering::Release);
+        WORKER_BUSY.store(false, Ordering::Release);
     } // end loop
 }
 
@@ -1181,9 +1500,13 @@ fn parse_file_list(raw: &[u8], len: usize) -> Vec<FileEntry> {
     let s = core::str::from_utf8(&raw[..len]).unwrap_or("");
     let mut entries = Vec::new();
     for row in s.split('\x1E') {
-        if row.is_empty() { continue; }
+        if row.is_empty() {
+            continue;
+        }
         let cols: Vec<&str> = row.split('\x1F').collect();
-        if cols.len() < 4 { continue; }
+        if cols.len() < 4 {
+            continue;
+        }
         let name = cols[0].to_string();
         let size_str = cols[1];
         let modified = cols[2].to_string();
@@ -1191,7 +1514,12 @@ fn parse_file_list(raw: &[u8], len: usize) -> Vec<FileEntry> {
         // Approximate size back (display only)
         let size: u64 = 0; // size is only for display, already formatted
         let _ = size_str;
-        entries.push(FileEntry { name, size, is_dir, modified });
+        entries.push(FileEntry {
+            name,
+            size,
+            is_dir,
+            modified,
+        });
     }
     entries
 }
@@ -1204,7 +1532,9 @@ fn spawn_worker() {
     WORKER_RESULT.store(RES_NONE, Ordering::Release);
     // Only spawn the worker thread once; it loops forever waiting for commands.
     if !WORKER_SPAWNED.load(Ordering::Relaxed) {
-        if let Ok(handle) = anyos_std::process::Thread::spawn_with_stack(worker_entry, 64 * 1024, "ftp-worker") {
+        if let Ok(handle) =
+            anyos_std::process::Thread::spawn_with_stack(worker_entry, 64 * 1024, "ftp-worker")
+        {
             WORKER_TID.store(handle.tid(), Ordering::Release);
             core::mem::forget(handle);
             WORKER_SPAWNED.store(true, Ordering::Release);
@@ -1296,9 +1626,13 @@ fn populate_grid(grid: &anyui::DataGrid, files: &[FileEntry]) {
     let mut colors: Vec<u32> = Vec::new();
 
     for entry in files {
-        let col = if entry.name == ".." { 0xFF888888u32 }
-                  else if entry.is_dir  { 0xFFDDAA44u32 }
-                  else                  { 0xFFCCCCCCu32 };
+        let col = if entry.name == ".." {
+            0xFF888888u32
+        } else if entry.is_dir {
+            0xFFDDAA44u32
+        } else {
+            0xFFCCCCCCu32
+        };
 
         if entry.name == ".." {
             data.extend_from_slice(b"[..] Ordner hoch");
@@ -1319,7 +1653,9 @@ fn populate_grid(grid: &anyui::DataGrid, files: &[FileEntry]) {
         data.extend_from_slice(entry.modified.as_bytes());
         data.push(0x1E);
 
-        colors.push(col); colors.push(col); colors.push(col);
+        colors.push(col);
+        colors.push(col);
+        colors.push(col);
     }
 
     grid.set_row_count(files.len() as u32);
@@ -1358,7 +1694,10 @@ fn cycle_sort(pane: u8, col: SortColumn) {
         (a.remote_sort_col, a.remote_sort_order)
     };
     let new_order = if cur_col == col {
-        match cur_order { SortOrder::Asc => SortOrder::Desc, SortOrder::Desc => SortOrder::Asc }
+        match cur_order {
+            SortOrder::Asc => SortOrder::Desc,
+            SortOrder::Desc => SortOrder::Asc,
+        }
     } else {
         SortOrder::Asc
     };
@@ -1375,8 +1714,15 @@ fn cycle_sort(pane: u8, col: SortColumn) {
         let files = a.remote_files.clone();
         populate_grid(&a.remote_grid, &files);
     }
-    let arrow = match new_order { SortOrder::Asc => "^", SortOrder::Desc => "v" };
-    let col_name = match col { SortColumn::Name => "Name", SortColumn::Size => "Groesse", SortColumn::Date => "Datum" };
+    let arrow = match new_order {
+        SortOrder::Asc => "^",
+        SortOrder::Desc => "v",
+    };
+    let col_name = match col {
+        SortColumn::Name => "Name",
+        SortColumn::Size => "Groesse",
+        SortColumn::Date => "Datum",
+    };
     let side = if pane == 0 { "Lokal" } else { "Remote" };
     log_line(&format!("{}: Sortiert nach {} {}", side, col_name, arrow));
 }
@@ -1413,7 +1759,10 @@ fn update_status() {
     let text = if a.is_connected {
         let rc = a.remote_files.len().saturating_sub(1);
         let lc = a.local_files.len().saturating_sub(1);
-        format!("Verbunden: {} | Remote: {} | Lokal: {}", a.remote_host, rc, lc)
+        format!(
+            "Verbunden: {} | Remote: {} | Lokal: {}",
+            a.remote_host, rc, lc
+        )
     } else {
         "Nicht verbunden".to_string()
     };
@@ -1423,8 +1772,11 @@ fn update_status() {
 fn log_line(msg: &str) {
     let a = app();
     let cur = get_editor_text(&a.log_editor);
-    let new_text = if cur.is_empty() { msg.to_string() }
-                   else { format!("{}\n{}", cur, msg) };
+    let new_text = if cur.is_empty() {
+        msg.to_string()
+    } else {
+        format!("{}\n{}", cur, msg)
+    };
     a.log_editor.set_text(&new_text);
 }
 
@@ -1443,7 +1795,9 @@ fn set_connected_state(connected: bool) {
 
 fn poll_worker() {
     let result = WORKER_RESULT.load(Ordering::Acquire);
-    if result == RES_NONE { return; }
+    if result == RES_NONE {
+        return;
+    }
 
     // Reset result so we don't process it twice
     WORKER_RESULT.store(RES_NONE, Ordering::Release);
@@ -1453,17 +1807,29 @@ fn poll_worker() {
 
     // Read result string
     let rlen = unsafe { RESULT_STR_LEN.load(Ordering::Acquire) as usize };
-    let msg = unsafe { core::str::from_utf8(&RESULT_STR[..rlen]).unwrap_or("").to_string() };
+    let msg = unsafe {
+        core::str::from_utf8(&RESULT_STR[..rlen])
+            .unwrap_or("")
+            .to_string()
+    };
 
     match result {
         RES_OK => {
             // Update remote listing if we have new data
             let list_len = unsafe { RESULT_STR_LEN.load(Ordering::Acquire) as usize };
-            let pwd_len  = unsafe { RESULT_STR2_LEN.load(Ordering::Acquire) as usize };
+            let pwd_len = unsafe { RESULT_STR2_LEN.load(Ordering::Acquire) as usize };
             if pwd_len > 0 {
                 let files = unsafe { parse_file_list(&RESULT_STR, list_len) };
-                let pwd = unsafe { core::str::from_utf8(&RESULT_STR2[..pwd_len]).unwrap_or("/").to_string() };
-                log_line(&format!("Verzeichnis empfangen: {} ({} Eintraege)", pwd, files.len()));
+                let pwd = unsafe {
+                    core::str::from_utf8(&RESULT_STR2[..pwd_len])
+                        .unwrap_or("/")
+                        .to_string()
+                };
+                log_line(&format!(
+                    "Verzeichnis empfangen: {} ({} Eintraege)",
+                    pwd,
+                    files.len()
+                ));
                 let a = app();
                 a.remote_dir = pwd.clone();
                 a.remote_files = files;
@@ -1483,14 +1849,18 @@ fn poll_worker() {
                     if !init_dir.is_empty() && init_dir != "/" {
                         a.initial_remote_dir = String::new();
                         if !WORKER_BUSY.load(Ordering::Relaxed) {
-                            unsafe { write_param(&mut PARAM1, &init_dir); }
+                            unsafe {
+                                write_param(&mut PARAM1, &init_dir);
+                            }
                             WORKER_CMD.store(CMD_CD, Ordering::Release);
                             spawn_worker();
                         }
                     }
                 }
                 // Reset STR2 len so we don't re-apply it
-                unsafe { RESULT_STR2_LEN.store(0, Ordering::Release); }
+                unsafe {
+                    RESULT_STR2_LEN.store(0, Ordering::Release);
+                }
             } else {
                 // Log the message if it's a human-readable result (not a file list)
                 if !msg.is_empty() && !msg.contains('\x1E') {
@@ -1512,11 +1882,16 @@ fn poll_worker() {
             if a.is_connected && !a.last_host.is_empty() && a.reconnect_attempts < 3 {
                 a.reconnect_attempts += 1;
                 let attempt = a.reconnect_attempts;
-                log_line(&format!("Verbindung verloren. Reconnect-Versuch {}/3...", attempt));
+                log_line(&format!(
+                    "Verbindung verloren. Reconnect-Versuch {}/3...",
+                    attempt
+                ));
                 set_connected_state(false);
                 a.is_connected = false;
-                unsafe { FTP_CLIENT.take(); } // drop broken client
-                // Reconnect after short delay
+                unsafe {
+                    FTP_CLIENT.take();
+                } // drop broken client
+                  // Reconnect after short delay
                 let host = a.last_host.clone();
                 let port = a.last_port;
                 let user = a.last_user.clone();
@@ -1533,7 +1908,9 @@ fn poll_worker() {
 // ─── Connect Helper ──────────────────────────────────────────────────────────
 
 fn do_connect(host: &str, port: u16, user: &str, pass: &str) {
-    if WORKER_BUSY.load(Ordering::Relaxed) { return; }
+    if WORKER_BUSY.load(Ordering::Relaxed) {
+        return;
+    }
     if host.is_empty() {
         anyui::MessageBox::show(anyui::MessageBoxType::Alert, "Bitte Host eingeben.", None);
         return;
@@ -1560,7 +1937,10 @@ fn do_connect(host: &str, port: u16, user: &str, pass: &str) {
     let (w, h) = a.win.get_size();
     let (x, y) = a.win.get_position();
     save_prefs(&Prefs {
-        win_x: x, win_y: y, win_w: w, win_h: h,
+        win_x: x,
+        win_y: y,
+        win_w: w,
+        win_h: h,
         last_host: a.last_host.clone(),
         last_port: a.last_port,
         last_user: a.last_user.clone(),
@@ -1586,8 +1966,14 @@ fn do_quick_connect() {
 
 fn show_site_manager() {
     let sites = load_sites();
-    let dlg = anyui::Window::new_with_flags("Site Manager", -1, -1, 540, 420,
-        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE);
+    let dlg = anyui::Window::new_with_flags(
+        "Site Manager",
+        -1,
+        -1,
+        540,
+        420,
+        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE,
+    );
 
     let panel = anyui::View::new();
     panel.set_dock(anyui::DOCK_FILL);
@@ -1602,7 +1988,9 @@ fn show_site_manager() {
     grid.set_columns(&[
         anyui::ColumnDef::new("Name").width(140),
         anyui::ColumnDef::new("Host").width(160),
-        anyui::ColumnDef::new("Port").width(50).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new("Port")
+            .width(50)
+            .align(anyui::ALIGN_RIGHT),
         anyui::ColumnDef::new("Benutzer").width(130),
     ]);
     panel.add(&grid);
@@ -1652,10 +2040,14 @@ fn show_site_manager() {
     panel.add(&btn_close);
 
     // Store sites in global static buffer for callbacks
-    unsafe { SM_SITES = Some(sites); }
+    unsafe {
+        SM_SITES = Some(sites);
+    }
 
     let dlg_c = dlg.clone();
-    btn_close.on_click(move |_| { dlg_c.destroy(); });
+    btn_close.on_click(move |_| {
+        dlg_c.destroy();
+    });
 
     // Connect: use selected site
     let dlg_c2 = dlg.clone();
@@ -1663,7 +2055,9 @@ fn show_site_manager() {
     btn_connect.on_click(move |_| {
         let row = grid_c.selected_row() as usize;
         let sites = unsafe { SM_SITES.as_ref().unwrap() };
-        if row >= sites.len() { return; }
+        if row >= sites.len() {
+            return;
+        }
         let site = &sites[row];
         app().initial_remote_dir = site.remote_dir.clone();
         do_connect(&site.host, site.port, &site.user, &site.pass);
@@ -1681,7 +2075,9 @@ fn show_site_manager() {
     grid.on_submit(move |e| {
         let row = e.index as usize;
         let sites = unsafe { SM_SITES.as_ref().unwrap() };
-        if row >= sites.len() { return; }
+        if row >= sites.len() {
+            return;
+        }
         let site = &sites[row];
         app().initial_remote_dir = site.remote_dir.clone();
         do_connect(&site.host, site.port, &site.user, &site.pass);
@@ -1704,7 +2100,9 @@ fn show_site_manager() {
     btn_edit.on_click(move |_| {
         let row = grid_c3.selected_row() as usize;
         let sites = unsafe { SM_SITES.as_ref().unwrap() };
-        if row >= sites.len() { return; }
+        if row >= sites.len() {
+            return;
+        }
         show_site_edit_dialog(Some(row), grid_c3.clone());
     });
 
@@ -1713,7 +2111,9 @@ fn show_site_manager() {
     btn_delete.on_click(move |_| {
         let row = grid_c4.selected_row() as usize;
         let sites = unsafe { SM_SITES.as_mut().unwrap() };
-        if row >= sites.len() { return; }
+        if row >= sites.len() {
+            return;
+        }
         sites.remove(row);
         save_sites(sites);
         populate_site_grid(&grid_c4, sites);
@@ -1726,9 +2126,19 @@ fn show_site_manager() {
 
 fn show_site_edit_dialog(edit_index: Option<usize>, parent_grid: anyui::DataGrid) {
     let editing = edit_index.is_some();
-    let title = if editing { "Profil bearbeiten" } else { "Neues Profil" };
-    let dlg = anyui::Window::new_with_flags(title, -1, -1, 420, 350,
-        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE);
+    let title = if editing {
+        "Profil bearbeiten"
+    } else {
+        "Neues Profil"
+    };
+    let dlg = anyui::Window::new_with_flags(
+        title,
+        -1,
+        -1,
+        420,
+        350,
+        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE,
+    );
 
     let panel = anyui::View::new();
     panel.set_dock(anyui::DOCK_FILL);
@@ -1736,50 +2146,62 @@ fn show_site_edit_dialog(edit_index: Option<usize>, parent_grid: anyui::DataGrid
     dlg.add(&panel);
 
     let lbl_name = anyui::Label::new("Name:");
-    lbl_name.set_size(90, 24); lbl_name.set_position(16, 20);
+    lbl_name.set_size(90, 24);
+    lbl_name.set_position(16, 20);
     panel.add(&lbl_name);
     let fld_name = anyui::TextField::new();
-    fld_name.set_size(290, 26); fld_name.set_position(112, 18);
+    fld_name.set_size(290, 26);
+    fld_name.set_position(112, 18);
     fld_name.set_placeholder("Mein Server");
     panel.add(&fld_name);
 
     let lbl_host = anyui::Label::new("Host:");
-    lbl_host.set_size(90, 24); lbl_host.set_position(16, 58);
+    lbl_host.set_size(90, 24);
+    lbl_host.set_position(16, 58);
     panel.add(&lbl_host);
     let fld_host = anyui::TextField::new();
-    fld_host.set_size(290, 26); fld_host.set_position(112, 56);
+    fld_host.set_size(290, 26);
+    fld_host.set_position(112, 56);
     fld_host.set_placeholder("ftp.example.com");
     panel.add(&fld_host);
 
     let lbl_port = anyui::Label::new("Port:");
-    lbl_port.set_size(90, 24); lbl_port.set_position(16, 96);
+    lbl_port.set_size(90, 24);
+    lbl_port.set_position(16, 96);
     panel.add(&lbl_port);
     let fld_port = anyui::TextField::new();
-    fld_port.set_size(80, 26); fld_port.set_position(112, 94);
+    fld_port.set_size(80, 26);
+    fld_port.set_position(112, 94);
     fld_port.set_text("21");
     panel.add(&fld_port);
 
     let lbl_user = anyui::Label::new("Benutzer:");
-    lbl_user.set_size(90, 24); lbl_user.set_position(16, 134);
+    lbl_user.set_size(90, 24);
+    lbl_user.set_position(16, 134);
     panel.add(&lbl_user);
     let fld_user = anyui::TextField::new();
-    fld_user.set_size(290, 26); fld_user.set_position(112, 132);
+    fld_user.set_size(290, 26);
+    fld_user.set_position(112, 132);
     fld_user.set_placeholder("anonymous");
     panel.add(&fld_user);
 
     let lbl_pass = anyui::Label::new("Passwort:");
-    lbl_pass.set_size(90, 24); lbl_pass.set_position(16, 172);
+    lbl_pass.set_size(90, 24);
+    lbl_pass.set_position(16, 172);
     panel.add(&lbl_pass);
     let fld_pass = anyui::TextField::new();
-    fld_pass.set_size(290, 26); fld_pass.set_position(112, 170);
+    fld_pass.set_size(290, 26);
+    fld_pass.set_position(112, 170);
     fld_pass.set_password_mode(true);
     panel.add(&fld_pass);
 
     let lbl_rdir = anyui::Label::new("Remote-Pfad:");
-    lbl_rdir.set_size(90, 24); lbl_rdir.set_position(16, 210);
+    lbl_rdir.set_size(90, 24);
+    lbl_rdir.set_position(16, 210);
     panel.add(&lbl_rdir);
     let fld_rdir = anyui::TextField::new();
-    fld_rdir.set_size(290, 26); fld_rdir.set_position(112, 208);
+    fld_rdir.set_size(290, 26);
+    fld_rdir.set_position(112, 208);
     fld_rdir.set_placeholder("/");
     panel.add(&fld_rdir);
 
@@ -1801,15 +2223,19 @@ fn show_site_edit_dialog(edit_index: Option<usize>, parent_grid: anyui::DataGrid
     }
 
     let btn_cancel = anyui::Button::new("Abbrechen");
-    btn_cancel.set_size(120, 32); btn_cancel.set_position(16, 260);
+    btn_cancel.set_size(120, 32);
+    btn_cancel.set_position(16, 260);
     panel.add(&btn_cancel);
 
     let btn_ok = anyui::Button::new("Speichern");
-    btn_ok.set_size(120, 32); btn_ok.set_position(282, 260);
+    btn_ok.set_size(120, 32);
+    btn_ok.set_position(282, 260);
     panel.add(&btn_ok);
 
     let dlg_c = dlg.clone();
-    btn_cancel.on_click(move |_| { dlg_c.destroy(); });
+    btn_cancel.on_click(move |_| {
+        dlg_c.destroy();
+    });
 
     let dlg_c2 = dlg.clone();
     let fn_c = fld_name.clone();
@@ -1828,12 +2254,23 @@ fn show_site_edit_dialog(edit_index: Option<usize>, parent_grid: anyui::DataGrid
         let remote_dir = get_field_text(&frd_c);
 
         if host.is_empty() {
-            anyui::MessageBox::show(anyui::MessageBoxType::Alert, "Host darf nicht leer sein.", None);
+            anyui::MessageBox::show(
+                anyui::MessageBoxType::Alert,
+                "Host darf nicht leer sein.",
+                None,
+            );
             return;
         }
         let port: u16 = port_str.parse().unwrap_or(21);
         let display_name = if name.is_empty() { host.clone() } else { name };
-        let profile = SiteProfile { name: display_name, host, port, user, pass, remote_dir };
+        let profile = SiteProfile {
+            name: display_name,
+            host,
+            port,
+            user,
+            pass,
+            remote_dir,
+        };
 
         let sites = unsafe { SM_SITES.as_mut().unwrap() };
         if let Some(idx) = edit_index {
@@ -1874,8 +2311,14 @@ static mut SM_SITES: Option<Vec<SiteProfile>> = None;
 // ─── Connect Dialog ───────────────────────────────────────────────────────────
 
 fn show_connect_dialog() {
-    let dlg = anyui::Window::new_with_flags("FTP Verbinden", -1, -1, 420, 270,
-        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE);
+    let dlg = anyui::Window::new_with_flags(
+        "FTP Verbinden",
+        -1,
+        -1,
+        420,
+        270,
+        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE,
+    );
 
     let panel = anyui::View::new();
     panel.set_dock(anyui::DOCK_FILL);
@@ -1938,7 +2381,9 @@ fn show_connect_dialog() {
     panel.add(&btn_ok);
 
     let dlg_c = dlg.clone();
-    btn_cancel.on_click(move |_| { dlg_c.destroy(); });
+    btn_cancel.on_click(move |_| {
+        dlg_c.destroy();
+    });
 
     let dlg_c2 = dlg.clone();
     let fh = fld_host.clone();
@@ -1967,42 +2412,62 @@ fn show_connect_dialog() {
 // ─── Rename Dialog ────────────────────────────────────────────────────────────
 
 fn show_rename_dialog(current_name: String, is_remote: bool) {
-    let dlg = anyui::Window::new_with_flags("Umbenennen", -1, -1, 380, 130,
-        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE);
+    let dlg = anyui::Window::new_with_flags(
+        "Umbenennen",
+        -1,
+        -1,
+        380,
+        130,
+        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE,
+    );
     let panel = anyui::View::new();
     panel.set_dock(anyui::DOCK_FILL);
     panel.set_color(0xFF2D2D30);
     dlg.add(&panel);
 
     let lbl = anyui::Label::new("Neuer Name:");
-    lbl.set_size(95, 24); lbl.set_position(12, 16);
+    lbl.set_size(95, 24);
+    lbl.set_position(12, 16);
     panel.add(&lbl);
 
     let fld = anyui::TextField::new();
-    fld.set_size(250, 26); fld.set_position(112, 14);
+    fld.set_size(250, 26);
+    fld.set_position(112, 14);
     fld.set_text(&current_name);
     panel.add(&fld);
 
     let btn_cancel = anyui::Button::new("Abbrechen");
-    btn_cancel.set_size(110, 30); btn_cancel.set_position(12, 54);
+    btn_cancel.set_size(110, 30);
+    btn_cancel.set_position(12, 54);
     panel.add(&btn_cancel);
 
     let btn_ok = anyui::Button::new("Umbenennen");
-    btn_ok.set_size(110, 30); btn_ok.set_position(252, 54);
+    btn_ok.set_size(110, 30);
+    btn_ok.set_position(252, 54);
     panel.add(&btn_ok);
 
     let dlg_c = dlg.clone();
-    btn_cancel.on_click(move |_| { dlg_c.destroy(); });
+    btn_cancel.on_click(move |_| {
+        dlg_c.destroy();
+    });
 
     let dlg_c2 = dlg.clone();
     let fld_c = fld.clone();
     let old = current_name.clone();
     btn_ok.on_click(move |_| {
         let new_name = get_field_text(&fld_c);
-        if new_name.is_empty() || new_name == old { dlg_c2.destroy(); return; }
+        if new_name.is_empty() || new_name == old {
+            dlg_c2.destroy();
+            return;
+        }
         if is_remote {
-            if WORKER_BUSY.load(Ordering::Relaxed) { return; }
-            unsafe { write_param(&mut PARAM1, &old); write_param(&mut PARAM2, &new_name); }
+            if WORKER_BUSY.load(Ordering::Relaxed) {
+                return;
+            }
+            unsafe {
+                write_param(&mut PARAM1, &old);
+                write_param(&mut PARAM2, &new_name);
+            }
             WORKER_CMD.store(CMD_RENAME, Ordering::Release);
             spawn_worker();
         } else {
@@ -2013,7 +2478,11 @@ fn show_rename_dialog(current_name: String, is_remote: bool) {
                 log_line(&format!("Umbenannt: {} -> {}", old, new_name));
                 refresh_local();
             } else {
-                anyui::MessageBox::show(anyui::MessageBoxType::Alert, "Umbenennen fehlgeschlagen.", None);
+                anyui::MessageBox::show(
+                    anyui::MessageBoxType::Alert,
+                    "Umbenennen fehlgeschlagen.",
+                    None,
+                );
             }
         }
         dlg_c2.destroy();
@@ -2024,41 +2493,60 @@ fn show_rename_dialog(current_name: String, is_remote: bool) {
 // ─── New Folder Dialog ────────────────────────────────────────────────────────
 
 fn show_new_folder_dialog(is_remote: bool) {
-    let dlg = anyui::Window::new_with_flags("Neuer Ordner", -1, -1, 360, 120,
-        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE);
+    let dlg = anyui::Window::new_with_flags(
+        "Neuer Ordner",
+        -1,
+        -1,
+        360,
+        120,
+        anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_NO_MAXIMIZE,
+    );
     let panel = anyui::View::new();
     panel.set_dock(anyui::DOCK_FILL);
     panel.set_color(0xFF2D2D30);
     dlg.add(&panel);
 
     let lbl = anyui::Label::new("Ordnername:");
-    lbl.set_size(95, 24); lbl.set_position(12, 16);
+    lbl.set_size(95, 24);
+    lbl.set_position(12, 16);
     panel.add(&lbl);
 
     let fld = anyui::TextField::new();
-    fld.set_size(230, 26); fld.set_position(112, 14);
+    fld.set_size(230, 26);
+    fld.set_position(112, 14);
     fld.set_placeholder("Neuer Ordner");
     panel.add(&fld);
 
     let btn_cancel = anyui::Button::new("Abbrechen");
-    btn_cancel.set_size(100, 30); btn_cancel.set_position(12, 50);
+    btn_cancel.set_size(100, 30);
+    btn_cancel.set_position(12, 50);
     panel.add(&btn_cancel);
 
     let btn_ok = anyui::Button::new("Erstellen");
-    btn_ok.set_size(100, 30); btn_ok.set_position(244, 50);
+    btn_ok.set_size(100, 30);
+    btn_ok.set_position(244, 50);
     panel.add(&btn_ok);
 
     let dlg_c = dlg.clone();
-    btn_cancel.on_click(move |_| { dlg_c.destroy(); });
+    btn_cancel.on_click(move |_| {
+        dlg_c.destroy();
+    });
 
     let dlg_c2 = dlg.clone();
     let fld_c = fld.clone();
     btn_ok.on_click(move |_| {
         let name = get_field_text(&fld_c);
-        if name.is_empty() { dlg_c2.destroy(); return; }
+        if name.is_empty() {
+            dlg_c2.destroy();
+            return;
+        }
         if is_remote {
-            if WORKER_BUSY.load(Ordering::Relaxed) { return; }
-            unsafe { write_param(&mut PARAM1, &name); }
+            if WORKER_BUSY.load(Ordering::Relaxed) {
+                return;
+            }
+            unsafe {
+                write_param(&mut PARAM1, &name);
+            }
             WORKER_CMD.store(CMD_MKDIR, Ordering::Release);
             spawn_worker();
         } else {
@@ -2068,7 +2556,11 @@ fn show_new_folder_dialog(is_remote: bool) {
                 log_line(&format!("Ordner erstellt: {}", name));
                 refresh_local();
             } else {
-                anyui::MessageBox::show(anyui::MessageBoxType::Alert, "Erstellen fehlgeschlagen.", None);
+                anyui::MessageBox::show(
+                    anyui::MessageBoxType::Alert,
+                    "Erstellen fehlgeschlagen.",
+                    None,
+                );
             }
         }
         dlg_c2.destroy();
@@ -2079,38 +2571,67 @@ fn show_new_folder_dialog(is_remote: bool) {
 // ─── Transfer Actions ─────────────────────────────────────────────────────────
 
 fn do_download() {
-    if WORKER_BUSY.load(Ordering::Relaxed) { return; }
+    if WORKER_BUSY.load(Ordering::Relaxed) {
+        return;
+    }
     let a = app();
-    if !a.is_connected { return; }
+    if !a.is_connected {
+        return;
+    }
     let row = a.remote_grid.selected_row() as usize;
-    if row >= a.remote_files.len() { return; }
+    if row >= a.remote_files.len() {
+        return;
+    }
     let entry = a.remote_files[row].clone();
-    if entry.is_dir || entry.name == ".." { return; }
+    if entry.is_dir || entry.name == ".." {
+        return;
+    }
     let local_path = join_path(&a.local_dir, &entry.name);
     log_line(&format!("Download: {} -> {}", entry.name, local_path));
-    unsafe { write_param(&mut PARAM1, &entry.name); write_param(&mut PARAM2, &local_path); }
+    unsafe {
+        write_param(&mut PARAM1, &entry.name);
+        write_param(&mut PARAM2, &local_path);
+    }
     WORKER_CMD.store(CMD_DOWNLOAD, Ordering::Release);
     spawn_worker();
 }
 
 fn do_upload() {
-    if WORKER_BUSY.load(Ordering::Relaxed) { return; }
+    if WORKER_BUSY.load(Ordering::Relaxed) {
+        return;
+    }
     let a = app();
-    if !a.is_connected { return; }
+    if !a.is_connected {
+        return;
+    }
     let row = a.local_grid.selected_row() as usize;
-    if row >= a.local_files.len() { return; }
+    if row >= a.local_files.len() {
+        return;
+    }
     let entry = a.local_files[row].clone();
-    if entry.is_dir || entry.name == ".." { return; }
+    if entry.is_dir || entry.name == ".." {
+        return;
+    }
     let local_path = join_path(&a.local_dir, &entry.name);
-    log_line(&format!("Upload: {} -> {}/{}", local_path, a.remote_dir, entry.name));
-    unsafe { write_param(&mut PARAM1, &local_path); write_param(&mut PARAM2, &entry.name); }
+    log_line(&format!(
+        "Upload: {} -> {}/{}",
+        local_path, a.remote_dir, entry.name
+    ));
+    unsafe {
+        write_param(&mut PARAM1, &local_path);
+        write_param(&mut PARAM2, &entry.name);
+    }
     WORKER_CMD.store(CMD_UPLOAD, Ordering::Release);
     spawn_worker();
 }
 
 fn do_delete_remote(entry: FileEntry) {
-    if WORKER_BUSY.load(Ordering::Relaxed) { return; }
-    unsafe { write_param(&mut PARAM1, &entry.name); }
+    if WORKER_BUSY.load(Ordering::Relaxed) {
+        return;
+    }
+    unsafe {
+        write_param(&mut PARAM1, &entry.name);
+    }
     PARAM_PORT.store(if entry.is_dir { 1 } else { 0 }, Ordering::Relaxed);
     WORKER_CMD.store(CMD_DELETE, Ordering::Release);
     spawn_worker();
@@ -2119,23 +2640,37 @@ fn do_delete_remote(entry: FileEntry) {
 fn do_delete() {
     let a = app();
     if a.focus_pane == 1 {
-        if !a.is_connected { return; }
+        if !a.is_connected {
+            return;
+        }
         let row = a.remote_grid.selected_row() as usize;
-        if row >= a.remote_files.len() { return; }
+        if row >= a.remote_files.len() {
+            return;
+        }
         let entry = a.remote_files[row].clone();
-        if entry.name == ".." { return; }
+        if entry.name == ".." {
+            return;
+        }
         do_delete_remote(entry);
     } else {
         let row = a.local_grid.selected_row() as usize;
-        if row >= a.local_files.len() { return; }
+        if row >= a.local_files.len() {
+            return;
+        }
         let entry = a.local_files[row].clone();
-        if entry.name == ".." { return; }
+        if entry.name == ".." {
+            return;
+        }
         let path = join_path(&a.local_dir, &entry.name);
         if fs::unlink(&path) == 0 {
             log_line(&format!("Geloescht: {}", entry.name));
             refresh_local();
         } else {
-            anyui::MessageBox::show(anyui::MessageBoxType::Alert, "Loeschen fehlgeschlagen.", None);
+            anyui::MessageBox::show(
+                anyui::MessageBoxType::Alert,
+                "Loeschen fehlgeschlagen.",
+                None,
+            );
         }
     }
 }
@@ -2143,17 +2678,27 @@ fn do_delete() {
 fn do_rename() {
     let a = app();
     if a.focus_pane == 1 {
-        if !a.is_connected { return; }
+        if !a.is_connected {
+            return;
+        }
         let row = a.remote_grid.selected_row() as usize;
-        if row >= a.remote_files.len() { return; }
+        if row >= a.remote_files.len() {
+            return;
+        }
         let name = a.remote_files[row].name.clone();
-        if name == ".." { return; }
+        if name == ".." {
+            return;
+        }
         show_rename_dialog(name, true);
     } else {
         let row = a.local_grid.selected_row() as usize;
-        if row >= a.local_files.len() { return; }
+        if row >= a.local_files.len() {
+            return;
+        }
         let name = a.local_files[row].name.clone();
-        if name == ".." { return; }
+        if name == ".." {
+            return;
+        }
         show_rename_dialog(name, false);
     }
 }
@@ -2161,10 +2706,18 @@ fn do_rename() {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    if !anyui::init() { return; }
+    if !anyui::init() {
+        return;
+    }
 
     let prefs = load_prefs();
-    let win = anyui::Window::new("anyzilla", prefs.win_x, prefs.win_y, prefs.win_w, prefs.win_h);
+    let win = anyui::Window::new(
+        "anyzilla",
+        prefs.win_x,
+        prefs.win_y,
+        prefs.win_w,
+        prefs.win_h,
+    );
 
     // ── Toolbar ───────────────────────────────────────────────────────────────
     let toolbar = anyui::Toolbar::new();
@@ -2264,50 +2817,60 @@ fn main() {
     // ── Menu Bar ─────────────────────────────────────────────────────────────
     let mut mb = anyui::MenuBarBuilder::new()
         .menu("File")
-            .item(1, "Site Manager", 0)
-            .separator()
-            .item(2, "Quit", 0)
+        .item(1, "Site Manager", 0)
+        .separator()
+        .item(2, "Quit", 0)
         .end_menu()
         .menu("Server")
-            .item(10, "Connect", 0)
-            .item(11, "Disconnect", 0)
-            .separator()
-            .item(12, "Refresh", 0)
+        .item(10, "Connect", 0)
+        .item(11, "Disconnect", 0)
+        .separator()
+        .item(12, "Refresh", 0)
         .end_menu()
         .menu("Transfer")
-            .item(20, "Upload", 0)
-            .item(21, "Download", 0)
+        .item(20, "Upload", 0)
+        .item(21, "Download", 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => { show_site_manager(); }
-            2 => { anyui::quit(); }
-            10 => { show_connect_dialog(); }
-            11 => {
-                if WORKER_BUSY.load(Ordering::Relaxed) { return; }
-                WORKER_CMD.store(CMD_DISCONNECT, Ordering::Release);
-                spawn_worker();
-                let a = app();
-                a.remote_files = Vec::new();
-                let empty: Vec<FileEntry> = Vec::new();
-                populate_grid(&a.remote_grid, &empty);
-                a.remote_path_label.set_text("Remote: (nicht verbunden)");
-                set_connected_state(false);
-                update_status();
-            }
-            12 => {
-                refresh_local();
-                if !WORKER_BUSY.load(Ordering::Relaxed) && app().is_connected {
-                    WORKER_CMD.store(CMD_LIST, Ordering::Release);
-                    spawn_worker();
-                }
-            }
-            20 => { do_upload(); }
-            21 => { do_download(); }
-            _ => {}
+    menu.on_item(|e| match e.item_id {
+        1 => {
+            show_site_manager();
         }
+        2 => {
+            anyui::quit();
+        }
+        10 => {
+            show_connect_dialog();
+        }
+        11 => {
+            if WORKER_BUSY.load(Ordering::Relaxed) {
+                return;
+            }
+            WORKER_CMD.store(CMD_DISCONNECT, Ordering::Release);
+            spawn_worker();
+            let a = app();
+            a.remote_files = Vec::new();
+            let empty: Vec<FileEntry> = Vec::new();
+            populate_grid(&a.remote_grid, &empty);
+            a.remote_path_label.set_text("Remote: (nicht verbunden)");
+            set_connected_state(false);
+            update_status();
+        }
+        12 => {
+            refresh_local();
+            if !WORKER_BUSY.load(Ordering::Relaxed) && app().is_connected {
+                WORKER_CMD.store(CMD_LIST, Ordering::Release);
+                spawn_worker();
+            }
+        }
+        20 => {
+            do_upload();
+        }
+        21 => {
+            do_download();
+        }
+        _ => {}
     });
 
     // ── Quick Connect Bar ────────────────────────────────────────────────────
@@ -2326,7 +2889,9 @@ fn main() {
     qc_host.set_size(200, 24);
     qc_host.set_position(48, 5);
     qc_host.set_placeholder("ftp.example.com");
-    if !prefs.last_host.is_empty() { qc_host.set_text(&prefs.last_host); }
+    if !prefs.last_host.is_empty() {
+        qc_host.set_text(&prefs.last_host);
+    }
     qc_bar.add(&qc_host);
 
     let qc_lbl_port = anyui::Label::new("Port:");
@@ -2351,7 +2916,9 @@ fn main() {
     qc_user.set_size(140, 24);
     qc_user.set_position(394, 5);
     qc_user.set_placeholder("anonymous");
-    if !prefs.last_user.is_empty() { qc_user.set_text(&prefs.last_user); }
+    if !prefs.last_user.is_empty() {
+        qc_user.set_text(&prefs.last_user);
+    }
     qc_bar.add(&qc_user);
 
     let qc_lbl_pass = anyui::Label::new("Pass:");
@@ -2364,7 +2931,9 @@ fn main() {
     qc_pass.set_size(140, 24);
     qc_pass.set_position(584, 5);
     qc_pass.set_password_mode(true);
-    if !prefs.last_pass.is_empty() { qc_pass.set_text(&prefs.last_pass); }
+    if !prefs.last_pass.is_empty() {
+        qc_pass.set_text(&prefs.last_pass);
+    }
     qc_bar.add(&qc_pass);
 
     let qc_btn = anyui::Button::new("Verbinden");
@@ -2431,7 +3000,9 @@ fn main() {
     local_grid.set_color(0xFF1E1E1E);
     local_grid.set_columns(&[
         anyui::ColumnDef::new("Name").width(280),
-        anyui::ColumnDef::new("Groesse").width(80).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new("Groesse")
+            .width(80)
+            .align(anyui::ALIGN_RIGHT),
         anyui::ColumnDef::new("Datum").width(110),
     ]);
     local_pane.add(&local_grid);
@@ -2460,7 +3031,9 @@ fn main() {
     remote_grid.set_color(0xFF1E1E1E);
     remote_grid.set_columns(&[
         anyui::ColumnDef::new("Name").width(280),
-        anyui::ColumnDef::new("Groesse").width(80).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new("Groesse")
+            .width(80)
+            .align(anyui::ALIGN_RIGHT),
         anyui::ColumnDef::new("Datum").width(110),
     ]);
     remote_pane.add(&remote_grid);
@@ -2540,14 +3113,24 @@ fn main() {
 
     // ── Toolbar Callbacks ─────────────────────────────────────────────────────
 
-    btn_sites.on_click(|_| { show_site_manager(); });
+    btn_sites.on_click(|_| {
+        show_site_manager();
+    });
 
-    btn_connect.on_click(|_| { show_connect_dialog(); });
+    btn_connect.on_click(|_| {
+        show_connect_dialog();
+    });
 
     // Quick connect bar callbacks
-    qc_btn.on_click(|_| { do_quick_connect(); });
-    qc_host.on_submit(|_| { do_quick_connect(); });
-    qc_pass.on_submit(|_| { do_quick_connect(); });
+    qc_btn.on_click(|_| {
+        do_quick_connect();
+    });
+    qc_host.on_submit(|_| {
+        do_quick_connect();
+    });
+    qc_pass.on_submit(|_| {
+        do_quick_connect();
+    });
 
     let qc_host_c = qc_host.clone();
     let qc_port_c = qc_port.clone();
@@ -2559,7 +3142,11 @@ fn main() {
         let user = get_field_text(&qc_user_c);
         let pass = get_field_text(&qc_pass_c);
         if host.is_empty() {
-            anyui::MessageBox::show(anyui::MessageBoxType::Alert, "Host darf nicht leer sein.", None);
+            anyui::MessageBox::show(
+                anyui::MessageBoxType::Alert,
+                "Host darf nicht leer sein.",
+                None,
+            );
             return;
         }
         let port: u16 = port_str.parse().unwrap_or(21);
@@ -2578,7 +3165,9 @@ fn main() {
     });
 
     btn_disconnect.on_click(|_| {
-        if WORKER_BUSY.load(Ordering::Relaxed) { return; }
+        if WORKER_BUSY.load(Ordering::Relaxed) {
+            return;
+        }
         WORKER_CMD.store(CMD_DISCONNECT, Ordering::Release);
         spawn_worker();
         let a = app();
@@ -2590,10 +3179,18 @@ fn main() {
         update_status();
     });
 
-    btn_upload.on_click(|_| { do_upload(); });
-    btn_download.on_click(|_| { do_download(); });
-    btn_delete.on_click(|_| { do_delete(); });
-    btn_rename.on_click(|_| { do_rename(); });
+    btn_upload.on_click(|_| {
+        do_upload();
+    });
+    btn_download.on_click(|_| {
+        do_download();
+    });
+    btn_delete.on_click(|_| {
+        do_delete();
+    });
+    btn_rename.on_click(|_| {
+        do_rename();
+    });
 
     btn_newfolder.on_click(|_| {
         show_new_folder_dialog(app().focus_pane == 1);
@@ -2626,13 +3223,23 @@ fn main() {
         }
     });
 
-    btn_sort_name.on_click(|_| { cycle_sort(app().focus_pane, SortColumn::Name); });
-    btn_sort_size.on_click(|_| { cycle_sort(app().focus_pane, SortColumn::Size); });
-    btn_sort_date.on_click(|_| { cycle_sort(app().focus_pane, SortColumn::Date); });
+    btn_sort_name.on_click(|_| {
+        cycle_sort(app().focus_pane, SortColumn::Name);
+    });
+    btn_sort_size.on_click(|_| {
+        cycle_sort(app().focus_pane, SortColumn::Size);
+    });
+    btn_sort_date.on_click(|_| {
+        cycle_sort(app().focus_pane, SortColumn::Date);
+    });
 
     // Path label click → toggle path editing
-    local_path_label.on_click(|_| { toggle_path_editing(0); });
-    remote_path_label.on_click(|_| { toggle_path_editing(1); });
+    local_path_label.on_click(|_| {
+        toggle_path_editing(0);
+    });
+    remote_path_label.on_click(|_| {
+        toggle_path_editing(1);
+    });
 
     // Path field submit → navigate to entered path
     local_path_field.on_submit(|_| {
@@ -2649,10 +3256,14 @@ fn main() {
 
     remote_path_field.on_submit(|_| {
         let a = app();
-        if !a.is_connected { return; }
+        if !a.is_connected {
+            return;
+        }
         let path = get_field_text(&a.remote_path_field);
         if !path.is_empty() && !WORKER_BUSY.load(Ordering::Relaxed) {
-            unsafe { write_param(&mut PARAM1, &path); }
+            unsafe {
+                write_param(&mut PARAM1, &path);
+            }
             WORKER_CMD.store(CMD_CD, Ordering::Release);
             spawn_worker();
         }
@@ -2663,12 +3274,16 @@ fn main() {
 
     // ── Grid Callbacks ────────────────────────────────────────────────────────
 
-    local_grid.on_selection_changed(|_| { app().focus_pane = 0; });
+    local_grid.on_selection_changed(|_| {
+        app().focus_pane = 0;
+    });
 
     local_grid.on_submit(|e| {
         let a = app();
         let row = e.index as usize;
-        if row >= a.local_files.len() { return; }
+        if row >= a.local_files.len() {
+            return;
+        }
         let entry = a.local_files[row].clone();
         if entry.is_dir {
             let new_dir = join_path(&a.local_dir, &entry.name);
@@ -2677,18 +3292,28 @@ fn main() {
         }
     });
 
-    remote_grid.on_selection_changed(|_| { app().focus_pane = 1; });
+    remote_grid.on_selection_changed(|_| {
+        app().focus_pane = 1;
+    });
 
     remote_grid.on_submit(|e| {
         let a = app();
-        if !a.is_connected { return; }
-        if WORKER_BUSY.load(Ordering::Relaxed) { return; }
+        if !a.is_connected {
+            return;
+        }
+        if WORKER_BUSY.load(Ordering::Relaxed) {
+            return;
+        }
         let row = e.index as usize;
-        if row >= a.remote_files.len() { return; }
+        if row >= a.remote_files.len() {
+            return;
+        }
         let entry = a.remote_files[row].clone();
         if entry.is_dir {
             log_line(&format!("Wechsle in Verzeichnis: {}", entry.name));
-            unsafe { write_param(&mut PARAM1, &entry.name); }
+            unsafe {
+                write_param(&mut PARAM1, &entry.name);
+            }
             WORKER_CMD.store(CMD_CD, Ordering::Release);
             spawn_worker();
         } else {
@@ -2709,7 +3334,10 @@ fn main() {
                     show_rename_dialog(name, false);
                 }
             }
-            2 => { app().focus_pane = 0; do_delete(); }
+            2 => {
+                app().focus_pane = 0;
+                do_delete();
+            }
             3 => show_new_folder_dialog(false),
             4 => refresh_local(),
             // 5 = separator
@@ -2732,7 +3360,10 @@ fn main() {
                     show_rename_dialog(name, true);
                 }
             }
-            2 => { app().focus_pane = 1; do_delete(); }
+            2 => {
+                app().focus_pane = 1;
+                do_delete();
+            }
             3 => show_new_folder_dialog(true),
             4 => {
                 if !WORKER_BUSY.load(Ordering::Relaxed) && app().is_connected {
@@ -2753,11 +3384,14 @@ fn main() {
 
     win.on_key_down(|e| {
         match e.keycode {
-            anyui::KEY_F2     => do_rename(),
+            anyui::KEY_F2 => do_rename(),
             anyui::KEY_DELETE => do_delete(),
-            anyui::KEY_F5     => {
-                if app().focus_pane == 1 { do_download(); }
-                else { do_upload(); }
+            anyui::KEY_F5 => {
+                if app().focus_pane == 1 {
+                    do_download();
+                } else {
+                    do_upload();
+                }
             }
             anyui::KEY_F7 => show_new_folder_dialog(app().focus_pane == 1),
             anyui::KEY_ESCAPE => {
@@ -2802,7 +3436,10 @@ fn main() {
         if w >= 200 && h >= 100 {
             let a = app();
             save_prefs(&Prefs {
-                win_x: x, win_y: y, win_w: w, win_h: h,
+                win_x: x,
+                win_y: y,
+                win_w: w,
+                win_h: h,
                 last_host: a.last_host.clone(),
                 last_port: a.last_port,
                 last_user: a.last_user.clone(),

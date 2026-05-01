@@ -8,11 +8,11 @@
 //!   - Transparent-run scanning in alpha-blend path
 //!   - fill() for background clear (LLVM vectorizes to rep stosd)
 
-use super::Compositor;
+use super::blend::{alpha_blend, blur_back_buffer_region, compute_shadow_cache, shadow_blend};
+use super::gpu::{GPU_FLIP, GPU_RECT_COPY, GPU_SYNC, GPU_UPDATE};
+use super::layer::{shadow_offset_y, shadow_spread, AccelMoveHint, BlurCache, SHADOW_OFFSET_X};
 use super::rect::Rect;
-use super::layer::{AccelMoveHint, BlurCache, SHADOW_OFFSET_X, shadow_offset_y, shadow_spread};
-use super::blend::{alpha_blend, shadow_blend, compute_shadow_cache, blur_back_buffer_region};
-use super::gpu::{GPU_UPDATE, GPU_FLIP, GPU_RECT_COPY, GPU_SYNC};
+use super::Compositor;
 
 impl Compositor {
     /// Collect damage from all dirty layers.
@@ -44,9 +44,8 @@ impl Compositor {
         }
         // Pass 1: Coalesce overlapping and nearby rects (within 32px gap).
         // Sort by Y then X for better spatial locality.
-        self.damage.sort_unstable_by(|a, b| {
-            a.y.cmp(&b.y).then(a.x.cmp(&b.x))
-        });
+        self.damage
+            .sort_unstable_by(|a, b| a.y.cmp(&b.y).then(a.x.cmp(&b.x)));
         let mut merged = alloc::vec::Vec::with_capacity(self.damage.len() / 2);
         if let Some(&first) = self.damage.first() {
             merged.push(first);
@@ -158,8 +157,9 @@ impl Compositor {
             for i in 0..damage_len {
                 let r = self.compositing_damage[i];
                 self.flush_region(&r, 0);
-                self.gpu_cmds
-                    .push([GPU_UPDATE, r.x as u32, r.y as u32, r.width, r.height, 0, 0, 0, 0]);
+                self.gpu_cmds.push([
+                    GPU_UPDATE, r.x as u32, r.y as u32, r.width, r.height, 0, 0, 0, 0,
+                ]);
             }
             self.compositing_damage.clear();
         }
@@ -177,8 +177,12 @@ impl Compositor {
 
     /// GPU-accelerated compositing for window drag (RECT_COPY fast path).
     fn compose_with_rect_copy(&mut self, hint: &AccelMoveHint) {
-        let old_b = hint.old_bounds.clip_to_screen(self.fb_width, self.fb_height);
-        let new_b = hint.new_bounds.clip_to_screen(self.fb_width, self.fb_height);
+        let old_b = hint
+            .old_bounds
+            .clip_to_screen(self.fb_width, self.fb_height);
+        let new_b = hint
+            .new_bounds
+            .clip_to_screen(self.fb_width, self.fb_height);
 
         if old_b.is_empty() || new_b.is_empty() {
             self.compositing_damage.clear();
@@ -202,9 +206,13 @@ impl Compositor {
         let damage_len = self.compositing_damage.len();
         for i in 0..damage_len {
             let r = self.compositing_damage[i];
-            if r.is_empty() { continue; }
+            if r.is_empty() {
+                continue;
+            }
             // Skip rects already covered by old_b or new_b
-            if old_b.fully_contains(&r) || new_b.fully_contains(&r) { continue; }
+            if old_b.fully_contains(&r) || new_b.fully_contains(&r) {
+                continue;
+            }
             self.composite_rect(&r);
         }
 
@@ -223,7 +231,8 @@ impl Compositor {
             new_b.y as u32,
             new_b.width,
             new_b.height,
-            0, 0,
+            0,
+            0,
         ]);
         self.gpu_cmds.push([GPU_SYNC, 0, 0, 0, 0, 0, 0, 0, 0]);
         self.flush_gpu();
@@ -238,7 +247,10 @@ impl Compositor {
                     rect.y as u32,
                     rect.width,
                     rect.height,
-                    0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
                 ]);
             }
         }
@@ -256,14 +268,21 @@ impl Compositor {
             new_b.y as u32,
             new_b.width,
             new_b.height,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
         ]);
 
         // Flush any extra damage rects not covered by old_b/new_b
         for i in 0..damage_len {
             let r = self.compositing_damage[i];
-            if r.is_empty() { continue; }
-            if old_b.fully_contains(&r) || new_b.fully_contains(&r) { continue; }
+            if r.is_empty() {
+                continue;
+            }
+            if old_b.fully_contains(&r) || new_b.fully_contains(&r) {
+                continue;
+            }
             self.flush_region(&r, 0);
             self.gpu_cmds.push([
                 GPU_UPDATE, r.x as u32, r.y as u32, r.width, r.height, 0, 0, 0, 0,
@@ -292,7 +311,9 @@ impl Compositor {
         const CORNER_RADIUS: i32 = 8;
 
         for li in (0..self.layers.len()).rev() {
-            if !self.layers[li].visible { continue; }
+            if !self.layers[li].visible {
+                continue;
+            }
             let bounds = self.layers[li].bounds();
             if self.layers[li].opaque {
                 if bounds.fully_contains(rect) {
@@ -384,8 +405,7 @@ impl Compositor {
                     // Fast path: opaque copy
                     for row in 0..overlap.height as usize {
                         let src_off = (sy + row) * lw + sx;
-                        let dst_off =
-                            (overlap.y as usize + row) * bb_stride + overlap.x as usize;
+                        let dst_off = (overlap.y as usize + row) * bb_stride + overlap.x as usize;
                         let w = overlap.width as usize;
                         let src_end = (src_off + w).min(lp_len);
                         let dst_end = (dst_off + w).min(self.back_buffer.len());
@@ -397,8 +417,7 @@ impl Compositor {
                     // Alpha-blend path with opaque-run + transparent-run scanning.
                     for row in 0..overlap.height as usize {
                         let src_off = (sy + row) * lw + sx;
-                        let dst_off =
-                            (overlap.y as usize + row) * bb_stride + overlap.x as usize;
+                        let dst_off = (overlap.y as usize + row) * bb_stride + overlap.x as usize;
                         let row_width = overlap.width as usize;
                         let mut col = 0usize;
                         while col < row_width {
@@ -445,8 +464,12 @@ impl Compositor {
                                 col += 1;
                                 while col < row_width {
                                     let si2 = src_off + col;
-                                    if si2 >= lp_len { break; }
-                                    if layer_pixels[si2] >> 24 != 0 { break; }
+                                    if si2 >= lp_len {
+                                        break;
+                                    }
+                                    if layer_pixels[si2] >> 24 != 0 {
+                                        break;
+                                    }
                                     col += 1;
                                 }
                             }
@@ -480,9 +503,15 @@ impl Compositor {
         // Fallback for partial first paints or changing below-content.
         let mut blur_temp = core::mem::take(&mut self.blur_temp);
         blur_back_buffer_region(
-            &mut self.back_buffer, self.fb_width, self.fb_height,
-            blur_area.x, blur_area.y, blur_area.width, blur_area.height,
-            radius, 2,
+            &mut self.back_buffer,
+            self.fb_width,
+            self.fb_height,
+            blur_area.x,
+            blur_area.y,
+            blur_area.width,
+            blur_area.height,
+            radius,
+            2,
             &mut blur_temp,
         );
         self.blur_temp = blur_temp;
@@ -548,9 +577,15 @@ impl Compositor {
 
         let mut blur_temp = core::mem::take(&mut self.blur_temp);
         blur_back_buffer_region(
-            &mut pixels, area.width, area.height,
-            0, 0, area.width, area.height,
-            radius, 2,
+            &mut pixels,
+            area.width,
+            area.height,
+            0,
+            0,
+            area.width,
+            area.height,
+            radius,
+            2,
             &mut blur_temp,
         );
         self.blur_temp = blur_temp;
@@ -617,9 +652,15 @@ impl Compositor {
 
         let mut blur_temp = core::mem::take(&mut self.blur_temp);
         blur_back_buffer_region(
-            &mut small, dw as u32, dh as u32,
-            0, 0, dw as u32, dh as u32,
-            (radius + 1) / 2, 2,
+            &mut small,
+            dw as u32,
+            dh as u32,
+            0,
+            0,
+            dw as u32,
+            dh as u32,
+            (radius + 1) / 2,
+            2,
             &mut blur_temp,
         );
         self.blur_temp = blur_temp;
@@ -694,7 +735,11 @@ impl Compositor {
                 return;
             };
             let cache_w = cache.cache_w as usize;
-            let alphas = if is_focused { &cache.focused_alphas } else { &cache.unfocused_alphas };
+            let alphas = if is_focused {
+                &cache.focused_alphas
+            } else {
+                &cache.unfocused_alphas
+            };
             let cache_alphas = alphas.as_ptr();
             let cache_len = alphas.len();
 
@@ -723,24 +768,42 @@ impl Compositor {
                     let left_end = win_abs_x0.min(ol_x1);
                     if ol_x0 < left_end {
                         Self::shadow_span(
-                            bb, bb_len, bb_row_off,
-                            cache_alphas, cache_len, cache_row_off,
-                            shadow_ox, ol_x0, left_end,
+                            bb,
+                            bb_len,
+                            bb_row_off,
+                            cache_alphas,
+                            cache_len,
+                            cache_row_off,
+                            shadow_ox,
+                            ol_x0,
+                            left_end,
                         );
                     }
                     let right_start = win_abs_x1.max(ol_x0);
                     if right_start < ol_x1 {
                         Self::shadow_span(
-                            bb, bb_len, bb_row_off,
-                            cache_alphas, cache_len, cache_row_off,
-                            shadow_ox, right_start, ol_x1,
+                            bb,
+                            bb_len,
+                            bb_row_off,
+                            cache_alphas,
+                            cache_len,
+                            cache_row_off,
+                            shadow_ox,
+                            right_start,
+                            ol_x1,
                         );
                     }
                 } else {
                     Self::shadow_span(
-                        bb, bb_len, bb_row_off,
-                        cache_alphas, cache_len, cache_row_off,
-                        shadow_ox, ol_x0, ol_x1,
+                        bb,
+                        bb_len,
+                        bb_row_off,
+                        cache_alphas,
+                        cache_len,
+                        cache_row_off,
+                        shadow_ox,
+                        ol_x0,
+                        ol_x1,
                     );
                 }
             }
@@ -750,16 +813,26 @@ impl Compositor {
     /// Process a horizontal span of shadow pixels with pre-baked alpha (no per-pixel div255 multiply).
     #[inline(always)]
     fn shadow_span(
-        bb: &mut [u32], bb_len: usize, bb_row_off: usize,
-        cache_alphas: *const u8, cache_len: usize, cache_row_off: usize,
-        shadow_ox: i32, x_start: i32, x_end: i32,
+        bb: &mut [u32],
+        bb_len: usize,
+        bb_row_off: usize,
+        cache_alphas: *const u8,
+        cache_len: usize,
+        cache_row_off: usize,
+        shadow_ox: i32,
+        x_start: i32,
+        x_end: i32,
     ) {
         for px in x_start..x_end {
             let cx = (px - shadow_ox) as usize;
             let cache_idx = cache_row_off + cx;
-            if cache_idx >= cache_len { break; }
+            if cache_idx >= cache_len {
+                break;
+            }
             let a = unsafe { *cache_alphas.add(cache_idx) } as u32;
-            if a == 0 { continue; }
+            if a == 0 {
+                continue;
+            }
             let di = bb_row_off + px as usize;
             if di < bb_len {
                 bb[di] = shadow_blend(a, bb[di]);

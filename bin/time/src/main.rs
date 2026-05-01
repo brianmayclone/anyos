@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{println, fs, process, shell, sys};
 use anyos_std::String;
+use anyos_std::{fs, println, process, shell, sys};
 
 anyos_std::entry!(main);
 
@@ -65,8 +65,12 @@ fn main() {
     line.push_str("m");
     push_u32(&mut line, secs);
     line.push('.');
-    if ms_part < 100 { line.push('0'); }
-    if ms_part < 10  { line.push('0'); }
+    if ms_part < 100 {
+        line.push('0');
+    }
+    if ms_part < 10 {
+        line.push('0');
+    }
     push_u32(&mut line, ms_part);
     line.push_str("s");
     println!("{}", line);

@@ -3,10 +3,10 @@
 //! Maps anyos_std::error::Error to std::io::Error and provides
 //! Read, Write, Seek traits plus BufReader, BufWriter, and Cursor.
 
-use core::fmt;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt;
 
 // ── Error / Result ──────────────────────────────────────────────────────────
 
@@ -40,12 +40,18 @@ pub struct Error {
 impl Error {
     /// Create a new error from a kind and a message.
     pub fn new<E: Into<Box<str>>>(kind: ErrorKind, error: E) -> Self {
-        Error { kind, message: Some(error.into()) }
+        Error {
+            kind,
+            message: Some(error.into()),
+        }
     }
 
     /// Create an error from just a kind (no message).
     pub fn from_kind(kind: ErrorKind) -> Self {
-        Error { kind, message: None }
+        Error {
+            kind,
+            message: None,
+        }
     }
 
     /// Get the error kind.
@@ -70,7 +76,10 @@ impl Error {
             anyos_std::error::Error::NoSpace => ErrorKind::Other,
             anyos_std::error::Error::Other(_) => ErrorKind::Other,
         };
-        Error { kind, message: None }
+        Error {
+            kind,
+            message: None,
+        }
     }
 
     /// Convert to anyos_std error.
@@ -211,19 +220,35 @@ pub trait Read {
                 buf.push_str(s);
                 Ok(n)
             }
-            Err(_) => Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8")),
+            Err(_) => Err(Error::new(
+                ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            )),
         }
     }
 
-    fn bytes(self) -> Bytes<Self> where Self: Sized {
+    fn bytes(self) -> Bytes<Self>
+    where
+        Self: Sized,
+    {
         Bytes { inner: self }
     }
 
-    fn chain<R: Read>(self, next: R) -> Chain<Self, R> where Self: Sized {
-        Chain { first: self, second: next, done_first: false }
+    fn chain<R: Read>(self, next: R) -> Chain<Self, R>
+    where
+        Self: Sized,
+    {
+        Chain {
+            first: self,
+            second: next,
+            done_first: false,
+        }
     }
 
-    fn take(self, limit: u64) -> Take<Self> where Self: Sized {
+    fn take(self, limit: u64) -> Take<Self>
+    where
+        Self: Sized,
+    {
         Take { inner: self, limit }
     }
 }
@@ -267,7 +292,10 @@ pub trait Write {
             }
         }
 
-        let mut output = Adapter { inner: self, error: Ok(()) };
+        let mut output = Adapter {
+            inner: self,
+            error: Ok(()),
+        };
         match fmt::write(&mut output, fmt) {
             Ok(()) => Ok(()),
             Err(..) => {
@@ -325,11 +353,17 @@ pub trait BufRead: Read {
                 buf.push_str(s);
                 Ok(n)
             }
-            Err(_) => Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8")),
+            Err(_) => Err(Error::new(
+                ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            )),
         }
     }
 
-    fn lines(self) -> Lines<Self> where Self: Sized {
+    fn lines(self) -> Lines<Self>
+    where
+        Self: Sized,
+    {
         Lines { buf: self }
     }
 }
@@ -353,7 +387,12 @@ impl<R: Read> BufReader<R> {
 
     pub fn with_capacity(capacity: usize, inner: R) -> Self {
         let buf = alloc::vec![0u8; capacity].into_boxed_slice();
-        BufReader { inner, buf, pos: 0, cap: 0 }
+        BufReader {
+            inner,
+            buf,
+            pos: 0,
+            cap: 0,
+        }
     }
 
     pub fn get_ref(&self) -> &R {
@@ -420,7 +459,11 @@ impl<W: Write> BufWriter<W> {
     }
 
     pub fn with_capacity(capacity: usize, inner: W) -> Self {
-        BufWriter { inner, buf: Vec::with_capacity(capacity), capacity }
+        BufWriter {
+            inner,
+            buf: Vec::with_capacity(capacity),
+            capacity,
+        }
     }
 
     pub fn get_ref(&self) -> &W {
@@ -569,7 +612,10 @@ impl<T: AsRef<[u8]>> Seek for Cursor<T> {
                 self.pos = n;
                 Ok(n)
             }
-            None => Err(Error::new(ErrorKind::InvalidInput, "invalid seek to a negative or overflowing position")),
+            None => Err(Error::new(
+                ErrorKind::InvalidInput,
+                "invalid seek to a negative or overflowing position",
+            )),
         }
     }
 }
@@ -659,7 +705,9 @@ impl<T: Read, U: Read> Read for Chain<T, U> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         if !self.done_first {
             match self.first.read(buf)? {
-                0 => { self.done_first = true; }
+                0 => {
+                    self.done_first = true;
+                }
                 n => return Ok(n),
             }
         }
@@ -849,7 +897,9 @@ pub struct Stdin;
 
 impl Stdin {
     pub fn lock(&self) -> StdinLock<'_> {
-        StdinLock { _marker: core::marker::PhantomData }
+        StdinLock {
+            _marker: core::marker::PhantomData,
+        }
     }
 
     pub fn read_line(&self, buf: &mut String) -> Result<usize> {
@@ -871,7 +921,10 @@ impl Stdin {
                 buf.push_str(s);
                 Ok(bytes.len())
             }
-            Err(_) => Err(Error::new(ErrorKind::InvalidData, "stdin contained invalid UTF-8")),
+            Err(_) => Err(Error::new(
+                ErrorKind::InvalidData,
+                "stdin contained invalid UTF-8",
+            )),
         }
     }
 }
@@ -905,7 +958,9 @@ pub struct Stdout;
 
 impl Stdout {
     pub fn lock(&self) -> StdoutLock<'_> {
-        StdoutLock { _marker: core::marker::PhantomData }
+        StdoutLock {
+            _marker: core::marker::PhantomData,
+        }
     }
 }
 
@@ -938,7 +993,9 @@ pub struct Stderr;
 
 impl Stderr {
     pub fn lock(&self) -> StderrLock<'_> {
-        StderrLock { _marker: core::marker::PhantomData }
+        StderrLock {
+            _marker: core::marker::PhantomData,
+        }
     }
 }
 
@@ -967,10 +1024,16 @@ impl Write for StderrLock<'_> {
 }
 
 /// Get a handle to standard input.
-pub fn stdin() -> Stdin { Stdin }
+pub fn stdin() -> Stdin {
+    Stdin
+}
 
 /// Get a handle to standard output.
-pub fn stdout() -> Stdout { Stdout }
+pub fn stdout() -> Stdout {
+    Stdout
+}
 
 /// Get a handle to standard error.
-pub fn stderr() -> Stderr { Stderr }
+pub fn stderr() -> Stderr {
+    Stderr
+}

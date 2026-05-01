@@ -24,6 +24,86 @@ struct InlineFragment {
     breaks_after: bool,
 }
 
+fn apply_inline_control_style(bx: &mut LayoutBox, style: Option<&ComputedStyle>) {
+    let Some(style) = style else {
+        return;
+    };
+
+    bx.color = style.color;
+    bx.bg_color = if style.background_color_is_current {
+        style.color
+    } else {
+        style.background_color
+    };
+    bx.accent_color = style.accent_color;
+    bx.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;
+    bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
+    bx.font_size = font_size_px(style);
+    bx.bold = is_bold(style);
+    bx.italic = is_italic(style);
+    if let Some(ref family) = style.font_family {
+        if let Some(wf_id) = crate::lookup_web_font_variant(family, bx.bold, bx.italic) {
+            bx.custom_font_id = wf_id;
+        }
+    }
+    bx.padding = super::edges_from(
+        style.padding_top,
+        style.padding_right,
+        style.padding_bottom,
+        style.padding_left,
+    );
+    bx.border_width = style.border_width;
+    bx.border_color = style.border_color;
+    bx.border_radius = style.border_radius;
+    bx.border_top_width = style.border_top.width;
+    bx.border_right_width = style.border_right.width;
+    bx.border_bottom_width = style.border_bottom.width;
+    bx.border_left_width = style.border_left.width;
+    bx.border_top_color = style.border_top.color;
+    bx.border_right_color = style.border_right.color;
+    bx.border_bottom_color = style.border_bottom.color;
+    bx.border_left_color = style.border_left.color;
+    bx.border_top_left_radius = style.border_top_left_radius;
+    bx.border_top_right_radius = style.border_top_right_radius;
+    bx.border_bottom_right_radius = style.border_bottom_right_radius;
+    bx.border_bottom_left_radius = style.border_bottom_left_radius;
+    bx.border_top_style = style.border_top.style;
+    bx.border_right_style = style.border_right.style;
+    bx.border_bottom_style = style.border_bottom.style;
+    bx.border_left_style = style.border_left.style;
+    bx.outline_width = style.outline_width;
+    bx.outline_color = style.outline_color;
+    bx.outline_offset = style.outline_offset;
+    bx.box_shadows = style.box_shadows.clone();
+    bx.text_shadows = style.text_shadows.clone();
+    bx.background_image = style.background_image.clone();
+    bx.background_size = style.background_size;
+    bx.background_repeat = style.background_repeat;
+    bx.background_clip = style.background_clip;
+    bx.background_position_x = style.background_position_x;
+    bx.background_position_y = style.background_position_y;
+    bx.letter_spacing = style.letter_spacing;
+    bx.text_align = style.text_align;
+}
+
+fn inline_control_outer_size(
+    style: Option<&ComputedStyle>,
+    content_w: i32,
+    content_h: i32,
+) -> (i32, i32) {
+    let Some(style) = style else {
+        return (content_w.max(1), content_h.max(1));
+    };
+    if style.box_sizing == BoxSizing::BorderBox {
+        return (content_w.max(1), content_h.max(1));
+    }
+    let border_w =
+        style.border_left.width + style.border_right.width + style.padding_left + style.padding_right;
+    let border_h =
+        style.border_top.width + style.border_bottom.width + style.padding_top + style.padding_bottom;
+    ((content_w + border_w).max(1), (content_h + border_h).max(1))
+}
+
 fn inline_box_has_visuals(style: &ComputedStyle) -> bool {
     style.background_color != 0
         || style.background_color_is_current

@@ -4,7 +4,8 @@
 /// RO pages are shared across all processes — reads via volatile, writes via syscall.
 const UISYS_BASE: u64 = 0x0400_0000;
 const UISYS_THEME_OFFSET: u32 = 0x0C; // offset of `theme` field in export struct
-const UISYS_THEME_ADDR: *const u32 = (UISYS_BASE as usize + UISYS_THEME_OFFSET as usize) as *const u32;
+const UISYS_THEME_ADDR: *const u32 =
+    (UISYS_BASE as usize + UISYS_THEME_OFFSET as usize) as *const u32;
 
 /// Cached theme value — refreshed once per frame via `refresh_theme_cache()`.
 static mut CACHED_IS_LIGHT: bool = false;
@@ -12,7 +13,9 @@ static mut CACHED_IS_LIGHT: bool = false;
 /// Refresh the cached theme value from the shared DLIB page.
 /// Called once per frame in the render loop — avoids 28K+ volatile reads per menubar render.
 pub(crate) fn refresh_theme_cache() {
-    unsafe { CACHED_IS_LIGHT = core::ptr::read_volatile(UISYS_THEME_ADDR) != 0; }
+    unsafe {
+        CACHED_IS_LIGHT = core::ptr::read_volatile(UISYS_THEME_ADDR) != 0;
+    }
 }
 
 /// Read the cached theme (0 = dark, 1 = light).
@@ -88,17 +91,21 @@ pub fn set_scale_factor(percent: u32) {
     // Round to nearest multiple of 25.
     let rounded = ((clamped + 12) / 25) * 25;
     anyos_std::dll::set_dll_u32(UISYS_BASE, UISYS_SCALE_OFFSET, rounded);
-    unsafe { CACHED_SCALE = rounded; }
+    unsafe {
+        CACHED_SCALE = rounded;
+    }
 }
 
 /// Read the current scale factor from the shared DLIB page (uncached).
 pub fn read_scale_factor() -> u32 {
     let v = unsafe {
-        core::ptr::read_volatile(
-            (UISYS_BASE as usize + UISYS_SCALE_OFFSET as usize) as *const u32,
-        )
+        core::ptr::read_volatile((UISYS_BASE as usize + UISYS_SCALE_OFFSET as usize) as *const u32)
     };
-    if v >= 100 && v <= 300 { v } else { 100 }
+    if v >= 100 && v <= 300 {
+        v
+    } else {
+        100
+    }
 }
 
 /// Set the font smoothing mode via kernel-mediated write to the shared RO DLIB page.
@@ -125,73 +132,125 @@ pub(crate) const COLOR_DESKTOP_BG: u32 = 0xFF1E1E1E;
 
 #[inline(always)]
 pub(crate) fn color_menubar_bg() -> u32 {
-    if is_light() { 0xB3F0F0F5 } else { 0xB3303035 }
+    if is_light() {
+        0xB3F0F0F5
+    } else {
+        0xB3303035
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_menubar_border() -> u32 {
-    if is_light() { 0xFFD1D1D6 } else { 0xFF404045 }
+    if is_light() {
+        0xFFD1D1D6
+    } else {
+        0xFF404045
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_menubar_text() -> u32 {
-    if is_light() { 0xFF1D1D1F } else { 0xFFE0E0E0 }
+    if is_light() {
+        0xFF1D1D1F
+    } else {
+        0xFFE0E0E0
+    }
 }
 
 // ── Title Bar Colors ───────────────────────────────────────────────────────
 
 #[inline(always)]
 pub(crate) fn color_titlebar_focused() -> u32 {
-    if is_light() { 0xFFE8E8E8 } else { 0xFF3C3C3C }
+    if is_light() {
+        0xFFE8E8E8
+    } else {
+        0xFF3C3C3C
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_titlebar_unfocused() -> u32 {
-    if is_light() { 0xFFF0F0F0 } else { 0xFF2A2A2A }
+    if is_light() {
+        0xFFF0F0F0
+    } else {
+        0xFF2A2A2A
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_titlebar_text() -> u32 {
-    if is_light() { 0xFF1D1D1F } else { 0xFFE0E0E0 }
+    if is_light() {
+        0xFF1D1D1F
+    } else {
+        0xFFE0E0E0
+    }
 }
 
 // ── Title Bar Gradient (top → bottom for subtle depth) ────────────────────
 
 #[inline(always)]
 pub(crate) fn color_titlebar_focused_top() -> u32 {
-    if is_light() { 0xFFEEEEEE } else { 0xFF454545 }
+    if is_light() {
+        0xFFEEEEEE
+    } else {
+        0xFF454545
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_titlebar_focused_bottom() -> u32 {
-    if is_light() { 0xFFE0E0E0 } else { 0xFF353535 }
+    if is_light() {
+        0xFFE0E0E0
+    } else {
+        0xFF353535
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_titlebar_unfocused_top() -> u32 {
-    if is_light() { 0xFFF4F4F4 } else { 0xFF303030 }
+    if is_light() {
+        0xFFF4F4F4
+    } else {
+        0xFF303030
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_titlebar_unfocused_bottom() -> u32 {
-    if is_light() { 0xFFEAEAEA } else { 0xFF252525 }
+    if is_light() {
+        0xFFEAEAEA
+    } else {
+        0xFF252525
+    }
 }
 
 // ── Window Colors ──────────────────────────────────────────────────────────
 
 #[inline(always)]
 pub(crate) fn color_window_bg() -> u32 {
-    if is_light() { 0xFFF5F5F7 } else { 0xFF1E1E1E }
+    if is_light() {
+        0xFFF5F5F7
+    } else {
+        0xFF1E1E1E
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_window_border() -> u32 {
-    if is_light() { 0xFFD1D1D6 } else { 0xFF4A4A4E }
+    if is_light() {
+        0xFFD1D1D6
+    } else {
+        0xFF4A4A4E
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_btn_unfocused() -> u32 {
-    if is_light() { 0xFFC7C7CC } else { 0xFF5A5A5E }
+    if is_light() {
+        0xFFC7C7CC
+    } else {
+        0xFF5A5A5E
+    }
 }
 
 // ── Traffic Light Buttons ──────────────────────────────────────────────────
@@ -211,44 +270,76 @@ pub(crate) const COLOR_MAX_PRESS: u32 = 0xFF1FA030;
 
 #[inline(always)]
 pub(crate) fn color_notif_bg() -> u32 {
-    if is_light() { 0xF0F5F5F7 } else { 0xF02C2C2E }
+    if is_light() {
+        0xF0F5F5F7
+    } else {
+        0xF02C2C2E
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_notif_title() -> u32 {
-    if is_light() { 0xFF1D1D1F } else { 0xFFE6E6E6 }
+    if is_light() {
+        0xFF1D1D1F
+    } else {
+        0xFFE6E6E6
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_notif_message() -> u32 {
-    if is_light() { 0xFF6E6E73 } else { 0xFF969696 }
+    if is_light() {
+        0xFF6E6E73
+    } else {
+        0xFF969696
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_notif_time() -> u32 {
-    if is_light() { 0xFF8E8E93 } else { 0xFF6A6A6E }
+    if is_light() {
+        0xFF8E8E93
+    } else {
+        0xFF6A6A6E
+    }
 }
 
 // ── Volume HUD Colors ─────────────────────────────────────────────────
 
 #[inline(always)]
 pub(crate) fn color_hud_bg() -> u32 {
-    if is_light() { 0xE6F0F0F5 } else { 0xE61C1C1E }
+    if is_light() {
+        0xE6F0F0F5
+    } else {
+        0xE61C1C1E
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_hud_bar() -> u32 {
-    if is_light() { 0xFF007AFF } else { 0xFF0A84FF }
+    if is_light() {
+        0xFF007AFF
+    } else {
+        0xFF0A84FF
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_hud_bar_bg() -> u32 {
-    if is_light() { 0xFFD1D1D6 } else { 0xFF3A3A3C }
+    if is_light() {
+        0xFFD1D1D6
+    } else {
+        0xFF3A3A3C
+    }
 }
 
 #[inline(always)]
 pub(crate) fn color_hud_text() -> u32 {
-    if is_light() { 0xFF1D1D1F } else { 0xFFE6E6E6 }
+    if is_light() {
+        0xFF1D1D1F
+    } else {
+        0xFFE6E6E6
+    }
 }
 
 // ── System Font ────────────────────────────────────────────────────────────
@@ -259,21 +350,29 @@ pub(crate) const FONT_SIZE: u16 = 13;
 
 /// Scaled system font size in physical pixels (DPI-scaled).
 #[inline(always)]
-pub(crate) fn scaled_font_size() -> u16 { scale_font(FONT_SIZE) }
+pub(crate) fn scaled_font_size() -> u16 {
+    scale_font(FONT_SIZE)
+}
 
 // ── Title Bar Layout ───────────────────────────────────────────────────────
 
 /// Traffic-light button diameter in physical pixels (DPI-scaled).
 #[inline(always)]
-pub(crate) fn title_btn_size() -> u32 { scale(12) }
+pub(crate) fn title_btn_size() -> u32 {
+    scale(12)
+}
 
 /// Traffic-light button Y offset in physical pixels (DPI-scaled).
 #[inline(always)]
-pub(crate) fn title_btn_y() -> u32 { scale(8) }
+pub(crate) fn title_btn_y() -> u32 {
+    scale(8)
+}
 
 /// Spacing between traffic-light button centers in physical pixels (DPI-scaled).
 #[inline(always)]
-pub(crate) fn title_btn_spacing() -> u32 { scale(20) }
+pub(crate) fn title_btn_spacing() -> u32 {
+    scale(20)
+}
 
 // ── Button Animation Helpers ───────────────────────────────────────────────
 

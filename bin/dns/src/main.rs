@@ -54,7 +54,11 @@ fn main() {
     if let Some(result) = libdns::resolve_ipv4(hostname) {
         anyos_std::println!(
             "{} -> {}.{}.{}.{}",
-            hostname, result[0], result[1], result[2], result[3]
+            hostname,
+            result[0],
+            result[1],
+            result[2],
+            result[3]
         );
     } else {
         anyos_std::println!("DNS: Failed to resolve '{}'", hostname);

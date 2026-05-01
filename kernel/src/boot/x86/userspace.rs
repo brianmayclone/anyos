@@ -35,7 +35,11 @@ pub(super) fn start_userspace(_boot_info: &BootInfo, nogui: bool) -> ! {
     }
 
     arch::hal::disable_interrupts();
-    task::scheduler::spawn(task::scheduler::deferred_reaper_thread, 20, "deferred_reaper");
+    task::scheduler::spawn(
+        task::scheduler::deferred_reaper_thread,
+        20,
+        "deferred_reaper",
+    );
     task::scheduler::spawn(task::cpu_monitor::start, 10, "cpu_monitor");
     task::scheduler::spawn(drivers::usb::poll_thread, 50, "usb_poll");
 

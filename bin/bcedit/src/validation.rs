@@ -10,23 +10,30 @@
 //!   - Missing recommended keys per entry (description)
 
 use crate::config::{
-    Config, MAX_LINES,
-    count_entries, find_key_in, first_section, is_section_header,
-    line_value, section_end, section_name,
+    count_entries, find_key_in, first_section, is_section_header, line_value, section_end,
+    section_name, Config, MAX_LINES,
 };
 
 pub fn check(cfg: &Config) {
     let mut issues = 0usize;
-    let mut notes  = 0usize;
+    let mut notes = 0usize;
 
     // ── global flags ──────────────────────────────────────────────────────────
     let first = first_section(cfg);
     let global_end = if first == MAX_LINES { cfg.count } else { first };
 
-    issues += check_numeric_flag(cfg, global_end, "timeout",
-        "the boot menu will not auto-select an entry");
-    issues += check_numeric_flag(cfg, global_end, "default",
-        "the boot loader will not know which entry to boot");
+    issues += check_numeric_flag(
+        cfg,
+        global_end,
+        "timeout",
+        "the boot menu will not auto-select an entry",
+    );
+    issues += check_numeric_flag(
+        cfg,
+        global_end,
+        "default",
+        "the boot loader will not know which entry to boot",
+    );
 
     // 'default' index in range?
     let di = find_key_in(cfg, 0, global_end, "default");
@@ -37,7 +44,9 @@ pub fn check(cfg: &Config) {
             if idx >= total {
                 anyos_std::println!(
                     "  ERROR: default={} is out of range — only {} entr{} defined",
-                    idx, total, if total == 1 { "y" } else { "ies" }
+                    idx,
+                    total,
+                    if total == 1 { "y" } else { "ies" }
                 );
                 issues += 1;
             }
@@ -60,7 +69,7 @@ pub fn check(cfg: &Config) {
         let s = cfg.lines[i].as_str();
         if is_section_header(s) {
             let name = section_name(s);
-            let end  = section_end(cfg, i);
+            let end = section_end(cfg, i);
 
             // required: kernel
             if find_key_in(cfg, i + 1, end, "kernel") == MAX_LINES {
@@ -83,8 +92,11 @@ pub fn check(cfg: &Config) {
     // ── summary ───────────────────────────────────────────────────────────────
     anyos_std::println!("");
     if issues == 0 && notes == 0 {
-        anyos_std::println!("OK — config is valid ({} entr{}).",
-            entry_count, if entry_count == 1 { "y" } else { "ies" });
+        anyos_std::println!(
+            "OK — config is valid ({} entr{}).",
+            entry_count,
+            if entry_count == 1 { "y" } else { "ies" }
+        );
     } else {
         if issues > 0 {
             anyos_std::println!("{} error(s) found — fix before rebooting.", issues);
@@ -107,9 +119,17 @@ fn check_numeric_flag(cfg: &Config, global_end: usize, key: &str, missing_hint: 
     }
     let v = line_value(cfg.lines[pos].as_str());
     let mut ok = !v.is_empty();
-    for b in v.as_bytes() { if !b.is_ascii_digit() { ok = false; } }
+    for b in v.as_bytes() {
+        if !b.is_ascii_digit() {
+            ok = false;
+        }
+    }
     if !ok {
-        anyos_std::println!("  ERROR: '{}' value '{}' is not a valid non-negative integer", key, v);
+        anyos_std::println!(
+            "  ERROR: '{}' value '{}' is not a valid non-negative integer",
+            key,
+            v
+        );
         return 1;
     }
     0
@@ -144,7 +164,10 @@ fn warn_duplicate_keys(cfg: &Config, entry_name: &str, start: usize, end: usize)
     let mut j = start;
     while j < end {
         let line_j = cfg.lines[j].as_str();
-        if line_j.is_empty() || line_j.starts_with('#') { j += 1; continue; }
+        if line_j.is_empty() || line_j.starts_with('#') {
+            j += 1;
+            continue;
+        }
         if let Some(eq) = line_j.find('=') {
             let key = &line_j[..eq];
             let mut k = j + 1;
@@ -155,7 +178,9 @@ fn warn_duplicate_keys(cfg: &Config, entry_name: &str, start: usize, end: usize)
                     && &line_k[..key.len()] == key
                 {
                     anyos_std::println!(
-                        "  WARNING: duplicate key '{}' in entry '{}'", key, entry_name
+                        "  WARNING: duplicate key '{}' in entry '{}'",
+                        key,
+                        entry_name
                     );
                     dups += 1;
                 }
@@ -169,10 +194,14 @@ fn warn_duplicate_keys(cfg: &Config, entry_name: &str, start: usize, end: usize)
 
 /// Parse a decimal string to usize. Returns None on invalid input.
 fn parse_usize(s: &str) -> Option<usize> {
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut n = 0usize;
     for b in s.as_bytes() {
-        if !b.is_ascii_digit() { return None; }
+        if !b.is_ascii_digit() {
+            return None;
+        }
         n = n * 10 + (*b - b'0') as usize;
     }
     Some(n)

@@ -12,8 +12,10 @@
 
 use crate::ipc_protocol as proto;
 
-use super::window::{HitTest, EVENT_DRAG_ENTER, EVENT_DRAG_LEAVE, EVENT_DRAG_OVER,
-    EVENT_DRAG_FEEDBACK, EVENT_DRAG_END, EVENT_DROP};
+use super::window::{
+    HitTest, EVENT_DRAG_END, EVENT_DRAG_ENTER, EVENT_DRAG_FEEDBACK, EVENT_DRAG_LEAVE,
+    EVENT_DRAG_OVER, EVENT_DROP,
+};
 use super::Desktop;
 
 /// Live cross-window drag session tracked by the compositor.
@@ -131,12 +133,8 @@ impl Desktop {
     pub(crate) fn drag_clear_image(&mut self) {
         if let Some(img) = self.compositor.drag_image.take() {
             if img.last_drawn {
-                let r = crate::compositor::Rect::new(
-                    img.last_x,
-                    img.last_y,
-                    img.image_w,
-                    img.image_h,
-                );
+                let r =
+                    crate::compositor::Rect::new(img.last_x, img.last_y, img.image_w, img.image_h);
                 self.compositor.add_damage(r);
             }
             anyos_std::ipc::shm_unmap(img.shm_id);
@@ -178,11 +176,7 @@ impl Desktop {
 
     /// Target opt-in. Returns the negotiated effect (0 if the request didn't
     /// overlap the source's allowed effects).
-    pub(crate) fn drag_accept(
-        &mut self,
-        target_window_id: u32,
-        requested_effects: u32,
-    ) -> u32 {
+    pub(crate) fn drag_accept(&mut self, target_window_id: u32, requested_effects: u32) -> u32 {
         // Compute the negotiated effect, then mutate, then notify source.
         let (effect, source_window_id, source_target) = {
             let drag = match self.global_drag.as_mut() {
@@ -210,10 +204,7 @@ impl Desktop {
             (effect, drag.source_window_id, target_window_id)
         };
         let _ = source_target;
-        self.push_event(
-            source_window_id,
-            [EVENT_DRAG_FEEDBACK, 1, effect, 0, 0],
-        );
+        self.push_event(source_window_id, [EVENT_DRAG_FEEDBACK, 1, effect, 0, 0]);
         effect
     }
 
@@ -227,10 +218,7 @@ impl Desktop {
             }
             _ => return,
         };
-        self.push_event(
-            source_window_id,
-            [EVENT_DRAG_FEEDBACK, 0, 0, 0, 0],
-        );
+        self.push_event(source_window_id, [EVENT_DRAG_FEEDBACK, 0, 0, 0, 0]);
     }
 
     // ── Routing (mouse_move / mouse_up) ────────────────────────────────
@@ -278,10 +266,7 @@ impl Desktop {
                 let xy = drag_pack_xy(self, target_id, mx, my);
                 let mod_eff = modifiers | ((allowed_effects & 0xFF) << 8);
                 // Wire: [type, target_id, payload_len, xy, mod_eff]
-                self.push_event(
-                    target_id,
-                    [EVENT_DRAG_OVER, payload_len, xy, mod_eff, 0],
-                );
+                self.push_event(target_id, [EVENT_DRAG_OVER, payload_len, xy, mod_eff, 0]);
             }
             return;
         }
@@ -307,10 +292,7 @@ impl Desktop {
             let xy = drag_pack_xy(self, new_id, mx, my);
             let mod_eff = modifiers | ((allowed_effects & 0xFF) << 8);
             // Wire: [type, new_id, payload_len, xy, mod_eff]
-            self.push_event(
-                new_id,
-                [EVENT_DRAG_OVER, payload_len, xy, mod_eff, 0],
-            );
+            self.push_event(new_id, [EVENT_DRAG_OVER, payload_len, xy, mod_eff, 0]);
         }
         let target_present = if new_target.is_some() { 1 } else { 0 };
         // Wire: [type, source_window_id, target_present, 0, 0]

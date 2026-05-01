@@ -388,7 +388,10 @@ fn read_schema_v2(data: &[u8]) -> Result<Vec<TableMeta>, String> {
     Ok(tables)
 }
 
-fn read_schema_definition_v2(data: &[u8], mut page_num: u32) -> Result<(Vec<ColumnMeta>, Vec<IndexMeta>), String> {
+fn read_schema_definition_v2(
+    data: &[u8],
+    mut page_num: u32,
+) -> Result<(Vec<ColumnMeta>, Vec<IndexMeta>), String> {
     let mut columns = Vec::new();
     let mut indexes = Vec::new();
 
@@ -396,7 +399,11 @@ fn read_schema_definition_v2(data: &[u8], mut page_num: u32) -> Result<(Vec<Colu
         let page = page_slice(data, page_num)?;
         let next_page = read_u32(page, 0)?;
         let used_end = read_u16(page, 4)? as usize;
-        let end = if used_end == 0 { 8 } else { used_end.min(page.len()) };
+        let end = if used_end == 0 {
+            8
+        } else {
+            used_end.min(page.len())
+        };
         let structured = page[6] == 1;
         let mut pos = 8usize;
 

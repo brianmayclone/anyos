@@ -35,7 +35,11 @@ pub fn recover_pending_upgrade(root: &str) -> Result<u32, String> {
     lines.reverse();
 
     for target in lines {
-        let backup = format!("{}/{}", backup_root.trim_end_matches('/'), strip_leading_slash(target));
+        let backup = format!(
+            "{}/{}",
+            backup_root.trim_end_matches('/'),
+            strip_leading_slash(target)
+        );
         if path_exists(&backup) {
             ensure_parent_dirs(target);
             copy_file(&backup, target)?;

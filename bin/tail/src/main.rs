@@ -11,9 +11,13 @@ fn read_all(fd: u32) -> (anyos_std::Vec<u8>, usize) {
     let mut read_buf = [0u8; 512];
     loop {
         let n = fs::read(fd, &mut read_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         let n = n as usize;
-        if total + n > file_buf.len() { break; }
+        if total + n > file_buf.len() {
+            break;
+        }
         file_buf[total..total + n].copy_from_slice(&read_buf[..n]);
         total += n;
     }
@@ -68,13 +72,19 @@ fn main() {
 
     if let Some(c_val) = byte_mode {
         let max_bytes = parse_num(c_val);
-        let n = if max_bytes == 0 { 512 } else { max_bytes as usize };
+        let n = if max_bytes == 0 {
+            512
+        } else {
+            max_bytes as usize
+        };
         let start = if total > n { total - n } else { 0 };
         if let Ok(s) = core::str::from_utf8(&data[start..]) {
             anyos_std::print!("{}", s);
         }
         if !follow || fd == 0 {
-            if fd != 0 { fs::close(fd); }
+            if fd != 0 {
+                fs::close(fd);
+            }
             return;
         }
     } else {
@@ -96,7 +106,9 @@ fn main() {
         }
 
         if !follow || fd == 0 {
-            if fd != 0 { fs::close(fd); }
+            if fd != 0 {
+                fs::close(fd);
+            }
             return;
         }
     }
@@ -107,7 +119,9 @@ fn main() {
     let mut offset: u32 = total as u32;
 
     // Close the fd we used for initial read; we'll reopen each iteration.
-    if fd != 0 { fs::close(fd); }
+    if fd != 0 {
+        fs::close(fd);
+    }
 
     let mut read_buf = [0u8; 4096];
     loop {
@@ -138,7 +152,9 @@ fn main() {
             // Read and print all new data
             loop {
                 let n = fs::read(follow_fd, &mut read_buf);
-                if n == 0 || n == u32::MAX { break; }
+                if n == 0 || n == u32::MAX {
+                    break;
+                }
                 let n = n as usize;
                 if let Ok(s) = core::str::from_utf8(&read_buf[..n]) {
                     anyos_std::print!("{}", s);

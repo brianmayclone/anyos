@@ -219,15 +219,7 @@ pub static FONT8X8: [u8; GLYPH_COUNT * GLYPH_H] = [
 /// - `fg`     — foreground ARGB color (e.g. `0xFFFFFFFF` for white)
 /// - `bg`     — background ARGB color (e.g. `0x00000000` for transparent)
 ///              Set `bg` alpha to 0 to skip background pixels.
-pub fn draw_char(
-    fb: &mut [u32],
-    stride: usize,
-    ch: u8,
-    px: usize,
-    py: usize,
-    fg: u32,
-    bg: u32,
-) {
+pub fn draw_char(fb: &mut [u32], stride: usize, ch: u8, px: usize, py: usize, fg: u32, bg: u32) {
     let glyph_idx = if ch >= 0x20 && ch <= 0x7E {
         (ch - 0x20) as usize
     } else {

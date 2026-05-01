@@ -29,9 +29,9 @@
 #![no_std]
 #![no_main]
 
+mod commands;
 mod config;
 mod io;
-mod commands;
 mod validation;
 
 anyos_std::entry!(main);
@@ -67,7 +67,9 @@ fn main() {
 
     if args.pos_count == 0 {
         let mut cfg = config::Config::new();
-        if io::read_file(&mut cfg) { commands::list(&cfg, false); }
+        if io::read_file(&mut cfg) {
+            commands::list(&cfg, false);
+        }
         return;
     }
 
@@ -77,12 +79,16 @@ fn main() {
     match cmd {
         "list" => {
             let mut cfg = config::Config::new();
-            if io::read_file(&mut cfg) { commands::list(&cfg, true); }
+            if io::read_file(&mut cfg) {
+                commands::list(&cfg, true);
+            }
             return;
         }
         "list-flags" => {
             let mut cfg = config::Config::new();
-            if io::read_file(&mut cfg) { commands::list_flags(&cfg); }
+            if io::read_file(&mut cfg) {
+                commands::list_flags(&cfg);
+            }
             return;
         }
         "show" => {
@@ -91,12 +97,16 @@ fn main() {
                 return;
             }
             let mut cfg = config::Config::new();
-            if io::read_file(&mut cfg) { commands::show(&cfg, args.positional[1]); }
+            if io::read_file(&mut cfg) {
+                commands::show(&cfg, args.positional[1]);
+            }
             return;
         }
         "check" => {
             let mut cfg = config::Config::new();
-            if io::read_file(&mut cfg) { validation::check(&cfg); }
+            if io::read_file(&mut cfg) {
+                validation::check(&cfg);
+            }
             return;
         }
         "init" => {
@@ -112,7 +122,9 @@ fn main() {
 
     // Mutating commands — read, modify, write back
     let mut cfg = config::Config::new();
-    if !io::read_file(&mut cfg) { return; }
+    if !io::read_file(&mut cfg) {
+        return;
+    }
 
     let modified = match cmd {
         "set-flag" => {
@@ -168,7 +180,12 @@ fn main() {
                 anyos_std::println!("Usage: bcedit set <name> <key> <value>");
                 false
             } else {
-                commands::set(&mut cfg, args.positional[1], args.positional[2], args.positional[3])
+                commands::set(
+                    &mut cfg,
+                    args.positional[1],
+                    args.positional[2],
+                    args.positional[3],
+                )
             }
         }
         "del" => {

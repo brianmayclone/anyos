@@ -5,8 +5,8 @@
 //! IPC signal is sent to the dock to reload.
 
 use alloc::format;
-use libconf_schema::{default_bool, default_int, manifest, RegistryScope, ServiceSchema};
 use libanyui_client as ui;
+use libconf_schema::{default_bool, default_int, manifest, RegistryScope, ServiceSchema};
 use ui::Widget;
 
 use crate::layout;
@@ -124,8 +124,12 @@ fn slider_to_icon_size(v: u32) -> u32 {
 
 /// Map icon size (20–128) to slider value (0–100).
 fn icon_size_to_slider(size: u32) -> u32 {
-    if size <= 20 { return 0; }
-    if size >= 128 { return 100; }
+    if size <= 20 {
+        return 0;
+    }
+    if size >= 128 {
+        return 100;
+    }
     (size - 20) * 100 / 108
 }
 
@@ -139,10 +143,16 @@ fn slider_to_mag_size(v: u32, icon_size: u32) -> u32 {
 /// Map mag size to slider value (0–100).
 fn mag_size_to_slider(mag_size: u32, icon_size: u32) -> u32 {
     let min_mag = (icon_size + 1).min(128);
-    if mag_size <= min_mag { return 0; }
-    if mag_size >= 128 { return 100; }
+    if mag_size <= min_mag {
+        return 0;
+    }
+    if mag_size >= 128 {
+        return 100;
+    }
     let range = 128u32.saturating_sub(min_mag);
-    if range == 0 { return 0; }
+    if range == 0 {
+        return 0;
+    }
     (mag_size - min_mag) * 100 / range
 }
 

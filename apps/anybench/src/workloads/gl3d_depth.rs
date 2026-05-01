@@ -5,17 +5,16 @@
 //! depth-buffer read/write overhead under high overdraw. Returns total
 //! depth-tested triangles rendered.
 
+use super::gl3d_common::*;
+use super::GL3D_TEST_MS;
 use alloc::vec::Vec;
 use libanyui_client as anyui;
 use libgl_client as gl;
-use super::GL3D_TEST_MS;
-use super::gl3d_common::*;
 
 const NUM_LAYERS: u32 = 10;
 const TRIS_PER_LAYER: u32 = 100;
 
-const VS_SRC: &str =
-"attribute vec3 aPosition;
+const VS_SRC: &str = "attribute vec3 aPosition;
 attribute vec3 aColor;
 uniform mat4 uMVP;
 varying vec3 vColor;
@@ -24,8 +23,7 @@ void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
 }";
 
-const FS_SRC: &str =
-"varying vec3 vColor;
+const FS_SRC: &str = "varying vec3 vColor;
 void main() {
     gl_FragColor = vec4(vColor, 1.0);
 }";
@@ -34,7 +32,9 @@ void main() {
 pub fn bench_gl3d_depth(canvas: &anyui::Canvas) -> u64 {
     let w = canvas.get_stride();
     let h = canvas.get_height();
-    if !ensure_gl_init(w, h) { return 0; }
+    if !ensure_gl_init(w, h) {
+        return 0;
+    }
 
     let (program, vs, fs) = match compile_program(VS_SRC, FS_SRC) {
         Some(p) => p,

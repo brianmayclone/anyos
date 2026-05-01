@@ -102,8 +102,12 @@ pub(crate) fn apply_theme() {
     st.nav_group.set_color(tc.toolbar_bg);
     st.btn_back
         .set_system_icon("chevron-left", ui::IconType::Outline, tc.text_secondary, 20);
-    st.btn_forward
-        .set_system_icon("chevron-right", ui::IconType::Outline, tc.text_secondary, 20);
+    st.btn_forward.set_system_icon(
+        "chevron-right",
+        ui::IconType::Outline,
+        tc.text_secondary,
+        20,
+    );
     st.btn_reload
         .set_system_icon("refresh", ui::IconType::Outline, tc.text_secondary, 20);
     st.btn_menu

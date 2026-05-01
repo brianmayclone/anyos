@@ -3,12 +3,12 @@
 //! Resolves the install order for a set of packages, ensuring dependencies
 //! are installed before the packages that require them.
 
+use crate::db::Database;
+use crate::index::{Index, PackageInfo};
+use crate::version::{self, Version};
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::println;
-use crate::index::{Index, PackageInfo};
-use crate::db::Database;
-use crate::version::{self, Version};
 
 /// A package scheduled for installation.
 #[derive(Debug, Clone)]
@@ -23,11 +23,7 @@ pub struct InstallItem {
 ///
 /// Returns an ordered list (dependencies first) of packages to install.
 /// Packages already installed with a sufficient version are skipped.
-pub fn resolve(
-    targets: &[&str],
-    index: &Index,
-    db: &Database,
-) -> Result<Vec<InstallItem>, String> {
+pub fn resolve(targets: &[&str], index: &Index, db: &Database) -> Result<Vec<InstallItem>, String> {
     let mut resolved: Vec<InstallItem> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
 
@@ -59,14 +55,17 @@ fn resolve_one(
     seen.push(String::from(name));
 
     // Find in index
-    let pkg = index.find_provider(name).ok_or_else(|| {
-        alloc::format!("package '{}' not found in index", name)
-    })?;
+    let pkg = index
+        .find_provider(name)
+        .ok_or_else(|| alloc::format!("package '{}' not found in index", name))?;
 
     // Check if already installed with sufficient version
     if let Some(installed) = db.get(&pkg.name) {
-        let installed_ver = Version::parse(&installed.version)
-            .unwrap_or(Version { major: 0, minor: 0, patch: 0 });
+        let installed_ver = Version::parse(&installed.version).unwrap_or(Version {
+            major: 0,
+            minor: 0,
+            patch: 0,
+        });
         if installed_ver >= pkg.version {
             // Already up to date
             seen.pop();
@@ -81,8 +80,11 @@ fn resolve_one(
         // Check if already installed and satisfies constraint
         if let Some(installed) = db.get(dep_name) {
             if let Some(ref c) = constraint {
-                let installed_ver = Version::parse(&installed.version)
-                    .unwrap_or(Version { major: 0, minor: 0, patch: 0 });
+                let installed_ver = Version::parse(&installed.version).unwrap_or(Version {
+                    major: 0,
+                    minor: 0,
+                    patch: 0,
+                });
                 if c.satisfied_by(&installed_ver) {
                     continue; // Dependency satisfied
                 }

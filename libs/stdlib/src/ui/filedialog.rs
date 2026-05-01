@@ -153,7 +153,11 @@ unsafe fn resolve_sym<T: Copy>(base: u64, name: &[u8]) -> Option<T> {
         return None;
     }
 
-    let load_bias = if link_base != u64::MAX { base - link_base } else { 0 };
+    let load_bias = if link_base != u64::MAX {
+        base - link_base
+    } else {
+        0
+    };
     dynamic_va += load_bias;
 
     let mut symtab: u64 = 0;

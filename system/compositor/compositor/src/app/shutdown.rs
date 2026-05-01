@@ -9,7 +9,10 @@ use crate::render::{acquire_lock, desktop_ref, release_lock};
 
 pub(crate) fn perform_shutdown(mode: u8, service_tids: &mut Vec<u32>) {
     let action = if mode == 2 { "restart" } else { "shutdown" };
-    println!("compositor: {} requested — terminating all processes...", action);
+    println!(
+        "compositor: {} requested — terminating all processes...",
+        action
+    );
 
     let mut tids_to_kill: Vec<u32>;
     {
@@ -89,7 +92,9 @@ pub(crate) fn perform_shutdown(mode: u8, service_tids: &mut Vec<u32>) {
             }
         }
 
-        draw_shutdown_logo(fb_ptr, w, h, fb_stride, top_r, top_g, top_b, bot_r, bot_g, bot_b);
+        draw_shutdown_logo(
+            fb_ptr, w, h, fb_stride, top_r, top_g, top_b, bot_r, bot_g, bot_b,
+        );
 
         #[cfg(target_arch = "x86_64")]
         unsafe {
@@ -100,8 +105,10 @@ pub(crate) fn perform_shutdown(mode: u8, service_tids: &mut Vec<u32>) {
             core::arch::asm!("dsb st", options(nostack, preserves_flags));
         }
 
-        c.gpu_cmds.push([compositor::gpu::GPU_CURSOR_SHOW, 0, 0, 0, 0, 0, 0, 0, 0]);
-        c.gpu_cmds.push([compositor::gpu::GPU_UPDATE, 0, 0, w, h, 0, 0, 0, 0]);
+        c.gpu_cmds
+            .push([compositor::gpu::GPU_CURSOR_SHOW, 0, 0, 0, 0, 0, 0, 0, 0]);
+        c.gpu_cmds
+            .push([compositor::gpu::GPU_UPDATE, 0, 0, w, h, 0, 0, 0, 0]);
         c.flush_gpu();
 
         release_lock();

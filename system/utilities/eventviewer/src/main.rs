@@ -6,9 +6,9 @@
 #![no_std]
 #![no_main]
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use anyos_std::i18n;
 use libanyui_client as ui;
 use ui::Widget;
@@ -241,9 +241,16 @@ fn populate_grid(a: &App) {
     let total = a.entries.len();
     let shown = a.filtered.len();
     if a.filter_level == 0 && a.search_text.is_empty() {
-        a.status.set_text(&format!("{} {}", total, i18n::t("events")));
+        a.status
+            .set_text(&format!("{} {}", total, i18n::t("events")));
     } else {
-        a.status.set_text(&format!("{} {} {} {}", shown, i18n::t("of"), total, i18n::t("events")));
+        a.status.set_text(&format!(
+            "{} {} {} {}",
+            shown,
+            i18n::t("of"),
+            total,
+            i18n::t("events")
+        ));
     }
 }
 
@@ -255,10 +262,7 @@ fn show_detail(a: &App, row_index: u32) {
     }
     let idx = a.filtered[row_index as usize];
     let e = &a.entries[idx];
-    let detail = format!(
-        "{} {} {}: {}",
-        e.timestamp, e.level, e.source, e.message
-    );
+    let detail = format!("{} {} {}: {}", e.timestamp, e.level, e.source, e.message);
     a.detail.set_text(&detail);
 }
 
@@ -431,32 +435,72 @@ fn main() {
     // ── Menu bar ──
     let mut mb = ui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("Refresh"), 0)
-            .separator()
-            .item(2, i18n::t("Quit"), 0)
+        .item(1, i18n::t("Refresh"), 0)
+        .separator()
+        .item(2, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("View"))
-            .item(10, i18n::t("All"), 0)
-            .item(11, i18n::t("Errors"), 0)
-            .item(12, i18n::t("Warnings"), 0)
-            .item(13, i18n::t("Info"), 0)
-            .item(14, i18n::t("Kernel"), 0)
-            .item(15, i18n::t("Debug"), 0)
+        .item(10, i18n::t("All"), 0)
+        .item(11, i18n::t("Errors"), 0)
+        .item(12, i18n::t("Warnings"), 0)
+        .item(13, i18n::t("Info"), 0)
+        .item(14, i18n::t("Kernel"), 0)
+        .item(15, i18n::t("Debug"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = ui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(move |e| {
-        match e.item_id {
-            1 => reload(),
-            2 => ui::quit(),
-            10 => { seg_level.set_state(0); let a = app(); a.filter_level = 0; apply_filters(a); populate_grid(a); a.detail.set_text(""); }
-            11 => { seg_level.set_state(1); let a = app(); a.filter_level = 1; apply_filters(a); populate_grid(a); a.detail.set_text(""); }
-            12 => { seg_level.set_state(2); let a = app(); a.filter_level = 2; apply_filters(a); populate_grid(a); a.detail.set_text(""); }
-            13 => { seg_level.set_state(3); let a = app(); a.filter_level = 3; apply_filters(a); populate_grid(a); a.detail.set_text(""); }
-            14 => { seg_level.set_state(4); let a = app(); a.filter_level = 4; apply_filters(a); populate_grid(a); a.detail.set_text(""); }
-            15 => { seg_level.set_state(5); let a = app(); a.filter_level = 5; apply_filters(a); populate_grid(a); a.detail.set_text(""); }
-            _ => {}
+    menu.on_item(move |e| match e.item_id {
+        1 => reload(),
+        2 => ui::quit(),
+        10 => {
+            seg_level.set_state(0);
+            let a = app();
+            a.filter_level = 0;
+            apply_filters(a);
+            populate_grid(a);
+            a.detail.set_text("");
         }
+        11 => {
+            seg_level.set_state(1);
+            let a = app();
+            a.filter_level = 1;
+            apply_filters(a);
+            populate_grid(a);
+            a.detail.set_text("");
+        }
+        12 => {
+            seg_level.set_state(2);
+            let a = app();
+            a.filter_level = 2;
+            apply_filters(a);
+            populate_grid(a);
+            a.detail.set_text("");
+        }
+        13 => {
+            seg_level.set_state(3);
+            let a = app();
+            a.filter_level = 3;
+            apply_filters(a);
+            populate_grid(a);
+            a.detail.set_text("");
+        }
+        14 => {
+            seg_level.set_state(4);
+            let a = app();
+            a.filter_level = 4;
+            apply_filters(a);
+            populate_grid(a);
+            a.detail.set_text("");
+        }
+        15 => {
+            seg_level.set_state(5);
+            let a = app();
+            a.filter_level = 5;
+            apply_filters(a);
+            populate_grid(a);
+            a.detail.set_text("");
+        }
+        _ => {}
     });
 
     // Auto-refresh every 10 seconds

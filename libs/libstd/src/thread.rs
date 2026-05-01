@@ -32,7 +32,9 @@ impl<T> JoinHandle<T> {
 
     /// Get the thread handle.
     pub fn thread(&self) -> Thread {
-        Thread { tid: self.inner.tid() }
+        Thread {
+            tid: self.inner.tid(),
+        }
     }
 
     /// Check if the thread is finished (non-blocking).
@@ -73,7 +75,10 @@ pub struct Builder {
 
 impl Builder {
     pub fn new() -> Self {
-        Builder { name: None, stack_size: None }
+        Builder {
+            name: None,
+            stack_size: None,
+        }
     }
 
     pub fn name(mut self, name: String) -> Self {
@@ -115,11 +120,9 @@ impl Builder {
             THREAD_CLOSURE = Some(closure_ptr as usize);
         }
 
-        let thread = anyos_std::process::Thread::spawn_with_stack(
-            thread_trampoline,
-            stack_size,
-            &name,
-        ).map_err(|e| crate::io::Error::from_anyos(e))?;
+        let thread =
+            anyos_std::process::Thread::spawn_with_stack(thread_trampoline, stack_size, &name)
+                .map_err(|e| crate::io::Error::from_anyos(e))?;
 
         Ok(JoinHandle {
             inner: thread,
@@ -134,13 +137,9 @@ impl Builder {
 static mut THREAD_CLOSURE: Option<usize> = None;
 
 fn thread_trampoline() {
-    let closure_ptr = unsafe {
-        THREAD_CLOSURE.take()
-    };
+    let closure_ptr = unsafe { THREAD_CLOSURE.take() };
     if let Some(ptr) = closure_ptr {
-        let closure = unsafe {
-            Box::from_raw(ptr as *mut Box<dyn FnOnce() + Send + 'static>)
-        };
+        let closure = unsafe { Box::from_raw(ptr as *mut Box<dyn FnOnce() + Send + 'static>) };
         (*closure)();
     }
 }
@@ -169,7 +168,9 @@ pub fn yield_now() {
 
 /// Get the current thread.
 pub fn current() -> Thread {
-    Thread { tid: anyos_std::process::getpid() }
+    Thread {
+        tid: anyos_std::process::getpid(),
+    }
 }
 
 /// Park the current thread (simplified: just yields).

@@ -29,16 +29,15 @@ mod workloads;
 
 use alloc::format;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
 use anyos_std::i18n;
-use libanyui_client as anyui;
 use anyui::Widget;
+use core::sync::atomic::{AtomicU32, Ordering};
+use libanyui_client as anyui;
 
 use workloads::{
-    NUM_CPU_TESTS, NUM_GPU_TESTS, NUM_GL3D_TESTS, NUM_DISK_TESTS,
-    CPU_BASELINES, GPU_BASELINES, GL3D_BASELINES, DISK_BASELINES,
-    CPU_TEST_NAMES, GPU_TEST_NAMES, GL3D_TEST_NAMES, DISK_TEST_NAMES,
-    run_cpu_bench, run_gpu_test, run_gl3d_test, run_disk_bench,
+    run_cpu_bench, run_disk_bench, run_gl3d_test, run_gpu_test, CPU_BASELINES, CPU_TEST_NAMES,
+    DISK_BASELINES, DISK_TEST_NAMES, GL3D_BASELINES, GL3D_TEST_NAMES, GPU_BASELINES,
+    GPU_TEST_NAMES, NUM_CPU_TESTS, NUM_DISK_TESTS, NUM_GL3D_TESTS, NUM_GPU_TESTS,
 };
 
 anyos_std::entry!(main);
@@ -168,11 +167,19 @@ fn fork_bench_worker(bench_id: u32) -> u32 {
         // Child process: run benchmark, exit with result as exit code
         let result = run_cpu_bench(bench_id);
         // Cap at u32::MAX - 2 to avoid conflicting with STILL_RUNNING / error sentinels
-        let code = if result > 0xFFFF_FFFD { 0xFFFF_FFFD } else { result as u32 };
+        let code = if result > 0xFFFF_FFFD {
+            0xFFFF_FFFD
+        } else {
+            result as u32
+        };
         anyos_std::process::exit(code);
     }
     // Parent: child == child TID (>0), or u32::MAX on error
-    if child == u32::MAX { 0 } else { child }
+    if child == u32::MAX {
+        0
+    } else {
+        child
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -180,13 +187,17 @@ fn fork_bench_worker(bench_id: u32) -> u32 {
 // ════════════════════════════════════════════════════════════════════════
 
 fn compute_score(raw: u64, baseline: u64) -> u32 {
-    if baseline == 0 { return 0; }
+    if baseline == 0 {
+        return 0;
+    }
     ((raw * 1000) / baseline) as u32
 }
 
 /// Geometric mean of scores (integer approximation via log-sum in fixed-point).
 fn geometric_mean(scores: &[u32]) -> u32 {
-    if scores.is_empty() { return 0; }
+    if scores.is_empty() {
+        return 0;
+    }
     let mut log_sum: u64 = 0;
     let mut count = 0u32;
     for &s in scores {
@@ -195,7 +206,9 @@ fn geometric_mean(scores: &[u32]) -> u32 {
             count += 1;
         }
     }
-    if count == 0 { return 0; }
+    if count == 0 {
+        return 0;
+    }
     let avg_log = log_sum / count as u64;
     int_exp2_fp(avg_log)
 }
@@ -205,7 +218,9 @@ fn geometric_mean(scores: &[u32]) -> u32 {
 /// Uses the integer part (position of highest set bit) plus 16 iterations
 /// of repeated squaring to refine the fractional part.
 fn int_log2_fp(x: u64) -> u64 {
-    if x <= 1 { return 0; }
+    if x <= 1 {
+        return 0;
+    }
     let mut val = x;
     let mut result: u64 = 0;
     while val >= 2 {
@@ -236,13 +251,17 @@ fn int_log2_fp(x: u64) -> u64 {
 ///   2^f ~ 1 + f * ln2 + f^2 * ln2^2/2 + f^3 * ln2^3/6
 fn int_exp2_fp(x: u64) -> u32 {
     let int_part = (x >> 16) as u32;
-    if int_part >= 31 { return u32::MAX; }
+    if int_part >= 31 {
+        return u32::MAX;
+    }
     let base = 1u64 << int_part;
     let f = (x & 0xFFFF) as u64;
-    if f == 0 { return base as u32; }
+    if f == 0 {
+        return base as u32;
+    }
     const C1: u64 = 45426; // ln(2)       * 65536
     const C2: u64 = 15743; // ln(2)^2 / 2 * 65536
-    const C3: u64 = 3634;  // ln(2)^3 / 6 * 65536
+    const C3: u64 = 3634; // ln(2)^3 / 6 * 65536
     let mut r = C3;
     r = (r * f) >> 16;
     r += C2;
@@ -251,7 +270,11 @@ fn int_exp2_fp(x: u64) -> u32 {
     r = (r * f) >> 16;
     r += 65536;
     let result = (base * r) >> 16;
-    if result > u32::MAX as u64 { u32::MAX } else { result as u32 }
+    if result > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        result as u32
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -288,26 +311,29 @@ fn build_ui() {
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("Quit"), 0)
+        .item(1, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("Benchmark"))
-            .item(10, i18n::t("Run All"), 0)
+        .item(10, i18n::t("Run All"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menubar = anyui::MenuBar::set(win.id(), menu_data);
-    menubar.on_item(|e| {
-        match e.item_id {
-            1 => anyui::quit(),
-            10 => start_benchmark(BenchMode::All),
-            _ => {}
-        }
+    menubar.on_item(|e| match e.item_id {
+        1 => anyui::quit(),
+        10 => start_benchmark(BenchMode::All),
+        _ => {}
     });
 
     let num_cpus = anyos_std::sys::sysinfo(2, &mut [0u8; 4]);
     let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
 
     // ── Tab bar ──
-    let tabs_str = format!("{}|{}|{}|3D|I/O", i18n::t("Overview"), i18n::t("CPU"), i18n::t("GPU"));
+    let tabs_str = format!(
+        "{}|{}|{}|3D|I/O",
+        i18n::t("Overview"),
+        i18n::t("CPU"),
+        i18n::t("GPU")
+    );
     let tabs = anyui::SegmentedControl::new(&tabs_str);
     tabs.set_dock(anyui::DOCK_TOP);
     tabs.set_size(640, 36);
@@ -332,9 +358,13 @@ fn build_ui() {
     lbl_title.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_title);
 
-    let lbl_subtitle = anyui::Label::new(&format!("{}  |  {} {} {}",
+    let lbl_subtitle = anyui::Label::new(&format!(
+        "{}  |  {} {} {}",
         i18n::t("Comprehensive System Benchmark"),
-        num_cpus, i18n::t("CPU Core(s)"), i18n::t("detected")));
+        num_cpus,
+        i18n::t("CPU Core(s)"),
+        i18n::t("detected")
+    ));
     lbl_subtitle.set_position(0, 60);
     lbl_subtitle.set_size(640, 20);
     lbl_subtitle.set_font_size(13);
@@ -388,37 +418,50 @@ fn build_ui() {
     panel_overview.add(&lbl_status);
 
     // Score summary cards
-    let card_labels = [i18n::t("CPU Single-Core"), i18n::t("CPU Multi-Core"), i18n::t("GPU OnScreen"), i18n::t("GPU OffScreen"), "3D", "Disk I/O"];
+    let card_labels = [
+        i18n::t("CPU Single-Core"),
+        i18n::t("CPU Multi-Core"),
+        i18n::t("GPU OnScreen"),
+        i18n::t("GPU OffScreen"),
+        "3D",
+        "Disk I/O",
+    ];
     let card_x: [i32; 6] = [8, 112, 216, 320, 424, 528];
-    let _lbl_summary_titles: Vec<anyui::Label> = (0..6).map(|i| {
-        let l = anyui::Label::new(card_labels[i]);
-        l.set_position(card_x[i], 285);
-        l.set_size(100, 16);
-        l.set_font_size(10);
-        l.set_text_color(colors.text_secondary);
-        l.set_state(TEXT_ALIGN_CENTER);
-        panel_overview.add(&l);
-        l
-    }).collect();
+    let _lbl_summary_titles: Vec<anyui::Label> = (0..6)
+        .map(|i| {
+            let l = anyui::Label::new(card_labels[i]);
+            l.set_position(card_x[i], 285);
+            l.set_size(100, 16);
+            l.set_font_size(10);
+            l.set_text_color(colors.text_secondary);
+            l.set_state(TEXT_ALIGN_CENTER);
+            panel_overview.add(&l);
+            l
+        })
+        .collect();
 
-    let lbl_summary_scores: Vec<anyui::Label> = (0..6).map(|i| {
-        let l = anyui::Label::new("-");
-        l.set_position(card_x[i], 305);
-        l.set_size(100, 28);
-        l.set_font_size(22);
-        l.set_font(1);
-        l.set_text_color(colors.warning);
-        l.set_state(TEXT_ALIGN_CENTER);
-        panel_overview.add(&l);
-        l
-    }).collect();
+    let lbl_summary_scores: Vec<anyui::Label> = (0..6)
+        .map(|i| {
+            let l = anyui::Label::new("-");
+            l.set_position(card_x[i], 305);
+            l.set_size(100, 28);
+            l.set_font_size(22);
+            l.set_font(1);
+            l.set_text_color(colors.warning);
+            l.set_state(TEXT_ALIGN_CENTER);
+            panel_overview.add(&l);
+            l
+        })
+        .collect();
 
     let div = anyui::Divider::new();
     div.set_position(32, 350);
     div.set_size(576, 1);
     panel_overview.add(&div);
 
-    let lbl_info = anyui::Label::new(i18n::t("anyBench measures CPU, GPU, 3D, and Disk I/O performance with standardized workloads."));
+    let lbl_info = anyui::Label::new(i18n::t(
+        "anyBench measures CPU, GPU, 3D, and Disk I/O performance with standardized workloads.",
+    ));
     lbl_info.set_position(0, 370);
     lbl_info.set_size(640, 16);
     lbl_info.set_font_size(11);
@@ -426,7 +469,9 @@ fn build_ui() {
     lbl_info.set_state(TEXT_ALIGN_CENTER);
     panel_overview.add(&lbl_info);
 
-    let lbl_info2 = anyui::Label::new(i18n::t("Higher scores indicate better performance. Baseline: 1000 pts."));
+    let lbl_info2 = anyui::Label::new(i18n::t(
+        "Higher scores indicate better performance. Baseline: 1000 pts.",
+    ));
     lbl_info2.set_position(0, 390);
     lbl_info2.set_size(640, 16);
     lbl_info2.set_font_size(11);
@@ -643,7 +688,8 @@ fn build_ui() {
     lbl_3d_info2.set_text_color(colors.text_secondary);
     panel_3d.add(&lbl_3d_info2);
 
-    let lbl_3d_info3 = anyui::Label::new("vertex transforms, shading, texturing, depth, draw calls");
+    let lbl_3d_info3 =
+        anyui::Label::new("vertex transforms, shading, texturing, depth, draw calls");
     lbl_3d_info3.set_position(16, 238);
     lbl_3d_info3.set_size(280, 16);
     lbl_3d_info3.set_font_size(11);
@@ -743,7 +789,8 @@ fn build_ui() {
     lbl_io_info.set_text_color(colors.text_secondary);
     panel_io.add(&lbl_io_info);
 
-    let lbl_io_info2 = anyui::Label::new("sequential read/write, random access, file create/delete");
+    let lbl_io_info2 =
+        anyui::Label::new("sequential read/write, random access, file create/delete");
     lbl_io_info2.set_position(16, 218);
     lbl_io_info2.set_size(400, 16);
     lbl_io_info2.set_font_size(11);
@@ -751,7 +798,13 @@ fn build_ui() {
     panel_io.add(&lbl_io_info2);
 
     // ── Tab switching ──
-    tabs.connect_panels(&[&panel_overview, &panel_cpu, &panel_gpu, &panel_3d, &panel_io]);
+    tabs.connect_panels(&[
+        &panel_overview,
+        &panel_cpu,
+        &panel_gpu,
+        &panel_3d,
+        &panel_io,
+    ]);
 
     unsafe {
         SUMMARY_SCORE_IDS = [
@@ -845,10 +898,14 @@ enum BenchMode {
 
 fn start_benchmark(mode: BenchMode) {
     let a = app();
-    if a.running { return; }
+    if a.running {
+        return;
+    }
 
     a.running = true;
-    unsafe { BENCH_MODE = mode; }
+    unsafe {
+        BENCH_MODE = mode;
+    }
 
     // Reset scores
     a.cpu_single_raw = [0; NUM_CPU_TESTS];
@@ -889,13 +946,15 @@ fn start_benchmark(mode: BenchMode) {
             a.phase = BenchPhase::CpuSingle;
             a.current_test = 0;
             a.progress.set_state(0);
-            a.lbl_status.set_text(i18n::t("Starting CPU Single-Core tests..."));
+            a.lbl_status
+                .set_text(i18n::t("Starting CPU Single-Core tests..."));
         }
         BenchMode::GpuOnly => {
             a.phase = BenchPhase::GpuOnScreen;
             a.current_test = 0;
             a.progress.set_state(0);
-            a.lbl_status.set_text(i18n::t("Starting GPU OnScreen tests..."));
+            a.lbl_status
+                .set_text(i18n::t("Starting GPU OnScreen tests..."));
         }
         BenchMode::Gl3dOnly => {
             a.phase = BenchPhase::Gl3D;
@@ -917,7 +976,9 @@ fn start_benchmark(mode: BenchMode) {
 fn total_steps() -> u32 {
     let mode = unsafe { BENCH_MODE };
     match mode {
-        BenchMode::All => (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2 + NUM_GL3D_TESTS + NUM_DISK_TESTS) as u32,
+        BenchMode::All => {
+            (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2 + NUM_GL3D_TESTS + NUM_DISK_TESTS) as u32
+        }
         BenchMode::CpuOnly => (NUM_CPU_TESTS * 2) as u32,
         BenchMode::GpuOnly => (NUM_GPU_TESTS * 2) as u32,
         BenchMode::Gl3dOnly => NUM_GL3D_TESTS as u32,
@@ -932,21 +993,33 @@ fn current_step() -> u32 {
         BenchPhase::CpuSingle => 0,
         BenchPhase::CpuMulti => NUM_CPU_TESTS as u32,
         BenchPhase::GpuOnScreen => {
-            if mode == BenchMode::GpuOnly { 0 }
-            else { (NUM_CPU_TESTS * 2) as u32 }
+            if mode == BenchMode::GpuOnly {
+                0
+            } else {
+                (NUM_CPU_TESTS * 2) as u32
+            }
         }
         BenchPhase::GpuOffScreen => {
-            if mode == BenchMode::GpuOnly { NUM_GPU_TESTS as u32 }
-            else { (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS) as u32 }
+            if mode == BenchMode::GpuOnly {
+                NUM_GPU_TESTS as u32
+            } else {
+                (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS) as u32
+            }
         }
         BenchPhase::Gl3D => {
-            if mode == BenchMode::Gl3dOnly { 0 }
-            else { (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2) as u32 }
+            if mode == BenchMode::Gl3dOnly {
+                0
+            } else {
+                (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2) as u32
+            }
         }
         BenchPhase::DiskIO => {
             let mode = unsafe { BENCH_MODE };
-            if mode == BenchMode::DiskOnly { 0 }
-            else { (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2 + NUM_GL3D_TESTS) as u32 }
+            if mode == BenchMode::DiskOnly {
+                0
+            } else {
+                (NUM_CPU_TESTS * 2 + NUM_GPU_TESTS * 2 + NUM_GL3D_TESTS) as u32
+            }
         }
         BenchPhase::Idle => return total_steps(),
     };
@@ -957,14 +1030,18 @@ static BENCH_STATE: AtomicU32 = AtomicU32::new(0); // 0=ready, 1=running
 
 fn tick_benchmark() {
     let a = app();
-    if !a.running { return; }
+    if !a.running {
+        return;
+    }
 
     let state = BENCH_STATE.load(Ordering::SeqCst);
 
     if state == 0 {
         let progress_pct = if total_steps() > 0 {
             (current_step() * 100 / total_steps()).min(100)
-        } else { 0 };
+        } else {
+            0
+        };
         a.progress.set_state(progress_pct);
 
         match a.phase {
@@ -973,11 +1050,13 @@ fn tick_benchmark() {
                     a.phase = BenchPhase::CpuMulti;
                     a.current_test = 0;
                     update_cpu_single_summary();
-                    a.lbl_status.set_text(i18n::t("Starting CPU Multi-Core tests..."));
+                    a.lbl_status
+                        .set_text(i18n::t("Starting CPU Multi-Core tests..."));
                     return;
                 }
                 let name = CPU_TEST_NAMES[a.current_test];
-                a.lbl_status.set_text(&format!("CPU Single-Core: {}...", name));
+                a.lbl_status
+                    .set_text(&format!("CPU Single-Core: {}...", name));
                 a.cpu_single_scores[a.current_test].set_text("...");
                 a.cpu_single_scores[a.current_test].set_text_color(tc().accent);
 
@@ -1006,11 +1085,17 @@ fn tick_benchmark() {
                     }
                     a.phase = BenchPhase::GpuOnScreen;
                     a.current_test = 0;
-                    a.lbl_status.set_text(i18n::t("Starting GPU OnScreen tests..."));
+                    a.lbl_status
+                        .set_text(i18n::t("Starting GPU OnScreen tests..."));
                     return;
                 }
                 let name = CPU_TEST_NAMES[a.current_test];
-                a.lbl_status.set_text(&format!("{} ({}T): {}...", i18n::t("CPU Multi-Core"), a.num_cpus, name));
+                a.lbl_status.set_text(&format!(
+                    "{} ({}T): {}...",
+                    i18n::t("CPU Multi-Core"),
+                    a.num_cpus,
+                    name
+                ));
                 a.cpu_multi_scores[a.current_test].set_text("...");
                 a.cpu_multi_scores[a.current_test].set_text_color(tc().accent);
 
@@ -1035,7 +1120,8 @@ fn tick_benchmark() {
                     update_gpu_on_summary();
                     a.phase = BenchPhase::GpuOffScreen;
                     a.current_test = 0;
-                    a.lbl_status.set_text(i18n::t("Starting GPU OffScreen tests..."));
+                    a.lbl_status
+                        .set_text(i18n::t("Starting GPU OffScreen tests..."));
                     return;
                 }
                 let name = GPU_TEST_NAMES[a.current_test];
@@ -1067,7 +1153,8 @@ fn tick_benchmark() {
                     return;
                 }
                 let name = GPU_TEST_NAMES[a.current_test];
-                a.lbl_status.set_text(&format!("GPU OffScreen: {}...", name));
+                a.lbl_status
+                    .set_text(&format!("GPU OffScreen: {}...", name));
                 a.gpu_off_scores[a.current_test].set_text("...");
                 a.gpu_off_scores[a.current_test].set_text_color(tc().accent);
                 BENCH_STATE.store(1, Ordering::SeqCst);
@@ -1170,7 +1257,9 @@ fn tick_benchmark() {
         let n = total as usize;
         for i in 0..n {
             let tid = unsafe { CHILD_TIDS[i] };
-            if tid == 0 { continue; }
+            if tid == 0 {
+                continue;
+            }
             let status = anyos_std::process::try_waitpid(tid);
             if status != anyos_std::process::STILL_RUNNING && status != u32::MAX {
                 unsafe {
@@ -1213,10 +1302,15 @@ fn tick_benchmark() {
 /// warning for moderate, and red (destructive) for poor results.
 fn score_color(score: u32) -> u32 {
     let colors = tc();
-    if score >= 1200 { colors.success }
-    else if score >= 800 { colors.warning }
-    else if score >= 400 { anyui::theme::lighten(colors.warning, 20) }
-    else { colors.destructive }
+    if score >= 1200 {
+        colors.success
+    } else if score >= 800 {
+        colors.warning
+    } else if score >= 400 {
+        anyui::theme::lighten(colors.warning, 20)
+    } else {
+        colors.destructive
+    }
 }
 
 fn update_cpu_single_summary() {
@@ -1225,7 +1319,8 @@ fn update_cpu_single_summary() {
         .map(|i| compute_score(a.cpu_single_raw[i], CPU_BASELINES[i]))
         .collect();
     let overall = geometric_mean(&scores);
-    a.lbl_cpu_single_score.set_text(&format!("Score: {}", overall));
+    a.lbl_cpu_single_score
+        .set_text(&format!("Score: {}", overall));
     unsafe {
         let id = SUMMARY_SCORE_IDS[0];
         anyui::Control::from_id(id).set_text(&format!("{}", overall));
@@ -1238,7 +1333,8 @@ fn update_cpu_multi_summary() {
         .map(|i| compute_score(a.cpu_multi_raw[i], CPU_BASELINES[i]))
         .collect();
     let overall = geometric_mean(&scores);
-    a.lbl_cpu_multi_score.set_text(&format!("Score: {}", overall));
+    a.lbl_cpu_multi_score
+        .set_text(&format!("Score: {}", overall));
     unsafe {
         let id = SUMMARY_SCORE_IDS[1];
         anyui::Control::from_id(id).set_text(&format!("{}", overall));
@@ -1251,7 +1347,8 @@ fn update_gpu_on_summary() {
         .map(|i| compute_score(a.gpu_on_raw[i], GPU_BASELINES[i]))
         .collect();
     let overall = geometric_mean(&scores);
-    a.lbl_gpu_onscreen_score.set_text(&format!("Score: {}", overall));
+    a.lbl_gpu_onscreen_score
+        .set_text(&format!("Score: {}", overall));
     unsafe {
         let id = SUMMARY_SCORE_IDS[2];
         anyui::Control::from_id(id).set_text(&format!("{}", overall));
@@ -1264,7 +1361,8 @@ fn update_gpu_off_summary() {
         .map(|i| compute_score(a.gpu_off_raw[i], GPU_BASELINES[i]))
         .collect();
     let overall = geometric_mean(&scores);
-    a.lbl_gpu_offscreen_score.set_text(&format!("Score: {}", overall));
+    a.lbl_gpu_offscreen_score
+        .set_text(&format!("Score: {}", overall));
     unsafe {
         let id = SUMMARY_SCORE_IDS[3];
         anyui::Control::from_id(id).set_text(&format!("{}", overall));

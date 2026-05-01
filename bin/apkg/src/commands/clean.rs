@@ -1,7 +1,7 @@
 //! `apkg clean` — remove cached package downloads.
 
-use anyos_std::{println, fs};
 use crate::config;
+use anyos_std::{fs, println};
 
 /// Execute `apkg clean`.
 pub fn run() {

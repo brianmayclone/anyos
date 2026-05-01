@@ -36,10 +36,12 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{ipc, println, String, Vec, format, i18n};
 use anyos_std::users;
-use libconf_schema::{default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema};
+use anyos_std::{format, i18n, ipc, println, String, Vec};
 use libanyui_client as ui;
+use libconf_schema::{
+    default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
+};
 use ui::ColumnDef;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -64,7 +66,8 @@ const VNC_SETTINGS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifes
     VNC_SETTINGS_DEFAULTS,
     VNC_SETTINGS_MIGRATIONS,
 );
-const VNC_SETTINGS_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("vnc-settings", &VNC_SETTINGS_MANIFEST);
+const VNC_SETTINGS_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("vnc-settings", &VNC_SETTINGS_MANIFEST);
 
 // ── Config model ──────────────────────────────────────────────────────────────
 
@@ -124,7 +127,9 @@ fn save_conf(cfg: &VncConf) {
     let _ = VNC_SETTINGS_SCHEMA.write_string("config/password", &cfg.password);
     let mut users_csv = String::new();
     for (i, u) in cfg.allowed_users.iter().enumerate() {
-        if i > 0 { users_csv.push(','); }
+        if i > 0 {
+            users_csv.push(',');
+        }
         users_csv.push_str(u);
     }
     let _ = VNC_SETTINGS_SCHEMA.write_string("config/allowed_users_csv", &users_csv);
@@ -171,8 +176,15 @@ anyos_std::global_app_state!(AppState);
 fn refresh_user_grid() {
     let s = app();
     // Build row data and pass to set_data for a full refresh.
-    let rows: Vec<Vec<&str>> = s.cfg.allowed_users.iter()
-        .map(|u| { let mut v = Vec::new(); v.push(u.as_str()); v })
+    let rows: Vec<Vec<&str>> = s
+        .cfg
+        .allowed_users
+        .iter()
+        .map(|u| {
+            let mut v = Vec::new();
+            v.push(u.as_str());
+            v
+        })
         .collect();
     s.user_grid.set_data(&rows);
     s.btn_remove.set_enabled(!s.cfg.allowed_users.is_empty());
@@ -189,7 +201,9 @@ fn read_form_into_cfg() {
     if n > 0 && n != u32::MAX {
         if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
             if let Ok(p) = text.trim().parse::<u16>() {
-                if p > 0 { s.cfg.port = p; }
+                if p > 0 {
+                    s.cfg.port = p;
+                }
             }
         }
     }
@@ -218,7 +232,11 @@ fn apply() {
 
     let s = app();
     let status = if s.cfg.enabled {
-        format!("    {} {}", i18n::t("Saved. VNC enabled on port"), s.cfg.port)
+        format!(
+            "    {} {}",
+            i18n::t("Saved. VNC enabled on port"),
+            s.cfg.port
+        )
     } else {
         format!("    {}", i18n::t("Saved. VNC access disabled."))
     };
@@ -234,7 +252,11 @@ fn apply() {
 /// exactly like Finder property windows.
 fn show_add_user_dialog() {
     let dlg = ui::Window::new_with_flags(
-        i18n::t("Add Allowed User"), -1, -1, 340, 120,
+        i18n::t("Add Allowed User"),
+        -1,
+        -1,
+        340,
+        120,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
     );
 
@@ -279,16 +301,21 @@ fn show_add_user_dialog() {
             dlg_ok.destroy();
 
             if !user_exists(name) {
-                app().status_label.set_text(&format!("    {}", i18n::t("Error: user does not exist locally.")));
+                app().status_label.set_text(&format!(
+                    "    {}",
+                    i18n::t("Error: user does not exist locally.")
+                ));
                 return;
             }
             let s = app();
             if s.cfg.allowed_users.iter().any(|u| u.as_str() == name) {
-                s.status_label.set_text(&format!("    {}", i18n::t("User already in list.")));
+                s.status_label
+                    .set_text(&format!("    {}", i18n::t("User already in list.")));
                 return;
             }
             s.cfg.allowed_users.push(String::from(name));
-            s.status_label.set_text(&format!("    {}", i18n::t("User added.")));
+            s.status_label
+                .set_text(&format!("    {}", i18n::t("User added.")));
             refresh_user_grid();
         });
     }
@@ -441,7 +468,7 @@ fn main() {
     scroll.add(&btn_cancel);
 
     let btn_apply = ui::Button::new(i18n::t("Apply"));
-    btn_apply.set_position(12 + 90 + 8, 442);   // 8 px gap after Cancel
+    btn_apply.set_position(12 + 90 + 8, 442); // 8 px gap after Cancel
     btn_apply.set_size(90, 28);
     scroll.add(&btn_apply);
 
@@ -478,7 +505,8 @@ fn main() {
         let sel = s.user_grid.selected_row();
         if sel != u32::MAX && (sel as usize) < s.cfg.allowed_users.len() {
             s.cfg.allowed_users.remove(sel as usize);
-            s.status_label.set_text(&format!("    {}", i18n::t("User removed.")));
+            s.status_label
+                .set_text(&format!("    {}", i18n::t("User removed.")));
             refresh_user_grid();
         }
     });

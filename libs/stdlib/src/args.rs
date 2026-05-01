@@ -126,7 +126,9 @@ fn tokenize_quoted<'a>(raw: &'a str, out: &mut [&'a str], max: usize) -> usize {
                 i += 1;
             }
             let end = i;
-            if i < len { i += 1; } // skip closing quote
+            if i < len {
+                i += 1;
+            } // skip closing quote
             out[count] = &raw[start..end];
             count += 1;
         } else if bytes[i] == b'\'' {
@@ -137,7 +139,9 @@ fn tokenize_quoted<'a>(raw: &'a str, out: &mut [&'a str], max: usize) -> usize {
                 i += 1;
             }
             let end = i;
-            if i < len { i += 1; } // skip closing quote
+            if i < len {
+                i += 1;
+            } // skip closing quote
             out[count] = &raw[start..end];
             count += 1;
         } else {

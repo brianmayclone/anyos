@@ -111,7 +111,10 @@ pub fn log_msg(level: &str, args: core::fmt::Arguments) {
         }
     }
 
-    let mut writer = BufWriter { buf: &mut buf[pos..511], pos: 0 };
+    let mut writer = BufWriter {
+        buf: &mut buf[pos..511],
+        pos: 0,
+    };
     let _ = core::fmt::write(&mut writer, args);
     pos += writer.pos;
 

@@ -4,8 +4,6 @@
 anyos_std::entry!(main);
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
 
@@ -23,8 +21,13 @@ fn main() {
         let len = (total as usize).min(buf.len());
         let mut offset = 0;
         while offset < len {
-            let end = buf[offset..len].iter().position(|&b| b == 0).unwrap_or(len - offset);
-            if end == 0 { break; }
+            let end = buf[offset..len]
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(len - offset);
+            if end == 0 {
+                break;
+            }
             if let Ok(entry) = core::str::from_utf8(&buf[offset..offset + end]) {
                 anyos_std::println!("{}", entry);
             }

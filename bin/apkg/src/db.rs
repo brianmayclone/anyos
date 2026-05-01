@@ -1,10 +1,10 @@
 //! Installed package database (read/write `/System/etc/apkg/installed.json`).
 
+use crate::config;
 use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::json::{Value, Number};
 use anyos_std::fs;
-use crate::config;
+use anyos_std::json::{Number, Value};
 
 /// An installed package record.
 #[derive(Debug, Clone)]
@@ -28,11 +28,17 @@ impl Database {
     pub fn load() -> Database {
         let content = match fs::read_to_string(config::INSTALLED_PATH) {
             Ok(s) => s,
-            Err(_) => return Database { packages: Vec::new() },
+            Err(_) => {
+                return Database {
+                    packages: Vec::new(),
+                }
+            }
         };
         match Value::parse(&content) {
             Ok(val) => Self::from_json(&val),
-            Err(_) => Database { packages: Vec::new() },
+            Err(_) => Database {
+                packages: Vec::new(),
+            },
         }
     }
 
@@ -85,7 +91,11 @@ impl Database {
             let files: Vec<Value> = pkg.files.iter().map(|f| Value::from(f.as_str())).collect();
             obj.set("files", Value::Array(files));
 
-            let deps: Vec<Value> = pkg.depends.iter().map(|d| Value::from(d.as_str())).collect();
+            let deps: Vec<Value> = pkg
+                .depends
+                .iter()
+                .map(|d| Value::from(d.as_str()))
+                .collect();
             obj.set("depends", Value::Array(deps));
 
             pkgs.set(&pkg.name, obj);
@@ -124,35 +134,45 @@ impl Database {
 
     /// Get all packages that depend on the given package name.
     pub fn reverse_deps(&self, name: &str) -> Vec<&InstalledPackage> {
-        self.packages.iter().filter(|p| {
-            p.depends.iter().any(|d| {
-                let dep_name = crate::version::parse_dependency(d).0;
-                dep_name == name
+        self.packages
+            .iter()
+            .filter(|p| {
+                p.depends.iter().any(|d| {
+                    let dep_name = crate::version::parse_dependency(d).0;
+                    dep_name == name
+                })
             })
-        }).collect()
+            .collect()
     }
 
     /// Get auto-installed packages that no other installed package depends on.
     pub fn orphan_auto_packages(&self) -> Vec<&InstalledPackage> {
-        self.packages.iter().filter(|p| {
-            if !p.auto {
-                return false;
-            }
-            // Check if any other installed package depends on this one
-            !self.packages.iter().any(|other| {
-                other.name != p.name && other.depends.iter().any(|d| {
-                    let dep_name = crate::version::parse_dependency(d).0;
-                    dep_name == p.name
+        self.packages
+            .iter()
+            .filter(|p| {
+                if !p.auto {
+                    return false;
+                }
+                // Check if any other installed package depends on this one
+                !self.packages.iter().any(|other| {
+                    other.name != p.name
+                        && other.depends.iter().any(|d| {
+                            let dep_name = crate::version::parse_dependency(d).0;
+                            dep_name == p.name
+                        })
                 })
             })
-        }).collect()
+            .collect()
     }
 }
 
 /// Parse a JSON array of strings.
 fn parse_string_array(val: &Value) -> Vec<String> {
     match val.as_array() {
-        Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         None => Vec::new(),
     }
 }

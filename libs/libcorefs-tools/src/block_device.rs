@@ -140,7 +140,13 @@ impl AnyOsBlockDevice<SyscallBackend> {
     /// Convenience constructor using the default syscall backend and a
     /// 512-byte sector size.
     pub fn open(device_id: u32, capacity_bytes: u64) -> CoreFsResult<Self> {
-        Self::new(SyscallBackend, device_id, 0, capacity_bytes, SECTOR_SIZE_512)
+        Self::new(
+            SyscallBackend,
+            device_id,
+            0,
+            capacity_bytes,
+            SECTOR_SIZE_512,
+        )
     }
 
     /// Open a device, querying its capacity from the kernel via
@@ -148,9 +154,7 @@ impl AnyOsBlockDevice<SyscallBackend> {
     /// device id is not found.
     pub fn open_auto(device_id: u32) -> CoreFsResult<Self> {
         let cap = query_device_capacity(device_id).ok_or_else(|| {
-            CoreFsError::InvalidInput(format!(
-                "device {device_id} not found in disk_list"
-            ))
+            CoreFsError::InvalidInput(format!("device {device_id} not found in disk_list"))
         })?;
         Self::new(SyscallBackend, device_id, 0, cap, SECTOR_SIZE_512)
     }
@@ -393,8 +397,7 @@ mod tests {
     #[test]
     fn partition_offset_applied() {
         let backend = MockBackend::new(32 * 512, 512);
-        let mut dev =
-            AnyOsBlockDevice::new(backend, 0, 8, 24 * 512, SECTOR_SIZE_512).unwrap();
+        let mut dev = AnyOsBlockDevice::new(backend, 0, 8, 24 * 512, SECTOR_SIZE_512).unwrap();
         let payload = vec![0x5A_u8; 512];
         dev.write_at(0, &payload).unwrap();
         // Byte 0 on the FS side maps to LBA 8 on the backing disk.

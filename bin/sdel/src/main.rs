@@ -45,7 +45,11 @@ fn main() {
     let mut store = [0u8; MAX_STORE];
     let n = anyos_std::fs::read(fd, &mut store);
     anyos_std::fs::close(fd);
-    let n = if n == u32::MAX { return; } else { n as usize };
+    let n = if n == u32::MAX {
+        return;
+    } else {
+        n as usize
+    };
 
     // Rebuild without the target key
     let mut out = [0u8; MAX_STORE];
@@ -83,7 +87,7 @@ fn main() {
     if out_len == 0 {
         anyos_std::fs::unlink(STORE_PATH);
     } else {
-        use anyos_std::fs::{O_WRITE, O_CREATE, O_TRUNC};
+        use anyos_std::fs::{O_CREATE, O_TRUNC, O_WRITE};
         let fd = anyos_std::fs::open(STORE_PATH, O_WRITE | O_CREATE | O_TRUNC);
         if fd != u32::MAX {
             anyos_std::fs::write(fd, &out[..out_len]);

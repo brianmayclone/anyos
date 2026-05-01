@@ -43,7 +43,7 @@ use corefs_core::storage::block_device::BlockDevice;
 use corefs_core::storage::ondisk::session::{OdfDeviceSession, OdfSessionOptions};
 use corefs_fuse_adapter::{FuseHandler, HandlerResult, SessionLoop, Transport};
 use corefs_fuse_proto::{
-    FrameHeader, PROTOCOL_VERSION, Reply, ReplyFrame, ReplyPayload, Request, RequestFrame,
+    FrameHeader, Reply, ReplyFrame, ReplyPayload, Request, RequestFrame, PROTOCOL_VERSION,
 };
 use libcorefs_tools::args;
 use libcorefs_tools::block_device::AnyOsBlockDevice;
@@ -212,12 +212,9 @@ fn decode_request(bytes: &[u8]) -> Option<Request> {
     // Wir dekodieren als RequestFrame mit Dummy-Header, falls der Kernel
     // doch einmal einen kompletten Frame vorlegt; andernfalls versuchen
     // wir den op-only Pfad. Aktuell verwenden beide Seiten `op only`.
-    bincode::serde::decode_from_slice::<Request, _>(
-        bytes,
-        bincode::config::legacy(),
-    )
-    .map(|(v, _)| v)
-    .ok()
+    bincode::serde::decode_from_slice::<Request, _>(bytes, bincode::config::legacy())
+        .map(|(v, _)| v)
+        .ok()
 }
 
 fn encode_reply(reply: &ReplyFrame) -> Option<Vec<u8>> {
@@ -284,9 +281,7 @@ fn main() -> u32 {
             }
         }
         Err(_) => {
-            anyos_std::println!(
-                "corefsd: /dev/fuse not available, running built-in demo loop"
-            );
+            anyos_std::println!("corefsd: /dev/fuse not available, running built-in demo loop");
             run_demo()
         }
     }
@@ -307,10 +302,7 @@ fn build_real_handler(device_id: u32, capacity: u64) -> Result<CoreFsHandler, u3
     let session = match OdfDeviceSession::open(boxed) {
         Ok(s) => s,
         Err(e_open) => {
-            anyos_std::println!(
-                "corefsd: open failed ({}), trying format_new_at()",
-                e_open
-            );
+            anyos_std::println!("corefsd: open failed ({}), trying format_new_at()", e_open);
             let fresh = match AnyOsBlockDevice::open(device_id, capacity) {
                 Ok(d) => d,
                 Err(e) => {

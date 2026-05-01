@@ -45,7 +45,11 @@ pub fn read_file(cfg: &mut Config) -> bool {
 
     let text = core::str::from_utf8(&raw[..n]).unwrap_or("");
     for line in text.split('\n') {
-        let line = if line.ends_with('\r') { &line[..line.len()-1] } else { line };
+        let line = if line.ends_with('\r') {
+            &line[..line.len() - 1]
+        } else {
+            line
+        };
         cfg.push(line);
     }
     // Remove spurious trailing empty line that split() adds when file ends with \n
@@ -58,7 +62,7 @@ pub fn read_file(cfg: &mut Config) -> bool {
 // ─── write ────────────────────────────────────────────────────────────────────
 
 pub fn write_file(cfg: &Config) -> bool {
-    use anyos_std::fs::{O_WRITE, O_CREATE, O_TRUNC};
+    use anyos_std::fs::{O_CREATE, O_TRUNC, O_WRITE};
     let fd = anyos_std::fs::open(BOOT_CFG, O_WRITE | O_CREATE | O_TRUNC);
     if fd == u32::MAX {
         anyos_std::println!("bcedit: cannot write {} (permission denied?)", BOOT_CFG);
@@ -75,7 +79,7 @@ pub fn write_file(cfg: &Config) -> bool {
 // ─── init (restore defaults) ──────────────────────────────────────────────────
 
 pub fn write_default() {
-    use anyos_std::fs::{O_WRITE, O_CREATE, O_TRUNC};
+    use anyos_std::fs::{O_CREATE, O_TRUNC, O_WRITE};
     let fd = anyos_std::fs::open(BOOT_CFG, O_WRITE | O_CREATE | O_TRUNC);
     if fd == u32::MAX {
         anyos_std::println!("bcedit: cannot write {} (permission denied?)", BOOT_CFG);

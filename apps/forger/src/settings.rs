@@ -171,7 +171,9 @@ fn load_from_confd() -> Option<GameSettings> {
         "fancy" => GraphicsQuality::Fancy,
         _ => GraphicsQuality::Balanced,
     };
-    let shadows_enabled = schema().read_bool("config/shadows_enabled").unwrap_or(false);
+    let shadows_enabled = schema()
+        .read_bool("config/shadows_enabled")
+        .unwrap_or(false);
     let shadow_quality = match schema().read_string("config/shadow_quality")?.as_str() {
         "soft" => ShadowQuality::Soft,
         "crisp" => ShadowQuality::Crisp,

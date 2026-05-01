@@ -4,8 +4,6 @@
 anyos_std::entry!(main);
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args = anyos_std::process::args(&mut args_buf);
 
@@ -13,7 +11,6 @@ fn main() {
         anyos_std::println!("ping - Send ICMP echo requests\n\nUsage: ping HOST");
         return;
     }
-
 
     if args.is_empty() {
         anyos_std::println!("Usage: ping <host>");
@@ -37,16 +34,17 @@ fn main() {
             }
             anyos_std::println!(
                 "PING {} ({}.{}.{}.{})",
-                target, resolved[0], resolved[1], resolved[2], resolved[3]
+                target,
+                resolved[0],
+                resolved[1],
+                resolved[2],
+                resolved[3]
             );
             resolved
         }
     };
 
-    anyos_std::println!(
-        "PING {}.{}.{}.{} — 4 packets",
-        ip[0], ip[1], ip[2], ip[3]
-    );
+    anyos_std::println!("PING {}.{}.{}.{} — 4 packets", ip[0], ip[1], ip[2], ip[3]);
 
     let mut sent = 0u32;
     let mut received = 0u32;
@@ -55,10 +53,7 @@ fn main() {
         sent += 1;
         let rtt = anyos_std::net::ping(&ip, seq, 500);
         if rtt == u32::MAX {
-            anyos_std::println!(
-                "  seq={}: Request timed out",
-                seq
-            );
+            anyos_std::println!("  seq={}: Request timed out", seq);
         } else {
             received += 1;
             // RTT is in PIT ticks; convert to milliseconds
@@ -66,7 +61,12 @@ fn main() {
             let ms = if hz > 0 { rtt * 1000 / hz } else { 0 };
             anyos_std::println!(
                 "  seq={}: Reply from {}.{}.{}.{} time={}ms",
-                seq, ip[0], ip[1], ip[2], ip[3], ms
+                seq,
+                ip[0],
+                ip[1],
+                ip[2],
+                ip[3],
+                ms
             );
         }
         // Wait between pings
@@ -78,7 +78,9 @@ fn main() {
     let lost = sent - received;
     anyos_std::println!(
         "--- {} packets transmitted, {} received, {} lost ---",
-        sent, received, lost
+        sent,
+        received,
+        lost
     );
 }
 
@@ -105,5 +107,9 @@ fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
         ip[idx] = val as u8;
         idx += 1;
     }
-    if idx == 4 { Some(ip) } else { None }
+    if idx == 4 {
+        Some(ip)
+    } else {
+        None
+    }
 }

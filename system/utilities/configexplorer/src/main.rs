@@ -211,8 +211,14 @@ fn main() {
         ui::ColumnDef::new("Entry").width(240),
         ui::ColumnDef::new("Kind").width(80),
         ui::ColumnDef::new("Value").width(360),
-        ui::ColumnDef::new("Version").width(72).align(ui::ALIGN_RIGHT).numeric(),
-        ui::ColumnDef::new("Updated").width(90).align(ui::ALIGN_RIGHT).numeric(),
+        ui::ColumnDef::new("Version")
+            .width(72)
+            .align(ui::ALIGN_RIGHT)
+            .numeric(),
+        ui::ColumnDef::new("Updated")
+            .width(90)
+            .align(ui::ALIGN_RIGHT)
+            .numeric(),
     ];
     grid.set_columns(&cols);
     win.add(&grid);
@@ -243,7 +249,8 @@ fn main() {
         if let Some(path) = tree_path_for_node(e.index) {
             let a = app();
             a.current_dir = path;
-            a.heading.set_text(&heading_for_scope(scope_from_ui(), &a.current_dir));
+            a.heading
+                .set_text(&heading_for_scope(scope_from_ui(), &a.current_dir));
             refresh_visible(a);
         }
     });
@@ -311,7 +318,11 @@ fn reload_snapshot(mode: RefreshMode) {
 
     anyos_std::println!(
         "configexplorer: reload mode={} scope={} dir='{}' client_present={}",
-        if mode == RefreshMode::Rebuild { "rebuild" } else { "soft" },
+        if mode == RefreshMode::Rebuild {
+            "rebuild"
+        } else {
+            "soft"
+        },
         scope_name(scope),
         a.current_dir.as_str(),
         a.client.is_some()
@@ -320,10 +331,7 @@ fn reload_snapshot(mode: RefreshMode) {
     if a.client.is_none() {
         match ConfClient::connect("configexplorer") {
             Ok(client) => {
-                anyos_std::println!(
-                    "configexplorer: connect OK scope={}",
-                    scope_name(scope)
-                );
+                anyos_std::println!("configexplorer: connect OK scope={}", scope_name(scope));
                 a.client = Some(client);
                 a.connection.set_text("Live");
                 a.connection.set_text_color(tc.success);
@@ -382,18 +390,21 @@ fn reload_snapshot(mode: RefreshMode) {
                 ConfError::Remote(message) if message == "forbidden" => {
                     a.connection.set_text("Live");
                     a.connection.set_text_color(tc.success);
-                    a.status.set_text("SYSTEM scope is forbidden for the current identity.");
+                    a.status
+                        .set_text("SYSTEM scope is forbidden for the current identity.");
                 }
                 ConfError::Timeout => {
                     a.connection.set_text("Slow");
                     a.connection.set_text_color(tc.warning);
-                    a.status.set_text("Registry snapshot timed out. Retrying automatically.");
+                    a.status
+                        .set_text("Registry snapshot timed out. Retrying automatically.");
                 }
                 _ => {
                     a.client = None;
                     a.connection.set_text("Retrying...");
                     a.connection.set_text_color(tc.warning);
-                    a.status.set_text("Lost connection to confd. Will retry automatically.");
+                    a.status
+                        .set_text("Lost connection to confd. Will retry automatically.");
                 }
             }
         }
@@ -412,7 +423,10 @@ fn rebuild_tree(a: &mut App) {
     };
     let root = a.tree.add_root(root_label);
     a.tree.set_node_style(root, ui::STYLE_BOLD);
-    a.tree_nodes.push(TreeNode { id: root, path: String::new() });
+    a.tree_nodes.push(TreeNode {
+        id: root,
+        path: String::new(),
+    });
 
     let dirs = collect_dirs(&a.items);
     for dir in &dirs {
@@ -462,7 +476,10 @@ fn ensure_tree_path(a: &mut App, root: u32, path: &str) {
         }
 
         let node = a.tree.add_child(parent, segment);
-        a.tree_nodes.push(TreeNode { id: node, path: current.clone() });
+        a.tree_nodes.push(TreeNode {
+            id: node,
+            path: current.clone(),
+        });
         parent = node;
     }
 }
@@ -494,9 +511,14 @@ fn populate_grid(a: &App) {
         a.grid.set_cell(row as u32, 1, kind_name(item));
         a.grid.set_cell(row as u32, 2, &value_text(item));
         a.grid.set_cell(row as u32, 3, &format!("{}", item.version));
-        a.grid.set_cell(row as u32, 4, &format!("{} ms", item.updated_at));
+        a.grid
+            .set_cell(row as u32, 4, &format!("{} ms", item.updated_at));
 
-        let base = if row % 2 == 0 { tc.window_bg } else { tc.alt_row_bg };
+        let base = if row % 2 == 0 {
+            tc.window_bg
+        } else {
+            tc.alt_row_bg
+        };
         for col in 0..5 {
             bg_colors[row * 5 + col] = base;
         }
@@ -511,8 +533,16 @@ fn populate_grid(a: &App) {
     a.status.set_text(&format!(
         "{} entries in {}{}",
         a.visible.len(),
-        if a.current_dir.is_empty() { "/" } else { a.current_dir.as_str() },
-        if a.search_text.is_empty() { "" } else { " (filtered)" }
+        if a.current_dir.is_empty() {
+            "/"
+        } else {
+            a.current_dir.as_str()
+        },
+        if a.search_text.is_empty() {
+            ""
+        } else {
+            " (filtered)"
+        }
     ));
 }
 
@@ -556,7 +586,8 @@ fn show_detail(row: u32) {
             None => 1,
         },
     });
-    a.heading.set_text(&heading_for_scope(scope_from_ui(), &parent_dir(&item.path)));
+    a.heading
+        .set_text(&heading_for_scope(scope_from_ui(), &parent_dir(&item.path)));
     load_audit(&item.path);
 }
 
@@ -602,7 +633,11 @@ fn save_current() {
         };
         match a.type_picker.selected_index() {
             0 => client.mkdir(scope, &path),
-            1 => client.set(scope, &path, ConfValue::String(read_text_editor(&a.value_editor))),
+            1 => client.set(
+                scope,
+                &path,
+                ConfValue::String(read_text_editor(&a.value_editor)),
+            ),
             2 => match parse_i64(&read_text_editor(&a.value_editor)) {
                 Some(value) => client.set(scope, &path, ConfValue::Int(value)),
                 None => {
@@ -678,7 +713,9 @@ fn collect_dirs(items: &[ConfItem]) -> Vec<String> {
 }
 
 fn directory_exists(items: &[ConfItem], path: &str) -> bool {
-    items.iter().any(|item| item.kind == NodeKind::Directory && item.path == path)
+    items
+        .iter()
+        .any(|item| item.kind == NodeKind::Directory && item.path == path)
 }
 
 fn tree_path_for_node(node_id: u32) -> Option<String> {
@@ -726,7 +763,11 @@ fn matches_search(item: &ConfItem, search: &str) -> bool {
 }
 
 fn heading_for_scope(scope: RegistryScope, dir: &str) -> String {
-    let scope_name = if scope == RegistryScope::System { "System" } else { "User" };
+    let scope_name = if scope == RegistryScope::System {
+        "System"
+    } else {
+        "User"
+    };
     if dir.is_empty() {
         format!("{} Root", scope_name)
     } else {
@@ -752,7 +793,11 @@ fn value_text(item: &ConfItem) -> String {
         Some(ConfValue::String(value)) => value.clone(),
         Some(ConfValue::Int(value)) => format!("{}", *value),
         Some(ConfValue::Bool(value)) => {
-            if *value { String::from("true") } else { String::from("false") }
+            if *value {
+                String::from("true")
+            } else {
+                String::from("false")
+            }
         }
         Some(ConfValue::ExternalRef(value)) => value.clone(),
         None => String::new(),
@@ -805,7 +850,11 @@ fn parse_i64(text: &str) -> Option<i64> {
         value = value.checked_mul(10)?.checked_add((b - b'0') as i64)?;
         idx += 1;
     }
-    if negative { Some(-value) } else { Some(value) }
+    if negative {
+        Some(-value)
+    } else {
+        Some(value)
+    }
 }
 
 fn parse_bool(text: &str) -> Option<bool> {

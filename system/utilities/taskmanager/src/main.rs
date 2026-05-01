@@ -1,28 +1,28 @@
 #![no_std]
 #![no_main]
 
-mod types;
 mod data;
 mod format;
-mod icon_cache;
 mod graph;
+mod icon_cache;
+mod types;
 
 use alloc::vec::Vec;
 
-use anyos_std::sys;
-use anyos_std::process;
 use anyos_std::i18n;
+use anyos_std::process;
+use anyos_std::sys;
 
 anyos_std::entry!(main);
 
 use libanyui_client as ui;
-use ui::{ColumnDef, ALIGN_RIGHT, Widget};
+use ui::{ColumnDef, Widget, ALIGN_RIGHT};
 
-use types::*;
 use data::*;
 use format::*;
-use icon_cache::*;
 use graph::*;
+use icon_cache::*;
+use types::*;
 
 // ─── Global mutable state (accessed from timer + button callbacks) ───────────
 
@@ -72,7 +72,13 @@ fn main() {
     header.add(&header_top);
 
     // Centered segmented control (manually positioned)
-    let seg_items = anyos_std::format!("{}|{}|{}|{}", i18n::t("Processes"), i18n::t("Graphs"), i18n::t("Disk"), i18n::t("System"));
+    let seg_items = anyos_std::format!(
+        "{}|{}|{}|{}",
+        i18n::t("Processes"),
+        i18n::t("Graphs"),
+        i18n::t("Disk"),
+        i18n::t("System")
+    );
     let seg = ui::SegmentedControl::new(&seg_items);
     seg.set_size(380, 24);
     seg.set_position((580 - 380) / 2, 4);
@@ -173,10 +179,19 @@ fn main() {
         ColumnDef::new(i18n::t("User")).width(65),
         ColumnDef::new(i18n::t("State")).width(70),
         ColumnDef::new(i18n::t("Arch")).width(50),
-        ColumnDef::new("CPU%").width(55).align(ALIGN_RIGHT).numeric(),
-        ColumnDef::new(i18n::t("Memory")).width(65).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new("CPU%")
+            .width(55)
+            .align(ALIGN_RIGHT)
+            .numeric(),
+        ColumnDef::new(i18n::t("Memory"))
+            .width(65)
+            .align(ALIGN_RIGHT)
+            .numeric(),
         ColumnDef::new("NET").width(75).align(ALIGN_RIGHT).numeric(),
-        ColumnDef::new(i18n::t("Priority")).width(50).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new(i18n::t("Priority"))
+            .width(50)
+            .align(ALIGN_RIGHT)
+            .numeric(),
     ]);
     proc_grid.set_row_height(20);
     proc_grid.set_indent_column(1); // Indent applies to "Process" column
@@ -230,8 +245,14 @@ fn main() {
     disk_grid.set_columns(&[
         ColumnDef::new("TID").width(50).align(ALIGN_RIGHT).numeric(),
         ColumnDef::new(i18n::t("Process")).width(160),
-        ColumnDef::new(i18n::t("Read")).width(130).align(ALIGN_RIGHT).numeric(),
-        ColumnDef::new(i18n::t("Written")).width(130).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new(i18n::t("Read"))
+            .width(130)
+            .align(ALIGN_RIGHT)
+            .numeric(),
+        ColumnDef::new(i18n::t("Written"))
+            .width(130)
+            .align(ALIGN_RIGHT)
+            .numeric(),
     ]);
     disk_grid.set_row_height(20);
     panel_disk.add(&disk_grid);
@@ -364,9 +385,12 @@ fn main() {
     seg.connect_panels(&[&panel_procs, &panel_graphs, &panel_disk, &panel_system]);
 
     // ── Allocate state on heap (accessed from callbacks) ──
-    let prev_ticks = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
-        PrevTicks { entries: [(0, 0); MAX_TASKS], net_entries: [(0, 0); MAX_TASKS], count: 0, prev_total: 0 }
-    ));
+    let prev_ticks = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(PrevTicks {
+        entries: [(0, 0); MAX_TASKS],
+        net_entries: [(0, 0); MAX_TASKS],
+        count: 0,
+        prev_total: 0,
+    }));
     let cpu_state = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(CpuState::new()));
     let cpu_history = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(CpuHistory::new()));
     let icon_cache = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<IconEntry>::new()));
@@ -376,7 +400,8 @@ fn main() {
     let tasks_buf = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<TaskEntry>::new()));
     let colors_buf = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<u32>::new()));
     let expanded_leaders = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<u32>::new()));
-    let display_rows_buf = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<DisplayRow>::new()));
+    let display_rows_buf =
+        alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Vec::<DisplayRow>::new()));
 
     unsafe {
         PREV_TICKS = Some(prev_ticks);
@@ -392,8 +417,12 @@ fn main() {
     }
 
     // Initial CPU fetch
-    unsafe { fetch_cpu(&mut *cpu_state); }
-    unsafe { (*cpu_history).push(&*cpu_state); }
+    unsafe {
+        fetch_cpu(&mut *cpu_state);
+    }
+    unsafe {
+        (*cpu_history).push(&*cpu_state);
+    }
 
     // ── Selection changed: enable/disable kill button ──
     proc_grid.on_selection_changed(move |ev| {
@@ -430,11 +459,16 @@ fn main() {
             let mut sbuf = [0u8; 48];
             let mut p = 0;
             let mut t = [0u8; 12];
-            sbuf[p..p + 4].copy_from_slice(b"TID "); p += 4;
-            let s = fmt_u32(&mut t, tid); sbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            sbuf[p..p + 2].copy_from_slice(b": "); p += 2;
+            sbuf[p..p + 4].copy_from_slice(b"TID ");
+            p += 4;
+            let s = fmt_u32(&mut t, tid);
+            sbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            sbuf[p..p + 2].copy_from_slice(b": ");
+            p += 2;
             let nl = name.len().min(24);
-            sbuf[p..p + nl].copy_from_slice(&name[..nl]); p += nl;
+            sbuf[p..p + nl].copy_from_slice(&name[..nl]);
+            p += nl;
             if let Ok(s) = core::str::from_utf8(&sbuf[..p]) {
                 sb_sel_label.set_text(s);
             }
@@ -516,15 +550,25 @@ fn main() {
             let mut ubuf = [0u8; 40];
             let mut p = 0;
             let mut t = [0u8; 12];
-            ubuf[p..p + 8].copy_from_slice(b"Uptime: "); p += 8;
+            ubuf[p..p + 8].copy_from_slice(b"Uptime: ");
+            p += 8;
             if hours > 0 {
-                let s = fmt_u32(&mut t, hours as u32); ubuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                ubuf[p..p + 2].copy_from_slice(b"h "); p += 2;
+                let s = fmt_u32(&mut t, hours as u32);
+                ubuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                ubuf[p..p + 2].copy_from_slice(b"h ");
+                p += 2;
             }
-            let s = fmt_u32(&mut t, mins as u32); ubuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            ubuf[p..p + 2].copy_from_slice(b"m "); p += 2;
-            let s = fmt_u32(&mut t, secs as u32); ubuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            ubuf[p] = b's'; p += 1;
+            let s = fmt_u32(&mut t, mins as u32);
+            ubuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            ubuf[p..p + 2].copy_from_slice(b"m ");
+            p += 2;
+            let s = fmt_u32(&mut t, secs as u32);
+            ubuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            ubuf[p] = b's';
+            p += 1;
             if let Ok(s) = core::str::from_utf8(&ubuf[..p]) {
                 uptime_label.set_text(s);
             }
@@ -554,19 +598,37 @@ fn main() {
             let mut mbuf = [0u8; 120];
             let mut p = 0;
             let mut t = [0u8; 12];
-            mbuf[p..p + 5].copy_from_slice(b"Mem: "); p += 5;
-            let s = fmt_u32(&mut t, mem_used_mb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            mbuf[p] = b'/'; p += 1;
-            let s = fmt_u32(&mut t, mem_total_mb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            mbuf[p..p + 8].copy_from_slice(b"M  Heap:"); p += 8;
-            let s = fmt_u32(&mut t, heap_kb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            mbuf[p] = b'/'; p += 1;
-            let s = fmt_u32(&mut t, heap_total_kb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            mbuf[p..p + 7].copy_from_slice(b"K  Net:"); p += 7;
-            let s = fmt_u32(&mut t, net_whole); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            mbuf[p] = b'.'; p += 1;
-            mbuf[p] = b'0' + net_frac as u8; p += 1;
-            mbuf[p..p + 5].copy_from_slice(b" Mbit"); p += 5;
+            mbuf[p..p + 5].copy_from_slice(b"Mem: ");
+            p += 5;
+            let s = fmt_u32(&mut t, mem_used_mb);
+            mbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            mbuf[p] = b'/';
+            p += 1;
+            let s = fmt_u32(&mut t, mem_total_mb);
+            mbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            mbuf[p..p + 8].copy_from_slice(b"M  Heap:");
+            p += 8;
+            let s = fmt_u32(&mut t, heap_kb);
+            mbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            mbuf[p] = b'/';
+            p += 1;
+            let s = fmt_u32(&mut t, heap_total_kb);
+            mbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            mbuf[p..p + 7].copy_from_slice(b"K  Net:");
+            p += 7;
+            let s = fmt_u32(&mut t, net_whole);
+            mbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            mbuf[p] = b'.';
+            p += 1;
+            mbuf[p] = b'0' + net_frac as u8;
+            p += 1;
+            mbuf[p..p + 5].copy_from_slice(b" Mbit");
+            p += 5;
             if let Ok(s) = core::str::from_utf8(&mbuf[..p]) {
                 mem_label.set_text(s);
             }
@@ -584,8 +646,11 @@ fn main() {
             if active_tab == 0 || active_tab == 2 {
                 let mut tbuf2 = [0u8; 24];
                 let mut p = 0;
-                let s = fmt_u32(&mut t, tasks.len() as u32); tbuf2[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                tbuf2[p..p + 10].copy_from_slice(b" Processes"); p += 10;
+                let s = fmt_u32(&mut t, tasks.len() as u32);
+                tbuf2[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                tbuf2[p..p + 10].copy_from_slice(b" Processes");
+                p += 10;
                 if let Ok(s) = core::str::from_utf8(&tbuf2[..p]) {
                     sb_tasks_label.set_text(s);
                 }
@@ -595,9 +660,13 @@ fn main() {
             {
                 let mut cbuf = [0u8; 16];
                 let mut p = 0;
-                cbuf[p..p + 5].copy_from_slice(b"CPU: "); p += 5;
-                let s = fmt_u32(&mut t, cpu_st.overall_pct); cbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                cbuf[p] = b'%'; p += 1;
+                cbuf[p..p + 5].copy_from_slice(b"CPU: ");
+                p += 5;
+                let s = fmt_u32(&mut t, cpu_st.overall_pct);
+                cbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                cbuf[p] = b'%';
+                p += 1;
                 if let Ok(s) = core::str::from_utf8(&cbuf[..p]) {
                     sb_cpu_label.set_text(s);
                 }
@@ -607,11 +676,18 @@ fn main() {
             if mem_total_mb > 0 {
                 let mut mbuf2 = [0u8; 32];
                 let mut p = 0;
-                mbuf2[p..p + 5].copy_from_slice(b"Mem: "); p += 5;
-                let s = fmt_u32(&mut t, mem_used_mb); mbuf2[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                mbuf2[p] = b'/'; p += 1;
-                let s = fmt_u32(&mut t, mem_total_mb); mbuf2[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                mbuf2[p..p + 2].copy_from_slice(b" M"); p += 2;
+                mbuf2[p..p + 5].copy_from_slice(b"Mem: ");
+                p += 5;
+                let s = fmt_u32(&mut t, mem_used_mb);
+                mbuf2[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                mbuf2[p] = b'/';
+                p += 1;
+                let s = fmt_u32(&mut t, mem_total_mb);
+                mbuf2[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                mbuf2[p..p + 2].copy_from_slice(b" M");
+                p += 2;
                 if let Ok(s) = core::str::from_utf8(&mbuf2[..p]) {
                     sb_mem_label.set_text(s);
                 }
@@ -628,10 +704,16 @@ fn main() {
                 let mut ibuf = [0u8; 32];
                 let mut p = 0;
                 let mut t = [0u8; 12];
-                let s = fmt_u32(&mut t, tasks.len() as u32); ibuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                ibuf[p..p + 11].copy_from_slice(b" proc  CPU:"); p += 11;
-                let s = fmt_u32(&mut t, cpu_st.overall_pct); ibuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                ibuf[p] = b'%'; p += 1;
+                let s = fmt_u32(&mut t, tasks.len() as u32);
+                ibuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                ibuf[p..p + 11].copy_from_slice(b" proc  CPU:");
+                p += 11;
+                let s = fmt_u32(&mut t, cpu_st.overall_pct);
+                ibuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                ibuf[p] = b'%';
+                p += 1;
                 if let Ok(s) = core::str::from_utf8(&ibuf[..p]) {
                     proc_info_label.set_text(s);
                 }
@@ -663,26 +745,37 @@ fn main() {
                             // Group header: "▶ name (N)" or "▼ name (N)"
                             // Arrow is drawn as text before the icon (icon is shifted by row_indent)
                             let is_exp = expanded.iter().any(|&tid| tid == task.tid);
-                            let arrow: &[u8] = if is_exp { "\u{25BC} ".as_bytes() } else { "\u{25B6} ".as_bytes() };
+                            let arrow: &[u8] = if is_exp {
+                                "\u{25BC} ".as_bytes()
+                            } else {
+                                "\u{25B6} ".as_bytes()
+                            };
                             let alen = arrow.len();
-                            nbuf[np..np + alen].copy_from_slice(arrow); np += alen;
+                            nbuf[np..np + alen].copy_from_slice(arrow);
+                            np += alen;
                             let mut t = [0u8; 12];
                             let nl = task.name_len.min(28);
-                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]); np += nl;
-                            nbuf[np..np + 2].copy_from_slice(b" ("); np += 2;
+                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]);
+                            np += nl;
+                            nbuf[np..np + 2].copy_from_slice(b" (");
+                            np += 2;
                             let cs = fmt_u32(&mut t, dr.thread_count as u32);
-                            nbuf[np..np + cs.len()].copy_from_slice(cs.as_bytes()); np += cs.len();
-                            nbuf[np] = b')'; np += 1;
+                            nbuf[np..np + cs.len()].copy_from_slice(cs.as_bytes());
+                            np += cs.len();
+                            nbuf[np] = b')';
+                            np += 1;
                         }
                         2 => {
                             // Child thread: plain name (indentation via row_indent)
                             let nl = task.name_len.min(32);
-                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]); np += nl;
+                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]);
+                            np += nl;
                         }
                         _ => {
                             // Standalone: plain name
                             let nl = task.name_len.min(40);
-                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]); np += nl;
+                            nbuf[np..np + nl].copy_from_slice(&task.name[..nl]);
+                            np += nl;
                         }
                     }
                     if let Ok(s) = core::str::from_utf8(&nbuf[..np]) {
@@ -730,7 +823,11 @@ fn main() {
                 }
 
                 // State column: for group headers use aggregated state, otherwise task state
-                let display_state = if dr.kind == 1 { dr.agg_state } else { task.state };
+                let display_state = if dr.kind == 1 {
+                    dr.agg_state
+                } else {
+                    task.state
+                };
                 if is_new || old_state != display_state {
                     let state_str = match display_state {
                         0 => i18n::t("Ready"),
@@ -744,7 +841,11 @@ fn main() {
 
                 // CPU% column: for group headers use aggregated CPU
                 {
-                    let cpu = if dr.kind == 1 { dr.agg_cpu } else { task.cpu_pct_x10 };
+                    let cpu = if dr.kind == 1 {
+                        dr.agg_cpu
+                    } else {
+                        task.cpu_pct_x10
+                    };
                     let mut cbuf = [0u8; 12];
                     let s = if cpu > 0 {
                         fmt_pct(&mut cbuf, cpu)
@@ -765,7 +866,11 @@ fn main() {
                 // NET column (index 7): network rate in Mbit/s
                 // For group headers use aggregated NET, otherwise individual
                 {
-                    let kbit = if dr.kind == 1 { dr.agg_net } else { task.net_kbit };
+                    let kbit = if dr.kind == 1 {
+                        dr.agg_net
+                    } else {
+                        task.net_kbit
+                    };
                     if kbit == 0 {
                         proc_grid.set_cell(ri as u32, 7, "0 Mbit");
                     } else {
@@ -821,10 +926,16 @@ fn main() {
             for dr in display.iter() {
                 let task = &tasks[dr.task_idx as usize];
                 prev_tids.push(task.tid);
-                let st = if dr.kind == 1 { dr.agg_state } else { task.state };
+                let st = if dr.kind == 1 {
+                    dr.agg_state
+                } else {
+                    task.state
+                };
                 prev_states.push(st);
             }
-            unsafe { PREV_PROC_COUNT = new_count; }
+            unsafe {
+                PREV_PROC_COUNT = new_count;
+            }
         }
 
         // ── Update graphs tab ──
@@ -833,11 +944,18 @@ fn main() {
             let mut gbuf = [0u8; 24];
             let mut p = 0;
             let mut t = [0u8; 12];
-            gbuf[p..p + 5].copy_from_slice(b"CPU: "); p += 5;
-            let s = fmt_u32(&mut t, cpu_st.overall_pct); gbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            gbuf[p..p + 4].copy_from_slice(b"%  ("); p += 4;
-            let s = fmt_u32(&mut t, ncpu as u32); gbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            gbuf[p..p + 2].copy_from_slice(b"C)"); p += 2;
+            gbuf[p..p + 5].copy_from_slice(b"CPU: ");
+            p += 5;
+            let s = fmt_u32(&mut t, cpu_st.overall_pct);
+            gbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            gbuf[p..p + 4].copy_from_slice(b"%  (");
+            p += 4;
+            let s = fmt_u32(&mut t, ncpu as u32);
+            gbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            gbuf[p..p + 2].copy_from_slice(b"C)");
+            p += 2;
             if let Ok(s) = core::str::from_utf8(&gbuf[..p]) {
                 graph_label.set_text(s);
             }
@@ -859,7 +977,16 @@ fn main() {
                         let row = core / cols;
                         let cx = col as i32 * (cell_w + gap);
                         let cy = row as i32 * (cell_h + gap);
-                        draw_cpu_graph(&cpu_canvas, cx, cy, cell_w as u32, cell_h as u32, core, cpu_st.core_pct[core], hist);
+                        draw_cpu_graph(
+                            &cpu_canvas,
+                            cx,
+                            cy,
+                            cell_w as u32,
+                            cell_h as u32,
+                            core,
+                            cpu_st.core_pct[core],
+                            hist,
+                        );
                     }
                 }
             }
@@ -878,29 +1005,42 @@ fn main() {
             let mut p = 0;
             let mut rb = [0u8; 20];
             let rs = fmt_bytes(&mut rb, total_read);
-            sbuf[p..p + 3].copy_from_slice(b"R: "); p += 3;
-            sbuf[p..p + rs.len()].copy_from_slice(rs.as_bytes()); p += rs.len();
-            sbuf[p..p + 6].copy_from_slice(b"   W: "); p += 6;
+            sbuf[p..p + 3].copy_from_slice(b"R: ");
+            p += 3;
+            sbuf[p..p + rs.len()].copy_from_slice(rs.as_bytes());
+            p += rs.len();
+            sbuf[p..p + 6].copy_from_slice(b"   W: ");
+            p += 6;
             let mut wb = [0u8; 20];
             let ws = fmt_bytes(&mut wb, total_write);
-            sbuf[p..p + ws.len()].copy_from_slice(ws.as_bytes()); p += ws.len();
+            sbuf[p..p + ws.len()].copy_from_slice(ws.as_bytes());
+            p += ws.len();
             if let Ok(s) = core::str::from_utf8(&sbuf[..p]) {
                 disk_summary.set_text(s);
             }
 
             // Incremental disk grid update (no Vec allocation)
-            let new_disk_count = tasks.iter().filter(|t| t.io_read_bytes > 0 || t.io_write_bytes > 0).count();
+            let new_disk_count = tasks
+                .iter()
+                .filter(|t| t.io_read_bytes > 0 || t.io_write_bytes > 0)
+                .count();
             let old_disk_count = unsafe { PREV_DISK_COUNT };
             if new_disk_count != old_disk_count {
                 disk_grid.set_row_count(new_disk_count as u32);
             }
             let mut ri = 0u32;
             for task in tasks.iter() {
-                if task.io_read_bytes == 0 && task.io_write_bytes == 0 { continue; }
+                if task.io_read_bytes == 0 && task.io_write_bytes == 0 {
+                    continue;
+                }
                 let mut t = [0u8; 12];
                 let s = fmt_u32(&mut t, task.tid);
                 disk_grid.set_cell(ri, 0, s);
-                disk_grid.set_cell(ri, 1, core::str::from_utf8(&task.name[..task.name_len]).unwrap_or(""));
+                disk_grid.set_cell(
+                    ri,
+                    1,
+                    core::str::from_utf8(&task.name[..task.name_len]).unwrap_or(""),
+                );
                 {
                     let mut rb = [0u8; 20];
                     let rs = fmt_bytes(&mut rb, task.io_read_bytes);
@@ -913,7 +1053,9 @@ fn main() {
                 }
                 ri += 1;
             }
-            unsafe { PREV_DISK_COUNT = new_disk_count; }
+            unsafe {
+                PREV_DISK_COUNT = new_disk_count;
+            }
         }
 
         // ── Update system tab ──
@@ -933,9 +1075,11 @@ fn main() {
                 if let Ok(s) = core::str::from_utf8(&hw.vendor[..vendor_len]) {
                     let mut buf = [0u8; 32];
                     let mut p = 0;
-                    buf[p..p + 8].copy_from_slice(b"Vendor: "); p += 8;
+                    buf[p..p + 8].copy_from_slice(b"Vendor: ");
+                    p += 8;
                     let vl = s.len().min(16);
-                    buf[p..p + vl].copy_from_slice(&s.as_bytes()[..vl]); p += vl;
+                    buf[p..p + vl].copy_from_slice(&s.as_bytes()[..vl]);
+                    p += vl;
                     if let Ok(vs) = core::str::from_utf8(&buf[..p]) {
                         cpu_vendor_label.set_text(vs);
                     }
@@ -943,39 +1087,70 @@ fn main() {
 
                 let mut buf = [0u8; 24];
                 let mut p = 0;
-                buf[p..p + 8].copy_from_slice(b"Cores:  "); p += 8;
-                let s = fmt_u32(&mut t, hw.cpu_count); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                if let Ok(s) = core::str::from_utf8(&buf[..p]) { cpu_cores_label.set_text(s); }
+                buf[p..p + 8].copy_from_slice(b"Cores:  ");
+                p += 8;
+                let s = fmt_u32(&mut t, hw.cpu_count);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                if let Ok(s) = core::str::from_utf8(&buf[..p]) {
+                    cpu_cores_label.set_text(s);
+                }
 
                 let mut buf = [0u8; 48];
                 let mut p = 0;
-                buf[p..p + 8].copy_from_slice(b"Speed:  "); p += 8;
-                let freq = if hw.cpu_freq_mhz > 0 { hw.cpu_freq_mhz } else { hw.tsc_mhz };
-                let s = fmt_u32(&mut t, freq); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p..p + 4].copy_from_slice(b" MHz"); p += 4;
+                buf[p..p + 8].copy_from_slice(b"Speed:  ");
+                p += 8;
+                let freq = if hw.cpu_freq_mhz > 0 {
+                    hw.cpu_freq_mhz
+                } else {
+                    hw.tsc_mhz
+                };
+                let s = fmt_u32(&mut t, freq);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p..p + 4].copy_from_slice(b" MHz");
+                p += 4;
                 if hw.max_freq_mhz > 0 && hw.max_freq_mhz != freq {
-                    buf[p..p + 6].copy_from_slice(b" (max "); p += 6;
-                    let s = fmt_u32(&mut t, hw.max_freq_mhz); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                    buf[p] = b')'; p += 1;
+                    buf[p..p + 6].copy_from_slice(b" (max ");
+                    p += 6;
+                    let s = fmt_u32(&mut t, hw.max_freq_mhz);
+                    buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                    p += s.len();
+                    buf[p] = b')';
+                    p += 1;
                 }
-                if let Ok(s) = core::str::from_utf8(&buf[..p]) { cpu_speed_label.set_text(s); }
+                if let Ok(s) = core::str::from_utf8(&buf[..p]) {
+                    cpu_speed_label.set_text(s);
+                }
             }
 
             // Memory card
             {
                 let mut buf = [0u8; 32];
                 let mut p = 0;
-                buf[p..p + 8].copy_from_slice(b"Total:  "); p += 8;
-                let s = fmt_u32(&mut t, hw.total_mem_mib); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p..p + 4].copy_from_slice(b" MiB"); p += 4;
-                if let Ok(s) = core::str::from_utf8(&buf[..p]) { mem_total_label.set_text(s); }
+                buf[p..p + 8].copy_from_slice(b"Total:  ");
+                p += 8;
+                let s = fmt_u32(&mut t, hw.total_mem_mib);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p..p + 4].copy_from_slice(b" MiB");
+                p += 4;
+                if let Ok(s) = core::str::from_utf8(&buf[..p]) {
+                    mem_total_label.set_text(s);
+                }
 
                 let mut buf = [0u8; 32];
                 let mut p = 0;
-                buf[p..p + 8].copy_from_slice(b"Free:   "); p += 8;
-                let s = fmt_u32(&mut t, hw.free_mem_mib); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p..p + 4].copy_from_slice(b" MiB"); p += 4;
-                if let Ok(s) = core::str::from_utf8(&buf[..p]) { mem_free_label.set_text(s); }
+                buf[p..p + 8].copy_from_slice(b"Free:   ");
+                p += 8;
+                let s = fmt_u32(&mut t, hw.free_mem_mib);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p..p + 4].copy_from_slice(b" MiB");
+                p += 4;
+                if let Ok(s) = core::str::from_utf8(&buf[..p]) {
+                    mem_free_label.set_text(s);
+                }
             }
 
             // System card
@@ -983,9 +1158,13 @@ fn main() {
                 let boot = if hw.boot_mode == 1 { "UEFI" } else { "BIOS" };
                 let mut buf = [0u8; 24];
                 let mut p = 0;
-                buf[p..p + 6].copy_from_slice(b"Boot: "); p += 6;
-                buf[p..p + boot.len()].copy_from_slice(boot.as_bytes()); p += boot.len();
-                if let Ok(s) = core::str::from_utf8(&buf[..p]) { boot_label.set_text(s); }
+                buf[p..p + 6].copy_from_slice(b"Boot: ");
+                p += 6;
+                buf[p..p + boot.len()].copy_from_slice(boot.as_bytes());
+                p += boot.len();
+                if let Ok(s) = core::str::from_utf8(&buf[..p]) {
+                    boot_label.set_text(s);
+                }
 
                 let ticks = sys::uptime();
                 let hz = sys::tick_hz();
@@ -995,27 +1174,50 @@ fn main() {
                 let secs = total_secs % 60;
                 let mut buf = [0u8; 40];
                 let mut p = 0;
-                buf[p..p + 8].copy_from_slice(b"Uptime: "); p += 8;
-                let s = fmt_u32(&mut t, hours as u32); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p..p + 2].copy_from_slice(b"h "); p += 2;
-                let s = fmt_u32(&mut t, mins as u32); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p..p + 2].copy_from_slice(b"m "); p += 2;
-                let s = fmt_u32(&mut t, secs as u32); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p] = b's'; p += 1;
-                if let Ok(s) = core::str::from_utf8(&buf[..p]) { uptime_sys_label.set_text(s); }
+                buf[p..p + 8].copy_from_slice(b"Uptime: ");
+                p += 8;
+                let s = fmt_u32(&mut t, hours as u32);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p..p + 2].copy_from_slice(b"h ");
+                p += 2;
+                let s = fmt_u32(&mut t, mins as u32);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p..p + 2].copy_from_slice(b"m ");
+                p += 2;
+                let s = fmt_u32(&mut t, secs as u32);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p] = b's';
+                p += 1;
+                if let Ok(s) = core::str::from_utf8(&buf[..p]) {
+                    uptime_sys_label.set_text(s);
+                }
             }
 
             // Display card
             if hw.fb_width > 0 && hw.fb_height > 0 {
                 let mut buf = [0u8; 40];
                 let mut p = 0;
-                let s = fmt_u32(&mut t, hw.fb_width); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p] = b'x'; p += 1;
-                let s = fmt_u32(&mut t, hw.fb_height); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p..p + 2].copy_from_slice(b" ("); p += 2;
-                let s = fmt_u32(&mut t, hw.fb_bpp); buf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-                buf[p..p + 5].copy_from_slice(b"-bit)"); p += 5;
-                if let Ok(s) = core::str::from_utf8(&buf[..p]) { disp_res_label.set_text(s); }
+                let s = fmt_u32(&mut t, hw.fb_width);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p] = b'x';
+                p += 1;
+                let s = fmt_u32(&mut t, hw.fb_height);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p..p + 2].copy_from_slice(b" (");
+                p += 2;
+                let s = fmt_u32(&mut t, hw.fb_bpp);
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p..p + 5].copy_from_slice(b"-bit)");
+                p += 5;
+                if let Ok(s) = core::str::from_utf8(&buf[..p]) {
+                    disp_res_label.set_text(s);
+                }
             }
         }
     });
@@ -1023,25 +1225,31 @@ fn main() {
     // ── Menu bar ──
     let mut mb = ui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("Quit"), 0)
+        .item(1, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("View"))
-            .item(10, i18n::t("Processes"), 0)
-            .item(11, i18n::t("Graphs"), 0)
-            .item(12, i18n::t("Disk"), 0)
-            .item(13, i18n::t("System"), 0)
+        .item(10, i18n::t("Processes"), 0)
+        .item(11, i18n::t("Graphs"), 0)
+        .item(12, i18n::t("Disk"), 0)
+        .item(13, i18n::t("System"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = ui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(move |e| {
-        match e.item_id {
-            1 => ui::quit(),
-            10 => { seg.set_state(0); }
-            11 => { seg.set_state(1); }
-            12 => { seg.set_state(2); }
-            13 => { seg.set_state(3); }
-            _ => {}
+    menu.on_item(move |e| match e.item_id {
+        1 => ui::quit(),
+        10 => {
+            seg.set_state(0);
         }
+        11 => {
+            seg.set_state(1);
+        }
+        12 => {
+            seg.set_state(2);
+        }
+        13 => {
+            seg.set_state(3);
+        }
+        _ => {}
     });
 
     ui::run();

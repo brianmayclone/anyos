@@ -35,8 +35,16 @@ fn main() {
 
         anyos_std::println!(
             "{:<3}.{:<3}.{:<3}.{:<3}    {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            ip[0], ip[1], ip[2], ip[3],
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3],
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
         );
     }
 

@@ -3,7 +3,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::{println, format, net, fs};
+use anyos_std::{format, fs, net, println};
 
 anyos_std::entry!(main);
 
@@ -34,7 +34,12 @@ impl FtpClient {
             [127, 0, 0, 1]
         };
 
-        let mut client = FtpClient { ctrl: sock, passive: true, active_port: 0, local_ip };
+        let mut client = FtpClient {
+            ctrl: sock,
+            passive: true,
+            active_port: 0,
+            local_ip,
+        };
 
         // Read 220 banner
         let resp = client.read_response();
@@ -144,8 +149,10 @@ impl FtpClient {
         let p1 = (port >> 8) as u8;
         let p2 = (port & 0xFF) as u8;
         let mut port_cmd = String::new();
-        port_cmd.push_str(&format!("{},{},{},{},{},{}",
-            ip[0], ip[1], ip[2], ip[3], p1, p2));
+        port_cmd.push_str(&format!(
+            "{},{},{},{},{},{}",
+            ip[0], ip[1], ip[2], ip[3], p1, p2
+        ));
         self.send_command("PORT ", &port_cmd);
         let resp = self.read_response();
         if !resp.starts_with("200") {
@@ -342,26 +349,42 @@ impl FtpClient {
 
         for i in 0..count as usize {
             let entry_offset = i * 64;
-            if entry_offset + 8 > dir_buf.len() { break; }
+            if entry_offset + 8 > dir_buf.len() {
+                break;
+            }
             let entry_type = dir_buf[entry_offset];
             let name_len = dir_buf[entry_offset + 1] as usize;
-            if name_len == 0 || name_len > 56 { break; }
-            if entry_offset + 8 + name_len > dir_buf.len() { break; }
-            let name = match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len]) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-            if name.is_empty() { break; }
+            if name_len == 0 || name_len > 56 {
+                break;
+            }
+            if entry_offset + 8 + name_len > dir_buf.len() {
+                break;
+            }
+            let name =
+                match core::str::from_utf8(&dir_buf[entry_offset + 8..entry_offset + 8 + name_len])
+                {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+            if name.is_empty() {
+                break;
+            }
             // Skip . and ..
-            if name == "." || name == ".." { continue; }
+            if name == "." || name == ".." {
+                continue;
+            }
 
             // Build local and remote paths for this entry
             let mut local_child = String::from(local_path);
-            if !local_child.ends_with('/') { local_child.push('/'); }
+            if !local_child.ends_with('/') {
+                local_child.push('/');
+            }
             local_child.push_str(name);
 
             let mut remote_child = String::from(remote_path);
-            if !remote_child.ends_with('/') { remote_child.push('/'); }
+            if !remote_child.ends_with('/') {
+                remote_child.push('/');
+            }
             remote_child.push_str(name);
 
             if entry_type == 1 {
@@ -449,7 +472,9 @@ impl FtpClient {
         let mut buf = [0u8; 4096];
         loop {
             let n = net::tcp_recv(data_sock, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             raw.extend_from_slice(&buf[..n as usize]);
         }
         net::tcp_close(data_sock);
@@ -459,7 +484,9 @@ impl FtpClient {
         for line in text.lines() {
             let t = line.trim();
             // LIST format: "drwxrwxrwx ... name" or "-rwxrwxrwx ... name"
-            if t.len() < 10 { continue; }
+            if t.len() < 10 {
+                continue;
+            }
             let is_dir = t.as_bytes()[0] == b'd';
             // Name is after the last whitespace-separated field
             // Skip permissions, links, owner, group, size, month, day, time/year
@@ -526,7 +553,10 @@ impl FtpClient {
                         // If no local path, use filename part of remote
                         let local_path = if local.is_empty() {
                             // Extract filename from path
-                            remote.rfind('/').map(|i| &remote[i+1..]).unwrap_or(remote)
+                            remote
+                                .rfind('/')
+                                .map(|i| &remote[i + 1..])
+                                .unwrap_or(remote)
                         } else {
                             local
                         };
@@ -541,7 +571,7 @@ impl FtpClient {
                         println!("Usage: put <local_path> [remote_path]");
                     } else {
                         let remote_path = if remote.is_empty() {
-                            local.rfind('/').map(|i| &local[i+1..]).unwrap_or(local)
+                            local.rfind('/').map(|i| &local[i + 1..]).unwrap_or(local)
                         } else {
                             remote
                         };
@@ -630,13 +660,26 @@ impl FtpClient {
                     } else {
                         for i in 0..count as usize {
                             let off = i * 64;
-                            if off + 8 > dir_buf.len() { break; }
+                            if off + 8 > dir_buf.len() {
+                                break;
+                            }
                             let entry_type = dir_buf[off];
                             let name_len = dir_buf[off + 1] as usize;
-                            if name_len == 0 || name_len > 56 { break; }
-                            if off + 8 + name_len > dir_buf.len() { break; }
-                            if let Ok(name) = core::str::from_utf8(&dir_buf[off + 8..off + 8 + name_len]) {
-                                let size = u32::from_le_bytes([dir_buf[off+4], dir_buf[off+5], dir_buf[off+6], dir_buf[off+7]]);
+                            if name_len == 0 || name_len > 56 {
+                                break;
+                            }
+                            if off + 8 + name_len > dir_buf.len() {
+                                break;
+                            }
+                            if let Ok(name) =
+                                core::str::from_utf8(&dir_buf[off + 8..off + 8 + name_len])
+                            {
+                                let size = u32::from_le_bytes([
+                                    dir_buf[off + 4],
+                                    dir_buf[off + 5],
+                                    dir_buf[off + 6],
+                                    dir_buf[off + 7],
+                                ]);
                                 if entry_type == 1 {
                                     println!("  [{}]", name);
                                 } else {
@@ -768,7 +811,9 @@ fn parse_pasv(resp: &str) -> Option<([u8; 4], u16)> {
                 current = current * 10 + (b - b'0') as u32;
             }
             b',' => {
-                if idx >= 6 { return None; }
+                if idx >= 6 {
+                    return None;
+                }
                 nums[idx] = current;
                 idx += 1;
                 current = 0;
@@ -790,7 +835,9 @@ fn parse_pasv(resp: &str) -> Option<([u8; 4], u16)> {
 fn format_ip(ip: &[u8; 4]) -> String {
     let mut s = String::new();
     for (i, &b) in ip.iter().enumerate() {
-        if i > 0 { s.push('.'); }
+        if i > 0 {
+            s.push('.');
+        }
         write_u32(&mut s, b as u32);
     }
     s
@@ -809,17 +856,18 @@ fn print_str(s: &str) {
 
 // All FTP commands for command-name completion
 const FTP_COMMANDS: &[&str] = &[
-    "ls", "dir", "list", "pwd", "cd", "get", "put", "upload",
-    "mkdir", "md", "rmdir", "rd", "delete", "del", "rm",
-    "rename", "ren", "mv", "size", "passive", "pasv",
-    "active", "port", "binary", "bin", "ascii",
-    "lpwd", "lcd", "lls", "ldir", "lmkdir", "lrm",
-    "help", "bye", "quit", "exit",
+    "ls", "dir", "list", "pwd", "cd", "get", "put", "upload", "mkdir", "md", "rmdir", "rd",
+    "delete", "del", "rm", "rename", "ren", "mv", "size", "passive", "pasv", "active", "port",
+    "binary", "bin", "ascii", "lpwd", "lcd", "lls", "ldir", "lmkdir", "lrm", "help", "bye", "quit",
+    "exit",
 ];
 
 // Commands that take remote file arguments (all entries)
 fn needs_remote_files(cmd: &str) -> bool {
-    matches!(cmd, "get" | "delete" | "del" | "rm" | "size" | "rename" | "ren" | "mv")
+    matches!(
+        cmd,
+        "get" | "delete" | "del" | "rm" | "size" | "rename" | "ren" | "mv"
+    )
 }
 
 // Commands that take remote directory arguments (dirs only)
@@ -843,20 +891,32 @@ fn local_file_names(dir: &str, dirs_only: bool) -> Vec<String> {
     let d = if dir.is_empty() { "." } else { dir };
     let mut dir_buf = [0u8; 64 * 128];
     let count = fs::readdir(d, &mut dir_buf);
-    if count == u32::MAX { return Vec::new(); }
+    if count == u32::MAX {
+        return Vec::new();
+    }
     let mut names = Vec::new();
     for i in 0..count as usize {
         let off = i * 64;
-        if off + 8 > dir_buf.len() { break; }
+        if off + 8 > dir_buf.len() {
+            break;
+        }
         let name_len = dir_buf[off + 1] as usize;
-        if name_len == 0 || name_len > 56 { break; }
-        if off + 8 + name_len > dir_buf.len() { break; }
+        if name_len == 0 || name_len > 56 {
+            break;
+        }
+        if off + 8 + name_len > dir_buf.len() {
+            break;
+        }
         if let Ok(name) = core::str::from_utf8(&dir_buf[off + 8..off + 8 + name_len]) {
             if name != "." && name != ".." {
                 let is_dir = dir_buf[off] == 1;
-                if dirs_only && !is_dir { continue; }
+                if dirs_only && !is_dir {
+                    continue;
+                }
                 let mut entry = String::from(name);
-                if is_dir { entry.push('/'); }
+                if is_dir {
+                    entry.push('/');
+                }
                 names.push(entry);
             }
         }
@@ -932,7 +992,11 @@ fn read_line_with_tab(buf: &mut [u8], ftp: &mut FtpClient) -> usize {
 }
 
 /// Find a tab completion for the current line.
-fn tab_complete(line: &str, ftp: &mut FtpClient, remote_cache: &mut Option<Vec<(String, bool)>>) -> Option<String> {
+fn tab_complete(
+    line: &str,
+    ftp: &mut FtpClient,
+    remote_cache: &mut Option<Vec<(String, bool)>>,
+) -> Option<String> {
     let trimmed = line.trim_start();
     if let Some(space_pos) = trimmed.find(' ') {
         // Command + partial argument
@@ -947,12 +1011,15 @@ fn tab_complete(line: &str, ftp: &mut FtpClient, remote_cache: &mut Option<Vec<(
             }
             let entries = remote_cache.as_ref()?;
             // Build candidate names (dirs get trailing /)
-            let candidates: Vec<String> = entries.iter()
+            let candidates: Vec<String> = entries
+                .iter()
                 .filter(|(_, is_dir)| !dirs_only || *is_dir)
                 .map(|(name, is_dir)| {
                     if *is_dir {
                         let mut s = name.clone();
-                        if !s.ends_with('/') { s.push('/'); }
+                        if !s.ends_with('/') {
+                            s.push('/');
+                        }
                         s
                     } else {
                         name.clone()
@@ -978,7 +1045,10 @@ fn tab_complete(line: &str, ftp: &mut FtpClient, remote_cache: &mut Option<Vec<(
         None
     } else {
         // Command name completion
-        let matches: Vec<&&str> = FTP_COMMANDS.iter().filter(|c| c.starts_with(trimmed)).collect();
+        let matches: Vec<&&str> = FTP_COMMANDS
+            .iter()
+            .filter(|c| c.starts_with(trimmed))
+            .collect();
         if matches.len() == 1 {
             let mut result = String::from(*matches[0]);
             result.push(' ');
@@ -996,8 +1066,16 @@ fn tab_complete(line: &str, ftp: &mut FtpClient, remote_cache: &mut Option<Vec<(
 }
 
 /// Complete arg_part from a list of candidates. Returns full line if matched.
-fn complete_from_list(cmd: &str, prefix: &str, candidates: &[String], line: &str) -> Option<String> {
-    let matches: Vec<&String> = candidates.iter().filter(|n| n.starts_with(prefix)).collect();
+fn complete_from_list(
+    cmd: &str,
+    prefix: &str,
+    candidates: &[String],
+    line: &str,
+) -> Option<String> {
+    let matches: Vec<&String> = candidates
+        .iter()
+        .filter(|n| n.starts_with(prefix))
+        .collect();
     if matches.len() == 1 {
         return Some(format!("{} {}", cmd, matches[0]));
     } else if matches.len() > 1 {
@@ -1031,7 +1109,9 @@ fn show_candidates_str(candidates: &[&str], line: &str) {
 
 /// Find the longest common prefix of a set of strings.
 fn common_prefix<'a>(strings: &[&'a str]) -> &'a str {
-    if strings.is_empty() { return ""; }
+    if strings.is_empty() {
+        return "";
+    }
     let first = strings[0];
     let mut len = first.len();
     for s in &strings[1..] {
@@ -1056,11 +1136,15 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
         match b {
             b'0'..=b'9' => {
                 num = num * 10 + (b - b'0') as u32;
-                if num > 255 { return None; }
+                if num > 255 {
+                    return None;
+                }
                 has_digit = true;
             }
             b'.' => {
-                if !has_digit || idx >= 3 { return None; }
+                if !has_digit || idx >= 3 {
+                    return None;
+                }
                 parts[idx] = num as u8;
                 idx += 1;
                 num = 0;
@@ -1069,14 +1153,14 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
             _ => return None,
         }
     }
-    if !has_digit || idx != 3 { return None; }
+    if !has_digit || idx != 3 {
+        return None;
+    }
     parts[3] = num as u8;
     Some(parts)
 }
 
 fn main() {
-
-
     let mut args_buf = [0u8; 256];
     let args_raw = anyos_std::process::args(&mut args_buf);
 

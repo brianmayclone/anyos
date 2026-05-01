@@ -18,7 +18,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{fs, ipc, net, process, println};
+use anyos_std::{fs, ipc, net, println, process};
 use libsvc::ServiceLifecycle;
 
 mod config;
@@ -29,16 +29,31 @@ const PIPE_NAME: &str = "ftpd";
 
 fn print_config(cfg: &config::FtpdConfig) {
     println!("ftpd: --- config ---");
-    println!("ftpd:   enabled       = {}", if cfg.enabled { "yes" } else { "no" });
+    println!(
+        "ftpd:   enabled       = {}",
+        if cfg.enabled { "yes" } else { "no" }
+    );
     println!("ftpd:   port          = {}", cfg.port);
-    println!("ftpd:   passive_mode  = {}", if cfg.passive_mode { "yes" } else { "no" });
-    println!("ftpd:   passive_ports = {}-{}", cfg.passive_port_min, cfg.passive_port_max);
-    println!("ftpd:   allow_anon    = {}", if cfg.allow_anonymous { "yes" } else { "no" });
+    println!(
+        "ftpd:   passive_mode  = {}",
+        if cfg.passive_mode { "yes" } else { "no" }
+    );
+    println!(
+        "ftpd:   passive_ports = {}-{}",
+        cfg.passive_port_min, cfg.passive_port_max
+    );
+    println!(
+        "ftpd:   allow_anon    = {}",
+        if cfg.allow_anonymous { "yes" } else { "no" }
+    );
     if cfg.allow_anonymous {
         println!("ftpd:   anon_root     = {}", cfg.anonymous_root_str());
     }
     println!("ftpd:   max_clients   = {}", cfg.max_clients);
-    println!("ftpd:   chroot_users  = {}", if cfg.chroot_users { "yes" } else { "no" });
+    println!(
+        "ftpd:   chroot_users  = {}",
+        if cfg.chroot_users { "yes" } else { "no" }
+    );
     println!("ftpd:   shares ({}):", cfg.shares_count);
     if cfg.shares_count == 0 {
         println!("ftpd:     (none)");
@@ -46,10 +61,10 @@ fn print_config(cfg: &config::FtpdConfig) {
     for i in 0..cfg.shares_count {
         let s = &cfg.shares[i];
         let perms = match (s.can_read, s.can_write) {
-            (true, true)  => "rw",
+            (true, true) => "rw",
             (true, false) => "r",
             (false, true) => "w",
-            _             => "-",
+            _ => "-",
         };
         println!("ftpd:     {}:{}: {}", s.user_str(), s.path_str(), perms);
     }
@@ -69,7 +84,9 @@ fn ensure_dir_exists(path: &str) {
             cur.push('/');
             continue;
         }
-        if !cur.ends_with('/') { cur.push('/'); }
+        if !cur.ends_with('/') {
+            cur.push('/');
+        }
         cur.push_str(part);
         if fs::stat(&cur, &mut st) == u32::MAX {
             fs::mkdir(&cur);
@@ -131,8 +148,10 @@ fn main() {
             println!("ftpd: tcp_listen failed on port {}", cfg.port);
             u32::MAX
         } else {
-            println!("ftpd: listening on {}.{}.{}.{}:{}",
-                local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port);
+            println!(
+                "ftpd: listening on {}.{}.{}.{}:{}",
+                local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port
+            );
             l
         }
     } else {
@@ -181,8 +200,10 @@ fn main() {
                             if current_listener == u32::MAX {
                                 println!("ftpd: tcp_listen failed on port {}", cfg.port);
                             } else {
-                                println!("ftpd: listening on {}.{}.{}.{}:{}",
-                                    local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port);
+                                println!(
+                                    "ftpd: listening on {}.{}.{}.{}:{}",
+                                    local_ip[0], local_ip[1], local_ip[2], local_ip[3], cfg.port
+                                );
                             }
                         } else {
                             println!("ftpd: disabled after reload");
@@ -230,8 +251,10 @@ fn main() {
             continue;
         }
 
-        println!("ftpd: connection from {}.{}.{}.{}",
-            remote_ip[0], remote_ip[1], remote_ip[2], remote_ip[3]);
+        println!(
+            "ftpd: connection from {}.{}.{}.{}",
+            remote_ip[0], remote_ip[1], remote_ip[2], remote_ip[3]
+        );
 
         // Check client limit
         if child_count >= cfg.max_clients as usize {

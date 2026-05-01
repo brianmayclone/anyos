@@ -15,10 +15,10 @@
 //! let choice = dialog::show_confirm(parent_win, "Delete?", "Are you sure?");
 //! ```
 
+use crate::process;
+use crate::ui::window;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::ui::window;
-use crate::process;
 
 /// Dialog type determines the icon color and symbol.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -66,13 +66,7 @@ const BTN_MIN_W: u16 = 72;
 /// button is styled as the primary (blue) action.
 ///
 /// Returns the 0-based button index, or `u32::MAX` on Escape/close.
-pub fn show(
-    _parent: u32,
-    dtype: DialogType,
-    title: &str,
-    message: &str,
-    buttons: &[&str],
-) -> u32 {
+pub fn show(_parent: u32, dtype: DialogType, title: &str, message: &str, buttons: &[&str]) -> u32 {
     if buttons.is_empty() {
         return u32::MAX;
     }
@@ -82,8 +76,14 @@ pub fn show(
     let dx = ((sw as i32 - DIALOG_W as i32) / 2).max(0) as u16;
     let dy = ((sh as i32 - DIALOG_H as i32) / 2).max(0) as u16;
 
-    let win = window::create_ex("", dx, dy, DIALOG_W, DIALOG_H,
-        window::WIN_FLAG_NOT_RESIZABLE);
+    let win = window::create_ex(
+        "",
+        dx,
+        dy,
+        DIALOG_W,
+        DIALOG_H,
+        window::WIN_FLAG_NOT_RESIZABLE,
+    );
     if win == u32::MAX {
         return u32::MAX;
     }
@@ -174,7 +174,11 @@ fn compute_button_positions(buttons: &[&str]) -> Vec<BtnRect> {
         let (tw, _) = window::font_measure(0, 13, label);
         let bw = (tw as u16 + 24).max(BTN_MIN_W);
         let bx = right_edge - bw as i16;
-        rects.push(BtnRect { x: bx, y: BTN_Y, w: bw });
+        rects.push(BtnRect {
+            x: bx,
+            y: BTN_Y,
+            w: bw,
+        });
         right_edge = bx - BTN_PAD;
     }
     rects.reverse();
@@ -201,7 +205,15 @@ fn render_dialog(
     };
     let icon_cx = ICON_X + ICON_SIZE as i16 / 2;
     let icon_cy = ICON_Y + ICON_SIZE as i16 / 2;
-    window::fill_rounded_rect(win, ICON_X, ICON_Y, ICON_SIZE, ICON_SIZE, ICON_SIZE / 2, icon_color);
+    window::fill_rounded_rect(
+        win,
+        ICON_X,
+        ICON_Y,
+        ICON_SIZE,
+        ICON_SIZE,
+        ICON_SIZE / 2,
+        icon_color,
+    );
 
     // Icon symbol (centered in the circle)
     let symbol = match dtype {
@@ -225,7 +237,11 @@ fn render_dialog(
     // Buttons
     for (i, (&label, rect)) in buttons.iter().zip(btn_positions.iter()).enumerate() {
         let is_primary = i == buttons.len() - 1;
-        let bg = if is_primary { COLOR_BTN_PRIMARY } else { COLOR_BTN_BG };
+        let bg = if is_primary {
+            COLOR_BTN_PRIMARY
+        } else {
+            COLOR_BTN_BG
+        };
         window::fill_rounded_rect(win, rect.x, rect.y, rect.w, BTN_H, 6, bg);
 
         // Center label
@@ -277,8 +293,7 @@ fn render_wrapped_text(win: u32, x: i16, y: i16, max_w: u16, color: u32, text: &
 
 fn hit_test_buttons(mx: i16, my: i16, positions: &[BtnRect]) -> Option<usize> {
     for (i, rect) in positions.iter().enumerate() {
-        if mx >= rect.x && mx < rect.x + rect.w as i16
-            && my >= rect.y && my < rect.y + BTN_H as i16
+        if mx >= rect.x && mx < rect.x + rect.w as i16 && my >= rect.y && my < rect.y + BTN_H as i16
         {
             return Some(i);
         }

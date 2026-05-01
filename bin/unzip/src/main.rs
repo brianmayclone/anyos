@@ -84,8 +84,13 @@ fn main() {
                 0
             };
 
-            anyos_std::println!("{:>8}  {:>8}  {:>4}%  {}",
-                size, method_name(method), ratio, name);
+            anyos_std::println!(
+                "{:>8}  {:>8}  {:>4}%  {}",
+                size,
+                method_name(method),
+                ratio,
+                name
+            );
             total_size += size;
         }
 

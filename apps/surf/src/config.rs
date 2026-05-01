@@ -132,7 +132,9 @@ fn bookmark_from_json(val: &Value) -> BookmarkItem {
 
 pub fn load() -> (SurfConfig, BookmarkStore) {
     let _ = SURF_SCHEMA.register();
-    let homepage = SURF_SCHEMA.read_string("config/homepage").unwrap_or_default();
+    let homepage = SURF_SCHEMA
+        .read_string("config/homepage")
+        .unwrap_or_default();
     let js_enabled = SURF_SCHEMA.read_bool("config/js_enabled").unwrap_or(true);
     let mut store = BookmarkStore::new();
     if let Some(json) = SURF_SCHEMA.read_string("config/bookmarks_json") {
@@ -177,7 +179,9 @@ pub fn fetch_favicon(bookmark_url: &str) -> Option<(Vec<u32>, u32, u32)> {
     let parsed = crate::http::parse_url(bookmark_url).ok()?;
     let favicon_path = alloc::format!(
         "{}://{}:{}/favicon.ico",
-        parsed.scheme, parsed.host, parsed.port
+        parsed.scheme,
+        parsed.host,
+        parsed.port
     );
     let favicon_url = crate::http::parse_url(&favicon_path).ok()?;
 

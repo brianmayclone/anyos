@@ -1,8 +1,8 @@
 //! GPU command dispatch and framebuffer I/O.
 
-use anyos_std::ipc;
-use super::Compositor;
 use super::rect::Rect;
+use super::Compositor;
+use anyos_std::ipc;
 
 // ── GPU Command Types ───────────────────────────────────────────────────────
 
@@ -39,7 +39,8 @@ impl Compositor {
 
     pub fn enable_hw_cursor(&mut self) {
         self.hw_cursor = true;
-        self.gpu_cmds.push([GPU_CURSOR_SHOW, 1, 0, 0, 0, 0, 0, 0, 0]);
+        self.gpu_cmds
+            .push([GPU_CURSOR_SHOW, 1, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     pub fn has_hw_cursor(&self) -> bool {
@@ -85,9 +86,13 @@ impl Compositor {
             // In GMR mode, back_buffer is in normal cacheable RAM — no sfence needed.
             if self.vram_dirty && !self.gmr_active {
                 #[cfg(target_arch = "x86_64")]
-                unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+                unsafe {
+                    core::arch::asm!("sfence", options(nostack, preserves_flags));
+                }
                 #[cfg(target_arch = "aarch64")]
-                unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)); }
+                unsafe {
+                    core::arch::asm!("dsb st", options(nostack, preserves_flags));
+                }
                 self.vram_dirty = false;
             }
             ipc::gpu_command(&self.gpu_cmds);
@@ -103,9 +108,13 @@ impl Compositor {
     pub fn prepare_flush(&mut self) {
         if self.vram_dirty && !self.gmr_active {
             #[cfg(target_arch = "x86_64")]
-            unsafe { core::arch::asm!("sfence", options(nostack, preserves_flags)); }
+            unsafe {
+                core::arch::asm!("sfence", options(nostack, preserves_flags));
+            }
             #[cfg(target_arch = "aarch64")]
-            unsafe { core::arch::asm!("dsb st", options(nostack, preserves_flags)); }
+            unsafe {
+                core::arch::asm!("dsb st", options(nostack, preserves_flags));
+            }
             self.vram_dirty = false;
         }
     }
@@ -144,11 +153,25 @@ impl Compositor {
             // After compose()'s FLIP, current_page was swapped.
             // The page we just wrote to (now visible) is:
             //   current_page==1 -> visible at fb_height, current_page==0 -> visible at 0
-            let front_offset = if self.current_page == 1 { self.fb_height } else { 0 };
+            let front_offset = if self.current_page == 1 {
+                self.fb_height
+            } else {
+                0
+            };
             self.flush_region(rect, front_offset);
         } else {
             self.flush_region(rect, 0);
-            self.gpu_cmds.push([GPU_UPDATE, rect.x as u32, rect.y as u32, rect.width, rect.height, 0, 0, 0, 0]);
+            self.gpu_cmds.push([
+                GPU_UPDATE,
+                rect.x as u32,
+                rect.y as u32,
+                rect.width,
+                rect.height,
+                0,
+                0,
+                0,
+                0,
+            ]);
             self.flush_gpu();
         }
     }

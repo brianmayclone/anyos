@@ -5,8 +5,8 @@
 
 use alloc::format;
 use alloc::string::String;
-use anyos_std::{i18n, net, process, sys};
 use anyos_std::ui::window;
+use anyos_std::{i18n, net, process, sys};
 use libanyui_client as ui;
 use ui::Widget;
 
@@ -177,7 +177,11 @@ fn build_system_info(panel: &ui::View) {
         &flow,
         i18n::t("Network"),
         &net_str,
-        if link_up { ui::theme::colors().success } else { ui::theme::colors().destructive },
+        if link_up {
+            ui::theme::colors().success
+        } else {
+            ui::theme::colors().destructive
+        },
     );
 
     // Uptime card

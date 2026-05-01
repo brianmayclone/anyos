@@ -2,7 +2,7 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::block;
-use crate::inventory::{HOTBAR_SLOTS, Inventory};
+use crate::inventory::{Inventory, HOTBAR_SLOTS};
 
 /// Format stats into a window title string.
 pub fn format_title(fps: u32, x: f32, y: f32, z: f32, block_name: &str, fog_chunks: f32) -> String {
@@ -48,8 +48,21 @@ fn draw_hotbar(
     let start_x = (canvas_w as i32 - total_w) / 2;
     let y = canvas_h as i32 - slot_h - 18;
 
-    canvas.fill_rect(start_x - 10, y - 10, (total_w + 20) as u32, (slot_h + 20) as u32, 0x7A11151B);
-    canvas.draw_rect(start_x - 10, y - 10, (total_w + 20) as u32, (slot_h + 20) as u32, 0xCC8CA0B3, 1);
+    canvas.fill_rect(
+        start_x - 10,
+        y - 10,
+        (total_w + 20) as u32,
+        (slot_h + 20) as u32,
+        0x7A11151B,
+    );
+    canvas.draw_rect(
+        start_x - 10,
+        y - 10,
+        (total_w + 20) as u32,
+        (slot_h + 20) as u32,
+        0xCC8CA0B3,
+        1,
+    );
 
     for slot in 0..HOTBAR_SLOTS {
         let x = start_x + slot as i32 * (slot_w + gap);
@@ -57,12 +70,26 @@ fn draw_hotbar(
         let fill = if selected { 0xDD2B333D } else { 0xB01B2027 };
         let border = if selected { 0xFFF2C94C } else { 0xCC657280 };
         canvas.fill_rect(x, y, slot_w as u32, slot_h as u32, fill);
-        canvas.draw_rect(x, y, slot_w as u32, slot_h as u32, border, if selected { 2 } else { 1 });
+        canvas.draw_rect(
+            x,
+            y,
+            slot_w as u32,
+            slot_h as u32,
+            border,
+            if selected { 2 } else { 1 },
+        );
         let label = alloc::format!("{}", slot + 1);
         canvas.draw_text(x + 4, y + 4, 0xA0FFFFFF, 4, 10, &label);
 
         if let Some(block_id) = inventory.slot_block(slot) {
-            canvas.draw_text(x + 8, y + 14, 0xFFFFFFFF, 1, 12, block::BLOCK_SHORT_NAMES[block_id as usize]);
+            canvas.draw_text(
+                x + 8,
+                y + 14,
+                0xFFFFFFFF,
+                1,
+                12,
+                block::BLOCK_SHORT_NAMES[block_id as usize],
+            );
             let count = alloc::format!("{}", inventory.slot_count(slot));
             canvas.draw_text(x + slot_w - 16, y + 25, 0xFFD9E3EA, 1, 11, &count);
         }

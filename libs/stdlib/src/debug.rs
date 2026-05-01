@@ -49,11 +49,25 @@ pub struct DebugRegs {
 impl Default for DebugRegs {
     fn default() -> Self {
         Self {
-            rax: 0, rbx: 0, rcx: 0, rdx: 0,
-            rsi: 0, rdi: 0, rbp: 0,
-            r8: 0, r9: 0, r10: 0, r11: 0,
-            r12: 0, r13: 0, r14: 0, r15: 0,
-            rsp: 0, rip: 0, rflags: 0, cr3: 0,
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rsp: 0,
+            rip: 0,
+            rflags: 0,
+            cr3: 0,
             _reserved: 0,
         }
     }
@@ -170,7 +184,11 @@ pub fn read_mem(tid: u32, addr: u64, buf: &mut [u8]) -> usize {
         len as u64,
         buf.as_mut_ptr() as u64,
     );
-    if ret == u32::MAX { 0 } else { ret as usize }
+    if ret == u32::MAX {
+        0
+    } else {
+        ret as usize
+    }
 }
 
 /// Write memory into the target thread's address space.
@@ -185,7 +203,11 @@ pub fn write_mem(tid: u32, addr: u64, data: &[u8]) -> usize {
         len as u64,
         data.as_ptr() as u64,
     );
-    if ret == u32::MAX { 0 } else { ret as usize }
+    if ret == u32::MAX {
+        0
+    } else {
+        ret as usize
+    }
 }
 
 /// Set a software breakpoint (INT3) at the given address.
@@ -224,7 +246,11 @@ pub fn get_memory_map(tid: u32, regions: &mut [MemoryRegion]) -> usize {
     let buf = regions.as_mut_ptr() as u64;
     let size = (regions.len() * core::mem::size_of::<MemoryRegion>()) as u32;
     let ret = syscall3(SYS_DEBUG_GET_MEM_MAP, tid as u64, buf, size as u64);
-    if ret == u32::MAX { 0 } else { ret as usize }
+    if ret == u32::MAX {
+        0
+    } else {
+        ret as usize
+    }
 }
 
 /// Get extended information about a thread.

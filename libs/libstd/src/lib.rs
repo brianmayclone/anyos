@@ -11,16 +11,16 @@
 
 extern crate alloc;
 
-pub mod io;
-pub mod path;
-pub mod sync;
-pub mod fs;
-pub mod net;
-pub mod thread;
-pub mod time;
 pub mod env;
 pub mod ffi;
+pub mod fs;
+pub mod io;
+pub mod net;
+pub mod path;
 pub mod process;
+pub mod sync;
+pub mod thread;
+pub mod time;
 
 // Re-export core/alloc modules that std normally provides
 pub mod fmt {
@@ -29,8 +29,8 @@ pub mod fmt {
 
 pub mod collections {
     pub use alloc::collections::*;
-    pub use anyos_std::HashMap;
     pub use anyos_std::collections::HashSet;
+    pub use anyos_std::HashMap;
 }
 
 pub mod string {
@@ -117,10 +117,10 @@ pub mod any {
 pub mod prelude {
     pub mod v1 {
         pub use alloc::boxed::Box;
-        pub use alloc::string::{String, ToString};
-        pub use alloc::vec::Vec;
         pub use alloc::format;
+        pub use alloc::string::{String, ToString};
         pub use alloc::vec;
+        pub use alloc::vec::Vec;
         pub use core::prelude::v1::*;
     }
 }

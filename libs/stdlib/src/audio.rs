@@ -13,7 +13,11 @@ use crate::raw::*;
 /// `data` must contain 16-bit signed little-endian stereo samples at 48 kHz
 /// (4 bytes per sample frame). Returns number of bytes accepted.
 pub fn audio_write(pcm_data: &[u8]) -> u32 {
-    syscall2(SYS_AUDIO_WRITE, pcm_data.as_ptr() as u64, pcm_data.len() as u64)
+    syscall2(
+        SYS_AUDIO_WRITE,
+        pcm_data.as_ptr() as u64,
+        pcm_data.len() as u64,
+    )
 }
 
 /// Stop audio playback.
@@ -81,20 +85,23 @@ fn parse_wav(data: &[u8]) -> Result<WavInfo<'_>, &'static str> {
 
     while pos + 8 <= data.len() {
         let chunk_id = &data[pos..pos + 4];
-        let chunk_size = u32::from_le_bytes([data[pos+4], data[pos+5], data[pos+6], data[pos+7]]) as usize;
+        let chunk_size =
+            u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]])
+                as usize;
         pos += 8;
 
         if chunk_id == b"fmt " {
             if chunk_size < 16 || pos + 16 > data.len() {
                 return Err("Invalid fmt chunk");
             }
-            let audio_format = u16::from_le_bytes([data[pos], data[pos+1]]);
+            let audio_format = u16::from_le_bytes([data[pos], data[pos + 1]]);
             if audio_format != 1 {
                 return Err("Not PCM format");
             }
-            channels = u16::from_le_bytes([data[pos+2], data[pos+3]]);
-            sample_rate = u32::from_le_bytes([data[pos+4], data[pos+5], data[pos+6], data[pos+7]]);
-            bits_per_sample = u16::from_le_bytes([data[pos+14], data[pos+15]]);
+            channels = u16::from_le_bytes([data[pos + 2], data[pos + 3]]);
+            sample_rate =
+                u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]);
+            bits_per_sample = u16::from_le_bytes([data[pos + 14], data[pos + 15]]);
             fmt_found = true;
             pos += chunk_size;
             break;
@@ -102,7 +109,9 @@ fn parse_wav(data: &[u8]) -> Result<WavInfo<'_>, &'static str> {
 
         pos += chunk_size;
         // Chunks are word-aligned
-        if chunk_size & 1 != 0 { pos += 1; }
+        if chunk_size & 1 != 0 {
+            pos += 1;
+        }
     }
 
     if !fmt_found {
@@ -112,7 +121,9 @@ fn parse_wav(data: &[u8]) -> Result<WavInfo<'_>, &'static str> {
     // Find "data" chunk
     while pos + 8 <= data.len() {
         let chunk_id = &data[pos..pos + 4];
-        let chunk_size = u32::from_le_bytes([data[pos+4], data[pos+5], data[pos+6], data[pos+7]]) as usize;
+        let chunk_size =
+            u32::from_le_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]])
+                as usize;
         pos += 8;
 
         if chunk_id == b"data" {
@@ -126,7 +137,9 @@ fn parse_wav(data: &[u8]) -> Result<WavInfo<'_>, &'static str> {
         }
 
         pos += chunk_size;
-        if chunk_size & 1 != 0 { pos += 1; }
+        if chunk_size & 1 != 0 {
+            pos += 1;
+        }
     }
 
     Err("No data chunk")

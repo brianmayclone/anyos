@@ -13,10 +13,10 @@
 //! header is needed — the block size is recomputed from the layout.
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicBool, Ordering};
 use core::ptr;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use libheap::{FreeBlock, block_size, free_list_alloc, free_list_dealloc};
+use libheap::{block_size, free_list_alloc, free_list_dealloc, FreeBlock};
 
 #[global_allocator]
 static ALLOCATOR: FreeListAlloc = FreeListAlloc;
@@ -45,12 +45,30 @@ struct Bucket {
 }
 
 static mut BUCKETS: [Bucket; NUM_BUCKETS] = [
-    Bucket { head: ptr::null_mut(), count: 0 },
-    Bucket { head: ptr::null_mut(), count: 0 },
-    Bucket { head: ptr::null_mut(), count: 0 },
-    Bucket { head: ptr::null_mut(), count: 0 },
-    Bucket { head: ptr::null_mut(), count: 0 },
-    Bucket { head: ptr::null_mut(), count: 0 },
+    Bucket {
+        head: ptr::null_mut(),
+        count: 0,
+    },
+    Bucket {
+        head: ptr::null_mut(),
+        count: 0,
+    },
+    Bucket {
+        head: ptr::null_mut(),
+        count: 0,
+    },
+    Bucket {
+        head: ptr::null_mut(),
+        count: 0,
+    },
+    Bucket {
+        head: ptr::null_mut(),
+        count: 0,
+    },
+    Bucket {
+        head: ptr::null_mut(),
+        count: 0,
+    },
 ];
 
 /// Map exact size to bucket index (only exact matches).

@@ -35,10 +35,15 @@ fn main() {
     }
 
     anyos_std::println!("{:<32} {:<24} {}", "Path", "Driver", "Type");
-    anyos_std::println!("{}", "--------------------------------------------------------------");
+    anyos_std::println!(
+        "{}",
+        "--------------------------------------------------------------"
+    );
 
     for i in 0..count as usize {
-        if (i + 1) * 64 > buf.len() { break; }
+        if (i + 1) * 64 > buf.len() {
+            break;
+        }
         let entry = &buf[i * 64..(i + 1) * 64];
 
         // Path [0..32]

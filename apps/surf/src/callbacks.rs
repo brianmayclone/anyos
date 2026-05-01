@@ -25,39 +25,52 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
 
     match _event_type {
         libanyui_client::EVENT_MOUSE_MOVE => {
-            let hovered = control_node.or_else(|| tab.webview.hit_test_node_canvas(ctrl_id));
-            tab.webview.set_hovered_node(hovered);
+            if tab.webview.handle_mouse_move_for_control(ctrl_id) {
+                crate::request_image_refresh(st.active_tab);
+            }
             return;
         }
         libanyui_client::EVENT_MOUSE_DOWN => {
             let active = control_node.or_else(|| tab.webview.hit_test_node_canvas(ctrl_id));
-            tab.webview.set_active_node(active);
-            tab.webview.set_hovered_node(active);
+            let changed =
+                tab.webview.set_active_node(active) | tab.webview.set_hovered_node(active);
+            if changed {
+                crate::request_image_refresh(st.active_tab);
+            }
             return;
         }
         libanyui_client::EVENT_MOUSE_ENTER => {
-            let hovered = control_node.or_else(|| tab.webview.hit_test_node_canvas(ctrl_id));
-            tab.webview.set_hovered_node(hovered);
+            if tab.webview.handle_mouse_move_for_control(ctrl_id) {
+                crate::request_image_refresh(st.active_tab);
+            }
             return;
         }
         libanyui_client::EVENT_MOUSE_UP => {
             let hovered = control_node.or_else(|| tab.webview.hit_test_node_canvas(ctrl_id));
-            tab.webview.set_active_node(None);
-            tab.webview.set_hovered_node(hovered);
+            let changed = tab.webview.set_active_node(None) | tab.webview.set_hovered_node(hovered);
+            if changed {
+                crate::request_image_refresh(st.active_tab);
+            }
             return;
         }
         libanyui_client::EVENT_FOCUS => {
             let focused = control_node;
-            tab.webview.set_focused_node(focused, true);
+            if tab.webview.set_focused_node(focused, true) {
+                crate::request_image_refresh(st.active_tab);
+            }
             return;
         }
         libanyui_client::EVENT_BLUR => {
-            tab.webview.set_focused_node(None, false);
+            if tab.webview.set_focused_node(None, false) {
+                crate::request_image_refresh(st.active_tab);
+            }
             return;
         }
         libanyui_client::EVENT_MOUSE_LEAVE => {
-            tab.webview.set_hovered_node(None);
-            tab.webview.set_active_node(None);
+            let changed = tab.webview.set_hovered_node(None) | tab.webview.set_active_node(None);
+            if changed {
+                crate::request_image_refresh(st.active_tab);
+            }
             return;
         }
         _ => {}
@@ -77,10 +90,11 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
     }
 
     let tab_index = st.active_tab;
-    let clicked_submit_node = st.tabs[tab_index]
+    let clicked_submit_node = st.tabs[tab_index].webview.submit_node_for_control(ctrl_id);
+    if !st.tabs[tab_index]
         .webview
-        .submit_node_for_control(ctrl_id);
-    if !st.tabs[tab_index].webview.dispatch_click_for_control(ctrl_id) {
+        .dispatch_click_for_control(ctrl_id)
+    {
         process_dom_event_side_effects(tab_index);
         return;
     }
@@ -177,13 +191,18 @@ pub(crate) extern "C" fn on_form_submit(ctrl_id: u32, _event_type: u32, _userdat
     let tab_index = st.active_tab;
 
     if _event_type == libanyui_client::EVENT_SUBMIT
-        && !st.tabs[tab_index].webview.dispatch_enter_for_control(ctrl_id)
+        && !st.tabs[tab_index]
+            .webview
+            .dispatch_enter_for_control(ctrl_id)
     {
         process_dom_event_side_effects(tab_index);
         return;
     }
 
-    if !st.tabs[tab_index].webview.dispatch_submit_for_control(ctrl_id) {
+    if !st.tabs[tab_index]
+        .webview
+        .dispatch_submit_for_control(ctrl_id)
+    {
         process_dom_event_side_effects(tab_index);
         return;
     }

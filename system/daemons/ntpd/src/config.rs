@@ -78,12 +78,19 @@ impl NtpdConfig {
 
 fn trim(s: &[u8]) -> &[u8] {
     let start = s.iter().position(|&b| b > b' ').unwrap_or(s.len());
-    let end = s.iter().rposition(|&b| b > b' ').map(|i| i + 1).unwrap_or(start);
+    let end = s
+        .iter()
+        .rposition(|&b| b > b' ')
+        .map(|i| i + 1)
+        .unwrap_or(start);
     &s[start..end]
 }
 
 fn is_yes(s: &[u8]) -> bool {
-    matches!(s, b"yes" | b"Yes" | b"YES" | b"1" | b"true" | b"True" | b"TRUE")
+    matches!(
+        s,
+        b"yes" | b"Yes" | b"YES" | b"1" | b"true" | b"True" | b"TRUE"
+    )
 }
 
 fn parse_u32(s: &[u8]) -> Option<u32> {
@@ -92,13 +99,19 @@ fn parse_u32(s: &[u8]) -> Option<u32> {
     for &b in s {
         if b >= b'0' && b <= b'9' {
             val = val * 10 + (b - b'0') as u64;
-            if val > u32::MAX as u64 { return None; }
+            if val > u32::MAX as u64 {
+                return None;
+            }
             any = true;
         } else {
             break;
         }
     }
-    if any { Some(val as u32) } else { None }
+    if any {
+        Some(val as u32)
+    } else {
+        None
+    }
 }
 
 // ── Config loader ─────────────────────────────────────────────────────────────

@@ -88,12 +88,26 @@ fn parse_response(data: &[u8]) -> Vec<FileResult> {
 
     let mut results = Vec::new();
     for line in lines {
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let mut parts = line.splitn(4, '\t');
-        let path = match parts.next() { Some(s) => s, None => continue };
-        let name = match parts.next() { Some(s) => s, None => continue };
-        let kind = match parts.next() { Some(s) => s, None => continue };
-        let size_str = match parts.next() { Some(s) => s, None => continue };
+        let path = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let name = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let kind = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let size_str = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
         results.push(FileResult {
             path: String::from(path),
             name: String::from(name),
@@ -109,13 +123,18 @@ fn parse_u32(s: &str) -> u32 {
     for b in s.bytes() {
         if b >= b'0' && b <= b'9' {
             val = val.wrapping_mul(10).wrapping_add((b - b'0') as u32);
-        } else { break; }
+        } else {
+            break;
+        }
     }
     val
 }
 
 fn fmt_u32(mut val: u32, buf: &mut [u8]) -> usize {
-    if val == 0 { buf[0] = b'0'; return 1; }
+    if val == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
     let mut tmp = [0u8; 10];
     let mut i = 0;
     while val > 0 {
@@ -123,7 +142,9 @@ fn fmt_u32(mut val: u32, buf: &mut [u8]) -> usize {
         val /= 10;
         i += 1;
     }
-    for j in 0..i { buf[j] = tmp[i - 1 - j]; }
+    for j in 0..i {
+        buf[j] = tmp[i - 1 - j];
+    }
     i
 }
 
@@ -154,5 +175,7 @@ pub fn fmt_size(size: u32) -> String {
 fn push_u32(s: &mut String, val: u32) {
     let mut buf = [0u8; 10];
     let len = fmt_u32(val, &mut buf);
-    if let Ok(t) = core::str::from_utf8(&buf[..len]) { s.push_str(t); }
+    if let Ok(t) = core::str::from_utf8(&buf[..len]) {
+        s.push_str(t);
+    }
 }

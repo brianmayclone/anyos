@@ -111,20 +111,61 @@ fn parse_from_doc(doc: &ini::IniDoc) -> Vec<InstallStep> {
 
 fn default_steps() -> Vec<InstallStep> {
     let mut s = Vec::new();
-    s.push(InstallStep { label: String::from("Installing bootloader"), action: StepAction::Bootloader });
-    s.push(InstallStep { label: String::from("Creating partition table"), action: StepAction::Partition });
-    s.push(InstallStep { label: String::from("Formatting filesystem"), action: StepAction::Format });
-    s.push(InstallStep { label: String::from("Setting root password"), action: StepAction::Password });
-    s.push(InstallStep { label: String::from("Copying system files"), action: StepAction::Copy {
-        source: String::from("/System"), target: String::from("/mnt/target/System") } });
-    s.push(InstallStep { label: String::from("Copying applications"), action: StepAction::Copy {
-        source: String::from("/Applications"), target: String::from("/mnt/target/Applications") } });
-    s.push(InstallStep { label: String::from("Setting up user accounts"), action: StepAction::Users });
-    s.push(InstallStep { label: String::from("Copying boot files"), action: StepAction::Copy {
-        source: String::from("/boot"), target: String::from("/mnt/target/boot") } });
-    s.push(InstallStep { label: String::from("Copying media files"), action: StepAction::Copy {
-        source: String::from("/media"), target: String::from("/mnt/target/media") } });
-    s.push(InstallStep { label: String::from("Writing boot configuration"), action: StepAction::BootCfg });
-    s.push(InstallStep { label: String::from("Finishing installation"), action: StepAction::Finish });
+    s.push(InstallStep {
+        label: String::from("Installing bootloader"),
+        action: StepAction::Bootloader,
+    });
+    s.push(InstallStep {
+        label: String::from("Creating partition table"),
+        action: StepAction::Partition,
+    });
+    s.push(InstallStep {
+        label: String::from("Formatting filesystem"),
+        action: StepAction::Format,
+    });
+    s.push(InstallStep {
+        label: String::from("Setting root password"),
+        action: StepAction::Password,
+    });
+    s.push(InstallStep {
+        label: String::from("Copying system files"),
+        action: StepAction::Copy {
+            source: String::from("/System"),
+            target: String::from("/mnt/target/System"),
+        },
+    });
+    s.push(InstallStep {
+        label: String::from("Copying applications"),
+        action: StepAction::Copy {
+            source: String::from("/Applications"),
+            target: String::from("/mnt/target/Applications"),
+        },
+    });
+    s.push(InstallStep {
+        label: String::from("Setting up user accounts"),
+        action: StepAction::Users,
+    });
+    s.push(InstallStep {
+        label: String::from("Copying boot files"),
+        action: StepAction::Copy {
+            source: String::from("/boot"),
+            target: String::from("/mnt/target/boot"),
+        },
+    });
+    s.push(InstallStep {
+        label: String::from("Copying media files"),
+        action: StepAction::Copy {
+            source: String::from("/media"),
+            target: String::from("/mnt/target/media"),
+        },
+    });
+    s.push(InstallStep {
+        label: String::from("Writing boot configuration"),
+        action: StepAction::BootCfg,
+    });
+    s.push(InstallStep {
+        label: String::from("Finishing installation"),
+        action: StepAction::Finish,
+    });
     s
 }

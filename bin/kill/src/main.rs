@@ -6,7 +6,9 @@ anyos_std::entry!(main);
 fn parse_u32(s: &str) -> Option<u32> {
     let mut n: u32 = 0;
     for &b in s.as_bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(n)
@@ -34,7 +36,10 @@ fn main() {
             if result == 0 {
                 anyos_std::println!("Killed thread {}", tid);
             } else {
-                anyos_std::println!("Failed to kill thread {} (not found or permission denied)", tid);
+                anyos_std::println!(
+                    "Failed to kill thread {} (not found or permission denied)",
+                    tid
+                );
             }
         }
         None => {

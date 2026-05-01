@@ -4,15 +4,23 @@
 anyos_std::entry!(main);
 
 fn to_lower(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
+    if b >= b'A' && b <= b'Z' {
+        b + 32
+    } else {
+        b
+    }
 }
 
 fn eq_ci(a: &str, b: &str) -> bool {
-    if a.len() != b.len() { return false; }
+    if a.len() != b.len() {
+        return false;
+    }
     let ab = a.as_bytes();
     let bb = b.as_bytes();
     for i in 0..ab.len() {
-        if to_lower(ab[i]) != to_lower(bb[i]) { return false; }
+        if to_lower(ab[i]) != to_lower(bb[i]) {
+            return false;
+        }
     }
     true
 }
@@ -23,9 +31,13 @@ fn read_all(fd: u32) -> (anyos_std::Vec<u8>, usize) {
     let mut read_buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut read_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         let n = n as usize;
-        if total + n > file_buf.len() { break; }
+        if total + n > file_buf.len() {
+            break;
+        }
         file_buf[total..total + n].copy_from_slice(&read_buf[..n]);
         total += n;
     }
@@ -59,14 +71,20 @@ fn main() {
     };
 
     let (file_buf, total) = read_all(fd);
-    if fd != 0 { anyos_std::fs::close(fd); }
+    if fd != 0 {
+        anyos_std::fs::close(fd);
+    }
 
     let text = core::str::from_utf8(&file_buf[..total]).unwrap_or("");
     let mut prev = "";
     let mut count: u32 = 0;
 
     for line in text.lines() {
-        let same = if ignore_case { eq_ci(line, prev) } else { line == prev };
+        let same = if ignore_case {
+            eq_ci(line, prev)
+        } else {
+            line == prev
+        };
         if same {
             count += 1;
         } else {

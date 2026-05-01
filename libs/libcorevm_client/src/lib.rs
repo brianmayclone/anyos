@@ -38,7 +38,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use dynlink::{DlHandle, dl_open, dl_sym};
+use dynlink::{dl_open, dl_sym, DlHandle};
 
 // ══════════════════════════════════════════════════════════════════════
 //  C-compatible types (mirror backend/types.rs)
@@ -47,11 +47,24 @@ use dynlink::{DlHandle, dl_open, dl_sym};
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VcpuRegs {
-    pub rax: u64, pub rbx: u64, pub rcx: u64, pub rdx: u64,
-    pub rsi: u64, pub rdi: u64, pub rbp: u64, pub rsp: u64,
-    pub r8: u64, pub r9: u64, pub r10: u64, pub r11: u64,
-    pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
-    pub rip: u64, pub rflags: u64,
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rip: u64,
+    pub rflags: u64,
 }
 
 #[repr(C)]
@@ -80,11 +93,21 @@ pub struct DescriptorTable {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VcpuSregs {
-    pub cs: SegmentReg, pub ds: SegmentReg, pub es: SegmentReg,
-    pub fs: SegmentReg, pub gs: SegmentReg, pub ss: SegmentReg,
-    pub tr: SegmentReg, pub ldt: SegmentReg,
-    pub gdt: DescriptorTable, pub idt: DescriptorTable,
-    pub cr0: u64, pub cr2: u64, pub cr3: u64, pub cr4: u64, pub efer: u64,
+    pub cs: SegmentReg,
+    pub ds: SegmentReg,
+    pub es: SegmentReg,
+    pub fs: SegmentReg,
+    pub gs: SegmentReg,
+    pub ss: SegmentReg,
+    pub tr: SegmentReg,
+    pub ldt: SegmentReg,
+    pub gdt: DescriptorTable,
+    pub idt: DescriptorTable,
+    pub cr0: u64,
+    pub cr2: u64,
+    pub cr3: u64,
+    pub cr4: u64,
+    pub efer: u64,
 }
 
 #[repr(C)]
@@ -92,7 +115,10 @@ pub struct VcpuSregs {
 pub struct CpuidEntry {
     pub function: u32,
     pub index: u32,
-    pub eax: u32, pub ebx: u32, pub ecx: u32, pub edx: u32,
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
 }
 
 /// C-compatible tagged struct for VM exit reasons (matches ffi.rs CExitReason).
@@ -120,31 +146,78 @@ struct CExitReason {
 /// Reason the VM stopped executing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmExitReason {
-    IoIn { port: u16, size: u8 },
-    IoOut { port: u16, size: u8, data: u32 },
-    MmioRead { addr: u64, size: u8 },
-    MmioWrite { addr: u64, size: u8, data: u64 },
-    MsrRead { index: u32 },
-    MsrWrite { index: u32, value: u64 },
-    CpuidExit { function: u32, index: u32 },
+    IoIn {
+        port: u16,
+        size: u8,
+    },
+    IoOut {
+        port: u16,
+        size: u8,
+        data: u32,
+    },
+    MmioRead {
+        addr: u64,
+        size: u8,
+    },
+    MmioWrite {
+        addr: u64,
+        size: u8,
+        data: u64,
+    },
+    MsrRead {
+        index: u32,
+    },
+    MsrWrite {
+        index: u32,
+        value: u64,
+    },
+    CpuidExit {
+        function: u32,
+        index: u32,
+    },
     Halted,
     InterruptWindow,
     Shutdown,
     Debug,
-    StringIo { port: u16, size: u8, is_out: bool, count: u32 },
+    StringIo {
+        port: u16,
+        size: u8,
+        is_out: bool,
+        count: u32,
+    },
     Error,
 }
 
 impl VmExitReason {
     fn from_c(c: &CExitReason) -> Self {
         match c.reason {
-            0 => VmExitReason::IoIn { port: c.port, size: c.size },
-            1 => VmExitReason::IoOut { port: c.port, size: c.size, data: c.data_u32 },
-            2 => VmExitReason::MmioRead { addr: c.addr, size: c.size },
-            3 => VmExitReason::MmioWrite { addr: c.addr, size: c.size, data: c.data_u64 },
+            0 => VmExitReason::IoIn {
+                port: c.port,
+                size: c.size,
+            },
+            1 => VmExitReason::IoOut {
+                port: c.port,
+                size: c.size,
+                data: c.data_u32,
+            },
+            2 => VmExitReason::MmioRead {
+                addr: c.addr,
+                size: c.size,
+            },
+            3 => VmExitReason::MmioWrite {
+                addr: c.addr,
+                size: c.size,
+                data: c.data_u64,
+            },
             4 => VmExitReason::MsrRead { index: c.msr_index },
-            5 => VmExitReason::MsrWrite { index: c.msr_index, value: c.data_u64 },
-            6 => VmExitReason::CpuidExit { function: c.cpuid_fn, index: c.cpuid_idx },
+            5 => VmExitReason::MsrWrite {
+                index: c.msr_index,
+                value: c.data_u64,
+            },
+            6 => VmExitReason::CpuidExit {
+                function: c.cpuid_fn,
+                index: c.cpuid_idx,
+            },
             7 => VmExitReason::Halted,
             8 => VmExitReason::InterruptWindow,
             9 => VmExitReason::Shutdown,
@@ -254,7 +327,10 @@ static mut LIB: Option<CoreVmLib> = None;
 
 /// Get a reference to the loaded library, panicking if not initialized.
 fn lib() -> &'static CoreVmLib {
-    unsafe { LIB.as_ref().expect("libcorevm not loaded -- call init() first") }
+    unsafe {
+        LIB.as_ref()
+            .expect("libcorevm not loaded -- call init() first")
+    }
 }
 
 /// Resolve a function pointer from the loaded library, or panic.
@@ -363,9 +439,13 @@ pub fn init() -> bool {
 pub fn last_error() -> Option<alloc::string::String> {
     let l = lib();
     let len = (l.last_error_len)() as usize;
-    if len == 0 { return None; }
+    if len == 0 {
+        return None;
+    }
     let ptr = (l.last_error)();
-    if ptr.is_null() { return None; }
+    if ptr.is_null() {
+        return None;
+    }
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
     Some(alloc::string::String::from_utf8_lossy(bytes).into_owned())
 }
@@ -460,8 +540,18 @@ impl VmHandle {
     }
 
     /// Inject an exception into a vCPU.
-    pub fn inject_exception(&self, id: u32, vector: u8, has_error_code: bool, error_code: u32) -> i32 {
-        let ec: i64 = if has_error_code { error_code as i64 } else { -1 };
+    pub fn inject_exception(
+        &self,
+        id: u32,
+        vector: u8,
+        has_error_code: bool,
+        error_code: u32,
+    ) -> i32 {
+        let ec: i64 = if has_error_code {
+            error_code as i64
+        } else {
+            -1
+        };
         (lib().inject_exception)(self.handle, id, vector, ec)
     }
 
@@ -485,7 +575,13 @@ impl VmHandle {
     // ── Memory ───────────────────────────────────────────────────
 
     /// Map a memory region into the guest physical address space.
-    pub fn set_memory_region(&self, slot: u32, guest_phys: u64, size: u64, host_ptr: *mut u8) -> i32 {
+    pub fn set_memory_region(
+        &self,
+        slot: u32,
+        guest_phys: u64,
+        size: u64,
+        host_ptr: *mut u8,
+    ) -> i32 {
         (lib().set_memory_region)(self.handle, slot, guest_phys, size, host_ptr)
     }
 
@@ -529,8 +625,24 @@ impl VmHandle {
     }
 
     /// Dispatch an MMIO exit to registered device handlers.
-    pub fn handle_mmio_exit(&self, addr: u64, direction: u8, size: u8, data: &mut [u8], dest_reg: u8, instr_len: u8) -> i32 {
-        (lib().handle_mmio_exit)(self.handle, addr, direction, size, data.as_mut_ptr(), dest_reg, instr_len)
+    pub fn handle_mmio_exit(
+        &self,
+        addr: u64,
+        direction: u8,
+        size: u8,
+        data: &mut [u8],
+        dest_reg: u8,
+        instr_len: u8,
+    ) -> i32 {
+        (lib().handle_mmio_exit)(
+            self.handle,
+            addr,
+            direction,
+            size,
+            data.as_mut_ptr(),
+            dest_reg,
+            instr_len,
+        )
     }
 
     /// Drain coalesced MMIO writes batched by KVM during the last run_vcpu.
@@ -541,7 +653,14 @@ impl VmHandle {
     }
 
     /// Dispatch a string I/O (REP INS/OUTS) exit to device handlers.
-    pub fn handle_string_io_exit(&self, port: u16, direction: u8, size: u8, data: &mut [u8], count: u32) -> i32 {
+    pub fn handle_string_io_exit(
+        &self,
+        port: u16,
+        direction: u8,
+        size: u8,
+        data: &mut [u8],
+        count: u32,
+    ) -> i32 {
         (lib().handle_string_io_exit)(self.handle, port, direction, size, data.as_mut_ptr(), count)
     }
 
@@ -574,7 +693,13 @@ impl VmHandle {
 
     /// Add a file to the fw_cfg device (used by SeaBIOS to find ROMs and tables).
     pub fn fw_cfg_add_file(&self, name: &str, data: &[u8]) -> i32 {
-        (lib().fw_cfg_add_file)(self.handle, name.as_ptr(), name.len() as u32, data.as_ptr(), data.len() as u32)
+        (lib().fw_cfg_add_file)(
+            self.handle,
+            name.as_ptr(),
+            name.len() as u32,
+            data.as_ptr(),
+            data.len() as u32,
+        )
     }
 
     /// Attach a disk image to an AHCI port (fd-backed).
@@ -706,7 +831,9 @@ impl VmHandle {
     pub fn debug_port_take_output(&self) -> Vec<u8> {
         let mut buf = [0u8; 4096];
         let n = (lib().debug_port_take_output)(self.handle, buf.as_mut_ptr(), buf.len() as u32);
-        if n <= 0 { return Vec::new(); }
+        if n <= 0 {
+            return Vec::new();
+        }
         let mut v = Vec::with_capacity(n as usize);
         v.extend_from_slice(&buf[..n as usize]);
         v

@@ -1,12 +1,12 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::String;
-use anyos_std::Vec;
 use anyos_std::fs;
 use anyos_std::i18n;
 use anyos_std::icons;
 use anyos_std::process;
+use anyos_std::String;
+use anyos_std::Vec;
 use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 
 use libanyui_client as ui;
@@ -61,8 +61,10 @@ fn dock_schema() -> ServiceSchema<'static> {
     ServiceSchema::new("finder", &DOCK_ITEMS_MANIFEST)
 }
 
-const FINDER_LOCATIONS_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
-    &[default_string("config/sidebar_locations_blob", FINDER_LOCATIONS_DEFAULT)];
+const FINDER_LOCATIONS_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[default_string(
+    "config/sidebar_locations_blob",
+    FINDER_LOCATIONS_DEFAULT,
+)];
 const FINDER_LOCATIONS_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
 const FINDER_LOCATIONS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "profile/finder",
@@ -176,17 +178,26 @@ fn discover_volumes() -> Vec<Volume> {
     // Read mount points
     let mut mount_buf = [0u8; 4096];
     let n = fs::list_mounts(&mut mount_buf);
-    if n == 0 || n == u32::MAX { return volumes; }
+    if n == 0 || n == u32::MAX {
+        return volumes;
+    }
 
     let mount_str = core::str::from_utf8(&mount_buf[..n as usize]).unwrap_or("");
     for line in mount_str.split('\n') {
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let mut parts = line.split('\t');
-        let path = match parts.next() { Some(p) => p, None => continue };
+        let path = match parts.next() {
+            Some(p) => p,
+            None => continue,
+        };
         let fstype = parts.next().unwrap_or("");
 
         // Skip system mounts
-        if path == "/" || path == "/dev" { continue; }
+        if path == "/" || path == "/dev" {
+            continue;
+        }
 
         let is_network = fstype == "smb";
         let is_removable = path.starts_with("/Volumes/") || path.starts_with("/mnt/");
@@ -199,7 +210,11 @@ fn discover_volumes() -> Vec<Volume> {
             String::from(if trimmed.is_empty() { path } else { trimmed })
         } else if path.starts_with("/Volumes/") {
             let vol_name = path.trim_start_matches("/Volumes/");
-            String::from(if vol_name.is_empty() { "Volume" } else { vol_name })
+            String::from(if vol_name.is_empty() {
+                "Volume"
+            } else {
+                vol_name
+            })
         } else if is_cdrom {
             String::from("CD/DVD")
         } else {
@@ -212,10 +227,13 @@ fn discover_volumes() -> Vec<Volume> {
         let disk_id = if path.starts_with("/Volumes/disk") {
             // /Volumes/disk2p1 → disk_id = 2
             let rest = path.trim_start_matches("/Volumes/disk");
-            rest.split('p').next()
+            rest.split('p')
+                .next()
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0)
-        } else { 0 };
+        } else {
+            0
+        };
 
         volumes.push(Volume {
             name,
@@ -268,13 +286,19 @@ struct IconCache {
 
 impl IconCache {
     fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// Load an icon, ensuring it is exactly `target_size x target_size` pixels.
     fn get_or_load(&mut self, path: &str, target_size: u32) -> Option<(&[u32], u32, u32)> {
         // Build cache key: path + size
-        if let Some(idx) = self.entries.iter().position(|e| e.path == path && e.width == target_size) {
+        if let Some(idx) = self
+            .entries
+            .iter()
+            .position(|e| e.path == path && e.width == target_size)
+        {
             let e = &self.entries[idx];
             return Some((&e.pixels, e.width, e.height));
         }
@@ -283,19 +307,24 @@ impl IconCache {
         let icon = Icon::load(path, target_size)?;
 
         // If the icon isn't the exact target size, scale it
-        let (final_pixels, final_w, final_h) = if icon.width == target_size && icon.height == target_size {
-            (icon.pixels, icon.width, icon.height)
-        } else {
-            let pixel_count = (target_size * target_size) as usize;
-            let mut scaled = Vec::new();
-            scaled.resize(pixel_count, 0u32);
-            libimage_client::scale_image(
-                &icon.pixels, icon.width, icon.height,
-                &mut scaled, target_size, target_size,
-                libimage_client::MODE_CONTAIN,
-            );
-            (scaled, target_size, target_size)
-        };
+        let (final_pixels, final_w, final_h) =
+            if icon.width == target_size && icon.height == target_size {
+                (icon.pixels, icon.width, icon.height)
+            } else {
+                let pixel_count = (target_size * target_size) as usize;
+                let mut scaled = Vec::new();
+                scaled.resize(pixel_count, 0u32);
+                libimage_client::scale_image(
+                    &icon.pixels,
+                    icon.width,
+                    icon.height,
+                    &mut scaled,
+                    target_size,
+                    target_size,
+                    libimage_client::MODE_CONTAIN,
+                );
+                (scaled, target_size, target_size)
+            };
 
         self.entries.push(CachedIcon {
             path: String::from(path),
@@ -326,9 +355,9 @@ struct AppState {
     grid: ui::DataGrid,
     icon_scroll: ui::ScrollView,
     icon_flow: ui::FlowPanel,
-    icon_item_ids: Vec<u32>,   // track created items for cleanup
-    icon_selected: Vec<bool>,  // per-item selection state in icon view
-    icon_anchor: usize,        // anchor index for Shift+Click range selection
+    icon_item_ids: Vec<u32>,  // track created items for cleanup
+    icon_selected: Vec<bool>, // per-item selection state in icon view
+    icon_anchor: usize,       // anchor index for Shift+Click range selection
     path_field: ui::TextField,
     btn_back: ui::IconButton,
     btn_fwd: ui::IconButton,
@@ -396,7 +425,12 @@ fn read_directory(path: &str) -> Vec<FileEntry> {
         let mut name = [0u8; 56];
         let copy_len = name_len.min(55);
         name[..copy_len].copy_from_slice(&buf[off + 8..off + 8 + copy_len]);
-        entries.push(FileEntry { name, name_len: copy_len, entry_type, size });
+        entries.push(FileEntry {
+            name,
+            name_len: copy_len,
+            entry_type,
+            size,
+        });
     }
 
     entries.sort_by(|a, b| {
@@ -542,7 +576,9 @@ fn load_trash_info(trash_dir: &str) -> anyos_std::json::Value {
     let mut buf = [0u8; 4096];
     loop {
         let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     fs::close(fd);
@@ -571,15 +607,24 @@ fn now_string() -> String {
     let hour = buf[4];
     let min = buf[5];
     let sec = buf[6];
-    anyos_std::format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, month, day, hour, min, sec)
+    anyos_std::format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year,
+        month,
+        day,
+        hour,
+        min,
+        sec
+    )
 }
 
 /// Move a single file/dir to trash. Returns true on success.
 fn move_to_trash_single(source_path: &str) -> bool {
     let trash_dir = get_trash_dir();
     let name = source_path.rsplit('/').next().unwrap_or("");
-    if name.is_empty() { return false; }
+    if name.is_empty() {
+        return false;
+    }
 
     // Generate unique name in trash
     let trash_path = unique_dest_path(&trash_dir, name);
@@ -614,12 +659,16 @@ fn move_to_trash_single(source_path: &str) -> bool {
 /// Copy a single file. Returns true on success.
 fn copy_file(src: &str, dst: &str) -> bool {
     let fd = fs::open(src, 0);
-    if fd == u32::MAX { return false; }
+    if fd == u32::MAX {
+        return false;
+    }
     let mut data = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
         let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     fs::close(fd);
@@ -631,7 +680,9 @@ fn copy_dir_recursive(src: &str, dst: &str) -> bool {
     fs::mkdir(dst);
     let mut buf = [0u8; 256 * 64];
     let count = fs::readdir(src, &mut buf);
-    if count == u32::MAX { return false; }
+    if count == u32::MAX {
+        return false;
+    }
 
     for i in 0..count as usize {
         let off = i * 64;
@@ -642,7 +693,9 @@ fn copy_dir_recursive(src: &str, dst: &str) -> bool {
             Ok(n) => n,
             Err(_) => continue,
         };
-        if name == "." || name == ".." { continue; }
+        if name == "." || name == ".." {
+            continue;
+        }
 
         let child_src = build_full_path(src, name);
         let child_dst = build_full_path(dst, name);
@@ -664,12 +717,18 @@ fn copy_dir_recursive(src: &str, dst: &str) -> bool {
 #[allow(dead_code)]
 fn count_files_recursive(path: &str) -> u32 {
     let mut stat_buf = [0u32; 7];
-    if fs::stat(path, &mut stat_buf) != 0 { return 0; }
-    if stat_buf[0] != TYPE_DIR as u32 { return 1; } // single file
+    if fs::stat(path, &mut stat_buf) != 0 {
+        return 0;
+    }
+    if stat_buf[0] != TYPE_DIR as u32 {
+        return 1;
+    } // single file
 
     let mut buf = [0u8; 256 * 64];
     let count = fs::readdir(path, &mut buf);
-    if count == u32::MAX { return 0; }
+    if count == u32::MAX {
+        return 0;
+    }
 
     let mut total = 0u32;
     for i in 0..count as usize {
@@ -681,7 +740,9 @@ fn count_files_recursive(path: &str) -> u32 {
             Ok(n) => n,
             Err(_) => continue,
         };
-        if name == "." || name == ".." { continue; }
+        if name == "." || name == ".." {
+            continue;
+        }
         if entry_type == TYPE_DIR {
             total += count_files_recursive(&build_full_path(path, name));
         } else {
@@ -785,7 +846,9 @@ fn navigate(path: &str) {
 
 fn navigate_back() {
     let s = app();
-    if s.history_pos == 0 { return; }
+    if s.history_pos == 0 {
+        return;
+    }
     s.history_pos -= 1;
     let path = s.history[s.history_pos].clone();
     s.cwd = path.clone();
@@ -797,7 +860,9 @@ fn navigate_back() {
 
 fn navigate_forward() {
     let s = app();
-    if s.history_pos + 1 >= s.history.len() { return; }
+    if s.history_pos + 1 >= s.history.len() {
+        return;
+    }
     s.history_pos += 1;
     let path = s.history[s.history_pos].clone();
     s.cwd = path.clone();
@@ -809,7 +874,9 @@ fn navigate_forward() {
 
 fn navigate_up() {
     let s = app();
-    if s.cwd == "/" { return; }
+    if s.cwd == "/" {
+        return;
+    }
     let parent = String::from(parent_path(&s.cwd));
     navigate(&parent);
 }
@@ -838,7 +905,9 @@ fn sync_sidebar(path: &str) {
 
 fn open_entry(idx: usize) {
     let s = app();
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
 
     let name = String::from(s.entries[idx].name_str());
     let entry_type = s.entries[idx].entry_type;
@@ -871,7 +940,9 @@ fn open_entry(idx: usize) {
 
 fn show_package_contents(idx: usize) {
     let s = app();
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
     let name = String::from(s.entries[idx].name_str());
     let new_path = build_full_path(&s.cwd, &name);
     navigate(&new_path);
@@ -883,7 +954,9 @@ fn show_package_contents(idx: usize) {
 
 fn copy_path(idx: usize) {
     let s = app();
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
     let name = s.entries[idx].name_str();
     let fp = build_full_path(&s.cwd, name);
     copy_path_text(fp.as_str());
@@ -967,7 +1040,13 @@ fn attach_sidebar_menu(target: &ui::Label, panel: &ui::View, loc_idx: usize) {
     panel.add(&menu);
 }
 
-fn attach_volume_menu(target: &ui::Label, panel: &ui::View, vol_idx: usize, is_network: bool, can_eject: bool) {
+fn attach_volume_menu(
+    target: &ui::Label,
+    panel: &ui::View,
+    vol_idx: usize,
+    is_network: bool,
+    can_eject: bool,
+) {
     let items = if is_network {
         "Open|Copy Path|-|Unmount"
     } else if can_eject {
@@ -1052,10 +1131,13 @@ fn add_quick_access_path(path: &str, mut insert_at: usize) {
     if insert_at > s.locations.len() {
         insert_at = s.locations.len();
     }
-    s.locations.insert(insert_at, Location {
-        name: location_name_for_path(path),
-        path: String::from(path),
-    });
+    s.locations.insert(
+        insert_at,
+        Location {
+            name: location_name_for_path(path),
+            path: String::from(path),
+        },
+    );
     if s.locations.len() > MAX_LOCATIONS {
         s.locations.truncate(MAX_LOCATIONS);
     }
@@ -1148,7 +1230,9 @@ fn rebuild_sidebar() {
 
     let max_quick = 5usize;
     for (i, loc) in s.locations.iter().enumerate() {
-        if i >= max_quick { break; }
+        if i >= max_quick {
+            break;
+        }
         let item = ui::Label::new(&loc.name);
         item.set_dock(ui::DOCK_TOP);
         item.set_size(160, 26);
@@ -1184,7 +1268,9 @@ fn rebuild_sidebar() {
     s.sidebar_panel.add(&root_label);
 
     for (vi, vol) in s.volumes.iter().enumerate() {
-        if !vol.removable { continue; }
+        if !vol.removable {
+            continue;
+        }
 
         let row = ui::View::new();
         row.set_dock(ui::DOCK_TOP);
@@ -1220,7 +1306,9 @@ fn rebuild_sidebar() {
         add_sidebar_section(&s.sidebar_panel, "Network", 12);
 
         for (vi, vol) in s.volumes.iter().enumerate() {
-            if !vol.network { continue; }
+            if !vol.network {
+                continue;
+            }
 
             let row = ui::View::new();
             row.set_dock(ui::DOCK_TOP);
@@ -1256,7 +1344,9 @@ fn rebuild_sidebar() {
 
 fn copy_selected() {
     let indices = get_selected_indices();
-    if indices.is_empty() { return; }
+    if indices.is_empty() {
+        return;
+    }
     let s = app();
     s.clip_files.clear();
     for &idx in &indices {
@@ -1276,7 +1366,9 @@ fn copy_selected() {
 
 fn cut_selected() {
     let indices = get_selected_indices();
-    if indices.is_empty() { return; }
+    if indices.is_empty() {
+        return;
+    }
     let s = app();
     s.clip_files.clear();
     for &idx in &indices {
@@ -1309,7 +1401,9 @@ fn paste_entry() {
         // Single file copy — do it immediately (fast path)
         let src = &sources[0];
         let src_name = src.rsplit('/').next().unwrap_or("");
-        if src_name.is_empty() { return; }
+        if src_name.is_empty() {
+            return;
+        }
 
         let dest = unique_dest_path(&dest_dir, src_name);
         let mut stat_buf = [0u32; 7];
@@ -1334,7 +1428,9 @@ fn paste_entry() {
         // Single file cut — just rename/move
         let src = &sources[0];
         let src_name = src.rsplit('/').next().unwrap_or("");
-        if src_name.is_empty() { return; }
+        if src_name.is_empty() {
+            return;
+        }
         let dest = unique_dest_path(&dest_dir, src_name);
         if fs::rename(src, &dest) == u32::MAX {
             app().sb_sel_label.set_text("Move failed");
@@ -1354,11 +1450,22 @@ fn paste_entry() {
 fn start_copy_operation(sources: Vec<String>, dest_dir: String, is_cut: bool) {
     let tc = ui::theme::colors();
     let total = sources.len() as u32;
-    let title = if is_cut { "Moving Files" } else { "Copying Files" };
+    let title = if is_cut {
+        "Moving Files"
+    } else {
+        "Copying Files"
+    };
 
     let win = ui::Window::new_with_flags(
-        title, -1, -1, 420, 160,
-        ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE | ui::WIN_FLAG_ALWAYS_ON_TOP,
+        title,
+        -1,
+        -1,
+        420,
+        160,
+        ui::WIN_FLAG_NOT_RESIZABLE
+            | ui::WIN_FLAG_NO_MINIMIZE
+            | ui::WIN_FLAG_NO_MAXIMIZE
+            | ui::WIN_FLAG_ALWAYS_ON_TOP,
     );
     win.set_color(tc.window_bg);
 
@@ -1452,10 +1559,12 @@ fn copy_operation_tick() {
             s.clip_files.clear();
         }
         if cancelled {
-            s.sb_sel_label.set_text(&anyos_std::format!("{} files processed (cancelled)", done));
+            s.sb_sel_label
+                .set_text(&anyos_std::format!("{} files processed (cancelled)", done));
         } else {
             let verb = if was_cut { "Moved" } else { "Copied" };
-            s.sb_sel_label.set_text(&anyos_std::format!("{} {} files", verb, done));
+            s.sb_sel_label
+                .set_text(&anyos_std::format!("{} {} files", verb, done));
         }
         refresh_current();
         return;
@@ -1468,9 +1577,7 @@ fn copy_operation_tick() {
 
     let src_name = src.rsplit('/').next().unwrap_or("");
     let verb = if is_cut { "Moving" } else { "Copying" };
-    ui::Control::from_id(op.file_label_id).set_text(
-        &anyos_std::format!("{}: {}", verb, src_name)
-    );
+    ui::Control::from_id(op.file_label_id).set_text(&anyos_std::format!("{}: {}", verb, src_name));
 
     let dest = unique_dest_path(&dest_dir, src_name);
     let mut stat_buf = [0u32; 7];
@@ -1492,16 +1599,22 @@ fn copy_operation_tick() {
 
     let pct = if op.total_files > 0 {
         (op.done_files * 100 / op.total_files).min(100)
-    } else { 0 };
+    } else {
+        0
+    };
     ui::Control::from_id(op.progress_id).set_state(pct);
-    ui::Control::from_id(op.count_label_id).set_text(
-        &anyos_std::format!("{} of {} files", op.done_files, op.total_files)
-    );
+    ui::Control::from_id(op.count_label_id).set_text(&anyos_std::format!(
+        "{} of {} files",
+        op.done_files,
+        op.total_files
+    ));
 }
 
 fn confirm_delete() {
     let indices = get_selected_indices();
-    if indices.is_empty() { return; }
+    if indices.is_empty() {
+        return;
+    }
 
     // Collect names for the confirmation message
     let s = app();
@@ -1514,7 +1627,9 @@ fn confirm_delete() {
             names.push(name);
         }
     }
-    if paths.is_empty() { return; }
+    if paths.is_empty() {
+        return;
+    }
 
     let msg = if names.len() == 1 {
         anyos_std::format!("Move \"{}\" to Trash?", names[0])
@@ -1524,8 +1639,15 @@ fn confirm_delete() {
 
     let tc = ui::theme::colors();
     let win = ui::Window::new_with_flags(
-        "Delete", -1, -1, 380, 140,
-        ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE | ui::WIN_FLAG_ALWAYS_ON_TOP,
+        "Delete",
+        -1,
+        -1,
+        380,
+        140,
+        ui::WIN_FLAG_NOT_RESIZABLE
+            | ui::WIN_FLAG_NO_MINIMIZE
+            | ui::WIN_FLAG_NO_MAXIMIZE
+            | ui::WIN_FLAG_ALWAYS_ON_TOP,
     );
     win.set_color(tc.window_bg);
 
@@ -1580,7 +1702,9 @@ fn confirm_delete() {
 
 fn start_rename(idx: usize) {
     let s = app();
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
     let name = s.entries[idx].name_str();
     s.rename_idx = idx;
     s.rename_active = true;
@@ -1611,7 +1735,10 @@ fn apply_rename() {
     }
     let new_name = match core::str::from_utf8(&buf[..len as usize]) {
         Ok(n) => n.trim(),
-        Err(_) => { close_rename(); return; }
+        Err(_) => {
+            close_rename();
+            return;
+        }
     };
     if new_name.is_empty() {
         close_rename();
@@ -1648,7 +1775,9 @@ fn apply_rename() {
 /// Add an .app bundle to the user's dock config.
 fn add_to_dock(idx: usize) {
     let s = app();
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
 
     let entry = &s.entries[idx];
     let name = entry.name_str();
@@ -1665,7 +1794,9 @@ fn add_to_dock(idx: usize) {
     // Check if already in dock
     for line in existing.split('\n') {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         if let Some(path) = line.splitn(2, '|').nth(1) {
             if path.trim() == full_path {
                 s.sb_sel_label.set_text("Already in Dock");
@@ -1699,7 +1830,9 @@ fn handle_context_action(index: u32) {
 
     // Variant 3 = background menu (no selection), only Paste at index 0
     if variant == 3 {
-        if index == 0 { paste_entry(); }
+        if index == 0 {
+            paste_entry();
+        }
         return;
     }
 
@@ -1707,7 +1840,11 @@ fn handle_context_action(index: u32) {
     // variant 0: Open|Add to Dock|Show Package Contents|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
     // variant 1: Open|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
     // variant 2: Open|Open With...|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
-    let paste_idx = match variant { 0 => 6u32, 1 => 4, _ => 5 };
+    let paste_idx = match variant {
+        0 => 6u32,
+        1 => 4,
+        _ => 5,
+    };
     if index == paste_idx {
         paste_entry();
         return;
@@ -1716,9 +1853,13 @@ fn handle_context_action(index: u32) {
     // All other actions require a valid selection
     let s = app();
     let sel = s.grid.selected_row();
-    if sel == u32::MAX { return; }
+    if sel == u32::MAX {
+        return;
+    }
     let idx = sel as usize;
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
 
     if variant == 0 {
         // Open|Add to Dock|Show Package Contents|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties
@@ -1780,9 +1921,15 @@ fn update_context_menu() {
     let (menu_text, variant) = if is_app {
         ("Open|Add to Dock|Show Package Contents|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties", 0u32)
     } else if is_dir {
-        ("Open|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties", 1u32)
+        (
+            "Open|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties",
+            1u32,
+        )
     } else {
-        ("Open|Open With...|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties", 2u32)
+        (
+            "Open|Open With...|-|Cut|Copy|Paste|-|Rename|Delete|-|Copy Path|Properties",
+            2u32,
+        )
     };
 
     s.ctx_menu_variant = variant;
@@ -1798,11 +1945,15 @@ fn update_context_menu() {
 /// Recursively count files and sum sizes in a directory.
 /// Returns (file_count, total_bytes). Caps recursion at `max_depth` levels.
 fn count_dir_contents_inner(path: &str, max_depth: u32) -> (u32, u64) {
-    if max_depth == 0 { return (0, 0); }
+    if max_depth == 0 {
+        return (0, 0);
+    }
 
     let mut buf = [0u8; 256 * 64];
     let count = fs::readdir(path, &mut buf);
-    if count == u32::MAX { return (0, 0); }
+    if count == u32::MAX {
+        return (0, 0);
+    }
 
     let mut files = 0u32;
     let mut bytes = 0u64;
@@ -1815,7 +1966,9 @@ fn count_dir_contents_inner(path: &str, max_depth: u32) -> (u32, u64) {
         let name = &buf[off + 8..off + 8 + name_len.min(55)];
 
         // Skip . and ..
-        if name == b"." || name == b".." { continue; }
+        if name == b"." || name == b".." {
+            continue;
+        }
 
         if entry_type == TYPE_DIR {
             if let Ok(name_str) = core::str::from_utf8(name) {
@@ -1857,7 +2010,9 @@ fn fmt_size64(size: u64) -> String {
 
 /// Convert a Unix timestamp to "YYYY-MM-DD HH:MM" string.
 fn fmt_date(ts: u32) -> String {
-    if ts == 0 { return String::from("--"); }
+    if ts == 0 {
+        return String::from("--");
+    }
 
     let secs = ts as u64;
     let days = secs / 86400;
@@ -1869,19 +2024,43 @@ fn fmt_date(ts: u32) -> String {
     let mut y = 1970u32;
     let mut remaining = days;
     loop {
-        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366u64 } else { 365u64 };
-        if remaining < days_in_year { break; }
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366u64
+        } else {
+            365u64
+        };
+        if remaining < days_in_year {
+            break;
+        }
         remaining -= days_in_year;
         y += 1;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let mdays: [u32; 12] = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 0u32;
     for i in 0..12 {
-        if remaining < mdays[i] as u64 { m = i as u32 + 1; break; }
+        if remaining < mdays[i] as u64 {
+            m = i as u32 + 1;
+            break;
+        }
         remaining -= mdays[i] as u64;
     }
-    if m == 0 { m = 12; }
+    if m == 0 {
+        m = 12;
+    }
     let d = remaining as u32 + 1;
 
     anyos_std::format!("{}-{:02}-{:02} {:02}:{:02}", y, m, d, hours, minutes)
@@ -1921,7 +2100,10 @@ fn enumerate_applications() -> Vec<AppInfo> {
     let mut apps = Vec::new();
     for bundle_path in icons::collect_app_bundles() {
         let display_name = icons::app_bundle_name(&bundle_path);
-        apps.push(AppInfo { display_name, bundle_path });
+        apps.push(AppInfo {
+            display_name,
+            bundle_path,
+        });
     }
 
     apps.sort_by(|a, b| a.display_name.as_str().cmp(b.display_name.as_str()));
@@ -1930,7 +2112,9 @@ fn enumerate_applications() -> Vec<AppInfo> {
 
 fn show_open_with(idx: usize) {
     let s = app();
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
 
     let name = String::from(s.entries[idx].name_str());
     let full_path = build_full_path(&s.cwd, &name);
@@ -1940,10 +2124,14 @@ fn show_open_with(idx: usize) {
     };
 
     let apps = enumerate_applications();
-    if apps.is_empty() { return; }
+    if apps.is_empty() {
+        return;
+    }
 
     // Find current default for this extension
-    let current_default = s.mimetypes.app_for_ext(&ext)
+    let current_default = s
+        .mimetypes
+        .app_for_ext(&ext)
         .map(String::from)
         .unwrap_or_default();
 
@@ -1951,7 +2139,11 @@ fn show_open_with(idx: usize) {
     let tc = ui::theme::colors();
     let title = anyos_std::format!("Open \"{}\" With...", name);
     let win = ui::Window::new_with_flags(
-        &title, -1, -1, 380, 420,
+        &title,
+        -1,
+        -1,
+        380,
+        420,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
     );
     win.set_color(tc.window_bg);
@@ -1997,9 +2189,7 @@ fn show_open_with(idx: usize) {
     // ── DataGrid listing apps (DOCK_FILL, added last) ──
     let grid = ui::DataGrid::new(0, 0);
     grid.set_dock(ui::DOCK_FILL);
-    grid.set_columns(&[
-        ui::ColumnDef::new("Application").width(340),
-    ]);
+    grid.set_columns(&[ui::ColumnDef::new("Application").width(340)]);
     grid.set_row_height(28);
     grid.set_header_height(28);
 
@@ -2078,7 +2268,9 @@ fn show_open_with(idx: usize) {
 
 fn show_properties(idx: usize) {
     let s = app();
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
 
     let entry = &s.entries[idx];
     let name = String::from(entry.name_str());
@@ -2131,7 +2323,11 @@ fn show_properties(idx: usize) {
     let tc = ui::theme::colors();
     let win_title = anyos_std::format!("{} \u{2014} Properties", display_name);
     let win = ui::Window::new_with_flags(
-        &win_title, -1, -1, 340, 360,
+        &win_title,
+        -1,
+        -1,
+        340,
+        360,
         ui::WIN_FLAG_NOT_RESIZABLE | ui::WIN_FLAG_NO_MINIMIZE | ui::WIN_FLAG_NO_MAXIMIZE,
     );
     win.set_color(tc.window_bg);
@@ -2276,7 +2472,9 @@ fn show_properties(idx: usize) {
 
 fn set_view_mode(mode: u32) {
     let s = app();
-    if s.view_mode == mode { return; }
+    if s.view_mode == mode {
+        return;
+    }
     s.view_mode = mode;
 
     if mode == VIEW_LIST {
@@ -2329,7 +2527,8 @@ fn set_quick_access_drop_preview(target_idx: Option<usize>, append: bool) {
     refresh_sidebar_selection_visuals();
 
     if append {
-        s.sb_sel_label.set_text("Drop to add at end of Quick Access");
+        s.sb_sel_label
+            .set_text("Drop to add at end of Quick Access");
     } else if let Some(idx) = target_idx {
         if idx < s.locations.len() {
             let text = anyos_std::format!("Drop before \"{}\"", s.locations[idx].name);
@@ -2555,10 +2754,16 @@ fn icon_clear_selection() {
 
 fn icon_set_selected(idx: usize, selected: bool) {
     let s = app();
-    if idx >= s.icon_selected.len() { return; }
+    if idx >= s.icon_selected.len() {
+        return;
+    }
     s.icon_selected[idx] = selected;
     if idx < s.icon_item_ids.len() {
-        let color = if selected { ui::theme::colors().selection } else { 0x00000000 };
+        let color = if selected {
+            ui::theme::colors().selection
+        } else {
+            0x00000000
+        };
         ui::Control::from_id(s.icon_item_ids[idx]).set_color(color);
     }
 }
@@ -2569,7 +2774,9 @@ fn select_icon_item(idx: usize) {
 
 fn select_icon_item_with_mods(idx: usize, mods: u32) {
     let s = app();
-    if idx >= s.entries.len() { return; }
+    if idx >= s.entries.len() {
+        return;
+    }
 
     let ctrl = mods & ui::MOD_CTRL != 0;
     let shift = mods & ui::MOD_SHIFT != 0;
@@ -2616,7 +2823,9 @@ fn icon_focused_index() -> Option<usize> {
 fn icon_cols_per_row() -> usize {
     let s = app();
     let (w, _) = s.icon_flow.get_size();
-    if w == 0 { return 1; }
+    if w == 0 {
+        return 1;
+    }
     (w as usize / GRID_CELL_W as usize).max(1)
 }
 
@@ -2673,7 +2882,9 @@ extern "C" fn grid_drag_start_handler(_control_id: u32, _event_type: u32, _userd
 // ============================================================================
 
 fn main() {
-    if !ui::init() { return; }
+    if !ui::init() {
+        return;
+    }
     i18n::init();
 
     let tc = ui::theme::colors();
@@ -2833,7 +3044,10 @@ fn main() {
     grid.set_dock(ui::DOCK_FILL);
     grid.set_columns(&[
         ui::ColumnDef::new(i18n::t("Name")).width(400),
-        ui::ColumnDef::new(i18n::t("Size")).width(100).align(ui::ALIGN_RIGHT).numeric(),
+        ui::ColumnDef::new(i18n::t("Size"))
+            .width(100)
+            .align(ui::ALIGN_RIGHT)
+            .numeric(),
     ]);
     grid.set_row_height(26);
     grid.set_header_height(28);
@@ -2844,7 +3058,9 @@ fn main() {
 
     // Context menu — attached to grid AND added to parent panel (required!)
     let ctx_menu = ui::ContextMenu::new("Open|Copy Path");
-    ctx_menu.on_item_click(|e| { handle_context_action(e.index); });
+    ctx_menu.on_item_click(|e| {
+        handle_context_action(e.index);
+    });
     grid.set_context_menu(&ctx_menu);
 
     content_panel.add(&grid);
@@ -2923,15 +3139,33 @@ fn main() {
 
     // ── Event handlers ───────────────────────────────────────────────────
 
-    btn_back.on_click(|_| { navigate_back(); });
-    btn_fwd.on_click(|_| { navigate_forward(); });
-    btn_up.on_click(|_| { navigate_up(); });
-    btn_refresh.on_click(|_| { refresh_current(); });
-    btn_list.on_click(|_| { set_view_mode(VIEW_LIST); });
-    btn_grid.on_click(|_| { set_view_mode(VIEW_ICONS); });
-    btn_rename_ok.on_click(|_| { apply_rename(); });
-    btn_rename_cancel.on_click(|_| { close_rename(); });
-    rename_field.on_submit(|_| { apply_rename(); });
+    btn_back.on_click(|_| {
+        navigate_back();
+    });
+    btn_fwd.on_click(|_| {
+        navigate_forward();
+    });
+    btn_up.on_click(|_| {
+        navigate_up();
+    });
+    btn_refresh.on_click(|_| {
+        refresh_current();
+    });
+    btn_list.on_click(|_| {
+        set_view_mode(VIEW_LIST);
+    });
+    btn_grid.on_click(|_| {
+        set_view_mode(VIEW_ICONS);
+    });
+    btn_rename_ok.on_click(|_| {
+        apply_rename();
+    });
+    btn_rename_cancel.on_click(|_| {
+        close_rename();
+    });
+    rename_field.on_submit(|_| {
+        apply_rename();
+    });
 
     path_field.on_submit(|_| {
         let s = app();
@@ -3050,13 +3284,40 @@ fn main() {
             let cols = icon_cols_per_row();
             let cur = icon_focused_index().unwrap_or(0);
             let new_idx = match ke.keycode {
-                ui::KEY_LEFT  => if cur > 0 { Some(cur - 1) } else { None },
-                ui::KEY_RIGHT => if cur + 1 < n { Some(cur + 1) } else { None },
-                ui::KEY_UP    => if cur >= cols { Some(cur - cols) } else { None },
-                ui::KEY_DOWN  => if cur + cols < n { Some(cur + cols) } else { None },
-                ui::KEY_HOME  => Some(0),
-                ui::KEY_END   => Some(n - 1),
-                ui::KEY_ENTER => { open_entry(cur); None },
+                ui::KEY_LEFT => {
+                    if cur > 0 {
+                        Some(cur - 1)
+                    } else {
+                        None
+                    }
+                }
+                ui::KEY_RIGHT => {
+                    if cur + 1 < n {
+                        Some(cur + 1)
+                    } else {
+                        None
+                    }
+                }
+                ui::KEY_UP => {
+                    if cur >= cols {
+                        Some(cur - cols)
+                    } else {
+                        None
+                    }
+                }
+                ui::KEY_DOWN => {
+                    if cur + cols < n {
+                        Some(cur + cols)
+                    } else {
+                        None
+                    }
+                }
+                ui::KEY_HOME => Some(0),
+                ui::KEY_END => Some(n - 1),
+                ui::KEY_ENTER => {
+                    open_entry(cur);
+                    None
+                }
                 _ => None,
             };
             if let Some(idx) = new_idx {
@@ -3065,55 +3326,55 @@ fn main() {
         }
     });
 
-    win.on_close(|_| { ui::quit(); });
+    win.on_close(|_| {
+        ui::quit();
+    });
 
     // ── Menu bar ─────────────────────────────────────────────────────────
     let mut mb = ui::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(2, i18n::t("Quit"), 0)
+        .item(2, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("Edit"))
-            .item(10, i18n::t("Cut"), 0)
-            .item(11, i18n::t("Copy"), 0)
-            .item(12, i18n::t("Paste"), 0)
-            .separator()
-            .item(13, i18n::t("Rename"), 0)
-            .item(14, i18n::t("Delete"), 0)
+        .item(10, i18n::t("Cut"), 0)
+        .item(11, i18n::t("Copy"), 0)
+        .item(12, i18n::t("Paste"), 0)
+        .separator()
+        .item(13, i18n::t("Rename"), 0)
+        .item(14, i18n::t("Delete"), 0)
         .end_menu()
         .menu(i18n::t("Go"))
-            .item(20, i18n::t("Back"), 0)
-            .item(21, i18n::t("Forward"), 0)
-            .item(22, i18n::t("Up"), 0)
-            .separator()
-            .item(23, i18n::t("Refresh"), 0)
+        .item(20, i18n::t("Back"), 0)
+        .item(21, i18n::t("Forward"), 0)
+        .item(22, i18n::t("Up"), 0)
+        .separator()
+        .item(23, i18n::t("Refresh"), 0)
         .end_menu()
         .menu(i18n::t("View"))
-            .item(30, i18n::t("List"), 0)
-            .item(31, i18n::t("Icons"), 0)
+        .item(30, i18n::t("List"), 0)
+        .item(31, i18n::t("Icons"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = ui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            2 => ui::quit(),
-            10 => cut_selected(),
-            11 => copy_selected(),
-            12 => paste_entry(),
-            13 => {
-                let sel = app().grid.selected_row();
-                if sel != u32::MAX && (sel as usize) < app().entries.len() {
-                    start_rename(sel as usize);
-                }
+    menu.on_item(|e| match e.item_id {
+        2 => ui::quit(),
+        10 => cut_selected(),
+        11 => copy_selected(),
+        12 => paste_entry(),
+        13 => {
+            let sel = app().grid.selected_row();
+            if sel != u32::MAX && (sel as usize) < app().entries.len() {
+                start_rename(sel as usize);
             }
-            14 => confirm_delete(),
-            20 => navigate_back(),
-            21 => navigate_forward(),
-            22 => navigate_up(),
-            23 => refresh_current(),
-            30 => set_view_mode(VIEW_LIST),
-            31 => set_view_mode(VIEW_ICONS),
-            _ => {}
         }
+        14 => confirm_delete(),
+        20 => navigate_back(),
+        21 => navigate_forward(),
+        22 => navigate_up(),
+        23 => refresh_current(),
+        30 => set_view_mode(VIEW_LIST),
+        31 => set_view_mode(VIEW_ICONS),
+        _ => {}
     });
 
     // ── Run ──────────────────────────────────────────────────────────────

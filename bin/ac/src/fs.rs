@@ -61,11 +61,20 @@ pub fn path_join(base: &str, name: &str) -> ([u8; MAX_PATH], usize) {
 
     let base = base.trim_end_matches('/');
     for &b in base.as_bytes() {
-        if len < MAX_PATH { buf[len] = b; len += 1; }
+        if len < MAX_PATH {
+            buf[len] = b;
+            len += 1;
+        }
     }
-    if len < MAX_PATH { buf[len] = b'/'; len += 1; }
+    if len < MAX_PATH {
+        buf[len] = b'/';
+        len += 1;
+    }
     for &b in name.as_bytes() {
-        if len < MAX_PATH { buf[len] = b; len += 1; }
+        if len < MAX_PATH {
+            buf[len] = b;
+            len += 1;
+        }
     }
     (buf, len)
 }
@@ -76,7 +85,7 @@ pub fn path_parent(path: &str) -> &str {
     match p.rfind('/') {
         Some(0) => "/",
         Some(i) => &p[..i],
-        None    => ".",
+        None => ".",
     }
 }
 
@@ -85,7 +94,7 @@ pub fn path_basename(path: &str) -> &str {
     let p = path.trim_end_matches('/');
     match p.rfind('/') {
         Some(i) => &p[i + 1..],
-        None    => p,
+        None => p,
     }
 }
 
@@ -113,7 +122,11 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
     let raw: &mut [u8] = unsafe { &mut RAW_BUF };
     let raw_count = {
         let r = anyos_std::fs::readdir(path, raw);
-        if r == u32::MAX { 0usize } else { r as usize }
+        if r == u32::MAX {
+            0usize
+        } else {
+            r as usize
+        }
     };
 
     // Prepend ".." for all directories except root "/"
@@ -133,9 +146,13 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
     };
 
     // Empty directory: only ".." (already added above)
-    if raw_count == 0 { return start; }
+    if raw_count == 0 {
+        return start;
+    }
 
-    let count = raw_count.min(MAX_ENTRIES - start).min(RAW_CHUNK / RAW_ENTRY_SIZE);
+    let count = raw_count
+        .min(MAX_ENTRIES - start)
+        .min(RAW_CHUNK / RAW_ENTRY_SIZE);
     for i in 0..count {
         let off = i * RAW_ENTRY_SIZE;
         // Kernel layout: 0=Regular, 1=Directory, 2=Device
@@ -152,7 +169,8 @@ pub fn read_dir(path: &str, out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
         };
         let name_len = raw[off + 1] as usize;
         let name_len = name_len.min(55);
-        let size = u32::from_le_bytes([raw[off+4], raw[off+5], raw[off+6], raw[off+7]]) as u64;
+        let size =
+            u32::from_le_bytes([raw[off + 4], raw[off + 5], raw[off + 6], raw[off + 7]]) as u64;
 
         let mut entry = DirEntry::EMPTY;
         entry.name[..name_len].copy_from_slice(&raw[off + 8..off + 8 + name_len]);
@@ -187,15 +205,21 @@ pub enum SortMode {
 
 /// Sort entries: dirs first (except ".." always index 0), then by mode.
 pub fn sort_entries(entries: &mut [DirEntry], count: usize, mode: SortMode, reverse: bool) {
-    if count == 0 { return; }
+    if count == 0 {
+        return;
+    }
 
     // Move ".." to position 0
     let dotdot = entries[..count].iter().position(|e| e.is_dotdot());
     if let Some(di) = dotdot {
-        if di != 0 { entries.swap(0, di); }
+        if di != 0 {
+            entries.swap(0, di);
+        }
     }
     let start = if dotdot.is_some() { 1 } else { 0 };
-    if count <= start + 1 { return; }
+    if count <= start + 1 {
+        return;
+    }
 
     // Insertion sort on entries[start..count]
     for i in (start + 1)..count {
@@ -204,14 +228,23 @@ pub fn sort_entries(entries: &mut [DirEntry], count: usize, mode: SortMode, reve
             let a_dir = entries[j - 1].is_dir();
             let b_dir = entries[j].is_dir();
             let swap = match (a_dir, b_dir) {
-                (true,  false) => false,
-                (false, true)  => true,
+                (true, false) => false,
+                (false, true) => true,
                 _ => {
                     let less = entry_less(&entries[j - 1], &entries[j], mode);
-                    if reverse { less } else { !less }
+                    if reverse {
+                        less
+                    } else {
+                        !less
+                    }
                 }
             };
-            if swap { entries.swap(j - 1, j); j -= 1; } else { break; }
+            if swap {
+                entries.swap(j - 1, j);
+                j -= 1;
+            } else {
+                break;
+            }
         }
     }
 }
@@ -223,16 +256,20 @@ fn entry_less(a: &DirEntry, b: &DirEntry, mode: SortMode) -> bool {
         SortMode::Kind => {
             let ak = kind_ord(&a.kind);
             let bk = kind_ord(&b.kind);
-            if ak != bk { ak < bk } else { a.name[..a.name_len] < b.name[..b.name_len] }
+            if ak != bk {
+                ak < bk
+            } else {
+                a.name[..a.name_len] < b.name[..b.name_len]
+            }
         }
     }
 }
 
 fn kind_ord(k: &EntryKind) -> u8 {
     match k {
-        EntryKind::Dir     => 0,
+        EntryKind::Dir => 0,
         EntryKind::Symlink => 1,
-        EntryKind::File    => 2,
+        EntryKind::File => 2,
         EntryKind::Unknown => 3,
     }
 }
@@ -242,7 +279,9 @@ fn kind_ord(k: &EntryKind) -> u8 {
 /// Copy a single file from `src` to `dst`. Returns true on success.
 pub fn copy_file(src: &str, dst: &str) -> bool {
     let fd_src = anyos_std::fs::open(src, 0); // O_RDONLY
-    if fd_src == u32::MAX { return false; }
+    if fd_src == u32::MAX {
+        return false;
+    }
 
     // O_WRITE=1 | O_CREATE=4 | O_TRUNC=8 = 13
     let fd_dst = anyos_std::fs::open(dst, 1 | 4 | 8);
@@ -255,10 +294,18 @@ pub fn copy_file(src: &str, dst: &str) -> bool {
     let mut buf = [0u8; 4096];
     loop {
         let n = anyos_std::fs::read(fd_src, &mut buf);
-        if n == 0 { break; }
-        if n == u32::MAX { ok = false; break; }
+        if n == 0 {
+            break;
+        }
+        if n == u32::MAX {
+            ok = false;
+            break;
+        }
         let w = anyos_std::fs::write(fd_dst, &buf[..n as usize]);
-        if w != n { ok = false; break; }
+        if w != n {
+            ok = false;
+            break;
+        }
     }
 
     anyos_std::fs::close(fd_src);
@@ -295,11 +342,17 @@ pub struct StatInfo {
 /// type: 0=file, 1=dir   flags: bit0=is_symlink
 pub fn stat(path: &str) -> Option<StatInfo> {
     let mut buf = [0u32; 7];
-    if anyos_std::fs::stat(path, &mut buf) == u32::MAX { return None; }
-    let is_dir     = buf[0] == 1;
-    let size       = buf[1] as u64;
+    if anyos_std::fs::stat(path, &mut buf) == u32::MAX {
+        return None;
+    }
+    let is_dir = buf[0] == 1;
+    let size = buf[1] as u64;
     let is_symlink = buf[2] & 1 != 0;
-    Some(StatInfo { size, is_dir, is_symlink })
+    Some(StatInfo {
+        size,
+        is_dir,
+        is_symlink,
+    })
 }
 
 // ─── Size formatting ──────────────────────────────────────────────────────────
@@ -319,19 +372,32 @@ pub fn fmt_size<'a>(buf: &'a mut [u8; 16], size: u64) -> &'a str {
         (size * 10, b'B')
     };
     let whole = val10 / 10;
-    let frac  = val10 % 10;
+    let frac = val10 % 10;
     let mut len = 0usize;
     let mut tmp = [0u8; 8];
     let mut ti = 8usize;
     let mut w = whole;
-    if w == 0 { ti -= 1; tmp[ti] = b'0'; } else {
-        while w > 0 { ti -= 1; tmp[ti] = b'0' + (w % 10) as u8; w /= 10; }
+    if w == 0 {
+        ti -= 1;
+        tmp[ti] = b'0';
+    } else {
+        while w > 0 {
+            ti -= 1;
+            tmp[ti] = b'0' + (w % 10) as u8;
+            w /= 10;
+        }
     }
-    for &b in &tmp[ti..] { buf[len] = b; len += 1; }
+    for &b in &tmp[ti..] {
+        buf[len] = b;
+        len += 1;
+    }
     if suffix != b'B' && frac != 0 {
-        buf[len] = b'.'; len += 1;
-        buf[len] = b'0' + frac as u8; len += 1;
+        buf[len] = b'.';
+        len += 1;
+        buf[len] = b'0' + frac as u8;
+        len += 1;
     }
-    buf[len] = suffix; len += 1;
+    buf[len] = suffix;
+    len += 1;
     core::str::from_utf8(&buf[..len]).unwrap_or("?")
 }

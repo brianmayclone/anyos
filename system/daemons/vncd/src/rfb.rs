@@ -21,11 +21,11 @@
 //! Keyboard events are mapped with `input::map_keysym` and injected via
 //! `CMD_INJECT_KEY`.  Mouse events go via `CMD_INJECT_POINTER`.
 
-use anyos_std::net;
 use anyos_std::ipc;
+use anyos_std::net;
+use anyos_std::println;
 use anyos_std::process;
 use anyos_std::sys;
-use anyos_std::println;
 
 use crate::config::VncConfig;
 use crate::des;
@@ -134,17 +134,17 @@ fn recv_exact(sock: u32, buf: &mut [u8]) -> bool {
 /// (same layout as `capture_screen` output and the compositor framebuffer).
 fn pixel_format_block() -> [u8; 16] {
     [
-        32,       // bits-per-pixel
-        24,       // depth
-        0,        // big-endian flag: 0 = little-endian
-        1,        // true-colour flag: 1 = yes
-        0, 0xFF,  // red-max   (255) BE16
-        0, 0xFF,  // green-max (255) BE16
-        0, 0xFF,  // blue-max  (255) BE16
-        16,       // red-shift   (ARGB: A=24, R=16, G=8, B=0)
-        8,        // green-shift
-        0,        // blue-shift
-        0, 0, 0,  // padding (3 bytes)
+        32, // bits-per-pixel
+        24, // depth
+        0,  // big-endian flag: 0 = little-endian
+        1,  // true-colour flag: 1 = yes
+        0, 0xFF, // red-max   (255) BE16
+        0, 0xFF, // green-max (255) BE16
+        0, 0xFF, // blue-max  (255) BE16
+        16,   // red-shift   (ARGB: A=24, R=16, G=8, B=0)
+        8,    // green-shift
+        0,    // blue-shift
+        0, 0, 0, // padding (3 bytes)
     ]
 }
 
@@ -152,7 +152,14 @@ fn pixel_format_block() -> [u8; 16] {
 
 /// Check if every pixel in a tile is the same solid color.
 /// Returns Some(color) if solid, None if mixed.
-fn tile_solid_color(fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) -> Option<u32> {
+fn tile_solid_color(
+    fb: &[u32],
+    stride: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+) -> Option<u32> {
     let first = fb[y * stride + x];
     for row in y..y + h {
         let off = row * stride + x;
@@ -169,7 +176,14 @@ fn tile_solid_color(fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: 
 ///
 /// RRE (encoding type 2) with zero subrects sends just the background color —
 /// 20 bytes total vs 4 KB for a 32×32 Raw tile.
-fn append_rre_solid_rect(out: &mut anyos_std::Vec<u8>, x: usize, y: usize, w: usize, h: usize, color: u32) {
+fn append_rre_solid_rect(
+    out: &mut anyos_std::Vec<u8>,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    color: u32,
+) {
     out.extend_from_slice(&be16(x as u16));
     out.extend_from_slice(&be16(y as u16));
     out.extend_from_slice(&be16(w as u16));
@@ -180,7 +194,15 @@ fn append_rre_solid_rect(out: &mut anyos_std::Vec<u8>, x: usize, y: usize, w: us
 }
 
 /// Append a raw rectangle (header + pixel data).
-fn append_raw_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: usize, y: usize, w: usize, h: usize) {
+fn append_raw_rect(
+    out: &mut anyos_std::Vec<u8>,
+    fb: &[u32],
+    stride: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+) {
     out.extend_from_slice(&be16(x as u16));
     out.extend_from_slice(&be16(y as u16));
     out.extend_from_slice(&be16(w as u16));
@@ -188,9 +210,8 @@ fn append_raw_rect(out: &mut anyos_std::Vec<u8>, fb: &[u32], stride: usize, x: u
     out.extend_from_slice(&[0, 0, 0, 0]); // encoding = Raw
     for row in y..y + h {
         let off = row * stride + x;
-        let row_bytes = unsafe {
-            core::slice::from_raw_parts(fb[off..].as_ptr() as *const u8, w * 4)
-        };
+        let row_bytes =
+            unsafe { core::slice::from_raw_parts(fb[off..].as_ptr() as *const u8, w * 4) };
         out.extend_from_slice(row_bytes);
     }
 }
@@ -206,7 +227,10 @@ fn append_zlib_rect(
     encoder: &mut crate::compress::ZlibEncoder,
     fb: &[u32],
     stride: usize,
-    x: usize, y: usize, w: usize, h: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
 ) {
     // Rectangle header: x, y, w, h, encoding=6 (Zlib)
     out.extend_from_slice(&be16(x as u16));
@@ -219,9 +243,8 @@ fn append_zlib_rect(
     raw_buf.clear();
     for row in y..y + h {
         let off = row * stride + x;
-        let row_bytes = unsafe {
-            core::slice::from_raw_parts(fb[off..].as_ptr() as *const u8, w * 4)
-        };
+        let row_bytes =
+            unsafe { core::slice::from_raw_parts(fb[off..].as_ptr() as *const u8, w * 4) };
         raw_buf.extend_from_slice(row_bytes);
     }
 
@@ -243,7 +266,15 @@ fn append_zlib_rect(
 }
 
 /// Check if a tile differs between `cur` and `prev` framebuffers.
-fn tile_dirty(cur: &[u32], prev: &[u32], stride: usize, tx: usize, ty: usize, tw: usize, th: usize) -> bool {
+fn tile_dirty(
+    cur: &[u32],
+    prev: &[u32],
+    stride: usize,
+    tx: usize,
+    ty: usize,
+    tw: usize,
+    th: usize,
+) -> bool {
     for row in ty..ty + th {
         let off = row * stride + tx;
         if cur[off..off + tw] != prev[off..off + tw] {
@@ -258,7 +289,15 @@ fn tile_dirty(cur: &[u32], prev: &[u32], stride: usize, tx: usize, ty: usize, tw
 /// CopyRect (encoding type 1) tells the client to copy pixels from
 /// `(src_x, src_y)` in its own framebuffer to `(dst_x, dst_y)`.
 /// Only 4 bytes of payload (source position) — vs thousands for pixel data.
-fn append_copyrect(out: &mut anyos_std::Vec<u8>, dx: usize, dy: usize, w: usize, h: usize, sx: usize, sy: usize) {
+fn append_copyrect(
+    out: &mut anyos_std::Vec<u8>,
+    dx: usize,
+    dy: usize,
+    w: usize,
+    h: usize,
+    sx: usize,
+    sy: usize,
+) {
     out.extend_from_slice(&be16(dx as u16));
     out.extend_from_slice(&be16(dy as u16));
     out.extend_from_slice(&be16(w as u16));
@@ -273,8 +312,15 @@ fn append_copyrect(out: &mut anyos_std::Vec<u8>, dx: usize, dy: usize, w: usize,
 /// Check if a rectangular region in `cur` at `(dx, dy)` matches `prev` at
 /// `(sx, sy)` exactly (pixel-perfect match).
 fn region_matches(
-    cur: &[u32], prev: &[u32], stride: usize,
-    dx: usize, dy: usize, sx: usize, sy: usize, w: usize, h: usize,
+    cur: &[u32],
+    prev: &[u32],
+    stride: usize,
+    dx: usize,
+    dy: usize,
+    sx: usize,
+    sy: usize,
+    w: usize,
+    h: usize,
 ) -> bool {
     for row in 0..h {
         let cur_off = (dy + row) * stride + dx;
@@ -298,9 +344,15 @@ fn region_matches(
 /// Only searches offsets up to `MAX_SEARCH` pixels in each direction to
 /// keep the cost bounded.
 fn detect_motion(
-    cur: &[u32], prev: &[u32], stride: usize,
-    bbox_x: usize, bbox_y: usize, bbox_w: usize, bbox_h: usize,
-    sw: usize, sh: usize,
+    cur: &[u32],
+    prev: &[u32],
+    stride: usize,
+    bbox_x: usize,
+    bbox_y: usize,
+    bbox_w: usize,
+    bbox_h: usize,
+    sw: usize,
+    sh: usize,
 ) -> Option<(i32, i32)> {
     const MAX_SEARCH: i32 = 128; // max pixels to search in each direction
     const SAMPLE_SIZE: usize = 16; // sample block size for initial search
@@ -313,7 +365,9 @@ fn detect_motion(
 
     // Extract the sample's first row signature for fast rejection
     let sig_off = sample_y * stride + sample_x;
-    if sig_off + sample_w > cur.len() { return None; }
+    if sig_off + sample_w > cur.len() {
+        return None;
+    }
 
     let mut best_dx: i32 = 0;
     let mut best_dy: i32 = 0;
@@ -323,38 +377,58 @@ fn detect_motion(
     // Use a spiral-like pattern: check small offsets first (more likely for
     // window dragging which is typically a few pixels per frame)
     for dist in 1..=MAX_SEARCH {
-        if found { break; }
+        if found {
+            break;
+        }
         // Check all offsets at Manhattan distance `dist`
         for dy in -dist..=dist {
-            if found { break; }
+            if found {
+                break;
+            }
             for &dx in &[-dist, dist] {
                 // Candidate source position in prev
                 let sx = sample_x as i32 + dx;
                 let sy = sample_y as i32 + dy;
-                if sx < 0 || sy < 0 { continue; }
+                if sx < 0 || sy < 0 {
+                    continue;
+                }
                 let sx = sx as usize;
                 let sy = sy as usize;
-                if sx + sample_w > sw || sy + sample_h > sh { continue; }
+                if sx + sample_w > sw || sy + sample_h > sh {
+                    continue;
+                }
 
                 // Quick check: does the sample match at this offset?
-                if region_matches(cur, prev, stride, sample_x, sample_y, sx, sy, sample_w, sample_h) {
+                if region_matches(
+                    cur, prev, stride, sample_x, sample_y, sx, sy, sample_w, sample_h,
+                ) {
                     best_dx = dx;
                     best_dy = dy;
                     found = true;
                     break;
                 }
             }
-            if found { break; }
+            if found {
+                break;
+            }
             // Also check horizontal offsets within this distance
-            if dy == -dist || dy == dist { continue; } // already checked corners
+            if dy == -dist || dy == dist {
+                continue;
+            } // already checked corners
             for &dx in &[-dist, dist] {
                 let sx = sample_x as i32 + dx;
                 let sy = sample_y as i32 + dy;
-                if sx < 0 || sy < 0 { continue; }
+                if sx < 0 || sy < 0 {
+                    continue;
+                }
                 let sx = sx as usize;
                 let sy = sy as usize;
-                if sx + sample_w > sw || sy + sample_h > sh { continue; }
-                if region_matches(cur, prev, stride, sample_x, sample_y, sx, sy, sample_w, sample_h) {
+                if sx + sample_w > sw || sy + sample_h > sh {
+                    continue;
+                }
+                if region_matches(
+                    cur, prev, stride, sample_x, sample_y, sx, sy, sample_w, sample_h,
+                ) {
                     best_dx = dx;
                     best_dy = dy;
                     found = true;
@@ -364,19 +438,27 @@ fn detect_motion(
         }
     }
 
-    if !found { return None; }
+    if !found {
+        return None;
+    }
 
     // Verify: does the ENTIRE bounding box match at this offset?
     // (The sample might match but the full region might not — e.g., two windows
     //  overlapping, or only part of the screen moved.)
     let src_x = bbox_x as i32 + best_dx;
     let src_y = bbox_y as i32 + best_dy;
-    if src_x < 0 || src_y < 0 { return None; }
+    if src_x < 0 || src_y < 0 {
+        return None;
+    }
     let src_x = src_x as usize;
     let src_y = src_y as usize;
-    if src_x + bbox_w > sw || src_y + bbox_h > sh { return None; }
+    if src_x + bbox_w > sw || src_y + bbox_h > sh {
+        return None;
+    }
 
-    if region_matches(cur, prev, stride, bbox_x, bbox_y, src_x, src_y, bbox_w, bbox_h) {
+    if region_matches(
+        cur, prev, stride, bbox_x, bbox_y, src_x, src_y, bbox_w, bbox_h,
+    ) {
         Some((best_dx, best_dy))
     } else {
         None
@@ -442,10 +524,18 @@ fn send_dirty_update_zlib(
                     dirty_map[map_idx] = 1;
                 }
                 n_dirty_tiles += 1;
-                if tx_idx < bb_x0 { bb_x0 = tx_idx; }
-                if tx_idx + 1 > bb_x1 { bb_x1 = tx_idx + 1; }
-                if ty_idx < bb_y0 { bb_y0 = ty_idx; }
-                if ty_idx + 1 > bb_y1 { bb_y1 = ty_idx + 1; }
+                if tx_idx < bb_x0 {
+                    bb_x0 = tx_idx;
+                }
+                if tx_idx + 1 > bb_x1 {
+                    bb_x1 = tx_idx + 1;
+                }
+                if ty_idx < bb_y0 {
+                    bb_y0 = ty_idx;
+                }
+                if ty_idx + 1 > bb_y1 {
+                    bb_y1 = ty_idx + 1;
+                }
             }
         }
     }
@@ -468,7 +558,8 @@ fn send_dirty_update_zlib(
     // Only attempt CopyRect if: client supports it, enough dirty tiles
     // to justify the search cost, and the dirty map fits in our buffer.
     let copyrect_applied = if use_copyrect && n_dirty_tiles >= 4 && map_size <= dirty_map.len() {
-        if let Some((dx, dy)) = detect_motion(cur, prev, sw, bbox_x, bbox_y, bbox_w, bbox_h, sw, sh) {
+        if let Some((dx, dy)) = detect_motion(cur, prev, sw, bbox_x, bbox_y, bbox_w, bbox_h, sw, sh)
+        {
             // CopyRect source position (where the content was in prev)
             let src_x = (bbox_x as i32 + dx) as usize;
             let src_y = (bbox_y as i32 + dy) as usize;
@@ -563,7 +654,9 @@ fn send_dirty_update_zlib(
                     let ntw = TILE_SIZE.min(sw - ntx);
                     tile_dirty(cur, prev, sw, ntx, ty, ntw, th)
                 };
-                if !next_dirty { break; }
+                if !next_dirty {
+                    break;
+                }
                 run_end += 1;
             }
 
@@ -594,7 +687,11 @@ fn send_dirty_update_zlib(
     send_buf[2] = count_bytes[0];
     send_buf[3] = count_bytes[1];
 
-    if send_all(sock, send_buf) { n_rects as i32 } else { -1 }
+    if send_all(sock, send_buf) {
+        n_rects as i32
+    } else {
+        -1
+    }
 }
 
 /// Send a FramebufferUpdate using Raw/RRE encoding (fallback, no compression).
@@ -616,9 +713,8 @@ fn send_dirty_update_raw(
         rect_hdr[4..6].copy_from_slice(&be16(sw as u16));
         rect_hdr[6..8].copy_from_slice(&be16(sh as u16));
         send_buf.extend_from_slice(&rect_hdr);
-        let byte_data = unsafe {
-            core::slice::from_raw_parts(cur.as_ptr() as *const u8, n_pixels * 4)
-        };
+        let byte_data =
+            unsafe { core::slice::from_raw_parts(cur.as_ptr() as *const u8, n_pixels * 4) };
         send_buf.extend_from_slice(byte_data);
         prev.copy_from_slice(&cur[..n_pixels]);
         let result = send_all(sock, send_buf);
@@ -655,13 +751,19 @@ fn send_dirty_update_raw(
         }
     }
 
-    if n_dirty == 0 { return 0; }
+    if n_dirty == 0 {
+        return 0;
+    }
 
     let count_bytes = be16(n_dirty);
     send_buf[2] = count_bytes[0];
     send_buf[3] = count_bytes[1];
 
-    if send_all(sock, send_buf) { n_dirty as i32 } else { -1 }
+    if send_all(sock, send_buf) {
+        n_dirty as i32
+    } else {
+        -1
+    }
 }
 
 // ── Login screen helpers ──────────────────────────────────────────────────────
@@ -675,7 +777,7 @@ fn render_login_overlay(
     sw: usize,
     sh: usize,
     state: &LoginState<'_>,
-    panel: &mut [u32],       // pre-allocated LOGIN_W * LOGIN_H buffer (heap)
+    panel: &mut [u32], // pre-allocated LOGIN_W * LOGIN_H buffer (heap)
 ) {
     // Fill entire buffer with dark background.
     for px in screen_buf.iter_mut() {
@@ -694,8 +796,7 @@ fn render_login_overlay(
     for row in 0..copy_h {
         let dst_off = (panel_y + row) * sw + panel_x;
         let src_off = row * LOGIN_W;
-        screen_buf[dst_off..dst_off + copy_w]
-            .copy_from_slice(&panel[src_off..src_off + copy_w]);
+        screen_buf[dst_off..dst_off + copy_w].copy_from_slice(&panel[src_off..src_off + copy_w]);
     }
 }
 
@@ -742,7 +843,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     let mut challenge = [0u8; 16];
     // Mix time values into all 16 bytes.
     for i in 0..4 {
-        challenge[i]     = (t0 >> (i * 8)) as u8;
+        challenge[i] = (t0 >> (i * 8)) as u8;
         challenge[i + 4] = (t1 >> (i * 8)) as u8;
         challenge[i + 8] = ((t0 ^ t1) >> (i * 8)) as u8 ^ 0xA5;
         challenge[i + 12] = ((t0.wrapping_add(t1)) >> (i * 8)) as u8 ^ 0x5A;
@@ -788,8 +889,16 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     let mut screen_info = [0u32; 3]; // [width, height, pitch_bytes]
     let mut tmp_buf = [0u32; 4];
     let _ = sys::capture_screen(&mut tmp_buf, &mut screen_info);
-    let sw = if screen_info[0] > 0 { (screen_info[0] as usize).min(MAX_SCREEN_DIM) } else { 1024 };
-    let sh = if screen_info[1] > 0 { (screen_info[1] as usize).min(MAX_SCREEN_DIM) } else { 768 };
+    let sw = if screen_info[0] > 0 {
+        (screen_info[0] as usize).min(MAX_SCREEN_DIM)
+    } else {
+        1024
+    };
+    let sh = if screen_info[1] > 0 {
+        (screen_info[1] as usize).min(MAX_SCREEN_DIM)
+    } else {
+        768
+    };
 
     // ── 6. ServerInit ─────────────────────────────────────────────────────────
     // framebuffer-width (BE16), framebuffer-height (BE16),
@@ -857,8 +966,13 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
             };
             render_login_overlay(&mut screen_buf, sw, sh, &state, &mut login_panel);
             let rc = send_dirty_update_raw(
-                sock, &screen_buf, &mut login_prev, sw, sh,
-                login_first_frame, &mut login_send_buf,
+                sock,
+                &screen_buf,
+                &mut login_prev,
+                sw,
+                sh,
+                login_first_frame,
+                &mut login_send_buf,
             );
             login_first_frame = false;
             if rc < 0 {
@@ -1036,8 +1150,12 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                         return;
                     }
                     let enc_type = i32::from_be_bytes(enc_buf);
-                    if enc_type == 1 { login_use_copyrect = true; }
-                    if enc_type == 6 { login_use_zlib = true; }
+                    if enc_type == 1 {
+                        login_use_copyrect = true;
+                    }
+                    if enc_type == 6 {
+                        login_use_zlib = true;
+                    }
                 }
             }
             _ => {
@@ -1049,7 +1167,10 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     }
 
     // ── 9. Main loop — stream live desktop ───────────────────────────────────
-    println!("vncd: authentication successful, entering desktop loop ({}x{})", sw, sh);
+    println!(
+        "vncd: authentication successful, entering desktop loop ({}x{})",
+        sw, sh
+    );
 
     // Free login-phase buffers — no longer needed.
     drop(login_panel);
@@ -1067,7 +1188,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     // Whether client supports Zlib encoding (type 6) and CopyRect (type 1).
     // Initialized from login-phase SetEncodings; updated if client resends.
     // For now, use Raw encoding for desktop to debug (Zlib may have issues).
-    let mut use_zlib = false;  // Disable Zlib temporarily for debugging
+    let mut use_zlib = false; // Disable Zlib temporarily for debugging
     let mut use_copyrect = login_use_copyrect;
 
     let mut mods = ModifierState::default();
@@ -1092,7 +1213,11 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     // the GPU framebuffer at 0x30000000, we read directly from that mapped
     // memory — no syscall, no 3 MB kernel→user copy per frame.
     let mut fb_mapped = false;
-    let fb_pitch: usize = if screen_info[2] > 0 { screen_info[2] as usize } else { sw * 4 };
+    let fb_pitch: usize = if screen_info[2] > 0 {
+        screen_info[2] as usize
+    } else {
+        sw * 4
+    };
     let fb_contiguous = fb_pitch == sw * 4;
 
     loop {
@@ -1130,27 +1255,43 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                 // SetPixelFormat (type 0): ignore.
                 0 => {
                     let mut _rest = [0u8; 19];
-                    if !recv_exact(sock, &mut _rest) { net::tcp_close(sock); return; }
+                    if !recv_exact(sock, &mut _rest) {
+                        net::tcp_close(sock);
+                        return;
+                    }
                 }
                 // SetEncodings (type 2): parse to detect compression support.
                 2 => {
                     let mut enc_hdr = [0u8; 3];
-                    if !recv_exact(sock, &mut enc_hdr) { net::tcp_close(sock); return; }
+                    if !recv_exact(sock, &mut enc_hdr) {
+                        net::tcp_close(sock);
+                        return;
+                    }
                     let count = from_be16(&enc_hdr[1..3]) as usize;
                     use_zlib = false;
                     use_copyrect = false;
                     let mut enc_buf = [0u8; 4];
                     for _ in 0..count {
-                        if !recv_exact(sock, &mut enc_buf) { net::tcp_close(sock); return; }
+                        if !recv_exact(sock, &mut enc_buf) {
+                            net::tcp_close(sock);
+                            return;
+                        }
                         let enc_type = i32::from_be_bytes(enc_buf);
-                        if enc_type == 1 { use_copyrect = true; }
-                        if enc_type == 6 { use_zlib = true; }
+                        if enc_type == 1 {
+                            use_copyrect = true;
+                        }
+                        if enc_type == 6 {
+                            use_zlib = true;
+                        }
                     }
                 }
                 // FramebufferUpdateRequest (type 3).
                 3 => {
                     let mut fbu_rest = [0u8; 9];
-                    if !recv_exact(sock, &mut fbu_rest) { net::tcp_close(sock); return; }
+                    if !recv_exact(sock, &mut fbu_rest) {
+                        net::tcp_close(sock);
+                        return;
+                    }
                     let incremental = fbu_rest[0] != 0;
                     if !incremental {
                         need_full = true;
@@ -1160,7 +1301,10 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                 // KeyEvent (type 4).
                 4 => {
                     let mut key_rest = [0u8; 7];
-                    if !recv_exact(sock, &mut key_rest) { net::tcp_close(sock); return; }
+                    if !recv_exact(sock, &mut key_rest) {
+                        net::tcp_close(sock);
+                        return;
+                    }
                     let down = key_rest[0] != 0;
                     let keysym = from_be32(&key_rest[3..7]);
                     mods.update(keysym, down);
@@ -1173,7 +1317,10 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                 // PointerEvent (type 5).
                 5 => {
                     let mut ptr_rest = [0u8; 5];
-                    if !recv_exact(sock, &mut ptr_rest) { net::tcp_close(sock); return; }
+                    if !recv_exact(sock, &mut ptr_rest) {
+                        net::tcp_close(sock);
+                        return;
+                    }
                     let buttons = ptr_rest[0];
                     let x = from_be16(&ptr_rest[1..3]);
                     let y = from_be16(&ptr_rest[3..5]);
@@ -1183,7 +1330,10 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                 // ClientCutText (type 6): forward to compositor clipboard.
                 6 => {
                     let mut cut_hdr = [0u8; 7];
-                    if !recv_exact(sock, &mut cut_hdr) { net::tcp_close(sock); return; }
+                    if !recv_exact(sock, &mut cut_hdr) {
+                        net::tcp_close(sock);
+                        return;
+                    }
                     let text_len = from_be32(&cut_hdr[3..7]) as usize;
                     if text_len == 0 {
                         // Empty clipboard — nothing to do.
@@ -1193,13 +1343,20 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                         let mut remaining = text_len;
                         while remaining > 0 {
                             let chunk = remaining.min(64);
-                            if !recv_exact(sock, &mut discard[..chunk]) { net::tcp_close(sock); return; }
+                            if !recv_exact(sock, &mut discard[..chunk]) {
+                                net::tcp_close(sock);
+                                return;
+                            }
                             remaining -= chunk;
                         }
                     } else {
-                        let mut text_buf: anyos_std::Vec<u8> = anyos_std::Vec::with_capacity(text_len);
+                        let mut text_buf: anyos_std::Vec<u8> =
+                            anyos_std::Vec::with_capacity(text_len);
                         text_buf.resize(text_len, 0u8);
-                        if !recv_exact(sock, &mut text_buf) { net::tcp_close(sock); return; }
+                        if !recv_exact(sock, &mut text_buf) {
+                            net::tcp_close(sock);
+                            return;
+                        }
                         crate::clipboard::set_compositor_clipboard(comp_chan, &text_buf);
                     }
                 }
@@ -1213,7 +1370,11 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
         // ── Phase B: send frame update if requested ──────────────────────────
         if update_requested {
             let now = sys::uptime_ms();
-            let interval = if consecutive_clean > IDLE_THRESHOLD { IDLE_FRAME_MS } else { MIN_FRAME_MS };
+            let interval = if consecutive_clean > IDLE_THRESHOLD {
+                IDLE_FRAME_MS
+            } else {
+                MIN_FRAME_MS
+            };
             if now.wrapping_sub(last_frame_ms) >= interval {
                 // Get current framebuffer
                 // Always use screen_buf for safety; don't directly reference 0x30000000.
@@ -1237,7 +1398,11 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                         if fb_contiguous {
                             unsafe {
                                 let src = 0x3000_0000 as *const u32;
-                                core::ptr::copy_nonoverlapping(src, screen_buf.as_mut_ptr(), sw * sh);
+                                core::ptr::copy_nonoverlapping(
+                                    src,
+                                    screen_buf.as_mut_ptr(),
+                                    sw * sh,
+                                );
                             }
                         } else {
                             unsafe {
@@ -1260,13 +1425,25 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                 // Send update — Zlib-compressed if client supports it, Raw otherwise
                 let rc = if use_zlib {
                     send_dirty_update_zlib(
-                        sock, cur, &mut prev_buf, sw, sh, need_full,
-                        &mut send_buf, &mut raw_buf, &mut zlib_encoder,
+                        sock,
+                        cur,
+                        &mut prev_buf,
+                        sw,
+                        sh,
+                        need_full,
+                        &mut send_buf,
+                        &mut raw_buf,
+                        &mut zlib_encoder,
                         use_copyrect,
                     )
                 } else {
                     send_dirty_update_raw(
-                        sock, cur, &mut prev_buf, sw, sh, need_full,
+                        sock,
+                        cur,
+                        &mut prev_buf,
+                        sw,
+                        sh,
+                        need_full,
                         &mut send_buf,
                     )
                 };
@@ -1290,7 +1467,12 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
         if clip_now.wrapping_sub(last_clipboard_check) >= CLIPBOARD_POLL_MS {
             last_clipboard_check = clip_now;
             let mut clip_buf = [0u8; 4096];
-            let clip_len = crate::clipboard::get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut clip_buf);
+            let clip_len = crate::clipboard::get_compositor_clipboard(
+                comp_chan,
+                reply_chan,
+                sub_id,
+                &mut clip_buf,
+            );
             if clip_len > 0 {
                 let clip_data = &clip_buf[..clip_len];
                 if clip_data != last_clipboard.as_slice() {
@@ -1299,7 +1481,9 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
                     // ServerCutText: type(1) + padding(3) + length(4) + text
                     let mut msg: anyos_std::Vec<u8> = anyos_std::Vec::with_capacity(8 + clip_len);
                     msg.push(3u8); // type = ServerCutText
-                    msg.push(0); msg.push(0); msg.push(0); // padding
+                    msg.push(0);
+                    msg.push(0);
+                    msg.push(0); // padding
                     let len_bytes = (clip_len as u32).to_be_bytes();
                     msg.extend_from_slice(&len_bytes);
                     msg.extend_from_slice(clip_data);

@@ -30,7 +30,11 @@ pub fn dns(hostname: &str, result: &mut [u8; 4]) -> u32 {
     let len = hostname.len().min(256);
     host_buf[..len].copy_from_slice(&hostname.as_bytes()[..len]);
     host_buf[len] = 0;
-    syscall2(SYS_NET_DNS, host_buf.as_ptr() as u64, result.as_mut_ptr() as u64)
+    syscall2(
+        SYS_NET_DNS,
+        host_buf.as_ptr() as u64,
+        result.as_mut_ptr() as u64,
+    )
 }
 
 /// Disable the NIC.
@@ -205,13 +209,23 @@ pub fn tcp_connect(ip: &[u8; 4], port: u16, timeout_ms: u32) -> u32 {
 
 /// Send data on a TCP connection. Returns bytes sent or u32::MAX on error.
 pub fn tcp_send(socket_id: u32, data: &[u8]) -> u32 {
-    syscall3(SYS_TCP_SEND, socket_id as u64, data.as_ptr() as u64, data.len() as u64)
+    syscall3(
+        SYS_TCP_SEND,
+        socket_id as u64,
+        data.as_ptr() as u64,
+        data.len() as u64,
+    )
 }
 
 /// Receive data from a TCP connection.
 /// Returns bytes received, 0=EOF (remote closed), u32::MAX=error/timeout.
 pub fn tcp_recv(socket_id: u32, buf: &mut [u8]) -> u32 {
-    syscall3(SYS_TCP_RECV, socket_id as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall3(
+        SYS_TCP_RECV,
+        socket_id as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Check how many bytes are available to read without blocking.
@@ -241,7 +255,11 @@ pub fn tcp_listen(port: u16, backlog: u16) -> u32 {
 /// or (u32::MAX, [0;4], 0) on error/timeout.
 pub fn tcp_accept(listener_id: u32) -> (u32, [u8; 4], u16) {
     let mut result = [0u8; 12];
-    let rc = syscall2(SYS_TCP_ACCEPT, listener_id as u64, result.as_mut_ptr() as u64);
+    let rc = syscall2(
+        SYS_TCP_ACCEPT,
+        listener_id as u64,
+        result.as_mut_ptr() as u64,
+    );
     if rc != 0 {
         return (u32::MAX, [0; 4], 0);
     }
@@ -255,7 +273,11 @@ pub fn tcp_accept(listener_id: u32) -> (u32, [u8; 4], u16) {
 /// if a connection is pending, or (u32::MAX, [0;4], 0) if none is ready yet.
 pub fn tcp_accept_nowait(listener_id: u32) -> (u32, [u8; 4], u16) {
     let mut result = [0u8; 12];
-    let rc = syscall2(SYS_TCP_ACCEPT_NOWAIT, listener_id as u64, result.as_mut_ptr() as u64);
+    let rc = syscall2(
+        SYS_TCP_ACCEPT_NOWAIT,
+        listener_id as u64,
+        result.as_mut_ptr() as u64,
+    );
     if rc != 0 {
         return (u32::MAX, [0; 4], 0);
     }
@@ -284,13 +306,13 @@ pub fn tcp_list() -> alloc::vec::Vec<TcpConnInfo> {
     for i in 0..count as usize {
         let off = i * 16;
         result.push(TcpConnInfo {
-            local_ip: [buf[off], buf[off+1], buf[off+2], buf[off+3]],
-            local_port: u16::from_be_bytes([buf[off+4], buf[off+5]]),
-            remote_ip: [buf[off+6], buf[off+7], buf[off+8], buf[off+9]],
-            remote_port: u16::from_be_bytes([buf[off+10], buf[off+11]]),
-            state: buf[off+12],
-            owner_tid: buf[off+13],
-            recv_buf_len: u16::from_le_bytes([buf[off+14], buf[off+15]]),
+            local_ip: [buf[off], buf[off + 1], buf[off + 2], buf[off + 3]],
+            local_port: u16::from_be_bytes([buf[off + 4], buf[off + 5]]),
+            remote_ip: [buf[off + 6], buf[off + 7], buf[off + 8], buf[off + 9]],
+            remote_port: u16::from_be_bytes([buf[off + 10], buf[off + 11]]),
+            state: buf[off + 12],
+            owner_tid: buf[off + 13],
+            recv_buf_len: u16::from_le_bytes([buf[off + 14], buf[off + 15]]),
         });
     }
     result
@@ -337,7 +359,12 @@ pub fn udp_sendto(dst_ip: &[u8; 4], dst_port: u16, src_port: u16, data: &[u8], f
 /// Buffer receives: [src_ip:4, src_port:u16, payload_len:u16, payload...].
 /// Returns total bytes written (8 + payload), 0=no data/timeout, u32::MAX=error.
 pub fn udp_recvfrom(port: u16, buf: &mut [u8]) -> u32 {
-    syscall3(SYS_UDP_RECVFROM, port as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall3(
+        SYS_UDP_RECVFROM,
+        port as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Set UDP socket option on a bound port.
@@ -395,7 +422,9 @@ pub struct NetStats {
 pub fn net_stats() -> Option<NetStats> {
     let mut buf = [0u8; 104];
     let rc = syscall2(SYS_NET_STATS, buf.as_mut_ptr() as u64, 104);
-    if rc != 0 { return None; }
+    if rc != 0 {
+        return None;
+    }
     Some(NetStats {
         rx_packets: u64::from_le_bytes(buf[0..8].try_into().unwrap()),
         tx_packets: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
@@ -439,7 +468,7 @@ pub enum WifiSecurity {
 #[derive(Debug, Clone)]
 pub struct BssInfo {
     pub bssid: [u8; 6],
-    pub ssid:  [u8; 32],
+    pub ssid: [u8; 32],
     pub ssid_len: usize,
     pub channel: u8,
     pub rssi: i8,
@@ -469,7 +498,9 @@ pub fn wifi_scan() {
 
 /// Read scanned access points.  Returns up to `max` entries.
 pub fn wifi_scan_results(max: usize) -> alloc::vec::Vec<BssInfo> {
-    if max == 0 { return alloc::vec::Vec::new(); }
+    if max == 0 {
+        return alloc::vec::Vec::new();
+    }
     let mut buf = alloc::vec![0u8; max * 48];
     let count = syscall3(SYS_WIFI, 3, buf.as_mut_ptr() as u64, max as u64) as usize;
     let count = count.min(max);
@@ -481,10 +512,21 @@ pub fn wifi_scan_results(max: usize) -> alloc::vec::Vec<BssInfo> {
         bssid.copy_from_slice(&buf[off..off + 6]);
         ssid.copy_from_slice(&buf[off + 6..off + 38]);
         let ssid_len = buf[off + 38] as usize;
-        let channel   = buf[off + 39];
-        let rssi      = buf[off + 40] as i8;
-        let security  = if buf[off + 41] == 0 { WifiSecurity::Open } else { WifiSecurity::Wpa2Personal };
-        out.push(BssInfo { bssid, ssid, ssid_len: ssid_len.min(32), channel, rssi, security });
+        let channel = buf[off + 39];
+        let rssi = buf[off + 40] as i8;
+        let security = if buf[off + 41] == 0 {
+            WifiSecurity::Open
+        } else {
+            WifiSecurity::Wpa2Personal
+        };
+        out.push(BssInfo {
+            bssid,
+            ssid,
+            ssid_len: ssid_len.min(32),
+            channel,
+            rssi,
+            security,
+        });
     }
     out
 }
@@ -495,8 +537,10 @@ pub fn wifi_scan_results(max: usize) -> alloc::vec::Vec<BssInfo> {
 /// Returns 0 on success (parameters accepted), u32::MAX on invalid args.
 pub fn wifi_connect(ssid: &str, password: &str) -> u32 {
     let ssid_b = ssid.as_bytes();
-    let pw_b   = password.as_bytes();
-    if ssid_b.len() > 32 || pw_b.len() > 64 { return u32::MAX; }
+    let pw_b = password.as_bytes();
+    if ssid_b.len() > 32 || pw_b.len() > 64 {
+        return u32::MAX;
+    }
     // buf layout: [ssid_len:1, ssid:32, pw_len:1, pw:64] = 98 bytes
     let mut buf = [0u8; 98];
     buf[0] = ssid_b.len() as u8;
@@ -533,13 +577,13 @@ pub fn wifi_status() -> WifiStatus {
         _ => WifiState::Disconnected,
     };
     let mut bssid = [0u8; 6];
-    let mut ssid  = [0u8; 32];
+    let mut ssid = [0u8; 32];
     bssid.copy_from_slice(&buf[4..10]);
     ssid.copy_from_slice(&buf[10..42]);
     WifiStatus {
         state,
         connected: buf[1] != 0,
-        channel:   buf[2],
+        channel: buf[2],
         bssid,
         ssid,
         ssid_len: buf[42] as usize,

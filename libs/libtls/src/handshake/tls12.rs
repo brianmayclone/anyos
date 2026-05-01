@@ -14,11 +14,11 @@
 //! 7. ChangeCipherSpec
 //! 8. Finished
 
-use alloc::vec::Vec;
+use crate::cipher_suite::CipherSuite;
+use crate::crypto::{chacha20poly1305, gcm, hmac, sha256, x25519};
 use crate::error::TlsError;
 use crate::record::{ContentType, ProtocolVersion, RecordHeader, RECORD_HEADER_SIZE};
-use crate::cipher_suite::CipherSuite;
-use crate::crypto::{sha256, hmac, x25519, gcm, chacha20poly1305};
+use alloc::vec::Vec;
 
 /// TLS 1.2 handshake result.
 pub struct Tls12Handshake {
@@ -99,7 +99,12 @@ pub fn continue_tls12_handshake(
     seed.extend_from_slice(&server_random);
 
     let mut master_secret = [0u8; 48];
-    prf_sha256(pre_master_secret, b"master secret", &seed, &mut master_secret);
+    prf_sha256(
+        pre_master_secret,
+        b"master secret",
+        &seed,
+        &mut master_secret,
+    );
 
     // Key expansion
     let key_len = cipher_suite.key_len();
@@ -126,14 +131,23 @@ pub fn continue_tls12_handshake(
     // Compute and send Finished
     let transcript_hash = sha256::sha256(&transcript);
     let mut verify_data = [0u8; 12];
-    prf_sha256(&master_secret, b"client finished", &transcript_hash, &mut verify_data);
+    prf_sha256(
+        &master_secret,
+        b"client finished",
+        &transcript_hash,
+        &mut verify_data,
+    );
 
     let finished_msg = build_handshake_msg(20, &verify_data);
     // Encrypt the Finished message with client key
     // For the first encrypted message, sequence number is 0
     let encrypted = encrypt_tls12_record(
-        cipher_suite, &client_write_key, &client_write_iv,
-        0, ContentType::Handshake as u8, &finished_msg,
+        cipher_suite,
+        &client_write_key,
+        &client_write_iv,
+        0,
+        ContentType::Handshake as u8,
+        &finished_msg,
         random_fn,
     );
     send_record_raw(fd, &encrypted, send_fn)?;
@@ -222,7 +236,12 @@ fn build_handshake_msg(msg_type: u8, body: &[u8]) -> Vec<u8> {
     msg
 }
 
-fn send_record(fd: u32, content_type: u8, data: &[u8], send_fn: fn(u32, &[u8]) -> i32) -> Result<(), TlsError> {
+fn send_record(
+    fd: u32,
+    content_type: u8,
+    data: &[u8],
+    send_fn: fn(u32, &[u8]) -> i32,
+) -> Result<(), TlsError> {
     let header = RecordHeader {
         content_type,
         version: ProtocolVersion::TLS12,
@@ -242,7 +261,9 @@ fn send_all_fn(fd: u32, data: &[u8], send_fn: fn(u32, &[u8]) -> i32) -> Result<(
     let mut offset = 0;
     while offset < data.len() {
         let n = send_fn(fd, &data[offset..]);
-        if n < 0 { return Err(TlsError::SendFailed); }
+        if n < 0 {
+            return Err(TlsError::SendFailed);
+        }
         if n == 0 {
             crate::transport_sleep(1);
             continue;
@@ -310,7 +331,8 @@ fn encrypt_tls12_record(
     let mut aad = [0u8; 13];
     aad[..8].copy_from_slice(&seq.to_be_bytes());
     aad[8] = content_type;
-    aad[9] = 0x03; aad[10] = 0x03; // TLS 1.2
+    aad[9] = 0x03;
+    aad[10] = 0x03; // TLS 1.2
     let pt_len = plaintext.len() as u16;
     aad[11] = (pt_len >> 8) as u8;
     aad[12] = pt_len as u8;
@@ -319,16 +341,15 @@ fn encrypt_tls12_record(
     let mut tag = [0u8; 16];
 
     match suite {
-        CipherSuite::EcdheRsaAes128GcmSha256 |
-        CipherSuite::EcdheEcdsaAes128GcmSha256 |
-        CipherSuite::Aes128GcmSha256 => {
+        CipherSuite::EcdheRsaAes128GcmSha256
+        | CipherSuite::EcdheEcdsaAes128GcmSha256
+        | CipherSuite::Aes128GcmSha256 => {
             let mut k = [0u8; 16];
             k.copy_from_slice(key);
             let aes = gcm::AesGcm::new_128(&k);
             aes.encrypt(&nonce, &aad, &mut data, &mut tag);
         }
-        CipherSuite::EcdheRsaChacha20Poly1305Sha256 |
-        CipherSuite::Chacha20Poly1305Sha256 => {
+        CipherSuite::EcdheRsaChacha20Poly1305Sha256 | CipherSuite::Chacha20Poly1305Sha256 => {
             let mut k = [0u8; 32];
             k.copy_from_slice(key);
             chacha20poly1305::encrypt(&k, &nonce, &aad, &mut data, &mut tag);
@@ -340,7 +361,8 @@ fn encrypt_tls12_record(
     let record_len = 8 + data.len() + 16;
     let mut record = Vec::with_capacity(5 + record_len);
     record.push(content_type);
-    record.push(0x03); record.push(0x03);
+    record.push(0x03);
+    record.push(0x03);
     record.push((record_len >> 8) as u8);
     record.push(record_len as u8);
     record.extend_from_slice(&explicit_nonce);

@@ -15,7 +15,6 @@ fn main() {
         return;
     }
 
-
     let mut args_buf = [0u8; 256];
     let args = process::args(&mut args_buf);
 
@@ -41,8 +40,10 @@ fn main() {
             continue;
         }
 
-        println!("echoserver: accepted connection from {}.{}.{}.{}:{} (socket {})",
-            ip[0], ip[1], ip[2], ip[3], rport, sock);
+        println!(
+            "echoserver: accepted connection from {}.{}.{}.{}:{} (socket {})",
+            ip[0], ip[1], ip[2], ip[3], rport, sock
+        );
 
         // Echo loop
         let mut buf = [0u8; 2048];
@@ -72,9 +73,13 @@ fn main() {
 fn parse_u16(s: &str) -> Option<u16> {
     let mut val: u32 = 0;
     for b in s.bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         val = val * 10 + (b - b'0') as u32;
-        if val > 65535 { return None; }
+        if val > 65535 {
+            return None;
+        }
     }
     Some(val as u16)
 }

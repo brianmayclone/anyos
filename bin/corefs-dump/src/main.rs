@@ -45,7 +45,10 @@ impl Report for SuperblockView {
     fn summary(&self) -> String {
         anyos_std::format!(
             "superblock of device {} — {} blocks, {} inodes, gen {}",
-            self.device_id, self.info.total_blocks, self.info.total_inodes, self.info.generation
+            self.device_id,
+            self.info.total_blocks,
+            self.info.total_inodes,
+            self.info.generation
         )
     }
 
@@ -74,9 +77,21 @@ impl Report for SuperblockView {
             self.info.free_inodes,
             self.info.generation,
             self.info.state,
-            if self.info.primary_ok { "ok" } else { "unreadable" },
-            if self.info.tertiary_ok { "ok" } else { "unreadable" },
-            if self.info.secondary_ok { "ok" } else { "unreadable" },
+            if self.info.primary_ok {
+                "ok"
+            } else {
+                "unreadable"
+            },
+            if self.info.tertiary_ok {
+                "ok"
+            } else {
+                "unreadable"
+            },
+            if self.info.secondary_ok {
+                "ok"
+            } else {
+                "unreadable"
+            },
         )
     }
 
@@ -123,7 +138,10 @@ impl Report for InodeView {
     fn summary(&self) -> String {
         anyos_std::format!(
             "inode slot {} (domain {}): {} {} bytes",
-            self.slot, self.domain_id, self.kind, self.size_bytes
+            self.slot,
+            self.domain_id,
+            self.kind,
+            self.size_bytes
         )
     }
 
@@ -241,10 +259,7 @@ fn main() -> u32 {
                     return exit_code_for(&e).as_u32();
                 }
             };
-            let view = SuperblockView {
-                device_id,
-                info,
-            };
+            let view = SuperblockView { device_id, info };
             libcorefs_tools::report::print_report(&view, json);
             ExitCode::Success.as_u32()
         }

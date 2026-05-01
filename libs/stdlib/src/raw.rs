@@ -243,30 +243,30 @@ pub(crate) const SYS_FSYNC: u32 = 285;
 pub(crate) const SYS_SET_SERIAL_VERBOSE: u32 = 283;
 
 // Text-mode console I/O (nogui mode)
-pub(crate) const SYS_CON_WRITE: u32    = 290;
-pub(crate) const SYS_CON_READ: u32     = 291;
+pub(crate) const SYS_CON_WRITE: u32 = 290;
+pub(crate) const SYS_CON_READ: u32 = 291;
 pub(crate) const SYS_CON_POLL_KEY: u32 = 292;
 pub(crate) const SYS_CON_GET_SIZE: u32 = 293;
 /// Set console mode flags (bit 0 = hide cursor, bit 1 = disable auto-scroll).
 pub(crate) const SYS_CON_SET_MODE: u32 = 294;
 /// Resize console: arg = (cols<<16)|rows. Returns new packed size.
-pub(crate) const SYS_CON_RESIZE: u32   = 295;
+pub(crate) const SYS_CON_RESIZE: u32 = 295;
 
 // Debug / trace (anyTrace)
-pub(crate) const SYS_DEBUG_ATTACH: u32         = 300;
-pub(crate) const SYS_DEBUG_DETACH: u32         = 301;
-pub(crate) const SYS_DEBUG_SUSPEND: u32        = 302;
-pub(crate) const SYS_DEBUG_RESUME: u32         = 303;
-pub(crate) const SYS_DEBUG_GET_REGS: u32       = 304;
-pub(crate) const SYS_DEBUG_SET_REGS: u32       = 305;
-pub(crate) const SYS_DEBUG_READ_MEM: u32       = 306;
-pub(crate) const SYS_DEBUG_WRITE_MEM: u32      = 307;
+pub(crate) const SYS_DEBUG_ATTACH: u32 = 300;
+pub(crate) const SYS_DEBUG_DETACH: u32 = 301;
+pub(crate) const SYS_DEBUG_SUSPEND: u32 = 302;
+pub(crate) const SYS_DEBUG_RESUME: u32 = 303;
+pub(crate) const SYS_DEBUG_GET_REGS: u32 = 304;
+pub(crate) const SYS_DEBUG_SET_REGS: u32 = 305;
+pub(crate) const SYS_DEBUG_READ_MEM: u32 = 306;
+pub(crate) const SYS_DEBUG_WRITE_MEM: u32 = 307;
 pub(crate) const SYS_DEBUG_SET_BREAKPOINT: u32 = 308;
 pub(crate) const SYS_DEBUG_CLR_BREAKPOINT: u32 = 309;
-pub(crate) const SYS_DEBUG_SINGLE_STEP: u32    = 310;
-pub(crate) const SYS_DEBUG_GET_MEM_MAP: u32    = 311;
-pub(crate) const SYS_DEBUG_WAIT_EVENT: u32     = 312;
-pub(crate) const SYS_THREAD_INFO_EX: u32       = 313;
+pub(crate) const SYS_DEBUG_SINGLE_STEP: u32 = 310;
+pub(crate) const SYS_DEBUG_GET_MEM_MAP: u32 = 311;
+pub(crate) const SYS_DEBUG_WAIT_EVENT: u32 = 312;
+pub(crate) const SYS_THREAD_INFO_EX: u32 = 313;
 
 // Anonymous-pipe / fcntl
 pub(crate) const SYS_PIPE_BYTES_AVAILABLE: u32 = 157;
@@ -274,17 +274,17 @@ pub(crate) const SYS_FCNTL_SC: u32 = 243;
 
 // Platform / thermal / ACPI / I²C  (320–326)
 pub(crate) const SYS_THERMAL_READ: u32 = 320;
-pub(crate) const SYS_THERMAL_CPU:  u32 = 321;
-pub(crate) const SYS_ACPI_SLEEP:   u32 = 322;
-pub(crate) const SYS_ACPI_PERF:    u32 = 323;
-pub(crate) const SYS_I2C_READ:     u32 = 324;
-pub(crate) const SYS_I2C_WRITE:    u32 = 325;
-pub(crate) const SYS_I2C_DETECT:   u32 = 326;
+pub(crate) const SYS_THERMAL_CPU: u32 = 321;
+pub(crate) const SYS_ACPI_SLEEP: u32 = 322;
+pub(crate) const SYS_ACPI_PERF: u32 = 323;
+pub(crate) const SYS_I2C_READ: u32 = 324;
+pub(crate) const SYS_I2C_WRITE: u32 = 325;
+pub(crate) const SYS_I2C_DETECT: u32 = 326;
 
 // Monitor detection
 pub(crate) const SYS_MONITOR_COUNT: u32 = 327;
-pub(crate) const SYS_MONITOR_INFO:  u32 = 328;
-pub(crate) const SYS_MONITOR_EDID:  u32 = 329;
+pub(crate) const SYS_MONITOR_INFO: u32 = 328;
+pub(crate) const SYS_MONITOR_EDID: u32 = 329;
 pub(crate) const SYS_MONITOR_MODES: u32 = 330;
 
 // Event bus

@@ -1,17 +1,26 @@
+use crate::types::*;
 use alloc::vec::Vec;
 use anyos_std::sys;
-use crate::types::*;
 
-pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks, total_sched_ticks: u32, result: &mut Vec<TaskEntry>) {
+pub fn fetch_tasks(
+    buf: &mut [u8; THREAD_ENTRY_SIZE * 64],
+    prev: &mut PrevTicks,
+    total_sched_ticks: u32,
+    result: &mut Vec<TaskEntry>,
+) {
     result.clear();
     let count = sys::sysinfo(1, buf);
-    if count == u32::MAX { return; }
+    if count == u32::MAX {
+        return;
+    }
 
     let dt = total_sched_ticks.wrapping_sub(prev.prev_total);
 
     for i in 0..count as usize {
         let off = i * THREAD_ENTRY_SIZE;
-        if off + THREAD_ENTRY_SIZE > buf.len() { break; }
+        if off + THREAD_ENTRY_SIZE > buf.len() {
+            break;
+        }
         let tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         let prio = buf[off + 4];
         let state = buf[off + 5];
@@ -19,15 +28,29 @@ pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks,
         let mut name = [0u8; 24];
         name.copy_from_slice(&buf[off + 8..off + 32]);
         let name_len = name.iter().position(|&b| b == 0).unwrap_or(24);
-        let user_pages = u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
-        let cpu_ticks = u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
+        let user_pages =
+            u32::from_le_bytes([buf[off + 32], buf[off + 33], buf[off + 34], buf[off + 35]]);
+        let cpu_ticks =
+            u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
         let io_read_bytes = u64::from_le_bytes([
-            buf[off + 40], buf[off + 41], buf[off + 42], buf[off + 43],
-            buf[off + 44], buf[off + 45], buf[off + 46], buf[off + 47],
+            buf[off + 40],
+            buf[off + 41],
+            buf[off + 42],
+            buf[off + 43],
+            buf[off + 44],
+            buf[off + 45],
+            buf[off + 46],
+            buf[off + 47],
         ]);
         let io_write_bytes = u64::from_le_bytes([
-            buf[off + 48], buf[off + 49], buf[off + 50], buf[off + 51],
-            buf[off + 52], buf[off + 53], buf[off + 54], buf[off + 55],
+            buf[off + 48],
+            buf[off + 49],
+            buf[off + 50],
+            buf[off + 51],
+            buf[off + 52],
+            buf[off + 53],
+            buf[off + 54],
+            buf[off + 55],
         ]);
 
         let prev_ticks = prev.entries[..prev.count]
@@ -44,45 +67,95 @@ pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks,
         };
 
         let uid = u16::from_le_bytes([buf[off + 56], buf[off + 57]]);
-        let parent_tid = u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
+        let parent_tid =
+            u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
         let is_child_thread = buf[off + 7] != 0; // pd_shared flag from kernel
 
         // Network bytes (tx at offset 64, rx at offset 72)
         let net_tx = u64::from_le_bytes([
-            buf[off+64], buf[off+65], buf[off+66], buf[off+67],
-            buf[off+68], buf[off+69], buf[off+70], buf[off+71],
+            buf[off + 64],
+            buf[off + 65],
+            buf[off + 66],
+            buf[off + 67],
+            buf[off + 68],
+            buf[off + 69],
+            buf[off + 70],
+            buf[off + 71],
         ]);
         let net_rx = u64::from_le_bytes([
-            buf[off+72], buf[off+73], buf[off+74], buf[off+75],
-            buf[off+76], buf[off+77], buf[off+78], buf[off+79],
+            buf[off + 72],
+            buf[off + 73],
+            buf[off + 74],
+            buf[off + 75],
+            buf[off + 76],
+            buf[off + 77],
+            buf[off + 78],
+            buf[off + 79],
         ]);
         let net_total = net_tx.wrapping_add(net_rx);
 
         // Network rate: delta bytes over 1000ms → kbit/s
         let prev_net = prev.net_entries[..prev.count]
-            .iter().find(|e| e.0 == tid).map(|e| e.1).unwrap_or(net_total);
+            .iter()
+            .find(|e| e.0 == tid)
+            .map(|e| e.1)
+            .unwrap_or(net_total);
         let d_net = net_total.wrapping_sub(prev_net);
         let net_kbit = if d_net > 0 {
             (d_net * 8 / 1000).min(u32::MAX as u64) as u32 // 1000ms refresh
-        } else { 0 };
+        } else {
+            0
+        };
 
-        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, uid, user_pages, cpu_pct_x10, io_read_bytes, io_write_bytes, parent_tid, is_child_thread, net_kbit });
+        result.push(TaskEntry {
+            tid,
+            name,
+            name_len,
+            state,
+            priority: prio,
+            arch,
+            uid,
+            user_pages,
+            cpu_pct_x10,
+            io_read_bytes,
+            io_write_bytes,
+            parent_tid,
+            is_child_thread,
+            net_kbit,
+        });
     }
 
     prev.count = 0;
     for i in 0..count as usize {
-        if prev.count >= MAX_TASKS { break; }
+        if prev.count >= MAX_TASKS {
+            break;
+        }
         let off = i * THREAD_ENTRY_SIZE;
-        if off + THREAD_ENTRY_SIZE > buf.len() { break; }
+        if off + THREAD_ENTRY_SIZE > buf.len() {
+            break;
+        }
         let tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
-        let cpu_ticks = u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
+        let cpu_ticks =
+            u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
         let net_tx = u64::from_le_bytes([
-            buf[off+64], buf[off+65], buf[off+66], buf[off+67],
-            buf[off+68], buf[off+69], buf[off+70], buf[off+71],
+            buf[off + 64],
+            buf[off + 65],
+            buf[off + 66],
+            buf[off + 67],
+            buf[off + 68],
+            buf[off + 69],
+            buf[off + 70],
+            buf[off + 71],
         ]);
         let net_rx = u64::from_le_bytes([
-            buf[off+72], buf[off+73], buf[off+74], buf[off+75],
-            buf[off+76], buf[off+77], buf[off+78], buf[off+79],
+            buf[off + 72],
+            buf[off + 73],
+            buf[off + 74],
+            buf[off + 75],
+            buf[off + 76],
+            buf[off + 77],
+            buf[off + 78],
+            buf[off + 79],
         ]);
         prev.entries[prev.count] = (tid, cpu_ticks);
         prev.net_entries[prev.count] = (tid, net_tx.wrapping_add(net_rx));
@@ -96,18 +169,18 @@ pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks,
 /// Groups child threads (pd_shared) under their leader process.
 /// Single-thread processes appear as standalone rows.
 /// Multi-thread processes appear as collapsible group headers.
-pub fn build_display_list(
-    tasks: &[TaskEntry],
-    expanded: &[u32],
-    display: &mut Vec<DisplayRow>,
-) {
+pub fn build_display_list(tasks: &[TaskEntry], expanded: &[u32], display: &mut Vec<DisplayRow>) {
     display.clear();
     let n = tasks.len().min(MAX_TASKS);
-    if n == 0 { return; }
+    if n == 0 {
+        return;
+    }
 
     // Step 1: Find the ultimate leader for each task.
     let mut leader = [0u16; MAX_TASKS];
-    for i in 0..n { leader[i] = i as u16; }
+    for i in 0..n {
+        leader[i] = i as u16;
+    }
 
     // Direct parent resolution
     for i in 0..n {
@@ -131,7 +204,9 @@ pub fn build_display_list(
                 changed = true;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     // Step 2: Count members per leader
@@ -144,13 +219,22 @@ pub fn build_display_list(
     let mut processed = [false; MAX_TASKS];
     for i in 0..n {
         let l = leader[i] as usize;
-        if processed[l] { continue; }
+        if processed[l] {
+            continue;
+        }
         processed[l] = true;
 
         let count = member_count[l];
         if count <= 1 {
             // Standalone process (single thread)
-            display.push(DisplayRow { kind: 0, task_idx: l as u16, thread_count: 0, agg_cpu: tasks[l].cpu_pct_x10, agg_net: tasks[l].net_kbit, agg_state: tasks[l].state });
+            display.push(DisplayRow {
+                kind: 0,
+                task_idx: l as u16,
+                thread_count: 0,
+                agg_cpu: tasks[l].cpu_pct_x10,
+                agg_net: tasks[l].net_kbit,
+                agg_state: tasks[l].state,
+            });
         } else {
             // Multi-thread process: compute aggregates
             let mut agg_cpu = 0u32;
@@ -161,21 +245,35 @@ pub fn build_display_list(
                     agg_cpu += tasks[j].cpu_pct_x10;
                     agg_net += tasks[j].net_kbit;
                     match tasks[j].state {
-                        1 => best_state = 1, // Running
+                        1 => best_state = 1,                    // Running
                         0 if best_state != 1 => best_state = 0, // Ready
                         _ => {}
                     }
                 }
             }
 
-            display.push(DisplayRow { kind: 1, task_idx: l as u16, thread_count: count, agg_cpu, agg_net, agg_state: best_state });
+            display.push(DisplayRow {
+                kind: 1,
+                task_idx: l as u16,
+                thread_count: count,
+                agg_cpu,
+                agg_net,
+                agg_state: best_state,
+            });
 
             // If expanded, add individual thread rows
             let is_expanded = expanded.iter().any(|&tid| tid == tasks[l].tid);
             if is_expanded {
                 for j in 0..n {
                     if leader[j] as usize == l {
-                        display.push(DisplayRow { kind: 2, task_idx: j as u16, thread_count: 0, agg_cpu: 0, agg_net: 0, agg_state: 0 });
+                        display.push(DisplayRow {
+                            kind: 2,
+                            task_idx: j as u16,
+                            thread_count: 0,
+                            agg_cpu: 0,
+                            agg_net: 0,
+                            agg_state: 0,
+                        });
                     }
                 }
             }
@@ -185,7 +283,9 @@ pub fn build_display_list(
 
 pub fn fetch_memory() -> Option<MemInfo> {
     let mut buf = [0u8; 16];
-    if sys::sysinfo(0, &mut buf) != 0 { return None; }
+    if sys::sysinfo(0, &mut buf) != 0 {
+        return None;
+    }
     Some(MemInfo {
         total_frames: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
         free_frames: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
@@ -216,7 +316,9 @@ pub fn fetch_cpu(state: &mut CpuState) {
 
     for i in 0..(state.num_cpus as usize).min(MAX_CPUS) {
         let off = 16 + i * 8;
-        if off + 8 > buf.len() { break; }
+        if off + 8 > buf.len() {
+            break;
+        }
         let ct = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         let ci = u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
         let dct = ct.wrapping_sub(state.prev_core_total[i]);
@@ -239,7 +341,8 @@ pub fn fetch_hwinfo() -> HwInfo {
     brand.copy_from_slice(&buf[0..48]);
     vendor.copy_from_slice(&buf[48..64]);
     HwInfo {
-        brand, vendor,
+        brand,
+        vendor,
         tsc_mhz: u32::from_le_bytes([buf[64], buf[65], buf[66], buf[67]]),
         cpu_count: u32::from_le_bytes([buf[68], buf[69], buf[70], buf[71]]),
         boot_mode: u32::from_le_bytes([buf[72], buf[73], buf[74], buf[75]]),

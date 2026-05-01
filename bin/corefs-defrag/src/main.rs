@@ -65,10 +65,7 @@ impl Report for DefragReport {
         } else {
             format!(
                 "defrag ok (device {}, {} entries moved, {} gaps reclaimed, {} blocks in use)",
-                self.device_id,
-                self.moved_entries,
-                self.reclaimed_gaps,
-                self.final_device_blocks
+                self.device_id, self.moved_entries, self.reclaimed_gaps, self.final_device_blocks
             )
         }
     }

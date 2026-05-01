@@ -3,7 +3,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{net, sys, process, println};
+use anyos_std::{net, println, process, sys};
 
 // ── TCP state names ─────────────────────────────────────────────────
 
@@ -36,17 +36,26 @@ struct Flags {
     route: bool,      // -r
     iface: bool,      // -i
     stats: bool,      // -s
-    continuous: bool,  // -c
+    continuous: bool, // -c
     wide: bool,       // -W
     help: bool,
 }
 
 fn parse_flags(raw: &str) -> Flags {
     let mut f = Flags {
-        tcp: false, udp: false, listen: false,
-        progs: false, extend: false, numeric: false, all: false,
-        route: false, iface: false, stats: false, continuous: false,
-        wide: false, help: false,
+        tcp: false,
+        udp: false,
+        listen: false,
+        progs: false,
+        extend: false,
+        numeric: false,
+        all: false,
+        route: false,
+        iface: false,
+        stats: false,
+        continuous: false,
+        wide: false,
+        help: false,
     };
 
     for arg in raw.split_ascii_whitespace() {
@@ -144,7 +153,10 @@ impl ThreadCache {
     fn new() -> Self {
         ThreadCache {
             entries: core::array::from_fn(|_| ThreadInfo {
-                tid: 0, name: [0; 24], name_len: 0, uid: 0,
+                tid: 0,
+                name: [0; 24],
+                name_len: 0,
+                uid: 0,
             }),
             count: 0,
         }
@@ -153,19 +165,25 @@ impl ThreadCache {
     fn load(&mut self) {
         let mut buf = [0u8; 80 * 64];
         let count = sys::sysinfo(1, &mut buf);
-        if count == u32::MAX { return; }
+        if count == u32::MAX {
+            return;
+        }
         self.count = (count as usize).min(64);
         for i in 0..self.count {
             let off = i * 80;
-            if off + 80 > buf.len() { break; }
-            self.entries[i].tid = u32::from_le_bytes([
-                buf[off], buf[off+1], buf[off+2], buf[off+3]
-            ]);
-            self.entries[i].name[..24].copy_from_slice(&buf[off+8..off+32]);
-            let nlen = self.entries[i].name.iter()
-                .position(|&b| b == 0).unwrap_or(24);
+            if off + 80 > buf.len() {
+                break;
+            }
+            self.entries[i].tid =
+                u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+            self.entries[i].name[..24].copy_from_slice(&buf[off + 8..off + 32]);
+            let nlen = self.entries[i]
+                .name
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(24);
             self.entries[i].name_len = nlen as u8;
-            self.entries[i].uid = u16::from_le_bytes([buf[off+56], buf[off+57]]);
+            self.entries[i].uid = u16::from_le_bytes([buf[off + 56], buf[off + 57]]);
         }
     }
 
@@ -175,10 +193,7 @@ impl ThreadCache {
 
     fn name_of(&self, tid: u32) -> &str {
         match self.find(tid) {
-            Some(info) => {
-                core::str::from_utf8(&info.name[..info.name_len as usize])
-                    .unwrap_or("-")
-            }
+            Some(info) => core::str::from_utf8(&info.name[..info.name_len as usize]).unwrap_or("-"),
             None => "-",
         }
     }
@@ -216,7 +231,11 @@ impl UserCache {
         if self.count < 16 {
             let mut name_buf = [0u8; 16];
             let nlen = process::getusername(uid, &mut name_buf);
-            let len = if nlen != u32::MAX && nlen > 0 { (nlen as u8).min(15) } else { 0 };
+            let len = if nlen != u32::MAX && nlen > 0 {
+                (nlen as u8).min(15)
+            } else {
+                0
+            };
             self.entries[self.count] = (uid, name_buf, len);
             self.count += 1;
             let len = len as usize;
@@ -237,8 +256,15 @@ fn fmt_ip_port(ip: &[u8; 4], port: u16) -> alloc::string::String {
 }
 
 fn fmt_mac(mac: &[u8]) -> alloc::string::String {
-    alloc::format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
+    alloc::format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5]
+    )
 }
 
 fn fmt_bytes(bytes: u64) -> alloc::string::String {
@@ -279,21 +305,39 @@ fn show_routing() {
     }
 
     println!("Kernel IP routing table");
-    println!("{:<16} {:<16} {:<16} {:<6} {:<6} {}",
-        "Destination", "Gateway", "Genmask", "Flags", "Metric", "Iface");
+    println!(
+        "{:<16} {:<16} {:<16} {:<6} {:<6} {}",
+        "Destination", "Gateway", "Genmask", "Flags", "Metric", "Iface"
+    );
 
     // Local subnet route
     let net_ip: [u8; 4] = [
-        ip[0] & mask[0], ip[1] & mask[1],
-        ip[2] & mask[2], ip[3] & mask[3],
+        ip[0] & mask[0],
+        ip[1] & mask[1],
+        ip[2] & mask[2],
+        ip[3] & mask[3],
     ];
-    println!("{:<16} {:<16} {:<16} {:<6} {:<6} {}",
-        fmt_ip(&net_ip), "0.0.0.0", fmt_ip(mask), "U", "0", "eth0");
+    println!(
+        "{:<16} {:<16} {:<16} {:<6} {:<6} {}",
+        fmt_ip(&net_ip),
+        "0.0.0.0",
+        fmt_ip(mask),
+        "U",
+        "0",
+        "eth0"
+    );
 
     // Default gateway
     if gw[0] != 0 || gw[1] != 0 || gw[2] != 0 || gw[3] != 0 {
-        println!("{:<16} {:<16} {:<16} {:<6} {:<6} {}",
-            "0.0.0.0", fmt_ip(gw), "0.0.0.0", "UG", "100", "eth0");
+        println!(
+            "{:<16} {:<16} {:<16} {:<6} {:<6} {}",
+            "0.0.0.0",
+            fmt_ip(gw),
+            "0.0.0.0",
+            "UG",
+            "100",
+            "eth0"
+        );
     }
 
     // ARP neighbors
@@ -305,10 +349,9 @@ fn show_routing() {
         println!("{:<16} {:<20} {}", "Address", "HWaddress", "Iface");
         for i in 0..arp_count as usize {
             let off = i * 12;
-            let aip = &arp_buf[off..off+4];
-            let amac = &arp_buf[off+4..off+10];
-            println!("{:<16} {:<20} {}",
-                fmt_ip(aip), fmt_mac(amac), "eth0");
+            let aip = &arp_buf[off..off + 4];
+            let amac = &arp_buf[off + 4..off + 10];
+            println!("{:<16} {:<20} {}", fmt_ip(aip), fmt_mac(amac), "eth0");
         }
     }
 }
@@ -330,24 +373,37 @@ fn show_interfaces() {
     let link = cfg[22];
 
     println!("Kernel Interface table");
-    println!("{:<8} {:<6} {:<16} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}",
-        "Iface", "MTU", "RX-OK", "RX-ERR", "RX-OVR", "TX-OK", "TX-ERR", "TX-OVR", "Flg");
+    println!(
+        "{:<8} {:<6} {:<16} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}",
+        "Iface", "MTU", "RX-OK", "RX-ERR", "RX-OVR", "TX-OK", "TX-ERR", "TX-OVR", "Flg"
+    );
 
     let flags = if link != 0 { "BMRU" } else { "BMR" };
 
     // Get NIC stats
     let (rx_ok, tx_ok, _rxb, _txb, rx_err, tx_err) = if let Some(s) = net::net_stats() {
-        (s.rx_packets, s.tx_packets, s.rx_bytes, s.tx_bytes, s.rx_errors, s.tx_errors)
+        (
+            s.rx_packets,
+            s.tx_packets,
+            s.rx_bytes,
+            s.tx_bytes,
+            s.rx_errors,
+            s.tx_errors,
+        )
     } else {
         (0, 0, 0, 0, 0, 0)
     };
 
-    println!("{:<8} {:<6} {:<16} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}",
-        "eth0", "1500", rx_ok, rx_err, "0", tx_ok, tx_err, "0", flags);
+    println!(
+        "{:<8} {:<6} {:<16} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}",
+        "eth0", "1500", rx_ok, rx_err, "0", tx_ok, tx_err, "0", flags
+    );
 
     // Loopback
-    println!("{:<8} {:<6} {:<16} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}",
-        "lo", "65536", "0", "0", "0", "0", "0", "0", "LRU");
+    println!(
+        "{:<8} {:<6} {:<16} {:<10} {:<10} {:<10} {:<10} {:<10} {:<10}",
+        "lo", "65536", "0", "0", "0", "0", "0", "0", "LRU"
+    );
 
     println!("");
     println!("eth0:");
@@ -358,10 +414,23 @@ fn show_interfaces() {
     println!("  DNS      : {}", fmt_ip(dns));
 
     if let Some(s) = net::net_stats() {
-        println!("  RX packets : {}  bytes : {} ({})", s.rx_packets, s.rx_bytes, fmt_bytes(s.rx_bytes));
-        println!("  TX packets : {}  bytes : {} ({})", s.tx_packets, s.tx_bytes, fmt_bytes(s.tx_bytes));
+        println!(
+            "  RX packets : {}  bytes : {} ({})",
+            s.rx_packets,
+            s.rx_bytes,
+            fmt_bytes(s.rx_bytes)
+        );
+        println!(
+            "  TX packets : {}  bytes : {} ({})",
+            s.tx_packets,
+            s.tx_bytes,
+            fmt_bytes(s.tx_bytes)
+        );
         if s.rx_errors > 0 || s.tx_errors > 0 {
-            println!("  RX errors  : {}  TX errors : {}", s.rx_errors, s.tx_errors);
+            println!(
+                "  RX errors  : {}  TX errors : {}",
+                s.rx_errors, s.tx_errors
+            );
         }
     }
 }
@@ -381,8 +450,16 @@ fn show_statistics(show_tcp: bool, show_udp: bool) {
     println!("Ip:");
     println!("    {} total packets received", stats.rx_packets);
     println!("    {} packets sent", stats.tx_packets);
-    println!("    {} incoming bytes ({})", stats.rx_bytes, fmt_bytes(stats.rx_bytes));
-    println!("    {} outgoing bytes ({})", stats.tx_bytes, fmt_bytes(stats.tx_bytes));
+    println!(
+        "    {} incoming bytes ({})",
+        stats.rx_bytes,
+        fmt_bytes(stats.rx_bytes)
+    );
+    println!(
+        "    {} outgoing bytes ({})",
+        stats.tx_bytes,
+        fmt_bytes(stats.tx_bytes)
+    );
     if stats.rx_errors > 0 {
         println!("    {} incoming errors", stats.rx_errors);
     }
@@ -393,8 +470,14 @@ fn show_statistics(show_tcp: bool, show_udp: bool) {
     if show_tcp {
         println!("Tcp:");
         println!("    {} active connection openings", stats.tcp_active_opens);
-        println!("    {} passive connection openings", stats.tcp_passive_opens);
-        println!("    {} current established connections", stats.tcp_curr_established);
+        println!(
+            "    {} passive connection openings",
+            stats.tcp_passive_opens
+        );
+        println!(
+            "    {} current established connections",
+            stats.tcp_curr_established
+        );
         println!("    {} segments sent", stats.tcp_segments_sent);
         println!("    {} segments received", stats.tcp_segments_recv);
         println!("    {} segments retransmitted", stats.tcp_retransmits);
@@ -431,7 +514,9 @@ fn show_sockets(flags: &Flags) {
     // Build header
     let mut header = alloc::format!(
         "Proto  {:<aw$} {:<aw$} {:<11}",
-        "Local Address", "Foreign Address", "State",
+        "Local Address",
+        "Foreign Address",
+        "State",
         aw = addr_w
     );
     if flags.progs {
@@ -453,8 +538,12 @@ fn show_sockets(flags: &Flags) {
         let conns = net::tcp_list();
         for c in &conns {
             let is_listen = c.state == 8;
-            if flags.listen && !is_listen { continue; }
-            if !flags.listen && !flags.all && is_listen { continue; }
+            if flags.listen && !is_listen {
+                continue;
+            }
+            if !flags.listen && !flags.all && is_listen {
+                continue;
+            }
 
             if !printed_header {
                 println!("{}", header);
@@ -471,7 +560,9 @@ fn show_sockets(flags: &Flags) {
 
             let mut line = alloc::format!(
                 "tcp    {:<aw$} {:<aw$} {:<11}",
-                local, remote, state_name(c.state),
+                local,
+                remote,
+                state_name(c.state),
                 aw = addr_w
             );
 
@@ -498,7 +589,9 @@ fn show_sockets(flags: &Flags) {
     if flags.udp {
         let bindings = net::udp_list();
         for b in &bindings {
-            if !flags.listen && !flags.all { continue; }
+            if !flags.listen && !flags.all {
+                continue;
+            }
 
             if !printed_header {
                 println!("{}", header);
@@ -511,7 +604,9 @@ fn show_sockets(flags: &Flags) {
 
             let mut line = alloc::format!(
                 "udp    {:<aw$} {:<aw$} {:<11}",
-                local, remote, "",
+                local,
+                remote,
+                "",
                 aw = addr_w
             );
 
@@ -567,7 +662,9 @@ fn main() {
             show_sockets(&flags);
         }
 
-        if !flags.continuous { break; }
+        if !flags.continuous {
+            break;
+        }
 
         println!("");
         // Sleep ~2 seconds

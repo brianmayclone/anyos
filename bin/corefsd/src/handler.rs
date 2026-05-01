@@ -21,7 +21,7 @@ use corefs_core::storage::block_store::BlockStore;
 use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
 use corefs_core::storage::ondisk::session::OdfDeviceSession;
 use corefs_fuse_adapter::{FuseHandler, HandlerResult};
-use corefs_fuse_proto::{Attr, DirEntry, PROTOCOL_VERSION, PartialAttr, Reply, Request, StatFs};
+use corefs_fuse_proto::{Attr, DirEntry, PartialAttr, Reply, Request, StatFs, PROTOCOL_VERSION};
 
 const ENOENT: i32 = 2;
 const EIO: i32 = 5;
@@ -464,13 +464,7 @@ impl CoreFsHandler {
                 InodeKind::File => 0o644,
                 InodeKind::Symlink => 0o777,
             };
-            let inode = Inode::new_at(
-                InodeId(next_id),
-                kind,
-                child_path.clone(),
-                metadata,
-                now,
-            );
+            let inode = Inode::new_at(InodeId(next_id), kind, child_path.clone(), metadata, now);
             state.active_inodes.push(inode);
             Ok(InodeId(next_id))
         });
@@ -479,11 +473,7 @@ impl CoreFsHandler {
                 // Look up the freshly-created inode so we can build Attr.
                 let inode_clone = {
                     let state = self.session.state();
-                    state
-                        .active_inodes
-                        .iter()
-                        .find(|i| i.id == id)
-                        .cloned()
+                    state.active_inodes.iter().find(|i| i.id == id).cloned()
                 };
                 let Some(inode) = inode_clone else {
                     return HandlerResult::Err {
@@ -557,9 +547,8 @@ impl CoreFsHandler {
                 for n in stale {
                     self.inode_by_no.remove(&n);
                 }
-                self.no_by_inode_id.retain(|_, v| {
-                    self.inode_by_no.contains_key(v)
-                });
+                self.no_by_inode_id
+                    .retain(|_, v| self.inode_by_no.contains_key(v));
                 HandlerResult::Ok(Reply::Unlink)
             }
             Err(e) => HandlerResult::Err {
@@ -603,9 +592,7 @@ impl CoreFsHandler {
                 .iter()
                 .any(|i| i.path.starts_with(child_prefix.as_str()))
             {
-                return Err(CoreFsError::InvalidCommand(
-                    "directory not empty".into(),
-                ));
+                return Err(CoreFsError::InvalidCommand("directory not empty".into()));
             }
             let removed = state.active_inodes.remove(idx);
             state.block_records.retain(|r| r.inode != removed.id);
@@ -773,11 +760,7 @@ impl CoreFsHandler {
             }
             // Drop overwrite target (if any) from active_inodes.
             if let Some(target_id) = target_remove_id {
-                if let Some(idx) = state
-                    .active_inodes
-                    .iter()
-                    .position(|i| i.id == target_id)
-                {
+                if let Some(idx) = state.active_inodes.iter().position(|i| i.id == target_id) {
                     let removed = state.active_inodes.remove(idx);
                     state.block_records.retain(|r| r.inode != removed.id);
                     state.deleted_inodes.push(removed);
@@ -845,8 +828,7 @@ impl CoreFsHandler {
                 for n in stale_nos {
                     self.inode_by_no.remove(&n);
                 }
-                self.no_by_inode_id
-                    .retain(|id, _| active_ids.contains(id));
+                self.no_by_inode_id.retain(|id, _| active_ids.contains(id));
                 HandlerResult::Ok(Reply::Rename)
             }
             Err(e) => HandlerResult::Err {
@@ -963,11 +945,7 @@ impl CoreFsHandler {
             Ok(_) => {
                 let inode_clone = {
                     let state = self.session.state();
-                    state
-                        .active_inodes
-                        .iter()
-                        .find(|i| i.path == path)
-                        .cloned()
+                    state.active_inodes.iter().find(|i| i.path == path).cloned()
                 };
                 let Some(inode) = inode_clone else {
                     return HandlerResult::Err {
@@ -985,12 +963,7 @@ impl CoreFsHandler {
         }
     }
 
-    fn op_symlink(
-        &mut self,
-        parent: FuseInodeNo,
-        name: String,
-        target: String,
-    ) -> HandlerResult {
+    fn op_symlink(&mut self, parent: FuseInodeNo, name: String, target: String) -> HandlerResult {
         let parent_path = match self.path_of(parent) {
             Some(p) => p.clone(),
             None => {
@@ -1049,11 +1022,7 @@ impl CoreFsHandler {
             Ok((id, _)) => {
                 let inode_clone = {
                     let state = self.session.state();
-                    state
-                        .active_inodes
-                        .iter()
-                        .find(|i| i.id == id)
-                        .cloned()
+                    state.active_inodes.iter().find(|i| i.id == id).cloned()
                 };
                 let Some(inode) = inode_clone else {
                     return HandlerResult::Err {
@@ -1115,15 +1084,13 @@ impl CoreFsHandler {
     fn op_statfs(&self) -> HandlerResult {
         let state = self.session.state();
         let block_size = state.volume.block_size as u32;
-        let used_blocks: u64 = state
-            .block_records
-            .iter()
-            .map(|r| r.total_blocks())
-            .sum();
+        let used_blocks: u64 = state.block_records.iter().map(|r| r.total_blocks()).sum();
         // VolumeDescriptor does not track total_blocks directly in this
         // snapshot — fake it with a generous constant derived from the
         // inode count so statfs doesn't report zero free blocks.
-        let total_blocks = used_blocks.saturating_add(state.active_inodes.len() as u64 * 16).max(1024);
+        let total_blocks = used_blocks
+            .saturating_add(state.active_inodes.len() as u64 * 16)
+            .max(1024);
         let free = total_blocks.saturating_sub(used_blocks);
         HandlerResult::Ok(Reply::Statfs(StatFs {
             bsize: block_size.max(512),
@@ -1149,8 +1116,12 @@ impl FuseHandler for CoreFsHandler {
             Request::Readdir { ino, .. } => self.op_readdir(ino),
             Request::Open { ino, .. } => self.op_open(ino),
             Request::Release { ino, fh } => self.op_release(ino, fh),
-            Request::Read { ino, offset, size, .. } => self.op_read(ino, offset, size),
-            Request::Write { ino, offset, data, .. } => self.op_write(ino, offset, data),
+            Request::Read {
+                ino, offset, size, ..
+            } => self.op_read(ino, offset, size),
+            Request::Write {
+                ino, offset, data, ..
+            } => self.op_write(ino, offset, data),
             Request::Create { parent, name, .. } => self.op_create(parent, name),
             Request::Mkdir { parent, name, .. } => self.op_mkdir(parent, name),
             Request::Unlink { parent, name } => self.op_unlink(parent, name),
@@ -1209,8 +1180,7 @@ mod tests {
             capacity_bytes: 4 * 1024 * 1024,
             ..OdfSessionOptions::with_defaults()
         };
-        let dev: Box<dyn BlockDevice> =
-            Box::new(MemoryDevice::new(4 * 1024 * 1024, 4096).unwrap());
+        let dev: Box<dyn BlockDevice> = Box::new(MemoryDevice::new(4 * 1024 * 1024, 4096).unwrap());
         OdfDeviceSession::format_new_at(dev, &opts, Timestamp::EPOCH).unwrap()
     }
 
@@ -1385,7 +1355,10 @@ mod tests {
             HandlerResult::Ok(Reply::Lookup(a)) => a,
             other => panic!("unexpected {:?}", other),
         };
-        let fh = match h.handle(Request::Open { ino: attr.ino, flags: 0 }) {
+        let fh = match h.handle(Request::Open {
+            ino: attr.ino,
+            flags: 0,
+        }) {
             HandlerResult::Ok(Reply::Open { fh, .. }) => fh,
             other => panic!("unexpected {:?}", other),
         };

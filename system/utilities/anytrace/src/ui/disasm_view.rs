@@ -3,11 +3,11 @@
 //! Highlights the current RIP line with a yellow background so the user
 //! always sees which instruction will execute next.
 
-use libanyui_client as ui;
-use ui::Widget;
-use alloc::string::String;
 use crate::logic::disasm;
 use crate::util::format::{hex64, hex_bytes};
+use alloc::string::String;
+use libanyui_client as ui;
+use ui::Widget;
 
 /// Current-RIP highlight color: dark yellow/amber background.
 const RIP_HIGHLIGHT: u32 = 0xFF3A3A00;
@@ -40,12 +40,20 @@ impl DisasmView {
             if *addr == current_rip {
                 rip_line = Some(i as u32);
             }
-            let prefix = if *addr == current_rip { "\u{25B6} " } else { "  " };
+            let prefix = if *addr == current_rip {
+                "\u{25B6} "
+            } else {
+                "  "
+            };
             let addr_str = hex64(*addr);
             let bytes_str = hex_bytes(&instr.bytes[..instr.len as usize]);
 
             // Pad bytes to 24 chars for alignment
-            let pad_len = if bytes_str.len() < 24 { 24 - bytes_str.len() } else { 0 };
+            let pad_len = if bytes_str.len() < 24 {
+                24 - bytes_str.len()
+            } else {
+                0
+            };
             let padding: String = core::iter::repeat(' ').take(pad_len).collect();
 
             text.push_str(prefix);
@@ -58,7 +66,11 @@ impl DisasmView {
 
             let operands = instr.operands_str();
             if !operands.is_empty() {
-                let mnem_pad = if instr.mnemonic_len < 8 { 8 - instr.mnemonic_len as usize } else { 1 };
+                let mnem_pad = if instr.mnemonic_len < 8 {
+                    8 - instr.mnemonic_len as usize
+                } else {
+                    1
+                };
                 let mp: String = core::iter::repeat(' ').take(mnem_pad).collect();
                 text.push_str(&mp);
                 text.push_str(operands);

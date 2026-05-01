@@ -108,25 +108,43 @@ fn set_partition_type_corefs(device_id: u32) {
     }
     for i in 0..count as usize {
         let base = i * ENTRY;
-        if base + ENTRY > buf.len() { break; }
+        if base + ENTRY > buf.len() {
+            break;
+        }
         let id = buf[base];
-        if id as u32 != device_id { continue; }
+        if id as u32 != device_id {
+            continue;
+        }
         let disk_id = buf[base + 1];
         let part = buf[base + 2];
-        if part == 0xFF { return; } // whole disk, nothing to set
+        if part == 0xFF {
+            return;
+        } // whole disk, nothing to set
         let start_lba = u64::from_le_bytes([
-            buf[base + 8], buf[base + 9], buf[base + 10], buf[base + 11],
-            buf[base + 12], buf[base + 13], buf[base + 14], buf[base + 15],
+            buf[base + 8],
+            buf[base + 9],
+            buf[base + 10],
+            buf[base + 11],
+            buf[base + 12],
+            buf[base + 13],
+            buf[base + 14],
+            buf[base + 15],
         ]);
         let size_sectors = u64::from_le_bytes([
-            buf[base + 16], buf[base + 17], buf[base + 18], buf[base + 19],
-            buf[base + 20], buf[base + 21], buf[base + 22], buf[base + 23],
+            buf[base + 16],
+            buf[base + 17],
+            buf[base + 18],
+            buf[base + 19],
+            buf[base + 20],
+            buf[base + 21],
+            buf[base + 22],
+            buf[base + 23],
         ]);
         // Build the 16-byte MBR entry expected by partition_create.
         let mut entry = [0u8; 16];
-        entry[0] = part;               // partition index (0-based)
-        entry[1] = COREFS_MBR_TYPE;    // type byte
-        entry[2] = 0;                  // not bootable
+        entry[0] = part; // partition index (0-based)
+        entry[1] = COREFS_MBR_TYPE; // type byte
+        entry[2] = 0; // not bootable
         entry[4..8].copy_from_slice(&(start_lba as u32).to_le_bytes());
         entry[8..12].copy_from_slice(&(size_sectors as u32).to_le_bytes());
         anyos_std::sys::partition_create(disk_id as u32, &entry);
@@ -169,7 +187,8 @@ fn main() -> u32 {
             Err(e) => {
                 anyos_std::println!(
                     "mkfs.corefs: cannot determine size of device {}: {}",
-                    device_id, e
+                    device_id,
+                    e
                 );
                 return exit_code_for(&e).as_u32();
             }
@@ -196,17 +215,14 @@ fn main() -> u32 {
     // Frische Session — formatiert + persistiert PersistedState::empty_at(...)
     // im NATIVE-Layout. Damit ist das Volume direkt von OdfReader/fsck/scrub
     // konsumierbar (ohne den vorherigen Blob→Native-Migrationsschritt).
-    let session = match OdfDeviceSession::format_new_at(
-        Box::new(device),
-        &session_opts,
-        Timestamp::EPOCH,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            anyos_std::println!("mkfs.corefs: format failed: {}", e);
-            return exit_code_for(&e).as_u32();
-        }
-    };
+    let session =
+        match OdfDeviceSession::format_new_at(Box::new(device), &session_opts, Timestamp::EPOCH) {
+            Ok(s) => s,
+            Err(e) => {
+                anyos_std::println!("mkfs.corefs: format failed: {}", e);
+                return exit_code_for(&e).as_u32();
+            }
+        };
 
     // If the device is a partition, set its MBR type to 0xCF (CoreFS).
     set_partition_type_corefs(device_id);

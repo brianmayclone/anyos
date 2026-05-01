@@ -43,16 +43,18 @@ fn main() {
     let mut store = [0u8; MAX_STORE];
     let n = anyos_std::fs::read(fd, &mut store);
     anyos_std::fs::close(fd);
-    let n = if n == u32::MAX { return; } else { n as usize };
+    let n = if n == u32::MAX {
+        return;
+    } else {
+        n as usize
+    };
 
     let text = core::str::from_utf8(&store[..n]).unwrap_or("");
     for line in text.split('\n') {
         if line.is_empty() {
             continue;
         }
-        if line.len() > key.len()
-            && &line[..key.len()] == key
-            && line.as_bytes()[key.len()] == b'='
+        if line.len() > key.len() && &line[..key.len()] == key && line.as_bytes()[key.len()] == b'='
         {
             let value = &line[key.len() + 1..];
             anyos_std::println!("{}", value);

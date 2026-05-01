@@ -405,8 +405,7 @@ impl Desktop {
             &HW_ARROW,
         );
         self.compositor.enable_hw_cursor();
-        self.compositor
-            .move_hw_cursor(self.mouse_x, self.mouse_y);
+        self.compositor.move_hw_cursor(self.mouse_x, self.mouse_y);
         self.compositor.flush_gpu();
         self.current_cursor = CursorShape::Arrow;
     }
@@ -511,7 +510,17 @@ impl Desktop {
                 // raw pointer that is read later when gpu_cmds are submitted.
                 static TRANSPARENT: [u32; 1] = [0x00000000];
                 self.compositor.define_hw_cursor(1, 1, 0, 0, &TRANSPARENT);
-                self.compositor.gpu_cmds.push([crate::compositor::gpu::GPU_CURSOR_SHOW, 1, 0, 0, 0, 0, 0, 0, 0]);
+                self.compositor.gpu_cmds.push([
+                    crate::compositor::gpu::GPU_CURSOR_SHOW,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]);
                 // Commands are drained by the caller (management thread) outside
                 // the lock via drain_gpu_cmds() + submit_cmds(). No flush here.
                 return;
@@ -521,8 +530,7 @@ impl Desktop {
         // Without this, some GPU backends (VirtIO, VMware SVGA) may briefly
         // hide or misplace the cursor during the shape transition.
         // Commands are drained by the caller outside the lock — no flush here.
-        self.compositor
-            .move_hw_cursor(self.mouse_x, self.mouse_y);
+        self.compositor.move_hw_cursor(self.mouse_x, self.mouse_y);
     }
 
     /// Determine the correct cursor shape from a HitTest result.
@@ -534,10 +542,12 @@ impl Desktop {
             super::window::HitTest::ResizeLeft | super::window::HitTest::ResizeRight => {
                 CursorShape::ResizeEW
             }
-            super::window::HitTest::ResizeTopLeft
-            | super::window::HitTest::ResizeBottomRight => CursorShape::ResizeNWSE,
-            super::window::HitTest::ResizeTopRight
-            | super::window::HitTest::ResizeBottomLeft => CursorShape::ResizeNESW,
+            super::window::HitTest::ResizeTopLeft | super::window::HitTest::ResizeBottomRight => {
+                CursorShape::ResizeNWSE
+            }
+            super::window::HitTest::ResizeTopRight | super::window::HitTest::ResizeBottomLeft => {
+                CursorShape::ResizeNESW
+            }
             _ => CursorShape::Arrow,
         }
     }

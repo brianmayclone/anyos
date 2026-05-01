@@ -32,7 +32,12 @@ pub fn uptime_ms() -> u32 {
 
 /// Get system info. cmd: 0=memory, 1=threads, 2=cpus.
 pub fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32 {
-    syscall3(SYS_SYSINFO, cmd as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall3(
+        SYS_SYSINFO,
+        cmd as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Read kernel log (dmesg). Returns bytes written to buf.
@@ -68,7 +73,9 @@ pub fn set_critical() {
 /// Fill a buffer with random bytes from the kernel RNG.
 /// Returns number of bytes written.
 pub fn random(buf: &mut [u8]) -> u32 {
-    if buf.is_empty() { return 0; }
+    if buf.is_empty() {
+        return 0;
+    }
     let len = buf.len().min(256);
     syscall2(SYS_RANDOM, buf.as_mut_ptr() as u64, len as u64)
 }
@@ -94,7 +101,12 @@ pub fn devlist(buf: &mut [u8]) -> u32 {
 /// Returns bytes written to buf, or 0 if no crash report exists for that TID.
 /// Buffer must be large enough for the kernel's CrashReport struct.
 pub fn get_crash_info(tid: u32, buf: &mut [u8]) -> u32 {
-    syscall3(SYS_GET_CRASH_INFO, tid as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall3(
+        SYS_GET_CRASH_INFO,
+        tid as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 // =========================================================================
@@ -125,19 +137,38 @@ pub fn disk_list(buf: &mut [u8]) -> u32 {
 ///   [24..32] padding
 /// Returns number of partitions found, or u32::MAX on error.
 pub fn disk_partitions(disk_id: u32, buf: &mut [u8]) -> u32 {
-    syscall3(SYS_DISK_PARTITIONS, disk_id as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall3(
+        SYS_DISK_PARTITIONS,
+        disk_id as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Read raw sectors from a block device.
 /// Returns 0 on success, u32::MAX on error.
 pub fn disk_read(device_id: u32, lba: u64, count: u32, buf: &mut [u8]) -> u32 {
-    syscall5(SYS_DISK_READ, device_id as u64, lba as u32 as u64, count as u64, buf.as_mut_ptr() as u64, buf.len() as u64)
+    syscall5(
+        SYS_DISK_READ,
+        device_id as u64,
+        lba as u32 as u64,
+        count as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Write raw sectors to a block device.
 /// Returns 0 on success, u32::MAX on error.
 pub fn disk_write(device_id: u32, lba: u64, count: u32, buf: &[u8]) -> u32 {
-    syscall5(SYS_DISK_WRITE, device_id as u64, lba as u32 as u64, count as u64, buf.as_ptr() as u64, buf.len() as u64)
+    syscall5(
+        SYS_DISK_WRITE,
+        device_id as u64,
+        lba as u32 as u64,
+        count as u64,
+        buf.as_ptr() as u64,
+        buf.len() as u64,
+    )
 }
 
 /// Create/update an MBR partition entry.
@@ -151,7 +182,12 @@ pub fn disk_write(device_id: u32, lba: u64, count: u32, buf: &[u8]) -> u32 {
 ///   [12..16] padding
 /// Returns 0 on success, u32::MAX on error.
 pub fn partition_create(disk_id: u32, entry: &[u8; 16]) -> u32 {
-    syscall3(SYS_PARTITION_CREATE, disk_id as u64, entry.as_ptr() as u64, 16)
+    syscall3(
+        SYS_PARTITION_CREATE,
+        disk_id as u64,
+        entry.as_ptr() as u64,
+        16,
+    )
 }
 
 /// Delete an MBR partition entry (zero it out).
@@ -264,46 +300,46 @@ pub fn con_set_mode(flags: u32) -> u32 {
 }
 
 /// Cursor-hide flag for [`con_set_mode`].
-pub const CON_MODE_HIDE_CURSOR: u32   = 0x01;
+pub const CON_MODE_HIDE_CURSOR: u32 = 0x01;
 /// Disable-auto-scroll flag for [`con_set_mode`].
 pub const CON_MODE_NO_AUTOSCROLL: u32 = 0x02;
 
 /// Key code prefix returned by [`con_poll_key`] for arrow keys.
 /// The low byte encodes: A=Up, B=Down, C=Right, D=Left (VT100 CSI convention).
-pub const KEY_ARROW_PREFIX: u32  = 0x10_0000;
+pub const KEY_ARROW_PREFIX: u32 = 0x10_0000;
 /// Key code prefix for navigation keys (Home/End/PageUp/PageDown/Delete).
-pub const KEY_NAV_PREFIX: u32    = 0x20_0000;
+pub const KEY_NAV_PREFIX: u32 = 0x20_0000;
 /// Key code prefix for function keys F1–F12.
 /// Low byte: 1=F1 … 12=F12.
-pub const KEY_FN_PREFIX: u32     = 0x30_0000;
+pub const KEY_FN_PREFIX: u32 = 0x30_0000;
 
-pub const KEY_UP: u32     = KEY_ARROW_PREFIX | 0x41;
-pub const KEY_DOWN: u32   = KEY_ARROW_PREFIX | 0x42;
-pub const KEY_RIGHT: u32  = KEY_ARROW_PREFIX | 0x43;
-pub const KEY_LEFT: u32   = KEY_ARROW_PREFIX | 0x44;
+pub const KEY_UP: u32 = KEY_ARROW_PREFIX | 0x41;
+pub const KEY_DOWN: u32 = KEY_ARROW_PREFIX | 0x42;
+pub const KEY_RIGHT: u32 = KEY_ARROW_PREFIX | 0x43;
+pub const KEY_LEFT: u32 = KEY_ARROW_PREFIX | 0x44;
 
 /// Shift modifier bit for arrow keys (bit 28).
-pub const KEY_SHIFT_BIT: u32   = 0x1400_0000;
-pub const KEY_SHIFT_UP: u32    = KEY_SHIFT_BIT | 0x41;
-pub const KEY_SHIFT_DOWN: u32  = KEY_SHIFT_BIT | 0x42;
+pub const KEY_SHIFT_BIT: u32 = 0x1400_0000;
+pub const KEY_SHIFT_UP: u32 = KEY_SHIFT_BIT | 0x41;
+pub const KEY_SHIFT_DOWN: u32 = KEY_SHIFT_BIT | 0x42;
 pub const KEY_SHIFT_RIGHT: u32 = KEY_SHIFT_BIT | 0x43;
-pub const KEY_SHIFT_LEFT: u32  = KEY_SHIFT_BIT | 0x44;
+pub const KEY_SHIFT_LEFT: u32 = KEY_SHIFT_BIT | 0x44;
 
-pub const KEY_HOME: u32     = KEY_NAV_PREFIX | 0x48;
-pub const KEY_END: u32      = KEY_NAV_PREFIX | 0x4B;
-pub const KEY_PGUP: u32     = KEY_NAV_PREFIX | 0x49;
-pub const KEY_PGDOWN: u32   = KEY_NAV_PREFIX | 0x51;
-pub const KEY_DELETE: u32   = KEY_NAV_PREFIX | 0x53;
+pub const KEY_HOME: u32 = KEY_NAV_PREFIX | 0x48;
+pub const KEY_END: u32 = KEY_NAV_PREFIX | 0x4B;
+pub const KEY_PGUP: u32 = KEY_NAV_PREFIX | 0x49;
+pub const KEY_PGDOWN: u32 = KEY_NAV_PREFIX | 0x51;
+pub const KEY_DELETE: u32 = KEY_NAV_PREFIX | 0x53;
 
-pub const KEY_F1: u32  = KEY_FN_PREFIX | 0x01;
-pub const KEY_F2: u32  = KEY_FN_PREFIX | 0x02;
-pub const KEY_F3: u32  = KEY_FN_PREFIX | 0x03;
-pub const KEY_F4: u32  = KEY_FN_PREFIX | 0x04;
-pub const KEY_F5: u32  = KEY_FN_PREFIX | 0x05;
-pub const KEY_F6: u32  = KEY_FN_PREFIX | 0x06;
-pub const KEY_F7: u32  = KEY_FN_PREFIX | 0x07;
-pub const KEY_F8: u32  = KEY_FN_PREFIX | 0x08;
-pub const KEY_F9: u32  = KEY_FN_PREFIX | 0x09;
+pub const KEY_F1: u32 = KEY_FN_PREFIX | 0x01;
+pub const KEY_F2: u32 = KEY_FN_PREFIX | 0x02;
+pub const KEY_F3: u32 = KEY_FN_PREFIX | 0x03;
+pub const KEY_F4: u32 = KEY_FN_PREFIX | 0x04;
+pub const KEY_F5: u32 = KEY_FN_PREFIX | 0x05;
+pub const KEY_F6: u32 = KEY_FN_PREFIX | 0x06;
+pub const KEY_F7: u32 = KEY_FN_PREFIX | 0x07;
+pub const KEY_F8: u32 = KEY_FN_PREFIX | 0x08;
+pub const KEY_F9: u32 = KEY_FN_PREFIX | 0x09;
 pub const KEY_F10: u32 = KEY_FN_PREFIX | 0x0A;
 
 // =========================================================================
@@ -319,7 +355,7 @@ pub const KEY_F10: u32 = KEY_FN_PREFIX | 0x0A;
 #[derive(Debug, Clone, Copy)]
 pub struct ThermalEntry {
     pub src_type: u8,
-    pub src_id:   u8,
+    pub src_id: u8,
     pub temp_x10: i32,
 }
 
@@ -329,7 +365,9 @@ pub struct ThermalEntry {
 /// to retrieve every available sensor.
 pub fn thermal_read(max: u32) -> alloc::vec::Vec<ThermalEntry> {
     use alloc::vec;
-    if max == 0 { return vec![]; }
+    if max == 0 {
+        return vec![];
+    }
     let entry_size = 8usize;
     let mut buf = vec![0u8; max as usize * entry_size];
     let count = syscall2(SYS_THERMAL_READ, buf.as_mut_ptr() as u64, max as u64) as usize;
@@ -338,9 +376,13 @@ pub fn thermal_read(max: u32) -> alloc::vec::Vec<ThermalEntry> {
     for i in 0..count {
         let off = i * entry_size;
         let src_type = buf[off];
-        let src_id   = buf[off + 1];
-        let temp_x10 = i32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]);
-        out.push(ThermalEntry { src_type, src_id, temp_x10 });
+        let src_id = buf[off + 1];
+        let temp_x10 = i32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
+        out.push(ThermalEntry {
+            src_type,
+            src_id,
+            temp_x10,
+        });
     }
     out
 }
@@ -350,7 +392,11 @@ pub fn thermal_read(max: u32) -> alloc::vec::Vec<ThermalEntry> {
 /// Returns `None` if no CPU thermal sensor is available on this hardware.
 pub fn thermal_cpu() -> Option<i32> {
     let v = syscall0(SYS_THERMAL_CPU);
-    if v == u32::MAX { None } else { Some(v as i32) }
+    if v == u32::MAX {
+        None
+    } else {
+        Some(v as i32)
+    }
 }
 
 // =========================================================================
@@ -368,7 +414,11 @@ pub fn thermal_cpu() -> Option<i32> {
 ///
 /// Returns `Ok(())` on success, `Err(())` for an unrecognised state.
 pub fn acpi_sleep(state: u32) -> Result<(), ()> {
-    if syscall1(SYS_ACPI_SLEEP, state as u64) == u32::MAX { Err(()) } else { Ok(()) }
+    if syscall1(SYS_ACPI_SLEEP, state as u64) == u32::MAX {
+        Err(())
+    } else {
+        Ok(())
+    }
 }
 
 /// Get the current CPU P-state frequency ratio byte.
@@ -377,14 +427,22 @@ pub fn acpi_sleep(state: u32) -> Result<(), ()> {
 /// Returns `None` if the kernel call fails.
 pub fn acpi_perf_get() -> Option<u8> {
     let v = syscall2(SYS_ACPI_PERF, 0, 0);
-    if v == u32::MAX { None } else { Some(v as u8) }
+    if v == u32::MAX {
+        None
+    } else {
+        Some(v as u8)
+    }
 }
 
 /// Set the CPU P-state frequency ratio.
 ///
 /// Returns `Ok(())` on success, `Err(())` on failure.
 pub fn acpi_perf_set(ratio: u8) -> Result<(), ()> {
-    if syscall2(SYS_ACPI_PERF, 1, ratio as u64) == u32::MAX { Err(()) } else { Ok(()) }
+    if syscall2(SYS_ACPI_PERF, 1, ratio as u64) == u32::MAX {
+        Err(())
+    } else {
+        Ok(())
+    }
 }
 
 // =========================================================================
@@ -396,7 +454,11 @@ pub fn acpi_perf_set(ratio: u8) -> Result<(), ()> {
 /// Returns `None` if the device does not ACK or the address/register is out of range.
 pub fn i2c_read_byte(addr: u8, reg: u8) -> Option<u8> {
     let v = syscall2(SYS_I2C_READ, addr as u64, reg as u64);
-    if v == u32::MAX { None } else { Some(v as u8) }
+    if v == u32::MAX {
+        None
+    } else {
+        Some(v as u8)
+    }
 }
 
 /// Write `value` to register `reg` of I²C device at 7-bit address `addr`.
@@ -404,7 +466,11 @@ pub fn i2c_read_byte(addr: u8, reg: u8) -> Option<u8> {
 /// Returns `Ok(())` on success, `Err(())` on error.
 pub fn i2c_write_byte(addr: u8, reg: u8, value: u8) -> Result<(), ()> {
     let v = syscall3(SYS_I2C_WRITE, addr as u64, reg as u64, value as u64);
-    if v == u32::MAX { Err(()) } else { Ok(()) }
+    if v == u32::MAX {
+        Err(())
+    } else {
+        Ok(())
+    }
 }
 
 /// Probe whether an I²C device is present at 7-bit address `addr`.

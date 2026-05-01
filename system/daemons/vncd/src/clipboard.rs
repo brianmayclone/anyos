@@ -30,7 +30,13 @@ pub fn set_compositor_clipboard(comp_chan: u32, text: &[u8]) {
     unsafe {
         core::ptr::copy_nonoverlapping(text.as_ptr(), shm_addr as *mut u8, text.len());
     }
-    let cmd: [u32; 5] = [CMD_SET_CLIPBOARD, shm_id, data_len, 0 /* text/plain */, 0];
+    let cmd: [u32; 5] = [
+        CMD_SET_CLIPBOARD,
+        shm_id,
+        data_len,
+        0, /* text/plain */
+        0,
+    ];
     ipc::evt_chan_emit(comp_chan, &cmd);
     process::sleep(32);
     ipc::shm_unmap(shm_id);
@@ -38,7 +44,12 @@ pub fn set_compositor_clipboard(comp_chan: u32, text: &[u8]) {
 }
 
 /// Get the compositor clipboard contents. Returns number of bytes written to `buf`.
-pub fn get_compositor_clipboard(comp_chan: u32, reply_chan: u32, sub_id: u32, buf: &mut [u8]) -> usize {
+pub fn get_compositor_clipboard(
+    comp_chan: u32,
+    reply_chan: u32,
+    sub_id: u32,
+    buf: &mut [u8],
+) -> usize {
     if buf.is_empty() {
         return 0;
     }

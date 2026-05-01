@@ -6,9 +6,9 @@ use core::sync::atomic::Ordering;
 use libanyui_client as ui;
 use libinstall::{self, ApplyStats, PreflightCheck};
 
-use crate::state::*;
-use crate::script::{self, StepAction};
 use crate::helpers::fix_case;
+use crate::script::{self, StepAction};
+use crate::state::*;
 
 struct CopyStats {
     files: u32,
@@ -19,7 +19,12 @@ struct CopyStats {
 
 impl CopyStats {
     const fn new() -> Self {
-        Self { files: 0, dirs: 0, errors: 0, bytes: 0 }
+        Self {
+            files: 0,
+            dirs: 0,
+            errors: 0,
+            bytes: 0,
+        }
     }
 
     fn add(&mut self, other: Self) {
@@ -54,7 +59,9 @@ fn log(line: &str) {
     let prefixed = format!("[{}] {}", step_prefix(), line);
     let bytes = prefixed.as_bytes();
     let len = bytes.len().min(511);
-    unsafe { LOG_LINE_BUF[..len].copy_from_slice(&bytes[..len]); }
+    unsafe {
+        LOG_LINE_BUF[..len].copy_from_slice(&bytes[..len]);
+    }
     LOG_LINE_LEN.store(len as u32, Ordering::Release);
     LOG_SEQ.fetch_add(1, Ordering::Release);
     append_log_file(&prefixed);
@@ -63,19 +70,25 @@ fn log(line: &str) {
 /// Log a line without step prefix (for top-level messages).
 fn log_raw(line: &str) {
     let len = line.len().min(511);
-    unsafe { LOG_LINE_BUF[..len].copy_from_slice(&line.as_bytes()[..len]); }
+    unsafe {
+        LOG_LINE_BUF[..len].copy_from_slice(&line.as_bytes()[..len]);
+    }
     LOG_LINE_LEN.store(len as u32, Ordering::Release);
     LOG_SEQ.fetch_add(1, Ordering::Release);
     append_log_file(line);
 }
 
 fn set_phase(text: &str) {
-    unsafe { ui::marshal_set_text(PHASE_LABEL_ID, text); }
+    unsafe {
+        ui::marshal_set_text(PHASE_LABEL_ID, text);
+    }
 }
 
 fn set_progress(pct: u32) {
     WORKER_PROGRESS.store(pct, Ordering::Release);
-    unsafe { ui::marshal_set_state(PROGRESS_BAR_ID, pct); }
+    unsafe {
+        ui::marshal_set_state(PROGRESS_BAR_ID, pct);
+    }
 }
 
 fn update_elapsed() {
@@ -83,7 +96,9 @@ fn update_elapsed() {
     let elapsed = sys::uptime_ms().wrapping_sub(start);
     let secs = elapsed / 1000;
     let text = format!("Elapsed: {}:{:02}", secs / 60, secs % 60);
-    unsafe { ui::marshal_set_text(STATUS_LABEL_ID, &text); }
+    unsafe {
+        ui::marshal_set_text(STATUS_LABEL_ID, &text);
+    }
 }
 
 fn fail(msg: &str) {
@@ -103,7 +118,9 @@ fn open_log_file() {
         "/mnt/target/install.log",
         fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC | fs::O_SYNC,
     );
-    unsafe { LOG_FD = fd; }
+    unsafe {
+        LOG_FD = fd;
+    }
 }
 
 fn append_log_file(line: &str) {
@@ -122,7 +139,9 @@ fn close_log_file() {
     if fd != u32::MAX {
         let _ = fs::fsync(fd as i32);
         fs::close(fd);
-        unsafe { LOG_FD = u32::MAX; }
+        unsafe {
+            LOG_FD = u32::MAX;
+        }
     }
 }
 
@@ -145,8 +164,14 @@ pub fn install_worker() {
         if buf[off] == dev_id as u8 {
             disk_id = buf[off + 1];
             total_sectors = u64::from_le_bytes([
-                buf[off + 12], buf[off + 13], buf[off + 14], buf[off + 15],
-                buf[off + 16], buf[off + 17], buf[off + 18], buf[off + 19],
+                buf[off + 12],
+                buf[off + 13],
+                buf[off + 14],
+                buf[off + 15],
+                buf[off + 16],
+                buf[off + 17],
+                buf[off + 18],
+                buf[off + 19],
             ]);
             break;
         }
@@ -157,8 +182,10 @@ pub fn install_worker() {
         return;
     }
 
-    log_raw(&format!("Target: dev={} disk={} sectors={} mode={} operation={}",
-        dev_id, disk_id, total_sectors, mode, operation));
+    log_raw(&format!(
+        "Target: dev={} disk={} sectors={} mode={} operation={}",
+        dev_id, disk_id, total_sectors, mode, operation
+    ));
 
     if operation == 1 {
         if let Err(msg) = run_upgrade(dev_id, disk_id, mode) {
@@ -168,7 +195,9 @@ pub fn install_worker() {
         set_progress(100);
         set_phase("Upgrade complete!");
         update_elapsed();
-        unsafe { ui::marshal_set_visible(BTN_REBOOT_ID, true); }
+        unsafe {
+            ui::marshal_set_visible(BTN_REBOOT_ID, true);
+        }
         WORKER_DONE.store(true, Ordering::Release);
         WORKER_ACTIVE.store(false, Ordering::Release);
         return;
@@ -184,12 +213,20 @@ pub fn install_worker() {
         set_progress(pct);
         set_phase(&step.label);
         set_step_prefix(&step.label);
-        log_raw(&format!("--- [{}/{}] {} ---", i + 1, total_steps, step.label));
+        log_raw(&format!(
+            "--- [{}/{}] {} ---",
+            i + 1,
+            total_steps,
+            step.label
+        ));
         update_elapsed();
 
         match &step.action {
             StepAction::Bootloader => {
-                if mode == 1 { log("  Skipped (partition install)"); continue; }
+                if mode == 1 {
+                    log("  Skipped (partition install)");
+                    continue;
+                }
                 let bl_dev = find_whole_disk_dev(disk_id).unwrap_or(dev_id);
                 if !install_bootloader(bl_dev) {
                     fail("Bootloader not found (stage1.bin / stage2.bin)");
@@ -198,7 +235,10 @@ pub fn install_worker() {
                 log("  Bootloader written to MBR");
             }
             StepAction::Partition => {
-                if mode == 1 { log("  Skipped (partition install)"); continue; }
+                if mode == 1 {
+                    log("  Skipped (partition install)");
+                    continue;
+                }
                 let bl_dev = find_whole_disk_dev(disk_id).unwrap_or(dev_id);
                 let want_corefs = SYSTEM_FS.load(Ordering::Acquire) == SYSTEM_FS_COREFS;
                 if want_corefs {
@@ -397,11 +437,15 @@ pub fn install_worker() {
                 log("  boot.cfg written");
             }
             StepAction::Finish => {
-                let elapsed = sys::uptime_ms().wrapping_sub(
-                    INSTALL_START_MS.load(Ordering::Relaxed));
+                let elapsed =
+                    sys::uptime_ms().wrapping_sub(INSTALL_START_MS.load(Ordering::Relaxed));
                 let secs = elapsed / 1000;
                 log("Unmounting target filesystem");
-                log_raw(&format!("=== Installation complete ({}:{:02}) ===", secs / 60, secs % 60));
+                log_raw(&format!(
+                    "=== Installation complete ({}:{:02}) ===",
+                    secs / 60,
+                    secs % 60
+                ));
                 close_log_file();
                 fs::umount("/mnt/target");
             }
@@ -412,7 +456,9 @@ pub fn install_worker() {
     set_phase("Installation complete!");
     update_elapsed();
 
-    unsafe { ui::marshal_set_visible(BTN_REBOOT_ID, true); }
+    unsafe {
+        ui::marshal_set_visible(BTN_REBOOT_ID, true);
+    }
     WORKER_DONE.store(true, Ordering::Release);
     WORKER_ACTIVE.store(false, Ordering::Release);
 }
@@ -509,7 +555,10 @@ fn find_whole_disk_dev(target_disk_id: u8) -> Option<u32> {
 fn mount_target(mode: u32, dev_id: u32, disk_id: u8) -> Option<u8> {
     if mode == 0 {
         for attempt in 0..5 {
-            log(&format!("  Rescanning partitions (attempt {}/5)", attempt + 1));
+            log(&format!(
+                "  Rescanning partitions (attempt {}/5)",
+                attempt + 1
+            ));
             sys::partition_rescan(disk_id as u32);
             anyos_std::process::sleep(700 + attempt * 300);
             let mut buf = [0u8; 64 * 32];
@@ -523,7 +572,10 @@ fn mount_target(mode: u32, dev_id: u32, disk_id: u8) -> Option<u8> {
                     if mount_rc == 0 {
                         return Some(pid);
                     }
-                    log(&format!("  Mount attempt failed for device {} (rc={})", pid, mount_rc));
+                    log(&format!(
+                        "  Mount attempt failed for device {} (rc={})",
+                        pid, mount_rc
+                    ));
                 }
             }
         }
@@ -534,7 +586,10 @@ fn mount_target(mode: u32, dev_id: u32, disk_id: u8) -> Option<u8> {
         if mount_rc == 0 {
             Some(dev_id as u8)
         } else {
-            log(&format!("  Mount failed for device {} (rc={})", dev_id, mount_rc));
+            log(&format!(
+                "  Mount failed for device {} (rc={})",
+                dev_id, mount_rc
+            ));
             None
         }
     }
@@ -543,14 +598,19 @@ fn mount_target(mode: u32, dev_id: u32, disk_id: u8) -> Option<u8> {
 // ── ExFAT formatting ───────────────────────────────────────────────────────
 
 fn write_le16(buf: &mut [u8], off: usize, val: u16) {
-    buf[off] = val as u8; buf[off + 1] = (val >> 8) as u8;
+    buf[off] = val as u8;
+    buf[off + 1] = (val >> 8) as u8;
 }
 fn write_le32(buf: &mut [u8], off: usize, val: u32) {
-    buf[off] = val as u8; buf[off + 1] = (val >> 8) as u8;
-    buf[off + 2] = (val >> 16) as u8; buf[off + 3] = (val >> 24) as u8;
+    buf[off] = val as u8;
+    buf[off + 1] = (val >> 8) as u8;
+    buf[off + 2] = (val >> 16) as u8;
+    buf[off + 3] = (val >> 24) as u8;
 }
 fn write_le64(buf: &mut [u8], off: usize, val: u64) {
-    for i in 0..8 { buf[off + i] = (val >> (i * 8)) as u8; }
+    for i in 0..8 {
+        buf[off + i] = (val >> (i * 8)) as u8;
+    }
 }
 fn disk_write_sector(dev: u32, lba: u32, data: &[u8; 512]) {
     sys::disk_write(dev, lba as u64, 1, data);
@@ -568,7 +628,11 @@ fn write_cluster(dev: u32, fs_start: u32, heap_off: u32, cluster: u32, spc: u32,
 }
 
 fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
-    let (spc, spc_shift): (u32, u8) = if fs_sectors > 512 * 1024 { (16, 4) } else { (SPC, SPC_SHIFT) };
+    let (spc, spc_shift): (u32, u8) = if fs_sectors > 512 * 1024 {
+        (16, 4)
+    } else {
+        (SPC, SPC_SHIFT)
+    };
     let cluster_size = spc * SECTOR_SIZE;
     let est_clusters = (fs_sectors - FAT_OFFSET) / spc;
     let fat_length = ((est_clusters + 2) * 4 + SECTOR_SIZE - 1) / SECTOR_SIZE;
@@ -580,7 +644,9 @@ fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
     let dev = dev_id;
 
     let mut vbr = [0u8; 512];
-    vbr[0] = 0xEB; vbr[1] = 0x76; vbr[2] = 0x90;
+    vbr[0] = 0xEB;
+    vbr[1] = 0x76;
+    vbr[2] = 0x90;
     vbr[3..11].copy_from_slice(b"EXFAT   ");
     write_le64(&mut vbr, 64, fs_start as u64);
     write_le64(&mut vbr, 72, fs_sectors as u64);
@@ -591,65 +657,109 @@ fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
     write_le32(&mut vbr, 96, root_cluster);
     write_le32(&mut vbr, 100, 0x414E594F);
     write_le16(&mut vbr, 104, 0x0100);
-    vbr[108] = 9; vbr[109] = spc_shift; vbr[110] = 1; vbr[111] = 0x80; vbr[112] = 0xFF;
-    vbr[510] = 0x55; vbr[511] = 0xAA;
+    vbr[108] = 9;
+    vbr[109] = spc_shift;
+    vbr[110] = 1;
+    vbr[111] = 0x80;
+    vbr[112] = 0xFF;
+    vbr[510] = 0x55;
+    vbr[511] = 0xAA;
 
-    let mut ext = [0u8; 512]; ext[510] = 0x55; ext[511] = 0xAA;
-    let oem = [0u8; 512]; let reserved = [0u8; 512];
+    let mut ext = [0u8; 512];
+    ext[510] = 0x55;
+    ext[511] = 0xAA;
+    let oem = [0u8; 512];
+    let reserved = [0u8; 512];
 
     let mut checksum: u32 = 0;
-    let regions: [&[u8; 512]; 11] = [&vbr, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &oem, &reserved];
+    let regions: [&[u8; 512]; 11] = [
+        &vbr, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &ext, &oem, &reserved,
+    ];
     for (si, sector) in regions.iter().enumerate() {
         for (bi, &b) in sector.iter().enumerate() {
             let abs = si * 512 + bi;
-            if abs == 106 || abs == 107 || abs == 112 { continue; }
+            if abs == 106 || abs == 107 || abs == 112 {
+                continue;
+            }
             checksum = checksum.rotate_right(1).wrapping_add(b as u32);
         }
     }
     let mut cs_sector = [0u8; 512];
-    for i in 0..128 { write_le32(&mut cs_sector, i * 4, checksum); }
+    for i in 0..128 {
+        write_le32(&mut cs_sector, i * 4, checksum);
+    }
 
     for base in [0u32, 12] {
         disk_write_sector(dev, fs_start + base, &vbr);
-        for i in 0..8u32 { disk_write_sector(dev, fs_start + base + 1 + i, &ext); }
+        for i in 0..8u32 {
+            disk_write_sector(dev, fs_start + base + 1 + i, &ext);
+        }
         disk_write_sector(dev, fs_start + base + 9, &oem);
         disk_write_sector(dev, fs_start + base + 10, &reserved);
         disk_write_sector(dev, fs_start + base + 11, &cs_sector);
     }
 
     let fat_abs = fs_start + FAT_OFFSET;
-    { let mut s = [0u8; 512];
-      write_le32(&mut s, 0, 0xFFFFFFF8); write_le32(&mut s, 4, 0xFFFFFFFF);
-      write_le32(&mut s, 8, 0xFFFFFFFF); write_le32(&mut s, 12, 0xFFFFFFFF);
-      write_le32(&mut s, 16, 0xFFFFFFFF); disk_write_sector(dev, fat_abs, &s); }
-    { let clear_end = (1u32 + 32).min(fat_length);
-      let zero_batch = [0u8; 32 * 512];
-      if clear_end > 1 { let n = clear_end - 1;
-        sys::disk_write(dev, (fat_abs + 1) as u64, n, &zero_batch[..(n as usize * 512)]); } }
+    {
+        let mut s = [0u8; 512];
+        write_le32(&mut s, 0, 0xFFFFFFF8);
+        write_le32(&mut s, 4, 0xFFFFFFFF);
+        write_le32(&mut s, 8, 0xFFFFFFFF);
+        write_le32(&mut s, 12, 0xFFFFFFFF);
+        write_le32(&mut s, 16, 0xFFFFFFFF);
+        disk_write_sector(dev, fat_abs, &s);
+    }
+    {
+        let clear_end = (1u32 + 32).min(fat_length);
+        let zero_batch = [0u8; 32 * 512];
+        if clear_end > 1 {
+            let n = clear_end - 1;
+            sys::disk_write(
+                dev,
+                (fat_abs + 1) as u64,
+                n,
+                &zero_batch[..(n as usize * 512)],
+            );
+        }
+    }
 
     let csz = cluster_size as usize;
     let mut upcase = anyos_std::vec![0u8; csz];
-    for i in 0u16..128 { let u = if i >= 0x61 && i <= 0x7A { i - 0x20 } else { i };
-        write_le16(&mut upcase, i as usize * 2, u); }
+    for i in 0u16..128 {
+        let u = if i >= 0x61 && i <= 0x7A { i - 0x20 } else { i };
+        write_le16(&mut upcase, i as usize * 2, u);
+    }
     let upcase_len: u32 = 256;
     let mut uc: u32 = 0;
-    for i in 0..upcase_len as usize { uc = uc.rotate_right(1).wrapping_add(upcase[i] as u32); }
+    for i in 0..upcase_len as usize {
+        uc = uc.rotate_right(1).wrapping_add(upcase[i] as u32);
+    }
     write_cluster(dev, fs_start, cluster_heap_offset, 3, spc, &upcase);
 
     let mut root = anyos_std::vec![0u8; csz];
     let bitmap_size = (cluster_count + 7) / 8;
-    root[0] = 0x81; write_le32(&mut root, 20, 2); write_le64(&mut root, 24, bitmap_size as u64);
-    root[32] = 0x82; write_le32(&mut root, 36, uc); write_le32(&mut root, 52, 3);
+    root[0] = 0x81;
+    write_le32(&mut root, 20, 2);
+    write_le64(&mut root, 24, bitmap_size as u64);
+    root[32] = 0x82;
+    write_le32(&mut root, 36, uc);
+    write_le32(&mut root, 52, 3);
     write_le64(&mut root, 56, upcase_len as u64);
-    root[64] = 0x83; root[65] = 5;
-    for (i, &ch) in b"anyOS".iter().enumerate() { write_le16(&mut root, 66 + i * 2, ch as u16); }
+    root[64] = 0x83;
+    root[65] = 5;
+    for (i, &ch) in b"anyOS".iter().enumerate() {
+        write_le16(&mut root, 66 + i * 2, ch as u16);
+    }
     write_cluster(dev, fs_start, cluster_heap_offset, 4, spc, &root);
 
-    let mut bitmap = anyos_std::vec![0u8; csz]; bitmap[0] = 0x07;
+    let mut bitmap = anyos_std::vec![0u8; csz];
+    bitmap[0] = 0x07;
     write_cluster(dev, fs_start, cluster_heap_offset, 2, spc, &bitmap);
 
     let zero = [0u8; 512];
-    for s in 24..FAT_OFFSET { disk_write_sector(dev, fs_start + s, &zero); }
+    for s in 24..FAT_OFFSET {
+        disk_write_sector(dev, fs_start + s, &zero);
+    }
 }
 
 // ── Bootloader ─────────────────────────────────────────────────────────────
@@ -657,25 +767,40 @@ fn format_exfat(dev_id: u32, fs_start: u32, fs_sectors: u32) {
 fn install_bootloader(dev_id: u32) -> bool {
     let mut stage1 = [0u8; 512];
     let s1 = fs::open("/boot/stage1.bin", 0);
-    if s1 == u32::MAX { return false; }
-    fs::read(s1, &mut stage1); fs::close(s1);
+    if s1 == u32::MAX {
+        return false;
+    }
+    fs::read(s1, &mut stage1);
+    fs::close(s1);
 
     let s2 = fs::open("/boot/stage2.bin", 0);
-    if s2 == u32::MAX { return false; }
+    if s2 == u32::MAX {
+        return false;
+    }
     let mut stage2 = anyos_std::vec![0u8; 63 * 512];
     let mut total = 0usize;
-    loop { let n = fs::read(s2, &mut stage2[total..]); if n == 0 || n == u32::MAX { break; } total += n as usize; }
+    loop {
+        let n = fs::read(s2, &mut stage2[total..]);
+        if n == 0 || n == u32::MAX {
+            break;
+        }
+        total += n as usize;
+    }
     fs::close(s2);
-    if total == 0 { return false; }
+    if total == 0 {
+        return false;
+    }
 
     let mut mbr = [0u8; 512];
     sys::disk_read(dev_id, 0, 1, &mut mbr);
     mbr[..440].copy_from_slice(&stage1[..440]);
-    mbr[510] = 0x55; mbr[511] = 0xAA;
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
     sys::disk_write(dev_id, 0, 1, &mbr);
 
     for s in 0..(total + 511) / 512 {
-        let off = s * 512; let mut sector = [0u8; 512];
+        let off = s * 512;
+        let mut sector = [0u8; 512];
         let end = (off + 512).min(total);
         sector[..end - off].copy_from_slice(&stage2[off..end]);
         sys::disk_write(dev_id, (1 + s) as u64, 1, &sector);
@@ -689,13 +814,25 @@ fn create_partition(dev_id: u32, _disk_id: u32, total_sectors: u64) {
     let part_size = total_sectors - PARTITION_START as u64;
     let mut mbr = [0u8; 512];
     sys::disk_read(dev_id, 0, 1, &mut mbr);
-    mbr[510] = 0x55; mbr[511] = 0xAA;
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
     let off = 446;
-    mbr[off] = 0x80; mbr[off+1] = 0xFE; mbr[off+2] = 0xFF; mbr[off+3] = 0xFF;
-    mbr[off+4] = 0x07; mbr[off+5] = 0xFE; mbr[off+6] = 0xFF; mbr[off+7] = 0xFF;
-    mbr[off+8..off+12].copy_from_slice(&(PARTITION_START).to_le_bytes());
-    mbr[off+12..off+16].copy_from_slice(&(part_size as u32).to_le_bytes());
-    for i in 1..4 { let o = 446 + i * 16; for b in &mut mbr[o..o+16] { *b = 0; } }
+    mbr[off] = 0x80;
+    mbr[off + 1] = 0xFE;
+    mbr[off + 2] = 0xFF;
+    mbr[off + 3] = 0xFF;
+    mbr[off + 4] = 0x07;
+    mbr[off + 5] = 0xFE;
+    mbr[off + 6] = 0xFF;
+    mbr[off + 7] = 0xFF;
+    mbr[off + 8..off + 12].copy_from_slice(&(PARTITION_START).to_le_bytes());
+    mbr[off + 12..off + 16].copy_from_slice(&(part_size as u32).to_le_bytes());
+    for i in 1..4 {
+        let o = 446 + i * 16;
+        for b in &mut mbr[o..o + 16] {
+            *b = 0;
+        }
+    }
     sys::disk_write(dev_id, 0, 1, &mbr);
 }
 
@@ -736,28 +873,41 @@ fn create_partition_dual(
 
     let mut mbr = [0u8; 512];
     sys::disk_read(dev_id, 0, 1, &mut mbr);
-    mbr[510] = 0x55; mbr[511] = 0xAA;
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
 
     // Slot 0 — boot exFAT (bootable).
     let off = 446;
-    mbr[off]   = 0x80; mbr[off+1] = 0xFE; mbr[off+2] = 0xFF; mbr[off+3] = 0xFF;
-    mbr[off+4] = FS_TYPE_EXFAT as u8;
-    mbr[off+5] = 0xFE; mbr[off+6] = 0xFF; mbr[off+7] = 0xFF;
-    mbr[off+8..off+12].copy_from_slice(&PARTITION_START.to_le_bytes());
-    mbr[off+12..off+16].copy_from_slice(&exfat_sectors.to_le_bytes());
+    mbr[off] = 0x80;
+    mbr[off + 1] = 0xFE;
+    mbr[off + 2] = 0xFF;
+    mbr[off + 3] = 0xFF;
+    mbr[off + 4] = FS_TYPE_EXFAT as u8;
+    mbr[off + 5] = 0xFE;
+    mbr[off + 6] = 0xFF;
+    mbr[off + 7] = 0xFF;
+    mbr[off + 8..off + 12].copy_from_slice(&PARTITION_START.to_le_bytes());
+    mbr[off + 12..off + 16].copy_from_slice(&exfat_sectors.to_le_bytes());
 
     // Slot 1 — CoreFS system (non-bootable, type 0xCF).
     let off1 = 446 + 16;
-    mbr[off1]   = 0x00; mbr[off1+1] = 0xFE; mbr[off1+2] = 0xFF; mbr[off1+3] = 0xFF;
-    mbr[off1+4] = FS_TYPE_COREFS as u8;
-    mbr[off1+5] = 0xFE; mbr[off1+6] = 0xFF; mbr[off1+7] = 0xFF;
-    mbr[off1+8..off1+12].copy_from_slice(&corefs_start.to_le_bytes());
-    mbr[off1+12..off1+16].copy_from_slice(&corefs_sectors.to_le_bytes());
+    mbr[off1] = 0x00;
+    mbr[off1 + 1] = 0xFE;
+    mbr[off1 + 2] = 0xFF;
+    mbr[off1 + 3] = 0xFF;
+    mbr[off1 + 4] = FS_TYPE_COREFS as u8;
+    mbr[off1 + 5] = 0xFE;
+    mbr[off1 + 6] = 0xFF;
+    mbr[off1 + 7] = 0xFF;
+    mbr[off1 + 8..off1 + 12].copy_from_slice(&corefs_start.to_le_bytes());
+    mbr[off1 + 12..off1 + 16].copy_from_slice(&corefs_sectors.to_le_bytes());
 
     // Slots 2 + 3 — unused.
     for i in 2..4 {
         let o = 446 + i * 16;
-        for b in &mut mbr[o..o+16] { *b = 0; }
+        for b in &mut mbr[o..o + 16] {
+            *b = 0;
+        }
     }
 
     sys::disk_write(dev_id, 0, 1, &mbr);
@@ -788,10 +938,14 @@ fn format_corefs_via_mkfs(
     let mut corefs_dev: Option<u32> = None;
     for i in 0..count as usize {
         let base = i * ENTRY;
-        if base + ENTRY > buf.len() { break; }
+        if base + ENTRY > buf.len() {
+            break;
+        }
         let d_id = buf[base + 1];
         let part = buf[base + 2];
-        if d_id != disk_id || part == 0xFF { continue; }
+        if d_id != disk_id || part == 0xFF {
+            continue;
+        }
 
         // The part_type byte lives at +40 in the 64-byte disk_list entry.
         // Cross-referenced with query_device_capacity / kernel/src/drivers/storage/blockdev.rs.
@@ -802,10 +956,11 @@ fn format_corefs_via_mkfs(
         }
     }
 
-    let dev_id = corefs_dev
-        .ok_or_else(|| anyos_std::String::from(
-            "no 0xCF partition visible after rescan — did the partition table write succeed?"
-        ))?;
+    let dev_id = corefs_dev.ok_or_else(|| {
+        anyos_std::String::from(
+            "no 0xCF partition visible after rescan — did the partition table write succeed?",
+        )
+    })?;
 
     // mkfs.corefs reads its size from disk_list, so just passing
     // --device is enough.  Label keeps the volume identifiable.
@@ -813,12 +968,16 @@ fn format_corefs_via_mkfs(
     let args = format!("--device {} --label {}", dev_id, label);
     let tid = anyos_std::process::spawn(path, &args);
     if tid == u32::MAX {
-        return Err(anyos_std::String::from("failed to spawn /System/bin/mkfs.corefs"));
+        return Err(anyos_std::String::from(
+            "failed to spawn /System/bin/mkfs.corefs",
+        ));
     }
     let exit = anyos_std::process::waitpid(tid);
     if exit != 0 {
         return Err(anyos_std::format!(
-            "mkfs.corefs exited with code {} (device {})", exit, dev_id
+            "mkfs.corefs exited with code {} (device {})",
+            exit,
+            dev_id
         ));
     }
     Ok(anyos_std::format!("device {}, label '{}'", dev_id, label))
@@ -829,7 +988,10 @@ fn format_corefs_via_mkfs(
 fn copy_recursive(src: &str, dst: &str, depth: u32) -> CopyStats {
     let mut stats = CopyStats::new();
     if depth > 32 {
-        log(&format!("  Warning: max recursion depth reached at {}", src));
+        log(&format!(
+            "  Warning: max recursion depth reached at {}",
+            src
+        ));
         stats.errors += 1;
         return stats;
     }
@@ -845,12 +1007,19 @@ fn copy_recursive(src: &str, dst: &str, depth: u32) -> CopyStats {
         let off = i * 64;
         let entry_type = buf[off];
         let name_len = buf[off + 1] as usize;
-        if name_len == 0 || name_len > 56 { continue; }
+        if name_len == 0 || name_len > 56 {
+            continue;
+        }
         let name = match core::str::from_utf8(&buf[off + 8..off + 8 + name_len]) {
-            Ok(s) => s, Err(_) => continue,
+            Ok(s) => s,
+            Err(_) => continue,
         };
-        if name == "." || name == ".." { continue; }
-        if depth == 0 && (name == "src" || name == "apps" || name == "install") { continue; }
+        if name == "." || name == ".." {
+            continue;
+        }
+        if depth == 0 && (name == "src" || name == "apps" || name == "install") {
+            continue;
+        }
         let fixed = fix_case(name);
         let child_src = format!("{}/{}", src, name);
         let child_dst = format!("{}/{}", dst, fixed);

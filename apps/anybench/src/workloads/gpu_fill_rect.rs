@@ -3,15 +3,17 @@
 //! Draws randomly positioned opaque rectangles as fast as possible for
 //! [`GPU_TEST_MS`] milliseconds. Returns total rectangles filled.
 
+use super::GPU_TEST_MS;
 use alloc::vec;
 use libanyui_client as anyui;
-use super::GPU_TEST_MS;
 
 /// Rectangle fill throughput benchmark (onscreen via Canvas API, offscreen via raw buffer).
 pub fn bench_gpu_fill_rect(canvas: &anyui::Canvas, offscreen: bool) -> u64 {
     let w = canvas.get_stride();
     let h = canvas.get_height();
-    if w == 0 || h == 0 { return 0; }
+    if w == 0 || h == 0 {
+        return 0;
+    }
 
     if offscreen {
         let buf_size = (w * h) as usize;

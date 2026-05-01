@@ -1,7 +1,7 @@
 //! std::env compatible environment functions.
 
-use crate::path::PathBuf;
 use crate::io;
+use crate::path::PathBuf;
 use alloc::string::String;
 
 /// Get an environment variable.
@@ -119,7 +119,11 @@ impl Iterator for Args {
 
 impl ExactSizeIterator for Args {
     fn len(&self) -> usize {
-        if self.index == 0 { 1 } else { 0 }
+        if self.index == 0 {
+            1
+        } else {
+            0
+        }
     }
 }
 

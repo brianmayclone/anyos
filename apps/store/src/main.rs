@@ -13,10 +13,10 @@ mod ui;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use libanyui_client as anyui;
 use anyui::Widget;
+use libanyui_client as anyui;
 
-use crate::apkg::{PackageInfo, InstalledEntry, PkgStatus};
+use crate::apkg::{InstalledEntry, PackageInfo, PkgStatus};
 
 // ─── Constants ─────────────────────────────────────────────────────
 
@@ -130,7 +130,9 @@ fn rebuild_cards() {
 
 /// Progress callback for Store downloads — updates the global ProgressBar.
 extern "C" fn download_progress_cb(received: u32, total: u32, _userdata: u64) {
-    if total == 0 { return; }
+    if total == 0 {
+        return;
+    }
     let pct = ((received as u64 * 100) / total as u64).min(100) as u32;
     app().progress_bar.set_state(pct);
 }
@@ -146,60 +148,86 @@ fn handle_action(pkg_idx: usize) {
     match status {
         PkgStatus::Available => {
             // Phase 1: Download with progress bar
-            state.status_label.set_text(&alloc::format!("  {} {}...", t("Downloading"), name));
+            state
+                .status_label
+                .set_text(&alloc::format!("  {} {}...", t("Downloading"), name));
             state.progress_bar.set_state(0);
             state.progress_bar.set_visible(true);
 
             let pkg_clone = pkg.clone();
-            let ok = apkg::download_package(
-                &pkg_clone,
-                download_progress_cb,
-                0,
-            );
+            let ok = apkg::download_package(&pkg_clone, download_progress_cb, 0);
 
             state.progress_bar.set_visible(false);
 
             if !ok {
-                state.status_label.set_text(&alloc::format!("  {} {}", t("Download failed for"), name));
+                state.status_label.set_text(&alloc::format!(
+                    "  {} {}",
+                    t("Download failed for"),
+                    name
+                ));
                 return;
             }
 
             // Phase 2: Install (apkg finds cached file, extracts only)
-            state.status_label.set_text(&alloc::format!("  {} {}...", t("Installing"), name));
+            state
+                .status_label
+                .set_text(&alloc::format!("  {} {}...", t("Installing"), name));
             let code = apkg::install_package(&name);
             if code == 0 {
-                state.status_label.set_text(&alloc::format!("  {} {}", name, t("installed successfully")));
+                state.status_label.set_text(&alloc::format!(
+                    "  {} {}",
+                    name,
+                    t("installed successfully")
+                ));
             } else {
-                state.status_label.set_text(&alloc::format!("  {} {} (exit {})", t("Failed to install"), name, code));
+                state.status_label.set_text(&alloc::format!(
+                    "  {} {} (exit {})",
+                    t("Failed to install"),
+                    name,
+                    code
+                ));
             }
         }
         PkgStatus::Updatable => {
             // Phase 1: Download with progress bar
-            state.status_label.set_text(&alloc::format!("  {} {}...", t("Downloading"), name));
+            state
+                .status_label
+                .set_text(&alloc::format!("  {} {}...", t("Downloading"), name));
             state.progress_bar.set_state(0);
             state.progress_bar.set_visible(true);
 
             let pkg_clone = pkg.clone();
-            let ok = apkg::download_package(
-                &pkg_clone,
-                download_progress_cb,
-                0,
-            );
+            let ok = apkg::download_package(&pkg_clone, download_progress_cb, 0);
 
             state.progress_bar.set_visible(false);
 
             if !ok {
-                state.status_label.set_text(&alloc::format!("  {} {}", t("Download failed for"), name));
+                state.status_label.set_text(&alloc::format!(
+                    "  {} {}",
+                    t("Download failed for"),
+                    name
+                ));
                 return;
             }
 
             // Phase 2: Upgrade (apkg finds cached file, extracts only)
-            state.status_label.set_text(&alloc::format!("  {} {}...", t("Updating"), name));
+            state
+                .status_label
+                .set_text(&alloc::format!("  {} {}...", t("Updating"), name));
             let code = apkg::upgrade_package(&name);
             if code == 0 {
-                state.status_label.set_text(&alloc::format!("  {} {}", name, t("updated successfully")));
+                state.status_label.set_text(&alloc::format!(
+                    "  {} {}",
+                    name,
+                    t("updated successfully")
+                ));
             } else {
-                state.status_label.set_text(&alloc::format!("  {} {} (exit {})", t("Failed to update"), name, code));
+                state.status_label.set_text(&alloc::format!(
+                    "  {} {} (exit {})",
+                    t("Failed to update"),
+                    name,
+                    code
+                ));
             }
         }
         PkgStatus::Installed => {
@@ -218,12 +246,21 @@ fn handle_remove(pkg_idx: usize) {
     let name = state.packages[pkg_idx].name.clone();
 
     let t = anyos_std::i18n::t;
-    state.status_label.set_text(&alloc::format!("  {} {}...", t("Removing"), name));
+    state
+        .status_label
+        .set_text(&alloc::format!("  {} {}...", t("Removing"), name));
     let code = apkg::remove_package(&name);
     if code == 0 {
-        state.status_label.set_text(&alloc::format!("  {} {}", name, t("removed successfully")));
+        state
+            .status_label
+            .set_text(&alloc::format!("  {} {}", name, t("removed successfully")));
     } else {
-        state.status_label.set_text(&alloc::format!("  {} {} (exit {})", t("Failed to remove"), name, code));
+        state.status_label.set_text(&alloc::format!(
+            "  {} {} (exit {})",
+            t("Failed to remove"),
+            name,
+            code
+        ));
     }
 
     // Reload and refresh

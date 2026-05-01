@@ -54,13 +54,22 @@ pub fn persist_entry(db: &Database, entry: &StateEntry) -> Result<(), String> {
     delete_entry(db, &entry.key)?;
 
     let (type_code, value_text, value_int, value_bool) = match &entry.value {
-        AmiValue::String(s) => (1, format!("'{}'", escape_sql(s)), String::from("0"), String::from("0")),
+        AmiValue::String(s) => (
+            1,
+            format!("'{}'", escape_sql(s)),
+            String::from("0"),
+            String::from("0"),
+        ),
         AmiValue::Int(v) => (2, String::from("''"), format!("{}", *v), String::from("0")),
         AmiValue::Bool(v) => (
             3,
             String::from("''"),
             String::from("0"),
-            if *v { String::from("1") } else { String::from("0") },
+            if *v {
+                String::from("1")
+            } else {
+                String::from("0")
+            },
         ),
     };
 

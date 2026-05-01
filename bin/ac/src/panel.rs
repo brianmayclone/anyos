@@ -7,7 +7,7 @@
 //! - sort mode and reverse flag
 //! - a set of selected ("marked") entries
 
-use crate::fs::{self, DirEntry, SortMode, MAX_ENTRIES, MAX_PATH, path_join, path_parent};
+use crate::fs::{self, path_join, path_parent, DirEntry, SortMode, MAX_ENTRIES, MAX_PATH};
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 
@@ -28,7 +28,7 @@ pub struct Panel {
 
     /// Sort configuration.
     pub sort_mode: SortMode,
-    pub sort_rev:  bool,
+    pub sort_rev: bool,
 
     /// Marked entries (bit-field would be ideal but we use a simple bool array).
     pub marked: [bool; MAX_ENTRIES],
@@ -79,7 +79,12 @@ impl Panel {
         path_copy[..plen].copy_from_slice(&self.path_buf[..plen]);
         let path_str = core::str::from_utf8(&path_copy[..plen]).unwrap_or("/");
         self.entry_count = fs::read_dir(path_str, &mut self.entries);
-        fs::sort_entries(&mut self.entries, self.entry_count, self.sort_mode, self.sort_rev);
+        fs::sort_entries(
+            &mut self.entries,
+            self.entry_count,
+            self.sort_mode,
+            self.sort_rev,
+        );
         self.marked = [false; MAX_ENTRIES];
         self.clamp();
     }
@@ -87,7 +92,9 @@ impl Panel {
     // ── Cursor movement ───────────────────────────────────────────────────────
 
     pub fn move_up(&mut self) {
-        if self.cursor > 0 { self.cursor -= 1; }
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
         self.ensure_visible();
     }
 
@@ -116,7 +123,9 @@ impl Panel {
     }
 
     pub fn move_end(&mut self) {
-        if self.entry_count > 0 { self.cursor = self.entry_count - 1; }
+        if self.entry_count > 0 {
+            self.cursor = self.entry_count - 1;
+        }
         self.ensure_visible();
     }
 
@@ -151,9 +160,11 @@ impl Panel {
     pub fn enter_dir(&mut self) -> bool {
         let entry = match self.current() {
             Some(e) => e.clone(),
-            None    => return false,
+            None => return false,
         };
-        if !entry.is_dir() { return false; }
+        if !entry.is_dir() {
+            return false;
+        }
 
         if entry.is_dotdot() {
             self.go_to_parent();
@@ -170,7 +181,9 @@ impl Panel {
 
     /// Navigate to the parent directory, selecting the directory we came from.
     pub fn go_to_parent(&mut self) {
-        if self.path() == "/" { return; }
+        if self.path() == "/" {
+            return;
+        }
 
         // Remember the last component of the current path so we can select it.
         let current_path = self.path();
@@ -178,7 +191,7 @@ impl Panel {
             let trimmed = current_path.trim_end_matches('/');
             match trimmed.rfind('/') {
                 Some(i) => &trimmed[i + 1..],
-                None    => trimmed,
+                None => trimmed,
             }
         };
         // Copy child name to stack before we mutate self.
@@ -223,7 +236,9 @@ impl Panel {
 
     /// Toggle mark on the current entry and advance cursor.
     pub fn toggle_mark_and_advance(&mut self) {
-        if self.entry_count == 0 { return; }
+        if self.entry_count == 0 {
+            return;
+        }
         if self.cursor < self.entry_count {
             // Don't mark ".." or "."
             if !self.entries[self.cursor].is_dotdot() && !self.entries[self.cursor].is_dot() {
@@ -235,12 +250,15 @@ impl Panel {
 
     /// Return the number of marked entries.
     pub fn marked_count(&self) -> usize {
-        self.marked[..self.entry_count].iter().filter(|&&m| m).count()
+        self.marked[..self.entry_count]
+            .iter()
+            .filter(|&&m| m)
+            .count()
     }
 
     /// Collect paths of all marked entries (or current if none marked).
     /// Returns a fixed-size array of (buf, len) pairs and the count.
-    pub fn selected_paths(&self) -> ([([ u8; MAX_PATH], usize); 64], usize) {
+    pub fn selected_paths(&self) -> ([([u8; MAX_PATH], usize); 64], usize) {
         let mut result = [([0u8; MAX_PATH], 0usize); 64];
         let mut n = 0usize;
         let mc = self.marked_count();
@@ -266,8 +284,13 @@ impl Panel {
 
     pub fn set_sort(&mut self, mode: SortMode, rev: bool) {
         self.sort_mode = mode;
-        self.sort_rev  = rev;
-        fs::sort_entries(&mut self.entries, self.entry_count, self.sort_mode, self.sort_rev);
+        self.sort_rev = rev;
+        fs::sort_entries(
+            &mut self.entries,
+            self.entry_count,
+            self.sort_mode,
+            self.sort_rev,
+        );
         self.clamp();
     }
 
@@ -278,15 +301,21 @@ impl Panel {
             self.cursor = 0;
             self.scroll = 0;
         } else {
-            if self.cursor >= self.entry_count { self.cursor = self.entry_count - 1; }
+            if self.cursor >= self.entry_count {
+                self.cursor = self.entry_count - 1;
+            }
         }
         self.ensure_visible();
     }
 
     /// Adjust scroll so that cursor is within the visible window.
     pub fn ensure_visible_with(&mut self, visible_rows: usize) {
-        if visible_rows == 0 { return; }
-        if self.cursor < self.scroll { self.scroll = self.cursor; }
+        if visible_rows == 0 {
+            return;
+        }
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        }
         if self.cursor >= self.scroll + visible_rows {
             self.scroll = self.cursor + 1 - visible_rows;
         }
@@ -294,7 +323,8 @@ impl Panel {
 
     fn ensure_visible(&mut self) {
         // Without knowing visible_rows here, just ensure scroll <= cursor.
-        if self.cursor < self.scroll { self.scroll = self.cursor; }
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        }
     }
 }
-

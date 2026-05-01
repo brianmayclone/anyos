@@ -12,7 +12,11 @@ fn ensure_initialized() {
 
 fn tcp_send(fd: u32, data: &[u8]) -> i32 {
     let n = net::tcp_send(fd, data);
-    if n == u32::MAX { -1 } else { n as i32 }
+    if n == u32::MAX {
+        -1
+    } else {
+        n as i32
+    }
 }
 
 fn tcp_recv(fd: u32, buf: &mut [u8]) -> i32 {
@@ -25,8 +29,12 @@ fn tcp_recv(fd: u32, buf: &mut [u8]) -> i32 {
             n if n > 0 => {
                 let read_len = (n as usize).min(buf.len());
                 let n = net::tcp_recv(fd, &mut buf[..read_len]);
-                if n == 0 { return 0; }
-                if n != u32::MAX { return n as i32; }
+                if n == 0 {
+                    return 0;
+                }
+                if n != u32::MAX {
+                    return n as i32;
+                }
             }
             _ => {}
         }
@@ -37,15 +45,25 @@ fn tcp_recv(fd: u32, buf: &mut [u8]) -> i32 {
     }
 }
 
-fn sleep(ms: u32) { anyos_std::process::sleep(ms); }
+fn sleep(ms: u32) {
+    anyos_std::process::sleep(ms);
+}
 
-fn random(buf: &mut [u8]) -> u32 { anyos_std::sys::random(buf) as u32 }
+fn random(buf: &mut [u8]) -> u32 {
+    anyos_std::sys::random(buf) as u32
+}
 
 pub fn connect(fd: u32, host: &str) -> i32 {
     ensure_initialized();
     libtls::connect(fd, host)
 }
 
-pub fn send(handle: TlsHandle, data: &[u8]) -> i32 { libtls::send(handle, data) }
-pub fn recv(handle: TlsHandle, buf: &mut [u8]) -> i32 { libtls::recv(handle, buf) }
-pub fn close(handle: TlsHandle) { libtls::close(handle); }
+pub fn send(handle: TlsHandle, data: &[u8]) -> i32 {
+    libtls::send(handle, data)
+}
+pub fn recv(handle: TlsHandle, buf: &mut [u8]) -> i32 {
+    libtls::recv(handle, buf)
+}
+pub fn close(handle: TlsHandle) {
+    libtls::close(handle);
+}

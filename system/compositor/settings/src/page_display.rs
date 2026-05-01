@@ -52,7 +52,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     panel.set_color(layout::bg());
 
     // ── Page header ─────────────────────────────────────────────────────
-    layout::build_page_header(&panel, i18n::t("Display"), i18n::t("Theme, monitor, resolution and wallpaper"));
+    layout::build_page_header(
+        &panel,
+        i18n::t("Display"),
+        i18n::t("Theme, monitor, resolution and wallpaper"),
+    );
 
     // ── Display Info card ───────────────────────────────────────────────
     let info_card = layout::build_auto_card(&panel);
@@ -69,7 +73,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     layout::build_info_row_colored(
         &info_card,
         i18n::t("2D Acceleration"),
-        if accel_2d { i18n::t("Available") } else { i18n::t("Not available") },
+        if accel_2d {
+            i18n::t("Available")
+        } else {
+            i18n::t("Not available")
+        },
         if accel_2d { tc.success } else { tc.destructive },
         false,
     );
@@ -81,7 +89,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     layout::build_info_row_colored(
         &info_card,
         i18n::t("3D Acceleration"),
-        if accel_3d { i18n::t("Available") } else { i18n::t("Not available") },
+        if accel_3d {
+            i18n::t("Available")
+        } else {
+            i18n::t("Not available")
+        },
         if accel_3d { tc.success } else { tc.destructive },
         false,
     );
@@ -100,7 +112,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             let mfr = str_from_bytes(&minfo.manufacturer);
             let model = str_from_bytes(&minfo.model_name);
             let mon_name = if model.is_empty() {
-                if mfr.is_empty() { alloc::string::String::from("Unknown") } else { alloc::string::String::from(mfr) }
+                if mfr.is_empty() {
+                    alloc::string::String::from("Unknown")
+                } else {
+                    alloc::string::String::from(mfr)
+                }
             } else {
                 format!("{} {}", mfr, model)
             };
@@ -111,7 +127,12 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             if nw > 0 && nh > 0 {
                 layout::build_separator(&info_card);
                 let native_str = format!("{} x {}", nw, nh);
-                layout::build_info_row(&info_card, i18n::t("Native Resolution"), &native_str, false);
+                layout::build_info_row(
+                    &info_card,
+                    i18n::t("Native Resolution"),
+                    &native_str,
+                    false,
+                );
             }
 
             let wmm = unsafe { core::ptr::addr_of!(minfo.width_mm).read_unaligned() };
@@ -145,7 +166,11 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             anyos_std::sys::monitor_info(0).and_then(|m| {
                 let nw = unsafe { core::ptr::addr_of!(m.native_width).read_unaligned() };
                 let nh = unsafe { core::ptr::addr_of!(m.native_height).read_unaligned() };
-                if nw > 0 && nh > 0 { Some((nw, nh)) } else { None }
+                if nw > 0 && nh > 0 {
+                    Some((nw, nh))
+                } else {
+                    None
+                }
             })
         } else {
             None
@@ -279,23 +304,27 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
                 let tid = unsafe { WP_TIMER };
                 if tid != 0 {
                     ui::kill_timer(tid);
-                    unsafe { WP_TIMER = 0; }
+                    unsafe {
+                        WP_TIMER = 0;
+                    }
                 }
                 return;
             }
 
             let name = &names[index];
             let path = format!("{}/{}", WALLPAPER_DIR, name);
-            let display = name
-                .rfind('.')
-                .map(|i| &name[..i])
-                .unwrap_or(name);
+            let display = name.rfind('.').map(|i| &name[..i]).unwrap_or(name);
 
             // Load and decode one thumbnail
             let thumbnail = if can_decode {
                 load_thumbnail(
-                    &path, file_ptr, pixel_ptr, scratch_ptr,
-                    FILE_BUF_SIZE, MAX_PIX, SCRATCH_SIZE,
+                    &path,
+                    file_ptr,
+                    pixel_ptr,
+                    scratch_ptr,
+                    FILE_BUF_SIZE,
+                    MAX_PIX,
+                    SCRATCH_SIZE,
                 )
             } else {
                 Vec::new()
@@ -341,7 +370,9 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
             ui::Control::from_id(progress_id).set_state(pct as u32);
         });
 
-        unsafe { WP_TIMER = timer_id; }
+        unsafe {
+            WP_TIMER = timer_id;
+        }
     }
 
     parent.add(&panel);
@@ -448,7 +479,12 @@ fn build_font_smoothing_card(panel: &ui::View) {
 
     let row = layout::build_setting_row(&card, i18n::t("Font Smoothing"), false);
 
-    let smoothing_items = format!("{}|{}|{}", i18n::t("None"), i18n::t("Greyscale"), i18n::t("Subpixel (LCD)"));
+    let smoothing_items = format!(
+        "{}|{}|{}",
+        i18n::t("None"),
+        i18n::t("Greyscale"),
+        i18n::t("Subpixel (LCD)")
+    );
     let dd = ui::DropDown::new(&smoothing_items);
     dd.set_position(200, 8);
     dd.set_size(280, 28);
@@ -519,9 +555,7 @@ fn scan_accent_styles() -> Vec<AccentStyle> {
 
     for filename in &names {
         let path = format!("{}/{}", STYLE_DIR, filename);
-        let style_name = filename
-            .strip_suffix(".conf")
-            .unwrap_or(filename);
+        let style_name = filename.strip_suffix(".conf").unwrap_or(filename);
 
         let mut buf = [0u8; 512];
         let fd = fs::open(&path, 0);
@@ -558,7 +592,9 @@ fn parse_style_conf(data: &[u8]) -> Option<(u32, u32, u32, u32)> {
 
     for line in text.split('\n') {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         let eq = line.find('=')?;
         let key = line[..eq].trim();
         let val_str = line[eq + 1..].trim();
@@ -579,7 +615,9 @@ fn parse_style_conf(data: &[u8]) -> Option<(u32, u32, u32, u32)> {
 /// Parse a `0xAARRGGBB` hex string.
 fn parse_hex_color(s: &str) -> Option<u32> {
     let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
-    if hex.len() != 8 { return None; }
+    if hex.len() != 8 {
+        return None;
+    }
     let mut val: u32 = 0;
     for &b in hex.as_bytes() {
         let digit = match b {

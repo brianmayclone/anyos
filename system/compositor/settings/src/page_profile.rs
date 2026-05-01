@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 
 use anyos_std::{env, fs, i18n, println, process, users};
 use libanyui_client as ui;
-use libconf_schema::{manifest, RegistryScope, RegistryManifest, ServiceSchema};
+use libconf_schema::{manifest, RegistryManifest, RegistryScope, ServiceSchema};
 use ui::Widget;
 
 use crate::layout;
@@ -24,14 +24,8 @@ use crate::layout;
 // screen runs as root and reads each user's User-scope entries directly via
 // ConfClient::get_for_user(), avoiding the System-scope write-permission gate.
 
-const PROFILES_MANIFEST: RegistryManifest<'static> = manifest(
-    "profiles",
-    RegistryScope::User,
-    1,
-    &[],
-    &[],
-    &[],
-);
+const PROFILES_MANIFEST: RegistryManifest<'static> =
+    manifest("profiles", RegistryScope::User, 1, &[], &[], &[]);
 
 fn profiles_schema() -> ServiceSchema<'static> {
     ServiceSchema::new("settings", &PROFILES_MANIFEST)
@@ -39,7 +33,11 @@ fn profiles_schema() -> ServiceSchema<'static> {
 
 pub fn read_avatar_path() -> Option<String> {
     let s = profiles_schema().read_string("avatar")?;
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 // ── Static state for the page (one preview canvas) ──────────────────────────
@@ -94,7 +92,9 @@ fn build_avatar_card(panel: &ui::View) {
     canvas.set_position(0, 12);
     canvas.set_size(AVATAR_SIZE, AVATAR_SIZE);
     row.add(&canvas);
-    unsafe { AVATAR_CANVAS = Some(canvas); }
+    unsafe {
+        AVATAR_CANVAS = Some(canvas);
+    }
     refresh_avatar();
 
     // Description
@@ -174,13 +174,7 @@ fn is_supported_image(path: &str) -> bool {
 
 // ── Info card ───────────────────────────────────────────────────────────────
 
-fn build_info_card(
-    panel: &ui::View,
-    uid: u16,
-    username: &str,
-    displayname: &str,
-    home: &str,
-) {
+fn build_info_card(panel: &ui::View, uid: u16, username: &str, displayname: &str, home: &str) {
     let card = layout::build_auto_card(panel);
     layout::build_info_row(&card, i18n::t("Display Name"), displayname, true);
     layout::build_separator(&card);
@@ -281,25 +275,25 @@ fn open_password_dialog() {
     f_old.focus();
 }
 
-fn confirm_id_setup(
-    ok: &ui::Button,
-    old_id: u32,
-    new_id: u32,
-    confirm_id: u32,
-    win_id: u32,
-) {
+fn confirm_id_setup(ok: &ui::Button, old_id: u32, new_id: u32, confirm_id: u32, win_id: u32) {
     ok.on_click(move |_| {
         let mut buf = [0u8; 128];
         let len = ui::Control::from_id(old_id).get_text(&mut buf);
-        let old_pw = core::str::from_utf8(&buf[..len as usize]).unwrap_or("").to_string();
+        let old_pw = core::str::from_utf8(&buf[..len as usize])
+            .unwrap_or("")
+            .to_string();
 
         let mut buf2 = [0u8; 128];
         let len2 = ui::Control::from_id(new_id).get_text(&mut buf2);
-        let new_pw = core::str::from_utf8(&buf2[..len2 as usize]).unwrap_or("").to_string();
+        let new_pw = core::str::from_utf8(&buf2[..len2 as usize])
+            .unwrap_or("")
+            .to_string();
 
         let mut buf3 = [0u8; 128];
         let len3 = ui::Control::from_id(confirm_id).get_text(&mut buf3);
-        let confirm_pw = core::str::from_utf8(&buf3[..len3 as usize]).unwrap_or("").to_string();
+        let confirm_pw = core::str::from_utf8(&buf3[..len3 as usize])
+            .unwrap_or("")
+            .to_string();
 
         if new_pw.is_empty() {
             ui::MessageBox::show(
@@ -340,8 +334,7 @@ fn confirm_id_setup(
 // ── Avatar rendering ────────────────────────────────────────────────────────
 
 const AVATAR_PALETTE: [u32; 8] = [
-    0xFF4E79A7, 0xFFF28E2B, 0xFFE15759, 0xFF76B7B2,
-    0xFF59A14F, 0xFFB07AA1, 0xFF9C755F, 0xFF5470C6,
+    0xFF4E79A7, 0xFFF28E2B, 0xFFE15759, 0xFF76B7B2, 0xFF59A14F, 0xFFB07AA1, 0xFF9C755F, 0xFF5470C6,
 ];
 
 fn avatar_color(seed: &str) -> u32 {
@@ -353,7 +346,11 @@ fn avatar_color(seed: &str) -> u32 {
 }
 
 fn compute_initials(display: &str, fallback: &str) -> String {
-    let src = if display.trim().is_empty() { fallback } else { display };
+    let src = if display.trim().is_empty() {
+        fallback
+    } else {
+        display
+    };
     let mut out = String::new();
     let mut prev_space = true;
     for c in src.chars() {
@@ -365,11 +362,15 @@ fn compute_initials(display: &str, fallback: &str) -> String {
             for u in c.to_uppercase() {
                 out.push(u);
             }
-            if out.chars().count() >= 2 { break; }
+            if out.chars().count() >= 2 {
+                break;
+            }
             prev_space = false;
         }
     }
-    if out.is_empty() { out.push('?'); }
+    if out.is_empty() {
+        out.push('?');
+    }
     out
 }
 
@@ -387,12 +388,18 @@ fn refresh_avatar() {
     match read_avatar_path() {
         Some(path) => match load_image(&path) {
             Some((pixels, w, h)) => {
-                println!("settings/profile: rendering avatar from '{}' ({}x{})", path, w, h);
+                println!(
+                    "settings/profile: rendering avatar from '{}' ({}x{})",
+                    path, w, h
+                );
                 blit_circular_buffer(&canvas, &pixels, w, h, layout::card_bg());
                 return;
             }
             None => {
-                println!("settings/profile: avatar path '{}' could not be decoded", path);
+                println!(
+                    "settings/profile: avatar path '{}' could not be decoded",
+                    path
+                );
             }
         },
         None => {}
@@ -426,11 +433,17 @@ fn load_image(path: &str) -> Option<(Vec<u32>, u32, u32)> {
     let mut buf = [0u8; 4096];
     loop {
         let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         data.extend_from_slice(&buf[..n as usize]);
     }
     fs::close(fd);
-    println!("settings/profile: load_image: read {} bytes from '{}'", data.len(), path);
+    println!(
+        "settings/profile: load_image: read {} bytes from '{}'",
+        data.len(),
+        path
+    );
     if data.len() >= 16 {
         let h = &data[..16];
         println!(
@@ -452,7 +465,9 @@ fn load_image(path: &str) -> Option<(Vec<u32>, u32, u32)> {
     );
     let w = info.width;
     let h = info.height;
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
     let mut pixels = vec![0u32; (w as usize).saturating_mul(h as usize)];
     let mut scratch = vec![0u8; info.scratch_needed as usize];
     if let Err(e) = libimage_client::decode(&data, &mut pixels, &mut scratch) {
@@ -472,8 +487,12 @@ fn load_image(path: &str) -> Option<(Vec<u32>, u32, u32)> {
     }
     let mut scaled = vec![0u32; (AVATAR_SIZE as usize) * (AVATAR_SIZE as usize)];
     if libimage_client::scale_image(
-        &cropped, side, side,
-        &mut scaled, AVATAR_SIZE, AVATAR_SIZE,
+        &cropped,
+        side,
+        side,
+        &mut scaled,
+        AVATAR_SIZE,
+        AVATAR_SIZE,
         libimage_client::MODE_SCALE,
     ) {
         Some((scaled, AVATAR_SIZE, AVATAR_SIZE))
@@ -482,13 +501,7 @@ fn load_image(path: &str) -> Option<(Vec<u32>, u32, u32)> {
     }
 }
 
-fn blit_circular_buffer(
-    canvas: &ui::Canvas,
-    pixels: &[u32],
-    w: u32,
-    h: u32,
-    bg: u32,
-) {
+fn blit_circular_buffer(canvas: &ui::Canvas, pixels: &[u32], w: u32, h: u32, bg: u32) {
     let size = AVATAR_SIZE as usize;
     let mut buf = vec![bg; size * size];
     let cx = (AVATAR_SIZE as i32) / 2;
@@ -518,7 +531,9 @@ fn resolve_identity() -> (u16, String, String, String) {
     let mut name_buf = [0u8; 64];
     let nlen = process::getusername(uid, &mut name_buf);
     let username = if nlen != u32::MAX && nlen > 0 {
-        core::str::from_utf8(&name_buf[..nlen as usize]).unwrap_or("root").to_string()
+        core::str::from_utf8(&name_buf[..nlen as usize])
+            .unwrap_or("root")
+            .to_string()
     } else {
         String::from("root")
     };
@@ -545,7 +560,9 @@ fn resolve_identity() -> (u16, String, String, String) {
     let mut home_buf = [0u8; 256];
     let hlen = env::get("HOME", &mut home_buf);
     let home = if hlen != u32::MAX && hlen > 0 {
-        core::str::from_utf8(&home_buf[..hlen as usize]).unwrap_or("/tmp").to_string()
+        core::str::from_utf8(&home_buf[..hlen as usize])
+            .unwrap_or("/tmp")
+            .to_string()
     } else {
         format!("/Users/{}", username)
     };

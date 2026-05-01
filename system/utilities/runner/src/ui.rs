@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 //! UI construction and event handling — Spotlight-style launcher.
 
+use crate::search::SearchResult;
+use crate::{apps, render, search, state};
 use libanyui_client as ui;
 use ui::Widget;
-use crate::{apps, render, search, state};
-use crate::search::SearchResult;
 
 const BLUR_RADIUS: u32 = 12;
 const TEXT_COLOR: u32 = 0xFF_F0_F0_F0;
@@ -24,8 +24,10 @@ pub fn build() {
 
     let win = ui::Window::new_with_flags(
         "",
-        x, y,
-        render::WIN_WIDTH, render::SEARCH_HEIGHT,
+        x,
+        y,
+        render::WIN_WIDTH,
+        render::SEARCH_HEIGHT,
         ui::WIN_FLAG_BORDERLESS
             | ui::WIN_FLAG_NOT_RESIZABLE
             | ui::WIN_FLAG_ALWAYS_ON_TOP
@@ -40,7 +42,14 @@ pub fn build() {
     canvas.set_position(0, 0);
     win.add(&canvas);
 
-    render::draw(&canvas, render::WIN_WIDTH, render::SEARCH_HEIGHT, &[], &apps_list, 0);
+    render::draw(
+        &canvas,
+        render::WIN_WIDTH,
+        render::SEARCH_HEIGHT,
+        &[],
+        &apps_list,
+        0,
+    );
     canvas.on_click(|_| on_canvas_click());
 
     let field = ui::TextField::new();
@@ -57,19 +66,19 @@ pub fn build() {
 
     field.on_text_changed(|_| on_query_changed());
     field.on_submit(|_| on_submit());
-    field.on_key_down(|e| {
-        match e.keycode {
-            0x103 => ui::quit(),
-            0x106 => move_selection(-1),
-            0x107 => move_selection(1),
-            _ => {}
-        }
+    field.on_key_down(|e| match e.keycode {
+        0x103 => ui::quit(),
+        0x106 => move_selection(-1),
+        0x107 => move_selection(1),
+        _ => {}
     });
 
     // Catch-up timer for skipped searchd queries
     ui::set_timer(SEARCHD_INTERVAL_MS, || on_catchup_tick());
 
-    win.on_close(|_| { ui::quit(); });
+    win.on_close(|_| {
+        ui::quit();
+    });
     field.focus();
 }
 
@@ -96,9 +105,13 @@ fn on_query_changed() {
 
 fn on_catchup_tick() {
     let s = state::get();
-    if !s.pending_query { return; }
+    if !s.pending_query {
+        return;
+    }
     let now = anyos_std::sys::uptime_ms();
-    if now.wrapping_sub(s.last_searchd_time) < SEARCHD_INTERVAL_MS { return; }
+    if now.wrapping_sub(s.last_searchd_time) < SEARCHD_INTERVAL_MS {
+        return;
+    }
     s.pending_query = false;
 
     let query = read_query(s.field_id);
@@ -122,7 +135,9 @@ fn read_query(field_id: u32) -> anyos_std::String {
 
 fn move_selection(delta: i32) {
     let s = state::get();
-    if s.results.is_empty() { return; }
+    if s.results.is_empty() {
+        return;
+    }
     let count = s.results.len() as i32;
     s.selected = (s.selected as i32 + delta).rem_euclid(count) as usize;
     redraw();
@@ -168,5 +183,12 @@ fn redraw() {
         s.win.resize(render::WIN_WIDTH, new_h);
         s.current_height = new_h;
     }
-    render::draw(&s.canvas, render::WIN_WIDTH, new_h, &s.results, &s.apps, s.selected);
+    render::draw(
+        &s.canvas,
+        render::WIN_WIDTH,
+        new_h,
+        &s.results,
+        &s.apps,
+        s.selected,
+    );
 }

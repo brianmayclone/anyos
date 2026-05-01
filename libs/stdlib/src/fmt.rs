@@ -175,7 +175,10 @@ pub fn hex32(val: u32) -> String {
 
 /// Format a `u8` as 2 zero-padded hex digits (no prefix).
 pub fn hex_byte(val: u8) -> [u8; 2] {
-    [HEX_CHARS[(val >> 4) as usize], HEX_CHARS[(val & 0xF) as usize]]
+    [
+        HEX_CHARS[(val >> 4) as usize],
+        HEX_CHARS[(val & 0xF) as usize],
+    ]
 }
 
 /// Format a byte slice as space-separated hex bytes (allocating).

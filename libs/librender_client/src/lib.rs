@@ -23,7 +23,11 @@ impl Surface {
     /// # Safety
     /// `pixels` must point to a buffer of at least `width * height` u32 elements.
     pub unsafe fn from_raw(pixels: *mut u32, width: u32, height: u32) -> Self {
-        Surface { pixels, width, height }
+        Surface {
+            pixels,
+            width,
+            height,
+        }
     }
 
     /// Fill the entire surface with a color.
@@ -61,25 +65,81 @@ impl Surface {
         src_opaque: bool,
     ) {
         (raw::exports().blit_rect)(
-            self.pixels, self.width, self.height, dx, dy,
-            src, sw, sh, sx, sy, cw, ch,
+            self.pixels,
+            self.width,
+            self.height,
+            dx,
+            dy,
+            src,
+            sw,
+            sh,
+            sx,
+            sy,
+            cw,
+            ch,
             if src_opaque { 1 } else { 0 },
         );
     }
 
     /// Set a pixel with LCD subpixel rendering.
-    pub fn put_pixel_subpixel(&mut self, x: i32, y: i32, r_cov: u8, g_cov: u8, b_cov: u8, color: u32) {
-        (raw::exports().put_pixel_subpixel)(self.pixels, self.width, self.height, x, y, r_cov, g_cov, b_cov, color);
+    pub fn put_pixel_subpixel(
+        &mut self,
+        x: i32,
+        y: i32,
+        r_cov: u8,
+        g_cov: u8,
+        b_cov: u8,
+        color: u32,
+    ) {
+        (raw::exports().put_pixel_subpixel)(
+            self.pixels,
+            self.width,
+            self.height,
+            x,
+            y,
+            r_cov,
+            g_cov,
+            b_cov,
+            color,
+        );
     }
 
     /// Fill a rounded rectangle.
     pub fn fill_rounded_rect(&mut self, x: i32, y: i32, w: u32, h: u32, radius: i32, color: u32) {
-        (raw::exports().fill_rounded_rect)(self.pixels, self.width, self.height, x, y, w, h, radius, color);
+        (raw::exports().fill_rounded_rect)(
+            self.pixels,
+            self.width,
+            self.height,
+            x,
+            y,
+            w,
+            h,
+            radius,
+            color,
+        );
     }
 
     /// Fill a rounded rectangle with anti-aliased edges.
-    pub fn fill_rounded_rect_aa(&mut self, x: i32, y: i32, w: u32, h: u32, radius: i32, color: u32) {
-        (raw::exports().fill_rounded_rect_aa)(self.pixels, self.width, self.height, x, y, w, h, radius, color);
+    pub fn fill_rounded_rect_aa(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        radius: i32,
+        color: u32,
+    ) {
+        (raw::exports().fill_rounded_rect_aa)(
+            self.pixels,
+            self.width,
+            self.height,
+            x,
+            y,
+            w,
+            h,
+            radius,
+            color,
+        );
     }
 
     /// Fill a solid circle.
@@ -89,7 +149,15 @@ impl Surface {
 
     /// Fill a circle with anti-aliased edges.
     pub fn fill_circle_aa(&mut self, cx: i32, cy: i32, radius: i32, color: u32) {
-        (raw::exports().fill_circle_aa)(self.pixels, self.width, self.height, cx, cy, radius, color);
+        (raw::exports().fill_circle_aa)(
+            self.pixels,
+            self.width,
+            self.height,
+            cx,
+            cy,
+            radius,
+            color,
+        );
     }
 
     /// Draw a line between two points.
@@ -99,7 +167,17 @@ impl Surface {
 
     /// Draw a rectangular outline.
     pub fn draw_rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: u32, thickness: u32) {
-        (raw::exports().draw_rect)(self.pixels, self.width, self.height, x, y, w, h, color, thickness);
+        (raw::exports().draw_rect)(
+            self.pixels,
+            self.width,
+            self.height,
+            x,
+            y,
+            w,
+            h,
+            color,
+            thickness,
+        );
     }
 
     /// Draw a circle outline.
@@ -109,22 +187,84 @@ impl Surface {
 
     /// Draw an anti-aliased circle outline.
     pub fn draw_circle_aa(&mut self, cx: i32, cy: i32, radius: i32, color: u32) {
-        (raw::exports().draw_circle_aa)(self.pixels, self.width, self.height, cx, cy, radius, color);
+        (raw::exports().draw_circle_aa)(
+            self.pixels,
+            self.width,
+            self.height,
+            cx,
+            cy,
+            radius,
+            color,
+        );
     }
 
     /// Draw a 1px rounded rectangle outline with anti-aliased corners.
-    pub fn draw_rounded_rect_aa(&mut self, x: i32, y: i32, w: u32, h: u32, radius: i32, color: u32) {
-        (raw::exports().draw_rounded_rect_aa)(self.pixels, self.width, self.height, x, y, w, h, radius, color);
+    pub fn draw_rounded_rect_aa(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        radius: i32,
+        color: u32,
+    ) {
+        (raw::exports().draw_rounded_rect_aa)(
+            self.pixels,
+            self.width,
+            self.height,
+            x,
+            y,
+            w,
+            h,
+            radius,
+            color,
+        );
     }
 
     /// Fill a horizontal gradient.
-    pub fn fill_gradient_h(&mut self, x: i32, y: i32, w: u32, h: u32, color_left: u32, color_right: u32) {
-        (raw::exports().fill_gradient_h)(self.pixels, self.width, self.height, x, y, w, h, color_left, color_right);
+    pub fn fill_gradient_h(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        color_left: u32,
+        color_right: u32,
+    ) {
+        (raw::exports().fill_gradient_h)(
+            self.pixels,
+            self.width,
+            self.height,
+            x,
+            y,
+            w,
+            h,
+            color_left,
+            color_right,
+        );
     }
 
     /// Fill a vertical gradient.
-    pub fn fill_gradient_v(&mut self, x: i32, y: i32, w: u32, h: u32, color_top: u32, color_bottom: u32) {
-        (raw::exports().fill_gradient_v)(self.pixels, self.width, self.height, x, y, w, h, color_top, color_bottom);
+    pub fn fill_gradient_v(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        color_top: u32,
+        color_bottom: u32,
+    ) {
+        (raw::exports().fill_gradient_v)(
+            self.pixels,
+            self.width,
+            self.height,
+            x,
+            y,
+            w,
+            h,
+            color_top,
+            color_bottom,
+        );
     }
 }
 

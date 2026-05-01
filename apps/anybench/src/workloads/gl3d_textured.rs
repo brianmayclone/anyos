@@ -4,17 +4,16 @@
 //! [`GL3D_TEST_MS`] milliseconds.  Measures texture-sampling and
 //! fragment-processing throughput. Returns total textured triangles rendered.
 
+use super::gl3d_common::*;
+use super::GL3D_TEST_MS;
 use alloc::vec;
 use alloc::vec::Vec;
 use libanyui_client as anyui;
 use libgl_client as gl;
-use super::GL3D_TEST_MS;
-use super::gl3d_common::*;
 
 const NUM_QUADS: u32 = 200;
 
-const VS_SRC: &str =
-"attribute vec3 aPosition;
+const VS_SRC: &str = "attribute vec3 aPosition;
 attribute vec2 aTexCoord;
 uniform mat4 uMVP;
 varying vec2 vTexCoord;
@@ -23,8 +22,7 @@ void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
 }";
 
-const FS_SRC: &str =
-"varying vec2 vTexCoord;
+const FS_SRC: &str = "varying vec2 vTexCoord;
 uniform sampler2D uTexture;
 void main() {
     gl_FragColor = texture2D(uTexture, vTexCoord);
@@ -40,11 +38,11 @@ fn generate_checkerboard() -> Vec<u8> {
             let dark = ((x / check) + (y / check)) % 2 == 0;
             let idx = ((y * size + x) * 4) as usize;
             if dark {
-                data[idx]     = 50;
+                data[idx] = 50;
                 data[idx + 1] = 50;
                 data[idx + 2] = 60;
             } else {
-                data[idx]     = 220;
+                data[idx] = 220;
                 data[idx + 1] = 220;
                 data[idx + 2] = 230;
             }
@@ -58,7 +56,9 @@ fn generate_checkerboard() -> Vec<u8> {
 pub fn bench_gl3d_textured(canvas: &anyui::Canvas) -> u64 {
     let w = canvas.get_stride();
     let h = canvas.get_height();
-    if !ensure_gl_init(w, h) { return 0; }
+    if !ensure_gl_init(w, h) {
+        return 0;
+    }
 
     let (program, vs, fs) = match compile_program(VS_SRC, FS_SRC) {
         Some(p) => p,
@@ -103,13 +103,36 @@ pub fn bench_gl3d_textured(canvas: &anyui::Canvas) -> u64 {
     gl::gen_textures(1, &mut tex);
     gl::bind_texture(gl::GL_TEXTURE_2D, tex[0]);
     gl::tex_image_2d(
-        gl::GL_TEXTURE_2D, 0, gl::GL_RGBA as i32, 64, 64, 0,
-        gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, &tex_data,
+        gl::GL_TEXTURE_2D,
+        0,
+        gl::GL_RGBA as i32,
+        64,
+        64,
+        0,
+        gl::GL_RGBA,
+        gl::GL_UNSIGNED_BYTE,
+        &tex_data,
     );
-    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, gl::GL_NEAREST as i32);
-    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, gl::GL_NEAREST as i32);
-    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_S, gl::GL_REPEAT as i32);
-    gl::tex_parameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_T, gl::GL_REPEAT as i32);
+    gl::tex_parameteri(
+        gl::GL_TEXTURE_2D,
+        gl::GL_TEXTURE_MAG_FILTER,
+        gl::GL_NEAREST as i32,
+    );
+    gl::tex_parameteri(
+        gl::GL_TEXTURE_2D,
+        gl::GL_TEXTURE_MIN_FILTER,
+        gl::GL_NEAREST as i32,
+    );
+    gl::tex_parameteri(
+        gl::GL_TEXTURE_2D,
+        gl::GL_TEXTURE_WRAP_S,
+        gl::GL_REPEAT as i32,
+    );
+    gl::tex_parameteri(
+        gl::GL_TEXTURE_2D,
+        gl::GL_TEXTURE_WRAP_T,
+        gl::GL_REPEAT as i32,
+    );
 
     let loc_mvp = gl::get_uniform_location(program, "uMVP");
     let loc_tex = gl::get_uniform_location(program, "uTexture");

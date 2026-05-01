@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
+use anyos_std::format;
 use anyos_std::fs;
 use anyos_std::sys;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::format;
 
 anyos_std::entry!(main);
 
@@ -129,8 +129,7 @@ fn parse_args(raw: &str) -> Result<Opts, String> {
                 bs_set = true;
             }
             "ibs" => {
-                let n =
-                    parse_size(v).ok_or_else(|| format!("dd: invalid ibs='{}'", v))?;
+                let n = parse_size(v).ok_or_else(|| format!("dd: invalid ibs='{}'", v))?;
                 if n == 0 {
                     return Err(String::from("dd: ibs must be > 0"));
                 }
@@ -139,8 +138,7 @@ fn parse_args(raw: &str) -> Result<Opts, String> {
                 }
             }
             "obs" => {
-                let n =
-                    parse_size(v).ok_or_else(|| format!("dd: invalid obs='{}'", v))?;
+                let n = parse_size(v).ok_or_else(|| format!("dd: invalid obs='{}'", v))?;
                 if n == 0 {
                     return Err(String::from("dd: obs must be > 0"));
                 }
@@ -149,8 +147,7 @@ fn parse_args(raw: &str) -> Result<Opts, String> {
                 }
             }
             "count" => {
-                o.count =
-                    Some(parse_count(v).ok_or_else(|| format!("dd: invalid count='{}'", v))?);
+                o.count = Some(parse_count(v).ok_or_else(|| format!("dd: invalid count='{}'", v))?);
             }
             "skip" => {
                 o.skip = parse_count(v).ok_or_else(|| format!("dd: invalid skip='{}'", v))?;
@@ -240,9 +237,19 @@ fn write_all(fd: u32, buf: &[u8]) -> bool {
 fn format_bytes(b: u64, out: &mut String) {
     use core::fmt::Write;
     if b >= 1024 * 1024 * 1024 {
-        let _ = write!(out, "{}.{} GiB", b / (1 << 30), (b % (1 << 30)) / ((1 << 30) / 10));
+        let _ = write!(
+            out,
+            "{}.{} GiB",
+            b / (1 << 30),
+            (b % (1 << 30)) / ((1 << 30) / 10)
+        );
     } else if b >= 1024 * 1024 {
-        let _ = write!(out, "{}.{} MiB", b / (1 << 20), (b % (1 << 20)) / ((1 << 20) / 10));
+        let _ = write!(
+            out,
+            "{}.{} MiB",
+            b / (1 << 20),
+            (b % (1 << 20)) / ((1 << 20) / 10)
+        );
     } else if b >= 1024 {
         let _ = write!(out, "{}.{} KiB", b / 1024, (b % 1024) / 102);
     } else {
@@ -282,7 +289,11 @@ fn print_summary(
         format_bytes(bps, &mut rate);
         anyos_std::println!(
             "{} bytes ({}) copied, {}.{:02} s, {}/s",
-            bytes, human, secs_whole, secs_frac, rate
+            bytes,
+            human,
+            secs_whole,
+            secs_frac,
+            rate
         );
     }
 }
@@ -338,8 +349,12 @@ fn run(o: &Opts) -> i32 {
         let bytes = o.seek.saturating_mul(o.obs);
         if !seek_forward(out_fd, bytes) {
             anyos_std::println!("dd: seek failed on output");
-            if in_fd != 0 { fs::close(in_fd); }
-            if out_fd != 1 { fs::close(out_fd); }
+            if in_fd != 0 {
+                fs::close(in_fd);
+            }
+            if out_fd != 1 {
+                fs::close(out_fd);
+            }
             return 1;
         }
     }

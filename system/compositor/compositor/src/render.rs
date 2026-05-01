@@ -9,9 +9,9 @@
 //! macOS (CVDisplayLink) and Windows (DWM) compositors work — render only
 //! when there's something to display, not on a blind timer.
 
+use anyos_std::println;
 use anyos_std::process;
 use anyos_std::sys;
-use anyos_std::println;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::desktop::Desktop;
@@ -96,12 +96,12 @@ pub fn render_thread_entry() {
     let mut last_clock_check: u32 = 0;
 
     // ── Debug stats (reset every 5 seconds) ──
-    let mut stat_wakeups: u32 = 0;       // times work_available was true
-    let mut stat_damage: u32 = 0;        // times compose() had actual damage
-    let mut stat_animations: u32 = 0;    // times has_animations was true
-    let mut stat_no_damage: u32 = 0;     // times compose() had NO damage
-    let mut stat_lock_fail: u32 = 0;     // times try_lock() failed
-    let mut stat_idle_loops: u32 = 0;    // times we entered idle branch
+    let mut stat_wakeups: u32 = 0; // times work_available was true
+    let mut stat_damage: u32 = 0; // times compose() had actual damage
+    let mut stat_animations: u32 = 0; // times has_animations was true
+    let mut stat_no_damage: u32 = 0; // times compose() had NO damage
+    let mut stat_lock_fail: u32 = 0; // times try_lock() failed
+    let mut stat_idle_loops: u32 = 0; // times we entered idle branch
     let mut stat_last_report: u32 = sys::uptime_ms();
 
     loop {
@@ -110,8 +110,12 @@ pub fn render_thread_entry() {
         if now_ms.wrapping_sub(stat_last_report) >= 30000 {
             println!(
                 "GPU-STATS: wake={} dmg={} anim={} no_dmg={} lock_fail={} idle={}",
-                stat_wakeups, stat_damage, stat_animations,
-                stat_no_damage, stat_lock_fail, stat_idle_loops
+                stat_wakeups,
+                stat_damage,
+                stat_animations,
+                stat_no_damage,
+                stat_lock_fail,
+                stat_idle_loops
             );
             stat_wakeups = 0;
             stat_damage = 0;
@@ -177,13 +181,21 @@ pub fn render_thread_entry() {
 
                 // VSync callback — notify apps that their frame is on screen.
                 for (target, window_id) in frame_acks {
-                    anyos_std::ipc::evt_chan_emit_to(target.channel_id, target.sub_id, &[
-                        crate::ipc_protocol::EVT_FRAME_ACK, window_id, 0, 0, 0,
-                    ]);
+                    anyos_std::ipc::evt_chan_emit_to(
+                        target.channel_id,
+                        target.sub_id,
+                        &[crate::ipc_protocol::EVT_FRAME_ACK, window_id, 0, 0, 0],
+                    );
                 }
 
-                if has_animations { stat_animations += 1; }
-                if had_damage { stat_damage += 1; } else { stat_no_damage += 1; }
+                if has_animations {
+                    stat_animations += 1;
+                }
+                if had_damage {
+                    stat_damage += 1;
+                } else {
+                    stat_no_damage += 1;
+                }
 
                 // If animations are still active, keep rendering next frame
                 if has_animations {

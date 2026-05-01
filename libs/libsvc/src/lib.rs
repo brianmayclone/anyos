@@ -30,8 +30,10 @@ impl ServiceLifecycle {
         let _ = self.ami.del(&self.key("error"));
         let _ = self.ami.del(&self.key("stopped_at"));
         let _ = self.ami.del(&self.key("failed_at"));
-        self.ami
-            .set(&self.key("state"), AmiValue::String(String::from("starting")))?;
+        self.ami.set(
+            &self.key("state"),
+            AmiValue::String(String::from("starting")),
+        )?;
         self.ami.set(&self.key("ready"), AmiValue::Bool(false))?;
         self.ami.set(&self.key("tid"), AmiValue::Int(tid))?;
         self.ami
@@ -62,8 +64,10 @@ impl ServiceLifecycle {
     pub fn notify_stopping(&mut self) -> Result<(), AmiError> {
         let stopped_at = current_uptime_ms() as i64;
         self.ami.set(&self.key("ready"), AmiValue::Bool(false))?;
-        self.ami
-            .set(&self.key("state"), AmiValue::String(String::from("stopping")))?;
+        self.ami.set(
+            &self.key("state"),
+            AmiValue::String(String::from("stopping")),
+        )?;
         self.ami
             .set(&self.key("stopped_at"), AmiValue::Int(stopped_at))?;
         Ok(())

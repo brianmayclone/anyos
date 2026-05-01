@@ -67,7 +67,9 @@ pub(super) fn blit_image_scaled(
     }
     match fit {
         ObjectFit::Fill => {
-            blit_image_buf_clipped(buf, stride, buf_h, dx, dy, dw, dh, clip, radii, src, src_w, src_h);
+            blit_image_buf_clipped(
+                buf, stride, buf_h, dx, dy, dw, dh, clip, radii, src, src_w, src_h,
+            );
         }
         ObjectFit::Contain | ObjectFit::ScaleDown => {
             let (fw, fh) = fit_contain_size(dw, dh, src_w, src_h);
@@ -81,20 +83,26 @@ pub(super) fn blit_image_scaled(
             };
             let ox = dx + resolve_object_position_offset(dw - fw, pos_x, pos_x_is_percent);
             let oy = dy + resolve_object_position_offset(dh - fh, pos_y, pos_y_is_percent);
-            blit_image_buf_clipped(buf, stride, buf_h, ox, oy, fw, fh, clip, radii, src, src_w, src_h);
+            blit_image_buf_clipped(
+                buf, stride, buf_h, ox, oy, fw, fh, clip, radii, src, src_w, src_h,
+            );
         }
         ObjectFit::Cover => {
             let (fw, fh) = fit_cover_size(dw, dh, src_w, src_h);
             let ox = dx + resolve_object_position_offset(dw - fw, pos_x, pos_x_is_percent);
             let oy = dy + resolve_object_position_offset(dh - fh, pos_y, pos_y_is_percent);
-            blit_image_buf_clipped(buf, stride, buf_h, ox, oy, fw, fh, clip, radii, src, src_w, src_h);
+            blit_image_buf_clipped(
+                buf, stride, buf_h, ox, oy, fw, fh, clip, radii, src, src_w, src_h,
+            );
         }
         ObjectFit::None => {
             let nw = src_w as i32;
             let nh = src_h as i32;
             let ox = dx + resolve_object_position_offset(dw - nw, pos_x, pos_x_is_percent);
             let oy = dy + resolve_object_position_offset(dh - nh, pos_y, pos_y_is_percent);
-            blit_image_buf_clipped(buf, stride, buf_h, ox, oy, nw, nh, clip, radii, src, src_w, src_h);
+            blit_image_buf_clipped(
+                buf, stride, buf_h, ox, oy, nw, nh, clip, radii, src, src_w, src_h,
+            );
         }
     }
 }

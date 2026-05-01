@@ -1,52 +1,52 @@
 //! UI helpers — card creation, detail view population, category icons.
 
+use crate::apkg::{format_size, PackageInfo, PkgStatus};
 use alloc::string::String;
 use alloc::vec::Vec;
 use libanyui_client as ui;
 use ui::Widget;
-use crate::apkg::{PackageInfo, PkgStatus, format_size};
 
 // ─── Category → Tabler Icon Mapping ────────────────────────────────
 
 /// Return a Tabler icon name for a package category.
 pub fn category_icon(category: &str) -> &'static str {
     match category {
-        "system"    => "settings",
-        "network"   => "network",
-        "dev"       => "code",
-        "editor"    => "edit",
-        "media"     => "player-play",
-        "graphics"  => "palette",
-        "games"     => "device-gamepad-2",
-        "utils"     => "tool",
-        "lib"       => "package",
-        "security"  => "shield-lock",
-        "shell"     => "terminal-2",
-        "web"       => "world",
-        "font"      => "typography",
-        "driver"    => "cpu",
-        _           => "package",
+        "system" => "settings",
+        "network" => "network",
+        "dev" => "code",
+        "editor" => "edit",
+        "media" => "player-play",
+        "graphics" => "palette",
+        "games" => "device-gamepad-2",
+        "utils" => "tool",
+        "lib" => "package",
+        "security" => "shield-lock",
+        "shell" => "terminal-2",
+        "web" => "world",
+        "font" => "typography",
+        "driver" => "cpu",
+        _ => "package",
     }
 }
 
 /// Return a distinctive ARGB color for a package category icon.
 pub fn category_color(category: &str) -> u32 {
     match category {
-        "system"    => 0xFF64D2FF,
-        "network"   => 0xFF5AC8FA,
-        "dev"       => 0xFFFF9F0A,
-        "editor"    => 0xFFBF5AF2,
-        "media"     => 0xFFFF375F,
-        "graphics"  => 0xFF30D158,
-        "games"     => 0xFFFF6482,
-        "utils"     => 0xFFFFD60A,
-        "lib"       => 0xFF64D2FF,
-        "security"  => 0xFF30D158,
-        "shell"     => 0xFF98989D,
-        "web"       => 0xFF5AC8FA,
-        "font"      => 0xFFAC8E68,
-        "driver"    => 0xFF98989D,
-        _           => 0xFF8E8E93,
+        "system" => 0xFF64D2FF,
+        "network" => 0xFF5AC8FA,
+        "dev" => 0xFFFF9F0A,
+        "editor" => 0xFFBF5AF2,
+        "media" => 0xFFFF375F,
+        "graphics" => 0xFF30D158,
+        "games" => 0xFFFF6482,
+        "utils" => 0xFFFFD60A,
+        "lib" => 0xFF64D2FF,
+        "security" => 0xFF30D158,
+        "shell" => 0xFF98989D,
+        "web" => 0xFF5AC8FA,
+        "font" => 0xFFAC8E68,
+        "driver" => 0xFF98989D,
+        _ => 0xFF8E8E93,
     }
 }
 
@@ -151,11 +151,7 @@ pub fn create_card(
 // ─── Detail View ───────────────────────────────────────────────────
 
 /// Populate the detail view with info about the given package.
-pub fn populate_detail(
-    detail: &ui::View,
-    pkg: &PackageInfo,
-    status: PkgStatus,
-) {
+pub fn populate_detail(detail: &ui::View, pkg: &PackageInfo, status: PkgStatus) {
     let tc = ui::theme::colors();
 
     // Clear existing children (remove all, then re-add)

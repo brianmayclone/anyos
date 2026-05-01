@@ -31,7 +31,9 @@ impl Framebuffer {
     /// Fill a rectangle with clipping and alpha blending.
     pub fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: u32) {
         let a = (color >> 24) & 0xFF;
-        if a == 0 { return; }
+        if a == 0 {
+            return;
+        }
 
         let fb_w = self.width as i32;
         let fb_h = self.height as i32;
@@ -39,7 +41,9 @@ impl Framebuffer {
         let y0 = y.max(0) as usize;
         let x1 = (x + w as i32).min(fb_w) as usize;
         let y1 = (y + h as i32).min(fb_h) as usize;
-        if x0 >= x1 || y0 >= y1 { return; }
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
 
         let stride = self.width as usize;
         if a >= 255 {
@@ -93,14 +97,22 @@ impl Framebuffer {
                 self.fill_rect(x + fs, y + dy as i32, fill_width, 1, color);
                 self.fill_rect(x + (w - ru) as i32, y + dy as i32, fill_width, 1, color);
                 self.fill_rect(x + fs, y + (h as i32 - 1 - dy as i32), fill_width, 1, color);
-                self.fill_rect(x + (w - ru) as i32, y + (h as i32 - 1 - dy as i32), fill_width, 1, color);
+                self.fill_rect(
+                    x + (w - ru) as i32,
+                    y + (h as i32 - 1 - dy as i32),
+                    fill_width,
+                    1,
+                    color,
+                );
             }
         }
     }
 
     /// Draw a 1px border outline of a rounded rectangle.
     pub fn stroke_rounded_rect(&mut self, x: i32, y: i32, w: u32, h: u32, r: i32, color: u32) {
-        if w == 0 || h == 0 { return; }
+        if w == 0 || h == 0 {
+            return;
+        }
         let ru = r as u32;
 
         // Top and bottom edges (between corners)
@@ -114,7 +126,9 @@ impl Framebuffer {
             self.fill_rect(x + w as i32 - 1, y + r, 1, h - ru * 2, color);
         }
 
-        if ru == 0 { return; }
+        if ru == 0 {
+            return;
+        }
 
         // Corner arcs (1px outline only)
         let r2x4 = (2 * r) * (2 * r);
@@ -161,13 +175,19 @@ impl Framebuffer {
         let stride = self.width as usize;
         for row in 0..16i32 {
             let py = dst_y + row;
-            if py < 0 || py >= self.height as i32 { continue; }
+            if py < 0 || py >= self.height as i32 {
+                continue;
+            }
             for col in 0..16i32 {
                 let px = dst_x + col;
-                if px < 0 || px >= self.width as i32 { continue; }
+                if px < 0 || px >= self.width as i32 {
+                    continue;
+                }
                 let src = icon[(row * 16 + col) as usize];
                 let a = (src >> 24) & 0xFF;
-                if a == 0 { continue; }
+                if a == 0 {
+                    continue;
+                }
                 let idx = py as usize * stride + px as usize;
                 if a >= 255 {
                     self.pixels[idx] = src;
@@ -179,10 +199,25 @@ impl Framebuffer {
     }
 
     /// Render text into the framebuffer via the system font renderer.
-    pub fn draw_text(&mut self, font_id: u16, font_size: u16, x: i32, y: i32, color: u32, text: &str) {
+    pub fn draw_text(
+        &mut self,
+        font_id: u16,
+        font_size: u16,
+        x: i32,
+        y: i32,
+        color: u32,
+        text: &str,
+    ) {
         anyos_std::ui::window::font_render_buf(
-            font_id, font_size,
-            &mut self.pixels, self.width, self.height, x, y, color, text,
+            font_id,
+            font_size,
+            &mut self.pixels,
+            self.width,
+            self.height,
+            x,
+            y,
+            color,
+            text,
         );
     }
 }

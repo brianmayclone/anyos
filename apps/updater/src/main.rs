@@ -8,12 +8,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use anyos_std::{fs, process, crypto};
 use anyos_std::json::Value;
+use anyos_std::{crypto, fs, process};
 use libinstall;
 
 use libanyui_client as ui;
-use ui::{ColumnDef, DOCK_TOP, DOCK_BOTTOM, DOCK_FILL, ALIGN_RIGHT};
+use ui::{ColumnDef, ALIGN_RIGHT, DOCK_BOTTOM, DOCK_FILL, DOCK_TOP};
 
 anyos_std::entry!(main);
 
@@ -54,7 +54,11 @@ static SYS_FILES_TOTAL: AtomicU32 = AtomicU32::new(0);
 // ── Version parsing ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-struct Version { major: u32, minor: u32, patch: u32 }
+struct Version {
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
 
 impl Version {
     fn parse(s: &str) -> Option<Version> {
@@ -62,24 +66,37 @@ impl Version {
         let major = parse_u32(parts.next()?)?;
         let minor = parts.next().map(parse_u32).unwrap_or(Some(0))?;
         let patch = parts.next().map(parse_u32).unwrap_or(Some(0))?;
-        if parts.next().is_some() { return None; }
-        Some(Version { major, minor, patch })
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(Version {
+            major,
+            minor,
+            patch,
+        })
     }
 }
 
 impl PartialOrd for Version {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.major.cmp(&other.major)
-            .then(self.minor.cmp(&other.minor))
-            .then(self.patch.cmp(&other.patch)))
+        Some(
+            self.major
+                .cmp(&other.major)
+                .then(self.minor.cmp(&other.minor))
+                .then(self.patch.cmp(&other.patch)),
+        )
     }
 }
 
 fn parse_u32(s: &str) -> Option<u32> {
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut n: u32 = 0;
     for &b in s.as_bytes() {
-        if !b.is_ascii_digit() { return None; }
+        if !b.is_ascii_digit() {
+            return None;
+        }
         n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(n)
@@ -91,11 +108,11 @@ struct AvailUpdate {
     name: String,
     old_ver: String,
     new_ver: String,
-    pkg_type: String,     // "bin", "system", "sysfile"
+    pkg_type: String, // "bin", "system", "sysfile"
     description: String,
     size: u64,
     md5: String,
-    filename: String,     // for packages: archive filename; for sysfiles: file path
+    filename: String, // for packages: archive filename; for sysfiles: file path
     selected: bool,
 }
 
@@ -122,7 +139,9 @@ struct UpdaterApp {
 }
 
 static mut APP: Option<UpdaterApp> = None;
-fn app() -> &'static mut UpdaterApp { unsafe { APP.as_mut().unwrap() } }
+fn app() -> &'static mut UpdaterApp {
+    unsafe { APP.as_mut().unwrap() }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -140,11 +159,14 @@ fn ensure_dirs() {
 fn read_mirrors() -> Vec<String> {
     let mut mirrors = Vec::new();
     let content = match fs::read_to_string(MIRRORS_PATH) {
-        Ok(s) => s, Err(_) => return mirrors,
+        Ok(s) => s,
+        Err(_) => return mirrors,
     };
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         mirrors.push(String::from(line));
     }
     mirrors
@@ -168,18 +190,32 @@ fn package_url(mirror: &str, arch_str: &str, filename: &str) -> String {
 fn file_url(mirror: &str, arch_str: &str, path: &str) -> String {
     let base = mirror.trim_end_matches('/');
     // path starts with "/" — strip it for URL
-    let rel = if path.starts_with('/') { &path[1..] } else { path };
+    let rel = if path.starts_with('/') {
+        &path[1..]
+    } else {
+        path
+    };
     format!("{}/files/{}/{}", base, arch_str, rel)
 }
 
 fn arch() -> &'static str {
-    #[cfg(target_arch = "x86_64")]  { "x86_64" }
-    #[cfg(target_arch = "aarch64")] { "aarch64" }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64"
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64"
+    }
 }
 
 fn format_size(bytes: u64) -> String {
     if bytes >= 1_048_576 {
-        format!("{}.{} MB", bytes / 1_048_576, (bytes % 1_048_576) * 10 / 1_048_576)
+        format!(
+            "{}.{} MB",
+            bytes / 1_048_576,
+            (bytes % 1_048_576) * 10 / 1_048_576
+        )
     } else if bytes >= 1024 {
         format!("{} KB", bytes / 1024)
     } else {
@@ -201,13 +237,17 @@ fn ensure_parent_dirs(path: &str) {
 fn set_worker_name(name: &str) {
     let bytes = name.as_bytes();
     let len = bytes.len().min(127);
-    unsafe { WORKER_NAME_BUF[..len].copy_from_slice(&bytes[..len]); }
+    unsafe {
+        WORKER_NAME_BUF[..len].copy_from_slice(&bytes[..len]);
+    }
     WORKER_NAME_LEN.store(len as u32, Ordering::SeqCst);
 }
 
 fn get_worker_name() -> String {
     let len = WORKER_NAME_LEN.load(Ordering::SeqCst) as usize;
-    if len == 0 { return String::new(); }
+    if len == 0 {
+        return String::new();
+    }
     let bytes = unsafe { &WORKER_NAME_BUF[..len] };
     String::from(core::str::from_utf8(bytes).unwrap_or(""))
 }
@@ -235,10 +275,12 @@ struct InstalledPkg {
 
 fn load_installed() -> Vec<InstalledPkg> {
     let content = match fs::read_to_string(INSTALLED_PATH) {
-        Ok(s) => s, Err(_) => return Vec::new(),
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
     };
     let val = match Value::parse(&content) {
-        Ok(v) => v, Err(_) => return Vec::new(),
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
     };
     let mut pkgs = Vec::new();
     if let Some(obj) = val["packages"].as_object() {
@@ -247,7 +289,10 @@ fn load_installed() -> Vec<InstalledPkg> {
                 name: String::from(name),
                 version: String::from(pv["version"].as_str().unwrap_or("0.0.0")),
                 files: match pv["files"].as_array() {
-                    Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+                    Some(arr) => arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect(),
                     None => Vec::new(),
                 },
                 pkg_type: String::from(pv["type"].as_str().unwrap_or("bin")),
@@ -301,7 +346,11 @@ fn parse_index() -> Option<Vec<RemotePkg>> {
         pkgs.push(RemotePkg {
             name: String::from(p["name"].as_str().unwrap_or("")),
             version_str: String::from(ver_str),
-            version: Version::parse(ver_str).unwrap_or(Version { major: 0, minor: 0, patch: 0 }),
+            version: Version::parse(ver_str).unwrap_or(Version {
+                major: 0,
+                minor: 0,
+                patch: 0,
+            }),
             description: String::from(p["description"].as_str().unwrap_or("")),
             pkg_type: String::from(p["type"].as_str().unwrap_or("bin")),
             size: p["size"].as_u64().unwrap_or(0),
@@ -363,8 +412,11 @@ fn check_all_updates() -> Vec<AvailUpdate> {
     let installed = load_installed();
     if let Some(remote) = parse_index() {
         for inst in &installed {
-            let inst_ver = Version::parse(&inst.version)
-                .unwrap_or(Version { major: 0, minor: 0, patch: 0 });
+            let inst_ver = Version::parse(&inst.version).unwrap_or(Version {
+                major: 0,
+                minor: 0,
+                patch: 0,
+            });
             if let Some(rpkg) = remote.iter().find(|r| r.name == inst.name) {
                 if rpkg.version > inst_ver {
                     updates.push(AvailUpdate {
@@ -424,7 +476,7 @@ fn check_all_updates() -> Vec<AvailUpdate> {
                     description: format!("{} — {}", category, mf.path),
                     size: mf.size,
                     md5: String::from(&mf.md5),
-                    filename: String::from(&mf.path),  // full path for download
+                    filename: String::from(&mf.path), // full path for download
                     selected: true,
                 });
             }
@@ -568,11 +620,18 @@ fn worker_upgrade_all() {
             if !file_exists(&cache_path) {
                 let mut ok = false;
                 for mirror in &mirrors {
-                    if libhttp_client::download(&package_url(mirror, a, &item.filename), &cache_path) {
-                        ok = true; break;
+                    if libhttp_client::download(
+                        &package_url(mirror, a, &item.filename),
+                        &cache_path,
+                    ) {
+                        ok = true;
+                        break;
                     }
                 }
-                if !ok { step += 1; continue; }
+                if !ok {
+                    step += 1;
+                    continue;
+                }
             }
 
             // Verify MD5
@@ -582,7 +641,8 @@ fn worker_upgrade_all() {
                     let hs = core::str::from_utf8(&hash).unwrap_or("");
                     if hs != item.md5 {
                         fs::unlink(&cache_path);
-                        step += 1; continue;
+                        step += 1;
+                        continue;
                     }
                 }
             }
@@ -643,7 +703,8 @@ fn worker_upgrade_all() {
             for mirror in &mirrors {
                 let url = file_url(mirror, a, &item.path);
                 if libhttp_client::download(&url, &tmp_path) {
-                    ok = true; break;
+                    ok = true;
+                    break;
                 }
             }
 
@@ -819,10 +880,20 @@ fn build_ui() {
 
     unsafe {
         APP = Some(UpdaterApp {
-            win, header_label, sub_label, grid,
-            btn_check, btn_update, btn_select_all, btn_reboot,
-            progress_view, progress_bar, progress_label, status_label,
-            updates: Vec::new(), timer_id,
+            win,
+            header_label,
+            sub_label,
+            grid,
+            btn_check,
+            btn_update,
+            btn_select_all,
+            btn_reboot,
+            progress_view,
+            progress_bar,
+            progress_label,
+            status_label,
+            updates: Vec::new(),
+            timer_id,
         });
     }
 
@@ -849,7 +920,9 @@ fn refresh_grid() {
     let mut bg_colors: Vec<u32> = Vec::new();
 
     for (i, upd) in a.updates.iter().enumerate() {
-        if i > 0 { data.push(0x1E); }
+        if i > 0 {
+            data.push(0x1E);
+        }
 
         // Checkbox
         data.extend_from_slice(if upd.selected { b"[x]" } else { b"[ ]" });
@@ -888,7 +961,9 @@ fn refresh_grid() {
         text_colors.push(0xFF808080);
 
         let bg = if i % 2 == 0 { 0xFF1E1E1E } else { 0xFF252526 };
-        for _ in 0..7 { bg_colors.push(bg); }
+        for _ in 0..7 {
+            bg_colors.push(bg);
+        }
     }
 
     a.grid.set_data_raw(&data);
@@ -899,14 +974,22 @@ fn refresh_grid() {
     a.btn_update.set_enabled(any_selected);
 
     let sel = a.updates.iter().filter(|u| u.selected).count();
-    let sz: u64 = a.updates.iter().filter(|u| u.selected).map(|u| u.size).sum();
+    let sz: u64 = a
+        .updates
+        .iter()
+        .filter(|u| u.selected)
+        .map(|u| u.size)
+        .sum();
     let pkg_count = a.updates.iter().filter(|u| u.pkg_type != "sysfile").count();
     let sys_count = a.updates.iter().filter(|u| u.pkg_type == "sysfile").count();
 
     if count > 0 {
         let mut desc = format!("{} ausgewaehlt ({})", sel, format_size(sz));
         if pkg_count > 0 && sys_count > 0 {
-            desc = format!("{} Paket(e), {} Systemdatei(en). {}", pkg_count, sys_count, desc);
+            desc = format!(
+                "{} Paket(e), {} Systemdatei(en). {}",
+                pkg_count, sys_count, desc
+            );
         } else if sys_count > 0 {
             desc = format!("{} Systemdatei(en). {}", sys_count, desc);
         } else {
@@ -919,14 +1002,17 @@ fn refresh_grid() {
 // ── Event handlers ───────────────────────────────────────────────────────────
 
 fn on_check_clicked() {
-    if WORKER_ACTIVE.load(Ordering::SeqCst) { return; }
+    if WORKER_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
 
     let a = app();
     a.btn_check.set_enabled(false);
     a.btn_update.set_enabled(false);
     a.progress_view.set_visible(true);
     a.progress_bar.set_state(0);
-    a.progress_label.set_text("Lade Paketindex und Systemmanifest...");
+    a.progress_label
+        .set_text("Lade Paketindex und Systemmanifest...");
     a.status_label.set_text("Suche nach Aktualisierungen...");
 
     WORKER_ACTIVE.store(true, Ordering::SeqCst);
@@ -950,7 +1036,9 @@ fn on_check_clicked() {
 }
 
 fn on_update_clicked() {
-    if WORKER_ACTIVE.load(Ordering::SeqCst) { return; }
+    if WORKER_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
 
     let a = app();
 
@@ -959,7 +1047,9 @@ fn on_update_clicked() {
     let mut sys_items = Vec::new();
 
     for upd in &a.updates {
-        if !upd.selected { continue; }
+        if !upd.selected {
+            continue;
+        }
         if upd.pkg_type == "sysfile" {
             sys_items.push(SysFileItem {
                 path: String::from(&upd.filename),
@@ -977,11 +1067,21 @@ fn on_update_clicked() {
         }
     }
 
-    if pkg_items.is_empty() && sys_items.is_empty() { return; }
+    if pkg_items.is_empty() && sys_items.is_empty() {
+        return;
+    }
 
     unsafe {
-        UPGRADE_LIST = if pkg_items.is_empty() { None } else { Some(pkg_items) };
-        SYSFILE_LIST = if sys_items.is_empty() { None } else { Some(sys_items) };
+        UPGRADE_LIST = if pkg_items.is_empty() {
+            None
+        } else {
+            Some(pkg_items)
+        };
+        SYSFILE_LIST = if sys_items.is_empty() {
+            None
+        } else {
+            Some(sys_items)
+        };
     }
 
     a.btn_check.set_enabled(false);
@@ -989,7 +1089,8 @@ fn on_update_clicked() {
     a.btn_select_all.set_enabled(false);
     a.progress_view.set_visible(true);
     a.progress_bar.set_state(0);
-    a.progress_label.set_text("Aktualisierungen werden installiert...");
+    a.progress_label
+        .set_text("Aktualisierungen werden installiert...");
     a.status_label.set_text("Installiere Updates...");
 
     WORKER_ACTIVE.store(true, Ordering::SeqCst);
@@ -1027,7 +1128,11 @@ fn on_select_all_clicked() {
     for upd in &mut a.updates {
         upd.selected = !all_selected;
     }
-    a.btn_select_all.set_text(if all_selected { "Alle auswaehlen" } else { "Keine auswaehlen" });
+    a.btn_select_all.set_text(if all_selected {
+        "Alle auswaehlen"
+    } else {
+        "Keine auswaehlen"
+    });
     refresh_grid();
 }
 
@@ -1045,7 +1150,9 @@ fn on_reboot_clicked() {
 }
 
 fn on_timer() {
-    if !WORKER_ACTIVE.load(Ordering::SeqCst) { return; }
+    if !WORKER_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
 
     let a = app();
     let pct = WORKER_PROGRESS.load(Ordering::SeqCst);
@@ -1056,20 +1163,29 @@ fn on_timer() {
 
     match phase {
         2 => {
-            a.progress_label.set_text(&format!("Lade Updates... {}%", pct));
+            a.progress_label
+                .set_text(&format!("Lade Updates... {}%", pct));
         }
         3 => {
             let idx = WORKER_PKG_IDX.load(Ordering::SeqCst);
             let total = WORKER_PKG_TOTAL.load(Ordering::SeqCst);
             a.progress_label.set_text(&format!(
-                "Paket: {} ({}/{}) — {}%", name, idx + 1, total, pct
+                "Paket: {} ({}/{}) — {}%",
+                name,
+                idx + 1,
+                total,
+                pct
             ));
         }
         4 => {
             let idx = WORKER_PKG_IDX.load(Ordering::SeqCst);
             let total = WORKER_PKG_TOTAL.load(Ordering::SeqCst);
             a.progress_label.set_text(&format!(
-                "Systemdatei: {} ({}/{}) — {}%", name, idx + 1, total, pct
+                "Systemdatei: {} ({}/{}) — {}%",
+                name,
+                idx + 1,
+                total,
+                pct
             ));
         }
         _ => {}
@@ -1082,7 +1198,8 @@ fn on_timer() {
         if phase == 2 {
             // Check phase complete
             if had_error {
-                a.status_label.set_text(&format!("Fehler: {}", get_worker_name()));
+                a.status_label
+                    .set_text(&format!("Fehler: {}", get_worker_name()));
                 a.progress_view.set_visible(false);
                 a.btn_check.set_enabled(true);
             } else {
@@ -1090,13 +1207,16 @@ fn on_timer() {
                 refresh_grid();
 
                 if a.updates.is_empty() {
-                    a.sub_label.set_text("Ihr System ist auf dem neuesten Stand.");
-                    a.status_label.set_text("Keine Aktualisierungen verfuegbar.");
+                    a.sub_label
+                        .set_text("Ihr System ist auf dem neuesten Stand.");
+                    a.status_label
+                        .set_text("Keine Aktualisierungen verfuegbar.");
                 } else {
                     let pkg_n = a.updates.iter().filter(|u| u.pkg_type != "sysfile").count();
                     let sys_n = a.updates.iter().filter(|u| u.pkg_type == "sysfile").count();
                     a.status_label.set_text(&format!(
-                        "{} Paket(e), {} Systemdatei(en) verfuegbar.", pkg_n, sys_n
+                        "{} Paket(e), {} Systemdatei(en) verfuegbar.",
+                        pkg_n, sys_n
                     ));
                 }
                 a.progress_view.set_visible(false);
@@ -1109,20 +1229,28 @@ fn on_timer() {
             let sys_total = SYS_FILES_TOTAL.load(Ordering::SeqCst);
 
             if had_error {
-                a.status_label.set_text(&format!("Fehler: {}", get_worker_name()));
+                a.status_label
+                    .set_text(&format!("Fehler: {}", get_worker_name()));
             } else if needs_reboot {
                 let mut msg = String::from("Aktualisierung abgeschlossen.");
                 if sys_total > 0 {
-                    msg = format!("{} {}/{} Systemdateien aktualisiert.", msg, sys_updated, sys_total);
+                    msg = format!(
+                        "{} {}/{} Systemdateien aktualisiert.",
+                        msg, sys_updated, sys_total
+                    );
                 }
                 msg.push_str(" Neustart erforderlich.");
                 a.status_label.set_text(&msg);
-                a.sub_label.set_text("Bitte starten Sie den Computer neu, um alle Aenderungen zu uebernehmen.");
+                a.sub_label.set_text(
+                    "Bitte starten Sie den Computer neu, um alle Aenderungen zu uebernehmen.",
+                );
                 a.btn_reboot.set_visible(true);
                 a.header_label.set_text("Neustart erforderlich");
             } else {
-                a.status_label.set_text("Alle Aktualisierungen wurden erfolgreich installiert.");
-                a.sub_label.set_text("Ihr System ist jetzt auf dem neuesten Stand.");
+                a.status_label
+                    .set_text("Alle Aktualisierungen wurden erfolgreich installiert.");
+                a.sub_label
+                    .set_text("Ihr System ist jetzt auf dem neuesten Stand.");
                 a.header_label.set_text("Aktualisierung abgeschlossen");
             }
 
@@ -1143,7 +1271,9 @@ fn on_timer() {
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() {
-    if !ui::init() { return; }
+    if !ui::init() {
+        return;
+    }
     ensure_dirs();
     build_ui();
     ui::run();

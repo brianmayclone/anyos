@@ -10,8 +10,8 @@ use anyos_std::process;
 use libanyui_client as ui;
 use ui::Widget;
 
-mod render;
 mod perms;
+mod render;
 
 use perms::{parse_hex, PERM_GROUPS};
 use render::*;
@@ -65,7 +65,10 @@ fn main() {
 
     anyos_std::println!(
         "[permdialog] app_id='{}' app_name='{}' caps=0x{:x} num_active={}",
-        app_id, app_name, declared_caps, num_active
+        app_id,
+        app_name,
+        declared_caps,
+        num_active
     );
 
     if num_active == 0 {
@@ -96,7 +99,14 @@ fn main() {
         | ui::WIN_FLAG_NO_CLOSE
         | ui::WIN_FLAG_NO_MINIMIZE
         | ui::WIN_FLAG_NO_MAXIMIZE;
-    let win = ui::Window::new_with_flags(anyos_std::i18n::t("Permissions"), dx, dy, DIALOG_W, dialog_h, flags);
+    let win = ui::Window::new_with_flags(
+        anyos_std::i18n::t("Permissions"),
+        dx,
+        dy,
+        DIALOG_W,
+        dialog_h,
+        flags,
+    );
 
     anyos_std::println!("[permdialog] dialog win={}", win.id());
     if win.id() == u32::MAX {
@@ -119,7 +129,9 @@ fn main() {
     win.add(&title_lbl);
 
     // ── Subtitle ──
-    let sub_lbl = ui::Label::new(anyos_std::i18n::t("This app requests the following permissions:"));
+    let sub_lbl = ui::Label::new(anyos_std::i18n::t(
+        "This app requests the following permissions:",
+    ));
     sub_lbl.set_position(PAD, 46);
     sub_lbl.set_size(content_w, 16);
     sub_lbl.set_font_size(11);

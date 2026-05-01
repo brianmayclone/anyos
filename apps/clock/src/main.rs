@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{String, format};
 use anyos_std::sys;
+use anyos_std::{format, String};
 use libanyui_client as ui;
 
 anyos_std::entry!(main);
@@ -59,20 +59,18 @@ const CTRL_BTN_GAP: i32 = 12;
 
 // ---- Sin/Cos lookup table (60 positions, scaled by 10000) ----
 const SIN60: [i32; 60] = [
-        0,  1045,  2079,  3090,  4067,  5000,  5878,  6691,  7431,  8090,
-     8660,  9135,  9511,  9781,  9945, 10000,  9945,  9781,  9511,  9135,
-     8660,  8090,  7431,  6691,  5878,  5000,  4067,  3090,  2079,  1045,
-        0, -1045, -2079, -3090, -4067, -5000, -5878, -6691, -7431, -8090,
-    -8660, -9135, -9511, -9781, -9945,-10000, -9945, -9781, -9511, -9135,
-    -8660, -8090, -7431, -6691, -5878, -5000, -4067, -3090, -2079, -1045,
+    0, 1045, 2079, 3090, 4067, 5000, 5878, 6691, 7431, 8090, 8660, 9135, 9511, 9781, 9945, 10000,
+    9945, 9781, 9511, 9135, 8660, 8090, 7431, 6691, 5878, 5000, 4067, 3090, 2079, 1045, 0, -1045,
+    -2079, -3090, -4067, -5000, -5878, -6691, -7431, -8090, -8660, -9135, -9511, -9781, -9945,
+    -10000, -9945, -9781, -9511, -9135, -8660, -8090, -7431, -6691, -5878, -5000, -4067, -3090,
+    -2079, -1045,
 ];
 const COS60: [i32; 60] = [
-    10000,  9945,  9781,  9511,  9135,  8660,  8090,  7431,  6691,  5878,
-     5000,  4067,  3090,  2079,  1045,     0, -1045, -2079, -3090, -4067,
-    -5000, -5878, -6691, -7431, -8090, -8660, -9135, -9511, -9781, -9945,
-   -10000, -9945, -9781, -9511, -9135, -8660, -8090, -7431, -6691, -5878,
-    -5000, -4067, -3090, -2079, -1045,     0,  1045,  2079,  3090,  4067,
-     5000,  5878,  6691,  7431,  8090,  8660,  9135,  9511,  9781,  9945,
+    10000, 9945, 9781, 9511, 9135, 8660, 8090, 7431, 6691, 5878, 5000, 4067, 3090, 2079, 1045, 0,
+    -1045, -2079, -3090, -4067, -5000, -5878, -6691, -7431, -8090, -8660, -9135, -9511, -9781,
+    -9945, -10000, -9945, -9781, -9511, -9135, -8660, -8090, -7431, -6691, -5878, -5000, -4067,
+    -3090, -2079, -1045, 0, 1045, 2079, 3090, 4067, 5000, 5878, 6691, 7431, 8090, 8660, 9135, 9511,
+    9781, 9945,
 ];
 
 // ---- Timezones ----
@@ -83,14 +81,46 @@ struct Timezone {
 }
 
 const TIMEZONES: [Timezone; 8] = [
-    Timezone { name: "UTC",     city: "London",       offset_h: 0 },
-    Timezone { name: "CET",     city: "Berlin",       offset_h: 1 },
-    Timezone { name: "EET",     city: "Helsinki",     offset_h: 2 },
-    Timezone { name: "MSK",     city: "Moscow",       offset_h: 3 },
-    Timezone { name: "IST",     city: "Mumbai",       offset_h: 5 },
-    Timezone { name: "CST",     city: "Shanghai",     offset_h: 8 },
-    Timezone { name: "JST",     city: "Tokyo",        offset_h: 9 },
-    Timezone { name: "EST",     city: "New York",     offset_h: -5 },
+    Timezone {
+        name: "UTC",
+        city: "London",
+        offset_h: 0,
+    },
+    Timezone {
+        name: "CET",
+        city: "Berlin",
+        offset_h: 1,
+    },
+    Timezone {
+        name: "EET",
+        city: "Helsinki",
+        offset_h: 2,
+    },
+    Timezone {
+        name: "MSK",
+        city: "Moscow",
+        offset_h: 3,
+    },
+    Timezone {
+        name: "IST",
+        city: "Mumbai",
+        offset_h: 5,
+    },
+    Timezone {
+        name: "CST",
+        city: "Shanghai",
+        offset_h: 8,
+    },
+    Timezone {
+        name: "JST",
+        city: "Tokyo",
+        offset_h: 9,
+    },
+    Timezone {
+        name: "EST",
+        city: "New York",
+        offset_h: -5,
+    },
 ];
 
 // ---- Timer presets (seconds) ----
@@ -100,12 +130,30 @@ struct Preset {
 }
 
 const PRESETS: [Preset; 6] = [
-    Preset { label: "1m",  secs: 60 },
-    Preset { label: "3m",  secs: 180 },
-    Preset { label: "5m",  secs: 300 },
-    Preset { label: "10m", secs: 600 },
-    Preset { label: "15m", secs: 900 },
-    Preset { label: "30m", secs: 1800 },
+    Preset {
+        label: "1m",
+        secs: 60,
+    },
+    Preset {
+        label: "3m",
+        secs: 180,
+    },
+    Preset {
+        label: "5m",
+        secs: 300,
+    },
+    Preset {
+        label: "10m",
+        secs: 600,
+    },
+    Preset {
+        label: "15m",
+        secs: 900,
+    },
+    Preset {
+        label: "30m",
+        secs: 1800,
+    },
 ];
 
 // ---- App state ----
@@ -131,7 +179,14 @@ fn get_time() -> (u32, u32, u32, u32, u32, u32) {
     let mut buf = [0u8; 8];
     sys::time(&mut buf);
     let year = buf[0] as u32 | ((buf[1] as u32) << 8);
-    (year, buf[2] as u32, buf[3] as u32, buf[4] as u32, buf[5] as u32, buf[6] as u32)
+    (
+        year,
+        buf[2] as u32,
+        buf[3] as u32,
+        buf[4] as u32,
+        buf[5] as u32,
+        buf[6] as u32,
+    )
 }
 
 fn apply_offset(hour: u32, min: u32, offset_h: i32) -> (u32, u32) {
@@ -203,7 +258,10 @@ fn update_timer_ui() {
     let secs = remaining % 60;
     let m2 = fmt_02(mins);
     let s2 = fmt_02(secs);
-    let display = format!("{}{}:{}{}", m2[0] as char, m2[1] as char, s2[0] as char, s2[1] as char);
+    let display = format!(
+        "{}{}:{}{}",
+        m2[0] as char, m2[1] as char, s2[0] as char, s2[1] as char
+    );
 
     let color = if a.timer_active {
         TIMER_RUNNING
@@ -249,30 +307,42 @@ fn update_timer_ui() {
 /// Parse user input: "mm:ss" format or plain number as minutes
 fn parse_timer_input(input: &str) -> Option<u32> {
     let input = input.trim();
-    if input.is_empty() { return None; }
+    if input.is_empty() {
+        return None;
+    }
 
     if let Some(colon_pos) = input.find(':') {
         let mins_str = &input[..colon_pos];
         let secs_str = &input[colon_pos + 1..];
         let mins = parse_u32(mins_str)?;
         let secs = parse_u32(secs_str)?;
-        if secs >= 60 { return None; }
+        if secs >= 60 {
+            return None;
+        }
         let total = mins * 60 + secs;
-        if total == 0 { return None; }
+        if total == 0 {
+            return None;
+        }
         return Some(total);
     }
 
     let val = parse_u32(input)?;
-    if val == 0 { return None; }
+    if val == 0 {
+        return None;
+    }
     Some(val * 60)
 }
 
 fn parse_u32(s: &str) -> Option<u32> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut result: u32 = 0;
     for b in s.bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         result = result.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(result)
@@ -297,7 +367,11 @@ fn render_clock() {
 
     // Tick marks
     for i in 0..60 {
-        let inner = if i % 5 == 0 { CLOCK_R - 14 } else { CLOCK_R - 6 };
+        let inner = if i % 5 == 0 {
+            CLOCK_R - 14
+        } else {
+            CLOCK_R - 6
+        };
         let outer = CLOCK_R - 3;
         let color = if i % 5 == 0 { TICK_MAJOR } else { TICK_MINOR };
         let x0 = CLOCK_CX + SIN60[i] * inner / 10000;
@@ -338,8 +412,10 @@ fn render_clock() {
     let h1 = fmt_02(hour);
     let m1 = fmt_02(min);
     let s1 = fmt_02(sec);
-    let time_str = format!("{}{}:{}{}:{}{}", h1[0] as char, h1[1] as char,
-        m1[0] as char, m1[1] as char, s1[0] as char, s1[1] as char);
+    let time_str = format!(
+        "{}{}:{}{}:{}{}",
+        h1[0] as char, h1[1] as char, m1[0] as char, m1[1] as char, s1[0] as char, s1[1] as char
+    );
     let (tw, _) = ui::measure_text(&time_str, 0, 28);
     let tx = (WIN_W as i32 - tw as i32) / 2;
     canvas.draw_text(tx, 260, TEXT_PRIMARY, 0, 28, &time_str);
@@ -347,9 +423,18 @@ fn render_clock() {
     // Date
     let (_year, month, day, _, _, _) = get_time();
     let month_name = match month {
-        1 => "January", 2 => "February", 3 => "March", 4 => "April",
-        5 => "May", 6 => "June", 7 => "July", 8 => "August",
-        9 => "September", 10 => "October", 11 => "November", 12 => "December",
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
         _ => "?",
     };
     let date_str = format!("{} {}", month_name, day);
@@ -389,7 +474,10 @@ fn render_world_clocks() {
         let (th, tm) = apply_offset(utc_h, utc_m, tz.offset_h);
         let h2 = fmt_02(th);
         let m2 = fmt_02(tm);
-        let tz_time = format!("{}{}:{}{}", h2[0] as char, h2[1] as char, m2[0] as char, m2[1] as char);
+        let tz_time = format!(
+            "{}{}:{}{}",
+            h2[0] as char, h2[1] as char, m2[0] as char, m2[1] as char
+        );
         let (tw, _) = ui::measure_text(&tz_time, 0, 20);
         let tx = w as i32 - 8 - tw as i32;
         canvas.draw_text(tx, ty + 8, TEXT_PRIMARY, 0, 20, &tz_time);
@@ -397,10 +485,11 @@ fn render_world_clocks() {
 }
 
 fn main() {
-    if !ui::init() { return; }
+    if !ui::init() {
+        return;
+    }
 
-    let win = ui::Window::new_with_flags("Clock", -1, -1, WIN_W, WIN_H,
-        ui::WIN_FLAG_NOT_RESIZABLE);
+    let win = ui::Window::new_with_flags("Clock", -1, -1, WIN_W, WIN_H, ui::WIN_FLAG_NOT_RESIZABLE);
 
     // ---- Clock canvas (analog clock + digital time + date) ----
     let clock_canvas = ui::Canvas::new(WIN_W, CLOCK_CANVAS_H);

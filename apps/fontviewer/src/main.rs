@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{String, format};
+use anyos_std::{format, String};
 use libanyui_client as ui;
 use ui::Widget;
 
@@ -57,7 +57,11 @@ fn render() {
     let mut y: i32 = 12 - scroll_y;
 
     // Font name header
-    let name = if a.font_name.is_empty() { "System Font (SF Pro)" } else { &a.font_name };
+    let name = if a.font_name.is_empty() {
+        "System Font (SF Pro)"
+    } else {
+        &a.font_name
+    };
     canvas.draw_text(16, y, TEXT, 1, 18, name); // font_id 1 = bold
     y += 28;
 
@@ -165,7 +169,9 @@ fn open_font() {
 }
 
 fn main() {
-    if !ui::init() { return; }
+    if !ui::init() {
+        return;
+    }
 
     let win = ui::Window::new("Font Viewer", -1, -1, 640, 500);
     win.set_color(BG);
@@ -173,21 +179,19 @@ fn main() {
     // Menu
     let mut mb = ui::MenuBarBuilder::new()
         .menu("Font Viewer")
-            .item(100, "About Font Viewer", 0)
-            .separator()
-            .item(199, "Quit", 0)
+        .item(100, "About Font Viewer", 0)
+        .separator()
+        .item(199, "Quit", 0)
         .end_menu()
         .menu("File")
-            .item(200, "Open Font...", 0)
+        .item(200, "Open Font...", 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = ui::MenuBar::set(win.id(), menu_data);
-    menu.on_item(|e| {
-        match e.item_id {
-            199 => ui::quit(),
-            200 => open_font(),
-            _ => {}
-        }
+    menu.on_item(|e| match e.item_id {
+        199 => ui::quit(),
+        200 => open_font(),
+        _ => {}
     });
 
     // Canvas (DOCK_FILL)
@@ -231,30 +235,28 @@ fn main() {
     render();
 
     // Keyboard events for scrolling
-    app().win.on_key_down(|ke| {
-        match ke.keycode {
-            ui::KEY_UP => {
-                app().scroll_y = (app().scroll_y - 40).max(0);
-                app().needs_redraw = true;
-            }
-            ui::KEY_DOWN => {
-                app().scroll_y += 40;
-                app().needs_redraw = true;
-            }
-            ui::KEY_PAGE_UP => {
-                app().scroll_y = (app().scroll_y - 200).max(0);
-                app().needs_redraw = true;
-            }
-            ui::KEY_PAGE_DOWN => {
-                app().scroll_y += 200;
-                app().needs_redraw = true;
-            }
-            ui::KEY_HOME => {
-                app().scroll_y = 0;
-                app().needs_redraw = true;
-            }
-            _ => {}
+    app().win.on_key_down(|ke| match ke.keycode {
+        ui::KEY_UP => {
+            app().scroll_y = (app().scroll_y - 40).max(0);
+            app().needs_redraw = true;
         }
+        ui::KEY_DOWN => {
+            app().scroll_y += 40;
+            app().needs_redraw = true;
+        }
+        ui::KEY_PAGE_UP => {
+            app().scroll_y = (app().scroll_y - 200).max(0);
+            app().needs_redraw = true;
+        }
+        ui::KEY_PAGE_DOWN => {
+            app().scroll_y += 200;
+            app().needs_redraw = true;
+        }
+        ui::KEY_HOME => {
+            app().scroll_y = 0;
+            app().needs_redraw = true;
+        }
+        _ => {}
     });
 
     // Resize handler

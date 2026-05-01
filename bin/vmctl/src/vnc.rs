@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 use anyos_std::{net, println, process, sys};
 use libcorevm_client::VmHandle;
 
-use crate::{VmConfig, read_file, BIOS_PATH_COREVM, BIOS_PATH_SEABIOS};
+use crate::{read_file, VmConfig, BIOS_PATH_COREVM, BIOS_PATH_SEABIOS};
 
 // ── Tunables ──────────────────────────────────────────────────────────────────
 
@@ -42,10 +42,22 @@ const MAX_DIM: usize = 2048;
 
 // ── Big-endian wire helpers ───────────────────────────────────────────────────
 
-#[inline] fn be16(v: u16) -> [u8; 2] { v.to_be_bytes() }
-#[inline] fn be32(v: u32) -> [u8; 4] { v.to_be_bytes() }
-#[inline] fn from_be16(b: &[u8]) -> u16 { u16::from_be_bytes([b[0], b[1]]) }
-#[inline] fn from_be32(b: &[u8]) -> u32 { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) }
+#[inline]
+fn be16(v: u16) -> [u8; 2] {
+    v.to_be_bytes()
+}
+#[inline]
+fn be32(v: u32) -> [u8; 4] {
+    v.to_be_bytes()
+}
+#[inline]
+fn from_be16(b: &[u8]) -> u16 {
+    u16::from_be_bytes([b[0], b[1]])
+}
+#[inline]
+fn from_be32(b: &[u8]) -> u32 {
+    u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+}
 
 // ── TCP helpers ───────────────────────────────────────────────────────────────
 
@@ -54,10 +66,14 @@ fn send_all(sock: u32, data: &[u8]) -> bool {
     let mut retries = 0u32;
     while sent < data.len() {
         let n = net::tcp_send(sock, &data[sent..]);
-        if n == 0 { return false; }
+        if n == 0 {
+            return false;
+        }
         if n == u32::MAX {
             retries += 1;
-            if retries > 10_000 { return false; }
+            if retries > 10_000 {
+                return false;
+            }
             process::sleep(1);
             continue;
         }
@@ -72,10 +88,14 @@ fn recv_exact(sock: u32, buf: &mut [u8]) -> bool {
     let mut tries = 0u32;
     while got < buf.len() {
         let n = net::tcp_recv(sock, &mut buf[got..]);
-        if n == 0 { return false; }
+        if n == 0 {
+            return false;
+        }
         if n == u32::MAX {
             tries += 1;
-            if tries > 30_000 { return false; } // 30 s
+            if tries > 30_000 {
+                return false;
+            } // 30 s
             process::sleep(1);
             continue;
         }
@@ -88,9 +108,15 @@ fn recv_exact(sock: u32, buf: &mut [u8]) -> bool {
 /// Non-blocking read of up to `buf.len()` bytes.  Returns 0 if no data.
 fn recv_nowait(sock: u32, buf: &mut [u8]) -> usize {
     let avail = net::tcp_recv_available(sock);
-    if avail == 0 || avail == u32::MAX { return 0; }
+    if avail == 0 || avail == u32::MAX {
+        return 0;
+    }
     let n = net::tcp_recv(sock, buf);
-    if n == u32::MAX { 0 } else { n as usize }
+    if n == u32::MAX {
+        0
+    } else {
+        n as usize
+    }
 }
 
 // ── DES for VNC auth ─────────────────────────────────────────────────────────
@@ -123,30 +149,41 @@ const SB:  [[u8;64];8] = [
     [13,2,8,4,6,15,11,1,10,9,3,14,5,0,12,7,1,15,13,8,10,3,7,4,12,5,6,11,0,14,9,2,7,11,4,1,9,12,14,2,0,6,10,13,15,3,5,8,2,1,14,7,4,10,8,13,15,12,9,0,3,5,6,11],
 ];
 
-#[inline] fn gb64(b: u64, p: u8) -> u64 { (b >> (64 - p)) & 1 }
-#[inline] fn sb64(b: u64, p: u8, v: u64) -> u64 { b | (v << (64 - p)) }
+#[inline]
+fn gb64(b: u64, p: u8) -> u64 {
+    (b >> (64 - p)) & 1
+}
+#[inline]
+fn sb64(b: u64, p: u8, v: u64) -> u64 {
+    b | (v << (64 - p))
+}
 
 fn perm64(b: u64, t: &[u8]) -> u64 {
     let mut o = 0u64;
-    for (i, &s) in t.iter().enumerate() { o = sb64(o, (i+1) as u8, gb64(b, s)); }
+    for (i, &s) in t.iter().enumerate() {
+        o = sb64(o, (i + 1) as u8, gb64(b, s));
+    }
     o
 }
 
-fn rot28(h: u32, n: u8) -> u32 { ((h << n) | (h >> (28-n))) & 0x0FFF_FFFF }
+fn rot28(h: u32, n: u8) -> u32 {
+    ((h << n) | (h >> (28 - n))) & 0x0FFF_FFFF
+}
 
 fn des_subkeys(key64: u64) -> [u64; 16] {
     let pm = perm64(key64, &PC1);
     let mut c = ((pm >> 36) as u32) & 0x0FFF_FFFF;
-    let mut d = ((pm >>  8) as u32) & 0x0FFF_FFFF;
+    let mut d = ((pm >> 8) as u32) & 0x0FFF_FFFF;
     let mut sk = [0u64; 16];
     for (r, &sh) in SH.iter().enumerate() {
-        c = rot28(c, sh); d = rot28(d, sh);
+        c = rot28(c, sh);
+        d = rot28(d, sh);
         let cd = ((c as u64) << 28) | (d as u64);
         // PC2
         let mut o = 0u64;
         for (i, &s) in PC2.iter().enumerate() {
             let bit = (cd >> (56 - s)) & 1;
-            o = sb64(o, (i+1) as u8, bit);
+            o = sb64(o, (i + 1) as u8, bit);
         }
         sk[r] = o;
     }
@@ -156,25 +193,36 @@ fn des_subkeys(key64: u64) -> [u64; 16] {
 fn des_feistel(r: u32, k: u64) -> u32 {
     let r64 = (r as u64) << 32;
     let mut ex = 0u64;
-    for (i, &s) in E.iter().enumerate() { let b = (r64 >> (64-s)) & 1; ex = sb64(ex, (i+1) as u8, b); }
+    for (i, &s) in E.iter().enumerate() {
+        let b = (r64 >> (64 - s)) & 1;
+        ex = sb64(ex, (i + 1) as u8, b);
+    }
     let xd = ex ^ k;
     let mut so = 0u32;
     for i in 0..8usize {
-        let g = ((xd >> (64 - (i*6+6))) & 0x3F) as usize;
+        let g = ((xd >> (64 - (i * 6 + 6))) & 0x3F) as usize;
         let row = ((g >> 4) & 2) | (g & 1);
         let col = (g >> 1) & 0xF;
         so = (so << 4) | (SB[i][row * 16 + col] as u32);
     }
     let s64 = (so as u64) << 32;
     let mut po = 0u32;
-    for (i, &s) in PP.iter().enumerate() { po |= (((s64 >> (64-s)) & 1) as u32) << (31-i); }
+    for (i, &s) in PP.iter().enumerate() {
+        po |= (((s64 >> (64 - s)) & 1) as u32) << (31 - i);
+    }
     po
 }
 
 fn des_encrypt(block: u64, sk: &[u64; 16]) -> u64 {
     let pm = perm64(block, &IP);
-    let mut l = (pm >> 32) as u32; let mut r = pm as u32;
-    for &k in sk { let f = des_feistel(r, k); let nr = l ^ f; l = r; r = nr; }
+    let mut l = (pm >> 32) as u32;
+    let mut r = pm as u32;
+    for &k in sk {
+        let f = des_feistel(r, k);
+        let nr = l ^ f;
+        l = r;
+        r = nr;
+    }
     perm64(((r as u64) << 32) | (l as u64), &FP)
 }
 
@@ -189,14 +237,20 @@ fn rev_byte(b: u8) -> u8 {
 /// Encrypt a 16-byte VNC challenge with an 8-byte password (in-place).
 fn vnc_des_encrypt(pw: &[u8; 8], chal: &mut [u8; 16]) {
     let mut key = 0u64;
-    for (i, &b) in pw.iter().enumerate() { key |= (rev_byte(b) as u64) << (56 - i*8); }
+    for (i, &b) in pw.iter().enumerate() {
+        key |= (rev_byte(b) as u64) << (56 - i * 8);
+    }
     let sk = des_subkeys(key);
     for blk in 0..2 {
         let off = blk * 8;
         let mut b64 = 0u64;
-        for i in 0..8 { b64 |= (chal[off+i] as u64) << (56 - i*8); }
+        for i in 0..8 {
+            b64 |= (chal[off + i] as u64) << (56 - i * 8);
+        }
         let enc = des_encrypt(b64, &sk);
-        for i in 0..8 { chal[off+i] = ((enc >> (56-i*8)) & 0xFF) as u8; }
+        for i in 0..8 {
+            chal[off + i] = ((enc >> (56 - i * 8)) & 0xFF) as u8;
+        }
     }
 }
 
@@ -204,7 +258,9 @@ fn vnc_verify(pw: &[u8; 8], chal: &[u8; 16], resp: &[u8; 16]) -> bool {
     let mut expected = *chal;
     vnc_des_encrypt(pw, &mut expected);
     let mut diff = 0u8;
-    for i in 0..16 { diff |= expected[i] ^ resp[i]; }
+    for i in 0..16 {
+        diff |= expected[i] ^ resp[i];
+    }
     diff == 0
 }
 
@@ -212,23 +268,32 @@ fn vnc_verify(pw: &[u8; 8], chal: &[u8; 16], resp: &[u8; 16]) -> bool {
 
 fn pixel_format_block() -> [u8; 16] {
     [
-        32, 24,
-        0,          // little-endian
-        1,          // true-colour
-        0, 0xFF,    // red-max
-        0, 0xFF,    // green-max
-        0, 0xFF,    // blue-max
-        16, 8, 0,   // R/G/B shifts (ARGB: A=24, R=16, G=8, B=0)
-        0, 0, 0,    // padding
+        32, 24, 0, // little-endian
+        1, // true-colour
+        0, 0xFF, // red-max
+        0, 0xFF, // green-max
+        0, 0xFF, // blue-max
+        16, 8, 0, // R/G/B shifts (ARGB: A=24, R=16, G=8, B=0)
+        0, 0, 0, // padding
     ]
 }
 
 // ── Framebuffer update helpers ────────────────────────────────────────────────
 
-fn tile_dirty(cur: &[u32], prev: &[u32], stride: usize, tx: usize, ty: usize, tw: usize, th: usize) -> bool {
-    for row in ty..ty+th {
+fn tile_dirty(
+    cur: &[u32],
+    prev: &[u32],
+    stride: usize,
+    tx: usize,
+    ty: usize,
+    tw: usize,
+    th: usize,
+) -> bool {
+    for row in ty..ty + th {
         let off = row * stride + tx;
-        if cur[off..off+tw] != prev[off..off+tw] { return true; }
+        if cur[off..off + tw] != prev[off..off + tw] {
+            return true;
+        }
     }
     false
 }
@@ -245,8 +310,8 @@ fn send_full_update(sock: u32, fb: &[u32], sw: usize, sh: usize, buf: &mut Vec<u
     buf.extend_from_slice(&be16(sw as u16));
     buf.extend_from_slice(&be16(sh as u16));
     buf.extend_from_slice(&be32(0)); // Raw encoding
-    // Pixel data (ARGB little-endian → RFB BGRA? No: we told the client LE, R=16,G=8,B=0)
-    for &px in &fb[..sw*sh] {
+                                     // Pixel data (ARGB little-endian → RFB BGRA? No: we told the client LE, R=16,G=8,B=0)
+    for &px in &fb[..sw * sh] {
         buf.extend_from_slice(&px.to_le_bytes());
     }
     send_all(sock, buf)
@@ -266,7 +331,7 @@ fn send_dirty_update(
     let tiles_y = (sh + TILE - 1) / TILE;
 
     // Collect dirty rectangles (tile-granular).  Max 512 tiles.
-    let mut rects: [(u16,u16,u16,u16); 512] = [(0,0,0,0); 512];
+    let mut rects: [(u16, u16, u16, u16); 512] = [(0, 0, 0, 0); 512];
     let mut n_rects = 0usize;
 
     for ty_i in 0..tiles_y {
@@ -284,7 +349,9 @@ fn send_dirty_update(
         }
     }
 
-    if n_rects == 0 { return true; }
+    if n_rects == 0 {
+        return true;
+    }
 
     buf.clear();
     buf.extend_from_slice(&[0, 0]); // type=FramebufferUpdate, padding
@@ -297,11 +364,10 @@ fn send_dirty_update(
         buf.extend_from_slice(&be16(rh));
         buf.extend_from_slice(&be32(0)); // Raw
         let (rx, ry, rw, rh) = (rx as usize, ry as usize, rw as usize, rh as usize);
-        for row in ry..ry+rh {
+        for row in ry..ry + rh {
             let off = row * sw + rx;
-            let row_bytes = unsafe {
-                core::slice::from_raw_parts(cur[off..].as_ptr() as *const u8, rw * 4)
-            };
+            let row_bytes =
+                unsafe { core::slice::from_raw_parts(cur[off..].as_ptr() as *const u8, rw * 4) };
             buf.extend_from_slice(row_bytes);
         }
     }
@@ -309,9 +375,9 @@ fn send_dirty_update(
     // Update prev for next comparison.
     for &(rx, ry, rw, rh) in &rects[..n_rects] {
         let (rx, ry, rw, rh) = (rx as usize, ry as usize, rw as usize, rh as usize);
-        for row in ry..ry+rh {
+        for row in ry..ry + rh {
             let off = row * sw + rx;
-            prev[off..off+rw].copy_from_slice(&cur[off..off+rw]);
+            prev[off..off + rw].copy_from_slice(&cur[off..off + rw]);
         }
     }
 
@@ -331,12 +397,33 @@ fn keysym_to_ps2(ks: u32) -> Option<u8> {
     // ASCII letters (physical position, same on QWERTY and QWERTZ)
     if ks >= 0x61 && ks <= 0x7A {
         return Some(match ks as u8 - b'a' {
-            0 => 0x1E, 1 => 0x30, 2 => 0x2E, 3 => 0x20, 4 => 0x12,
-            5 => 0x21, 6 => 0x22, 7 => 0x23, 8 => 0x17, 9 => 0x24,
-            10=> 0x25, 11=> 0x26, 12=> 0x32, 13=> 0x31, 14=> 0x18,
-            15=> 0x19, 16=> 0x10, 17=> 0x13, 18=> 0x1F, 19=> 0x14,
-            20=> 0x16, 21=> 0x2F, 22=> 0x11, 23=> 0x2D, 24=> 0x15,
-            25=> 0x2C, _ => return None,
+            0 => 0x1E,
+            1 => 0x30,
+            2 => 0x2E,
+            3 => 0x20,
+            4 => 0x12,
+            5 => 0x21,
+            6 => 0x22,
+            7 => 0x23,
+            8 => 0x17,
+            9 => 0x24,
+            10 => 0x25,
+            11 => 0x26,
+            12 => 0x32,
+            13 => 0x31,
+            14 => 0x18,
+            15 => 0x19,
+            16 => 0x10,
+            17 => 0x13,
+            18 => 0x1F,
+            19 => 0x14,
+            20 => 0x16,
+            21 => 0x2F,
+            22 => 0x11,
+            23 => 0x2D,
+            24 => 0x15,
+            25 => 0x2C,
+            _ => return None,
         });
     }
     // Upper-case → same scancode as lowercase
@@ -345,73 +432,94 @@ fn keysym_to_ps2(ks: u32) -> Option<u8> {
     }
     Some(match ks {
         // ── Digits (same physical position on all layouts) ──────────────
-        0x30 => 0x0B, 0x31 => 0x02, 0x32 => 0x03, 0x33 => 0x04,
-        0x34 => 0x05, 0x35 => 0x06, 0x36 => 0x07, 0x37 => 0x08,
-        0x38 => 0x09, 0x39 => 0x0A,
+        0x30 => 0x0B,
+        0x31 => 0x02,
+        0x32 => 0x03,
+        0x33 => 0x04,
+        0x34 => 0x05,
+        0x35 => 0x06,
+        0x36 => 0x07,
+        0x37 => 0x08,
+        0x38 => 0x09,
+        0x39 => 0x0A,
 
         // ── Special keys ────────────────────────────────────────────────
-        0x20 => 0x39,                    // Space
-        0x0D | 0xFF0D | 0xFF8D => 0x1C,  // Return
-        0x09 | 0xFF09 => 0x0F,           // Tab
-        0x1B | 0xFF1B => 0x01,           // Escape
-        0xFF08 => 0x0E,                  // BackSpace
-        0xFFFF => 0x53,                  // Delete
+        0x20 => 0x39,                   // Space
+        0x0D | 0xFF0D | 0xFF8D => 0x1C, // Return
+        0x09 | 0xFF09 => 0x0F,          // Tab
+        0x1B | 0xFF1B => 0x01,          // Escape
+        0xFF08 => 0x0E,                 // BackSpace
+        0xFFFF => 0x53,                 // Delete
         // Function keys
-        0xFFBE => 0x3B, 0xFFBF => 0x3C, 0xFFC0 => 0x3D, 0xFFC1 => 0x3E,
-        0xFFC2 => 0x3F, 0xFFC3 => 0x40, 0xFFC4 => 0x41, 0xFFC5 => 0x42,
-        0xFFC6 => 0x43, 0xFFC7 => 0x44, 0xFFC8 => 0x57, 0xFFC9 => 0x58,
+        0xFFBE => 0x3B,
+        0xFFBF => 0x3C,
+        0xFFC0 => 0x3D,
+        0xFFC1 => 0x3E,
+        0xFFC2 => 0x3F,
+        0xFFC3 => 0x40,
+        0xFFC4 => 0x41,
+        0xFFC5 => 0x42,
+        0xFFC6 => 0x43,
+        0xFFC7 => 0x44,
+        0xFFC8 => 0x57,
+        0xFFC9 => 0x58,
         // Arrows
-        0xFF51 => 0x4B, 0xFF52 => 0x48, 0xFF53 => 0x4D, 0xFF54 => 0x50,
+        0xFF51 => 0x4B,
+        0xFF52 => 0x48,
+        0xFF53 => 0x4D,
+        0xFF54 => 0x50,
         // Nav
-        0xFF50 => 0x47, 0xFF57 => 0x4F, // Home / End
-        0xFF55 => 0x49, 0xFF56 => 0x51, // PgUp / PgDn
-        0xFF63 => 0x52,                  // Insert
+        0xFF50 => 0x47,
+        0xFF57 => 0x4F, // Home / End
+        0xFF55 => 0x49,
+        0xFF56 => 0x51, // PgUp / PgDn
+        0xFF63 => 0x52, // Insert
         // Modifiers
-        0xFFE1 | 0xFFE2 => 0x2A,        // Shift (left/right → left shift code)
-        0xFFE3 | 0xFFE4 => 0x1D,        // Ctrl
-        0xFFE9 | 0xFFEA => 0x38,        // Alt / AltGr
-        0xFFE5 => 0x3A,                 // Caps Lock
+        0xFFE1 | 0xFFE2 => 0x2A, // Shift (left/right → left shift code)
+        0xFFE3 | 0xFFE4 => 0x1D, // Ctrl
+        0xFFE9 | 0xFFEA => 0x38, // Alt / AltGr
+        0xFFE5 => 0x3A,          // Caps Lock
 
         // ── de-CH number row (normal layer) ─────────────────────────────
         // These keys sit right of '0' on a Swiss keyboard
-        0x27   => 0x0C, // ' (apostrophe, key right of 0)
-        0x5E   => 0x0D, // ^ (circumflex dead key)
+        0x27 => 0x0C, // ' (apostrophe, key right of 0)
+        0x5E => 0x0D, // ^ (circumflex dead key)
 
         // ── de-CH number row (shift layer) ──────────────────────────────
         // VNC client sends these as keysyms when Shift is held
-        0x2B   => 0x02, // + = Shift+1
-        0x22   => 0x03, // " = Shift+2
-        0x2A   => 0x04, // * = Shift+3
-        0x25   => 0x06, // % = Shift+5
-        0x26   => 0x07, // & = Shift+6
-        0x2F   => 0x08, // / = Shift+7
-        0x28   => 0x09, // ( = Shift+8
-        0x29   => 0x0A, // ) = Shift+9
-        0x3D   => 0x0B, // = = Shift+0
-        0x3F   => 0x0C, // ? = Shift+'
-        0x60   => 0x0D, // ` = Shift+^
+        0x2B => 0x02, // + = Shift+1
+        0x22 => 0x03, // " = Shift+2
+        0x2A => 0x04, // * = Shift+3
+        0x25 => 0x06, // % = Shift+5
+        0x26 => 0x07, // & = Shift+6
+        0x2F => 0x08, // / = Shift+7
+        0x28 => 0x09, // ( = Shift+8
+        0x29 => 0x0A, // ) = Shift+9
+        0x3D => 0x0B, // = = Shift+0
+        0x3F => 0x0C, // ? = Shift+'
+        0x60 => 0x0D, // ` = Shift+^
 
         // ── de-CH letter-row punctuation ────────────────────────────────
         // Keys after P, L, and on the bottom row
-        0x5B   => 0x1A, // [ (AltGr+ü on de-CH, but also physical key)
-        0x5D   => 0x1B, // ] (AltGr+¨ on de-CH)
-        0x7B   => 0x28, // { (AltGr+ä on de-CH)
-        0x7D   => 0x2B, // } (AltGr+$ on de-CH)
-        0x5C   => 0x56, // \ (AltGr+< on de-CH, ISO key)
-        0x7C   => 0x08, // | (AltGr+7 on de-CH)
-        0x40   => 0x03, // @ (AltGr+2 on de-CH)
-        0x23   => 0x04, // # (AltGr+3 on de-CH)
-        0x7E   => 0x0D, // ~ (AltGr+^ on de-CH)
-        0x24   => 0x2B, // $ (key after ä on de-CH, normal layer)
-        0x21   => 0x1B, // ! (Shift+¨ on de-CH)
-        0x2C   => 0x33, // ,
-        0x2E   => 0x34, // .
-        0x2D   => 0x35, // - (key after . on de-CH)
-        0x3B   => 0x33, // ; = Shift+, on de-CH
-        0x3A   => 0x34, // : = Shift+. on de-CH
-        0x5F   => 0x35, // _ = Shift+- on de-CH
-        0x3C   => 0x56, // < (ISO key, normal)
-        0x3E   => 0x56, // > (ISO key, Shift)
+        0x5B => 0x1A, // [ (AltGr+ü on de-CH, but also physical key)
+        0x5D => 0x1B, // ] (AltGr+¨ on de-CH)
+        0x7B => 0x28, // { (AltGr+ä on de-CH)
+        0x7D => 0x2B, // } (AltGr+$ on de-CH)
+        0x5C => 0x56, // \ (AltGr+< on de-CH, ISO key)
+        0x7C => 0x08, // | (AltGr+7 on de-CH)
+        0x40 => 0x03, // @ (AltGr+2 on de-CH)
+        0x23 => 0x04, // # (AltGr+3 on de-CH)
+        0x7E => 0x0D, // ~ (AltGr+^ on de-CH)
+        0x24 => 0x2B, // $ (key after ä on de-CH, normal layer)
+        0x21 => 0x1B, // ! (Shift+¨ on de-CH)
+        0x2C => 0x33, // ,
+        0x2E => 0x34, // .
+        0x2D => 0x35, // - (key after . on de-CH)
+        0x3B => 0x33, // ; = Shift+, on de-CH
+        0x3A => 0x34, // : = Shift+. on de-CH
+        0x5F => 0x35, // _ = Shift+- on de-CH
+        0x3C => 0x56, // < (ISO key, normal)
+        0x3E => 0x56, // > (ISO key, Shift)
 
         // ── Latin-1 keysyms (de-CH specific characters) ─────────────────
         0x00FC => 0x1A, // ü (key after P)
@@ -444,17 +552,25 @@ fn keysym_to_ps2(ks: u32) -> Option<u8> {
 /// `handle` is the running VM.  `password` is None for no-auth.
 fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Option<&[u8; 8]>) {
     // ── 1. Version handshake ─────────────────────────────────────────────
-    if !send_all(sock, b"RFB 003.008\n") { return; }
+    if !send_all(sock, b"RFB 003.008\n") {
+        return;
+    }
     let mut ver = [0u8; 12];
-    if !recv_exact(sock, &mut ver) { return; }
+    if !recv_exact(sock, &mut ver) {
+        return;
+    }
     // Accept any 3.x client.
 
     // ── 2. Security negotiation ──────────────────────────────────────────
     if password.is_some() {
         // Offer type 2 (VNC Auth)
-        if !send_all(sock, &[1u8, 2u8]) { return; }
+        if !send_all(sock, &[1u8, 2u8]) {
+            return;
+        }
         let mut sec = [0u8; 1];
-        if !recv_exact(sock, &mut sec) { return; }
+        if !recv_exact(sock, &mut sec) {
+            return;
+        }
         if sec[0] != 2 {
             // Client rejected — send failure
             send_all(sock, &be32(1));
@@ -465,10 +581,14 @@ fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Opt
         let mut rng = [0u8; 16];
         let _ = sys::random(&mut rng);
         challenge.copy_from_slice(&rng);
-        if !send_all(sock, &challenge) { return; }
+        if !send_all(sock, &challenge) {
+            return;
+        }
         // Receive response
         let mut response = [0u8; 16];
-        if !recv_exact(sock, &mut response) { return; }
+        if !recv_exact(sock, &mut response) {
+            return;
+        }
         let pw = password.unwrap();
         if !vnc_verify(pw, &challenge, &response) {
             send_all(sock, &be32(1)); // SecurityResult: failed
@@ -477,16 +597,24 @@ fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Opt
         send_all(sock, &be32(0)); // SecurityResult: OK
     } else {
         // Offer type 1 (None)
-        if !send_all(sock, &[1u8, 1u8]) { return; }
+        if !send_all(sock, &[1u8, 1u8]) {
+            return;
+        }
         let mut sec = [0u8; 1];
-        if !recv_exact(sock, &mut sec) { return; }
+        if !recv_exact(sock, &mut sec) {
+            return;
+        }
         // RFB 3.8: send SecurityResult even for None
-        if !send_all(sock, &be32(0)) { return; }
+        if !send_all(sock, &be32(0)) {
+            return;
+        }
     }
 
     // ── 3. ClientInit ────────────────────────────────────────────────────
     let mut ci = [0u8; 1];
-    if !recv_exact(sock, &mut ci) { return; }
+    if !recv_exact(sock, &mut ci) {
+        return;
+    }
     // shared-flag byte — ignore
 
     // ── 4. ServerInit ────────────────────────────────────────────────────
@@ -498,13 +626,15 @@ fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Opt
     si.extend_from_slice(&pixel_format_block());
     si.extend_from_slice(&be32(name.len() as u32));
     si.extend_from_slice(name);
-    if !send_all(sock, &si) { return; }
+    if !send_all(sock, &si) {
+        return;
+    }
 
     // ── 5. Main loop ─────────────────────────────────────────────────────
     let n_pixels = sw * sh;
     let mut screen_buf: Vec<u32> = alloc::vec![0u32; n_pixels];
-    let mut prev_buf:   Vec<u32> = alloc::vec![0u32; n_pixels];
-    let mut send_buf:   Vec<u8>  = Vec::with_capacity(sw * 4 * 32 + 64);
+    let mut prev_buf: Vec<u32> = alloc::vec![0u32; n_pixels];
+    let mut send_buf: Vec<u8> = Vec::with_capacity(sw * 4 * 32 + 64);
 
     let mut pending_update = false;
     let mut clean_frames = 0u32;
@@ -524,27 +654,41 @@ fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Opt
         let n = recv_nowait(sock, &mut hdr);
         if n > 0 {
             match hdr[0] {
-                0 => { // SetPixelFormat — read and ignore (we keep our format)
+                0 => {
+                    // SetPixelFormat — read and ignore (we keep our format)
                     let mut rest = [0u8; 19];
-                    if !recv_exact(sock, &mut rest) { return; }
+                    if !recv_exact(sock, &mut rest) {
+                        return;
+                    }
                 }
-                2 => { // SetEncodings
+                2 => {
+                    // SetEncodings
                     let mut buf4 = [0u8; 3];
-                    if !recv_exact(sock, &mut buf4) { return; }
+                    if !recv_exact(sock, &mut buf4) {
+                        return;
+                    }
                     let count = from_be16(&buf4[1..]) as usize;
                     let mut enc_buf = alloc::vec![0u8; count * 4];
-                    if !recv_exact(sock, &mut enc_buf) { return; }
+                    if !recv_exact(sock, &mut enc_buf) {
+                        return;
+                    }
                     // We only support Raw — ignore what the client requests.
                 }
-                3 => { // FramebufferUpdateRequest
+                3 => {
+                    // FramebufferUpdateRequest
                     let mut rest = [0u8; 9];
-                    if !recv_exact(sock, &mut rest) { return; }
+                    if !recv_exact(sock, &mut rest) {
+                        return;
+                    }
                     pending_update = true;
                 }
-                4 => { // KeyEvent: down(1) + pad(2) + keysym(4)
+                4 => {
+                    // KeyEvent: down(1) + pad(2) + keysym(4)
                     let mut rest = [0u8; 7];
-                    if !recv_exact(sock, &mut rest) { return; }
-                    let down  = rest[0] != 0;
+                    if !recv_exact(sock, &mut rest) {
+                        return;
+                    }
+                    let down = rest[0] != 0;
                     let keysym = from_be32(&rest[3..7]);
                     if let Some(sc) = keysym_to_ps2(keysym) {
                         if down {
@@ -554,22 +698,32 @@ fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Opt
                         }
                     }
                 }
-                5 => { // PointerEvent: buttons(1) + x(2) + y(2)
+                5 => {
+                    // PointerEvent: buttons(1) + x(2) + y(2)
                     let mut rest = [0u8; 5];
-                    if !recv_exact(sock, &mut rest) { return; }
+                    if !recv_exact(sock, &mut rest) {
+                        return;
+                    }
                     let buttons = rest[0];
                     let x = from_be16(&rest[1..3]) as i16;
                     let y = from_be16(&rest[3..5]) as i16;
                     handle.ps2_mouse_move(x, y, buttons);
                 }
-                6 => { // ClientCutText
+                6 => {
+                    // ClientCutText
                     let mut buf7 = [0u8; 7];
-                    if !recv_exact(sock, &mut buf7) { return; }
+                    if !recv_exact(sock, &mut buf7) {
+                        return;
+                    }
                     let len = from_be32(&buf7[3..7]) as usize;
                     let mut text = alloc::vec![0u8; len];
-                    if !recv_exact(sock, &mut text) { return; }
+                    if !recv_exact(sock, &mut text) {
+                        return;
+                    }
                 }
-                _ => { return; } // unknown message type — close
+                _ => {
+                    return;
+                } // unknown message type — close
             }
         }
 
@@ -580,18 +734,25 @@ fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Opt
                 let n_u32 = (pixels.len() / 4).min(n_pixels);
                 for i in 0..n_u32 {
                     screen_buf[i] = u32::from_le_bytes([
-                        pixels[i*4], pixels[i*4+1], pixels[i*4+2], pixels[i*4+3],
+                        pixels[i * 4],
+                        pixels[i * 4 + 1],
+                        pixels[i * 4 + 2],
+                        pixels[i * 4 + 3],
                     ]);
                 }
                 true
             } else {
                 // No framebuffer yet (e.g. guest still in real-mode) — blank
-                for px in screen_buf.iter_mut() { *px = 0; }
+                for px in screen_buf.iter_mut() {
+                    *px = 0;
+                }
                 false
             };
 
             if first_frame {
-                if !send_full_update(sock, &screen_buf, sw, sh, &mut send_buf) { return; }
+                if !send_full_update(sock, &screen_buf, sw, sh, &mut send_buf) {
+                    return;
+                }
                 prev_buf.copy_from_slice(&screen_buf);
                 first_frame = false;
                 pending_update = false;
@@ -599,7 +760,7 @@ fn run_session(sock: u32, handle: &VmHandle, sw: usize, sh: usize, password: Opt
             }
 
             if frame_updated {
-                let has_dirty = (0..sw*sh).any(|i| screen_buf[i] != prev_buf[i]);
+                let has_dirty = (0..sw * sh).any(|i| screen_buf[i] != prev_buf[i]);
                 if has_dirty {
                     clean_frames = 0;
                     if !send_dirty_update(sock, &screen_buf, &mut prev_buf, sw, sh, &mut send_buf) {
@@ -651,9 +812,14 @@ fn setup_vm(config: &VmConfig) -> Option<VmHandle> {
             if size > 0 {
                 handle.ahci_attach_disk(0, fd as i32, size);
                 println!("[vmctl-vnc] Disk: {} ({} B)", config.disk_image, size);
-            } else { anyos_std::fs::close(fd); }
+            } else {
+                anyos_std::fs::close(fd);
+            }
         } else {
-            println!("[vmctl-vnc] WARNING: cannot open disk: {}", config.disk_image);
+            println!(
+                "[vmctl-vnc] WARNING: cannot open disk: {}",
+                config.disk_image
+            );
         }
     }
 
@@ -666,12 +832,18 @@ fn setup_vm(config: &VmConfig) -> Option<VmHandle> {
             if size > 0 {
                 handle.ahci_attach_cdrom(1, fd as i32, size);
                 println!("[vmctl-vnc] ISO: {} ({} B)", config.iso_image, size);
-            } else { anyos_std::fs::close(fd); }
+            } else {
+                anyos_std::fs::close(fd);
+            }
         }
     }
 
     // BIOS
-    let bios_path = if config.bios_type == "seabios" { BIOS_PATH_SEABIOS } else { BIOS_PATH_COREVM };
+    let bios_path = if config.bios_type == "seabios" {
+        BIOS_PATH_SEABIOS
+    } else {
+        BIOS_PATH_COREVM
+    };
     let bios = read_file(bios_path);
     if bios.is_empty() {
         println!("[vmctl-vnc] ERROR: BIOS not found at {}", bios_path);
@@ -686,16 +858,26 @@ fn setup_vm(config: &VmConfig) -> Option<VmHandle> {
 
     // Initial CPU state: real mode, CS:IP = F000:FFF0
     let mut sregs = handle.get_vcpu_sregs(0);
-    sregs.cs.base = 0xF0000; sregs.cs.selector = 0xF000;
-    sregs.cs.limit = 0xFFFF;  sregs.cs.type_ = 0x0B;
-    sregs.cs.present = 1;     sregs.cs.s = 1;
-    sregs.ds.base = 0; sregs.ds.selector = 0; sregs.ds.limit = 0xFFFF;
-    sregs.ds.type_ = 0x03; sregs.ds.present = 1; sregs.ds.s = 1;
-    sregs.es = sregs.ds; sregs.ss = sregs.ds;
-    sregs.fs = sregs.ds; sregs.gs = sregs.ds;
+    sregs.cs.base = 0xF0000;
+    sregs.cs.selector = 0xF000;
+    sregs.cs.limit = 0xFFFF;
+    sregs.cs.type_ = 0x0B;
+    sregs.cs.present = 1;
+    sregs.cs.s = 1;
+    sregs.ds.base = 0;
+    sregs.ds.selector = 0;
+    sregs.ds.limit = 0xFFFF;
+    sregs.ds.type_ = 0x03;
+    sregs.ds.present = 1;
+    sregs.ds.s = 1;
+    sregs.es = sregs.ds;
+    sregs.ss = sregs.ds;
+    sregs.fs = sregs.ds;
+    sregs.gs = sregs.ds;
     handle.set_vcpu_sregs(0, &sregs);
     let mut regs = handle.get_vcpu_regs(0);
-    regs.rip = 0xFFF0; regs.rflags = 0x2;
+    regs.rip = 0xFFF0;
+    regs.rflags = 0x2;
     handle.set_vcpu_regs(0, &regs);
 
     Some(handle)
@@ -705,11 +887,16 @@ fn setup_vm(config: &VmConfig) -> Option<VmHandle> {
 
 /// Run a VM and serve its display as VNC on `port`.
 pub fn cmd_vnc(config: VmConfig, port: u16, password: Option<&[u8; 8]>) {
-    println!("[vmctl-vnc] Starting VM '{}' ({} MiB)...", config.name, config.ram_mb);
+    println!(
+        "[vmctl-vnc] Starting VM '{}' ({} MiB)...",
+        config.name, config.ram_mb
+    );
 
     let handle = match setup_vm(&config) {
         Some(h) => h,
-        None => { anyos_std::process::exit(1); }
+        None => {
+            anyos_std::process::exit(1);
+        }
     };
 
     // Determine display dimensions from the VGA mode (default 1024×768).
@@ -736,13 +923,23 @@ pub fn cmd_vnc(config: VmConfig, port: u16, password: Option<&[u8; 8]>) {
     } else {
         (0, 0, 0, 0)
     };
-    println!("[vmctl-vnc] VNC listening on {}.{}.{}.{}:{}", a, b, c, d, port);
+    println!(
+        "[vmctl-vnc] VNC listening on {}.{}.{}.{}:{}",
+        a, b, c, d, port
+    );
     println!("[vmctl-vnc] Connect with any VNC viewer. Press Ctrl+C to stop.");
-    println!("[vmctl-vnc] Auth: {}", if password.is_some() { "VNC password" } else { "none (open)" });
+    println!(
+        "[vmctl-vnc] Auth: {}",
+        if password.is_some() {
+            "VNC password"
+        } else {
+            "none (open)"
+        }
+    );
 
     // Track the current VNC client socket (single session).
     let mut client_sock: u32 = u32::MAX;
-    let mut client_pid:  u32 = u32::MAX;
+    let mut client_pid: u32 = u32::MAX;
 
     let mut exit_count: u64 = 0;
 
@@ -796,7 +993,7 @@ pub fn cmd_vnc(config: VmConfig, port: u16, password: Option<&[u8; 8]>) {
         // Reap finished client child.
         if client_pid != u32::MAX {
             if process::try_waitpid(client_pid) != process::STILL_RUNNING {
-                client_pid  = u32::MAX;
+                client_pid = u32::MAX;
                 client_sock = u32::MAX;
             }
         }
@@ -805,8 +1002,10 @@ pub fn cmd_vnc(config: VmConfig, port: u16, password: Option<&[u8; 8]>) {
         if client_sock == u32::MAX && exit_count % 100 == 0 {
             let (sock, ip, _port) = net::tcp_accept_nowait(listener);
             if sock != u32::MAX {
-                println!("[vmctl-vnc] VNC client connected from {}.{}.{}.{}",
-                    ip[0], ip[1], ip[2], ip[3]);
+                println!(
+                    "[vmctl-vnc] VNC client connected from {}.{}.{}.{}",
+                    ip[0], ip[1], ip[2], ip[3]
+                );
 
                 // Refresh screen dimensions before forking.
                 let (fw, fh, _) = handle.vga_get_mode();
@@ -824,11 +1023,11 @@ pub fn cmd_vnc(config: VmConfig, port: u16, password: Option<&[u8; 8]>) {
                 if tid == 0 {
                     // Child: run RFB session, then exit.
                     let pw_ref = pw_copy.as_ref();
-                    run_session(sock, &handle, sw_c, sh_c, pw_ref.map(|p| p as &[u8;8]));
+                    run_session(sock, &handle, sw_c, sh_c, pw_ref.map(|p| p as &[u8; 8]));
                     net::tcp_close(sock);
                     process::exit(0);
                 } else if tid != u32::MAX {
-                    client_pid  = tid;
+                    client_pid = tid;
                     client_sock = sock;
                 } else {
                     println!("[vmctl-vnc] fork failed — closing client");
@@ -839,7 +1038,9 @@ pub fn cmd_vnc(config: VmConfig, port: u16, password: Option<&[u8; 8]>) {
     }
 
     // Clean up.
-    if client_pid != u32::MAX { process::kill(client_pid); }
+    if client_pid != u32::MAX {
+        process::kill(client_pid);
+    }
     net::tcp_close(listener);
     println!("[vmctl-vnc] Done.");
 }

@@ -99,7 +99,8 @@ impl Element {
 
     /// Get an attribute value by name.
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attributes.iter()
+        self.attributes
+            .iter()
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.as_str())
     }
@@ -112,7 +113,8 @@ impl Element {
                 return;
             }
         }
-        self.attributes.push((String::from(name), String::from(value)));
+        self.attributes
+            .push((String::from(name), String::from(value)));
     }
 
     /// Remove an attribute by name. Returns true if it existed.
@@ -152,10 +154,13 @@ impl Element {
 
     /// Find the first child element with the given name (mutable).
     pub fn child_mut(&mut self, name: &str) -> Option<&mut Element> {
-        self.children.iter_mut().filter_map(|n| match n {
-            XmlNode::Element(e) if e.name == name => Some(e),
-            _ => None,
-        }).next()
+        self.children
+            .iter_mut()
+            .filter_map(|n| match n {
+                XmlNode::Element(e) if e.name == name => Some(e),
+                _ => None,
+            })
+            .next()
     }
 
     /// Find all child elements with the given name.
@@ -209,7 +214,10 @@ impl Element {
 
     /// Number of child elements.
     pub fn element_count(&self) -> usize {
-        self.children.iter().filter(|n| matches!(n, XmlNode::Element(_))).count()
+        self.children
+            .iter()
+            .filter(|n| matches!(n, XmlNode::Element(_)))
+            .count()
     }
 
     /// Whether this element has no children.
@@ -275,7 +283,12 @@ impl Document {
             serialize_declaration(decl, &mut out);
             out.push('\n');
         }
-        serialize_node(&XmlNode::Element(self.root.clone()), &mut out, Some(indent), 0);
+        serialize_node(
+            &XmlNode::Element(self.root.clone()),
+            &mut out,
+            Some(indent),
+            0,
+        );
         out
     }
 }
@@ -316,13 +329,22 @@ impl core::fmt::Display for XmlError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             XmlError::UnexpectedEnd => write!(f, "unexpected end of input"),
-            XmlError::UnexpectedChar(pos, ch) => write!(f, "unexpected '{}' at position {}", ch, pos),
-            XmlError::MismatchedTag(pos, expected, got) =>
-                write!(f, "mismatched closing tag at {}: expected </{}>, got </{}>", pos, expected, got),
-            XmlError::InvalidEntity(pos) => write!(f, "invalid entity reference at position {}", pos),
+            XmlError::UnexpectedChar(pos, ch) => {
+                write!(f, "unexpected '{}' at position {}", ch, pos)
+            }
+            XmlError::MismatchedTag(pos, expected, got) => write!(
+                f,
+                "mismatched closing tag at {}: expected </{}>, got </{}>",
+                pos, expected, got
+            ),
+            XmlError::InvalidEntity(pos) => {
+                write!(f, "invalid entity reference at position {}", pos)
+            }
             XmlError::InvalidCData(pos) => write!(f, "invalid CDATA section at position {}", pos),
             XmlError::InvalidComment(pos) => write!(f, "invalid comment at position {}", pos),
-            XmlError::InvalidPI(pos) => write!(f, "invalid processing instruction at position {}", pos),
+            XmlError::InvalidPI(pos) => {
+                write!(f, "invalid processing instruction at position {}", pos)
+            }
             XmlError::NoRootElement => write!(f, "no root element found"),
             XmlError::MultipleRoots => write!(f, "multiple root elements"),
             XmlError::TrailingData(pos) => write!(f, "trailing data at position {}", pos),
@@ -339,7 +361,10 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
-        Parser { input: input.as_bytes(), pos: 0 }
+        Parser {
+            input: input.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn remaining(&self) -> usize {
@@ -352,7 +377,9 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> Option<u8> {
         let b = self.input.get(self.pos).copied();
-        if b.is_some() { self.pos += 1; }
+        if b.is_some() {
+            self.pos += 1;
+        }
         b
     }
 
@@ -459,7 +486,11 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(Declaration { version, encoding, standalone })
+        Ok(Declaration {
+            version,
+            encoding,
+            standalone,
+        })
     }
 
     // ── Element ──
@@ -512,7 +543,11 @@ impl<'a> Parser<'a> {
                 if close_name != name {
                     return Err(XmlError::MismatchedTag(self.pos, name, close_name));
                 }
-                return Ok(Element { name, attributes, children });
+                return Ok(Element {
+                    name,
+                    attributes,
+                    children,
+                });
             }
 
             if self.pos >= self.input.len() {
@@ -545,7 +580,9 @@ impl<'a> Parser<'a> {
     fn parse_name(&mut self) -> Result<String, XmlError> {
         let start = self.pos;
         match self.peek() {
-            Some(b) if Self::is_name_start(b) => { self.pos += 1; }
+            Some(b) if Self::is_name_start(b) => {
+                self.pos += 1;
+            }
             Some(b) => return Err(XmlError::UnexpectedChar(self.pos, b as char)),
             None => return Err(XmlError::UnexpectedEnd),
         }
@@ -618,7 +655,9 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 let hex_start = self.pos;
                 while let Some(b) = self.peek() {
-                    if b == b';' { break; }
+                    if b == b';' {
+                        break;
+                    }
                     self.pos += 1;
                 }
                 let hex = core::str::from_utf8(&self.input[hex_start..self.pos])
@@ -628,7 +667,9 @@ impl<'a> Parser<'a> {
                 // Decimal: &#DDDD;
                 let dec_start = self.pos;
                 while let Some(b) = self.peek() {
-                    if b == b';' { break; }
+                    if b == b';' {
+                        break;
+                    }
                     self.pos += 1;
                 }
                 let dec = core::str::from_utf8(&self.input[dec_start..self.pos])
@@ -757,7 +798,9 @@ impl<'a> Parser<'a> {
 fn parse_u32_dec(s: &str) -> Option<u32> {
     let mut n: u32 = 0;
     for &b in s.as_bytes() {
-        if !b.is_ascii_digit() { return None; }
+        if !b.is_ascii_digit() {
+            return None;
+        }
         n = n.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(n)
@@ -829,7 +872,10 @@ fn serialize_element(elem: &Element, out: &mut String, indent: Option<usize>, de
     out.push('>');
 
     // Check if children are all text (inline mode)
-    let all_text = elem.children.iter().all(|n| matches!(n, XmlNode::Text(_) | XmlNode::CData(_)));
+    let all_text = elem
+        .children
+        .iter()
+        .all(|n| matches!(n, XmlNode::Text(_) | XmlNode::CData(_)));
 
     if let Some(indent_size) = indent {
         if all_text {

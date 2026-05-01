@@ -6,7 +6,7 @@ use anyos_std::fs;
 use crate::detect::detect_existing_installation;
 use crate::model::{UpgradeList, UpgradeOperation};
 use crate::transaction::has_pending_upgrade;
-use crate::util::{file_size, is_config_path, path_exists, read_dir, join_root};
+use crate::util::{file_size, is_config_path, join_root, path_exists, read_dir};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PreflightCheck {
@@ -105,7 +105,8 @@ pub fn preflight_upgrade(root: &str, list: &UpgradeList) -> PreflightReport {
                     continue;
                 }
 
-                match estimate_sync_bytes(root, source, target, *merge_configs, *preserve_existing) {
+                match estimate_sync_bytes(root, source, target, *merge_configs, *preserve_existing)
+                {
                     Ok(0) => {
                         push_issue(
                             &mut report,
@@ -240,7 +241,12 @@ fn compare_versions(left: &str, right: &str) -> i32 {
     }
 }
 
-fn push_issue(report: &mut PreflightReport, level: PreflightCheck, code: PreflightCode, message: &str) {
+fn push_issue(
+    report: &mut PreflightReport,
+    level: PreflightCheck,
+    code: PreflightCode,
+    message: &str,
+) {
     if level == PreflightCheck::Error {
         report.ok = false;
     }

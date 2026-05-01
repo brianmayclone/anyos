@@ -85,8 +85,7 @@ pub fn parse(raw: &str) -> LongArgs {
             }
             if let Some(eq) = body.find('=') {
                 let (name, value) = body.split_at(eq);
-                out.options
-                    .push((name.into(), value[1..].into()));
+                out.options.push((name.into(), value[1..].into()));
                 i += 1;
                 continue;
             }

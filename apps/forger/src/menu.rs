@@ -198,7 +198,8 @@ pub fn layout(ui: &MenuUi, canvas_w: u32, canvas_h: u32) {
     ui.back_btn.set_size(110, 34);
 
     ui.world_panel.set_position(world_panel_x, world_panel_y);
-    ui.world_panel.set_size(world_panel_w as u32, world_panel_h as u32);
+    ui.world_panel
+        .set_size(world_panel_w as u32, world_panel_h as u32);
     ui.world_title.set_position(20, 18);
     ui.world_title.set_size(200, 28);
     ui.world_hint.set_position(20, 48);
@@ -238,15 +239,18 @@ pub fn layout(ui: &MenuUi, canvas_w: u32, canvas_h: u32) {
 pub fn show_mode(ui: &MenuUi, mode: AppMode) {
     let in_menu = mode != AppMode::InGame;
     ui.overlay.set_visible(in_menu);
-    ui.back_btn.set_visible(matches!(mode, AppMode::WorldSelect | AppMode::Settings));
+    ui.back_btn
+        .set_visible(matches!(mode, AppMode::WorldSelect | AppMode::Settings));
     ui.hero_panel.set_visible(mode == AppMode::MainMenu);
     ui.world_panel.set_visible(mode == AppMode::WorldSelect);
     ui.settings_panel.set_visible(mode == AppMode::Settings);
 }
 
 pub fn sync_settings(ui: &MenuUi, settings: &GameSettings) {
-    ui.graphics_drop.set_selected_index(settings.graphics_quality_index());
-    ui.shadows_toggle.set_state(if settings.shadows_enabled { 1 } else { 0 });
+    ui.graphics_drop
+        .set_selected_index(settings.graphics_quality_index());
+    ui.shadows_toggle
+        .set_state(if settings.shadows_enabled { 1 } else { 0 });
     ui.shadow_quality_drop
         .set_selected_index(settings.shadow_quality_index());
 }
@@ -361,7 +365,9 @@ pub fn refresh_menu_state(s: &mut crate::state::GameState) {
 
 pub fn create_world_from_field(s: &mut crate::state::GameState) {
     let name = read_text(&s.menu_ui.new_world_name);
-    let seed = anyos_std::sys::uptime_ms().wrapping_mul(1664525).wrapping_add(1013904223);
+    let seed = anyos_std::sys::uptime_ms()
+        .wrapping_mul(1664525)
+        .wrapping_add(1013904223);
     if let Some(summary) = crate::save::create_world(&name, seed) {
         s.world_summaries = crate::save::load_world_summaries();
         s.menu_ui.new_world_name.set_text("");

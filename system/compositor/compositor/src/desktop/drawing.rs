@@ -15,13 +15,17 @@ pub(crate) fn fill_rect(
     color: u32,
 ) {
     let a = (color >> 24) & 0xFF;
-    if a == 0 { return; }
+    if a == 0 {
+        return;
+    }
     // Pre-clamp bounds — eliminates per-pixel branch checks
     let x0 = x.max(0) as u32;
     let y0 = y.max(0) as u32;
     let x1 = ((x + w as i32) as u32).min(stride);
     let y1 = ((y + h as i32) as u32).min(buf_h);
-    if x0 >= x1 || y0 >= y1 { return; }
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
     let cw = (x1 - x0) as usize;
     let plen = pixels.len();
     if a >= 255 {
@@ -95,7 +99,16 @@ pub(crate) fn fill_rounded_rect(
         let fill_width = r - fill_start;
         if fill_width > 0 {
             let fs = fill_start as i32;
-            fill_rect(pixels, stride, buf_h, x + fs, y + dy as i32, fill_width, 1, color);
+            fill_rect(
+                pixels,
+                stride,
+                buf_h,
+                x + fs,
+                y + dy as i32,
+                fill_width,
+                1,
+                color,
+            );
             fill_rect(
                 pixels,
                 stride,
@@ -215,7 +228,7 @@ pub(crate) fn fill_rounded_rect_top(
         return;
     }
     let buf_h = stride; // assume square-ish
-    // Body below rounded top
+                        // Body below rounded top
     if h > r {
         fill_rect(pixels, stride, buf_h, x, y + r as i32, w, h - r, color);
     }
@@ -239,7 +252,16 @@ pub(crate) fn fill_rounded_rect_top(
         let fill_width = r - fill_start;
         if fill_width > 0 {
             let fs = fill_start as i32;
-            fill_rect(pixels, stride, buf_h, x + fs, y + dy as i32, fill_width, 1, color);
+            fill_rect(
+                pixels,
+                stride,
+                buf_h,
+                x + fs,
+                y + dy as i32,
+                fill_width,
+                1,
+                color,
+            );
             fill_rect(
                 pixels,
                 stride,
@@ -257,7 +279,9 @@ pub(crate) fn fill_rounded_rect_top(
 /// Linearly interpolate between two ARGB colors.
 /// `t` ranges from 0 (returns c0) to `total` (returns c1).
 fn lerp_color(c0: u32, c1: u32, t: u32, total: u32) -> u32 {
-    if total == 0 { return c0; }
+    if total == 0 {
+        return c0;
+    }
     let mix = |v0: u32, v1: u32| -> u32 {
         (v0 as i32 + ((v1 as i32 - v0 as i32) * t as i32 / total as i32)) as u32 & 0xFF
     };
@@ -281,7 +305,9 @@ pub(crate) fn fill_rounded_rect_top_gradient(
     top_color: u32,
     bottom_color: u32,
 ) {
-    if h == 0 || w == 0 { return; }
+    if h == 0 || w == 0 {
+        return;
+    }
     let buf_h = stride; // assume buffer height >= stride
     let r = if w < r * 2 { 0 } else { r };
     let denom = h.saturating_sub(1).max(1);
@@ -309,11 +335,29 @@ pub(crate) fn fill_rounded_rect_top_gradient(
             }
             // Center band
             if w > r * 2 {
-                fill_rect(pixels, stride, buf_h, x + r as i32, y + dy as i32, w - r * 2, 1, color);
+                fill_rect(
+                    pixels,
+                    stride,
+                    buf_h,
+                    x + r as i32,
+                    y + dy as i32,
+                    w - r * 2,
+                    1,
+                    color,
+                );
             }
             // Right corner pixels
             if lw > 0 {
-                fill_rect(pixels, stride, buf_h, x + (w - r) as i32, y + dy as i32, lw, 1, color);
+                fill_rect(
+                    pixels,
+                    stride,
+                    buf_h,
+                    x + (w - r) as i32,
+                    y + dy as i32,
+                    lw,
+                    1,
+                    color,
+                );
             }
         } else {
             // Full-width row

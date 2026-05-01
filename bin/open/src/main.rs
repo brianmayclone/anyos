@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{fs, process};
 use anyos_std::icons::MimeDb;
+use anyos_std::{fs, process};
 
 anyos_std::entry!(main);
 
@@ -62,7 +62,10 @@ fn main() {
     let ext = match path.rfind('.') {
         Some(dot) => &path[dot + 1..],
         None => {
-            anyos_std::println!("open: {}: no file extension, cannot determine application", path);
+            anyos_std::println!(
+                "open: {}: no file extension, cannot determine application",
+                path
+            );
             return;
         }
     };

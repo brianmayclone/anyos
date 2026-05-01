@@ -905,7 +905,11 @@ impl<'a> ExecState<'a> {
                 self.groups = saved;
                 Some(pos)
             }
-            Node::NamedGroup { index, name: _, body } => {
+            Node::NamedGroup {
+                index,
+                name: _,
+                body,
+            } => {
                 // Same as capturing group but with a name.
                 let saved = self.groups.clone();
                 let start = pos;
@@ -1129,7 +1133,12 @@ impl Regex {
     }
 
     fn try_match_at(&self, chars: &[char], pos: usize) -> Option<Match> {
-        let mut state = ExecState::new(chars, self.flags, self.group_count, self.named_groups.as_slice());
+        let mut state = ExecState::new(
+            chars,
+            self.flags,
+            self.group_count,
+            self.named_groups.as_slice(),
+        );
         if let Some(end) = state.exec_nodes(&self.nodes, pos) {
             state.groups[0] = Some((pos, end));
             Some(Match {

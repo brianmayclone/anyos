@@ -8,14 +8,14 @@
 //! - Sort menu
 //! - Help screen
 
-use crate::term::{self, TermBuf, color};
 use crate::input::{self, Key};
+use crate::term::{self, color, TermBuf};
 
 // ─── Color scheme for dialogs ─────────────────────────────────────────────────
 
 /// Dialog border / title color.
-const DLG_FG:     u8 = color::BRIGHT_WHITE;
-const DLG_BG:     u8 = color::BLUE;
+const DLG_FG: u8 = color::BRIGHT_WHITE;
+const DLG_BG: u8 = color::BLUE;
 const DLG_BTN_FG: u8 = color::BLACK;
 const DLG_BTN_BG: u8 = color::BRIGHT_WHITE;
 const DLG_ERR_BG: u8 = color::RED;
@@ -24,7 +24,15 @@ const DLG_ERR_BG: u8 = color::RED;
 
 /// Draw a centered box with a title.
 /// Returns (box_col, box_row, box_width, box_height) — inner content area.
-fn draw_box(buf: &mut TermBuf, cols: u32, rows: u32, width: u32, height: u32, title: &str, err: bool) -> (u32, u32) {
+fn draw_box(
+    buf: &mut TermBuf,
+    cols: u32,
+    rows: u32,
+    width: u32,
+    height: u32,
+    title: &str,
+    err: bool,
+) -> (u32, u32) {
     let col = (cols.saturating_sub(width)) / 2 + 1;
     let row = (rows.saturating_sub(height)) / 2 + 1;
 
@@ -38,12 +46,16 @@ fn draw_box(buf: &mut TermBuf, cols: u32, rows: u32, width: u32, height: u32, ti
         if r == 0 {
             // Top border
             buf.push_str("+");
-            for _ in 0..width.saturating_sub(2) { buf.push_str("="); }
+            for _ in 0..width.saturating_sub(2) {
+                buf.push_str("=");
+            }
             buf.push_str("+");
         } else if r + 1 == height {
             // Bottom border
             buf.push_str("+");
-            for _ in 0..width.saturating_sub(2) { buf.push_str("="); }
+            for _ in 0..width.saturating_sub(2) {
+                buf.push_str("=");
+            }
             buf.push_str("+");
         } else {
             // Side borders + fill
@@ -91,7 +103,9 @@ fn draw_button(buf: &mut TermBuf, col: u32, row: u32, label: &str, selected: boo
 /// Show a Yes/No confirmation dialog. Returns `true` if user chose Yes.
 pub fn confirm(buf: &mut TermBuf, cols: u32, rows: u32, title: &str, message: &str) -> bool {
     // Box: width = max(message+4, 30), height = 7
-    let w = (message.len() as u32 + 6).max(32).min(cols.saturating_sub(4));
+    let w = (message.len() as u32 + 6)
+        .max(32)
+        .min(cols.saturating_sub(4));
     let h = 7u32;
     let (ic, ir) = draw_box(buf, cols, rows, w, h, title, false);
 
@@ -110,16 +124,20 @@ pub fn confirm(buf: &mut TermBuf, cols: u32, rows: u32, title: &str, message: &s
         // Redraw buttons
         let btn_row = ir + 3;
         let btn_col_yes = ic + (w / 2).saturating_sub(10);
-        let btn_col_no  = btn_col_yes + 12;
+        let btn_col_no = btn_col_yes + 12;
         draw_button(buf, btn_col_yes, btn_row, " Yes ", yes);
-        draw_button(buf, btn_col_no,  btn_row, " No  ", !yes);
+        draw_button(buf, btn_col_no, btn_row, " No  ", !yes);
         buf.flush();
 
         match input::read_key() {
             Key::Left | Key::Right | Key::Tab => yes = !yes,
-            Key::Char(b'y') | Key::Char(b'Y') => { return true; }
-            Key::Char(b'n') | Key::Char(b'N') => { return false; }
-            Key::Enter  => return yes,
+            Key::Char(b'y') | Key::Char(b'Y') => {
+                return true;
+            }
+            Key::Char(b'n') | Key::Char(b'N') => {
+                return false;
+            }
+            Key::Enter => return yes,
             Key::Escape | Key::Char(b'q') => return false,
             _ => {}
         }
@@ -141,7 +159,9 @@ pub fn input_line(
     prompt: &str,
     default: &str,
 ) -> Option<[u8; INPUT_BUF_SIZE]> {
-    let w = (prompt.len() as u32 + 20).max(50).min(cols.saturating_sub(4));
+    let w = (prompt.len() as u32 + 20)
+        .max(50)
+        .min(cols.saturating_sub(4));
     let h = 6u32;
     let (ic, ir) = draw_box(buf, cols, rows, w, h, title, false);
 
@@ -156,7 +176,7 @@ pub fn input_line(
     // Input field
     let field_col = ic + 1;
     let field_row = ir + 2;
-    let field_w   = (w.saturating_sub(4)) as usize;
+    let field_w = (w.saturating_sub(4)) as usize;
 
     let mut ibuf = [0u8; INPUT_BUF_SIZE];
     let def = default.as_bytes();
@@ -171,7 +191,11 @@ pub fn input_line(
         term::fg16(buf, color::BLACK);
         term::bg16(buf, color::BRIGHT_WHITE);
         // Show the visible portion of the input
-        let start = if cursor_pos > field_w { cursor_pos - field_w } else { 0 };
+        let start = if cursor_pos > field_w {
+            cursor_pos - field_w
+        } else {
+            0
+        };
         let visible = &ibuf[start..ilen];
         let vlen = visible.len().min(field_w);
         buf.push_bytes(&visible[..vlen]);
@@ -181,8 +205,10 @@ pub fn input_line(
 
         match input::read_key() {
             Key::Escape => return None,
-            Key::Enter  => {
-                if ilen == 0 { return None; }
+            Key::Enter => {
+                if ilen == 0 {
+                    return None;
+                }
                 return Some(ibuf);
             }
             Key::Char(c) if c >= 32 && c < 127 => {
@@ -209,10 +235,22 @@ pub fn input_line(
                     ilen -= 1;
                 }
             }
-            Key::Left  => { if cursor_pos > 0 { cursor_pos -= 1; } }
-            Key::Right => { if cursor_pos < ilen { cursor_pos += 1; } }
-            Key::Home  => { cursor_pos = 0; }
-            Key::End   => { cursor_pos = ilen; }
+            Key::Left => {
+                if cursor_pos > 0 {
+                    cursor_pos -= 1;
+                }
+            }
+            Key::Right => {
+                if cursor_pos < ilen {
+                    cursor_pos += 1;
+                }
+            }
+            Key::Home => {
+                cursor_pos = 0;
+            }
+            Key::End => {
+                cursor_pos = ilen;
+            }
             _ => {}
         }
     }
@@ -274,9 +312,13 @@ pub fn progress(buf: &mut TermBuf, cols: u32, rows: u32, title: &str, msg: &str,
     term::goto(buf, ic + 1, ir + 2);
     term::bg16(buf, color::BRIGHT_BLUE);
     term::fg16(buf, color::BRIGHT_WHITE);
-    for _ in 0..filled { buf.push_byte(b' '); }
+    for _ in 0..filled {
+        buf.push_byte(b' ');
+    }
     term::bg16(buf, DLG_BG);
-    for _ in filled..bar_w { buf.push_byte(b' '); }
+    for _ in filled..bar_w {
+        buf.push_byte(b' ');
+    }
     term::reset(buf);
     buf.flush();
 }
@@ -311,7 +353,9 @@ pub fn show_help(buf: &mut TermBuf, cols: u32, rows: u32) {
     let (ic, ir) = draw_box(buf, cols, rows, w, h, " AC Help ", false);
 
     for (i, line) in HELP_LINES.iter().enumerate() {
-        if i as u32 >= h.saturating_sub(3) { break; }
+        if i as u32 >= h.saturating_sub(3) {
+            break;
+        }
         term::goto(buf, ic, ir + i as u32);
         term::fg16(buf, color::BRIGHT_WHITE);
         term::bg16(buf, DLG_BG);
@@ -339,11 +383,11 @@ use crate::fs::SortMode;
 
 pub fn sort_menu(buf: &mut TermBuf, cols: u32, rows: u32) -> Option<(SortMode, bool)> {
     let options: &[(&str, SortMode, bool)] = &[
-        ("Name            (ascending)",  SortMode::Name, false),
+        ("Name            (ascending)", SortMode::Name, false),
         ("Name            (descending)", SortMode::Name, true),
-        ("Size            (ascending)",  SortMode::Size, false),
+        ("Size            (ascending)", SortMode::Size, false),
         ("Size            (descending)", SortMode::Size, true),
-        ("Type/Extension  (ascending)",  SortMode::Kind, false),
+        ("Type/Extension  (ascending)", SortMode::Kind, false),
         ("Type/Extension  (descending)", SortMode::Kind, true),
     ];
 
@@ -369,8 +413,16 @@ pub fn sort_menu(buf: &mut TermBuf, cols: u32, rows: u32) -> Option<(SortMode, b
         buf.flush();
 
         match input::read_key() {
-            Key::Up   => { if sel > 0 { sel -= 1; } }
-            Key::Down => { if sel + 1 < options.len() { sel += 1; } }
+            Key::Up => {
+                if sel > 0 {
+                    sel -= 1;
+                }
+            }
+            Key::Down => {
+                if sel + 1 < options.len() {
+                    sel += 1;
+                }
+            }
             Key::Enter => {
                 let (_, mode, rev) = options[sel];
                 return Some((mode, rev));

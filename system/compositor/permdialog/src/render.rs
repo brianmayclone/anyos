@@ -35,7 +35,9 @@ pub fn format_title(app_name: &str, buf: &mut [u8]) -> usize {
     }
 
     for &b in app_name.as_bytes() {
-        if pos >= max { break; }
+        if pos >= max {
+            break;
+        }
         buf[pos] = b;
         pos += 1;
     }
@@ -49,7 +51,9 @@ pub fn format_title(app_name: &str, buf: &mut [u8]) -> usize {
     }
 
     for &b in anyos_std::i18n::t(" wants access to:").as_bytes() {
-        if pos >= max { break; }
+        if pos >= max {
+            break;
+        }
         buf[pos] = b;
         pos += 1;
     }

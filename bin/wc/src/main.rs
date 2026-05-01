@@ -8,10 +8,14 @@ fn wc_fd(fd: u32, lines: &mut u32, words: &mut u32, bytes: &mut u32) {
     let mut read_buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut read_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         for &b in &read_buf[..n as usize] {
             *bytes += 1;
-            if b == b'\n' { *lines += 1; }
+            if b == b'\n' {
+                *lines += 1;
+            }
             if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
                 in_word = false;
             } else if !in_word {
@@ -23,9 +27,15 @@ fn wc_fd(fd: u32, lines: &mut u32, words: &mut u32, bytes: &mut u32) {
 }
 
 fn print_counts(l: u32, w: u32, b: u32, show_l: bool, show_w: bool, show_b: bool, name: &str) {
-    if show_l { anyos_std::print!("{:>7} ", l); }
-    if show_w { anyos_std::print!("{:>7} ", w); }
-    if show_b { anyos_std::print!("{:>7} ", b); }
+    if show_l {
+        anyos_std::print!("{:>7} ", l);
+    }
+    if show_w {
+        anyos_std::print!("{:>7} ", w);
+    }
+    if show_b {
+        anyos_std::print!("{:>7} ", b);
+    }
     anyos_std::println!("{}", name);
 }
 

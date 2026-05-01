@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 //! Canvas rendering — rounded background, category headers, result rows with icons.
 
-use libanyui_client as ui;
 use crate::apps::{AppEntry, ICON_SIZE};
 use crate::search::{Category, SearchResult};
 use crate::searchd;
+use libanyui_client as ui;
 
 // ── Layout constants ─────────────────────────────────────────────────────────
 
@@ -60,7 +60,9 @@ pub fn calc_height(results: &[SearchResult]) -> u32 {
     for r in results.iter() {
         let cat = r.category();
         if last_cat != Some(cat) {
-            if last_cat.is_some() { h += DIVIDER_Y_OFFSET; }
+            if last_cat.is_some() {
+                h += DIVIDER_Y_OFFSET;
+            }
             h += CATEGORY_HEIGHT;
             last_cat = Some(cat);
         }
@@ -78,7 +80,9 @@ pub fn hit_test(results: &[SearchResult], cy: i32) -> Option<usize> {
     for (idx, r) in results.iter().enumerate() {
         let cat = r.category();
         if last_cat != Some(cat) {
-            if last_cat.is_some() { y += DIVIDER_Y_OFFSET as i32; }
+            if last_cat.is_some() {
+                y += DIVIDER_Y_OFFSET as i32;
+            }
             y += CATEGORY_HEIGHT as i32;
             last_cat = Some(cat);
         }
@@ -92,17 +96,25 @@ pub fn hit_test(results: &[SearchResult], cy: i32) -> Option<usize> {
 }
 
 pub fn draw(
-    canvas: &ui::Canvas, w: u32, h: u32,
-    results: &[SearchResult], apps: &[AppEntry], selected: usize,
+    canvas: &ui::Canvas,
+    w: u32,
+    h: u32,
+    results: &[SearchResult],
+    apps: &[AppEntry],
+    selected: usize,
 ) {
     let buf = canvas.get_buffer();
-    if buf.is_null() { return; }
+    if buf.is_null() {
+        return;
+    }
     let stride = canvas.get_stride().max(w);
     let buf_h = canvas.get_height().max(h);
     let total = (stride * buf_h) as usize;
     let pixels = unsafe { core::slice::from_raw_parts_mut(buf, total) };
 
-    for p in pixels.iter_mut() { *p = 0x00_000000; }
+    for p in pixels.iter_mut() {
+        *p = 0x00_000000;
+    }
     fill_rounded_rect(pixels, stride, 0, 0, w, h, CORNER_RADIUS, BG_COLOR);
 
     // Divider
@@ -110,7 +122,9 @@ pub fn draw(
         let dy = SEARCH_HEIGHT - 1;
         for x in PADDING_X..w.saturating_sub(PADDING_X) {
             let idx = (dy * stride + x) as usize;
-            if idx < pixels.len() { pixels[idx] = DIVIDER_COLOR; }
+            if idx < pixels.len() {
+                pixels[idx] = DIVIDER_COLOR;
+            }
         }
     }
 
@@ -121,15 +135,25 @@ pub fn draw(
     for (idx, r) in results.iter().enumerate() {
         let cat = r.category();
         if last_cat != Some(cat) {
-            if last_cat.is_some() { y += DIVIDER_Y_OFFSET; }
+            if last_cat.is_some() {
+                y += DIVIDER_Y_OFFSET;
+            }
             y += CATEGORY_HEIGHT;
             last_cat = Some(cat);
         }
         let rh = row_height(r);
 
         if idx == selected {
-            fill_rounded_rect(pixels, stride,
-                PADDING_X - 6, y, w - (PADDING_X - 6) * 2, rh, 8, SELECTED_BG);
+            fill_rounded_rect(
+                pixels,
+                stride,
+                PADDING_X - 6,
+                y,
+                w - (PADDING_X - 6) * 2,
+                rh,
+                8,
+                SELECTED_BG,
+            );
         }
 
         let icon_y = y + (rh.saturating_sub(ICON_SIZE)) / 2;
@@ -147,8 +171,9 @@ pub fn draw(
                     "directory" => ICON_DIR,
                     _ => ICON_OTHER,
                 };
-                fill_rounded_rect(pixels, stride,
-                    ICON_LEFT, icon_y, ICON_SIZE, ICON_SIZE, 4, color);
+                fill_rounded_rect(
+                    pixels, stride, ICON_LEFT, icon_y, ICON_SIZE, ICON_SIZE, 4, color,
+                );
             }
         }
 
@@ -164,9 +189,17 @@ pub fn draw(
     for (idx, r) in results.iter().enumerate() {
         let cat = r.category();
         if last_cat != Some(cat) {
-            if last_cat.is_some() { y += DIVIDER_Y_OFFSET; }
-            canvas.draw_text(PADDING_X as i32, (y + 5) as i32,
-                CATEGORY_COLOR, 1, 11, cat.label());
+            if last_cat.is_some() {
+                y += DIVIDER_Y_OFFSET;
+            }
+            canvas.draw_text(
+                PADDING_X as i32,
+                (y + 5) as i32,
+                CATEGORY_COLOR,
+                1,
+                11,
+                cat.label(),
+            );
             y += CATEGORY_HEIGHT;
             last_cat = Some(cat);
         }
@@ -178,21 +211,25 @@ pub fn draw(
 
         match r {
             SearchResult::App { .. } => {
-                canvas.draw_text(TEXT_LEFT as i32, (y + 7) as i32,
-                    text_color, 0, 14, name);
+                canvas.draw_text(TEXT_LEFT as i32, (y + 7) as i32, text_color, 0, 14, name);
             }
             SearchResult::File { path, size, .. } => {
                 // Line 1: filename (bold)
-                canvas.draw_text(TEXT_LEFT as i32, (y + 4) as i32,
-                    text_color, 1, 13, name);
+                canvas.draw_text(TEXT_LEFT as i32, (y + 4) as i32, text_color, 1, 13, name);
                 // Line 2: path — size
                 let path_color = if sel { PATH_SELECTED } else { PATH_COLOR };
                 let size_str = searchd::fmt_size(*size);
                 let mut detail = anyos_std::String::from(path.as_str());
                 detail.push_str(" \u{2014} ");
                 detail.push_str(&size_str);
-                canvas.draw_text(TEXT_LEFT as i32, (y + 22) as i32,
-                    path_color, 0, 10, &detail);
+                canvas.draw_text(
+                    TEXT_LEFT as i32,
+                    (y + 22) as i32,
+                    path_color,
+                    0,
+                    10,
+                    &detail,
+                );
             }
         }
 
@@ -204,8 +241,12 @@ pub fn draw(
 
 fn blend_over(dst: u32, src: u32) -> u32 {
     let sa = (src >> 24) & 0xFF;
-    if sa == 0 { return dst; }
-    if sa == 255 { return src; }
+    if sa == 0 {
+        return dst;
+    }
+    if sa == 255 {
+        return src;
+    }
     let inv = 255 - sa;
     let r = (((src >> 16) & 0xFF) * sa + ((dst >> 16) & 0xFF) * inv) / 255;
     let g = (((src >> 8) & 0xFF) * sa + ((dst >> 8) & 0xFF) * inv) / 255;
@@ -218,19 +259,30 @@ fn blit_icon(pixels: &mut [u32], stride: u32, x: u32, y: u32, size: u32, icon: &
     for row in 0..size {
         for col in 0..size {
             let si = (row * size + col) as usize;
-            if si >= icon.len() { continue; }
+            if si >= icon.len() {
+                continue;
+            }
             let src = icon[si];
-            if (src >> 24) == 0 { continue; }
+            if (src >> 24) == 0 {
+                continue;
+            }
             let di = ((y + row) * stride + (x + col)) as usize;
-            if di < pixels.len() { pixels[di] = blend_over(pixels[di], src); }
+            if di < pixels.len() {
+                pixels[di] = blend_over(pixels[di], src);
+            }
         }
     }
 }
 
 fn fill_rounded_rect(
-    pixels: &mut [u32], stride: u32,
-    rx: u32, ry: u32, rw: u32, rh: u32,
-    radius: u32, color: u32,
+    pixels: &mut [u32],
+    stride: u32,
+    rx: u32,
+    ry: u32,
+    rw: u32,
+    rh: u32,
+    radius: u32,
+    color: u32,
 ) {
     let r = radius.min(rw / 2).min(rh / 2);
     let r_sq = (r * r) as i64;
@@ -259,7 +311,9 @@ fn fill_rounded_rect(
             };
             if inside {
                 let i = (py * stride + px) as usize;
-                if i < pixels.len() { pixels[i] = color; }
+                if i < pixels.len() {
+                    pixels[i] = color;
+                }
             }
         }
     }

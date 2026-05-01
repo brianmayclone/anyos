@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 //! Shell interpreter — shared command execution engine for Terminal and Shell apps.
 
-use anyos_std::{String, Vec, format};
-use anyos_std::{fs, ipc, process, env};
 use anyos_std::shell;
+use anyos_std::{env, fs, ipc, process};
+use anyos_std::{format, String, Vec};
 
-use crate::{InputLine, History, read_file_to_buf, make_prompt};
+use crate::{make_prompt, read_file_to_buf, History, InputLine};
 
 // ─── Output abstraction ─────────────────────────────────────────────────────
 
@@ -49,9 +49,7 @@ pub enum ShellAction {
         redirect: Option<shell::Redirect>,
     },
     /// Prompt the user for a password (su command).
-    PromptPassword {
-        username: String,
-    },
+    PromptPassword { username: String },
     /// Reboot the system.
     Reboot,
     /// Shutdown the system.
@@ -88,34 +86,54 @@ fn split_logical_operators(line: &str) -> Option<Vec<(LogicalOp, String)>> {
 
     while i < len {
         match bytes[i] {
-            b'\'' if !in_double_quote => { in_single_quote = !in_single_quote; i += 1; }
-            b'"' if !in_single_quote => { in_double_quote = !in_double_quote; i += 1; }
-            b'\\' if !in_single_quote => { i += 2; }
+            b'\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                i += 1;
+            }
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                i += 1;
+            }
+            b'\\' if !in_single_quote => {
+                i += 2;
+            }
             b'&' if !in_single_quote && !in_double_quote && i + 1 < len && bytes[i + 1] == b'&' => {
                 let cmd = String::from(line[start..i].trim());
                 result.push((current_op, cmd));
                 current_op = LogicalOp::And;
-                i += 2; start = i; found_op = true;
+                i += 2;
+                start = i;
+                found_op = true;
             }
             b'|' if !in_single_quote && !in_double_quote && i + 1 < len && bytes[i + 1] == b'|' => {
                 let cmd = String::from(line[start..i].trim());
                 result.push((current_op, cmd));
                 current_op = LogicalOp::Or;
-                i += 2; start = i; found_op = true;
+                i += 2;
+                start = i;
+                found_op = true;
             }
             b';' if !in_single_quote && !in_double_quote => {
                 let cmd = String::from(line[start..i].trim());
                 result.push((current_op, cmd));
                 current_op = LogicalOp::Semicolon;
-                i += 1; start = i; found_op = true;
+                i += 1;
+                start = i;
+                found_op = true;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
-    if !found_op { return None; }
+    if !found_op {
+        return None;
+    }
     let cmd = String::from(line[start..].trim());
-    if !cmd.is_empty() { result.push((current_op, cmd)); }
+    if !cmd.is_empty() {
+        result.push((current_op, cmd));
+    }
     Some(result)
 }
 
@@ -138,7 +156,13 @@ pub struct BackgroundJob {
 /// Callback trait for app-specific builtins (e.g. Terminal's `help`, `profile`, `theme`).
 pub trait AppBuiltins {
     /// Try to handle a builtin command.  Return true if handled.
-    fn handle(&mut self, cmd: &str, args: &str, shell: &mut ShellState, out: &mut dyn ShellOutput) -> bool;
+    fn handle(
+        &mut self,
+        cmd: &str,
+        args: &str,
+        shell: &mut ShellState,
+        out: &mut dyn ShellOutput,
+    ) -> bool;
     /// Called after `cd` changes directory.
     fn on_cd(&mut self, new_cwd: &str);
     /// Called to clear the screen (the `clear` builtin).
@@ -148,7 +172,15 @@ pub trait AppBuiltins {
 /// Minimal AppBuiltins that does nothing (for Shell app).
 pub struct NoAppBuiltins;
 impl AppBuiltins for NoAppBuiltins {
-    fn handle(&mut self, _cmd: &str, _args: &str, _shell: &mut ShellState, _out: &mut dyn ShellOutput) -> bool { false }
+    fn handle(
+        &mut self,
+        _cmd: &str,
+        _args: &str,
+        _shell: &mut ShellState,
+        _out: &mut dyn ShellOutput,
+    ) -> bool {
+        false
+    }
     fn on_cd(&mut self, _new_cwd: &str) {}
     fn clear_screen(&mut self) {}
 }
@@ -194,15 +226,21 @@ impl ShellState {
 
     // ── Delegation wrappers ─────────────────────────────────────────────
 
-    pub fn cursor_byte_pos(&self) -> usize { self.line.cursor_byte_pos() }
-    pub fn char_count(&self) -> usize { self.line.char_count() }
+    pub fn cursor_byte_pos(&self) -> usize {
+        self.line.cursor_byte_pos()
+    }
+    pub fn char_count(&self) -> usize {
+        self.line.char_count()
+    }
 
     pub fn insert_char(&mut self, c: char) {
         self.line.insert_char(c);
         self.history.reset_index();
     }
 
-    pub fn backspace(&mut self) { self.line.backspace(); }
+    pub fn backspace(&mut self) {
+        self.line.backspace();
+    }
 
     pub fn history_up(&mut self) {
         if let Some(entry) = self.history.up() {
@@ -221,16 +259,30 @@ impl ShellState {
         }
     }
 
-    pub fn cursor_left(&mut self) { self.line.cursor_left(); }
-    pub fn cursor_right(&mut self) { self.line.cursor_right(); }
-    pub fn cursor_home(&mut self) { self.line.cursor_home(); }
-    pub fn cursor_end(&mut self) { self.line.cursor_end(); }
-    pub fn delete_at_cursor(&mut self) { self.line.delete(); }
+    pub fn cursor_left(&mut self) {
+        self.line.cursor_left();
+    }
+    pub fn cursor_right(&mut self) {
+        self.line.cursor_right();
+    }
+    pub fn cursor_home(&mut self) {
+        self.line.cursor_home();
+    }
+    pub fn cursor_end(&mut self) {
+        self.line.cursor_end();
+    }
+    pub fn delete_at_cursor(&mut self) {
+        self.line.delete();
+    }
 
     // ── Command execution ───────────────────────────────────────────────
 
     /// Execute the current input line.  Returns a list of actions for the caller.
-    pub fn execute(&mut self, out: &mut dyn ShellOutput, app: &mut dyn AppBuiltins) -> Vec<ShellAction> {
+    pub fn execute(
+        &mut self,
+        out: &mut dyn ShellOutput,
+        app: &mut dyn AppBuiltins,
+    ) -> Vec<ShellAction> {
         let raw_line = String::from(self.line.text.trim_matches(|c: char| c == ' '));
         out.write_char('\n');
 
@@ -266,7 +318,11 @@ impl ShellState {
     /// Resume execution of a pending `&&`/`||`/`;` chain.  Drains commands
     /// until the chain is exhausted or an external command is encountered
     /// (returned to the caller; the remaining chain stays for later resumption).
-    pub fn resume_pending_chain(&mut self, out: &mut dyn ShellOutput, app: &mut dyn AppBuiltins) -> Vec<ShellAction> {
+    pub fn resume_pending_chain(
+        &mut self,
+        out: &mut dyn ShellOutput,
+        app: &mut dyn AppBuiltins,
+    ) -> Vec<ShellAction> {
         while !self.pending_chain.is_empty() {
             let (op, cmd_str) = self.pending_chain.remove(0);
             let should_run = match op {
@@ -274,9 +330,13 @@ impl ShellState {
                 LogicalOp::And => self.chain_last_success,
                 LogicalOp::Or => !self.chain_last_success,
             };
-            if !should_run { continue; }
+            if !should_run {
+                continue;
+            }
             let cmd_str = String::from(cmd_str.trim());
-            if cmd_str.is_empty() { continue; }
+            if cmd_str.is_empty() {
+                continue;
+            }
 
             // Execute via execute() with history suppressed
             let saved_input = core::mem::replace(&mut self.line.text, cmd_str);
@@ -292,8 +352,13 @@ impl ShellState {
             let mut has_external = false;
             for a in &sub_actions {
                 match a {
-                    ShellAction::Done => { self.chain_last_success = true; }
-                    _ => { has_external = true; break; }
+                    ShellAction::Done => {
+                        self.chain_last_success = true;
+                    }
+                    _ => {
+                        has_external = true;
+                        break;
+                    }
                 }
             }
             if has_external {
@@ -305,7 +370,12 @@ impl ShellState {
     }
 
     /// Execute a single command (no logical operators).
-    fn execute_single(&mut self, raw_line: &str, out: &mut dyn ShellOutput, app: &mut dyn AppBuiltins) -> Vec<ShellAction> {
+    fn execute_single(
+        &mut self,
+        raw_line: &str,
+        out: &mut dyn ShellOutput,
+        app: &mut dyn AppBuiltins,
+    ) -> Vec<ShellAction> {
         // Expand aliases
         let expanded_line = {
             let first_word = raw_line.split_whitespace().next().unwrap_or("");
@@ -338,7 +408,11 @@ impl ShellState {
         let args = expanded_args_buf.as_str();
 
         // Capture builtin output for redirect
-        let mut capture_buf: Option<String> = if redirect.is_some() { Some(String::new()) } else { None };
+        let mut capture_buf: Option<String> = if redirect.is_some() {
+            Some(String::new())
+        } else {
+            None
+        };
         let use_capture = capture_buf.is_some();
 
         // Try app-specific builtins first
@@ -350,7 +424,10 @@ impl ShellState {
         match cmd {
             "echo" => {
                 if use_capture {
-                    if let Some(ref mut buf) = capture_buf { buf.push_str(args); buf.push('\n'); }
+                    if let Some(ref mut buf) = capture_buf {
+                        buf.push_str(args);
+                        buf.push('\n');
+                    }
                 } else {
                     out.write_line(args);
                 }
@@ -359,7 +436,10 @@ impl ShellState {
             "uname" => {
                 let msg = format!(".anyOS x86_64");
                 if use_capture {
-                    if let Some(ref mut buf) = capture_buf { buf.push_str(&msg); buf.push('\n'); }
+                    if let Some(ref mut buf) = capture_buf {
+                        buf.push_str(&msg);
+                        buf.push('\n');
+                    }
                 } else {
                     out.write_line(&msg);
                 }
@@ -367,7 +447,10 @@ impl ShellState {
             "cd" => self.cmd_cd(args, out, app),
             "pwd" => {
                 if use_capture {
-                    if let Some(ref mut buf) = capture_buf { buf.push_str(&self.cwd); buf.push('\n'); }
+                    if let Some(ref mut buf) = capture_buf {
+                        buf.push_str(&self.cwd);
+                        buf.push('\n');
+                    }
                 } else {
                     out.write_line(&self.cwd);
                 }
@@ -395,13 +478,19 @@ impl ShellState {
             "su" => {
                 self.flush_capture(capture_buf, redirect);
                 let parts_vec: Vec<&str> = args.split_whitespace().collect();
-                let username = if parts_vec.is_empty() { "root" } else { parts_vec[0] };
+                let username = if parts_vec.is_empty() {
+                    "root"
+                } else {
+                    parts_vec[0]
+                };
                 if parts_vec.len() > 1 {
                     Self::do_su(username, parts_vec[1], out);
                     return actions_one(ShellAction::Done);
                 } else {
                     out.write_str("Password: ");
-                    return actions_one(ShellAction::PromptPassword { username: String::from(username) });
+                    return actions_one(ShellAction::PromptPassword {
+                        username: String::from(username),
+                    });
                 }
             }
             "jobs" => self.cmd_jobs(out),
@@ -440,8 +529,14 @@ impl ShellState {
     }
 
     /// Execute an external command (not a builtin).
-    fn execute_external(&mut self, _cmd: &str, line: &str, redirect: Option<shell::Redirect>,
-                        input_data: Option<String>, _out: &mut dyn ShellOutput) -> Vec<ShellAction> {
+    fn execute_external(
+        &mut self,
+        _cmd: &str,
+        line: &str,
+        redirect: Option<shell::Redirect>,
+        input_data: Option<String>,
+        _out: &mut dyn ShellOutput,
+    ) -> Vec<ShellAction> {
         // Pipeline
         if shell::has_pipe(line) {
             return actions_one(ShellAction::RunPipeline {
@@ -525,7 +620,9 @@ impl ShellState {
                 String::from("/")
             }
         } else if target == ".." {
-            if self.cwd == "/" { return; }
+            if self.cwd == "/" {
+                return;
+            }
             let trimmed = self.cwd.trim_end_matches('/');
             match trimmed.rfind('/') {
                 Some(0) => String::from("/"),
@@ -570,8 +667,13 @@ impl ShellState {
             let len = (total as usize).min(env_buf.len());
             let mut offset = 0;
             while offset < len {
-                let end = env_buf[offset..len].iter().position(|&b| b == 0).unwrap_or(len - offset);
-                if end == 0 { break; }
+                let end = env_buf[offset..len]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(len - offset);
+                if end == 0 {
+                    break;
+                }
                 if let Ok(entry) = core::str::from_utf8(&env_buf[offset..offset + end]) {
                     out.write_line(entry);
                 }
@@ -611,8 +713,13 @@ impl ShellState {
             let len = (total as usize).min(env_buf.len());
             let mut offset = 0;
             while offset < len {
-                let end = env_buf[offset..len].iter().position(|&b| b == 0).unwrap_or(len - offset);
-                if end == 0 { break; }
+                let end = env_buf[offset..len]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(len - offset);
+                if end == 0 {
+                    break;
+                }
                 if let Ok(entry) = core::str::from_utf8(&env_buf[offset..offset + end]) {
                     out.write_str("export ");
                     out.write_line(entry);
@@ -624,11 +731,15 @@ impl ShellState {
         if let Some(eq_pos) = args.find('=') {
             let key = &args[..eq_pos];
             let value = &args[eq_pos + 1..];
-            if !key.is_empty() { env::set(key, value); }
+            if !key.is_empty() {
+                env::set(key, value);
+            }
         } else {
             let mut val_buf = [0u8; 256];
             let len = env::get(args, &mut val_buf);
-            if len == u32::MAX { env::set(args, ""); }
+            if len == u32::MAX {
+                env::set(args, "");
+            }
         }
     }
 
@@ -728,11 +839,16 @@ impl ShellState {
         }
         let text = match core::str::from_utf8(&data[..total]) {
             Ok(s) => s,
-            Err(_) => { out.write_line("source: invalid UTF-8"); return; }
+            Err(_) => {
+                out.write_line("source: invalid UTF-8");
+                return;
+            }
         };
         for line in text.split('\n') {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             let mut parts = line.splitn(2, ' ');
             let cmd = parts.next().unwrap_or("");
             let cmd_args = parts.next().unwrap_or("");
@@ -750,7 +866,9 @@ impl ShellState {
                         if !line[..eq].contains(' ') {
                             let key = line[..eq].trim();
                             let val = line[eq + 1..].trim();
-                            if !key.is_empty() { env::set(key, val); }
+                            if !key.is_empty() {
+                                env::set(key, val);
+                            }
                             continue;
                         }
                     }
@@ -761,7 +879,9 @@ impl ShellState {
                         format!("{} {}", cmd, cmd_args)
                     };
                     let tid = process::spawn(&resolved, &full_args);
-                    if tid != u32::MAX { process::waitpid(tid); }
+                    if tid != u32::MAX {
+                        process::waitpid(tid);
+                    }
                 }
             }
         }
@@ -800,9 +920,17 @@ impl ShellState {
                 } else if status != process::STILL_RUNNING {
                     job.finished = true;
                     job.exit_code = status;
-                    if job.pipe_id != 0 { ipc::pipe_close(job.pipe_id); job.pipe_id = 0; }
-                    if job.stdin_pipe != 0 { ipc::pipe_close(job.stdin_pipe); job.stdin_pipe = 0; }
-                    for &p in &job.extra_pipes { ipc::pipe_close(p); }
+                    if job.pipe_id != 0 {
+                        ipc::pipe_close(job.pipe_id);
+                        job.pipe_id = 0;
+                    }
+                    if job.stdin_pipe != 0 {
+                        ipc::pipe_close(job.stdin_pipe);
+                        job.stdin_pipe = 0;
+                    }
+                    for &p in &job.extra_pipes {
+                        ipc::pipe_close(p);
+                    }
                     job.extra_pipes.clear();
                 }
             }
@@ -811,23 +939,40 @@ impl ShellState {
             out.write_line("No jobs");
             return;
         }
-        let last_id = self.bg_jobs.iter().rev().find(|j| !j.finished).map(|j| j.job_id).unwrap_or(0);
+        let last_id = self
+            .bg_jobs
+            .iter()
+            .rev()
+            .find(|j| !j.finished)
+            .map(|j| j.job_id)
+            .unwrap_or(0);
         for job in &self.bg_jobs {
             let marker = if job.job_id == last_id { "+" } else { "-" };
             let status = if job.finished {
-                if job.exit_code == 0 { "Done" } else { "Exit" }
+                if job.exit_code == 0 {
+                    "Done"
+                } else {
+                    "Exit"
+                }
             } else if job.stopped {
                 "Stopped"
             } else {
                 "Running"
             };
-            let suffix = if !job.finished && !job.stopped { " &" } else { "" };
+            let suffix = if !job.finished && !job.stopped {
+                " &"
+            } else {
+                ""
+            };
             let cmd_display = if job.command.is_empty() {
                 format!("TID {}", job.tid)
             } else {
                 format!("{}{}", job.command, suffix)
             };
-            let line = format!("[{}]{}  {:<20}{}\n", job.job_id, marker, status, cmd_display);
+            let line = format!(
+                "[{}]{}  {:<20}{}\n",
+                job.job_id, marker, status, cmd_display
+            );
             out.write_str(&line);
         }
         self.bg_jobs.retain(|j| !j.finished);
@@ -839,14 +984,19 @@ impl ShellState {
             let cmd = job.command.clone();
             let was_stopped = job.stopped;
 
-            if !cmd.is_empty() { out.write_line(&cmd); }
-            else { out.write_line(&format!("TID {}", tid)); }
+            if !cmd.is_empty() {
+                out.write_line(&cmd);
+            } else {
+                out.write_line(&format!("TID {}", tid));
+            }
 
             if was_stopped {
                 process::send_signal(tid, process::SIGCONT);
             }
             for job in &mut self.bg_jobs {
-                if job.tid == tid { job.finished = true; }
+                if job.tid == tid {
+                    job.finished = true;
+                }
             }
             return actions_one(ShellAction::RunForeground {
                 path: String::new(), // already running
@@ -861,7 +1011,12 @@ impl ShellState {
     }
 
     fn cmd_bg(&mut self, out: &mut dyn ShellOutput) {
-        if let Some(job) = self.bg_jobs.iter_mut().rev().find(|j| j.stopped && !j.finished) {
+        if let Some(job) = self
+            .bg_jobs
+            .iter_mut()
+            .rev()
+            .find(|j| j.stopped && !j.finished)
+        {
             let tid = job.tid;
             let job_id = job.job_id;
             job.stopped = false;
@@ -896,22 +1051,39 @@ impl ShellState {
         let job_id = self.next_job_id;
         self.next_job_id += 1;
         self.bg_jobs.push(BackgroundJob {
-            job_id, tid,
+            job_id,
+            tid,
             command: String::from(command),
-            finished: false, exit_code: 0, stopped: false,
-            pipe_id: 0, stdin_pipe: 0, extra_pipes: Vec::new(),
+            finished: false,
+            exit_code: 0,
+            stopped: false,
+            pipe_id: 0,
+            stdin_pipe: 0,
+            extra_pipes: Vec::new(),
         });
     }
 
     /// Register a stopped foreground process as a background job.
-    pub fn add_stopped_job(&mut self, tid: u32, command: &str, pipe_id: u32, stdin_pipe: u32, extra_pipes: Vec<u32>) {
+    pub fn add_stopped_job(
+        &mut self,
+        tid: u32,
+        command: &str,
+        pipe_id: u32,
+        stdin_pipe: u32,
+        extra_pipes: Vec<u32>,
+    ) {
         let job_id = self.next_job_id;
         self.next_job_id += 1;
         self.bg_jobs.push(BackgroundJob {
-            job_id, tid,
+            job_id,
+            tid,
             command: String::from(command),
-            finished: false, exit_code: 0, stopped: true,
-            pipe_id, stdin_pipe, extra_pipes,
+            finished: false,
+            exit_code: 0,
+            stopped: true,
+            pipe_id,
+            stdin_pipe,
+            extra_pipes,
         });
     }
 }

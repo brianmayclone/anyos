@@ -92,7 +92,11 @@ impl IniDoc {
     /// Parse INI text. Returns `None` if parsing fails or library not loaded.
     pub fn parse(text: &str) -> Option<IniDoc> {
         let h = (lib().libini_parse)(text.as_ptr(), text.len() as u32);
-        if h == 0 { None } else { Some(IniDoc { handle: h }) }
+        if h == 0 {
+            None
+        } else {
+            Some(IniDoc { handle: h })
+        }
     }
 
     /// Load and parse an INI file from disk.
@@ -106,11 +110,16 @@ impl IniDoc {
         let mut buf = [0u8; 512];
         let len = (lib().libini_get)(
             self.handle,
-            section.as_ptr(), section.len() as u32,
-            key.as_ptr(), key.len() as u32,
-            buf.as_mut_ptr(), buf.len() as u32,
+            section.as_ptr(),
+            section.len() as u32,
+            key.as_ptr(),
+            key.len() as u32,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
         );
-        if len == 0 { return None; }
+        if len == 0 {
+            return None;
+        }
         let s = core::str::from_utf8(&buf[..len as usize]).ok()?;
         Some(String::from(s))
     }
@@ -119,8 +128,10 @@ impl IniDoc {
     pub fn get_u32(&self, section: &str, key: &str, default: u32) -> u32 {
         (lib().libini_get_u32)(
             self.handle,
-            section.as_ptr(), section.len() as u32,
-            key.as_ptr(), key.len() as u32,
+            section.as_ptr(),
+            section.len() as u32,
+            key.as_ptr(),
+            key.len() as u32,
             default,
         )
     }
@@ -129,8 +140,10 @@ impl IniDoc {
     pub fn get_i32(&self, section: &str, key: &str, default: i32) -> i32 {
         (lib().libini_get_i32)(
             self.handle,
-            section.as_ptr(), section.len() as u32,
-            key.as_ptr(), key.len() as u32,
+            section.as_ptr(),
+            section.len() as u32,
+            key.as_ptr(),
+            key.len() as u32,
             default,
         )
     }
@@ -139,8 +152,10 @@ impl IniDoc {
     pub fn get_bool(&self, section: &str, key: &str, default: bool) -> bool {
         let result = (lib().libini_get_bool)(
             self.handle,
-            section.as_ptr(), section.len() as u32,
-            key.as_ptr(), key.len() as u32,
+            section.as_ptr(),
+            section.len() as u32,
+            key.as_ptr(),
+            key.len() as u32,
             if default { 1 } else { 0 },
         );
         result != 0
@@ -150,18 +165,17 @@ impl IniDoc {
     pub fn get_hex(&self, section: &str, key: &str, default: u32) -> u32 {
         (lib().libini_get_hex)(
             self.handle,
-            section.as_ptr(), section.len() as u32,
-            key.as_ptr(), key.len() as u32,
+            section.as_ptr(),
+            section.len() as u32,
+            key.as_ptr(),
+            key.len() as u32,
             default,
         )
     }
 
     /// Check if a section exists.
     pub fn has_section(&self, section: &str) -> bool {
-        (lib().libini_has_section)(
-            self.handle,
-            section.as_ptr(), section.len() as u32,
-        ) != 0
+        (lib().libini_has_section)(self.handle, section.as_ptr(), section.len() as u32) != 0
     }
 
     /// Number of sections in the document.
@@ -172,21 +186,18 @@ impl IniDoc {
     /// Get section name by index.
     pub fn section_name(&self, index: u32) -> Option<String> {
         let mut buf = [0u8; 256];
-        let len = (lib().libini_section_name)(
-            self.handle, index,
-            buf.as_mut_ptr(), buf.len() as u32,
-        );
-        if len == 0 { return None; }
+        let len =
+            (lib().libini_section_name)(self.handle, index, buf.as_mut_ptr(), buf.len() as u32);
+        if len == 0 {
+            return None;
+        }
         let s = core::str::from_utf8(&buf[..len as usize]).ok()?;
         Some(String::from(s))
     }
 
     /// Number of key=value entries in a section.
     pub fn entry_count(&self, section: &str) -> u32 {
-        (lib().libini_entry_count)(
-            self.handle,
-            section.as_ptr(), section.len() as u32,
-        )
+        (lib().libini_entry_count)(self.handle, section.as_ptr(), section.len() as u32)
     }
 
     /// Get key name at index within a section.
@@ -194,11 +205,15 @@ impl IniDoc {
         let mut buf = [0u8; 256];
         let len = (lib().libini_entry_key)(
             self.handle,
-            section.as_ptr(), section.len() as u32,
+            section.as_ptr(),
+            section.len() as u32,
             index,
-            buf.as_mut_ptr(), buf.len() as u32,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
         );
-        if len == 0 { return None; }
+        if len == 0 {
+            return None;
+        }
         let s = core::str::from_utf8(&buf[..len as usize]).ok()?;
         Some(String::from(s))
     }
@@ -208,11 +223,15 @@ impl IniDoc {
         let mut buf = [0u8; 512];
         let len = (lib().libini_entry_value)(
             self.handle,
-            section.as_ptr(), section.len() as u32,
+            section.as_ptr(),
+            section.len() as u32,
             index,
-            buf.as_mut_ptr(), buf.len() as u32,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
         );
-        if len == 0 { return None; }
+        if len == 0 {
+            return None;
+        }
         let s = core::str::from_utf8(&buf[..len as usize]).ok()?;
         Some(String::from(s))
     }

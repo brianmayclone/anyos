@@ -3,10 +3,10 @@
 //! `.tar.gz` archives are read via `TarReader`. File entries under the
 //! `<name>-<version>/files/` prefix are extracted to the filesystem root.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
-use anyos_std::{fs, println, json::Value};
+use anyos_std::{fs, json::Value, println};
 
 /// Result of extracting a package archive.
 pub struct ExtractResult {
@@ -93,7 +93,10 @@ pub fn extract_package(archive_path: &str) -> Option<ExtractResult> {
         }
     }
 
-    Some(ExtractResult { pkg_json, installed_files })
+    Some(ExtractResult {
+        pkg_json,
+        installed_files,
+    })
 }
 
 /// Ensure all parent directories for a path exist.

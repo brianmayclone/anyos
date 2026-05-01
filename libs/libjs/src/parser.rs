@@ -494,14 +494,13 @@ impl Parser {
         let is_top_level_iife_shape = parenthesized && function_pos < 64;
         #[cfg(feature = "host")]
         if std::env::var_os("LIBJS_DEBUG_IIFE").is_some() && parenthesized {
-            let exact_tail = exact
-                .map(|idx| {
-                    (
-                        idx,
-                        self.tokens.get(idx + 1).map(|t| &t.kind),
-                        self.tokens.get(idx + 2).map(|t| &t.kind),
-                    )
-                });
+            let exact_tail = exact.map(|idx| {
+                (
+                    idx,
+                    self.tokens.get(idx + 1).map(|t| &t.kind),
+                    self.tokens.get(idx + 2).map(|t| &t.kind),
+                )
+            });
             let recovered = self.find_recoverable_parenthesized_function_rbrace(open_pos);
             let recovered_tail = recovered.map(|idx| {
                 (
@@ -581,8 +580,16 @@ impl Parser {
             if !matches!(self.tokens[i].kind, TokenKind::RBrace) {
                 continue;
             }
-            let next = self.tokens.get(i + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
-            let next2 = self.tokens.get(i + 2).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let next = self
+                .tokens
+                .get(i + 1)
+                .map(|t| &t.kind)
+                .unwrap_or(&TokenKind::Eof);
+            let next2 = self
+                .tokens
+                .get(i + 2)
+                .map(|t| &t.kind)
+                .unwrap_or(&TokenKind::Eof);
             let plausible_tail = matches!(
                 next,
                 TokenKind::RParen
@@ -612,8 +619,16 @@ impl Parser {
             if !matches!(self.tokens[i].kind, TokenKind::RBrace) {
                 continue;
             }
-            let next = self.tokens.get(i + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
-            let next2 = self.tokens.get(i + 2).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let next = self
+                .tokens
+                .get(i + 1)
+                .map(|t| &t.kind)
+                .unwrap_or(&TokenKind::Eof);
+            let next2 = self
+                .tokens
+                .get(i + 2)
+                .map(|t| &t.kind)
+                .unwrap_or(&TokenKind::Eof);
             if matches!(next, TokenKind::RParen)
                 && matches!(
                     next2,
@@ -639,9 +654,21 @@ impl Parser {
             if !matches!(self.tokens[i].kind, TokenKind::RBrace) {
                 continue;
             }
-            let next = self.tokens.get(i + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
-            let next2 = self.tokens.get(i + 2).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
-            let next3 = self.tokens.get(i + 3).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let next = self
+                .tokens
+                .get(i + 1)
+                .map(|t| &t.kind)
+                .unwrap_or(&TokenKind::Eof);
+            let next2 = self
+                .tokens
+                .get(i + 2)
+                .map(|t| &t.kind)
+                .unwrap_or(&TokenKind::Eof);
+            let next3 = self
+                .tokens
+                .get(i + 3)
+                .map(|t| &t.kind)
+                .unwrap_or(&TokenKind::Eof);
             if matches!(next, TokenKind::RParen)
                 && matches!(next2, TokenKind::Dot)
                 && matches!(next3, TokenKind::Ident(name) if name == "call" || name == "apply")
@@ -658,7 +685,11 @@ impl Parser {
             if !matches!(self.tokens[i].kind, TokenKind::RBrace) {
                 continue;
             }
-            let next = self.tokens.get(i + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let next = self
+                .tokens
+                .get(i + 1)
+                .map(|t| &t.kind)
+                .unwrap_or(&TokenKind::Eof);
             if matches!(next, TokenKind::Catch | TokenKind::Finally) {
                 best = Some(i);
             }
@@ -1681,7 +1712,9 @@ impl Parser {
                     .unwrap_or_default();
                 self.syntax_error(&alloc::format!(
                     "invalid assignment target before {}{}{}",
-                    token, previous, next
+                    token,
+                    previous,
+                    next
                 ));
             }
             self.pos += 1;

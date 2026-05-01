@@ -139,7 +139,11 @@ fn parse_simple_float_fixed100(s: &str) -> i32 {
         }
     }
     let value = int_part * 100 + frac;
-    if neg { -value } else { value }
+    if neg {
+        -value
+    } else {
+        value
+    }
 }
 
 pub(super) fn parse_simple_float(s: &str) -> i32 {

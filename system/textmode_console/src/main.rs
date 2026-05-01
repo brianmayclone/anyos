@@ -66,7 +66,7 @@ fn main() -> u32 {
         let ulen = anyos_std::env::get("USER", &mut user_buf);
         let username = if ulen != u32::MAX && ulen > 0 {
             anyos_std::String::from(
-                core::str::from_utf8(&user_buf[..ulen as usize]).unwrap_or("root")
+                core::str::from_utf8(&user_buf[..ulen as usize]).unwrap_or("root"),
             )
         } else {
             anyos_std::String::from("root")

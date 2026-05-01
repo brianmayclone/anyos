@@ -142,11 +142,7 @@ pub fn load_index(path: &str) -> Vec<MessageSummary> {
         }
     }
 
-    messages.sort_by(|a, b| {
-        b.date
-            .cmp(&a.date)
-            .then_with(|| b.uid.cmp(&a.uid))
-    });
+    messages.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.uid.cmp(&a.uid)));
     messages
 }
 
@@ -413,8 +409,17 @@ pub fn classify_message(message: &MessageSummary, folder: &str) -> String {
     if contains_any(
         &haystack,
         &[
-            "invoice", "receipt", "payment", "order", "shipment", "tracking", "renewal",
-            "refund", "subscription", "statement", "bill",
+            "invoice",
+            "receipt",
+            "payment",
+            "order",
+            "shipment",
+            "tracking",
+            "renewal",
+            "refund",
+            "subscription",
+            "statement",
+            "bill",
         ],
     ) {
         return String::from("Transactions");
@@ -422,8 +427,16 @@ pub fn classify_message(message: &MessageSummary, folder: &str) -> String {
     if contains_any(
         &haystack,
         &[
-            "newsletter", "sale", "discount", "offer", "promo", "deal", "coupon", "marketing",
-            "launch", "shop now",
+            "newsletter",
+            "sale",
+            "discount",
+            "offer",
+            "promo",
+            "deal",
+            "coupon",
+            "marketing",
+            "launch",
+            "shop now",
         ],
     ) {
         return String::from("Promotions");
@@ -431,8 +444,17 @@ pub fn classify_message(message: &MessageSummary, folder: &str) -> String {
     if contains_any(
         &haystack,
         &[
-            "update", "digest", "notification", "alert", "summary", "activity", "news",
-            "security", "password", "sign-in", "signin",
+            "update",
+            "digest",
+            "notification",
+            "alert",
+            "summary",
+            "activity",
+            "news",
+            "security",
+            "password",
+            "sign-in",
+            "signin",
         ],
     ) {
         return String::from("Updates");
@@ -531,10 +553,7 @@ fn validate_db(base: &str, account_id: &str) -> bool {
     if db.query("SELECT uid FROM msg_body LIMIT 1").is_err() {
         return false;
     }
-    if db
-        .query("SELECT uid FROM msg_body_chunk LIMIT 1")
-        .is_err()
-    {
+    if db.query("SELECT uid FROM msg_body_chunk LIMIT 1").is_err() {
         return false;
     }
     if db.flush().is_err() {

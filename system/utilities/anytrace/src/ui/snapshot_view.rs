@@ -1,10 +1,10 @@
 //! Snapshot list view using DataGrid.
 
-use libanyui_client as ui;
-use ui::Widget;
-use ui::ColumnDef;
 use crate::logic::snapshots::Snapshot;
-use crate::util::format::{hex64, fmt_u64};
+use crate::util::format::{fmt_u64, hex64};
+use libanyui_client as ui;
+use ui::ColumnDef;
+use ui::Widget;
 
 /// Snapshot view panel.
 pub struct SnapshotView {

@@ -68,12 +68,20 @@ pub(crate) fn management_loop(
                 desktop.compositor.damage_all();
                 release_lock();
                 signal_render();
-                println!("compositor: boot watchdog redraw #{} ({}ms)", boot_redraw_idx + 1, elapsed);
+                println!(
+                    "compositor: boot watchdog redraw #{} ({}ms)",
+                    boot_redraw_idx + 1,
+                    elapsed
+                );
                 boot_redraw_idx += 1;
             }
         }
 
-        let timeout = if *init_pending || *login_pending { 100 } else { 5000 };
+        let timeout = if *init_pending || *login_pending {
+            100
+        } else {
+            5000
+        };
         ipc::evt_chan_wait(compositor_channel, compositor_sub, timeout);
 
         // Check if init waiter thread signaled completion
@@ -87,7 +95,10 @@ pub(crate) fn management_loop(
             if new_login != u32::MAX {
                 *login_tid = new_login;
                 *login_pending = true;
-                println!("compositor: login spawned (TID={}), waiting for authentication...", new_login);
+                println!(
+                    "compositor: login spawned (TID={}), waiting for authentication...",
+                    new_login
+                );
             } else {
                 println!("compositor: WARNING — /System/login could not be spawned");
             }
@@ -102,13 +113,22 @@ pub(crate) fn management_loop(
                 if is_crash || is_cancelled {
                     login_retries += 1;
                     if is_crash {
-                        println!("compositor: login crashed (exit={}), attempt {}/{}", status, login_retries, MAX_LOGIN_RETRIES);
+                        println!(
+                            "compositor: login crashed (exit={}), attempt {}/{}",
+                            status, login_retries, MAX_LOGIN_RETRIES
+                        );
                     } else {
-                        println!("compositor: login exited without authentication, attempt {}/{}", login_retries, MAX_LOGIN_RETRIES);
+                        println!(
+                            "compositor: login exited without authentication, attempt {}/{}",
+                            login_retries, MAX_LOGIN_RETRIES
+                        );
                     }
 
                     if login_retries >= MAX_LOGIN_RETRIES {
-                        println!("compositor: FATAL — login failed {} times, giving up", MAX_LOGIN_RETRIES);
+                        println!(
+                            "compositor: FATAL — login failed {} times, giving up",
+                            MAX_LOGIN_RETRIES
+                        );
                         *login_pending = false;
                         login_failed = true;
                     } else {
@@ -266,12 +286,7 @@ pub(crate) fn management_loop(
             release_lock();
 
             if logout {
-                perform_logout(
-                    login_tid,
-                    login_pending,
-                    dock_spawned,
-                    service_tids,
-                );
+                perform_logout(login_tid, login_pending, dock_spawned, service_tids);
             }
         }
 

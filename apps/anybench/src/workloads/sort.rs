@@ -3,8 +3,8 @@
 //! Sorts a 50 000-element pseudo-random array repeatedly for [`CPU_TEST_MS`]
 //! milliseconds. Returns cumulative number of elements sorted.
 
-use alloc::vec;
 use super::CPU_TEST_MS;
+use alloc::vec;
 
 /// Quicksort benchmark on pseudo-random data.
 pub fn bench_sort() -> u64 {
@@ -29,23 +29,35 @@ pub fn bench_sort() -> u64 {
 
 /// In-place quicksort (Hoare partition).
 fn quicksort(arr: &mut [u32]) {
-    if arr.len() <= 1 { return; }
+    if arr.len() <= 1 {
+        return;
+    }
     let pivot = arr[arr.len() / 2];
     let mut lo = 0usize;
     let mut hi = arr.len() - 1;
     while lo <= hi {
-        while arr[lo] < pivot { lo += 1; }
+        while arr[lo] < pivot {
+            lo += 1;
+        }
         while arr[hi] > pivot {
-            if hi == 0 { break; }
+            if hi == 0 {
+                break;
+            }
             hi -= 1;
         }
         if lo <= hi {
             arr.swap(lo, hi);
             lo += 1;
-            if hi == 0 { break; }
+            if hi == 0 {
+                break;
+            }
             hi -= 1;
         }
     }
-    if hi > 0 { quicksort(&mut arr[..=hi]); }
-    if lo < arr.len() { quicksort(&mut arr[lo..]); }
+    if hi > 0 {
+        quicksort(&mut arr[..=hi]);
+    }
+    if lo < arr.len() {
+        quicksort(&mut arr[lo..]);
+    }
 }

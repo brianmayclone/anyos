@@ -1713,6 +1713,17 @@ impl eframe::App for BrowserHostApp {
                     self.wv.viewport_height().max(1) as f32,
                 );
                 let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size));
+                if response.hovered() {
+                    if let Some(pos) = response.hover_pos() {
+                        let mx = (pos.x - response.rect.min.x).round() as i32;
+                        let my = (pos.y - response.rect.min.y).round() as i32;
+                        if self.wv.handle_mouse_move_at_viewport(mx, my, self.scroll_y) {
+                            self.needs_redraw = true;
+                        }
+                    }
+                } else if self.wv.set_hovered_node(None) {
+                    self.needs_redraw = true;
+                }
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         self.handle_browser_click(pos, response.rect.min);
@@ -2206,6 +2217,7 @@ fn main() {
 
     // Mouse click tracking (detect rising/falling edge)
     let mut mouse_was_down = false;
+    let mut last_mouse_pos: Option<(i32, i32)> = None;
 
     // Focused form control (control_id from libwebview)
     // We maintain the text content ourselves so we can echo it back.
@@ -2326,6 +2338,20 @@ fn main() {
         }
 
         // ── Mouse click ─────────────────────────────────────────────────
+        let mouse_pos_now = window
+            .get_mouse_pos(MouseMode::Discard)
+            .map(|(mx, my)| (mx as i32, my as i32));
+        if mouse_pos_now != last_mouse_pos {
+            last_mouse_pos = mouse_pos_now;
+            if let Some((mx, my)) = mouse_pos_now {
+                if wv.handle_mouse_move_at_viewport(mx, my, scroll_y) {
+                    needs_redraw = true;
+                }
+            } else if wv.set_hovered_node(None) {
+                needs_redraw = true;
+            }
+        }
+
         let mouse_down = window.get_mouse_down(MouseButton::Left);
         let clicked = !mouse_down && mouse_was_down; // released = click
         mouse_was_down = mouse_down;

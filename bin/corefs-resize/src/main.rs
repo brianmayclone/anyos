@@ -98,7 +98,8 @@ fn main() -> u32 {
     if new_size % BLOCK_SIZE != 0 {
         anyos_std::println!(
             "corefs-resize: --new-size {} must be a multiple of block size {}",
-            new_size, BLOCK_SIZE
+            new_size,
+            BLOCK_SIZE
         );
         return ExitCode::InvalidArgument.as_u32();
     }

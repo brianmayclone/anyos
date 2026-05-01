@@ -70,7 +70,9 @@ pub fn flush_cache() -> bool {
 
 #[cfg(not(feature = "host"))]
 pub fn reload() -> bool {
-    request("RELOAD").map(|response| response.starts_with("OK\t")).unwrap_or(false)
+    request("RELOAD")
+        .map(|response| response.starts_with("OK\t"))
+        .unwrap_or(false)
 }
 
 #[cfg(not(feature = "host"))]

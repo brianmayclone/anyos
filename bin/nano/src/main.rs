@@ -3,11 +3,11 @@
 #![no_std]
 #![no_main]
 
+use alloc::string::ToString;
+use anyos_std::format;
+use anyos_std::fs;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::fs;
-use anyos_std::format;
-use alloc::string::ToString;
 
 anyos_std::entry!(main);
 
@@ -42,7 +42,11 @@ struct InputReader {
 
 impl InputReader {
     fn new() -> Self {
-        InputReader { buf: [0u8; 32], len: 0, pos: 0 }
+        InputReader {
+            buf: [0u8; 32],
+            len: 0,
+            pos: 0,
+        }
     }
 
     fn read_key(&mut self) -> Key {
@@ -102,15 +106,26 @@ impl InputReader {
             b'D' => Key::Left,
             b'H' => Key::Home,
             b'F' => Key::End,
-            b'3' => { self.consume_tilde(); Key::Delete }
-            b'5' => { self.consume_tilde(); Key::PageUp }
-            b'6' => { self.consume_tilde(); Key::PageDown }
+            b'3' => {
+                self.consume_tilde();
+                Key::Delete
+            }
+            b'5' => {
+                self.consume_tilde();
+                Key::PageUp
+            }
+            b'6' => {
+                self.consume_tilde();
+                Key::PageDown
+            }
             _ => {
                 // Consume until we see a letter >= 0x40
                 while self.pos < self.len {
                     let c = self.buf[self.pos];
                     self.pos += 1;
-                    if c >= 0x40 { break; }
+                    if c >= 0x40 {
+                        break;
+                    }
                 }
                 Key::None
             }
@@ -156,8 +171,8 @@ impl InputReader {
 
 struct Editor {
     lines: Vec<String>,
-    cx: usize,          // cursor column in the line
-    cy: usize,          // cursor line (0-indexed in file)
+    cx: usize, // cursor column in the line
+    cy: usize, // cursor line (0-indexed in file)
     scroll_row: usize,
     scroll_col: usize,
     filename: String,
@@ -231,7 +246,9 @@ impl Editor {
         let mut buf = [0u8; 512];
         loop {
             let n = fs::read(fd, &mut buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             data.extend_from_slice(&buf[..n as usize]);
         }
         fs::close(fd);
@@ -240,7 +257,11 @@ impl Editor {
         if let Ok(text) = core::str::from_utf8(&data) {
             for line in text.split('\n') {
                 // Strip \r
-                let line = if line.ends_with('\r') { &line[..line.len()-1] } else { line };
+                let line = if line.ends_with('\r') {
+                    &line[..line.len() - 1]
+                } else {
+                    line
+                };
                 self.lines.push(String::from(line));
             }
         }
@@ -262,7 +283,9 @@ impl Editor {
         }
         let mut content = String::new();
         for (i, line) in self.lines.iter().enumerate() {
-            if i > 0 { content.push('\n'); }
+            if i > 0 {
+                content.push('\n');
+            }
             content.push_str(line);
         }
         content.push('\n');
@@ -271,7 +294,11 @@ impl Editor {
             return false;
         }
         self.modified = false;
-        self.set_message(&format!("Wrote {} lines to {}", self.lines.len(), self.filename));
+        self.set_message(&format!(
+            "Wrote {} lines to {}",
+            self.lines.len(),
+            self.filename
+        ));
         true
     }
 
@@ -314,7 +341,9 @@ impl Editor {
             }
             PromptAction::GotoLine => {
                 if let Some(num) = parse_int(&input) {
-                    let line = (num as usize).saturating_sub(1).min(self.lines.len().saturating_sub(1));
+                    let line = (num as usize)
+                        .saturating_sub(1)
+                        .min(self.lines.len().saturating_sub(1));
                     self.cy = line;
                     self.cx = 0;
                     self.ensure_cursor_visible();
@@ -372,17 +401,28 @@ impl Editor {
         match key {
             // ── Ctrl commands (nano-style) ──
             Key::Ctrl(b'x') => self.cmd_exit(),
-            Key::Ctrl(b'o') => { self.save_file(); }
-            Key::Ctrl(b's') => { self.save_file(); }
+            Key::Ctrl(b'o') => {
+                self.save_file();
+            }
+            Key::Ctrl(b's') => {
+                self.save_file();
+            }
             Key::Ctrl(b'w') => self.start_prompt("Search: ", PromptAction::Search),
             Key::Ctrl(b'k') => self.cmd_cut_line(),
             Key::Ctrl(b'u') => self.cmd_paste(),
             Key::Ctrl(b'g') => self.cmd_help(),
-            Key::Ctrl(b'_') | Key::Ctrl(b't') => self.start_prompt("Enter line number: ", PromptAction::GotoLine),
+            Key::Ctrl(b'_') | Key::Ctrl(b't') => {
+                self.start_prompt("Enter line number: ", PromptAction::GotoLine)
+            }
             Key::Ctrl(b'c') => {
                 // Show current position
-                let msg = format!("line {}/{}, col {}/{}", self.cy + 1, self.lines.len(), self.cx + 1,
-                    self.lines.get(self.cy).map_or(0, |l| l.len()));
+                let msg = format!(
+                    "line {}/{}, col {}/{}",
+                    self.cy + 1,
+                    self.lines.len(),
+                    self.cx + 1,
+                    self.lines.get(self.cy).map_or(0, |l| l.len())
+                );
                 self.set_message(&msg);
             }
             Key::Ctrl(b'a') => self.cx = 0,
@@ -396,7 +436,9 @@ impl Editor {
             Key::Left => self.move_left(),
             Key::Right => self.move_right(),
             Key::Home => self.cx = 0,
-            Key::End => { self.cx = self.lines.get(self.cy).map_or(0, |l| l.len()); }
+            Key::End => {
+                self.cx = self.lines.get(self.cy).map_or(0, |l| l.len());
+            }
             Key::PageUp => {
                 for _ in 0..self.edit_rows() {
                     self.move_up();
@@ -575,7 +617,7 @@ impl Editor {
         }
         let start_line = self.cy;
         let start_col = self.cx + 1; // start after current position
-        // Search from current position to end, then wrap
+                                     // Search from current position to end, then wrap
         for offset in 0..self.lines.len() {
             let line_idx = (start_line + offset) % self.lines.len();
             let line = &self.lines[line_idx];
@@ -605,7 +647,9 @@ impl Editor {
     // ─── Rendering ───────────────────────────────────────────────────────────
 
     fn render(&mut self) {
-        if !self.needs_redraw { return; }
+        if !self.needs_redraw {
+            return;
+        }
         self.needs_redraw = false;
 
         // Hide cursor during render
@@ -649,7 +693,11 @@ impl Editor {
         anyos_std::print!("\x1B[{};1H", status_row);
         anyos_std::print!("\x1B[7m"); // Inverse video
 
-        let fname = if self.filename.is_empty() { "New Buffer" } else { &self.filename };
+        let fname = if self.filename.is_empty() {
+            "New Buffer"
+        } else {
+            &self.filename
+        };
         let modified_indicator = if self.modified { " [Modified]" } else { "" };
         let left = format!(" nano  {}{}", fname, modified_indicator);
         let right = format!("Ln {}, Col {} ", self.cy + 1, self.cx + 1);
@@ -692,7 +740,8 @@ fn get_terminal_size() -> (usize, usize) {
     let rows = {
         let n = anyos_std::env::get("LINES", &mut buf);
         if n != u32::MAX {
-            parse_int(core::str::from_utf8(&buf[..n as usize]).unwrap_or("24")).unwrap_or(24) as usize
+            parse_int(core::str::from_utf8(&buf[..n as usize]).unwrap_or("24")).unwrap_or(24)
+                as usize
         } else {
             24
         }
@@ -700,7 +749,8 @@ fn get_terminal_size() -> (usize, usize) {
     let cols = {
         let n = anyos_std::env::get("COLUMNS", &mut buf);
         if n != u32::MAX {
-            parse_int(core::str::from_utf8(&buf[..n as usize]).unwrap_or("80")).unwrap_or(80) as usize
+            parse_int(core::str::from_utf8(&buf[..n as usize]).unwrap_or("80")).unwrap_or(80)
+                as usize
         } else {
             80
         }
@@ -710,7 +760,9 @@ fn get_terminal_size() -> (usize, usize) {
 
 fn parse_int(s: &str) -> Option<u32> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut result = 0u32;
     for c in s.chars() {
         if c >= '0' && c <= '9' {
@@ -744,8 +796,6 @@ impl ToLowercase for String {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
-
-
     let mut editor = Editor::new();
     let mut input = InputReader::new();
 

@@ -282,9 +282,13 @@ pub fn sys_net_dhcp(buf_ptr: u64) -> u32 {
             0
         }
         Err(msg) => {
-            if msg.contains("OFFER") { 3 }
-            else if msg.contains("ACK") { 4 }
-            else { u32::MAX }
+            if msg.contains("OFFER") {
+                3
+            } else if msg.contains("ACK") {
+                4
+            } else {
+                u32::MAX
+            }
         }
     }
 }

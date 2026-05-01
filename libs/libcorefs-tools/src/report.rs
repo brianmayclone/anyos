@@ -253,10 +253,7 @@ mod tests {
         b.kv_u64("size", 1024);
         b.kv_bool("clean", true);
         b.end_object();
-        assert_eq!(
-            b.finish(),
-            r#"{"label":"root","size":1024,"clean":true}"#
-        );
+        assert_eq!(b.finish(), r#"{"label":"root","size":1024,"clean":true}"#);
     }
 
     #[test]
@@ -287,9 +284,6 @@ mod tests {
         b.begin_object();
         b.kv_string("msg", "line1\nline2\t\"quoted\"");
         b.end_object();
-        assert_eq!(
-            b.finish(),
-            r#"{"msg":"line1\nline2\t\"quoted\""}"#
-        );
+        assert_eq!(b.finish(), r#"{"msg":"line1\nline2\t\"quoted\""}"#);
     }
 }

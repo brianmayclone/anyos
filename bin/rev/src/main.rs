@@ -9,9 +9,13 @@ fn read_all(fd: u32) -> (anyos_std::Vec<u8>, usize) {
     let mut read_buf = [0u8; 512];
     loop {
         let n = anyos_std::fs::read(fd, &mut read_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         let n = n as usize;
-        if total + n > file_buf.len() { break; }
+        if total + n > file_buf.len() {
+            break;
+        }
         file_buf[total..total + n].copy_from_slice(&read_buf[..n]);
         total += n;
     }
@@ -41,7 +45,9 @@ fn main() {
     };
 
     let (file_buf, total) = read_all(fd);
-    if fd != 0 { anyos_std::fs::close(fd); }
+    if fd != 0 {
+        anyos_std::fs::close(fd);
+    }
 
     let text = core::str::from_utf8(&file_buf[..total]).unwrap_or("");
     for line in text.lines() {

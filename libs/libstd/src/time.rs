@@ -12,7 +12,9 @@ pub struct Instant {
 impl Instant {
     /// Get the current instant.
     pub fn now() -> Self {
-        Instant { ms: anyos_std::sys::uptime_ms() as u64 }
+        Instant {
+            ms: anyos_std::sys::uptime_ms() as u64,
+        }
     }
 
     /// Duration since an earlier instant.
@@ -27,12 +29,16 @@ impl Instant {
 
     /// Checked addition.
     pub fn checked_add(&self, duration: Duration) -> Option<Instant> {
-        self.ms.checked_add(duration.as_millis() as u64).map(|ms| Instant { ms })
+        self.ms
+            .checked_add(duration.as_millis() as u64)
+            .map(|ms| Instant { ms })
     }
 
     /// Checked subtraction.
     pub fn checked_sub(&self, duration: Duration) -> Option<Instant> {
-        self.ms.checked_sub(duration.as_millis() as u64).map(|ms| Instant { ms })
+        self.ms
+            .checked_sub(duration.as_millis() as u64)
+            .map(|ms| Instant { ms })
     }
 
     /// Checked duration since another instant.
@@ -49,14 +55,18 @@ impl Instant {
 impl Add<Duration> for Instant {
     type Output = Instant;
     fn add(self, rhs: Duration) -> Instant {
-        Instant { ms: self.ms + rhs.as_millis() as u64 }
+        Instant {
+            ms: self.ms + rhs.as_millis() as u64,
+        }
     }
 }
 
 impl Sub<Duration> for Instant {
     type Output = Instant;
     fn sub(self, rhs: Duration) -> Instant {
-        Instant { ms: self.ms - rhs.as_millis() as u64 }
+        Instant {
+            ms: self.ms - rhs.as_millis() as u64,
+        }
     }
 }
 
@@ -99,7 +109,9 @@ impl SystemTime {
         if self.secs >= earlier.secs {
             Ok(Duration::from_secs(self.secs - earlier.secs))
         } else {
-            Err(SystemTimeError(Duration::from_secs(earlier.secs - self.secs)))
+            Err(SystemTimeError(Duration::from_secs(
+                earlier.secs - self.secs,
+            )))
         }
     }
 
@@ -110,26 +122,34 @@ impl SystemTime {
 
     /// Checked addition.
     pub fn checked_add(&self, duration: Duration) -> Option<SystemTime> {
-        self.secs.checked_add(duration.as_secs()).map(|secs| SystemTime { secs })
+        self.secs
+            .checked_add(duration.as_secs())
+            .map(|secs| SystemTime { secs })
     }
 
     /// Checked subtraction.
     pub fn checked_sub(&self, duration: Duration) -> Option<SystemTime> {
-        self.secs.checked_sub(duration.as_secs()).map(|secs| SystemTime { secs })
+        self.secs
+            .checked_sub(duration.as_secs())
+            .map(|secs| SystemTime { secs })
     }
 }
 
 impl Add<Duration> for SystemTime {
     type Output = SystemTime;
     fn add(self, rhs: Duration) -> SystemTime {
-        SystemTime { secs: self.secs + rhs.as_secs() }
+        SystemTime {
+            secs: self.secs + rhs.as_secs(),
+        }
     }
 }
 
 impl Sub<Duration> for SystemTime {
     type Output = SystemTime;
     fn sub(self, rhs: Duration) -> SystemTime {
-        SystemTime { secs: self.secs - rhs.as_secs() }
+        SystemTime {
+            secs: self.secs - rhs.as_secs(),
+        }
     }
 }
 
@@ -165,5 +185,9 @@ fn approximate_days(year: u32, month: u32, day: u32) -> u32 {
     let doy = (153 * (m - 3) + 2) / 5 + day as i32 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468; // days since epoch
-    if days < 0 { 0 } else { days as u32 }
+    if days < 0 {
+        0
+    } else {
+        days as u32
+    }
 }

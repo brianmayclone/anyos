@@ -140,7 +140,14 @@ impl CompositorClient {
     /// Create a new window at position (x, y) with the given content dimensions.
     /// x/y: pixel coordinates, or -1 for compositor auto-placement (CW_USEDEFAULT).
     /// Returns a WindowHandle on success, None on failure.
-    pub fn create_window(&self, x: i32, y: i32, width: u32, height: u32, flags: u32) -> Option<WindowHandle> {
+    pub fn create_window(
+        &self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        flags: u32,
+    ) -> Option<WindowHandle> {
         let mut shm_id: u32 = 0;
         let mut surface: *mut u32 = core::ptr::null_mut();
         let id = (raw::exports().create_window)(
@@ -172,7 +179,14 @@ impl CompositorClient {
     ///
     /// IMPORTANT: The surface stride is `handle.stride` pixels (not `width`).
     /// Use `y * stride + x` to address pixels, not `y * width + x`.
-    pub fn create_vram_window(&self, x: i32, y: i32, width: u32, height: u32, flags: u32) -> Option<VramWindowHandle> {
+    pub fn create_vram_window(
+        &self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        flags: u32,
+    ) -> Option<VramWindowHandle> {
         let mut stride: u32 = 0;
         let mut surface: *mut u32 = core::ptr::null_mut();
         let id = (raw::exports().create_vram_window)(
@@ -227,12 +241,7 @@ impl CompositorClient {
     /// Poll for the next event for a specific window.
     pub fn poll_event(&self, handle: &WindowHandle) -> Option<Event> {
         let mut buf = [0u32; 5];
-        let ok = (raw::exports().poll_event)(
-            self.channel_id,
-            self.sub_id,
-            handle.id,
-            &mut buf,
-        );
+        let ok = (raw::exports().poll_event)(self.channel_id, self.sub_id, handle.id, &mut buf);
         if ok != 0 {
             Some(Event {
                 event_type: buf[0],
@@ -249,12 +258,7 @@ impl CompositorClient {
     /// Poll for the next event for a VRAM window.
     pub fn poll_event_vram(&self, handle: &VramWindowHandle) -> Option<Event> {
         let mut buf = [0u32; 5];
-        let ok = (raw::exports().poll_event)(
-            self.channel_id,
-            self.sub_id,
-            handle.id,
-            &mut buf,
-        );
+        let ok = (raw::exports().poll_event)(self.channel_id, self.sub_id, handle.id, &mut buf);
         if ok != 0 {
             Some(Event {
                 event_type: buf[0],
@@ -372,7 +376,12 @@ impl CompositorClient {
     /// Resize a window's shared memory surface to new dimensions.
     /// Updates the WindowHandle in-place with the new SHM id, surface pointer,
     /// and dimensions. Returns true on success.
-    pub fn resize_window(&self, handle: &mut WindowHandle, new_width: u32, new_height: u32) -> bool {
+    pub fn resize_window(
+        &self,
+        handle: &mut WindowHandle,
+        new_width: u32,
+        new_height: u32,
+    ) -> bool {
         let mut new_shm_id: u32 = 0;
         let new_surface = (raw::exports().resize_shm)(
             self.channel_id,
@@ -501,11 +510,7 @@ impl TrayClient {
     /// Poll for the next event (unfiltered — tray clicks, window events, broadcasts).
     pub fn poll_event(&self) -> Option<Event> {
         let mut buf = [0u32; 5];
-        let ok = (raw::exports().tray_poll_event)(
-            self.channel_id,
-            self.sub_id,
-            &mut buf,
-        );
+        let ok = (raw::exports().tray_poll_event)(self.channel_id, self.sub_id, &mut buf);
         if ok != 0 {
             Some(Event {
                 event_type: buf[0],
@@ -521,7 +526,14 @@ impl TrayClient {
 
     /// Create a window at position (x, y) (for popups, settings panels, etc.).
     /// x/y: pixel coordinates, or -1 for compositor auto-placement.
-    pub fn create_window(&self, x: i32, y: i32, width: u32, height: u32, flags: u32) -> Option<WindowHandle> {
+    pub fn create_window(
+        &self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        flags: u32,
+    ) -> Option<WindowHandle> {
         let mut shm_id: u32 = 0;
         let mut surface: *mut u32 = core::ptr::null_mut();
         let id = (raw::exports().create_window)(

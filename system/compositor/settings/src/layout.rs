@@ -11,15 +11,25 @@ use ui::Widget;
 // ── Theme colour accessors ────────────────────────────────────────────────
 
 /// Page/panel background.
-pub fn bg() -> u32 { ui::theme::colors().window_bg }
+pub fn bg() -> u32 {
+    ui::theme::colors().window_bg
+}
 /// Card background.
-pub fn card_bg() -> u32 { ui::theme::colors().card_bg }
+pub fn card_bg() -> u32 {
+    ui::theme::colors().card_bg
+}
 /// Primary text colour.
-pub fn text() -> u32 { ui::theme::colors().text }
+pub fn text() -> u32 {
+    ui::theme::colors().text
+}
 /// Dimmed / secondary text colour.
-pub fn text_dim() -> u32 { ui::theme::colors().text_secondary }
+pub fn text_dim() -> u32 {
+    ui::theme::colors().text_secondary
+}
 /// Accent colour (links, selection highlights).
-pub fn accent() -> u32 { ui::theme::colors().accent }
+pub fn accent() -> u32 {
+    ui::theme::colors().accent
+}
 
 // Keep old constants as aliases so pages that still reference them compile.
 // TODO: remove once all call sites are migrated.

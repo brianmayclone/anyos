@@ -3,15 +3,17 @@
 //! Draws random lines for [`GPU_TEST_MS`] milliseconds using Bresenham's
 //! algorithm (offscreen) or the Canvas API (onscreen). Returns total lines drawn.
 
+use super::{draw_line_bresenham, GPU_TEST_MS};
 use alloc::vec;
 use libanyui_client as anyui;
-use super::{GPU_TEST_MS, draw_line_bresenham};
 
 /// Line rendering throughput benchmark.
 pub fn bench_gpu_lines(canvas: &anyui::Canvas, offscreen: bool) -> u64 {
     let w = canvas.get_stride();
     let h = canvas.get_height();
-    if w == 0 || h == 0 { return 0; }
+    if w == 0 || h == 0 {
+        return 0;
+    }
 
     if offscreen {
         let buf_size = (w * h) as usize;

@@ -12,25 +12,25 @@ use libgl_client as gl;
 use libphysics_client as physics;
 
 mod block;
-mod noise;
-mod world;
-mod textures;
-mod mesh;
-mod render;
-mod player;
-mod ui;
-mod state;
 mod game;
 mod inventory;
+mod menu;
+mod mesh;
+mod noise;
+mod player;
+mod render;
 mod save;
 mod settings;
-mod menu;
+mod state;
+mod textures;
+mod ui;
+mod world;
 
 use inventory::Inventory;
 use player::Player;
 use render::Renderer;
 use settings::GameSettings;
-use state::{AppMode, GameState, STATE, find_spawn_height, world_query};
+use state::{find_spawn_height, world_query, AppMode, GameState, STATE};
 use world::World;
 
 fn capture_mouse(s: &mut GameState, x: i32, y: i32) {
@@ -54,7 +54,8 @@ fn place_targeted_block(s: &mut GameState) {
             if s.world.get_block(hit.prev_x, hit.prev_y, hit.prev_z) == block::AIR
                 && s.inventory.consume_selected()
             {
-                s.world.set_block(hit.prev_x, hit.prev_y, hit.prev_z, block_id);
+                s.world
+                    .set_block(hit.prev_x, hit.prev_y, hit.prev_z, block_id);
                 game::sync_selected_block(&s.inventory, &mut s.player);
             }
         }
@@ -123,7 +124,11 @@ fn main() {
     anyos_std::println!("forger: libphysics loaded");
 
     let atlas_data = textures::generate_atlas();
-    let mut renderer = Renderer::init(&atlas_data, textures::ATLAS_W as u32, textures::ATLAS_H as u32);
+    let mut renderer = Renderer::init(
+        &atlas_data,
+        textures::ATLAS_W as u32,
+        textures::ATLAS_H as u32,
+    );
 
     let mut preview_world = World::new(42);
     anyos_std::println!("forger: generating preview chunks...");
@@ -261,7 +266,8 @@ fn main() {
             c if c == b'c' as u32 || c == b'C' as u32 => s.player.descend = true,
             c if c == b'g' as u32 || c == b'G' as u32 => {
                 s.player.toggle_fly();
-                s.mode_toggle.set_state(if s.player.is_flying() { 1 } else { 0 });
+                s.mode_toggle
+                    .set_state(if s.player.is_flying() { 1 } else { 0 });
             }
             c if (b'1' as u32..=b'9' as u32).contains(&c) => {
                 s.inventory.set_selected_slot((c - b'1' as u32) as usize);
@@ -362,7 +368,8 @@ fn main() {
         if let Some(info) = libanyui_client::get_fullscreen_info() {
             s.canvas_w = info.width;
             s.canvas_h = info.height;
-            s.upscale_buffer.resize((info.width * info.height) as usize, 0);
+            s.upscale_buffer
+                .resize((info.width * info.height) as usize, 0);
             s.fb_w = (info.width / s.render_divisor).max(1);
             s.fb_h = (info.height / s.render_divisor).max(1);
             gl::gl_resize(s.fb_w, s.fb_h);
