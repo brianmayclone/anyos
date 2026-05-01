@@ -439,7 +439,7 @@ pub fn sys_tcp_accept_nowait(listener_id: u32, result_ptr: u64) -> u32 {
 
 /// sys_tcp_list - List all TCP connections.
 /// arg1=buf_ptr, arg2=max_entries. Each entry is 16 bytes:
-///   [local_ip:4, local_port:u16, remote_ip:4, remote_port:u16, state:u8, owner_tid_lo:u8, recv_buf_hi:u16]
+///   [local_ip:4, local_port:u16, remote_ip:4, remote_port:u16, state:u8, owner_tid_lo:u8, recv_buf_len:u16]
 /// Returns number of entries written.
 pub fn sys_tcp_list(buf_ptr: u64, max_entries: u32) -> u32 {
     if buf_ptr == 0 || max_entries == 0 {
@@ -461,7 +461,7 @@ pub fn sys_tcp_list(buf_ptr: u64, max_entries: u32) -> u32 {
         buf[off + 11] = rp[1];
         buf[off + 12] = info.state as u8;
         buf[off + 13] = (info.owner_tid & 0xFF) as u8;
-        let recv_len = (info.recv_buf_len as u16).to_le_bytes();
+        let recv_len = (info.recv_buf_len.min(u16::MAX as usize) as u16).to_le_bytes();
         buf[off + 14] = recv_len[0];
         buf[off + 15] = recv_len[1];
     }

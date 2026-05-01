@@ -11,7 +11,7 @@ use crate::syscall;
 use crate::tls;
 use crate::url::{
     Url, clone_url, find_header_value, parse_hex, parse_u32, parse_url,
-    push_u32, resolve_url, starts_with_ignore_case, parse_ip,
+    push_u32, resolve_url, parse_ip,
 };
 use crate::deflate;
 
@@ -109,9 +109,6 @@ pub fn download(url_str: &str, path: &str) -> bool {
 /// Download a URL to a file with an optional progress callback.
 /// The callback receives `(received_bytes, total_bytes, userdata)` after each chunk.
 /// `total_bytes` is 0 if the server did not send a Content-Length header.
-///
-/// Uses the same proven receive path as `get()` (accumulate in Vec),
-/// with progress callbacks fired during body reception.
 pub fn download_to_file(
     url_str: &str,
     path: &str,
@@ -135,7 +132,7 @@ pub fn download_to_file(
         PROGRESS_UD = userdata;
     }
 
-    let result = fetch_get(&url, true);
+    let result = fetch_get_to_file(&url, path);
 
     // Clear callback
     unsafe {
@@ -143,16 +140,56 @@ pub fn download_to_file(
     }
 
     match result {
-        Ok((status, body)) => {
+        Ok(status) => {
             set_status(status as u32);
-            if status >= 400 {
-                return false;
-            }
-            write_to_file(path, &body)
+            status < 400
         }
         Err(err) => {
             set_error(err);
             false
+        }
+    }
+}
+
+/// Perform an HTTP(S) GET, consume the response body, and report progress.
+///
+/// This is intended for throughput measurements and other callers that care
+/// about bytes crossing the TCP connection but do not need to keep the body.
+pub fn drain_progress(
+    url_str: &str,
+    callback: Option<extern "C" fn(u32, u32, u64)>,
+    userdata: u64,
+) -> Option<u32> {
+    set_status(0);
+    set_error(ERR_NONE);
+
+    let url = match parse_url(url_str) {
+        Some(u) => u,
+        None => {
+            set_error(ERR_INVALID_URL);
+            return None;
+        }
+    };
+
+    unsafe {
+        PROGRESS_CB = callback;
+        PROGRESS_UD = userdata;
+    }
+
+    let result = fetch_get_drain(&url);
+
+    unsafe {
+        PROGRESS_CB = None;
+    }
+
+    match result {
+        Ok((status, received)) => {
+            set_status(status as u32);
+            if status < 400 { Some(received) } else { None }
+        }
+        Err(err) => {
+            set_error(err);
+            None
         }
     }
 }
@@ -221,6 +258,77 @@ fn fetch_get(url: &Url, raw: bool) -> Result<(u16, Vec<u8>), u32> {
     Err(ERR_TOO_MANY_REDIRECTS)
 }
 
+/// Core GET download implementation with redirect following.
+/// Streams the body directly to disk to avoid large heap copies during downloads.
+fn fetch_get_to_file(url: &Url, path: &str) -> Result<u16, u32> {
+    let mut current = clone_url(url);
+
+    for _redirect_n in 0..MAX_REDIRECTS {
+        let is_https = current.scheme == "https";
+
+        let conn = connect_to(&current.host, current.port, is_https)?;
+
+        let request = build_get_request(&current, true);
+        if !send_data(&conn, request.as_bytes(), is_https) {
+            close_conn(conn);
+            return Err(ERR_SEND_FAILURE);
+        }
+
+        match receive_response_to_file(&conn, is_https, path) {
+            Ok(ResponseFileAction::Redirect(_status, location)) => {
+                close_conn(conn);
+                current = resolve_url(&current, &location);
+                continue;
+            }
+            Ok(ResponseFileAction::Complete(status)) => {
+                close_conn(conn);
+                return Ok(status);
+            }
+            Err(err) => {
+                close_conn(conn);
+                return Err(err);
+            }
+        }
+    }
+
+    Err(ERR_TOO_MANY_REDIRECTS)
+}
+
+/// Core GET drain implementation with redirect following.
+fn fetch_get_drain(url: &Url) -> Result<(u16, u32), u32> {
+    let mut current = clone_url(url);
+
+    for _redirect_n in 0..MAX_REDIRECTS {
+        let is_https = current.scheme == "https";
+
+        let conn = connect_to(&current.host, current.port, is_https)?;
+
+        let request = build_get_request(&current, true);
+        if !send_data(&conn, request.as_bytes(), is_https) {
+            close_conn(conn);
+            return Err(ERR_SEND_FAILURE);
+        }
+
+        match receive_response_drain(&conn, is_https) {
+            Ok(ResponseDrainAction::Redirect(_status, location)) => {
+                close_conn(conn);
+                current = resolve_url(&current, &location);
+                continue;
+            }
+            Ok(ResponseDrainAction::Complete(status, received)) => {
+                close_conn(conn);
+                return Ok((status, received));
+            }
+            Err(err) => {
+                close_conn(conn);
+                return Err(err);
+            }
+        }
+    }
+
+    Err(ERR_TOO_MANY_REDIRECTS)
+}
+
 /// Core POST implementation with redirect following.
 ///
 /// HTTP redirect behavior per RFC 7231/7538:
@@ -258,7 +366,7 @@ fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, 
         }
 
         match receive_response(&conn, is_https, false)? {
-            ResponseAction::Redirect(redir_status, location) => {
+            ResponseAction::Redirect(_redir_status, location) => {
                 close_conn(conn);
                 current = resolve_url(&current, &location);
                 // 307/308: preserve POST method and body
@@ -398,6 +506,16 @@ enum ResponseAction {
     Complete(u16, Vec<u8>),
 }
 
+enum ResponseFileAction {
+    Redirect(u16, String),
+    Complete(u16),
+}
+
+enum ResponseDrainAction {
+    Redirect(u16, String),
+    Complete(u16, u32),
+}
+
 /// Receive and parse an HTTP response (headers + body).
 /// When `raw` is true, body decompression is skipped.
 fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<ResponseAction, u32> {
@@ -457,6 +575,131 @@ fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<Resp
     let body = if raw { raw_body } else { decompress_body(raw_body, &content_encoding) };
 
     Ok(ResponseAction::Complete(status, body))
+}
+
+/// Receive headers and stream the response body directly to a file.
+fn receive_response_to_file(
+    conn: &Connection,
+    is_https: bool,
+    path: &str,
+) -> Result<ResponseFileAction, u32> {
+    let mut response_buf: Vec<u8> = Vec::new();
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+    let header_end;
+
+    loop {
+        let n = recv_some(conn, &mut recv_buf, is_https);
+        if n == 0 {
+            return Err(ERR_NO_RESPONSE);
+        }
+        response_buf.extend_from_slice(&recv_buf[..n]);
+
+        if let Some(end) = find_header_end_bytes(&response_buf) {
+            header_end = end;
+            break;
+        }
+        if response_buf.len() > MAX_HEADER_SIZE {
+            return Err(ERR_NO_RESPONSE);
+        }
+    }
+
+    let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
+    let (status, _reason) = parse_status_line(header_str);
+
+    if is_redirect(status) {
+        if let Some(location) = find_header_value(header_str, "location") {
+            return Ok(ResponseFileAction::Redirect(status, String::from(location)));
+        }
+        return Ok(ResponseFileAction::Complete(status));
+    }
+
+    if status >= 400 {
+        return Ok(ResponseFileAction::Complete(status));
+    }
+
+    let is_chunked = find_header_value(header_str, "transfer-encoding")
+        .map(|v| v.contains("chunked"))
+        .unwrap_or(false);
+    let content_length = parse_content_length(header_str);
+
+    let mut trailing = Vec::new();
+    if header_end < response_buf.len() {
+        trailing.extend_from_slice(&response_buf[header_end..]);
+    }
+
+    let fd = syscall::open(path, syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC);
+    if fd == u32::MAX {
+        return Err(ERR_FILE_WRITE);
+    }
+
+    let read_result = if is_chunked {
+        read_chunked_body_to_file(conn, fd, &trailing, is_https)
+    } else {
+        read_body_to_file(conn, fd, &trailing, content_length, is_https)
+    };
+
+    syscall::close(fd);
+    read_result?;
+
+    Ok(ResponseFileAction::Complete(status))
+}
+
+/// Receive headers and consume the response body without storing it.
+fn receive_response_drain(
+    conn: &Connection,
+    is_https: bool,
+) -> Result<ResponseDrainAction, u32> {
+    let mut response_buf: Vec<u8> = Vec::new();
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+    let header_end;
+
+    loop {
+        let n = recv_some(conn, &mut recv_buf, is_https);
+        if n == 0 {
+            return Err(ERR_NO_RESPONSE);
+        }
+        response_buf.extend_from_slice(&recv_buf[..n]);
+
+        if let Some(end) = find_header_end_bytes(&response_buf) {
+            header_end = end;
+            break;
+        }
+        if response_buf.len() > MAX_HEADER_SIZE {
+            return Err(ERR_NO_RESPONSE);
+        }
+    }
+
+    let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
+    let (status, _reason) = parse_status_line(header_str);
+
+    if is_redirect(status) {
+        if let Some(location) = find_header_value(header_str, "location") {
+            return Ok(ResponseDrainAction::Redirect(status, String::from(location)));
+        }
+        return Ok(ResponseDrainAction::Complete(status, 0));
+    }
+
+    if status >= 400 {
+        return Ok(ResponseDrainAction::Complete(status, 0));
+    }
+
+    let is_chunked = find_header_value(header_str, "transfer-encoding")
+        .map(|v| v.contains("chunked"))
+        .unwrap_or(false);
+    let content_length = parse_content_length(header_str);
+
+    let mut trailing = Vec::new();
+    if header_end < response_buf.len() {
+        trailing.extend_from_slice(&response_buf[header_end..]);
+    }
+
+    let received = if is_chunked {
+        read_chunked_body_drain(conn, &trailing, is_https)
+    } else {
+        read_body_drain(conn, &trailing, content_length, is_https)
+    };
+
+    Ok(ResponseDrainAction::Complete(status, received))
 }
 
 // ── Request building ────────────────────────────────────────────────────────
@@ -565,7 +808,7 @@ fn fetch_post_headers_inner(url: &Url, body: &[u8], content_type: &str, extra_he
         }
 
         match receive_response(&conn, is_https, false)? {
-            ResponseAction::Redirect(redir_status, location) => {
+            ResponseAction::Redirect(_redir_status, location) => {
                 close_conn(conn);
                 current = resolve_url(&current, &location);
                 // Preserve POST method on all redirects.
@@ -674,6 +917,151 @@ fn read_body(
     body
 }
 
+/// Stream a Content-Length or connection-close body directly to a file.
+fn read_body_to_file(
+    conn: &Connection,
+    fd: u32,
+    initial: &[u8],
+    content_length: Option<u32>,
+    is_https: bool,
+) -> Result<u32, u32> {
+    let total = content_length.unwrap_or(0);
+    let mut received = 0u32;
+
+    if !initial.is_empty() {
+        let initial_len = if let Some(cl) = content_length {
+            initial.len().min(cl as usize)
+        } else {
+            initial.len()
+        };
+        if initial_len > 0 {
+            if !write_all(fd, &initial[..initial_len]) {
+                return Err(ERR_FILE_WRITE);
+            }
+            received = initial_len as u32;
+        }
+    }
+
+    unsafe {
+        if let Some(cb) = PROGRESS_CB {
+            cb(received, total, PROGRESS_UD);
+        }
+    }
+
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+    let mut retried = false;
+
+    loop {
+        if let Some(cl) = content_length {
+            if received >= cl {
+                break;
+            }
+        }
+
+        let n = recv_some(conn, &mut recv_buf, is_https);
+        if n == 0 {
+            if let Some(cl) = content_length {
+                if received < cl && !retried {
+                    retried = true;
+                    syscall::sleep(50);
+                    continue;
+                }
+            }
+            break;
+        }
+        retried = false;
+
+        let write_len = if let Some(cl) = content_length {
+            let remaining = cl.saturating_sub(received) as usize;
+            n.min(remaining)
+        } else {
+            n
+        };
+
+        if write_len > 0 {
+            if !write_all(fd, &recv_buf[..write_len]) {
+                return Err(ERR_FILE_WRITE);
+            }
+            received = received.saturating_add(write_len as u32);
+        }
+
+        unsafe {
+            if let Some(cb) = PROGRESS_CB {
+                cb(received, total, PROGRESS_UD);
+            }
+        }
+    }
+
+    Ok(received)
+}
+
+/// Read a Content-Length or connection-close body and discard it.
+fn read_body_drain(
+    conn: &Connection,
+    initial: &[u8],
+    content_length: Option<u32>,
+    is_https: bool,
+) -> u32 {
+    let total = content_length.unwrap_or(0);
+    let mut received = 0u32;
+
+    if !initial.is_empty() {
+        let initial_len = if let Some(cl) = content_length {
+            initial.len().min(cl as usize)
+        } else {
+            initial.len()
+        };
+        received = initial_len as u32;
+    }
+
+    unsafe {
+        if let Some(cb) = PROGRESS_CB {
+            cb(received, total, PROGRESS_UD);
+        }
+    }
+
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+    let mut retried = false;
+
+    loop {
+        if let Some(cl) = content_length {
+            if received >= cl {
+                break;
+            }
+        }
+
+        let n = recv_some(conn, &mut recv_buf, is_https);
+        if n == 0 {
+            if let Some(cl) = content_length {
+                if received < cl && !retried {
+                    retried = true;
+                    syscall::sleep(50);
+                    continue;
+                }
+            }
+            break;
+        }
+        retried = false;
+
+        let read_len = if let Some(cl) = content_length {
+            let remaining = cl.saturating_sub(received) as usize;
+            n.min(remaining)
+        } else {
+            n
+        };
+
+        received = received.saturating_add(read_len as u32);
+
+        unsafe {
+            if let Some(cb) = PROGRESS_CB {
+                cb(received, total, PROGRESS_UD);
+            }
+        }
+    }
+
+    received
+}
+
 /// Read a chunked transfer-encoded body.
 ///
 /// `recv_some` already handles transient TCP failures with internal retries
@@ -741,6 +1129,156 @@ fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Vec<u
     }
 
     body
+}
+
+/// Stream a chunked transfer-encoded body directly to a file.
+fn read_chunked_body_to_file(
+    conn: &Connection,
+    fd: u32,
+    initial: &[u8],
+    is_https: bool,
+) -> Result<u32, u32> {
+    let mut buf: Vec<u8> = Vec::with_capacity(RECV_BUF_SIZE * 4);
+    buf.extend_from_slice(initial);
+    let mut cursor: usize = 0;
+    let mut received = 0u32;
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+
+    loop {
+        let chunk_size;
+        loop {
+            if let Some(crlf) = find_crlf(&buf[cursor..]) {
+                let size_str = core::str::from_utf8(&buf[cursor..cursor + crlf]).unwrap_or("0");
+                let hex_str = match size_str.find(';') {
+                    Some(i) => &size_str[..i],
+                    None => size_str,
+                };
+                chunk_size = parse_hex(hex_str.trim());
+                cursor += crlf + 2;
+                break;
+            }
+            let n = recv_some(conn, &mut recv_buf, is_https);
+            if n == 0 {
+                return Ok(received);
+            }
+            buf.extend_from_slice(&recv_buf[..n]);
+        }
+
+        if chunk_size == 0 {
+            break;
+        }
+
+        while buf.len() - cursor < chunk_size {
+            let n = recv_some(conn, &mut recv_buf, is_https);
+            if n == 0 {
+                return Ok(received);
+            }
+            buf.extend_from_slice(&recv_buf[..n]);
+        }
+
+        let available = (buf.len() - cursor).min(chunk_size);
+        if available > 0 {
+            if !write_all(fd, &buf[cursor..cursor + available]) {
+                return Err(ERR_FILE_WRITE);
+            }
+            received = received.saturating_add(available as u32);
+        }
+        cursor += available;
+
+        unsafe {
+            if let Some(cb) = PROGRESS_CB {
+                cb(received, 0, PROGRESS_UD);
+            }
+        }
+
+        while buf.len() - cursor < 2 {
+            let n = recv_some(conn, &mut recv_buf, is_https);
+            if n == 0 {
+                return Ok(received);
+            }
+            buf.extend_from_slice(&recv_buf[..n]);
+        }
+        if buf[cursor] == b'\r' && buf[cursor + 1] == b'\n' {
+            cursor += 2;
+        }
+
+        if cursor > 65536 {
+            buf.drain(..cursor);
+            cursor = 0;
+        }
+    }
+
+    Ok(received)
+}
+
+/// Read a chunked transfer-encoded body and discard it.
+fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) -> u32 {
+    let mut buf: Vec<u8> = Vec::with_capacity(RECV_BUF_SIZE * 4);
+    buf.extend_from_slice(initial);
+    let mut cursor: usize = 0;
+    let mut received = 0u32;
+    let mut recv_buf = [0u8; RECV_BUF_SIZE];
+
+    loop {
+        let chunk_size;
+        loop {
+            if let Some(crlf) = find_crlf(&buf[cursor..]) {
+                let size_str = core::str::from_utf8(&buf[cursor..cursor + crlf]).unwrap_or("0");
+                let hex_str = match size_str.find(';') {
+                    Some(i) => &size_str[..i],
+                    None => size_str,
+                };
+                chunk_size = parse_hex(hex_str.trim());
+                cursor += crlf + 2;
+                break;
+            }
+            let n = recv_some(conn, &mut recv_buf, is_https);
+            if n == 0 {
+                return received;
+            }
+            buf.extend_from_slice(&recv_buf[..n]);
+        }
+
+        if chunk_size == 0 {
+            break;
+        }
+
+        while buf.len() - cursor < chunk_size {
+            let n = recv_some(conn, &mut recv_buf, is_https);
+            if n == 0 {
+                return received;
+            }
+            buf.extend_from_slice(&recv_buf[..n]);
+        }
+
+        let available = (buf.len() - cursor).min(chunk_size);
+        received = received.saturating_add(available as u32);
+        cursor += available;
+
+        unsafe {
+            if let Some(cb) = PROGRESS_CB {
+                cb(received, 0, PROGRESS_UD);
+            }
+        }
+
+        while buf.len() - cursor < 2 {
+            let n = recv_some(conn, &mut recv_buf, is_https);
+            if n == 0 {
+                return received;
+            }
+            buf.extend_from_slice(&recv_buf[..n]);
+        }
+        if buf[cursor] == b'\r' && buf[cursor + 1] == b'\n' {
+            cursor += 2;
+        }
+
+        if cursor > 65536 {
+            buf.drain(..cursor);
+            cursor = 0;
+        }
+    }
+
+    received
 }
 
 // ── Header parsing helpers ──────────────────────────────────────────────────
@@ -841,27 +1379,6 @@ fn write_all(fd: u32, data: &[u8]) -> bool {
         let n = syscall::write(fd, &data[written..]);
         if n == u32::MAX { return false; }
         written += n as usize;
-    }
-    true
-}
-
-/// Write data to a file path.
-fn write_to_file(path: &str, data: &[u8]) -> bool {
-    let fd = syscall::open(path, syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC);
-    if fd == u32::MAX {
-        set_error(ERR_FILE_WRITE);
-        return false;
-    }
-    let mut written = 0usize;
-    while written < data.len() {
-        let n = syscall::write(fd, &data[written..]);
-        if n == u32::MAX { break; }
-        written += n as usize;
-    }
-    syscall::close(fd);
-    if written != data.len() {
-        set_error(ERR_FILE_WRITE);
-        return false;
     }
     true
 }

@@ -12,6 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use super::native_math::{floor_f64, trunc_f64};
 use super::Vm;
 use crate::value::*;
 
@@ -189,38 +190,94 @@ fn read_element(buf: &[u8], offset: usize, kind: TypedArrayKind) -> f64 {
     }
 }
 
+fn to_integer_or_zero(val: f64) -> f64 {
+    if !val.is_finite() || val == 0.0 {
+        0.0
+    } else {
+        trunc_f64(val)
+    }
+}
+
+fn positive_mod_f64(val: f64, modulo: f64) -> f64 {
+    if modulo == 0.0 {
+        return 0.0;
+    }
+    let quotient = floor_f64(val / modulo);
+    let mut rem = val - quotient * modulo;
+    if rem < 0.0 {
+        rem += modulo;
+    }
+    if rem >= modulo {
+        rem -= modulo;
+    }
+    rem
+}
+
+fn to_uint_n(val: f64, modulo: f64) -> u32 {
+    positive_mod_f64(to_integer_or_zero(val), modulo) as u32
+}
+
+fn to_uint8(val: f64) -> u8 {
+    to_uint_n(val, 256.0) as u8
+}
+
+fn to_uint16(val: f64) -> u16 {
+    to_uint_n(val, 65_536.0) as u16
+}
+
+fn to_uint32(val: f64) -> u32 {
+    positive_mod_f64(to_integer_or_zero(val), 4_294_967_296.0) as u32
+}
+
+fn to_uint8_clamped(val: f64) -> u8 {
+    if val.is_nan() || val <= 0.0 {
+        0
+    } else if val >= 255.0 {
+        255
+    } else {
+        let floor = floor_f64(val);
+        let frac = val - floor;
+        if frac > 0.5 {
+            (floor as u8) + 1
+        } else if frac < 0.5 {
+            floor as u8
+        } else {
+            let floor_u8 = floor as u8;
+            if floor_u8 & 1 == 0 {
+                floor_u8
+            } else {
+                floor_u8 + 1
+            }
+        }
+    }
+}
+
 fn write_element(buf: &mut [u8], offset: usize, kind: TypedArrayKind, val: f64) {
     let b = &mut buf[offset..];
     match kind {
         TypedArrayKind::Int8 => {
-            b[0] = val as i8 as u8;
+            b[0] = to_uint8(val);
         }
         TypedArrayKind::Uint8 => {
-            b[0] = val as u8;
+            b[0] = to_uint8(val);
         }
         TypedArrayKind::Uint8Clamped => {
-            b[0] = if val < 0.0 {
-                0
-            } else if val > 255.0 {
-                255
-            } else {
-                val as u8
-            };
+            b[0] = to_uint8_clamped(val);
         }
         TypedArrayKind::Int16 => {
-            let bytes = (val as i16).to_le_bytes();
+            let bytes = (to_uint16(val) as i16).to_le_bytes();
             b[..2].copy_from_slice(&bytes);
         }
         TypedArrayKind::Uint16 => {
-            let bytes = (val as u16).to_le_bytes();
+            let bytes = to_uint16(val).to_le_bytes();
             b[..2].copy_from_slice(&bytes);
         }
         TypedArrayKind::Int32 => {
-            let bytes = (val as i32).to_le_bytes();
+            let bytes = (to_uint32(val) as i32).to_le_bytes();
             b[..4].copy_from_slice(&bytes);
         }
         TypedArrayKind::Uint32 => {
-            let bytes = (val as u32).to_le_bytes();
+            let bytes = to_uint32(val).to_le_bytes();
             b[..4].copy_from_slice(&bytes);
         }
         TypedArrayKind::Float32 => {

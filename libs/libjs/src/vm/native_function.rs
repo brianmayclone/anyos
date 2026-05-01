@@ -181,6 +181,7 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
                         is_constructor: false,
                         all_args: args.to_vec(),
                         self_ref: func.clone(),
+                        new_target: JsValue::Undefined,
                     };
                     vm.frames.push(frame);
                     vm.current_this = saved_current_this;

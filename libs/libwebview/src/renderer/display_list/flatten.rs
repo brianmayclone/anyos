@@ -112,6 +112,41 @@ impl DisplayList {
         }
     }
 
+    fn text_clip_gradient_color_at(&self, bx: &LayoutBox, t: i32) -> Option<u32> {
+        if !matches!(bx.background_clip, BackgroundClipVal::Text) {
+            return None;
+        }
+        match &bx.background_image {
+            BackgroundImageVal::LinearGradient { stops, .. } if !stops.is_empty() => {
+                let color = if stops.len() == 1 {
+                    stops[0].color
+                } else {
+                    interpolate_gradient_color(stops, t.clamp(0, 10000))
+                };
+                Some(if (color >> 24) == 0 { color | 0xFF00_0000 } else { color })
+            }
+            _ => None,
+        }
+    }
+
+    fn measure_text_fragment_width(
+        &self,
+        text: &str,
+        font_id: u32,
+        font_size: u16,
+        scale_x_percent: i32,
+    ) -> i32 {
+        if crate::is_ahem_font_id(font_id) {
+            return text.chars().count() as i32 * font_size as i32;
+        }
+        let (w, _) = libfont_client::measure(font_id, font_size, text);
+        let mut w = w as i32;
+        if scale_x_percent != 100 {
+            w = w * scale_x_percent / 100;
+        }
+        w.max(0)
+    }
+
     fn resolve_radius_for_rect(value: i32, w: i32, h: i32) -> i32 {
         if value < 0 {
             let pct = (-value) as i64;
@@ -744,19 +779,87 @@ impl DisplayList {
                     );
                 }
 
-                self.push(
-                    abs_x,
-                    abs_y,
-                    draw_w,
-                    draw_h,
-                    DrawKind::Text {
-                        color,
-                        font_id,
-                        font_size,
-                        scale_x_percent,
-                        text: text.clone(),
-                    },
-                );
+                if matches!(bx.background_clip, BackgroundClipVal::Text)
+                    && matches!(bx.background_image, BackgroundImageVal::LinearGradient { .. })
+                    && draw_w > 1
+                {
+                    let chars: Vec<char> = text.chars().collect();
+                    let count = chars.len();
+                    if count > 1 {
+                        let mut measured_widths = Vec::with_capacity(count);
+                        let mut measured_total = 0i32;
+                        for ch in &chars {
+                            let mut s = String::new();
+                            s.push(*ch);
+                            let w = self
+                                .measure_text_fragment_width(
+                                    &s,
+                                    font_id,
+                                    font_size,
+                                    scale_x_percent,
+                                )
+                                .max(1);
+                            measured_widths.push(w);
+                            measured_total = measured_total.saturating_add(w);
+                        }
+                        let total = measured_total.max(1) as i64;
+                        let target = draw_w.max(1) as i64;
+                        let mut measured_x = 0i32;
+                        for (i, ch) in chars.into_iter().enumerate() {
+                            let char_w = measured_widths[i];
+                            let x0 = abs_x + ((measured_x as i64 * target) / total) as i32;
+                            let x1 = abs_x
+                                + (((measured_x + char_w) as i64 * target) / total) as i32;
+                            let w = (x1 - x0).max(1);
+                            let midpoint = measured_x + char_w / 2;
+                            let t = ((midpoint as i64 * 10000) / total) as i32;
+                            let mut s = String::new();
+                            s.push(ch);
+                            self.push(
+                                x0,
+                                abs_y,
+                                w,
+                                draw_h,
+                                DrawKind::Text {
+                                    color: self.text_clip_gradient_color_at(bx, t).unwrap_or(color),
+                                    font_id,
+                                    font_size,
+                                    scale_x_percent,
+                                    text: s,
+                                },
+                            );
+                            measured_x = measured_x.saturating_add(char_w);
+                        }
+                    } else {
+                        self.push(
+                            abs_x,
+                            abs_y,
+                            draw_w,
+                            draw_h,
+                            DrawKind::Text {
+                                color,
+                                font_id,
+                                font_size,
+                                scale_x_percent,
+                                text: text.clone(),
+                            },
+                        );
+                    }
+                } else {
+                    self.push(
+                        abs_x,
+                        abs_y,
+                        draw_w,
+                        draw_h,
+                        DrawKind::Text {
+                            color,
+                            font_id,
+                            font_size,
+                            scale_x_percent,
+                            text: text.clone(),
+                        },
+                    );
+                }
 
                 // Text decorations with sub-property support.
                 let deco_color = if bx.text_decoration_color != 0 {

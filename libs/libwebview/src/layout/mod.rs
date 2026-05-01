@@ -1880,9 +1880,20 @@ pub(super) fn layout_children_ex_with_budget(
 ) -> i32 {
     // Children start after the border and padding on the top-left.
     let bw = parent.border_width;
+    let parent_horizontal_border = if parent.border_left_width != 0 || parent.border_right_width != 0
+    {
+        parent.border_left_width + parent.border_right_width
+    } else {
+        bw * 2
+    };
+    let flow_width = if parent.width > 0 {
+        (parent.width - parent.padding.left - parent.padding.right - parent_horizontal_border).max(0)
+    } else {
+        available_width.max(0)
+    };
     let mut cursor_y: i32 = bw + parent.padding.top;
     let mut prev_margin_bottom: i32 = 0;
-    let mut float_ctx = FloatContext::new(available_width);
+    let mut float_ctx = FloatContext::new(flow_width);
 
     // Place ::before block pseudo-element at the start of the flow.
     if let Some(mut b) = before_block {
@@ -1926,7 +1937,7 @@ pub(super) fn layout_children_ex_with_budget(
                 styles,
                 pseudo,
                 &grandchildren,
-                available_width,
+                flow_width,
                 parent,
                 cid,
                 images,
@@ -1945,7 +1956,7 @@ pub(super) fn layout_children_ex_with_budget(
         if matches!(style.position, Position::Absolute | Position::Fixed) {
             let li = float_ctx.left_intrusion_at(cursor_y, 1);
             let ri = float_ctx.right_intrusion_at(cursor_y, 1);
-            let static_width = (available_width - li - ri).max(0);
+            let static_width = (flow_width - li - ri).max(0);
             let collapsed = if prev_margin_bottom > style.margin_top {
                 prev_margin_bottom
             } else {
@@ -1981,7 +1992,7 @@ pub(super) fn layout_children_ex_with_budget(
                     styles,
                     pseudo,
                     cid,
-                    available_width,
+                    flow_width,
                     images,
                     viewport_w,
                 );
@@ -2012,7 +2023,7 @@ pub(super) fn layout_children_ex_with_budget(
                 if float_val == FloatVal::Left {
                     placed.x = bw + parent.padding.left + li + placed.margin.left + relative_x;
                 } else {
-                    let right_edge = available_width - ri;
+                    let right_edge = flow_width - ri;
                     placed.x =
                         bw + parent.padding.left + right_edge - placed.width - placed.margin.right
                             + relative_x;
@@ -2035,7 +2046,7 @@ pub(super) fn layout_children_ex_with_budget(
             // ── Normal block flow ──
             let li = float_ctx.left_intrusion_at(cursor_y, 1);
             let ri = float_ctx.right_intrusion_at(cursor_y, 1);
-            let effective_avail = (available_width - li - ri).max(0);
+            let effective_avail = (flow_width - li - ri).max(0);
             let parent_style = &styles[_parent_node];
             let child_style = &styles[cid];
             let parent_justify = if parent_style.justify_items_specified {
@@ -2211,7 +2222,7 @@ pub(super) fn layout_children_ex_with_budget(
             let run_start = i;
             let mut inline_ids: Vec<NodeId> = Vec::new();
             let oof_static_x = bw + parent.padding.left;
-            let oof_static_w = available_width.max(0);
+            let oof_static_w = flow_width.max(0);
             while i < child_ids.len() {
                 let sid = child_ids[i];
                 let ss = &styles[sid];
@@ -2269,7 +2280,7 @@ pub(super) fn layout_children_ex_with_budget(
             // Query float intrusions for inline content.
             let li = float_ctx.left_intrusion_at(cursor_y, 1);
             let ri = float_ctx.right_intrusion_at(cursor_y, 1);
-            let inline_avail = (available_width - li - ri).max(0);
+            let inline_avail = (flow_width - li - ri).max(0);
 
             let parent_style = &styles[_parent_node];
             let parent_align = parent_style.text_align;

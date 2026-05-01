@@ -127,7 +127,38 @@ pub fn make_headers_constructor() -> JsValue {
 
 /// Create the `Request` constructor function.
 pub fn make_request_constructor() -> JsValue {
-    native_ctor_fn("Request", native_request_ctor)
+    let ctor = native_ctor_fn("Request", native_request_ctor);
+    if let JsValue::Function(func) = &ctor {
+        let proto_obj = func.borrow().prototype.clone();
+        if let Some(proto_obj) = proto_obj {
+            let mut proto = proto_obj.borrow_mut();
+            // AbortController polyfills and feature probes check this exact own
+            // property before deciding whether they need to wrap window.fetch.
+            proto.set(String::from("signal"), JsValue::Null);
+        }
+    }
+    if let JsValue::Function(func) = &ctor {
+        if let Some(proto_obj) = func.borrow().prototype.clone() {
+            let mut proto = proto_obj.borrow_mut();
+            proto.set(String::from("clone"), native_fn("clone", request_clone));
+            proto.set(String::from("text"), native_fn("text", request_text));
+            proto.set(String::from("json"), native_fn("json", request_json));
+        }
+    }
+    ctor
+}
+
+fn request_instance_prototype(vm: &mut Vm) -> Option<Rc<RefCell<JsObject>>> {
+    match vm.get_global("Request") {
+        JsValue::Function(func) => func.borrow().prototype.clone(),
+        _ => None,
+    }
+}
+
+fn set_request_instance_prototype(vm: &mut Vm, obj: &mut JsObject) {
+    if let Some(proto) = request_instance_prototype(vm) {
+        obj.prototype = Some(proto);
+    }
 }
 
 /// Create the `Response` constructor function, including common static helpers.
@@ -211,6 +242,7 @@ pub fn native_request_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         String::from("headers"),
         native_headers_ctor(_vm, &[headers_init]),
     );
+    set_request_instance_prototype(_vm, &mut obj);
     obj.set(String::from("clone"), native_fn("clone", request_clone));
     obj.set(String::from("text"), native_fn("text", request_text));
     obj.set(String::from("json"), native_fn("json", request_json));

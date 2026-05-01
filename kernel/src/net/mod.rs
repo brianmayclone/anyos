@@ -138,8 +138,10 @@ pub fn poll_rx() {
 
         // VirtIO Net: poll virtqueue and drain received packets
         crate::drivers::network::virtio_net::poll_rx();
-        while let Some(packet) = crate::drivers::network::virtio_net::recv_packet() {
-            ethernet::handle_frame(&packet);
+        packets.clear();
+        crate::drivers::network::virtio_net::recv_all_packets(&mut packets);
+        for packet in packets.iter() {
+            ethernet::handle_frame(packet);
         }
 
         // CDC-ECM (USB Ethernet)

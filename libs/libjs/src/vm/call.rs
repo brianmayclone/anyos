@@ -184,6 +184,13 @@ impl Vm {
         args: &[JsValue],
         new_target: &JsValue,
     ) -> bool {
+        if self.frames.len() >= Self::MAX_CALL_DEPTH {
+            let err = self.make_range_error("Maximum call stack size exceeded");
+            if !self.handle_exception(err) {
+                self.stack.push(JsValue::Undefined);
+            }
+            return true;
+        }
         if !self.is_constructable_value(new_target) {
             let exc = self.make_type_error("newTarget is not a constructor");
             if !self.handle_exception(exc) {
@@ -297,6 +304,7 @@ impl Vm {
                                 is_constructor: true,
                                 all_args: args.to_vec(),
                                 self_ref: ctor_ref,
+                                new_target: new_target.clone(),
                             };
                             self.frames.push(frame);
                         }
@@ -553,6 +561,7 @@ impl Vm {
                             is_constructor: false,
                             all_args: args.to_vec(),
                             self_ref: callee.clone(),
+                            new_target: JsValue::Undefined,
                         };
                         self.frames.push(frame);
                         self.current_this = saved_current_this;
@@ -866,6 +875,13 @@ impl Vm {
     /// `super(args)` — call parent constructor, forwarding new.target from the
     /// current (derived) constructor frame.  Stack: [..., SuperClass, arg1..argN]
     pub fn super_call(&mut self, argc: usize) {
+        if self.frames.len() >= Self::MAX_CALL_DEPTH {
+            let err = self.make_range_error("Maximum call stack size exceeded");
+            if !self.handle_exception(err) {
+                self.stack.push(JsValue::Undefined);
+            }
+            return;
+        }
         if self.stack.len() < argc + 1 {
             self.stack.push(JsValue::Undefined);
             return;
@@ -896,7 +912,7 @@ impl Vm {
         let mut new_target = JsValue::Undefined;
         for f in self.frames.iter().rev() {
             if f.is_constructor {
-                new_target = f.self_ref.clone();
+                new_target = f.new_target.clone();
                 break;
             }
         }
@@ -946,8 +962,9 @@ impl Vm {
                             this_val,
                             is_constructor: true,
                             all_args: args.to_vec(),
+                            self_ref: JsValue::Function(func_rc.clone()),
                             // new.target is forwarded from the derived constructor.
-                            self_ref: new_target,
+                            new_target,
                         };
                         self.frames.push(frame);
                     }

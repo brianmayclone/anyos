@@ -1855,35 +1855,10 @@ fn main() {
                 std::mem::take(&mut *guard)
             };
             let mut changed = !new_chars.is_empty();
+            let mut submit_requested = window.is_key_pressed(Key::Enter, KeyRepeat::No);
             for c in new_chars {
                 if c == '\r' || c == '\n' {
-                    // Enter: submit the form that contains the focused control.
-                    let node_id = wv
-                        .form_controls()
-                        .iter()
-                        .find(|fc| fc.control_id == ctrl_id)
-                        .map(|fc| fc.node_id)
-                        .unwrap_or(0);
-                    if let Some((action, method, _enctype)) = wv.form_action_for_node(node_id) {
-                        let data = wv.collect_form_data_for_node(node_id);
-                        let query = form_encode(&data);
-                        let nav_url = if method == "GET" {
-                            let base = if action.is_empty() {
-                                current_url.clone()
-                            } else {
-                                resolve_url(&current_url, &action)
-                            };
-                            if query.is_empty() {
-                                base
-                            } else {
-                                format!("{}?{}", base, query)
-                            }
-                        } else {
-                            resolve_url(&current_url, &action)
-                        };
-                        eprintln!("[enter] form submit → {}", nav_url);
-                        navigate_to = Some(nav_url);
-                    }
+                    submit_requested = true;
                 } else {
                     text.push(c);
                 }
@@ -1898,6 +1873,21 @@ fn main() {
             if changed {
                 wv.set_form_control_text(ctrl_id, text);
                 needs_redraw = true;
+            }
+
+            if submit_requested {
+                let node_id = wv
+                    .form_controls()
+                    .iter()
+                    .find(|fc| fc.control_id == ctrl_id)
+                    .map(|fc| fc.node_id)
+                    .unwrap_or(0);
+                if let Some(nav_url) =
+                    submit_form_node_host(&mut wv, &current_url, &mut cookies, node_id)
+                {
+                    eprintln!("[enter] form submit → {}", nav_url);
+                    navigate_to = Some(nav_url);
+                }
             }
         } else {
             // Drain and discard typed chars when no field is focused.
@@ -1924,23 +1914,9 @@ fn main() {
                 // 2. Hit-test for submit button → collect form data and navigate
                 else if let Some(node_id) = wv.hit_test_submit_viewport(mx, my, scroll_y) {
                     focused_control = None;
-                    if let Some((action, method, _enctype)) = wv.form_action_for_node(node_id) {
-                        let data = wv.collect_form_data_for_node(node_id);
-                        let query = form_encode(&data);
-                        let base = if action.is_empty() {
-                            current_url.clone()
-                        } else {
-                            resolve_url(&current_url, &action)
-                        };
-                        let nav_url = if method == "GET" {
-                            if query.is_empty() {
-                                base
-                            } else {
-                                format!("{}?{}", base, query)
-                            }
-                        } else {
-                            base
-                        };
+                    if let Some(nav_url) =
+                        submit_form_node_host(&mut wv, &current_url, &mut cookies, node_id)
+                    {
                         eprintln!("[click] submit → {}", nav_url);
                         navigate_to = Some(nav_url);
                     } else {
@@ -2182,6 +2158,40 @@ fn clip_text_to_width(text: &str, font_size: u16, max_width: u32) -> String {
 // ── Form helpers ──────────────────────────────────────────────────────────────
 
 /// URL-encode form data as "key=value&key2=value2".
+fn submit_form_node_host(
+    wv: &mut libwebview::WebView,
+    current_url: &str,
+    cookies: &mut HostCookieJar,
+    node_id: usize,
+) -> Option<String> {
+    if !wv.dispatch_submit_for_node(node_id) {
+        apply_host_js_mutations(wv, current_url, cookies);
+        return wv
+            .take_pending_navigation_requests()
+            .pop()
+            .map(|nav| resolve_url(current_url, &nav.url));
+    }
+
+    apply_host_js_mutations(wv, current_url, cookies);
+    if let Some(nav) = wv.take_pending_navigation_requests().pop() {
+        return Some(resolve_url(current_url, &nav.url));
+    }
+
+    let (action, method, _enctype) = wv.form_action_for_node(node_id)?;
+    let data = wv.collect_form_data_for_node(node_id);
+    let query = form_encode(&data);
+    let base = if action.is_empty() {
+        current_url.to_string()
+    } else {
+        resolve_url(current_url, &action)
+    };
+    if method == "GET" && !query.is_empty() {
+        Some(format!("{}?{}", base, query))
+    } else {
+        Some(base)
+    }
+}
+
 fn form_encode(data: &[(String, String)]) -> String {
     data.iter()
         .map(|(k, v)| format!("{}={}", url_encode(k), url_encode(v)))

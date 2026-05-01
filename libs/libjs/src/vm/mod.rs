@@ -18,6 +18,10 @@ use crate::value::*;
 const MAX_ENGINE_LOG_MESSAGES: usize = 128;
 const STEP_CHECK_MASK: u64 = 0x3ff;
 
+fn dump_exception_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Undefined
+}
+
 pub mod builtins;
 pub mod call;
 pub mod event_loop;
@@ -110,6 +114,8 @@ pub struct CallFrame {
     pub all_args: Vec<JsValue>,
     /// The function value currently executing (used by `LoadSelf` for named function exprs).
     pub self_ref: JsValue,
+    /// The ECMAScript `new.target` value for constructor frames.
+    pub new_target: JsValue,
 }
 
 /// Exception handler for try-catch.
@@ -548,6 +554,7 @@ impl Vm {
             is_constructor: false,
             all_args: Vec::new(),
             self_ref: JsValue::Undefined,
+            new_target: JsValue::Undefined,
         };
         self.frames.push(frame);
         let result = self.run();
@@ -2080,12 +2087,86 @@ impl Vm {
                                 .get(2)
                                 .map(|v| v.get().type_of())
                                 .unwrap_or("<none>");
+                            let locals = self.frames[frame_idx]
+                                .locals
+                                .iter()
+                                .enumerate()
+                                .take(8)
+                                .map(|(idx, v)| {
+                                    let val = v.get();
+                                    alloc::format!(
+                                        "{}:{}={}",
+                                        idx,
+                                        val.type_of(),
+                                        val.to_js_string()
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let callers = self
+                                .frames
+                                .iter()
+                                .enumerate()
+                                .rev()
+                                .take(6)
+                                .map(|(depth, f)| {
+                                    let op =
+                                        f.ip.checked_sub(1)
+                                            .and_then(|i| f.chunk.code.get(i).copied())
+                                            .map(|op| self.describe_frame_op(f, op))
+                                            .unwrap_or_else(|| String::from("<entry>"));
+                                    let ctx = {
+                                        let mut s = String::new();
+                                        let start = f.ip.saturating_sub(5);
+                                        let end = (f.ip + 4).min(f.chunk.code.len());
+                                        for i in start..end {
+                                            if !s.is_empty() {
+                                                s.push_str(";");
+                                            }
+                                            let marker = if i + 1 == f.ip { "*" } else { "" };
+                                            s.push_str(&alloc::format!(
+                                                "{}{}:{}",
+                                                marker,
+                                                i,
+                                                self.describe_frame_op(f, f.chunk.code[i])
+                                            ));
+                                        }
+                                        s
+                                    };
+                                    let local_preview = f
+                                        .locals
+                                        .iter()
+                                        .enumerate()
+                                        .take(5)
+                                        .map(|(idx, v)| {
+                                            let val = v.get();
+                                            alloc::format!("{}:{}", idx, val.type_of())
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(",");
+                                    alloc::format!(
+                                        "#{}:{}@{} len={} {} locals=[{}] ops=[{}]",
+                                        depth,
+                                        f.chunk.name.as_deref().unwrap_or("<script>"),
+                                        f.ip,
+                                        f.chunk.code.len(),
+                                        op,
+                                        local_preview,
+                                        ctx
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" <- ");
                             std::eprintln!(
-                                "[libjs-debug] nullish.{} context: {} local0={} local2={}",
+                                "[libjs-debug] nullish.{} frame={} ip={} context: {} local0={} local2={} locals=[{}] callers=[{}]",
                                 name,
+                                frame.chunk.name.as_deref().unwrap_or("<script>"),
+                                ip,
                                 ctx,
                                 local0,
-                                local2
+                                local2,
+                                locals,
+                                callers
                             );
                             self.log_engine(&alloc::format!("nullish.{} context: {}", name, ctx));
                         }
@@ -2156,6 +2237,9 @@ impl Vm {
                                     slot.holder = Some(Rc::downgrade(&holder));
                                 }
                                 self.stack.push(val);
+                            } else if name == "_DumpException" {
+                                self.stack
+                                    .push(native_fn("_DumpException", dump_exception_noop));
                             } else {
                                 // Fall back to the full slow path for the
                                 // edge cases (`primitive_value` String wrapper,
@@ -2981,7 +3065,7 @@ impl Vm {
                     for fi in (0..self.frames.len()).rev() {
                         let f = &self.frames[fi];
                         if f.is_constructor {
-                            target = f.self_ref.clone();
+                            target = f.new_target.clone();
                             break;
                         }
                         // Check if this frame is an arrow function — arrows inherit new.target.
@@ -4508,6 +4592,7 @@ impl Vm {
             is_constructor: false,
             all_args: Vec::new(),
             self_ref: JsValue::Undefined,
+            new_target: JsValue::Undefined,
         };
         let frame_depth = self.frames.len();
         self.frames.push(frame);
@@ -4565,6 +4650,7 @@ impl Vm {
             is_constructor: false,
             all_args: Vec::new(),
             self_ref: JsValue::Undefined,
+            new_target: JsValue::Undefined,
         };
         let frame_depth = self.frames.len();
         self.frames.push(frame);

@@ -9,7 +9,6 @@ anyos_std::entry!(main);
 const URL_10MB: &str = "http://speedtest.tele2.net/10MB.zip";
 const URL_100MB: &str = "http://speedtest.tele2.net/100MB.zip";
 const VERSION: &str = "1.0";
-const TEMP_FILE: &str = "/tmp/speedtest.bin";
 
 /// ~512 KB per sample chunk
 const CHUNK_SIZE: u32 = 512 * 1024;
@@ -440,13 +439,10 @@ fn main() {
 
     println!("  Starte Download...");
 
-    // Ensure /tmp/ exists
-    anyos_std::fs::mkdir("/tmp");
-
-    // Download via libhttp with progress tracking
-    let success = libhttp_client::download_progress(
+    // Drain via libhttp with progress tracking. A speed test must not include
+    // filesystem write latency in the measured receive path.
+    let received = libhttp_client::drain_progress(
         url_str,
-        TEMP_FILE,
         progress_callback,
         0,
     );
@@ -454,7 +450,7 @@ fn main() {
     let end_ms = sys::uptime_ms();
     println!(); // newline after \r progress
 
-    if !success {
+    if received.is_none() {
         let err = libhttp_client::last_error();
         let status = libhttp_client::last_status();
         let err_msg = match err {
@@ -478,7 +474,7 @@ fn main() {
 
     let s = state();
     let total_ms = end_ms.wrapping_sub(s.start_ms);
-    let total_bytes = s.received;
+    let total_bytes = received.unwrap_or(s.received);
 
     println!("  Empfangen: {} KB", total_bytes / 1024);
 
@@ -501,17 +497,12 @@ fn main() {
         println!("  Versuche eine andere URL, z.B.:");
         println!("    speedtest http://proof.ovh.net/files/10Mb.dat");
         println!("    speedtest http://speedtest.tele2.net/10MB.zip");
-        // Cleanup temp file
-        anyos_std::fs::unlink(TEMP_FILE);
         return;
     }
 
     // Move samples out for analysis
     let samples: Vec<ChunkSample> = core::mem::take(&mut s.samples);
     analyze(total_bytes, total_ms, &samples);
-
-    // Cleanup temp file
-    anyos_std::fs::unlink(TEMP_FILE);
 
     println!();
 }

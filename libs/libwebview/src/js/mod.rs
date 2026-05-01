@@ -1849,6 +1849,22 @@ impl JsRuntime {
         vm.set_global("globalThis", win.clone());
         js_trace!("[js] setup native api: global globalThis done");
 
+        // Google's gbar bootstrap installs a diagnostic `_DumpException`
+        // hook early and then calls it from many catch blocks.  Provide the
+        // browser-global namespace up front so a missing diagnostics hook does
+        // not turn recoverable site exceptions into fatal script failures.
+        let gbar = JsValue::Object(Rc::new(RefCell::new(JsObject::new())));
+        gbar.set_property(
+            String::from("_DumpException"),
+            native_fn("_DumpException", |_, _| JsValue::Undefined),
+        );
+        win.set_property(String::from("gbar_"), gbar.clone());
+        vm.set_global("gbar_", gbar);
+        vm.set_global(
+            "_DumpException",
+            native_fn("_DumpException", |_, _| JsValue::Undefined),
+        );
+
         // Browser semantics: `globalThis` is the Window object, so built-in
         // constructors and namespaces must also be visible as window properties.
         // Many modern bundles intentionally read `globalThis.Object`,

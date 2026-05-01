@@ -225,6 +225,18 @@ pub fn recv_packet() -> Option<Vec<u8>> {
     net.rx_queue.pop_front()
 }
 
+/// Drain all queued received packets with one lock acquisition.
+pub fn recv_all_packets(out: &mut Vec<Vec<u8>>) {
+    let mut state = STATE.lock();
+    let net = match state.as_mut() {
+        Some(n) => n,
+        None => return,
+    };
+    while let Some(packet) = net.rx_queue.pop_front() {
+        out.push(packet);
+    }
+}
+
 // ── IRQ Handler ─────────────────────────────────────────────────────────────
 
 /// ISR address for the VirtIO-Net device (set during probe).

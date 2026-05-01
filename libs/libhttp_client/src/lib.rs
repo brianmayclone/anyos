@@ -77,6 +77,16 @@ mod host {
         download(url, path)
     }
 
+    pub fn drain_progress(
+        url: &str,
+        callback: ProgressCallback,
+        userdata: u64,
+    ) -> Option<u32> {
+        let data = get(url)?;
+        callback(data.len() as u32, data.len() as u32, userdata);
+        Some(data.len() as u32)
+    }
+
     pub fn post(url: &str, body: &[u8], content_type: &str) -> Option<Vec<u8>> {
         let header = format!("Content-Type: {}", content_type);
         curl_request(url, &[header], Some(body))
@@ -162,6 +172,8 @@ mod imp {
         symbols: {
             libhttp_get(url: *const u8, url_len: u32, buf: *mut u8, buf_len: u32) -> u32,
             libhttp_download(url: *const u8, url_len: u32, path: *const u8, path_len: u32) -> u32,
+            libhttp_drain_progress(url: *const u8, url_len: u32,
+                cb: Option<ProgressCallback>, userdata: u64) -> u32,
             libhttp_download_progress(url: *const u8, url_len: u32, path: *const u8, path_len: u32,
                 cb: Option<ProgressCallback>, userdata: u64) -> u32,
             libhttp_post(url: *const u8, url_len: u32, body: *const u8, body_len: u32,
@@ -253,6 +265,25 @@ mod imp {
             userdata,
         );
         result == 0
+    }
+
+    /// Perform an HTTP(S) GET and discard the response body with progress reporting.
+    ///
+    /// The `callback` is called after each received chunk with
+    /// `(received_bytes, total_bytes, userdata)`.
+    /// Returns the received byte count on success, or `None` on error.
+    pub fn drain_progress(
+        url: &str,
+        callback: ProgressCallback,
+        userdata: u64,
+    ) -> Option<u32> {
+        let result = (lib().libhttp_drain_progress)(
+            url.as_ptr(),
+            url.len() as u32,
+            Some(callback),
+            userdata,
+        );
+        if result == u32::MAX { None } else { Some(result) }
     }
 
     /// Perform an HTTP(S) POST request.

@@ -97,6 +97,25 @@ pub extern "C" fn libhttp_download(
     if http::download(url_str, path) { 0 } else { u32::MAX }
 }
 
+/// Perform HTTP(S) GET and discard the body while reporting progress.
+///
+/// Returns: received byte count on success, `u32::MAX` on error.
+#[no_mangle]
+pub extern "C" fn libhttp_drain_progress(
+    url_ptr: *const u8, url_len: u32,
+    callback: Option<extern "C" fn(u32, u32, u64)>,
+    userdata: u64,
+) -> u32 {
+    let url_str = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(url_ptr, url_len as usize))
+    };
+
+    match http::drain_progress(url_str, callback, userdata) {
+        Some(received) => received,
+        None => u32::MAX,
+    }
+}
+
 /// Perform HTTP(S) POST request with body.
 ///
 /// Returns: bytes written to `out_buf`, or `u32::MAX` on error.

@@ -112,6 +112,90 @@ fn function_descriptor_flag(func: &JsFunction, key: &str, flag: &str, default: b
     }
 }
 
+fn existing_property_for_define(target: &JsValue, key: &str) -> Option<Property> {
+    match target {
+        JsValue::Object(obj) => obj.borrow().get_property_descriptor(key).cloned(),
+        JsValue::Array(arr) => {
+            let arr = arr.borrow();
+            if key == "length" {
+                return Some(Property {
+                    value: JsValue::Number(arr.length as f64),
+                    writable: true,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                });
+            }
+            if let Ok(idx) = key.parse::<usize>() {
+                if let Some(prop) = arr.properties.get(key) {
+                    return Some(prop.clone());
+                }
+                if let Some(value) = arr.elements.get(&idx) {
+                    return Some(Property {
+                        value: value.clone(),
+                        writable: true,
+                        enumerable: true,
+                        configurable: true,
+                        getter: None,
+                        setter: None,
+                    });
+                }
+            }
+            arr.properties.get(key).cloned()
+        }
+        JsValue::Function(fn_rc) => {
+            let func = fn_rc.borrow();
+            if let Some(val) = func.own_props.get(key) {
+                return Some(Property {
+                    value: val.clone(),
+                    writable: function_descriptor_flag(&func, key, "writable", true),
+                    enumerable: function_descriptor_flag(&func, key, "enumerable", true),
+                    configurable: function_descriptor_flag(&func, key, "configurable", true),
+                    getter: None,
+                    setter: None,
+                });
+            }
+            match key {
+                "name" if !function_builtin_deleted(&func, "name") => Some(Property {
+                    value: func
+                        .name
+                        .as_ref()
+                        .map(|n| JsValue::String(n.clone()))
+                        .unwrap_or(JsValue::String(String::new())),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                    getter: None,
+                    setter: None,
+                }),
+                "length" if !function_builtin_deleted(&func, "length") => Some(Property {
+                    value: JsValue::Number(func.arity.unwrap_or(func.params.len()) as f64),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                    getter: None,
+                    setter: None,
+                }),
+                "prototype"
+                    if !func.kind.is_arrow() && !function_builtin_deleted(&func, "prototype") =>
+                {
+                    func.prototype.as_ref().map(|proto| Property {
+                        value: JsValue::Object(proto.clone()),
+                        writable: true,
+                        enumerable: false,
+                        configurable: false,
+                        getter: None,
+                        setter: None,
+                    })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn to_property_key(vm: &mut Vm, val: &JsValue) -> Option<String> {
     let key_val = match val {
         JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
@@ -643,6 +727,7 @@ pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let desc = desc_obj.borrow();
         let has_get = desc.has_own("get");
         let has_set = desc.has_own("set");
+        let existing = existing_property_for_define(&target, &key);
         let prop = if has_get || has_set {
             let getter = {
                 let v = desc.get("get");
@@ -675,19 +760,32 @@ pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             p.configurable = configurable;
             p
         } else {
-            let value = desc.get("value");
+            let value = if desc.has_own("value") {
+                desc.get("value")
+            } else {
+                existing
+                    .as_ref()
+                    .map(|p| p.value.clone())
+                    .unwrap_or(JsValue::Undefined)
+            };
             let writable = if desc.has_own("writable") {
                 desc.get("writable").to_boolean()
+            } else if let Some(existing) = existing.as_ref() {
+                existing.writable
             } else {
                 false
             };
             let enumerable = if desc.has_own("enumerable") {
                 desc.get("enumerable").to_boolean()
+            } else if let Some(existing) = existing.as_ref() {
+                existing.enumerable
             } else {
                 false
             };
             let configurable = if desc.has_own("configurable") {
                 desc.get("configurable").to_boolean()
+            } else if let Some(existing) = existing.as_ref() {
+                existing.configurable
             } else {
                 false
             };
@@ -704,7 +802,12 @@ pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
         match &target {
             JsValue::Object(target_obj) => {
-                target_obj.borrow_mut().properties.insert(key, prop);
+                let mut target = target_obj.borrow_mut();
+                let is_new = !target.properties.contains_key(&key);
+                target.properties.insert(key, prop);
+                if is_new {
+                    target.invalidate_shape();
+                }
             }
             JsValue::Array(arr) => {
                 // For arrays: accessor properties go in .properties,
@@ -766,6 +869,12 @@ pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 } else {
                     let mut func = f.borrow_mut();
                     func.own_props.remove(&deleted_builtin_key);
+                    if key == "prototype" {
+                        match &prop.value {
+                            JsValue::Object(proto) => func.prototype = Some(proto.clone()),
+                            _ => func.prototype = None,
+                        }
+                    }
                     func.own_props.insert(key.clone(), prop.value);
                     func.own_props.insert(
                         function_desc_flag_key(&key, "writable"),

@@ -122,6 +122,79 @@ fn json_parse_nested() {
     assert_eq!(e.get_global("r").to_number(), 42.0);
 }
 
+// ── TypedArray built-ins ─────────────────────────────────────────────────────
+
+#[test]
+fn typed_array_constructor_is_callable() {
+    let mut e = JsEngine::new();
+    let result = e.eval("var a = Uint8Array([1, 2, 260]); [typeof Uint8Array, a.length, a[0], a[1], a[2]].join(',')");
+    assert_eq!(result.to_js_string(), "function,3,1,2,4");
+}
+
+#[test]
+fn typed_array_accepts_symbol_to_string_tag_assignment() {
+    let mut e = JsEngine::new();
+    let result = e.eval("Uint8Array.prototype[Symbol.toStringTag] = 'Uint8Array'; Uint8Array.prototype[Symbol.toStringTag]");
+    assert_eq!(result.to_js_string(), "Uint8Array");
+}
+
+#[test]
+fn typed_array_integer_writes_wrap_instead_of_saturating() {
+    let mut e = JsEngine::new();
+    let result = e.eval(
+        r#"
+        [
+            Uint8Array([-1, 260])[0],
+            Uint8Array([-1, 260])[1],
+            Int8Array([255, 128])[0],
+            Int8Array([255, 128])[1],
+            Uint16Array([65537])[0],
+            Int16Array([65535])[0],
+            Uint32Array([-1])[0],
+            Int32Array([4294967295])[0]
+        ].join(',')
+        "#,
+    );
+    assert_eq!(result.to_js_string(), "255,4,-1,-128,1,-1,4294967295,-1");
+}
+
+#[test]
+fn uint8_clamped_array_uses_clamped_rounding() {
+    let mut e = JsEngine::new();
+    let result = e.eval("var a = Uint8ClampedArray([-1, 0.5, 1.5, 2.5, 255.6]); [a[0], a[1], a[2], a[3], a[4]].join(',')");
+    assert_eq!(result.to_js_string(), "0,0,2,2,255");
+}
+
+#[test]
+fn define_property_preserves_existing_function_prototype_value() {
+    let mut e = JsEngine::new();
+    let result = e.eval(
+        r#"
+        function C() {}
+        var before = typeof C.prototype;
+        Object.defineProperty(C, 'prototype', { writable: false });
+        C.prototype.marker = 7;
+        [before, typeof C.prototype, C.prototype.marker].join(',')
+        "#,
+    );
+    assert_eq!(result.to_js_string(), "object,object,7");
+}
+
+#[test]
+fn define_property_preserves_existing_object_writable_flag() {
+    let mut e = JsEngine::new();
+    let result = e.eval(
+        r#"
+        'use strict';
+        var o = { fetch: function original() {} };
+        Object.defineProperty(o, 'fetch', { value: function patched() {} });
+        o.fetch = function assigned() {};
+        typeof o.fetch
+        "#,
+    );
+    assert_eq!(result.to_js_string(), "function");
+}
+
 #[test]
 fn json_roundtrip() {
     let mut e = JsEngine::new();

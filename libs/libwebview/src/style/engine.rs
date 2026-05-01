@@ -162,7 +162,7 @@ fn ua_style_and_flags(tag: Tag) -> (ComputedStyle, u32) {
             s.margin_top = 8;
             s.margin_bottom = 8;
         }
-        Tag::Img | Tag::Br | Tag::Span | Tag::Label => {
+        Tag::Img | Tag::Picture | Tag::Br | Tag::Span | Tag::Label => {
             s.display = Display::Inline;
         }
         Tag::Input | Tag::Button | Tag::Select | Tag::Textarea => {
@@ -679,6 +679,23 @@ fn apply_decl_with_vars(
     }
 }
 
+fn apply_custom_props_from_decls(
+    declarations: &[Declaration],
+    important: bool,
+    node_cp: &mut Vec<(String, String)>,
+) {
+    for decl in declarations {
+        if decl.important != important {
+            continue;
+        }
+        if let Property::CustomProperty(ref name) = decl.property {
+            if let CssValue::Keyword(ref val) = decl.value {
+                store_custom_prop(node_cp, name, val);
+            }
+        }
+    }
+}
+
 fn apply_decls_two_pass(
     style: &mut ComputedStyle,
     declarations: &[Declaration],
@@ -692,8 +709,13 @@ fn apply_decls_two_pass(
     root_fs: i32,
     set_flags: &mut u32,
 ) {
+    apply_custom_props_from_decls(declarations, important, node_cp);
+
     for decl in declarations {
-        if decl.important == important && matches!(decl.property, Property::FontSize) {
+        if decl.important == important
+            && matches!(decl.property, Property::FontSize)
+            && !matches!(decl.property, Property::CustomProperty(_))
+        {
             apply_decl_with_vars(
                 style,
                 decl,
@@ -709,7 +731,9 @@ fn apply_decls_two_pass(
         }
     }
     for decl in declarations {
-        if decl.important == important && !matches!(decl.property, Property::FontSize) {
+        if decl.important == important
+            && !matches!(decl.property, Property::FontSize | Property::CustomProperty(_))
+        {
             apply_decl_with_vars(
                 style,
                 decl,
@@ -2078,6 +2102,8 @@ fn resolve_styles_prepared_impl(
                             inline_style_cache[id] = Some(crate::css::parse_inline_style(&a.value));
                         }
                         let inline_decls = inline_style_cache[id].as_ref().unwrap();
+                        apply_custom_props_from_decls(inline_decls, false, node_cp);
+                        apply_custom_props_from_decls(inline_decls, true, node_cp);
                         apply_decls_two_pass(
                             &mut style,
                             inline_decls,
@@ -2399,6 +2425,20 @@ fn apply_author_rules(
     }
 
     let mut set_flags: u32 = 0;
+
+    // Resolve custom properties before dependent declarations. Utility-first
+    // CSS (Tailwind 4 etc.) often emits `background-image: var(...)` before
+    // the utility rules that define the gradient stops for the same element.
+    sort_matches_for_phase(matches, all_rules, false, layer_count);
+    for &(_, idx) in matches.iter() {
+        let (rule, _) = all_rules[idx];
+        apply_custom_props_from_decls(&rule.declarations, false, node_cp);
+    }
+    sort_matches_for_phase(matches, all_rules, true, layer_count);
+    for &(_, idx) in matches.iter() {
+        let (rule, _) = all_rules[idx];
+        apply_custom_props_from_decls(&rule.declarations, true, node_cp);
+    }
 
     // Phase 1: Apply normal (non-!important) declarations.
     sort_matches_for_phase(matches, all_rules, false, layer_count);
@@ -2806,6 +2846,14 @@ fn lookup_custom_property<'a>(
     fallback_custom_property(name)
 }
 
+fn custom_property_is_unset_keyword(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.eq_ignore_ascii_case("initial")
+        || trimmed.eq_ignore_ascii_case("unset")
+        || trimmed.eq_ignore_ascii_case("revert")
+        || trimmed.eq_ignore_ascii_case("revert-layer")
+}
+
 fn fallback_custom_property(name: &str) -> Option<&'static str> {
     match name {
         "--base" | "--text-black" | "--surface-black" | "--global-black" => Some("#333333"),
@@ -2946,6 +2994,21 @@ fn resolve_css_var_value(
     match value {
         CssValue::Var(name, fallback) => {
             if let Some(val) = lookup_custom_property(name, node_cp, dom, node_id, ancestors_cp) {
+                if custom_property_is_unset_keyword(val) {
+                    return if let Some(fb) = fallback {
+                        resolve_css_var_value(
+                            fb,
+                            property,
+                            dom,
+                            node_id,
+                            node_cp,
+                            ancestors_cp,
+                            depth + 1,
+                        )
+                    } else {
+                        None
+                    };
+                }
                 let resolved_val = if val.contains("var(") {
                     resolve_nested_vars(val, dom, node_id, node_cp, ancestors_cp)
                 } else {
@@ -3035,12 +3098,23 @@ fn resolve_nested_vars(
             // Look up the variable
             if let Some(val) = lookup_custom_property(var_name, node_cp, dom, node_id, ancestors_cp)
             {
-                let resolved_val = if val.contains("var(") {
-                    resolve_nested_vars(val, dom, node_id, node_cp, ancestors_cp)
+                let use_fallback = custom_property_is_unset_keyword(val);
+                if use_fallback {
+                    if let Some(fb) = fallback {
+                        let resolved_fb = resolve_nested_vars(fb, dom, node_id, node_cp, ancestors_cp);
+                        result.push_str(&resolved_fb);
+                    } else {
+                        let stop = (end + 1).min(bytes.len());
+                        result.push_str(&value[i..stop]);
+                    }
                 } else {
-                    String::from(val)
-                };
-                result.push_str(&resolved_val);
+                    let resolved_val = if val.contains("var(") {
+                        resolve_nested_vars(val, dom, node_id, node_cp, ancestors_cp)
+                    } else {
+                        String::from(val)
+                    };
+                    result.push_str(&resolved_val);
+                }
             } else if let Some(fb) = fallback {
                 // Recursively resolve vars in fallback too
                 let resolved_fb = resolve_nested_vars(fb, dom, node_id, node_cp, ancestors_cp);
@@ -6477,11 +6551,12 @@ fn parse_linear_gradient(inner: &str) -> Option<BackgroundImageVal> {
 
     // Check if first part is an angle or direction
     let first = parts[0].trim();
-    if let Some(a) = parse_gradient_angle(first) {
+    let first_direction = first.split_once(" in ").map(|(dir, _)| dir.trim()).unwrap_or(first);
+    if let Some(a) = parse_gradient_angle(first_direction) {
         angle_deg = a;
         start_idx = 1;
-    } else if first.starts_with("to ") {
-        angle_deg = match first {
+    } else if first_direction.starts_with("to ") {
+        angle_deg = match first_direction {
             "to top" => 0,
             "to right" => 90,
             "to bottom" => 180,
@@ -6493,7 +6568,7 @@ fn parse_linear_gradient(inner: &str) -> Option<BackgroundImageVal> {
             _ => return None,
         };
         start_idx = 1;
-    } else if looks_like_invalid_gradient_angle(first) {
+    } else if looks_like_invalid_gradient_angle(first_direction) {
         return None;
     }
 
@@ -6961,6 +7036,22 @@ mod declaration_tests {
             parsed,
             Some(BackgroundImageVal::LinearGradient { ref stops, .. }) if stops.len() == 2
         ));
+    }
+
+    #[test]
+    fn linear_gradient_accepts_modern_color_interpolation_space() {
+        let parsed = parse_background_image_val(
+            "linear-gradient(to right in oklab, #863bff 0%, #47bfff 100%)",
+        );
+        match parsed {
+            Some(BackgroundImageVal::LinearGradient { angle_deg, ref stops }) => {
+                assert_eq!(angle_deg, 90);
+                assert_eq!(stops.len(), 2);
+                assert_eq!(stops[0].color, 0xFF863BFF);
+                assert_eq!(stops[1].color, 0xFF47BFFF);
+            }
+            _ => panic!("expected modern color-space gradient"),
+        }
     }
 
     #[test]
@@ -7732,6 +7823,21 @@ mod layout_regression_tests {
         assert_eq!(style.margin_left, -10);
         assert_eq!(style.padding_left, 20);
         assert_eq!(style.padding_bottom, 20);
+    }
+
+    #[test]
+    fn picture_defaults_to_inline_like_replaced_media_container() {
+        let dom = crate::html::parse(r#"<picture><img src="x"></picture>"#);
+        let stylesheet = crate::css::parse_stylesheet("");
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 800, 600, &mut inline_style_cache);
+        let picture_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Picture, .. }))
+            .expect("picture node");
+
+        assert!(matches!(styles[picture_id].display, Display::Inline));
     }
 
     #[test]

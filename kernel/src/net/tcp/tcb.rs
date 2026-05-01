@@ -17,8 +17,17 @@ pub(crate) const ACK: u8 = 0x10;
 // ── Protocol constants ──────────────────────────────────────────────
 pub(crate) const TCP_HEADER_LEN: usize = 20;
 pub(crate) const MAX_CONNECTIONS: usize = 256;
-/// Receive buffer size per connection (1 MiB — allows large TCP windows).
-pub(crate) const RECV_BUF_SIZE: usize = 1_048_576;
+/// Maximum receive buffer size per connection.
+///
+/// 2 MiB covers about 370 Mbit/s at 45 ms RTT and keeps the advertised
+/// receive window large without overwhelming our current RX rings/polling.
+pub(crate) const RECV_BUF_SIZE: usize = 2 * 1024 * 1024;
+/// Initial receive buffer allocation per connection.
+///
+/// The logical receive window is RECV_BUF_SIZE, but allocating that much for
+/// every listener, half-open, or idle socket would waste memory. VecDeque grows
+/// on demand as real data arrives.
+pub(crate) const RECV_BUF_INITIAL_CAP: usize = 64 * 1024;
 /// Maximum segment size (standard Ethernet MTU minus IP+TCP headers).
 pub(crate) const MSS: usize = 1460;
 /// Base retransmission timeout in ticks (3 seconds at 100 Hz).
@@ -29,11 +38,13 @@ pub(crate) const MAX_RETRANSMITS: u32 = 5;
 pub(crate) const TIME_WAIT_TICKS: u32 = 200;
 /// Maximum pending connections per listener.
 pub(crate) const MAX_BACKLOG: usize = 128;
-/// Maximum bytes in flight (sliding window send limit, 4 MiB).
-pub(crate) const MAX_IN_FLIGHT: usize = 4_194_304;
+/// Maximum bytes in flight (sliding window send limit, 2 MiB).
+pub(crate) const MAX_IN_FLIGHT: usize = 2 * 1024 * 1024;
 /// Our TCP Window Scale shift count (RFC 7323).
-/// Effective receive window = RECV_BUF_SIZE = 1 MiB (advertised as 1048576 >> 6 = 16384 * 64).
-pub(crate) const OUR_WINDOW_SHIFT: u8 = 6;
+///
+/// Effective receive window is about RECV_BUF_SIZE: 2 MiB is advertised as
+/// 65535 with shift 5, yielding 2,097,120 bytes.
+pub(crate) const OUR_WINDOW_SHIFT: u8 = 5;
 /// Maximum segments to batch per lock acquisition in send().
 pub(crate) const SEND_BATCH_SIZE: usize = 64;
 /// Delayed ACK: flush after this many accepted data segments.
@@ -45,7 +56,7 @@ pub(crate) const DELAYED_ACK_TICKS: u32 = 2;
 /// WAN downloads can deliver sizeable bursts after a single missing segment.
 /// Keeping only 32 MSS-sized segments makes us drop already-received data and
 /// forces avoidable retransmission rounds.
-pub(crate) const MAX_OOO_SEGMENTS: usize = 512;
+pub(crate) const MAX_OOO_SEGMENTS: usize = 1024;
 /// Maximum send buffer size (matches MAX_IN_FLIGHT).
 pub(crate) const MAX_SEND_BUF: usize = MAX_IN_FLIGHT;
 
@@ -212,7 +223,7 @@ impl Tcb {
             rcv_nxt: 0,
             snd_wnd_shift: 0,
             rcv_wnd_shift: 0,
-            recv_buf: VecDeque::with_capacity(RECV_BUF_SIZE),
+            recv_buf: VecDeque::with_capacity(RECV_BUF_INITIAL_CAP),
             ooo_buf: Vec::new(),
             send_buf: VecDeque::new(),
             retransmit_count: 0,

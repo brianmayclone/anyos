@@ -18,6 +18,34 @@ use super::{
     layout_children_ex_with_budget, link_href, list_marker_for, BoxType, FormFieldKind, LayoutBox,
 };
 
+fn resolve_definite_block_calc(calc: (i32, i32), containing_height: i32) -> Option<i32> {
+    let (px100, pct100) = calc;
+    if pct100 != 0 && containing_height <= 0 {
+        return None;
+    }
+    Some((px100 / 100 + (containing_height.max(0) as i64 * pct100 as i64 / 10000) as i32).max(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_definite_block_calc;
+
+    #[test]
+    fn percentage_block_calc_without_definite_height_stays_auto() {
+        assert_eq!(resolve_definite_block_calc((-20_000, 10_000), 0), None);
+    }
+
+    #[test]
+    fn definite_block_calc_clamps_negative_result_to_zero() {
+        assert_eq!(resolve_definite_block_calc((-56_000, 10_000), 208), Some(0));
+    }
+
+    #[test]
+    fn definite_block_calc_resolves_google_logo_spacer_case() {
+        assert_eq!(resolve_definite_block_calc((-20_000, 10_000), 208), Some(8));
+    }
+}
+
 /// Build a block-level layout box for a single DOM node.
 ///
 /// `viewport_w` is the full viewport width, passed down to child layout calls
@@ -262,13 +290,7 @@ fn build_block_internal(
             None
         }
     } else if let Some((px100, pct100)) = style.height_calc {
-        let px_part = px100 / 100;
-        let pct_part = if parent_height > 0 {
-            (parent_height as i64 * pct100 as i64 / 10000) as i32
-        } else {
-            0
-        };
-        Some(px_part + pct_part)
+        resolve_definite_block_calc((px100, pct100), parent_height)
     } else {
         None
     };
@@ -897,8 +919,8 @@ fn build_block_internal(
     // Inner (content) width for child layout.
     let inner_w = bx.width - bx.padding.left - bx.padding.right - horizontal_border;
     let inner_w = inner_w.max(0);
-    let resolve_height_calc = |calc: (i32, i32)| -> i32 {
-        calc.0 / 100 + (parent_height.max(0) as i64 * calc.1 as i64 / 10000) as i32
+    let resolve_height_calc = |calc: (i32, i32)| -> Option<i32> {
+        resolve_definite_block_calc(calc, parent_height)
     };
     let explicit_outer_height_hint = if let Some(h) = forced_outer_height {
         Some(h.max(0))
@@ -920,11 +942,12 @@ fn build_block_internal(
             None
         }
     } else if let Some(calc) = style.height_calc {
-        let resolved_h = resolve_height_calc(calc);
-        Some(if is_border_box {
-            resolved_h
-        } else {
-            resolved_h + vertical_non_content
+        resolve_height_calc(calc).map(|resolved_h| {
+            if is_border_box {
+                resolved_h
+            } else {
+                resolved_h + vertical_non_content
+            }
         })
     } else if style.aspect_ratio > 0 && inner_w > 0 {
         // CSS Sizing 4 §2.4: when the box has a definite inline size and
@@ -938,10 +961,11 @@ fn build_block_internal(
         None
     };
     let definite_parent_content_h = explicit_outer_height_hint.map(|mut outer_h| {
-        if let Some(mh) = style
-            .max_height
-            .or_else(|| style.max_height_calc.map(resolve_height_calc))
-        {
+        if let Some(mh) = style.max_height.or_else(|| {
+            style
+                .max_height_calc
+                .and_then(resolve_height_calc)
+        }) {
             let max_outer = if is_border_box {
                 mh
             } else {
@@ -951,11 +975,10 @@ fn build_block_internal(
                 outer_h = max_outer;
             }
         }
-        let min_height_val = if let Some(calc) = style.min_height_calc {
-            resolve_height_calc(calc)
-        } else {
-            style.min_height
-        };
+        let min_height_val = style
+            .min_height_calc
+            .and_then(resolve_height_calc)
+            .unwrap_or(style.min_height);
         if min_height_val > 0 {
             let min_outer = if is_border_box {
                 min_height_val
@@ -1142,13 +1165,7 @@ fn build_block_internal(
             None
         }
     } else if let Some((px100, pct100)) = style.height_calc {
-        let px_part = px100 / 100;
-        let pct_part = if parent_height > 0 {
-            (parent_height as i64 * pct100 as i64 / 10000) as i32
-        } else {
-            0
-        };
-        Some(px_part + pct_part)
+        resolve_definite_block_calc((px100, pct100), parent_height)
     } else if matches!(style.position, Position::Absolute | Position::Fixed)
         && style.top.is_some()
         && style.bottom_offset.is_some()
@@ -1189,10 +1206,11 @@ fn build_block_internal(
     }
 
     // Apply min-height / max-height.
-    if let Some(mh) = style
-        .max_height
-        .or_else(|| style.max_height_calc.map(resolve_height_calc))
-    {
+    if let Some(mh) = style.max_height.or_else(|| {
+        style
+            .max_height_calc
+            .and_then(resolve_height_calc)
+    }) {
         let max_h = if is_border_box {
             mh
         } else {
@@ -1202,11 +1220,10 @@ fn build_block_internal(
             bx.height = max_h;
         }
     }
-    let min_height_val = if let Some(calc) = style.min_height_calc {
-        resolve_height_calc(calc)
-    } else {
-        style.min_height
-    };
+    let min_height_val = style
+        .min_height_calc
+        .and_then(resolve_height_calc)
+        .unwrap_or(style.min_height);
     if min_height_val > 0 {
         let min_h = if is_border_box {
             min_height_val
