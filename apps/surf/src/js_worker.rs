@@ -10,6 +10,7 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use libanyui_client as ui_lib;
 
 pub(crate) enum JsWorkerJob {
     Script {
@@ -52,6 +53,7 @@ pub(crate) struct JsWorkerResult {
 
 static REQUEST_LOCK: AtomicBool = AtomicBool::new(false);
 static RESULT_LOCK: AtomicBool = AtomicBool::new(false);
+static RESULT_NOTIFY_PENDING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_WORKERS: AtomicU32 = AtomicU32::new(0);
 static BUSY_WORKERS: AtomicU32 = AtomicU32::new(0);
 
@@ -80,6 +82,20 @@ pub(crate) fn init() {
     }
     release(&RESULT_LOCK);
     release(&REQUEST_LOCK);
+}
+
+extern "C" fn result_ready_cb(_userdata: u64) {
+    RESULT_NOTIFY_PENDING.store(false, Ordering::Release);
+    crate::handle_js_worker_results_ready();
+}
+
+fn notify_result_ready() {
+    if RESULT_NOTIFY_PENDING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+    {
+        ui_lib::marshal_dispatch(result_ready_cb, 0);
+    }
 }
 
 pub(crate) fn submit(req: JsWorkerRequest) {
@@ -176,6 +192,7 @@ fn push_result(result: JsWorkerResult) {
         }
     }
     release(&RESULT_LOCK);
+    notify_result_ready();
 }
 
 fn worker_entry() {

@@ -25,8 +25,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId};
 use crate::style::{
-    AlignContent, AlignItems, BoxSizing, ComputedStyle, Display, GridArea, GridLine,
-    GridTrackSize, JustifyContent, Position, PseudoStyles,
+    AlignContent, AlignItems, BoxSizing, ComputedStyle, Display, GridArea, GridLine, GridTrackSize,
+    JustifyContent, Position, PseudoStyles,
 };
 use crate::ImageCache;
 
@@ -293,15 +293,7 @@ pub fn layout_grid(
             && !item_style.width_min_content
             && !item_style.width_fit_content;
         let item_avail = if use_fit_content_width {
-            super::shrink_to_fit_width(
-                dom,
-                styles,
-                pseudo,
-                item.node_id,
-                col_w,
-                images,
-                viewport_w,
-            )
+            super::shrink_to_fit_width(dom, styles, pseudo, item.node_id, col_w, images, viewport_w)
         } else {
             col_w
         };
@@ -381,7 +373,12 @@ pub fn layout_grid(
         row_heights.len(),
     );
     if align_content == AlignContent::Stretch && base_grid_h < available_grid_h {
-        stretch_auto_rows(&mut row_heights, row_templates, auto_row, available_grid_h - base_grid_h);
+        stretch_auto_rows(
+            &mut row_heights,
+            row_templates,
+            auto_row,
+            available_grid_h - base_grid_h,
+        );
     }
     if justify_content == JustifyContent::FlexStart && base_grid_w < available_grid_w {
         // Nothing to do; keep the historical behavior for the default.
@@ -392,7 +389,12 @@ pub fn layout_grid(
         let mut y = content_y_offset;
         for r in 0..total_rows {
             offsets.push(y);
-            y += row_heights[r] + if r + 1 < total_rows { row_gap + extra_row_gap } else { 0 };
+            y += row_heights[r]
+                + if r + 1 < total_rows {
+                    row_gap + extra_row_gap
+                } else {
+                    0
+                };
         }
         offsets
     };
@@ -405,10 +407,21 @@ pub fn layout_grid(
     };
 
     for item in &mut items {
-        let x = content_x_offset + col_offset(&col_widths, item.placed_col, col_gap + extra_col_gap);
+        let x =
+            content_x_offset + col_offset(&col_widths, item.placed_col, col_gap + extra_col_gap);
         let y = row_offsets[item.placed_row];
-        let cell_w = span_width(&col_widths, item.placed_col, item.span_cols, col_gap + extra_col_gap);
-        let cell_h = span_height(&row_heights, item.placed_row, item.span_rows, row_gap + extra_row_gap);
+        let cell_w = span_width(
+            &col_widths,
+            item.placed_col,
+            item.span_cols,
+            col_gap + extra_col_gap,
+        );
+        let cell_h = span_height(
+            &row_heights,
+            item.placed_row,
+            item.span_rows,
+            row_gap + extra_row_gap,
+        );
 
         if let Some(mut bx) = item.layout.take() {
             let item_w = bx.width;
@@ -1253,11 +1266,17 @@ fn tracks_total(tracks: &[i32], gap: i32) -> i32 {
     tracks.iter().copied().sum::<i32>() + gap * tracks.len().saturating_sub(1) as i32
 }
 
-fn definite_grid_content_height(style: &ComputedStyle, current_height: i32, content_height: i32) -> i32 {
+fn definite_grid_content_height(
+    style: &ComputedStyle,
+    current_height: i32,
+    content_height: i32,
+) -> i32 {
     let mut h = current_height.max(content_height);
     if let Some(explicit) = style.height {
         h = h.max(explicit);
-    } else if (style.height_pct.is_some() || style.height_calc.is_some()) && style.max_height.is_some() {
+    } else if (style.height_pct.is_some() || style.height_calc.is_some())
+        && style.max_height.is_some()
+    {
         // A grid container with a definite percentage/calc height may be clamped
         // by max-height after child layout. Use that clamped content height for
         // align-content before final box sizing, so tracks can be packed within
@@ -1428,7 +1447,14 @@ fn expand_fr_rows(
         } else {
             auto_track
         };
-        if matches!(track, GridTrackSize::Fr(_) | GridTrackSize::Minmax { max_is_fr: true, .. }) {
+        if matches!(
+            track,
+            GridTrackSize::Fr(_)
+                | GridTrackSize::Minmax {
+                    max_is_fr: true,
+                    ..
+                }
+        ) {
             row_heights[idx] += 1;
             remainder -= 1;
         }

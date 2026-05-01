@@ -173,6 +173,7 @@ pub fn build_block_with_budget(
         abs_y,
         layout_budget_bottom,
         None,
+        None,
     )
 }
 
@@ -198,7 +199,35 @@ pub(super) fn build_block_with_forced_outer_height(
         parent_height,
         0,
         None,
+        None,
         Some(forced_outer_height),
+    )
+}
+
+pub(super) fn build_block_with_forced_outer_width(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    available_width: i32,
+    images: &ImageCache,
+    viewport_w: i32,
+    parent_height: i32,
+    forced_outer_width: i32,
+) -> LayoutBox {
+    build_block_internal(
+        dom,
+        styles,
+        pseudo,
+        node_id,
+        available_width,
+        images,
+        viewport_w,
+        parent_height,
+        0,
+        None,
+        Some(forced_outer_width),
+        None,
     )
 }
 
@@ -213,6 +242,7 @@ fn build_block_internal(
     parent_height: i32,
     abs_y: i32,
     layout_budget_bottom: Option<i32>,
+    forced_outer_width: Option<i32>,
     forced_outer_height: Option<i32>,
 ) -> LayoutBox {
     let style = &styles[node_id];
@@ -493,6 +523,10 @@ fn build_block_internal(
         if bx.width < min_outer {
             bx.width = min_outer;
         }
+    }
+
+    if let Some(forced_w) = forced_outer_width {
+        bx.width = forced_w.max(0);
     }
 
     // Clamp to available space.
@@ -1044,18 +1078,15 @@ fn build_block_internal(
         bx.width = ta_w + bx.padding.left + bx.padding.right + horizontal_border;
         bx.height = ta_h + bx.padding.top + bx.padding.bottom + vertical_border;
         bx.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
-        bx.form_value = dom
-            .attr(node_id, "value")
-            .map(String::from)
-            .or_else(|| {
-                let text = dom.text_content(node_id);
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(String::from(trimmed))
-                }
-            });
+        bx.form_value = dom.attr(node_id, "value").map(String::from).or_else(|| {
+            let text = dom.text_content(node_id);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(String::from(trimmed))
+            }
+        });
         bx.form_field = Some(FormFieldKind::Textarea);
         return bx;
     }
@@ -1071,9 +1102,8 @@ fn build_block_internal(
     // Inner (content) width for child layout.
     let inner_w = bx.width - bx.padding.left - bx.padding.right - horizontal_border;
     let inner_w = inner_w.max(0);
-    let resolve_height_calc = |calc: (i32, i32)| -> Option<i32> {
-        resolve_definite_block_calc(calc, parent_height)
-    };
+    let resolve_height_calc =
+        |calc: (i32, i32)| -> Option<i32> { resolve_definite_block_calc(calc, parent_height) };
     let explicit_outer_height_hint = if let Some(h) = forced_outer_height {
         Some(h.max(0))
     } else if let Some(h) = style.height {
@@ -1113,11 +1143,10 @@ fn build_block_internal(
         None
     };
     let definite_parent_content_h = explicit_outer_height_hint.map(|mut outer_h| {
-        if let Some(mh) = style.max_height.or_else(|| {
-            style
-                .max_height_calc
-                .and_then(resolve_height_calc)
-        }) {
+        if let Some(mh) = style
+            .max_height
+            .or_else(|| style.max_height_calc.and_then(resolve_height_calc))
+        {
             let max_outer = if is_border_box {
                 mh
             } else {
@@ -1363,11 +1392,10 @@ fn build_block_internal(
     }
 
     // Apply min-height / max-height.
-    if let Some(mh) = style.max_height.or_else(|| {
-        style
-            .max_height_calc
-            .and_then(resolve_height_calc)
-    }) {
+    if let Some(mh) = style
+        .max_height
+        .or_else(|| style.max_height_calc.and_then(resolve_height_calc))
+    {
         let max_h = if is_border_box {
             mh
         } else {
@@ -1525,12 +1553,7 @@ fn append_out_of_flow_children(
             _ => {}
         }
 
-        let abs_left = resolve_inset(
-            abs_style.left_offset,
-            abs_style.left_calc,
-            content_w,
-            true,
-        );
+        let abs_left = resolve_inset(abs_style.left_offset, abs_style.left_calc, content_w, true);
         let abs_top = resolve_inset(abs_style.top, abs_style.top_calc, content_h, content_h > 0);
         let abs_right = resolve_inset(
             abs_style.right_offset,
@@ -1595,8 +1618,12 @@ fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
     // Modern sites style even text-only <button>s through classes. Treating
     // those as fixed native controls gives them the wrong intrinsic height and
     // ignores CSS padding/line-height (CoreVM nav, Speedometer start button).
-    if dom.attr(node_id, "class").is_some_and(|class| !class.trim().is_empty())
-        || dom.attr(node_id, "style").is_some_and(|style| !style.trim().is_empty())
+    if dom
+        .attr(node_id, "class")
+        .is_some_and(|class| !class.trim().is_empty())
+        || dom
+            .attr(node_id, "style")
+            .is_some_and(|style| !style.trim().is_empty())
     {
         return false;
     }

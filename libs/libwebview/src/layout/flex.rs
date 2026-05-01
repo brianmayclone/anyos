@@ -10,7 +10,9 @@ use crate::style::{
 };
 use crate::ImageCache;
 
-use super::block::{build_block, build_block_with_forced_outer_height};
+use super::block::{
+    build_block, build_block_with_forced_outer_height, build_block_with_forced_outer_width,
+};
 use super::LayoutBox;
 
 struct FlexItem {
@@ -37,7 +39,12 @@ struct FlexLine {
     cross_size: i32, // resolved cross size of this line
 }
 
-fn push_flex_item_nodes(dom: &Dom, styles: &[ComputedStyle], node_id: NodeId, out: &mut Vec<NodeId>) {
+fn push_flex_item_nodes(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    node_id: NodeId,
+    out: &mut Vec<NodeId>,
+) {
     let st = &styles[node_id];
     if st.display == Display::None {
         return;
@@ -188,8 +195,7 @@ pub(super) fn measure_max_content(
             .iter()
             .any(|&cid| matches!(dom.get(cid).node_type, NodeType::Element { .. }));
     if !is_rich_button {
-        if let Some(w) =
-            super::intrinsic_form_control_width(dom, styles, node_id, Some(viewport_w))
+        if let Some(w) = super::intrinsic_form_control_width(dom, styles, node_id, Some(viewport_w))
         {
             return w;
         }
@@ -331,6 +337,31 @@ pub(super) fn measure_max_content(
         return total + pad_border;
     }
 
+    // Float rows inside shrink-to-fit containers (classic nav bars, clearfix
+    // grids) contribute their natural row width, not just the widest floated
+    // child. Without this, a floated `<ul>` with floated `<li>` children
+    // shrinks to one menu item and stacks the whole navigation vertically.
+    let mut floated_row_w = 0i32;
+    let mut has_floated_child = false;
+    for &cid in &children {
+        let cst = &styles[cid];
+        if cst.display == Display::None {
+            continue;
+        }
+        if matches!(cst.position, Position::Absolute | Position::Fixed) {
+            continue;
+        }
+        if cst.float != crate::style::FloatVal::None {
+            let cw = measure_max_content(dom, styles, pseudo, cid, images, viewport_w)
+                + cst.margin_left
+                + cst.margin_right;
+            if cw > 0 {
+                floated_row_w += cw;
+                has_floated_child = true;
+            }
+        }
+    }
+
     // Block/column container → max of children's max-content widths.
     let mut max_w = 0i32;
     for &cid in &children {
@@ -347,6 +378,9 @@ pub(super) fn measure_max_content(
         if cw > max_w {
             max_w = cw;
         }
+    }
+    if has_floated_child && floated_row_w > max_w {
+        max_w = floated_row_w;
     }
     max_w + pad_border
 }
@@ -848,6 +882,7 @@ pub fn layout_flex(
             } else {
                 available_width
             };
+            let forced_child_outer_width = if is_row { Some(child_avail) } else { None };
             let forced_child_outer_height = if is_row {
                 None
             } else {
@@ -875,6 +910,18 @@ pub fn layout_flex(
                             viewport_w,
                             definite_container_height.unwrap_or(0),
                             forced_h,
+                        )
+                    } else if let Some(forced_w) = forced_child_outer_width {
+                        build_block_with_forced_outer_width(
+                            dom,
+                            styles,
+                            pseudo,
+                            items[i].node_id,
+                            child_avail,
+                            images,
+                            viewport_w,
+                            definite_container_height.unwrap_or(0),
+                            forced_w,
                         )
                     } else {
                         build_block(
@@ -904,6 +951,18 @@ pub fn layout_flex(
                         viewport_w,
                         definite_container_height.unwrap_or(0),
                         forced_h,
+                    )
+                } else if let Some(forced_w) = forced_child_outer_width {
+                    build_block_with_forced_outer_width(
+                        dom,
+                        styles,
+                        pseudo,
+                        items[i].node_id,
+                        child_avail,
+                        images,
+                        viewport_w,
+                        definite_container_height.unwrap_or(0),
+                        forced_w,
                     )
                 } else {
                     build_block(
@@ -1128,8 +1187,11 @@ pub fn layout_flex(
                         - auto_after;
                     child_box.y = cross_cursor + y_pos + child_box.margin.top;
                 } else {
-                    child_box.y =
-                        cross_cursor + lead_offset + running_main + auto_before + child_box.margin.top;
+                    child_box.y = cross_cursor
+                        + lead_offset
+                        + running_main
+                        + auto_before
+                        + child_box.margin.top;
                 }
 
                 let item_w = child_box.width + child_box.margin.left + child_box.margin.right;

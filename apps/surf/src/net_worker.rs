@@ -11,6 +11,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use libanyui_client as ui_lib;
 
 use crate::http::{self, ConnPool, CookieJar, FetchError, Url};
 
@@ -254,6 +255,7 @@ static WORKER_ACTIVE_VISIBLE: AtomicU32 = AtomicU32::new(0);
 static WORKER_ACTIVE_BACKGROUND: AtomicU32 = AtomicU32::new(0);
 /// Requests currently being processed after they have been dequeued.
 static REQUESTS_IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
+static RESULT_NOTIFY_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WorkerClass {
@@ -446,6 +448,20 @@ pub(crate) fn init() {
     }
 }
 
+extern "C" fn result_ready_cb(_userdata: u64) {
+    RESULT_NOTIFY_PENDING.store(false, Ordering::Release);
+    crate::handle_net_worker_results_ready();
+}
+
+fn notify_result_ready() {
+    if RESULT_NOTIFY_PENDING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+    {
+        ui_lib::marshal_dispatch(result_ready_cb, 0);
+    }
+}
+
 /// Submit a request to the worker queue.
 pub(crate) fn submit(req: FetchRequest) {
     let submitted_ms = anyos_std::sys::uptime_ms();
@@ -573,6 +589,7 @@ pub(crate) fn prepend_results_for_tab(tab_index: usize, mut results: Vec<FetchRe
         }
     }
     release(&RESULT_LOCK);
+    notify_result_ready();
 }
 
 /// Bump the generation counter and clear any pending CSS/Image requests
@@ -668,6 +685,7 @@ pub(crate) fn handle_closed_tab(closed_idx: usize) {
         }
     }
     release(&RESULT_LOCK);
+    notify_result_ready();
 }
 
 /// Best-effort signal for the UI thread that the network worker may still

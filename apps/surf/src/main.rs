@@ -106,7 +106,7 @@ const MAX_SCRIPT_SOURCE_BYTES: usize = 1024 * 1024;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = false;
 const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
 const IMAGE_REPAINT_BURST_DELAY_MS: u32 = 64;
-const NET_POLL_INTERVAL_MS: u32 = 16;
+const NET_POLL_INTERVAL_MS: u32 = 250;
 const DEBUG_SKIP_BLOCKING_SLOT2: bool = false;
 
 fn debug_text_fingerprint(text: &str) -> u64 {
@@ -264,8 +264,6 @@ struct AppState {
     net_poll_timer: u32,
     /// Timer ID for cooperative script execution (0 = not running).
     script_pump_timer: u32,
-    /// Timer ID for completed background JavaScript jobs (0 = not running).
-    js_worker_timer: u32,
     /// Timer ID for scheduling JS runtime timers onto the JS worker.
     js_runtime_timer: u32,
     /// Per-tab render work. Paint-only updates can reuse the cached layout tree,
@@ -431,11 +429,6 @@ pub(crate) fn start_anim_timer() {
                 net_results.len()
             );
             process_fetched_results(net_results);
-        }
-        if process_js_worker_results() {
-            unsafe {
-                IDLE_TICKS = 0;
-            }
         }
         let active_tab = st.active_tab;
         let changed = if st.tabs[active_tab].js_worker_busy {
@@ -805,7 +798,6 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
         state: js_state,
         generation,
     });
-    ensure_js_worker_timer();
 }
 
 fn finish_script_slot(result: js_worker::JsWorkerResult) {
@@ -1014,7 +1006,6 @@ fn submit_js_timer_tick(tab_index: usize, elapsed_ms: u32) -> bool {
         state: js_state,
         generation,
     });
-    ensure_js_worker_timer();
     true
 }
 
@@ -1035,12 +1026,17 @@ fn schedule_js_runtime_timer() {
         let Some((tab_index, due_ms)) = next_js_timer_tab() else {
             return;
         };
-        if submit_js_timer_tick(tab_index, due_ms.max(delay_ms)) {
-            ensure_js_worker_timer();
-        } else {
+        if !submit_js_timer_tick(tab_index, due_ms.max(delay_ms)) {
             schedule_js_runtime_timer();
         }
     });
+}
+
+pub(crate) fn handle_js_worker_results_ready() {
+    let had_results = process_js_worker_results();
+    if had_results {
+        schedule_js_runtime_timer();
+    }
 }
 
 fn process_js_worker_results() -> bool {
@@ -1053,27 +1049,6 @@ fn process_js_worker_results() -> bool {
         finish_script_slot(result);
     }
     true
-}
-
-fn ensure_js_worker_timer() {
-    let st = state();
-    if st.js_worker_timer != 0 {
-        return;
-    }
-    st.js_worker_timer = ui_lib::set_timer(16, || {
-        let had_results = process_js_worker_results();
-        let st = state();
-        if js_worker::has_pending_activity() {
-            if had_results {
-                ensure_anim_timer();
-            }
-            return;
-        }
-        if st.js_worker_timer != 0 {
-            defer_kill_timer(st.js_worker_timer);
-            st.js_worker_timer = 0;
-        }
-    });
 }
 
 fn execute_buffered_async_scripts(tab_index: usize) {
@@ -1165,7 +1140,6 @@ fn schedule_script_pump_for_tab(tab_index: usize) {
         return;
     }
     st.script_pump_timer = ui_lib::set_timer(SCRIPT_PUMP_DELAY_MS, pump_script_tick);
-    ensure_anim_timer();
 }
 
 fn schedule_script_pump() {
@@ -1174,7 +1148,6 @@ fn schedule_script_pump() {
         return;
     }
     st.script_pump_timer = ui_lib::set_timer(SCRIPT_PUMP_DELAY_MS, pump_script_tick);
-    ensure_anim_timer();
 }
 
 fn next_script_tab() -> Option<usize> {
@@ -1240,7 +1213,6 @@ fn pump_script_tick() {
     }
 
     if js_worker::has_pending_activity() {
-        ensure_js_worker_timer();
         return;
     }
 
@@ -1481,7 +1453,13 @@ pub(crate) fn ensure_net_poll_timer() {
         return;
     }
     start_net_poll_timer();
-    ensure_anim_timer();
+}
+
+pub(crate) fn handle_net_worker_results_ready() {
+    let results = drain_results_from_mailboxes();
+    if !results.is_empty() {
+        process_fetched_results(results);
+    }
 }
 
 /// Dispatch completed fetch results to their handlers.
@@ -2998,7 +2976,6 @@ fn main() {
             anim_timer: 0,
             net_poll_timer: 0,
             script_pump_timer: 0,
-            js_worker_timer: 0,
             js_runtime_timer: 0,
             render_dirty: [RenderWork::None; 16],
             scroll_render_pending: false,

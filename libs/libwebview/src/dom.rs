@@ -673,7 +673,15 @@ impl Dom {
                     if let Some(src) = first_non_empty_attr(
                         self,
                         child_id,
-                        &["data-src", "data-lazy-src", "data-original", "src"],
+                        &[
+                            "data-src",
+                            "data-lazy",
+                            "data-lazyload",
+                            "data-lazy-src",
+                            "data-flickity-lazyload",
+                            "data-original",
+                            "src",
+                        ],
                     ) {
                         return Some(String::from(src));
                     }
@@ -695,7 +703,10 @@ impl Dom {
             &[
                 "src",
                 "data-src",
+                "data-lazy",
+                "data-lazyload",
                 "data-lazy-src",
+                "data-flickity-lazyload",
                 "data-original",
                 "data-url",
                 "data-image",
@@ -710,7 +721,10 @@ impl Dom {
             &[
                 "src",
                 "data-src",
+                "data-lazy",
+                "data-lazyload",
                 "data-lazy-src",
+                "data-flickity-lazyload",
                 "data-original",
                 "data-url",
                 "data-image",
@@ -1523,6 +1537,23 @@ mod tests {
         assert_eq!(
             dom.image_url(img_id).as_deref(),
             Some("https://im.chip.de/hero.jpg")
+        );
+    }
+
+    #[test]
+    fn image_url_uses_flickity_lazyload_when_src_is_empty() {
+        let dom = crate::html::parse(
+            r#"<img src="" data-flickity-lazyload="https://cdn.neowin.com/hero.webp">"#,
+        );
+        let img_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Img, .. }))
+            .expect("img node");
+
+        assert_eq!(
+            dom.image_url(img_id).as_deref(),
+            Some("https://cdn.neowin.com/hero.webp")
         );
     }
 

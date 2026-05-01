@@ -21,14 +21,14 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    resolve_inset, resolve_margins, AlignItems, ClearVal, ComputedStyle, Direction, Display, FlexDirection,
-    FloatVal, FontStyleVal, FontWeight, InlineAxisAlignment, ListStyle, ListStylePosition,
-    OverflowVal, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
+    resolve_inset, resolve_margins, AlignItems, BoxSizing, ClearVal, ComputedStyle, Direction,
+    Display, FlexDirection, FloatVal, FontStyleVal, FontWeight, InlineAxisAlignment, ListStyle,
+    ListStylePosition, OverflowVal, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
 };
 use crate::ImageCache;
 
 // Re-export sub-module public items.
-use block::{build_block, build_block_with_budget};
+use block::{build_block, build_block_with_budget, build_block_with_forced_outer_width};
 pub use form::{collect_form_positions, FormFieldPos};
 use inline::{layout_inline_content, layout_inline_content_with_pseudo};
 
@@ -987,9 +987,7 @@ pub(super) fn intrinsic_form_control_width(
     let custom_font_id = style
         .font_family
         .as_ref()
-        .and_then(|family| {
-            crate::lookup_web_font_variant(family, is_bold(style), is_italic(style))
-        })
+        .and_then(|family| crate::lookup_web_font_variant(family, is_bold(style), is_italic(style)))
         .unwrap_or(0);
     let measured_label_width = |label: &str| {
         let (w, _) = measure_text(
@@ -1688,12 +1686,8 @@ fn resolve_absolute_alignment_rec(
 
                     let horizontal_cb_size = if is_fixed { viewport_w } else { next_cb_w };
                     let vertical_cb_size = if is_fixed { viewport_h } else { next_cb_h };
-                    let left = resolve_inset(
-                        style.left_offset,
-                        style.left_calc,
-                        horizontal_cb_size,
-                        true,
-                    );
+                    let left =
+                        resolve_inset(style.left_offset, style.left_calc, horizontal_cb_size, true);
                     let right = resolve_inset(
                         style.right_offset,
                         style.right_calc,
@@ -1892,14 +1886,15 @@ pub(super) fn layout_children_ex_with_budget(
 ) -> i32 {
     // Children start after the border and padding on the top-left.
     let bw = parent.border_width;
-    let parent_horizontal_border = if parent.border_left_width != 0 || parent.border_right_width != 0
-    {
-        parent.border_left_width + parent.border_right_width
-    } else {
-        bw * 2
-    };
+    let parent_horizontal_border =
+        if parent.border_left_width != 0 || parent.border_right_width != 0 {
+            parent.border_left_width + parent.border_right_width
+        } else {
+            bw * 2
+        };
     let flow_width = if parent.width > 0 {
-        (parent.width - parent.padding.left - parent.padding.right - parent_horizontal_border).max(0)
+        (parent.width - parent.padding.left - parent.padding.right - parent_horizontal_border)
+            .max(0)
     } else {
         available_width.max(0)
     };
@@ -1909,6 +1904,20 @@ pub(super) fn layout_children_ex_with_budget(
 
     // Place ::before block pseudo-element at the start of the flow.
     if let Some(mut b) = before_block {
+        let clear = if _parent_node < pseudo.before.len() {
+            pseudo.before[_parent_node]
+                .as_ref()
+                .map(|ps| ps.clear)
+                .unwrap_or(ClearVal::None)
+        } else {
+            ClearVal::None
+        };
+        if clear != ClearVal::None {
+            let clear_to = float_ctx.clear_y(clear);
+            if clear_to > cursor_y {
+                cursor_y = clear_to;
+            }
+        }
         let mt = b.margin.top;
         let mb = b.margin.bottom;
         b.x = bw + parent.padding.left + b.margin.left;
@@ -1999,17 +2008,25 @@ pub(super) fn layout_children_ex_with_budget(
 
             // ── Floated elements ──
             if float_val != FloatVal::None {
-                let stf_width = shrink_to_fit_width(
-                    dom,
-                    styles,
-                    pseudo,
-                    cid,
-                    flow_width,
-                    images,
-                    viewport_w,
-                );
+                let stf_width =
+                    shrink_to_fit_width(dom, styles, pseudo, cid, flow_width, images, viewport_w);
+                let has_definite_float_width = style.width.is_some()
+                    || style.width_pct.is_some()
+                    || style.width_calc.is_some();
                 let mut placed = if is_table_element(dom, cid) {
                     table::layout_table(dom, styles, pseudo, cid, stf_width, images, viewport_w)
+                } else if has_definite_float_width {
+                    build_block_with_forced_outer_width(
+                        dom,
+                        styles,
+                        pseudo,
+                        cid,
+                        stf_width,
+                        images,
+                        viewport_w,
+                        parent_height,
+                        stf_width,
+                    )
                 } else {
                     build_block(
                         dom,
@@ -2561,6 +2578,24 @@ pub(super) fn layout_children_ex_with_budget(
         parent.children.push(abs_box);
     }
 
+    // Clearfix rules often use generated content with `display: table`, and
+    // real-world CSS sometimes mutates display through fallbacks. Apply the
+    // pseudo clear even if it did not generate a visible block box.
+    let after_clear = if _parent_node < pseudo.after.len() {
+        pseudo.after[_parent_node]
+            .as_ref()
+            .map(|ps| ps.clear)
+            .unwrap_or(ClearVal::None)
+    } else {
+        ClearVal::None
+    };
+    if after_clear != ClearVal::None {
+        let clear_to = float_ctx.clear_y(after_clear);
+        if clear_to > cursor_y {
+            cursor_y = clear_to;
+        }
+    }
+
     // Place ::after block pseudo-element at the end of the flow.
     if let Some(mut b) = after_block {
         let mt = b.margin.top;
@@ -2931,28 +2966,35 @@ pub(super) fn shrink_to_fit_width(
     viewport_w: i32,
 ) -> i32 {
     let style = &styles[node_id];
+    let pad_border = style.padding_left
+        + style.padding_right
+        + style.border_left.width
+        + style.border_right.width
+        + style.border_width * 2;
+    let to_outer = |specified: i32| -> i32 {
+        if matches!(style.box_sizing, BoxSizing::BorderBox) {
+            specified
+        } else {
+            specified + pad_border
+        }
+    };
     // If explicit width is set, use it.
     if let Some(w) = style.width {
         if w > 0 {
-            return w.min(max_width);
+            return to_outer(w).min(max_width);
         }
     }
     // Percentage width.
     if let Some(pct) = style.width_pct {
         let w = (max_width as i64 * pct as i64 / 10000) as i32;
         if w > 0 {
-            return w.min(max_width);
+            return to_outer(w).min(max_width);
         }
     }
     // Otherwise, use max-content width (natural width without forced line-wrapping).
     // This is the correct CSS shrink-to-fit algorithm: it prevents block children
     // (like <figcaption>) from expanding the float to the full container width.
     let mc = flex::measure_max_content(dom, styles, pseudo, node_id, images, viewport_w);
-    let pad_border = style.padding_left
-        + style.padding_right
-        + style.border_left.width
-        + style.border_right.width
-        + style.border_width * 2;
     let (_, margin_right, _, margin_left) = resolve_margins(style, max_width);
     (mc + pad_border + margin_left + margin_right)
         .max(1)

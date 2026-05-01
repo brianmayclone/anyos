@@ -12,9 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::initial::default_style;
-use super::lengths::{
-    parse_transform_translate_component, resolve_length, set_viewport_size,
-};
+use super::lengths::{parse_transform_translate_component, resolve_length, set_viewport_size};
 use super::types::*;
 use crate::css::{
     AttrOp, ContainerCondition, ContainerQuery, CssValue, Declaration, Property, PseudoClass,
@@ -733,7 +731,10 @@ fn apply_decls_two_pass(
     }
     for decl in declarations {
         if decl.important == important
-            && !matches!(decl.property, Property::FontSize | Property::CustomProperty(_))
+            && !matches!(
+                decl.property,
+                Property::FontSize | Property::CustomProperty(_)
+            )
         {
             apply_decl_with_vars(
                 style,
@@ -2141,11 +2142,7 @@ fn resolve_styles_prepared_impl(
         // present. Many sites keep modal templates in the DOM and rely on this
         // behavior; painting them breaks the page under a full-screen backdrop.
         if let NodeType::Element { tag, attrs, .. } = &node.node_type {
-            if *tag == Tag::Dialog
-                && attrs
-                    .iter()
-                    .all(|a| !eq_ignore_ascii_case(&a.name, "open"))
-            {
+            if *tag == Tag::Dialog && attrs.iter().all(|a| !eq_ignore_ascii_case(&a.name, "open")) {
                 style.display = Display::None;
             }
 
@@ -2153,8 +2150,7 @@ fn resolve_styles_prepared_impl(
                 apply_visually_hidden_style(&mut style);
             } else if selector_state.focused_node != Some(id)
                 && attrs.iter().any(|a| {
-                    eq_ignore_ascii_case(&a.name, "class")
-                        && has_visually_hidden_class(&a.value)
+                    eq_ignore_ascii_case(&a.name, "class") && has_visually_hidden_class(&a.value)
                 })
             {
                 apply_visually_hidden_style(&mut style);
@@ -2162,20 +2158,20 @@ fn resolve_styles_prepared_impl(
         }
 
         fn apply_visually_hidden_style(style: &mut ComputedStyle) {
-                style.position = Position::Absolute;
-                style.left_offset = Some(-10000);
-                style.top = Some(0);
-                style.width = Some(1);
-                style.height = Some(1);
-                style.min_width = 0;
-                style.min_height = 0;
-                style.padding_top = 0;
-                style.padding_right = 0;
-                style.padding_bottom = 0;
-                style.padding_left = 0;
-                style.overflow_x = OverflowVal::Hidden;
-                style.overflow_y = OverflowVal::Hidden;
-                style.clip_rect = Some([0, 0, 0, 0]);
+            style.position = Position::Absolute;
+            style.left_offset = Some(-10000);
+            style.top = Some(0);
+            style.width = Some(1);
+            style.height = Some(1);
+            style.min_width = 0;
+            style.min_height = 0;
+            style.padding_top = 0;
+            style.padding_right = 0;
+            style.padding_bottom = 0;
+            style.padding_left = 0;
+            style.overflow_x = OverflowVal::Hidden;
+            style.overflow_y = OverflowVal::Hidden;
+            style.clip_rect = Some([0, 0, 0, 0]);
         }
 
         // (Phase 3b removed: custom properties are resolved on-demand via
@@ -2487,7 +2483,10 @@ fn apply_tailwind_display_fallback(
     attrs: &[crate::dom::Attr],
     viewport_width: i32,
 ) {
-    let Some(class_attr) = attrs.iter().find(|a| eq_ignore_ascii_case(&a.name, "class")) else {
+    let Some(class_attr) = attrs
+        .iter()
+        .find(|a| eq_ignore_ascii_case(&a.name, "class"))
+    else {
         return;
     };
 
@@ -2562,6 +2561,12 @@ fn tailwind_display_utility(class_name: &str) -> Option<Display> {
         "block" => Some(Display::Block),
         "inline" => Some(Display::Inline),
         "inline-block" => Some(Display::InlineBlock),
+        // Approximate CSS table wrappers as block boxes until the layout
+        // engine has full CSS table display support.  This is especially
+        // important for the ubiquitous clearfix idiom
+        // `::after { display: table; clear: both; content: "" }`.
+        "table" => Some(Display::Block),
+        "inline-table" => Some(Display::InlineBlock),
         "flex" => Some(Display::Flex),
         "inline-flex" => Some(Display::InlineFlex),
         "grid" => Some(Display::Grid),
@@ -2573,7 +2578,10 @@ fn tailwind_display_utility(class_name: &str) -> Option<Display> {
 }
 
 fn apply_tailwind_spacing_fallback(style: &mut ComputedStyle, attrs: &[crate::dom::Attr]) {
-    let Some(class_attr) = attrs.iter().find(|a| eq_ignore_ascii_case(&a.name, "class")) else {
+    let Some(class_attr) = attrs
+        .iter()
+        .find(|a| eq_ignore_ascii_case(&a.name, "class"))
+    else {
         return;
     };
 
@@ -2744,7 +2752,10 @@ fn apply_flexbox_grid_column_fallback(
     attrs: &[crate::dom::Attr],
     viewport_width: i32,
 ) {
-    let Some(class_attr) = attrs.iter().find(|a| eq_ignore_ascii_case(&a.name, "class")) else {
+    let Some(class_attr) = attrs
+        .iter()
+        .find(|a| eq_ignore_ascii_case(&a.name, "class"))
+    else {
         return;
     };
 
@@ -2936,7 +2947,9 @@ fn fallback_custom_property(name: &str) -> Option<&'static str> {
         "--font-letter-spacing" | "--font-letter-spacing-p" | "--font-letter-spacing-caps" => {
             Some("0")
         }
-        "--font-family-headline" | "--font-family-inter-tight" | "--website-font"
+        "--font-family-headline"
+        | "--font-family-inter-tight"
+        | "--website-font"
         | "--website-paragraph" => Some("Arial"),
         "--text-xxs" | "--unified-text-xxs" => Some(".555rem"),
         "--text-xs" | "--unified-text-xs" => Some(".666rem"),
@@ -2953,20 +2966,40 @@ fn fallback_custom_property(name: &str) -> Option<&'static str> {
         "--headline-lg" | "--unified-headline-lg" => Some("1.777rem"),
         "--headline-xl" | "--unified-headline-xl" => Some("2rem"),
         "--headline-xxl" | "--unified-headline-xxl" => Some("3rem"),
-        "--line-height-default" | "--line-height-text-xs" | "--line-height-text-sm"
-        | "--line-height-text-md" | "--line-height-text-lg" | "--line-height-text-xl"
-        | "--line-height-text-xxl" | "--txt-line-height-xs" | "--txt-line-height-sm"
-        | "--txt-line-height-md" | "--txt-line-height-lg" | "--txt-line-height-xl"
-        | "--unified-line-height-base" | "--unified-line-height-text-xxs"
-        | "--unified-line-height-text-xs" | "--unified-line-height-text-sm"
-        | "--unified-line-height-text-md" | "--unified-line-height-text-lg"
-        | "--unified-line-height-text-xl" | "--unified-line-height-text-xxl" => Some("1.3"),
-        "--line-height-hl-xxs" | "--line-height-hl-xs" | "--line-height-hl-sm"
-        | "--line-height-hl-md" | "--line-height-hl-lg" | "--line-height-hl-xl"
-        | "--line-height-hl-xxl" | "--unified-line-height-hl-xxs"
-        | "--unified-line-height-hl-xs" | "--unified-line-height-hl-sm"
-        | "--unified-line-height-hl-md" | "--unified-line-height-hl-lg"
-        | "--unified-line-height-hl-xl" | "--unified-line-height-hl-xxl" => Some("1.2"),
+        "--line-height-default"
+        | "--line-height-text-xs"
+        | "--line-height-text-sm"
+        | "--line-height-text-md"
+        | "--line-height-text-lg"
+        | "--line-height-text-xl"
+        | "--line-height-text-xxl"
+        | "--txt-line-height-xs"
+        | "--txt-line-height-sm"
+        | "--txt-line-height-md"
+        | "--txt-line-height-lg"
+        | "--txt-line-height-xl"
+        | "--unified-line-height-base"
+        | "--unified-line-height-text-xxs"
+        | "--unified-line-height-text-xs"
+        | "--unified-line-height-text-sm"
+        | "--unified-line-height-text-md"
+        | "--unified-line-height-text-lg"
+        | "--unified-line-height-text-xl"
+        | "--unified-line-height-text-xxl" => Some("1.3"),
+        "--line-height-hl-xxs"
+        | "--line-height-hl-xs"
+        | "--line-height-hl-sm"
+        | "--line-height-hl-md"
+        | "--line-height-hl-lg"
+        | "--line-height-hl-xl"
+        | "--line-height-hl-xxl"
+        | "--unified-line-height-hl-xxs"
+        | "--unified-line-height-hl-xs"
+        | "--unified-line-height-hl-sm"
+        | "--unified-line-height-hl-md"
+        | "--unified-line-height-hl-lg"
+        | "--unified-line-height-hl-xl"
+        | "--unified-line-height-hl-xxl" => Some("1.2"),
         "--spacing-xxs" => Some(".125rem"),
         "--spacing-xs" => Some(".25rem"),
         "--spacing-sm" => Some(".5rem"),
@@ -3165,7 +3198,8 @@ fn resolve_nested_vars(
                 let use_fallback = custom_property_is_unset_keyword(val);
                 if use_fallback {
                     if let Some(fb) = fallback {
-                        let resolved_fb = resolve_nested_vars(fb, dom, node_id, node_cp, ancestors_cp);
+                        let resolved_fb =
+                            resolve_nested_vars(fb, dom, node_id, node_cp, ancestors_cp);
                         result.push_str(&resolved_fb);
                     } else {
                         let stop = (end + 1).min(bytes.len());
@@ -3401,6 +3435,8 @@ pub fn apply_declaration(
                     "inline" => Display::Inline,
                     "inline-block" => Display::InlineBlock,
                     "list-item" => Display::ListItem,
+                    "table" => Display::Block,
+                    "inline-table" => Display::InlineBlock,
                     "table-row" => Display::TableRow,
                     "table-cell" => Display::TableCell,
                     "flex" => Display::Flex,
@@ -3417,20 +3453,18 @@ pub fn apply_declaration(
                 style.display = Display::None;
             }
         }
-        Property::Color => {
-            match decl.value {
-                CssValue::Color(c) => {
-                    style.color = c;
-                }
-                CssValue::CurrentColor => {}
-                CssValue::Inherit => {
-                    if let Some(parent) = parent_style {
-                        style.color = parent.color;
-                    }
-                }
-                _ => {}
+        Property::Color => match decl.value {
+            CssValue::Color(c) => {
+                style.color = c;
             }
-        }
+            CssValue::CurrentColor => {}
+            CssValue::Inherit => {
+                if let Some(parent) = parent_style {
+                    style.color = parent.color;
+                }
+            }
+            _ => {}
+        },
         Property::BackgroundColor | Property::Background => match decl.value {
             CssValue::Color(c) => {
                 style.background_color = c;
@@ -3561,28 +3595,26 @@ pub fn apply_declaration(
                 }
             }
         }
-        Property::TextDecoration => {
-            match decl.value {
-                CssValue::Keyword(ref kw) => {
-                    style.text_decoration = match kw.as_str() {
-                        "underline" => TextDeco::Underline,
-                        "line-through" => TextDeco::LineThrough,
-                        "overline" => TextDeco::Overline,
-                        "none" => TextDeco::None,
-                        _ => style.text_decoration,
-                    };
-                }
-                CssValue::None => {
-                    style.text_decoration = TextDeco::None;
-                }
-                CssValue::Inherit => {
-                    if let Some(parent) = parent_style {
-                        style.text_decoration = parent.text_decoration;
-                    }
-                }
-                _ => {}
+        Property::TextDecoration => match decl.value {
+            CssValue::Keyword(ref kw) => {
+                style.text_decoration = match kw.as_str() {
+                    "underline" => TextDeco::Underline,
+                    "line-through" => TextDeco::LineThrough,
+                    "overline" => TextDeco::Overline,
+                    "none" => TextDeco::None,
+                    _ => style.text_decoration,
+                };
             }
-        }
+            CssValue::None => {
+                style.text_decoration = TextDeco::None;
+            }
+            CssValue::Inherit => {
+                if let Some(parent) = parent_style {
+                    style.text_decoration = parent.text_decoration;
+                }
+            }
+            _ => {}
+        },
         Property::LineHeight => {
             // line-height: <number> means multiple of font_size (not pixels).
             if let CssValue::Number(v) = decl.value {
@@ -5759,12 +5791,7 @@ fn split_whitespace_respecting_parens(s: &str) -> Vec<&str> {
     tokens
 }
 
-fn apply_padding_shorthand(
-    style: &mut ComputedStyle,
-    value: &str,
-    parent_fs: i32,
-    root_fs: i32,
-) {
+fn apply_padding_shorthand(style: &mut ComputedStyle, value: &str, parent_fs: i32, root_fs: i32) {
     let parts = split_whitespace_respecting_parens(value);
     if parts.is_empty() {
         return;
@@ -6621,7 +6648,10 @@ fn parse_linear_gradient(inner: &str) -> Option<BackgroundImageVal> {
 
     // Check if first part is an angle or direction
     let first = parts[0].trim();
-    let first_direction = first.split_once(" in ").map(|(dir, _)| dir.trim()).unwrap_or(first);
+    let first_direction = first
+        .split_once(" in ")
+        .map(|(dir, _)| dir.trim())
+        .unwrap_or(first);
     if let Some(a) = parse_gradient_angle(first_direction) {
         angle_deg = a;
         start_idx = 1;
@@ -7155,14 +7185,12 @@ mod declaration_tests {
 
     #[test]
     fn calc_with_nested_var_is_resolved_after_custom_property_lookup() {
-        let decls = crate::css::parse_inline_style("width: calc(956px + 2 * var(--container-spacing))");
+        let decls =
+            crate::css::parse_inline_style("width: calc(956px + 2 * var(--container-spacing))");
         assert_eq!(decls.len(), 1);
         assert!(matches!(decls[0].value, CssValue::Keyword(_)));
 
-        let resolved = crate::css::parse_value(
-            &Property::Width,
-            "calc(956px + 2 * 20px)",
-        );
+        let resolved = crate::css::parse_value(&Property::Width, "calc(956px + 2 * 20px)");
         assert!(matches!(resolved, CssValue::Length(996, Unit::Px)));
     }
 
@@ -7269,7 +7297,10 @@ mod declaration_tests {
             "linear-gradient(to right in oklab, #863bff 0%, #47bfff 100%)",
         );
         match parsed {
-            Some(BackgroundImageVal::LinearGradient { angle_deg, ref stops }) => {
+            Some(BackgroundImageVal::LinearGradient {
+                angle_deg,
+                ref stops,
+            }) => {
                 assert_eq!(angle_deg, 90);
                 assert_eq!(stops.len(), 2);
                 assert_eq!(stops[0].color, 0xFF863BFF);
@@ -8074,7 +8105,15 @@ mod layout_regression_tests {
         let section_id = dom
             .nodes
             .iter()
-            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Section, .. }))
+            .position(|node| {
+                matches!(
+                    node.node_type,
+                    NodeType::Element {
+                        tag: Tag::Section,
+                        ..
+                    }
+                )
+            })
             .expect("section node");
         let style = &styles[section_id];
 
@@ -8103,7 +8142,15 @@ mod layout_regression_tests {
         let section_id = dom
             .nodes
             .iter()
-            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Section, .. }))
+            .position(|node| {
+                matches!(
+                    node.node_type,
+                    NodeType::Element {
+                        tag: Tag::Section,
+                        ..
+                    }
+                )
+            })
             .expect("section node");
         let style = &styles[section_id];
 
@@ -8122,7 +8169,15 @@ mod layout_regression_tests {
         let picture_id = dom
             .nodes
             .iter()
-            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Picture, .. }))
+            .position(|node| {
+                matches!(
+                    node.node_type,
+                    NodeType::Element {
+                        tag: Tag::Picture,
+                        ..
+                    }
+                )
+            })
             .expect("picture node");
 
         assert!(matches!(styles[picture_id].display, Display::Inline));
@@ -8166,7 +8221,15 @@ mod layout_regression_tests {
         let dialog_id = dom
             .nodes
             .iter()
-            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Dialog, .. }))
+            .position(|node| {
+                matches!(
+                    node.node_type,
+                    NodeType::Element {
+                        tag: Tag::Dialog,
+                        ..
+                    }
+                )
+            })
             .expect("dialog node");
 
         assert!(matches!(styles[dialog_id].display, Display::None));

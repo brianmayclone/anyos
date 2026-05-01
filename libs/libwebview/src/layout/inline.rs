@@ -463,10 +463,7 @@ pub fn layout_inline_content_with_pseudo(
 
 fn is_text_clip_linear_gradient(bx: &LayoutBox) -> bool {
     bx.text.is_some()
-        && matches!(
-            bx.background_clip,
-            crate::style::BackgroundClipVal::Text
-        )
+        && matches!(bx.background_clip, crate::style::BackgroundClipVal::Text)
         && matches!(
             bx.background_image,
             crate::style::BackgroundImageVal::LinearGradient { .. }
@@ -709,7 +706,8 @@ fn collect_inline_fragments(
                 let vertical_border = frame.border_top_width + frame.border_bottom_width;
                 let horizontal_non_content =
                     frame.padding.left + frame.padding.right + horizontal_border;
-                let vertical_non_content = frame.padding.top + frame.padding.bottom + vertical_border;
+                let vertical_non_content =
+                    frame.padding.top + frame.padding.bottom + vertical_border;
                 let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
                 let resolve_specified_width = |w: i32| {
                     if is_border_box {
@@ -951,10 +949,12 @@ fn collect_inline_fragments(
                     .get(node_id)
                     .parent
                     .and_then(|pid| styles.get(pid))
-                    .and_then(|parent_style| match (parent_style.width, parent_style.height) {
-                        (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
-                        _ => None,
-                    });
+                    .and_then(
+                        |parent_style| match (parent_style.width, parent_style.height) {
+                            (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
+                            _ => None,
+                        },
+                    );
                 let mut content_w = iw.min(available_width.max(1));
                 let mut content_h = if iw > 0 && content_w < iw {
                     ((ih as i64 * content_w as i64) / iw as i64).max(1) as i32
@@ -1097,18 +1097,15 @@ fn collect_inline_fragments(
                 let mut ta = LayoutBox::new(Some(node_id), BoxType::Inline);
                 ta.form_field = Some(FormFieldKind::Textarea);
                 ta.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
-                ta.form_value = dom
-                    .attr(node_id, "value")
-                    .map(String::from)
-                    .or_else(|| {
-                        let text = dom.text_content(node_id);
-                        let trimmed = text.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(String::from(trimmed))
-                        }
-                    });
+                ta.form_value = dom.attr(node_id, "value").map(String::from).or_else(|| {
+                    let text = dom.text_content(node_id);
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(String::from(trimmed))
+                    }
+                });
                 if node_id < styles.len() {
                     ta.bg_color = styles[node_id].background_color;
                     ta.color = styles[node_id].color;
@@ -1497,7 +1494,9 @@ fn collect_inline_fragments(
                             let custom_font_id = ps
                                 .font_family
                                 .as_ref()
-                                .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
+                                .and_then(|family| {
+                                    crate::lookup_web_font_variant(family, bold, italic)
+                                })
                                 .unwrap_or(0);
                             let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                             let mut tb =
@@ -1616,7 +1615,9 @@ fn collect_inline_fragments(
                             let custom_font_id = ps
                                 .font_family
                                 .as_ref()
-                                .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
+                                .and_then(|family| {
+                                    crate::lookup_web_font_variant(family, bold, italic)
+                                })
                                 .unwrap_or(0);
                             let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                             let mut tb =
@@ -2225,8 +2226,12 @@ fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
     // Only use the native form-control fallback for unstyled buttons. Styled
     // text buttons need the normal CSS box model so their padding and
     // line-height match author styles.
-    if dom.attr(node_id, "class").is_some_and(|class| !class.trim().is_empty())
-        || dom.attr(node_id, "style").is_some_and(|style| !style.trim().is_empty())
+    if dom
+        .attr(node_id, "class")
+        .is_some_and(|class| !class.trim().is_empty())
+        || dom
+            .attr(node_id, "style")
+            .is_some_and(|style| !style.trim().is_empty())
     {
         return false;
     }
