@@ -476,6 +476,18 @@ impl Vm {
                         self.current_this = saved_current_this;
                     }
                     FnKind::Bytecode(chunk) => {
+                        #[cfg(feature = "host")]
+                        if std::env::var_os("LIBJS_DEBUG_CALLS").is_some()
+                            && chunk.code.len() > 1000
+                        {
+                            eprintln!(
+                                "[libjs-call] invoke bytecode name={} ops={} args={} this={}",
+                                chunk.name.as_deref().unwrap_or("<anon>"),
+                                chunk.code.len(),
+                                args.len(),
+                                effective_this.type_of()
+                            );
+                        }
                         let mut locals = Vm::make_locals(&chunk);
                         for (i, arg) in args.iter().enumerate() {
                             if i < locals.len() {
@@ -609,6 +621,33 @@ impl Vm {
                                     }
                                 }
                             }
+                        }
+                    }
+                    if context.is_empty() && ip > 0 {
+                        let mut ops = alloc::string::String::new();
+                        let max_back = ip.min(6);
+                        for back in 1..=max_back {
+                            let check_ip = ip - back;
+                            if !ops.is_empty() {
+                                ops.push_str(" <- ");
+                            }
+                            match code[check_ip] {
+                                crate::bytecode::Op::GetPropNamed(ci)
+                                | crate::bytecode::Op::SetPropNamed(ci)
+                                | crate::bytecode::Op::LoadGlobal(ci) => {
+                                    if let Some(crate::bytecode::Constant::String(s)) =
+                                        consts.get(ci as usize)
+                                    {
+                                        ops.push_str(&alloc::format!("{:?}({})", code[check_ip], s));
+                                    } else {
+                                        ops.push_str(&alloc::format!("{:?}", code[check_ip]));
+                                    }
+                                }
+                                _ => ops.push_str(&alloc::format!("{:?}", code[check_ip])),
+                            }
+                        }
+                        if !ops.is_empty() {
+                            context = alloc::format!(" after {}", ops);
                         }
                     }
                 }
@@ -770,6 +809,9 @@ impl Vm {
         self.run_target_depth = saved_depth;
         let result = self.run();
         self.run_target_depth = prev_target;
+        if self.frames.len() > saved_depth {
+            self.frames.truncate(saved_depth);
+        }
         self.call_value_depth -= 1;
         // Op::Return pushes the return value onto the stack AND returns it
         // from run(). Restore stack to pre-call depth to avoid pollution.
@@ -803,6 +845,9 @@ impl Vm {
         self.run_target_depth = saved_depth;
         let result = self.run();
         self.run_target_depth = prev_target;
+        if self.frames.len() > saved_depth {
+            self.frames.truncate(saved_depth);
+        }
         self.stack.truncate(stack_before);
         Some(result)
     }

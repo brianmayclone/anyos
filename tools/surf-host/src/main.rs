@@ -32,6 +32,8 @@ use std::sync::{mpsc, Arc, Mutex};
 
 const SURF_HOST_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36";
+const HOST_SYNC_WEB_FONT_LIMIT: usize = 6;
+const HOST_VIEWPORT_RENDER_PASS_LIMIT: usize = 128;
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -448,6 +450,21 @@ fn register_system_fonts(wv: &mut libwebview::WebView) {
     }
 }
 
+fn render_viewport_bounded(wv: &mut libwebview::WebView, scroll_y: i32, context: &str) {
+    for pass in 0..HOST_VIEWPORT_RENDER_PASS_LIMIT {
+        if !wv.render_viewport_at(scroll_y) {
+            return;
+        }
+        if pass + 1 == HOST_VIEWPORT_RENDER_PASS_LIMIT {
+            eprintln!(
+                "[surf-host] viewport render still pending after {} pass(es) during {}; saving partial frame",
+                HOST_VIEWPORT_RENDER_PASS_LIMIT,
+                context
+            );
+        }
+    }
+}
+
 fn load_valid_web_font_data(family: &str, data: &[u8]) -> Option<u32> {
     let Some(font_id) = libfont_client::load_data(data) else {
         return None;
@@ -538,8 +555,18 @@ fn load_page_inner(
         start_image_loading(wv, &base_url, image_backend) // images (async, parallel threads)
     };
     if js_enabled {
-        run_javascript(wv, &base_url, cookies);
-        run_js_timers(wv, &base_url, cookies, 5000);
+        if run_javascript(wv, &base_url, cookies) {
+            wv.relayout();
+        }
+        run_js_debug_probes(wv);
+        if std::env::var_os("SURF_HOST_RUN_INITIAL_TIMERS").is_some() {
+            run_js_timers(wv, &base_url, cookies, 5000);
+        } else if wv.has_timers() {
+            eprintln!(
+                "[js] skipping initial timer drain ({} timer(s) pending; set SURF_HOST_RUN_INITIAL_TIMERS=1 to enable)",
+                wv.timer_count()
+            );
+        }
         if std::env::var_os("SURF_DEBUG_DOM_ELEMENTS_AFTER_JS").is_some() {
             if let Some(dom) = wv.dom() {
                 debug_dump_dom_elements(dom);
@@ -1521,10 +1548,7 @@ fn main() {
             );
         }
         wv.relayout();
-        let mut pending_tiles = true;
-        while pending_tiles {
-            pending_tiles = wv.render_viewport_at(0);
-        }
+        render_viewport_bounded(&mut wv, 0, "initial frame");
         debug_log_image_bounds(&mut wv);
     }
 
@@ -1541,13 +1565,15 @@ fn main() {
             );
             // Run timers in steps during the wait period so setTimeout/setInterval
             // callbacks fire (e.g. boot sequences, animations).
+            let run_screenshot_timers =
+                std::env::var_os("SURF_HOST_RUN_SCREENSHOT_TIMERS").is_some();
             let step = 50u64;
             let mut waited = 0u64;
             while waited < args.delay_ms {
-                if wv.has_timers() {
+                if run_screenshot_timers && wv.has_timers() {
                     wv.run_timers(step);
+                    wv.tick(step);
                 }
-                wv.tick(step);
                 waited += step;
                 // Sleep a small amount to avoid 100% CPU
                 std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1564,10 +1590,7 @@ fn main() {
                     debug_dump_text_runs(root, 0);
                 }
             }
-            let mut pending_tiles = true;
-            while pending_tiles {
-                pending_tiles = wv.render_viewport_at(0);
-            }
+            render_viewport_bounded(&mut wv, 0, "screenshot delay");
             debug_log_image_bounds(&mut wv);
             // Print a bounded console sample from timer callbacks. Pages with
             // 10ms consent/ad polling loops can otherwise spend more time
@@ -2374,6 +2397,9 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
     if url.starts_with("file://") {
         return std::fs::read(&url[7..]).ok();
     }
+    if url.starts_with("data:") {
+        return decode_data_uri(url);
+    }
 
     // Check disk cache — fresh entries (< 24h) are served directly.
     let dir = disk_cache_dir();
@@ -2396,6 +2422,7 @@ fn fetch_resource(url: &str) -> Option<Vec<u8>> {
     match ureq::get(url)
         .set("User-Agent", SURF_HOST_USER_AGENT)
         .set("Accept", "*/*")
+        .timeout(std::time::Duration::from_secs(8))
         .call()
     {
         Ok(resp) => {
@@ -2580,11 +2607,23 @@ fn percent_decode_data_uri_payload(payload: &str) -> Vec<u8> {
     out
 }
 
-fn decode_font_data_uri(src: &str) -> Option<Vec<u8>> {
+fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     let rest = src.strip_prefix("data:")?;
     let comma = rest.find(',')?;
     let meta = &rest[..comma];
     let payload = &rest[comma + 1..];
+    let bytes = if meta.contains(";base64") {
+        base64_decode(payload.as_bytes())
+    } else {
+        percent_decode_data_uri_payload(payload)
+    };
+    (!bytes.is_empty()).then_some(bytes)
+}
+
+fn decode_font_data_uri(src: &str) -> Option<Vec<u8>> {
+    let rest = src.strip_prefix("data:")?;
+    let comma = rest.find(',')?;
+    let meta = &rest[..comma];
     let mime = meta.split(';').next().unwrap_or("").trim();
     let is_font = mime.starts_with("font/")
         || mime.starts_with("application/font")
@@ -2593,12 +2632,7 @@ fn decode_font_data_uri(src: &str) -> Option<Vec<u8>> {
     if !is_font {
         return None;
     }
-    let bytes = if meta.contains(";base64") {
-        base64_decode(payload.as_bytes())
-    } else {
-        percent_decode_data_uri_payload(payload)
-    };
-    (!bytes.is_empty()).then_some(bytes)
+    decode_data_uri(src)
 }
 
 // ── Resource loading (DOM-based, identical to anyOS surf) ────────────────────
@@ -3059,6 +3093,9 @@ fn load_resources(
         links
     };
     let mut fetched_font_urls: Vec<String> = Vec::new();
+    let mut fetched_font_families: Vec<String> = Vec::new();
+    let mut sync_font_attempts = 0usize;
+    let mut sync_font_limit_logged = false;
 
     for (css_url, _href) in &css_links {
         eprintln!("[surf-host] fetching CSS: {}", css_url);
@@ -3136,6 +3173,11 @@ fn load_resources(
                         if src.is_empty() {
                             continue;
                         }
+                        if wv.web_font_id(family).is_some()
+                            || fetched_font_families.iter().any(|f| f == family)
+                        {
+                            continue;
+                        }
                         if src.starts_with("data:") {
                             if let Some(font_data) = decode_font_data_uri(src) {
                                 if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
@@ -3145,7 +3187,18 @@ fn load_resources(
                                         font_data.len()
                                     );
                                     wv.register_web_font(&family, font_id);
+                                    fetched_font_families.push(family.clone());
                                 }
+                            }
+                            continue;
+                        }
+                        if sync_font_attempts >= HOST_SYNC_WEB_FONT_LIMIT {
+                            if !sync_font_limit_logged {
+                                eprintln!(
+                                    "[surf-host] skipping remaining web fonts after {} synchronous fetches",
+                                    HOST_SYNC_WEB_FONT_LIMIT
+                                );
+                                sync_font_limit_logged = true;
                             }
                             continue;
                         }
@@ -3154,6 +3207,8 @@ fn load_resources(
                             continue;
                         }
                         fetched_font_urls.push(font_url.clone());
+                        fetched_font_families.push(family.clone());
+                        sync_font_attempts += 1;
                         eprintln!("[surf-host] fetching font: {}", font_url);
                         if let Some(font_data) = fetch_resource(&font_url) {
                             if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
@@ -3192,6 +3247,9 @@ fn load_resources(
             if wv.web_font_id(&family).is_some() {
                 continue;
             } // already loaded
+            if fetched_font_families.iter().any(|f| f == family) {
+                continue;
+            }
             if src.starts_with("data:") {
                 if let Some(font_data) = decode_font_data_uri(src) {
                     if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
@@ -3201,7 +3259,18 @@ fn load_resources(
                             font_data.len()
                         );
                         wv.register_web_font(&family, font_id);
+                        fetched_font_families.push(family.clone());
                     }
+                }
+                continue;
+            }
+            if sync_font_attempts >= HOST_SYNC_WEB_FONT_LIMIT {
+                if !sync_font_limit_logged {
+                    eprintln!(
+                        "[surf-host] skipping remaining web fonts after {} synchronous fetches",
+                        HOST_SYNC_WEB_FONT_LIMIT
+                    );
+                    sync_font_limit_logged = true;
                 }
                 continue;
             }
@@ -3210,6 +3279,8 @@ fn load_resources(
                 continue;
             }
             fetched_font_urls.push(font_url.clone());
+            fetched_font_families.push(family.clone());
+            sync_font_attempts += 1;
             eprintln!("[surf-host] fetching inline font: {}", font_url);
             if let Some(font_data) = fetch_resource(&font_url) {
                 if let Some(font_id) = load_valid_web_font_data(&family, &font_data) {
@@ -3630,7 +3701,11 @@ fn prefetch_module_sources(
     }
 }
 
-fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut HostCookieJar) {
+fn run_javascript(
+    wv: &mut libwebview::WebView,
+    base_url: &str,
+    cookies: &mut HostCookieJar,
+) -> bool {
     // Register synchronous HTTP handler so fetch()/XHR work inside JS.
     register_http_handler(wv);
 
@@ -3638,7 +3713,7 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut Ho
     let entries = wv.script_entries();
     if entries.is_empty() {
         eprintln!("[js] no scripts found");
-        return;
+        return false;
     }
 
     let mut scripts: Vec<String> = Vec::new();
@@ -3680,6 +3755,7 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut Ho
         inline_count,
         external_count
     );
+    dump_debug_script_indexes(&scripts, &script_urls);
 
     let mut seen_modules = HashSet::new();
     for (idx, script) in scripts.iter().enumerate() {
@@ -3694,12 +3770,94 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str, cookies: &mut Ho
     }
 
     // Execute all scripts.
-    wv.execute_js(&scripts);
+    let changed = wv.execute_js_with_limits(
+        &scripts,
+        libwebview::js::ScriptExecutionLimits {
+            max_scripts: 256,
+            max_script_bytes: None,
+        },
+    );
     apply_host_js_mutations(wv, base_url, cookies);
 
     // Print console output.
     for line in wv.js_console() {
         eprintln!("[js:console] {}", line);
+    }
+    changed
+}
+
+fn dump_debug_script_indexes(scripts: &[String], script_urls: &[Option<String>]) {
+    let Some(spec) = std::env::var_os("SURF_HOST_DUMP_SCRIPT_INDEX") else {
+        return;
+    };
+    for raw in spec.to_string_lossy().split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(idx) = raw.parse::<usize>() else {
+            eprintln!("[js-debug] invalid script dump index '{}'", raw);
+            continue;
+        };
+        let Some(script) = scripts.get(idx) else {
+            eprintln!(
+                "[js-debug] script #{} unavailable ({} script(s) total)",
+                idx,
+                scripts.len()
+            );
+            continue;
+        };
+        let path = format!("/tmp/surf-script-{}.js", idx);
+        match std::fs::write(&path, script) {
+            Ok(()) => {
+                let src = script_urls
+                    .get(idx)
+                    .and_then(|url| url.as_deref())
+                    .unwrap_or("<inline>");
+                eprintln!(
+                    "[js-debug] dumped script #{} ({} bytes, src={}) to {}",
+                    idx,
+                    script.len(),
+                    src,
+                    path
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "[js-debug] failed to dump script #{} to {}: {}",
+                    idx, path, err
+                );
+            }
+        }
+    }
+}
+
+fn run_js_debug_probes(wv: &mut libwebview::WebView) {
+    let Some(probes) = std::env::var_os("SURF_HOST_DEBUG_JS_PROBES") else {
+        return;
+    };
+    let probes = probes.to_string_lossy();
+    let defaults = [
+        "typeof __d + '/' + typeof requireLazy",
+        "document.querySelectorAll('script[data-sjs]').length",
+        "document.querySelectorAll('script[data-sjs]:not([data-processed])').length",
+        "document.body ? document.body.children.length : -1",
+        "document.body ? document.body.textContent.length : -1",
+    ];
+    if probes.trim().is_empty() || probes.trim() == "1" {
+        for source in defaults {
+            let _ = wv.eval_js_for_devtools(source);
+        }
+    } else {
+        for source in probes.split(";;") {
+            let source = source.trim();
+            if !source.is_empty() {
+                let _ = wv.eval_js_for_devtools(source);
+            }
+        }
+    }
+    for line in wv.js_console() {
+        eprintln!("[js:probe] {}", line);
     }
 }
 

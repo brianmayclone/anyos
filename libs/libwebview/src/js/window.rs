@@ -90,6 +90,15 @@ pub fn make_window(
     let mut obj = JsObject::new();
 
     obj.set(String::from("document"), document.clone());
+    let node_filter = JsValue::new_object();
+    node_filter.set_property(String::from("FILTER_ACCEPT"), JsValue::Number(1.0));
+    node_filter.set_property(String::from("FILTER_REJECT"), JsValue::Number(2.0));
+    node_filter.set_property(String::from("FILTER_SKIP"), JsValue::Number(3.0));
+    node_filter.set_property(String::from("SHOW_ALL"), JsValue::Number(0xFFFF_FFFFu32 as f64));
+    node_filter.set_property(String::from("SHOW_ELEMENT"), JsValue::Number(0x1 as f64));
+    node_filter.set_property(String::from("SHOW_TEXT"), JsValue::Number(0x4 as f64));
+    node_filter.set_property(String::from("SHOW_COMMENT"), JsValue::Number(0x80 as f64));
+    obj.set(String::from("NodeFilter"), node_filter);
 
     // location — share from document.
     let loc = document.get_property("location");
@@ -115,6 +124,23 @@ pub fn make_window(
     );
     nav.set_property(String::from("cookieEnabled"), JsValue::Bool(true));
     nav.set_property(String::from("onLine"), JsValue::Bool(true));
+    let connection = JsValue::new_object();
+    connection.set_property(
+        String::from("effectiveType"),
+        JsValue::String(String::from("4g")),
+    );
+    connection.set_property(String::from("downlink"), JsValue::Number(10.0));
+    connection.set_property(String::from("rtt"), JsValue::Number(50.0));
+    connection.set_property(String::from("saveData"), JsValue::Bool(false));
+    connection.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", win_noop),
+    );
+    connection.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", win_noop),
+    );
+    nav.set_property(String::from("connection"), connection);
     nav.set_property(
         String::from("vendor"),
         JsValue::String(String::from("anyOS")),
@@ -162,6 +188,29 @@ pub fn make_window(
         native_fn("sendBeacon", navigator_send_beacon),
     );
     nav.set_property(String::from("share"), native_fn("share", navigator_share));
+    let service_worker = JsValue::new_object();
+    service_worker.set_property(String::from("controller"), JsValue::Null);
+    service_worker.set_property(
+        String::from("register"),
+        native_fn("register", navigator_service_worker_register),
+    );
+    service_worker.set_property(
+        String::from("getRegistration"),
+        native_fn("getRegistration", navigator_service_worker_get_registration),
+    );
+    service_worker.set_property(
+        String::from("getRegistrations"),
+        native_fn("getRegistrations", navigator_service_worker_get_registrations),
+    );
+    service_worker.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", win_noop),
+    );
+    service_worker.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", win_noop),
+    );
+    nav.set_property(String::from("serviceWorker"), service_worker);
     obj.set(String::from("navigator"), nav);
 
     // screen.
@@ -271,6 +320,18 @@ pub fn make_window(
         String::from("dispatchEvent"),
         native_fn("dispatchEvent", |_, _| JsValue::Bool(true)),
     );
+    obj.set(
+        String::from("__shady_native_addEventListener"),
+        native_fn("addEventListener", win_add_event_listener),
+    );
+    obj.set(
+        String::from("__shady_native_removeEventListener"),
+        native_fn("removeEventListener", super::native_remove_event_listener),
+    );
+    obj.set(
+        String::from("__shady_native_dispatchEvent"),
+        native_fn("dispatchEvent", |_, _| JsValue::Bool(true)),
+    );
 
     // Base64 encoding/decoding (W3C HTML §8.3).
     obj.set(String::from("atob"), native_fn("atob", win_atob));
@@ -294,6 +355,28 @@ pub fn make_window(
     perf.set_property(String::from("now"), native_fn("now", win_performance_now));
     perf.set_property(String::from("mark"), native_fn("mark", win_noop));
     perf.set_property(String::from("measure"), native_fn("measure", win_noop));
+    let timing = JsValue::new_object();
+    for key in [
+        "navigationStart",
+        "fetchStart",
+        "domainLookupStart",
+        "domainLookupEnd",
+        "connectStart",
+        "connectEnd",
+        "requestStart",
+        "responseStart",
+        "responseEnd",
+        "domLoading",
+        "domInteractive",
+        "domContentLoadedEventStart",
+        "domContentLoadedEventEnd",
+        "domComplete",
+        "loadEventStart",
+        "loadEventEnd",
+    ] {
+        timing.set_property(String::from(key), JsValue::Number(1.0));
+    }
+    perf.set_property(String::from("timing"), timing);
     perf.set_property(
         String::from("getEntriesByName"),
         native_fn("getEntriesByName", |_, _| make_array(Vec::new())),
@@ -375,10 +458,22 @@ pub fn make_window(
     );
 
     // Event constructors (W3C DOM Events Level 3 / UIEvents / Pointer Events).
-    obj.set(
-        String::from("EventTarget"),
-        native_ctor_fn("EventTarget", win_event_target),
-    );
+    let event_target_ctor = make_native_constructor(vm, "EventTarget", win_event_target, None);
+    if let JsValue::Function(func) = &event_target_ctor {
+        if let Some(proto) = func.borrow().prototype.clone() {
+            let proto_val = JsValue::Object(proto);
+            let add = native_fn("addEventListener", win_noop);
+            let remove = native_fn("removeEventListener", win_noop);
+            let dispatch = native_fn("dispatchEvent", |_, _| JsValue::Bool(true));
+            proto_val.set_property(String::from("addEventListener"), add.clone());
+            proto_val.set_property(String::from("removeEventListener"), remove.clone());
+            proto_val.set_property(String::from("dispatchEvent"), dispatch.clone());
+            proto_val.set_property(String::from("__shady_native_addEventListener"), add);
+            proto_val.set_property(String::from("__shady_native_removeEventListener"), remove);
+            proto_val.set_property(String::from("__shady_native_dispatchEvent"), dispatch);
+        }
+    }
+    obj.set(String::from("EventTarget"), event_target_ctor);
     obj.set(String::from("Event"), native_ctor_fn("Event", win_event));
     obj.set(
         String::from("CustomEvent"),
@@ -430,8 +525,31 @@ pub fn make_window(
         native_ctor_fn("TextDecoder", win_text_decoder),
     );
     obj.set(
+        String::from("TextEncoderStream"),
+        native_ctor_fn("TextEncoderStream", win_text_encoder_stream),
+    );
+    obj.set(
+        String::from("TextDecoderStream"),
+        native_ctor_fn("TextDecoderStream", win_text_decoder_stream),
+    );
+    obj.set(
         String::from("AbortController"),
         native_ctor_fn("AbortController", win_abort_controller),
+    );
+    obj.set(String::from("Blob"), native_ctor_fn("Blob", win_blob));
+    let dom_string_map_ctor = make_native_constructor(vm, "DOMStringMap", win_dom_ctor, None);
+    obj.set(String::from("DOMStringMap"), dom_string_map_ctor);
+    obj.set(
+        String::from("ReadableStream"),
+        native_ctor_fn("ReadableStream", win_readable_stream),
+    );
+    obj.set(
+        String::from("WritableStream"),
+        native_ctor_fn("WritableStream", win_writable_stream),
+    );
+    obj.set(
+        String::from("TransformStream"),
+        native_ctor_fn("TransformStream", win_transform_stream),
     );
     obj.set(
         String::from("queueMicrotask"),
@@ -453,6 +571,11 @@ pub fn make_window(
         String::from("clearEventListeners"),
         native_fn("clearEventListeners", win_noop),
     );
+    obj.set(String::from("clarity"), native_fn("clarity", win_noop));
+    obj.set(
+        String::from("renderClarity"),
+        native_fn("renderClarity", win_noop),
+    );
     obj.set(
         String::from("getRequestUUID"),
         native_fn("getRequestUUID", win_get_request_uuid),
@@ -472,6 +595,7 @@ pub fn make_window(
         native_ctor_fn("Image", super::document::native_image_ctor),
     );
     let node_ctor = make_native_constructor(vm, "Node", win_dom_ctor, None);
+    let window_ctor = make_native_constructor(vm, "Window", win_dom_ctor, None);
     let node_proto = match &node_ctor {
         JsValue::Function(func) => func.borrow().prototype.clone(),
         _ => None,
@@ -508,6 +632,10 @@ pub fn make_window(
     }
     let html_element_ctor =
         make_native_constructor(vm, "HTMLElement", win_dom_ctor, element_proto.clone());
+    let html_element_proto = match &html_element_ctor {
+        JsValue::Function(func) => func.borrow().prototype.clone(),
+        _ => element_proto.clone(),
+    };
     let attr_ctor = make_native_constructor(vm, "Attr", win_attr_ctor, node_proto.clone());
     let custom_element_registry_ctor = make_native_constructor(
         vm,
@@ -518,35 +646,70 @@ pub fn make_window(
     let custom_elements = win_custom_element_registry_ctor(vm, &[]);
 
     obj.set(String::from("Node"), node_ctor);
+    obj.set(String::from("Window"), window_ctor);
     obj.set(String::from("Document"), document_ctor);
     obj.set(String::from("DocumentFragment"), document_fragment_ctor);
+    obj.set(
+        String::from("ShadowRoot"),
+        make_native_constructor(vm, "ShadowRoot", win_dom_ctor, node_proto.clone()),
+    );
     obj.set(String::from("CharacterData"), character_data_ctor);
+    obj.set(
+        String::from("CDATASection"),
+        make_native_constructor(vm, "CDATASection", win_dom_ctor, character_data_proto.clone()),
+    );
+    obj.set(
+        String::from("ProcessingInstruction"),
+        make_native_constructor(
+            vm,
+            "ProcessingInstruction",
+            win_dom_ctor,
+            character_data_proto.clone(),
+        ),
+    );
     obj.set(String::from("DocumentType"), document_type_ctor);
     obj.set(String::from("Text"), text_ctor);
     obj.set(String::from("Comment"), comment_ctor);
     obj.set(String::from("Element"), element_ctor);
     obj.set(String::from("HTMLElement"), html_element_ctor);
-    install_html_element_constructor(vm, &mut obj, "HTMLAnchorElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLAreaElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLButtonElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLCanvasElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLDivElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLFormElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLHeadElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLHtmlElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLIFrameElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLImageElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLInputElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLLabelElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLLinkElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLMetaElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLOptionElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLScriptElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLSelectElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLSpanElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLStyleElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLTableElement", element_proto.clone());
-    install_html_element_constructor(vm, &mut obj, "HTMLTextAreaElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLAnchorElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLAreaElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLBodyElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLBRElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLButtonElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLCanvasElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLDivElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLFormElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLHeadElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLHeadingElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLHtmlElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLIFrameElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLImageElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLInputElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLLabelElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLLIElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLLinkElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLMediaElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLMetaElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLAudioElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLVideoElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLSourceElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLPictureElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLOptionElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLParagraphElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLScriptElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLSelectElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLSlotElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLSpanElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLStyleElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLTableElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLTemplateElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLTextAreaElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLUListElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "HTMLUnknownElement", html_element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "SVGElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "SVGSVGElement", element_proto.clone());
+    install_html_element_constructor(vm, &mut obj, "SVGGraphicsElement", element_proto.clone());
     obj.set(String::from("Attr"), attr_ctor);
     obj.set(
         String::from("CustomElementRegistry"),
@@ -1363,6 +1526,18 @@ fn navigator_share(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     promise_resolve_value(vm, JsValue::Undefined)
 }
 
+fn navigator_service_worker_register(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    promise_resolve_value(vm, JsValue::Undefined)
+}
+
+fn navigator_service_worker_get_registration(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    promise_resolve_value(vm, JsValue::Undefined)
+}
+
+fn navigator_service_worker_get_registrations(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    promise_resolve_value(vm, make_array(Vec::new()))
+}
+
 fn win_tcfapi(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let command = arg_string(args, 0).to_ascii_lowercase();
     let callback = args.get(2).cloned().unwrap_or(JsValue::Undefined);
@@ -1930,6 +2105,150 @@ fn win_message_channel(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     channel
 }
 
+fn stream_resolved_undefined(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    promise_resolve_value(vm, JsValue::Undefined)
+}
+
+fn readable_reader_read(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let result = JsValue::new_object();
+    result.set_property(String::from("done"), JsValue::Bool(true));
+    result.set_property(String::from("value"), JsValue::Undefined);
+    promise_resolve_value(vm, result)
+}
+
+fn make_readable_stream_controller() -> JsValue {
+    let ctrl = JsValue::new_object();
+    ctrl.set_property(String::from("desiredSize"), JsValue::Number(1.0));
+    ctrl.set_property(String::from("enqueue"), native_fn("enqueue", win_noop));
+    ctrl.set_property(String::from("close"), native_fn("close", win_noop));
+    ctrl.set_property(String::from("error"), native_fn("error", win_noop));
+    ctrl
+}
+
+fn make_readable_stream_object() -> JsValue {
+    let stream = JsValue::new_object();
+    stream.set_property(String::from("locked"), JsValue::Bool(false));
+    stream.set_property(
+        String::from("getReader"),
+        native_fn("getReader", |_vm, _args| {
+            let reader = JsValue::new_object();
+            reader.set_property(String::from("closed"), promise_resolve_value(_vm, JsValue::Undefined));
+            reader.set_property(String::from("read"), native_fn("read", readable_reader_read));
+            reader.set_property(
+                String::from("releaseLock"),
+                native_fn("releaseLock", win_noop),
+            );
+            reader.set_property(
+                String::from("cancel"),
+                native_fn("cancel", stream_resolved_undefined),
+            );
+            reader
+        }),
+    );
+    stream.set_property(
+        String::from("cancel"),
+        native_fn("cancel", stream_resolved_undefined),
+    );
+    stream.set_property(
+        String::from("pipeTo"),
+        native_fn("pipeTo", stream_resolved_undefined),
+    );
+    stream.set_property(
+        String::from("pipeThrough"),
+        native_fn("pipeThrough", |vm, args| {
+            let transform = args.first().cloned().unwrap_or(JsValue::Undefined);
+            let readable = transform.get_property("readable");
+            if !readable.is_undefined() {
+                return readable;
+            }
+            vm.current_this.clone()
+        }),
+    );
+    stream.set_property(
+        String::from("tee"),
+        native_fn("tee", |_vm, _args| {
+            make_array(vec![
+                make_readable_stream_object(),
+                make_readable_stream_object(),
+            ])
+        }),
+    );
+    stream
+}
+
+fn win_readable_stream(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let stream = make_readable_stream_object();
+    let source = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let start = source.get_property("start");
+    if start.is_function() {
+        let controller = make_readable_stream_controller();
+        vm.call_value(&start, &[controller], source);
+    }
+    stream
+}
+
+fn make_writable_stream_object() -> JsValue {
+    let stream = JsValue::new_object();
+    stream.set_property(String::from("locked"), JsValue::Bool(false));
+    stream.set_property(
+        String::from("getWriter"),
+        native_fn("getWriter", |vm, _args| {
+            let writer = JsValue::new_object();
+            writer.set_property(String::from("closed"), promise_resolve_value(vm, JsValue::Undefined));
+            writer.set_property(String::from("ready"), promise_resolve_value(vm, JsValue::Undefined));
+            writer.set_property(
+                String::from("desiredSize"),
+                JsValue::Number(1.0),
+            );
+            writer.set_property(
+                String::from("write"),
+                native_fn("write", stream_resolved_undefined),
+            );
+            writer.set_property(
+                String::from("close"),
+                native_fn("close", stream_resolved_undefined),
+            );
+            writer.set_property(
+                String::from("abort"),
+                native_fn("abort", stream_resolved_undefined),
+            );
+            writer.set_property(
+                String::from("releaseLock"),
+                native_fn("releaseLock", win_noop),
+            );
+            writer
+        }),
+    );
+    stream.set_property(
+        String::from("abort"),
+        native_fn("abort", stream_resolved_undefined),
+    );
+    stream.set_property(
+        String::from("close"),
+        native_fn("close", stream_resolved_undefined),
+    );
+    stream
+}
+
+fn win_writable_stream(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let stream = make_writable_stream_object();
+    let sink = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let start = sink.get_property("start");
+    if start.is_function() {
+        let controller = JsValue::new_object();
+        controller.set_property(String::from("error"), native_fn("error", win_noop));
+        vm.call_value(&start, &[controller], sink);
+    }
+    stream
+}
+
+fn win_transform_stream(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let transform = JsValue::new_object();
+    transform.set_property(String::from("readable"), make_readable_stream_object());
+    transform.set_property(String::from("writable"), make_writable_stream_object());
+    transform
+}
+
 fn win_url_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let url = arg_string(args, 0);
     let u = JsValue::new_object();
@@ -2007,6 +2326,25 @@ fn win_text_decoder(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     dec
 }
 
+fn make_text_codec_stream(encoding: &str) -> JsValue {
+    let stream = JsValue::new_object();
+    stream.set_property(String::from("readable"), make_readable_stream_object());
+    stream.set_property(String::from("writable"), make_writable_stream_object());
+    stream.set_property(
+        String::from("encoding"),
+        JsValue::String(String::from(encoding)),
+    );
+    stream
+}
+
+fn win_text_encoder_stream(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    make_text_codec_stream("utf-8")
+}
+
+fn win_text_decoder_stream(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    make_text_codec_stream("utf-8")
+}
+
 fn win_abort_controller(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let sig = JsValue::new_object();
     sig.set_property(String::from("aborted"), JsValue::Bool(false));
@@ -2023,6 +2361,34 @@ fn win_abort_controller(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         }),
     );
     ctrl
+}
+
+fn win_blob(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let parts = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let opts = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let typ = opts.get_property("type").to_js_string();
+    let mut size = 0usize;
+    if let JsValue::Array(arr) = &parts {
+        for (_idx, part) in arr.borrow().elements.iter() {
+            size = size.saturating_add(part.to_js_string().len());
+        }
+    }
+    let blob = JsValue::new_object();
+    blob.set_property(String::from("size"), JsValue::Number(size as f64));
+    blob.set_property(String::from("type"), JsValue::String(typ));
+    blob.set_property(
+        String::from("text"),
+        native_fn("text", |vm, _| promise_resolve_value(vm, JsValue::String(String::new()))),
+    );
+    blob.set_property(
+        String::from("arrayBuffer"),
+        native_fn("arrayBuffer", |vm, _| promise_resolve_value(vm, JsValue::new_array(Vec::new()))),
+    );
+    blob.set_property(
+        String::from("slice"),
+        native_fn("slice", |_vm, _| JsValue::new_object()),
+    );
+    blob
 }
 
 fn win_queue_microtask(_vm: &mut Vm, args: &[JsValue]) -> JsValue {

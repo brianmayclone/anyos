@@ -21,6 +21,26 @@ fn parse_calc_value(s: &str) -> CssValue {
     }
 }
 
+fn clamp_calc_i64(v: i64) -> i32 {
+    const LIMIT: i64 = i32::MAX as i64 / 4;
+    v.clamp(-LIMIT, LIMIT) as i32
+}
+
+fn calc_add(a: i32, b: i32) -> i32 {
+    clamp_calc_i64(a as i64 + b as i64)
+}
+
+fn calc_sub(a: i32, b: i32) -> i32 {
+    clamp_calc_i64(a as i64 - b as i64)
+}
+
+fn calc_mul_div(a: i32, b: i32, div: i32) -> i32 {
+    if div == 0 {
+        return 0;
+    }
+    clamp_calc_i64((a as i64) * (b as i64) / (div as i64))
+}
+
 fn eval_calc_components(s: &str) -> (i32, i32) {
     let s = s.trim();
     let bytes = s.as_bytes();
@@ -49,9 +69,9 @@ fn eval_calc_components(s: &str) -> (i32, i32) {
         let (lpx, lpct) = eval_calc_components(&s[..pos]);
         let (rpx, rpct) = eval_calc_components(&s[pos + 1..]);
         return if split_op == b'+' {
-            (lpx + rpx, lpct + rpct)
+            (calc_add(lpx, rpx), calc_add(lpct, rpct))
         } else {
-            (lpx - rpx, lpct - rpct)
+            (calc_sub(lpx, rpx), calc_sub(lpct, rpct))
         };
     }
 
@@ -73,13 +93,13 @@ fn eval_calc_components(s: &str) -> (i32, i32) {
         let (rpx, rpct) = eval_calc_components(&s[pos + 1..]);
         if split_op == b'*' {
             if lpct == 0 && rpct == 0 {
-                return (lpx * rpx / 100, 0);
+                return (calc_mul_div(lpx, rpx, 100), 0);
             } else if lpct == 0 && rpct != 0 {
                 let mul = lpx;
-                return (rpx * mul / 100, rpct * mul / 100);
+                return (calc_mul_div(rpx, mul, 100), calc_mul_div(rpct, mul, 100));
             } else if rpct == 0 {
                 let mul = rpx;
-                return (lpx * mul / 100, lpct * mul / 100);
+                return (calc_mul_div(lpx, mul, 100), calc_mul_div(lpct, mul, 100));
             } else {
                 // Invalid CSS math: dimensions/percentages cannot be multiplied
                 // by another percentage-bearing term into a length-percentage.
@@ -88,7 +108,7 @@ fn eval_calc_components(s: &str) -> (i32, i32) {
         } else {
             let div = rpx;
             if div != 0 {
-                return (lpx * 100 / div, lpct * 100 / div);
+                return (calc_mul_div(lpx, 100, div), calc_mul_div(lpct, 100, div));
             } else {
                 return (0, 0);
             }

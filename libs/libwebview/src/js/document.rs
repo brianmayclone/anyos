@@ -277,6 +277,10 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
         String::from("hasFeature"),
         native_fn("hasFeature", |_, _| JsValue::Bool(true)),
     );
+    impl_obj.set_property(
+        String::from("createHTMLDocument"),
+        native_fn("createHTMLDocument", |vm, _| vm.get_global("document")),
+    );
     obj.set(String::from("implementation"), impl_obj);
 
     // ── Native methods ──

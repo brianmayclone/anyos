@@ -535,6 +535,7 @@ impl Vm {
         self.last_exception = None;
         let chunk = Rc::new(chunk);
         let locals = Self::make_locals(&chunk);
+        let global_this = self.global_this_value();
         let frame = CallFrame {
             chunk: chunk.clone(),
             ip: 0,
@@ -543,7 +544,7 @@ impl Vm {
             upvalue_cells: Vec::new(),
             with_scopes: Vec::new(),
             captured_with_scope_len: 0,
-            this_val: JsValue::Object(self.globals.clone()),
+            this_val: global_this,
             is_constructor: false,
             all_args: Vec::new(),
             self_ref: JsValue::Undefined,
@@ -674,15 +675,25 @@ impl Vm {
         }
     }
 
-    fn browser_window_global_get(&self, name: &str) -> Option<JsValue> {
+    fn browser_window_global_has(&self, name: &str) -> bool {
+        if matches!(name, "window" | "self" | "globalThis") {
+            return false;
+        }
+        let window = self.globals.borrow().get("window");
+        if let JsValue::Object(window_obj) = window {
+            return window_obj.borrow().has(name);
+        }
+        false
+    }
+
+    fn browser_window_global_get(&mut self, name: &str) -> Option<JsValue> {
         if matches!(name, "window" | "self" | "globalThis") {
             return None;
         }
         let window = self.globals.borrow().get("window");
-        if let JsValue::Object(window_obj) = window {
-            let obj = window_obj.borrow();
-            if obj.has(name) {
-                return Some(obj.get(name));
+        if let JsValue::Object(window_obj) = &window {
+            if window_obj.borrow().has(name) {
+                return Some(self.get_property_invoking_getter(&window, name));
             }
         }
         None
@@ -697,6 +708,15 @@ impl Vm {
             window_obj
                 .borrow_mut()
                 .set(String::from(name), value.clone());
+        }
+    }
+
+    fn global_this_value(&self) -> JsValue {
+        let configured = self.globals.borrow().get("globalThis");
+        if !configured.is_undefined() {
+            configured
+        } else {
+            JsValue::Object(self.globals.clone())
         }
     }
 
@@ -1000,11 +1020,11 @@ impl Vm {
                     } else if let Some(val) = self.captured_with_scope_get(frame_idx, &name) {
                         self.stack.push(val);
                     } else if name == "globalThis" {
-                        self.stack.push(JsValue::Object(self.globals.clone()));
+                        self.stack.push(self.global_this_value());
+                    } else if let Some(val) = self.browser_window_global_get(&name) {
+                        self.stack.push(val);
                     } else if self.globals.borrow().has(&name) {
                         let val = self.globals.borrow().get(&name);
-                        self.stack.push(val);
-                    } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
                     } else {
                         if name == "e" {
@@ -1028,11 +1048,15 @@ impl Vm {
                 Op::LoadGlobal(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     if name == "globalThis" {
-                        // ES2020: globalThis — return the live global object
-                        self.stack.push(JsValue::Object(self.globals.clone()));
+                        // ES2020: globalThis — return the configured browser global
+                        // object when the host has installed one (`window` in browsers),
+                        // otherwise fall back to the VM global object.
+                        self.stack.push(self.global_this_value());
                     } else if let Some(val) = self.active_with_scope_get(frame_idx, &name) {
                         self.stack.push(val);
                     } else if let Some(val) = self.captured_with_scope_get(frame_idx, &name) {
+                        self.stack.push(val);
+                    } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
                     } else if let Some(val) =
                         self.try_load_global_ic(frame_idx, ip, name.as_str())
@@ -1040,8 +1064,6 @@ impl Vm {
                         self.stack.push(val);
                     } else if self.globals.borrow().has(&name) {
                         let val = self.globals.borrow().get(&name);
-                        self.stack.push(val);
-                    } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
                     } else {
                         if name == "e" {
@@ -1115,7 +1137,7 @@ impl Vm {
                     } else if let Some(val) = self.captured_with_scope_get(frame_idx, &name) {
                         self.stack.push(val);
                     } else if name == "globalThis" {
-                        self.stack.push(JsValue::Object(self.globals.clone()));
+                        self.stack.push(self.global_this_value());
                     } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
                     } else {
@@ -1126,16 +1148,16 @@ impl Vm {
                 Op::LoadGlobalSafe(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     if name == "globalThis" {
-                        self.stack.push(JsValue::Object(self.globals.clone()));
+                        self.stack.push(self.global_this_value());
                     } else if let Some(val) = self.active_with_scope_get(frame_idx, &name) {
                         self.stack.push(val);
                     } else if let Some(val) = self.captured_with_scope_get(frame_idx, &name) {
                         self.stack.push(val);
+                    } else if let Some(val) = self.browser_window_global_get(&name) {
+                        self.stack.push(val);
                     } else if let Some(val) =
                         self.try_load_global_ic(frame_idx, ip, name.as_str())
                     {
-                        self.stack.push(val);
-                    } else if let Some(val) = self.browser_window_global_get(&name) {
                         self.stack.push(val);
                     } else {
                         let val = self.globals.borrow().get(&name);
@@ -1377,7 +1399,10 @@ impl Vm {
                     if !self.globals.borrow().has(&name) {
                         self.globals
                             .borrow_mut()
-                            .set(name, JsValue::Undefined);
+                            .set(name.clone(), JsValue::Undefined);
+                    }
+                    if !self.browser_window_global_has(&name) {
+                        self.browser_window_global_set(&name, &JsValue::Undefined);
                     }
                 }
                 Op::LeaveWith => {
@@ -1987,6 +2012,56 @@ impl Vm {
                         if Self::is_nullish_safe_probe_key(&name) {
                             self.stack.push(JsValue::Undefined);
                             continue;
+                        }
+                        #[cfg(feature = "host")]
+                        if name == "prototype" && std::env::var_os("LIBJS_DEBUG_PROTOTYPE").is_some()
+                        {
+                            let mut ctx = String::new();
+                            let frame = &self.frames[frame_idx];
+                            let max_back = ip.min(10);
+                            for back in 1..=max_back {
+                                let check_ip = ip - back;
+                                if !ctx.is_empty() {
+                                    ctx.push_str(" <- ");
+                                }
+                                match &frame.chunk.code[check_ip] {
+                                    crate::bytecode::Op::LoadGlobal(ci)
+                                    | crate::bytecode::Op::GetPropNamed(ci)
+                                    | crate::bytecode::Op::SetPropNamed(ci) => {
+                                        if let Some(crate::bytecode::Constant::String(s)) =
+                                            frame.chunk.constants.get(*ci as usize)
+                                        {
+                                            ctx.push_str(&alloc::format!(
+                                                "{:?}({})",
+                                                frame.chunk.code[check_ip], s
+                                            ));
+                                        } else {
+                                            ctx.push_str(&alloc::format!(
+                                                "{:?}",
+                                                frame.chunk.code[check_ip]
+                                            ));
+                                        }
+                                    }
+                                    op => ctx.push_str(&alloc::format!("{:?}", op)),
+                                }
+                            }
+                            let local0 = self.frames[frame_idx]
+                                .locals
+                                .get(0)
+                                .map(|v| v.get().to_js_string())
+                                .unwrap_or_else(|| String::from("<none>"));
+                            let local2 = self.frames[frame_idx]
+                                .locals
+                                .get(2)
+                                .map(|v| v.get().type_of())
+                                .unwrap_or("<none>");
+                            std::eprintln!(
+                                "[libjs-debug] undefined.prototype context: {} local0={} local2={}",
+                                ctx,
+                                local0,
+                                local2
+                            );
+                            self.log_engine(&alloc::format!("undefined.prototype context: {}", ctx));
                         }
                         let msg = alloc::format!(
                             "Cannot read properties of {} (reading '{}')",

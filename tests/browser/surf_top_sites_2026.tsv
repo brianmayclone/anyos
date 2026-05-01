@@ -1,0 +1,48 @@
+# Surf browser rendering matrix.
+# Source basis: Similarweb "Top Websites Ranking" / "Top 50 Most Visited Websites Worldwide", March 2026 snapshot.
+# Created: 2026-04-30.
+# Notes:
+# - Explicit adult domains from the global ranking are intentionally excluded from this automated test list.
+# - Keep this list stable for regression work; refresh only when we deliberately update the browser matrix.
+# - The active debug workflow should run only the two worst pages at a time, especially white/timeout pages.
+rank	url	focus
+1	https://www.google.com/	search,forms,layout,js
+2	https://www.youtube.com/	video-app,js,css-grid
+3	https://www.facebook.com/	app-shell,forms,js
+4	https://www.instagram.com/	app-shell,js,media
+5	https://chatgpt.com/	spa,js,streaming
+6	https://x.com/	spa,js,layout
+7	https://www.reddit.com/	feeds,css,js
+8	https://www.bing.com/	search,forms,layout
+9	https://www.whatsapp.com/	landing,images,css
+10	https://www.wikipedia.org/	content,tables,images
+11	https://www.tiktok.com/	spa,media,js
+12	https://www.yahoo.co.jp/	portal,layout,images
+13	https://www.yahoo.com/	portal,layout,ads
+14	https://yandex.ru/	search,forms,js
+15	https://gemini.google.com/	spa,js,auth-shell
+16	https://www.amazon.com/	ecommerce,forms,layout
+17	https://www.linkedin.com/	app-shell,forms,js
+18	https://www.baidu.com/	search,forms,layout
+19	https://www.bet.br/	landing,layout,js
+20	https://www.naver.com/	portal,layout,images
+21	https://www.netflix.com/	landing,media,css
+22	https://www.pinterest.com/	media-grid,js,layout
+23	https://www.live.com/	auth-shell,forms,gradient
+24	https://dzen.ru/	portal,feeds,js
+25	https://www.bilibili.com/	media,layout,js
+26	https://www.temu.com/	ecommerce,css,js
+27	https://www.microsoft.com/	landing,css,images
+28	https://www.office.com/	app-shell,auth,js
+29	https://www.cloud.microsoft/	landing,css,images
+30	https://www.twitch.tv/	spa,media,js
+31	https://www.canva.com/	spa,css,js
+32	https://weather.com/	portal,widgets,js
+33	https://vk.com/	app-shell,forms,js
+34	https://www.globo.com/	portal,images,performance
+35	https://www.samsung.com/	landing,images,css
+36	https://news.yahoo.co.jp/	news,layout,images
+37	https://mail.ru/	portal,js,white-page
+38	https://www.fandom.com/	content,ads,layout
+39	https://t.me/	landing,forms,css
+40	https://www.nytimes.com/	news,js,white-page

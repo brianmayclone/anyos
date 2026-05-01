@@ -836,13 +836,22 @@ impl WebView {
     /// `scripts` should contain the text of each script to execute, in
     /// document order (resolved from [`script_entries`]).
     pub fn execute_js(&mut self, scripts: &[String]) -> bool {
+        self.execute_js_with_limits(scripts, js::ScriptExecutionLimits::default())
+    }
+
+    pub fn execute_js_with_limits(
+        &mut self,
+        scripts: &[String],
+        limits: js::ScriptExecutionLimits,
+    ) -> bool {
         let mut dom = match self.dom_val.take() {
             Some(d) => d,
             None => return false,
         };
 
         let url = self.current_url.clone();
-        self.js_runtime.execute_script_sources(&dom, &url, scripts);
+        self.js_runtime
+            .execute_script_sources_with_limits(&dom, &url, scripts, limits);
 
         // Apply DOM mutations and re-layout.
         let mut changed = false;

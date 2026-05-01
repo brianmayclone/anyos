@@ -63,6 +63,28 @@ impl JsEngine {
         // Parse
         let mut parser = parser::Parser::new(tokens);
         let program = parser.parse_program();
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_PARSE").is_some() {
+            std::eprintln!(
+                "[libjs-parse] source_bytes={} stmts={} remaining_tokens={} errors={}",
+                source.len(),
+                program.body.len(),
+                parser.remaining_tokens(),
+                parser.errors.len()
+            );
+            if let Some(err) = parser.errors.first() {
+                std::eprintln!("[libjs-parse] first_error={}", err);
+            }
+            if std::env::var_os("LIBJS_DEBUG_AST").is_some() {
+                for (idx, stmt) in program.body.iter().take(8).enumerate() {
+                    let detail = match stmt {
+                        ast::Stmt::Expr(expr) => ast::expr_summary(expr, 0),
+                        other => ast::stmt_variant_name(other).into(),
+                    };
+                    std::eprintln!("[libjs-ast] stmt#{} {}", idx, detail);
+                }
+            }
+        }
 
         // If there were parse errors, store a SyntaxError as last_exception
         if !parser.errors.is_empty() {
@@ -74,6 +96,18 @@ impl JsEngine {
         // Compile (using eval mode to return the last expression's value)
         let mut compiler = compiler::Compiler::new();
         let chunk = compiler.compile_eval(&program);
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_PARSE").is_some() {
+            std::eprintln!(
+                "[libjs-parse] chunk_ops={} constants={}",
+                chunk.code.len(),
+                chunk.constants.len()
+            );
+            debug_chunk_functions(&chunk, 0, 6);
+            if std::env::var_os("LIBJS_DEBUG_BYTECODE").is_some() {
+                debug_chunk_ops(&chunk, "top", 96);
+            }
+        }
 
         // Execute
         self.vm.execute(chunk)
@@ -146,6 +180,44 @@ impl JsEngine {
         self.vm
             .module_registry
             .insert(String::from(specifier), namespace);
+    }
+}
+
+#[cfg(feature = "host")]
+fn debug_chunk_functions(chunk: &bytecode::Chunk, depth: usize, remaining: usize) {
+    if remaining == 0 {
+        return;
+    }
+    for (idx, constant) in chunk.constants.iter().enumerate() {
+        if let bytecode::Constant::Function(func) = constant {
+            let indent = "  ".repeat(depth);
+            std::eprintln!(
+                "[libjs-parse] {}fn_const#{} name={} ops={} constants={} locals={} params={} strict={} generator={} async={}",
+                indent,
+                idx,
+                func.name.as_deref().unwrap_or("<anon>"),
+                func.code.len(),
+                func.constants.len(),
+                func.local_names.len(),
+                func.param_count,
+                func.strict,
+                func.is_generator,
+                func.is_async
+            );
+            if std::env::var_os("LIBJS_DEBUG_BYTECODE").is_some() && func.code.len() > 1000 {
+                let mut label = String::from("fn:");
+                label.push_str(func.name.as_deref().unwrap_or("<anon>"));
+                debug_chunk_ops(func, &label, 96);
+            }
+            debug_chunk_functions(func, depth + 1, remaining - 1);
+        }
+    }
+}
+
+#[cfg(feature = "host")]
+fn debug_chunk_ops(chunk: &bytecode::Chunk, label: &str, limit: usize) {
+    for (idx, op) in chunk.code.iter().take(limit).enumerate() {
+        std::eprintln!("[libjs-bytecode] {} {:04}: {:?}", label, idx, op);
     }
 }
 

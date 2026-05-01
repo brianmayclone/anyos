@@ -121,7 +121,8 @@ pub(super) fn interpolate_gradient_color(stops: &[crate::style::GradientStop], t
             if range <= 0 {
                 return stop.color;
             }
-            let frac = ((t_clamped - prev.position) * 255 / range) as u32;
+            let frac = (((t_clamped as i64 - prev.position as i64) * 255 / range as i64)
+                .clamp(0, 255)) as u32;
             return lerp_color(prev.color, stop.color, frac);
         }
         prev = stop;
@@ -131,6 +132,7 @@ pub(super) fn interpolate_gradient_color(stops: &[crate::style::GradientStop], t
 
 /// Linear interpolation between two ARGB colors. `frac` is 0..255.
 fn lerp_color(c0: u32, c1: u32, frac: u32) -> u32 {
+    let frac = frac.min(255);
     let inv = 255 - frac;
     let a = (((c0 >> 24) & 0xFF) * inv + ((c1 >> 24) & 0xFF) * frac) / 255;
     let r = (((c0 >> 16) & 0xFF) * inv + ((c1 >> 16) & 0xFF) * frac) / 255;

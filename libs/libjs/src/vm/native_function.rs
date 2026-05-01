@@ -32,10 +32,29 @@ pub fn function_apply(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this_arg = args.first().cloned().unwrap_or(JsValue::Undefined);
     let call_args: Vec<JsValue> = match args.get(1) {
         Some(JsValue::Array(arr)) => arr.borrow().to_dense_vec(),
+        Some(JsValue::Object(_)) => array_like_to_vec(args.get(1).unwrap()),
+        Some(JsValue::String(s)) => s
+            .chars()
+            .map(|ch| {
+                let mut out = String::new();
+                out.push(ch);
+                JsValue::String(out)
+            })
+            .collect(),
+        Some(JsValue::Null | JsValue::Undefined) | None => Vec::new(),
         _ => Vec::new(),
     };
 
     invoke_with_this(vm, &func, &this_arg, &call_args)
+}
+
+fn array_like_to_vec(value: &JsValue) -> Vec<JsValue> {
+    let len = value.get_property("length").to_number().max(0.0) as usize;
+    let mut out = Vec::new();
+    for idx in 0..len {
+        out.push(value.get_property(&format!("{}", idx)));
+    }
+    out
 }
 
 /// Function.prototype.bind(thisArg, ...args)
@@ -127,6 +146,17 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
                     result
                 }
                 FnKind::Bytecode(chunk) => {
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_CALLS").is_some() && chunk.code.len() > 1000
+                    {
+                        eprintln!(
+                            "[libjs-call] function.call/apply bytecode name={} ops={} args={} this={}",
+                            chunk.name.as_deref().unwrap_or("<anon>"),
+                            chunk.code.len(),
+                            args.len(),
+                            effective_this.type_of()
+                        );
+                    }
                     let captured_with_scopes = match &func {
                         JsValue::Function(f) => f.borrow().with_scopes.clone(),
                         _ => Vec::new(),

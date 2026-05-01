@@ -1,10 +1,7 @@
 //! Promise — simplified synchronous implementation.
 //!
-//! Since our VM is single-threaded and has no event loop, Promises
-//! resolve synchronously during construction.  This is sufficient for
-//! the vast majority of web-page JS that uses `new Promise(...)`,
-//! `.then()`, `.catch()`, `Promise.resolve()`, `Promise.reject()`,
-//! and `Promise.all()`.
+//! Since our VM is single-threaded, Promise reactions are queued as
+//! microtasks and drained by the VM between macrotasks.
 
 use alloc::rc::Rc;
 use alloc::string::String;
@@ -40,15 +37,16 @@ pub fn ctor_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     // Execute the executor(resolve, reject) synchronously
     if executor.is_function() {
-        let promise_clone = promise.clone();
-
-        // Store promise reference for resolve/reject to find via globals.
-        vm.set_global("__promise_pending", promise_clone);
-        vm.register_native("__promise_resolve_fn", promise_resolve_native);
-        vm.register_native("__promise_reject_fn", promise_reject_native);
-
-        let resolve_fn = vm.get_global("__promise_resolve_fn");
-        let reject_fn = vm.get_global("__promise_reject_fn");
+        let resolve_fn = make_bound_native(
+            "__promise_resolve__",
+            promise_resolve_native,
+            vec![promise.clone()],
+        );
+        let reject_fn = make_bound_native(
+            "__promise_reject__",
+            promise_reject_native,
+            vec![promise.clone()],
+        );
 
         vm.call_value(&executor, &[resolve_fn, reject_fn], JsValue::Undefined);
     }
@@ -192,15 +190,15 @@ fn settle_chained_result(vm: &mut Vm, target: &JsValue, result: JsValue) {
 }
 
 fn promise_resolve_native(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let value = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let promise = vm.get_global("__promise_pending");
+    let promise = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     settle_promise(vm, &promise, "fulfilled", &value);
     JsValue::Undefined
 }
 
 fn promise_reject_native(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let value = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let promise = vm.get_global("__promise_pending");
+    let promise = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     settle_promise(vm, &promise, "rejected", &value);
     JsValue::Undefined
 }
@@ -496,6 +494,91 @@ pub fn promise_reject(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     make_promise(vm, "rejected", value)
 }
 
+fn promise_state(value: &JsValue) -> Option<(String, JsValue)> {
+    if let JsValue::Object(obj) = value {
+        let o = obj.borrow();
+        if o.internal_tag.as_deref() == Some("__promise__") {
+            return Some((o.get("__state").to_js_string(), o.get("__value")));
+        }
+    }
+    None
+}
+
+fn state_number(state: &JsValue, key: &str) -> usize {
+    state.get_property(key).to_number().max(0.0) as usize
+}
+
+fn set_state_number(state: &JsValue, key: &str, value: usize) {
+    state.set_property(String::from(key), JsValue::Number(value as f64));
+}
+
+fn state_bool(state: &JsValue, key: &str) -> bool {
+    matches!(state.get_property(key), JsValue::Bool(true))
+}
+
+fn promise_all_fulfill_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let state = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let index = args.get(1).map(|v| v.to_number() as usize).unwrap_or(0);
+    let value = args.get(2).cloned().unwrap_or(JsValue::Undefined);
+    if state_bool(&state, "settled") {
+        return JsValue::Undefined;
+    }
+    if let JsValue::Array(values) = state.get_property("values") {
+        values.borrow_mut().set(index, value);
+    }
+    let remaining = state_number(&state, "remaining").saturating_sub(1);
+    set_state_number(&state, "remaining", remaining);
+    if remaining == 0 {
+        state.set_property(String::from("settled"), JsValue::Bool(true));
+        let target = state.get_property("target");
+        let values = state.get_property("values");
+        settle_promise(vm, &target, "fulfilled", &values);
+    }
+    JsValue::Undefined
+}
+
+fn promise_all_reject_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let state = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let reason = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    if !state_bool(&state, "settled") {
+        state.set_property(String::from("settled"), JsValue::Bool(true));
+        let target = state.get_property("target");
+        settle_promise(vm, &target, "rejected", &reason);
+    }
+    JsValue::Undefined
+}
+
+fn promise_race_fulfill_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let state = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    if !state_bool(&state, "settled") {
+        state.set_property(String::from("settled"), JsValue::Bool(true));
+        let target = state.get_property("target");
+        settle_promise(vm, &target, "fulfilled", &value);
+    }
+    JsValue::Undefined
+}
+
+fn promise_race_reject_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let state = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let reason = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    if !state_bool(&state, "settled") {
+        state.set_property(String::from("settled"), JsValue::Bool(true));
+        let target = state.get_property("target");
+        settle_promise(vm, &target, "rejected", &reason);
+    }
+    JsValue::Undefined
+}
+
+fn attach_then(vm: &mut Vm, promise_like: &JsValue, on_fulfilled: JsValue, on_rejected: JsValue) {
+    let then_fn = vm.get_property_with_proto(promise_like, "then");
+    if then_fn.is_function() {
+        vm.call_value(&then_fn, &[on_fulfilled, on_rejected], promise_like.clone());
+        let _ = vm.last_exception.take();
+        let _ = vm.pending_exception.take();
+    }
+}
+
 pub fn promise_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
     let promises = match &iterable {
@@ -503,24 +586,34 @@ pub fn promise_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         _ => Vec::new(),
     };
 
-    let mut results = Vec::with_capacity(promises.len());
-    for p in &promises {
-        if let JsValue::Object(obj) = p {
-            let o = obj.borrow();
-            if o.internal_tag.as_deref() == Some("__promise__") {
-                let state = o.get("__state").to_js_string();
-                if state == "rejected" {
-                    let value = o.get("__value");
-                    drop(o);
-                    return promise_reject(vm, &[value]);
-                }
-                results.push(o.get("__value"));
-                continue;
-            }
-        }
-        results.push(p.clone());
+    let target = make_pending_promise(vm);
+    if promises.is_empty() {
+        settle_promise(vm, &target, "fulfilled", &JsValue::new_array(Vec::new()));
+        return target;
     }
-    promise_resolve(vm, &[JsValue::new_array(results)])
+
+    let state = JsValue::new_object();
+    state.set_property(String::from("target"), target.clone());
+    state.set_property(String::from("values"), JsValue::new_array(Vec::new()));
+    state.set_property(String::from("remaining"), JsValue::Number(promises.len() as f64));
+    state.set_property(String::from("settled"), JsValue::Bool(false));
+
+    for (i, p) in promises.into_iter().enumerate() {
+        let normalized = promise_resolve(vm, &[p]);
+        let on_fulfilled = make_bound_native(
+            "__promise_all_fulfill__",
+            promise_all_fulfill_runner,
+            vec![state.clone(), JsValue::Number(i as f64)],
+        );
+        let on_rejected = make_bound_native(
+            "__promise_all_reject__",
+            promise_all_reject_runner,
+            vec![state.clone()],
+        );
+        attach_then(vm, &normalized, on_fulfilled, on_rejected);
+    }
+
+    target
 }
 
 pub fn promise_all_settled(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -563,26 +656,36 @@ pub fn promise_race(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::Array(arr) => arr.borrow().to_dense_vec(),
         _ => Vec::new(),
     };
-    // Return the first settled promise
-    for p in &promises {
-        if let JsValue::Object(obj) = p {
-            let o = obj.borrow();
-            if o.internal_tag.as_deref() == Some("__promise__") {
-                let state = o.get("__state").to_js_string();
-                if state == "fulfilled" {
-                    let val = o.get("__value");
-                    drop(o);
-                    return promise_resolve(vm, &[val]);
-                } else if state == "rejected" {
-                    let val = o.get("__value");
-                    drop(o);
-                    return promise_reject(vm, &[val]);
-                }
+    let target = make_pending_promise(vm);
+    let state = JsValue::new_object();
+    state.set_property(String::from("target"), target.clone());
+    state.set_property(String::from("settled"), JsValue::Bool(false));
+
+    for p in promises {
+        let normalized = promise_resolve(vm, &[p]);
+        if let Some((promise_state, value)) = promise_state(&normalized) {
+            if promise_state == "fulfilled" {
+                settle_promise(vm, &target, "fulfilled", &value);
+                return target;
+            }
+            if promise_state == "rejected" {
+                settle_promise(vm, &target, "rejected", &value);
+                return target;
             }
         }
+        let on_fulfilled = make_bound_native(
+            "__promise_race_fulfill__",
+            promise_race_fulfill_runner,
+            vec![state.clone()],
+        );
+        let on_rejected = make_bound_native(
+            "__promise_race_reject__",
+            promise_race_reject_runner,
+            vec![state.clone()],
+        );
+        attach_then(vm, &normalized, on_fulfilled, on_rejected);
     }
-    // All pending — return a pending promise
-    promise_resolve(vm, &[JsValue::Undefined])
+    target
 }
 
 /// `Promise.any(iterable)` — resolves with the first fulfilled value.

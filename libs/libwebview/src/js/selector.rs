@@ -265,14 +265,18 @@ fn matches_parsed(dom: &Dom, node_id: usize, parts: &[SelectorPart<'_>]) -> bool
         return false;
     }
 
-    // Walk left through the chain, verifying each combinator.
+    // Walk left through the chain, verifying each combinator. The combinator is
+    // stored on the right-hand part because it describes how that part connects
+    // to the previous one (`div > p` => `p.combinator = Child`).
     let mut current = node_id;
-    let mut idx = last;
+    let mut right_idx = last;
 
-    while idx > 0 {
-        idx -= 1;
-        let part = &parts[idx];
-        let comb = part.combinator.unwrap_or(Combinator::Descendant);
+    while right_idx > 0 {
+        let left_idx = right_idx - 1;
+        let part = &parts[left_idx];
+        let comb = parts[right_idx]
+            .combinator
+            .unwrap_or(Combinator::Descendant);
 
         match comb {
             Combinator::Descendant => {
@@ -326,6 +330,7 @@ fn matches_parsed(dom: &Dom, node_id: usize, parts: &[SelectorPart<'_>]) -> bool
                 }
             }
         }
+        right_idx = left_idx;
     }
 
     true
@@ -348,11 +353,11 @@ fn prev_element_sibling(dom: &Dom, node_id: usize) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Compound selector matching (handles tag, #id, .class, [attr], *)
+// Compound selector matching (handles tag, #id, .class, [attr], :not(...), *)
 // ---------------------------------------------------------------------------
 
 /// Match a single compound selector against a node.
-/// A compound selector is e.g. `div.cls#id[attr=val]`.
+/// A compound selector is e.g. `div.cls#id[attr=val]:not([hidden])`.
 fn matches_compound(dom: &Dom, node_id: usize, compound: &str) -> bool {
     if node_id >= dom.nodes.len() {
         return false;
@@ -369,7 +374,7 @@ fn matches_compound(dom: &Dom, node_id: usize, compound: &str) -> bool {
         return true;
     }
 
-    // Tokenize compound into sub-parts: tag, .class, #id, [attr].
+    // Tokenize compound into sub-parts: tag, .class, #id, [attr], :not(...).
     let parts = tokenize_compound(compound);
     if parts.is_empty() {
         return false;
@@ -408,6 +413,11 @@ fn matches_compound(dom: &Dom, node_id: usize, compound: &str) -> bool {
                     }
                 }
             },
+            CompoundPart::Not(inner) => {
+                if matches_compound(dom, node_id, inner.trim()) {
+                    return false;
+                }
+            }
         }
     }
     true
@@ -419,6 +429,7 @@ enum CompoundPart<'a> {
     Id(&'a str),
     Class(&'a str),
     Attr(&'a str, Option<&'a str>),
+    Not(&'a str),
 }
 
 /// Tokenize a compound selector like `div.cls#id[href]` into parts.
@@ -428,10 +439,21 @@ fn tokenize_compound(s: &str) -> Vec<CompoundPart<'_>> {
     let len = bytes.len();
     let mut i = 0;
 
-    // Leading tag name (if doesn't start with #, ., [, or *).
-    if i < len && bytes[i] != b'#' && bytes[i] != b'.' && bytes[i] != b'[' && bytes[i] != b'*' {
+    // Leading tag name (if doesn't start with #, ., [, :, or *).
+    if i < len
+        && bytes[i] != b'#'
+        && bytes[i] != b'.'
+        && bytes[i] != b'['
+        && bytes[i] != b':'
+        && bytes[i] != b'*'
+    {
         let start = i;
-        while i < len && bytes[i] != b'#' && bytes[i] != b'.' && bytes[i] != b'[' {
+        while i < len
+            && bytes[i] != b'#'
+            && bytes[i] != b'.'
+            && bytes[i] != b'['
+            && bytes[i] != b':'
+        {
             i += 1;
         }
         parts.push(CompoundPart::Tag(&s[start..i]));
@@ -445,7 +467,12 @@ fn tokenize_compound(s: &str) -> Vec<CompoundPart<'_>> {
             b'#' => {
                 i += 1;
                 let start = i;
-                while i < len && bytes[i] != b'#' && bytes[i] != b'.' && bytes[i] != b'[' {
+                while i < len
+                    && bytes[i] != b'#'
+                    && bytes[i] != b'.'
+                    && bytes[i] != b'['
+                    && bytes[i] != b':'
+                {
                     i += 1;
                 }
                 if i > start {
@@ -455,7 +482,12 @@ fn tokenize_compound(s: &str) -> Vec<CompoundPart<'_>> {
             b'.' => {
                 i += 1;
                 let start = i;
-                while i < len && bytes[i] != b'#' && bytes[i] != b'.' && bytes[i] != b'[' {
+                while i < len
+                    && bytes[i] != b'#'
+                    && bytes[i] != b'.'
+                    && bytes[i] != b'['
+                    && bytes[i] != b':'
+                {
                     i += 1;
                 }
                 if i > start {
@@ -483,6 +515,42 @@ fn tokenize_compound(s: &str) -> Vec<CompoundPart<'_>> {
                     parts.push(CompoundPart::Attr(inner.trim(), None));
                 }
             }
+            b':' => {
+                i += 1;
+                let name_start = i;
+                while i < len && is_ident_byte(bytes[i]) {
+                    i += 1;
+                }
+                let name = &s[name_start..i];
+                if name == "not" && i < len && bytes[i] == b'(' {
+                    let inner_start = i + 1;
+                    let mut depth = 1i32;
+                    i += 1;
+                    while i < len && depth > 0 {
+                        match bytes[i] {
+                            b'(' => depth += 1,
+                            b')' => depth -= 1,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    let inner_end = if depth == 0 { i.saturating_sub(1) } else { len };
+                    if inner_end > inner_start {
+                        parts.push(CompoundPart::Not(&s[inner_start..inner_end]));
+                    }
+                } else if i < len && bytes[i] == b'(' {
+                    let mut depth = 1i32;
+                    i += 1;
+                    while i < len && depth > 0 {
+                        match bytes[i] {
+                            b'(' => depth += 1,
+                            b')' => depth -= 1,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                }
+            }
             _ => {
                 i += 1; // skip unexpected characters
             }
@@ -490,4 +558,65 @@ fn tokenize_compound(s: &str) -> Vec<CompoundPart<'_>> {
     }
 
     parts
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_all, matches_selector};
+    use crate::dom::{Attr, Dom, NodeType, Tag};
+    use alloc::string::String;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    fn attr(name: &str, value: &str) -> Attr {
+        Attr {
+            name: String::from(name),
+            value: String::from(value),
+        }
+    }
+
+    fn el(dom: &mut Dom, tag: Tag, attrs: Vec<Attr>, parent: Option<usize>) -> usize {
+        dom.add_node(NodeType::Element { tag, attrs }, parent)
+    }
+
+    #[test]
+    fn not_attribute_selector_excludes_processed_nodes() {
+        let mut dom = Dom::new();
+        let html = el(&mut dom, Tag::Html, Vec::new(), None);
+        let body = el(&mut dom, Tag::Body, Vec::new(), Some(html));
+        let unprocessed = el(
+            &mut dom,
+            Tag::Script,
+            vec![attr("data-sjs", "1")],
+            Some(body),
+        );
+        let _processed = el(
+            &mut dom,
+            Tag::Script,
+            vec![attr("data-sjs", "1"), attr("data-processed", "1")],
+            Some(body),
+        );
+
+        let ids = find_all(&dom, "script[data-sjs]:not([data-processed])");
+        assert_eq!(ids, vec![unprocessed]);
+    }
+
+    #[test]
+    fn explicit_combinators_use_the_right_hand_part() {
+        let mut dom = Dom::new();
+        let root = el(&mut dom, Tag::Div, vec![attr("id", "root")], None);
+        let child = el(&mut dom, Tag::Section, vec![attr("class", "child")], Some(root));
+        let grandchild = el(&mut dom, Tag::Span, vec![attr("class", "leaf")], Some(child));
+        let sibling = el(&mut dom, Tag::P, vec![attr("class", "after")], Some(root));
+
+        assert!(matches_selector(&dom, child, "div > section.child"));
+        assert!(!matches_selector(&dom, grandchild, "div > span.leaf"));
+        assert!(matches_selector(&dom, grandchild, "div span.leaf"));
+        assert!(matches_selector(&dom, sibling, "section + p.after"));
+        assert!(matches_selector(&dom, sibling, "section ~ p.after"));
+    }
 }

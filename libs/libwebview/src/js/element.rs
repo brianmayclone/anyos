@@ -16,9 +16,9 @@ use libjs::Vm;
 use super::classlist;
 use super::selector;
 use super::{
-    arg_string, dom_property_hook, get_bridge, make_array, read_all_child_node_ids, read_attribute,
-    read_child_ids, read_inner_html, read_node_type, read_parent_id, read_tag_name,
-    read_text_content, this_node_id, DomMutation, StyleAnimation,
+    arg_string, dataset_property_hook, dom_property_hook, get_bridge, make_array,
+    read_all_child_node_ids, read_attribute, read_child_ids, read_inner_html, read_node_type,
+    read_parent_id, read_tag_name, read_text_content, this_node_id, DomMutation, StyleAnimation,
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -41,6 +41,13 @@ fn data_attr_to_camel(s: &str) -> String {
         }
     }
     result
+}
+
+fn constructor_prototype(vm: &mut Vm, name: &str) -> Option<Rc<RefCell<JsObject>>> {
+    match vm.get_global(name).get_property("prototype") {
+        JsValue::Object(proto) => Some(proto),
+        _ => None,
+    }
 }
 
 /// Compute the previous and next sibling node IDs for the given real DOM node.
@@ -197,6 +204,22 @@ pub fn populate_element_prototype(proto: &JsValue) {
         native_fn("getClientRects", el_get_client_rects),
     );
     proto.set_property(String::from("matches"), native_fn("matches", el_matches));
+    proto.set_property(
+        String::from("matchesSelector"),
+        native_fn("matchesSelector", el_matches),
+    );
+    proto.set_property(
+        String::from("webkitMatchesSelector"),
+        native_fn("webkitMatchesSelector", el_matches),
+    );
+    proto.set_property(
+        String::from("mozMatchesSelector"),
+        native_fn("mozMatchesSelector", el_matches),
+    );
+    proto.set_property(
+        String::from("msMatchesSelector"),
+        native_fn("msMatchesSelector", el_matches),
+    );
     proto.set_property(String::from("closest"), native_fn("closest", el_closest));
     // ParentNode interface
     proto.set_property(String::from("prepend"), native_fn("prepend", el_prepend));
@@ -334,7 +357,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     // Build the element object.
     let mut obj = JsObject::new();
     let prototype_ctor = match node_type as u32 {
-        1 => vm.get_global("HTMLElement"),
+        1 => vm.get_global(html_constructor_for_tag_name(&tag_name)),
         _ => vm.get_global("Node"),
     };
     if let JsValue::Function(func) = prototype_ctor {
@@ -477,6 +500,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("style"), style_obj);
     // dataset — DOMStringMap from data-* attributes (W3C HTML §3.2.6.1).
     let mut dataset_obj = JsObject::new();
+    dataset_obj.prototype = constructor_prototype(vm, "DOMStringMap");
     if node_id >= 0 {
         if let Some(bridge) = get_bridge(vm) {
             let dom = bridge.dom();
@@ -493,6 +517,8 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
             }
         }
     }
+    dataset_obj.set_hook = Some(dataset_property_hook);
+    dataset_obj.set_hook_data = node_id as usize as *mut u8;
     obj.set(
         String::from("dataset"),
         JsValue::Object(Rc::new(RefCell::new(dataset_obj))),
@@ -549,6 +575,24 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
         String::from("getElementsByClassName"),
         native_fn("getElementsByClassName", el_get_elements_by_class_name),
     );
+    obj.set(String::from("matches"), native_fn("matches", el_matches));
+    obj.set(
+        String::from("matchesSelector"),
+        native_fn("matchesSelector", el_matches),
+    );
+    obj.set(
+        String::from("webkitMatchesSelector"),
+        native_fn("webkitMatchesSelector", el_matches),
+    );
+    obj.set(
+        String::from("mozMatchesSelector"),
+        native_fn("mozMatchesSelector", el_matches),
+    );
+    obj.set(
+        String::from("msMatchesSelector"),
+        native_fn("msMatchesSelector", el_matches),
+    );
+    obj.set(String::from("closest"), native_fn("closest", el_closest));
 
     // Tree manipulation (Node interface).
     obj.set(
@@ -824,6 +868,46 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     }
 
     result
+}
+
+fn html_constructor_for_tag_name(tag_name: &str) -> &'static str {
+    match tag_name {
+        "A" => "HTMLAnchorElement",
+        "AREA" => "HTMLAreaElement",
+        "BUTTON" => "HTMLButtonElement",
+        "CANVAS" => "HTMLCanvasElement",
+        "DIV" => "HTMLDivElement",
+        "FORM" => "HTMLFormElement",
+        "HEAD" => "HTMLHeadElement",
+        "HTML" => "HTMLHtmlElement",
+        "IFRAME" => "HTMLIFrameElement",
+        "IMG" => "HTMLImageElement",
+        "INPUT" => "HTMLInputElement",
+        "LABEL" => "HTMLLabelElement",
+        "LINK" => "HTMLLinkElement",
+        "AUDIO" => "HTMLAudioElement",
+        "BODY" => "HTMLBodyElement",
+        "BR" => "HTMLBRElement",
+        "VIDEO" => "HTMLVideoElement",
+        "SOURCE" => "HTMLSourceElement",
+        "PICTURE" => "HTMLPictureElement",
+        "H1" | "H2" | "H3" | "H4" | "H5" | "H6" => "HTMLHeadingElement",
+        "LI" => "HTMLLIElement",
+        "META" => "HTMLMetaElement",
+        "OPTION" => "HTMLOptionElement",
+        "P" => "HTMLParagraphElement",
+        "SCRIPT" => "HTMLScriptElement",
+        "SELECT" => "HTMLSelectElement",
+        "SLOT" => "HTMLSlotElement",
+        "SPAN" => "HTMLSpanElement",
+        "STYLE" => "HTMLStyleElement",
+        "TABLE" => "HTMLTableElement",
+        "TEMPLATE" => "HTMLTemplateElement",
+        "TEXTAREA" => "HTMLTextAreaElement",
+        "UL" => "HTMLUListElement",
+        "SVG" => "SVGSVGElement",
+        _ => "HTMLElement",
+    }
 }
 
 // ═══════════════════════════════════════════════════════════

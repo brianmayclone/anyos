@@ -14,6 +14,7 @@ use crate::token::{Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
+    matching_rbrace: Vec<Option<usize>>,
     pos: usize,
     pub errors: Vec<String>,
     /// When true, the `in` keyword is NOT treated as a binary operator in
@@ -34,10 +35,30 @@ pub struct Parser {
 /// input exhausting the VM stack.
 const MAX_PARSER_DEPTH: usize = 1024;
 
+fn build_matching_rbrace(tokens: &[Token]) -> Vec<Option<usize>> {
+    let mut matches = vec![None; tokens.len()];
+    let mut stack = Vec::new();
+    for (idx, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LBrace => stack.push(idx),
+            TokenKind::RBrace => {
+                if let Some(open_idx) = stack.pop() {
+                    matches[open_idx] = Some(idx);
+                }
+            }
+            TokenKind::Eof => break,
+            _ => {}
+        }
+    }
+    matches
+}
+
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
+        let matching_rbrace = build_matching_rbrace(&tokens);
         Parser {
             tokens,
+            matching_rbrace,
             pos: 0,
             errors: Vec::new(),
             no_in: false,
@@ -137,8 +158,16 @@ impl Parser {
 
     fn expect(&mut self, kind: &TokenKind) {
         if !self.eat(kind) {
-            // Skip to recover
-            self.pos += 1;
+            // Recover conservatively.  Do not consume closing delimiters that
+            // may belong to an outer construct; large minified bundles rely on
+            // deeply nested functions/blocks, and stealing an outer `}` can
+            // make the parser swallow the rest of the file into the wrong body.
+            if !matches!(
+                self.peek(),
+                TokenKind::RBrace | TokenKind::RParen | TokenKind::RBracket | TokenKind::Eof
+            ) {
+                self.pos += 1;
+            }
         }
     }
 
@@ -414,10 +443,91 @@ impl Parser {
     }
 
     fn parse_block_stmt(&mut self) -> Stmt {
-        self.expect(&TokenKind::LBrace);
-        let stmts = self.parse_block_body();
-        self.expect(&TokenKind::RBrace);
+        let stmts = self.parse_braced_block_body();
         Stmt::Block(stmts)
+    }
+
+    fn parse_braced_block_body(&mut self) -> Vec<Stmt> {
+        self.expect(&TokenKind::LBrace);
+        let open_pos = self.pos.saturating_sub(1);
+        let close_pos = self.find_matching_rbrace(open_pos);
+        let body = if let Some(close_pos) = close_pos {
+            let body = self.parse_block_body_bounded(close_pos);
+            self.pos = close_pos;
+            body
+        } else {
+            self.parse_block_body()
+        };
+        self.expect(&TokenKind::RBrace);
+        body
+    }
+
+    fn parse_function_block_body(&mut self) -> Vec<Stmt> {
+        self.expect(&TokenKind::LBrace);
+        let open_pos = self.pos.saturating_sub(1);
+        let close_pos = self
+            .find_matching_rbrace(open_pos)
+            .or_else(|| self.find_recoverable_function_rbrace(open_pos));
+        let body = if let Some(close_pos) = close_pos {
+            let body = self.parse_block_body_bounded(close_pos);
+            self.pos = close_pos;
+            body
+        } else {
+            self.parse_block_body()
+        };
+        self.expect(&TokenKind::RBrace);
+        body
+    }
+
+    fn parse_function_expr_block_body(&mut self, function_pos: usize) -> Vec<Stmt> {
+        self.expect(&TokenKind::LBrace);
+        let open_pos = self.pos.saturating_sub(1);
+        let exact = self.find_matching_rbrace(open_pos);
+        let parenthesized = function_pos > 0
+            && matches!(
+                self.tokens
+                    .get(function_pos - 1)
+                    .map(|t| &t.kind)
+                    .unwrap_or(&TokenKind::Eof),
+                TokenKind::LParen
+            );
+        let exact_has_parenthesized_tail = exact
+            .and_then(|idx| self.tokens.get(idx + 1).map(|t| &t.kind))
+            .map(|kind| matches!(kind, TokenKind::RParen))
+            .unwrap_or(false);
+        let is_top_level_iife_shape = parenthesized && function_pos < 64;
+        let close_pos = if is_top_level_iife_shape && !exact_has_parenthesized_tail {
+            self.find_recoverable_parenthesized_function_rbrace(open_pos)
+                .or(exact)
+        } else {
+            exact.or_else(|| self.find_recoverable_function_rbrace(open_pos))
+        };
+        let body = if let Some(close_pos) = close_pos {
+            let body = self.parse_block_body_bounded(close_pos);
+            self.pos = close_pos;
+            body
+        } else {
+            self.parse_block_body()
+        };
+        self.expect(&TokenKind::RBrace);
+        body
+    }
+
+    fn parse_try_block_body(&mut self) -> Vec<Stmt> {
+        self.expect(&TokenKind::LBrace);
+        let open_pos = self.pos.saturating_sub(1);
+        let close_pos = self
+            .find_matching_rbrace(open_pos)
+            .or_else(|| self.find_recoverable_try_rbrace(open_pos));
+        let body = if let Some(close_pos) = close_pos {
+            let body = self.parse_block_body_bounded(close_pos);
+            self.pos = close_pos;
+            body
+        } else {
+            self.parse_block_body()
+        };
+        self.expect(&TokenKind::RBrace);
+        body
     }
 
     fn parse_block_body(&mut self) -> Vec<Stmt> {
@@ -427,6 +537,99 @@ impl Parser {
             let before = self.pos;
             if let Some(stmt) = self.parse_statement() {
                 stmts.push(stmt);
+            }
+            if self.pos == before {
+                self.pos += 1;
+            }
+        }
+        stmts
+    }
+
+    fn find_matching_rbrace(&self, open_pos: usize) -> Option<usize> {
+        self.matching_rbrace.get(open_pos).copied().flatten()
+    }
+
+    fn find_recoverable_function_rbrace(&self, open_pos: usize) -> Option<usize> {
+        let mut best = None;
+        for i in open_pos.saturating_add(1)..self.tokens.len() {
+            if !matches!(self.tokens[i].kind, TokenKind::RBrace) {
+                continue;
+            }
+            let next = self.tokens.get(i + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let next2 = self.tokens.get(i + 2).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let plausible_tail = matches!(
+                next,
+                TokenKind::RParen
+                    | TokenKind::Semicolon
+                    | TokenKind::Comma
+                    | TokenKind::RBracket
+                    | TokenKind::RBrace
+                    | TokenKind::Dot
+                    | TokenKind::QuestionDot
+                    | TokenKind::Eof
+            ) || (matches!(next, TokenKind::RParen)
+                && matches!(
+                    next2,
+                    TokenKind::Dot | TokenKind::LParen | TokenKind::Semicolon | TokenKind::Comma
+                ));
+            if plausible_tail {
+                best = Some(i);
+            }
+        }
+        best
+    }
+
+    fn find_recoverable_parenthesized_function_rbrace(&self, open_pos: usize) -> Option<usize> {
+        let mut i = self.tokens.len();
+        while i > open_pos.saturating_add(1) {
+            i -= 1;
+            if !matches!(self.tokens[i].kind, TokenKind::RBrace) {
+                continue;
+            }
+            let next = self.tokens.get(i + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            let next2 = self.tokens.get(i + 2).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            if matches!(next, TokenKind::RParen)
+                && matches!(
+                    next2,
+                    TokenKind::Dot
+                        | TokenKind::LParen
+                        | TokenKind::Semicolon
+                        | TokenKind::Comma
+                        | TokenKind::RParen
+                        | TokenKind::RBracket
+                        | TokenKind::Eof
+                )
+            {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn find_recoverable_try_rbrace(&self, open_pos: usize) -> Option<usize> {
+        let mut best = None;
+        for i in open_pos.saturating_add(1)..self.tokens.len() {
+            if !matches!(self.tokens[i].kind, TokenKind::RBrace) {
+                continue;
+            }
+            let next = self.tokens.get(i + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof);
+            if matches!(next, TokenKind::Catch | TokenKind::Finally) {
+                best = Some(i);
+            }
+        }
+        best
+    }
+
+    fn parse_block_body_bounded(&mut self, close_pos: usize) -> Vec<Stmt> {
+        let mut stmts = Vec::new();
+        while self.pos < close_pos && !matches!(self.peek(), TokenKind::Eof) {
+            let before = self.pos;
+            if let Some(stmt) = self.parse_statement() {
+                stmts.push(stmt);
+            }
+            if self.pos > close_pos {
+                self.pos = close_pos;
+                break;
             }
             if self.pos == before {
                 self.pos += 1;
@@ -850,9 +1053,7 @@ impl Parser {
 
     fn parse_try(&mut self) -> Stmt {
         self.expect(&TokenKind::Try);
-        self.expect(&TokenKind::LBrace);
-        let block = self.parse_block_body();
-        self.expect(&TokenKind::RBrace);
+        let block = self.parse_try_block_body();
 
         let catch = if self.eat(&TokenKind::Catch) {
             let param = if self.eat(&TokenKind::LParen) {
@@ -862,18 +1063,14 @@ impl Parser {
             } else {
                 None
             };
-            self.expect(&TokenKind::LBrace);
-            let body = self.parse_block_body();
-            self.expect(&TokenKind::RBrace);
+            let body = self.parse_try_block_body();
             Some(CatchClause { param, body })
         } else {
             None
         };
 
         let finally = if self.eat(&TokenKind::Finally) {
-            self.expect(&TokenKind::LBrace);
-            let body = self.parse_block_body();
-            self.expect(&TokenKind::RBrace);
+            let body = self.parse_try_block_body();
             Some(body)
         } else {
             None
@@ -1097,9 +1294,7 @@ impl Parser {
         let is_generator = self.eat(&TokenKind::Star);
         let name = self.ident_str();
         let params = self.parse_params();
-        self.expect(&TokenKind::LBrace);
-        let body = self.parse_block_body();
-        self.expect(&TokenKind::RBrace);
+        let body = self.parse_function_block_body();
         Stmt::FunctionDecl {
             name,
             params,
@@ -2408,6 +2603,7 @@ impl Parser {
 
     fn parse_function_expr(&mut self, is_async: bool) -> Expr {
         self.expect(&TokenKind::Function);
+        let function_pos = self.pos.saturating_sub(1);
         let is_generator = self.eat(&TokenKind::Star);
         let name = if let TokenKind::Ident(s) = self.peek().clone() {
             self.pos += 1;
@@ -2416,9 +2612,19 @@ impl Parser {
             None
         };
         let params = self.parse_params();
-        self.expect(&TokenKind::LBrace);
-        let body = self.parse_block_body();
-        self.expect(&TokenKind::RBrace);
+        let body = self.parse_function_expr_block_body(function_pos);
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_PARSER_FUNCTION_END").is_some()
+            && (body.len() > 100 || params.len() == 1)
+        {
+            eprintln!(
+                "[libjs-parser] function_expr params={} body_stmts={} next={:?} next2={:?}",
+                params.len(),
+                body.len(),
+                self.peek(),
+                self.peek2()
+            );
+        }
         Expr::FunctionExpr {
             name,
             params,

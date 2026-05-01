@@ -70,6 +70,14 @@ impl Vm {
                 String::from("keys"),
                 native_fn("keys", native_object::object_keys_method),
             );
+            p.set_hidden(
+                String::from("values"),
+                native_fn("values", native_object::object_values_method),
+            );
+            p.set_hidden(
+                String::from("entries"),
+                native_fn("entries", native_object::object_entries_method),
+            );
         }
 
         // ── Iterator.prototype ──

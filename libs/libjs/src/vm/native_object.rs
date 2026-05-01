@@ -351,6 +351,14 @@ pub fn object_keys_method(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     }
 }
 
+pub fn object_values_method(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    object_values(vm, &[vm.current_this.clone()])
+}
+
+pub fn object_entries_method(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    object_entries(vm, &[vm.current_this.clone()])
+}
+
 // ═══════════════════════════════════════════════════════════
 // Object static methods (Object.keys, Object.values, etc.)
 // ═══════════════════════════════════════════════════════════

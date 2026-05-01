@@ -36,7 +36,157 @@ const MAX_CONSOLE_MESSAGES: usize = 512;
 const MAX_PENDING_TIMERS: usize = 1024;
 const JS_TRACE: bool = false;
 const TIMER_CALLBACK_STEP_LIMIT: u64 = 1_000_000;
-const DEFAULT_SCRIPT_STEP_LIMIT: u64 = 64_000_000;
+const DEFAULT_SCRIPT_STEP_LIMIT: u64 = 8_000_000;
+const DEFAULT_MAX_SCRIPTS: usize = 48;
+const DEFAULT_MAX_SCRIPT_BYTES: usize = 1024 * 1024;
+const SURF_IMMEDIATE_SCHEDULER_JS: &str = r#"
+(function(){
+    function patch(s){
+      if (!s || s.__surfImmediateScheduler) return;
+      var run = function(cb){ if (typeof cb === 'function') return cb(); return cb; };
+      var defer = function(cb){
+        if (typeof cb !== 'function') return cb;
+        var budget = s.__surfImmediateBudget == null ? 0 : s.__surfImmediateBudget;
+        if (budget > 0) {
+          s.__surfImmediateBudget = budget - 1;
+          return cb();
+        }
+        if (typeof setImmediate === 'function') return setImmediate(cb);
+        if (typeof setTimeout === 'function') return setTimeout(cb, 0);
+        return cb();
+      };
+    var runPri = function(_pri, cb){ return run(cb); };
+    s.defer = defer;
+    s.deferUserBlockingRunAtCurrentPri_DO_NOT_USE = defer;
+    s.scheduleImmediatePriCallback = defer;
+    s.scheduleLoggingPriCallback = defer;
+    s.scheduleNormalPriCallback = defer;
+    s.scheduleSpeculativeCallback = defer;
+    s.scheduleUserBlockingPriCallback = defer;
+    s.scheduleDelayedCallback_DO_NOT_USE = function(_pri, _delay, cb){ return defer(cb); };
+    s.cancelCallback = function(){};
+    s.cancelDelayedCallback_DO_NOT_USE = function(){};
+    s.getCallbackScheduler = function(){ return defer; };
+    s.getUserBlockingRunAtCurrentPriCallbackScheduler_DO_NOT_USE = function(){ return defer; };
+    s.runWithPriority = runPri;
+    s.runWithPriority_DO_NOT_USE = runPri;
+    s.shouldYield = function(){ return false; };
+    s.__surfImmediateScheduler = true;
+  }
+  try {
+    if (typeof ifRequireable === 'function') {
+      ifRequireable('JSScheduler', patch, function(){});
+    } else if (typeof require === 'function') {
+      patch(require('JSScheduler'));
+    }
+  } catch (_e) {}
+})();
+"#;
+
+const SURF_SERVERJS_DEFINE_FAST_PATH_JS: &str = r#"
+(function(){
+  try {
+    if (typeof require !== 'function' || typeof document === 'undefined') return;
+    var ServerJSDefine = require('ServerJSDefine');
+    if (!ServerJSDefine || typeof ServerJSDefine.handleDefines !== 'function') return;
+    var processed = window.__surfProcessedSjsDefineIndexes || (window.__surfProcessedSjsDefineIndexes = {});
+    window.__surfSjsDefineCount = window.__surfSjsDefineCount || 0;
+    window.__surfSjsDefineErrors = window.__surfSjsDefineErrors || 0;
+    window.__surfSjsFirstDefineError = window.__surfSjsFirstDefineError || '';
+    window.__surfSjsDefineAttempts = window.__surfSjsDefineAttempts || 0;
+    var scripts = document.querySelectorAll('script[data-sjs]');
+    Array.from(scripts).forEach(function(el, index){
+      if (processed[index]) return;
+      var payload;
+      try { payload = JSON.parse(el.textContent || ''); } catch (_e) { return; }
+      var didWork = false;
+      (payload.require || []).forEach(function(req){
+        try {
+          if (!req || req[0] === 'qplTimingsServerJS') return;
+          if ((req[0] === 'ScheduledServerJS' || req[0] === 'ScheduledServerJSWithCSS') && req[1] === 'handle') {
+            var args = req[3] || [];
+            args.forEach(function(arg){
+              var bbox = arg && arg.__bbox;
+              if (bbox && bbox.define && bbox.define.length) {
+                window.__surfSjsDefineAttempts += bbox.define.length;
+                ServerJSDefine.handleDefines(bbox.define);
+                window.__surfSjsDefineCount += bbox.define.length;
+                didWork = true;
+              }
+            });
+          } else if (req[0] === 'ScheduledServerJSDefine' && req[1] === 'handleDefines') {
+            var args = req[3] || [];
+            if (args[0] && args[0].length) {
+              window.__surfSjsDefineAttempts += args[0].length;
+              ServerJSDefine.handleDefines(args[0], args[1]);
+              window.__surfSjsDefineCount += args[0].length;
+              didWork = true;
+            }
+          }
+        } catch (_e) {
+          window.__surfSjsDefineErrors += 1;
+          try {
+            if (!window.__surfSjsFirstDefineError && _e && _e.message) window.__surfSjsFirstDefineError = _e.message;
+          } catch (_ignored) {}
+        }
+      });
+      if (didWork) processed[index] = true;
+    });
+  } catch (_e) {
+    try { window.__surfSjsDefineErrors = (window.__surfSjsDefineErrors || 0) + 1; } catch (_ignored) {}
+    try { if (!window.__surfSjsFirstDefineError && _e && _e.message) window.__surfSjsFirstDefineError = _e.message; } catch (_ignored) {}
+  }
+})();
+"#;
+
+const SURF_SERVERJS_ROOT_FAST_PATH_JS: &str = r#"
+(function(){
+  try {
+    if (typeof require !== 'function' || typeof document === 'undefined') return;
+    if (window.__surfRanSjsRootRequire) return;
+    var scripts = document.querySelectorAll('script[data-sjs]');
+    var rootEntries = [];
+    Array.from(scripts).forEach(function(el){
+      var payload;
+      try { payload = JSON.parse(el.textContent || ''); } catch (_e) { return; }
+      (payload.require || []).forEach(function(req){
+        if (!req || (req[0] !== 'ScheduledServerJS' && req[0] !== 'ScheduledServerJSWithCSS') || req[1] !== 'handle') return;
+        (req[3] || []).forEach(function(arg){
+          var bbox = arg && arg.__bbox;
+          (bbox && bbox.require || []).forEach(function(entry){
+            if (entry && entry[0] === 'CometPlatformRootClient' && entry[1] === 'initialize') {
+              rootEntries.push(entry);
+            }
+          });
+        });
+      });
+    });
+    rootEntries.forEach(function(entry){
+      var mod = require(entry[0]);
+      var fn = mod && mod[entry[1]];
+      if (typeof fn === 'function') {
+        fn.apply(mod, entry[3] || []);
+        window.__surfRanSjsRootRequire = true;
+      }
+    });
+  } catch (_e) {}
+})();
+"#;
+
+#[derive(Clone, Copy)]
+pub struct ScriptExecutionLimits {
+    pub max_scripts: usize,
+    pub max_script_bytes: Option<usize>,
+}
+
+impl Default for ScriptExecutionLimits {
+    fn default() -> Self {
+        ScriptExecutionLimits {
+            max_scripts: DEFAULT_MAX_SCRIPTS,
+            max_script_bytes: Some(DEFAULT_MAX_SCRIPT_BYTES),
+        }
+    }
+}
 
 fn configured_script_step_limit() -> u64 {
     #[cfg(feature = "host")]
@@ -309,6 +459,30 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
         // Ignore internal properties and methods.
         _ => {}
     }
+}
+
+fn dataset_property_hook(data: *mut u8, key: &str, value: &JsValue) {
+    let mutations = unsafe {
+        if MUTATION_TARGET.is_null() {
+            return;
+        }
+        &mut *MUTATION_TARGET
+    };
+    let node_id = data as usize as i64;
+    let mut attr = String::from("data-");
+    for ch in key.chars() {
+        if ch.is_ascii_uppercase() {
+            attr.push('-');
+            attr.push(ch.to_ascii_lowercase());
+        } else {
+            attr.push(ch);
+        }
+    }
+    mutations.push(DomMutation::SetAttribute {
+        node_id,
+        name: attr,
+        value: value.to_js_string(),
+    });
 }
 
 fn apply_react_motion_final_styles(
@@ -897,13 +1071,29 @@ fn parse_quoted_js_string(bytes: &[u8], mut i: usize) -> Option<(String, usize)>
 }
 
 fn push_unique_spec(specs: &mut Vec<String>, spec: String) {
-    if !spec.is_empty() && !specs.iter().any(|s| s == &spec) {
+    if is_prefetchable_module_specifier(&spec) && !specs.iter().any(|s| s == &spec) {
         specs.push(spec);
     }
 }
 
 fn bytes_start_with(bytes: &[u8], i: usize, pat: &[u8]) -> bool {
     i + pat.len() <= bytes.len() && &bytes[i..i + pat.len()] == pat
+}
+
+fn is_prefetchable_module_specifier(spec: &str) -> bool {
+    let s = spec.trim();
+    if s.is_empty() {
+        return false;
+    }
+    // Host-side module prefetch can only resolve URL-like module specifiers.
+    // Bare specifiers need import-map/package resolution, and one-character
+    // punctuation strings show up in heavily minified bundles near `import`
+    // tokens even though they are not fetchable chunks.
+    s.starts_with("./")
+        || s.starts_with("../")
+        || s.starts_with('/')
+        || s.starts_with("http://")
+        || s.starts_with("https://")
 }
 
 /// Extract simple static/dynamic ES module specifiers from a script.
@@ -1128,6 +1318,33 @@ impl JsRuntime {
         self.engine.clear_console();
     }
 
+    fn install_immediate_scheduler_fast_path(&mut self) {
+        let _ = self.engine.eval(SURF_IMMEDIATE_SCHEDULER_JS);
+        self.engine.vm().last_exception = None;
+        self.engine.vm().pending_exception = None;
+        self.engine.vm().frames.clear();
+        self.engine.vm().stack.clear();
+        self.engine.clear_console();
+    }
+
+    fn install_serverjs_define_fast_path(&mut self) {
+        let _ = self.engine.eval(SURF_SERVERJS_DEFINE_FAST_PATH_JS);
+        self.engine.vm().last_exception = None;
+        self.engine.vm().pending_exception = None;
+        self.engine.vm().frames.clear();
+        self.engine.vm().stack.clear();
+        self.engine.clear_console();
+    }
+
+    fn install_serverjs_root_fast_path(&mut self) {
+        let _ = self.engine.eval(SURF_SERVERJS_ROOT_FAST_PATH_JS);
+        self.engine.vm().last_exception = None;
+        self.engine.vm().pending_exception = None;
+        self.engine.vm().frames.clear();
+        self.engine.vm().stack.clear();
+        self.engine.clear_console();
+    }
+
     pub fn new() -> Self {
         let engine = JsEngine::new();
         Self {
@@ -1248,6 +1465,16 @@ impl JsRuntime {
     /// * `url` — the current page URL, used to populate `window.location` /
     ///   `document.location` inside the JS environment.
     pub fn execute_script_sources(&mut self, dom: &Dom, url: &str, scripts: &[String]) {
+        self.execute_script_sources_with_limits(dom, url, scripts, ScriptExecutionLimits::default());
+    }
+
+    pub fn execute_script_sources_with_limits(
+        &mut self,
+        dom: &Dom,
+        url: &str,
+        scripts: &[String],
+        limits: ScriptExecutionLimits,
+    ) {
         if scripts.is_empty() {
             return;
         }
@@ -1258,14 +1485,6 @@ impl JsRuntime {
             scripts.len(),
             total_bytes
         );
-
-        // Cap large pages: limit total number of scripts. Very large modern
-        // bundles can still exhaust the Rust stack in parser/compiler/runtime
-        // paths before the VM step limit gets a chance to abort. Until those
-        // paths are fully iterative, prefer running small progressive-enhancement
-        // scripts over risking the whole browser process.
-        const MAX_SCRIPTS: usize = 48;
-        const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
 
         // Per-script step limit to keep pages responsive.
         //
@@ -1360,9 +1579,32 @@ impl JsRuntime {
         );
 
         // Execute each script (with limits to keep UI responsive).
-        let script_count = scripts.len().min(MAX_SCRIPTS);
+        let script_count = scripts.len().min(limits.max_scripts);
         for (idx, script) in scripts.iter().take(script_count).enumerate() {
-            if script.len() > MAX_SCRIPT_BYTES {
+            // Some site loaders replace ScheduleJSWork with their own queued
+            // scheduler.  In Surf's current screenshot/AnyOS turn model that can
+            // strand server-render payloads behind timers that are never reached
+            // before the first paint.  Keep the host bridge deterministic per
+            // script until JS runs on its own event loop thread.
+            reinstall_schedule_js_work(self.engine.vm());
+            #[cfg(feature = "host")]
+            if std::env::var_os("LIBWEBVIEW_DEBUG_SCRIPT_GLOBALS").is_some() {
+                let d = self.engine.vm().get_global("__d").type_of();
+                let d_stub = self.engine.vm().get_global("__d_stub").type_of();
+                let require_lazy = self.engine.vm().get_global("requireLazy").type_of();
+                anyos_std::println!(
+                    "[js-debug] before #{}: __d={} __d_stub={} requireLazy={}",
+                    idx,
+                    d,
+                    d_stub,
+                    require_lazy
+                );
+            }
+            if limits
+                .max_script_bytes
+                .map(|max| script.len() > max)
+                .unwrap_or(false)
+            {
                 anyos_std::println!(
                     "[js] skipping script #{} ({} bytes — too large)",
                     idx,
@@ -1453,14 +1695,54 @@ impl JsRuntime {
                 let truncated = if r.len() > 80 { &r[..80] } else { &r };
                 js_trace!("[js] result #{}: {}", idx, truncated);
             }
+
+            self.install_immediate_scheduler_fast_path();
+            self.install_serverjs_define_fast_path();
+
+            #[cfg(feature = "host")]
+            if std::env::var_os("LIBWEBVIEW_DEBUG_SCRIPT_EVAL").is_some() {
+                let module_count = self.engine.eval(
+                    "try{typeof require==='function'&&typeof require('__debug')==='object'?Object.keys(require('__debug').modulesMap||{}).length:-1}catch(e){-2}",
+                );
+                self.engine.vm().last_exception = None;
+                self.engine.vm().pending_exception = None;
+                self.engine.vm().frames.clear();
+                self.engine.vm().stack.clear();
+
+                let pending_sjs = self.engine.eval(
+                    "try{document.querySelectorAll('script[data-sjs]:not([data-processed])').length}catch(e){-1}",
+                );
+                self.engine.vm().last_exception = None;
+                self.engine.vm().pending_exception = None;
+                self.engine.vm().frames.clear();
+                self.engine.vm().stack.clear();
+
+                let step_limit = self.engine.vm().step_limit;
+                let last_exc = self.engine.vm().last_exception.is_some();
+                let pending_exc = self.engine.vm().pending_exception.is_some();
+                anyos_std::println!(
+                    "[js-debug] after #{}: bytes={} steps={} limit={} last_exc={} pending_exc={} modules={:?} pending_sjs={:?}",
+                    idx,
+                    script.len(),
+                    steps_used,
+                    step_limit,
+                    last_exc,
+                    pending_exc,
+                    module_count,
+                    pending_sjs
+                );
+            }
         }
         if scripts.len() > script_count {
             anyos_std::println!(
                 "[js] skipped {} script(s) (limit={})",
                 scripts.len() - script_count,
-                MAX_SCRIPTS
+                limits.max_scripts
             );
         }
+
+        self.install_serverjs_define_fast_path();
+        self.install_serverjs_root_fast_path();
 
         // Disable interception.
         unsafe {
@@ -1544,6 +1826,10 @@ impl JsRuntime {
         // Create window object natively.
         js_trace!("[js] setup native api: window make begin");
         let win = window::make_window(vm, doc, &origin, self.viewport_width, self.viewport_height);
+        win.set_property(
+            String::from("ScheduleJSWork"),
+            native_fn("ScheduleJSWork", native_schedule_js_work),
+        );
         js_trace!("[js] setup native api: window make done");
         js_trace!("[js] setup native api: global window begin");
         vm.set_global("window", win.clone());
@@ -1617,9 +1903,13 @@ impl JsRuntime {
         // modern bundlers (Vite/React) that reference them without the `window.` prefix work.
         for key in &[
             "Node",
+            "Window",
             "Document",
             "DocumentFragment",
+            "ShadowRoot",
             "CharacterData",
+            "CDATASection",
+            "ProcessingInstruction",
             "DocumentType",
             "Text",
             "Comment",
@@ -1627,35 +1917,61 @@ impl JsRuntime {
             "HTMLElement",
             "HTMLAnchorElement",
             "HTMLAreaElement",
+            "HTMLBodyElement",
+            "HTMLBRElement",
             "HTMLButtonElement",
             "HTMLCanvasElement",
             "HTMLDivElement",
             "HTMLFormElement",
             "HTMLHeadElement",
+            "HTMLHeadingElement",
             "HTMLHtmlElement",
             "HTMLIFrameElement",
             "HTMLImageElement",
             "HTMLInputElement",
             "HTMLLabelElement",
+            "HTMLLIElement",
             "HTMLLinkElement",
+            "HTMLMediaElement",
             "HTMLMetaElement",
+            "HTMLAudioElement",
+            "HTMLVideoElement",
+            "HTMLSourceElement",
+            "HTMLPictureElement",
             "HTMLOptionElement",
+            "HTMLParagraphElement",
             "HTMLScriptElement",
             "HTMLSelectElement",
+            "HTMLSlotElement",
             "HTMLSpanElement",
             "HTMLStyleElement",
             "HTMLTableElement",
+            "HTMLTemplateElement",
             "HTMLTextAreaElement",
+            "HTMLUListElement",
+            "HTMLUnknownElement",
+            "SVGElement",
+            "SVGSVGElement",
+            "SVGGraphicsElement",
             "Attr",
+            "NodeFilter",
             "CustomElementRegistry",
             "customElements",
             "MutationObserver",
             "ResizeObserver",
             "IntersectionObserver",
             "AbortController",
+            "Blob",
+            "DOMStringMap",
+            "ReadableStream",
+            "WritableStream",
+            "TransformStream",
             "queueMicrotask",
+            "ScheduleJSWork",
             "TextEncoder",
             "TextDecoder",
+            "TextEncoderStream",
+            "TextDecoderStream",
             "URL",
             "URLSearchParams",
             "EventTarget",
@@ -1693,6 +2009,8 @@ impl JsRuntime {
             "getCookie",
             "getParameterByName",
             "clearEventListeners",
+            "clarity",
+            "renderClarity",
             "getRequestUUID",
             "crypto",
             "__tcfapi",
@@ -2641,10 +2959,20 @@ impl JsRuntime {
                             js_exception_summary(exc)
                         );
                     }
+                    if let Some(ref exc) = self.engine.vm().pending_exception {
+                        eprintln!(
+                            "[js-dom-debug] timer id={} pending exception: {}",
+                            t.id,
+                            js_exception_summary(exc)
+                        );
+                    }
                 }
 
                 // Clear any timer callback exceptions so next timer can run fresh.
                 self.engine.vm().last_exception = None;
+                self.engine.vm().pending_exception = None;
+                self.engine.vm().frames.clear();
+                self.engine.vm().stack.clear();
 
                 unsafe {
                     MUTATION_TARGET = core::ptr::null_mut();
@@ -4179,6 +4507,27 @@ fn formdata_foreach(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             &[JsValue::String(v), JsValue::String(n)],
             JsValue::Undefined,
         );
+    }
+    JsValue::Undefined
+}
+
+fn reinstall_schedule_js_work(vm: &mut Vm) {
+    let schedule = native_fn("ScheduleJSWork", native_schedule_js_work);
+    vm.set_global("ScheduleJSWork", schedule.clone());
+    let win = vm.get_global("window");
+    if !win.is_undefined() {
+        win.set_property(String::from("ScheduleJSWork"), schedule);
+    }
+}
+
+fn native_schedule_js_work(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cb = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if matches!(cb, JsValue::Function(_)) {
+        // Meta's loader treats ScheduleJSWork as a wrapper factory:
+        //   ScheduleJSWork(callback)(...args)
+        // Returning the callback itself keeps the work synchronous in our
+        // current single-turn VM, but preserves the observable contract.
+        return cb;
     }
     JsValue::Undefined
 }

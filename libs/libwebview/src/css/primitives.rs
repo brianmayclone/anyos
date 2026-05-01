@@ -60,6 +60,7 @@ fn try_parse_dimension(s: &str) -> Option<CssValue> {
 }
 
 fn parse_fixed_point(s: &str) -> Option<i32> {
+    const MAX_FIXED: i32 = i32::MAX / 4;
     let bytes = s.as_bytes();
     if bytes.is_empty() {
         return Option::None;
@@ -79,8 +80,8 @@ fn parse_fixed_point(s: &str) -> Option<i32> {
     let mut integer_part: i32 = 0;
     while i < bytes.len() && bytes[i].is_ascii_digit() {
         integer_part = integer_part
-            .wrapping_mul(10)
-            .wrapping_add((bytes[i] - b'0') as i32);
+            .saturating_mul(10)
+            .saturating_add((bytes[i] - b'0') as i32);
         i += 1;
     }
 
@@ -107,8 +108,11 @@ fn parse_fixed_point(s: &str) -> Option<i32> {
         frac = d1 * 10 + d2;
     }
 
-    let val = integer_part * 100 + frac;
-    Some(if negative { -val } else { val })
+    let val = integer_part
+        .saturating_mul(100)
+        .saturating_add(frac)
+        .min(MAX_FIXED);
+    Some(if negative { val.saturating_neg() } else { val })
 }
 
 fn parse_int(s: &str) -> Option<i32> {

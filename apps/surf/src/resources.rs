@@ -265,7 +265,7 @@ pub(crate) fn queue_font_face_batch(
 
     let mut immediate = 0u32;
     let mut deferred = 0u32;
-    let mut queued_keys: Vec<(String, String)> = Vec::new();
+    let mut queued_families: Vec<String> = Vec::new();
 
     for (family, src_url, display) in font_faces {
         if src_url.is_empty() {
@@ -274,10 +274,10 @@ pub(crate) fn queue_font_face_batch(
         if st.tabs[tab_index].webview.web_font_id(family).is_some() {
             continue;
         }
-        if queued_keys.iter().any(|(f, s)| f == family && s == src_url) {
+        if queued_families.iter().any(|f| f == family) {
             continue;
         }
-        queued_keys.push((family.clone(), src_url.clone()));
+        queued_families.push(family.clone());
         if src_url.starts_with("data:") {
             if let Some(font_data) = decode_font_data_uri(src_url) {
                 if let Some(font_id) = load_valid_web_font_data(family, &font_data) {

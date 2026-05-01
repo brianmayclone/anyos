@@ -23,6 +23,60 @@ fn function_expression() {
 }
 
 #[test]
+fn function_expression_body_is_lazy() {
+    let v = js("var hit = 0; var f = function(){ hit = 1; missingCall(); }; hit");
+    assert_eq!(v.to_number(), 0.0);
+}
+
+#[test]
+fn apply_return_value_can_be_called() {
+    assert_eq!(
+        num("function id(x){ return x; } id.apply(null, [function(){ return 42; }])()"),
+        42.0
+    );
+}
+
+#[test]
+fn apply_with_arguments_object_return_value_can_be_called() {
+    assert_eq!(
+        num("function id(x){ return x; } function guard(){ return id.apply(void 0, arguments); } guard(function(){ return 42; }, 'name', {root: true})()"),
+        42.0
+    );
+}
+
+#[test]
+fn promise_resolve_reject_are_bound_to_their_own_promise() {
+    let mut e = JsEngine::new();
+    e.eval(
+        r#"
+        var out = '';
+        var p = new Promise(function(resolveOuter) {
+            new Promise(function(resolveInner) { resolveInner('inner'); });
+            resolveOuter('outer');
+        });
+        p.then(function(v) { out = v; });
+        "#,
+    );
+    assert_eq!(e.eval("out").to_js_string(), "outer");
+}
+
+#[test]
+fn promise_all_waits_for_pending_entries() {
+    let mut e = JsEngine::new();
+    e.eval(
+        r#"
+        var resolveLater;
+        var out = 'pending';
+        var p = new Promise(function(resolve) { resolveLater = resolve; });
+        Promise.all([p]).then(function(values) { out = 'all:' + values[0]; });
+        "#,
+    );
+    assert_eq!(e.eval("out").to_js_string(), "pending");
+    e.eval("resolveLater(42);");
+    assert_eq!(e.eval("out").to_js_string(), "all:42");
+}
+
+#[test]
 fn named_function_expression() {
     assert_eq!(
         num("var fn = function factorial(n){ return n<=1?1:n*factorial(n-1); }; fn(5)"),
@@ -245,6 +299,43 @@ fn function_call_method() {
             getVal.call(o)
         "#),
         10.0
+    );
+}
+
+#[test]
+fn function_expression_call_can_initialize_global_namespace() {
+    assert_eq!(
+        num(r#"
+            this.ns = this.ns || {};
+            (function(_) { _.answer = 42; }).call(this, this.ns);
+            this.ns.answer
+        "#),
+        42.0
+    );
+}
+
+#[test]
+fn strict_script_top_level_this_still_initializes_namespace() {
+    assert_eq!(
+        num(r#"
+            "use strict";
+            this.ns = this.ns || {};
+            (function(_) { _.answer = 42; }).call(this, this.ns);
+            this.ns.answer
+        "#),
+        42.0
+    );
+}
+
+#[test]
+fn function_expression_with_try_body_call_executes() {
+    assert_eq!(
+        num(r#"
+            this.ns = this.ns || {};
+            (function(_) { try { _.answer = 42; } catch(e) { _.answer = 1; } }).call(this, this.ns);
+            this.ns.answer
+        "#),
+        42.0
     );
 }
 
