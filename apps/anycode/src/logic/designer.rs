@@ -847,12 +847,15 @@ impl DesignerDocument {
                 out.push_str(&format!("    root.add({});\n", control.name));
             }
         }
-        out.push_str("    return {\n      root,\n");
+        out.push_str("    return {\n      root: root,\n");
         for control in &self.controls {
-            out.push_str(&format!("      {},\n", control.name));
+            out.push_str(&format!("      {}: {},\n", control.name, control.name));
         }
         out.push_str("    };\n  }\n}\n\n");
-        out.push_str(&format!("module.exports = {{ {}Ui }};\n", self.form_name));
+        out.push_str(&format!(
+            "module.exports = {{ {}Ui: {}Ui }};\n",
+            self.form_name, self.form_name
+        ));
         out
     }
 
@@ -905,7 +908,10 @@ impl DesignerDocument {
         out.push_str("  }\n\n");
         out.push_str("  root() {\n    return this.ui.root;\n  }\n");
         out.push_str("}\n\n");
-        out.push_str(&format!("module.exports = {{ {} }};\n", self.form_name));
+        out.push_str(&format!(
+            "module.exports = {{ {}: {} }};\n",
+            self.form_name, self.form_name
+        ));
         out
     }
 
@@ -937,7 +943,8 @@ impl DesignerDocument {
         out.push_str("module.exports = {\n");
         for (idx, handler) in handlers.iter().enumerate() {
             out.push_str(&format!(
-                "  {}{}",
+                "  {}: {}{}",
+                handler,
                 handler,
                 if idx + 1 == handlers.len() {
                     "\n"
@@ -1479,6 +1486,34 @@ pub fn create_form_files_for_target(
         }
     }
     Ok(())
+}
+
+pub fn regenerate_node_forms_for_project(project_root: &str) -> usize {
+    let ui_dir = format!("{}/src/ui", project_root);
+    let mut changed = 0usize;
+    regenerate_node_forms_in_dir(&ui_dir, &mut changed, 0);
+    changed
+}
+
+fn regenerate_node_forms_in_dir(dir: &str, changed: &mut usize, depth: u32) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(entries) = anyos_std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        let full = crate::util::path::join(dir, &entry.name);
+        if entry.is_dir() {
+            regenerate_node_forms_in_dir(&full, changed, depth + 1);
+        } else if is_designer_file(&full) {
+            if let Some(doc) = load_designer(&full) {
+                if regenerate_generated_files_for_target(&full, &doc, UiCodeTarget::Node).is_ok() {
+                    *changed += 1;
+                }
+            }
+        }
+    }
 }
 
 pub fn next_form_name(project_root: &str, base_name: &str) -> String {

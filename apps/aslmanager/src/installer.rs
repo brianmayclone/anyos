@@ -186,17 +186,28 @@ pub fn open_terminal() {
 }
 
 extern "C" fn download_progress_cb(received: u32, total: u32, userdata: u64) {
-    if total == 0 {
-        return;
-    }
     let base = (userdata >> 32) as u32;
     let span = userdata as u32;
-    let pct = base + (((received as u64 * span as u64) / total as u64) as u32);
+    let pct = if total == 0 {
+        let mib = received / (1024 * 1024);
+        base + mib.min(span)
+    } else {
+        base + (((received as u64 * span as u64) / total as u64) as u32)
+    };
     set_progress(pct.min(100));
 }
 
 fn install_worker() {
     let cfg = crate::app().config.clone();
+
+    set_status("Preparing HTTP download engine...");
+    set_phase("Loading HTTP library");
+    set_progress(1);
+
+    if !libhttp_client::init() {
+        finish_error("could not load /Libraries/libhttp.so");
+        return;
+    }
 
     set_status("Preparing ASL storage...");
     set_phase("Checking ASL services");
@@ -338,17 +349,13 @@ fn ensure_artifact(
     }
 
     let _ = fs::unlink(tmp);
+    if !preflight_tmp_path(tmp, label) {
+        return false;
+    }
     set_phase(&format!("Downloading {}", label));
     log_line(&format!("Downloading {} from Debian mirror.", label));
     let userdata = ((base as u64) << 32) | span as u64;
-    if !libhttp_client::download_progress(url, tmp, download_progress_cb, userdata) {
-        log_line(&format!(
-            "{} download failed: http status {}, error {}.",
-            label,
-            libhttp_client::last_status(),
-            libhttp_client::last_error()
-        ));
-        let _ = fs::unlink(tmp);
+    if !download_with_retries(url, tmp, label, userdata) {
         return false;
     }
     if !verified_artifact(tmp, cfg, kind) {
@@ -364,6 +371,96 @@ fn ensure_artifact(
     }
     log_line(&format!("{} ready.", label));
     true
+}
+
+fn preflight_tmp_path(tmp: &str, label: &str) -> bool {
+    let fd = fs::open(tmp, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == 0 || fd == u32::MAX {
+        log_line(&format!(
+            "{} download target is not writable: {}.",
+            label, tmp
+        ));
+        return false;
+    }
+    let _ = fs::close(fd);
+    let _ = fs::unlink(tmp);
+    true
+}
+
+fn download_with_retries(url: &str, tmp: &str, label: &str, userdata: u64) -> bool {
+    if attempt_download(url, tmp, label, userdata, "HTTPS") {
+        return true;
+    }
+
+    let status = libhttp_client::last_status();
+    let error = libhttp_client::last_error();
+    if !should_try_http_fallback(status, error) {
+        let _ = fs::unlink(tmp);
+        return false;
+    }
+
+    let Some(fallback_url) = official_http_fallback(url) else {
+        let _ = fs::unlink(tmp);
+        return false;
+    };
+
+    let _ = fs::unlink(tmp);
+    log_line("Retrying through Debian's HTTP cloud mirror endpoint.");
+    if attempt_download(&fallback_url, tmp, label, userdata, "HTTP fallback") {
+        return true;
+    }
+
+    let _ = fs::unlink(tmp);
+    false
+}
+
+fn attempt_download(url: &str, tmp: &str, label: &str, userdata: u64, mode: &str) -> bool {
+    if libhttp_client::download_progress(url, tmp, download_progress_cb, userdata) {
+        return true;
+    }
+
+    let status = libhttp_client::last_status();
+    let error = libhttp_client::last_error();
+    log_line(&format!(
+        "{} download failed via {}: http status {}, error {} ({}).",
+        label,
+        mode,
+        status,
+        error,
+        http_error_name(error)
+    ));
+    false
+}
+
+fn should_try_http_fallback(status: u32, error: u32) -> bool {
+    if status >= 400 {
+        return false;
+    }
+    matches!(error, 2 | 3 | 4 | 5 | 7) || status == 0
+}
+
+fn official_http_fallback(url: &str) -> Option<String> {
+    if !url.starts_with(DEBIAN_CLOUD_URL_PREFIX) {
+        return None;
+    }
+    let suffix = &url[DEBIAN_CLOUD_URL_PREFIX.len()..];
+    Some(format!("{}{}", DEBIAN_CLOUD_HTTP_URL_PREFIX, suffix))
+}
+
+fn http_error_name(error: u32) -> &'static str {
+    match error {
+        0 => "none",
+        1 => "invalid URL",
+        2 => "DNS failure",
+        3 => "TCP connection failure",
+        4 => "send failure",
+        5 => "no response or timeout",
+        6 => "too many redirects",
+        7 => "TLS handshake failed",
+        8 => "output buffer too small",
+        9 => "file write error",
+        _ => "unknown",
+    }
 }
 
 fn run_asl_self_check() -> bool {

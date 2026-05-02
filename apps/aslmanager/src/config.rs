@@ -71,7 +71,9 @@ pub(crate) fn load() -> ManagerConfig {
 }
 
 pub(crate) fn is_allowed_debian_url(url: &str) -> bool {
-    (url.starts_with(DEBIAN_URL_PREFIX) || url.starts_with(DEBIAN_CLOUD_URL_PREFIX))
+    (url.starts_with(DEBIAN_URL_PREFIX)
+        || url.starts_with(DEBIAN_CLOUD_URL_PREFIX)
+        || url.starts_with(DEBIAN_CLOUD_HTTP_URL_PREFIX))
         && !url.contains('\0')
         && !url.contains("/../")
 }

@@ -16,5 +16,6 @@ pub const DEBIAN_RAW_URL: &str =
     "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-nocloud-amd64.raw";
 pub const DEBIAN_URL_PREFIX: &str = "https://deb.debian.org/debian/";
 pub const DEBIAN_CLOUD_URL_PREFIX: &str = "https://cloud.debian.org/images/cloud/";
+pub const DEBIAN_CLOUD_HTTP_URL_PREFIX: &str = "http://cloud.debian.org/images/cloud/";
 
 pub const RAW_DISK_MIN_BYTES: u32 = 500_000_000;

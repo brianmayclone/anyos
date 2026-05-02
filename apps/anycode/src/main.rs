@@ -435,6 +435,7 @@ fn build_and_run(
         if s.current_project.is_some() {
             s.run_panel.update(&s.task_mgr);
             s.run_panel.update_tests(&s.test_explorer);
+            logic::commands::repair_node_generated_files_on_open();
             logic::commands::refresh_run_config_selector();
             if let Some(ref proj) = s.current_project {
                 s.sidebar.populate_project(proj, &s.task_mgr);

@@ -184,7 +184,9 @@ impl StoryboardDocument {
                 escape_js(&segue.handler)
             ));
         }
-        out.push_str("];\n\nmodule.exports = { STORYBOARD_NAME, SCENES, SEGUES };\n");
+        out.push_str(
+            "];\n\nmodule.exports = { STORYBOARD_NAME: STORYBOARD_NAME, SCENES: SCENES, SEGUES: SEGUES };\n",
+        );
         out
     }
 
@@ -257,7 +259,7 @@ impl StoryboardDocument {
         out.push_str("    default: return false;\n  }\n}\n\n");
         out.push_str("function storyboardNavigate(formName) {\n  void formName;\n  // TODO: connect this to the application navigation host.\n}\n\n");
         out.push_str(
-            "module.exports = { storyboardTarget, storyboardCanNavigate, storyboardNavigate };\n",
+            "module.exports = { storyboardTarget: storyboardTarget, storyboardCanNavigate: storyboardCanNavigate, storyboardNavigate: storyboardNavigate };\n",
         );
         out
     }

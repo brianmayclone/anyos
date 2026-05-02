@@ -2139,6 +2139,23 @@ pub fn restore_node_packages() {
     spawn_node_package_task("install", tasks::TaskCategory::Custom, "npm install");
 }
 
+pub fn repair_node_generated_files_on_open() {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        return;
+    };
+    if project.project_type != project::ProjectType::NodeJS {
+        return;
+    }
+    let changed = designer::regenerate_node_forms_for_project(&project.root);
+    if changed > 0 {
+        s.output.append_line(&format!(
+            "[Node] Regenerated {} generated UI file set(s)",
+            changed
+        ));
+    }
+}
+
 pub fn auto_restore_node_packages_on_open() {
     let s = app();
     if !s.config.node_auto_install_on_open {
@@ -3731,6 +3748,7 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
 
     s.solution = Some(solution);
     s.current_project = Some(proj);
+    repair_node_generated_files_on_open();
     refresh_run_config_selector();
     s.git_state = git::GitState::empty();
     if let Some(repo_root) = git::find_repository_root(&workspace_root) {

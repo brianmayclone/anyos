@@ -263,30 +263,177 @@ mod imp {
 
     use super::*;
 
-    dynlink::dll_exports! {
-        lib_path: "/Libraries/libhttp.so",
-        lib_struct: LibHttp,
-        init_call: "libhttp_init",
-        symbols: {
-            libhttp_get(url: *const u8, url_len: u32, buf: *mut u8, buf_len: u32) -> u32,
-            libhttp_download(url: *const u8, url_len: u32, path: *const u8, path_len: u32) -> u32,
-            libhttp_drain_progress(url: *const u8, url_len: u32,
-                cb: Option<ProgressCallback>, userdata: u64) -> u32,
-            libhttp_download_progress(url: *const u8, url_len: u32, path: *const u8, path_len: u32,
-                cb: Option<ProgressCallback>, userdata: u64) -> u32,
-            libhttp_post(url: *const u8, url_len: u32, body: *const u8, body_len: u32,
-                ct: *const u8, ct_len: u32, buf: *mut u8, buf_len: u32) -> u32,
-            libhttp_post_with_headers(url: *const u8, url_len: u32, body: *const u8, body_len: u32,
-                ct: *const u8, ct_len: u32, headers: *const u8, headers_len: u32,
-                buf: *mut u8, buf_len: u32) -> u32,
-            libhttp_request_with_headers(url: *const u8, url_len: u32,
-                method: *const u8, method_len: u32, body: *const u8, body_len: u32,
-                ct: *const u8, ct_len: u32, headers: *const u8, headers_len: u32,
-                buf: *mut u8, buf_len: u32) -> u32,
-            libhttp_last_status() -> u32,
-            libhttp_last_headers(buf: *mut u8, buf_len: u32) -> u32,
-            libhttp_last_error() -> u32,
+    const LIBHTTP_PATH: &str = "/Libraries/libhttp.so";
+
+    type GetFn = extern "C" fn(*const u8, u32, *mut u8, u32) -> u32;
+    type DownloadFn = extern "C" fn(*const u8, u32, *const u8, u32) -> u32;
+    type DrainProgressFn = extern "C" fn(*const u8, u32, Option<ProgressCallback>, u64) -> u32;
+    type DownloadProgressFn =
+        extern "C" fn(*const u8, u32, *const u8, u32, Option<ProgressCallback>, u64) -> u32;
+    type PostFn =
+        extern "C" fn(*const u8, u32, *const u8, u32, *const u8, u32, *mut u8, u32) -> u32;
+    type PostHeadersFn = extern "C" fn(
+        *const u8,
+        u32,
+        *const u8,
+        u32,
+        *const u8,
+        u32,
+        *const u8,
+        u32,
+        *mut u8,
+        u32,
+    ) -> u32;
+    type RequestHeadersFn = extern "C" fn(
+        *const u8,
+        u32,
+        *const u8,
+        u32,
+        *const u8,
+        u32,
+        *const u8,
+        u32,
+        *const u8,
+        u32,
+        *mut u8,
+        u32,
+    ) -> u32;
+    type LastStatusFn = extern "C" fn() -> u32;
+    type LastHeadersFn = extern "C" fn(*mut u8, u32) -> u32;
+    type LastErrorFn = extern "C" fn() -> u32;
+
+    struct LibHttp {
+        _handle: dynlink::DlHandle,
+        libhttp_get: GetFn,
+        libhttp_download: DownloadFn,
+        libhttp_drain_progress: Option<DrainProgressFn>,
+        libhttp_download_progress: Option<DownloadProgressFn>,
+        libhttp_post: PostFn,
+        libhttp_post_with_headers: Option<PostHeadersFn>,
+        libhttp_request_with_headers: Option<RequestHeadersFn>,
+        libhttp_last_status: LastStatusFn,
+        libhttp_last_headers: Option<LastHeadersFn>,
+        libhttp_last_error: LastErrorFn,
+    }
+
+    static mut LIB: Option<LibHttp> = None;
+
+    #[allow(static_mut_refs)]
+    fn lib() -> &'static LibHttp {
+        unsafe { LIB.as_ref().expect("LibHttp not loaded") }
+    }
+
+    fn load_get(handle: &dynlink::DlHandle) -> Option<GetFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_get")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), GetFn>(&ptr) })
+    }
+
+    fn load_download(handle: &dynlink::DlHandle) -> Option<DownloadFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_download")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), DownloadFn>(&ptr) })
+    }
+
+    fn load_drain_progress(handle: &dynlink::DlHandle) -> Option<DrainProgressFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_drain_progress")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), DrainProgressFn>(&ptr) })
+    }
+
+    fn load_download_progress(handle: &dynlink::DlHandle) -> Option<DownloadProgressFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_download_progress")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), DownloadProgressFn>(&ptr) })
+    }
+
+    fn load_post(handle: &dynlink::DlHandle) -> Option<PostFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_post")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), PostFn>(&ptr) })
+    }
+
+    fn load_post_headers(handle: &dynlink::DlHandle) -> Option<PostHeadersFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_post_with_headers")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), PostHeadersFn>(&ptr) })
+    }
+
+    fn load_request_headers(handle: &dynlink::DlHandle) -> Option<RequestHeadersFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_request_with_headers")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), RequestHeadersFn>(&ptr) })
+    }
+
+    fn load_last_status(handle: &dynlink::DlHandle) -> Option<LastStatusFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_last_status")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), LastStatusFn>(&ptr) })
+    }
+
+    fn load_last_headers(handle: &dynlink::DlHandle) -> Option<LastHeadersFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_last_headers")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), LastHeadersFn>(&ptr) })
+    }
+
+    fn load_last_error(handle: &dynlink::DlHandle) -> Option<LastErrorFn> {
+        let ptr = dynlink::dl_sym(handle, "libhttp_last_error")?;
+        Some(unsafe { core::mem::transmute_copy::<*const (), LastErrorFn>(&ptr) })
+    }
+
+    pub fn init() -> bool {
+        let handle = match dynlink::dl_open(LIBHTTP_PATH) {
+            Some(handle) => handle,
+            None => {
+                dynlink::log_open_failed(LIBHTTP_PATH);
+                return false;
+            }
+        };
+
+        let Some(libhttp_get) = load_get(&handle) else {
+            dynlink::log_missing_symbol(LIBHTTP_PATH, "libhttp_get");
+            return false;
+        };
+        let Some(libhttp_download) = load_download(&handle) else {
+            dynlink::log_missing_symbol(LIBHTTP_PATH, "libhttp_download");
+            return false;
+        };
+        let Some(libhttp_post) = load_post(&handle) else {
+            dynlink::log_missing_symbol(LIBHTTP_PATH, "libhttp_post");
+            return false;
+        };
+        let Some(libhttp_last_status) = load_last_status(&handle) else {
+            dynlink::log_missing_symbol(LIBHTTP_PATH, "libhttp_last_status");
+            return false;
+        };
+        let Some(libhttp_last_error) = load_last_error(&handle) else {
+            dynlink::log_missing_symbol(LIBHTTP_PATH, "libhttp_last_error");
+            return false;
+        };
+
+        let libhttp_drain_progress = load_drain_progress(&handle);
+        let libhttp_download_progress = load_download_progress(&handle);
+        let libhttp_post_with_headers = load_post_headers(&handle);
+        let libhttp_request_with_headers = load_request_headers(&handle);
+        let libhttp_last_headers = load_last_headers(&handle);
+
+        let lib = LibHttp {
+            _handle: handle,
+            libhttp_get,
+            libhttp_download,
+            libhttp_drain_progress,
+            libhttp_download_progress,
+            libhttp_post,
+            libhttp_post_with_headers,
+            libhttp_request_with_headers,
+            libhttp_last_status,
+            libhttp_last_headers,
+            libhttp_last_error,
+        };
+
+        if let Some(init_ptr) = dynlink::dl_sym(&lib._handle, "libhttp_init") {
+            let init_fn: extern "C" fn() -> u32 = unsafe {
+                core::mem::transmute_copy::<*const (), extern "C" fn() -> u32>(&init_ptr)
+            };
+            let _ = init_fn();
         }
+
+        unsafe {
+            LIB = Some(lib);
+        }
+        true
     }
 
     // ── Public API ──────────────────────────────────────────────────────────────
@@ -359,14 +506,28 @@ mod imp {
         callback: ProgressCallback,
         userdata: u64,
     ) -> bool {
-        let result = (lib().libhttp_download_progress)(
-            url.as_ptr(),
-            url.len() as u32,
-            path.as_ptr(),
-            path.len() as u32,
-            Some(callback),
-            userdata,
-        );
+        let result = if let Some(download_progress) = lib().libhttp_download_progress {
+            download_progress(
+                url.as_ptr(),
+                url.len() as u32,
+                path.as_ptr(),
+                path.len() as u32,
+                Some(callback),
+                userdata,
+            )
+        } else {
+            callback(0, 0, userdata);
+            let result = (lib().libhttp_download)(
+                url.as_ptr(),
+                url.len() as u32,
+                path.as_ptr(),
+                path.len() as u32,
+            );
+            if result == 0 {
+                callback(1, 1, userdata);
+            }
+            result
+        };
         result == 0
     }
 
@@ -376,12 +537,14 @@ mod imp {
     /// `(received_bytes, total_bytes, userdata)`.
     /// Returns the received byte count on success, or `None` on error.
     pub fn drain_progress(url: &str, callback: ProgressCallback, userdata: u64) -> Option<u32> {
-        let result = (lib().libhttp_drain_progress)(
-            url.as_ptr(),
-            url.len() as u32,
-            Some(callback),
-            userdata,
-        );
+        let result = if let Some(drain_progress) = lib().libhttp_drain_progress {
+            drain_progress(url.as_ptr(), url.len() as u32, Some(callback), userdata)
+        } else {
+            let body = get(url)?;
+            let received = body.len() as u32;
+            callback(received, received, userdata);
+            received
+        };
         if result == u32::MAX {
             None
         } else {
@@ -423,8 +586,11 @@ mod imp {
         content_type: &str,
         extra_headers: &str,
     ) -> Option<Vec<u8>> {
+        let Some(post_with_headers) = lib().libhttp_post_with_headers else {
+            return post(url, body, content_type);
+        };
         let mut buf = vec![0u8; 256 * 1024];
-        let n = (lib().libhttp_post_with_headers)(
+        let n = post_with_headers(
             url.as_ptr(),
             url.len() as u32,
             body.as_ptr(),
@@ -450,8 +616,17 @@ mod imp {
         content_type: &str,
         extra_headers: &str,
     ) -> Option<Vec<u8>> {
+        let Some(request_with_headers) = lib().libhttp_request_with_headers else {
+            if method.eq_ignore_ascii_case("GET") && body.is_empty() {
+                return get(url);
+            }
+            if method.eq_ignore_ascii_case("POST") {
+                return post(url, body, content_type);
+            }
+            return None;
+        };
         let mut buf = vec![0u8; 4 * 1024 * 1024];
-        let n = (lib().libhttp_request_with_headers)(
+        let n = request_with_headers(
             url.as_ptr(),
             url.len() as u32,
             method.as_ptr(),
@@ -478,8 +653,11 @@ mod imp {
     }
 
     pub fn last_headers() -> String {
+        let Some(last_headers) = lib().libhttp_last_headers else {
+            return String::new();
+        };
         let mut buf = vec![0u8; 64 * 1024];
-        let n = (lib().libhttp_last_headers)(buf.as_mut_ptr(), buf.len() as u32);
+        let n = last_headers(buf.as_mut_ptr(), buf.len() as u32);
         let used = (n as usize).min(buf.len());
         buf.truncate(used);
         String::from_utf8(buf).unwrap_or_default()
