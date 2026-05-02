@@ -8,6 +8,8 @@ impl DisplayList {
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
+            rounded_clip_stack: Vec::new(),
+            opacity_stack: Vec::new(),
             rotation_stack: Vec::new(),
             cull_y_range: None,
         }
@@ -23,6 +25,8 @@ impl DisplayList {
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
+            rounded_clip_stack: Vec::new(),
+            opacity_stack: Vec::new(),
             rotation_stack: Vec::new(),
             cull_y_range: None,
         };
@@ -42,6 +46,8 @@ impl DisplayList {
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
+            rounded_clip_stack: Vec::new(),
+            opacity_stack: Vec::new(),
             rotation_stack: Vec::new(),
             cull_y_range: Some((y_start, y_end)),
         };
@@ -211,7 +217,7 @@ impl DisplayList {
                 (cmd.x, draw_y, cmd.w, cmd.h)
             };
 
-            if cmd.masks.is_empty() {
+            if cmd.opacity == 255 && cmd.masks.is_empty() && cmd.rounded_clips.is_empty() {
                 rasterize_draw_cmd(
                     images,
                     cmd,
@@ -309,6 +315,16 @@ impl DisplayList {
                 }
             }
         }
+
+        let parent_opacity = self.opacity_stack.last().copied().unwrap_or(255) as i32;
+        let effective_opacity = ((parent_opacity * bx.opacity.clamp(0, 255) + 127) / 255)
+            .clamp(0, 255) as u8;
+        let pushed_opacity = if effective_opacity < 255 || !self.opacity_stack.is_empty() {
+            self.opacity_stack.push(effective_opacity);
+            true
+        } else {
+            false
+        };
 
         let sticky_abs_y = if bx.is_sticky {
             if let Some(ctx) = sticky_ctx {
@@ -1104,6 +1120,20 @@ impl DisplayList {
         } else {
             false
         };
+        let pushed_rounded_clip = if bx.overflow_hidden && draw_w > 0 && draw_h > 0 {
+            let radii = self.border_radii_for_rect(bx, draw_w, draw_h);
+            if radii.iter().any(|&r| r > 0) {
+                self.rounded_clip_stack.push(RoundedClip {
+                    rect: (abs_x, abs_y, draw_w, draw_h),
+                    radii,
+                });
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
         let next_sticky_ctx = if bx.overflow_hidden {
             let content_top = abs_y + bx.border_width + bx.padding.top;
@@ -1138,17 +1168,19 @@ impl DisplayList {
 
         if has_sc_children {
             // Partition children into three groups:
-            // 1. Child stacking contexts with negative z-index (sorted ascending)
-            // 2. Non-stacking-context non-positioned children in document order
-            // 3. Non-stacking-context positioned auto-z children in document order
-            // 4. Child stacking contexts with z-index >= 0 (sorted ascending)
+            // 1. Child stacking contexts with explicit negative z-index.
+            // 2. Non-positioned children in document order, including stacking
+            //    contexts created only by opacity/transform with z-index:auto.
+            // 3. Positioned z-index:auto children in document order, also
+            //    including opacity/transform stacking contexts.
+            // 4. Child stacking contexts with explicit z-index >= 0.
             let mut neg: Vec<(i32, usize)> = Vec::new();
             let mut pos: Vec<(i32, usize)> = Vec::new();
             let mut normal: Vec<usize> = Vec::new();
             let mut positioned_auto: Vec<usize> = Vec::new();
 
             for (i, child) in bx.children.iter().enumerate() {
-                if child.creates_stacking_context {
+                if child.creates_stacking_context && !child.z_index_auto {
                     if child.z_index < 0 {
                         neg.push((child.z_index, i));
                     } else {
@@ -1195,8 +1227,14 @@ impl DisplayList {
         if pushed_clip {
             self.clip_stack.pop();
         }
+        if pushed_rounded_clip {
+            self.rounded_clip_stack.pop();
+        }
         if pushed_mask {
             self.mask_stack.pop();
+        }
+        if pushed_opacity {
+            self.opacity_stack.pop();
         }
         if pushed_rotation {
             self.rotation_stack.pop();

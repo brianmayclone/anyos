@@ -501,6 +501,12 @@ pub enum BackgroundImageVal {
         center_y: i32,
         stops: Vec<GradientStop>,
     },
+    ConicGradient {
+        from_deg: i32,
+        center_x: i32,
+        center_y: i32,
+        stops: Vec<GradientStop>,
+    },
 }
 
 #[derive(Clone, PartialEq)]

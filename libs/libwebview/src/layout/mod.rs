@@ -1708,6 +1708,16 @@ fn resolve_absolute_alignment_rec(
                     );
 
                     let mut width = child.width;
+                    if let Some(pct) = style.width_pct {
+                        if horizontal_cb_size > 0 {
+                            width = ((horizontal_cb_size as i64 * pct as i64) / 10000) as i32;
+                        }
+                    } else if let Some((px100, pct100)) = style.width_calc {
+                        width = ((px100 as i64
+                            + (horizontal_cb_size as i64 * pct100 as i64 / 10000))
+                            / 100)
+                            .max(0) as i32;
+                    }
                     let mut ml = child.margin.left;
                     let mut mr = child.margin.right;
                     let desired_abs_x = resolve_axis(
@@ -1734,6 +1744,16 @@ fn resolve_absolute_alignment_rec(
                     child.margin.right = mr;
 
                     let mut height = child.height;
+                    if let Some(pct) = style.height_pct {
+                        if vertical_cb_size > 0 {
+                            height = ((vertical_cb_size as i64 * pct as i64) / 10000) as i32;
+                        }
+                    } else if let Some((px100, pct100)) = style.height_calc {
+                        height = ((px100 as i64
+                            + (vertical_cb_size as i64 * pct100 as i64 / 10000))
+                            / 100)
+                            .max(0) as i32;
+                    }
                     let mut mt = child.margin.top;
                     let mut mb = child.margin.bottom;
                     let desired_abs_y = resolve_axis(

@@ -1034,6 +1034,15 @@ impl WebView {
         !self.js_runtime.timers.is_empty()
     }
 
+    /// Check if visual-only work still needs animation ticks.
+    pub fn has_visual_work(&self) -> bool {
+        self.pending_tiles
+            || !self.smooth_scrolls.is_empty()
+            || !self.js_runtime.active_animations.is_empty()
+            || !self.js_runtime.active_transitions.is_empty()
+            || !self.js_runtime.active_style_animations.is_empty()
+    }
+
     /// Number of active JS timers.
     pub fn timer_count(&self) -> usize {
         self.js_runtime.timers.len()

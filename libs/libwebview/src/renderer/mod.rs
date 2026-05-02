@@ -40,7 +40,9 @@ use tile::{
     TileCache, TileCanvas, BUFFER_ZONE, INITIAL_VISIBLE_EXTRA_ROWS, MAX_TILES_PER_IDLE_TICK,
     MAX_TILES_PER_SCROLL_TICK, MAX_TILE_CANVASES, TILE_HEIGHT,
 };
-use types::{DisplayList, DrawCmd, DrawKind, DrawRotation, HitRegion, MaskLayer, StickyContext};
+use types::{
+    DisplayList, DrawCmd, DrawKind, DrawRotation, HitRegion, MaskLayer, RoundedClip, StickyContext,
+};
 
 pub(crate) struct Renderer {
     tile_canvases: Vec<TileCanvas>,

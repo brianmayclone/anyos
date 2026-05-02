@@ -466,6 +466,28 @@ impl DisplayList {
                     },
                 );
             }
+            BackgroundImageVal::ConicGradient {
+                from_deg,
+                center_x,
+                center_y,
+                stops,
+            } => {
+                if stops.len() < 2 {
+                    return;
+                }
+                self.push(
+                    bg_x,
+                    bg_y,
+                    bg_w,
+                    bg_h,
+                    DrawKind::ConicGradient {
+                        from_deg: *from_deg,
+                        center_x: *center_x,
+                        center_y: *center_y,
+                        stops: stops.clone(),
+                    },
+                );
+            }
             BackgroundImageVal::Url(ref src) => {
                 if !src.is_empty() {
                     let (img_w, img_h, object_fit) = match bx.background_size {

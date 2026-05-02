@@ -71,6 +71,10 @@ pub(super) struct DrawCmd {
     pub(super) clip: Option<(i32, i32, i32, i32)>,
     /// Active CSS mask layers inherited from ancestors and this element.
     pub(super) masks: Vec<MaskLayer>,
+    /// Active rounded overflow clips inherited from ancestors.
+    pub(super) rounded_clips: Vec<RoundedClip>,
+    /// Approximate composited opacity inherited from CSS opacity ancestors.
+    pub(super) opacity: u8,
     /// Active rotation transforms inherited from ancestors and this element.
     pub(super) rotations: Vec<DrawRotation>,
 }
@@ -93,6 +97,12 @@ pub(super) struct MaskLayer {
     pub(super) position_x_is_percent: bool,
     pub(super) position_y: i32,
     pub(super) position_y_is_percent: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct RoundedClip {
+    pub(super) rect: (i32, i32, i32, i32),
+    pub(super) radii: [i32; 4],
 }
 
 pub(super) enum DrawKind {
@@ -121,6 +131,12 @@ pub(super) enum DrawKind {
         vertical: bool,
     },
     RadialGradient {
+        center_x: i32,
+        center_y: i32,
+        stops: Vec<crate::style::GradientStop>,
+    },
+    ConicGradient {
+        from_deg: i32,
         center_x: i32,
         center_y: i32,
         stops: Vec<crate::style::GradientStop>,
@@ -161,6 +177,10 @@ pub(crate) struct DisplayList {
     pub(super) clip_stack: Vec<(i32, i32, i32, i32)>,
     /// Current CSS mask layers during flatten.
     pub(super) mask_stack: Vec<MaskLayer>,
+    /// Current rounded overflow clips during flatten.
+    pub(super) rounded_clip_stack: Vec<RoundedClip>,
+    /// Current effective opacity during flatten.
+    pub(super) opacity_stack: Vec<u8>,
     /// Active rotation transforms during flatten.
     pub(super) rotation_stack: Vec<DrawRotation>,
     /// Maximum command height seen — used as search margin for binary search.

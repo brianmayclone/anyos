@@ -1288,7 +1288,8 @@ impl BrowserHostApp {
             if self.drain_js_side_effects() {
                 return;
             }
-            self.wv.tick(16);
+        }
+        if self.wv.tick_visual_only(16) {
             if load_iframe_snapshots(
                 &mut self.wv,
                 &self.current_url,
@@ -1734,7 +1735,7 @@ impl eframe::App for BrowserHostApp {
 
         self.render_devtools(ctx);
 
-        if self.pending.is_done() && !self.wv.has_timers() {
+        if self.pending.is_done() && !self.wv.has_timers() && !self.wv.has_visual_work() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         } else {
             ctx.request_repaint();
@@ -2084,8 +2085,8 @@ fn main() {
                         }
                         wv.relayout();
                     }
-                    wv.tick(step);
                 }
+                wv.tick_visual_only(step);
                 waited += step;
                 // Sleep a small amount to avoid 100% CPU
                 std::thread::sleep(std::time::Duration::from_millis(5));
@@ -3460,6 +3461,37 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             libwebview::style::AlignContent::Stretch => "stretch",
         }
     }
+    fn background_clip_name(value: libwebview::style::BackgroundClipVal) -> &'static str {
+        match value {
+            libwebview::style::BackgroundClipVal::BorderBox => "border-box",
+            libwebview::style::BackgroundClipVal::PaddingBox => "padding-box",
+            libwebview::style::BackgroundClipVal::ContentBox => "content-box",
+            libwebview::style::BackgroundClipVal::Text => "text",
+        }
+    }
+    fn background_image_name(value: &libwebview::style::BackgroundImageVal) -> &'static str {
+        match value {
+            libwebview::style::BackgroundImageVal::None => "none",
+            libwebview::style::BackgroundImageVal::Url(_) => "url",
+            libwebview::style::BackgroundImageVal::LinearGradient { .. } => "linear-gradient",
+            libwebview::style::BackgroundImageVal::RadialGradient { .. } => "radial-gradient",
+            libwebview::style::BackgroundImageVal::ConicGradient { .. } => "conic-gradient",
+        }
+    }
+    fn has_ancestor_with_class(dom: &libwebview::dom::Dom, node_id: usize, needle: &str) -> bool {
+        let mut cur = dom.get(node_id).parent;
+        while let Some(parent) = cur {
+            if dom
+                .attr(parent, "class")
+                .map(|classes| classes.split_ascii_whitespace().any(|class| class == needle))
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            cur = dom.get(parent).parent;
+        }
+        false
+    }
 
     const INTERESTING_CLASSES: &[&str] = &[
         "skip-link",
@@ -3488,6 +3520,12 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         "BKRPef",
         "WC2Die",
         "plR5qb",
+        "xL0qi",
+        "iydNQb",
+        "mTurwe",
+        "bvUkz",
+        "u4Uk3c",
+        "lTxWLe",
         "L3eUgb",
         "LLD4me",
         "k1zIA",
@@ -3540,7 +3578,24 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
         let is_interesting_class = class_attr
             .split_ascii_whitespace()
             .any(|class| INTERESTING_CLASSES.contains(&class));
-        if !is_body && !is_interesting_id && !is_interesting_class && !is_main_nav_item {
+        let is_google_ai_button_part = has_ancestor_with_class(dom, node_id, "plR5qb");
+        if !is_body
+            && !is_interesting_id
+            && !is_interesting_class
+            && !is_main_nav_item
+            && !is_google_ai_button_part
+        {
+            continue;
+        }
+        if tag == Tag::Style && is_google_ai_button_part {
+            let css_text = dom.text_content(node_id);
+            let preview: String = css_text.chars().take(1200).collect();
+            eprintln!(
+                "[surf-host] interesting-style-css node={} parent={:?} preview={:?}",
+                node_id,
+                dom.get(node_id).parent,
+                preview
+            );
             continue;
         }
         let Some(style) = wv.resolved_style_ref(node_id) else {
@@ -3557,7 +3612,7 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             })
             .unwrap_or_else(String::new);
         eprintln!(
-            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) font_family={:?} flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} align_content={:?} width={:?} width_pct={:?} width_calc={:?} height={:?} height_pct={:?} height_calc={:?} inset=({:?}/{:?},{:?}/{:?},{:?}/{:?},{:?}/{:?}) transform=(tx:{} tx_pct:{} ty:{} ty_pct:{} sx:{} sy:{} rot:{}) min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) margin_auto=({},{},{},{}) padding=({},{},{},{}) grid_rows={} grid_cols={} border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
+            "[surf-host] interesting-style node={} tag={} id={:?} class={:?} bounds={:?} display={:?} position={} visibility={} overflow=({:?},{:?}) font_family={:?} bg={:#010x} bg_image={:?} bg_clip={:?} mask={:?} flex=({},{},{:?}/{:?}) flexdir={:?} justify={:?} align={:?} align_content={:?} width={:?} width_pct={:?} width_calc={:?} height={:?} height_pct={:?} height_calc={:?} inset=({:?}/{:?},{:?}/{:?},{:?}/{:?},{:?}/{:?}) transform=(tx:{} tx_pct:{} ty:{} ty_pct:{} sx:{} sy:{} rot:{}) min=({:?},{:?}) max=({:?},{:?}) margin=({:?},{:?},{:?},{:?}) margin_auto=({},{},{},{}) padding=({},{},{},{}) grid_rows={} grid_cols={} border_w=({},{},{},{}) border_c=({:#010x},{:#010x},{:#010x},{:#010x}) radius=({},{},{},{}) z={} opacity={:.3} shadows={}{}",
             node_id,
             tag.tag_name(),
             id_attr,
@@ -3569,6 +3624,10 @@ fn debug_dump_interesting_styles(wv: &libwebview::WebView, dom: &libwebview::dom
             style.overflow_x,
             style.overflow_y,
             style.font_family,
+            style.background_color,
+            background_image_name(&style.background_image),
+            background_clip_name(style.background_clip),
+            background_image_name(&style.mask_image),
             style.flex_grow,
             style.flex_shrink,
             style.flex_basis,
@@ -3696,6 +3755,7 @@ fn debug_dump_named_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom)
             libwebview::style::BackgroundImageVal::Url(_) => "url",
             libwebview::style::BackgroundImageVal::LinearGradient { .. } => "linear-gradient",
             libwebview::style::BackgroundImageVal::RadialGradient { .. } => "radial-gradient",
+            libwebview::style::BackgroundImageVal::ConicGradient { .. } => "conic-gradient",
         };
         eprintln!(
             "[surf-host] named-style node={} id={} bounds={:?} top={:?}/{:?} left={:?}/{:?} right={:?}/{:?} bottom={:?}/{:?} padding=({}, {}, {}, {}) margin=({}, {}, {}, {}) bg_pos=({}, {}) bg_image={}",

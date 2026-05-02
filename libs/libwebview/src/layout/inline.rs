@@ -1871,15 +1871,13 @@ fn emit_input_fragment(
 
     // Propagate CSS-declared background and text colors to the fragment so the
     // renderer can apply them to the native widget instead of its theme default.
-    let (css_bg, css_fg, css_accent, uses_dark_color_scheme) = if node_id < styles.len() {
+    let (css_accent, uses_dark_color_scheme) = if node_id < styles.len() {
         (
-            styles[node_id].background_color,
-            styles[node_id].color,
             styles[node_id].accent_color,
             styles[node_id].color_scheme == crate::style::ColorSchemeVal::Dark,
         )
     } else {
-        (0, 0, 0, false)
+        (0, false)
     };
 
     match lower {

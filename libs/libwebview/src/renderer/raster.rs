@@ -6,7 +6,7 @@ use super::raster_utils::{
     fill_rounded_border_buf, fill_rounded_rect_buf, fit_contain_size, fit_cover_size,
     interpolate_gradient_color, lighten_color, resolve_object_position_offset, sin_approx,
 };
-use super::{DrawCmd, DrawKind, ImageCache, MaskLayer};
+use super::{DrawCmd, DrawKind, ImageCache, MaskLayer, RoundedClip};
 use crate::style::{BackgroundImageVal, BackgroundRepeatVal, BackgroundSizeVal};
 
 fn draw_ahem_string_buf(
@@ -221,6 +221,17 @@ fn rasterize_draw_cmd_basic(
                 buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *center_x, *center_y, stops,
             );
         }
+        DrawKind::ConicGradient {
+            from_deg,
+            center_x,
+            center_y,
+            stops,
+        } => {
+            fill_conic_gradient_buf(
+                buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *from_deg, *center_x,
+                *center_y, stops,
+            );
+        }
         DrawKind::Text {
             color,
             font_id,
@@ -395,6 +406,17 @@ pub(super) fn rasterize_draw_cmd(
                 center_y: *center_y,
                 stops: stops.clone(),
             },
+            DrawKind::ConicGradient {
+                from_deg,
+                center_x,
+                center_y,
+                stops,
+            } => DrawKind::ConicGradient {
+                from_deg: *from_deg,
+                center_x: *center_x,
+                center_y: *center_y,
+                stops: stops.clone(),
+            },
             DrawKind::Text {
                 color,
                 font_id,
@@ -430,6 +452,8 @@ pub(super) fn rasterize_draw_cmd(
         },
         clip: None,
         masks: Vec::new(),
+        rounded_clips: Vec::new(),
+        opacity: 255,
         rotations: Vec::new(),
     };
     rasterize_draw_cmd_basic(
@@ -523,6 +547,8 @@ pub(super) fn rasterize_masked_cmd(
         tile_y_start,
         &scratch,
         &cmd.masks,
+        &cmd.rounded_clips,
+        cmd.opacity as u32,
     );
 }
 
@@ -538,6 +564,8 @@ fn composite_masked_scratch(
     tile_y_start: i32,
     scratch: &[u32],
     masks: &[MaskLayer],
+    rounded_clips: &[RoundedClip],
+    opacity: u32,
 ) {
     if dst.is_null() || w <= 0 || h <= 0 {
         return;
@@ -558,11 +586,15 @@ fn composite_masked_scratch(
                 }
                 let doc_x = x + col;
                 let doc_y = tile_y_start + dst_row;
+                if !rounded_clips_contain(doc_x, doc_y, rounded_clips) {
+                    continue;
+                }
                 let mask_a = combined_mask_alpha(images, doc_x, doc_y, masks);
                 if mask_a == 0 {
                     continue;
                 }
-                let masked = apply_alpha_to_argb(src, mask_a);
+                let combined_a = mask_a * opacity / 255;
+                let masked = apply_alpha_to_argb(src, combined_a);
                 if (masked >> 24) & 0xFF == 0 {
                     continue;
                 }
@@ -588,6 +620,50 @@ fn combined_mask_alpha(images: &ImageCache, doc_x: i32, doc_y: i32, masks: &[Mas
         }
     }
     alpha
+}
+
+fn rounded_clips_contain(doc_x: i32, doc_y: i32, clips: &[RoundedClip]) -> bool {
+    for clip in clips {
+        if !rounded_clip_contains(*clip, doc_x, doc_y) {
+            return false;
+        }
+    }
+    true
+}
+
+fn rounded_clip_contains(clip: RoundedClip, doc_x: i32, doc_y: i32) -> bool {
+    let (x, y, w, h) = clip.rect;
+    if w <= 0 || h <= 0 || doc_x < x || doc_y < y || doc_x >= x + w || doc_y >= y + h {
+        return false;
+    }
+
+    let local_x = doc_x - x;
+    let local_y = doc_y - y;
+    let max_r = (w.min(h) / 2).max(0);
+    let tl = clip.radii[0].clamp(0, max_r);
+    let tr = clip.radii[1].clamp(0, max_r);
+    let br = clip.radii[2].clamp(0, max_r);
+    let bl = clip.radii[3].clamp(0, max_r);
+
+    if tl > 0 && local_x < tl && local_y < tl {
+        return inside_corner(local_x, local_y, tl, tl, tl);
+    }
+    if tr > 0 && local_x >= w - tr && local_y < tr {
+        return inside_corner(local_x, local_y, w - tr - 1, tr, tr);
+    }
+    if br > 0 && local_x >= w - br && local_y >= h - br {
+        return inside_corner(local_x, local_y, w - br - 1, h - br - 1, br);
+    }
+    if bl > 0 && local_x < bl && local_y >= h - bl {
+        return inside_corner(local_x, local_y, bl, h - bl - 1, bl);
+    }
+    true
+}
+
+fn inside_corner(px: i32, py: i32, cx: i32, cy: i32, r: i32) -> bool {
+    let dx = px - cx;
+    let dy = py - cy;
+    dx as i64 * dx as i64 + dy as i64 * dy as i64 <= r as i64 * r as i64
 }
 
 fn sample_mask_alpha(images: &ImageCache, mask: &MaskLayer, doc_x: i32, doc_y: i32) -> u32 {
@@ -654,6 +730,28 @@ fn sample_mask_alpha(images: &ImageCache, mask: &MaskLayer, doc_x: i32, doc_y: i
             let tiled_x = wrap_repeat(rel_x, mw);
             let tiled_y = wrap_repeat(rel_y, mh);
             let t = radial_gradient_position(*center_x, *center_y, tiled_x, tiled_y, mw, mh);
+            (interpolate_gradient_color(stops, t) >> 24) & 0xFF
+        }
+        BackgroundImageVal::ConicGradient {
+            from_deg,
+            center_x,
+            center_y,
+            stops,
+        } => {
+            let (mx, my, mw, mh) = resolve_mask_image_rect(mask, None);
+            if mw <= 0 || mh <= 0 {
+                return 0;
+            }
+            let rel_x = doc_x - mx;
+            let rel_y = doc_y - my;
+            if !mask_repeats_at(mask.repeat, rel_x, rel_y, mw, mh) {
+                return 0;
+            }
+            let tiled_x = wrap_repeat(rel_x, mw);
+            let tiled_y = wrap_repeat(rel_y, mh);
+            let cx = ((mw as i64 * *center_x as i64) / 10000) as i32;
+            let cy = ((mh as i64 * *center_y as i64) / 10000) as i32;
+            let t = conic_gradient_position(*from_deg, tiled_x - cx, tiled_y - cy);
             (interpolate_gradient_color(stops, t) >> 24) & 0xFF
         }
     }
@@ -985,6 +1083,46 @@ fn fill_radial_gradient_buf(
     }
 }
 
+fn fill_conic_gradient_buf(
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    from_deg: i32,
+    center_x: i32,
+    center_y: i32,
+    stops: &[crate::style::GradientStop],
+) {
+    if w <= 0 || h <= 0 || buf.is_null() || stops.len() < 2 {
+        return;
+    }
+    let s = stride as i32;
+    let bh = buf_h as i32;
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(s);
+    let y1 = (y + h).min(bh);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    let cx = x + ((w as i64 * center_x as i64) / 10000) as i32;
+    let cy = y + ((h as i64 * center_y as i64) / 10000) as i32;
+    unsafe {
+        for py in y0..y1 {
+            let row = buf.add(py as usize * stride as usize);
+            for px in x0..x1 {
+                let t = conic_gradient_position(from_deg, px - cx, py - cy);
+                let color = interpolate_gradient_color(stops, t);
+                blend_pixel(row.add(px as usize), color);
+            }
+        }
+    }
+}
+
 fn isqrt_i64(n: i64) -> i64 {
     if n <= 0 {
         return 0;
@@ -996,6 +1134,44 @@ fn isqrt_i64(n: i64) -> i64 {
         y = (x + n / x) / 2;
     }
     x
+}
+
+fn conic_gradient_position(from_deg: i32, rel_x: i32, rel_y: i32) -> i32 {
+    // CSS conic gradients start at the top and rotate clockwise.  Avoid libm
+    // atan2 here so the renderer stays portable in the freestanding anyOS
+    // build; this piecewise approximation is smooth enough for UI glows.
+    let mut deg = atan2_deg_approx(rel_x, -rel_y) - from_deg;
+    deg %= 360;
+    if deg < 0 {
+        deg += 360;
+    }
+    ((deg as i64 * 10000) / 360) as i32
+}
+
+fn atan2_deg_approx(y: i32, x: i32) -> i32 {
+    if x == 0 && y == 0 {
+        return 0;
+    }
+    let ax = x.abs();
+    let ay = y.abs();
+    let base = if ax >= ay {
+        if ax == 0 {
+            0
+        } else {
+            (ay * 45) / ax
+        }
+    } else if ay == 0 {
+        90
+    } else {
+        90 - (ax * 45) / ay
+    };
+
+    match (x >= 0, y >= 0) {
+        (true, true) => base,
+        (false, true) => 180 - base,
+        (false, false) => 180 + base,
+        (true, false) => 360 - base,
+    }
 }
 
 fn radial_gradient_position(

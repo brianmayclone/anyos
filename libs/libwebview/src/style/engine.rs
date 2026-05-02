@@ -164,8 +164,24 @@ fn ua_style_and_flags(tag: Tag) -> (ComputedStyle, u32) {
         Tag::Img | Tag::Picture | Tag::Br | Tag::Span | Tag::Label => {
             s.display = Display::Inline;
         }
-        Tag::Input | Tag::Button | Tag::Select | Tag::Textarea => {
-            s.display = Display::Inline;
+        Tag::Button => {
+            // HTML form controls are replaced/flow-root style inline boxes in
+            // browser UA styles. Treating rich <button> content as plain inline
+            // breaks modern pill controls such as Google's KI button, where
+            // absolutely positioned layers and centered children depend on the
+            // button having its own inline-block box.
+            //
+            // We model styled rich buttons as inline-flex: this matches the
+            // visual behavior sites generally rely on from native buttons
+            // (content centered in the control) while still allowing author
+            // CSS to override `display`.
+            s.display = Display::InlineFlex;
+            s.align_items = AlignItems::Center;
+            s.justify_content = JustifyContent::Center;
+            s.box_sizing = BoxSizing::BorderBox;
+        }
+        Tag::Input | Tag::Select | Tag::Textarea => {
+            s.display = Display::InlineBlock;
         }
         Tag::Table => {}
         Tag::Tr => {
@@ -6607,7 +6623,7 @@ fn extract_css_url_function(s: &str) -> Option<String> {
     None
 }
 
-/// Parse `background-image` value: `url(...)`, `image-set(...)`, or `linear-gradient(...)`.
+/// Parse `background-image` value: `url(...)`, `image-set(...)`, or CSS gradients.
 fn parse_background_image_val(s: &str) -> Option<BackgroundImageVal> {
     let trimmed = s.trim();
     let lower = trimmed.to_ascii_lowercase();
@@ -6631,6 +6647,12 @@ fn parse_background_image_val(s: &str) -> Option<BackgroundImageVal> {
             .trim_start_matches("radial-gradient(")
             .trim_end_matches(')');
         return parse_radial_gradient(inner);
+    }
+    if lower.starts_with("conic-gradient(") {
+        let inner = lower
+            .trim_start_matches("conic-gradient(")
+            .trim_end_matches(')');
+        return parse_conic_gradient(inner);
     }
     None
 }
@@ -6759,6 +6781,73 @@ fn parse_radial_gradient(inner: &str) -> Option<BackgroundImageVal> {
         center_y,
         stops,
     })
+}
+
+fn parse_conic_gradient(inner: &str) -> Option<BackgroundImageVal> {
+    let parts: Vec<&str> = split_comma_respecting_parens(inner);
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let mut from_deg = 0;
+    let mut center_x = 5000;
+    let mut center_y = 5000;
+    let mut start_idx = 0;
+    let first = parts[0].trim();
+    if !looks_like_color_stop(first) {
+        let (from, cx, cy) = parse_conic_prelude(first);
+        from_deg = from;
+        center_x = cx;
+        center_y = cy;
+        start_idx = 1;
+    }
+
+    let mut stops = Vec::new();
+    for part in parts.iter().skip(start_idx) {
+        let part = part.trim();
+        let (color_str, position_str) = split_gradient_stop(part);
+        let color = crate::css::try_parse_color_pub(color_str)
+            .or_else(|| crate::css::named_color_pub(&color_str.to_ascii_lowercase()))?;
+        let position = if let Some(pos) = position_str {
+            parse_conic_gradient_position(pos)
+        } else {
+            -1
+        };
+        stops.push(GradientStop { color, position });
+    }
+    distribute_gradient_positions(&mut stops);
+    Some(BackgroundImageVal::ConicGradient {
+        from_deg,
+        center_x,
+        center_y,
+        stops,
+    })
+}
+
+fn parse_conic_prelude(s: &str) -> (i32, i32, i32) {
+    let mut from_deg = 0;
+    let mut center_x = 5000;
+    let mut center_y = 5000;
+    let lower = s.replace('_', " ").to_ascii_lowercase();
+    let mut before_at = lower.as_str();
+    let mut after_at = "";
+    if let Some((before, after)) = lower.split_once(" at ") {
+        before_at = before.trim();
+        after_at = after.trim();
+    }
+
+    if let Some(rest) = before_at.strip_prefix("from ") {
+        if let Some(angle) = parse_gradient_angle(rest.trim()) {
+            from_deg = angle;
+        }
+    }
+    if !after_at.is_empty() {
+        if let Some((cx, cy)) = parse_radial_position(after_at) {
+            center_x = cx;
+            center_y = cy;
+        }
+    }
+    (from_deg, center_x, center_y)
 }
 
 fn looks_like_color_stop(s: &str) -> bool {
@@ -6954,6 +7043,18 @@ fn parse_gradient_position(s: &str) -> i32 {
         }
     }
     -1
+}
+
+fn parse_conic_gradient_position(s: &str) -> i32 {
+    let pos = s.split_whitespace().next().unwrap_or(s).trim();
+    if let Some(angle) = parse_gradient_angle(pos) {
+        let mut normalized = angle % 360;
+        if normalized < 0 {
+            normalized += 360;
+        }
+        return ((normalized as i64 * 10000) / 360) as i32;
+    }
+    parse_gradient_position(pos)
 }
 
 fn split_comma_respecting_parens(s: &str) -> Vec<&str> {

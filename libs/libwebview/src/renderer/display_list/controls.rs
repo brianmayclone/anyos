@@ -679,6 +679,7 @@ impl DisplayList {
             self.max_h = draw_h;
         }
         let clip = self.clip_stack.last().copied();
+        let opacity = self.opacity_stack.last().copied().unwrap_or(255);
         self.cmds.push(DrawCmd {
             x: draw_x,
             y: draw_y,
@@ -691,6 +692,8 @@ impl DisplayList {
             kind,
             clip,
             masks: self.mask_stack.clone(),
+            rounded_clips: self.rounded_clip_stack.clone(),
+            opacity,
             rotations: self.rotation_stack.clone(),
         });
     }
