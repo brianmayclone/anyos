@@ -154,6 +154,9 @@ pub(crate) struct PopupInfo {
     /// If this popup was opened by an AutoCompleteTextField, its control ID.
     /// When the popup item is selected, the TextField's text is updated.
     pub owner_autocomplete: Option<ControlId>,
+    /// If this popup is the built-in Cut/Copy/Paste/Select All menu shown
+    /// on right-click in a text-input control, the target control's ID.
+    pub owner_text_edit: Option<ControlId>,
 }
 
 /// Source-side payload SHM tied to a `DragSession`. Allocated lazily when
@@ -3410,6 +3413,7 @@ pub extern "C" fn anyui_open_popup(id: ControlId) {
             owner_dropdown: None,
             owner_combobox: None,
             owner_autocomplete: None,
+            owner_text_edit: None,
         });
         let tid = libsyscall::get_tid();
         compositor::focus_by_tid(st.channel_id, tid);

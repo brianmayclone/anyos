@@ -344,6 +344,43 @@ pub fn run_once() -> u32 {
                                                     &mut pending_cbs,
                                                 );
                                             }
+                                        } else if let Some(te_id) =
+                                            st.popup.as_ref().and_then(|p| p.owner_text_edit)
+                                        {
+                                            // Built-in text-edit context menu:
+                                            //   0 = Cut, 1 = Copy, 2 = Paste,
+                                            //   3 = divider (skipped by ContextMenu),
+                                            //   4 = Select All
+                                            let selected_idx = st.controls[idx].base().state;
+                                            let action_char: u32 = match selected_idx {
+                                                0 => b'x' as u32,
+                                                1 => b'c' as u32,
+                                                2 => b'v' as u32,
+                                                4 => b'a' as u32,
+                                                _ => 0,
+                                            };
+                                            dismiss_popup(st);
+                                            if action_char != 0 {
+                                                if let Some(te_idx) =
+                                                    control::find_idx(&st.controls, te_id)
+                                                {
+                                                    let resp = st.controls[te_idx]
+                                                        .handle_key_down(
+                                                            0,
+                                                            action_char,
+                                                            control::MOD_CTRL,
+                                                        );
+                                                    st.controls[te_idx].base_mut().mark_dirty();
+                                                    if resp.fire_change {
+                                                        fire_event_callback(
+                                                            &st.controls,
+                                                            te_id,
+                                                            control::EVENT_CHANGE,
+                                                            &mut pending_cbs,
+                                                        );
+                                                    }
+                                                }
+                                            }
                                         } else {
                                             // Normal context menu
                                             dismiss_popup(st);
@@ -922,6 +959,48 @@ pub fn run_once() -> u32 {
                                         &mut pending_cbs,
                                     );
 
+                                    // Auto-attach a built-in Cut/Copy/Paste/Select All
+                                    // context menu for text-input controls that don't
+                                    // already have a user-defined context menu.
+                                    let mut dyn_text_target: Option<ControlId> = None;
+                                    if let Some(idx2) = control::find_idx(&st.controls, target_id) {
+                                        let kind = st.controls[idx2].kind();
+                                        let has_menu =
+                                            st.controls[idx2].base().context_menu.is_some();
+                                        let is_text_input = matches!(
+                                            kind,
+                                            ControlKind::TextField
+                                                | ControlKind::TextArea
+                                                | ControlKind::SearchField
+                                                | ControlKind::ComboBox
+                                                | ControlKind::AutoCompleteTextField
+                                        );
+                                        if !has_menu && is_text_input {
+                                            let new_menu_id = st.next_id;
+                                            st.next_id += 1;
+                                            let items_text: alloc::vec::Vec<u8> =
+                                                b"Cut|Copy|Paste|-|Select All".to_vec();
+                                            let menu_ctrl = crate::controls::create_control(
+                                                ControlKind::ContextMenu,
+                                                new_menu_id,
+                                                0,
+                                                0,
+                                                0,
+                                                0,
+                                                0,
+                                                &items_text,
+                                            );
+                                            st.controls.push(menu_ctrl);
+                                            if let Some(i2) =
+                                                control::find_idx(&st.controls, target_id)
+                                            {
+                                                st.controls[i2].base_mut().context_menu =
+                                                    Some(new_menu_id);
+                                            }
+                                            dyn_text_target = Some(target_id);
+                                        }
+                                    }
+
                                     // If control has a context menu, show it as a popup window
                                     if let Some(idx2) = control::find_idx(&st.controls, target_id) {
                                         if let Some(menu_id) = st.controls[idx2].base().context_menu
@@ -1011,10 +1090,37 @@ pub fn run_once() -> u32 {
                                                         owner_dropdown: None,
                                                         owner_combobox: None,
                                                         owner_autocomplete: None,
+                                                        owner_text_edit: dyn_text_target,
                                                     });
                                                     // Popup keeps focus from create_window so it
                                                     // receives keyboard navigation; clicking outside
                                                     // dismisses via line ~409 / EVT_FOCUS_LOST.
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // If we synthesized a built-in text-edit menu but the
+                                    // popup never opened (e.g. compositor::create_window
+                                    // failed), tear down the orphan ContextMenu and clear
+                                    // the temporary context_menu pointer.
+                                    if let Some(te_id) = dyn_text_target {
+                                        let popup_owns_menu = st
+                                            .popup
+                                            .as_ref()
+                                            .map(|p| p.owner_text_edit == Some(te_id))
+                                            .unwrap_or(false);
+                                        if !popup_owns_menu {
+                                            if let Some(te_idx) =
+                                                control::find_idx(&st.controls, te_id)
+                                            {
+                                                if let Some(orphan) =
+                                                    st.controls[te_idx].base().context_menu
+                                                {
+                                                    st.controls[te_idx]
+                                                        .base_mut()
+                                                        .context_menu = None;
+                                                    st.controls.retain(|c| c.id() != orphan);
                                                 }
                                             }
                                         }
@@ -1156,6 +1262,7 @@ pub fn run_once() -> u32 {
                                                             owner_dropdown: Some(target_id),
                                                             owner_combobox: None,
                                                             owner_autocomplete: None,
+                                                            owner_text_edit: None,
                                                         });
                                                         // Popup keeps focus from create_window so it
                                                         // receives clicks/keys; clicking the main
@@ -1300,6 +1407,7 @@ pub fn run_once() -> u32 {
                                                                 owner_dropdown: None,
                                                                 owner_combobox: Some(target_id),
                                                                 owner_autocomplete: None,
+                                                                owner_text_edit: None,
                                                             });
                                                             // Popup keeps focus from create_window;
                                                             // EVT_FOCUS_LOST dismisses on outside click.
@@ -1625,6 +1733,7 @@ pub fn run_once() -> u32 {
                                                 owner_dropdown: None,
                                                 owner_combobox: Some(focus_id),
                                                 owner_autocomplete: None,
+                                                owner_text_edit: None,
                                             });
                                             // Popup keeps focus from create_window;
                                             // EVT_FOCUS_LOST dismisses on outside click.
@@ -1840,6 +1949,7 @@ pub fn run_once() -> u32 {
                                                 owner_dropdown: None,
                                                 owner_combobox: None,
                                                 owner_autocomplete: Some(focus_id),
+                                                owner_text_edit: None,
                                             });
                                             let tid = libsyscall::get_tid();
                                             compositor::focus_by_tid(st.channel_id, tid);
@@ -3229,6 +3339,14 @@ fn dismiss_popup(st: &mut crate::AnyuiState) {
                     cb.request_popup = false;
                     cb.text_base.base.mark_dirty();
                 }
+            }
+            st.controls.retain(|c| c.id() != popup.menu_id);
+        }
+        // Built-in text-edit context menu: clear the synthetic context_menu
+        // pointer on the owner and remove the temporary ContextMenu control.
+        if let Some(te_id) = popup.owner_text_edit {
+            if let Some(te_idx) = control::find_idx(&st.controls, te_id) {
+                st.controls[te_idx].base_mut().context_menu = None;
             }
             st.controls.retain(|c| c.id() != popup.menu_id);
         }
