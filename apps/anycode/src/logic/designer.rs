@@ -2158,6 +2158,113 @@ fn control_layout_code(control: &DesignerControl) -> String {
                 let state = parse_u32(&property.value).unwrap_or(0);
                 out.push_str(&format!("        {}.set_state({});\n", control.name, state));
             }
+            "value" => {
+                let state = parse_u32(&property.value).unwrap_or(0);
+                out.push_str(&format!("        {}.set_state({});\n", control.name, state));
+            }
+            "checked" => {
+                let state = if parse_boolish(&property.value).unwrap_or(false) {
+                    1
+                } else {
+                    0
+                };
+                out.push_str(&format!("        {}.set_state({});\n", control.name, state));
+            }
+            "enabled" => out.push_str(&format!(
+                "        {}.set_enabled({});\n",
+                control.name,
+                rust_bool_code(&property.value, true)
+            )),
+            "visible" => out.push_str(&format!(
+                "        {}.set_visible({});\n",
+                control.name,
+                rust_bool_code(&property.value, true)
+            )),
+            "tooltip" if !property.value.is_empty() => out.push_str(&format!(
+                "        {}.set_tooltip(\"{}\");\n",
+                control.name,
+                escape(&property.value)
+            )),
+            "font_size" => {
+                let size = parse_u32(&property.value).unwrap_or(14);
+                out.push_str(&format!(
+                    "        {}.set_font_size({});\n",
+                    control.name, size
+                ));
+            }
+            "text_color" => out.push_str(&format!(
+                "        {}.set_text_color({});\n",
+                control.name,
+                rust_color_code(&property.value, "0xFFFFFFFF")
+            )),
+            "background_color" => out.push_str(&format!(
+                "        {}.set_color({});\n",
+                control.name,
+                rust_color_code(&property.value, "0x00000000")
+            )),
+            "placeholder" if !property.value.is_empty() => {
+                if matches!(control.kind, DesignerControlKind::ComboBox) {
+                    out.push_str(&format!(
+                        "        {}.set_combobox_placeholder(\"{}\");\n",
+                        control.name,
+                        escape(&property.value)
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "        {}.set_textfield_placeholder(\"{}\");\n",
+                        control.name,
+                        escape(&property.value)
+                    ));
+                }
+            }
+            "read_only" => {
+                let value = rust_bool_code(&property.value, false);
+                if matches!(control.kind, DesignerControlKind::TextArea) {
+                    out.push_str(&format!(
+                        "        {}.set_textarea_read_only({});\n",
+                        control.name, value
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "        {}.set_textfield_read_only({});\n",
+                        control.name, value
+                    ));
+                }
+            }
+            "password" => out.push_str(&format!(
+                "        {}.set_textfield_password_mode({});\n",
+                control.name,
+                rust_bool_code(&property.value, false)
+            )),
+            "max_length" => {
+                let value = parse_u32(&property.value).unwrap_or(0);
+                if matches!(control.kind, DesignerControlKind::TextArea) {
+                    out.push_str(&format!(
+                        "        {}.set_textarea_max_length({});\n",
+                        control.name, value
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "        {}.set_textfield_max_length({});\n",
+                        control.name, value
+                    ));
+                }
+            }
+            "items" if !property.value.is_empty() => {
+                if matches!(control.kind, DesignerControlKind::ComboBox) {
+                    out.push_str(&format!(
+                        "        {}.set_combobox_items(\"{}\");\n",
+                        control.name,
+                        escape(&property.value)
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "        {}.set_text(\"{}\");\n",
+                        control.name,
+                        escape(&property.value)
+                    ));
+                }
+            }
             _ => {}
         }
     }
@@ -2255,8 +2362,77 @@ fn js_control_layout_code(control: &DesignerControl) -> String {
             )),
             "selected_index" | "active_page" => {
                 let state = parse_u32(&property.value).unwrap_or(0);
+                out.push_str(&format!(
+                    "    {}.setSelectedIndex({});\n",
+                    control.name, state
+                ));
+            }
+            "value" => {
+                let state = parse_u32(&property.value).unwrap_or(0);
                 out.push_str(&format!("    {}.setState({});\n", control.name, state));
             }
+            "checked" => {
+                let state = if parse_boolish(&property.value).unwrap_or(false) {
+                    1
+                } else {
+                    0
+                };
+                out.push_str(&format!("    {}.setState({});\n", control.name, state));
+            }
+            "enabled" => out.push_str(&format!(
+                "    {}.setEnabled({});\n",
+                control.name,
+                js_bool_code(&property.value, true)
+            )),
+            "visible" => out.push_str(&format!(
+                "    {}.setVisible({});\n",
+                control.name,
+                js_bool_code(&property.value, true)
+            )),
+            "tooltip" if !property.value.is_empty() => out.push_str(&format!(
+                "    {}.setTooltip(\"{}\");\n",
+                control.name,
+                escape(&property.value)
+            )),
+            "font_size" => {
+                let size = parse_u32(&property.value).unwrap_or(14);
+                out.push_str(&format!("    {}.setFontSize({});\n", control.name, size));
+            }
+            "text_color" => out.push_str(&format!(
+                "    {}.setTextColor(\"{}\");\n",
+                control.name,
+                js_color_value(&property.value, "#FFFFFFFF")
+            )),
+            "background_color" => out.push_str(&format!(
+                "    {}.setColor(\"{}\");\n",
+                control.name,
+                js_color_value(&property.value, "#00000000")
+            )),
+            "placeholder" if !property.value.is_empty() => out.push_str(&format!(
+                "    {}.setPlaceholder(\"{}\");\n",
+                control.name,
+                escape(&property.value)
+            )),
+            "read_only" => out.push_str(&format!(
+                "    {}.setReadOnly({});\n",
+                control.name,
+                js_bool_code(&property.value, false)
+            )),
+            "password" => out.push_str(&format!(
+                "    {}.setPasswordMode({});\n",
+                control.name,
+                js_bool_code(&property.value, false)
+            )),
+            "max_length" => out.push_str(&format!(
+                "    {}.setMaxLength({});\n",
+                control.name,
+                parse_u32(&property.value).unwrap_or(0)
+            )),
+            "items" if !property.value.is_empty() => out.push_str(&format!(
+                "    {}.setItems(\"{}\");\n",
+                control.name,
+                escape(&property.value)
+            )),
             _ => {}
         }
     }
@@ -2482,6 +2658,7 @@ fn normalized_property(value: &str) -> &'static str {
         "ReadOnly" | "read_only" | "readonly" => "read_only",
         "Password" | "password" => "password",
         "MaxLength" | "max_length" | "maxlength" => "max_length",
+        "Value" | "value" => "value",
         "Checked" | "checked" => "checked",
         "Items" | "items" => "items",
         "SelectedIndex" | "selected_index" | "selectedindex" => "selected_index",
@@ -2599,6 +2776,55 @@ fn parse_i32(value: &str) -> Option<i32> {
             }
         })
     }
+}
+
+fn parse_boolish(value: &str) -> Option<bool> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("true")
+        || value.eq_ignore_ascii_case("yes")
+        || value.eq_ignore_ascii_case("on")
+        || value == "1"
+    {
+        Some(true)
+    } else if value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+        || value.eq_ignore_ascii_case("off")
+        || value == "0"
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn rust_bool_code(value: &str, default: bool) -> &'static str {
+    if parse_boolish(value).unwrap_or(default) {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+fn js_bool_code(value: &str, default: bool) -> &'static str {
+    rust_bool_code(value, default)
+}
+
+fn color_hex(value: &str) -> Option<String> {
+    validate_argb_color(value).ok()?;
+    let trimmed = value.trim();
+    Some(String::from(&trimmed[1..]))
+}
+
+fn rust_color_code(value: &str, default: &str) -> String {
+    color_hex(value)
+        .map(|hex| format!("0x{}", hex))
+        .unwrap_or_else(|| String::from(default))
+}
+
+fn js_color_value(value: &str, default: &str) -> String {
+    validate_argb_color(value)
+        .map(|_| String::from(value.trim()))
+        .unwrap_or_else(|_| String::from(default))
 }
 
 fn validate_argb_color(value: &str) -> Result<(), &'static str> {

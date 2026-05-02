@@ -195,6 +195,25 @@ impl Control {
     pub fn set_auto_size(&self, _enabled: bool) {}
     pub fn set_min_size(&self, _w: u32, _h: u32) {}
     pub fn set_max_size(&self, _w: u32, _h: u32) {}
+    pub fn set_textfield_placeholder(&self, _text: &str) {}
+    pub fn set_textfield_password_mode(&self, _enabled: bool) {}
+    pub fn set_textfield_read_only(&self, _enabled: bool) {}
+    pub fn textfield_select_all(&self) {}
+    pub fn set_textfield_cursor(&self, _pos: u32) {}
+    pub fn set_textfield_selection(&self, _start: u32, _end: u32) {}
+    pub fn set_textfield_max_length(&self, _max_len: u32) {}
+    pub fn set_textarea_read_only(&self, _enabled: bool) {}
+    pub fn textarea_select_all(&self) {}
+    pub fn set_textarea_cursor(&self, _pos: u32) {}
+    pub fn set_textarea_selection(&self, _start: u32, _end: u32) {}
+    pub fn set_textarea_max_length(&self, _max_len: u32) {}
+    pub fn set_autocomplete_suggestions(&self, _items: &str) {}
+    pub fn set_combobox_items(&self, _items: &str) {}
+    pub fn set_combobox_placeholder(&self, _text: &str) {}
+    pub fn set_combobox_editable(&self, _editable: bool) {}
+    pub fn set_combobox_selected_index(&self, _index: Option<u32>) {}
+    pub fn set_split_ratio(&self, _ratio: u32) {}
+    pub fn set_scroll_offsets(&self, _x: i32, _y: i32) {}
     pub fn set_font_size(&self, _size: u32) {}
     pub fn get_font_size(&self) -> u32 {
         14
@@ -203,6 +222,9 @@ impl Control {
     pub fn set_text_color(&self, _color: u32) {}
     pub fn set_tooltip(&self, _text: &str) {}
     pub fn set_tab_index(&self, _index: u32) {}
+    pub fn set_draggable(&self, _draggable: bool) {}
+    pub fn set_drop_target(&self, _drop_target: bool) {}
+    pub fn open_popup(&self) {}
     pub fn focus(&self) {}
     pub fn bring_to_front(&self) {}
     pub fn remove(&self) {}
@@ -210,13 +232,22 @@ impl Control {
     pub fn on_click_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_change_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_submit_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_focus_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_blur_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_key_down_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_double_click_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_context_menu_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_context_menu(&self, _f: impl FnMut(u32) + 'static) {}
+    pub fn on_mouse_enter_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_mouse_leave_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_mouse_down_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_mouse_up_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_scroll_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_drag_start_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_drag_enter_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_drag_leave_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_drop_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_drag_end_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn set_password_mode(&self, _enabled: bool) {}
 }
 

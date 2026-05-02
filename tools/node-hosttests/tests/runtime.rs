@@ -222,11 +222,21 @@ fn anyos_anyui_module_creates_native_control_bridge_objects() {
         button.setPosition(12, 16).setSize(80, 24).setColor('#FF112233').setText('Run'); \
         const eventChain = button.onClick((event) => { globalThis.lastEventId = event.id; }); \
         label.setDock(ui.DOCK_TOP).setMargin(1, 2, 3, 4).setPadding(4, 3, 2, 1); \
+        const input = new ui.TextField(); \
+        input.setPlaceholder('Name').setPasswordMode(false).setReadOnly(false).setMaxLength(40); \
+        input.setCursor(0).setSelection(0, 0).selectAll(); \
+        const combo = new ui.ComboBox(); \
+        combo.setItems('Debug|Release').setPlaceholder('Profile').setSelectedIndex(null).setEditable(true); \
+        const scroll = new ui.ScrollView(); \
+        scroll.setScrollOffsets(4, 8).setDropTarget(true).setDraggable(false); \
         globalThis.out = [
             typeof ui.run,
             typeof button.setDock,
             eventChain === button,
             typeof button.onChanged,
+            typeof input.setPlaceholder,
+            typeof combo.setSelectedIndex,
+            typeof scroll.onDrop,
             button.__anyuiKind,
             button.__anyuiId > 0,
             label.__anyuiKind,
@@ -238,7 +248,7 @@ fn anyos_anyui_module_creates_native_control_bridge_objects() {
     let value = runtime.eval("out");
     assert_eq!(
         value.to_js_string(),
-        "function:function:true:function:Button:true:Label:true"
+        "function:function:true:function:function:function:function:Button:true:Label:true"
     );
 }
 

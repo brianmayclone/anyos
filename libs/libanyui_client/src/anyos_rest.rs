@@ -973,6 +973,84 @@ impl Control {
         (lib().set_max_size)(self.id, max_w, max_h);
     }
 
+    // ── Common editor/control-specific properties ──
+
+    pub fn set_textfield_placeholder(&self, text: &str) {
+        (lib().textfield_set_placeholder)(self.id, text.as_ptr(), text.len() as u32);
+    }
+
+    pub fn set_textfield_password_mode(&self, enabled: bool) {
+        (lib().textfield_set_password)(self.id, enabled as u32);
+    }
+
+    pub fn set_textfield_read_only(&self, enabled: bool) {
+        (lib().textfield_set_read_only)(self.id, enabled as u32);
+    }
+
+    pub fn textfield_select_all(&self) {
+        (lib().textfield_select_all)(self.id);
+    }
+
+    pub fn set_textfield_cursor(&self, pos: u32) {
+        (lib().textfield_set_cursor)(self.id, pos);
+    }
+
+    pub fn set_textfield_selection(&self, start: u32, end: u32) {
+        (lib().textfield_set_selection)(self.id, start, end);
+    }
+
+    pub fn set_textfield_max_length(&self, max_len: u32) {
+        (lib().textfield_set_max_length)(self.id, max_len);
+    }
+
+    pub fn set_textarea_read_only(&self, enabled: bool) {
+        (lib().textarea_set_read_only)(self.id, enabled as u32);
+    }
+
+    pub fn textarea_select_all(&self) {
+        (lib().textarea_select_all)(self.id);
+    }
+
+    pub fn set_textarea_cursor(&self, pos: u32) {
+        (lib().textarea_set_cursor)(self.id, pos);
+    }
+
+    pub fn set_textarea_selection(&self, start: u32, end: u32) {
+        (lib().textarea_set_selection)(self.id, start, end);
+    }
+
+    pub fn set_textarea_max_length(&self, max_len: u32) {
+        (lib().textarea_set_max_length)(self.id, max_len);
+    }
+
+    pub fn set_autocomplete_suggestions(&self, items: &str) {
+        (lib().autocomplete_set_suggestions)(self.id, items.as_ptr(), items.len() as u32);
+    }
+
+    pub fn set_combobox_items(&self, items: &str) {
+        (lib().combobox_set_items)(self.id, items.as_ptr(), items.len() as u32);
+    }
+
+    pub fn set_combobox_placeholder(&self, text: &str) {
+        (lib().combobox_set_placeholder)(self.id, text.as_ptr(), text.len() as u32);
+    }
+
+    pub fn set_combobox_editable(&self, editable: bool) {
+        (lib().combobox_set_editable)(self.id, editable as u32);
+    }
+
+    pub fn set_combobox_selected_index(&self, index: Option<u32>) {
+        (lib().combobox_set_selected_index)(self.id, index.unwrap_or(u32::MAX));
+    }
+
+    pub fn set_split_ratio(&self, ratio: u32) {
+        (lib().set_split_ratio)(self.id, ratio);
+    }
+
+    pub fn set_scroll_offsets(&self, x: i32, y: i32) {
+        (lib().scrollview_set_offsets)(self.id, x, y);
+    }
+
     // ── Text styling ──
 
     pub fn set_font_size(&self, size: u32) {

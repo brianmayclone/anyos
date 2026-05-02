@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "anyui"), allow(dead_code, unused_variables))]
+
 #[cfg(feature = "anyui")]
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -398,12 +400,39 @@ fn make_ui_object(kind: &str, native_id: Option<u32>) -> JsValue {
         ("setMargin", anyui_set_margin),
         ("setPadding", anyui_set_padding),
         ("setOrientation", anyui_set_orientation),
+        ("setAutoSize", anyui_set_auto_size),
+        ("setMinSize", anyui_set_min_size),
+        ("setMaxSize", anyui_set_max_size),
         ("setState", anyui_set_state),
+        ("getState", anyui_get_state),
+        ("getText", anyui_get_text),
+        ("getPosition", anyui_get_position),
+        ("getSize", anyui_get_size),
         ("setVisible", anyui_set_visible),
         ("setEnabled", anyui_set_enabled),
         ("setFontSize", anyui_set_font_size),
         ("setTextColor", anyui_set_text_color),
+        ("setStyle", anyui_set_style),
         ("setTooltip", anyui_set_tooltip),
+        ("setTabIndex", anyui_set_tab_index),
+        ("setPlaceholder", anyui_set_placeholder),
+        ("setPasswordMode", anyui_set_password_mode),
+        ("setReadOnly", anyui_set_read_only),
+        ("selectAll", anyui_select_all),
+        ("setCursor", anyui_set_cursor),
+        ("setSelection", anyui_set_selection),
+        ("setMaxLength", anyui_set_max_length),
+        ("setItems", anyui_set_items),
+        ("setSelectedIndex", anyui_set_selected_index),
+        ("setSuggestions", anyui_set_suggestions),
+        ("setEditable", anyui_set_editable),
+        ("setSplitRatio", anyui_set_split_ratio),
+        ("setScrollOffsets", anyui_set_scroll_offsets),
+        ("setSelectedColor", anyui_set_selected_color),
+        ("setDraggable", anyui_set_draggable),
+        ("setDropTarget", anyui_set_drop_target),
+        ("openPopup", anyui_open_popup),
+        ("remove", anyui_remove),
         ("focus", anyui_focus),
         ("bringToFront", anyui_bring_to_front),
     ] {
@@ -415,6 +444,18 @@ fn make_ui_object(kind: &str, native_id: Option<u32>) -> JsValue {
             anyui_on_click as fn(&mut Vm, &[JsValue]) -> JsValue,
         ),
         ("onDoubleClick", anyui_on_double_click),
+        ("onFocus", anyui_on_focus),
+        ("onBlur", anyui_on_blur),
+        ("onContextMenu", anyui_on_context_menu),
+        ("onMouseEnter", anyui_on_mouse_enter),
+        ("onMouseLeave", anyui_on_mouse_leave),
+        ("onMouseDown", anyui_on_mouse_down),
+        ("onMouseUp", anyui_on_mouse_up),
+        ("onDragStart", anyui_on_drag_start),
+        ("onDragEnter", anyui_on_drag_enter),
+        ("onDragLeave", anyui_on_drag_leave),
+        ("onDrop", anyui_on_drop),
+        ("onDragEnd", anyui_on_drag_end),
         ("onTextChanged", anyui_on_change),
         ("onSelectionChanged", anyui_on_change),
         ("onActiveChanged", anyui_on_change),
@@ -579,6 +620,17 @@ fn this_anyui_id(vm: &Vm) -> Option<u32> {
     anyui_id(&vm.current_this)
 }
 
+fn this_anyui_kind(vm: &Vm) -> String {
+    vm.current_this.get_property("__anyuiKind").to_js_string()
+}
+
+fn anyui_number_object(first_name: &str, first: f64, second_name: &str, second: f64) -> JsValue {
+    let mut obj = JsObject::new();
+    obj.set(String::from(first_name), JsValue::Number(first));
+    obj.set(String::from(second_name), JsValue::Number(second));
+    object(obj)
+}
+
 fn anyui_add(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     #[cfg(feature = "anyui")]
     if let (Some(parent), Some(child)) = (this_anyui_id(vm), args.first().and_then(anyui_id)) {
@@ -661,12 +713,73 @@ fn anyui_set_orientation(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     vm.current_this.clone()
 }
 
+fn anyui_set_auto_size(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_auto_size(arg_bool(args, 0, true));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_min_size(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_min_size(arg_u32(args, 0, 0), arg_u32(args, 1, 0));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_max_size(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_max_size(arg_u32(args, 0, 0), arg_u32(args, 1, 0));
+    }
+    vm.current_this.clone()
+}
+
 fn anyui_set_state(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     #[cfg(feature = "anyui")]
     if let Some(id) = this_anyui_id(vm) {
         anyui::Control::from_id(id).set_state(arg_u32(args, 0, 0));
     }
     vm.current_this.clone()
+}
+
+fn anyui_get_state(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        return JsValue::Number(anyui::Control::from_id(id).get_state() as f64);
+    }
+    JsValue::Number(0.0)
+}
+
+fn anyui_get_text(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let mut buf = [0u8; 4096];
+        let len = anyui::Control::from_id(id).get_text(&mut buf) as usize;
+        let text = core::str::from_utf8(&buf[..len.min(buf.len())]).unwrap_or("");
+        return JsValue::String(String::from(text));
+    }
+    JsValue::String(String::new())
+}
+
+fn anyui_get_position(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let (x, y) = anyui::Control::from_id(id).get_position();
+        return anyui_number_object("x", x as f64, "y", y as f64);
+    }
+    anyui_number_object("x", 0.0, "y", 0.0)
+}
+
+fn anyui_get_size(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let (width, height) = anyui::Control::from_id(id).get_size();
+        return anyui_number_object("width", width as f64, "height", height as f64);
+    }
+    anyui_number_object("width", 0.0, "height", 0.0)
 }
 
 fn anyui_set_visible(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -701,10 +814,220 @@ fn anyui_set_text_color(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     vm.current_this.clone()
 }
 
+fn anyui_set_style(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_style(arg_u32(args, 0, 0), arg_u32(args, 1, 0));
+    }
+    vm.current_this.clone()
+}
+
 fn anyui_set_tooltip(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     #[cfg(feature = "anyui")]
     if let Some(id) = this_anyui_id(vm) {
         anyui::Control::from_id(id).set_tooltip(&arg_string(args, 0, ""));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_tab_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_tab_index(arg_u32(args, 0, 0));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_placeholder(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let control = anyui::Control::from_id(id);
+        let text = arg_string(args, 0, "");
+        if this_anyui_kind(vm) == "ComboBox" {
+            control.set_combobox_placeholder(&text);
+        } else {
+            control.set_textfield_placeholder(&text);
+        }
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_password_mode(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_textfield_password_mode(arg_bool(args, 0, true));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_read_only(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let control = anyui::Control::from_id(id);
+        if this_anyui_kind(vm) == "TextArea" {
+            control.set_textarea_read_only(arg_bool(args, 0, true));
+        } else {
+            control.set_textfield_read_only(arg_bool(args, 0, true));
+        }
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_select_all(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let control = anyui::Control::from_id(id);
+        if this_anyui_kind(vm) == "TextArea" {
+            control.textarea_select_all();
+        } else {
+            control.textfield_select_all();
+        }
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_cursor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let control = anyui::Control::from_id(id);
+        if this_anyui_kind(vm) == "TextArea" {
+            control.set_textarea_cursor(arg_u32(args, 0, 0));
+        } else {
+            control.set_textfield_cursor(arg_u32(args, 0, 0));
+        }
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_selection(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let control = anyui::Control::from_id(id);
+        if this_anyui_kind(vm) == "TextArea" {
+            control.set_textarea_selection(arg_u32(args, 0, 0), arg_u32(args, 1, 0));
+        } else {
+            control.set_textfield_selection(arg_u32(args, 0, 0), arg_u32(args, 1, 0));
+        }
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_max_length(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let control = anyui::Control::from_id(id);
+        if this_anyui_kind(vm) == "TextArea" {
+            control.set_textarea_max_length(arg_u32(args, 0, 0));
+        } else {
+            control.set_textfield_max_length(arg_u32(args, 0, 0));
+        }
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_items(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let items = arg_string(args, 0, "");
+        let control = anyui::Control::from_id(id);
+        if this_anyui_kind(vm) == "ComboBox" {
+            control.set_combobox_items(&items);
+        } else {
+            control.set_text(&items);
+        }
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_selected_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let control = anyui::Control::from_id(id);
+        if this_anyui_kind(vm) == "ComboBox" {
+            let index = if matches!(
+                args.first(),
+                Some(JsValue::Null) | Some(JsValue::Undefined) | None
+            ) {
+                None
+            } else {
+                Some(arg_u32(args, 0, 0))
+            };
+            control.set_combobox_selected_index(index);
+        } else {
+            control.set_state(arg_u32(args, 0, 0));
+        }
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_suggestions(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_autocomplete_suggestions(&arg_string(args, 0, ""));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_editable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_combobox_editable(arg_bool(args, 0, true));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_split_ratio(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_split_ratio(arg_u32(args, 0, 50));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_scroll_offsets(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_scroll_offsets(arg_i32(args, 0, 0), arg_i32(args, 1, 0));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_selected_color(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_state(arg_color(args, 0, 0xFFFFFFFF));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_draggable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_draggable(arg_bool(args, 0, true));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_drop_target(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_drop_target(arg_bool(args, 0, true));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_open_popup(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).open_popup();
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_remove(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).remove();
     }
     vm.current_this.clone()
 }
@@ -733,6 +1056,54 @@ fn anyui_on_double_click(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     anyui_bind_event(vm, args, AnyuiEventBinding::DoubleClick)
 }
 
+fn anyui_on_focus(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::Focus)
+}
+
+fn anyui_on_blur(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::Blur)
+}
+
+fn anyui_on_context_menu(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::ContextMenu)
+}
+
+fn anyui_on_mouse_enter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::MouseEnter)
+}
+
+fn anyui_on_mouse_leave(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::MouseLeave)
+}
+
+fn anyui_on_mouse_down(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::MouseDown)
+}
+
+fn anyui_on_mouse_up(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::MouseUp)
+}
+
+fn anyui_on_drag_start(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::DragStart)
+}
+
+fn anyui_on_drag_enter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::DragEnter)
+}
+
+fn anyui_on_drag_leave(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::DragLeave)
+}
+
+fn anyui_on_drop(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::Drop)
+}
+
+fn anyui_on_drag_end(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::DragEnd)
+}
+
 fn anyui_on_change(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     anyui_bind_event(vm, args, AnyuiEventBinding::Change)
 }
@@ -745,6 +1116,18 @@ fn anyui_on_submit(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 enum AnyuiEventBinding {
     Click,
     DoubleClick,
+    Focus,
+    Blur,
+    ContextMenu,
+    MouseEnter,
+    MouseLeave,
+    MouseDown,
+    MouseUp,
+    DragStart,
+    DragEnter,
+    DragLeave,
+    Drop,
+    DragEnd,
     Change,
     Submit,
 }
@@ -773,6 +1156,32 @@ fn anyui_bind_event(vm: &mut Vm, args: &[JsValue], event: AnyuiEventBinding) -> 
             AnyuiEventBinding::DoubleClick => {
                 control.on_double_click_raw(anyui_js_event_thunk, userdata)
             }
+            AnyuiEventBinding::Focus => control.on_focus_raw(anyui_js_event_thunk, userdata),
+            AnyuiEventBinding::Blur => control.on_blur_raw(anyui_js_event_thunk, userdata),
+            AnyuiEventBinding::ContextMenu => {
+                control.on_context_menu_raw(anyui_js_event_thunk, userdata)
+            }
+            AnyuiEventBinding::MouseEnter => {
+                control.on_mouse_enter_raw(anyui_js_event_thunk, userdata)
+            }
+            AnyuiEventBinding::MouseLeave => {
+                control.on_mouse_leave_raw(anyui_js_event_thunk, userdata)
+            }
+            AnyuiEventBinding::MouseDown => {
+                control.on_mouse_down_raw(anyui_js_event_thunk, userdata)
+            }
+            AnyuiEventBinding::MouseUp => control.on_mouse_up_raw(anyui_js_event_thunk, userdata),
+            AnyuiEventBinding::DragStart => {
+                control.on_drag_start_raw(anyui_js_event_thunk, userdata)
+            }
+            AnyuiEventBinding::DragEnter => {
+                control.on_drag_enter_raw(anyui_js_event_thunk, userdata)
+            }
+            AnyuiEventBinding::DragLeave => {
+                control.on_drag_leave_raw(anyui_js_event_thunk, userdata)
+            }
+            AnyuiEventBinding::Drop => control.on_drop_raw(anyui_js_event_thunk, userdata),
+            AnyuiEventBinding::DragEnd => control.on_drag_end_raw(anyui_js_event_thunk, userdata),
             AnyuiEventBinding::Change => control.on_change_raw(anyui_js_event_thunk, userdata),
             AnyuiEventBinding::Submit => control.on_submit_raw(anyui_js_event_thunk, userdata),
         }
