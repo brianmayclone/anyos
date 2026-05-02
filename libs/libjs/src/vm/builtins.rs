@@ -556,6 +556,18 @@ impl Vm {
                 String::from("toString"),
                 native_fn_with_length("toString", native_regexp::regexp_to_string, 0),
             );
+            p.set_hidden(
+                String::from(native_symbol::WELL_KNOWN_REPLACE),
+                native_fn_with_length(
+                    "[Symbol.replace]",
+                    native_regexp::regexp_symbol_replace,
+                    2,
+                ),
+            );
+            p.set_hidden(
+                String::from(native_symbol::WELL_KNOWN_MATCH),
+                native_fn_with_length("[Symbol.match]", native_regexp::regexp_symbol_match, 1),
+            );
         }
 
         // ── Generator.prototype ──
@@ -967,6 +979,32 @@ impl Vm {
         // ── Symbol ──
         let symbol_ctor = native_fn("Symbol", native_symbol::ctor_symbol);
         native_symbol::install_well_known_symbols(&symbol_ctor);
+        let mut symbol_proto = JsObject::new();
+        symbol_proto.prototype = Some(self.object_proto.clone());
+        symbol_proto.set_hidden(String::from("constructor"), symbol_ctor.clone());
+        symbol_proto.set_hidden(
+            String::from("toString"),
+            native_fn_with_length("toString", native_symbol::symbol_to_string, 0),
+        );
+        symbol_proto.set_hidden(
+            String::from("valueOf"),
+            native_fn_with_length("valueOf", native_symbol::symbol_value_of, 0),
+        );
+        symbol_proto.properties.insert(
+            String::from("description"),
+            Property::accessor(
+                Some(native_fn_with_length(
+                    "get description",
+                    native_symbol::symbol_description_get,
+                    0,
+                )),
+                None,
+            ),
+        );
+        symbol_ctor.set_property(
+            String::from("prototype"),
+            JsValue::Object(Rc::new(RefCell::new(symbol_proto))),
+        );
         self.set_global("Symbol", symbol_ctor);
 
         // ── Proxy ──

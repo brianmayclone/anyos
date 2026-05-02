@@ -45,6 +45,61 @@ pub fn ctor_symbol(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::String(format!("__symbol__{}_{}", id, desc))
 }
 
+/// `Symbol.prototype.description`.
+pub fn symbol_description_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    symbol_raw_value(&vm.current_this)
+        .as_deref()
+        .map(symbol_description_from_raw)
+        .unwrap_or(JsValue::Undefined)
+}
+
+/// `Symbol.prototype.toString()`.
+pub fn symbol_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    symbol_raw_value(&vm.current_this)
+        .as_deref()
+        .map(|s| JsValue::String(super::native_string::symbol_display_name(s)))
+        .unwrap_or(JsValue::Undefined)
+}
+
+/// `Symbol.prototype.valueOf()`.
+pub fn symbol_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    symbol_raw_value(&vm.current_this)
+        .map(JsValue::String)
+        .unwrap_or(JsValue::Undefined)
+}
+
+pub(crate) fn symbol_description_from_raw(s: &str) -> JsValue {
+    if let Some(rest) = s.strip_prefix("__symbol__") {
+        if let Some(idx) = rest.find('_') {
+            if idx + 1 == rest.len() {
+                return JsValue::Undefined;
+            }
+            return JsValue::String(String::from(&rest[idx + 1..]));
+        }
+    }
+    if let Some(rest) = s.strip_prefix("__symbol_global__") {
+        return JsValue::String(String::from(rest));
+    }
+    JsValue::Undefined
+}
+
+fn symbol_raw_value(value: &JsValue) -> Option<String> {
+    match value {
+        JsValue::String(s) if super::is_symbol_value(value) => Some(s.clone()),
+        JsValue::Object(obj) => {
+            let obj = obj.borrow();
+            match obj.primitive_value.as_deref() {
+                Some(JsValue::String(s)) => {
+                    let candidate = JsValue::String(s.clone());
+                    super::is_symbol_value(&candidate).then(|| s.clone())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Symbol static methods / well-known symbols
 // ═══════════════════════════════════════════════════════════

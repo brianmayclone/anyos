@@ -260,6 +260,55 @@ mod tests {
     }
 
     #[test]
+    fn function_call_bind_uncurries_native_methods() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var replace = Function.prototype.call.bind(String.prototype.replace); \
+             var replace2 = Function.call.bind(String.prototype.replace); \
+             replace('a.b', /\\./g, '#') + ':' + replace2('c.d', /\\./g, '#')",
+        );
+        assert_eq!(result.to_js_string(), "a#b:c#d");
+    }
+
+    #[test]
+    fn function_call_reference_survives_closure_uncurry() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var uncurry = (function() { \
+                 var call = Function.prototype.call; \
+                 return function(fn, thisArg, a, b) { return call.call(fn, thisArg, a, b); }; \
+             })(); \
+             uncurry(String.prototype.replace, 'a.b', /\\./g, '#')",
+        );
+        assert_eq!(result.to_js_string(), "a#b");
+    }
+
+    #[test]
+    fn regexp_symbol_replace_is_callable() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval("/\\./[Symbol.replace]('a.b', '#')");
+        assert_eq!(result.to_js_string(), "a#b");
+    }
+
+    #[test]
+    fn regexp_symbol_match_is_callable() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval("/o+/[Symbol.match]('fooo')[0]");
+        assert_eq!(result.to_js_string(), "ooo");
+    }
+
+    #[test]
+    fn symbol_prototype_description_is_available() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "'description' in Symbol.prototype && \
+             Symbol('surf').description === 'surf' && \
+             Symbol().description === undefined",
+        );
+        assert!(result.to_boolean());
+    }
+
+    #[test]
     fn named_function_expression_does_not_create_a_global_binding() {
         let mut engine = JsEngine::new();
         let result = engine.eval(

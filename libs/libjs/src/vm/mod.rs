@@ -3887,6 +3887,24 @@ impl Vm {
                 idx,
                 const_str(idx).unwrap_or("<non-string>")
             ),
+            Op::LoadUpvalue(idx) => format!(
+                "LoadUpvalue({}) {}",
+                idx,
+                chunk
+                    .upvalue_names
+                    .get(idx as usize)
+                    .map(|s| s.as_str())
+                    .unwrap_or("<unnamed>")
+            ),
+            Op::StoreUpvalue(idx) => format!(
+                "StoreUpvalue({}) {}",
+                idx,
+                chunk
+                    .upvalue_names
+                    .get(idx as usize)
+                    .map(|s| s.as_str())
+                    .unwrap_or("<unnamed>")
+            ),
             Op::DefineMethod(idx) => format!(
                 "DefineMethod({}) {}",
                 idx,
@@ -4496,6 +4514,9 @@ impl Vm {
                 }
             }
             JsValue::String(s) => {
+                if is_symbol_value(val) && key == "description" {
+                    return native_symbol::symbol_description_from_raw(s);
+                }
                 if key == "length" {
                     return JsValue::Number(s.chars().count() as f64);
                 }

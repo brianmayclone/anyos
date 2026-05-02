@@ -235,6 +235,45 @@ pub fn regexp_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     }
 }
 
+/// `RegExp.prototype[Symbol.replace](string, replaceValue)`.
+pub fn regexp_symbol_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let regexp = vm.current_this.clone();
+    let input = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let replacement = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let saved_this = vm.current_this.clone();
+    vm.current_this = JsValue::String(input);
+    let result = string_replace_regexp(vm, &[regexp, replacement]);
+    vm.current_this = saved_this;
+    result
+}
+
+/// `RegExp.prototype[Symbol.match](string)`.
+pub fn regexp_symbol_match(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let regexp = vm.current_this.clone();
+    let input = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let regex = match get_regex(&regexp) {
+        Some(r) => r,
+        None => return JsValue::Null,
+    };
+
+    if regex.flags.global {
+        let matches = regex.exec_all(&input);
+        if matches.is_empty() {
+            return JsValue::Null;
+        }
+        let elements: Vec<JsValue> = matches
+            .iter()
+            .map(|m| JsValue::String(String::from(m.full_match(&input))))
+            .collect();
+        JsValue::new_array(elements)
+    } else {
+        match regex.exec(&input, 0) {
+            Some(m) => build_exec_result(vm, &m, &input),
+            None => JsValue::Null,
+        }
+    }
+}
+
 // ── RegExp constructor ──
 
 /// `RegExp(pattern, flags)` / `new RegExp(pattern, flags)`
