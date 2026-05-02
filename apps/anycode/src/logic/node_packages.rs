@@ -84,12 +84,6 @@ pub const SUGGESTED_PACKAGES: &[SuggestedNodePackage] = &[
         kind: NodeDependencyKind::Dev,
         description: "Restart app while developing",
     },
-    SuggestedNodePackage {
-        name: "typescript",
-        version: "latest",
-        kind: NodeDependencyKind::Dev,
-        description: "Type checking and tooling",
-    },
 ];
 
 pub fn packages_for_project(project: &Project) -> Vec<NodePackage> {
