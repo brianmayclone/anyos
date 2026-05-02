@@ -5,10 +5,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read as IoRead, Seek as IoSeek, SeekFrom, Write as IoWrite};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 /// Open flags (compatible with anyOS API).
 pub const O_WRITE: u32 = 1;
@@ -98,8 +99,68 @@ pub fn write_bytes(path: &str, data: &[u8]) -> Result<(), ()> {
     std::fs::write(path, data).map_err(|_| ())
 }
 
-pub fn stat(_path: &str, _stat_buf: &mut [u32; 7]) -> u32 {
-    u32::MAX
+fn file_type_id(metadata: &Metadata) -> u32 {
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        2
+    } else if file_type.is_dir() {
+        1
+    } else {
+        0
+    }
+}
+
+fn mode(metadata: &Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        0
+    }
+}
+
+fn mtime(metadata: &Metadata) -> u32 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs().min(u32::MAX as u64) as u32)
+        .unwrap_or(0)
+}
+
+fn fill_stat(metadata: Metadata, stat_buf: &mut [u32; 7]) {
+    let ty = file_type_id(&metadata);
+    stat_buf[0] = ty;
+    stat_buf[1] = metadata.len().min(u32::MAX as u64) as u32;
+    stat_buf[2] = if ty == 2 { 1 } else { 0 };
+    stat_buf[3] = 0;
+    stat_buf[4] = 0;
+    stat_buf[5] = mode(&metadata);
+    stat_buf[6] = mtime(&metadata);
+}
+
+pub fn stat(path: &str, stat_buf: &mut [u32; 7]) -> u32 {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            fill_stat(metadata, stat_buf);
+            0
+        }
+        Err(_) => u32::MAX,
+    }
+}
+
+pub fn lstat(path: &str, stat_buf: &mut [u32; 7]) -> u32 {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            fill_stat(metadata, stat_buf);
+            0
+        }
+        Err(_) => u32::MAX,
+    }
 }
 
 pub fn fstat(_fd: u32, _stat_buf: &mut [u32; 4]) -> u32 {
@@ -119,9 +180,12 @@ pub fn readdir(_path: &str, _buf: &mut [u8]) -> u32 {
     let mut written = 0usize;
 
     for entry in entries.flatten().take(max_entries) {
+        let metadata = entry.metadata().ok();
         let file_type = match entry.file_type() {
             Ok(ft) => {
-                if ft.is_dir() {
+                if ft.is_symlink() {
+                    2u8
+                } else if ft.is_dir() {
                     1u8
                 } else {
                     0u8
@@ -129,6 +193,10 @@ pub fn readdir(_path: &str, _buf: &mut [u8]) -> u32 {
             }
             Err(_) => 0u8,
         };
+        let size = metadata
+            .as_ref()
+            .map(|metadata| metadata.len().min(u32::MAX as u64) as u32)
+            .unwrap_or(0);
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let name_bytes = name.as_bytes();
@@ -141,6 +209,7 @@ pub fn readdir(_path: &str, _buf: &mut [u8]) -> u32 {
         for b in &mut buf[off + 4..off + entry_size] {
             *b = 0;
         }
+        buf[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
         buf[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
         written += 1;
     }

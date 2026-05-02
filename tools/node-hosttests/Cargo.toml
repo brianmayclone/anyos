@@ -1,0 +1,10 @@
+[package]
+name = "node-hosttests"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+libnode = { path = "../../libs/libnode", features = ["host"] }
+libuv = { path = "../../libs/libuv", features = ["host"] }
