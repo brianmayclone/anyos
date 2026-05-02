@@ -300,6 +300,44 @@ mod tests {
     }
 
     #[test]
+    fn es_module_top_level_names_do_not_pollute_script_globals() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source(
+            "./chunk.js",
+            "function $(value) { return value + 1; } const P = { ok: 7 }; export { P as configValuesSerialized };",
+        );
+        let result = engine.eval(
+            "function $(e) { return Object.entries(e).length; } \
+             var ns = __import__('./chunk.js'); \
+             $(ns.configValuesSerialized)",
+        );
+        assert_eq!(result.to_number(), 1.0);
+    }
+
+    #[test]
+    fn dynamic_import_keeps_entry_bundle_helper_binding() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        engine.register_module_source(
+            "./route.js",
+            "function $(value) { return value; } const P = { ok: 7 }; export { P as configValuesSerialized };",
+        );
+        let result = engine.eval(
+            "function $(e) { return Object.entries(e).length; } \
+             async function run() { \
+                 const ns = await import('./route.js'); \
+                 return $(ns.configValuesSerialized); \
+             } \
+             var seen = 'pending'; \
+             run().then(v => { seen = v; }); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "pending");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "1");
+    }
+
+    #[test]
     fn dynamic_import_through_vite_preload_wrapper_resolves_namespace() {
         let mut engine = JsEngine::new();
         engine.set_step_limit(1_000_000);

@@ -1847,7 +1847,7 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
             return Err(vm.make_syntax_error(&parser.errors[0]));
         }
         let mut compiler = crate::compiler::Compiler::new();
-        let chunk = compiler.compile_eval(&program);
+        let chunk = compiler.compile_module(&program);
 
         // Execute the module body.
         let module_fn = JsValue::Function(alloc::rc::Rc::new(core::cell::RefCell::new(

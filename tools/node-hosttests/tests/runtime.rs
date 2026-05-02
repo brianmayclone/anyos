@@ -259,7 +259,10 @@ fn fetch_performs_real_http_request_with_method_headers_and_body() {
         let lower = request.to_ascii_lowercase();
         assert!(request.starts_with("POST /ai HTTP/1.1"), "{request}");
         assert!(lower.contains("authorization: bearer test"), "{request}");
-        assert!(lower.contains("content-type: application/json"), "{request}");
+        assert!(
+            lower.contains("content-type: application/json"),
+            "{request}"
+        );
         assert!(request.ends_with(r#"{"q":"codex"}"#), "{request}");
         stream
             .write_all(
@@ -674,6 +677,46 @@ fn npm_installs_node_tooling_packages_and_node_uses_them() {
         String::from_utf8_lossy(&nodemon.stdout).contains("rs:app.js:src:js,json"),
         "stdout:\n{}",
         String::from_utf8_lossy(&nodemon.stdout)
+    );
+}
+
+#[test]
+#[ignore = "downloads a package with bins from the npm registry"]
+fn npm_global_install_creates_prefix_bin_link() {
+    let root = temp_project("npm-global-cwd");
+    let prefix = temp_project("npm-global-prefix");
+
+    let install = run_npm(
+        &[
+            "install",
+            "-g",
+            "nodemon@3.1.10",
+            "--no-audit",
+            "--prefix",
+            prefix.to_str().unwrap(),
+            "--registry",
+            libnode::DEFAULT_NPM_REGISTRY,
+        ],
+        &root,
+    );
+    assert!(
+        install.status.success(),
+        "npm process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(
+        prefix
+            .join("Library")
+            .join("node_modules")
+            .join("nodemon")
+            .join("package.json")
+            .exists(),
+        "global nodemon package was not installed"
+    );
+    assert!(
+        prefix.join("bin").join("nodemon").exists(),
+        "global nodemon link was not created"
     );
 }
 

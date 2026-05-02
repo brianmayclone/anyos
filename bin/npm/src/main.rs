@@ -23,19 +23,17 @@ fn npm_main() -> u32 {
             return 1;
         }
     };
-    let registry = RegistryConfig {
-        url: cli.registry,
-    };
-    if cli.global {
-        anyos_std::println!("npm: global mode requested; installing into the current prefix is not implemented yet");
-    }
+    let registry = RegistryConfig { url: cli.registry };
+    let global_prefix = configured_global_prefix(cli.prefix);
 
     match cli.command {
         cli::NpmCommand::Help => usage(),
         cli::NpmCommand::Version => anyos_std::println!("{}", libnode::VERSION),
         cli::NpmCommand::Init { yes } => npm_init(yes),
         cli::NpmCommand::Install { packages } => {
-            if packages.is_empty() {
+            if cli.global {
+                npm_install_global(&packages, registry, &global_prefix);
+            } else if packages.is_empty() {
                 npm_install_manifest(registry);
             } else {
                 for package in packages {
@@ -98,8 +96,7 @@ fn npm_uninstall(packages: &[String]) {
             anyos_std::println!("up to date, audited 0 packages");
         }
     }
-    if changed
-        && anyos_std::fs::write_bytes("package.json", manifest.as_str().as_bytes()).is_err()
+    if changed && anyos_std::fs::write_bytes("package.json", manifest.as_str().as_bytes()).is_err()
     {
         anyos_std::println!("npm: could not update package.json");
     }
@@ -115,12 +112,49 @@ fn npm_update(packages: &[String], registry: RegistryConfig) {
     }
 }
 
+fn npm_install_global(packages: &[String], registry: RegistryConfig, prefix: &str) {
+    if packages.is_empty() {
+        anyos_std::println!("npm: global install requires one or more packages");
+        return;
+    }
+    let installer = PackageInstaller::new(registry);
+    for package in packages {
+        let spec = PackageSpec::parse(package);
+        match installer.install_global_package_result(prefix, &spec) {
+            Ok(report) => {
+                anyos_std::println!("added {}@{} -g", spec.name, spec.version);
+                anyos_std::println!("installed packages: {}", report.installed.len());
+                anyos_std::println!("{}/bin", prefix.trim_end_matches('/'));
+            }
+            Err(err) => anyos_std::println!("npm: {}", err),
+        }
+    }
+}
+
 fn npm_list() {
     let data = anyos_std::fs::read_to_string("package.json").ok();
     let manifest = PackageManifest::parse_or_new(data);
     for dep in manifest.dependencies() {
         anyos_std::println!("{}@{}", dep.name, dep.version);
     }
+}
+
+fn configured_global_prefix(cli_prefix: Option<String>) -> String {
+    if let Some(prefix) = cli_prefix {
+        return prefix;
+    }
+    let mut buf = [0u8; 512];
+    let len = anyos_std::env::get("NPM_CONFIG_PREFIX", &mut buf);
+    if len != u32::MAX && len > 0 {
+        let len = (len as usize).min(buf.len());
+        let value = core::str::from_utf8(&buf[..len])
+            .unwrap_or("/System")
+            .trim_end_matches('\0');
+        if !value.is_empty() {
+            return String::from(value);
+        }
+    }
+    String::from("/System")
 }
 
 fn npm_outdated(registry: RegistryConfig) {
@@ -199,6 +233,7 @@ fn usage() {
     anyos_std::println!("Usage:");
     anyos_std::println!("  npm init [-y]");
     anyos_std::println!("  npm install [package[@version] ...] [--registry url]");
+    anyos_std::println!("  npm install -g <package[@version] ...> [--prefix /System]");
     anyos_std::println!("  npm uninstall <package...>");
     anyos_std::println!("  npm update [package...]");
     anyos_std::println!("  npm list");

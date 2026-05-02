@@ -233,6 +233,22 @@ pub fn unlink(path: &str) -> u32 {
     }
 }
 
+pub fn symlink(target: &str, link_path: &str) -> u32 {
+    #[cfg(unix)]
+    {
+        if std::os::unix::fs::symlink(target, link_path).is_ok() {
+            return 0;
+        }
+    }
+    #[cfg(windows)]
+    {
+        if std::os::windows::fs::symlink_file(target, link_path).is_ok() {
+            return 0;
+        }
+    }
+    u32::MAX
+}
+
 pub fn getcwd(buf: &mut [u8]) -> u32 {
     if let Ok(cwd) = std::env::current_dir() {
         let s = cwd.to_string_lossy();

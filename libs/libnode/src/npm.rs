@@ -274,6 +274,36 @@ pub struct InstallReport {
     pub installed: Vec<PackageSpec>,
 }
 
+struct InstallLayout {
+    node_modules_dir: String,
+    bin_dir: String,
+    global_bin_dir: Option<String>,
+}
+
+impl InstallLayout {
+    fn local(root: &str) -> Self {
+        let node_modules_dir = join_path(root, "node_modules");
+        let bin_dir = join_path(&node_modules_dir, ".bin");
+        Self {
+            node_modules_dir,
+            bin_dir,
+            global_bin_dir: None,
+        }
+    }
+
+    fn global(prefix: &str) -> Self {
+        let normalized = normalize_path(prefix);
+        let node_modules_dir = join_path(&join_path(&normalized, "Library"), "node_modules");
+        let bin_dir = join_path(&node_modules_dir, ".bin");
+        let global_bin_dir = Some(join_path(&normalized, "bin"));
+        Self {
+            node_modules_dir,
+            bin_dir,
+            global_bin_dir,
+        }
+    }
+}
+
 pub struct PackageInstaller {
     client: RegistryClient,
     max_depth: usize,
@@ -297,11 +327,29 @@ impl PackageInstaller {
         root: &str,
         spec: &PackageSpec,
     ) -> Result<InstallReport, String> {
+        let layout = InstallLayout::local(root);
+        self.install_package_with_layout(&layout, spec)
+    }
+
+    pub fn install_global_package_result(
+        &self,
+        prefix: &str,
+        spec: &PackageSpec,
+    ) -> Result<InstallReport, String> {
+        let layout = InstallLayout::global(prefix);
+        self.install_package_with_layout(&layout, spec)
+    }
+
+    fn install_package_with_layout(
+        &self,
+        layout: &InstallLayout,
+        spec: &PackageSpec,
+    ) -> Result<InstallReport, String> {
         let mut report = InstallReport {
             installed: Vec::new(),
         };
         let mut seen = Vec::new();
-        self.install_recursive(root, spec, 0, &mut seen, &mut report)?;
+        self.install_recursive(layout, spec, 0, &mut seen, &mut report)?;
         Ok(report)
     }
 
@@ -309,7 +357,10 @@ impl PackageInstaller {
         self.install_manifest_dependencies_result(root).ok()
     }
 
-    pub fn install_manifest_dependencies_result(&self, root: &str) -> Result<InstallReport, String> {
+    pub fn install_manifest_dependencies_result(
+        &self,
+        root: &str,
+    ) -> Result<InstallReport, String> {
         let manifest_path = join_path(root, "package.json");
         let manifest = fs::read_to_string(&manifest_path)
             .map_err(|_| format!("could not read {}", manifest_path))?;
@@ -320,22 +371,26 @@ impl PackageInstaller {
             installed: Vec::new(),
         };
         let mut seen = Vec::new();
+        let layout = InstallLayout::local(root);
         for dep in deps {
-            self.install_recursive(root, &dep, 0, &mut seen, &mut report)?;
+            self.install_recursive(&layout, &dep, 0, &mut seen, &mut report)?;
         }
         Ok(report)
     }
 
     fn install_recursive(
         &self,
-        root: &str,
+        layout: &InstallLayout,
         spec: &PackageSpec,
         depth: usize,
         seen: &mut Vec<String>,
         report: &mut InstallReport,
     ) -> Result<(), String> {
         if depth > self.max_depth {
-            return Err(format!("dependency graph is deeper than {}", self.max_depth));
+            return Err(format!(
+                "dependency graph is deeper than {}",
+                self.max_depth
+            ));
         }
 
         let metadata = self
@@ -355,30 +410,30 @@ impl PackageInstaller {
             name: spec.name.clone(),
             version,
         };
-        let install_dir = package_install_dir(root, &resolved.name);
+        let install_dir = package_install_dir(&layout.node_modules_dir, &resolved.name);
         if !installed_version_matches(&install_dir, &resolved.version) {
-            let tarball = metadata
-                .tarball_url(&resolved.version)
-                .unwrap_or_else(|| self.client.package_tarball_url(&resolved.name, &resolved.version));
+            let tarball = metadata.tarball_url(&resolved.version).unwrap_or_else(|| {
+                self.client
+                    .package_tarball_url(&resolved.name, &resolved.version)
+            });
             let data = self
                 .client
                 .fetch_tarball(&tarball)
                 .ok_or_else(|| format!("could not download {}", tarball))?;
-            let cache_path = package_cache_path(root, &resolved);
+            let cache_path = package_cache_path(&layout.node_modules_dir, &resolved);
             mkdir_p(&dirname(&cache_path));
             fs::write_bytes(&cache_path, &data)
                 .map_err(|_| format!("could not write {}", cache_path))?;
-            extract_npm_tarball(&cache_path, &install_dir).ok_or_else(|| {
-                format!("could not extract {} into {}", cache_path, install_dir)
-            })?;
-            install_bin_entries(root, &resolved, &metadata);
+            extract_npm_tarball(&cache_path, &install_dir)
+                .ok_or_else(|| format!("could not extract {} into {}", cache_path, install_dir))?;
+            install_bin_entries(layout, &resolved, &metadata);
             report.installed.push(resolved.clone());
         } else {
-            install_bin_entries(root, &resolved, &metadata);
+            install_bin_entries(layout, &resolved, &metadata);
         }
 
         for dep in metadata.dependencies(&resolved.version) {
-            self.install_recursive(root, &dep, depth + 1, seen, report)?;
+            self.install_recursive(layout, &dep, depth + 1, seen, report)?;
         }
         Ok(())
     }
@@ -616,7 +671,9 @@ fn parse_numeric_part(input: &str) -> Option<u32> {
     for byte in input.as_bytes() {
         if byte.is_ascii_digit() {
             seen_digit = true;
-            value = value.saturating_mul(10).saturating_add((byte - b'0') as u32);
+            value = value
+                .saturating_mul(10)
+                .saturating_add((byte - b'0') as u32);
         } else {
             break;
         }
@@ -660,16 +717,24 @@ fn version_satisfies(version: &Semver, requested: &str) -> bool {
 
 fn version_satisfies_token(version: &Semver, token: &str) -> bool {
     if let Some(rest) = token.strip_prefix(">=") {
-        return Semver::parse(rest).map(|min| *version >= min).unwrap_or(false);
+        return Semver::parse(rest)
+            .map(|min| *version >= min)
+            .unwrap_or(false);
     }
     if let Some(rest) = token.strip_prefix('>') {
-        return Semver::parse(rest).map(|min| *version > min).unwrap_or(false);
+        return Semver::parse(rest)
+            .map(|min| *version > min)
+            .unwrap_or(false);
     }
     if let Some(rest) = token.strip_prefix("<=") {
-        return Semver::parse(rest).map(|max| *version <= max).unwrap_or(false);
+        return Semver::parse(rest)
+            .map(|max| *version <= max)
+            .unwrap_or(false);
     }
     if let Some(rest) = token.strip_prefix('<') {
-        return Semver::parse(rest).map(|max| *version < max).unwrap_or(false);
+        return Semver::parse(rest)
+            .map(|max| *version < max)
+            .unwrap_or(false);
     }
     if let Some(rest) = token.strip_prefix('~') {
         let Some(base) = Semver::parse(rest) else {
@@ -714,22 +779,22 @@ fn numeric_or_wildcard_matches(value: u32, token: &str) -> bool {
     matches!(token, "*" | "x" | "X") || parse_numeric_part(token) == Some(value)
 }
 
-fn package_install_dir(root: &str, package_name: &str) -> String {
+fn package_install_dir(node_modules_dir: &str, package_name: &str) -> String {
     if let Some(stripped) = package_name.strip_prefix('@') {
         if let Some(slash) = stripped.find('/') {
             return join_path(
-                &join_path(&join_path(root, "node_modules"), &format!("@{}", &stripped[..slash])),
+                &join_path(node_modules_dir, &format!("@{}", &stripped[..slash])),
                 &stripped[slash + 1..],
             );
         }
     }
-    join_path(&join_path(root, "node_modules"), package_name)
+    join_path(node_modules_dir, package_name)
 }
 
-fn package_cache_path(root: &str, spec: &PackageSpec) -> String {
+fn package_cache_path(node_modules_dir: &str, spec: &PackageSpec) -> String {
     let safe_name = spec.name.replace('/', "__");
     join_path(
-        &join_path(&join_path(root, "node_modules"), ".cache/anyos-npm"),
+        &join_path(node_modules_dir, ".cache/anyos-npm"),
         &format!("{}-{}.tgz", safe_name, spec.version),
     )
 }
@@ -743,13 +808,15 @@ fn package_binary_name(package_name: &str) -> String {
         .to_string()
 }
 
-fn install_bin_entries(root: &str, spec: &PackageSpec, metadata: &PackageMetadata) {
+fn install_bin_entries(layout: &InstallLayout, spec: &PackageSpec, metadata: &PackageMetadata) {
     let entries = metadata.bin_entries(&spec.version);
     if entries.is_empty() {
         return;
     }
-    let bin_dir = join_path(&join_path(root, "node_modules"), ".bin");
-    mkdir_p(&bin_dir);
+    mkdir_p(&layout.bin_dir);
+    if let Some(global_bin_dir) = &layout.global_bin_dir {
+        mkdir_p(global_bin_dir);
+    }
     for (name, target) in entries {
         let clean_target = target.trim_start_matches("./");
         if clean_target.is_empty()
@@ -759,14 +826,17 @@ fn install_bin_entries(root: &str, spec: &PackageSpec, metadata: &PackageMetadat
         {
             continue;
         }
-        let package_path = if spec.name.starts_with('@') {
-            format!("../{}/{}", spec.name, clean_target)
-        } else {
-            format!("../{}/{}", spec.name, clean_target)
-        };
-        let shim_path = join_path(&bin_dir, &name);
+        let package_path = format!("../{}/{}", spec.name, clean_target);
+        let shim_path = join_path(&layout.bin_dir, &name);
         let source = format!("require({:?});\n", package_path);
         let _ = fs::write_bytes(&shim_path, source.as_bytes());
+        if let Some(global_bin_dir) = &layout.global_bin_dir {
+            let global_shim_path = join_path(global_bin_dir, &name);
+            let _ = fs::unlink(&global_shim_path);
+            if fs::symlink(&shim_path, &global_shim_path) != 0 {
+                let _ = fs::write_bytes(&global_shim_path, source.as_bytes());
+            }
+        }
     }
 }
 
@@ -922,7 +992,10 @@ mod tests {
         assert_eq!(metadata.resolve_version("*").as_deref(), Some("1.3.0"));
         assert_eq!(metadata.resolve_version("~1.2.0").as_deref(), Some("1.2.9"));
         assert_eq!(metadata.resolve_version("^1.2.0").as_deref(), Some("1.3.0"));
-        assert_eq!(metadata.resolve_version(">=1.2.3 <2.0.0").as_deref(), Some("1.3.0"));
+        assert_eq!(
+            metadata.resolve_version(">=1.2.3 <2.0.0").as_deref(),
+            Some("1.3.0")
+        );
     }
 
     #[test]

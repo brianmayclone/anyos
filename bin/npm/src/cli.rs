@@ -20,12 +20,14 @@ pub struct NpmCli {
     pub command: NpmCommand,
     pub registry: String,
     pub global: bool,
+    pub prefix: Option<String>,
 }
 
 pub fn parse(raw: &str) -> Result<NpmCli, String> {
     let tokens = anyos_std::args::tokenize(raw);
     let mut registry = String::from(libnode::DEFAULT_NPM_REGISTRY);
     let mut global = false;
+    let mut prefix = None;
     let mut command: Option<String> = None;
     let mut positional = Vec::new();
     let mut yes = false;
@@ -39,6 +41,7 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
                     command: NpmCommand::Version,
                     registry,
                     global,
+                    prefix,
                 });
             }
             "-h" | "--help" | "help" => {
@@ -46,6 +49,7 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
                     command: NpmCommand::Help,
                     registry,
                     global,
+                    prefix,
                 });
             }
             "-g" | "--global" => {
@@ -66,6 +70,22 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
             }
             _ if token.starts_with("--registry=") => {
                 registry = String::from(&token["--registry=".len()..]);
+                idx += 1;
+            }
+            "--prefix" => {
+                idx += 1;
+                let Some(value) = tokens.get(idx) else {
+                    return Err(String::from("--prefix requires a value"));
+                };
+                prefix = Some(value.clone());
+                idx += 1;
+            }
+            _ if token.starts_with("--prefix=") => {
+                prefix = Some(String::from(&token["--prefix=".len()..]));
+                idx += 1;
+            }
+            _ if token == "--location=global" => {
+                global = true;
                 idx += 1;
             }
             _ if is_ignored_install_flag(token) => {
@@ -118,6 +138,7 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
         command,
         registry,
         global,
+        prefix,
     })
 }
 
@@ -152,4 +173,3 @@ fn is_ignored_install_flag(token: &str) -> bool {
 fn option_consumes_next(token: &str) -> bool {
     matches!(token, "--omit" | "--include" | "--save-prefix")
 }
-

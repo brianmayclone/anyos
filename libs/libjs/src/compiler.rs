@@ -157,6 +157,10 @@ pub struct Compiler {
     binding_is_global: bool,
     /// True if the current compilation is in strict mode (`"use strict"` directive).
     pub is_strict: bool,
+    /// Classic browser scripts share top-level declarations through the global
+    /// object across <script> tags. ES modules keep top-level names private to
+    /// the module environment.
+    top_level_bindings_global: bool,
     /// Nesting depth of `with` statements (>0 means we're inside a `with` block).
     with_depth: u32,
 }
@@ -174,6 +178,7 @@ impl Compiler {
         Compiler {
             scopes: Vec::new(),
             is_strict: false,
+            top_level_bindings_global: true,
             binding_is_global: false,
             with_depth: 0,
         }
@@ -266,6 +271,14 @@ impl Compiler {
         self.compile_program(program, true)
     }
 
+    pub fn compile_module(&mut self, program: &Program) -> Chunk {
+        let prev = self.top_level_bindings_global;
+        self.top_level_bindings_global = false;
+        let chunk = self.compile_program(program, false);
+        self.top_level_bindings_global = prev;
+        chunk
+    }
+
     fn compile_program(&mut self, program: &Program, is_eval: bool) -> Chunk {
         self.scopes.push(Scope::new());
 
@@ -323,25 +336,24 @@ impl Compiler {
             self.scope_mut().chunk.declared_globals = globals;
         }
 
-        // ES2023 §10.4.1.1 — Pre-initialize hoisted `var` declarations to undefined
-        // in the global scope.  This ensures that `var x` inside a `with` block
-        // creates the global binding even when the assignment is intercepted by the
-        // with-object.  Only initialize if the binding doesn't already exist (to
-        // avoid overwriting existing globals like harness-injected functions).
+        // ES2023 §10.4.1.1 — Pre-initialize hoisted `var` declarations.
+        // Classic scripts place top-level vars on the global object. Modules
+        // keep them in a private module scope.
         {
             let mut var_names: Vec<String> = Vec::new();
             Self::collect_var_names(&program.body, &mut var_names);
             for name in &var_names {
-                let ci = self.add_const(Constant::String(name.clone()));
-                // LoadGlobalSafe returns undefined for non-existent globals.
-                // Use typeof check: if typeof name === "undefined" AND the name
-                // is not explicitly set to undefined, initialize it.
-                // Simpler: use a dedicated opcode or just do conditional init.
-                // For now: load current value, if undefined store undefined (no-op for
-                // existing undefined), if not undefined skip.
-                // Actually simplest: just use DeclareGlobal opcode.
-                self.emit(Op::DeclareGlobal(ci));
+                if self.top_level_bindings_global {
+                    let ci = self.add_const(Constant::String(name.clone()));
+                    self.emit(Op::DeclareGlobal(ci));
+                } else if self.scope().resolve_local(name).is_none() {
+                    self.scope_mut().add_local(name.clone());
+                }
             }
+        }
+
+        if !self.top_level_bindings_global {
+            self.predeclare_module_top_level_locals(&program.body);
         }
 
         // ES2023 §10.2.1 — hoist function declarations: compile all top-level
@@ -410,6 +422,52 @@ impl Compiler {
         chunk.upvalue_mutable = scope.upvalues.iter().map(|uv| uv.mutable).collect();
         chunk.upvalue_starts_tdz = scope.upvalues.iter().map(|uv| uv.starts_tdz).collect();
         chunk
+    }
+
+    fn predeclare_module_top_level_locals(&mut self, body: &[Stmt]) {
+        for stmt in body {
+            match stmt {
+                Stmt::Import { specifiers, .. } => {
+                    for spec in specifiers {
+                        let name = match spec {
+                            ImportSpecifier::Default(local)
+                            | ImportSpecifier::Named { local, .. }
+                            | ImportSpecifier::Namespace(local) => local,
+                        };
+                        if self.scope().resolve_local(name).is_none() {
+                            self.scope_mut().add_local(name.clone());
+                        }
+                    }
+                }
+                Stmt::VarDecl { kind, decls } => {
+                    for decl in decls {
+                        let mut names = Vec::new();
+                        Self::collect_pattern_names(&decl.name, &mut names);
+                        for name in names {
+                            if self.scope().resolve_local(&name).is_none() {
+                                self.scope_mut().add_local_with_flags(
+                                    name,
+                                    *kind != VarKind::Const,
+                                    *kind != VarKind::Var,
+                                );
+                            }
+                        }
+                    }
+                }
+                Stmt::FunctionDecl { name, .. } => {
+                    if self.scope().resolve_local(name).is_none() {
+                        self.scope_mut().add_local(name.clone());
+                    }
+                }
+                Stmt::ClassDecl { name, .. } => {
+                    if self.scope().resolve_local(name).is_none() {
+                        self.scope_mut()
+                            .add_local_with_flags(name.clone(), false, true);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn emit_update_completion(&mut self, slot: u16) {
@@ -981,11 +1039,13 @@ impl Compiler {
                 // even in the global compilation scope (ES2023 §14.2.1).
                 let is_var = *kind == VarKind::Var;
                 let is_global = if is_var {
-                    self.is_global_scope()
+                    self.top_level_bindings_global && self.is_global_scope()
                 } else {
                     // let/const are only global at the top-level (scope_depth == 0),
                     // not inside blocks (scope_depth > 0).
-                    self.is_global_scope() && self.scope().scope_depth == 0
+                    self.top_level_bindings_global
+                        && self.is_global_scope()
+                        && self.scope().scope_depth == 0
                 };
                 for decl in decls {
                     self.compile_var_decl(decl, is_global, is_var, *kind == VarKind::Const);
@@ -1271,11 +1331,19 @@ impl Compiler {
                 is_async,
                 is_generator,
             } => {
-                if self.is_global_scope() {
+                if self.is_global_scope() && self.top_level_bindings_global {
                     // At the global scope function declarations are global bindings.
                     self.compile_function_gen(Some(name), params, body, *is_async, *is_generator);
                     let ci = self.add_const(Constant::String(name.clone()));
                     self.emit(Op::StoreGlobal(ci));
+                    self.emit(Op::Pop);
+                } else if self.is_global_scope() {
+                    self.compile_function_gen(Some(name), params, body, *is_async, *is_generator);
+                    let slot = self
+                        .scope()
+                        .resolve_local(name)
+                        .unwrap_or_else(|| self.scope_mut().add_local(name.clone()));
+                    self.emit(Op::StoreLocal(slot));
                     self.emit(Op::Pop);
                 } else {
                     // In non-global scopes, function declarations are fully hoisted:
@@ -1290,7 +1358,7 @@ impl Compiler {
                 body,
             } => {
                 self.compile_class(Some(name), super_class, body);
-                if self.is_global_scope() {
+                if self.is_global_scope() && self.top_level_bindings_global {
                     let ci = self.add_const(Constant::String(name.clone()));
                     self.emit(Op::StoreGlobal(ci));
                     self.emit(Op::Pop);
@@ -1350,22 +1418,46 @@ impl Compiler {
                             self.emit(Op::Dup);
                             let key = self.add_const(Constant::String(String::from("default")));
                             self.emit(Op::GetPropNamed(key));
-                            let ci = self.add_const(Constant::String(local.clone()));
-                            self.emit(Op::StoreGlobal(ci));
+                            if self.top_level_bindings_global {
+                                let ci = self.add_const(Constant::String(local.clone()));
+                                self.emit(Op::StoreGlobal(ci));
+                            } else {
+                                let slot = self
+                                    .scope()
+                                    .resolve_local(local)
+                                    .unwrap_or_else(|| self.scope_mut().add_local(local.clone()));
+                                self.emit(Op::StoreLocal(slot));
+                            }
                             self.emit(Op::Pop);
                         }
                         ImportSpecifier::Named { imported, local } => {
                             self.emit(Op::Dup);
                             let key = self.add_const(Constant::String(imported.clone()));
                             self.emit(Op::GetPropNamed(key));
-                            let ci = self.add_const(Constant::String(local.clone()));
-                            self.emit(Op::StoreGlobal(ci));
+                            if self.top_level_bindings_global {
+                                let ci = self.add_const(Constant::String(local.clone()));
+                                self.emit(Op::StoreGlobal(ci));
+                            } else {
+                                let slot = self
+                                    .scope()
+                                    .resolve_local(local)
+                                    .unwrap_or_else(|| self.scope_mut().add_local(local.clone()));
+                                self.emit(Op::StoreLocal(slot));
+                            }
                             self.emit(Op::Pop);
                         }
                         ImportSpecifier::Namespace(local) => {
                             self.emit(Op::Dup);
-                            let ci = self.add_const(Constant::String(local.clone()));
-                            self.emit(Op::StoreGlobal(ci));
+                            if self.top_level_bindings_global {
+                                let ci = self.add_const(Constant::String(local.clone()));
+                                self.emit(Op::StoreGlobal(ci));
+                            } else {
+                                let slot = self
+                                    .scope()
+                                    .resolve_local(local)
+                                    .unwrap_or_else(|| self.scope_mut().add_local(local.clone()));
+                                self.emit(Op::StoreLocal(slot));
+                            }
                             self.emit(Op::Pop);
                         }
                     }
@@ -1394,8 +1486,7 @@ impl Compiler {
                             let exports_ci =
                                 self.add_const(Constant::String(String::from("__exports__")));
                             self.emit(Op::LoadGlobal(exports_ci));
-                            let name_ci = self.add_const(Constant::String(name.clone()));
-                            self.emit(Op::LoadGlobal(name_ci));
+                            self.emit_load_name(&name);
                             let prop_ci = self.add_const(Constant::String(name));
                             self.emit(Op::SetPropNamed(prop_ci));
                             self.emit(Op::Pop);
@@ -1408,8 +1499,7 @@ impl Compiler {
                             let exports_ci =
                                 self.add_const(Constant::String(String::from("__exports__")));
                             self.emit(Op::LoadGlobal(exports_ci));
-                            let local_ci = self.add_const(Constant::String(spec.local.clone()));
-                            self.emit(Op::LoadGlobal(local_ci));
+                            self.emit_load_name(&spec.local);
                             let exported_ci =
                                 self.add_const(Constant::String(spec.exported.clone()));
                             self.emit(Op::SetPropNamed(exported_ci));
@@ -1429,7 +1519,12 @@ impl Compiler {
                                 self.scope().chunk.constants.len()
                             );
                             let tmp_ci = self.add_const(Constant::String(tmp_name.clone()));
-                            self.emit(Op::DeclareGlobal(tmp_ci));
+                            let tmp_slot = if self.top_level_bindings_global {
+                                self.emit(Op::DeclareGlobal(tmp_ci));
+                                None
+                            } else {
+                                Some(self.scope_mut().add_local(tmp_name.clone()))
+                            };
 
                             let src_ci = self.add_const(Constant::String(source.clone()));
                             let import_ci =
@@ -1437,14 +1532,22 @@ impl Compiler {
                             self.emit(Op::LoadGlobal(import_ci));
                             self.emit(Op::LoadConst(src_ci));
                             self.emit(Op::Call(1));
-                            self.emit(Op::StoreGlobal(tmp_ci));
+                            if let Some(slot) = tmp_slot {
+                                self.emit(Op::StoreLocal(slot));
+                            } else {
+                                self.emit(Op::StoreGlobal(tmp_ci));
+                            }
                             self.emit(Op::Pop);
 
                             for spec in specifiers {
                                 let exports_ci =
                                     self.add_const(Constant::String(String::from("__exports__")));
                                 self.emit(Op::LoadGlobal(exports_ci));
-                                self.emit(Op::LoadGlobal(tmp_ci));
+                                if let Some(slot) = tmp_slot {
+                                    self.emit(Op::LoadLocal(slot));
+                                } else {
+                                    self.emit(Op::LoadGlobal(tmp_ci));
+                                }
                                 let local_ci =
                                     self.add_const(Constant::String(spec.local.clone()));
                                 self.emit(Op::GetPropNamed(local_ci));
