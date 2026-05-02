@@ -308,7 +308,16 @@ fn cmd_add(args: &anyos_std::args::ParsedArgs) {
         if path == "." || path == "-A" {
             add_directory(&repo, &mut index, ".", &gitignore);
         } else {
-            add_file(&repo, &mut index, path);
+            let full_path = repo.workdir_path(path);
+            let is_dir = std::fs::metadata(&full_path)
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
+            if is_dir {
+                let rel = path.trim_end_matches('/');
+                add_directory(&repo, &mut index, rel, &gitignore);
+            } else {
+                add_file(&repo, &mut index, path);
+            }
         }
     }
 
