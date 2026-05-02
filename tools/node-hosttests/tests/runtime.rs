@@ -721,6 +721,65 @@ fn npm_global_install_creates_prefix_bin_link() {
 }
 
 #[test]
+#[ignore = "downloads the OpenAI Codex CLI and platform packages from the npm registry"]
+fn npm_global_install_openai_codex_and_node_runs_cli_help() {
+    let root = temp_project("npm-codex-cwd");
+    let prefix = temp_project("npm-codex-prefix");
+
+    let install = run_npm(
+        &[
+            "install",
+            "-g",
+            "@openai/codex@0.128.0",
+            "--no-audit",
+            "--prefix",
+            prefix.to_str().unwrap(),
+            "--registry",
+            libnode::DEFAULT_NPM_REGISTRY,
+        ],
+        &root,
+    );
+    assert!(
+        install.status.success(),
+        "npm process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    let codex_js = prefix
+        .join("Library")
+        .join("node_modules")
+        .join("@openai")
+        .join("codex")
+        .join("bin")
+        .join("codex.js");
+    assert!(codex_js.exists(), "codex.js was not installed");
+    assert!(
+        prefix
+            .join("Library")
+            .join("node_modules")
+            .join("@openai")
+            .join("codex-linux-x64")
+            .join("package.json")
+            .exists(),
+        "linux-x64 optional package was not installed"
+    );
+
+    let run = run_node(&[codex_js.to_str().unwrap(), "--help"], &root);
+    assert!(
+        run.status.success(),
+        "codex --help failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("Codex CLI"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+#[test]
 #[ignore = "downloads OpenAI and Anthropic SDK packages from the npm registry"]
 fn npm_installs_ai_sdk_packages_and_node_uses_them() {
     let root = temp_project("official-ai-sdk-packages");

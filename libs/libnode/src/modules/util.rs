@@ -24,7 +24,9 @@ pub fn module() -> JsValue {
 }
 
 pub fn object(module: JsObject) -> JsValue {
-    JsValue::Object(Rc::new(RefCell::new(module)))
+    let value = JsValue::Object(Rc::new(RefCell::new(module)));
+    value.set_property(String::from("default"), value.clone());
+    value
 }
 
 pub fn empty_object() -> JsValue {

@@ -45,11 +45,13 @@ impl NodeRuntime {
         if self.options.argv.is_empty() {
             self.options.argv = vec![String::from("node"), String::from(path)];
         }
-        let source = strip_hashbang(source);
+        let source = prepare_entry_source(path, source);
         self.install_process_object();
         let dirname = resolver::dirname(path);
         self.preload_requires(&source, &dirname, 0);
         self.install_commonjs_globals(path, &dirname);
+        self.install_import_meta(path);
+        self.preload_entry_node_modules_package_jsons(path);
         self.engine.eval(&source)
     }
 
@@ -174,6 +176,11 @@ impl NodeRuntime {
         self.engine.register_module_object("node:buffer", buffer);
         self.engine
             .set_global("Buffer", modules::buffer::buffer_global());
+        let child_process = modules::child_process_module();
+        self.engine
+            .register_module_object("child_process", child_process.clone());
+        self.engine
+            .register_module_object("node:child_process", child_process);
         let crypto = modules::crypto_module();
         self.engine.register_module_object("crypto", crypto.clone());
         self.engine.register_module_object("node:crypto", crypto);
@@ -206,6 +213,11 @@ impl NodeRuntime {
         let net = modules::net_module();
         self.engine.register_module_object("net", net.clone());
         self.engine.register_module_object("node:net", net);
+        let node_module = modules::node_module_module();
+        self.engine
+            .register_module_object("module", node_module.clone());
+        self.engine
+            .register_module_object("node:module", node_module);
         let http = modules::http_module();
         self.engine.register_module_object("http", http.clone());
         self.engine
@@ -255,6 +267,17 @@ impl NodeRuntime {
             .set_global("__filename", JsValue::String(String::from(filename)));
         self.engine
             .set_global("__dirname", JsValue::String(String::from(dirname)));
+    }
+
+    fn install_import_meta(&mut self, filename: &str) {
+        let import = JsValue::new_object();
+        let meta = JsValue::new_object();
+        meta.set_property(
+            String::from("url"),
+            JsValue::String(file_url_from_path(filename)),
+        );
+        import.set_property(String::from("meta"), meta);
+        self.engine.set_global("import", import);
     }
 
     fn preload_requires(&mut self, source: &str, from_dir: &str, depth: usize) {
@@ -352,6 +375,31 @@ impl NodeRuntime {
         exports
     }
 
+    fn preload_entry_node_modules_package_jsons(&mut self, entry_path: &str) {
+        let Some(node_modules) = nearest_node_modules_root(entry_path) else {
+            return;
+        };
+        for package in package_dirs(&node_modules) {
+            let package_json = resolver::join_path(&package.1, "package.json");
+            let Ok(source) = anyos_std::fs::read_to_string(&package_json) else {
+                continue;
+            };
+            let module = ResolvedModule {
+                id: alloc::format!("{}/package.json", package.0),
+                filename: resolver::normalize_path(&package_json),
+                dirname: package.1.clone(),
+                source,
+                kind: ModuleKind::Json,
+            };
+            let exports = self.load_json_module(&module);
+            self.engine
+                .register_module_object(&module.id, exports.clone());
+            self.engine
+                .register_module_object(&module.filename, exports.clone());
+            self.record_resolved_module(&module.id, &module.filename);
+        }
+    }
+
     fn cache_module_object(&mut self, filename: &str, module: JsValue) {
         let cache = self.engine.get_global("__node_require_cache__");
         cache.set_property(String::from(filename), module);
@@ -439,6 +487,72 @@ fn js_string_literal(source: &str) -> String {
         }
     }
     out.push('"');
+    out
+}
+
+fn file_url_from_path(path: &str) -> String {
+    let normalized = resolver::normalize_path(path);
+    if normalized.starts_with('/') {
+        alloc::format!("file://{}", normalized)
+    } else {
+        alloc::format!("file:///{}", normalized)
+    }
+}
+
+fn prepare_entry_source(path: &str, source: &str) -> String {
+    let source = strip_hashbang(source);
+    let import_meta = alloc::format!(
+        "({{ url: {} }})",
+        js_string_literal(&file_url_from_path(path))
+    );
+    source.replace("import.meta", &import_meta)
+}
+
+fn nearest_node_modules_root(path: &str) -> Option<String> {
+    let marker = "/node_modules/";
+    let idx = path.rfind(marker)?;
+    Some(String::from(&path[..idx + marker.len() - 1]))
+}
+
+fn package_dirs(node_modules: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (name, path) in read_dir_names(node_modules) {
+        if name == ".cache" || name == ".bin" {
+            continue;
+        }
+        if name.starts_with('@') {
+            for (child, child_path) in read_dir_names(&path) {
+                out.push((alloc::format!("{}/{}", name, child), child_path));
+            }
+        } else {
+            out.push((name, path));
+        }
+    }
+    out
+}
+
+fn read_dir_names(path: &str) -> Vec<(String, String)> {
+    let mut buf = alloc::vec![0u8; 8192];
+    let count = anyos_std::fs::readdir(path, &mut buf);
+    if count == u32::MAX {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for index in 0..count as usize {
+        let base = index * 64;
+        if base + 64 > buf.len() {
+            break;
+        }
+        let name_len = buf[base + 1] as usize;
+        let name_start = base + 8;
+        let name_end = (name_start + name_len).min(base + 64);
+        if let Ok(name) = core::str::from_utf8(&buf[name_start..name_end]) {
+            if name == "." || name == ".." || name.is_empty() {
+                continue;
+            }
+            out.push((String::from(name), resolver::join_path(path, name)));
+        }
+    }
     out
 }
 

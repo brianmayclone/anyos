@@ -27,6 +27,13 @@ impl PackageSpec {
             version: String::from("latest"),
         }
     }
+
+    fn registry_spec(&self) -> Self {
+        self.version
+            .strip_prefix("npm:")
+            .map(Self::parse)
+            .unwrap_or_else(|| self.clone())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -184,8 +191,17 @@ impl RegistryClient {
 
     pub fn fetch_metadata(&self, package_name: &str) -> Option<PackageMetadata> {
         let url = self.package_metadata_url(package_name);
-        let data = libhttp_client::get(&url)?;
-        let text = String::from_utf8(data).ok()?;
+        let text = match libhttp_client::get(&url).and_then(|data| String::from_utf8(data).ok()) {
+            Some(text) if metadata_looks_complete(&text, package_name) => text,
+            _ => {
+                let path = metadata_cache_path(package_name);
+                mkdir_p(&dirname(&path));
+                if !libhttp_client::download(&url, &path) {
+                    return None;
+                }
+                fs::read_to_string(&path).ok()?
+            }
+        };
         Some(PackageMetadata {
             package_name: String::from(package_name),
             raw_json: text,
@@ -194,6 +210,10 @@ impl RegistryClient {
 
     pub fn fetch_tarball(&self, url: &str) -> Option<Vec<u8>> {
         libhttp_client::get(url)
+    }
+
+    pub fn download_tarball(&self, url: &str, path: &str) -> bool {
+        libhttp_client::download(url, path)
     }
 }
 
@@ -224,6 +244,16 @@ impl PackageMetadata {
             return Vec::new();
         };
         let Some(deps) = json_object_field(version_object, "\"dependencies\"") else {
+            return Vec::new();
+        };
+        parse_dependency_object(deps)
+    }
+
+    pub fn optional_dependencies(&self, version: &str) -> Vec<PackageSpec> {
+        let Some(version_object) = self.version_object(version) else {
+            return Vec::new();
+        };
+        let Some(deps) = json_object_field(version_object, "\"optionalDependencies\"") else {
             return Vec::new();
         };
         parse_dependency_object(deps)
@@ -393,13 +423,19 @@ impl PackageInstaller {
             ));
         }
 
+        let registry_spec = spec.registry_spec();
         let metadata = self
             .client
-            .fetch_metadata(&spec.name)
-            .ok_or_else(|| format!("could not fetch metadata for {}", spec.name))?;
+            .fetch_metadata(&registry_spec.name)
+            .ok_or_else(|| format!("could not fetch metadata for {}", registry_spec.name))?;
         let version = metadata
-            .resolve_version(&spec.version)
-            .ok_or_else(|| format!("could not resolve {}@{}", spec.name, spec.version))?;
+            .resolve_version(&registry_spec.version)
+            .ok_or_else(|| {
+                format!(
+                    "could not resolve {}@{}",
+                    registry_spec.name, registry_spec.version
+                )
+            })?;
         let key = format!("{}@{}", spec.name, version);
         if seen.iter().any(|entry| entry == &key) {
             return Ok(());
@@ -414,18 +450,16 @@ impl PackageInstaller {
         if !installed_version_matches(&install_dir, &resolved.version) {
             let tarball = metadata.tarball_url(&resolved.version).unwrap_or_else(|| {
                 self.client
-                    .package_tarball_url(&resolved.name, &resolved.version)
+                    .package_tarball_url(&registry_spec.name, &resolved.version)
             });
-            let data = self
-                .client
-                .fetch_tarball(&tarball)
-                .ok_or_else(|| format!("could not download {}", tarball))?;
             let cache_path = package_cache_path(&layout.node_modules_dir, &resolved);
             mkdir_p(&dirname(&cache_path));
-            fs::write_bytes(&cache_path, &data)
-                .map_err(|_| format!("could not write {}", cache_path))?;
+            if !self.client.download_tarball(&tarball, &cache_path) {
+                return Err(format!("could not download {}", tarball));
+            }
             extract_npm_tarball(&cache_path, &install_dir)
                 .ok_or_else(|| format!("could not extract {} into {}", cache_path, install_dir))?;
+            mark_package_executables(&install_dir);
             install_bin_entries(layout, &resolved, &metadata);
             report.installed.push(resolved.clone());
         } else {
@@ -434,6 +468,9 @@ impl PackageInstaller {
 
         for dep in metadata.dependencies(&resolved.version) {
             self.install_recursive(layout, &dep, depth + 1, seen, report)?;
+        }
+        for dep in metadata.optional_dependencies(&resolved.version) {
+            let _ = self.install_recursive(layout, &dep, depth + 1, seen, report);
         }
         Ok(())
     }
@@ -799,6 +836,21 @@ fn package_cache_path(node_modules_dir: &str, spec: &PackageSpec) -> String {
     )
 }
 
+fn metadata_cache_path(package_name: &str) -> String {
+    let safe_name = package_name.replace('@', "_at_").replace('/', "__");
+    join_path(
+        &join_path("node_modules", ".cache/anyos-npm/metadata"),
+        &format!("{}.json", safe_name),
+    )
+}
+
+fn metadata_looks_complete(source: &str, package_name: &str) -> bool {
+    source.contains("\"dist-tags\"")
+        && source.contains("\"versions\"")
+        && source.contains(&format!("\"name\":\"{}\"", package_name))
+        && source.trim_end().ends_with('}')
+}
+
 fn package_binary_name(package_name: &str) -> String {
     package_name
         .rsplit('/')
@@ -869,6 +921,49 @@ fn extract_npm_tarball(cache_path: &str, package_dir: &str) -> Option<()> {
         fs::write_bytes(&out_path, &data).ok()?;
     }
     Some(())
+}
+
+fn mark_package_executables(package_dir: &str) {
+    mark_executables_recursive(package_dir, 0);
+}
+
+fn mark_executables_recursive(path: &str, depth: usize) {
+    if depth > 16 {
+        return;
+    }
+    let mut buf = alloc::vec![0u8; 8192];
+    let count = fs::readdir(path, &mut buf);
+    if count == u32::MAX {
+        return;
+    }
+    for index in 0..count as usize {
+        let base = index * 64;
+        if base + 64 > buf.len() {
+            break;
+        }
+        let entry_type = buf[base] as u32;
+        let name_len = buf[base + 1] as usize;
+        let name_start = base + 8;
+        let name_end = (name_start + name_len).min(base + 64);
+        let Ok(name) = core::str::from_utf8(&buf[name_start..name_end]) else {
+            continue;
+        };
+        if name == "." || name == ".." || name.is_empty() {
+            continue;
+        }
+        let full = join_path(path, name);
+        if entry_type == 1 {
+            mark_executables_recursive(&full, depth + 1);
+        } else if should_mark_executable(&full, name) {
+            let _ = fs::chmod(&full, 0o755);
+        }
+    }
+}
+
+fn should_mark_executable(path: &str, name: &str) -> bool {
+    path.contains("/bin/")
+        || path.contains("/vendor/")
+        || matches!(name, "codex" | "codex.exe" | "rg" | "node" | "npm")
 }
 
 fn npm_tar_entry_path(name: &str) -> Option<String> {

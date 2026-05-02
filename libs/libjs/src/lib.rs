@@ -338,6 +338,76 @@ mod tests {
     }
 
     #[test]
+    fn object_entries_sees_frozen_null_proto_vike_export_values() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "function render() {} \
+             const exports = Object.freeze(Object.defineProperty( \
+               { __proto__: null, onRenderClient: render }, \
+               Symbol.toStringTag, \
+               { value: 'Module' } \
+             )); \
+             Object.entries(exports).map(function(entry) { return entry[0]; }).join(',') + \
+               ':' + typeof exports.onRenderClient",
+        );
+        assert_eq!(result.to_js_string(), "onRenderClient:function");
+    }
+
+    #[test]
+    fn module_import_preserves_frozen_vike_export_values_entries() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source(
+            "./route.js",
+            "function o() {} \
+             const i = Object.freeze(Object.defineProperty( \
+               { __proto__: null, onRenderClient: o }, \
+               Symbol.toStringTag, \
+               { value: 'Module' } \
+             )); \
+             const P = { onRenderClient: { valueSerialized: { exportValues: i } } }; \
+             export { P as configValuesSerialized };",
+        );
+        let result = engine.eval(
+            "const ns = __import__('./route.js'); \
+             const exports = ns.configValuesSerialized.onRenderClient.valueSerialized.exportValues; \
+             Object.entries(exports).map(function(entry) { return entry[0]; }).join(',') + \
+               ':' + typeof exports.onRenderClient",
+        );
+        assert_eq!(result.to_js_string(), "onRenderClient:function");
+    }
+
+    #[test]
+    fn optional_call_short_circuits_following_member_chain() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var env; \
+             var value = env?.split(',').map(function(v) { return v.trim(); }); \
+             value === undefined",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert!(result.to_boolean());
+    }
+
+    #[test]
+    fn optional_call_continuation_still_runs_for_present_base() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var env = ' a, b '; \
+             env?.split(',').map(function(v) { return v.trim(); }).join('|')",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "a|b");
+    }
+
+    #[test]
     fn dynamic_import_through_vite_preload_wrapper_resolves_namespace() {
         let mut engine = JsEngine::new();
         engine.set_step_limit(1_000_000);

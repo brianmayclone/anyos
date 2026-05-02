@@ -1,5 +1,6 @@
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use libjs::value::{JsObject, JsValue};
 use libjs::vm::{native_fn, Vm};
 
@@ -10,12 +11,27 @@ pub fn module() -> JsValue {
     module.set(String::from("parse"), native_fn("parse", parse));
     module.set(String::from("format"), native_fn("format", format_url));
     module.set(String::from("resolve"), native_fn("resolve", resolve));
+    module.set(
+        String::from("fileURLToPath"),
+        native_fn("fileURLToPath", file_url_to_path),
+    );
     module.set(String::from("URL"), native_fn("URL", url_constructor));
     module.set(
         String::from("URLSearchParams"),
         native_fn("URLSearchParams", search_params_constructor),
     );
     object(module)
+}
+
+fn file_url_to_path(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let input = args
+        .first()
+        .map(|value| value.to_js_string())
+        .unwrap_or_default();
+    if let Some(path) = input.strip_prefix("file://") {
+        return JsValue::String(percent_decode_path(path));
+    }
+    JsValue::String(input)
 }
 
 fn parse(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -215,6 +231,33 @@ fn has_scheme(value: &str) -> bool {
         .find(':')
         .map(|idx| value[..idx].bytes().all(|byte| byte.is_ascii_alphabetic()))
         .unwrap_or(false)
+}
+
+fn percent_decode_path(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| String::from(value))
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 struct UrlParts {

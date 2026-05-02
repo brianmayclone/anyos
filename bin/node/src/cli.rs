@@ -15,9 +15,16 @@ pub enum NodeMode {
     Repl,
     Help,
     Version,
-    Eval { source: String, print: bool },
-    Check { script: String },
-    Script { script: String },
+    Eval {
+        source: String,
+        print: bool,
+    },
+    Check {
+        script: String,
+    },
+    Script {
+        script: String,
+    },
     Stdin,
 }
 
@@ -186,4 +193,3 @@ fn take_value(tokens: &[String], idx: &mut usize, option: &str) -> Result<String
     *idx = value_idx;
     Ok(value.clone())
 }
-

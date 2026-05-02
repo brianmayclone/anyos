@@ -60,7 +60,7 @@ fn node_main() -> u32 {
             };
             let value = runtime.run_script(script, &source);
             if let Some(exception) = runtime.engine().last_exception() {
-                anyos_std::println!("{}", exception.to_js_string());
+                anyos_std::println!("{}", format_exception(exception));
                 return 1;
             }
             let _ = value;
@@ -92,7 +92,7 @@ fn finish_runtime(runtime: &mut libnode::NodeRuntime) -> u32 {
     runtime.run_event_loop();
     flush_console(runtime);
     if let Some(exception) = runtime.engine().last_exception() {
-        anyos_std::println!("{}", exception.to_js_string());
+        anyos_std::println!("{}", format_exception(exception));
         return 1;
     }
     0
@@ -125,11 +125,27 @@ fn run_repl(runtime: &mut libnode::NodeRuntime) {
         runtime.run_event_loop();
         flush_console(runtime);
         if let Some(exception) = runtime.engine().last_exception() {
-            anyos_std::println!("{}", exception.to_js_string());
+            anyos_std::println!("{}", format_exception(exception));
             runtime.engine().clear_last_exception();
         } else if !matches!(value, libjs::JsValue::Undefined) {
             anyos_std::println!("{}", value.to_js_string());
         }
+    }
+}
+
+fn format_exception(exception: &libjs::JsValue) -> String {
+    let stack = exception.get_property("stack").to_js_string();
+    if !stack.is_empty() && stack != "undefined" {
+        return stack;
+    }
+
+    let name = exception.get_property("name").to_js_string();
+    let message = exception.get_property("message").to_js_string();
+    match (name.as_str(), message.as_str()) {
+        ("undefined", "undefined") | ("", "") => exception.to_js_string(),
+        ("undefined", message) | ("", message) => String::from(message),
+        (name, "undefined") | (name, "") => String::from(name),
+        (name, message) => alloc::format!("{}: {}", name, message),
     }
 }
 

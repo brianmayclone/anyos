@@ -15,9 +15,20 @@ pub fn module(options: &NodeOptions) -> JsValue {
     process.set(String::from("versions"), versions_object());
     process.set(
         String::from("platform"),
-        JsValue::String(String::from("anyos")),
+        JsValue::String(String::from(node_platform())),
+    );
+    process.set(
+        String::from("arch"),
+        JsValue::String(String::from(node_arch())),
+    );
+    process.set(
+        String::from("pid"),
+        JsValue::Number(anyos_std::process::getpid() as f64),
     );
     process.set(String::from("cwd"), native_fn("cwd", cwd));
+    process.set(String::from("exit"), native_fn("exit", exit));
+    process.set(String::from("kill"), native_fn("kill", kill));
+    process.set(String::from("on"), native_fn("on", on));
     process.set(String::from("binding"), native_fn("binding", binding));
     process.set(String::from("nextTick"), native_fn("nextTick", next_tick));
     process.set(String::from("env"), env_object());
@@ -34,6 +45,29 @@ pub fn module(options: &NodeOptions) -> JsValue {
         ),
     );
     JsValue::Object(Rc::new(RefCell::new(process)))
+}
+
+fn exit(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let code = args
+        .first()
+        .map(|value| value.to_number() as u32)
+        .unwrap_or(0);
+    anyos_std::process::exit(code);
+}
+
+fn kill(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let pid = args
+        .first()
+        .map(|value| value.to_number() as u32)
+        .unwrap_or(0);
+    if pid == 0 {
+        return JsValue::Bool(false);
+    }
+    JsValue::Bool(anyos_std::process::kill(pid) != u32::MAX)
+}
+
+fn on(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::new_object()
 }
 
 fn cwd(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -127,4 +161,33 @@ pub fn current_dir() -> String {
     }
     let len = (len as usize).min(buf.len());
     String::from(core::str::from_utf8(&buf[..len]).unwrap_or("."))
+}
+
+fn node_platform() -> &'static str {
+    #[cfg(feature = "host")]
+    {
+        if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else if cfg!(target_os = "windows") {
+            "win32"
+        } else {
+            "anyos"
+        }
+    }
+    #[cfg(not(feature = "host"))]
+    {
+        "anyos"
+    }
+}
+
+fn node_arch() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "unknown"
+    }
 }

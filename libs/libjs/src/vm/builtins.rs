@@ -1828,11 +1828,23 @@ fn bigint_constructor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsValue> {
     // 1. Check cached registry.
     if let Some(ns) = vm.module_registry.get(specifier) {
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+            std::eprintln!("[libjs-module] cache hit {}", specifier);
+        }
         return Ok(ns.clone());
     }
 
     // 2. Check source registry — compile, execute, cache.
     if let Some(source) = vm.module_sources.get(specifier).cloned() {
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+            std::eprintln!(
+                "[libjs-module] compile {} ({} bytes)",
+                specifier,
+                source.len()
+            );
+        }
         // Save current __exports__ and install a fresh one for this module.
         let prev_exports = vm.get_global("__exports__");
         let module_exports = JsValue::new_object();
@@ -1843,6 +1855,14 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
         let mut parser = crate::parser::Parser::new(tokens);
         let program = parser.parse_program();
         if !parser.errors.is_empty() {
+            #[cfg(feature = "host")]
+            if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+                std::eprintln!(
+                    "[libjs-module] parse error {}: {}",
+                    specifier,
+                    parser.errors[0]
+                );
+            }
             vm.set_global("__exports__", prev_exports);
             return Err(vm.make_syntax_error(&parser.errors[0]));
         }
@@ -1873,6 +1893,14 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
             .take()
             .or_else(|| vm.last_exception.take())
         {
+            #[cfg(feature = "host")]
+            if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+                std::eprintln!(
+                    "[libjs-module] execute error {}: {}",
+                    specifier,
+                    module_debug_exception(vm, &exc)
+                );
+            }
             vm.set_global("__exports__", prev_exports);
             return Err(exc);
         }
@@ -1884,12 +1912,35 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
         // Cache the module namespace.
         vm.module_registry
             .insert(String::from(specifier), final_exports.clone());
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+            std::eprintln!("[libjs-module] ready {}", specifier);
+        }
         return Ok(final_exports);
     }
 
     // 3. Module not found.
     let msg = alloc::format!("Cannot find module '{}'", specifier);
+    #[cfg(feature = "host")]
+    if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+        std::eprintln!("[libjs-module] missing {}", specifier);
+    }
     Err(vm.make_error(&msg))
+}
+
+#[cfg(feature = "host")]
+fn module_debug_exception(vm: &mut Vm, exc: &JsValue) -> alloc::string::String {
+    let mut parts = alloc::vec::Vec::new();
+    parts.push(exc.to_js_string());
+    let message = vm.get_property_with_proto(exc, "message");
+    if !message.is_undefined() {
+        parts.push(alloc::format!("message={}", message.to_js_string()));
+    }
+    let stack = vm.get_property_with_proto(exc, "stack");
+    if !stack.is_undefined() {
+        parts.push(alloc::format!("stack={}", stack.to_js_string()));
+    }
+    parts.join(" ")
 }
 
 fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {

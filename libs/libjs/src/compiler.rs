@@ -31,6 +31,23 @@ struct UpvalueDesc {
     starts_tdz: bool,
 }
 
+enum OptionalCallBase<'a> {
+    Named {
+        object: &'a Expr,
+        property: &'a String,
+        arguments: &'a [Expr],
+    },
+    Computed {
+        object: &'a Expr,
+        index: &'a Expr,
+        arguments: &'a [Expr],
+    },
+    Direct {
+        callee: &'a Expr,
+        arguments: &'a [Expr],
+    },
+}
+
 /// Entry on the label stack, tracking forward jumps for `break label`
 /// and `continue label` (ES2023 §14.13 Labelled Statements).
 struct LabelEntry {
@@ -3651,6 +3668,248 @@ impl Compiler {
         true
     }
 
+    fn compile_optional_call_continuation_chain(&mut self, expr: &Expr) -> bool {
+        let mut properties = Vec::new();
+        let Some(base) = Self::collect_optional_call_continuation_chain(expr, &mut properties)
+        else {
+            return false;
+        };
+
+        match base {
+            OptionalCallBase::Named {
+                object,
+                property,
+                arguments,
+            } => {
+                self.compile_expr(object);
+                self.emit(Op::Dup);
+                let skip = self.emit(Op::JumpIfNullish(0));
+                let ci = self.add_const(Constant::String(property.clone()));
+                self.emit(Op::GetPropNamed(ci));
+                if Self::args_have_spread(arguments) {
+                    self.compile_args_as_array(arguments);
+                    self.emit(Op::CallMethodSpread);
+                } else {
+                    for arg in arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::CallMethod(arguments.len() as u8));
+                }
+                for property in properties {
+                    let ci = self.add_const(Constant::String(property));
+                    self.emit(Op::GetPropNamed(ci));
+                }
+                let end = self.emit(Op::Jump(0));
+                self.patch_jump(skip);
+                self.emit(Op::Pop);
+                self.emit(Op::Pop);
+                self.emit(Op::LoadUndefined);
+                self.patch_jump(end);
+            }
+            OptionalCallBase::Computed {
+                object,
+                index,
+                arguments,
+            } => {
+                self.compile_expr(object);
+                self.emit(Op::Dup);
+                let skip = self.emit(Op::JumpIfNullish(0));
+                self.compile_expr(index);
+                self.emit(Op::GetProp);
+                if Self::args_have_spread(arguments) {
+                    self.compile_args_as_array(arguments);
+                    self.emit(Op::CallMethodSpread);
+                } else {
+                    for arg in arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::CallMethod(arguments.len() as u8));
+                }
+                for property in properties {
+                    let ci = self.add_const(Constant::String(property));
+                    self.emit(Op::GetPropNamed(ci));
+                }
+                let end = self.emit(Op::Jump(0));
+                self.patch_jump(skip);
+                self.emit(Op::Pop);
+                self.emit(Op::Pop);
+                self.emit(Op::LoadUndefined);
+                self.patch_jump(end);
+            }
+            OptionalCallBase::Direct { callee, arguments } => {
+                self.compile_expr(callee);
+                let skip = self.emit(Op::JumpIfNullish(0));
+                if Self::args_have_spread(arguments) {
+                    self.compile_args_as_array(arguments);
+                    self.emit(Op::CallSpread);
+                } else {
+                    for arg in arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::Call(arguments.len() as u8));
+                }
+                for property in properties {
+                    let ci = self.add_const(Constant::String(property));
+                    self.emit(Op::GetPropNamed(ci));
+                }
+                let end = self.emit(Op::Jump(0));
+                self.patch_jump(skip);
+                self.emit(Op::Pop);
+                self.emit(Op::LoadUndefined);
+                self.patch_jump(end);
+            }
+        }
+
+        true
+    }
+
+    fn compile_optional_method_call_continuation_chain(&mut self, expr: &Expr) -> bool {
+        let Expr::Call {
+            callee,
+            arguments: method_arguments,
+        } = expr
+        else {
+            return false;
+        };
+        let Expr::Member {
+            object,
+            property: method,
+            computed: false,
+        } = callee.as_ref()
+        else {
+            return false;
+        };
+
+        let mut properties = Vec::new();
+        let Some(base) = Self::collect_optional_call_continuation_chain(object, &mut properties)
+        else {
+            return false;
+        };
+
+        match base {
+            OptionalCallBase::Named {
+                object,
+                property,
+                arguments,
+            } => {
+                self.compile_expr(object);
+                self.emit(Op::Dup);
+                let skip = self.emit(Op::JumpIfNullish(0));
+                let ci = self.add_const(Constant::String(property.clone()));
+                self.emit(Op::GetPropNamed(ci));
+                if Self::args_have_spread(arguments) {
+                    self.compile_args_as_array(arguments);
+                    self.emit(Op::CallMethodSpread);
+                } else {
+                    for arg in arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::CallMethod(arguments.len() as u8));
+                }
+                for property in properties {
+                    let ci = self.add_const(Constant::String(property));
+                    self.emit(Op::GetPropNamed(ci));
+                }
+                self.emit(Op::Dup);
+                let ci = self.add_const(Constant::String(method.clone()));
+                self.emit(Op::GetPropNamed(ci));
+                if Self::args_have_spread(method_arguments) {
+                    self.compile_args_as_array(method_arguments);
+                    self.emit(Op::CallMethodSpread);
+                } else {
+                    for arg in method_arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::CallMethod(method_arguments.len() as u8));
+                }
+                let end = self.emit(Op::Jump(0));
+                self.patch_jump(skip);
+                self.emit(Op::Pop);
+                self.emit(Op::Pop);
+                self.emit(Op::LoadUndefined);
+                self.patch_jump(end);
+            }
+            OptionalCallBase::Computed {
+                object,
+                index,
+                arguments,
+            } => {
+                self.compile_expr(object);
+                self.emit(Op::Dup);
+                let skip = self.emit(Op::JumpIfNullish(0));
+                self.compile_expr(index);
+                self.emit(Op::GetProp);
+                if Self::args_have_spread(arguments) {
+                    self.compile_args_as_array(arguments);
+                    self.emit(Op::CallMethodSpread);
+                } else {
+                    for arg in arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::CallMethod(arguments.len() as u8));
+                }
+                for property in properties {
+                    let ci = self.add_const(Constant::String(property));
+                    self.emit(Op::GetPropNamed(ci));
+                }
+                self.emit(Op::Dup);
+                let ci = self.add_const(Constant::String(method.clone()));
+                self.emit(Op::GetPropNamed(ci));
+                if Self::args_have_spread(method_arguments) {
+                    self.compile_args_as_array(method_arguments);
+                    self.emit(Op::CallMethodSpread);
+                } else {
+                    for arg in method_arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::CallMethod(method_arguments.len() as u8));
+                }
+                let end = self.emit(Op::Jump(0));
+                self.patch_jump(skip);
+                self.emit(Op::Pop);
+                self.emit(Op::Pop);
+                self.emit(Op::LoadUndefined);
+                self.patch_jump(end);
+            }
+            OptionalCallBase::Direct { callee, arguments } => {
+                self.compile_expr(callee);
+                let skip = self.emit(Op::JumpIfNullish(0));
+                if Self::args_have_spread(arguments) {
+                    self.compile_args_as_array(arguments);
+                    self.emit(Op::CallSpread);
+                } else {
+                    for arg in arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::Call(arguments.len() as u8));
+                }
+                for property in properties {
+                    let ci = self.add_const(Constant::String(property));
+                    self.emit(Op::GetPropNamed(ci));
+                }
+                self.emit(Op::Dup);
+                let ci = self.add_const(Constant::String(method.clone()));
+                self.emit(Op::GetPropNamed(ci));
+                if Self::args_have_spread(method_arguments) {
+                    self.compile_args_as_array(method_arguments);
+                    self.emit(Op::CallMethodSpread);
+                } else {
+                    for arg in method_arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::CallMethod(method_arguments.len() as u8));
+                }
+                let end = self.emit(Op::Jump(0));
+                self.patch_jump(skip);
+                self.emit(Op::Pop);
+                self.emit(Op::LoadUndefined);
+                self.patch_jump(end);
+            }
+        }
+
+        true
+    }
+
     fn collect_optional_member_chain<'a>(
         expr: &'a Expr,
         properties: &mut Vec<String>,
@@ -3673,7 +3932,51 @@ impl Compiler {
         }
     }
 
+    fn collect_optional_call_continuation_chain<'a>(
+        expr: &'a Expr,
+        properties: &mut Vec<String>,
+    ) -> Option<OptionalCallBase<'a>> {
+        match expr {
+            Expr::Member {
+                object,
+                property,
+                computed: false,
+            } => {
+                let base = Self::collect_optional_call_continuation_chain(object, properties)?;
+                properties.push(property.clone());
+                Some(base)
+            }
+            Expr::Call { callee, arguments } => match callee.as_ref() {
+                Expr::OptionalChain { object, property } => Some(OptionalCallBase::Named {
+                    object,
+                    property,
+                    arguments,
+                }),
+                Expr::OptionalIndex { object, index } => Some(OptionalCallBase::Computed {
+                    object,
+                    index,
+                    arguments,
+                }),
+                Expr::OptionalCall {
+                    callee,
+                    arguments: optional_arguments,
+                } if arguments.is_empty() => Some(OptionalCallBase::Direct {
+                    callee,
+                    arguments: optional_arguments,
+                }),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn compile_expr(&mut self, expr: &Expr) {
+        if self.compile_optional_method_call_continuation_chain(expr) {
+            return;
+        }
+        if self.compile_optional_call_continuation_chain(expr) {
+            return;
+        }
         if self.compile_optional_member_chain(expr) {
             return;
         }

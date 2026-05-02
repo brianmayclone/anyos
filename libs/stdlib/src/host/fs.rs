@@ -249,6 +249,26 @@ pub fn symlink(target: &str, link_path: &str) -> u32 {
     u32::MAX
 }
 
+pub fn chmod(path: &str, mode: u16) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(mode as u32);
+            if std::fs::set_permissions(path, permissions).is_ok() {
+                return 0;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+        return 0;
+    }
+    u32::MAX
+}
+
 pub fn getcwd(buf: &mut [u8]) -> u32 {
     if let Ok(cwd) = std::env::current_dir() {
         let s = cwd.to_string_lossy();
