@@ -607,11 +607,42 @@ fn attach_then(vm: &mut Vm, promise_like: &JsValue, on_fulfilled: JsValue, on_re
     }
 }
 
+fn collect_iterable_values(vm: &mut Vm, iterable: &JsValue) -> Result<Vec<JsValue>, JsValue> {
+    if let JsValue::Array(arr) = iterable {
+        return Ok(arr.borrow().to_dense_vec());
+    }
+
+    let iter = vm.create_iterator(iterable);
+    if let Some(exc) = vm.pending_exception.take() {
+        return Err(exc);
+    }
+    if let Some(exc) = vm.last_exception.take() {
+        return Err(exc);
+    }
+
+    let mut values = Vec::new();
+    for _ in 0..100_000 {
+        let (value, has_more) = vm.iter_next_for(&iter);
+        if let Some(exc) = vm.pending_exception.take() {
+            return Err(exc);
+        }
+        if let Some(exc) = vm.last_exception.take() {
+            return Err(exc);
+        }
+        if !has_more {
+            return Ok(values);
+        }
+        values.push(value);
+    }
+
+    Err(vm.make_range_error("Promise iterable produced too many values"))
+}
+
 pub fn promise_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let promises = match &iterable {
-        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
-        _ => Vec::new(),
+    let promises = match collect_iterable_values(vm, &iterable) {
+        Ok(promises) => promises,
+        Err(exc) => return make_rejected_promise(exc),
     };
 
     let target = make_pending_promise(vm);
@@ -649,9 +680,9 @@ pub fn promise_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn promise_all_settled(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let promises = match &iterable {
-        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
-        _ => Vec::new(),
+    let promises = match collect_iterable_values(vm, &iterable) {
+        Ok(promises) => promises,
+        Err(exc) => return make_rejected_promise(exc),
     };
 
     let mut results = Vec::with_capacity(promises.len());
@@ -683,9 +714,9 @@ pub fn promise_all_settled(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn promise_race(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let promises = match &iterable {
-        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
-        _ => Vec::new(),
+    let promises = match collect_iterable_values(vm, &iterable) {
+        Ok(promises) => promises,
+        Err(exc) => return make_rejected_promise(exc),
     };
     let target = make_pending_promise(vm);
     let state = JsValue::new_object();
@@ -725,9 +756,9 @@ pub fn promise_race(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 /// all rejection reasons (ES2021 §27.2.4.1).
 pub fn promise_any(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let iterable = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let promises = match &iterable {
-        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
-        _ => Vec::new(),
+    let promises = match collect_iterable_values(vm, &iterable) {
+        Ok(promises) => promises,
+        Err(exc) => return make_rejected_promise(exc),
     };
     let mut errors: Vec<JsValue> = Vec::new();
     for p in &promises {

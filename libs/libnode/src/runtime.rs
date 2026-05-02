@@ -1,6 +1,7 @@
 use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec;
+use alloc::vec::Vec;
 use libjs::value::JsValue;
 use libjs::vm::native_fn;
 
@@ -219,8 +220,18 @@ impl NodeRuntime {
         error.set_property(String::from("stackTraceLimit"), JsValue::Number(10.0));
     }
 
-    fn install_commonjs_globals(&mut self, filename: &str, dirname: &str) {
+    fn install_commonjs_globals(&mut self, filename: &str, dirname: &str) -> JsValue {
         let module = modules::commonjs_module(filename, dirname);
+        self.install_commonjs_globals_from_module(filename, dirname, module.clone());
+        module
+    }
+
+    fn install_commonjs_globals_from_module(
+        &mut self,
+        filename: &str,
+        dirname: &str,
+        module: JsValue,
+    ) {
         let exports = module.get_property("exports");
         self.engine.set_global("module", module);
         self.engine.set_global("exports", exports);
@@ -235,12 +246,13 @@ impl NodeRuntime {
             return;
         }
         for specifier in resolver::find_require_specifiers(source) {
-            if resolver::is_core_module(&specifier)
-                || !matches!(self.module(&specifier), JsValue::Undefined)
-            {
+            if resolver::is_core_module(&specifier) {
                 continue;
             }
             if let Some(module) = self.resolver.resolve(&specifier, from_dir) {
+                if !matches!(self.module(&module.filename), JsValue::Undefined) {
+                    continue;
+                }
                 self.load_commonjs_module(&specifier, module, depth + 1);
             }
         }
@@ -271,13 +283,35 @@ impl NodeRuntime {
         let exports = match module.kind {
             ModuleKind::Json => self.load_json_module(&module),
             ModuleKind::JavaScript => {
-                self.preload_requires(&module.source, &module.dirname, depth);
-                self.install_commonjs_globals(&module.filename, &module.dirname);
-                let wrapped = wrap_commonjs_source(&module);
-                self.engine.eval(&wrapped);
-                let module_global = self.engine.get_global("module");
-                module_global.set_property(String::from("loaded"), JsValue::Bool(true));
+                let module_global = modules::commonjs_module(&module.filename, &module.dirname);
+                let placeholder_exports = module_global.get_property("exports");
                 self.cache_module_object(&module.filename, module_global.clone());
+                self.engine
+                    .register_module_object(requested_specifier, placeholder_exports.clone());
+                self.engine
+                    .register_module_object(&module.id, placeholder_exports.clone());
+                self.engine
+                    .register_module_object(&module.filename, placeholder_exports);
+                self.preload_requires(&module.source, &module.dirname, depth);
+                self.install_commonjs_globals_from_module(
+                    &module.filename,
+                    &module.dirname,
+                    module_global.clone(),
+                );
+                let wrapped = self.wrap_commonjs_source(&module);
+                self.engine.eval(&wrapped);
+                #[cfg(feature = "host")]
+                if std::env::var_os("LIBNODE_DEBUG_MODULES").is_some() {
+                    if let Some(exc) = self.engine.last_exception() {
+                        std::eprintln!(
+                            "[libnode-module] {} exception message={} stack={}",
+                            module.filename,
+                            exc.get_property("message").to_js_string(),
+                            exc.get_property("stack").to_js_string()
+                        );
+                    }
+                }
+                module_global.set_property(String::from("loaded"), JsValue::Bool(true));
                 module_global.get_property("exports")
             }
         };
@@ -312,6 +346,34 @@ impl NodeRuntime {
             String::from(specifier),
             JsValue::String(String::from(filename)),
         );
+    }
+
+    fn wrap_commonjs_source(&self, module: &ResolvedModule) -> String {
+        let mut map_entries = String::new();
+        for specifier in resolver::find_require_specifiers(&module.source) {
+            if resolver::is_core_module(&specifier) {
+                continue;
+            }
+            if let Some(resolved) = self.resolver.resolve(&specifier, &module.dirname) {
+                if !map_entries.is_empty() {
+                    map_entries.push(',');
+                }
+                map_entries.push_str(&js_string_literal(&specifier));
+                map_entries.push(':');
+                map_entries.push_str(&js_string_literal(&resolved.filename));
+            }
+        }
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBNODE_DEBUG_REQUIRE_MAP").is_some() {
+            std::eprintln!("[libnode-require-map] {} {{{}}}", module.filename, map_entries);
+        }
+        alloc::format!(
+            "(function() {{\nvar __node_require_map = {{{}}};\nfunction __node_local_require__(id) {{ return require(__node_require_map[id] || id); }}\n__node_local_require__.resolve = function(id) {{ return require.resolve(__node_require_map[id] || id); }};\n__node_local_require__.cache = require.cache;\nreturn (function(exports, require, module, __filename, __dirname) {{\n{}\n}})(module.exports, __node_local_require__, module, {}, {});\n}})();",
+            map_entries,
+            module.source,
+            js_string_literal(&module.filename),
+            js_string_literal(&module.dirname)
+        )
     }
 
     fn module(&mut self, name: &str) -> JsValue {
@@ -357,15 +419,6 @@ fn js_string_literal(source: &str) -> String {
     }
     out.push('"');
     out
-}
-
-fn wrap_commonjs_source(module: &ResolvedModule) -> String {
-    alloc::format!(
-        "(function(exports, require, module, __filename, __dirname) {{\n{}\n}})(module.exports, require, module, {}, {});",
-        module.source,
-        js_string_literal(&module.filename),
-        js_string_literal(&module.dirname)
-    )
 }
 
 fn error_capture_stack_trace(_vm: &mut libjs::vm::Vm, args: &[JsValue]) -> JsValue {

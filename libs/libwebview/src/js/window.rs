@@ -8,7 +8,7 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use libjs::value::{JsObject, Property};
-use libjs::vm::{native_ctor_fn, native_fn};
+use libjs::vm::{native_ctor_fn, native_fn, native_symbol};
 use libjs::JsValue;
 use libjs::Vm;
 
@@ -3413,7 +3413,23 @@ fn win_url_search_params(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     params.set_hidden_property(
         String::from("entries"),
-        native_fn("entries", |vm, _| vm.current_this.get_property("__entries")),
+        native_fn("entries", |vm, _| {
+            let entries = vm.current_this.get_property("__entries");
+            if let JsValue::Array(arr) = entries {
+                return vm.make_internal_iterator(arr.borrow().to_dense_vec());
+            }
+            vm.make_internal_iterator(Vec::new())
+        }),
+    );
+    params.set_hidden_property(
+        String::from(native_symbol::WELL_KNOWN_ITERATOR),
+        native_fn("[Symbol.iterator]", |vm, _| {
+            let entries = vm.current_this.get_property("__entries");
+            if let JsValue::Array(arr) = entries {
+                return vm.make_internal_iterator(arr.borrow().to_dense_vec());
+            }
+            vm.make_internal_iterator(Vec::new())
+        }),
     );
 
     params.set_hidden_property(String::from("set"), native_fn("set", win_noop));

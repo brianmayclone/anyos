@@ -4143,6 +4143,7 @@ mod tests {
               url: new URL('https://example.com/path').href === 'https://example.com/path',
               urlSearchParams: new URL('https://example.com/path?q=test#x').searchParams.get('q') === 'test',
               searchParams: new URLSearchParams('a=1').get('a') === '1',
+              searchParamsIterator: Array.from(new URLSearchParams('a=1&b=2'))[1][0] === 'b',
               textEncoder: typeof new TextEncoder().encode === 'function',
               textDecoder: typeof new TextDecoder().decode === 'function',
               abortController: !!new AbortController().signal,

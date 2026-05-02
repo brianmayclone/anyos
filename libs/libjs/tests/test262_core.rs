@@ -499,6 +499,19 @@ fn function_call_can_dispatch_bytecode_without_reentrant_run() {
 }
 
 #[test]
+fn object_constructor_preserves_callable_function_values() {
+    assert_eq!(
+        eval_str(
+            r#"
+            function add(a, b) { return a + b; }
+            Object(add)(2, 3) + ':' + (Object(add) === add)
+            "#
+        ),
+        "5:true"
+    );
+}
+
+#[test]
 fn function_call_empty_completion_preserves_expression_stack() {
     assert_eq!(
         eval_str(
@@ -930,6 +943,25 @@ fn array_from() {
     assert_eq!(
         eval_str("Array.from([1,2,3], x => x * 2).join(',')"),
         "2,4,6"
+    );
+    assert_eq!(
+        eval_str(
+            r#"
+        var iterable = {
+            [Symbol.iterator]: function() {
+                var i = 0;
+                return {
+                    next: function() {
+                        i++;
+                        return i <= 3 ? { value: i * 10, done: false } : { done: true };
+                    }
+                };
+            }
+        };
+        Array.from(iterable).join(',')
+    "#
+        ),
+        "10,20,30"
     );
 }
 
@@ -2326,6 +2358,16 @@ fn async_promise_all() {
     "#
         ),
         "1+2+3"
+    );
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        Promise.all(new Set([Promise.resolve(4), 5])).then(arr => { out = arr.join("+"); });
+        out
+    "#
+        ),
+        "4+5"
     );
 }
 

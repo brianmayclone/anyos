@@ -204,7 +204,7 @@ fn debug_chunk_functions(chunk: &bytecode::Chunk, depth: usize, remaining: usize
         if let bytecode::Constant::Function(func) = constant {
             let indent = "  ".repeat(depth);
             std::eprintln!(
-                "[libjs-parse] {}fn_const#{} name={} ops={} constants={} locals={} params={} strict={} generator={} async={}",
+                "[libjs-parse] {}fn_const#{} name={} ops={} constants={} locals={} params={} strict={} generator={} async={} upvalues={:?} local_names={:?}",
                 indent,
                 idx,
                 func.name.as_deref().unwrap_or("<anon>"),
@@ -214,7 +214,9 @@ fn debug_chunk_functions(chunk: &bytecode::Chunk, depth: usize, remaining: usize
                 func.param_count,
                 func.strict,
                 func.is_generator,
-                func.is_async
+                func.is_async,
+                func.upvalue_names,
+                func.local_names
             );
             if std::env::var_os("LIBJS_DEBUG_BYTECODE").is_some() && func.code.len() > 1000 {
                 let mut label = String::from("fn:");

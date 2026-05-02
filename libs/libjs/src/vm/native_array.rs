@@ -2127,6 +2127,57 @@ pub fn array_is_array(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
+fn collect_iterable_for_array_from(vm: &mut Vm, source: &JsValue) -> Option<Vec<JsValue>> {
+    let iter_fn = vm.get_property_invoking_getter(source, native_symbol::WELL_KNOWN_ITERATOR);
+    if matches!(iter_fn, JsValue::Empty) {
+        return Some(Vec::new());
+    }
+    if vm.pending_exception.is_some() {
+        return Some(Vec::new());
+    }
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+        return Some(Vec::new());
+    }
+    if !iter_fn.is_function() {
+        return None;
+    }
+
+    let iter = vm.call_value(&iter_fn, &[], source.clone());
+    if matches!(iter, JsValue::Empty) {
+        return Some(Vec::new());
+    }
+    if vm.pending_exception.is_some() {
+        return Some(Vec::new());
+    }
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+        return Some(Vec::new());
+    }
+
+    let mut items = Vec::new();
+    for _ in 0..100_000 {
+        let (value, has_more) = vm.iter_next_for(&iter);
+        if matches!(value, JsValue::Empty) {
+            return Some(Vec::new());
+        }
+        if vm.pending_exception.is_some() {
+            return Some(Vec::new());
+        }
+        if let Some(exc) = vm.last_exception.take() {
+            vm.pending_exception = Some(exc);
+            return Some(Vec::new());
+        }
+        if !has_more {
+            return Some(items);
+        }
+        items.push(value);
+    }
+
+    vm.pending_exception = Some(vm.make_range_error("Array.from iterable produced too many values"));
+    Some(Vec::new())
+}
+
 pub fn array_from(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let source = args.first().cloned().unwrap_or(JsValue::Undefined);
     let map_fn = args.get(1).cloned();
@@ -2169,14 +2220,21 @@ pub fn array_from(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     }
                 }
                 _ => {
-                    let len = obj.borrow().get("length").to_number();
-                    if len > 0.0 && len.is_finite() {
-                        let n = len as usize;
-                        (0..n.min(10_000))
-                            .map(|i| obj.borrow().get(&alloc::format!("{}", i)))
-                            .collect()
+                    if let Some(iterated) = collect_iterable_for_array_from(vm, &source) {
+                        if vm.pending_exception.is_some() {
+                            return JsValue::Undefined;
+                        }
+                        iterated
                     } else {
-                        Vec::new()
+                        let len = obj.borrow().get("length").to_number();
+                        if len > 0.0 && len.is_finite() {
+                            let n = len as usize;
+                            (0..n.min(10_000))
+                                .map(|i| obj.borrow().get(&alloc::format!("{}", i)))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        }
                     }
                 }
             }

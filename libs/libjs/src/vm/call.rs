@@ -5,7 +5,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use super::{CallFrame, LocalSlot, Vm};
+use super::{CallFrame, Vm};
 use crate::value::*;
 
 impl Vm {
@@ -342,6 +342,49 @@ impl Vm {
 
         let callee = self.stack[callee_idx].clone();
         let args: Vec<JsValue> = self.stack[args_start..].to_vec();
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_CALLFUNCTION").is_some()
+            && !matches!(callee, JsValue::Function(_))
+        {
+            let mut ops = alloc::string::String::new();
+            if let Some(frame) = self.frames.last() {
+                let ip = frame.ip;
+                for back in 1..=ip.min(10) {
+                    let check_ip = ip - back;
+                    if !ops.is_empty() {
+                        ops.push_str(" <- ");
+                    }
+                    ops.push_str(&alloc::format!("{:?}", frame.chunk.code[check_ip]));
+                }
+            }
+            let stack_tail = self
+                .stack
+                .iter()
+                .enumerate()
+                .rev()
+                .take(12)
+                .map(|(idx, value)| {
+                    alloc::format!(
+                        "{}:{}:{}",
+                        idx,
+                        value.type_of(),
+                        value.to_js_string()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            std::eprintln!(
+                "[libjs-callfunction] argc={} len={} callee_idx={} args_start={} callee={}:{} ops=[{}] tail=[{}]",
+                argc,
+                self.stack.len(),
+                callee_idx,
+                args_start,
+                callee.type_of(),
+                callee.to_js_string(),
+                ops,
+                stack_tail
+            );
+        }
         self.stack.truncate(callee_idx);
 
         self.last_exception = None;
@@ -371,6 +414,40 @@ impl Vm {
         let args: Vec<JsValue> = self.stack[args_start..].to_vec();
         let callee = self.stack[method_idx].clone();
         let this_val = self.stack[this_idx].clone();
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_CALLMETHOD").is_some()
+            && !matches!(callee, JsValue::Function(_))
+        {
+            let stack_tail = self
+                .stack
+                .iter()
+                .enumerate()
+                .rev()
+                .take(12)
+                .map(|(idx, value)| {
+                    alloc::format!(
+                        "{}:{}:{}",
+                        idx,
+                        value.type_of(),
+                        value.to_js_string()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            std::eprintln!(
+                "[libjs-callmethod] argc={} len={} this_idx={} method_idx={} args_start={} this={}:{} callee={}:{} tail=[{}]",
+                argc,
+                self.stack.len(),
+                this_idx,
+                method_idx,
+                args_start,
+                this_val.type_of(),
+                this_val.to_js_string(),
+                callee.type_of(),
+                callee.to_js_string(),
+                stack_tail
+            );
+        }
         self.stack.truncate(this_idx);
 
         self.last_exception = None;

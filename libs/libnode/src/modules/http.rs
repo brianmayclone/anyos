@@ -82,6 +82,9 @@ fn install_stream_methods(proto: &mut JsObject) {
         native_fn("removeListener", stream_remove_listener),
     );
     proto.set(String::from("unpipe"), native_fn("unpipe", stream_unpipe));
+    proto.set(String::from("resume"), native_fn("resume", stream_unpipe));
+    proto.set(String::from("pause"), native_fn("pause", stream_unpipe));
+    proto.set(String::from("pipe"), native_fn("pipe", stream_pipe));
 }
 
 fn stream_on(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -102,6 +105,10 @@ fn stream_remove_listener(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 fn stream_unpipe(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     vm.current_this.clone()
+}
+
+fn stream_pipe(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    args.first().cloned().unwrap_or(JsValue::Undefined)
 }
 
 pub fn poll_servers(vm: &mut Vm) -> usize {

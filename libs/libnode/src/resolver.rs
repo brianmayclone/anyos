@@ -97,8 +97,53 @@ pub fn find_require_specifiers(source: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + 8 <= bytes.len() {
+        if bytes[i] == b'\'' || bytes[i] == b'"' || bytes[i] == b'`' {
+            let quote = bytes[i];
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
         if &bytes[i..i + 7] == b"require" {
+            let before_ok = i == 0
+                || !(bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b'_'
+                    || bytes[i - 1] == b'$');
+            if !before_ok {
+                i += 1;
+                continue;
+            }
             let mut j = i + 7;
+            let after_ok = j >= bytes.len()
+                || !(bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' || bytes[j] == b'$');
+            if !after_ok {
+                i += 1;
+                continue;
+            }
             while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                 j += 1;
             }

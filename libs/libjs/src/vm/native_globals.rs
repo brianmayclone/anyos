@@ -187,6 +187,7 @@ pub fn ctor_object(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(val @ JsValue::Object(_)) => val.clone(),
         Some(val @ JsValue::Array(_)) => val.clone(),
+        Some(val @ JsValue::Function(_)) => val.clone(),
         Some(JsValue::String(s)) => {
             let obj = JsValue::new_object();
             if let JsValue::Object(rc) = &obj {
