@@ -344,6 +344,7 @@ impl Vm {
         let args: Vec<JsValue> = self.stack[args_start..].to_vec();
         self.stack.truncate(callee_idx);
 
+        self.last_exception = None;
         self.current_this = JsValue::Undefined;
         self.invoke_function(&callee, &args, JsValue::Undefined);
         // `control_flow_restored` is a one-shot signal that pertains to a
@@ -372,6 +373,7 @@ impl Vm {
         let this_val = self.stack[this_idx].clone();
         self.stack.truncate(this_idx);
 
+        self.last_exception = None;
         self.current_this = this_val.clone();
         self.invoke_function(&callee, &args, this_val);
         self.control_flow_restored = false;
@@ -687,11 +689,22 @@ impl Vm {
                 };
                 #[cfg(feature = "host")]
                 if std::env::var_os("LIBJS_DEBUG_NONCALLABLE").is_some() {
+                    let stack_tail = self
+                        .stack
+                        .iter()
+                        .rev()
+                        .take(8)
+                        .map(|value| {
+                            alloc::format!("{}:{}", value.type_of(), value.to_js_string())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
                     std::eprintln!(
-                        "[libjs-debug] non-callable call: {} callee_type={} stack=[{}]",
+                        "[libjs-debug] non-callable call: {} callee_type={} frames=[{}] stack_tail=[{}]",
                         desc,
                         callee.type_of(),
-                        stack
+                        stack,
+                        stack_tail
                     );
                 }
                 let exc = self.make_type_error(&desc);

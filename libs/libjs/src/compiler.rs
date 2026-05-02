@@ -2150,12 +2150,13 @@ impl Compiler {
             self.patch_jump(no_match_jump);
         }
 
+        let pop_pos = self.offset();
         self.emit(Op::Pop); // pop discriminant
 
-        // Patch all break jumps to after the Pop.
+        // Patch all break jumps to the discriminator cleanup.
         let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
         for b in breaks {
-            self.patch_jump(b);
+            self.patch_jump_to_pos(b, pop_pos);
         }
         self.scope_mut().break_jumps = old_breaks;
     }
@@ -2201,10 +2202,11 @@ impl Compiler {
         } else {
             self.patch_jump(no_match_jump);
         }
+        let pop_pos = self.offset();
         self.emit(Op::Pop);
         let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
         for b in breaks {
-            self.patch_jump(b);
+            self.patch_jump_to_pos(b, pop_pos);
         }
         self.scope_mut().break_jumps = old_breaks;
         self.emit(Op::LoadLocal(slot));

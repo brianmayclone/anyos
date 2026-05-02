@@ -180,6 +180,14 @@ impl NodeRuntime {
         let timers = modules::timers_module();
         self.engine.register_module_object("timers", timers.clone());
         self.engine.register_module_object("node:timers", timers);
+        let timers = self.module("node:timers");
+        self.engine
+            .set_global("setImmediate", timers.get_property("setImmediate"));
+        self.engine
+            .set_global("clearImmediate", timers.get_property("clearImmediate"));
+        let tty = modules::tty_module();
+        self.engine.register_module_object("tty", tty.clone());
+        self.engine.register_module_object("node:tty", tty);
         let net = modules::net_module();
         self.engine.register_module_object("net", net.clone());
         self.engine.register_module_object("node:net", net);
@@ -199,6 +207,16 @@ impl NodeRuntime {
             .register_module_object("@anyos/image", modules::image_module(&self.policy));
         self.engine
             .register_module_object("node:uv", modules::uv_module(self.event_loop.uv_loop()));
+        self.install_node_error_extensions();
+    }
+
+    fn install_node_error_extensions(&mut self) {
+        let error = self.engine.get_global("Error");
+        error.set_property(
+            String::from("captureStackTrace"),
+            native_fn("captureStackTrace", error_capture_stack_trace),
+        );
+        error.set_property(String::from("stackTraceLimit"), JsValue::Number(10.0));
     }
 
     fn install_commonjs_globals(&mut self, filename: &str, dirname: &str) {
@@ -255,7 +273,8 @@ impl NodeRuntime {
             ModuleKind::JavaScript => {
                 self.preload_requires(&module.source, &module.dirname, depth);
                 self.install_commonjs_globals(&module.filename, &module.dirname);
-                self.engine.eval(&module.source);
+                let wrapped = wrap_commonjs_source(&module);
+                self.engine.eval(&wrapped);
                 let module_global = self.engine.get_global("module");
                 module_global.set_property(String::from("loaded"), JsValue::Bool(true));
                 self.cache_module_object(&module.filename, module_global.clone());
@@ -338,6 +357,82 @@ fn js_string_literal(source: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn wrap_commonjs_source(module: &ResolvedModule) -> String {
+    alloc::format!(
+        "(function(exports, require, module, __filename, __dirname) {{\n{}\n}})(module.exports, require, module, {}, {});",
+        module.source,
+        js_string_literal(&module.filename),
+        js_string_literal(&module.dirname)
+    )
+}
+
+fn error_capture_stack_trace(_vm: &mut libjs::vm::Vm, args: &[JsValue]) -> JsValue {
+    let Some(target) = args.first() else {
+        return JsValue::Undefined;
+    };
+    let mut frames = Vec::new();
+    for _ in 0..12 {
+        frames.push(call_site_object());
+    }
+    target.set_property(String::from("stack"), JsValue::new_array(frames));
+    JsValue::Undefined
+}
+
+fn call_site_object() -> JsValue {
+    let site = JsValue::new_object();
+    site.set_property(
+        String::from("getFileName"),
+        native_fn("getFileName", call_site_file_name),
+    );
+    site.set_property(
+        String::from("getLineNumber"),
+        native_fn("getLineNumber", call_site_line_number),
+    );
+    site.set_property(
+        String::from("getColumnNumber"),
+        native_fn("getColumnNumber", call_site_column_number),
+    );
+    site.set_property(
+        String::from("getFunctionName"),
+        native_fn("getFunctionName", call_site_function_name),
+    );
+    site.set_property(String::from("isEval"), native_fn("isEval", call_site_is_eval));
+    site.set_property(
+        String::from("getEvalOrigin"),
+        native_fn("getEvalOrigin", call_site_eval_origin),
+    );
+    site.set_property(String::from("toString"), native_fn("toString", call_site_to_string));
+    site
+}
+
+fn call_site_file_name(_vm: &mut libjs::vm::Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::String(String::from("<anonymous>"))
+}
+
+fn call_site_line_number(_vm: &mut libjs::vm::Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Number(1.0)
+}
+
+fn call_site_column_number(_vm: &mut libjs::vm::Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Number(1.0)
+}
+
+fn call_site_function_name(_vm: &mut libjs::vm::Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::String(String::new())
+}
+
+fn call_site_is_eval(_vm: &mut libjs::vm::Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Bool(false)
+}
+
+fn call_site_eval_origin(_vm: &mut libjs::vm::Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::String(String::new())
+}
+
+fn call_site_to_string(_vm: &mut libjs::vm::Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::String(String::from("<anonymous>:1:1"))
 }
 
 #[cfg(test)]

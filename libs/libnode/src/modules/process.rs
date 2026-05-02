@@ -18,6 +18,7 @@ pub fn module(options: &NodeOptions) -> JsValue {
         JsValue::String(String::from("anyos")),
     );
     process.set(String::from("cwd"), native_fn("cwd", cwd));
+    process.set(String::from("binding"), native_fn("binding", binding));
     process.set(String::from("nextTick"), native_fn("nextTick", next_tick));
     process.set(String::from("env"), env_object());
     process.set(String::from("argv"), string_array(&options.argv));
@@ -26,6 +27,46 @@ pub fn module(options: &NodeOptions) -> JsValue {
 
 fn cwd(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::String(current_dir())
+}
+
+fn binding(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args
+        .first()
+        .map(|value| value.to_js_string())
+        .unwrap_or_default();
+    match name.as_str() {
+        "buffer" => {
+            let out = JsValue::new_object();
+            out.set_property(
+                String::from("kStringMaxLength"),
+                JsValue::Number((usize::MAX / 2) as f64),
+            );
+            out
+        }
+        "tty_wrap" => {
+            let out = JsValue::new_object();
+            out.set_property(
+                String::from("guessHandleType"),
+                native_fn("guessHandleType", guess_handle_type),
+            );
+            out
+        }
+        _ => {
+            vm.pending_exception = Some(vm.make_type_error(&alloc::format!(
+                "No such module: {}",
+                name
+            )));
+            JsValue::Undefined
+        }
+    }
+}
+
+fn guess_handle_type(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first().map(|value| value.to_number() as i32) {
+        Some(0) => JsValue::String(String::from("TTY")),
+        Some(1) | Some(2) => JsValue::String(String::from("TTY")),
+        _ => JsValue::String(String::from("FILE")),
+    }
 }
 
 fn versions_object() -> JsValue {

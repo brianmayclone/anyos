@@ -16,12 +16,92 @@ const HTTP_SERVERS_KEY: &str = "__node_http_servers__";
 pub fn module() -> JsValue {
     let mut module = JsObject::new();
     module.set(
+        String::from("IncomingMessage"),
+        constructor_with_prototype("IncomingMessage", incoming_message_prototype()),
+    );
+    module.set(
+        String::from("ServerResponse"),
+        constructor_with_prototype("ServerResponse", server_response_prototype()),
+    );
+    module.set(
         String::from("createServer"),
         native_fn("createServer", create_server),
     );
     module.set(String::from("get"), native_fn("get", get));
     module.set(String::from("request"), native_fn("request", request));
     object(module)
+}
+
+fn constructor_with_prototype(name: &str, prototype: JsValue) -> JsValue {
+    let ctor = native_fn(name, noop_constructor);
+    ctor.set_property(String::from("prototype"), prototype);
+    ctor
+}
+
+fn noop_constructor(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    vm.current_this.clone()
+}
+
+fn incoming_message_prototype() -> JsValue {
+    let mut proto = JsObject::new();
+    install_stream_methods(&mut proto);
+    object(proto)
+}
+
+fn server_response_prototype() -> JsValue {
+    let mut proto = JsObject::new();
+    install_stream_methods(&mut proto);
+    proto.set(
+        String::from("setHeader"),
+        native_fn("setHeader", set_header),
+    );
+    proto.set(
+        String::from("getHeader"),
+        native_fn("getHeader", get_header),
+    );
+    proto.set(
+        String::from("removeHeader"),
+        native_fn("removeHeader", remove_header),
+    );
+    proto.set(
+        String::from("writeHead"),
+        native_fn("writeHead", write_head),
+    );
+    proto.set(String::from("write"), native_fn("write", write));
+    proto.set(String::from("end"), native_fn("end", end));
+    object(proto)
+}
+
+fn install_stream_methods(proto: &mut JsObject) {
+    proto.set(String::from("on"), native_fn("on", stream_on));
+    proto.set(String::from("once"), native_fn("once", stream_on));
+    proto.set(String::from("emit"), native_fn("emit", stream_emit));
+    proto.set(String::from("listeners"), native_fn("listeners", stream_listeners));
+    proto.set(
+        String::from("removeListener"),
+        native_fn("removeListener", stream_remove_listener),
+    );
+    proto.set(String::from("unpipe"), native_fn("unpipe", stream_unpipe));
+}
+
+fn stream_on(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    vm.current_this.clone()
+}
+
+fn stream_emit(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Bool(false)
+}
+
+fn stream_listeners(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::new_array(Vec::new())
+}
+
+fn stream_remove_listener(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    vm.current_this.clone()
+}
+
+fn stream_unpipe(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    vm.current_this.clone()
 }
 
 pub fn poll_servers(vm: &mut Vm) -> usize {
@@ -307,7 +387,19 @@ fn handle_socket(vm: &mut Vm, server: JsValue, socket: u32) -> bool {
         return true;
     }
     vm.call_value(&handler, &[req, res.clone()], server);
+    drain_request_tasks(vm, &res);
     if vm.last_exception.is_some() {
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBNODE_DEBUG_HTTP").is_some() {
+            if let Some(exc) = vm.last_exception.as_ref() {
+                std::eprintln!(
+                    "[libnode-http] handler exception: {} message={} stack={}",
+                    exc.to_js_string(),
+                    exc.get_property("message").to_js_string(),
+                    exc.get_property("stack").to_js_string()
+                );
+            }
+        }
         send_simple_response(
             socket,
             500,
@@ -322,12 +414,32 @@ fn handle_socket(vm: &mut Vm, server: JsValue, socket: u32) -> bool {
     true
 }
 
+fn drain_request_tasks(vm: &mut Vm, res: &JsValue) {
+    for _ in 0..100 {
+        vm.drain_microtasks();
+        if res.get_property("__node_http_sent__").to_boolean() {
+            break;
+        }
+        if !vm.event_loop.has_pending_timers() {
+            break;
+        }
+        vm.tick(1);
+        if vm.last_exception.is_some() {
+            break;
+        }
+    }
+}
+
 fn read_http_request(socket: u32) -> Option<HttpRequest> {
     let mut socket = tcp_handle(socket, libuv::UvHandleKind::Tcp);
     let mut data = Vec::new();
     let mut buf = [0u8; 1024];
     for _ in 0..128 {
         let n = libuv::tcp_read(&mut socket, &mut buf);
+        if n == libuv::UV_EAGAIN {
+            anyos_std::process::sleep(1);
+            continue;
+        }
         if n <= 0 {
             break;
         }
@@ -432,6 +544,16 @@ fn get_header(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     vm.current_this
         .get_property(RESPONSE_HEADERS_KEY)
         .get_property(&name)
+}
+
+fn remove_header(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args
+        .first()
+        .map(|value| lower_ascii(&value.to_js_string()))
+        .unwrap_or_default();
+    let headers = vm.current_this.get_property(RESPONSE_HEADERS_KEY);
+    headers.delete_property(&name);
+    vm.current_this.clone()
 }
 
 fn write_head(vm: &mut Vm, args: &[JsValue]) -> JsValue {

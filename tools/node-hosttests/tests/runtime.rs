@@ -2,7 +2,8 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use libnode::{NodeOptions, NodeRuntime};
 
@@ -27,12 +28,51 @@ fn runtime_for(root: &std::path::Path) -> NodeRuntime {
     NodeRuntime::new(options)
 }
 
+fn fixture_project(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join(name)
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("node-hosttests should live under tools/node-hosttests")
+        .to_path_buf()
+}
+
+fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) {
+    fs::create_dir_all(to).expect("failed to create destination directory");
+    for entry in fs::read_dir(from).expect("failed to read source directory") {
+        let entry = entry.expect("failed to read source entry");
+        let source = entry.path();
+        let dest = to.join(entry.file_name());
+        if source.is_dir() {
+            copy_dir_recursive(&source, &dest);
+        } else {
+            fs::copy(&source, &dest).expect("failed to copy fixture file");
+        }
+    }
+}
+
 fn free_port() -> u16 {
     TcpListener::bind(("127.0.0.1", 0))
         .expect("failed to bind temp listener")
         .local_addr()
         .expect("failed to read temp listener addr")
         .port()
+}
+
+fn wait_for_runtime_io(runtime: &mut NodeRuntime) -> usize {
+    for _ in 0..100 {
+        let handled = runtime.run_event_loop_once();
+        if handled > 0 {
+            return handled;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    0
 }
 
 #[test]
@@ -281,9 +321,12 @@ fn http_server_handles_real_localhost_request() {
 
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("failed to connect server");
     stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("failed to set read timeout");
+    stream
         .write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("failed to write request");
-    runtime.run_event_loop_once();
+    assert!(wait_for_runtime_io(&mut runtime) > 0, "server did not accept request");
 
     let mut response = String::new();
     stream
@@ -291,6 +334,125 @@ fn http_server_handles_real_localhost_request() {
         .expect("failed to read response");
     assert!(response.contains("HTTP/1.1 200 OK"), "{response}");
     assert!(response.ends_with("GET:/hello"), "{response}");
+}
+
+#[test]
+#[ignore = "downloads Express and transitive packages from the npm registry"]
+fn npm_installs_official_express_and_node_loads_package() {
+    let root = temp_project("official-express");
+    copy_dir_recursive(&fixture_project("express-app"), &root);
+
+    let npm_manifest = repo_root().join("bin/npm/Cargo.toml");
+    let output = Command::new("cargo")
+        .arg("run")
+        .arg("-q")
+        .arg("--manifest-path")
+        .arg(npm_manifest)
+        .arg("--features")
+        .arg("host")
+        .arg("--")
+        .arg("install")
+        .current_dir(&root)
+        .output()
+        .expect("failed to run anyOS npm");
+    assert!(
+        output.status.success(),
+        "npm process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let npm_stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        npm_stdout.contains("installed packages:"),
+        "unexpected npm output: {npm_stdout}"
+    );
+    assert!(
+        root.join("node_modules").join("express").join("package.json").exists(),
+        "official express package was not installed"
+    );
+
+    let main = root.join("src").join("server.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let express = require('express'); \
+        let packageInfo = require('express/package.json'); \
+        typeof express + ':' + packageInfo.name + ':' + packageInfo.version",
+    );
+    let exception = runtime
+        .engine()
+        .last_exception()
+        .map(|value| value.to_js_string())
+        .unwrap_or_else(|| String::from("<none>"));
+    assert_eq!(
+        value.to_js_string(),
+        "function:express:4.18.2",
+        "exception: {exception}"
+    );
+}
+
+#[test]
+#[ignore = "downloads Express and transitive packages from the npm registry"]
+fn npm_installs_official_express_and_serves_http_route() {
+    let root = temp_project("official-express-server");
+    copy_dir_recursive(&fixture_project("express-app"), &root);
+
+    let npm_manifest = repo_root().join("bin/npm/Cargo.toml");
+    let output = Command::new("cargo")
+        .arg("run")
+        .arg("-q")
+        .arg("--manifest-path")
+        .arg(npm_manifest)
+        .arg("--features")
+        .arg("host")
+        .arg("--")
+        .arg("install")
+        .current_dir(&root)
+        .output()
+        .expect("failed to run anyOS npm");
+    assert!(
+        output.status.success(),
+        "npm process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let port = free_port();
+    let main = root.join("src").join("server.js");
+    let mut runtime = runtime_for(&root);
+    runtime.run_script(
+        &main.to_string_lossy(),
+        &format!(
+            "\
+            const server = require('./server'); \
+            const app = server.createApp(); \
+            const httpServer = app.listen({});",
+            port
+        ),
+    );
+    let exception = runtime
+        .engine()
+        .last_exception()
+        .map(|value| value.to_js_string())
+        .unwrap_or_else(|| String::from("<none>"));
+    assert_eq!(exception, "<none>");
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("failed to connect server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("failed to set read timeout");
+    stream
+        .write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .expect("failed to write request");
+    assert!(wait_for_runtime_io(&mut runtime) > 0, "server did not accept request");
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("failed to read response");
+    assert!(response.contains("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.ends_with("hello express:GET:/hello"), "{response}");
 }
 
 #[test]

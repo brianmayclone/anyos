@@ -687,6 +687,7 @@ impl Vm {
     pub fn execute(&mut self, chunk: Chunk) -> JsValue {
         self.steps = 0;
         self.last_exception = None;
+        self.pending_exception = None;
         let chunk = Rc::new(chunk);
         let locals = Self::make_locals(&chunk);
         let global_this = self.global_this_value();
@@ -1005,10 +1006,6 @@ impl Vm {
                 if !self.handle_exception(exc) {
                     return JsValue::Undefined;
                 }
-                continue;
-            }
-            if let Some(exc) = self.last_exception.take() {
-                self.pending_exception = Some(exc);
                 continue;
             }
 
@@ -4824,12 +4821,12 @@ impl Vm {
             ));
         }
         // Only use try handlers that belong to the current run scope.
-        // Handlers with frame_depth <= run_target_depth belong to a parent
+        // Handlers with frame_depth < run_target_depth belong to a parent
         // call_value context and must not catch exceptions from this scope
         // (e.g. valueOf/toString called during ToPrimitive should not be
         // caught by an outer try/catch).
         if let Some(handler) = self.try_handlers.last() {
-            if handler.frame_depth > self.run_target_depth {
+            if handler.frame_depth >= self.run_target_depth {
                 #[cfg(feature = "host")]
                 {
                     if std::env::var_os("LIBJS_DEBUG_CAUGHT").is_some() {
@@ -4847,6 +4844,7 @@ impl Vm {
                 }
                 let handler = self.try_handlers.pop().unwrap();
                 self.close_iterators_in_stack_range(handler.stack_depth);
+                self.last_exception = None;
                 self.stack.truncate(handler.stack_depth);
                 while self.frames.len() > handler.frame_depth {
                     self.frames.pop();

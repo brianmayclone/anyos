@@ -16,6 +16,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(feature = "host")]
+extern crate std;
 
 use alloc::string::String;
 #[cfg(not(feature = "host"))]
@@ -115,28 +117,51 @@ mod host {
         inflate(data).or_else(|| inflate_raw(data))
     }
 
-    pub struct TarReader;
+    pub struct TarReader {
+        inner: libzip::tar::TarReader,
+    }
     impl TarReader {
-        pub fn open(_path: &str) -> Option<TarReader> {
-            None
+        pub fn open(path: &str) -> Option<TarReader> {
+            let data = std::fs::read(path).ok()?;
+            libzip::tar::TarReader::parse(data).map(|inner| TarReader { inner })
         }
         pub fn entry_count(&self) -> u32 {
-            0
+            self.inner.entry_count() as u32
         }
-        pub fn entry_name(&self, _index: u32) -> String {
-            String::new()
+        pub fn entry_name(&self, index: u32) -> String {
+            self.inner
+                .entries
+                .get(index as usize)
+                .map(|entry| entry.name.clone())
+                .unwrap_or_default()
         }
-        pub fn entry_size(&self, _index: u32) -> u32 {
-            0
+        pub fn entry_size(&self, index: u32) -> u32 {
+            self.inner
+                .entries
+                .get(index as usize)
+                .map(|entry| entry.size.min(u32::MAX as u64) as u32)
+                .unwrap_or(0)
         }
-        pub fn entry_is_dir(&self, _index: u32) -> bool {
-            false
+        pub fn entry_is_dir(&self, index: u32) -> bool {
+            self.inner
+                .entries
+                .get(index as usize)
+                .map(|entry| entry.is_dir)
+                .unwrap_or(false)
         }
-        pub fn extract(&self, _index: u32) -> Option<alloc::vec::Vec<u8>> {
-            None
+        pub fn extract(&self, index: u32) -> Option<alloc::vec::Vec<u8>> {
+            self.inner.extract(index as usize)
         }
-        pub fn extract_to_file(&self, _index: u32, _path: &str) -> bool {
-            false
+        pub fn extract_to_file(&self, index: u32, path: &str) -> bool {
+            let Some(data) = self.extract(index) else {
+                return false;
+            };
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                if std::fs::create_dir_all(parent).is_err() {
+                    return false;
+                }
+            }
+            std::fs::write(path, data).is_ok()
         }
     }
 

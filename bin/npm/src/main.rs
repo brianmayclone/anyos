@@ -2,7 +2,9 @@
 #![cfg_attr(not(feature = "host"), no_main)]
 
 use alloc::string::String;
-use libnode::npm::{PackageManifest, PackageSpec, RegistryClient, RegistryConfig};
+use libnode::npm::{
+    PackageInstaller, PackageManifest, PackageSpec, RegistryClient, RegistryConfig,
+};
 
 #[cfg(feature = "host")]
 extern crate alloc;
@@ -20,11 +22,11 @@ fn npm_main() {
     match args.pos(0).unwrap_or("") {
         "init" => npm_init(),
         "install" | "i" => {
-            let Some(package) = args.pos(1) else {
-                anyos_std::println!("npm: install requires a package name");
-                return;
-            };
-            npm_install(package, registry);
+            if let Some(package) = args.pos(1) {
+                npm_install(package, registry);
+            } else {
+                npm_install_manifest(registry);
+            }
         }
         "info" | "view" => {
             let Some(package) = args.pos(1) else {
@@ -70,7 +72,7 @@ fn npm_install(package: &str, registry: RegistryConfig) {
     let spec = PackageSpec::parse(package);
     let data = anyos_std::fs::read_to_string("package.json").ok();
     let mut manifest = PackageManifest::parse_or_new(data);
-    let client = RegistryClient::new(registry);
+    let client = RegistryClient::new(registry.clone());
     let resolved = client.fetch_metadata(&spec.name).and_then(|metadata| {
         let version = metadata.resolve_version(&spec.version)?;
         let tarball = metadata.tarball_url(&version);
@@ -94,11 +96,29 @@ fn npm_install(package: &str, registry: RegistryConfig) {
         spec.clone()
     };
     manifest.add_dependency(&install_spec);
-    if anyos_std::fs::write_bytes("package.json", manifest.as_str().as_bytes()).is_ok() {
-        anyos_std::println!("added {}@{}", install_spec.name, install_spec.version);
-        anyos_std::println!("registry: {}", client.package_metadata_url(&spec.name));
-    } else {
+    if anyos_std::fs::write_bytes("package.json", manifest.as_str().as_bytes()).is_err() {
         anyos_std::println!("npm: could not update package.json");
+        return;
+    }
+
+    let installer = PackageInstaller::new(registry);
+    match installer.install_package_result(".", &install_spec) {
+        Ok(report) => {
+            anyos_std::println!("added {}@{}", install_spec.name, install_spec.version);
+            anyos_std::println!("installed packages: {}", report.installed.len());
+            anyos_std::println!("registry: {}", client.package_metadata_url(&spec.name));
+        }
+        Err(err) => anyos_std::println!("npm: {}", err),
+    }
+}
+
+fn npm_install_manifest(registry: RegistryConfig) {
+    let installer = PackageInstaller::new(registry);
+    match installer.install_manifest_dependencies_result(".") {
+        Ok(report) => {
+            anyos_std::println!("installed packages: {}", report.installed.len());
+        }
+        Err(err) => anyos_std::println!("npm: {}", err),
     }
 }
 
@@ -106,7 +126,7 @@ fn usage() {
     anyos_std::println!("npm {}", libnode::VERSION);
     anyos_std::println!("Usage:");
     anyos_std::println!("  npm init");
-    anyos_std::println!("  npm install <package[@version]> [-r registry]");
+    anyos_std::println!("  npm install [package[@version]] [-r registry]");
     anyos_std::println!("  npm info <package>");
     anyos_std::println!("  npm search <query>");
 }
