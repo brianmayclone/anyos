@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use libjs::value::{JsObject, JsValue};
 use libjs::vm::{native_fn, Vm};
 
+use super::buffer;
 use super::util::object;
 
 const SERVER_LISTENER_KEY: &str = "__node_http_listener__";
@@ -76,7 +77,10 @@ fn install_stream_methods(proto: &mut JsObject) {
     proto.set(String::from("on"), native_fn("on", stream_on));
     proto.set(String::from("once"), native_fn("once", stream_on));
     proto.set(String::from("emit"), native_fn("emit", stream_emit));
-    proto.set(String::from("listeners"), native_fn("listeners", stream_listeners));
+    proto.set(
+        String::from("listeners"),
+        native_fn("listeners", stream_listeners),
+    );
     proto.set(
         String::from("removeListener"),
         native_fn("removeListener", stream_remove_listener),
@@ -577,10 +581,7 @@ fn write_head(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 fn write(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let chunk = args
-        .first()
-        .map(|value| value.to_js_string())
-        .unwrap_or_default();
+    let chunk = args.first().map(http_body_text).unwrap_or_default();
     let body = vm.current_this.get_property("__node_http_body__");
     let mut text = body.to_js_string();
     if matches!(body, JsValue::Undefined) {
@@ -607,7 +608,7 @@ fn response_end_with_value(res: JsValue, body_value: JsValue) {
         body.clear();
     }
     if !matches!(body_value, JsValue::Undefined) {
-        body.push_str(&body_value.to_js_string());
+        body.push_str(&http_body_text(&body_value));
     }
     let status = res.get_property("statusCode").to_number() as u16;
     let socket = res.get_property(RESPONSE_SOCKET_KEY).to_number() as u32;
@@ -636,6 +637,13 @@ fn response_end_with_value(res: JsValue, body_value: JsValue) {
     libuv::tcp_write(&mut socket, response.as_bytes());
     libuv::tcp_close(&mut socket);
     res.set_property(String::from("__node_http_sent__"), JsValue::Bool(true));
+}
+
+fn http_body_text(value: &JsValue) -> String {
+    if buffer::is_buffer_like(value) {
+        return String::from_utf8_lossy(&buffer::buffer_to_bytes(value)).into_owned();
+    }
+    value.to_js_string()
 }
 
 fn copy_headers(from: &JsValue, to: &JsValue) {
