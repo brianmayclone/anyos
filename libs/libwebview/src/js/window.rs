@@ -413,9 +413,10 @@ pub fn make_window(
 
     // Performance (W3C Performance Timeline §4).
     let perf = JsValue::new_object();
+    let navigation_entry = make_navigation_timing_entry(viewport_w, viewport_h);
     perf.set_hidden_property(
         String::from("__surfPerformanceEntries"),
-        JsValue::new_array(Vec::new()),
+        JsValue::new_array(vec![navigation_entry]),
     );
     perf.set_property(String::from("now"), native_fn("now", win_performance_now));
     perf.set_property(
@@ -448,6 +449,14 @@ pub fn make_window(
         timing.set_property(String::from(key), JsValue::Number(1.0));
     }
     perf.set_property(String::from("timing"), timing);
+    let navigation = JsValue::new_object();
+    navigation.set_property(String::from("TYPE_NAVIGATE"), JsValue::Number(0.0));
+    navigation.set_property(String::from("TYPE_RELOAD"), JsValue::Number(1.0));
+    navigation.set_property(String::from("TYPE_BACK_FORWARD"), JsValue::Number(2.0));
+    navigation.set_property(String::from("TYPE_RESERVED"), JsValue::Number(255.0));
+    navigation.set_property(String::from("type"), JsValue::Number(0.0));
+    navigation.set_property(String::from("redirectCount"), JsValue::Number(0.0));
+    perf.set_property(String::from("navigation"), navigation);
     perf.set_property(
         String::from("getEntriesByName"),
         native_fn("getEntriesByName", win_performance_get_entries_by_name),
@@ -2928,6 +2937,66 @@ fn performance_entry(name: String, entry_type: &str, start_time: f64, duration: 
     );
     entry.set_property(String::from("startTime"), JsValue::Number(start_time));
     entry.set_property(String::from("duration"), JsValue::Number(duration.max(0.0)));
+    entry
+}
+
+fn make_navigation_timing_entry(viewport_w: u32, viewport_h: u32) -> JsValue {
+    let entry = performance_entry(
+        String::from("document"),
+        "navigation",
+        0.0,
+        anyos_std::sys::uptime_ms() as f64,
+    );
+    entry.set_property(
+        String::from("initiatorType"),
+        JsValue::String(String::new()),
+    );
+    entry.set_property(
+        String::from("type"),
+        JsValue::String(String::from("navigate")),
+    );
+    entry.set_property(String::from("redirectCount"), JsValue::Number(0.0));
+    entry.set_property(String::from("workerStart"), JsValue::Number(0.0));
+    entry.set_property(String::from("fetchStart"), JsValue::Number(0.0));
+    entry.set_property(String::from("domainLookupStart"), JsValue::Number(0.0));
+    entry.set_property(String::from("domainLookupEnd"), JsValue::Number(0.0));
+    entry.set_property(String::from("connectStart"), JsValue::Number(0.0));
+    entry.set_property(String::from("connectEnd"), JsValue::Number(0.0));
+    entry.set_property(String::from("secureConnectionStart"), JsValue::Number(0.0));
+    entry.set_property(String::from("requestStart"), JsValue::Number(0.0));
+    entry.set_property(String::from("responseStart"), JsValue::Number(1.0));
+    entry.set_property(String::from("responseEnd"), JsValue::Number(1.0));
+    entry.set_property(String::from("domInteractive"), JsValue::Number(1.0));
+    entry.set_property(
+        String::from("domContentLoadedEventStart"),
+        JsValue::Number(1.0),
+    );
+    entry.set_property(
+        String::from("domContentLoadedEventEnd"),
+        JsValue::Number(1.0),
+    );
+    entry.set_property(String::from("domComplete"), JsValue::Number(1.0));
+    entry.set_property(String::from("loadEventStart"), JsValue::Number(1.0));
+    entry.set_property(String::from("loadEventEnd"), JsValue::Number(1.0));
+    entry.set_property(String::from("transferSize"), JsValue::Number(0.0));
+    entry.set_property(String::from("encodedBodySize"), JsValue::Number(0.0));
+    entry.set_property(String::from("decodedBodySize"), JsValue::Number(0.0));
+    entry.set_property(
+        String::from("nextHopProtocol"),
+        JsValue::String(String::from("h2")),
+    );
+    entry.set_property(
+        String::from("renderBlockingStatus"),
+        JsValue::String(String::from("blocking")),
+    );
+    entry.set_property(
+        String::from("__viewportWidth"),
+        JsValue::Number(viewport_w as f64),
+    );
+    entry.set_property(
+        String::from("__viewportHeight"),
+        JsValue::Number(viewport_h as f64),
+    );
     entry
 }
 
