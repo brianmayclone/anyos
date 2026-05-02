@@ -36,6 +36,16 @@ pub fn module() -> JsValue {
     object(module)
 }
 
+pub fn make_passthrough_stream() -> JsValue {
+    let mut stream = JsObject::new();
+    stream.set(String::from("readable"), JsValue::Bool(true));
+    stream.set(String::from("writable"), JsValue::Bool(true));
+    install_stream_methods(&mut stream);
+    let stream = object(stream);
+    ensure_stream_state(&stream);
+    stream
+}
+
 fn stream_constructor(name: &str) -> JsValue {
     let ctor = native_ctor_fn(name, stream_init);
     if let JsValue::Function(func) = &ctor {

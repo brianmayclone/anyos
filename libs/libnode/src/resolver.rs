@@ -210,6 +210,7 @@ pub fn core_module_canonical_name(specifier: &str) -> Option<&'static str> {
         "assert/strict" | "node:assert/strict" => Some("assert/strict"),
         "buffer" | "node:buffer" => Some("buffer"),
         "crypto" | "node:crypto" => Some("crypto"),
+        "dns" | "node:dns" => Some("dns"),
         "events" | "node:events" => Some("events"),
         "fs" | "node:fs" => Some("fs"),
         "http" | "node:http" => Some("http"),
@@ -223,6 +224,7 @@ pub fn core_module_canonical_name(specifier: &str) -> Option<&'static str> {
         "timers" | "node:timers" => Some("timers"),
         "util" | "node:util" => Some("util"),
         "url" | "node:url" => Some("url"),
+        "zlib" | "node:zlib" => Some("zlib"),
         "node:uv" => Some("node:uv"),
         _ => None,
     }

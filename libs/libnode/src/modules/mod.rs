@@ -2,6 +2,7 @@ pub mod assert;
 pub mod buffer;
 pub mod commonjs;
 pub mod crypto;
+pub mod dns;
 pub mod events;
 pub mod fs;
 pub mod http;
@@ -16,6 +17,7 @@ pub mod timers;
 pub mod url;
 pub mod util;
 pub mod uv;
+pub mod zlib;
 
 pub use assert::{module as assert_module, strict_module as assert_strict_module};
 pub use buffer::module as buffer_module;
@@ -23,6 +25,7 @@ pub use commonjs::{
     module_object as commonjs_module, require as node_require, resolve as node_require_resolve,
 };
 pub use crypto::module as crypto_module;
+pub use dns::module as dns_module;
 pub use events::module as events_module;
 pub use fs::module as fs_module;
 pub use http::module as http_module;
@@ -37,3 +40,4 @@ pub use timers::module as timers_module;
 pub use url::module as url_module;
 pub use util::module as util_module;
 pub use uv::module as uv_module;
+pub use zlib::module as zlib_module;

@@ -162,6 +162,9 @@ impl NodeRuntime {
         let crypto = modules::crypto_module();
         self.engine.register_module_object("crypto", crypto.clone());
         self.engine.register_module_object("node:crypto", crypto);
+        let dns = modules::dns_module();
+        self.engine.register_module_object("dns", dns.clone());
+        self.engine.register_module_object("node:dns", dns);
         let events = modules::events_module();
         self.engine.register_module_object("events", events.clone());
         self.engine.register_module_object("node:events", events);
@@ -171,6 +174,9 @@ impl NodeRuntime {
         let stream = modules::stream_module();
         self.engine.register_module_object("stream", stream.clone());
         self.engine.register_module_object("node:stream", stream);
+        let zlib = modules::zlib_module();
+        self.engine.register_module_object("zlib", zlib.clone());
+        self.engine.register_module_object("node:zlib", zlib);
         let timers = modules::timers_module();
         self.engine.register_module_object("timers", timers.clone());
         self.engine.register_module_object("node:timers", timers);
