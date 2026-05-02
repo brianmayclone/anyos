@@ -751,7 +751,7 @@ fn escape_js(value: &str) -> String {
 
 fn ensure_startup_main_js(project_root: &str, storyboard_path: &str) -> Result<bool, &'static str> {
     let main_path = format!("{}/src/main.js", project_root);
-    if path::exists(&main_path) {
+    if path::exists(&main_path) && !is_generated_startup_main_js(&main_path) {
         return Ok(false);
     }
     let doc = load_storyboard(storyboard_path).ok_or("Could not load startup storyboard")?;
@@ -774,6 +774,15 @@ fn ensure_startup_main_js(project_root: &str, storyboard_path: &str) -> Result<b
     anyos_std::fs::write_bytes(&main_path, code.as_bytes())
         .map_err(|_| "Could not write src/main.js")?;
     Ok(true)
+}
+
+fn is_generated_startup_main_js(main_path: &str) -> bool {
+    let Ok(data) = anyos_std::fs::read_to_string(main_path) else {
+        return false;
+    };
+    data.contains("STARTUP_STORYBOARD")
+        && data.contains("require('@anyos/anyui')")
+        && (data.contains("Generated form") || data.contains("MainFormModule"))
 }
 
 fn startup_main_rs(
@@ -806,7 +815,7 @@ fn startup_main_js(
     height: u32,
 ) -> String {
     format!(
-        "const ui = require('@anyos/anyui');\nconst {}Module = require('./ui/{}');\nconst {} = resolveFormConstructor({}Module, \"{}\");\n\nconst STARTUP_STORYBOARD = \"{}\";\n\nfunction resolveFormConstructor(module, formName) {{\n  let candidate = module && (module[formName] || module.default || module);\n  for (let i = 0; i < 4 && candidate && typeof candidate !== 'function'; i++) {{\n    candidate = candidate[formName] || candidate.default || candidate;\n  }}\n  if (typeof candidate !== 'function') {{\n    throw new TypeError(\"Generated form '\" + formName + \"' did not export a constructor\");\n  }}\n  return candidate;\n}}\n\nfunction main() {{\n  const form = new {}();\n  const root = form.root();\n  if (!root) {{\n    throw new Error(\"Generated form '{}' did not return a root view\");\n  }}\n  root.setDock(ui.DOCK_FILL);\n\n  const win = new ui.Window(\"{}\", -1, -1, {}, {});\n  win.add(root);\n\n  void STARTUP_STORYBOARD;\n  ui.run();\n}}\n\nmain();\n",
+        "const ui = require('@anyos/anyui');\nconst {}Module = require('./ui/{}');\nconst {} = resolveFormConstructor({}Module, \"{}\");\n\nconst STARTUP_STORYBOARD = \"{}\";\n\nfunction wrapUiBuilder(uiBuilder) {{\n  function GeneratedAnyCodeForm() {{\n    this.ui = uiBuilder.build();\n  }}\n  GeneratedAnyCodeForm.prototype.root = function() {{\n    return this.ui && this.ui.root;\n  }};\n  return GeneratedAnyCodeForm;\n}}\n\nfunction asFormConstructor(candidate) {{\n  if (candidate && typeof candidate.build === 'function') {{\n    return wrapUiBuilder(candidate);\n  }}\n  if (typeof candidate === 'function') {{\n    return candidate;\n  }}\n  return null;\n}}\n\nfunction resolveFormConstructor(module, formName) {{\n  let candidate = module && (module[formName] || module.default || module);\n  for (let i = 0; i < 4 && candidate; i++) {{\n    const direct = asFormConstructor(candidate);\n    if (direct) {{\n      return direct;\n    }}\n    const uiBuilder = candidate[formName + 'Ui'] || candidate.default;\n    const fromUiBuilder = asFormConstructor(uiBuilder);\n    if (fromUiBuilder) {{\n      return fromUiBuilder;\n    }}\n    const next = candidate[formName] || candidate.default;\n    if (!next || next === candidate) {{\n      break;\n    }}\n    candidate = next;\n  }}\n  throw new TypeError(\"Generated form '\" + formName + \"' did not export a constructor\");\n}}\n\nfunction main() {{\n  const form = new {}();\n  const root = form.root();\n  if (!root) {{\n    throw new Error(\"Generated form '{}' did not return a root view\");\n  }}\n  root.setDock(ui.DOCK_FILL);\n\n  const win = new ui.Window(\"{}\", -1, -1, {}, {});\n  win.add(root);\n\n  void STARTUP_STORYBOARD;\n  ui.run();\n}}\n\nmain();\n",
         form_name,
         escape_js(module_name),
         form_name,

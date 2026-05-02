@@ -9,6 +9,7 @@ host = ["anyos_std/host", "libnode/host"]
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 libnode = { path = "../../libs/libnode" }
+libjs = { path = "../../libs/libjs" }
 
 [profile.dev]
 panic = "abort"

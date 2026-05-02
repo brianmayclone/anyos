@@ -272,6 +272,10 @@ fn npm_run_script(script: &str, extra_args: &[String]) -> u32 {
         tokens.push(arg.clone());
     }
 
+    if is_node_command(&tokens[0]) {
+        return npm_run_node_script(&tokens[1..]);
+    }
+
     let command = resolve_script_command(&tokens[0]);
     let argv = script_argv_string(&command, &tokens[1..]);
     let pipe_id = anyos_std::ipc::pipe_create("npm:run");
@@ -286,6 +290,116 @@ fn npm_run_script(script: &str, extra_args: &[String]) -> u32 {
         return 1;
     }
 
+    let mut buf = [0u8; 1024];
+    loop {
+        let n = anyos_std::ipc::pipe_read(pipe_id, &mut buf);
+        if n != 0 && n != u32::MAX {
+            if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
+                anyos_std::print!("{}", text);
+            }
+        }
+        let status = anyos_std::process::try_waitpid(tid);
+        if status != anyos_std::process::STILL_RUNNING && status != u32::MAX {
+            anyos_std::ipc::pipe_close(pipe_id);
+            return status;
+        }
+        anyos_std::process::yield_cpu();
+    }
+}
+
+fn npm_run_node_script(args: &[String]) -> u32 {
+    if args.is_empty() {
+        anyos_std::println!("npm: node script is missing");
+        return 1;
+    }
+    if args[0].starts_with('-') {
+        return npm_run_external_script_command("node", args);
+    }
+
+    let script = &args[0];
+    let mut options = libnode::NodeOptions::default();
+    options.cwd = current_dir();
+    options.argv = {
+        let mut argv = alloc::vec::Vec::new();
+        argv.push(String::from("node"));
+        argv.push(script.clone());
+        argv.extend(args.iter().skip(1).cloned());
+        argv
+    };
+
+    let mut runtime = libnode::NodeRuntime::new(options);
+    match runtime.run_file(script) {
+        Ok(_) => {
+            runtime.run_event_loop();
+            flush_node_console(&mut runtime);
+            if let Some(exception) = runtime.engine().last_exception() {
+                anyos_std::println!("{}", format_node_exception(exception));
+                1
+            } else {
+                0
+            }
+        }
+        Err(err) => {
+            anyos_std::println!("node: {}", err);
+            1
+        }
+    }
+}
+
+fn npm_run_external_script_command(command: &str, args: &[String]) -> u32 {
+    let command = resolve_script_command(command);
+    let argv = script_argv_string(&command, args);
+    let pipe_id = anyos_std::ipc::pipe_create("npm:run");
+    if pipe_id == 0 {
+        anyos_std::println!("npm: could not create output pipe");
+        return 1;
+    }
+    let tid = anyos_std::process::spawn_piped(&command, &argv, pipe_id);
+    if tid == u32::MAX {
+        anyos_std::ipc::pipe_close(pipe_id);
+        anyos_std::println!("npm: could not run script command: {}", command);
+        return 1;
+    }
+    pump_process_output(pipe_id, tid)
+}
+
+fn is_node_command(command: &str) -> bool {
+    matches!(basename(command).as_str(), "node" | "node.elf")
+}
+
+fn flush_node_console(runtime: &mut libnode::NodeRuntime) {
+    for msg in runtime.engine().console_output() {
+        anyos_std::println!("{}", msg);
+    }
+    runtime.engine().clear_console();
+}
+
+fn format_node_exception(exception: &libjs::JsValue) -> String {
+    let stack = exception.get_property("stack").to_js_string();
+    if !stack.is_empty() && stack != "undefined" {
+        return stack;
+    }
+    let name = exception.get_property("name").to_js_string();
+    let message = exception.get_property("message").to_js_string();
+    match (name.as_str(), message.as_str()) {
+        ("undefined", "undefined") | ("", "") => exception.to_js_string(),
+        ("undefined", message) | ("", message) => String::from(message),
+        (name, "undefined") | (name, "") => String::from(name),
+        (name, message) => alloc::format!("{}: {}", name, message),
+    }
+}
+
+fn current_dir() -> String {
+    let mut buf = [0u8; 512];
+    let len = anyos_std::fs::getcwd(&mut buf);
+    if len == u32::MAX {
+        return String::from(".");
+    }
+    let len = (len as usize).min(buf.len());
+    String::from(core::str::from_utf8(&buf[..len]).unwrap_or("."))
+}
+
+fn pump_process_output(pipe_id: u32, tid: u32) -> u32 {
     let mut buf = [0u8; 1024];
     loop {
         let n = anyos_std::ipc::pipe_read(pipe_id, &mut buf);

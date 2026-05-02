@@ -1590,6 +1590,7 @@ name = "npm"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libjs",
  "libnode",
 ]
 

@@ -539,13 +539,43 @@ const STARTUP_STORYBOARD = "{}";
 
 function resolveFormConstructor(module, formName) {{
   let candidate = module && (module[formName] || module.default || module);
-  for (let i = 0; i < 4 && candidate && typeof candidate !== 'function'; i++) {{
-    candidate = candidate[formName] || candidate.default || candidate;
+  for (let i = 0; i < 4 && candidate; i++) {{
+    const direct = asFormConstructor(candidate);
+    if (direct) {{
+      return direct;
+    }}
+    const uiBuilder = candidate[formName + 'Ui'] || candidate.default;
+    const fromUiBuilder = asFormConstructor(uiBuilder);
+    if (fromUiBuilder) {{
+      return fromUiBuilder;
+    }}
+    const next = candidate[formName] || candidate.default;
+    if (!next || next === candidate) {{
+      break;
+    }}
+    candidate = next;
   }}
-  if (typeof candidate !== 'function') {{
-    throw new TypeError("Generated form '" + formName + "' did not export a constructor");
+  throw new TypeError("Generated form '" + formName + "' did not export a constructor");
+}}
+
+function asFormConstructor(candidate) {{
+  if (candidate && typeof candidate.build === 'function') {{
+    return wrapUiBuilder(candidate);
   }}
-  return candidate;
+  if (typeof candidate === 'function') {{
+    return candidate;
+  }}
+  return null;
+}}
+
+function wrapUiBuilder(uiBuilder) {{
+  function GeneratedAnyCodeForm() {{
+    this.ui = uiBuilder.build();
+  }}
+  GeneratedAnyCodeForm.prototype.root = function() {{
+    return this.ui && this.ui.root;
+  }};
+  return GeneratedAnyCodeForm;
 }}
 
 function main() {{
@@ -577,6 +607,14 @@ main();
         "generated anyCode Node UI app failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+
+    let npm_output = run_npm(&["start"], &root);
+    assert!(
+        npm_output.status.success(),
+        "generated anyCode Node UI app failed through npm start\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&npm_output.stdout),
+        String::from_utf8_lossy(&npm_output.stderr)
     );
 }
 
@@ -613,13 +651,43 @@ const MainForm = resolveFormConstructor(MainFormModule, "MainForm");
 
 function resolveFormConstructor(module, formName) {
   let candidate = module && (module[formName] || module.default || module);
-  for (let i = 0; i < 4 && candidate && typeof candidate !== 'function'; i++) {
-    candidate = candidate[formName] || candidate.default || candidate;
+  for (let i = 0; i < 4 && candidate; i++) {
+    const direct = asFormConstructor(candidate);
+    if (direct) {
+      return direct;
+    }
+    const uiBuilder = candidate[formName + 'Ui'] || candidate.default;
+    const fromUiBuilder = asFormConstructor(uiBuilder);
+    if (fromUiBuilder) {
+      return fromUiBuilder;
+    }
+    const next = candidate[formName] || candidate.default;
+    if (!next || next === candidate) {
+      break;
+    }
+    candidate = next;
   }
-  if (typeof candidate !== 'function') {
-    throw new TypeError("Generated form '" + formName + "' did not export a constructor");
+  throw new TypeError("Generated form '" + formName + "' did not export a constructor");
+}
+
+function asFormConstructor(candidate) {
+  if (candidate && typeof candidate.build === 'function') {
+    return wrapUiBuilder(candidate);
   }
-  return candidate;
+  if (typeof candidate === 'function') {
+    return candidate;
+  }
+  return null;
+}
+
+function wrapUiBuilder(uiBuilder) {
+  function GeneratedAnyCodeForm() {
+    this.ui = uiBuilder.build();
+  }
+  GeneratedAnyCodeForm.prototype.root = function() {
+    return this.ui && this.ui.root;
+  };
+  return GeneratedAnyCodeForm;
 }
 
 const form = new MainForm();
@@ -633,6 +701,90 @@ root.setDock(ui.DOCK_FILL);
     assert!(
         output.status.success(),
         "nested CommonJS form wrapper should be accepted\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn anycode_startup_accepts_designer_ui_builder_export() {
+    let root = temp_project("anycode-designer-builder-export");
+    let form_dir = root.join("src").join("ui").join("main_form");
+    fs::create_dir_all(&form_dir).expect("failed to create form module");
+    fs::write(
+        form_dir.join("index.js"),
+        r#"const ui = require('@anyos/anyui');
+
+class MainFormUi {
+  static build() {
+    const root = new ui.View();
+    root.setSize(640, 420);
+    return { root: root };
+  }
+}
+
+module.exports = { MainFormUi: MainFormUi };
+"#,
+    )
+    .expect("failed to write designer-only form module");
+    fs::write(
+        root.join("src").join("main.js"),
+        r#"const ui = require('@anyos/anyui');
+const MainFormModule = require('./ui/main_form');
+const MainForm = resolveFormConstructor(MainFormModule, "MainForm");
+
+function resolveFormConstructor(module, formName) {
+  let candidate = module && (module[formName] || module.default || module);
+  for (let i = 0; i < 4 && candidate; i++) {
+    const direct = asFormConstructor(candidate);
+    if (direct) {
+      return direct;
+    }
+    const uiBuilder = candidate[formName + 'Ui'] || candidate.default;
+    const fromUiBuilder = asFormConstructor(uiBuilder);
+    if (fromUiBuilder) {
+      return fromUiBuilder;
+    }
+    const next = candidate[formName] || candidate.default;
+    if (!next || next === candidate) {
+      break;
+    }
+    candidate = next;
+  }
+  throw new TypeError("Generated form '" + formName + "' did not export a constructor");
+}
+
+function asFormConstructor(candidate) {
+  if (candidate && typeof candidate.build === 'function') {
+    return wrapUiBuilder(candidate);
+  }
+  if (typeof candidate === 'function') {
+    return candidate;
+  }
+  return null;
+}
+
+function wrapUiBuilder(uiBuilder) {
+  function GeneratedAnyCodeForm() {
+    this.ui = uiBuilder.build();
+  }
+  GeneratedAnyCodeForm.prototype.root = function() {
+    return this.ui && this.ui.root;
+  };
+  return GeneratedAnyCodeForm;
+}
+
+const form = new MainForm();
+const root = form.root();
+root.setDock(ui.DOCK_FILL);
+"#,
+    )
+    .expect("failed to write startup");
+
+    let output = run_node(&[root.join("src/main.js").to_str().unwrap()], &root);
+    assert!(
+        output.status.success(),
+        "designer Ui builder export should be accepted\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
