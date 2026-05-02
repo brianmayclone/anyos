@@ -375,6 +375,38 @@ mod tests {
     }
 
     #[test]
+    fn promise_chain_resumes_transpiled_generator_with_resolved_value() {
+        let mut engine = JsEngine::new();
+        engine.eval(
+            "var seen = 'pending'; \
+             function run(iterator) { \
+               function resume(value) { return iterator.next(value); } \
+               function fail(err) { return iterator.throw(err); } \
+               return new Promise(function(resolve, reject) { \
+                 function step(result) { \
+                   result.done ? resolve(result.value) : \
+                     Promise.resolve(result.value).then(resume, fail).then(step, reject); \
+                 } \
+                 step(iterator.next()); \
+               }); \
+             } \
+             var state = 0; \
+             var iterator = { \
+               next: function(value) { \
+                 if (state++ === 0) { \
+                   return { done: false, value: Promise.resolve({ headers: { get: function(){ return 'ok'; }, has: function(){ return false; } }, url: 'u' }) }; \
+                 } \
+                 return { done: true, value: value.headers.get('X-Test') }; \
+               }, \
+               throw: function(err) { throw err; } \
+             }; \
+             run(iterator).then(function(value) { seen = value; });",
+        );
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "ok");
+    }
+
+    #[test]
     fn contextual_of_can_be_assigned_as_identifier() {
         let mut engine = JsEngine::new();
         let result = engine.eval("of=function(a){return a+1}; of(4)");
