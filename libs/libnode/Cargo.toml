@@ -1,0 +1,15 @@
+[package]
+name = "libnode"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+host = ["anyos_std/host", "libjs/host", "libuv/host"]
+
+[dependencies]
+anyos_std = { path = "../stdlib" }
+libjs = { path = "../libjs" }
+libuv = { path = "../libuv" }
+
+[lib]
+name = "libnode"

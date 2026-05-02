@@ -4218,6 +4218,44 @@ mod tests {
     }
 
     #[test]
+    fn fetch_returns_internal_promise_when_page_wraps_promise_resolve() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        let script = r#"
+            Promise.resolve = function(value) { return value; };
+            var p = fetch('/gen_204');
+            globalThis.__fetch_thenable_ok = typeof p.then === 'function';
+            globalThis.__fetch_rejection_seen = false;
+            p.then(
+              function() { globalThis.__fetch_rejection_seen = 'unexpected'; },
+              function() { globalThis.__fetch_rejection_seen = true; }
+            );
+        "#;
+
+        runtime.execute_script_sources(&dom, "https://www.google.de/", &[script.to_string()]);
+
+        assert!(
+            runtime.engine.vm().last_exception.is_none(),
+            "unexpected JS exception: {:?}",
+            runtime.engine.vm().last_exception
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__fetch_thenable_ok"),
+                JsValue::Bool(true)
+            ),
+            "fetch did not return a thenable"
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__fetch_rejection_seen"),
+                JsValue::Bool(true)
+            ),
+            "fetch rejection callback did not run"
+        );
+    }
+
+    #[test]
     fn btoa_encodes_binary_string_code_units() {
         let dom = html::parse("<html><body></body></html>");
         let mut runtime = JsRuntime::new();

@@ -1,0 +1,19 @@
+[package]
+name = "node"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+host = ["anyos_std/host", "libnode/host"]
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+libnode = { path = "../../libs/libnode" }
+libjs = { path = "../../libs/libjs" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

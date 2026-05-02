@@ -175,6 +175,8 @@ file(GLOB_RECURSE ANYOS_SOURCE_MIRROR_DEPS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/libs/dynlink/*"
   "${CMAKE_SOURCE_DIR}/libs/libcorevm_client/*"
   "${CMAKE_SOURCE_DIR}/libs/libhttp_client/*"
+  "${CMAKE_SOURCE_DIR}/libs/libnode/*"
+  "${CMAKE_SOURCE_DIR}/libs/libuv/*"
   "${CMAKE_SOURCE_DIR}/libs/libzip_client/*"
   "${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md"
 )
@@ -226,6 +228,14 @@ add_custom_command(
     -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libhttp_client
     -P ${FILTERED_COPY_SCRIPT}
   COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libnode
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libnode
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libuv
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libuv
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
     -DSRC=${CMAKE_SOURCE_DIR}/libs/libzip_client
     -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libzip_client
     -P ${FILTERED_COPY_SCRIPT}
@@ -239,6 +249,8 @@ add_custom_command(
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/dynlink/target
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libcorevm_client/target
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libhttp_client/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libnode/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libuv/target
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libzip_client/target
   COMMAND ${CMAKE_COMMAND} -E remove -f
     ${ANYOS_SOURCE_MIRROR_ROOT}/bin/git/bearssl_stream.o
@@ -298,6 +310,8 @@ set(STDLIB_DEPS
 file(GLOB_RECURSE _WS_RS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/bin/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/apps/*/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/libs/libnode/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/libs/libuv/src/*.rs"
   "${CMAKE_SOURCE_DIR}/system/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/system/daemons/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/system/compositor/*/src/*.rs"
@@ -307,6 +321,8 @@ file(GLOB_RECURSE _WS_RS CONFIGURE_DEPENDS
 file(GLOB _WS_TOMLS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/bin/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/apps/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/libs/libnode/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/libs/libuv/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/system/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/system/daemons/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/system/compositor/*/Cargo.toml"
@@ -887,6 +903,8 @@ add_custom_command(
 set(RUST_USER_BINS ${RUST_USER_BINS} ${SYSROOT_DIR}/System/bin/gunzip)
 add_rust_user_program(banner)
 add_rust_user_program(jscript)
+add_rust_user_program(node)
+add_rust_user_program(npm)
 add_rust_user_program(jp2a)
 add_rust_user_program(ntp)
 add_rust_user_program(ntpd)

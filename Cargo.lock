@@ -1273,6 +1273,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "libnode"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libjs",
+ "libuv",
+]
+
+[[package]]
 name = "libphysics_client"
 version = "0.1.0"
 dependencies = [
@@ -1323,6 +1332,13 @@ version = "0.1.0"
 dependencies = [
  "rcgen",
  "rustls",
+]
+
+[[package]]
+name = "libuv"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
 ]
 
 [[package]]
@@ -1511,6 +1527,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "node"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libjs",
+ "libnode",
+]
+
+[[package]]
 name = "notepad"
 version = "0.1.0"
 dependencies = [
@@ -1535,6 +1560,14 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+]
+
+[[package]]
+name = "npm"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libnode",
 ]
 
 [[package]]

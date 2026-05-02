@@ -5,7 +5,7 @@ use alloc::string::String;
 use core::cell::RefCell;
 
 use libjs::value::JsObject;
-use libjs::vm::{native_ctor_fn, native_fn};
+use libjs::vm::{native_ctor_fn, native_fn, native_promise};
 use libjs::JsValue;
 use libjs::Vm;
 
@@ -15,7 +15,9 @@ use super::http;
 /// `fetch(url, options)` — performs HTTP request, returns a Promise-like result.
 ///
 /// Since our Promise implementation is synchronous, the request is made
-/// immediately via `__http_request` and wrapped in Promise.resolve/reject.
+/// immediately via `__http_request` and wrapped in an internal Promise. Do not
+/// call the page-visible `Promise.resolve` here: sites may wrap or replace it,
+/// while native browser APIs still return engine-created promises.
 pub fn native_fetch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let input = args.get(0).cloned().unwrap_or(JsValue::Undefined);
     let url = if let JsValue::Object(_) = &input {
@@ -77,34 +79,10 @@ pub fn native_fetch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         // Build Response object.
         let response = make_response(status, &status_text, &url, &resp_body);
 
-        // Wrap in Promise.resolve(response).
-        // Call the global Promise.resolve if available.
-        let promise_ctor = vm.get_global("Promise");
-        if let JsValue::Function(_) = &promise_ctor {
-            let resolve_fn = promise_ctor.get_property("resolve");
-            if let JsValue::Function(f) = resolve_fn {
-                let kind = f.borrow().kind.clone();
-                if let libjs::value::FnKind::Native(native) = kind {
-                    return native(vm, &[response]);
-                }
-            }
-        }
-        // Fallback: return response directly.
-        response
+        native_promise::promise_resolve(vm, &[response])
     } else {
-        // Wrap in Promise.reject(error).
-        let promise_ctor = vm.get_global("Promise");
-        if let JsValue::Function(_) = &promise_ctor {
-            let reject_fn = promise_ctor.get_property("reject");
-            if let JsValue::Function(f) = reject_fn {
-                let kind = f.borrow().kind.clone();
-                if let libjs::value::FnKind::Native(native) = kind {
-                    let err = JsValue::String(String::from("Network request failed"));
-                    return native(vm, &[err]);
-                }
-            }
-        }
-        JsValue::Undefined
+        let err = JsValue::String(String::from("Network request failed"));
+        native_promise::promise_reject(vm, &[err])
     }
 }
 
@@ -414,17 +392,7 @@ fn resp_clone(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn wrap_promise_resolve(vm: &mut Vm, val: JsValue) -> JsValue {
-    let promise_ctor = vm.get_global("Promise");
-    if let JsValue::Function(_) = &promise_ctor {
-        let resolve_fn = promise_ctor.get_property("resolve");
-        if let JsValue::Function(f) = resolve_fn {
-            let kind = f.borrow().kind.clone();
-            if let libjs::value::FnKind::Native(native) = kind {
-                return native(vm, &[val]);
-            }
-        }
-    }
-    val
+    native_promise::promise_resolve(vm, &[val])
 }
 
 /// `new Headers(init)` constructor.
