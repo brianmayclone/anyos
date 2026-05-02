@@ -8,6 +8,7 @@ use anyos_std::String;
 use anyos_std::Vec;
 use anyui::Widget;
 use libanyui_client as anyui;
+use libconf_schema::{default_int, manifest, RegistryScope, ServiceSchema};
 
 anyos_std::entry!(main);
 
@@ -18,6 +19,34 @@ const POLL_INTERVAL_MS: u32 = 500;
 const MAX_PREVIEW_LEN: usize = 120;
 const HISTORY_FILE: &str = ".clipboard_history.json";
 const NUM_COLS: usize = 3;
+
+// ── confd schema (per-user settings) ─────────────────────────────────────────
+
+const CLIPMAN_DIRS: &[&str] = &["config"];
+const CLIPMAN_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
+    &[default_int("config/retention_days", DEFAULT_RETENTION_DAYS as i64)];
+const CLIPMAN_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const CLIPMAN_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/clipman",
+    RegistryScope::User,
+    1,
+    CLIPMAN_DIRS,
+    CLIPMAN_DEFAULTS,
+    CLIPMAN_MIGRATIONS,
+);
+const CLIPMAN_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("clipman", &CLIPMAN_MANIFEST);
+
+fn load_retention_days() -> u32 {
+    match CLIPMAN_SCHEMA.read_i64("config/retention_days") {
+        Some(v) if v >= 0 => v as u32,
+        _ => DEFAULT_RETENTION_DAYS,
+    }
+}
+
+fn save_retention_days(days: u32) {
+    let _ = CLIPMAN_SCHEMA.write_i64("config/retention_days", days as i64);
+}
 
 // ── Data model ───────────────────────────────────────────────────────────────
 
@@ -117,23 +146,19 @@ fn get_history_path() -> String {
     anyos_std::format!("{}/{}", home, HISTORY_FILE)
 }
 
-fn load_history(path: &str) -> (Vec<ClipEntry>, u32) {
+fn load_history(path: &str) -> Vec<ClipEntry> {
     let data = match read_file(path) {
         Some(d) => d,
-        None => return (Vec::new(), DEFAULT_RETENTION_DAYS),
+        None => return Vec::new(),
     };
     let text = match core::str::from_utf8(&data) {
         Ok(s) => s,
-        Err(_) => return (Vec::new(), DEFAULT_RETENTION_DAYS),
+        Err(_) => return Vec::new(),
     };
     let json = match anyos_std::json::Value::parse(text) {
         Ok(v) => v,
-        Err(_) => return (Vec::new(), DEFAULT_RETENTION_DAYS),
+        Err(_) => return Vec::new(),
     };
-
-    let retention = json["retention_days"]
-        .as_i64()
-        .unwrap_or(DEFAULT_RETENTION_DAYS as i64) as u32;
 
     let mut entries = Vec::new();
     if let Some(arr) = json["entries"].as_array() {
@@ -149,15 +174,13 @@ fn load_history(path: &str) -> (Vec<ClipEntry>, u32) {
         }
     }
 
-    (entries, retention)
+    entries
 }
 
 fn save_history(s: &AppState) {
     use anyos_std::json::Value;
 
     let mut root = Value::new_object();
-    root.set("retention_days", (s.retention_days as i64).into());
-
     let mut arr = Value::new_array();
     for entry in &s.entries {
         let mut obj = Value::new_object();
@@ -433,6 +456,7 @@ fn apply_settings() {
         let text = core::str::from_utf8(&buf[..len as usize]).unwrap_or("3");
         let val = parse_num(text.as_bytes());
         s.retention_days = val;
+        save_retention_days(val);
         cleanup_old_entries(s);
         save_history(s);
         populate_grid(s);
@@ -442,9 +466,8 @@ fn apply_settings() {
 
 fn refresh() {
     let s = app();
-    let (entries, retention) = load_history(&s.history_path);
-    s.entries = entries;
-    s.retention_days = retention;
+    s.entries = load_history(&s.history_path);
+    s.retention_days = load_retention_days();
     cleanup_old_entries(s);
     populate_grid(s);
 }
@@ -639,10 +662,12 @@ fn main() {
         return;
     }
     i18n::init();
+    let _ = CLIPMAN_SCHEMA.register();
 
-    // Load history
+    // Load settings from confd, history from per-user JSON
     let history_path = get_history_path();
-    let (mut entries, retention_days) = load_history(&history_path);
+    let mut entries = load_history(&history_path);
+    let retention_days = load_retention_days();
 
     // Get current clipboard content as baseline and add to history if new
     let mut clip_buf = [0u8; 4096];
