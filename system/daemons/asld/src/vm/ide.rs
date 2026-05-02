@@ -23,12 +23,17 @@ const STATUS_DRDY: u8 = 0x40;
 enum IdeStorage {
     None,
     Memory(Vec<u8>),
-    File { fd: u32, sectors: u32 },
+    File {
+        fd: u32,
+        sectors: u32,
+        writable: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct IdeController {
     storage: IdeStorage,
+    slave_storage: IdeStorage,
     error: u8,
     sector_count: u8,
     lba_low: u8,
@@ -38,6 +43,7 @@ pub(super) struct IdeController {
     status: u8,
     data: Vec<u8>,
     data_offset: usize,
+    write_target: Option<WriteTarget>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -45,10 +51,18 @@ pub(super) struct IdeIoAction {
     pub read_value: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WriteTarget {
+    slave: bool,
+    lba: u32,
+    count: u32,
+}
+
 impl IdeController {
     pub(super) fn disabled() -> Self {
         Self {
             storage: IdeStorage::None,
+            slave_storage: IdeStorage::None,
             error: 0,
             sector_count: 0,
             lba_low: 0,
@@ -58,6 +72,7 @@ impl IdeController {
             status: 0,
             data: Vec::new(),
             data_offset: 0,
+            write_target: None,
         }
     }
 
@@ -70,33 +85,57 @@ impl IdeController {
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn open_read_only(path: &str) -> Result<Self, AsldError> {
-        let mut stat_buf = [0u32; 7];
-        if anyos_std::fs::stat(path, &mut stat_buf) != 0 || stat_buf[0] != 0 {
-            return Err(AsldError::InvalidState("SeaBIOS boot disk is missing"));
-        }
-        let size = stat_buf[1] as usize;
-        if size < SECTOR_SIZE {
-            return Err(AsldError::InvalidState("SeaBIOS boot disk is too small"));
-        }
-        let fd = anyos_std::fs::open(path, 0);
-        if fd == 0 || fd == u32::MAX {
-            return Err(AsldError::InvalidState("SeaBIOS boot disk is not readable"));
-        }
-
+    pub(super) fn open_asl_disks(base_path: &str, seed_path: &str) -> Result<Self, AsldError> {
+        let base = open_file_disk(base_path, true)
+            .map_err(|_| AsldError::InvalidState("SeaBIOS boot disk is missing"))?;
+        let seed = open_file_disk(seed_path, false).unwrap_or(IdeStorage::None);
         let mut controller = Self::disabled();
-        controller.storage = IdeStorage::File {
-            fd,
-            sectors: (size / SECTOR_SIZE) as u32,
-        };
+        controller.storage = base;
+        controller.slave_storage = seed;
         controller.status = STATUS_DRDY;
         Ok(controller)
     }
 
     #[cfg(not(target_os = "linux"))]
+    pub(super) fn open_read_only(path: &str) -> Result<Self, AsldError> {
+        let storage = open_file_disk(path, false)
+            .map_err(|_| AsldError::InvalidState("SeaBIOS boot disk is missing"))?;
+        let mut controller = Self::disabled();
+        controller.storage = storage;
+        controller.status = STATUS_DRDY;
+        Ok(controller)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_file_disk(path: &str, writable: bool) -> Result<IdeStorage, AsldError> {
+    let mut stat_buf = [0u32; 7];
+    if anyos_std::fs::stat(path, &mut stat_buf) != 0 || stat_buf[0] != 0 {
+        return Err(AsldError::InvalidState("SeaBIOS boot disk is missing"));
+    }
+    let size = stat_buf[1] as usize;
+    if size < SECTOR_SIZE {
+        return Err(AsldError::InvalidState("SeaBIOS boot disk is too small"));
+    }
+    let fd = anyos_std::fs::open(path, if writable { anyos_std::fs::O_WRITE } else { 0 });
+    if fd == 0 || fd == u32::MAX {
+        return Err(AsldError::InvalidState("SeaBIOS boot disk is not readable"));
+    }
+
+    Ok(IdeStorage::File {
+        fd,
+        sectors: (size / SECTOR_SIZE) as u32,
+        writable,
+    })
+}
+
+impl IdeController {
+    #[cfg(not(target_os = "linux"))]
     pub(super) fn close(&self) {
-        if let IdeStorage::File { fd, .. } = &self.storage {
-            let _ = anyos_std::fs::close(*fd);
+        for storage in [&self.storage, &self.slave_storage] {
+            if let IdeStorage::File { fd, .. } = storage {
+                let _ = anyos_std::fs::close(*fd);
+            }
         }
     }
 
@@ -114,15 +153,22 @@ impl IdeController {
             });
         }
 
+        if exit.io_port == PRIMARY_DATA {
+            self.write_data_port(exit.io_data as u32, exit.access_size as u32);
+            return Some(IdeIoAction { read_value: None });
+        }
+
         let value = (exit.io_data & 0xff) as u8;
         match exit.io_port {
-            PRIMARY_DATA => self.set_error(0x04),
             PRIMARY_ERROR_FEATURES => {}
             PRIMARY_SECTOR_COUNT => self.sector_count = value,
             PRIMARY_LBA_LOW => self.lba_low = value,
             PRIMARY_LBA_MID => self.lba_mid = value,
             PRIMARY_LBA_HIGH => self.lba_high = value,
-            PRIMARY_DRIVE_HEAD => self.drive_head = value,
+            PRIMARY_DRIVE_HEAD => {
+                self.drive_head = value;
+                self.status = if self.has_disk() { STATUS_DRDY } else { 0 };
+            }
             PRIMARY_STATUS_COMMAND => self.execute_command(value),
             PRIMARY_ALT_STATUS_CONTROL => {}
             _ => {}
@@ -153,6 +199,22 @@ impl IdeController {
         Some(words * 2)
     }
 
+    pub(super) fn data_string_write_from(
+        &mut self,
+        exit: &VmExitInfo,
+        buffer: &[u8],
+    ) -> Option<usize> {
+        if exit.reason != exit_reason::IO_INSTRUCTION
+            || exit.io_port != PRIMARY_DATA
+            || exit.is_read != 0
+            || exit.access_size != 2
+        {
+            return None;
+        }
+        self.write_data_bytes(buffer);
+        Some(buffer.len())
+    }
+
     fn read_port(&mut self, port: u16) -> u32 {
         match port {
             PRIMARY_DATA => self.read_data_word() as u32,
@@ -168,7 +230,7 @@ impl IdeController {
     }
 
     fn sector_count(&self) -> u32 {
-        match &self.storage {
+        match self.selected_storage() {
             IdeStorage::None => 0,
             IdeStorage::Memory(bytes) => (bytes.len() / SECTOR_SIZE) as u32,
             IdeStorage::File { sectors, .. } => *sectors,
@@ -191,7 +253,19 @@ impl IdeController {
     }
 
     fn has_disk(&self) -> bool {
-        !matches!(self.storage, IdeStorage::None)
+        !matches!(self.selected_storage(), IdeStorage::None)
+    }
+
+    fn selected_slave(&self) -> bool {
+        (self.drive_head & 0x10) != 0
+    }
+
+    fn selected_storage(&self) -> &IdeStorage {
+        if self.selected_slave() {
+            &self.slave_storage
+        } else {
+            &self.storage
+        }
     }
 
     fn read_sectors(&mut self) {
@@ -206,13 +280,10 @@ impl IdeController {
         }
 
         self.data.resize(byte_count, 0);
-        let ok = match &mut self.storage {
-            IdeStorage::Memory(bytes) => {
-                self.data.copy_from_slice(&bytes[offset..end]);
-                true
-            }
-            IdeStorage::File { fd, .. } => read_disk_file(*fd, offset, &mut self.data),
-            IdeStorage::None => false,
+        let ok = if self.selected_slave() {
+            read_storage(&mut self.slave_storage, offset, end, &mut self.data)
+        } else {
+            read_storage(&mut self.storage, offset, end, &mut self.data)
         };
         if ok {
             self.data_offset = 0;
@@ -221,6 +292,28 @@ impl IdeController {
         } else {
             self.set_error(0x04);
         }
+    }
+
+    fn prepare_write_sectors(&mut self) {
+        let lba = self.selected_lba();
+        let count = self.selected_sector_count();
+        let byte_count = (count as usize).saturating_mul(SECTOR_SIZE);
+        let offset = (lba as usize).saturating_mul(SECTOR_SIZE);
+        let end = offset.saturating_add(byte_count);
+        if !self.has_disk() || end > (self.sector_count() as usize * SECTOR_SIZE) {
+            self.set_error(0x04);
+            return;
+        }
+        self.data.clear();
+        self.data.resize(byte_count, 0);
+        self.data_offset = 0;
+        self.write_target = Some(WriteTarget {
+            slave: self.selected_slave(),
+            lba,
+            count,
+        });
+        self.error = 0;
+        self.status = STATUS_DRDY | STATUS_DRQ;
     }
 
     fn identify(&mut self) {
@@ -250,6 +343,10 @@ impl IdeController {
 
     fn finish_data_if_needed(&mut self) {
         if self.data_offset >= self.data.len() {
+            if self.write_target.is_some() {
+                self.commit_write();
+                return;
+            }
             self.data.clear();
             self.data_offset = 0;
             self.status = if self.has_disk() { STATUS_DRDY } else { 0 };
@@ -268,9 +365,72 @@ impl IdeController {
         value
     }
 
+    fn write_data_port(&mut self, value: u32, access_size: u32) {
+        if access_size == 1 {
+            let bytes = [(value & 0xff) as u8];
+            self.write_data_bytes(&bytes);
+        } else {
+            let bytes = (value as u16).to_le_bytes();
+            self.write_data_bytes(&bytes);
+        }
+    }
+
+    fn write_data_bytes(&mut self, bytes: &[u8]) {
+        if self.write_target.is_none() || self.data_offset >= self.data.len() {
+            self.set_error(0x04);
+            return;
+        }
+        let count = bytes.len().min(self.data.len() - self.data_offset);
+        self.data[self.data_offset..self.data_offset + count].copy_from_slice(&bytes[..count]);
+        self.data_offset += count;
+        self.finish_data_if_needed();
+    }
+
+    fn commit_write(&mut self) {
+        let Some(target) = self.write_target.take() else {
+            return;
+        };
+        let offset = target.lba as usize * SECTOR_SIZE;
+        let expected = target.count as usize * SECTOR_SIZE;
+        let data = self.data.clone();
+        let ok = if data.len() == expected {
+            let storage = if target.slave {
+                &mut self.slave_storage
+            } else {
+                &mut self.storage
+            };
+            match storage {
+                IdeStorage::Memory(bytes) => {
+                    let end = offset.saturating_add(data.len());
+                    if end <= bytes.len() {
+                        bytes[offset..end].copy_from_slice(&data);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                IdeStorage::File { fd, writable, .. } => {
+                    *writable && write_disk_file(*fd, offset, &data)
+                }
+                IdeStorage::None => false,
+            }
+        } else {
+            false
+        };
+        self.data.clear();
+        self.data_offset = 0;
+        if ok {
+            self.error = 0;
+            self.status = if self.has_disk() { STATUS_DRDY } else { 0 };
+        } else {
+            self.set_error(0x04);
+        }
+    }
+
     fn execute_command(&mut self, command: u8) {
         match command {
             0x20 | 0x24 => self.read_sectors(),
+            0x30 | 0x34 => self.prepare_write_sectors(),
             0x90 | 0x91 | 0xe7 => {
                 self.error = 0;
                 self.status = if self.has_disk() { STATUS_DRDY } else { 0 };
@@ -292,6 +452,17 @@ impl IdeController {
     }
 }
 
+fn read_storage(storage: &mut IdeStorage, offset: usize, end: usize, data: &mut [u8]) -> bool {
+    match storage {
+        IdeStorage::Memory(bytes) => {
+            data.copy_from_slice(&bytes[offset..end]);
+            true
+        }
+        IdeStorage::File { fd, .. } => read_disk_file(*fd, offset, data),
+        IdeStorage::None => false,
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 fn read_disk_file(fd: u32, offset: usize, data: &mut [u8]) -> bool {
     if offset > i32::MAX as usize {
@@ -305,6 +476,22 @@ fn read_disk_file(fd: u32, offset: usize, data: &mut [u8]) -> bool {
 
 #[cfg(target_os = "linux")]
 fn read_disk_file(_fd: u32, _offset: usize, _data: &mut [u8]) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_disk_file(fd: u32, offset: usize, data: &[u8]) -> bool {
+    if offset > i32::MAX as usize {
+        return false;
+    }
+    if anyos_std::fs::lseek(fd, offset as i32, anyos_std::fs::SEEK_SET) == u32::MAX {
+        return false;
+    }
+    anyos_std::fs::write(fd, data) == data.len() as u32
+}
+
+#[cfg(target_os = "linux")]
+fn write_disk_file(_fd: u32, _offset: usize, _data: &[u8]) -> bool {
     false
 }
 
@@ -348,8 +535,8 @@ fn write_ide_ascii(buffer: &mut [u8], word_index: usize, word_count: usize, text
 #[cfg(test)]
 mod tests {
     use super::{
-        IdeController, PRIMARY_DATA, PRIMARY_LBA_LOW, PRIMARY_SECTOR_COUNT, PRIMARY_STATUS_COMMAND,
-        SECTOR_SIZE, STATUS_DRDY, STATUS_DRQ,
+        IdeController, IdeStorage, PRIMARY_DATA, PRIMARY_LBA_LOW, PRIMARY_SECTOR_COUNT,
+        PRIMARY_STATUS_COMMAND, SECTOR_SIZE, STATUS_DRDY, STATUS_DRQ,
     };
     use crate::vm::{exit_reason, VmExitInfo};
 
@@ -433,5 +620,80 @@ mod tests {
         );
         assert_eq!(copied, Some(4));
         assert_eq!(buffer, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn writes_memory_disk_sector() {
+        let disk = alloc::vec![0u8; 2 * SECTOR_SIZE];
+        let mut state = IdeController::with_memory_disk(disk);
+
+        let _ = state.io_action(&VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: PRIMARY_SECTOR_COUNT,
+            is_read: 0,
+            io_data: 1,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        });
+        let _ = state.io_action(&VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: PRIMARY_LBA_LOW,
+            is_read: 0,
+            io_data: 1,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        });
+        let _ = state.io_action(&VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: PRIMARY_STATUS_COMMAND,
+            is_read: 0,
+            io_data: 0x30,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        });
+        assert_eq!(state.status, STATUS_DRDY | STATUS_DRQ);
+        for _ in 0..(SECTOR_SIZE / 2) {
+            let _ = state.io_action(&VmExitInfo {
+                reason: exit_reason::IO_INSTRUCTION,
+                io_port: PRIMARY_DATA,
+                access_size: 2,
+                is_read: 0,
+                io_data: 0x55aa,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            });
+        }
+        assert_eq!(state.status, STATUS_DRDY);
+        match &state.storage {
+            IdeStorage::Memory(bytes) => {
+                assert_eq!(bytes[SECTOR_SIZE], 0xaa);
+                assert_eq!(bytes[SECTOR_SIZE + 1], 0x55);
+            }
+            _ => panic!("expected memory disk"),
+        }
+    }
+
+    #[test]
+    fn identifies_slave_seed_disk() {
+        let mut state = IdeController::with_memory_disk(alloc::vec![0u8; 2 * SECTOR_SIZE]);
+        state.slave_storage = IdeStorage::Memory(alloc::vec![0u8; 4 * SECTOR_SIZE]);
+        let _ = state.io_action(&VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: super::PRIMARY_DRIVE_HEAD,
+            is_read: 0,
+            io_data: 0xf0,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        });
+        let _ = state.io_action(&VmExitInfo {
+            reason: exit_reason::IO_INSTRUCTION,
+            io_port: PRIMARY_STATUS_COMMAND,
+            is_read: 0,
+            io_data: 0xec,
+            instruction_len: 1,
+            ..VmExitInfo::default()
+        });
+        assert_eq!(state.status, STATUS_DRDY | STATUS_DRQ);
+        assert_eq!(state.sector_count(), 4);
     }
 }

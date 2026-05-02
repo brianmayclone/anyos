@@ -735,7 +735,14 @@ pub fn show_completion_list() {
         None => return,
     };
 
-    let set = intellisense::completions_for_cursor(&file_path, &text, row, col, &s.symbol_index);
+    let set = intellisense::completions_for_cursor(
+        &file_path,
+        &text,
+        row,
+        col,
+        &s.symbol_index,
+        s.current_project.as_ref(),
+    );
     if set.items.is_empty() {
         s.editor_view.hide_completions();
         s.status.set_analysis_status("IntelliSense: no suggestions");
@@ -788,6 +795,20 @@ pub fn update_completion_detail(index: usize) {
     let s = app();
     if let Some(item) = s.active_completions.get(index) {
         s.editor_view.set_completion_detail(&item.detail);
+    }
+}
+
+pub fn maybe_show_auto_completion(editor_index: usize) {
+    let s = app();
+    if editor_index != s.file_mgr.active {
+        return;
+    }
+    let (file_path, text, row, col) = match active_editor_context() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+    if intellisense::should_auto_popup(&file_path, &text, row, col) {
+        show_completion_list();
     }
 }
 

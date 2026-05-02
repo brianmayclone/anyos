@@ -17,6 +17,7 @@ pub mod mounts;
 pub mod network;
 pub mod runtime;
 pub mod schema;
+pub mod seed;
 pub mod status;
 pub mod storage;
 pub mod store;

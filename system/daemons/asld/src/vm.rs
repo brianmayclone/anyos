@@ -214,7 +214,10 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     }
 
     let ide = if crate::boot::is_seabios(config) {
-        match IdeController::open_read_only(&config.storage.base_image_path) {
+        match IdeController::open_asl_disks(
+            &config.storage.base_image_path,
+            &config.storage.seed_image_path,
+        ) {
             Ok(ide) => ide,
             Err(err) => {
                 let _ = anyos_std::process::munmap_large(guest_memory, guest_memory_size);
@@ -834,8 +837,11 @@ fn handle_ide_string_io_exit(
     let Some(string_io) = io_string_info(exit) else {
         return Ok(false);
     };
-    if exit.is_read == 0 || exit.access_size != 2 {
+    if exit.access_size != 2 {
         return Ok(false);
+    }
+    if exit.is_read == 0 {
+        return handle_ide_string_write_exit(instance, vcpu, exit, string_io);
     }
 
     let mut regs = vcpu
@@ -880,6 +886,69 @@ fn handle_ide_string_io_exit(
     }
 
     regs.rdi = update_address_register(regs.rdi, string_io.address_size, index);
+    if string_io.rep {
+        let remaining = requested_units.saturating_sub(copied_units) as u64;
+        regs.rcx = update_address_register(regs.rcx, string_io.address_size, remaining);
+    }
+    vcpu.set_regs(&regs)
+        .map_err(|_| AsldError::BackendUnavailable("avm set_regs failed"))?;
+
+    if !string_io.rep || copied_units >= requested_units {
+        advance_guest_rip(vcpu, exit.instruction_len)?;
+    }
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_ide_string_write_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+    string_io: IoStringInfo,
+) -> Result<bool, AsldError> {
+    let mut regs = vcpu
+        .regs()
+        .map_err(|_| AsldError::BackendUnavailable("avm get_regs failed"))?;
+    let sregs = vcpu
+        .sregs()
+        .map_err(|_| AsldError::BackendUnavailable("avm get_sregs failed"))?;
+
+    let requested_units = if string_io.rep {
+        address_register_value(regs.rcx, string_io.address_size) as usize
+    } else {
+        1
+    };
+    if requested_units == 0 {
+        advance_guest_rip(vcpu, exit.instruction_len)?;
+        return Ok(true);
+    }
+
+    let max_units = MAX_STRING_IO_BYTES / exit.access_size as usize;
+    let units = requested_units.min(max_units);
+    let byte_count = units * exit.access_size as usize;
+    let mut buffer = [0u8; MAX_STRING_IO_BYTES];
+    let mut index = address_register_value(regs.rsi, string_io.address_size);
+    let step = exit.access_size as u64;
+
+    for chunk in buffer[..byte_count].chunks_exact_mut(exit.access_size as usize) {
+        let linear = sregs.ds_base.wrapping_add(index);
+        read_guest_bytes(instance, vcpu, linear, chunk)?;
+        index = if (sregs.rflags & (1 << 10)) != 0 {
+            index.wrapping_sub(step)
+        } else {
+            index.wrapping_add(step)
+        };
+    }
+
+    let Some(copied) = instance
+        .ide
+        .data_string_write_from(exit, &buffer[..byte_count])
+    else {
+        return Ok(false);
+    };
+    let copied_units = copied / exit.access_size as usize;
+
+    regs.rsi = update_address_register(regs.rsi, string_io.address_size, index);
     if string_io.rep {
         let remaining = requested_units.saturating_sub(copied_units) as u64;
         regs.rcx = update_address_register(regs.rcx, string_io.address_size, remaining);
@@ -1212,6 +1281,35 @@ fn update_address_register(original: u64, address_size: u8, value: u64) -> u64 {
 }
 
 #[cfg(not(target_os = "linux"))]
+fn read_guest_bytes(
+    instance: &VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    guest_linear: u64,
+    bytes: &mut [u8],
+) -> Result<(), AsldError> {
+    let gpa = vcpu
+        .translate(guest_linear)
+        .map_err(|_| AsldError::BackendUnavailable("avm translate failed"))?
+        .unwrap_or(guest_linear);
+    let start = gpa as usize;
+    let end = start
+        .checked_add(bytes.len())
+        .ok_or(AsldError::InvalidState("guest I/O buffer overflow"))?;
+    if end > instance.guest_memory_size {
+        return Err(AsldError::InvalidState("guest I/O buffer out of bounds"));
+    }
+
+    unsafe {
+        let src = core::slice::from_raw_parts(
+            (instance.guest_memory_addr + start) as *const u8,
+            bytes.len(),
+        );
+        bytes.copy_from_slice(src);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
 fn write_guest_bytes(
     instance: &VmInstance,
     vcpu: &libavm::AvmVcpu,
@@ -1533,6 +1631,7 @@ mod tests {
                 base_image_path: String::from("/base"),
                 overlay_image_path: String::from("/overlay"),
                 state_image_path: String::from("/state"),
+                seed_image_path: String::from("/seed"),
                 state_image_enabled: true,
             },
             network: NetworkPolicy::default(),

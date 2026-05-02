@@ -134,6 +134,7 @@ pub struct StorageSpec {
     pub base_image_path: String,
     pub overlay_image_path: String,
     pub state_image_path: String,
+    pub seed_image_path: String,
     pub state_image_enabled: bool,
 }
 
@@ -341,6 +342,7 @@ pub fn default_storage_for(name: &str) -> StorageSpec {
         base_image_path: format!("{DISTRO_IMAGES_ROOT}/{name}/images/base.img"),
         overlay_image_path: format!("{DISTRO_IMAGES_ROOT}/{name}/images/overlay.img"),
         state_image_path: format!("{DISTRO_IMAGES_ROOT}/{name}/images/state.img"),
+        seed_image_path: format!("{DISTRO_IMAGES_ROOT}/{name}/images/seed.img"),
         state_image_enabled: true,
     }
 }
@@ -367,6 +369,9 @@ mod tests {
         assert!(storage
             .overlay_image_path
             .ends_with("/ubuntu-dev/images/overlay.img"));
+        assert!(storage
+            .seed_image_path
+            .ends_with("/ubuntu-dev/images/seed.img"));
         assert!(storage.state_image_enabled);
     }
 }

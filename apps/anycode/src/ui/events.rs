@@ -917,6 +917,7 @@ pub fn wire_editor_text_changed(editor_index: usize) {
             }
             commands::schedule_live_check(editor_index);
             s.editor_view.hide_completions();
+            commands::maybe_show_auto_completion(editor_index);
         });
     }
 }

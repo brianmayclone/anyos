@@ -35,6 +35,12 @@ pub fn validate_storage(name: &str, storage: &StorageSpec) -> Vec<StorageValidat
             message: String::from("state layer disabled"),
         });
     }
+    out.push(validate_layer_path(
+        name,
+        "seed",
+        &storage.seed_image_path,
+        true,
+    ));
     annotate_distinct_paths(&mut out, storage);
     out
 }
@@ -66,6 +72,7 @@ pub fn export_manifest_lines(cfg: &DistroConfig) -> Vec<String> {
             cfg.storage.overlay_image_path
         ),
         format!("storage.state_image_path\t{}", cfg.storage.state_image_path),
+        format!("storage.seed_image_path\t{}", cfg.storage.seed_image_path),
         format!(
             "storage.state_image_enabled\t{}",
             cfg.storage.state_image_enabled
@@ -150,9 +157,18 @@ fn annotate_distinct_paths(report: &mut [StorageValidation], storage: &StorageSp
     let base = &storage.base_image_path;
     let overlay = &storage.overlay_image_path;
     let state = &storage.state_image_path;
-    if base == overlay || (storage.state_image_enabled && (base == state || overlay == state)) {
+    let seed = &storage.seed_image_path;
+    if base == overlay
+        || base == seed
+        || overlay == seed
+        || (storage.state_image_enabled && (base == state || overlay == state || state == seed))
+    {
         for item in report.iter_mut() {
-            if item.role == "base" || item.role == "overlay" || item.role == "state" {
+            if item.role == "base"
+                || item.role == "overlay"
+                || item.role == "state"
+                || item.role == "seed"
+            {
                 item.valid = false;
                 item.message = String::from("storage layer paths must be distinct");
             }

@@ -380,6 +380,9 @@ impl RuntimeService {
         }
 
         crate::log::info("runtime", &format!("start: distro='{}'", cfg.name));
+        if crate::boot::is_seabios(&cfg) {
+            crate::seed::ensure_seed_image(&cfg)?;
+        }
         match vm::start_vm(&cfg) {
             Ok(vm_instance) => {
                 crate::log::info(
@@ -1235,6 +1238,7 @@ fn format_config_lines(cfg: &DistroConfig) -> Vec<String> {
             cfg.storage.overlay_image_path
         ),
         format!("storage.state_image_path\t{}", cfg.storage.state_image_path),
+        format!("storage.seed_image_path\t{}", cfg.storage.seed_image_path),
         format!(
             "storage.state_image_enabled\t{}",
             cfg.storage.state_image_enabled

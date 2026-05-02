@@ -219,6 +219,9 @@ pub fn load_distro<S: ConfigStore>(store: &mut S, name: &str) -> Result<DistroCo
         state_image_path: store
             .get_string(&alloc::format!("{root}/storage/state_image_path"))?
             .unwrap_or_default(),
+        seed_image_path: store
+            .get_string(&alloc::format!("{root}/storage/seed_image_path"))?
+            .unwrap_or_else(|| default_storage_for(name).seed_image_path),
         state_image_enabled: store
             .get_bool(&alloc::format!("{root}/storage/state_image_enabled"))?
             .unwrap_or(false),
@@ -420,6 +423,7 @@ pub fn delete_distro<S: ConfigStore>(
             "base_image_path",
             "overlay_image_path",
             "state_image_path",
+            "seed_image_path",
             "state_image_enabled",
         ],
     )?;
@@ -612,6 +616,10 @@ fn write_scalar_fields<S: ConfigStore>(
     store.set_string(
         &alloc::format!("{root}/storage/state_image_path"),
         &config.storage.state_image_path,
+    )?;
+    store.set_string(
+        &alloc::format!("{root}/storage/seed_image_path"),
+        &config.storage.seed_image_path,
     )?;
     store.set_bool(
         &alloc::format!("{root}/storage/state_image_enabled"),

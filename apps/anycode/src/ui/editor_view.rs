@@ -89,7 +89,7 @@ impl EditorView {
         completion_accent.set_color(tc.accent);
         completion_panel.add(&completion_accent);
 
-        let completion_title = ui::Label::new("Rust Intelligence");
+        let completion_title = ui::Label::new("Code Intelligence");
         completion_title.set_dock(ui::DOCK_TOP);
         completion_title.set_size(380, 30);
         completion_title.set_font_size(12);

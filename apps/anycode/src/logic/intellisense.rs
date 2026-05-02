@@ -136,6 +136,17 @@ pub fn word_at_cursor(text: &str, row: u32, col: u32) -> String {
     word_at(text, row as usize, col as usize)
 }
 
+pub fn should_auto_popup(file_path: &str, text: &str, row: u32, col: u32) -> bool {
+    let lang = language::language_for_filename(path::basename(file_path)).id;
+    if !matches!(lang, LanguageId::JavaScript | LanguageId::TypeScript) {
+        return false;
+    }
+    if module_string_prefix_at(text, row as usize, col as usize).is_some() {
+        return true;
+    }
+    previous_byte_at(text, row as usize, col as usize) == Some(b'.')
+}
+
 pub fn best_symbol_for_word<'a>(
     file_path: &str,
     word: &str,
@@ -206,6 +217,199 @@ fn push_anyui_members(items: &mut Vec<CompletionItem>, prefix: &str) {
     }
 }
 
+fn push_node_module_completions(
+    items: &mut Vec<CompletionItem>,
+    prefix: &str,
+    project: Option<&Project>,
+) {
+    for &(module, detail) in NODE_CORE_MODULES {
+        push_completion(items, prefix, module, module, detail);
+    }
+    if let Some(project) = project {
+        for package in node_packages::packages_for_project(project) {
+            push_completion(
+                items,
+                prefix,
+                &package.name,
+                &package.name,
+                package.kind.display_name(),
+            );
+        }
+    }
+}
+
+fn push_js_node_globals(items: &mut Vec<CompletionItem>, prefix: &str, project: Option<&Project>) {
+    for &(label, insert, detail) in JS_NODE_GLOBALS {
+        push_completion(items, prefix, label, insert, detail);
+    }
+    push_node_module_completions(items, prefix, project);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum JsReceiverKind {
+    Console,
+    Process,
+    Buffer,
+    Json,
+    Math,
+    Promise,
+    Fs,
+    Path,
+    Http,
+    Https,
+    Url,
+    Events,
+    Stream,
+    ChildProcess,
+    AnyUiControl,
+}
+
+fn push_js_receiver_members(items: &mut Vec<CompletionItem>, prefix: &str, kind: JsReceiverKind) {
+    let members: &[(&str, &str, &str)] = match kind {
+        JsReceiverKind::Console => CONSOLE_MEMBERS,
+        JsReceiverKind::Process => PROCESS_MEMBERS,
+        JsReceiverKind::Buffer => BUFFER_MEMBERS,
+        JsReceiverKind::Json => JSON_MEMBERS,
+        JsReceiverKind::Math => MATH_MEMBERS,
+        JsReceiverKind::Promise => PROMISE_MEMBERS,
+        JsReceiverKind::Fs => FS_MEMBERS,
+        JsReceiverKind::Path => PATH_MEMBERS,
+        JsReceiverKind::Http => HTTP_MEMBERS,
+        JsReceiverKind::Https => HTTP_MEMBERS,
+        JsReceiverKind::Url => URL_MEMBERS,
+        JsReceiverKind::Events => EVENTS_MEMBERS,
+        JsReceiverKind::Stream => STREAM_MEMBERS,
+        JsReceiverKind::ChildProcess => CHILD_PROCESS_MEMBERS,
+        JsReceiverKind::AnyUiControl => ANYUI_CONTROL_MEMBERS,
+    };
+    for &(label, insert, detail) in members {
+        push_completion(items, prefix, label, insert, detail);
+    }
+}
+
+fn js_receiver_kind(text: &str, receiver: &str) -> Option<JsReceiverKind> {
+    match receiver {
+        "console" => return Some(JsReceiverKind::Console),
+        "process" => return Some(JsReceiverKind::Process),
+        "Buffer" => return Some(JsReceiverKind::Buffer),
+        "JSON" => return Some(JsReceiverKind::Json),
+        "Math" => return Some(JsReceiverKind::Math),
+        "Promise" => return Some(JsReceiverKind::Promise),
+        _ => {}
+    }
+
+    if is_anyui_instance(text, receiver) {
+        return Some(JsReceiverKind::AnyUiControl);
+    }
+
+    for line in text.split('\n') {
+        if !line.contains(receiver) {
+            continue;
+        }
+        let compact = without_spaces(line);
+        if let Some(module) = required_module_for_receiver(&compact, receiver) {
+            return module_receiver_kind(&module);
+        }
+        if let Some(module) = imported_module_for_receiver(&compact, receiver) {
+            return module_receiver_kind(&module);
+        }
+    }
+    None
+}
+
+fn required_module_for_receiver(compact_line: &str, receiver: &str) -> Option<String> {
+    let assign = format!("{}=require(", receiver);
+    let pos = compact_line.find(&assign)?;
+    let rest = &compact_line[pos + assign.len()..];
+    quoted_prefix(rest)
+}
+
+fn imported_module_for_receiver(compact_line: &str, receiver: &str) -> Option<String> {
+    let star_single = format!("*as{}from'", receiver);
+    if let Some(pos) = compact_line.find(&star_single) {
+        return quoted_prefix(&compact_line[pos + star_single.len() - 1..]);
+    }
+    let star_double = format!("*as{}from\"", receiver);
+    if let Some(pos) = compact_line.find(&star_double) {
+        return quoted_prefix(&compact_line[pos + star_double.len() - 1..]);
+    }
+    let default_single = format!("import{}from'", receiver);
+    if let Some(pos) = compact_line.find(&default_single) {
+        return quoted_prefix(&compact_line[pos + default_single.len() - 1..]);
+    }
+    let default_double = format!("import{}from\"", receiver);
+    if let Some(pos) = compact_line.find(&default_double) {
+        return quoted_prefix(&compact_line[pos + default_double.len() - 1..]);
+    }
+    None
+}
+
+fn module_receiver_kind(module: &str) -> Option<JsReceiverKind> {
+    match module {
+        "fs" | "node:fs" | "fs/promises" | "node:fs/promises" => Some(JsReceiverKind::Fs),
+        "path" | "node:path" => Some(JsReceiverKind::Path),
+        "http" | "node:http" => Some(JsReceiverKind::Http),
+        "https" | "node:https" => Some(JsReceiverKind::Https),
+        "url" | "node:url" => Some(JsReceiverKind::Url),
+        "events" | "node:events" => Some(JsReceiverKind::Events),
+        "stream" | "node:stream" => Some(JsReceiverKind::Stream),
+        "child_process" | "node:child_process" => Some(JsReceiverKind::ChildProcess),
+        _ => None,
+    }
+}
+
+fn is_anyui_instance(text: &str, receiver: &str) -> bool {
+    for line in text.split('\n') {
+        if !line.contains(receiver) || !line.contains("new ") {
+            continue;
+        }
+        let compact = without_spaces(line);
+        let lhs = format!("{}=new", receiver);
+        if compact.contains(&lhs)
+            && (compact.contains("newui.")
+                || compact.contains("newanyui.")
+                || compact.contains("newrequire('@anyos/anyui').")
+                || compact.contains("newrequire(\"@anyos/anyui\")."))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn module_string_prefix_at(text: &str, row: usize, col: usize) -> Option<String> {
+    let line = nth_line(text, row);
+    let col = col.min(line.len());
+    let before = &line[..col];
+    let quote_pos = before
+        .rfind('\'')
+        .or_else(|| before.rfind('"'))
+        .or_else(|| before.rfind('`'))?;
+    let prefix = &before[quote_pos + 1..];
+    if prefix.contains('\'') || prefix.contains('"') || prefix.contains('`') {
+        return None;
+    }
+    let context = without_spaces(&before[..quote_pos]);
+    if context.ends_with("require(")
+        || context.ends_with("import(")
+        || context.ends_with("from")
+        || context.ends_with("import")
+    {
+        return Some(String::from(prefix));
+    }
+    None
+}
+
+fn quoted_prefix(value: &str) -> Option<String> {
+    let quote = value.chars().next()?;
+    if quote != '\'' && quote != '"' && quote != '`' {
+        return None;
+    }
+    let rest = &value[quote.len_utf8()..];
+    let end = rest.find(quote).unwrap_or(rest.len());
+    Some(String::from(&rest[..end]))
+}
+
 const JS_ANYOS_COMPLETIONS: &[(&str, &str, &str)] = &[
     ("@anyos/anyui", "@anyos/anyui", "native anyOS UI module"),
     (
@@ -228,6 +432,224 @@ const JS_ANYOS_COMPLETIONS: &[(&str, &str, &str)] = &[
         "const label = new ui.Label('Label');",
         "anyOS UI control",
     ),
+];
+
+const JS_NODE_GLOBALS: &[(&str, &str, &str)] = &[
+    (
+        "require",
+        "require('${1:module}')",
+        "CommonJS module import",
+    ),
+    ("module", "module", "CommonJS current module"),
+    ("exports", "exports", "CommonJS exports object"),
+    ("__dirname", "__dirname", "current module directory"),
+    ("__filename", "__filename", "current module file"),
+    ("process", "process", "Node.js process object"),
+    ("console", "console", "console logging API"),
+    ("Buffer", "Buffer", "binary buffer API"),
+    ("setTimeout", "setTimeout(() => {\n    \n}, 0)", "timer"),
+    (
+        "setInterval",
+        "setInterval(() => {\n    \n}, 1000)",
+        "timer",
+    ),
+    ("clearTimeout", "clearTimeout", "timer cleanup"),
+    ("clearInterval", "clearInterval", "timer cleanup"),
+    ("Promise", "Promise", "Promise constructor"),
+    ("async", "async", "async function keyword"),
+    ("await", "await", "await expression"),
+];
+
+const NODE_CORE_MODULES: &[(&str, &str)] = &[
+    ("assert", "Node.js core module"),
+    ("buffer", "Node.js core module"),
+    ("child_process", "Node.js process spawning"),
+    ("crypto", "Node.js core module"),
+    ("dns", "Node.js DNS module"),
+    ("events", "Node.js events module"),
+    ("fs", "Node.js filesystem module"),
+    ("fs/promises", "Node.js promise filesystem module"),
+    ("http", "Node.js HTTP module"),
+    ("https", "Node.js HTTPS module"),
+    ("net", "Node.js TCP module"),
+    ("os", "Node.js OS module"),
+    ("path", "Node.js path module"),
+    ("process", "Node.js process module"),
+    ("querystring", "Node.js querystring module"),
+    ("stream", "Node.js stream module"),
+    ("timers", "Node.js timers module"),
+    ("url", "Node.js URL module"),
+    ("util", "Node.js utilities module"),
+    ("zlib", "Node.js compression module"),
+    ("node:fs", "Node.js filesystem module"),
+    ("node:http", "Node.js HTTP module"),
+    ("node:path", "Node.js path module"),
+];
+
+const CONSOLE_MEMBERS: &[(&str, &str, &str)] = &[
+    ("log", "log", "console.log(...args)"),
+    ("info", "info", "console.info(...args)"),
+    ("warn", "warn", "console.warn(...args)"),
+    ("error", "error", "console.error(...args)"),
+    ("debug", "debug", "console.debug(...args)"),
+    ("trace", "trace", "console.trace(...args)"),
+    ("time", "time", "console.time(label)"),
+    ("timeEnd", "timeEnd", "console.timeEnd(label)"),
+    ("dir", "dir", "console.dir(value)"),
+];
+
+const PROCESS_MEMBERS: &[(&str, &str, &str)] = &[
+    ("argv", "argv", "process arguments"),
+    ("env", "env", "environment variables"),
+    ("cwd", "cwd", "process.cwd()"),
+    ("exit", "exit", "process.exit(code)"),
+    ("nextTick", "nextTick", "process.nextTick(callback)"),
+    ("platform", "platform", "platform string"),
+    ("version", "version", "Node.js version"),
+    ("versions", "versions", "runtime component versions"),
+    ("stdin", "stdin", "standard input stream"),
+    ("stdout", "stdout", "standard output stream"),
+    ("stderr", "stderr", "standard error stream"),
+    ("on", "on", "event listener"),
+];
+
+const BUFFER_MEMBERS: &[(&str, &str, &str)] = &[
+    ("from", "from", "Buffer.from(value)"),
+    ("alloc", "alloc", "Buffer.alloc(size)"),
+    ("allocUnsafe", "allocUnsafe", "Buffer.allocUnsafe(size)"),
+    ("byteLength", "byteLength", "Buffer.byteLength(value)"),
+    ("concat", "concat", "Buffer.concat(list)"),
+    ("isBuffer", "isBuffer", "Buffer.isBuffer(value)"),
+];
+
+const JSON_MEMBERS: &[(&str, &str, &str)] = &[
+    ("parse", "parse", "JSON.parse(text)"),
+    ("stringify", "stringify", "JSON.stringify(value)"),
+];
+
+const MATH_MEMBERS: &[(&str, &str, &str)] = &[
+    ("abs", "abs", "Math.abs(x)"),
+    ("ceil", "ceil", "Math.ceil(x)"),
+    ("floor", "floor", "Math.floor(x)"),
+    ("max", "max", "Math.max(...values)"),
+    ("min", "min", "Math.min(...values)"),
+    ("random", "random", "Math.random()"),
+    ("round", "round", "Math.round(x)"),
+    ("trunc", "trunc", "Math.trunc(x)"),
+];
+
+const PROMISE_MEMBERS: &[(&str, &str, &str)] = &[
+    ("all", "all", "Promise.all(iterable)"),
+    ("allSettled", "allSettled", "Promise.allSettled(iterable)"),
+    ("race", "race", "Promise.race(iterable)"),
+    ("resolve", "resolve", "Promise.resolve(value)"),
+    ("reject", "reject", "Promise.reject(error)"),
+];
+
+const FS_MEMBERS: &[(&str, &str, &str)] = &[
+    ("readFile", "readFile", "fs.readFile(path, callback)"),
+    (
+        "readFileSync",
+        "readFileSync",
+        "fs.readFileSync(path, encoding)",
+    ),
+    (
+        "writeFile",
+        "writeFile",
+        "fs.writeFile(path, data, callback)",
+    ),
+    (
+        "writeFileSync",
+        "writeFileSync",
+        "fs.writeFileSync(path, data)",
+    ),
+    ("existsSync", "existsSync", "fs.existsSync(path)"),
+    ("mkdir", "mkdir", "fs.mkdir(path, options, callback)"),
+    ("mkdirSync", "mkdirSync", "fs.mkdirSync(path, options)"),
+    ("readdir", "readdir", "fs.readdir(path, callback)"),
+    ("readdirSync", "readdirSync", "fs.readdirSync(path)"),
+    ("stat", "stat", "fs.stat(path, callback)"),
+    ("statSync", "statSync", "fs.statSync(path)"),
+    ("unlink", "unlink", "fs.unlink(path, callback)"),
+    ("unlinkSync", "unlinkSync", "fs.unlinkSync(path)"),
+    (
+        "createReadStream",
+        "createReadStream",
+        "fs.createReadStream(path)",
+    ),
+    (
+        "createWriteStream",
+        "createWriteStream",
+        "fs.createWriteStream(path)",
+    ),
+    ("promises", "promises", "fs.promises API"),
+];
+
+const PATH_MEMBERS: &[(&str, &str, &str)] = &[
+    ("join", "join", "path.join(...parts)"),
+    ("resolve", "resolve", "path.resolve(...parts)"),
+    ("dirname", "dirname", "path.dirname(path)"),
+    ("basename", "basename", "path.basename(path)"),
+    ("extname", "extname", "path.extname(path)"),
+    ("normalize", "normalize", "path.normalize(path)"),
+    ("relative", "relative", "path.relative(from, to)"),
+    ("isAbsolute", "isAbsolute", "path.isAbsolute(path)"),
+    ("sep", "sep", "path separator"),
+];
+
+const HTTP_MEMBERS: &[(&str, &str, &str)] = &[
+    ("createServer", "createServer", "http.createServer(handler)"),
+    ("request", "request", "http.request(options, callback)"),
+    ("get", "get", "http.get(options, callback)"),
+    ("Server", "Server", "HTTP server class"),
+    (
+        "IncomingMessage",
+        "IncomingMessage",
+        "HTTP request/response message",
+    ),
+    ("ServerResponse", "ServerResponse", "HTTP server response"),
+    ("STATUS_CODES", "STATUS_CODES", "HTTP status code map"),
+];
+
+const URL_MEMBERS: &[(&str, &str, &str)] = &[
+    ("URL", "URL", "URL class"),
+    (
+        "URLSearchParams",
+        "URLSearchParams",
+        "URLSearchParams class",
+    ),
+    ("parse", "parse", "url.parse(input)"),
+    ("format", "format", "url.format(urlObject)"),
+    ("pathToFileURL", "pathToFileURL", "url.pathToFileURL(path)"),
+    ("fileURLToPath", "fileURLToPath", "url.fileURLToPath(url)"),
+];
+
+const EVENTS_MEMBERS: &[(&str, &str, &str)] = &[
+    ("EventEmitter", "EventEmitter", "EventEmitter class"),
+    ("once", "once", "events.once(emitter, name)"),
+    ("on", "on", "events.on(emitter, name)"),
+];
+
+const STREAM_MEMBERS: &[(&str, &str, &str)] = &[
+    ("Readable", "Readable", "Readable stream class"),
+    ("Writable", "Writable", "Writable stream class"),
+    ("Duplex", "Duplex", "Duplex stream class"),
+    ("Transform", "Transform", "Transform stream class"),
+    ("pipeline", "pipeline", "stream.pipeline(...)"),
+    ("finished", "finished", "stream.finished(stream, callback)"),
+];
+
+const CHILD_PROCESS_MEMBERS: &[(&str, &str, &str)] = &[
+    ("spawn", "spawn", "child_process.spawn(command, args)"),
+    ("exec", "exec", "child_process.exec(command, callback)"),
+    ("execFile", "execFile", "child_process.execFile(file, args)"),
+    ("fork", "fork", "child_process.fork(modulePath)"),
+    (
+        "spawnSync",
+        "spawnSync",
+        "child_process.spawnSync(command, args)",
+    ),
+    ("execSync", "execSync", "child_process.execSync(command)"),
 ];
 
 const ANYUI_MEMBER_COMPLETIONS: &[(&str, &str, &str)] = &[
@@ -279,6 +701,28 @@ const ANYUI_MEMBER_COMPLETIONS: &[(&str, &str, &str)] = &[
     ("Alert", "Alert", "@anyos/anyui class"),
     ("Badge", "Badge", "@anyos/anyui class"),
     ("Tooltip", "Tooltip", "@anyos/anyui class"),
+];
+
+const ANYUI_CONTROL_MEMBERS: &[(&str, &str, &str)] = &[
+    ("add", "add", "add child control"),
+    ("remove", "remove", "remove child control"),
+    ("setText", "setText", "set control text"),
+    ("getText", "getText", "read control text"),
+    ("setPosition", "setPosition", "set absolute position"),
+    ("setSize", "setSize", "set control size"),
+    ("setDock", "setDock", "set dock layout"),
+    ("setMargin", "setMargin", "set margin"),
+    ("setPadding", "setPadding", "set padding"),
+    ("setColor", "setColor", "set #AARRGGBB color"),
+    ("setTextColor", "setTextColor", "set #AARRGGBB text color"),
+    ("setVisible", "setVisible", "show or hide control"),
+    ("setEnabled", "setEnabled", "enable or disable control"),
+    ("setTooltip", "setTooltip", "set tooltip"),
+    ("focus", "focus", "focus control"),
+    ("onClick", "onClick", "click event"),
+    ("onChanged", "onChanged", "changed event"),
+    ("onTextChanged", "onTextChanged", "text changed event"),
+    ("onSubmit", "onSubmit", "submit event"),
 ];
 
 fn symbol_matches_file(lang: LanguageId, symbol: &IndexedSymbol) -> bool {
@@ -398,6 +842,16 @@ fn word_at(text: &str, row: usize, col: usize) -> String {
 
 fn nth_line(text: &str, row: usize) -> &str {
     text.split('\n').nth(row).unwrap_or("")
+}
+
+fn previous_byte_at(text: &str, row: usize, col: usize) -> Option<u8> {
+    let line = nth_line(text, row);
+    let bytes = line.as_bytes();
+    let col = col.min(bytes.len());
+    if col == 0 {
+        return None;
+    }
+    Some(bytes[col - 1])
 }
 
 fn is_ident_byte(b: u8) -> bool {
