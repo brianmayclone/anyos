@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use libnode::npm::{PackageInstaller, PackageSpec, RegistryConfig};
 use libnode::{NodeOptions, NodeRuntime};
 
 fn temp_project(name: &str) -> PathBuf {
@@ -40,6 +41,14 @@ fn repo_root() -> PathBuf {
         .and_then(|path| path.parent())
         .expect("node-hosttests should live under tools/node-hosttests")
         .to_path_buf()
+}
+
+fn system_node_modules_dir() -> PathBuf {
+    repo_root()
+        .join("sysroot")
+        .join("System")
+        .join("Library")
+        .join("node_modules")
 }
 
 fn node_manifest() -> PathBuf {
@@ -250,6 +259,54 @@ fn anyos_anyui_module_creates_native_control_bridge_objects() {
         value.to_js_string(),
         "function:function:true:function:function:function:function:Button:true:Label:true"
     );
+}
+
+#[test]
+fn anyos_system_packages_are_visible_to_node_resolution() {
+    let root = temp_project("anyos-system-packages");
+    std::env::set_var("ANYOS_NODE_SYSTEM_PACKAGES", system_node_modules_dir());
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        const pkg = require('@anyos/anyui/package.json'); \
+        const ui = require('@anyos/anyui'); \
+        const viaPackage = require('@anyos/anyui'); \
+        [pkg.name, pkg.version, typeof ui.Window, typeof viaPackage.Button].join(':');",
+    );
+
+    assert_eq!(value.to_js_string(), "@anyos/anyui:0.1.0:function:function");
+}
+
+#[test]
+fn npm_installs_anyos_system_packages_without_registry_fetch() {
+    let root = temp_project("anyos-system-npm");
+    std::env::set_var("ANYOS_NODE_SYSTEM_PACKAGES", system_node_modules_dir());
+    let installer = PackageInstaller::new(RegistryConfig::default());
+    let report = installer
+        .install_package_result(
+            root.to_str().unwrap(),
+            &PackageSpec::parse("@anyos/anyui@0.1.0"),
+        )
+        .expect("system package install should succeed");
+
+    assert_eq!(report.installed.len(), 1);
+    assert_eq!(report.installed[0].name, "@anyos/anyui");
+    assert!(root
+        .join("node_modules")
+        .join("@anyos")
+        .join("anyui")
+        .join("index.d.ts")
+        .exists());
+
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "require('@anyos/anyui/package.json').name + ':' + typeof require('@anyos/anyui').Window",
+    );
+    assert_eq!(value.to_js_string(), "@anyos/anyui:function");
 }
 
 #[test]
@@ -476,9 +533,20 @@ module.exports = { storyboardTarget: storyboardTarget, storyboardCanNavigate: st
         format!(
             r#"const ui = require('@anyos/anyui');
 const MainFormModule = require('./ui/main_form');
-const MainForm = MainFormModule.MainForm || MainFormModule.default || MainFormModule;
+const MainForm = resolveFormConstructor(MainFormModule, "MainForm");
 
 const STARTUP_STORYBOARD = "{}";
+
+function resolveFormConstructor(module, formName) {{
+  let candidate = module && (module[formName] || module.default || module);
+  for (let i = 0; i < 4 && candidate && typeof candidate !== 'function'; i++) {{
+    candidate = candidate[formName] || candidate.default || candidate;
+  }}
+  if (typeof candidate !== 'function') {{
+    throw new TypeError("Generated form '" + formName + "' did not export a constructor");
+  }}
+  return candidate;
+}}
 
 function main() {{
   const form = new MainForm();
@@ -507,6 +575,64 @@ main();
     assert!(
         output.status.success(),
         "generated anyCode Node UI app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn anycode_startup_accepts_nested_commonjs_form_export_wrappers() {
+    let root = temp_project("anycode-nested-form-export");
+    fs::create_dir_all(root.join("src").join("ui").join("main_form"))
+        .expect("failed to create form module");
+    fs::write(
+        root.join("src")
+            .join("ui")
+            .join("main_form")
+            .join("index.js"),
+        r#"class MainForm {
+  constructor() {
+    this.created = true;
+  }
+  root() {
+    return {
+      setDock: function(_) {}
+    };
+  }
+}
+
+module.exports = { MainForm: { MainForm: MainForm } };
+"#,
+    )
+    .expect("failed to write nested wrapper form");
+    fs::write(
+        root.join("src").join("main.js"),
+        r#"const ui = require('@anyos/anyui');
+const MainFormModule = require('./ui/main_form');
+const MainForm = resolveFormConstructor(MainFormModule, "MainForm");
+
+function resolveFormConstructor(module, formName) {
+  let candidate = module && (module[formName] || module.default || module);
+  for (let i = 0; i < 4 && candidate && typeof candidate !== 'function'; i++) {
+    candidate = candidate[formName] || candidate.default || candidate;
+  }
+  if (typeof candidate !== 'function') {
+    throw new TypeError("Generated form '" + formName + "' did not export a constructor");
+  }
+  return candidate;
+}
+
+const form = new MainForm();
+const root = form.root();
+root.setDock(ui.DOCK_FILL);
+"#,
+    )
+    .expect("failed to write main.js");
+
+    let output = run_node(&[root.join("src/main.js").to_str().unwrap()], &root);
+    assert!(
+        output.status.success(),
+        "nested CommonJS form wrapper should be accepted\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

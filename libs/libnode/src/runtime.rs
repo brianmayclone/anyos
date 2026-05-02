@@ -57,7 +57,21 @@ impl NodeRuntime {
 
     pub fn run_file(&mut self, path: &str) -> Result<JsValue, &'static str> {
         let source = anyos_std::fs::read_to_string(path).map_err(|_| "Could not read script")?;
-        Ok(self.run_script(path, &source))
+        Ok(self.run_entry_file(path, &source))
+    }
+
+    pub fn run_entry_file(&mut self, path: &str, source: &str) -> JsValue {
+        if self.options.argv.is_empty() {
+            self.options.argv = vec![String::from("node"), String::from(path)];
+        }
+        let source = prepare_entry_source(path, source);
+        self.install_process_object();
+        let dirname = resolver::dirname(path);
+        self.preload_requires(&source, &dirname, 0);
+        self.install_commonjs_globals(path, &dirname);
+        self.install_import_meta(path);
+        self.preload_entry_node_modules_package_jsons(path);
+        self.engine.run_named(&source, Some(path))
     }
 
     pub fn set_policy(&mut self, policy: NativeModulePolicy) {
@@ -227,11 +241,17 @@ impl NodeRuntime {
         let ffi = modules::ffi_module(&self.policy);
         self.engine
             .register_module_object("@anyos/ffi", ffi.clone());
-        self.engine.register_module_object("node:ffi", ffi);
+        self.engine.register_module_object("node:ffi", ffi.clone());
+        self.engine.register_module_object("node:anyos-ffi", ffi);
+        let anyui = modules::anyui_module(&self.policy);
         self.engine
-            .register_module_object("@anyos/anyui", modules::anyui_module(&self.policy));
+            .register_module_object("@anyos/anyui", anyui.clone());
+        self.engine.register_module_object("node:anyui", anyui);
+        let image = modules::image_module(&self.policy);
         self.engine
-            .register_module_object("@anyos/image", modules::image_module(&self.policy));
+            .register_module_object("@anyos/image", image.clone());
+        self.engine
+            .register_module_object("node:anyos-image", image);
         self.engine
             .register_module_object("node:uv", modules::uv_module(self.event_loop.uv_loop()));
         self.install_node_error_extensions();
@@ -339,7 +359,7 @@ impl NodeRuntime {
                     module_global.clone(),
                 );
                 let wrapped = self.wrap_commonjs_source(&module, &source);
-                self.engine.eval_named(&wrapped, Some(&module.filename));
+                self.engine.run_named(&wrapped, Some(&module.filename));
                 #[cfg(feature = "host")]
                 if std::env::var_os("LIBNODE_DEBUG_MODULES").is_some() {
                     if let Some(exc) = self.engine.last_exception() {

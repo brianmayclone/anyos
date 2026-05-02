@@ -818,7 +818,39 @@ impl Vm {
         let args: Vec<JsValue> = self.stack[args_start..].to_vec();
         self.stack.truncate(ctor_idx);
 
-        if self.construct_with_new_target(&ctor, &args, &ctor) {
+        let mut ctor_to_construct = ctor.clone();
+        if !self.is_constructable_value(&ctor_to_construct) {
+            let mut fallback_prop: Option<alloc::string::String> = None;
+            if let Some(frame) = self.frames.last() {
+                let ip = frame.ip;
+                let code = &frame.chunk.code;
+                let consts = &frame.chunk.constants;
+                if ip >= 1 {
+                    for back in 1..ip.min(10) {
+                        let check_ip = ip - back;
+                        if check_ip < code.len() {
+                            if let crate::bytecode::Op::GetPropNamed(ci) = &code[check_ip] {
+                                if let Some(crate::bytecode::Constant::String(s)) =
+                                    consts.get(*ci as usize)
+                                {
+                                    fallback_prop = Some(s.clone());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(maybe_ctor) = self.unwrap_namespace_constructor_candidate(
+                &ctor_to_construct,
+                fallback_prop.as_deref(),
+                4,
+            ) {
+                ctor_to_construct = maybe_ctor;
+            }
+        }
+
+        if self.construct_with_new_target(&ctor_to_construct, &args, &ctor_to_construct) {
             return;
         }
 

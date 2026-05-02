@@ -5,7 +5,7 @@ use crate::util::path;
 
 pub fn package_json(project_name: &str) -> String {
     format!(
-        "{{\n  \"name\": \"{}\",\n  \"version\": \"0.1.0\",\n  \"type\": \"commonjs\",\n  \"private\": true,\n  \"main\": \"src/main.js\",\n  \"scripts\": {{\n    \"start\": \"node src/main.js\",\n    \"lint\": \"eslint src\",\n    \"test\": \"node src/main.js --self-test\"\n  }},\n  \"dependencies\": {{}},\n  \"devDependencies\": {{\n    \"eslint\": \"^8.57.1\"\n  }}\n}}\n",
+        "{{\n  \"name\": \"{}\",\n  \"version\": \"0.1.0\",\n  \"type\": \"commonjs\",\n  \"private\": true,\n  \"main\": \"src/main.js\",\n  \"scripts\": {{\n    \"start\": \"node src/main.js\",\n    \"lint\": \"eslint src\",\n    \"test\": \"node src/main.js --self-test\"\n  }},\n  \"dependencies\": {{\n    \"@anyos/anyui\": \"0.1.0\"\n  }},\n  \"devDependencies\": {{\n    \"eslint\": \"^8.57.1\"\n  }}\n}}\n",
         project_name
     )
 }
@@ -25,7 +25,8 @@ pub fn ensure_support_files(project_root: &str) -> Result<(), &'static str> {
   },
   "include": [
     "src/**/*.js",
-    "src/types/**/*.d.ts"
+    "src/types/**/*.d.ts",
+    "node_modules/@anyos/**/*.d.ts"
   ]
 }
 "#,

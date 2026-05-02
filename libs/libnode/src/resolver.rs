@@ -61,7 +61,16 @@ impl ModuleResolver {
             current = parent;
         }
         let candidate = join_path(&join_path(&self.cwd, "node_modules"), specifier);
-        self.load_as_file_or_directory(&candidate, specifier)
+        if let Some(module) = self.load_as_file_or_directory(&candidate, specifier) {
+            return Some(module);
+        }
+        for base in system_node_module_bases() {
+            let candidate = join_path(&base, specifier);
+            if let Some(module) = self.load_as_file_or_directory(&candidate, specifier) {
+                return Some(module);
+            }
+        }
+        None
     }
 
     fn load_as_file_or_directory(&self, base: &str, id: &str) -> Option<ResolvedModule> {
@@ -272,9 +281,27 @@ pub fn core_module_canonical_name(specifier: &str) -> Option<&'static str> {
         "util" | "node:util" => Some("util"),
         "url" | "node:url" => Some("url"),
         "zlib" | "node:zlib" => Some("zlib"),
+        "node:anyos-ffi" => Some("node:anyos-ffi"),
+        "node:anyos-image" => Some("node:anyos-image"),
+        "node:anyui" => Some("node:anyui"),
         "node:uv" => Some("node:uv"),
         _ => None,
     }
+}
+
+fn system_node_module_bases() -> Vec<String> {
+    let mut bases = Vec::new();
+    #[cfg(feature = "host")]
+    if let Ok(value) = std::env::var("ANYOS_NODE_SYSTEM_PACKAGES") {
+        for base in value.split(':') {
+            let base = base.trim();
+            if !base.is_empty() {
+                bases.push(normalize_path(base));
+            }
+        }
+    }
+    bases.push(String::from("/System/Library/node_modules"));
+    bases
 }
 
 fn is_relative_or_absolute(specifier: &str) -> bool {

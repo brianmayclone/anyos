@@ -62,6 +62,18 @@ impl JsEngine {
 
     /// Evaluate JavaScript source code with a source name used in stack traces.
     pub fn eval_named(&mut self, source: &str, name: Option<&str>) -> JsValue {
+        self.execute_source(source, name, true)
+    }
+
+    /// Execute JavaScript as a classic script with a source name used in stack traces.
+    ///
+    /// Unlike `eval_named`, this uses normal script compilation instead of eval
+    /// completion semantics. Entrypoints and CommonJS modules should use this path.
+    pub fn run_named(&mut self, source: &str, name: Option<&str>) -> JsValue {
+        self.execute_source(source, name, false)
+    }
+
+    fn execute_source(&mut self, source: &str, name: Option<&str>, is_eval: bool) -> JsValue {
         // Tokenize
         let tokens = lexer::Lexer::tokenize(source);
         #[cfg(feature = "host")]
@@ -110,9 +122,13 @@ impl JsEngine {
             return JsValue::Undefined;
         }
 
-        // Compile (using eval mode to return the last expression's value)
+        // Compile
         let mut compiler = compiler::Compiler::new();
-        let mut chunk = compiler.compile_eval(&program);
+        let mut chunk = if is_eval {
+            compiler.compile_eval(&program)
+        } else {
+            compiler.compile(&program)
+        };
         if let Some(name) = name {
             chunk.name = Some(alloc::string::String::from(name));
         }

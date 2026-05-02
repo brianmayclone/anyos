@@ -95,6 +95,10 @@ pub fn anyui_module(_policy: &NativeModulePolicy) -> JsValue {
         native_ctor_fn("Checkbox", anyui_checkbox_ctor),
     );
     module.set(
+        String::from("CheckBox"),
+        native_ctor_fn("CheckBox", anyui_checkbox_ctor),
+    );
+    module.set(
         String::from("RadioButton"),
         native_ctor_fn("RadioButton", anyui_radio_button_ctor),
     );

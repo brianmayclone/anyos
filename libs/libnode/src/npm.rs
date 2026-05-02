@@ -508,6 +508,9 @@ impl PackageInstaller {
         }
 
         let registry_spec = spec.registry_spec();
+        if self.install_system_package(layout, &registry_spec, seen, report)? {
+            return Ok(());
+        }
         let metadata = self
             .client
             .fetch_metadata(&registry_spec.name)
@@ -557,6 +560,45 @@ impl PackageInstaller {
             let _ = self.install_recursive(layout, &dep, depth + 1, seen, report);
         }
         Ok(())
+    }
+
+    fn install_system_package(
+        &self,
+        layout: &InstallLayout,
+        spec: &PackageSpec,
+        seen: &mut Vec<String>,
+        report: &mut InstallReport,
+    ) -> Result<bool, String> {
+        let Some(source_dir) = find_system_package_dir(&spec.name) else {
+            return Ok(false);
+        };
+        let package_json_path = join_path(&source_dir, "package.json");
+        let package_json = fs::read_to_string(&package_json_path)
+            .map_err(|_| format!("could not read {}", package_json_path))?;
+        let version = json_string_field(&package_json, "\"version\"")
+            .unwrap_or_else(|| String::from("0.0.0"));
+        let key = format!("{}@{}", spec.name, version);
+        if seen.iter().any(|entry| entry == &key) {
+            return Ok(true);
+        }
+        seen.push(key);
+
+        let install_dir = package_install_dir(&layout.node_modules_dir, &spec.name);
+        if !installed_version_matches(&install_dir, &version) {
+            copy_package_tree(&source_dir, &install_dir)
+                .ok_or_else(|| format!("could not install system package {}", spec.name))?;
+            mark_package_executables(&install_dir);
+            report.installed.push(PackageSpec {
+                name: spec.name.clone(),
+                version: version.clone(),
+            });
+        }
+
+        let manifest = PackageManifest::parse_or_new(Some(package_json));
+        for dep in manifest.dependencies() {
+            self.install_recursive(layout, &dep, 1, seen, report)?;
+        }
+        Ok(true)
     }
 }
 
@@ -910,6 +952,83 @@ fn package_install_dir(node_modules_dir: &str, package_name: &str) -> String {
         }
     }
     join_path(node_modules_dir, package_name)
+}
+
+fn find_system_package_dir(package_name: &str) -> Option<String> {
+    for base in system_package_bases() {
+        let candidate = package_install_dir(&base, package_name);
+        if fs::read_to_string(&join_path(&candidate, "package.json")).is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn system_package_bases() -> Vec<String> {
+    let mut bases = Vec::new();
+    #[cfg(feature = "host")]
+    if let Ok(value) = std::env::var("ANYOS_NODE_SYSTEM_PACKAGES") {
+        for base in value.split(':') {
+            let base = base.trim();
+            if !base.is_empty() {
+                bases.push(normalize_path(base));
+            }
+        }
+    }
+    bases.push(String::from("/System/Library/node_modules"));
+    bases
+}
+
+fn copy_package_tree(source_dir: &str, install_dir: &str) -> Option<()> {
+    mkdir_p(install_dir);
+    copy_dir_recursive(source_dir, install_dir, 0)
+}
+
+fn copy_dir_recursive(source_dir: &str, install_dir: &str, depth: usize) -> Option<()> {
+    if depth > 32 {
+        return None;
+    }
+    let mut buf = alloc::vec![0u8; 8192];
+    let count = fs::readdir(source_dir, &mut buf);
+    if count == u32::MAX {
+        return None;
+    }
+    for index in 0..count as usize {
+        let base = index * 64;
+        if base + 64 > buf.len() {
+            break;
+        }
+        let entry_type = buf[base];
+        let name_len = buf[base + 1] as usize;
+        let name_start = base + 8;
+        let name_end = (name_start + name_len).min(base + 64);
+        let name = core::str::from_utf8(&buf[name_start..name_end]).ok()?;
+        if name.is_empty() || name == "." || name == ".." {
+            continue;
+        }
+        let source = join_path(source_dir, name);
+        let target = join_path(install_dir, name);
+        if entry_type == 1 {
+            mkdir_p(&target);
+            copy_dir_recursive(&source, &target, depth + 1)?;
+        } else {
+            let data = read_file_bytes(&source)?;
+            mkdir_p(&dirname(&target));
+            fs::write_bytes(&target, &data).ok()?;
+        }
+    }
+    Some(())
+}
+
+fn read_file_bytes(path: &str) -> Option<Vec<u8>> {
+    #[cfg(feature = "host")]
+    {
+        fs::read_to_vec(path)
+    }
+    #[cfg(not(feature = "host"))]
+    {
+        fs::read_to_vec(path).ok()
+    }
 }
 
 fn package_cache_path(node_modules_dir: &str, spec: &PackageSpec) -> String {
