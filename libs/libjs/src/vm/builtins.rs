@@ -1160,6 +1160,10 @@ impl Vm {
 
         // ── ES Modules runtime ──
         self.set_global("__import__", native_fn("__import__", module_import_fn));
+        self.set_global(
+            "__dynamic_import__",
+            native_fn("__dynamic_import__", dynamic_module_import_fn),
+        );
         self.set_global("__exports__", JsValue::new_object());
 
         // ── BigInt constructor ──
@@ -1821,26 +1825,18 @@ fn bigint_constructor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
-fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let specifier = match args.first() {
-        Some(JsValue::String(s)) => s.clone(),
-        _ => {
-            vm.throw_native(vm.make_type_error("import() requires a string specifier"));
-            return JsValue::Undefined;
-        }
-    };
-
+fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsValue> {
     // 1. Check cached registry.
-    if let Some(ns) = vm.module_registry.get(&specifier) {
-        return ns.clone();
+    if let Some(ns) = vm.module_registry.get(specifier) {
+        return Ok(ns.clone());
     }
 
     // 2. Check source registry — compile, execute, cache.
-    if let Some(source) = vm.module_sources.get(&specifier).cloned() {
+    if let Some(source) = vm.module_sources.get(specifier).cloned() {
         // Save current __exports__ and install a fresh one for this module.
         let prev_exports = vm.get_global("__exports__");
         let module_exports = JsValue::new_object();
-        vm.set_global("__exports__", module_exports.clone());
+        vm.set_global("__exports__", module_exports);
 
         // Compile the module source.
         let tokens = crate::lexer::Lexer::tokenize(&source);
@@ -1848,9 +1844,7 @@ fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let program = parser.parse_program();
         if !parser.errors.is_empty() {
             vm.set_global("__exports__", prev_exports);
-            let err = vm.make_syntax_error(&parser.errors[0]);
-            vm.throw_native(err);
-            return JsValue::Undefined;
+            return Err(vm.make_syntax_error(&parser.errors[0]));
         }
         let mut compiler = crate::compiler::Compiler::new();
         let chunk = compiler.compile_eval(&program);
@@ -1874,24 +1868,61 @@ fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         )));
         vm.call_value(&module_fn, &[], JsValue::Undefined);
 
+        if let Some(exc) = vm
+            .pending_exception
+            .take()
+            .or_else(|| vm.last_exception.take())
+        {
+            vm.set_global("__exports__", prev_exports);
+            return Err(exc);
+        }
+
         // Collect exports and restore previous __exports__.
         let final_exports = vm.get_global("__exports__");
         vm.set_global("__exports__", prev_exports);
 
-        // Also copy any global-scope declarations that `export let/const/function`
-        // placed into the global scope.  ExportDecl::Decl compiles to global stores.
-        // (Named exports via `export { a, b }` already wrote to __exports__.)
-
         // Cache the module namespace.
-        vm.module_registry.insert(specifier, final_exports.clone());
-        return final_exports;
+        vm.module_registry
+            .insert(String::from(specifier), final_exports.clone());
+        return Ok(final_exports);
     }
 
     // 3. Module not found.
     let msg = alloc::format!("Cannot find module '{}'", specifier);
-    let err = vm.make_error(&msg);
-    vm.throw_native(err);
-    JsValue::Undefined
+    Err(vm.make_error(&msg))
+}
+
+fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let specifier = match args.first() {
+        Some(JsValue::String(s)) => s.clone(),
+        _ => {
+            vm.throw_native(vm.make_type_error("import() requires a string specifier"));
+            return JsValue::Undefined;
+        }
+    };
+
+    match resolve_module_namespace(vm, &specifier) {
+        Ok(ns) => ns,
+        Err(err) => {
+            vm.throw_native(err);
+            JsValue::Undefined
+        }
+    }
+}
+
+fn dynamic_module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let specifier = match args.first() {
+        Some(JsValue::String(s)) => s.clone(),
+        _ => {
+            let err = vm.make_type_error("import() requires a string specifier");
+            return native_promise::make_rejected_promise(err);
+        }
+    };
+
+    match resolve_module_namespace(vm, &specifier) {
+        Ok(ns) => native_promise::promise_resolve(vm, &[ns]),
+        Err(err) => native_promise::make_rejected_promise(err),
+    }
 }
 
 // ═══════════════════════════════════════════════════════

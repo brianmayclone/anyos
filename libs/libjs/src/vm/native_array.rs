@@ -2174,7 +2174,8 @@ fn collect_iterable_for_array_from(vm: &mut Vm, source: &JsValue) -> Option<Vec<
         items.push(value);
     }
 
-    vm.pending_exception = Some(vm.make_range_error("Array.from iterable produced too many values"));
+    vm.pending_exception =
+        Some(vm.make_range_error("Array.from iterable produced too many values"));
     Some(Vec::new())
 }
 

@@ -4461,11 +4461,12 @@ fn apply_host_js_mutations(
 
 fn prefetch_module_sources(
     wv: &mut libwebview::WebView,
+    page_url: &str,
     referrer_url: &str,
     source: &str,
     seen: &mut HashSet<String>,
 ) {
-    for specifier in libwebview::js::extract_module_specifiers(source) {
+    for specifier in libwebview::js::extract_module_specifiers_for_page(source, page_url) {
         let full_url = resolve_url(referrer_url, &specifier);
         if !seen.insert(full_url.clone()) {
             continue;
@@ -4481,7 +4482,7 @@ fn prefetch_module_sources(
         };
         wv.js_runtime().register_module_source(&specifier, &text);
         wv.js_runtime().register_module_source(&full_url, &text);
-        prefetch_module_sources(wv, &full_url, &text, seen);
+        prefetch_module_sources(wv, page_url, &full_url, &text, seen);
     }
 }
 
@@ -4554,7 +4555,7 @@ fn run_javascript(
         if let Some(Some(url)) = script_urls.get(idx) {
             wv.js_runtime().register_module_source(url, script);
         }
-        prefetch_module_sources(wv, referrer, script, &mut seen_modules);
+        prefetch_module_sources(wv, base_url, referrer, script, &mut seen_modules);
     }
 
     // Execute all scripts.

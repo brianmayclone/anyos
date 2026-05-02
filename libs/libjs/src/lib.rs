@@ -165,6 +165,11 @@ impl JsEngine {
         self.vm.last_exception.as_ref()
     }
 
+    /// Clear the last unhandled exception.
+    pub fn clear_last_exception(&mut self) {
+        self.vm.last_exception = None;
+    }
+
     /// Compile JavaScript source without executing it.
     pub fn compile(&self, source: &str) -> Chunk {
         let tokens = lexer::Lexer::tokenize(source);

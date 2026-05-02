@@ -1206,6 +1206,76 @@ pub fn extract_module_specifiers(source: &str) -> Vec<String> {
     specs
 }
 
+/// Extract module specifiers for a concrete page load.
+///
+/// This includes the conservative static scan plus a contextual dynamic import
+/// fallback for generated route bundles. We intentionally avoid returning every
+/// lazy route chunk from large Vite/Vike manifests because that blocks Surf on
+/// hundreds of unrelated downloads before the page can hydrate.
+pub fn extract_module_specifiers_for_page(source: &str, page_url: &str) -> Vec<String> {
+    let mut specs = extract_module_specifiers(source);
+    let bytes = source.as_bytes();
+    let brand_key = module_relevance_key(page_url);
+    let mut dynamic_specs = Vec::new();
+    let mut j = 0usize;
+    while j < bytes.len() {
+        if bytes_start_with(bytes, j, b"import")
+            && (j == 0 || !is_ident_byte(bytes[j - 1]))
+            && (j + 6 >= bytes.len() || !is_ident_byte(bytes[j + 6]))
+        {
+            let mut k = skip_js_ws(bytes, j + 6);
+            if k < bytes.len() && bytes[k] == b'(' {
+                k = skip_js_ws(bytes, k + 1);
+                if let Some((spec, end)) = parse_quoted_js_string(bytes, k) {
+                    if is_prefetchable_module_specifier(&spec)
+                        && !dynamic_specs.iter().any(|s| s == &spec)
+                    {
+                        dynamic_specs.push(spec);
+                    }
+                    j = end;
+                    continue;
+                }
+            }
+        }
+        j += 1;
+    }
+
+    if dynamic_specs.len() <= 32 || brand_key.is_empty() {
+        for spec in dynamic_specs {
+            push_unique_spec(&mut specs, spec);
+        }
+    } else {
+        for spec in dynamic_specs {
+            if spec.contains(&brand_key) {
+                push_unique_spec(&mut specs, spec);
+            }
+        }
+    }
+    specs
+}
+
+fn module_relevance_key(page_url: &str) -> String {
+    let host_start = page_url.find("://").map_or(0, |idx| idx + 3);
+    let host_end = page_url[host_start..]
+        .find('/')
+        .map_or(page_url.len(), |idx| host_start + idx);
+    let host = &page_url[host_start..host_end];
+    let first_label = host
+        .trim_start_matches("www.")
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim();
+    if first_label.is_empty()
+        || first_label
+            .bytes()
+            .any(|b| !(b.is_ascii_alphanumeric() || b == b'-'))
+    {
+        return String::new();
+    }
+    alloc::format!("_{}.", first_label.to_ascii_lowercase())
+}
+
 // ═══════════════════════════════════════════════════════════
 // JsRuntime — public API
 // ═══════════════════════════════════════════════════════════

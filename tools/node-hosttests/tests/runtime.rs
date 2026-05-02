@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use libnode::{NodeOptions, NodeRuntime};
@@ -40,6 +40,72 @@ fn repo_root() -> PathBuf {
         .and_then(|path| path.parent())
         .expect("node-hosttests should live under tools/node-hosttests")
         .to_path_buf()
+}
+
+fn node_manifest() -> PathBuf {
+    repo_root().join("bin/node/Cargo.toml")
+}
+
+fn npm_manifest() -> PathBuf {
+    repo_root().join("bin/npm/Cargo.toml")
+}
+
+fn run_node(args: &[&str], cwd: &std::path::Path) -> std::process::Output {
+    let mut command = Command::new("cargo");
+    command
+        .arg("run")
+        .arg("-q")
+        .arg("--manifest-path")
+        .arg(node_manifest())
+        .arg("--features")
+        .arg("host")
+        .arg("--")
+        .args(args)
+        .current_dir(cwd);
+    command.output().expect("failed to run anyOS node")
+}
+
+fn run_node_with_stdin(
+    args: &[&str],
+    stdin: &str,
+    cwd: &std::path::Path,
+) -> std::process::Output {
+    let mut child = Command::new("cargo")
+        .arg("run")
+        .arg("-q")
+        .arg("--manifest-path")
+        .arg(node_manifest())
+        .arg("--features")
+        .arg("host")
+        .arg("--")
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn anyOS node");
+    let mut child_stdin = child.stdin.take().expect("stdin should be piped");
+    child_stdin
+        .write_all(stdin.as_bytes())
+        .expect("failed to write node stdin");
+    drop(child_stdin);
+    child.wait_with_output().expect("failed to wait for node")
+}
+
+fn run_npm(args: &[&str], cwd: &std::path::Path) -> std::process::Output {
+    let mut command = Command::new("cargo");
+    command
+        .arg("run")
+        .arg("-q")
+        .arg("--manifest-path")
+        .arg(npm_manifest())
+        .arg("--features")
+        .arg("host")
+        .arg("--")
+        .args(args)
+        .current_dir(cwd);
+    command.output().expect("failed to run anyOS npm")
 }
 
 fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) {
@@ -205,6 +271,184 @@ fn process_next_tick_runs_before_later_event_loop_work() {
     let value = runtime.eval("out");
 
     assert_eq!(value.to_js_string(), "tick");
+}
+
+#[test]
+fn node_cli_eval_print_script_args_and_repl_match_core_shapes() {
+    let root = temp_project("node-cli");
+    let eval = run_node(
+        &["-e", "console.log(process.argv.join('|'))", "alpha beta", "gamma"],
+        &root,
+    );
+    assert!(eval.status.success());
+    let eval_stdout = String::from_utf8_lossy(&eval.stdout);
+    assert!(
+        eval_stdout.contains("node|alpha beta|gamma"),
+        "stdout: {eval_stdout}"
+    );
+    assert!(
+        !eval_stdout.lines().any(|line| line == "undefined"),
+        "node -e should not print eval result: {eval_stdout}"
+    );
+
+    let print = run_node(&["-p", "1 + 2"], &root);
+    assert!(print.status.success());
+    assert!(String::from_utf8_lossy(&print.stdout).contains("3"));
+
+    let script = root.join("main.js");
+    fs::write(
+        &script,
+        b"console.log(process.argv[1].endsWith('main.js') + ':' + process.argv[2]);",
+    )
+    .expect("failed to write node cli script");
+    let script_out = run_node(&[script.to_str().unwrap(), "quoted value"], &root);
+    assert!(script_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&script_out.stdout).contains("true:quoted value"),
+        "stdout: {}",
+        String::from_utf8_lossy(&script_out.stdout)
+    );
+
+    let repl = run_node_with_stdin(&[], "1 + 2\n.exit\n", &root);
+    assert!(repl.status.success());
+    let repl_stdout = String::from_utf8_lossy(&repl.stdout);
+    assert!(repl_stdout.contains("Welcome to anyOS Node.js"));
+    assert!(repl_stdout.lines().any(|line| line == "3"));
+}
+
+#[test]
+fn commonjs_entry_module_is_exposed_as_require_main() {
+    let root = temp_project("require-main");
+    let helper = root.join("helper.js");
+    fs::write(
+        &helper,
+        b"module.exports = require.main === module;",
+    )
+    .expect("failed to write helper.js");
+
+    let main = root.join("main.js");
+    fs::write(
+        &main,
+        b"console.log((require.main === module) + ':' + require('./helper'));",
+    )
+    .expect("failed to write main.js");
+
+    let output = run_node(&[main.to_str().unwrap()], &root);
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("true:false"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+#[ignore = "downloads packages from the npm registry"]
+fn npm_cli_accepts_common_flags_list_and_uninstall() {
+    let root = temp_project("npm-cli");
+    let init = run_npm(&["init", "-y"], &root);
+    assert!(init.status.success());
+    assert!(root.join("package.json").exists());
+
+    let install = run_npm(
+        &[
+            "install",
+            "left-pad@1.3.0",
+            "--save-exact",
+            "--no-audit",
+            "--registry",
+            libnode::DEFAULT_NPM_REGISTRY,
+        ],
+        &root,
+    );
+    assert!(
+        install.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+
+    let list = run_npm(&["list"], &root);
+    assert!(list.status.success());
+    assert!(String::from_utf8_lossy(&list.stdout).contains("left-pad@1.3.0"));
+
+    let uninstall = run_npm(&["uninstall", "left-pad"], &root);
+    assert!(uninstall.status.success());
+    let manifest = fs::read_to_string(root.join("package.json")).expect("package.json missing");
+    assert!(!manifest.contains("\"left-pad\""), "{manifest}");
+}
+
+#[test]
+#[ignore = "downloads multiple packages and transitive dependencies from the npm registry"]
+fn npm_installs_multi_package_project_and_node_runs_it() {
+    let root = temp_project("official-multi-package");
+    copy_dir_recursive(&fixture_project("multi-package-app"), &root);
+
+    let install = run_npm(
+        &[
+            "install",
+            "--no-audit",
+            "--registry",
+            libnode::DEFAULT_NPM_REGISTRY,
+        ],
+        &root,
+    );
+    assert!(
+        install.status.success(),
+        "npm process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let npm_stdout = String::from_utf8_lossy(&install.stdout);
+    assert!(
+        npm_stdout.contains("installed packages:"),
+        "unexpected npm output: {npm_stdout}"
+    );
+    assert!(
+        root.join("node_modules").join("left-pad").join("package.json").exists(),
+        "left-pad package was not installed"
+    );
+    assert!(
+        root.join("node_modules").join("is-odd").join("package.json").exists(),
+        "is-odd package was not installed"
+    );
+    assert!(
+        root.join("node_modules")
+            .join("is-number")
+            .join("package.json")
+            .exists(),
+        "is-odd transitive dependency is-number was not installed"
+    );
+
+    let list = run_npm(&["list"], &root);
+    assert!(
+        list.status.success(),
+        "npm list failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&list.stdout),
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(list_stdout.contains("left-pad@1.3.0"), "{list_stdout}");
+    assert!(list_stdout.contains("is-odd@3.0.1"), "{list_stdout}");
+
+    let script = root.join("src").join("app.js");
+    let run = run_node(&[script.to_str().unwrap(), "7"], &root);
+    assert!(
+        run.status.success(),
+        "node process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("007:true"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
 }
 
 #[test]

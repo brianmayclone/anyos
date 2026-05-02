@@ -22,6 +22,17 @@ pub fn module(options: &NodeOptions) -> JsValue {
     process.set(String::from("nextTick"), native_fn("nextTick", next_tick));
     process.set(String::from("env"), env_object());
     process.set(String::from("argv"), string_array(&options.argv));
+    process.set(String::from("execArgv"), string_array(&options.exec_argv));
+    process.set(
+        String::from("argv0"),
+        JsValue::String(
+            options
+                .argv
+                .first()
+                .cloned()
+                .unwrap_or_else(|| String::from("node")),
+        ),
+    );
     JsValue::Object(Rc::new(RefCell::new(process)))
 }
 

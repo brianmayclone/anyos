@@ -2873,6 +2873,34 @@ fn module_native_object() {
     assert_eq!(result.to_js_string(), "1.0");
 }
 
+#[test]
+fn dynamic_import_returns_fulfilled_promise_with_namespace() {
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.register_module_source("dyn", "export const answer = 42;");
+    let result = engine.eval(
+        r#"
+        var p = import('dyn');
+        typeof p.then + ':' + p.__state + ':' + p.__value.answer
+    "#,
+    );
+    assert_eq!(result.to_js_string(), "function:fulfilled:42");
+}
+
+#[test]
+fn arguments_object_is_iterable() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (function() {
+                return [...arguments].join(':');
+            })('a', 'b', 'c')
+            "#
+        ),
+        "a:b:c"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // §10.2 — Strict Mode
 // ═══════════════════════════════════════════════════════════

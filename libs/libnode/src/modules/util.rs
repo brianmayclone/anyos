@@ -32,12 +32,12 @@ pub fn empty_object() -> JsValue {
 }
 
 pub fn string_array(values: &[String]) -> JsValue {
-    let mut object = JsObject::new();
-    for (idx, value) in values.iter().enumerate() {
-        object.set(idx.to_string(), JsValue::String(value.clone()));
-    }
-    object.set(String::from("length"), JsValue::Number(values.len() as f64));
-    self::object(object)
+    JsValue::new_array(
+        values
+            .iter()
+            .map(|value| JsValue::String(value.clone()))
+            .collect(),
+    )
 }
 
 fn format(_vm: &mut Vm, args: &[JsValue]) -> JsValue {

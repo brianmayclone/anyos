@@ -42,7 +42,9 @@ impl NodeRuntime {
     }
 
     pub fn run_script(&mut self, path: &str, source: &str) -> JsValue {
-        self.options.argv = vec![String::from("node"), String::from(path)];
+        if self.options.argv.is_empty() {
+            self.options.argv = vec![String::from("node"), String::from(path)];
+        }
         self.install_process_object();
         let dirname = resolver::dirname(path);
         self.preload_requires(source, &dirname, 0);
@@ -223,6 +225,8 @@ impl NodeRuntime {
     fn install_commonjs_globals(&mut self, filename: &str, dirname: &str) -> JsValue {
         let module = modules::commonjs_module(filename, dirname);
         self.install_commonjs_globals_from_module(filename, dirname, module.clone());
+        let require = self.engine.get_global("require");
+        require.set_property(String::from("main"), module.clone());
         module
     }
 
@@ -368,7 +372,7 @@ impl NodeRuntime {
             std::eprintln!("[libnode-require-map] {} {{{}}}", module.filename, map_entries);
         }
         alloc::format!(
-            "(function() {{\nvar __node_require_map = {{{}}};\nfunction __node_local_require__(id) {{ return require(__node_require_map[id] || id); }}\n__node_local_require__.resolve = function(id) {{ return require.resolve(__node_require_map[id] || id); }};\n__node_local_require__.cache = require.cache;\nreturn (function(exports, require, module, __filename, __dirname) {{\n{}\n}})(module.exports, __node_local_require__, module, {}, {});\n}})();",
+            "(function() {{\nvar __node_require_map = {{{}}};\nfunction __node_local_require__(id) {{ return require(__node_require_map[id] || id); }}\n__node_local_require__.resolve = function(id) {{ return require.resolve(__node_require_map[id] || id); }};\n__node_local_require__.cache = require.cache;\n__node_local_require__.main = require.main;\nreturn (function(exports, require, module, __filename, __dirname) {{\n{}\n}})(module.exports, __node_local_require__, module, {}, {});\n}})();",
             map_entries,
             module.source,
             js_string_literal(&module.filename),

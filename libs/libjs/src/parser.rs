@@ -2401,12 +2401,25 @@ impl Parser {
                 self.pos += 1;
                 Expr::Ident(s)
             }
-            TokenKind::As | TokenKind::From | TokenKind::Of | TokenKind::Await | TokenKind::Let => {
+            TokenKind::As
+            | TokenKind::From
+            | TokenKind::Of
+            | TokenKind::Await
+            | TokenKind::Let
+            | TokenKind::Import => {
                 // These are contextual keywords in JavaScript. They are only
                 // special in specific grammar positions (`import ... as ...`,
                 // `for (... of ...)`, modules/async functions, lexical decls),
                 // but minified bundles also use them as ordinary names.
-                Expr::Ident(self.ident_str())
+                let name = self.ident_str();
+                if name == "import" {
+                    // In expression position, `import(specifier)` is the
+                    // dynamic import operator. Static import declarations are
+                    // parsed in statement position before we get here.
+                    Expr::Ident(String::from("__dynamic_import__"))
+                } else {
+                    Expr::Ident(name)
+                }
             }
             TokenKind::LParen => {
                 self.pos += 1;

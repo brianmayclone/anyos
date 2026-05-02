@@ -108,6 +108,50 @@ impl PackageManifest {
         self.data = format!("{{\n  \"dependencies\": {{\n{}\n  }}\n}}\n", dep_line);
     }
 
+    pub fn remove_dependency(&mut self, name: &str) -> bool {
+        let Some(pos) = self.data.find("\"dependencies\"") else {
+            return false;
+        };
+        let Some(open_rel) = self.data[pos..].find('{') else {
+            return false;
+        };
+        let open = pos + open_rel + 1;
+        let close = self.data[open..]
+            .find('}')
+            .map(|idx| open + idx)
+            .unwrap_or(open);
+        let deps = parse_dependency_object(&self.data[open..close]);
+        if !deps.iter().any(|dep| dep.name == name) {
+            return false;
+        }
+        let remaining: Vec<PackageSpec> = deps.into_iter().filter(|dep| dep.name != name).collect();
+        let mut replacement = String::new();
+        if !remaining.is_empty() {
+            replacement.push('\n');
+            for (idx, dep) in remaining.iter().enumerate() {
+                replacement.push_str(&format!("    \"{}\": \"{}\"", dep.name, dep.version));
+                if idx + 1 < remaining.len() {
+                    replacement.push(',');
+                }
+                replacement.push('\n');
+            }
+        }
+        let mut out = String::new();
+        out.push_str(&self.data[..open]);
+        out.push_str(&replacement);
+        out.push_str(&self.data[close..]);
+        self.data = out;
+        true
+    }
+
+    pub fn dependencies(&self) -> Vec<PackageSpec> {
+        self.data
+            .find("\"dependencies\"")
+            .and_then(|pos| json_object_field(&self.data[pos..], "\"dependencies\""))
+            .map(parse_dependency_object)
+            .unwrap_or_default()
+    }
+
     pub fn as_str(&self) -> &str {
         &self.data
     }

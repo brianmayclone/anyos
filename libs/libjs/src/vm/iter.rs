@@ -177,6 +177,23 @@ impl Vm {
             }
         }
 
+        // Web bundles frequently spread or destructure `arguments`.
+        // It is array-like in older JavaScript, and modern engines expose it
+        // through the iterator protocol as well.
+        if let JsValue::Object(obj) = val {
+            if obj.borrow().internal_tag.as_deref() == Some("__arguments__") {
+                let len = match obj.borrow().get("length") {
+                    JsValue::Number(n) if n > 0.0 => n as usize,
+                    _ => 0,
+                };
+                let mut items = Vec::new();
+                for idx in 0..len {
+                    items.push(obj.borrow().get(&alloc::format!("{}", idx)));
+                }
+                return self.make_internal_iterator(items);
+            }
+        }
+
         // 2. ES2023 §7.4.1: without a callable @@iterator, the value is not iterable.
         let val_str = val.to_js_string();
         let msg = alloc::format!("{} is not iterable", val_str);

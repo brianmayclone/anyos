@@ -364,12 +364,7 @@ impl Vm {
                 .rev()
                 .take(12)
                 .map(|(idx, value)| {
-                    alloc::format!(
-                        "{}:{}:{}",
-                        idx,
-                        value.type_of(),
-                        value.to_js_string()
-                    )
+                    alloc::format!("{}:{}:{}", idx, value.type_of(), value.to_js_string())
                 })
                 .collect::<Vec<_>>()
                 .join(",");
@@ -425,12 +420,7 @@ impl Vm {
                 .rev()
                 .take(12)
                 .map(|(idx, value)| {
-                    alloc::format!(
-                        "{}:{}:{}",
-                        idx,
-                        value.type_of(),
-                        value.to_js_string()
-                    )
+                    alloc::format!("{}:{}:{}", idx, value.type_of(), value.to_js_string())
                 })
                 .collect::<Vec<_>>()
                 .join(",");
@@ -771,9 +761,7 @@ impl Vm {
                         .iter()
                         .rev()
                         .take(8)
-                        .map(|value| {
-                            alloc::format!("{}:{}", value.type_of(), value.to_js_string())
-                        })
+                        .map(|value| alloc::format!("{}:{}", value.type_of(), value.to_js_string()))
                         .collect::<Vec<_>>()
                         .join(",");
                     std::eprintln!(
