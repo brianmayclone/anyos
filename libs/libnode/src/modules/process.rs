@@ -63,10 +63,8 @@ fn binding(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             out
         }
         _ => {
-            vm.pending_exception = Some(vm.make_type_error(&alloc::format!(
-                "No such module: {}",
-                name
-            )));
+            vm.pending_exception =
+                Some(vm.make_type_error(&alloc::format!("No such module: {}", name)));
             JsValue::Undefined
         }
     }

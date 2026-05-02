@@ -494,10 +494,13 @@ pub fn make_window(
     let history = JsValue::new_object();
     history.set_property(String::from("length"), JsValue::Number(1.0));
     history.set_property(String::from("state"), JsValue::Null);
-    history.set_property(String::from("pushState"), native_fn("pushState", win_noop));
+    history.set_property(
+        String::from("pushState"),
+        native_fn("pushState", history_push_state),
+    );
     history.set_property(
         String::from("replaceState"),
-        native_fn("replaceState", win_noop),
+        native_fn("replaceState", history_replace_state),
     );
     history.set_property(String::from("back"), native_fn("back", win_noop));
     history.set_property(String::from("forward"), native_fn("forward", win_noop));
@@ -1017,6 +1020,103 @@ fn win_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn win_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::Undefined
 }
+
+fn history_push_state(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    history_state_update(vm, args, false)
+}
+
+fn history_replace_state(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    history_state_update(vm, args, true)
+}
+
+fn history_state_update(vm: &mut Vm, args: &[JsValue], replace: bool) -> JsValue {
+    let state = args.first().cloned().unwrap_or(JsValue::Null);
+    vm.current_this
+        .set_property(String::from("state"), state.clone());
+
+    if !replace {
+        let len = vm.current_this.get_property("length").to_number();
+        vm.current_this
+            .set_property(String::from("length"), JsValue::Number((len + 1.0).max(1.0)));
+    }
+
+    let Some(url_arg) = args.get(2) else {
+        return JsValue::Undefined;
+    };
+    if url_arg.is_undefined() || url_arg.is_null() {
+        return JsValue::Undefined;
+    }
+
+    let window = vm.get_global("window");
+    let location = window.get_property("location");
+    let current_href = location.get_property("href").to_js_string();
+    let href = resolve_history_url(&current_href, &url_arg.to_js_string());
+    if href.is_empty() {
+        return JsValue::Undefined;
+    }
+
+    update_location_object(&location, &href);
+    let document = vm.get_global("document");
+    if !document.is_undefined() {
+        document.set_property(String::from("URL"), JsValue::String(href));
+    }
+    JsValue::Undefined
+}
+
+fn update_location_object(location: &JsValue, href: &str) {
+    let (protocol, hostname, host, port, pathname, search, hash, origin) =
+        super::document::parse_location_fields(href);
+    set_location_data(location, "href", JsValue::String(String::from(href)));
+    set_location_data(location, "hostname", JsValue::String(hostname));
+    set_location_data(location, "host", JsValue::String(host));
+    set_location_data(location, "port", JsValue::String(port));
+    set_location_data(location, "pathname", JsValue::String(pathname));
+    set_location_data(location, "protocol", JsValue::String(protocol));
+    set_location_data(location, "search", JsValue::String(search));
+    set_location_data(location, "hash", JsValue::String(hash));
+    set_location_data(location, "origin", JsValue::String(origin));
+}
+
+fn set_location_data(location: &JsValue, key: &str, value: JsValue) {
+    if let JsValue::Object(obj) = location {
+        let mut borrowed = obj.borrow_mut();
+        let hook = borrowed.set_hook.take();
+        let hook_data = borrowed.set_hook_data;
+        borrowed.set(String::from(key), value);
+        borrowed.set_hook = hook;
+        borrowed.set_hook_data = hook_data;
+    } else {
+        location.set_property(String::from(key), value);
+    }
+}
+
+fn resolve_history_url(current_href: &str, raw_url: &str) -> String {
+    let raw = raw_url.trim();
+    if raw.is_empty() {
+        return String::from(current_href);
+    }
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return String::from(raw);
+    }
+
+    let (_, _, _, _, pathname, search, _, origin) = super::document::parse_location_fields(current_href);
+    if raw.starts_with('/') {
+        return alloc::format!("{}{}", origin, raw);
+    }
+    if raw.starts_with('?') {
+        return alloc::format!("{}{}{}", origin, pathname, raw);
+    }
+    if raw.starts_with('#') {
+        return alloc::format!("{}{}{}{}", origin, pathname, search, raw);
+    }
+
+    let base_dir = match pathname.rfind('/') {
+        Some(pos) => &pathname[..pos + 1],
+        None => "/",
+    };
+    alloc::format!("{}{}{}", origin, base_dir, raw)
+}
+
 fn win_noop_obj(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::new_object()
 }

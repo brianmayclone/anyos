@@ -7,13 +7,13 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::deflate;
 use crate::syscall;
 use crate::tls;
 use crate::url::{
-    Url, clone_url, find_header_value, parse_hex, parse_u32, parse_url,
-    push_u32, resolve_url, parse_ip,
+    clone_url, find_header_value, parse_hex, parse_ip, parse_u32, parse_url, push_u32, resolve_url,
+    Url,
 };
-use crate::deflate;
 
 // ── Error codes ─────────────────────────────────────────────────────────────
 
@@ -45,6 +45,7 @@ struct Connection {
 
 static mut LAST_STATUS: u32 = 0;
 static mut LAST_ERROR: u32 = 0;
+static mut LAST_HEADERS: Option<String> = None;
 
 /// Progress callback set by `download_to_file()` for use by body readers.
 static mut PROGRESS_CB: Option<extern "C" fn(u32, u32, u64)> = None;
@@ -53,12 +54,22 @@ static mut PROGRESS_UD: u64 = 0;
 
 /// Set the last HTTP status code.
 pub(crate) fn set_status(status: u32) {
-    unsafe { LAST_STATUS = status; }
+    unsafe {
+        LAST_STATUS = status;
+    }
 }
 
 /// Set the last error code.
 pub(crate) fn set_error(err: u32) {
-    unsafe { LAST_ERROR = err; }
+    unsafe {
+        LAST_ERROR = err;
+    }
+}
+
+fn set_headers(headers: &str) {
+    unsafe {
+        LAST_HEADERS = Some(String::from(headers));
+    }
 }
 
 /// Get the last HTTP status code.
@@ -69,6 +80,10 @@ pub fn last_status() -> u32 {
 /// Get the last error code.
 pub fn last_error() -> u32 {
     unsafe { LAST_ERROR }
+}
+
+pub fn last_headers() -> String {
+    unsafe { LAST_HEADERS.clone().unwrap_or_default() }
 }
 
 // ── HTTP GET to buffer ──────────────────────────────────────────────────────
@@ -185,7 +200,11 @@ pub fn drain_progress(
     match result {
         Ok((status, received)) => {
             set_status(status as u32);
-            if status < 400 { Some(received) } else { None }
+            if status < 400 {
+                Some(received)
+            } else {
+                None
+            }
         }
         Err(err) => {
             set_error(err);
@@ -208,6 +227,37 @@ pub fn post(url_str: &str, body: &[u8], content_type: &str) -> Option<Vec<u8>> {
     };
 
     match fetch_post_inner(&url, body, content_type) {
+        Ok((status, resp_body)) => {
+            set_status(status as u32);
+            Some(resp_body)
+        }
+        Err(err) => {
+            set_error(err);
+            None
+        }
+    }
+}
+
+/// Perform an HTTP(S) request with custom method, body, and headers.
+pub fn request_with_headers(
+    url_str: &str,
+    method: &str,
+    body: &[u8],
+    content_type: &str,
+    extra_headers: &str,
+) -> Option<Vec<u8>> {
+    set_status(0);
+    set_error(ERR_NONE);
+
+    let url = match parse_url(url_str) {
+        Some(u) => u,
+        None => {
+            set_error(ERR_INVALID_URL);
+            return None;
+        }
+    };
+
+    match fetch_request_headers_inner(&url, method, body, content_type, extra_headers) {
         Ok((status, resp_body)) => {
             set_status(status as u32);
             Some(resp_body)
@@ -387,6 +437,46 @@ fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, 
     Err(ERR_TOO_MANY_REDIRECTS)
 }
 
+fn fetch_request_headers_inner(
+    url: &Url,
+    method: &str,
+    body: &[u8],
+    content_type: &str,
+    extra_headers: &str,
+) -> Result<(u16, Vec<u8>), u32> {
+    let mut current = clone_url(url);
+    let method = normalize_method(method);
+
+    for _redirect_n in 0..MAX_REDIRECTS {
+        let is_https = current.scheme == "https";
+        let conn = connect_to(&current.host, current.port, is_https)?;
+        let request =
+            build_request_with_headers(&current, &method, body, content_type, extra_headers);
+
+        let mut combined = Vec::with_capacity(request.len() + body.len());
+        combined.extend_from_slice(request.as_bytes());
+        combined.extend_from_slice(body);
+        if !send_data(&conn, &combined, is_https) {
+            close_conn(conn);
+            return Err(ERR_SEND_FAILURE);
+        }
+
+        match receive_response(&conn, is_https, false)? {
+            ResponseAction::Redirect(_redir_status, location) => {
+                close_conn(conn);
+                current = resolve_url(&current, &location);
+                continue;
+            }
+            ResponseAction::Complete(status, resp_body) => {
+                close_conn(conn);
+                return Ok((status, resp_body));
+            }
+        }
+    }
+
+    Err(ERR_TOO_MANY_REDIRECTS)
+}
+
 // ── Connection management ───────────────────────────────────────────────────
 
 /// Establish a TCP connection (+ TLS handshake for HTTPS).
@@ -467,11 +557,17 @@ fn recv_some(conn: &Connection, buf: &mut [u8], is_https: bool) -> usize {
         // git-upload-pack pack generation), during which tls::recv returns -1.
         for _ in 0..3 {
             let n = tls::recv(handle, buf);
-            if n > 0 { return n as usize; }
-            if n == 0 { return 0; } // EOF
-            // n < 0: check if connection is still alive
+            if n > 0 {
+                return n as usize;
+            }
+            if n == 0 {
+                return 0;
+            } // EOF
+              // n < 0: check if connection is still alive
             let avail = syscall::tcp_recv_available(conn.sock);
-            if avail == u32::MAX || avail == 0xFFFFFFFE { return 0; }
+            if avail == u32::MAX || avail == 0xFFFFFFFE {
+                return 0;
+            }
             // Connection alive, server still thinking — wait and retry
             syscall::sleep(100);
         }
@@ -542,6 +638,7 @@ fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<Resp
 
     // Parse status line
     let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
+    set_headers(header_str);
     let (status, _reason) = parse_status_line(header_str);
 
     // Handle redirects
@@ -557,8 +654,8 @@ fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<Resp
         .map(|v| v.contains("chunked"))
         .unwrap_or(false);
     let content_length = parse_content_length(header_str);
-    let content_encoding = find_header_value(header_str, "content-encoding")
-        .map(|v| String::from(v));
+    let content_encoding =
+        find_header_value(header_str, "content-encoding").map(|v| String::from(v));
 
     let mut trailing = Vec::new();
     if header_end < response_buf.len() {
@@ -572,7 +669,11 @@ fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<Resp
     }?;
 
     // Decompress if content-encoded (skip in raw mode for file downloads)
-    let body = if raw { raw_body } else { decompress_body(raw_body, &content_encoding) };
+    let body = if raw {
+        raw_body
+    } else {
+        decompress_body(raw_body, &content_encoding)
+    };
 
     Ok(ResponseAction::Complete(status, body))
 }
@@ -604,6 +705,7 @@ fn receive_response_to_file(
     }
 
     let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
+    set_headers(header_str);
     let (status, _reason) = parse_status_line(header_str);
 
     if is_redirect(status) {
@@ -627,7 +729,10 @@ fn receive_response_to_file(
         trailing.extend_from_slice(&response_buf[header_end..]);
     }
 
-    let fd = syscall::open(path, syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC);
+    let fd = syscall::open(
+        path,
+        syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC,
+    );
     if fd == u32::MAX {
         return Err(ERR_FILE_WRITE);
     }
@@ -645,10 +750,7 @@ fn receive_response_to_file(
 }
 
 /// Receive headers and consume the response body without storing it.
-fn receive_response_drain(
-    conn: &Connection,
-    is_https: bool,
-) -> Result<ResponseDrainAction, u32> {
+fn receive_response_drain(conn: &Connection, is_https: bool) -> Result<ResponseDrainAction, u32> {
     let mut response_buf: Vec<u8> = Vec::new();
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
     let header_end;
@@ -670,11 +772,15 @@ fn receive_response_drain(
     }
 
     let header_str = core::str::from_utf8(&response_buf[..header_end]).unwrap_or("");
+    set_headers(header_str);
     let (status, _reason) = parse_status_line(header_str);
 
     if is_redirect(status) {
         if let Some(location) = find_header_value(header_str, "location") {
-            return Ok(ResponseDrainAction::Redirect(status, String::from(location)));
+            return Ok(ResponseDrainAction::Redirect(
+                status,
+                String::from(location),
+            ));
         }
         return Ok(ResponseDrainAction::Complete(status, 0));
     }
@@ -751,7 +857,12 @@ fn build_post_request(url: &Url, body: &[u8], content_type: &str) -> String {
 }
 
 /// Perform an HTTP(S) POST request with custom headers.
-pub fn post_with_headers(url_str: &str, body: &[u8], content_type: &str, extra_headers: &str) -> Option<Vec<u8>> {
+pub fn post_with_headers(
+    url_str: &str,
+    body: &[u8],
+    content_type: &str,
+    extra_headers: &str,
+) -> Option<Vec<u8>> {
     set_status(0);
     set_error(ERR_NONE);
 
@@ -776,7 +887,12 @@ pub fn post_with_headers(url_str: &str, body: &[u8], content_type: &str, extra_h
 }
 
 /// Core POST with custom headers — same flow as fetch_post_inner.
-fn fetch_post_headers_inner(url: &Url, body: &[u8], content_type: &str, extra_headers: &str) -> Result<(u16, Vec<u8>), u32> {
+fn fetch_post_headers_inner(
+    url: &Url,
+    body: &[u8],
+    content_type: &str,
+    extra_headers: &str,
+) -> Result<(u16, Vec<u8>), u32> {
     let mut current = clone_url(url);
     let mut use_post = true;
 
@@ -828,7 +944,12 @@ fn fetch_post_headers_inner(url: &Url, body: &[u8], content_type: &str, extra_he
 }
 
 /// Build a POST request with extra headers inserted before Connection header.
-fn build_post_request_with_headers(url: &Url, body: &[u8], content_type: &str, extra_headers: &str) -> String {
+fn build_post_request_with_headers(
+    url: &Url,
+    body: &[u8],
+    content_type: &str,
+    extra_headers: &str,
+) -> String {
     let mut req = String::new();
     req.push_str("POST ");
     req.push_str(&url.path);
@@ -858,6 +979,88 @@ fn build_post_request_with_headers(url: &Url, body: &[u8], content_type: &str, e
     }
     req.push_str("\r\n\r\n");
     req
+}
+
+fn build_request_with_headers(
+    url: &Url,
+    method: &str,
+    body: &[u8],
+    content_type: &str,
+    extra_headers: &str,
+) -> String {
+    let mut req = String::new();
+    req.push_str(method);
+    req.push(' ');
+    req.push_str(&url.path);
+    req.push_str(" HTTP/1.1\r\nHost: ");
+    req.push_str(&url.host);
+    if (url.scheme == "http" && url.port != 80) || (url.scheme == "https" && url.port != 443) {
+        req.push(':');
+        push_u32(&mut req, url.port as u32);
+    }
+    req.push_str("\r\nUser-Agent: node/anyos");
+    req.push_str("\r\nAccept: */*");
+    req.push_str("\r\nAccept-Encoding: gzip, deflate");
+    if !content_type.is_empty() && !header_block_has(extra_headers, "content-type") {
+        req.push_str("\r\nContent-Type: ");
+        req.push_str(content_type);
+    }
+    if method_allows_body(method) || !body.is_empty() {
+        req.push_str("\r\nContent-Length: ");
+        push_u32(&mut req, body.len() as u32);
+    }
+    if !extra_headers.is_empty() {
+        req.push_str("\r\n");
+        req.push_str(extra_headers);
+        if !extra_headers.ends_with("\r\n") {
+            req.push_str("\r\n");
+        }
+        if !header_block_has(extra_headers, "connection") {
+            req.push_str("Connection: close\r\n");
+        }
+    } else {
+        req.push_str("\r\nConnection: close\r\n");
+    }
+    req.push_str("\r\n");
+    req
+}
+
+fn normalize_method(method: &str) -> String {
+    let trimmed = method.trim();
+    if trimmed.is_empty() {
+        return String::from("GET");
+    }
+    let mut out = String::new();
+    for ch in trimmed.chars() {
+        out.push(ch.to_ascii_uppercase());
+    }
+    out
+}
+
+fn method_allows_body(method: &str) -> bool {
+    !(method == "GET" || method == "HEAD")
+}
+
+fn header_block_has(headers: &str, name: &str) -> bool {
+    for line in headers.split('\n') {
+        let line = line.trim();
+        let Some(idx) = line.find(':') else {
+            continue;
+        };
+        if eq_ignore_ascii_case(&line[..idx], name) {
+            return true;
+        }
+    }
+    false
+}
+
+fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .all(|(x, y)| crate::url::ascii_lower(x) == crate::url::ascii_lower(y))
 }
 
 // ── Body reading ────────────────────────────────────────────────────────────
@@ -1074,7 +1277,6 @@ fn read_body_drain(
             }
         }
     }
-
 }
 
 /// Read a chunked transfer-encoded body.
@@ -1104,16 +1306,22 @@ fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Resul
                 break;
             }
             let n = recv_some(conn, &mut recv_buf, is_https);
-            if n == 0 { return Err(ERR_NO_RESPONSE); }
+            if n == 0 {
+                return Err(ERR_NO_RESPONSE);
+            }
             buf.extend_from_slice(&recv_buf[..n]);
         }
 
-        if chunk_size == 0 { break; }
+        if chunk_size == 0 {
+            break;
+        }
 
         // Read chunk data
         while buf.len() - cursor < chunk_size {
             let n = recv_some(conn, &mut recv_buf, is_https);
-            if n == 0 { return Err(ERR_NO_RESPONSE); }
+            if n == 0 {
+                return Err(ERR_NO_RESPONSE);
+            }
             buf.extend_from_slice(&recv_buf[..n]);
         }
 
@@ -1130,7 +1338,9 @@ fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Resul
         // Skip trailing CRLF
         while buf.len() - cursor < 2 {
             let n = recv_some(conn, &mut recv_buf, is_https);
-            if n == 0 { return Err(ERR_NO_RESPONSE); }
+            if n == 0 {
+                return Err(ERR_NO_RESPONSE);
+            }
             buf.extend_from_slice(&recv_buf[..n]);
         }
         if buf[cursor] == b'\r' && buf[cursor + 1] == b'\n' {
@@ -1300,10 +1510,11 @@ fn read_chunked_body_drain(conn: &Connection, initial: &[u8], is_https: bool) ->
 
 /// Find the end of HTTP headers (\r\n\r\n) in raw bytes.
 fn find_header_end_bytes(data: &[u8]) -> Option<usize> {
-    if data.len() < 4 { return None; }
+    if data.len() < 4 {
+        return None;
+    }
     for i in 0..data.len() - 3 {
-        if data[i] == b'\r' && data[i + 1] == b'\n'
-            && data[i + 2] == b'\r' && data[i + 3] == b'\n'
+        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n'
         {
             return Some(i + 4);
         }
@@ -1341,7 +1552,9 @@ fn is_redirect(status: u16) -> bool {
 
 /// Find \r\n in a byte slice.
 fn find_crlf(data: &[u8]) -> Option<usize> {
-    if data.len() < 2 { return None; }
+    if data.len() < 2 {
+        return None;
+    }
     for i in 0..data.len() - 1 {
         if data[i] == b'\r' && data[i + 1] == b'\n' {
             return Some(i);
@@ -1359,8 +1572,8 @@ fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
                 return decoded;
             }
         } else if contains_ignore_case(enc_bytes, b"deflate") {
-            if let Some(decoded) = deflate::decompress_zlib(&raw)
-                .or_else(|| deflate::decompress_deflate(&raw))
+            if let Some(decoded) =
+                deflate::decompress_zlib(&raw).or_else(|| deflate::decompress_deflate(&raw))
             {
                 return decoded;
             }
@@ -1371,7 +1584,9 @@ fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
 
 /// Case-insensitive contains check for byte slices.
 fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.len() > haystack.len() { return false; }
+    if needle.len() > haystack.len() {
+        return false;
+    }
     for i in 0..=haystack.len() - needle.len() {
         let mut matched = true;
         for j in 0..needle.len() {
@@ -1380,7 +1595,9 @@ fn contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
                 break;
             }
         }
-        if matched { return true; }
+        if matched {
+            return true;
+        }
     }
     false
 }
@@ -1392,7 +1609,9 @@ fn write_all(fd: u32, data: &[u8]) -> bool {
     let mut written = 0usize;
     while written < data.len() {
         let n = syscall::write(fd, &data[written..]);
-        if n == u32::MAX { return false; }
+        if n == u32::MAX {
+            return false;
+        }
         written += n as usize;
     }
     true

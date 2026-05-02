@@ -60,7 +60,7 @@ pub fn populate_document_prototype(proto: &JsValue) {
 
 /// Parse a URL string into its Location object fields.
 /// Returns `(protocol, hostname, host, port, pathname, search, hash, origin)`.
-fn parse_location_fields(
+pub(super) fn parse_location_fields(
     url: &str,
 ) -> (
     String,

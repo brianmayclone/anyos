@@ -2221,6 +2221,15 @@ fn handle_nav_done(
             ensure_net_poll_timer();
         }
     }
+    let modulepreload_count = queue_modulepreload_dependencies(tab_idx, &base_url, generation);
+    if modulepreload_count > 0 {
+        crate::surf_log!(
+            "[surf] modulepreloads queued: tab={} count={}",
+            tab_idx,
+            modulepreload_count
+        );
+        log_tab_load_state(tab_idx, "after_modulepreload_queue");
+    }
 
     if let Some(dom) = st.tabs[tab_idx].webview.dom() {
         let startup_critical_only =
@@ -2571,6 +2580,95 @@ fn register_module_source_aliases(
         .webview
         .js_runtime()
         .register_module_source(&absolute, source);
+    for alias in module_source_aliases(specifier, url) {
+        st.tabs[tab_index]
+            .webview
+            .js_runtime()
+            .register_module_source(&alias, source);
+    }
+}
+
+fn module_source_aliases(specifier: &str, url: &http::Url) -> Vec<String> {
+    let mut aliases = Vec::new();
+    push_unique_module_alias(&mut aliases, specifier);
+    push_unique_module_alias(&mut aliases, &module_url_key(url));
+    push_unique_module_alias(&mut aliases, &url.path);
+    push_unique_module_alias(&mut aliases, url.path.trim_start_matches('/'));
+
+    if let Some(file_start) = url.path.rfind('/') {
+        let file = &url.path[file_start + 1..];
+        push_unique_module_alias(&mut aliases, &anyos_std::format!("./{}", file));
+        if url.path.contains("/chunks/") {
+            push_unique_module_alias(&mut aliases, &anyos_std::format!("../chunks/{}", file));
+            push_unique_module_alias(&mut aliases, &anyos_std::format!("./chunks/{}", file));
+        }
+        if url.path.contains("/entries/") {
+            push_unique_module_alias(&mut aliases, &anyos_std::format!("../entries/{}", file));
+            push_unique_module_alias(&mut aliases, &anyos_std::format!("./entries/{}", file));
+        }
+    }
+
+    aliases
+}
+
+fn push_unique_module_alias(aliases: &mut Vec<String>, alias: &str) {
+    if alias.is_empty() || aliases.iter().any(|existing| existing == alias) {
+        return;
+    }
+    aliases.push(String::from(alias));
+}
+
+fn queue_modulepreload_dependencies(
+    tab_index: usize,
+    page_url: &http::Url,
+    generation: u32,
+) -> usize {
+    let links = state()
+        .tabs
+        .get(tab_index)
+        .and_then(|tab| tab.webview.dom())
+        .map(libwebview::js::extract_modulepreload_links_from_dom)
+        .unwrap_or_default();
+    if links.is_empty() {
+        return 0;
+    }
+
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return 0;
+    }
+
+    let mut queued = 0usize;
+    for specifier in links {
+        let url = http::resolve_url(page_url, &specifier);
+        let key = module_url_key(&url);
+        if st.tabs[tab_index]
+            .requested_module_urls
+            .iter()
+            .any(|existing| existing == &key)
+        {
+            continue;
+        }
+        st.tabs[tab_index].requested_module_urls.push(key);
+        crate::surf_log!(
+            "[surf] queuing modulepreload fetch: tab={} specifier={}",
+            tab_index,
+            specifier
+        );
+        net_worker::submit(net_worker::FetchRequest::ModuleScript {
+            tab_index,
+            specifier,
+            url,
+            generation,
+        });
+        queued += 1;
+    }
+
+    if queued > 0 {
+        st.tabs[tab_index].load_state.on_module_added(queued);
+        ensure_net_poll_timer();
+    }
+    queued
 }
 
 fn queue_module_dependencies(
@@ -2585,7 +2683,16 @@ fn queue_module_dependencies(
         .and_then(|tab| tab.current_url.as_ref())
         .map(module_url_key)
         .unwrap_or_default();
-    let specs = libwebview::js::extract_module_specifiers_for_page(source, &page_url);
+    let current_page_id = state()
+        .tabs
+        .get(tab_index)
+        .and_then(|tab| tab.webview.dom())
+        .and_then(libwebview::js::extract_vike_page_id_from_dom);
+    let specs = libwebview::js::extract_module_specifiers_for_page_with_page_id(
+        source,
+        &page_url,
+        current_page_id.as_deref(),
+    );
     if specs.is_empty() {
         return 0;
     }

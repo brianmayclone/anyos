@@ -171,6 +171,17 @@ impl RegistryClient {
         self.config.package_url(package_name)
     }
 
+    pub fn package_tarball_url(&self, package_name: &str, version: &str) -> String {
+        let basename = package_binary_name(package_name);
+        format!(
+            "{}{}/-/{}-{}.tgz",
+            self.config.normalized_url(),
+            encode_package_name(package_name),
+            basename,
+            version
+        )
+    }
+
     pub fn fetch_metadata(&self, package_name: &str) -> Option<PackageMetadata> {
         let url = self.package_metadata_url(package_name);
         let data = libhttp_client::get(&url)?;
@@ -193,7 +204,7 @@ pub struct PackageMetadata {
 
 impl PackageMetadata {
     pub fn resolve_version(&self, requested: &str) -> Option<String> {
-        if requested == "latest" {
+        if requested == "latest" || requested == "*" {
             json_nested_string(&self.raw_json, "\"dist-tags\"", "\"latest\"")
         } else if self.has_version(requested) {
             Some(String::from(requested))
@@ -216,6 +227,19 @@ impl PackageMetadata {
             return Vec::new();
         };
         parse_dependency_object(deps)
+    }
+
+    pub fn bin_entries(&self, version: &str) -> Vec<(String, String)> {
+        let Some(version_object) = self.version_object(version) else {
+            return Vec::new();
+        };
+        let package_bin_name = package_binary_name(&self.package_name);
+        if let Some(bin_object) = json_object_field(version_object, "\"bin\"") {
+            return parse_string_object(bin_object);
+        }
+        json_string_field(version_object, "\"bin\"")
+            .map(|path| alloc::vec![(package_bin_name, path)])
+            .unwrap_or_default()
     }
 
     fn has_version(&self, version: &str) -> bool {
@@ -335,7 +359,7 @@ impl PackageInstaller {
         if !installed_version_matches(&install_dir, &resolved.version) {
             let tarball = metadata
                 .tarball_url(&resolved.version)
-                .ok_or_else(|| format!("missing tarball for {}@{}", spec.name, resolved.version))?;
+                .unwrap_or_else(|| self.client.package_tarball_url(&resolved.name, &resolved.version));
             let data = self
                 .client
                 .fetch_tarball(&tarball)
@@ -347,7 +371,10 @@ impl PackageInstaller {
             extract_npm_tarball(&cache_path, &install_dir).ok_or_else(|| {
                 format!("could not extract {} into {}", cache_path, install_dir)
             })?;
+            install_bin_entries(root, &resolved, &metadata);
             report.installed.push(resolved.clone());
+        } else {
+            install_bin_entries(root, &resolved, &metadata);
         }
 
         for dep in metadata.dependencies(&resolved.version) {
@@ -490,18 +517,22 @@ fn find_json_key(source: &str, key: &str) -> Option<usize> {
 }
 
 fn parse_dependency_object(source: &str) -> Vec<PackageSpec> {
+    parse_string_object(source)
+        .into_iter()
+        .map(|(name, version)| PackageSpec { name, version })
+        .collect()
+}
+
+fn parse_string_object(source: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for pair in source.split(',') {
         let Some(colon) = pair.find(':') else {
             continue;
         };
-        let name = pair[..colon].trim().trim_matches('"');
-        let version = pair[colon + 1..].trim().trim_matches('"');
-        if !name.is_empty() && !version.is_empty() {
-            out.push(PackageSpec {
-                name: name.to_string(),
-                version: version.to_string(),
-            });
+        let key = pair[..colon].trim().trim_matches('"');
+        let value = pair[colon + 1..].trim().trim_matches('"');
+        if !key.is_empty() && !value.is_empty() {
+            out.push((key.to_string(), value.to_string()));
         }
     }
     out
@@ -703,6 +734,42 @@ fn package_cache_path(root: &str, spec: &PackageSpec) -> String {
     )
 }
 
+fn package_binary_name(package_name: &str) -> String {
+    package_name
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(package_name)
+        .to_string()
+}
+
+fn install_bin_entries(root: &str, spec: &PackageSpec, metadata: &PackageMetadata) {
+    let entries = metadata.bin_entries(&spec.version);
+    if entries.is_empty() {
+        return;
+    }
+    let bin_dir = join_path(&join_path(root, "node_modules"), ".bin");
+    mkdir_p(&bin_dir);
+    for (name, target) in entries {
+        let clean_target = target.trim_start_matches("./");
+        if clean_target.is_empty()
+            || clean_target.starts_with('/')
+            || clean_target.contains("../")
+            || clean_target == ".."
+        {
+            continue;
+        }
+        let package_path = if spec.name.starts_with('@') {
+            format!("../{}/{}", spec.name, clean_target)
+        } else {
+            format!("../{}/{}", spec.name, clean_target)
+        };
+        let shim_path = join_path(&bin_dir, &name);
+        let source = format!("require({:?});\n", package_path);
+        let _ = fs::write_bytes(&shim_path, source.as_bytes());
+    }
+}
+
 fn installed_version_matches(package_dir: &str, version: &str) -> bool {
     let package_json = join_path(package_dir, "package.json");
     let Ok(data) = fs::read_to_string(&package_json) else {
@@ -848,10 +915,11 @@ mod tests {
         let metadata = PackageMetadata {
             package_name: String::from("demo"),
             raw_json: String::from(
-                r#"{"versions":{"1.0.0":{},"1.2.3":{},"1.2.9":{},"1.3.0":{},"2.0.0":{}}}"#,
+                r#"{"dist-tags":{"latest":"1.3.0"},"versions":{"1.0.0":{},"1.2.3":{},"1.2.9":{},"1.3.0":{},"2.0.0":{}}}"#,
             ),
         };
 
+        assert_eq!(metadata.resolve_version("*").as_deref(), Some("1.3.0"));
         assert_eq!(metadata.resolve_version("~1.2.0").as_deref(), Some("1.2.9"));
         assert_eq!(metadata.resolve_version("^1.2.0").as_deref(), Some("1.3.0"));
         assert_eq!(metadata.resolve_version(">=1.2.3 <2.0.0").as_deref(), Some("1.3.0"));
@@ -863,6 +931,15 @@ mod tests {
         assert_eq!(
             client.package_metadata_url("@scope/pkg"),
             "https://registry.npmjs.org/@scope%2fpkg"
+        );
+    }
+
+    #[test]
+    fn scoped_tarball_url_matches_npm_registry_shape() {
+        let client = RegistryClient::new(RegistryConfig::default());
+        assert_eq!(
+            client.package_tarball_url("@types/node", "25.6.0"),
+            "https://registry.npmjs.org/@types%2fnode/-/node-25.6.0.tgz"
         );
     }
 }

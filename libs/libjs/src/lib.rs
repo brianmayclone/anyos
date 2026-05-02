@@ -291,6 +291,99 @@ mod tests {
     }
 
     #[test]
+    fn es_module_named_reexport_copies_exports() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source("./dep.js", "const value = 42; export { value as _ };");
+        engine.register_module_source("./bar.js", "export { _ as alias } from './dep.js';");
+        let result = engine.eval("var m = __import__('./bar.js'); m.alias");
+        assert_eq!(result.to_number(), 42.0);
+    }
+
+    #[test]
+    fn dynamic_import_through_vite_preload_wrapper_resolves_namespace() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        engine.register_module_source(
+            "./route.js",
+            "const P = { ok: 7 }; export { P as configValuesSerialized };",
+        );
+        let result = engine.eval(
+            "var seen = 'pending'; \
+             const preload = (loader) => Promise.resolve().then(() => loader().catch((err) => { throw err; })); \
+             async function run() { \
+                 const ns = await preload(() => import('./route.js')); \
+                 seen = ns.configValuesSerialized.ok; \
+             } \
+             run(); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "7");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "7");
+    }
+
+    #[test]
+    fn object_literal_arrow_return_can_build_vike_page_entry() {
+        let mut engine = JsEngine::new();
+        engine.set_step_limit(1_000_000);
+        let result = engine.eval(
+            "var page = { \
+                 loadVirtualFilePageEntry: () => ({ \
+                     moduleId: 'virtual:test', \
+                     moduleExportsPromise: Promise.resolve({ configValuesSerialized: { ok: 9 } }) \
+                 }) \
+             }; \
+             async function run(e) { \
+                 const { moduleId, moduleExportsPromise } = e.loadVirtualFilePageEntry(); \
+                 const ns = await moduleExportsPromise; \
+                 return ns.configValuesSerialized.ok; \
+             } \
+             var seen = 'pending'; \
+             run(page).then(v => { seen = v; }); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "pending");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "9");
+    }
+
+    #[test]
+    fn async_function_return_value_settles_then_chain() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var seen = 'pending'; \
+             async function run() { return 9; } \
+             run().then(v => { seen = v; }); \
+             seen",
+        );
+        assert_eq!(result.to_js_string(), "pending");
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "9");
+    }
+
+    #[test]
+    fn async_function_returned_promise_is_fulfilled() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "async function run() { return 9; } \
+             var p = run(); \
+             typeof p.then + ':' + p.__state + ':' + p.__value",
+        );
+        assert_eq!(result.to_js_string(), "function:fulfilled:9");
+    }
+
+    #[test]
+    fn object_destructuring_reads_arrow_return_object() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var page = { load: () => ({ moduleId: 'x', moduleExportsPromise: 9 }) }; \
+             const { moduleId, moduleExportsPromise } = page.load(); \
+             moduleId + ':' + moduleExportsPromise",
+        );
+        assert_eq!(result.to_js_string(), "x:9");
+    }
+
+    #[test]
     fn regexp_symbol_replace_is_callable() {
         let mut engine = JsEngine::new();
         let result = engine.eval("/\\./[Symbol.replace]('a.b', '#')");

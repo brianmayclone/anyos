@@ -45,11 +45,12 @@ impl NodeRuntime {
         if self.options.argv.is_empty() {
             self.options.argv = vec![String::from("node"), String::from(path)];
         }
+        let source = strip_hashbang(source);
         self.install_process_object();
         let dirname = resolver::dirname(path);
-        self.preload_requires(source, &dirname, 0);
+        self.preload_requires(&source, &dirname, 0);
         self.install_commonjs_globals(path, &dirname);
-        self.engine.eval(source)
+        self.engine.eval(&source)
     }
 
     pub fn run_file(&mut self, path: &str) -> Result<JsValue, &'static str> {
@@ -104,9 +105,16 @@ impl NodeRuntime {
     }
 
     fn install_builtins(&mut self) {
+        self.install_global_alias();
         self.install_process_object();
         self.install_require();
         self.install_native_modules();
+    }
+
+    fn install_global_alias(&mut self) {
+        let global = JsValue::Object(self.engine.vm().globals.clone());
+        self.engine.set_global("global", global.clone());
+        self.engine.set_global("globalThis", global);
     }
 
     fn install_process_object(&mut self) {
@@ -141,6 +149,10 @@ impl NodeRuntime {
         let url = modules::url_module();
         self.engine.register_module_object("url", url.clone());
         self.engine.register_module_object("node:url", url);
+        let web = modules::web_globals_module();
+        self.engine.register_module_object("node:web", web.clone());
+        self.engine.register_module_object("web", web);
+        modules::web::install_globals(&mut self.engine);
         let querystring = modules::querystring_module();
         self.engine
             .register_module_object("querystring", querystring.clone());
@@ -296,13 +308,14 @@ impl NodeRuntime {
                     .register_module_object(&module.id, placeholder_exports.clone());
                 self.engine
                     .register_module_object(&module.filename, placeholder_exports);
-                self.preload_requires(&module.source, &module.dirname, depth);
+                let source = strip_hashbang(&module.source);
+                self.preload_requires(&source, &module.dirname, depth);
                 self.install_commonjs_globals_from_module(
                     &module.filename,
                     &module.dirname,
                     module_global.clone(),
                 );
-                let wrapped = self.wrap_commonjs_source(&module);
+                let wrapped = self.wrap_commonjs_source(&module, &source);
                 self.engine.eval(&wrapped);
                 #[cfg(feature = "host")]
                 if std::env::var_os("LIBNODE_DEBUG_MODULES").is_some() {
@@ -352,9 +365,9 @@ impl NodeRuntime {
         );
     }
 
-    fn wrap_commonjs_source(&self, module: &ResolvedModule) -> String {
+    fn wrap_commonjs_source(&self, module: &ResolvedModule, source: &str) -> String {
         let mut map_entries = String::new();
-        for specifier in resolver::find_require_specifiers(&module.source) {
+        for specifier in resolver::find_require_specifiers(source) {
             if resolver::is_core_module(&specifier) {
                 continue;
             }
@@ -369,12 +382,16 @@ impl NodeRuntime {
         }
         #[cfg(feature = "host")]
         if std::env::var_os("LIBNODE_DEBUG_REQUIRE_MAP").is_some() {
-            std::eprintln!("[libnode-require-map] {} {{{}}}", module.filename, map_entries);
+            std::eprintln!(
+                "[libnode-require-map] {} {{{}}}",
+                module.filename,
+                map_entries
+            );
         }
         alloc::format!(
             "(function() {{\nvar __node_require_map = {{{}}};\nfunction __node_local_require__(id) {{ return require(__node_require_map[id] || id); }}\n__node_local_require__.resolve = function(id) {{ return require.resolve(__node_require_map[id] || id); }};\n__node_local_require__.cache = require.cache;\n__node_local_require__.main = require.main;\nreturn (function(exports, require, module, __filename, __dirname) {{\n{}\n}})(module.exports, __node_local_require__, module, {}, {});\n}})();",
             map_entries,
-            module.source,
+            source,
             js_string_literal(&module.filename),
             js_string_literal(&module.dirname)
         )
@@ -425,6 +442,21 @@ fn js_string_literal(source: &str) -> String {
     out
 }
 
+fn strip_hashbang(source: &str) -> String {
+    if !source.starts_with("#!") {
+        return String::from(source);
+    }
+    match source.find('\n') {
+        Some(idx) => {
+            let mut out = String::from("//");
+            out.push_str(&source[2..idx]);
+            out.push_str(&source[idx..]);
+            out
+        }
+        None => String::from("//"),
+    }
+}
+
 fn error_capture_stack_trace(_vm: &mut libjs::vm::Vm, args: &[JsValue]) -> JsValue {
     let Some(target) = args.first() else {
         return JsValue::Undefined;
@@ -455,12 +487,18 @@ fn call_site_object() -> JsValue {
         String::from("getFunctionName"),
         native_fn("getFunctionName", call_site_function_name),
     );
-    site.set_property(String::from("isEval"), native_fn("isEval", call_site_is_eval));
+    site.set_property(
+        String::from("isEval"),
+        native_fn("isEval", call_site_is_eval),
+    );
     site.set_property(
         String::from("getEvalOrigin"),
         native_fn("getEvalOrigin", call_site_eval_origin),
     );
-    site.set_property(String::from("toString"), native_fn("toString", call_site_to_string));
+    site.set_property(
+        String::from("toString"),
+        native_fn("toString", call_site_to_string),
+    );
     site
 }
 

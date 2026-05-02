@@ -31,8 +31,18 @@ pub type ProgressCallback = extern "C" fn(u32, u32, u64);
 #[cfg(feature = "host")]
 mod host {
     use super::*;
+    use std::fs;
     use std::io::Write;
     use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Mutex, OnceLock};
+
+    static LAST_STATUS: AtomicU32 = AtomicU32::new(0);
+    static LAST_HEADERS: OnceLock<Mutex<String>> = OnceLock::new();
+
+    fn headers_store() -> &'static Mutex<String> {
+        LAST_HEADERS.get_or_init(|| Mutex::new(String::new()))
+    }
 
     pub fn init() -> bool {
         true
@@ -105,8 +115,35 @@ mod host {
         curl_request(url, &headers, Some(body))
     }
 
+    pub fn request_with_headers(
+        url: &str,
+        method: &str,
+        body: &[u8],
+        content_type: &str,
+        extra_headers: &str,
+    ) -> Option<Vec<u8>> {
+        let mut headers = Vec::new();
+        if !content_type.is_empty() && !has_header(extra_headers, "content-type") {
+            headers.push(format!("Content-Type: {}", content_type));
+        }
+        for header in extra_headers.lines() {
+            let trimmed = header.trim();
+            if !trimmed.is_empty() {
+                headers.push(String::from(trimmed));
+            }
+        }
+        curl_request_with_method(url, method, &headers, Some(body))
+    }
+
     pub fn last_status() -> u32 {
-        0
+        LAST_STATUS.load(Ordering::Relaxed)
+    }
+
+    pub fn last_headers() -> String {
+        headers_store()
+            .lock()
+            .map(|headers| headers.clone())
+            .unwrap_or_default()
     }
 
     pub fn last_error() -> u32 {
@@ -114,6 +151,27 @@ mod host {
     }
 
     fn curl_request(url: &str, headers: &[String], body: Option<&[u8]>) -> Option<Vec<u8>> {
+        let method = if body.is_some() { "POST" } else { "GET" };
+        curl_request_with_method(url, method, headers, body)
+    }
+
+    fn curl_request_with_method(
+        url: &str,
+        method: &str,
+        headers: &[String],
+        body: Option<&[u8]>,
+    ) -> Option<Vec<u8>> {
+        let unique = format!(
+            "anyos-http-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_nanos()
+        );
+        let header_path = std::env::temp_dir().join(format!("{}.headers", unique));
+        let body_path = std::env::temp_dir().join(format!("{}.body", unique));
+
         let mut cmd = Command::new("curl");
         cmd.arg("-fsSL")
             .arg("--proto")
@@ -121,7 +179,15 @@ mod host {
             .arg("--max-time")
             .arg("300")
             .arg("--user-agent")
-            .arg("git/anyos");
+            .arg("node/anyos")
+            .arg("-X")
+            .arg(method)
+            .arg("-D")
+            .arg(&header_path)
+            .arg("-w")
+            .arg("%{http_code}")
+            .arg("-o")
+            .arg(&body_path);
 
         for header in headers {
             cmd.arg("-H").arg(header);
@@ -146,11 +212,38 @@ mod host {
         }
 
         let output = child.wait_with_output().ok()?;
+        let headers = fs::read_to_string(&header_path).unwrap_or_default();
+        let body = fs::read(&body_path).unwrap_or_default();
+        let _ = fs::remove_file(&header_path);
+        let _ = fs::remove_file(&body_path);
+        if let Ok(mut stored) = headers_store().lock() {
+            *stored = headers;
+        }
+        LAST_STATUS.store(
+            parse_curl_status(&output.stdout).unwrap_or(0),
+            Ordering::Relaxed,
+        );
         if output.status.success() {
-            Some(output.stdout)
+            Some(body)
         } else {
             None
         }
+    }
+
+    fn parse_curl_status(stderr: &[u8]) -> Option<u32> {
+        let text = core::str::from_utf8(stderr).ok()?;
+        text.trim()
+            .rsplit(|ch: char| !ch.is_ascii_digit())
+            .find(|part| !part.is_empty())
+            .and_then(|part| part.parse::<u32>().ok())
+    }
+
+    fn has_header(headers: &str, name: &str) -> bool {
+        headers.lines().any(|line| {
+            line.find(':')
+                .map(|idx| line[..idx].trim().eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+        })
     }
 }
 
@@ -177,7 +270,12 @@ mod imp {
             libhttp_post_with_headers(url: *const u8, url_len: u32, body: *const u8, body_len: u32,
                 ct: *const u8, ct_len: u32, headers: *const u8, headers_len: u32,
                 buf: *mut u8, buf_len: u32) -> u32,
+            libhttp_request_with_headers(url: *const u8, url_len: u32,
+                method: *const u8, method_len: u32, body: *const u8, body_len: u32,
+                ct: *const u8, ct_len: u32, headers: *const u8, headers_len: u32,
+                buf: *mut u8, buf_len: u32) -> u32,
             libhttp_last_status() -> u32,
+            libhttp_last_headers(buf: *mut u8, buf_len: u32) -> u32,
             libhttp_last_error() -> u32,
         }
     }
@@ -336,9 +434,46 @@ mod imp {
         Some(buf)
     }
 
+    pub fn request_with_headers(
+        url: &str,
+        method: &str,
+        body: &[u8],
+        content_type: &str,
+        extra_headers: &str,
+    ) -> Option<Vec<u8>> {
+        let mut buf = vec![0u8; 4 * 1024 * 1024];
+        let n = (lib().libhttp_request_with_headers)(
+            url.as_ptr(),
+            url.len() as u32,
+            method.as_ptr(),
+            method.len() as u32,
+            body.as_ptr(),
+            body.len() as u32,
+            content_type.as_ptr(),
+            content_type.len() as u32,
+            extra_headers.as_ptr(),
+            extra_headers.len() as u32,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+        );
+        if n == u32::MAX {
+            return None;
+        }
+        buf.truncate(n as usize);
+        Some(buf)
+    }
+
     /// Returns the HTTP status code of the last request (e.g. 200, 404, 0 if no request).
     pub fn last_status() -> u32 {
         (lib().libhttp_last_status)()
+    }
+
+    pub fn last_headers() -> String {
+        let mut buf = vec![0u8; 64 * 1024];
+        let n = (lib().libhttp_last_headers)(buf.as_mut_ptr(), buf.len() as u32);
+        let used = (n as usize).min(buf.len());
+        buf.truncate(used);
+        String::from_utf8(buf).unwrap_or_default()
     }
 
     /// Returns the error code of the last request.

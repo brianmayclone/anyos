@@ -1103,7 +1103,10 @@ fn is_prefetchable_module_specifier(spec: &str) -> bool {
 ///
 /// This is intentionally conservative and string-aware enough for bundled
 /// browser code (`import{...}from"chunk.js"`, `import "chunk.js"`,
-/// `export{...}from"chunk.js"`, `import("chunk.js")`). The real parser still
+/// `export{...}from"chunk.js"`). Dynamic `import("chunk.js")` is deliberately
+/// handled by [`extract_module_specifiers_for_page_with_page_id`] because large
+/// Vite/Vike manifests contain hundreds of lazy route chunks that must not be
+/// fetched eagerly. The real parser still
 /// owns JS semantics; this helper only lets hosts prefetch module chunks before
 /// `__import__()` resolves them.
 pub fn extract_module_specifiers(source: &str) -> Vec<String> {
@@ -1145,12 +1148,9 @@ pub fn extract_module_specifiers(source: &str) -> Vec<String> {
             {
                 let mut j = skip_js_ws(bytes, i + 6);
                 if j < bytes.len() && bytes[j] == b'(' {
-                    j = skip_js_ws(bytes, j + 1);
-                    if let Some((spec, end)) = parse_quoted_js_string(bytes, j) {
-                        push_unique_spec(&mut specs, spec);
-                        i = end;
-                        continue;
-                    }
+                    // Dynamic import: runtime-triggered. Do not eagerly
+                    // prefetch here; the page-aware scanner below narrows it
+                    // to the current route when possible.
                 } else if let Some((spec, end)) = parse_quoted_js_string(bytes, j) {
                     push_unique_spec(&mut specs, spec);
                     i = end;
@@ -1213,9 +1213,18 @@ pub fn extract_module_specifiers(source: &str) -> Vec<String> {
 /// lazy route chunk from large Vite/Vike manifests because that blocks Surf on
 /// hundreds of unrelated downloads before the page can hydrate.
 pub fn extract_module_specifiers_for_page(source: &str, page_url: &str) -> Vec<String> {
+    extract_module_specifiers_for_page_with_page_id(source, page_url, None)
+}
+
+pub fn extract_module_specifiers_for_page_with_page_id(
+    source: &str,
+    page_url: &str,
+    current_page_id: Option<&str>,
+) -> Vec<String> {
     let mut specs = extract_module_specifiers(source);
     let bytes = source.as_bytes();
-    let brand_key = module_relevance_key(page_url);
+    let _ = page_url;
+    let page_module_key = current_page_id.and_then(page_id_module_key);
     let mut dynamic_specs = Vec::new();
     let mut j = 0usize;
     while j < bytes.len() {
@@ -1240,40 +1249,103 @@ pub fn extract_module_specifiers_for_page(source: &str, page_url: &str) -> Vec<S
         j += 1;
     }
 
-    if dynamic_specs.len() <= 32 || brand_key.is_empty() {
+    if let Some(page_module_key) = page_module_key {
+        for spec in dynamic_specs {
+            if spec.contains(&page_module_key) {
+                push_unique_spec(&mut specs, spec);
+            }
+        }
+    } else if dynamic_specs.len() <= 32 {
         for spec in dynamic_specs {
             push_unique_spec(&mut specs, spec);
         }
     } else {
-        for spec in dynamic_specs {
-            if spec.contains(&brand_key) {
-                push_unique_spec(&mut specs, spec);
-            }
-        }
+        // Large Vite/Vike manifests list every lazy route as `import(...)`.
+        // Browsers do not prefetch those blindly; they use `modulepreload`
+        // links plus the runtime-selected route. If we cannot determine the
+        // current page id, keep dynamic imports lazy instead of flooding the
+        // network/JS queues with hundreds of unrelated route chunks.
     }
     specs
 }
 
-fn module_relevance_key(page_url: &str) -> String {
-    let host_start = page_url.find("://").map_or(0, |idx| idx + 3);
-    let host_end = page_url[host_start..]
-        .find('/')
-        .map_or(page_url.len(), |idx| host_start + idx);
-    let host = &page_url[host_start..host_end];
-    let first_label = host
-        .trim_start_matches("www.")
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .trim();
-    if first_label.is_empty()
-        || first_label
-            .bytes()
-            .any(|b| !(b.is_ascii_alphanumeric() || b == b'-'))
-    {
-        return String::new();
+pub fn extract_modulepreload_links_from_dom(dom: &crate::dom::Dom) -> Vec<String> {
+    let mut links = Vec::new();
+    for (node_id, _) in dom.nodes.iter().enumerate() {
+        if !dom.has_tag_name(node_id, "link") {
+            continue;
+        }
+        let rel = dom.attr(node_id, "rel").unwrap_or("");
+        if !rel
+            .split_ascii_whitespace()
+            .any(|token| token.eq_ignore_ascii_case("modulepreload"))
+        {
+            continue;
+        }
+        let Some(href) = dom.attr(node_id, "href") else {
+            continue;
+        };
+        if href.is_empty() || links.iter().any(|existing| existing == href) {
+            continue;
+        }
+        links.push(String::from(href));
     }
-    alloc::format!("_{}.", first_label.to_ascii_lowercase())
+    links
+}
+
+pub fn extract_vike_page_id_from_dom(dom: &crate::dom::Dom) -> Option<String> {
+    for (node_id, _) in dom.nodes.iter().enumerate() {
+        if !dom.has_tag_name(node_id, "script") {
+            continue;
+        }
+        if dom.attr(node_id, "id") != Some("vike_pageContext") {
+            continue;
+        }
+        let text = dom.text_content(node_id);
+        if let Some(page_id) = extract_json_string_field(&text, "pageId") {
+            return Some(page_id.replace("\\/", "/"));
+        }
+    }
+    None
+}
+
+fn extract_json_string_field(source: &str, key: &str) -> Option<String> {
+    let needle = alloc::format!("\"{}\"", key);
+    let key_pos = source.find(&needle)?;
+    let after_key = &source[key_pos + needle.len()..];
+    let colon = after_key.find(':')?;
+    let mut rest = after_key[colon + 1..].trim_start();
+    if !rest.starts_with('"') {
+        return None;
+    }
+    rest = &rest[1..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(out),
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    out.push('\\');
+                    out.push(next);
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    None
+}
+
+fn page_id_module_key(page_id: &str) -> Option<String> {
+    let page_id = page_id.trim().trim_start_matches('/');
+    if page_id.is_empty()
+        || page_id
+            .bytes()
+            .any(|b| !(b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_')))
+    {
+        return None;
+    }
+    Some(page_id.replace('/', "_"))
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -4187,10 +4259,54 @@ fn native_formdata_ctor(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 #[cfg(test)]
 mod tests {
-    use super::JsRuntime;
+    use super::{
+        extract_module_specifiers_for_page_with_page_id, extract_vike_page_id_from_dom, JsRuntime,
+    };
     use crate::html;
     use alloc::string::String;
     use libjs::JsValue;
+
+    #[test]
+    fn vike_page_id_is_extracted_from_json_script() {
+        let dom = html::parse(
+            r#"<script id="vike_pageContext" type="application/json">{"pageId":"\/src\/frontend\/pages\/generated-module-pages\/channel-1\/focus"}</script>"#,
+        );
+
+        assert_eq!(
+            extract_vike_page_id_from_dom(&dom).as_deref(),
+            Some("/src/frontend/pages/generated-module-pages/channel-1/focus")
+        );
+    }
+
+    #[test]
+    fn page_aware_module_scan_prefetches_only_current_vike_route() {
+        let source = r#"
+            const pageFilesLazy = {
+                "/src/frontend/pages/generated-module-pages/channel-0/focus": () => import("./src_frontend_pages_generated-module-pages_channel-0_focus.A.js"),
+                "/src/frontend/pages/generated-module-pages/channel-1/focus": () => import("./src_frontend_pages_generated-module-pages_channel-1_focus.B.js"),
+                "/src/frontend/pages/generated-module-pages_news-article-0/focus": () => import("./src_frontend_pages_generated-module-pages_news-article-0_focus.C.js")
+            };
+            import "./chunk-static.js";
+        "#;
+
+        let specs = extract_module_specifiers_for_page_with_page_id(
+            source,
+            "https://www.focus.de/",
+            Some("/src/frontend/pages/generated-module-pages/channel-1/focus"),
+        );
+
+        assert!(specs.iter().any(|s| s == "./chunk-static.js"));
+        assert!(
+            specs
+                .iter()
+                .any(|s| s == "./src_frontend_pages_generated-module-pages_channel-1_focus.B.js")
+        );
+        assert!(
+            !specs
+                .iter()
+                .any(|s| s.contains("channel-0_focus") || s.contains("news-article-0_focus"))
+        );
+    }
 
     #[test]
     fn browser_native_constructors_are_constructable() {

@@ -55,8 +55,7 @@ pub fn parse_url(s: &str) -> Option<Url> {
 
 /// Resolve a relative URL against a base URL.
 pub fn resolve_url(base: &Url, relative: &str) -> Url {
-    if starts_with_ignore_case(relative, "http://")
-        || starts_with_ignore_case(relative, "https://")
+    if starts_with_ignore_case(relative, "http://") || starts_with_ignore_case(relative, "https://")
     {
         match parse_url(relative) {
             Some(u) => return u,
@@ -130,12 +129,16 @@ pub fn clone_url(url: &Url) -> Url {
 /// Parse an ASCII decimal string into u16.
 pub fn parse_u16(s: &str) -> Option<u16> {
     let mut val: u32 = 0;
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     for b in s.bytes() {
         match b {
             b'0'..=b'9' => {
                 val = val * 10 + (b - b'0') as u32;
-                if val > 65535 { return None; }
+                if val > 65535 {
+                    return None;
+                }
             }
             _ => return None,
         }
@@ -146,7 +149,9 @@ pub fn parse_u16(s: &str) -> Option<u16> {
 /// Parse an ASCII decimal string into u32.
 pub fn parse_u32(s: &str) -> Option<u32> {
     let mut val: u32 = 0;
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     for b in s.bytes() {
         match b {
             b'0'..=b'9' => {
@@ -169,11 +174,15 @@ pub fn parse_ip(s: &str) -> Option<[u8; 4]> {
         match b {
             b'0'..=b'9' => {
                 num = num * 10 + (b - b'0') as u32;
-                if num > 255 { return None; }
+                if num > 255 {
+                    return None;
+                }
                 has_digit = true;
             }
             b'.' => {
-                if !has_digit || idx >= 3 { return None; }
+                if !has_digit || idx >= 3 {
+                    return None;
+                }
                 parts[idx] = num as u8;
                 idx += 1;
                 num = 0;
@@ -182,30 +191,42 @@ pub fn parse_ip(s: &str) -> Option<[u8; 4]> {
             _ => return None,
         }
     }
-    if !has_digit || idx != 3 { return None; }
+    if !has_digit || idx != 3 {
+        return None;
+    }
     parts[3] = num as u8;
     Some(parts)
 }
 
 /// Convert ASCII byte to lowercase.
 pub fn ascii_lower(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
+    if b >= b'A' && b <= b'Z' {
+        b + 32
+    } else {
+        b
+    }
 }
 
 /// Case-insensitive prefix check.
 pub fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
-    if s.len() < prefix.len() { return false; }
+    if s.len() < prefix.len() {
+        return false;
+    }
     let sb = s.as_bytes();
     let pb = prefix.as_bytes();
     for i in 0..pb.len() {
-        if ascii_lower(sb[i]) != ascii_lower(pb[i]) { return false; }
+        if ascii_lower(sb[i]) != ascii_lower(pb[i]) {
+            return false;
+        }
     }
     true
 }
 
 /// Append a u32 as decimal digits to a String.
 pub fn push_u32(s: &mut String, val: u32) {
-    if val >= 10 { push_u32(s, val / 10); }
+    if val >= 10 {
+        push_u32(s, val / 10);
+    }
     s.push((b'0' + (val % 10) as u8) as char);
 }
 

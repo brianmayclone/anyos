@@ -18,6 +18,7 @@ pub mod tty;
 pub mod url;
 pub mod util;
 pub mod uv;
+pub mod web;
 pub mod zlib;
 mod zlib_codec;
 
@@ -43,4 +44,5 @@ pub use tty::module as tty_module;
 pub use url::module as url_module;
 pub use util::module as util_module;
 pub use uv::module as uv_module;
+pub use web::globals_module as web_globals_module;
 pub use zlib::module as zlib_module;

@@ -18,15 +18,19 @@
 
 extern crate alloc;
 
+pub mod deflate;
+pub mod http;
 pub mod syscall;
 pub mod tls;
 pub mod url;
-pub mod http;
-pub mod deflate;
 
 // ── Allocator ───────────────────────────────────────────────────────────────
 
-libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
+libheap::dll_allocator!(
+    crate::syscall::sbrk,
+    crate::syscall::mmap,
+    crate::syscall::munmap
+);
 
 // ── Panic handler ───────────────────────────────────────────────────────────
 
@@ -54,8 +58,10 @@ pub extern "C" fn libhttp_init() -> u32 {
 /// Follows redirects automatically (up to 10 hops).
 #[no_mangle]
 pub extern "C" fn libhttp_get(
-    url_ptr: *const u8, url_len: u32,
-    out_buf: *mut u8, out_buf_len: u32,
+    url_ptr: *const u8,
+    url_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
 ) -> u32 {
     let url_str = unsafe {
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(url_ptr, url_len as usize))
@@ -84,8 +90,10 @@ pub extern "C" fn libhttp_get(
 /// Returns: 0 on success, `u32::MAX` on error.
 #[no_mangle]
 pub extern "C" fn libhttp_download(
-    url_ptr: *const u8, url_len: u32,
-    path_ptr: *const u8, path_len: u32,
+    url_ptr: *const u8,
+    url_len: u32,
+    path_ptr: *const u8,
+    path_len: u32,
 ) -> u32 {
     let url_str = unsafe {
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(url_ptr, url_len as usize))
@@ -94,7 +102,11 @@ pub extern "C" fn libhttp_download(
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
     };
 
-    if http::download(url_str, path) { 0 } else { u32::MAX }
+    if http::download(url_str, path) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Perform HTTP(S) GET and discard the body while reporting progress.
@@ -102,7 +114,8 @@ pub extern "C" fn libhttp_download(
 /// Returns: received byte count on success, `u32::MAX` on error.
 #[no_mangle]
 pub extern "C" fn libhttp_drain_progress(
-    url_ptr: *const u8, url_len: u32,
+    url_ptr: *const u8,
+    url_len: u32,
     callback: Option<extern "C" fn(u32, u32, u64)>,
     userdata: u64,
 ) -> u32 {
@@ -121,21 +134,24 @@ pub extern "C" fn libhttp_drain_progress(
 /// Returns: bytes written to `out_buf`, or `u32::MAX` on error.
 #[no_mangle]
 pub extern "C" fn libhttp_post(
-    url_ptr: *const u8, url_len: u32,
-    body_ptr: *const u8, body_len: u32,
-    content_type_ptr: *const u8, content_type_len: u32,
-    out_buf: *mut u8, out_buf_len: u32,
+    url_ptr: *const u8,
+    url_len: u32,
+    body_ptr: *const u8,
+    body_len: u32,
+    content_type_ptr: *const u8,
+    content_type_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
 ) -> u32 {
     let url_str = unsafe {
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(url_ptr, url_len as usize))
     };
-    let body = unsafe {
-        core::slice::from_raw_parts(body_ptr, body_len as usize)
-    };
+    let body = unsafe { core::slice::from_raw_parts(body_ptr, body_len as usize) };
     let content_type = unsafe {
-        core::str::from_utf8_unchecked(
-            core::slice::from_raw_parts(content_type_ptr, content_type_len as usize)
-        )
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            content_type_ptr,
+            content_type_len as usize,
+        ))
     };
 
     match http::post(url_str, body, content_type) {
@@ -159,30 +175,90 @@ pub extern "C" fn libhttp_post(
 /// Returns: bytes written to `out_buf`, or `u32::MAX` on error.
 #[no_mangle]
 pub extern "C" fn libhttp_post_with_headers(
-    url_ptr: *const u8, url_len: u32,
-    body_ptr: *const u8, body_len: u32,
-    content_type_ptr: *const u8, content_type_len: u32,
-    headers_ptr: *const u8, headers_len: u32,
-    out_buf: *mut u8, out_buf_len: u32,
+    url_ptr: *const u8,
+    url_len: u32,
+    body_ptr: *const u8,
+    body_len: u32,
+    content_type_ptr: *const u8,
+    content_type_len: u32,
+    headers_ptr: *const u8,
+    headers_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
 ) -> u32 {
     let url_str = unsafe {
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(url_ptr, url_len as usize))
     };
-    let body = unsafe {
-        core::slice::from_raw_parts(body_ptr, body_len as usize)
-    };
+    let body = unsafe { core::slice::from_raw_parts(body_ptr, body_len as usize) };
     let content_type = unsafe {
-        core::str::from_utf8_unchecked(
-            core::slice::from_raw_parts(content_type_ptr, content_type_len as usize)
-        )
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            content_type_ptr,
+            content_type_len as usize,
+        ))
     };
     let extra_headers = unsafe {
-        core::str::from_utf8_unchecked(
-            core::slice::from_raw_parts(headers_ptr, headers_len as usize)
-        )
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            headers_ptr,
+            headers_len as usize,
+        ))
     };
 
     match http::post_with_headers(url_str, body, content_type, extra_headers) {
+        Some(resp_body) => {
+            let copy_len = resp_body.len().min(out_buf_len as usize);
+            if copy_len > 0 {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(resp_body.as_ptr(), out_buf, copy_len);
+                }
+            }
+            if resp_body.len() > out_buf_len as usize {
+                http::set_error(http::ERR_BUFFER_TOO_SMALL);
+            }
+            copy_len as u32
+        }
+        None => u32::MAX,
+    }
+}
+
+/// Perform HTTP(S) request with custom method and headers.
+///
+/// `extra_headers` must be pre-formatted: `"Authorization: Bearer KEY\r\nX-Custom: val\r\n"`
+#[no_mangle]
+pub extern "C" fn libhttp_request_with_headers(
+    url_ptr: *const u8,
+    url_len: u32,
+    method_ptr: *const u8,
+    method_len: u32,
+    body_ptr: *const u8,
+    body_len: u32,
+    content_type_ptr: *const u8,
+    content_type_len: u32,
+    headers_ptr: *const u8,
+    headers_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let url_str = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(url_ptr, url_len as usize))
+    };
+    let method = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(method_ptr, method_len as usize))
+    };
+    let body = unsafe { core::slice::from_raw_parts(body_ptr, body_len as usize) };
+    let content_type = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            content_type_ptr,
+            content_type_len as usize,
+        ))
+    };
+    let extra_headers = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            headers_ptr,
+            headers_len as usize,
+        ))
+    };
+
+    match http::request_with_headers(url_str, method, body, content_type, extra_headers) {
         Some(resp_body) => {
             let copy_len = resp_body.len().min(out_buf_len as usize);
             if copy_len > 0 {
@@ -208,8 +284,10 @@ pub extern "C" fn libhttp_post_with_headers(
 /// Returns: 0 on success, `u32::MAX` on error.
 #[no_mangle]
 pub extern "C" fn libhttp_download_progress(
-    url_ptr: *const u8, url_len: u32,
-    path_ptr: *const u8, path_len: u32,
+    url_ptr: *const u8,
+    url_len: u32,
+    path_ptr: *const u8,
+    path_len: u32,
     callback: Option<extern "C" fn(u32, u32, u64)>,
     userdata: u64,
 ) -> u32 {
@@ -220,13 +298,32 @@ pub extern "C" fn libhttp_download_progress(
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
     };
 
-    if http::download_to_file(url_str, path, callback, userdata) { 0 } else { u32::MAX }
+    if http::download_to_file(url_str, path, callback, userdata) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Returns the HTTP status code of the last request (e.g. 200, 404).
 #[no_mangle]
 pub extern "C" fn libhttp_last_status() -> u32 {
     http::last_status()
+}
+
+/// Copy headers of the last HTTP response into `out_buf`.
+///
+/// Returns the full header byte length. If the buffer is smaller, the prefix is copied.
+#[no_mangle]
+pub extern "C" fn libhttp_last_headers(out_buf: *mut u8, out_buf_len: u32) -> u32 {
+    let headers = http::last_headers();
+    let copy_len = headers.len().min(out_buf_len as usize);
+    if copy_len > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(headers.as_ptr(), out_buf, copy_len);
+        }
+    }
+    headers.len() as u32
 }
 
 /// Returns the last error code (0 = no error).

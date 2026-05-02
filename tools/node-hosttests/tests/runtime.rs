@@ -65,11 +65,7 @@ fn run_node(args: &[&str], cwd: &std::path::Path) -> std::process::Output {
     command.output().expect("failed to run anyOS node")
 }
 
-fn run_node_with_stdin(
-    args: &[&str],
-    stdin: &str,
-    cwd: &std::path::Path,
-) -> std::process::Output {
+fn run_node_with_stdin(args: &[&str], stdin: &str, cwd: &std::path::Path) -> std::process::Output {
     let mut child = Command::new("cargo")
         .arg("run")
         .arg("-q")
@@ -211,6 +207,93 @@ fn timers_buffers_events_and_assert_work_together() {
 }
 
 #[test]
+fn node_web_compat_globals_cover_modern_sdk_primitives() {
+    let root = temp_project("web-compat");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let headers = new Headers({ 'x-sdk': 'yes' }); \
+        headers.append('x-sdk', 'again'); \
+        let req = new Request('https://example.invalid/v1', { method: 'post', headers }); \
+        let controller = new AbortController(); \
+        controller.abort('stop'); \
+        let blob = new Blob(['open', 'ai'], { type: 'text/plain' }); \
+        let form = new FormData(); \
+        form.set('file', blob); \
+        var out = ''; \
+        new Response('{\"ok\":true}', { status: 201, headers: { 'content-type': 'application/json' } }) \
+            .text() \
+            .then(function(body) { \
+                out = typeof fetch + ':' + (global === globalThis) + ':' + \
+                    req.method + ':' + req.headers.get('x-sdk') + ':' + \
+                    controller.signal.aborted + ':' + blob.size + ':' + \
+                    form.has('file') + ':' + body; \
+            });",
+    );
+
+    runtime.run_event_loop();
+    let value = runtime.eval("out");
+    assert_eq!(
+        value.to_js_string(),
+        "function:true:POST:yes, again:true:6:true:{\"ok\":true}"
+    );
+}
+
+#[test]
+fn fetch_performs_real_http_request_with_method_headers_and_body() {
+    let root = temp_project("fetch-real-http");
+    let main = root.join("main.js");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("failed to bind host listener");
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("failed to accept fetch client");
+        let mut request = String::new();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("failed to set read timeout");
+        let mut buf = [0u8; 4096];
+        let n = stream.read(&mut buf).expect("failed to read request");
+        request.push_str(&String::from_utf8_lossy(&buf[..n]));
+        let lower = request.to_ascii_lowercase();
+        assert!(request.starts_with("POST /ai HTTP/1.1"), "{request}");
+        assert!(lower.contains("authorization: bearer test"), "{request}");
+        assert!(lower.contains("content-type: application/json"), "{request}");
+        assert!(request.ends_with(r#"{"q":"codex"}"#), "{request}");
+        stream
+            .write_all(
+                b"HTTP/1.1 202 Accepted\r\ncontent-type: application/json\r\nx-request-id: req_123\r\ncontent-length: 11\r\nconnection: close\r\n\r\n{\"ok\":true}",
+            )
+            .expect("failed to write response");
+    });
+
+    let mut runtime = runtime_for(&root);
+    runtime.run_script(
+        &main.to_string_lossy(),
+        &format!(
+            "\
+            var out = ''; \
+            fetch('http://127.0.0.1:{}/ai', {{ \
+                method: 'POST', \
+                headers: {{ 'content-type': 'application/json', authorization: 'Bearer test' }}, \
+                body: '{{\"q\":\"codex\"}}' \
+            }}).then(function(res) {{ \
+                return res.text().then(function(body) {{ \
+                    out = res.status + ':' + res.ok + ':' + res.headers.get('x-request-id') + ':' + body; \
+                }}); \
+            }});",
+            port
+        ),
+    );
+
+    runtime.run_event_loop();
+    server.join().expect("fetch server thread failed");
+    let value = runtime.eval("out");
+    assert_eq!(value.to_js_string(), r#"202:true:req_123:{"ok":true}"#);
+}
+
+#[test]
 fn fs_module_exposes_common_sync_project_scanners() {
     let root = temp_project("fs");
     fs::write(root.join("alpha.txt"), b"alpha").expect("failed to write alpha.txt");
@@ -277,7 +360,12 @@ fn process_next_tick_runs_before_later_event_loop_work() {
 fn node_cli_eval_print_script_args_and_repl_match_core_shapes() {
     let root = temp_project("node-cli");
     let eval = run_node(
-        &["-e", "console.log(process.argv.join('|'))", "alpha beta", "gamma"],
+        &[
+            "-e",
+            "console.log(process.argv.join('|'))",
+            "alpha beta",
+            "gamma",
+        ],
         &root,
     );
     assert!(eval.status.success());
@@ -320,11 +408,8 @@ fn node_cli_eval_print_script_args_and_repl_match_core_shapes() {
 fn commonjs_entry_module_is_exposed_as_require_main() {
     let root = temp_project("require-main");
     let helper = root.join("helper.js");
-    fs::write(
-        &helper,
-        b"module.exports = require.main === module;",
-    )
-    .expect("failed to write helper.js");
+    fs::write(&helper, b"module.exports = require.main === module;")
+        .expect("failed to write helper.js");
 
     let main = root.join("main.js");
     fs::write(
@@ -410,11 +495,17 @@ fn npm_installs_multi_package_project_and_node_runs_it() {
         "unexpected npm output: {npm_stdout}"
     );
     assert!(
-        root.join("node_modules").join("left-pad").join("package.json").exists(),
+        root.join("node_modules")
+            .join("left-pad")
+            .join("package.json")
+            .exists(),
         "left-pad package was not installed"
     );
     assert!(
-        root.join("node_modules").join("is-odd").join("package.json").exists(),
+        root.join("node_modules")
+            .join("is-odd")
+            .join("package.json")
+            .exists(),
         "is-odd package was not installed"
     );
     assert!(
@@ -473,11 +564,17 @@ fn npm_installs_larger_packages_and_node_uses_their_apis() {
         String::from_utf8_lossy(&install.stderr)
     );
     assert!(
-        root.join("node_modules").join("lodash").join("package.json").exists(),
+        root.join("node_modules")
+            .join("lodash")
+            .join("package.json")
+            .exists(),
         "lodash package was not installed"
     );
     assert!(
-        root.join("node_modules").join("moment").join("package.json").exists(),
+        root.join("node_modules")
+            .join("moment")
+            .join("package.json")
+            .exists(),
         "moment package was not installed"
     );
 
@@ -491,6 +588,151 @@ fn npm_installs_larger_packages_and_node_uses_their_apis() {
     );
     assert!(
         String::from_utf8_lossy(&run.stdout).contains("7:anyOsNodeRuntime:2026-05-02"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+#[test]
+#[ignore = "downloads nodemon, ESLint and transitive packages from the npm registry"]
+fn npm_installs_node_tooling_packages_and_node_uses_them() {
+    let root = temp_project("official-tooling-packages");
+    copy_dir_recursive(&fixture_project("tooling-app"), &root);
+
+    let install = run_npm(
+        &[
+            "install",
+            "--no-audit",
+            "--registry",
+            libnode::DEFAULT_NPM_REGISTRY,
+        ],
+        &root,
+    );
+    assert!(
+        install.status.success(),
+        "npm process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let npm_stdout = String::from_utf8_lossy(&install.stdout);
+    assert!(
+        npm_stdout.contains("installed packages:"),
+        "unexpected npm output: {npm_stdout}"
+    );
+    assert!(
+        root.join("node_modules")
+            .join("eslint")
+            .join("package.json")
+            .exists(),
+        "eslint package was not installed"
+    );
+    assert!(
+        root.join("node_modules")
+            .join("nodemon")
+            .join("package.json")
+            .exists(),
+        "nodemon package was not installed"
+    );
+    assert!(
+        root.join("node_modules")
+            .join(".bin")
+            .join("eslint")
+            .exists(),
+        "eslint .bin shim was not generated"
+    );
+    assert!(
+        root.join("node_modules")
+            .join(".bin")
+            .join("nodemon")
+            .exists(),
+        "nodemon .bin shim was not generated"
+    );
+
+    let eslint_script = root.join("src").join("eslint-check.js");
+    let eslint = run_node(&[eslint_script.to_str().unwrap()], &root);
+    assert!(
+        eslint.status.success(),
+        "eslint check failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&eslint.stdout),
+        String::from_utf8_lossy(&eslint.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&eslint.stdout).contains("eslint:8.57.1:all,recommended"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&eslint.stdout)
+    );
+
+    let nodemon_script = root.join("src").join("nodemon-check.js");
+    let nodemon = run_node(&[nodemon_script.to_str().unwrap()], &root);
+    assert!(
+        nodemon.status.success(),
+        "nodemon check failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&nodemon.stdout),
+        String::from_utf8_lossy(&nodemon.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&nodemon.stdout).contains("rs:app.js:src:js,json"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&nodemon.stdout)
+    );
+}
+
+#[test]
+#[ignore = "downloads OpenAI and Anthropic SDK packages from the npm registry"]
+fn npm_installs_ai_sdk_packages_and_node_uses_them() {
+    let root = temp_project("official-ai-sdk-packages");
+    copy_dir_recursive(&fixture_project("ai-sdk-app"), &root);
+
+    let install = run_npm(
+        &[
+            "install",
+            "--no-audit",
+            "--registry",
+            libnode::DEFAULT_NPM_REGISTRY,
+        ],
+        &root,
+    );
+    assert!(
+        install.status.success(),
+        "npm process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(
+        root.join("node_modules")
+            .join("openai")
+            .join("package.json")
+            .exists(),
+        "openai package was not installed"
+    );
+    assert!(
+        root.join("node_modules")
+            .join("@anthropic-ai")
+            .join("sdk")
+            .join("package.json")
+            .exists(),
+        "@anthropic-ai/sdk package was not installed"
+    );
+    assert!(
+        root.join("node_modules")
+            .join(".bin")
+            .join("openai")
+            .exists(),
+        "openai .bin shim was not generated"
+    );
+
+    let script = root.join("src").join("app.js");
+    let run = run_node(&[script.to_str().unwrap()], &root);
+    assert!(
+        run.status.success(),
+        "node process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains(
+            "openai:4.104.0:function:function:function:object:anthropic:0.39.0:function:function:function:object:function:function:function:function:function"
+        ),
         "stdout:\n{}",
         String::from_utf8_lossy(&run.stdout)
     );
@@ -615,7 +857,10 @@ fn http_server_handles_real_localhost_request() {
     stream
         .write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("failed to write request");
-    assert!(wait_for_runtime_io(&mut runtime) > 0, "server did not accept request");
+    assert!(
+        wait_for_runtime_io(&mut runtime) > 0,
+        "server did not accept request"
+    );
 
     let mut response = String::new();
     stream
@@ -656,7 +901,10 @@ fn npm_installs_official_express_and_node_loads_package() {
         "unexpected npm output: {npm_stdout}"
     );
     assert!(
-        root.join("node_modules").join("express").join("package.json").exists(),
+        root.join("node_modules")
+            .join("express")
+            .join("package.json")
+            .exists(),
         "official express package was not installed"
     );
 
@@ -734,7 +982,10 @@ fn npm_installs_official_express_and_serves_http_route() {
     stream
         .write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .expect("failed to write request");
-    assert!(wait_for_runtime_io(&mut runtime) > 0, "server did not accept request");
+    assert!(
+        wait_for_runtime_io(&mut runtime) > 0,
+        "server did not accept request"
+    );
 
     let mut response = String::new();
     stream

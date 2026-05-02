@@ -1417,12 +1417,48 @@ impl Compiler {
                             self.emit(Op::Pop);
                         }
                     }
-                    ExportDecl::ReExport {
-                        specifiers: _,
-                        source: _,
-                    } => {
-                        // Re-exports are resolved at module-linking time, not compilation.
-                        self.emit(Op::Nop);
+                    ExportDecl::ReExport { specifiers, source } => {
+                        // `export { a as b } from "module"` is common in
+                        // bundled ESM chunks. Resolve it eagerly through the
+                        // same synchronous module registry used by static
+                        // imports, then copy the requested properties onto
+                        // this module's export object.
+                        if !specifiers.is_empty() {
+                            let tmp_name = alloc::format!(
+                                "__reexport_ns_{}",
+                                self.scope().chunk.constants.len()
+                            );
+                            let tmp_ci = self.add_const(Constant::String(tmp_name.clone()));
+                            self.emit(Op::DeclareGlobal(tmp_ci));
+
+                            let src_ci = self.add_const(Constant::String(source.clone()));
+                            let import_ci =
+                                self.add_const(Constant::String(String::from("__import__")));
+                            self.emit(Op::LoadGlobal(import_ci));
+                            self.emit(Op::LoadConst(src_ci));
+                            self.emit(Op::Call(1));
+                            self.emit(Op::StoreGlobal(tmp_ci));
+                            self.emit(Op::Pop);
+
+                            for spec in specifiers {
+                                let exports_ci =
+                                    self.add_const(Constant::String(String::from("__exports__")));
+                                self.emit(Op::LoadGlobal(exports_ci));
+                                self.emit(Op::LoadGlobal(tmp_ci));
+                                let local_ci =
+                                    self.add_const(Constant::String(spec.local.clone()));
+                                self.emit(Op::GetPropNamed(local_ci));
+                                let exported_ci =
+                                    self.add_const(Constant::String(spec.exported.clone()));
+                                self.emit(Op::SetPropNamed(exported_ci));
+                                self.emit(Op::Pop);
+                            }
+                        } else {
+                            // `export * from "module"` still needs full
+                            // namespace enumeration support; keep it a no-op
+                            // instead of faking partial semantics.
+                            self.emit(Op::Nop);
+                        }
                     }
                 }
             }

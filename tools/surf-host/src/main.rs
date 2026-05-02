@@ -4466,7 +4466,14 @@ fn prefetch_module_sources(
     source: &str,
     seen: &mut HashSet<String>,
 ) {
-    for specifier in libwebview::js::extract_module_specifiers_for_page(source, page_url) {
+    let current_page_id = wv
+        .dom()
+        .and_then(libwebview::js::extract_vike_page_id_from_dom);
+    for specifier in libwebview::js::extract_module_specifiers_for_page_with_page_id(
+        source,
+        page_url,
+        current_page_id.as_deref(),
+    ) {
         let full_url = resolve_url(referrer_url, &specifier);
         if !seen.insert(full_url.clone()) {
             continue;
@@ -4480,10 +4487,88 @@ fn prefetch_module_sources(
             eprintln!("[js]   module not valid UTF-8, skipping");
             continue;
         };
-        wv.js_runtime().register_module_source(&specifier, &text);
-        wv.js_runtime().register_module_source(&full_url, &text);
+        register_module_source_aliases(wv, &specifier, &full_url, &text);
         prefetch_module_sources(wv, page_url, &full_url, &text, seen);
     }
+}
+
+fn prefetch_modulepreload_sources(
+    wv: &mut libwebview::WebView,
+    page_url: &str,
+    seen: &mut HashSet<String>,
+) {
+    let links = wv
+        .dom()
+        .map(libwebview::js::extract_modulepreload_links_from_dom)
+        .unwrap_or_default();
+    for href in links {
+        let full_url = resolve_url(page_url, &href);
+        if !seen.insert(full_url.clone()) {
+            continue;
+        }
+        eprintln!("[js] fetching modulepreload: {} -> {}", href, full_url);
+        let Some(data) = fetch_resource(&full_url) else {
+            eprintln!("[js]   modulepreload fetch failed");
+            continue;
+        };
+        let Ok(text) = String::from_utf8(data) else {
+            eprintln!("[js]   modulepreload not valid UTF-8, skipping");
+            continue;
+        };
+        register_module_source_aliases(wv, &href, &full_url, &text);
+        prefetch_module_sources(wv, page_url, &full_url, &text, seen);
+    }
+}
+
+fn register_module_source_aliases(
+    wv: &mut libwebview::WebView,
+    specifier: &str,
+    full_url: &str,
+    source: &str,
+) {
+    if source.is_empty() {
+        return;
+    }
+    for alias in module_source_aliases(specifier, full_url) {
+        wv.js_runtime().register_module_source(&alias, source);
+    }
+}
+
+fn module_source_aliases(specifier: &str, full_url: &str) -> Vec<String> {
+    let mut aliases = Vec::new();
+    push_unique_alias(&mut aliases, specifier);
+    push_unique_alias(&mut aliases, full_url);
+
+    if let Some(path_start) = full_url.find("://").and_then(|scheme| {
+        full_url[scheme + 3..]
+            .find('/')
+            .map(|path| scheme + 3 + path)
+    }) {
+        let path = &full_url[path_start..];
+        push_unique_alias(&mut aliases, path);
+        push_unique_alias(&mut aliases, path.trim_start_matches('/'));
+        if let Some(file_start) = path.rfind('/') {
+            let file = &path[file_start + 1..];
+            push_unique_alias(&mut aliases, &format!("./{}", file));
+            if path.contains("/chunks/") {
+                push_unique_alias(&mut aliases, &format!("../chunks/{}", file));
+                push_unique_alias(&mut aliases, &format!("./chunks/{}", file));
+            }
+            if path.contains("/entries/") {
+                push_unique_alias(&mut aliases, &format!("../entries/{}", file));
+                push_unique_alias(&mut aliases, &format!("./entries/{}", file));
+            }
+        }
+    }
+
+    aliases
+}
+
+fn push_unique_alias(aliases: &mut Vec<String>, alias: &str) {
+    if alias.is_empty() || aliases.iter().any(|existing| existing == alias) {
+        return;
+    }
+    aliases.push(alias.to_string());
 }
 
 fn run_javascript(
@@ -4547,13 +4632,14 @@ fn run_javascript(
     dump_debug_script_indexes(&scripts, &script_urls);
 
     let mut seen_modules = HashSet::new();
+    prefetch_modulepreload_sources(wv, base_url, &mut seen_modules);
     for (idx, script) in scripts.iter().enumerate() {
         let referrer = script_urls
             .get(idx)
             .and_then(|u| u.as_deref())
             .unwrap_or(base_url);
         if let Some(Some(url)) = script_urls.get(idx) {
-            wv.js_runtime().register_module_source(url, script);
+            register_module_source_aliases(wv, url, url, script);
         }
         prefetch_module_sources(wv, base_url, referrer, script, &mut seen_modules);
     }

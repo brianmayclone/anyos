@@ -1,0 +1,8 @@
+{
+  "name": "anyos-node-ai-sdk-fixture",
+  "version": "0.1.0",
+  "dependencies": {
+    "openai": "4.104.0",
+    "@anthropic-ai/sdk": "0.39.0"
+  }
+}

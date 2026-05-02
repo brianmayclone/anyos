@@ -635,9 +635,17 @@ impl Dom {
     }
 
     pub fn has_tag_name(&self, id: NodeId, name: &str) -> bool {
-        self.raw_tag_name(id)
-            .map(|raw| raw.eq_ignore_ascii_case(name))
-            .unwrap_or(false)
+        match &self.nodes[id].node_type {
+            NodeType::Element { tag, .. } => {
+                if tag.tag_name().eq_ignore_ascii_case(name) {
+                    return true;
+                }
+                self.raw_tag_name(id)
+                    .map(|raw| raw.eq_ignore_ascii_case(name))
+                    .unwrap_or(false)
+            }
+            NodeType::Text(_) => false,
+        }
     }
 
     /// Resolve the best available image URL for an `<img>` element.
@@ -1495,6 +1503,27 @@ impl FloatApprox for f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_tag_name_matches_builtin_and_custom_elements() {
+        let dom = crate::html::parse(r#"<script id="s">1</script><a-img src="/x.png"></a-img>"#);
+        let script_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Script, .. }))
+            .expect("script node");
+        let custom_id = dom
+            .nodes
+            .iter()
+            .enumerate()
+            .position(|(id, _)| dom.raw_tag_name(id) == Some("a-img"))
+            .expect("custom node");
+
+        assert!(dom.has_tag_name(script_id, "script"));
+        assert!(dom.has_tag_name(script_id, "SCRIPT"));
+        assert!(dom.has_tag_name(custom_id, "a-img"));
+        assert!(!dom.has_tag_name(script_id, "style"));
+    }
 
     #[test]
     fn srcset_candidates_allow_commas_inside_urls() {
