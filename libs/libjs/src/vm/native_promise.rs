@@ -97,6 +97,13 @@ fn is_internal_promise(value: &JsValue) -> bool {
     )
 }
 
+fn same_object(a: &JsValue, b: &JsValue) -> bool {
+    match (a, b) {
+        (JsValue::Object(a), JsValue::Object(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
 fn make_bound_native(
     name: &str,
     native: fn(&mut Vm, &[JsValue]) -> JsValue,
@@ -148,7 +155,12 @@ fn chain_internal_promise(vm: &mut Vm, source: &JsValue, target: &JsValue) {
 fn thenable_resolve_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
     let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    settle_promise(vm, &target, "fulfilled", &value);
+    if same_object(&target, &value) {
+        let err = vm.make_type_error("A promise cannot resolve to itself");
+        settle_promise(vm, &target, "rejected", &err);
+    } else {
+        settle_chained_result(vm, &target, value);
+    }
     JsValue::Undefined
 }
 
@@ -189,6 +201,11 @@ fn adopt_thenable(vm: &mut Vm, target: &JsValue, thenable: &JsValue) -> bool {
 }
 
 pub(crate) fn settle_chained_result(vm: &mut Vm, target: &JsValue, result: JsValue) {
+    if same_object(target, &result) {
+        let err = vm.make_type_error("A promise cannot resolve to itself");
+        settle_promise(vm, target, "rejected", &err);
+        return;
+    }
     if adopt_thenable(vm, target, &result) {
         return;
     }
@@ -198,7 +215,12 @@ pub(crate) fn settle_chained_result(vm: &mut Vm, target: &JsValue, result: JsVal
 fn promise_resolve_native(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let promise = args.first().cloned().unwrap_or(JsValue::Undefined);
     let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    settle_promise(vm, &promise, "fulfilled", &value);
+    if same_object(&promise, &value) {
+        let err = vm.make_type_error("A promise cannot resolve to itself");
+        settle_promise(vm, &promise, "rejected", &err);
+    } else if !adopt_thenable(vm, &promise, &value) {
+        settle_promise(vm, &promise, "fulfilled", &value);
+    }
     JsValue::Undefined
 }
 

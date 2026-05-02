@@ -360,6 +360,21 @@ mod tests {
     }
 
     #[test]
+    fn promise_executor_resolve_adopts_nested_promise() {
+        let mut engine = JsEngine::new();
+        engine.eval(
+            "var seen = 'pending'; \
+             new Promise(function(resolve) { \
+               resolve(Promise.resolve('response')); \
+             }).then(function(value) { \
+               seen = value; \
+             });",
+        );
+        let result = engine.eval("seen");
+        assert_eq!(result.to_js_string(), "response");
+    }
+
+    #[test]
     fn contextual_of_can_be_assigned_as_identifier() {
         let mut engine = JsEngine::new();
         let result = engine.eval("of=function(a){return a+1}; of(4)");
