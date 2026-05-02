@@ -510,6 +510,23 @@ fn fetch_pack_streamed_attempt(
     Ok(count)
 }
 
+/// A delta object that couldn't be resolved when first encountered.
+/// Saved for a fixed-point retry pass after the main streaming loop.
+enum PendingDelta {
+    /// OFS_DELTA: base referenced by absolute pack offset.
+    Ofs {
+        entry_start: usize,
+        base_abs: usize,
+        delta: Vec<u8>,
+    },
+    /// REF_DELTA: base referenced by SHA-1 (may be a forward reference).
+    Ref {
+        entry_start: usize,
+        base_oid: Oid,
+        delta: Vec<u8>,
+    },
+}
+
 /// Parse pack objects from a stream and write to repository.
 fn stream_parse_objects(
     stream: &mut crate::stream::HttpStream,
@@ -523,6 +540,7 @@ fn stream_parse_objects(
     let mut offset_index: Vec<(usize, Oid, u8)> = Vec::new();
     let mut resolved_bytes = 0usize;
     let mut count = 0u32;
+    let mut pending: Vec<PendingDelta> = Vec::new();
 
     for i in 0..num_objects {
         let entry_start = stream.decoded_pos().saturating_sub(pack_base_pos);
@@ -596,11 +614,13 @@ fn stream_parse_objects(
                     });
 
                 let Some((base_data, base_type)) = base else {
-                    return Err(Error::Other(format!(
-                        "missing REF_DELTA base {} for pack object {}",
-                        base_oid.to_hex(),
-                        i + 1
-                    )));
+                    // Forward reference or evicted base — defer resolution.
+                    pending.push(PendingDelta::Ref {
+                        entry_start,
+                        base_oid,
+                        delta: delta_data,
+                    });
+                    continue;
                 };
 
                 let result = crate::pack::apply_delta(&base_data, &delta_data);
@@ -649,11 +669,13 @@ fn stream_parse_objects(
                     });
 
                 let Some((base_data, base_type)) = base else {
-                    return Err(Error::Other(format!(
-                        "missing OFS_DELTA base at pack offset {} for object {}",
+                    // Base not yet resolved (chained delta) — defer.
+                    pending.push(PendingDelta::Ofs {
+                        entry_start,
                         base_abs,
-                        i + 1
-                    )));
+                        delta: delta_data,
+                    });
+                    continue;
                 };
 
                 let result = crate::pack::apply_delta(&base_data, &delta_data);
@@ -688,6 +710,111 @@ fn stream_parse_objects(
                     i + 1
                 )));
             }
+        }
+    }
+
+    // Fixed-point resolution of deferred deltas (forward refs / chained OFS).
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut still_pending: Vec<PendingDelta> = Vec::with_capacity(pending.len());
+
+        for p in pending.drain(..) {
+            let (entry_start, base_lookup) = match &p {
+                PendingDelta::Ofs {
+                    entry_start,
+                    base_abs,
+                    ..
+                } => {
+                    let base = resolved
+                        .iter()
+                        .find(|(off, _, _, _)| *off == *base_abs)
+                        .map(|(_, _, data, obj_type)| (data.clone(), *obj_type))
+                        .or_else(|| {
+                            offset_index
+                                .iter()
+                                .find(|(off, _, _)| *off == *base_abs)
+                                .and_then(|(_, oid, obj_type)| {
+                                    repo.read_object(oid).ok().map(|obj| (obj.data, *obj_type))
+                                })
+                        });
+                    (*entry_start, base)
+                }
+                PendingDelta::Ref {
+                    entry_start,
+                    base_oid,
+                    ..
+                } => {
+                    let base = resolved
+                        .iter()
+                        .find(|(_, o, _, _)| *o == *base_oid)
+                        .map(|(_, _, d, t)| (d.clone(), *t))
+                        .or_else(|| {
+                            repo.read_object(base_oid).ok().map(|o| {
+                                let t = match o.obj_type {
+                                    ObjectType::Commit => OBJ_COMMIT,
+                                    ObjectType::Tree => OBJ_TREE,
+                                    ObjectType::Blob => OBJ_BLOB,
+                                    ObjectType::Tag => OBJ_TAG,
+                                };
+                                (o.data, t)
+                            })
+                        });
+                    (*entry_start, base)
+                }
+            };
+
+            let Some((base_data, base_type)) = base_lookup else {
+                still_pending.push(p);
+                continue;
+            };
+
+            let delta_data = match p {
+                PendingDelta::Ofs { delta, .. } => delta,
+                PendingDelta::Ref { delta, .. } => delta,
+            };
+
+            let result = crate::pack::apply_delta(&base_data, &delta_data);
+            let obj_type = crate::pack::pack_type_to_object_type(base_type);
+            let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
+            let obj = Object {
+                obj_type,
+                data: result.clone(),
+            };
+            repo.write_object(&obj).map_err(|e| {
+                Error::Other(format!(
+                    "failed to write delta object {}: {}",
+                    oid.to_hex(),
+                    e
+                ))
+            })?;
+            push_delta_cache(
+                &mut resolved,
+                &mut offset_index,
+                &mut resolved_bytes,
+                entry_start,
+                oid,
+                result,
+                base_type,
+            );
+            count += 1;
+        }
+
+        pending = still_pending;
+        if pending.len() == before {
+            // No progress — unresolvable cycle or truly missing base.
+            let sample = match &pending[0] {
+                PendingDelta::Ofs { base_abs, .. } => {
+                    format!("OFS_DELTA base @ pack offset {}", base_abs)
+                }
+                PendingDelta::Ref { base_oid, .. } => {
+                    format!("REF_DELTA base {}", base_oid.to_hex())
+                }
+            };
+            return Err(Error::Other(format!(
+                "could not resolve {} deferred delta(s); first missing: {}",
+                pending.len(),
+                sample
+            )));
         }
     }
 
