@@ -375,7 +375,7 @@ fn build_and_run(
         .item(35, t("Clean"), 0)
         .separator()
         .item(36, t("Run Configurations..."), 0)
-        .item(37, t("Manage Crates..."), 0)
+        .item(37, t("Manage Packages..."), 0)
         .item(38, t("Project Properties..."), 0)
         .end_menu()
         .menu(t("AI"))

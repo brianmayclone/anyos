@@ -16,6 +16,7 @@ pub mod intellisense;
 pub mod language;
 pub mod language_service;
 pub mod live_analysis;
+pub mod node_packages;
 pub mod plugin;
 pub mod project;
 pub mod rust_backend;

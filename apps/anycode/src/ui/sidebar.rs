@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use libanyui_client as ui;
 
-use crate::logic::project::{Project, TargetKind};
+use crate::logic::project::{Project, ProjectType, TargetKind};
 use crate::logic::tasks::{TaskCategory, TaskManager};
 use crate::util::{path, syntax_map};
 
@@ -252,6 +252,10 @@ impl Sidebar {
     }
 
     fn add_crate_nodes(&mut self, parent: u32, project: &Project) {
+        if project.project_type == ProjectType::NodeJS {
+            self.add_node_package_nodes(parent, project);
+            return;
+        }
         let deps = crate::logic::crates::dependencies_for_project(project);
         let tc = ui::theme::colors();
         let crates_node = self
@@ -284,6 +288,40 @@ impl Sidebar {
             self.tree.set_expanded(section, false);
         }
         self.tree.set_expanded(crates_node, false);
+    }
+
+    fn add_node_package_nodes(&mut self, parent: u32, project: &Project) {
+        let packages = crate::logic::node_packages::packages_for_project(project);
+        let tc = ui::theme::colors();
+        let packages_node = self
+            .tree
+            .add_child(parent, &format!("NPM Packages ({})", packages.len()));
+        self.remember_path(packages_node, "anycode://crates", true);
+        self.tree.set_node_style(packages_node, STYLE_BOLD);
+        self.tree.set_node_text_color(packages_node, tc.accent);
+        self.set_system_icon(packages_node, "package", tc.accent);
+        let manage_node = self.tree.add_child(packages_node, "Manage NPM Packages...");
+        self.remember_path(manage_node, "anycode://manage-crates", true);
+        self.set_system_icon(manage_node, "package-search", tc.text_secondary);
+
+        for kind in [
+            crate::logic::node_packages::NodeDependencyKind::Runtime,
+            crate::logic::node_packages::NodeDependencyKind::Dev,
+            crate::logic::node_packages::NodeDependencyKind::Optional,
+        ] {
+            let section = self.tree.add_child(packages_node, kind.display_name());
+            self.remember_virtual(section);
+            self.set_system_icon(section, "boxes", tc.text_secondary);
+            for package in packages.iter().filter(|package| package.kind == kind) {
+                let node = self
+                    .tree
+                    .add_child(section, &format!("{} {}", package.name, package.version));
+                self.remember_virtual(node);
+                self.set_system_icon(node, "box", tc.text_secondary);
+            }
+            self.tree.set_expanded(section, false);
+        }
+        self.tree.set_expanded(packages_node, false);
     }
 
     fn add_connected_service_nodes(&mut self, parent: u32, project: &Project) {
@@ -910,9 +948,9 @@ fn context_menu_items(kind: SidebarContextKind) -> &'static str {
             "New File|New UI Form...|New Storyboard / Workflow...|New Folder|-|Rename|Delete"
         }
         SidebarContextKind::Project => {
-            "Project Properties...|-|New UI Form...|New Storyboard / Workflow...|-|Manage Crates...|Connected Services..."
+            "Project Properties...|-|New UI Form...|New Storyboard / Workflow...|-|Manage Packages...|Connected Services..."
         }
-        SidebarContextKind::Crates => "Manage Crates...|Refresh Dependencies",
+        SidebarContextKind::Crates => "Manage Packages...|Refresh Dependencies",
         SidebarContextKind::ConnectedServices => {
             "Add Connected Service...|Manage Connected Services..."
         }
@@ -1014,6 +1052,8 @@ fn language_icon_color(lang: &str) -> u32 {
         "C" => 0xFF569CD6,
         "Rust" => 0xFFDEA584,
         "Python" => 0xFF4EC9B0,
+        "JavaScript" => 0xFFDCDCAA,
+        "TypeScript" => 0xFF569CD6,
         "JSON" => 0xFFCE9178,
         "Shell" => 0xFF6A9955,
         "Makefile" => 0xFFDCDCAA,

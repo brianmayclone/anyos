@@ -7,7 +7,8 @@ use crate::app;
 use crate::app_state::DesignerHistoryEntry;
 use crate::logic::{
     ai, build, crates, debug_session, designer, diagnostics, file_manager, git, intellisense,
-    language, language_service, live_analysis, project, search, storyboard, symbols, tasks,
+    language, language_service, live_analysis, node_packages, project, search, storyboard, symbols,
+    tasks,
 };
 use crate::ui::problems_panel::ProblemFilter;
 use crate::util::path;
@@ -103,6 +104,96 @@ pub fn create_rust_ui_project_named(project_name: String, project_root: String) 
     open_workspace(project_root, false);
     s.status
         .set_analysis_status(&format!("Created Rust UI App {}", project_name));
+    true
+}
+
+pub fn create_node_ui_project_named(project_name: String, project_root: String) -> bool {
+    let s = app();
+    let project_name = project_name.trim();
+    let project_root = project_root.trim();
+    if !is_valid_project_name(project_name) {
+        s.status
+            .set_analysis_status("Project name must be a type-like name");
+        return false;
+    }
+    if project_root.is_empty() || path::exists(project_root) {
+        s.status
+            .set_analysis_status("Choose a new empty project folder");
+        return false;
+    }
+    let parent = path::parent(project_root);
+    if parent.is_empty() || !path::is_directory(parent) {
+        s.status
+            .set_analysis_status("Project parent folder does not exist");
+        return false;
+    }
+    if !mkdir_ok(project_root)
+        || !mkdir_ok(&format!("{}/src", project_root))
+        || !mkdir_ok(&format!("{}/src/ui", project_root))
+    {
+        s.status
+            .set_analysis_status("Could not create project folders");
+        return false;
+    }
+
+    let package_name = to_crate_name(project_name);
+    let package_json = format!(
+        "{{\n  \"name\": \"{}\",\n  \"version\": \"0.1.0\",\n  \"type\": \"commonjs\",\n  \"scripts\": {{\n    \"start\": \"node src/main.js\",\n    \"lint\": \"eslint src\",\n    \"test\": \"node src/main.js --self-test\"\n  }},\n  \"dependencies\": {{}},\n  \"devDependencies\": {{}}\n}}\n",
+        package_name
+    );
+    if anyos_std::fs::write_bytes(
+        &format!("{}/package.json", project_root),
+        package_json.as_bytes(),
+    )
+    .is_err()
+    {
+        s.status.set_analysis_status("Could not write package.json");
+        return false;
+    }
+    if let Err(err) = designer::create_form_files_for_target(
+        project_root,
+        "MainForm",
+        designer::UiCodeTarget::Node,
+    ) {
+        s.status.set_analysis_status(err);
+        return false;
+    }
+    let storyboard_path = format!("{}/src/ui/Main.Storyboard", project_root);
+    let designer_path = designer::designer_file_path(project_root, "MainForm");
+    let storyboard_doc = storyboard::StoryboardDocument {
+        name: String::from("Main"),
+        scenes: vec![storyboard::StoryboardScene {
+            form_name: String::from("MainForm"),
+            designer_path,
+            x: 48,
+            y: 48,
+        }],
+        segues: Vec::new(),
+    };
+    if let Err(err) = storyboard::save_storyboard_for_target(
+        &storyboard_path,
+        &storyboard_doc,
+        storyboard::UiCodeTarget::Node,
+    ) {
+        s.status.set_analysis_status(err);
+        return false;
+    }
+    if let Err(err) = storyboard::ensure_startup_main_for_target(
+        project_root,
+        &storyboard_path,
+        storyboard::UiCodeTarget::Node,
+    ) {
+        s.status.set_analysis_status(err);
+        return false;
+    }
+
+    let project = project::Project::open(project_root);
+    let mut solution = crate::logic::solution::SolutionMetadata::load(&project);
+    solution.startup_storyboard = storyboard_path;
+    let _ = solution.save();
+    open_workspace(project_root, false);
+    s.status
+        .set_analysis_status(&format!("Created Node UI App {}", project_name));
     true
 }
 
@@ -1836,7 +1927,7 @@ pub fn show_new_ui_form_dialog() {
     let root = match s.current_project.as_ref() {
         Some(project) => project.root.clone(),
         None => {
-            s.status.set_analysis_status("Open a Rust project first");
+            s.status.set_analysis_status("Open a project first");
             return;
         }
     };
@@ -1849,7 +1940,7 @@ pub fn show_new_storyboard_dialog() {
     let root = match s.current_project.as_ref() {
         Some(project) => project.root.clone(),
         None => {
-            s.status.set_analysis_status("Open a Rust project first");
+            s.status.set_analysis_status("Open a project first");
             return;
         }
     };
@@ -1862,7 +1953,7 @@ pub fn create_storyboard() {
     let root = match s.current_project.as_ref() {
         Some(project) => project.root.clone(),
         None => {
-            s.status.set_analysis_status("Open a Rust project first");
+            s.status.set_analysis_status("Open a project first");
             return;
         }
     };
@@ -1872,10 +1963,17 @@ pub fn create_storyboard() {
 
 pub fn create_storyboard_named(storyboard_name: String, set_startup: bool) -> bool {
     let s = app();
-    let root = match s.current_project.as_ref() {
-        Some(project) => project.root.clone(),
+    let (root, target) = match s.current_project.as_ref() {
+        Some(project) => (
+            project.root.clone(),
+            if project.project_type == project::ProjectType::NodeJS {
+                designer::UiCodeTarget::Node
+            } else {
+                designer::UiCodeTarget::Rust
+            },
+        ),
         None => {
-            s.status.set_analysis_status("Open a Rust project first");
+            s.status.set_analysis_status("Open a project first");
             return false;
         }
     };
@@ -1898,7 +1996,7 @@ pub fn create_storyboard_named(storyboard_name: String, set_startup: bool) -> bo
         scenes: Vec::new(),
         segues: Vec::new(),
     };
-    if let Err(err) = storyboard::save_storyboard(&path, &doc) {
+    if let Err(err) = storyboard::save_storyboard_for_target(&path, &doc, target) {
         s.status.set_analysis_status(err);
         return false;
     }
@@ -1916,10 +2014,15 @@ pub fn create_storyboard_named(storyboard_name: String, set_startup: bool) -> bo
 pub fn set_startup_storyboard(storyboard_path: String) {
     let s = app();
     let Some(project) = s.current_project.as_ref() else {
-        s.status.set_analysis_status("Open a Rust project first");
+        s.status.set_analysis_status("Open a project first");
         return;
     };
     let project_root = project.root.clone();
+    let target = if project.project_type == project::ProjectType::NodeJS {
+        storyboard::UiCodeTarget::Node
+    } else {
+        storyboard::UiCodeTarget::Rust
+    };
     if storyboard_path.is_empty() {
         if let Some(solution) = s.solution.as_mut() {
             solution.startup_storyboard.clear();
@@ -1932,7 +2035,7 @@ pub fn set_startup_storyboard(storyboard_path: String) {
         return;
     }
 
-    match storyboard::ensure_startup_main(&project_root, &storyboard_path) {
+    match storyboard::ensure_startup_main_for_target(&project_root, &storyboard_path, target) {
         Ok(created_main) => {
             if s.solution.is_none() {
                 s.solution = s
@@ -1952,7 +2055,7 @@ pub fn set_startup_storyboard(storyboard_path: String) {
             }
             if created_main {
                 s.status
-                    .set_analysis_status("Startup Storyboard saved; src/main.rs generated");
+                    .set_analysis_status("Startup Storyboard saved; startup source generated");
             } else {
                 s.status
                     .set_analysis_status("Startup Storyboard saved; existing src/main.rs kept");
@@ -1964,11 +2067,61 @@ pub fn set_startup_storyboard(storyboard_path: String) {
 
 pub fn manage_crates() {
     let s = app();
-    if s.current_project.is_none() {
-        s.status.set_analysis_status("Open a Rust project first");
+    let Some(project) = s.current_project.as_ref() else {
+        s.status.set_analysis_status("Open a project first");
         return;
+    };
+    if project.project_type == project::ProjectType::NodeJS {
+        crate::ui::node_package_manager_dialog::show();
+    } else {
+        crate::ui::crate_manager_dialog::show();
     }
-    crate::ui::crate_manager_dialog::show();
+}
+
+pub fn add_node_package(name: String, version: String, kind_index: u32) {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        s.status.set_analysis_status("Open a Node project first");
+        return;
+    };
+    let kind = node_packages::NodeDependencyKind::from_index(kind_index);
+    match node_packages::add_or_update_package(project, &name, &version, kind) {
+        Ok(()) => {
+            refresh_project_metadata();
+            app()
+                .status
+                .set_analysis_status(&format!("Updated npm package {}", name.trim()));
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
+pub fn restore_node_packages() {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        s.status.set_analysis_status("Open a Node project first");
+        return;
+    };
+    let cmd = if s.config.npm_path.is_empty() {
+        crate::logic::config::find_tool("npm")
+    } else {
+        s.config.npm_path.clone()
+    };
+    if !cmd.is_empty() {
+        let args = String::from("install");
+        anyos_std::fs::chdir(&project.root);
+        s.output.show_output();
+        s.output
+            .append_line(&format!("$ {} {}", path::basename(&cmd), args));
+        s.build_process = build::BuildProcess::spawn(&cmd, &args);
+        s.active_task_category = Some(tasks::TaskCategory::Custom);
+        if s.build_process.is_some() {
+            crate::start_build_timer();
+        }
+    } else {
+        s.status
+            .set_analysis_status("npm was not found; configure Node toolchain first");
+    }
 }
 
 pub fn manage_connected_services() {
@@ -2154,16 +2307,23 @@ fn refresh_project_metadata() {
 
 pub fn create_ui_form_named(form_name: String) -> bool {
     let s = app();
-    let root = match s.current_project.as_ref() {
-        Some(project) => project.root.clone(),
+    let (root, target) = match s.current_project.as_ref() {
+        Some(project) => (
+            project.root.clone(),
+            if project.project_type == project::ProjectType::NodeJS {
+                designer::UiCodeTarget::Node
+            } else {
+                designer::UiCodeTarget::Rust
+            },
+        ),
         None => {
-            s.status.set_analysis_status("Open a Rust project first");
+            s.status.set_analysis_status("Open a project first");
             return false;
         }
     };
     if !designer::is_valid_form_name(&form_name) {
         s.status
-            .set_analysis_status("Use a valid Rust type name, for example MainForm");
+            .set_analysis_status("Use a valid type name, for example MainForm");
         return false;
     }
     if designer::form_exists(&root, &form_name) {
@@ -2171,7 +2331,7 @@ pub fn create_ui_form_named(form_name: String) -> bool {
             .set_analysis_status("A UI form with this name already exists");
         return false;
     }
-    match designer::create_form_files(&root, &form_name) {
+    match designer::create_form_files_for_target(&root, &form_name, target) {
         Ok(()) => {
             let designer_path = designer::designer_file_path(&root, &form_name);
             let synced_storyboards = storyboard::sync_storyboards_for_project(&root);

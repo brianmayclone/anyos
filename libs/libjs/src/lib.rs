@@ -242,7 +242,8 @@ fn debug_chunk_ops(chunk: &bytecode::Chunk, label: &str, limit: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::JsEngine;
+    use super::{JsEngine, JsValue};
+    use alloc::string::String;
 
     #[test]
     fn array_iterators_expose_a_real_prototype_with_next() {
@@ -405,6 +406,115 @@ mod tests {
             engine.last_exception()
         );
         assert_eq!(result.to_js_string(), "a|b");
+    }
+
+    #[test]
+    fn module_static_imports_all_named_aliases_before_execution() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source(
+            "./helper.js",
+            "const exports = Object.freeze(Object.defineProperty( \
+               { __proto__: null, Header: 1 }, \
+               Symbol.toStringTag, \
+               { value: 'Module' } \
+             )); \
+             export { exports as t };",
+        );
+        engine.register_module_source(
+            "./entry.js",
+            "import { t as m } from './helper.js'; \
+             export { m as value };",
+        );
+        let result = engine.eval("var ns = __import__('./entry.js'); ns.value.Header");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_number(), 1.0);
+    }
+
+    #[test]
+    fn module_static_imports_are_instantiated_before_top_level_code() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source("./dep.js", "const value = 42; export { value };");
+        engine.register_module_source(
+            "./entry.js",
+            "const seen = value; import { value } from './dep.js'; export { seen };",
+        );
+        let result = engine.eval("var ns = __import__('./entry.js'); ns.seen");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_number(), 42.0);
+    }
+
+    #[test]
+    fn module_loader_intrinsics_ignore_window_shadow_properties() {
+        let mut engine = JsEngine::new();
+        let window = JsValue::new_object();
+        window.set_property(String::from("__import__"), JsValue::Undefined);
+        engine.set_global("window", window);
+        engine.register_module_source("./dep.js", "const value = 7; export { value };");
+        engine.register_module_source(
+            "./entry.js",
+            "import { value } from './dep.js'; export { value };",
+        );
+        let result = engine.eval("var ns = __import__('./entry.js'); ns.value");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_number(), 7.0);
+    }
+
+    #[test]
+    fn module_static_imports_survive_vite_object_spread_bundle_shape() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source("./loader.js", "function y() {} export { y as _ };");
+        engine.register_module_source(
+            "./define.js",
+            "var o = Object.defineProperty, _ = (t, e) => { \
+                 for (var r in e) o(t, r, { get: e[r], enumerable: true }); \
+             }; \
+             export { _ };",
+        );
+        engine.register_module_source(
+            "./exports.js",
+            "function y(islands, o) { return o.Header(); } export { y as h };",
+        );
+        engine.register_module_source(
+            "./widgets.js",
+            "var r = function() { return 9; }; \
+             const a = Object.freeze(Object.defineProperty( \
+               { __proto__: null, Header: r }, \
+               Symbol.toStringTag, \
+               { value: 'Module' } \
+             )); \
+             export { a as t };",
+        );
+        engine.register_module_source(
+            "./entry.js",
+            "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=['x'])))=>i.map(i=>d[i]);\
+             import{_ as t}from'./loader.js';\
+             import{_ as s}from'./define.js';\
+             import{h as a}from'./exports.js';\
+             import{t as m}from'./widgets.js';\
+             var r = {}; s(r, { HeadlineOnlyBlock: () => 1 }); \
+             function z(o) { return a(o.islands, { ...r, ...m }); } \
+             export { z as r };",
+        );
+        let result =
+            engine.eval("var ns = __import__('./entry.js'); ns.r({ islands: {} });");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_number(), 9.0);
     }
 
     #[test]

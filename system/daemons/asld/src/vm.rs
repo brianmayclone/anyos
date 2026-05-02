@@ -34,6 +34,7 @@ const E1000_IRQ: u8 = 11;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmInstance {
     pub distro_name: String,
+    pub boot_mode: String,
     pub vm_id: u32,
     pub vcpu_id: u32,
     pub vm_handle: u64,
@@ -93,6 +94,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     ensure_pipe(&format!("asl-console-{}", config.name))?;
     Ok(VmInstance {
         distro_name: config.name.clone(),
+        boot_mode: crate::boot::build_boot_plan(config).mode,
         vm_id: 1,
         vcpu_id: 0,
         vm_handle: 1,
@@ -190,6 +192,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         }
     };
 
+    let boot_plan = crate::boot::build_boot_plan(config);
     let boot_result = if crate::boot::is_smoke_test(config) {
         configure_boot_vcpu(&vcpu, guest_memory, guest_memory_size)
     } else if crate::boot::is_seabios(config) {
@@ -225,6 +228,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
 
     Ok(VmInstance {
         distro_name: config.name.clone(),
+        boot_mode: boot_plan.mode,
         vm_id,
         vcpu_id,
         vm_handle: vm.raw_handle(),
@@ -270,7 +274,17 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
         if exit.reason == exit_reason::HLT && inject_pending_device_irqs(instance, &vcpu)? {
             continue;
         }
-        let assessment = assess_boot_exit(&exit);
+        let mut assessment = assess_boot_exit(&exit);
+        if assessment.ready
+            && assessment.halted
+            && instance.boot_mode != crate::boot::SMOKE_TEST_KERNEL_PROFILE
+        {
+            assessment.halted = false;
+            assessment.summary = format!(
+                "guest reached idle halt; runtime remains active ({})",
+                describe_exit(&exit)
+            );
+        }
         last_exit = exit;
         if !assessment.should_continue {
             instance.halted = assessment.halted;
@@ -1319,7 +1333,7 @@ fn assess_boot_exit(exit: &VmExitInfo) -> ExitAssessment {
             ExitAssessment {
                 ready: false,
                 should_continue: false,
-                halted: true,
+                halted: false,
                 summary: format!(
                     "guest failed to enter stable boot state ({})",
                     describe_exit(exit)
@@ -1530,6 +1544,7 @@ mod tests {
         };
         let instance = start_vm(&cfg).unwrap();
         assert_eq!(instance.vcpu_id, 0);
+        assert_eq!(instance.boot_mode, "direct-linux");
         assert!(instance.console_pipe_name.contains("ubuntu"));
         assert!(instance.guest_memory_size >= 16 * 1024 * 1024);
         let mut instance = instance;

@@ -60,7 +60,7 @@ pub fn show() {
     btn_service.set_color(tc.control_bg);
     content.add(&btn_service);
 
-    let btn_project = ui::Button::new(t("Rust UI App"));
+    let btn_project = ui::Button::new(t("App Project"));
     btn_project.set_position(24, 124);
     btn_project.set_size(168, 38);
     btn_project.set_color(tc.success);

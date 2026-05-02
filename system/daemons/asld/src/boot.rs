@@ -26,6 +26,11 @@ const LINUX_HEAP_END_PTR_OFFSET: usize = 0x224;
 const LINUX_CMDLINE_PTR_OFFSET: usize = 0x228;
 const LINUX_INITRD_ADDR_MAX_OFFSET: usize = 0x22c;
 const LINUX_CMDLINE_SIZE_OFFSET: usize = 0x238;
+const LINUX_E820_ENTRIES_OFFSET: usize = 0x1e8;
+const LINUX_E820_TABLE_OFFSET: usize = 0x2d0;
+const LINUX_E820_ENTRY_SIZE: usize = 20;
+const LINUX_E820_TYPE_RAM: u32 = 1;
+const LINUX_E820_TYPE_RESERVED: u32 = 2;
 const LINUX_BOOT_MAGIC: u32 = 0x5372_6448;
 const LINUX_BOOT_FLAG: u16 = 0xaa55;
 const DEFAULT_SETUP_SECTORS: usize = 4;
@@ -349,6 +354,53 @@ fn write_direct_linux_guest_memory(
     write_u32(params, LINUX_INITRD_ADDR_MAX_OFFSET, 0xffff_ffff)?;
     write_u32(params, LINUX_INITRD_ADDR_OFFSET, layout.initrd_addr as u32)?;
     write_u32(params, LINUX_INITRD_SIZE_OFFSET, layout.initrd_size as u32)?;
+    write_e820_map(params, guest_memory_size)?;
+    Ok(())
+}
+
+fn write_e820_map(params: &mut [u8], guest_memory_size: usize) -> Result<(), AsldError> {
+    let low_ram_end = core::cmp::min(guest_memory_size as u64, 0x0009_fc00);
+    let high_ram_start = 0x0010_0000u64;
+    let high_ram_size = (guest_memory_size as u64).saturating_sub(high_ram_start);
+
+    let mut entries = 0usize;
+    if low_ram_end != 0 {
+        write_e820_entry(params, entries, 0, low_ram_end, LINUX_E820_TYPE_RAM)?;
+        entries += 1;
+    }
+    write_e820_entry(
+        params,
+        entries,
+        low_ram_end,
+        0x0010_0000u64.saturating_sub(low_ram_end),
+        LINUX_E820_TYPE_RESERVED,
+    )?;
+    entries += 1;
+    if high_ram_size != 0 {
+        write_e820_entry(
+            params,
+            entries,
+            high_ram_start,
+            high_ram_size,
+            LINUX_E820_TYPE_RAM,
+        )?;
+        entries += 1;
+    }
+    params[LINUX_E820_ENTRIES_OFFSET] = entries as u8;
+    Ok(())
+}
+
+fn write_e820_entry(
+    params: &mut [u8],
+    index: usize,
+    addr: u64,
+    size: u64,
+    entry_type: u32,
+) -> Result<(), AsldError> {
+    let offset = LINUX_E820_TABLE_OFFSET + index * LINUX_E820_ENTRY_SIZE;
+    write_u64(params, offset, addr)?;
+    write_u64(params, offset + 8, size)?;
+    write_u32(params, offset + 16, entry_type)?;
     Ok(())
 }
 
@@ -409,6 +461,14 @@ fn write_u16(data: &mut [u8], offset: usize, value: u16) -> Result<(), AsldError
 fn write_u32(data: &mut [u8], offset: usize, value: u32) -> Result<(), AsldError> {
     let bytes = data
         .get_mut(offset..offset + 4)
+        .ok_or(AsldError::InvalidState("short Linux boot params"))?;
+    bytes.copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn write_u64(data: &mut [u8], offset: usize, value: u64) -> Result<(), AsldError> {
+    let bytes = data
+        .get_mut(offset..offset + 8)
         .ok_or(AsldError::InvalidState("short Linux boot params"))?;
     bytes.copy_from_slice(&value.to_le_bytes());
     Ok(())
@@ -509,6 +569,19 @@ mod tests {
         );
         assert_eq!(memory[LINUX_CMDLINE_ADDR], b'c');
         assert_eq!(memory[LINUX_BOOT_PARAMS_ADDR + 0x210], 0xff);
+        assert_eq!(
+            memory[LINUX_BOOT_PARAMS_ADDR + super::LINUX_E820_ENTRIES_OFFSET],
+            3
+        );
+        assert_eq!(
+            u64::from_le_bytes(
+                memory[LINUX_BOOT_PARAMS_ADDR + super::LINUX_E820_TABLE_OFFSET
+                    ..LINUX_BOOT_PARAMS_ADDR + super::LINUX_E820_TABLE_OFFSET + 8]
+                    .try_into()
+                    .unwrap()
+            ),
+            0
+        );
     }
 
     #[test]

@@ -25,9 +25,7 @@ pub fn show(default_name: &str) {
     title.set_text_color(tc.text);
     header.add(&title);
 
-    let subtitle = ui::Label::new(t(
-        "Create a named navigation storyboard for this Rust UI app.",
-    ));
+    let subtitle = ui::Label::new(t("Create a named navigation storyboard for this UI app."));
     subtitle.set_position(22, 38);
     subtitle.set_size(410, 18);
     subtitle.set_font_size(10);

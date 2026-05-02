@@ -333,6 +333,31 @@ impl Vm {
     pub fn call_function(&mut self, argc: usize) {
         let frame_stack_base = self.frames.last().map(|f| f.stack_base).unwrap_or(0);
         if self.stack.len().saturating_sub(frame_stack_base) < argc + 1 {
+            #[cfg(feature = "host")]
+            if std::env::var_os("LIBJS_DEBUG_CALLFUNCTION").is_some() {
+                let frame = self.frames.last();
+                let ops = frame
+                    .map(|f| {
+                        let mut s = alloc::string::String::new();
+                        let ip = f.ip;
+                        for back in 1..=ip.min(10) {
+                            let check_ip = ip - back;
+                            if !s.is_empty() {
+                                s.push_str(" <- ");
+                            }
+                            s.push_str(&alloc::format!("{:?}", f.chunk.code[check_ip]));
+                        }
+                        s
+                    })
+                    .unwrap_or_default();
+                std::eprintln!(
+                    "[libjs-callfunction] underflow argc={} len={} frame_base={} ops=[{}]",
+                    argc,
+                    self.stack.len(),
+                    frame_stack_base,
+                    ops
+                );
+            }
             self.stack.truncate(frame_stack_base);
             self.stack.push(JsValue::Undefined);
             return;

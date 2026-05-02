@@ -54,7 +54,7 @@ impl WelcomeTab {
         btn_open_folder.set_position(58, 174);
         panel.add(&btn_open_folder);
 
-        let btn_new_project = make_start_link(t("Create a new Rust UI app..."));
+        let btn_new_project = make_start_link(t("Create a new UI app..."));
         btn_new_project.set_position(58, 202);
         panel.add(&btn_new_project);
 

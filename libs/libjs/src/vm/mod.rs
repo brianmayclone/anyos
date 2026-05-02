@@ -832,7 +832,9 @@ impl Vm {
     }
 
     fn browser_window_global_has(&self, name: &str) -> bool {
-        if matches!(name, "window" | "self" | "globalThis") {
+        if matches!(name, "window" | "self" | "globalThis")
+            || Self::is_vm_intrinsic_global(name)
+        {
             return false;
         }
         let window = self.globals.borrow().get("window");
@@ -843,7 +845,9 @@ impl Vm {
     }
 
     fn browser_window_global_get(&mut self, name: &str) -> Option<JsValue> {
-        if matches!(name, "window" | "self" | "globalThis") {
+        if matches!(name, "window" | "self" | "globalThis")
+            || Self::is_vm_intrinsic_global(name)
+        {
             return None;
         }
         let window = self.globals.borrow().get("window");
@@ -853,6 +857,10 @@ impl Vm {
             }
         }
         None
+    }
+
+    fn is_vm_intrinsic_global(name: &str) -> bool {
+        matches!(name, "__import__" | "__dynamic_import__" | "__exports__")
     }
 
     fn browser_window_global_set(&mut self, name: &str, value: &JsValue) {
@@ -1028,6 +1036,10 @@ impl Vm {
                 Op::LoadConst(idx) => {
                     let val = self.load_constant(frame_idx, idx);
                     self.stack.push(val);
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_STACK_OPS").is_some() {
+                        self.debug_stack_op(frame_idx, ip, "LoadConst");
+                    }
                 }
                 Op::LoadEmpty => self.stack.push(JsValue::Empty),
                 Op::LoadUndefined => self.stack.push(JsValue::Undefined),
@@ -1036,10 +1048,18 @@ impl Vm {
                 Op::LoadFalse => self.stack.push(JsValue::Bool(false)),
                 Op::Pop => {
                     self.stack.pop();
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_STACK_OPS").is_some() {
+                        self.debug_stack_op(frame_idx, ip, "Pop");
+                    }
                 }
                 Op::Dup => {
                     if let Some(val) = self.stack.last().cloned() {
                         self.stack.push(val);
+                    }
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_STACK_OPS").is_some() {
+                        self.debug_stack_op(frame_idx, ip, "Dup");
                     }
                 }
                 Op::TrimStack(keep) => {
@@ -1249,6 +1269,10 @@ impl Vm {
                         if !self.handle_exception(err) {
                             return JsValue::Undefined;
                         }
+                    }
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_STACK_OPS").is_some() {
+                        self.debug_stack_op(frame_idx, ip, "LoadGlobal");
                     }
                 }
                 Op::LoadNameSafe(name_idx) => {
@@ -1856,7 +1880,18 @@ impl Vm {
 
                 // ── Functions ──
                 Op::Call(argc) => {
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_STACK_OPS").is_some() {
+                        self.debug_stack_op(frame_idx, ip, "Call-before");
+                    }
                     self.call_function(argc as usize);
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_STACK_OPS").is_some() {
+                        if !self.frames.is_empty() {
+                            let current = self.frames.len().saturating_sub(1);
+                            self.debug_stack_op(current, self.frames[current].ip, "Call-after");
+                        }
+                    }
                 }
                 Op::CallMethod(argc) => {
                     self.call_method(argc as usize);
@@ -3774,6 +3809,50 @@ impl Vm {
                 );
             }
         }
+    }
+
+    #[cfg(feature = "host")]
+    fn debug_stack_op(&self, frame_idx: usize, ip: usize, label: &str) {
+        let Some(frame) = self.frames.get(frame_idx) else {
+            return;
+        };
+        let code = &frame.chunk.code;
+        let start = ip.saturating_sub(4);
+        let end = (ip + 5).min(code.len());
+        let interesting = (start..end).any(|idx| match code[idx] {
+            Op::LoadGlobal(ci) => {
+                matches!(frame.chunk.constants.get(ci as usize), Some(Constant::String(s)) if s == "__import__" || s == "__dynamic_import__")
+            }
+            Op::LoadConst(ci) => {
+                matches!(frame.chunk.constants.get(ci as usize), Some(Constant::String(s)) if s.contains("chunk-BTZNkQMO") || s.contains("chunk-D2EXcC4W") || s.contains("chunk-C07D3bSM"))
+            }
+            _ => false,
+        });
+        if !interesting {
+            return;
+        }
+        let op = code.get(ip).copied().unwrap_or(Op::Nop);
+        let tail = self
+            .stack
+            .iter()
+            .enumerate()
+            .rev()
+            .take(8)
+            .map(|(idx, value)| {
+                alloc::format!("{}:{}:{}", idx, value.type_of(), value.to_js_string())
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        std::eprintln!(
+            "[libjs-stack] {} frame={} ip={} base={} len={} op={} tail=[{}]",
+            label,
+            frame.chunk.name.as_deref().unwrap_or("<script>"),
+            ip,
+            frame.stack_base,
+            self.stack.len(),
+            self.describe_frame_op(frame, op),
+            tail
+        );
     }
 
     #[cfg(feature = "host")]

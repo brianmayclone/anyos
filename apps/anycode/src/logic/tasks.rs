@@ -181,10 +181,8 @@ impl TaskManager {
         match project.project_type {
             ProjectType::Cargo => self.detect_cargo_tasks(project, config),
             ProjectType::RustFolder => self.detect_rust_folder_tasks(project, config),
-            ProjectType::CMake | ProjectType::Make | ProjectType::NodeJS => {
-                // Studio v1 is intentionally Rust-first. C/TCC/Make and JS tasks
-                // are kept out of the active auto-detection path for this phase.
-            }
+            ProjectType::CMake | ProjectType::Make => {}
+            ProjectType::NodeJS => self.detect_nodejs_tasks(project, config),
             ProjectType::Python => {}
             ProjectType::Generic => self.detect_generic_tasks(project, config),
         }
@@ -647,6 +645,39 @@ impl TaskManager {
     fn detect_nodejs_tasks(&mut self, project: &Project, config: &Config) {
         let root = &project.root;
         let npm = find_tool_path("npm", config);
+        let node = find_tool_path("node", config);
+
+        if !npm.is_empty() {
+            let mut install = Task::new(
+                "Install Packages",
+                TaskCategory::Custom,
+                &npm,
+                "install",
+                root,
+            );
+            install.display_label = format!("{} install", command_basename(&npm));
+            self.tasks.push(install);
+        }
+
+        if !node.is_empty() && crate::util::path::exists(&format!("{}/src/main.js", root)) {
+            let mut run = Task::new(
+                "Run src/main.js",
+                TaskCategory::Run,
+                &node,
+                "src/main.js",
+                root,
+            );
+            run.display_label = format!("{} src/main.js", command_basename(&node));
+            self.tasks.push(run);
+        } else if !node.is_empty() && crate::util::path::exists(&format!("{}/main.js", root)) {
+            let mut run = Task::new("Run main.js", TaskCategory::Run, &node, "main.js", root);
+            run.display_label = format!("{} main.js", command_basename(&node));
+            self.tasks.push(run);
+        }
+
+        if npm.is_empty() {
+            return;
+        }
 
         for script in &project.npm_scripts {
             let category = match script.name.as_str() {
@@ -659,8 +690,23 @@ impl TaskManager {
             };
             let args = format!("run {}", script.name);
             let mut task = Task::new(&script.name, category, &npm, &args, root);
-            task.display_label = format!("npm run {}", script.name);
+            task.display_label = format!("{} run {}", command_basename(&npm), script.name);
             self.tasks.push(task);
+        }
+
+        if let Some(idx) = self
+            .tasks
+            .iter()
+            .position(|t| t.category == TaskCategory::Build)
+        {
+            self.selected_build_task = idx;
+        }
+        if let Some(idx) = self
+            .tasks
+            .iter()
+            .position(|t| t.category == TaskCategory::Run)
+        {
+            self.selected_run_task = idx;
         }
     }
 
@@ -844,6 +890,9 @@ fn find_tool_path(name: &str, config: &Config) -> String {
         "cc" | "gcc" | "clang" if !config.cc_path.is_empty() => config.cc_path.clone(),
         "c++" | "g++" | "clang++" if !config.cxx_path.is_empty() => config.cxx_path.clone(),
         "git" if !config.git_path.is_empty() => config.git_path.clone(),
+        "node" if !config.node_path.is_empty() => config.node_path.clone(),
+        "npm" if !config.npm_path.is_empty() => config.npm_path.clone(),
+        "eslint" if !config.eslint_path.is_empty() => config.eslint_path.clone(),
         _ => crate::logic::config::find_tool(name),
     }
 }

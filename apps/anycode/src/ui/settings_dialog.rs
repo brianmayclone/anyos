@@ -393,9 +393,13 @@ pub fn show() {
         (t("Make"), config.make_path.as_str()),
         (t("C Compiler"), config.cc_path.as_str()),
         (t("C++ Compiler"), config.cxx_path.as_str()),
+        (t("Node.js Runtime"), config.node_path.as_str()),
+        (t("NPM"), config.npm_path.as_str()),
+        (t("ESLint / NPX"), config.eslint_path.as_str()),
         (t("Git"), "/System/bin/git"),
     ];
-    let mut tool_fields: [Option<ui::TextField>; 6] = [None, None, None, None, None, None];
+    let mut tool_fields: [Option<ui::TextField>; 9] =
+        [None, None, None, None, None, None, None, None, None];
 
     for (idx, (name, path)) in tool_names.iter().enumerate() {
         let lbl = ui::Label::new(name);
@@ -419,7 +423,7 @@ pub fn show() {
         if !path.is_empty() {
             field.set_text(path);
         }
-        if idx == 5 {
+        if idx == 8 {
             field.set_enabled(false);
         }
         page_build.add(&field);
@@ -600,7 +604,10 @@ pub fn show() {
     let make_id = tool_fields[2].as_ref().unwrap().id();
     let cc_id = tool_fields[3].as_ref().unwrap().id();
     let cxx_id = tool_fields[4].as_ref().unwrap().id();
-    let git_id = tool_fields[5].as_ref().unwrap().id();
+    let node_id = tool_fields[5].as_ref().unwrap().id();
+    let npm_id = tool_fields[6].as_ref().unwrap().id();
+    let eslint_id = tool_fields[7].as_ref().unwrap().id();
+    let git_id = tool_fields[8].as_ref().unwrap().id();
 
     let fs_reset_id = font_size_field.id();
     let tw_reset_id = tab_width_field.id();
@@ -621,6 +628,9 @@ pub fn show() {
     let make_reset_id = make_id;
     let cc_reset_id = cc_id;
     let cxx_reset_id = cxx_id;
+    let node_reset_id = node_id;
+    let npm_reset_id = npm_id;
+    let eslint_reset_id = eslint_id;
     let git_reset_id = git_id;
 
     btn_reset.on_click(move |_| {
@@ -645,6 +655,9 @@ pub fn show() {
         ui::Control::from_id(make_reset_id).set_text("");
         ui::Control::from_id(cc_reset_id).set_text("");
         ui::Control::from_id(cxx_reset_id).set_text("");
+        ui::Control::from_id(node_reset_id).set_text("");
+        ui::Control::from_id(npm_reset_id).set_text("");
+        ui::Control::from_id(eslint_reset_id).set_text("");
         ui::Control::from_id(git_reset_id).set_text("");
     });
 
@@ -665,6 +678,9 @@ pub fn show() {
         cfg.make_path = read_string(make_id);
         cfg.cc_path = read_string(cc_id);
         cfg.cxx_path = read_string(cxx_id);
+        cfg.node_path = read_string(node_id);
+        cfg.npm_path = read_string(npm_id);
+        cfg.eslint_path = read_string(eslint_id);
         cfg.git_path = String::from("/System/bin/git");
         cfg.auto_discover();
         cfg.save();

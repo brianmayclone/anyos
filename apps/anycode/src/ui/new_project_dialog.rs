@@ -6,7 +6,7 @@ use ui::Widget;
 use crate::app;
 
 const DLG_W: u32 = 560;
-const DLG_H: u32 = 300;
+const DLG_H: u32 = 340;
 
 pub fn show() {
     let t = anyos_std::i18n::t;
@@ -23,7 +23,7 @@ pub fn show() {
     header.set_color(tc.sidebar_bg);
     win.add(&header);
 
-    let title = ui::Label::new(t("New Rust UI App"));
+    let title = ui::Label::new(t("New Project"));
     title.set_position(22, 14);
     title.set_size(400, 22);
     title.set_font_size(17);
@@ -31,7 +31,7 @@ pub fn show() {
     header.add(&title);
 
     let subtitle = ui::Label::new(t(
-        "Creates Cargo metadata, MainForm, Main.Storyboard and startup main.rs.",
+        "Creates an app project with MainForm, Storyboard and startup entry point.",
     ));
     subtitle.set_position(22, 39);
     subtitle.set_size(500, 18);
@@ -73,8 +73,22 @@ pub fn show() {
     path_field.set_text(&default_path);
     content.add(&path_field);
 
-    let template = ui::Label::new(t("Template: Rust UI App with Designer and Storyboard"));
+    let lbl_template = ui::Label::new(t("Template"));
+    lbl_template.set_position(24, 118);
+    lbl_template.set_size(130, 18);
+    lbl_template.set_text_color(tc.text);
+    content.add(&lbl_template);
+
+    let template_combo = ui::DropDown::new(t("Rust UI App|Node.js UI App"));
+    template_combo.set_position(150, 112);
+    template_combo.set_size(360, 30);
+    content.add(&template_combo);
+
+    let template = ui::Label::new(t(
+        "Designer and Storyboard use the same model for both targets.",
+    ));
     template.set_position(150, 110);
+    template.set_position(150, 150);
     template.set_size(360, 18);
     template.set_font_size(10);
     template.set_text_color(tc.text_secondary);
@@ -100,11 +114,20 @@ pub fn show() {
 
     let name_id = name_field.id();
     let path_id = path_field.id();
+    let template_id = template_combo.id();
     btn_create.on_click(move |_| {
-        if crate::logic::commands::create_rust_ui_project_named(
-            read_string(name_id),
-            read_string(path_id),
-        ) {
+        let created = if ui::Control::from_id(template_id).get_state() == 1 {
+            crate::logic::commands::create_node_ui_project_named(
+                read_string(name_id),
+                read_string(path_id),
+            )
+        } else {
+            crate::logic::commands::create_rust_ui_project_named(
+                read_string(name_id),
+                read_string(path_id),
+            )
+        };
+        if created {
             ui::Window::from_id(win_id).destroy();
         }
     });

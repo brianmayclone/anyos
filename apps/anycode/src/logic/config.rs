@@ -34,6 +34,9 @@ pub struct Config {
     pub cc_path: String,
     pub cxx_path: String,
     pub git_path: String,
+    pub node_path: String,
+    pub npm_path: String,
+    pub eslint_path: String,
     pub last_project: String,
     pub recent_projects: Vec<String>,
     pub session_project: String,
@@ -101,6 +104,24 @@ const ANYCODE_RUST_MANIFEST: libconf_schema::RegistryManifest<'static> = manifes
 const ANYCODE_RUST_SCHEMA: ServiceSchema<'static> =
     ServiceSchema::new("anycode", &ANYCODE_RUST_MANIFEST);
 
+const ANYCODE_NODE_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_string("config/node_path", ""),
+    default_string("config/npm_path", ""),
+    default_string("config/eslint_path", ""),
+    default_string("config/package_manager", "npm"),
+    default_bool("config/lint_on_save", true),
+];
+const ANYCODE_NODE_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/anycode_node",
+    RegistryScope::User,
+    1,
+    &["config"],
+    ANYCODE_NODE_DEFAULTS,
+    &[],
+);
+const ANYCODE_NODE_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("anycode", &ANYCODE_NODE_MANIFEST);
+
 const ANYCODE_LAYOUT_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("config/dock_layout_json", ""),
     default_bool("config/inspector_visible", true),
@@ -122,6 +143,7 @@ impl Config {
         let _ = ANYCODE_SCHEMA.register();
         let _ = ANYCODE_SYSTEM_SCHEMA.register();
         let _ = ANYCODE_RUST_SCHEMA.register();
+        let _ = ANYCODE_NODE_SCHEMA.register();
         let _ = ANYCODE_LAYOUT_SCHEMA.register();
         let defaults = Self::defaults();
         let data = match ANYCODE_SCHEMA.read_string("config/settings_json") {
@@ -174,6 +196,9 @@ impl Config {
             cc_path: json_str(&val, "cc_path", ""),
             cxx_path: json_str(&val, "cxx_path", ""),
             git_path: json_str(&val, "git_path", SYSTEM_GIT_PATH),
+            node_path: json_str(&val, "node_path", ""),
+            npm_path: json_str(&val, "npm_path", ""),
+            eslint_path: json_str(&val, "eslint_path", ""),
             last_project: json_str(&val, "last_project", ""),
             recent_projects: json_str_array(&val, "recent_projects"),
             session_project: json_str(&val, "session_project", ""),
@@ -199,6 +224,8 @@ impl Config {
             || cfg.make_path.is_empty()
             || cfg.cc_path.is_empty()
             || cfg.cxx_path.is_empty()
+            || cfg.node_path.is_empty()
+            || cfg.npm_path.is_empty()
         {
             cfg.auto_discover();
             cfg.save();
@@ -260,6 +287,9 @@ impl Config {
         obj.set("cc_path", Value::String(self.cc_path.clone()));
         obj.set("cxx_path", Value::String(self.cxx_path.clone()));
         obj.set("git_path", Value::String(self.git_path.clone()));
+        obj.set("node_path", Value::String(self.node_path.clone()));
+        obj.set("npm_path", Value::String(self.npm_path.clone()));
+        obj.set("eslint_path", Value::String(self.eslint_path.clone()));
         obj.set("last_project", Value::String(self.last_project.clone()));
         obj.set("recent_projects", json_string_array(&self.recent_projects));
         obj.set(
@@ -283,6 +313,9 @@ impl Config {
         let _ = ANYCODE_RUST_SCHEMA.write_bool("config/format_on_save", self.rust_format_on_save);
         let _ =
             ANYCODE_RUST_SCHEMA.write_bool("config/use_anyrc_library", self.rust_use_anyrc_library);
+        let _ = ANYCODE_NODE_SCHEMA.write_string("config/node_path", &self.node_path);
+        let _ = ANYCODE_NODE_SCHEMA.write_string("config/npm_path", &self.npm_path);
+        let _ = ANYCODE_NODE_SCHEMA.write_string("config/eslint_path", &self.eslint_path);
         let layout = self.layout_json();
         let _ = ANYCODE_LAYOUT_SCHEMA.write_string("config/dock_layout_json", &layout);
         let _ =
@@ -320,6 +353,9 @@ impl Config {
             cc_path: String::new(),
             cxx_path: String::new(),
             git_path: String::from(SYSTEM_GIT_PATH),
+            node_path: String::new(),
+            npm_path: String::new(),
+            eslint_path: String::new(),
             last_project: String::new(),
             recent_projects: Vec::new(),
             session_project: String::new(),
@@ -346,6 +382,21 @@ impl Config {
         }
         if let Some(v) = ANYCODE_RUST_SCHEMA.read_bool("config/use_anyrc_library") {
             self.rust_use_anyrc_library = v;
+        }
+        if let Some(path) = ANYCODE_NODE_SCHEMA.read_string("config/node_path") {
+            if !path.is_empty() {
+                self.node_path = path;
+            }
+        }
+        if let Some(path) = ANYCODE_NODE_SCHEMA.read_string("config/npm_path") {
+            if !path.is_empty() {
+                self.npm_path = path;
+            }
+        }
+        if let Some(path) = ANYCODE_NODE_SCHEMA.read_string("config/eslint_path") {
+            if !path.is_empty() {
+                self.eslint_path = path;
+            }
         }
         if let Some(layout) = ANYCODE_LAYOUT_SCHEMA.read_string("config/dock_layout_json") {
             self.apply_layout_json(&layout);
@@ -394,6 +445,15 @@ impl Config {
         }
         if self.cxx_path.is_empty() {
             self.cxx_path = find_first_in_path(&["c++", "g++", "clang++"]);
+        }
+        if self.node_path.is_empty() {
+            self.node_path = find_in_path("node");
+        }
+        if self.npm_path.is_empty() {
+            self.npm_path = find_in_path("npm");
+        }
+        if self.eslint_path.is_empty() {
+            self.eslint_path = find_first_in_path(&["eslint", "npx"]);
         }
         self.git_path = String::from(SYSTEM_GIT_PATH);
     }

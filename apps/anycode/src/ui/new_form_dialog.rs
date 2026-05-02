@@ -25,7 +25,7 @@ pub fn show(default_name: &str) {
     title.set_text_color(tc.text);
     header.add(&title);
 
-    let subtitle = ui::Label::new(t("Create a Rust UI form with designer metadata."));
+    let subtitle = ui::Label::new(t("Create a UI form with designer metadata."));
     subtitle.set_position(22, 38);
     subtitle.set_size(390, 18);
     subtitle.set_font_size(10);
@@ -52,7 +52,7 @@ pub fn show(default_name: &str) {
     field.select_all();
     content.add(&field);
 
-    let hint = ui::Label::new(t("Use a Rust type name, e.g. MainForm or SettingsDialog."));
+    let hint = ui::Label::new(t("Use a type name, e.g. MainForm or SettingsDialog."));
     hint.set_position(126, 55);
     hint.set_size(300, 18);
     hint.set_font_size(10);

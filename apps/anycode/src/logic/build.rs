@@ -228,6 +228,9 @@ fn resolve_tool(name: &str, config: &Config) -> String {
         "crust" | "rustc" | "anyrc" => config.crust_path.clone(),
         "ccargo" | "cargo" | "acargo" => config.ccargo_path.clone(),
         "git" => config.git_path.clone(),
+        "node" => config.node_path.clone(),
+        "npm" => config.npm_path.clone(),
+        "eslint" => config.eslint_path.clone(),
         _ => {
             if name.starts_with('/') || name.starts_with("./") {
                 String::from(name)
@@ -269,7 +272,7 @@ pub struct ToolStatus {
 /// Check which development tools are installed.
 pub fn check_prerequisites() -> Vec<ToolStatus> {
     let mut results = Vec::new();
-    let tools: [(&str, &str, &[&str]); 8] = [
+    let tools: [(&str, &str, &[&str]); 11] = [
         ("crust", "Rust Compiler", &["crust", "rustc"]),
         (
             "ccargo",
@@ -281,6 +284,9 @@ pub fn check_prerequisites() -> Vec<ToolStatus> {
         ("c++", "C++ Compiler", &["c++", "g++", "clang++"]),
         ("make", "Make Build Tool", &["make"]),
         ("git", "Git Version Control", &["git", "agit"]),
+        ("node", "Node.js Runtime", &["node"]),
+        ("npm", "NPM Package Manager", &["npm"]),
+        ("eslint", "JavaScript Linter", &["eslint", "npx"]),
         ("nasm", "NASM Assembler", &["nasm"]),
     ];
 

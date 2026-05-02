@@ -1952,6 +1952,11 @@ fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     };
 
+    #[cfg(feature = "host")]
+    if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+        std::eprintln!("[libjs-module] static import {}", specifier);
+    }
+
     match resolve_module_namespace(vm, &specifier) {
         Ok(ns) => ns,
         Err(err) => {
@@ -1969,6 +1974,11 @@ fn dynamic_module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             return native_promise::make_rejected_promise(err);
         }
     };
+
+    #[cfg(feature = "host")]
+    if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+        std::eprintln!("[libjs-module] dynamic import {}", specifier);
+    }
 
     match resolve_module_namespace(vm, &specifier) {
         Ok(ns) => native_promise::promise_resolve(vm, &[ns]),

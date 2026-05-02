@@ -1,6 +1,8 @@
 #![cfg_attr(not(target_os = "linux"), no_std)]
 
 use anyos_std::{format, println, process, String, Vec};
+#[cfg(not(target_os = "linux"))]
+use anyos_std::{fs, ipc, sys};
 
 const ASLD_PIPE: &str = "asld";
 const RESPONSE_TIMEOUT_TICKS: u32 = 100;
@@ -763,23 +765,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                 }
             }
             ClientCommand::Shell { .. } => {
-                for line in lines {
-                    let mut parts = line.split('\t');
-                    let head = parts.next().unwrap_or("");
-                    if head == "reused" {
-                        println!("reused\t{}", parts.next().unwrap_or("false"));
-                        continue;
-                    }
-                    println!(
-                        "session\t{}\tname={}\tmode={}\tstdout={}\tstdin={}\tpid={}",
-                        head,
-                        parts.next().unwrap_or("-"),
-                        parts.next().unwrap_or("-"),
-                        parts.next().unwrap_or("-"),
-                        parts.next().unwrap_or("-"),
-                        parts.next().unwrap_or("-"),
-                    );
-                }
+                print_or_attach_shell(lines);
             }
             ClientCommand::Exec { .. } => {
                 for line in lines {
@@ -825,6 +811,179 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             }
         },
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ShellAttachInfo {
+    session_id: String,
+    session_name: String,
+    mode: String,
+    console_pipe: String,
+    stdin_pipe: String,
+    attached_pid: u32,
+    reused: bool,
+}
+
+#[cfg(not(target_os = "linux"))]
+fn parse_shell_attach_info(lines: &[String]) -> Option<ShellAttachInfo> {
+    let mut info = None;
+    let mut reused = false;
+    for line in lines {
+        let mut parts = line.split('\t');
+        let head = parts.next().unwrap_or("");
+        if head == "reused" {
+            reused = parts.next().unwrap_or("false") == "true";
+            continue;
+        }
+        info = Some(ShellAttachInfo {
+            session_id: String::from(head),
+            session_name: String::from(parts.next().unwrap_or("-")),
+            mode: String::from(parts.next().unwrap_or("-")),
+            console_pipe: String::from(parts.next().unwrap_or("-")),
+            stdin_pipe: String::from(parts.next().unwrap_or("-")),
+            attached_pid: parse_u32(parts.next().unwrap_or("0")).unwrap_or(0),
+            reused,
+        });
+    }
+    info.map(|mut value| {
+        value.reused = reused;
+        value
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn print_or_attach_shell(lines: &[String]) {
+    for line in lines {
+        let mut parts = line.split('\t');
+        let head = parts.next().unwrap_or("");
+        if head == "reused" {
+            println!("reused\t{}", parts.next().unwrap_or("false"));
+            continue;
+        }
+        println!(
+            "session\t{}\tname={}\tmode={}\tstdout={}\tstdin={}\tpid={}",
+            head,
+            parts.next().unwrap_or("-"),
+            parts.next().unwrap_or("-"),
+            parts.next().unwrap_or("-"),
+            parts.next().unwrap_or("-"),
+            parts.next().unwrap_or("-"),
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn print_or_attach_shell(lines: &[String]) {
+    let Some(info) = parse_shell_attach_info(lines) else {
+        println!("aslctl: malformed shell response");
+        return;
+    };
+    if info.console_pipe == "-" || info.stdin_pipe == "-" {
+        println!(
+            "session\t{}\tname={}\tmode={}\tstdout={}\tstdin={}\tpid={}",
+            info.session_id,
+            info.session_name,
+            info.mode,
+            info.console_pipe,
+            info.stdin_pipe,
+            info.attached_pid
+        );
+        return;
+    }
+    attach_shell(&info);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn attach_shell(info: &ShellAttachInfo) {
+    let output_pipe = ipc::pipe_open(&info.console_pipe);
+    let input_pipe = ipc::pipe_open(&info.stdin_pipe);
+    if output_pipe == 0 || output_pipe == u32::MAX || input_pipe == 0 || input_pipe == u32::MAX {
+        println!("aslctl: failed to attach ASL console pipes");
+        return;
+    }
+
+    fs::set_fd_nonblock(0, true);
+    let _ = fs::write(
+        1,
+        format!(
+            "Connected to ASL {} ({}, {}). Ctrl+D detaches.\n",
+            info.session_id, info.mode, info.session_name
+        )
+        .as_bytes(),
+    );
+
+    let mut output = [0u8; 512];
+    let mut input = [0u8; 128];
+    loop {
+        drain_shell_output(output_pipe, &mut output);
+        if !pump_shell_stdin(input_pipe, &mut input) {
+            break;
+        }
+        if info.attached_pid != 0
+            && process::try_waitpid(info.attached_pid) != process::STILL_RUNNING
+        {
+            drain_shell_output(output_pipe, &mut output);
+            break;
+        }
+        process::sleep(10);
+    }
+
+    fs::set_fd_nonblock(0, false);
+    ipc::pipe_close(output_pipe);
+    ipc::pipe_close(input_pipe);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drain_shell_output(pipe: u32, buf: &mut [u8]) {
+    loop {
+        let n = ipc::pipe_read(pipe, buf);
+        if n == 0 || n == u32::MAX {
+            break;
+        }
+        let _ = fs::write(1, &buf[..n as usize]);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pump_shell_stdin(pipe: u32, buf: &mut [u8]) -> bool {
+    let n = fs::read_nonblock(0, buf);
+    if n > 0 {
+        for &byte in &buf[..n as usize] {
+            if byte == 0x04 {
+                let _ = fs::write(1, b"\nDetached.\n");
+                return false;
+            }
+        }
+        let _ = ipc::pipe_write(pipe, &buf[..n as usize]);
+    }
+
+    let key = sys::con_poll_key();
+    if key == 0 {
+        return true;
+    }
+    if key == 0x04 {
+        let _ = fs::write(1, b"\nDetached.\n");
+        return false;
+    }
+    let mut encoded = [0u8; 4];
+    let bytes = encode_key(key, &mut encoded);
+    if !bytes.is_empty() {
+        let _ = ipc::pipe_write(pipe, bytes);
+    }
+    true
+}
+
+#[cfg(not(target_os = "linux"))]
+fn encode_key(key: u32, buf: &mut [u8; 4]) -> &[u8] {
+    if key <= 0x7f {
+        buf[0] = key as u8;
+        return &buf[..1];
+    }
+    let Some(ch) = char::from_u32(key) else {
+        return &[];
+    };
+    ch.encode_utf8(buf).as_bytes()
 }
 
 fn print_usage() {
@@ -1095,6 +1254,11 @@ fn parse_usize(s: &str) -> Option<usize> {
         out = out.checked_mul(10)?.checked_add((b - b'0') as usize)?;
     }
     Some(out)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn parse_u32(s: &str) -> Option<u32> {
+    parse_usize(s).and_then(|value| u32::try_from(value).ok())
 }
 
 fn join_tab_fields<'a, I>(parts: &mut I) -> String

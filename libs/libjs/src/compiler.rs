@@ -373,6 +373,22 @@ impl Compiler {
             self.predeclare_module_top_level_locals(&program.body);
         }
 
+        // ES modules instantiate static imports before evaluating the rest of
+        // the module body, regardless of where the import declaration appears
+        // among top-level module items. Vite/Rollup bundles often emit helper
+        // consts before import declarations; executing those imports in source
+        // order leaves later bindings undefined during route bootstrap.
+        if !self.top_level_bindings_global {
+            for (i, stmt) in program.body.iter().enumerate() {
+                if let Stmt::Import { .. } = stmt {
+                    if let Some(&line) = program.stmt_lines.get(i) {
+                        self.scope_mut().chunk.current_line = line;
+                    }
+                    self.compile_stmt(stmt);
+                }
+            }
+        }
+
         // ES2023 §10.2.1 — hoist function declarations: compile all top-level
         // FunctionDecl statements first so they are available before any other
         // code executes (function hoisting in the global scope).
@@ -397,6 +413,9 @@ impl Compiler {
         for (i, stmt) in program.body.iter().enumerate() {
             // Skip FunctionDecl — already compiled above.
             if let Stmt::FunctionDecl { .. } = stmt {
+                continue;
+            }
+            if !self.top_level_bindings_global && matches!(stmt, Stmt::Import { .. }) {
                 continue;
             }
 
@@ -1420,6 +1439,10 @@ impl Compiler {
                 self.emit(Op::Nop);
             }
             Stmt::Import { specifiers, source } => {
+                #[cfg(feature = "host")]
+                if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+                    std::eprintln!("[libjs-module] compile import {} {:?}", source, specifiers);
+                }
                 // Import: load module from registry, bind specifiers as globals.
                 // We compile as: __import__('source') → module namespace object,
                 // then extract each specifier and bind to a global.

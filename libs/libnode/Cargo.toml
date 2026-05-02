@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-host = ["anyos_std/host", "libhttp_client/host", "libjs/host", "libtls/host", "libuv/host", "libzip_client/host"]
+default = ["anyui"]
+anyui = ["dep:libanyui_client"]
+host = ["anyos_std/host", "libhttp_client/host", "libjs/host", "libtls/host", "libuv/host", "libzip_client/host", "libanyui_client/host"]
 
 [dependencies]
 anyos_std = { path = "../stdlib" }
+libanyui_client = { path = "../libanyui_client", optional = true, default-features = false }
 libhttp_client = { path = "../libhttp_client" }
 libjs = { path = "../libjs" }
 libtls = { path = "../libtls" }
