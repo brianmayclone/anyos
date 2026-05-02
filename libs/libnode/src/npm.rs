@@ -117,6 +117,7 @@ pub struct RegistryClient {
 
 impl RegistryClient {
     pub fn new(config: RegistryConfig) -> Self {
+        let _ = libhttp_client::init();
         Self { config }
     }
 

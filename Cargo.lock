@@ -1281,6 +1281,7 @@ dependencies = [
  "libjs",
  "libtls",
  "libuv",
+ "libzip_client",
 ]
 
 [[package]]
@@ -1355,11 +1356,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "libzip"
+version = "0.1.0"
+dependencies = [
+ "libheap",
+ "libsyscall",
+]
+
+[[package]]
 name = "libzip_client"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
+ "libzip",
 ]
 
 [[package]]

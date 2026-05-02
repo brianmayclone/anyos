@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-host = ["anyos_std/host", "libhttp_client/host", "libjs/host", "libtls/host", "libuv/host"]
+host = ["anyos_std/host", "libhttp_client/host", "libjs/host", "libtls/host", "libuv/host", "libzip_client/host"]
 
 [dependencies]
 anyos_std = { path = "../stdlib" }
@@ -12,6 +12,7 @@ libhttp_client = { path = "../libhttp_client" }
 libjs = { path = "../libjs" }
 libtls = { path = "../libtls" }
 libuv = { path = "../libuv" }
+libzip_client = { path = "../libzip_client" }
 
 [lib]
 name = "libnode"

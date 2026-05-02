@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-host = ["dynlink/host", "anyos_std/host"]
+host = ["dynlink/host", "anyos_std/host", "dep:libzip", "libzip/host"]
 
 [dependencies]
 dynlink = { path = "../dynlink" }
 anyos_std = { path = "../stdlib" }
+libzip = { path = "../libzip", optional = true }
 
 [lib]
 name = "libzip_client"

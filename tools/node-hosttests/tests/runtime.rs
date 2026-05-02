@@ -154,15 +154,109 @@ fn process_next_tick_runs_before_later_event_loop_work() {
     let root = temp_project("next-tick");
     let main = root.join("main.js");
     let mut runtime = runtime_for(&root);
-    let value = runtime.run_script(
+    runtime.run_script(
         &main.to_string_lossy(),
         "\
-        let out = ''; \
+        var out = ''; \
         process.nextTick(function(value) { out = out + value; }, 'tick'); \
         out",
     );
+    runtime.run_event_loop();
+    let value = runtime.eval("out");
 
     assert_eq!(value.to_js_string(), "tick");
+}
+
+#[test]
+fn zlib_roundtrips_sync_and_callback_helpers() {
+    let root = temp_project("zlib");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let zlib = require('node:zlib'); \
+        let gzip = zlib.gzipSync(Buffer.from('hello gzip')); \
+        let gunzip = zlib.gunzipSync(gzip).toString(); \
+        let deflated = zlib.deflateSync('hello zlib'); \
+        let inflated = zlib.inflateSync(deflated).toString(); \
+        let raw = zlib.deflateRawSync('hello raw'); \
+        let rawInflated = zlib.inflateRawSync(raw).toString(); \
+        let asyncResult = ''; \
+        zlib.gzip('callback', function(err, data) { \
+            asyncResult = err ? err.code : zlib.gunzipSync(data).toString(); \
+        }); \
+        gunzip + ':' + inflated + ':' + rawInflated + ':' + asyncResult",
+    );
+
+    assert_eq!(
+        value.to_js_string(),
+        "hello gzip:hello zlib:hello raw:callback"
+    );
+}
+
+#[test]
+fn zlib_transform_streams_emit_compressed_data_on_end() {
+    let root = temp_project("zlib-stream");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let zlib = require('node:zlib'); \
+        let gzip = zlib.createGzip(); \
+        let compressed = null; \
+        gzip.on('data', function(chunk) { compressed = chunk; }); \
+        gzip.end('stream body'); \
+        let gunzip = zlib.createGunzip(); \
+        let decoded = ''; \
+        gunzip.on('data', function(chunk) { decoded = chunk.toString(); }); \
+        gunzip.end(compressed); \
+        decoded",
+    );
+
+    assert_eq!(value.to_js_string(), "stream body");
+}
+
+#[test]
+fn zlib_inflates_external_dynamic_huffman_streams() {
+    let root = temp_project("zlib-dynamic");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let zlib = require('node:zlib'); \
+        let chunk = 'abcde'; \
+        let expected = ''; \
+        for (let i = 0; i < 1000; i++) { expected = expected + chunk; } \
+        let zlibBytes = [120,156,237,205,187,1,67,0,20,0,192,222,20,111,53,4,241,75,16,223,76,175,74,151,70,237,110,129,75,211,171,34,251,39,242,159,120,68,17,101,84,207,186,105,187,254,245,30,198,233,51,47,235,182,31,223,228,114,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,187,217,118,2,8,42,110,97]; \
+        let rawBytes = zlibBytes.slice(2, zlibBytes.length - 4); \
+        let gzipBytes = [31,139,8,0,0,0,0,0,0,3,237,205,187,1,67,0,20,0,192,222,20,111,53,4,241,75,16,223,76,175,74,151,70,237,110,129,75,211,171,34,251,39,242,159,120,68,17,101,84,207,186,105,187,254,245,30,198,233,51,47,235,182,31,223,228,114,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,187,217,118,2,242,109,141,160,224,171,0,0]; \
+        rawBytes = [237,205,187,1,67,0,20,0,192,222,20,111,53,4,241,75,16,223,76,175,74,151,70,237,110,129,75,211,171,34,251,39,242,159,120,68,17,101,84,207,186,105,187,254,245,30,198,233,51,47,235,182,31,223,228,114,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,187,217,118,2]; \
+        let zlibBytes2 = [120,156]; \
+        for (let i = 0; i < rawBytes.length; i++) { zlibBytes2.push(rawBytes[i]); } \
+        zlibBytes2.push(8); zlibBytes2.push(42); zlibBytes2.push(110); zlibBytes2.push(97); \
+        let gzipBytes2 = [31,139,8,0,0,0,0,0,0,3]; \
+        for (let i = 0; i < rawBytes.length; i++) { gzipBytes2.push(rawBytes[i]); } \
+        gzipBytes2.push(242); gzipBytes2.push(109); gzipBytes2.push(141); gzipBytes2.push(160); gzipBytes2.push(224); gzipBytes2.push(171); gzipBytes2.push(0); gzipBytes2.push(0); \
+        let zlibBytes3 = [120,156,237,205,187,1,67,0,20,0,192,222,20,111,53,4,241,75,16,223,76,175,74,151,70,237,110,129,75,211,171,34,251,39,242,159,120,68,17,101,84,207,186,105,187,254,245,30,198,233,51,47,235,182,31,223,228,114,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,179,217,108,54,155,205,102,187,217,118,2,8,42,110,97]; \
+        let rawBytes3 = zlibBytes3.slice(2, zlibBytes3.length - 4); \
+        let gzipBytes3 = [31,139,8,0,0,0,0,0,0,3]; \
+        for (let i = 0; i < rawBytes3.length; i++) { gzipBytes3.push(rawBytes3[i]); } \
+        gzipBytes3.push(242); gzipBytes3.push(109); gzipBytes3.push(141); gzipBytes3.push(160); gzipBytes3.push(224); gzipBytes3.push(171); gzipBytes3.push(0); gzipBytes3.push(0); \
+        let zlibBytes4 = [120,218,237,196,57,1,0,0,8,4,160,172,231,211,191,130,41,220,96,32,213,179,145,36,73,146,36,73,146,244,217,1,198,122,142,2]; \
+        let rawBytes4 = zlibBytes4.slice(2, zlibBytes4.length - 4); \
+        let gzipBytes4 = [31,139,8,0,0,0,0,0,0,3]; \
+        for (let i = 0; i < rawBytes4.length; i++) { gzipBytes4.push(rawBytes4[i]); } \
+        gzipBytes4.push(198); gzipBytes4.push(17); gzipBytes4.push(4); gzipBytes4.push(75); gzipBytes4.push(136); gzipBytes4.push(19); gzipBytes4.push(0); gzipBytes4.push(0); \
+        let inflated = zlib.inflateSync(Buffer.from(zlibBytes4)).toString(); \
+        let rawInflated = zlib.inflateRawSync(Buffer.from(rawBytes4)).toString(); \
+        let gunzipped = zlib.gunzipSync(Buffer.from(gzipBytes4)).toString(); \
+        (inflated === expected) + ':' + (rawInflated === expected) + ':' + (gunzipped === expected) + ':' + inflated.length",
+    );
+
+    assert_eq!(value.to_js_string(), "true:true:true:5000");
 }
 
 #[test]

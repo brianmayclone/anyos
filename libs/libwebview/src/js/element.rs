@@ -1190,6 +1190,7 @@ fn make_template_content(vm: &mut Vm, template_node_id: i64) -> JsValue {
         String::from("nodeName"),
         JsValue::String(String::from("#document-fragment")),
     );
+    frag.set(String::from("ownerDocument"), vm.get_global("document"));
     frag.set(
         String::from("__templateNodeId"),
         JsValue::Number(template_node_id as f64),
@@ -1294,6 +1295,7 @@ fn frag_clone_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             String::from("nodeName"),
             JsValue::String(String::from("#document-fragment")),
         );
+        frag.set(String::from("ownerDocument"), vm.get_global("document"));
         frag.set(String::from("children"), make_array(Vec::new()));
         frag.set(String::from("childNodes"), make_array(Vec::new()));
         frag.set(String::from("childElementCount"), JsValue::Number(0.0));
@@ -1322,6 +1324,7 @@ fn frag_clone_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         String::from("nodeName"),
         JsValue::String(String::from("#document-fragment")),
     );
+    frag.set(String::from("ownerDocument"), vm.get_global("document"));
     frag.set(
         String::from("children"),
         make_array(cloned_children.clone()),
@@ -1495,6 +1498,10 @@ fn deep_clone_node(vm: &mut Vm, node_id: i64) -> JsValue {
                     JsValue::String(String::from("#text")),
                 );
                 obj.set(String::from("textContent"), JsValue::String(text));
+                obj.set(String::from("ownerDocument"), vm.get_global("document"));
+                obj.set(String::from("parentNode"), JsValue::Null);
+                obj.set(String::from("nextSibling"), JsValue::Null);
+                obj.set(String::from("previousSibling"), JsValue::Null);
                 obj.set_hook = Some(dom_property_hook);
                 obj.set_hook_data = new_id as usize as *mut u8;
                 return JsValue::Object(Rc::new(RefCell::new(obj)));

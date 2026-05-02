@@ -4141,6 +4141,7 @@ mod tests {
               intersectionObserver: typeof new IntersectionObserver(function(){}).observe === 'function',
               messageChannel: !!new MessageChannel().port1,
               url: new URL('https://example.com/path').href === 'https://example.com/path',
+              urlSearchParams: new URL('https://example.com/path?q=test#x').searchParams.get('q') === 'test',
               searchParams: new URLSearchParams('a=1').get('a') === '1',
               textEncoder: typeof new TextEncoder().encode === 'function',
               textDecoder: typeof new TextDecoder().decode === 'function',

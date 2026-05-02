@@ -14,6 +14,13 @@ EXPORTS
     libzip_add_file
     libzip_add_dir
     libzip_write_to_file
+    libzip_gzip_compress
+    libzip_gzip_decompress
+    libzip_zlib_compress
+    libzip_zlib_decompress
+    libzip_deflate_raw
+    libzip_inflate_raw
+    libzip_unzip
     libzip_gzip_compress_file
     libzip_gzip_decompress_file
     libzip_tar_open

@@ -12,29 +12,36 @@
 //! # Export Convention
 //! All public functions are `extern "C"` with `#[no_mangle]` for use via `dl_sym()`.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(feature = "host"), no_std)]
+#![cfg_attr(not(feature = "host"), no_main)]
 
 extern crate alloc;
 
-pub mod syscall;
 pub mod crc32;
-pub mod inflate;
 pub mod deflate;
-pub mod zip;
 pub mod gzip;
+pub mod inflate;
+pub mod syscall;
 pub mod tar;
+pub mod zip;
+pub mod zlib;
 
 use alloc::vec::Vec;
-use zip::{ZipReader, ZipWriter};
 use tar::{TarReader, TarWriter};
+use zip::{ZipReader, ZipWriter};
 
 // ── Allocator ───────────────────────────────────────────────────────────────
 
-libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
+#[cfg(not(feature = "host"))]
+libheap::dll_allocator!(
+    crate::syscall::sbrk,
+    crate::syscall::mmap,
+    crate::syscall::munmap
+);
 
 // ── Panic handler ───────────────────────────────────────────────────────────
 
+#[cfg(not(feature = "host"))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     syscall::exit(1);
@@ -45,16 +52,14 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 const MAX_HANDLES: usize = 8;
 
 enum ZipHandle {
-    Empty,
     Reader(ZipReader),
     Writer(ZipWriter),
     TarReader(TarReader),
     TarWriter(TarWriter),
 }
 
-static mut HANDLES: [Option<ZipHandle>; MAX_HANDLES] = [
-    None, None, None, None, None, None, None, None,
-];
+static mut HANDLES: [Option<ZipHandle>; MAX_HANDLES] =
+    [None, None, None, None, None, None, None, None];
 
 fn alloc_handle(h: ZipHandle) -> u32 {
     unsafe {
@@ -70,7 +75,9 @@ fn alloc_handle(h: ZipHandle) -> u32 {
 
 fn get_reader(handle: u32) -> Option<&'static ZipReader> {
     let idx = handle as usize;
-    if idx == 0 || idx > MAX_HANDLES { return None; }
+    if idx == 0 || idx > MAX_HANDLES {
+        return None;
+    }
     unsafe {
         match &HANDLES[idx - 1] {
             Some(ZipHandle::Reader(r)) => Some(r),
@@ -81,7 +88,9 @@ fn get_reader(handle: u32) -> Option<&'static ZipReader> {
 
 fn get_writer(handle: u32) -> Option<&'static mut ZipWriter> {
     let idx = handle as usize;
-    if idx == 0 || idx > MAX_HANDLES { return None; }
+    if idx == 0 || idx > MAX_HANDLES {
+        return None;
+    }
     unsafe {
         match &mut HANDLES[idx - 1] {
             Some(ZipHandle::Writer(w)) => Some(w),
@@ -92,7 +101,9 @@ fn get_writer(handle: u32) -> Option<&'static mut ZipWriter> {
 
 fn get_tar_reader(handle: u32) -> Option<&'static TarReader> {
     let idx = handle as usize;
-    if idx == 0 || idx > MAX_HANDLES { return None; }
+    if idx == 0 || idx > MAX_HANDLES {
+        return None;
+    }
     unsafe {
         match &HANDLES[idx - 1] {
             Some(ZipHandle::TarReader(r)) => Some(r),
@@ -103,7 +114,9 @@ fn get_tar_reader(handle: u32) -> Option<&'static TarReader> {
 
 fn get_tar_writer(handle: u32) -> Option<&'static mut TarWriter> {
     let idx = handle as usize;
-    if idx == 0 || idx > MAX_HANDLES { return None; }
+    if idx == 0 || idx > MAX_HANDLES {
+        return None;
+    }
     unsafe {
         match &mut HANDLES[idx - 1] {
             Some(ZipHandle::TarWriter(w)) => Some(w),
@@ -115,7 +128,9 @@ fn get_tar_writer(handle: u32) -> Option<&'static mut TarWriter> {
 fn free_handle(handle: u32) {
     let idx = handle as usize;
     if idx > 0 && idx <= MAX_HANDLES {
-        unsafe { HANDLES[idx - 1] = None; }
+        unsafe {
+            HANDLES[idx - 1] = None;
+        }
     }
 }
 
@@ -130,7 +145,9 @@ pub extern "C" fn libzip_open(path_ptr: *const u8, path_len: u32) -> u32 {
     };
 
     let fd = syscall::open(path, 0);
-    if fd == u32::MAX { return 0; }
+    if fd == u32::MAX {
+        return 0;
+    }
 
     let size = syscall::file_size(fd) as usize;
     let mut data = alloc::vec![0u8; size];
@@ -138,7 +155,9 @@ pub extern "C" fn libzip_open(path_ptr: *const u8, path_len: u32) -> u32 {
     while read < size {
         let chunk = &mut data[read..];
         let n = syscall::read(fd, chunk);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         read += n as usize;
     }
     syscall::close(fd);
@@ -198,7 +217,11 @@ pub extern "C" fn libzip_entry_name(handle: u32, index: u32, buf: *mut u8, buf_l
 #[no_mangle]
 pub extern "C" fn libzip_entry_size(handle: u32, index: u32) -> u32 {
     match get_reader(handle) {
-        Some(r) => r.entries.get(index as usize).map(|e| e.uncompressed_size).unwrap_or(0),
+        Some(r) => r
+            .entries
+            .get(index as usize)
+            .map(|e| e.uncompressed_size)
+            .unwrap_or(0),
         None => 0,
     }
 }
@@ -207,7 +230,11 @@ pub extern "C" fn libzip_entry_size(handle: u32, index: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn libzip_entry_compressed_size(handle: u32, index: u32) -> u32 {
     match get_reader(handle) {
-        Some(r) => r.entries.get(index as usize).map(|e| e.compressed_size).unwrap_or(0),
+        Some(r) => r
+            .entries
+            .get(index as usize)
+            .map(|e| e.compressed_size)
+            .unwrap_or(0),
         None => 0,
     }
 }
@@ -216,7 +243,11 @@ pub extern "C" fn libzip_entry_compressed_size(handle: u32, index: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn libzip_entry_method(handle: u32, index: u32) -> u32 {
     match get_reader(handle) {
-        Some(r) => r.entries.get(index as usize).map(|e| e.method as u32).unwrap_or(u32::MAX),
+        Some(r) => r
+            .entries
+            .get(index as usize)
+            .map(|e| e.method as u32)
+            .unwrap_or(u32::MAX),
         None => u32::MAX,
     }
 }
@@ -225,12 +256,16 @@ pub extern "C" fn libzip_entry_method(handle: u32, index: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn libzip_entry_is_dir(handle: u32, index: u32) -> u32 {
     match get_reader(handle) {
-        Some(r) => {
-            match r.entries.get(index as usize) {
-                Some(e) => if e.name.ends_with('/') { 1 } else { 0 },
-                None => 0,
+        Some(r) => match r.entries.get(index as usize) {
+            Some(e) => {
+                if e.name.ends_with('/') {
+                    1
+                } else {
+                    0
+                }
             }
-        }
+            None => 0,
+        },
         None => 0,
     }
 }
@@ -258,7 +293,10 @@ pub extern "C" fn libzip_extract(handle: u32, index: u32, buf: *mut u8, buf_len:
 /// Extract an entry directly to a file. Returns 0 on success, u32::MAX on error.
 #[no_mangle]
 pub extern "C" fn libzip_extract_to_file(
-    handle: u32, index: u32, path_ptr: *const u8, path_len: u32,
+    handle: u32,
+    index: u32,
+    path_ptr: *const u8,
+    path_len: u32,
 ) -> u32 {
     let reader = match get_reader(handle) {
         Some(r) => r,
@@ -274,18 +312,29 @@ pub extern "C" fn libzip_extract_to_file(
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
     };
 
-    let fd = syscall::open(path, syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC);
-    if fd == u32::MAX { return u32::MAX; }
+    let fd = syscall::open(
+        path,
+        syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC,
+    );
+    if fd == u32::MAX {
+        return u32::MAX;
+    }
 
     let mut written = 0usize;
     while written < data.len() {
         let n = syscall::write(fd, &data[written..]);
-        if n == u32::MAX { break; }
+        if n == u32::MAX {
+            break;
+        }
         written += n as usize;
     }
     syscall::close(fd);
 
-    if written == data.len() { 0 } else { u32::MAX }
+    if written == data.len() {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Add a file to a ZIP writer. `compress`: 0=stored, 1=deflate.
@@ -293,8 +342,10 @@ pub extern "C" fn libzip_extract_to_file(
 #[no_mangle]
 pub extern "C" fn libzip_add_file(
     handle: u32,
-    name_ptr: *const u8, name_len: u32,
-    data_ptr: *const u8, data_len: u32,
+    name_ptr: *const u8,
+    name_len: u32,
+    data_ptr: *const u8,
+    data_len: u32,
     compress: u32,
 ) -> u32 {
     let writer = match get_writer(handle) {
@@ -305,9 +356,7 @@ pub extern "C" fn libzip_add_file(
     let name = unsafe {
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(name_ptr, name_len as usize))
     };
-    let data = unsafe {
-        core::slice::from_raw_parts(data_ptr, data_len as usize)
-    };
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
 
     writer.add(name, data, compress != 0);
     0
@@ -316,10 +365,7 @@ pub extern "C" fn libzip_add_file(
 /// Add a directory entry to a ZIP writer.
 /// Returns 0 on success, u32::MAX on error.
 #[no_mangle]
-pub extern "C" fn libzip_add_dir(
-    handle: u32,
-    name_ptr: *const u8, name_len: u32,
-) -> u32 {
+pub extern "C" fn libzip_add_dir(handle: u32, name_ptr: *const u8, name_len: u32) -> u32 {
     let writer = match get_writer(handle) {
         Some(w) => w,
         None => return u32::MAX,
@@ -339,7 +385,9 @@ pub extern "C" fn libzip_add_dir(
 #[no_mangle]
 pub extern "C" fn libzip_write_to_file(handle: u32, path_ptr: *const u8, path_len: u32) -> u32 {
     let idx = handle as usize;
-    if idx == 0 || idx > MAX_HANDLES { return u32::MAX; }
+    if idx == 0 || idx > MAX_HANDLES {
+        return u32::MAX;
+    }
 
     // Take ownership of the writer
     let writer = unsafe {
@@ -358,64 +406,196 @@ pub extern "C" fn libzip_write_to_file(handle: u32, path_ptr: *const u8, path_le
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
     };
 
-    let fd = syscall::open(path, syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC);
-    if fd == u32::MAX { return u32::MAX; }
+    let fd = syscall::open(
+        path,
+        syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC,
+    );
+    if fd == u32::MAX {
+        return u32::MAX;
+    }
 
     let mut written = 0usize;
     while written < data.len() {
         let n = syscall::write(fd, &data[written..]);
-        if n == u32::MAX { break; }
+        if n == u32::MAX {
+            break;
+        }
         written += n as usize;
     }
     syscall::close(fd);
 
-    if written == data.len() { 0 } else { u32::MAX }
+    if written == data.len() {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 // ── Helper: file I/O ────────────────────────────────────────────────────────
 
 fn read_file_to_vec(path: &str) -> Option<Vec<u8>> {
     let fd = syscall::open(path, 0);
-    if fd == u32::MAX { return None; }
+    if fd == u32::MAX {
+        return None;
+    }
     let size = syscall::file_size(fd) as usize;
     let mut data = alloc::vec![0u8; size];
     let mut read = 0usize;
     while read < size {
         let n = syscall::read(fd, &mut data[read..]);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         read += n as usize;
     }
     syscall::close(fd);
-    if read < size { data.truncate(read); }
+    if read < size {
+        data.truncate(read);
+    }
     Some(data)
 }
 
 fn write_vec_to_file(path: &str, data: &[u8]) -> bool {
-    let fd = syscall::open(path, syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC);
-    if fd == u32::MAX { return false; }
+    let fd = syscall::open(
+        path,
+        syscall::O_WRITE | syscall::O_CREATE | syscall::O_TRUNC,
+    );
+    if fd == u32::MAX {
+        return false;
+    }
     let mut written = 0usize;
     while written < data.len() {
         let n = syscall::write(fd, &data[written..]);
-        if n == u32::MAX { break; }
+        if n == u32::MAX {
+            break;
+        }
         written += n as usize;
     }
     syscall::close(fd);
     written == data.len()
 }
 
+fn copy_to_out(data: Vec<u8>, out_buf: *mut u8, out_buf_len: u32) -> u32 {
+    let required = data.len();
+    let copy_len = required.min(out_buf_len as usize);
+    if copy_len > 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(data.as_ptr(), out_buf, copy_len);
+        }
+    }
+    required as u32
+}
+
+fn copy_optional_to_out(data: Option<Vec<u8>>, out_buf: *mut u8, out_buf_len: u32) -> u32 {
+    match data {
+        Some(data) => copy_to_out(data, out_buf, out_buf_len),
+        None => u32::MAX,
+    }
+}
+
 // ── Gzip C ABI Exports ─────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn libzip_gzip_compress(
+    data_ptr: *const u8,
+    data_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    copy_to_out(gzip::gzip_compress(data), out_buf, out_buf_len)
+}
+
+#[no_mangle]
+pub extern "C" fn libzip_gzip_decompress(
+    data_ptr: *const u8,
+    data_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    copy_optional_to_out(gzip::gzip_decompress(data), out_buf, out_buf_len)
+}
+
+#[no_mangle]
+pub extern "C" fn libzip_zlib_compress(
+    data_ptr: *const u8,
+    data_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    copy_to_out(zlib::zlib_compress(data), out_buf, out_buf_len)
+}
+
+#[no_mangle]
+pub extern "C" fn libzip_zlib_decompress(
+    data_ptr: *const u8,
+    data_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    copy_optional_to_out(zlib::zlib_decompress(data), out_buf, out_buf_len)
+}
+
+#[no_mangle]
+pub extern "C" fn libzip_deflate_raw(
+    data_ptr: *const u8,
+    data_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    copy_to_out(deflate::deflate(data), out_buf, out_buf_len)
+}
+
+#[no_mangle]
+pub extern "C" fn libzip_inflate_raw(
+    data_ptr: *const u8,
+    data_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    copy_optional_to_out(inflate::inflate(data), out_buf, out_buf_len)
+}
+
+#[no_mangle]
+pub extern "C" fn libzip_unzip(
+    data_ptr: *const u8,
+    data_len: u32,
+    out_buf: *mut u8,
+    out_buf_len: u32,
+) -> u32 {
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    let result = if gzip::is_gzip(data) {
+        gzip::gzip_decompress(data)
+    } else {
+        zlib::zlib_decompress(data).or_else(|| inflate::inflate(data))
+    };
+    copy_optional_to_out(result, out_buf, out_buf_len)
+}
 
 /// Compress a file with gzip. Returns 0 on success, u32::MAX on error.
 #[no_mangle]
 pub extern "C" fn libzip_gzip_compress_file(
-    in_path_ptr: *const u8, in_path_len: u32,
-    out_path_ptr: *const u8, out_path_len: u32,
+    in_path_ptr: *const u8,
+    in_path_len: u32,
+    out_path_ptr: *const u8,
+    out_path_len: u32,
 ) -> u32 {
     let in_path = unsafe {
-        core::str::from_utf8_unchecked(core::slice::from_raw_parts(in_path_ptr, in_path_len as usize))
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            in_path_ptr,
+            in_path_len as usize,
+        ))
     };
     let out_path = unsafe {
-        core::str::from_utf8_unchecked(core::slice::from_raw_parts(out_path_ptr, out_path_len as usize))
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            out_path_ptr,
+            out_path_len as usize,
+        ))
     };
 
     let data = match read_file_to_vec(in_path) {
@@ -424,20 +604,32 @@ pub extern "C" fn libzip_gzip_compress_file(
     };
 
     let compressed = gzip::gzip_compress(&data);
-    if write_vec_to_file(out_path, &compressed) { 0 } else { u32::MAX }
+    if write_vec_to_file(out_path, &compressed) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Decompress a gzip file. Returns 0 on success, u32::MAX on error.
 #[no_mangle]
 pub extern "C" fn libzip_gzip_decompress_file(
-    in_path_ptr: *const u8, in_path_len: u32,
-    out_path_ptr: *const u8, out_path_len: u32,
+    in_path_ptr: *const u8,
+    in_path_len: u32,
+    out_path_ptr: *const u8,
+    out_path_len: u32,
 ) -> u32 {
     let in_path = unsafe {
-        core::str::from_utf8_unchecked(core::slice::from_raw_parts(in_path_ptr, in_path_len as usize))
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            in_path_ptr,
+            in_path_len as usize,
+        ))
     };
     let out_path = unsafe {
-        core::str::from_utf8_unchecked(core::slice::from_raw_parts(out_path_ptr, out_path_len as usize))
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            out_path_ptr,
+            out_path_len as usize,
+        ))
     };
 
     let data = match read_file_to_vec(in_path) {
@@ -450,7 +642,11 @@ pub extern "C" fn libzip_gzip_decompress_file(
         None => return u32::MAX,
     };
 
-    if write_vec_to_file(out_path, &decompressed) { 0 } else { u32::MAX }
+    if write_vec_to_file(out_path, &decompressed) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 // ── Tar C ABI Exports ──────────────────────────────────────────────────────
@@ -496,7 +692,12 @@ pub extern "C" fn libzip_tar_entry_count(handle: u32) -> u32 {
 
 /// Get the name of a tar entry.
 #[no_mangle]
-pub extern "C" fn libzip_tar_entry_name(handle: u32, index: u32, buf: *mut u8, buf_len: u32) -> u32 {
+pub extern "C" fn libzip_tar_entry_name(
+    handle: u32,
+    index: u32,
+    buf: *mut u8,
+    buf_len: u32,
+) -> u32 {
     let reader = match get_tar_reader(handle) {
         Some(r) => r,
         None => return 0,
@@ -517,7 +718,11 @@ pub extern "C" fn libzip_tar_entry_name(handle: u32, index: u32, buf: *mut u8, b
 #[no_mangle]
 pub extern "C" fn libzip_tar_entry_size(handle: u32, index: u32) -> u32 {
     match get_tar_reader(handle) {
-        Some(r) => r.entries.get(index as usize).map(|e| e.size as u32).unwrap_or(0),
+        Some(r) => r
+            .entries
+            .get(index as usize)
+            .map(|e| e.size as u32)
+            .unwrap_or(0),
         None => 0,
     }
 }
@@ -527,7 +732,13 @@ pub extern "C" fn libzip_tar_entry_size(handle: u32, index: u32) -> u32 {
 pub extern "C" fn libzip_tar_entry_is_dir(handle: u32, index: u32) -> u32 {
     match get_tar_reader(handle) {
         Some(r) => match r.entries.get(index as usize) {
-            Some(e) => if e.is_dir { 1 } else { 0 },
+            Some(e) => {
+                if e.is_dir {
+                    1
+                } else {
+                    0
+                }
+            }
             None => 0,
         },
         None => 0,
@@ -555,7 +766,10 @@ pub extern "C" fn libzip_tar_extract(handle: u32, index: u32, buf: *mut u8, buf_
 /// Extract a tar entry directly to a file.
 #[no_mangle]
 pub extern "C" fn libzip_tar_extract_to_file(
-    handle: u32, index: u32, path_ptr: *const u8, path_len: u32,
+    handle: u32,
+    index: u32,
+    path_ptr: *const u8,
+    path_len: u32,
 ) -> u32 {
     let reader = match get_tar_reader(handle) {
         Some(r) => r,
@@ -568,15 +782,21 @@ pub extern "C" fn libzip_tar_extract_to_file(
     let path = unsafe {
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
     };
-    if write_vec_to_file(path, &data) { 0 } else { u32::MAX }
+    if write_vec_to_file(path, &data) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 /// Add a file to a tar writer.
 #[no_mangle]
 pub extern "C" fn libzip_tar_add_file(
     handle: u32,
-    name_ptr: *const u8, name_len: u32,
-    data_ptr: *const u8, data_len: u32,
+    name_ptr: *const u8,
+    name_len: u32,
+    data_ptr: *const u8,
+    data_len: u32,
 ) -> u32 {
     let writer = match get_tar_writer(handle) {
         Some(w) => w,
@@ -585,18 +805,14 @@ pub extern "C" fn libzip_tar_add_file(
     let name = unsafe {
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(name_ptr, name_len as usize))
     };
-    let data = unsafe {
-        core::slice::from_raw_parts(data_ptr, data_len as usize)
-    };
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
     writer.add_file(name, data);
     0
 }
 
 /// Add a directory entry to a tar writer.
 #[no_mangle]
-pub extern "C" fn libzip_tar_add_dir(
-    handle: u32, name_ptr: *const u8, name_len: u32,
-) -> u32 {
+pub extern "C" fn libzip_tar_add_dir(handle: u32, name_ptr: *const u8, name_len: u32) -> u32 {
     let writer = match get_tar_writer(handle) {
         Some(w) => w,
         None => return u32::MAX,
@@ -612,10 +828,15 @@ pub extern "C" fn libzip_tar_add_dir(
 /// Handle is consumed by this call.
 #[no_mangle]
 pub extern "C" fn libzip_tar_write_to_file(
-    handle: u32, path_ptr: *const u8, path_len: u32, compress: u32,
+    handle: u32,
+    path_ptr: *const u8,
+    path_len: u32,
+    compress: u32,
 ) -> u32 {
     let idx = handle as usize;
-    if idx == 0 || idx > MAX_HANDLES { return u32::MAX; }
+    if idx == 0 || idx > MAX_HANDLES {
+        return u32::MAX;
+    }
 
     let writer = unsafe {
         match HANDLES[idx - 1].take() {
@@ -638,5 +859,9 @@ pub extern "C" fn libzip_tar_write_to_file(
         core::str::from_utf8_unchecked(core::slice::from_raw_parts(path_ptr, path_len as usize))
     };
 
-    if write_vec_to_file(path, &output) { 0 } else { u32::MAX }
+    if write_vec_to_file(path, &output) {
+        0
+    } else {
+        u32::MAX
+    }
 }

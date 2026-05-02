@@ -2577,10 +2577,22 @@ fn win_transform_stream(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     transform
 }
 
-fn win_url_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+fn win_url_ctor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let url = arg_string(args, 0);
     let u = JsValue::new_object();
+    let (protocol, host, pathname, search, hash, origin) = parse_url_parts(&url);
     u.set_property(String::from("href"), JsValue::String(url.clone()));
+    u.set_property(String::from("protocol"), JsValue::String(protocol));
+    u.set_property(String::from("host"), JsValue::String(host.clone()));
+    u.set_property(String::from("hostname"), JsValue::String(host));
+    u.set_property(String::from("pathname"), JsValue::String(pathname));
+    u.set_property(String::from("search"), JsValue::String(search.clone()));
+    u.set_property(String::from("hash"), JsValue::String(hash));
+    u.set_property(String::from("origin"), JsValue::String(origin));
+    u.set_property(
+        String::from("searchParams"),
+        win_url_search_params(vm, &[JsValue::String(search)]),
+    );
     u.set_property(
         String::from("toString"),
         native_fn("toString", |vm, _| {
@@ -2591,6 +2603,43 @@ fn win_url_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }),
     );
     u
+}
+
+fn parse_url_parts(url: &str) -> (String, String, String, String, String, String) {
+    let (protocol, rest) = if let Some(pos) = url.find("://") {
+        (String::from(&url[..pos + 1]), &url[pos + 3..])
+    } else {
+        (String::new(), url)
+    };
+    let (without_hash, hash) = if let Some(pos) = rest.find('#') {
+        (&rest[..pos], String::from(&rest[pos..]))
+    } else {
+        (rest, String::new())
+    };
+    let (without_search, search) = if let Some(pos) = without_hash.find('?') {
+        (&without_hash[..pos], String::from(&without_hash[pos..]))
+    } else {
+        (without_hash, String::new())
+    };
+    let (host, pathname) = if protocol.is_empty() {
+        (String::new(), String::from(without_search))
+    } else if let Some(pos) = without_search.find('/') {
+        (
+            String::from(&without_search[..pos]),
+            String::from(&without_search[pos..]),
+        )
+    } else {
+        (String::from(without_search), String::from("/"))
+    };
+    let origin = if protocol.is_empty() || host.is_empty() {
+        String::new()
+    } else {
+        let mut out = protocol.clone();
+        out.push_str("//");
+        out.push_str(&host);
+        out
+    };
+    (protocol, host, pathname, search, hash, origin)
 }
 
 fn win_text_encoder(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {

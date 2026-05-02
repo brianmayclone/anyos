@@ -230,6 +230,13 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     }
 
     // Properties.
+    obj.set(String::from("nodeType"), JsValue::Number(9.0));
+    obj.set(
+        String::from("nodeName"),
+        JsValue::String(String::from("#document")),
+    );
+    obj.set(String::from("nodeValue"), JsValue::Null);
+    obj.set(String::from("ownerDocument"), JsValue::Null);
     obj.set(String::from("title"), JsValue::String(title));
     obj.properties.insert(
         String::from("documentElement"),
@@ -675,6 +682,7 @@ fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     obj.set(String::from("nodeValue"), JsValue::String(text.clone()));
     obj.set(String::from("data"), JsValue::String(text.clone()));
     obj.set(String::from("innerText"), JsValue::String(text));
+    obj.set(String::from("ownerDocument"), vm.get_global("document"));
     obj.set(String::from("parentNode"), JsValue::Null);
     obj.set(String::from("nextSibling"), JsValue::Null);
     obj.set(String::from("previousSibling"), JsValue::Null);
@@ -693,6 +701,7 @@ fn doc_create_document_fragment(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         String::from("nodeName"),
         JsValue::String(String::from("#document-fragment")),
     );
+    obj.set(String::from("ownerDocument"), vm.get_global("document"));
     obj.set(
         String::from("children"),
         JsValue::Array(Rc::new(RefCell::new(JsArray::new()))),
@@ -770,6 +779,7 @@ fn doc_create_comment(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     );
     obj.set(String::from("textContent"), JsValue::String(text.clone()));
     obj.set(String::from("data"), JsValue::String(text));
+    obj.set(String::from("ownerDocument"), vm.get_global("document"));
     obj.set(String::from("parentNode"), JsValue::Null);
     obj.set(String::from("nextSibling"), JsValue::Null);
     obj.set(String::from("previousSibling"), JsValue::Null);

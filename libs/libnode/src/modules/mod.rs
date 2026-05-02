@@ -18,6 +18,7 @@ pub mod url;
 pub mod util;
 pub mod uv;
 pub mod zlib;
+mod zlib_codec;
 
 pub use assert::{module as assert_module, strict_module as assert_strict_module};
 pub use buffer::module as buffer_module;

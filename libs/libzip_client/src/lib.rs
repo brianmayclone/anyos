@@ -18,11 +18,17 @@
 extern crate alloc;
 
 use alloc::string::String;
+#[cfg(not(feature = "host"))]
 use alloc::vec;
+use alloc::vec::Vec;
 
 #[cfg(feature = "host")]
 mod host {
     use super::*;
+
+    pub fn init() -> bool {
+        true
+    }
 
     pub struct ZipReader;
     impl ZipReader {
@@ -76,6 +82,37 @@ mod host {
     }
     pub fn gzip_decompress_file(_in_path: &str, _out_path: &str) -> bool {
         false
+    }
+
+    pub fn gzip(data: &[u8]) -> Option<Vec<u8>> {
+        Some(libzip::gzip::gzip_compress(data))
+    }
+
+    pub fn gunzip(data: &[u8]) -> Option<Vec<u8>> {
+        libzip::gzip::gzip_decompress(data)
+    }
+
+    pub fn deflate(data: &[u8]) -> Option<Vec<u8>> {
+        Some(libzip::zlib::zlib_compress(data))
+    }
+
+    pub fn inflate(data: &[u8]) -> Option<Vec<u8>> {
+        libzip::zlib::zlib_decompress(data)
+    }
+
+    pub fn deflate_raw(data: &[u8]) -> Option<Vec<u8>> {
+        Some(libzip::deflate::deflate(data))
+    }
+
+    pub fn inflate_raw(data: &[u8]) -> Option<Vec<u8>> {
+        libzip::inflate::inflate(data)
+    }
+
+    pub fn unzip(data: &[u8]) -> Option<Vec<u8>> {
+        if libzip::gzip::is_gzip(data) {
+            return gunzip(data);
+        }
+        inflate(data).or_else(|| inflate_raw(data))
     }
 
     pub struct TarReader;
@@ -147,6 +184,13 @@ mod imp {
             libzip_add_dir(handle: u32, name: *const u8, name_len: u32) -> u32,
             libzip_write_to_file(handle: u32, path: *const u8, path_len: u32) -> u32,
             // Gzip functions
+            libzip_gzip_compress(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
+            libzip_gzip_decompress(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
+            libzip_zlib_compress(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
+            libzip_zlib_decompress(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
+            libzip_deflate_raw(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
+            libzip_inflate_raw(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
+            libzip_unzip(data: *const u8, data_len: u32, out: *mut u8, out_len: u32) -> u32,
             libzip_gzip_compress_file(in_path: *const u8, in_len: u32, out_path: *const u8, out_len: u32) -> u32,
             libzip_gzip_decompress_file(in_path: *const u8, in_len: u32, out_path: *const u8, out_len: u32) -> u32,
             // Tar functions
@@ -320,6 +364,76 @@ mod imp {
             out_path.as_ptr(),
             out_path.len() as u32,
         ) == 0
+    }
+
+    fn transform_bytes(
+        input: &[u8],
+        initial_capacity: usize,
+        f: extern "C" fn(*const u8, u32, *mut u8, u32) -> u32,
+    ) -> Option<Vec<u8>> {
+        let mut capacity = initial_capacity.max(64);
+        loop {
+            let mut out = vec![0u8; capacity];
+            let needed = f(
+                input.as_ptr(),
+                input.len() as u32,
+                out.as_mut_ptr(),
+                out.len() as u32,
+            );
+            if needed == u32::MAX {
+                return None;
+            }
+            let needed = needed as usize;
+            if needed <= out.len() {
+                out.truncate(needed);
+                return Some(out);
+            }
+            capacity = needed;
+        }
+    }
+
+    pub fn gzip(data: &[u8]) -> Option<Vec<u8>> {
+        transform_bytes(data, data.len() + 64, lib().libzip_gzip_compress)
+    }
+
+    pub fn gunzip(data: &[u8]) -> Option<Vec<u8>> {
+        transform_bytes(
+            data,
+            data.len().saturating_mul(4) + 1024,
+            lib().libzip_gzip_decompress,
+        )
+    }
+
+    pub fn deflate(data: &[u8]) -> Option<Vec<u8>> {
+        transform_bytes(data, data.len() + 64, lib().libzip_zlib_compress)
+    }
+
+    pub fn inflate(data: &[u8]) -> Option<Vec<u8>> {
+        transform_bytes(
+            data,
+            data.len().saturating_mul(4) + 1024,
+            lib().libzip_zlib_decompress,
+        )
+    }
+
+    pub fn deflate_raw(data: &[u8]) -> Option<Vec<u8>> {
+        transform_bytes(data, data.len() + 64, lib().libzip_deflate_raw)
+    }
+
+    pub fn inflate_raw(data: &[u8]) -> Option<Vec<u8>> {
+        transform_bytes(
+            data,
+            data.len().saturating_mul(4) + 1024,
+            lib().libzip_inflate_raw,
+        )
+    }
+
+    pub fn unzip(data: &[u8]) -> Option<Vec<u8>> {
+        transform_bytes(
+            data,
+            data.len().saturating_mul(4) + 1024,
+            lib().libzip_unzip,
+        )
     }
 
     // ── TarReader ───────────────────────────────────────────────────────────────

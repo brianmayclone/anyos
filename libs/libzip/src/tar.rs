@@ -4,7 +4,6 @@
 //! Transparently handles `.tar.gz` via the `gzip` module.
 
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -87,7 +86,10 @@ impl TarReader {
             pos = data_offset + data_blocks * BLOCK_SIZE;
         }
 
-        Some(TarReader { entries, data: tar_data })
+        Some(TarReader {
+            entries,
+            data: tar_data,
+        })
     }
 
     /// Number of entries in the archive.

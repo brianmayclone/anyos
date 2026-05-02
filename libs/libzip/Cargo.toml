@@ -3,8 +3,11 @@ name = "libzip"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+host = []
+
 [lib]
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 libheap = { path = "../libheap" }
@@ -16,5 +19,3 @@ opt-level = 2
 
 [profile.release]
 panic = "abort"
-
-[workspace]
