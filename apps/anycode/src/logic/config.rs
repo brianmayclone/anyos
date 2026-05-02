@@ -37,6 +37,7 @@ pub struct Config {
     pub node_path: String,
     pub npm_path: String,
     pub eslint_path: String,
+    pub node_auto_install_on_open: bool,
     pub last_project: String,
     pub recent_projects: Vec<String>,
     pub session_project: String,
@@ -110,6 +111,7 @@ const ANYCODE_NODE_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("config/eslint_path", ""),
     default_string("config/package_manager", "npm"),
     default_bool("config/lint_on_save", true),
+    default_bool("config/auto_install_on_open", true),
 ];
 const ANYCODE_NODE_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "apps/anycode_node",
@@ -199,6 +201,11 @@ impl Config {
             node_path: json_str(&val, "node_path", ""),
             npm_path: json_str(&val, "npm_path", ""),
             eslint_path: json_str(&val, "eslint_path", ""),
+            node_auto_install_on_open: json_bool(
+                &val,
+                "node_auto_install_on_open",
+                defaults.node_auto_install_on_open,
+            ),
             last_project: json_str(&val, "last_project", ""),
             recent_projects: json_str_array(&val, "recent_projects"),
             session_project: json_str(&val, "session_project", ""),
@@ -290,6 +297,10 @@ impl Config {
         obj.set("node_path", Value::String(self.node_path.clone()));
         obj.set("npm_path", Value::String(self.npm_path.clone()));
         obj.set("eslint_path", Value::String(self.eslint_path.clone()));
+        obj.set(
+            "node_auto_install_on_open",
+            Value::Bool(self.node_auto_install_on_open),
+        );
         obj.set("last_project", Value::String(self.last_project.clone()));
         obj.set("recent_projects", json_string_array(&self.recent_projects));
         obj.set(
@@ -316,6 +327,10 @@ impl Config {
         let _ = ANYCODE_NODE_SCHEMA.write_string("config/node_path", &self.node_path);
         let _ = ANYCODE_NODE_SCHEMA.write_string("config/npm_path", &self.npm_path);
         let _ = ANYCODE_NODE_SCHEMA.write_string("config/eslint_path", &self.eslint_path);
+        let _ = ANYCODE_NODE_SCHEMA.write_bool(
+            "config/auto_install_on_open",
+            self.node_auto_install_on_open,
+        );
         let layout = self.layout_json();
         let _ = ANYCODE_LAYOUT_SCHEMA.write_string("config/dock_layout_json", &layout);
         let _ =
@@ -356,6 +371,7 @@ impl Config {
             node_path: String::new(),
             npm_path: String::new(),
             eslint_path: String::new(),
+            node_auto_install_on_open: true,
             last_project: String::new(),
             recent_projects: Vec::new(),
             session_project: String::new(),
@@ -397,6 +413,9 @@ impl Config {
             if !path.is_empty() {
                 self.eslint_path = path;
             }
+        }
+        if let Some(v) = ANYCODE_NODE_SCHEMA.read_bool("config/auto_install_on_open") {
+            self.node_auto_install_on_open = v;
         }
         if let Some(layout) = ANYCODE_LAYOUT_SCHEMA.read_string("config/dock_layout_json") {
             self.apply_layout_json(&layout);

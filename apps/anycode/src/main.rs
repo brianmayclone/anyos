@@ -440,6 +440,7 @@ fn build_and_run(
                 s.sidebar.populate_project(proj, &s.task_mgr);
             }
             logic::commands::check_crate_updates_on_open();
+            logic::commands::auto_restore_node_packages_on_open();
         } else {
             s.run_panel.show_no_project();
             logic::commands::refresh_run_config_selector();

@@ -3427,6 +3427,33 @@ fn resolve_cmd(cmd: &str, cwd: &str) -> String {
     anyos_std::shell::resolve_cmd_path(cmd, cwd)
 }
 
+fn startup_command() -> String {
+    let mut args_buf = [0u8; 512];
+    let raw = process::args(&mut args_buf).trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    if let Some(pos) = raw.find("--run ") {
+        return String::from(raw[pos + 6..].trim());
+    }
+    String::new()
+}
+
+fn run_startup_command(command: &str) {
+    if command.is_empty() {
+        return;
+    }
+    let Some(sess) = app().active_session_mut() else {
+        return;
+    };
+    sess.buf.write_str(command);
+    sess.buf.write_str("\n");
+    let (_cont, foreground, _su) = sess.shell.execute_single_command(command, &mut sess.buf);
+    if let Some(fp) = foreground {
+        let _ = sess.shell.wait_foreground_blocking(fp, &mut sess.buf);
+    }
+}
+
 // ─── Shell ───────────────────────────────────────────────────────────────────
 
 // ─── Logical Operators for Command Chaining ──────────────────────────────────
@@ -7909,6 +7936,9 @@ fn main() {
     }
 
     // Initial render
+    let startup_cmd = startup_command();
+    run_startup_command(&startup_cmd);
+
     render_to_canvas(app(), &canvas);
 
     // ── Tab bar events ──

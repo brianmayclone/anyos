@@ -3,11 +3,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::logic::language::{self, LanguageId};
+use crate::logic::node_packages;
+use crate::logic::project::Project;
 use crate::logic::symbol_index::{IndexedSymbol, SymbolIndex};
 use crate::logic::symbols::SymbolKind;
 use crate::util::path;
 
-const MAX_COMPLETIONS: usize = 24;
+const MAX_COMPLETIONS: usize = 64;
 
 #[derive(Clone)]
 pub struct CompletionItem {
@@ -27,12 +29,21 @@ pub fn completions_for_cursor(
     row: u32,
     col: u32,
     index: &SymbolIndex,
+    project: Option<&Project>,
 ) -> CompletionSet {
     let lang = language::language_for_filename(path::basename(file_path)).id;
     let prefix = prefix_at(text, row as usize, col as usize);
     let mut items = Vec::new();
 
     if matches!(lang, LanguageId::JavaScript | LanguageId::TypeScript) {
+        if let Some(module_prefix) = module_string_prefix_at(text, row as usize, col as usize) {
+            push_node_module_completions(&mut items, &module_prefix, project);
+            return CompletionSet {
+                prefix: module_prefix,
+                items,
+            };
+        }
+
         if let Some((receiver, member_prefix)) = member_access_at(text, row as usize, col as usize)
         {
             if is_anyui_alias(text, &receiver) {
@@ -43,7 +54,16 @@ pub fn completions_for_cursor(
                     items: member_items,
                 };
             }
+            if let Some(kind) = js_receiver_kind(text, &receiver) {
+                let mut member_items = Vec::new();
+                push_js_receiver_members(&mut member_items, &member_prefix, kind);
+                return CompletionSet {
+                    prefix: member_prefix,
+                    items: member_items,
+                };
+            }
         }
+        push_js_node_globals(&mut items, &prefix, project);
         push_js_anyos_completions(&mut items, &prefix);
     }
 

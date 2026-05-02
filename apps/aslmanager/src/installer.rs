@@ -169,7 +169,10 @@ pub fn on_timer() {
 }
 
 pub fn open_terminal() {
-    let tid = process::launch_app("/Applications/Terminal.app/Terminal", "");
+    let tid = process::launch_app(
+        "/Applications/Terminal.app/Terminal",
+        "ASL --run aslctl shell debian --fallback-console",
+    );
     if tid == u32::MAX {
         crate::app()
             .status_label
@@ -177,8 +180,8 @@ pub fn open_terminal() {
     } else {
         crate::app()
             .status_label
-            .set_text("Terminal opened. Run: aslctl shell debian --fallback-console");
-        log_line_ui("Terminal opened. Command: aslctl shell debian --fallback-console");
+            .set_text("ASL terminal opened for Debian.");
+        log_line_ui("Terminal opened and attached to Debian.");
     }
 }
 
@@ -436,10 +439,7 @@ fn is_safe_artifact_path(path: &str, cfg: &ManagerConfig) -> bool {
     let in_images = path.len() > cfg.images_dir.len()
         && path.starts_with(&cfg.images_dir)
         && path.as_bytes()[cfg.images_dir.len()] == b'/';
-    in_images
-        && !path.contains('\0')
-        && !path.contains("/../")
-        && !path.ends_with("/..")
+    in_images && !path.contains('\0') && !path.contains("/../") && !path.ends_with("/..")
 }
 
 fn ensure_seabios_config() -> bool {

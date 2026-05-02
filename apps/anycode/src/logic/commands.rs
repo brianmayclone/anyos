@@ -2118,6 +2118,44 @@ pub fn restore_node_packages() {
     spawn_node_package_task("install", tasks::TaskCategory::Custom, "npm install");
 }
 
+pub fn auto_restore_node_packages_on_open() {
+    let s = app();
+    if !s.config.node_auto_install_on_open {
+        return;
+    }
+    if s.build_process.is_some() {
+        return;
+    }
+    let Some(ref project) = s.current_project else {
+        return;
+    };
+    if project.project_type != project::ProjectType::NodeJS {
+        return;
+    }
+    if !path::exists(&format!("{}/package.json", project.root)) {
+        return;
+    }
+    let deps = node_packages::packages_for_project(project);
+    if deps.is_empty() {
+        return;
+    }
+    if path::is_directory(&format!("{}/node_modules", project.root)) {
+        s.output.append_line(&format!(
+            "[Node] {} package dependency/dependencies declared; node_modules already present",
+            deps.len()
+        ));
+        return;
+    }
+
+    s.status
+        .set_analysis_status("Node dependencies missing; running npm install...");
+    s.output.append_line(&format!(
+        "[Node] {} package dependency/dependencies declared; restoring with npm install",
+        deps.len()
+    ));
+    spawn_node_package_task("install", tasks::TaskCategory::Custom, "npm install");
+}
+
 pub fn check_node_package_updates() {
     spawn_node_package_task("outdated", tasks::TaskCategory::Check, "npm outdated");
 }
@@ -3665,7 +3703,6 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     s.run_panel.update_tests(&s.test_explorer);
     s.run_panel.update_debug_session(&s.debug_session);
     s.sidebar.populate_project(&proj, &s.task_mgr);
-    refresh_run_config_selector();
     s.status.set_project_type(&project_context);
 
     s.status.set_branch("");
@@ -3673,6 +3710,7 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
 
     s.solution = Some(solution);
     s.current_project = Some(proj);
+    refresh_run_config_selector();
     s.git_state = git::GitState::empty();
     if let Some(repo_root) = git::find_repository_root(&workspace_root) {
         s.git_state.is_repo = true;
@@ -3696,6 +3734,7 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     s.config.push_recent_project(&workspace_root);
     s.config.save();
     update_status();
+    auto_restore_node_packages_on_open();
 
     if should_restore_session {
         restore_session();
