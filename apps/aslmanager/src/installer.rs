@@ -213,38 +213,33 @@ fn install_worker() {
     }
 
     if !ensure_artifact(
-        &cfg.kernel_path,
-        &cfg.kernel_tmp,
-        &cfg.debian_kernel_url,
+        &cfg.base_image_path,
+        &cfg.base_image_tmp,
+        &cfg.debian_raw_url,
         &cfg,
-        ArtifactKind::Kernel,
-        "Linux kernel",
+        ArtifactKind::RawDisk,
+        "Debian VM disk",
         10,
-        25,
+        68,
     ) {
-        finish_error("kernel download failed");
-        return;
-    }
-    if !ensure_artifact(
-        &cfg.initrd_path,
-        &cfg.initrd_tmp,
-        &cfg.debian_initrd_url,
-        &cfg,
-        ArtifactKind::Initrd,
-        "Debian initrd",
-        40,
-        35,
-    ) {
-        finish_error("initrd download failed");
+        finish_error("Debian VM disk download failed");
         return;
     }
 
-    set_progress(78);
+    set_progress(80);
     set_phase("Registering Debian with asld");
     match asld::request(&format!("STATUS {}", DISTRO_NAME)) {
-        Ok(resp) if resp.ok => log_line("ASL distro already exists; reusing configuration."),
+        Ok(resp) if resp.ok => {
+            if !ensure_seabios_config() {
+                finish_error("could not update Debian ASL profile");
+                return;
+            }
+        }
         _ => {
-            let cmd = format!("CREATE {}\t{}\t{}\t-", DISTRO_NAME, IMAGE_REF, OWNER);
+            let cmd = format!(
+                "CREATE {}\t{}\t{}\t{}",
+                DISTRO_NAME, IMAGE_REF, OWNER, KERNEL_PROFILE
+            );
             match asld::request(&cmd) {
                 Ok(resp) if resp.ok => log_line("ASL distro created."),
                 Ok(resp) => {
@@ -259,7 +254,7 @@ fn install_worker() {
         }
     }
 
-    set_progress(88);
+    set_progress(90);
     set_phase("Starting Debian VM");
     match asld::request(&format!("START {}", DISTRO_NAME)) {
         Ok(resp) if resp.ok => {
@@ -305,8 +300,7 @@ fn install_worker() {
 
 #[derive(Clone, Copy)]
 enum ArtifactKind {
-    Kernel,
-    Initrd,
+    RawDisk,
 }
 
 fn ensure_artifact(
@@ -345,6 +339,12 @@ fn ensure_artifact(
     log_line(&format!("Downloading {} from Debian mirror.", label));
     let userdata = ((base as u64) << 32) | span as u64;
     if !libhttp_client::download_progress(url, tmp, download_progress_cb, userdata) {
+        log_line(&format!(
+            "{} download failed: http status {}, error {}.",
+            label,
+            libhttp_client::last_status(),
+            libhttp_client::last_error()
+        ));
         let _ = fs::unlink(tmp);
         return false;
     }
@@ -386,7 +386,7 @@ fn ensure_dirs(cfg: &ManagerConfig) -> bool {
         cfg.asl_root.as_str(),
         cfg.distros_root.as_str(),
         cfg.distro_root.as_str(),
-        cfg.boot_dir.as_str(),
+        cfg.images_dir.as_str(),
     ] {
         if fs::mkdir(dir) == u32::MAX && !dir_exists(dir) {
             return false;
@@ -397,8 +397,7 @@ fn ensure_dirs(cfg: &ManagerConfig) -> bool {
 
 fn artifacts_ready() -> bool {
     let cfg = &crate::app().config;
-    verified_artifact(&cfg.kernel_path, cfg, ArtifactKind::Kernel)
-        && verified_artifact(&cfg.initrd_path, cfg, ArtifactKind::Initrd)
+    verified_artifact(&cfg.base_image_path, cfg, ArtifactKind::RawDisk)
 }
 
 fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> bool {
@@ -406,8 +405,7 @@ fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> boo
         return false;
     }
     let min_size = match kind {
-        ArtifactKind::Kernel => KERNEL_MIN_BYTES,
-        ArtifactKind::Initrd => INITRD_MIN_BYTES,
+        ArtifactKind::RawDisk => RAW_DISK_MIN_BYTES,
     };
     let mut stat_buf = [0u32; 7];
     if fs::stat(path, &mut stat_buf) != 0 || stat_buf[1] < min_size {
@@ -416,13 +414,7 @@ fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> boo
     let mut header = [0u8; 520];
     let read = read_prefix(path, &mut header);
     match kind {
-        ArtifactKind::Kernel => {
-            read >= 0x206
-                && header[0] == b'M'
-                && header[1] == b'Z'
-                && &header[0x202..0x206] == b"HdrS"
-        }
-        ArtifactKind::Initrd => read >= 2 && header[0] == 0x1f && header[1] == 0x8b,
+        ArtifactKind::RawDisk => read >= 512 && header[510] == 0x55 && header[511] == 0xaa,
     }
 }
 
@@ -441,12 +433,66 @@ fn read_prefix(path: &str, buf: &mut [u8]) -> usize {
 }
 
 fn is_safe_artifact_path(path: &str, cfg: &ManagerConfig) -> bool {
-    path.len() > cfg.boot_dir.len()
-        && path.starts_with(&cfg.boot_dir)
-        && path.as_bytes()[cfg.boot_dir.len()] == b'/'
+    let in_images = path.len() > cfg.images_dir.len()
+        && path.starts_with(&cfg.images_dir)
+        && path.as_bytes()[cfg.images_dir.len()] == b'/';
+    in_images
         && !path.contains('\0')
         && !path.contains("/../")
         && !path.ends_with("/..")
+}
+
+fn ensure_seabios_config() -> bool {
+    let config = asld::request(&format!("CONFIG_SHOW {}", DISTRO_NAME));
+    match config {
+        Ok(resp) if resp.ok => {
+            let profile = asld::field_value(&resp.lines, "kernel_profile").unwrap_or("-");
+            if profile == KERNEL_PROFILE {
+                log_line("ASL distro already exists with SeaBIOS profile; reusing it.");
+                return true;
+            }
+            log_line(
+                "Existing Debian profile is not a bootable VM profile; replacing ASL registration.",
+            );
+            match asld::request(&format!("DELETE {}\t1", DISTRO_NAME)) {
+                Ok(resp) if resp.ok => {}
+                Ok(resp) => {
+                    log_line(&format!("ASL delete failed: {}", resp.message));
+                    return false;
+                }
+                Err(err) => {
+                    log_line(err);
+                    return false;
+                }
+            }
+            let cmd = format!(
+                "CREATE {}\t{}\t{}\t{}",
+                DISTRO_NAME, IMAGE_REF, OWNER, KERNEL_PROFILE
+            );
+            match asld::request(&cmd) {
+                Ok(resp) if resp.ok => {
+                    log_line("ASL distro recreated with SeaBIOS VM profile.");
+                    true
+                }
+                Ok(resp) => {
+                    log_line(&format!("ASL create failed: {}", resp.message));
+                    false
+                }
+                Err(err) => {
+                    log_line(err);
+                    false
+                }
+            }
+        }
+        Ok(resp) => {
+            log_line(&format!("ASL config check failed: {}", resp.message));
+            false
+        }
+        Err(err) => {
+            log_line(err);
+            false
+        }
+    }
 }
 
 fn file_exists(path: &str) -> bool {

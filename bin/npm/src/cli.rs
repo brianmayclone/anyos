@@ -9,6 +9,7 @@ pub enum NpmCommand {
     Install { packages: Vec<String> },
     Uninstall { packages: Vec<String> },
     Update { packages: Vec<String> },
+    Run { script: String, args: Vec<String> },
     List,
     Outdated,
     Info { package: String },
@@ -118,6 +119,23 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
         },
         "update" | "up" | "upgrade" => NpmCommand::Update {
             packages: positional,
+        },
+        "run" | "run-script" => {
+            let Some(script) = positional.first().cloned() else {
+                return Err(String::from("npm run requires a script name"));
+            };
+            NpmCommand::Run {
+                script,
+                args: positional.iter().skip(1).cloned().collect(),
+            }
+        }
+        "start" => NpmCommand::Run {
+            script: String::from("start"),
+            args: positional,
+        },
+        "test" | "t" => NpmCommand::Run {
+            script: String::from("test"),
+            args: positional,
         },
         "list" | "ls" | "ll" | "la" => NpmCommand::List,
         "outdated" => NpmCommand::Outdated,

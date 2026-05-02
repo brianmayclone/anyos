@@ -32,6 +32,21 @@ pub fn completions_for_cursor(
     let prefix = prefix_at(text, row as usize, col as usize);
     let mut items = Vec::new();
 
+    if matches!(lang, LanguageId::JavaScript | LanguageId::TypeScript) {
+        if let Some((receiver, member_prefix)) = member_access_at(text, row as usize, col as usize)
+        {
+            if is_anyui_alias(text, &receiver) {
+                let mut member_items = Vec::new();
+                push_anyui_members(&mut member_items, &member_prefix);
+                return CompletionSet {
+                    prefix: member_prefix,
+                    items: member_items,
+                };
+            }
+        }
+        push_js_anyos_completions(&mut items, &prefix);
+    }
+
     if let Some(info) = language::info_for_id(lang) {
         for &(trigger, body) in info.snippets {
             push_completion(&mut items, &prefix, trigger, body, "snippet");
@@ -159,6 +174,93 @@ fn push_completion(
     });
 }
 
+fn push_js_anyos_completions(items: &mut Vec<CompletionItem>, prefix: &str) {
+    for &(label, insert, detail) in JS_ANYOS_COMPLETIONS {
+        push_completion(items, prefix, label, insert, detail);
+    }
+}
+
+fn push_anyui_members(items: &mut Vec<CompletionItem>, prefix: &str) {
+    for &(label, insert, detail) in ANYUI_MEMBER_COMPLETIONS {
+        push_completion(items, prefix, label, insert, detail);
+    }
+}
+
+const JS_ANYOS_COMPLETIONS: &[(&str, &str, &str)] = &[
+    ("@anyos/anyui", "@anyos/anyui", "native anyOS UI module"),
+    (
+        "requireAnyUI",
+        "const ui = require('@anyos/anyui');",
+        "import native anyOS UI",
+    ),
+    (
+        "createWindow",
+        "const win = new ui.Window('Main', 120, 80, 800, 520);",
+        "anyOS UI window",
+    ),
+    (
+        "anyuiButton",
+        "const button = new ui.Button('OK');",
+        "anyOS UI control",
+    ),
+    (
+        "anyuiLabel",
+        "const label = new ui.Label('Label');",
+        "anyOS UI control",
+    ),
+];
+
+const ANYUI_MEMBER_COMPLETIONS: &[(&str, &str, &str)] = &[
+    ("Window", "Window", "@anyos/anyui class"),
+    ("View", "View", "@anyos/anyui class"),
+    ("Button", "Button", "@anyos/anyui class"),
+    ("PlainButton", "PlainButton", "@anyos/anyui class"),
+    ("IconButton", "IconButton", "@anyos/anyui class"),
+    ("ImageButton", "ImageButton", "@anyos/anyui class"),
+    ("Label", "Label", "@anyos/anyui class"),
+    ("LinkLabel", "LinkLabel", "@anyos/anyui class"),
+    ("TextField", "TextField", "@anyos/anyui class"),
+    ("TextArea", "TextArea", "@anyos/anyui class"),
+    (
+        "AutoCompleteTextField",
+        "AutoCompleteTextField",
+        "@anyos/anyui class",
+    ),
+    ("SearchField", "SearchField", "@anyos/anyui class"),
+    ("CheckBox", "CheckBox", "@anyos/anyui class"),
+    ("RadioButton", "RadioButton", "@anyos/anyui class"),
+    ("Toggle", "Toggle", "@anyos/anyui class"),
+    ("DropDown", "DropDown", "@anyos/anyui class"),
+    ("ComboBox", "ComboBox", "@anyos/anyui class"),
+    ("ListBox", "ListBox", "@anyos/anyui class"),
+    ("TreeView", "TreeView", "@anyos/anyui class"),
+    ("DataGrid", "DataGrid", "@anyos/anyui class"),
+    ("TableView", "TableView", "@anyos/anyui class"),
+    ("TabBar", "TabBar", "@anyos/anyui class"),
+    ("SegmentedControl", "SegmentedControl", "@anyos/anyui class"),
+    ("Toolbar", "Toolbar", "@anyos/anyui class"),
+    ("NavigationBar", "NavigationBar", "@anyos/anyui class"),
+    ("GroupBox", "GroupBox", "@anyos/anyui class"),
+    ("Panel", "Panel", "@anyos/anyui class"),
+    ("FlowPanel", "FlowPanel", "@anyos/anyui class"),
+    ("StackPanel", "StackPanel", "@anyos/anyui class"),
+    ("SplitView", "SplitView", "@anyos/anyui class"),
+    ("ScrollView", "ScrollView", "@anyos/anyui class"),
+    ("Canvas", "Canvas", "@anyos/anyui class"),
+    ("ImageView", "ImageView", "@anyos/anyui class"),
+    ("ColorWell", "ColorWell", "@anyos/anyui class"),
+    ("DatePicker", "DatePicker", "@anyos/anyui class"),
+    ("TimePicker", "TimePicker", "@anyos/anyui class"),
+    ("ProgressBar", "ProgressBar", "@anyos/anyui class"),
+    ("Slider", "Slider", "@anyos/anyui class"),
+    ("Stepper", "Stepper", "@anyos/anyui class"),
+    ("Spinner", "Spinner", "@anyos/anyui class"),
+    ("StatusIndicator", "StatusIndicator", "@anyos/anyui class"),
+    ("Alert", "Alert", "@anyos/anyui class"),
+    ("Badge", "Badge", "@anyos/anyui class"),
+    ("Tooltip", "Tooltip", "@anyos/anyui class"),
+];
+
 fn symbol_matches_file(lang: LanguageId, symbol: &IndexedSymbol) -> bool {
     match lang {
         LanguageId::Rust => matches!(
@@ -175,6 +277,65 @@ fn symbol_matches_file(lang: LanguageId, symbol: &IndexedSymbol) -> bool {
         ),
         _ => true,
     }
+}
+
+fn member_access_at(text: &str, row: usize, col: usize) -> Option<(String, String)> {
+    let line = nth_line(text, row);
+    let bytes = line.as_bytes();
+    let col = col.min(bytes.len());
+    let mut dot = col;
+    while dot > 0 && is_ident_byte(bytes[dot - 1]) {
+        dot -= 1;
+    }
+    if dot == 0 || bytes[dot - 1] != b'.' {
+        return None;
+    }
+    let member = core::str::from_utf8(&bytes[dot..col]).unwrap_or("");
+    let mut receiver_end = dot - 1;
+    while receiver_end > 0 && bytes[receiver_end - 1].is_ascii_whitespace() {
+        receiver_end -= 1;
+    }
+    let mut receiver_start = receiver_end;
+    while receiver_start > 0 && is_ident_byte(bytes[receiver_start - 1]) {
+        receiver_start -= 1;
+    }
+    if receiver_start == receiver_end {
+        return None;
+    }
+    Some((
+        String::from(core::str::from_utf8(&bytes[receiver_start..receiver_end]).unwrap_or("")),
+        String::from(member),
+    ))
+}
+
+fn is_anyui_alias(text: &str, receiver: &str) -> bool {
+    if receiver == "ui" || receiver == "anyui" {
+        return true;
+    }
+    for line in text.split('\n') {
+        if !line.contains("@anyos/anyui") || !line.contains(receiver) {
+            continue;
+        }
+        let compact = without_spaces(line);
+        if compact.contains(&format!("{}=require('@anyos/anyui')", receiver))
+            || compact.contains(&format!("{}=require(\"@anyos/anyui\")", receiver))
+            || compact.contains(&format!("*as{}from'@anyos/anyui'", receiver))
+            || compact.contains(&format!("*as{}from\"@anyos/anyui\"", receiver))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn without_spaces(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        if !ch.is_whitespace() {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn prefix_at(text: &str, row: usize, col: usize) -> String {

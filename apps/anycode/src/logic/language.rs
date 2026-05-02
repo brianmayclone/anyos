@@ -422,7 +422,7 @@ static LANG_JAVASCRIPT: LanguageInfo = LanguageInfo {
         ("main", "function main() {\n    ${0}\n}\n\nmain();"),
         ("anyui", "const ui = require('@anyos/anyui');\n${0}"),
     ],
-    syntax_file: None,
+    syntax_file: Some("js.syn"),
 };
 
 static LANG_TYPESCRIPT: LanguageInfo = LanguageInfo {
@@ -469,7 +469,7 @@ static LANG_TYPESCRIPT: LanguageInfo = LanguageInfo {
         ("interface", "interface ${1:Name} {\n    ${0}\n}"),
         ("type", "type ${1:Name} = ${0};"),
     ],
-    syntax_file: None,
+    syntax_file: Some("ts.syn"),
 };
 
 static LANG_SHELL: LanguageInfo = LanguageInfo {

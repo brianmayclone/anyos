@@ -669,9 +669,13 @@ impl TaskManager {
                     "clean" => TaskCategory::Clean,
                     _ => TaskCategory::Custom,
                 };
-                let args = format!("run {}", script.name);
+                let args = match script.name.as_str() {
+                    "start" => String::from("start"),
+                    "test" => String::from("test"),
+                    _ => format!("run {}", script.name),
+                };
                 let mut task = Task::new(&script.name, category, &npm, &args, root);
-                task.display_label = format!("{} run {}", command_basename(&npm), script.name);
+                task.display_label = format!("{} {}", command_basename(&npm), args);
                 self.tasks.push(task);
             }
 

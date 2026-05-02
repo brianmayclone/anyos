@@ -43,6 +43,7 @@ fn npm_main() -> u32 {
         }
         cli::NpmCommand::Uninstall { packages } => npm_uninstall(&packages),
         cli::NpmCommand::Update { packages } => npm_update(&packages, registry),
+        cli::NpmCommand::Run { script, args } => return npm_run_script(&script, &args),
         cli::NpmCommand::List => npm_list(),
         cli::NpmCommand::Outdated => npm_outdated(registry),
         cli::NpmCommand::Info { package } => {
@@ -234,10 +235,91 @@ fn usage() {
     anyos_std::println!("  npm init [-y]");
     anyos_std::println!("  npm install [package[@version] ...] [--registry url]");
     anyos_std::println!("  npm install -g <package[@version] ...> [--prefix /System]");
+    anyos_std::println!("  npm run <script> [args...]");
+    anyos_std::println!("  npm start");
     anyos_std::println!("  npm uninstall <package...>");
     anyos_std::println!("  npm update [package...]");
     anyos_std::println!("  npm list");
     anyos_std::println!("  npm outdated");
     anyos_std::println!("  npm info <package>");
     anyos_std::println!("  npm search <query>");
+}
+
+fn npm_run_script(script: &str, extra_args: &[String]) -> u32 {
+    let data = anyos_std::fs::read_to_string("package.json").ok();
+    let manifest = PackageManifest::parse_or_new(data);
+    let Some(command_line) = manifest.script(script) else {
+        anyos_std::println!("npm: missing script: {}", script);
+        return 1;
+    };
+    anyos_std::println!("> {}", script);
+    anyos_std::println!("> {}", command_line);
+
+    let mut tokens = anyos_std::args::tokenize(&command_line);
+    if tokens.is_empty() {
+        anyos_std::println!("npm: script '{}' is empty", script);
+        return 1;
+    }
+    for arg in extra_args {
+        tokens.push(arg.clone());
+    }
+
+    let command = resolve_script_command(&tokens[0]);
+    let argv = script_argv_string(&command, &tokens[1..]);
+    let pipe_id = anyos_std::ipc::pipe_create("npm:run");
+    if pipe_id == 0 {
+        anyos_std::println!("npm: could not create output pipe");
+        return 1;
+    }
+    let tid = anyos_std::process::spawn_piped(&command, &argv, pipe_id);
+    if tid == u32::MAX {
+        anyos_std::ipc::pipe_close(pipe_id);
+        anyos_std::println!("npm: could not run script command: {}", command);
+        return 1;
+    }
+
+    let mut buf = [0u8; 1024];
+    loop {
+        let n = anyos_std::ipc::pipe_read(pipe_id, &mut buf);
+        if n != 0 && n != u32::MAX {
+            if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
+                anyos_std::print!("{}", text);
+            }
+        }
+        let status = anyos_std::process::try_waitpid(tid);
+        if status != anyos_std::process::STILL_RUNNING && status != u32::MAX {
+            anyos_std::ipc::pipe_close(pipe_id);
+            return status;
+        }
+        anyos_std::process::yield_cpu();
+    }
+}
+
+fn resolve_script_command(command: &str) -> String {
+    if command.contains('/') {
+        return String::from(command);
+    }
+    let system = alloc::format!("/System/bin/{}", command);
+    let mut stat = [0u32; 7];
+    if anyos_std::fs::stat(&system, &mut stat) == 0 {
+        system
+    } else {
+        String::from(command)
+    }
+}
+
+fn script_argv_string(command: &str, args: &[String]) -> String {
+    let mut out = basename(command);
+    for arg in args {
+        out.push(' ');
+        out.push_str(arg);
+    }
+    out
+}
+
+fn basename(path: &str) -> String {
+    match path.rsplit('/').next() {
+        Some(name) if !name.is_empty() => String::from(name),
+        _ => String::from(path),
+    }
 }

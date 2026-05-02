@@ -1,6 +1,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use anyos_std::json::Value;
 
 // ════════════════════════════════════════════════════════════════
 //  Diagnostics — compiler output parsing for errors/warnings
@@ -102,6 +103,12 @@ impl DiagnosticSet {
 
     /// Parse compiler output and append any detected diagnostics.
     pub fn parse_output(&mut self, output: &str) {
+        if let Some(mut eslint) = try_parse_eslint_json_output(output) {
+            self.diagnostics.append(&mut eslint);
+            self.deduplicate();
+            return;
+        }
+
         let mut pending_rust: Option<usize> = None;
         let mut pending_python: Option<usize> = None;
 
@@ -215,6 +222,68 @@ impl DiagnosticSet {
             result.push_str(part);
         }
         result
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Parser: ESLint JSON output
+// ════════════════════════════════════════════════════════════════
+
+fn try_parse_eslint_json_output(output: &str) -> Option<Vec<Diagnostic>> {
+    let trimmed = output.trim();
+    let json = if trimmed.starts_with('[') {
+        trimmed
+    } else {
+        let start = trimmed.find('[')?;
+        let end = trimmed.rfind(']')?;
+        if end <= start {
+            return None;
+        }
+        &trimmed[start..=end]
+    };
+
+    let value = Value::parse(json).ok()?;
+    let results = value.as_array()?;
+    let mut diagnostics = Vec::new();
+    for result in results {
+        let file_path = result["filePath"].as_str().unwrap_or("");
+        let Some(messages) = result["messages"].as_array() else {
+            continue;
+        };
+        for message in messages {
+            let line = json_u32(&message["line"]).unwrap_or(1);
+            let column = json_u32(&message["column"]).unwrap_or(1);
+            let end_line = json_u32(&message["endLine"]).unwrap_or(line);
+            let end_column = json_u32(&message["endColumn"]).unwrap_or(column.saturating_add(1));
+            let severity = match json_u32(&message["severity"]).unwrap_or(2) {
+                1 => Severity::Warning,
+                2 => Severity::Error,
+                _ => Severity::Info,
+            };
+            let text = message["message"].as_str().unwrap_or("ESLint diagnostic");
+            let rule = message["ruleId"].as_str();
+            diagnostics.push(Diagnostic {
+                severity,
+                file_path: String::from(file_path),
+                line,
+                column,
+                end_line,
+                end_column,
+                message: String::from(text),
+                code: rule.map(String::from),
+                source: String::from("eslint"),
+            });
+        }
+    }
+    Some(diagnostics)
+}
+
+fn json_u32(value: &Value) -> Option<u32> {
+    let value = value.as_u64()?;
+    if value > u32::MAX as u64 {
+        None
+    } else {
+        Some(value as u32)
     }
 }
 
@@ -486,5 +555,23 @@ mod tests {
         assert_eq!(diag.file_path.as_str(), "script.py");
         assert_eq!(diag.line, 7);
         assert_eq!(diag.message.as_str(), "SyntaxError: invalid syntax");
+    }
+
+    #[test]
+    fn eslint_json_output_is_parsed() {
+        let mut set = DiagnosticSet::new();
+        set.parse_output(
+            r#"[{"filePath":"/app/src/main.js","messages":[{"ruleId":"no-undef","severity":2,"message":"'ui' is not defined.","line":3,"column":5,"endLine":3,"endColumn":7}],"errorCount":1,"warningCount":0}]"#,
+        );
+
+        assert_eq!(set.diagnostics.len(), 1);
+        let diag = &set.diagnostics[0];
+        assert_eq!(diag.severity, Severity::Error);
+        assert_eq!(diag.file_path.as_str(), "/app/src/main.js");
+        assert_eq!(diag.line, 3);
+        assert_eq!(diag.column, 5);
+        assert_eq!(diag.end_column, 7);
+        assert_eq!(diag.code.as_deref(), Some("no-undef"));
+        assert_eq!(diag.message.as_str(), "'ui' is not defined.");
     }
 }

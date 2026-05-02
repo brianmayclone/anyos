@@ -1,0 +1,15 @@
+keywords=abstract,any,as,asserts,async,await,boolean,break,case,catch,class,const,constructor,continue,debugger,declare,default,delete,do,else,enum,export,extends,false,finally,for,from,function,get,if,implements,import,in,infer,instanceof,interface,is,keyof,let,module,namespace,never,new,null,number,object,of,private,protected,public,readonly,require,return,set,static,string,super,switch,symbol,this,throw,true,try,type,typeof,undefined,unique,unknown,var,void,while,with,yield
+types=Array,ArrayBuffer,BigInt,Boolean,DataView,Date,Error,EvalError,Float32Array,Float64Array,Function,Int8Array,Int16Array,Int32Array,Map,Number,Object,Partial,Pick,Promise,RangeError,Readonly,Record,ReferenceError,RegExp,Required,Set,String,Symbol,SyntaxError,TypeError,Uint8Array,Uint16Array,Uint32Array,WeakMap,WeakSet
+builtins=console,require,module,exports,process,Buffer,global,__dirname,__filename,setTimeout,clearTimeout,setInterval,clearInterval,setImmediate,clearImmediate,fetch,JSON,Math,Reflect,Proxy,parseInt,parseFloat,isNaN,isFinite,Promise
+line_comment=//
+block_comment_start=/*
+block_comment_end=*/
+string_delimiters="
+char_delimiter='
+keyword_color=0xFFC586C0
+type_color=0xFF4EC9B0
+builtin_color=0xFFDCDCAA
+string_color=0xFFCE9178
+comment_color=0xFF6A9955
+number_color=0xFFB5CEA8
+operator_color=0xFFD4D4D4

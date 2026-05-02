@@ -1,0 +1,15 @@
+keywords=async,await,break,case,catch,class,const,continue,debugger,default,delete,do,else,export,extends,false,finally,for,from,function,get,if,import,in,instanceof,let,new,null,of,return,set,static,super,switch,this,throw,true,try,typeof,undefined,var,void,while,with,yield
+types=Array,ArrayBuffer,BigInt,Boolean,DataView,Date,Error,EvalError,Float32Array,Float64Array,Function,Int8Array,Int16Array,Int32Array,Map,Number,Object,Promise,RangeError,ReferenceError,RegExp,Set,String,Symbol,SyntaxError,TypeError,Uint8Array,Uint16Array,Uint32Array,WeakMap,WeakSet,Window,Document
+builtins=console,require,module,exports,process,Buffer,global,__dirname,__filename,setTimeout,clearTimeout,setInterval,clearInterval,setImmediate,clearImmediate,fetch,JSON,Math,Reflect,Proxy,parseInt,parseFloat,isNaN,isFinite,encodeURI,decodeURI,encodeURIComponent,decodeURIComponent,Promise,EventEmitter
+line_comment=//
+block_comment_start=/*
+block_comment_end=*/
+string_delimiters="
+char_delimiter='
+keyword_color=0xFFC586C0
+type_color=0xFF4EC9B0
+builtin_color=0xFFDCDCAA
+string_color=0xFFCE9178
+comment_color=0xFF6A9955
+number_color=0xFFB5CEA8
+operator_color=0xFFD4D4D4

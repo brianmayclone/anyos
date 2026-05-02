@@ -3,6 +3,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use anyos_std::fs;
+use anyos_std::json::Value;
 
 use crate::DEFAULT_NPM_REGISTRY;
 
@@ -157,6 +158,11 @@ impl PackageManifest {
             .and_then(|pos| json_object_field(&self.data[pos..], "\"dependencies\""))
             .map(parse_dependency_object)
             .unwrap_or_default()
+    }
+
+    pub fn script(&self, name: &str) -> Option<String> {
+        let value = Value::parse(&self.data).ok()?;
+        value["scripts"][name].as_str().map(String::from)
     }
 
     pub fn as_str(&self) -> &str {

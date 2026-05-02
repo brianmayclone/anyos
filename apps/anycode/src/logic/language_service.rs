@@ -75,6 +75,12 @@ fn analyze_rust_with_anyrc(file_path: &str, text: &str) -> Vec<Diagnostic> {
 }
 
 pub fn check_command(file_path: &str, ctx: &ServiceContext<'_>) -> Option<CheckCommand> {
+    let filename = path::basename(file_path);
+    let lang = language::language_for_filename(filename);
+    if matches!(lang.id, LanguageId::JavaScript | LanguageId::TypeScript) {
+        return eslint_check_command(file_path, ctx);
+    }
+
     if let Some(task) = ctx
         .task_mgr
         .tasks
@@ -89,8 +95,6 @@ pub fn check_command(file_path: &str, ctx: &ServiceContext<'_>) -> Option<CheckC
         });
     }
 
-    let filename = path::basename(file_path);
-    let lang = language::language_for_filename(filename);
     match lang.id {
         LanguageId::Rust => {
             if !ctx.config.rust_check_on_save || ctx.config.ccargo_path.is_empty() {
@@ -130,6 +134,34 @@ pub fn check_command(file_path: &str, ctx: &ServiceContext<'_>) -> Option<CheckC
         LanguageId::C | LanguageId::Cpp | LanguageId::JavaScript | LanguageId::TypeScript => None,
         _ => None,
     }
+}
+
+fn eslint_check_command(file_path: &str, ctx: &ServiceContext<'_>) -> Option<CheckCommand> {
+    let working_dir = project_root_or_parent(file_path, ctx.project);
+    let local_eslint = format!("{}/node_modules/.bin/eslint", working_dir);
+    let configured = if !ctx.config.eslint_path.is_empty() {
+        ctx.config.eslint_path.clone()
+    } else if crate::util::path::exists(&local_eslint) {
+        local_eslint
+    } else {
+        find_first_tool(&["eslint", "npx"])
+    };
+    if configured.is_empty() {
+        return None;
+    }
+
+    let command_name = path::basename(&configured);
+    let args = if command_name == "npx" {
+        format!("eslint --format json {}", file_path)
+    } else {
+        format!("--format json {}", file_path)
+    };
+    Some(CheckCommand {
+        command: configured,
+        args,
+        working_dir,
+        label: String::from("eslint"),
+    })
 }
 
 fn find_first_tool(names: &[&str]) -> String {

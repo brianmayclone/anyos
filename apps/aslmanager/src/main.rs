@@ -21,9 +21,9 @@ pub(crate) struct AppState {
     pub(crate) config: config::ManagerConfig,
     pub(crate) install_btn: anyui::Button,
     pub(crate) terminal_btn: anyui::Button,
-    pub(crate) nav_overview: anyui::IconButton,
-    pub(crate) nav_performance: anyui::IconButton,
-    pub(crate) nav_logs: anyui::IconButton,
+    pub(crate) nav_overview: NavItem,
+    pub(crate) nav_performance: NavItem,
+    pub(crate) nav_logs: NavItem,
     pub(crate) overview_panel: anyui::View,
     pub(crate) performance_panel: anyui::View,
     pub(crate) logs_panel: anyui::View,
@@ -42,6 +42,13 @@ pub(crate) struct AppState {
     pub(crate) last_log_seq: u32,
     pub(crate) last_total_exits: u64,
     pub(crate) worker: Option<process::Thread>,
+}
+
+pub(crate) struct NavItem {
+    row: anyui::View,
+    indicator: anyui::View,
+    button: anyui::PlainButton,
+    icon: &'static str,
 }
 
 anyos_std::global_app_state!(AppState);
@@ -67,11 +74,16 @@ fn main() {
     app().terminal_btn.on_click(|_| installer::open_terminal());
     app()
         .nav_overview
+        .button
         .on_click(|_| show_section(Section::Overview));
     app()
         .nav_performance
+        .button
         .on_click(|_| show_section(Section::Performance));
-    app().nav_logs.on_click(|_| show_section(Section::Logs));
+    app()
+        .nav_logs
+        .button
+        .on_click(|_| show_section(Section::Logs));
 
     show_section(Section::Overview);
     let _timer_id = anyui::set_timer(500, || {
@@ -156,73 +168,97 @@ fn build_ui() -> AppState {
 fn build_sidebar(
     root: &anyui::View,
     tc: &anyui::theme::ThemeColors,
-) -> (anyui::IconButton, anyui::IconButton, anyui::IconButton) {
+) -> (NavItem, NavItem, NavItem) {
     let sidebar = anyui::View::new();
     sidebar.set_position(0, 0);
     sidebar.set_size(SIDEBAR_W, WIN_H - 40);
-    sidebar.set_color(tc.sidebar_bg);
+    sidebar.set_color(anyui::theme::darken(tc.window_bg, 4));
     root.add(&sidebar);
 
-    let side_title = anyui::Label::new("ASL");
-    side_title.set_position(18, 16);
+    let brand = anyui::View::new();
+    brand.set_position(0, 0);
+    brand.set_size(SIDEBAR_W, 72);
+    brand.set_color(anyui::theme::darken(tc.window_bg, 4));
+    sidebar.add(&brand);
+
+    let accent = anyui::View::new();
+    accent.set_position(0, 0);
+    accent.set_size(3, 72);
+    accent.set_color(tc.accent);
+    brand.add(&accent);
+
+    let side_title = anyui::Label::new("ASL Manager");
+    side_title.set_position(18, 15);
     side_title.set_size(SIDEBAR_W - 36, 22);
     side_title.set_font(1);
-    side_title.set_font_size(18);
+    side_title.set_font_size(15);
     side_title.set_text_color(tc.text);
-    side_title.set_color(tc.sidebar_bg);
-    sidebar.add(&side_title);
+    side_title.set_color(anyui::theme::darken(tc.window_bg, 4));
+    brand.add(&side_title);
 
-    let side_sub = anyui::Label::new("Debian subsystem");
-    side_sub.set_position(18, 42);
+    let side_sub = anyui::Label::new("Debian on anyOS");
+    side_sub.set_position(18, 40);
     side_sub.set_size(SIDEBAR_W - 36, 18);
     side_sub.set_font_size(11);
     side_sub.set_text_color(tc.text_secondary);
-    side_sub.set_color(tc.sidebar_bg);
-    sidebar.add(&side_sub);
+    side_sub.set_color(anyui::theme::darken(tc.window_bg, 4));
+    brand.add(&side_sub);
 
     let distro_title = anyui::Label::new("DISTRIBUTION");
-    distro_title.set_position(18, 78);
+    distro_title.set_position(18, 92);
     distro_title.set_size(SIDEBAR_W - 36, 18);
     distro_title.set_font_size(10);
-    side_title.set_text_color(tc.text_secondary);
     distro_title.set_text_color(tc.text_secondary);
-    distro_title.set_color(tc.sidebar_bg);
+    distro_title.set_color(anyui::theme::darken(tc.window_bg, 4));
     sidebar.add(&distro_title);
 
     let debian_row = anyui::View::new();
-    debian_row.set_position(12, 104);
-    debian_row.set_size(SIDEBAR_W - 24, 64);
-    debian_row.set_color(anyui::theme::darken(tc.sidebar_bg, 2));
+    debian_row.set_position(0, 118);
+    debian_row.set_size(SIDEBAR_W, 62);
+    debian_row.set_color(anyui::theme::darken(tc.window_bg, 2));
     sidebar.add(&debian_row);
 
+    let debian_accent = anyui::View::new();
+    debian_accent.set_position(0, 0);
+    debian_accent.set_size(3, 62);
+    debian_accent.set_color(0xFF00A8A8);
+    debian_row.add(&debian_accent);
+
+    let debian_icon = anyui::PlainButton::new("");
+    debian_icon.set_position(16, 15);
+    debian_icon.set_size(28, 28);
+    debian_icon.set_enabled(false);
+    debian_icon.set_system_icon("server", anyui::IconType::Outline, tc.text, 22);
+    debian_row.add(&debian_icon);
+
     let debian_name = anyui::Label::new("Debian");
-    debian_name.set_position(14, 9);
-    debian_name.set_size(SIDEBAR_W - 52, 22);
+    debian_name.set_position(54, 10);
+    debian_name.set_size(SIDEBAR_W - 72, 22);
     debian_name.set_font_size(15);
     debian_name.set_font(1);
     debian_name.set_text_color(tc.text);
-    debian_name.set_color(anyui::theme::darken(tc.sidebar_bg, 2));
+    debian_name.set_color(anyui::theme::darken(tc.window_bg, 2));
     debian_row.add(&debian_name);
 
-    let debian_sub = anyui::Label::new("stable amd64, headless");
-    debian_sub.set_position(14, 34);
-    debian_sub.set_size(SIDEBAR_W - 52, 18);
+    let debian_sub = anyui::Label::new("Trixie amd64, headless VM");
+    debian_sub.set_position(54, 35);
+    debian_sub.set_size(SIDEBAR_W - 72, 18);
     debian_sub.set_font_size(11);
     debian_sub.set_text_color(tc.text_secondary);
-    debian_sub.set_color(anyui::theme::darken(tc.sidebar_bg, 2));
+    debian_sub.set_color(anyui::theme::darken(tc.window_bg, 2));
     debian_row.add(&debian_sub);
 
     let nav_title = anyui::Label::new("SECTIONS");
-    nav_title.set_position(18, 198);
+    nav_title.set_position(18, 214);
     nav_title.set_size(SIDEBAR_W - 36, 18);
     nav_title.set_font_size(10);
     nav_title.set_text_color(tc.text_secondary);
-    nav_title.set_color(tc.sidebar_bg);
+    nav_title.set_color(anyui::theme::darken(tc.window_bg, 4));
     sidebar.add(&nav_title);
 
-    let nav_overview = nav_button(&sidebar, 12, 224, "Overview", "layout-dashboard", tc);
-    let nav_performance = nav_button(&sidebar, 12, 264, "Performance", "activity", tc);
-    let nav_logs = nav_button(&sidebar, 12, 304, "Logs", "terminal", tc);
+    let nav_overview = nav_button(&sidebar, 0, 240, "Overview", "layout-dashboard", tc);
+    let nav_performance = nav_button(&sidebar, 0, 278, "Performance", "activity", tc);
+    let nav_logs = nav_button(&sidebar, 0, 316, "Logs", "terminal", tc);
     (nav_overview, nav_performance, nav_logs)
 }
 
@@ -288,7 +324,7 @@ fn build_overview_panel(
     root.add(&heading);
 
     let summary = anyui::Label::new(
-        "One click downloads verified Debian netboot artifacts, registers ASL, and starts it.",
+        "One click downloads a headless Debian VM disk, registers ASL, and starts it.",
     );
     summary.set_position(content_x + 24, 58);
     summary.set_size(content_w - 48, 34);
@@ -297,19 +333,13 @@ fn build_overview_panel(
     summary.set_color(tc.window_bg);
     root.add(&summary);
 
-    add_fact(
-        root,
-        content_x + 24,
-        100,
-        "Mode",
-        "Headless netboot, no X11",
-    );
+    add_fact(root, content_x + 24, 100, "Mode", "Headless VM disk");
     add_fact(
         root,
         content_x + 196,
         100,
         "Source",
-        "deb.debian.org over HTTPS",
+        "cloud.debian.org over HTTPS",
     );
     add_fact(
         root,
@@ -530,17 +560,34 @@ fn nav_button(
     x: i32,
     y: i32,
     text: &str,
-    icon: &str,
+    icon: &'static str,
     tc: &anyui::theme::ThemeColors,
-) -> anyui::IconButton {
-    let btn = anyui::IconButton::new(text);
-    btn.set_position(x, y);
-    btn.set_size(SIDEBAR_W - 24, 32);
-    btn.set_color(tc.control_bg);
-    btn.set_text_color(tc.text);
+) -> NavItem {
+    let row = anyui::View::new();
+    row.set_position(x, y);
+    row.set_size(SIDEBAR_W, 34);
+    row.set_color(anyui::theme::darken(tc.window_bg, 4));
+    parent.add(&row);
+
+    let indicator = anyui::View::new();
+    indicator.set_position(0, 0);
+    indicator.set_size(3, 34);
+    indicator.set_color(0x00000000);
+    row.add(&indicator);
+
+    let btn = anyui::PlainButton::new(text);
+    btn.set_position(14, 0);
+    btn.set_size(SIDEBAR_W - 22, 34);
+    btn.set_text_color(tc.text_secondary);
     btn.set_system_icon(icon, anyui::IconType::Outline, tc.text_secondary, 18);
-    parent.add(&btn);
-    btn
+    row.add(&btn);
+
+    NavItem {
+        row,
+        indicator,
+        button: btn,
+        icon,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -567,7 +614,17 @@ fn show_section(section: Section) {
     }
 }
 
-fn style_nav(btn: &anyui::IconButton, active: bool, tc: &anyui::theme::ThemeColors) {
-    btn.set_color(if active { tc.selection } else { tc.control_bg });
-    btn.set_text_color(if active { 0xFFFFFFFF } else { tc.text });
+fn style_nav(item: &NavItem, active: bool, tc: &anyui::theme::ThemeColors) {
+    let row_color = if active {
+        anyui::theme::darken(tc.window_bg, 1)
+    } else {
+        anyui::theme::darken(tc.window_bg, 4)
+    };
+    let text_color = if active { tc.text } else { tc.text_secondary };
+    item.row.set_color(row_color);
+    item.indicator
+        .set_color(if active { tc.accent } else { 0x00000000 });
+    item.button.set_text_color(text_color);
+    item.button
+        .set_system_icon(item.icon, anyui::IconType::Outline, text_color, 18);
 }
