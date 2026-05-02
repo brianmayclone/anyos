@@ -659,7 +659,51 @@ impl TaskManager {
             self.tasks.push(install);
         }
 
-        if !node.is_empty() && crate::util::path::exists(&format!("{}/src/main.js", root)) {
+        if !npm.is_empty() {
+            for script in &project.npm_scripts {
+                let category = match script.name.as_str() {
+                    "build" => TaskCategory::Build,
+                    "start" | "dev" | "serve" => TaskCategory::Run,
+                    "test" => TaskCategory::Test,
+                    "lint" | "check" => TaskCategory::Check,
+                    "clean" => TaskCategory::Clean,
+                    _ => TaskCategory::Custom,
+                };
+                let args = format!("run {}", script.name);
+                let mut task = Task::new(&script.name, category, &npm, &args, root);
+                task.display_label = format!("{} run {}", command_basename(&npm), script.name);
+                self.tasks.push(task);
+            }
+
+            let mut outdated = Task::new(
+                "Check Package Updates",
+                TaskCategory::Check,
+                &npm,
+                "outdated",
+                root,
+            );
+            outdated.display_label = format!("{} outdated", command_basename(&npm));
+            self.tasks.push(outdated);
+
+            let mut update = Task::new(
+                "Update Packages",
+                TaskCategory::Custom,
+                &npm,
+                "update",
+                root,
+            );
+            update.display_label = format!("{} update", command_basename(&npm));
+            self.tasks.push(update);
+        }
+
+        let has_script_run = self
+            .tasks
+            .iter()
+            .any(|task| task.category == TaskCategory::Run && task.command == npm);
+        if !has_script_run
+            && !node.is_empty()
+            && crate::util::path::exists(&format!("{}/src/main.js", root))
+        {
             let mut run = Task::new(
                 "Run src/main.js",
                 TaskCategory::Run,
@@ -669,29 +713,13 @@ impl TaskManager {
             );
             run.display_label = format!("{} src/main.js", command_basename(&node));
             self.tasks.push(run);
-        } else if !node.is_empty() && crate::util::path::exists(&format!("{}/main.js", root)) {
+        } else if !has_script_run
+            && !node.is_empty()
+            && crate::util::path::exists(&format!("{}/main.js", root))
+        {
             let mut run = Task::new("Run main.js", TaskCategory::Run, &node, "main.js", root);
             run.display_label = format!("{} main.js", command_basename(&node));
             self.tasks.push(run);
-        }
-
-        if npm.is_empty() {
-            return;
-        }
-
-        for script in &project.npm_scripts {
-            let category = match script.name.as_str() {
-                "build" => TaskCategory::Build,
-                "start" | "dev" | "serve" => TaskCategory::Run,
-                "test" => TaskCategory::Test,
-                "lint" | "check" => TaskCategory::Check,
-                "clean" => TaskCategory::Clean,
-                _ => TaskCategory::Custom,
-            };
-            let args = format!("run {}", script.name);
-            let mut task = Task::new(&script.name, category, &npm, &args, root);
-            task.display_label = format!("{} run {}", command_basename(&npm), script.name);
-            self.tasks.push(task);
         }
 
         if let Some(idx) = self
@@ -704,9 +732,28 @@ impl TaskManager {
         if let Some(idx) = self
             .tasks
             .iter()
-            .position(|t| t.category == TaskCategory::Run)
+            .position(|t| t.category == TaskCategory::Run && t.name == "start")
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .position(|t| t.category == TaskCategory::Run && t.name == "dev")
+            })
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .position(|t| t.category == TaskCategory::Run)
+            })
         {
             self.selected_run_task = idx;
+        }
+        if self.selected_build_task == usize::MAX {
+            if let Some(idx) = self
+                .tasks
+                .iter()
+                .position(|t| t.category == TaskCategory::Check && t.name == "lint")
+            {
+                self.selected_build_task = idx;
+            }
         }
     }
 

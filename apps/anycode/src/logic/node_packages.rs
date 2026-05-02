@@ -45,6 +45,53 @@ pub struct NodePackage {
     pub kind: NodeDependencyKind,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SuggestedNodePackage {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub kind: NodeDependencyKind,
+    pub description: &'static str,
+}
+
+pub const SUGGESTED_PACKAGES: &[SuggestedNodePackage] = &[
+    SuggestedNodePackage {
+        name: "express",
+        version: "^4.18.3",
+        kind: NodeDependencyKind::Runtime,
+        description: "HTTP app/server framework",
+    },
+    SuggestedNodePackage {
+        name: "openai",
+        version: "latest",
+        kind: NodeDependencyKind::Runtime,
+        description: "OpenAI API client",
+    },
+    SuggestedNodePackage {
+        name: "@anthropic-ai/sdk",
+        version: "latest",
+        kind: NodeDependencyKind::Runtime,
+        description: "Claude API client",
+    },
+    SuggestedNodePackage {
+        name: "eslint",
+        version: "^8.57.1",
+        kind: NodeDependencyKind::Dev,
+        description: "JavaScript linting",
+    },
+    SuggestedNodePackage {
+        name: "nodemon",
+        version: "latest",
+        kind: NodeDependencyKind::Dev,
+        description: "Restart app while developing",
+    },
+    SuggestedNodePackage {
+        name: "typescript",
+        version: "latest",
+        kind: NodeDependencyKind::Dev,
+        description: "Type checking and tooling",
+    },
+];
+
 pub fn packages_for_project(project: &Project) -> Vec<NodePackage> {
     let pkg_path = package_json_path(project);
     let Ok(content) = anyos_std::fs::read_to_string(&pkg_path) else {
@@ -121,15 +168,6 @@ pub fn remove_package(project: &Project, name: &str) -> Result<(), &'static str>
     }
     anyos_std::fs::write_bytes(&pkg_path, root.to_json_string_pretty().as_bytes())
         .map_err(|_| "Could not update package.json")
-}
-
-pub fn install_command(project: &Project) -> Option<(String, String)> {
-    let npm = crate::logic::config::find_tool("npm");
-    if npm.is_empty() {
-        None
-    } else {
-        Some((npm, format!("install --prefix {}", project.root)))
-    }
 }
 
 pub fn update_check_message(count: usize) -> String {

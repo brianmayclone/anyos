@@ -5,7 +5,7 @@ use crate::app;
 use crate::logic::node_packages::{self, NodeDependencyKind};
 
 const DLG_W: u32 = 680;
-const DLG_H: u32 = 460;
+const DLG_H: u32 = 520;
 
 pub fn show() {
     let t = anyos_std::i18n::t;
@@ -94,7 +94,7 @@ fn build_installed_page(page: &ui::View, packages: &[node_packages::NodePackage]
     let tc = ui::theme::colors();
     let tree = ui::TreeView::new(620, 280);
     tree.set_position(20, 18);
-    tree.set_size(620, 280);
+    tree.set_size(620, 250);
     page.add(&tree);
 
     let root = tree.add_root("package.json");
@@ -117,9 +117,23 @@ fn build_installed_page(page: &ui::View, packages: &[node_packages::NodePackage]
     }
     tree.set_expanded(root, true);
 
-    let hint =
-        ui::Label::new("Use Browse to add or update packages. Install/Restore runs npm install.");
-    hint.set_position(22, 314);
+    let remove_name = text_row(page, "Remove", "", 286);
+
+    let btn_remove = ui::Button::new("Remove");
+    btn_remove.set_position(430, 286);
+    btn_remove.set_size(120, 30);
+    btn_remove.set_color(tc.destructive);
+    page.add(&btn_remove);
+
+    let remove_id = remove_name.id();
+    btn_remove.on_click(move |_| {
+        crate::logic::commands::remove_node_package(read_string(remove_id));
+    });
+
+    let hint = ui::Label::new(
+        "Browse adds packages, Updates runs npm outdated/update, Install/Restore runs npm install.",
+    );
+    hint.set_position(22, 336);
     hint.set_size(600, 18);
     hint.set_font_size(10);
     hint.set_text_color(tc.text_secondary);
@@ -155,12 +169,24 @@ fn build_browse_page(page: &ui::View) {
     });
 
     let note =
-        ui::Label::new("Registry search is planned; this page already edits package.json safely.");
+        ui::Label::new("Quick packages write package.json safely; run Install/Restore afterwards.");
     note.set_position(130, 158);
     note.set_size(470, 18);
     note.set_font_size(10);
     note.set_text_color(tc.text_secondary);
     page.add(&note);
+
+    let quick_title = ui::Label::new("Common packages");
+    quick_title.set_position(24, 196);
+    quick_title.set_size(220, 18);
+    quick_title.set_text_color(tc.text);
+    page.add(&quick_title);
+
+    for (idx, package) in node_packages::SUGGESTED_PACKAGES.iter().enumerate() {
+        let x = if idx % 2 == 0 { 24 } else { 334 };
+        let y = 226 + ((idx / 2) as i32) * 48;
+        quick_package_row(page, package, x, y);
+    }
 }
 
 fn build_updates_page(page: &ui::View, packages: &[node_packages::NodePackage]) {
@@ -178,6 +204,24 @@ fn build_updates_page(page: &ui::View, packages: &[node_packages::NodePackage]) 
     hint.set_font_size(10);
     hint.set_text_color(tc.text_secondary);
     page.add(&hint);
+
+    let btn_check = ui::Button::new("Check Updates");
+    btn_check.set_position(22, 92);
+    btn_check.set_size(130, 30);
+    btn_check.set_color(tc.control_bg);
+    page.add(&btn_check);
+    btn_check.on_click(move |_| {
+        crate::logic::commands::check_node_package_updates();
+    });
+
+    let btn_update = ui::Button::new("Update Packages");
+    btn_update.set_position(166, 92);
+    btn_update.set_size(140, 30);
+    btn_update.set_color(tc.accent);
+    page.add(&btn_update);
+    btn_update.on_click(move |_| {
+        crate::logic::commands::update_node_packages();
+    });
 }
 
 fn text_row(page: &ui::View, label: &str, value: &str, y: i32) -> ui::TextField {
@@ -196,6 +240,42 @@ fn text_row(page: &ui::View, label: &str, value: &str, y: i32) -> ui::TextField 
     field.set_text(value);
     page.add(&field);
     field
+}
+
+fn quick_package_row(
+    page: &ui::View,
+    package: &node_packages::SuggestedNodePackage,
+    x: i32,
+    y: i32,
+) {
+    let tc = ui::theme::colors();
+    let btn = ui::Button::new(package.name);
+    btn.set_position(x, y);
+    btn.set_size(138, 30);
+    btn.set_color(match package.kind {
+        NodeDependencyKind::Runtime => tc.accent,
+        NodeDependencyKind::Dev => tc.control_bg,
+        NodeDependencyKind::Optional => tc.control_bg,
+    });
+    page.add(&btn);
+
+    let description = ui::Label::new(package.description);
+    description.set_position(x + 148, y + 6);
+    description.set_size(150, 18);
+    description.set_font_size(10);
+    description.set_text_color(tc.text_secondary);
+    page.add(&description);
+
+    let name = package.name;
+    let version = package.version;
+    let kind = match package.kind {
+        NodeDependencyKind::Runtime => 0,
+        NodeDependencyKind::Dev => 1,
+        NodeDependencyKind::Optional => 2,
+    };
+    btn.on_click(move |_| {
+        crate::logic::commands::add_node_package(name.into(), version.into(), kind);
+    });
 }
 
 fn read_string(id: u32) -> alloc::string::String {

@@ -4,6 +4,7 @@
 #![no_main]
 
 mod asld;
+mod config;
 mod constants;
 mod installer;
 
@@ -17,6 +18,7 @@ use crate::constants::*;
 anyos_std::entry!(main);
 
 pub(crate) struct AppState {
+    pub(crate) config: config::ManagerConfig,
     pub(crate) install_btn: anyui::Button,
     pub(crate) terminal_btn: anyui::Button,
     pub(crate) nav_overview: anyui::IconButton,
@@ -81,6 +83,7 @@ fn main() {
 
 fn build_ui() -> AppState {
     let tc = anyui::theme::colors();
+    let manager_config = config::load();
     let win = anyui::Window::new("ASL Manager", -1, -1, WIN_W, WIN_H);
 
     let toolbar = anyui::Toolbar::new();
@@ -112,7 +115,7 @@ fn build_ui() -> AppState {
     let (nav_overview, nav_performance, nav_logs) = build_sidebar(&root, tc);
     let panels = build_content_panels(&root);
     let (install_btn, terminal_btn, status_label, phase_label, progress_bar) =
-        build_overview_panel(&panels.overview, tc);
+        build_overview_panel(&panels.overview, tc, &manager_config);
     let runtime = build_performance_panel(&panels.performance, tc);
     let log_area = build_logs_panel(&panels.logs, tc);
 
@@ -123,6 +126,7 @@ fn build_ui() -> AppState {
     );
 
     AppState {
+        config: manager_config,
         install_btn,
         terminal_btn,
         nav_overview,
@@ -263,6 +267,7 @@ fn build_content_panels(root: &anyui::View) -> ContentPanels {
 fn build_overview_panel(
     root: &anyui::View,
     tc: &anyui::theme::ThemeColors,
+    manager_config: &config::ManagerConfig,
 ) -> (
     anyui::Button,
     anyui::Button,
@@ -306,7 +311,13 @@ fn build_overview_panel(
         "Source",
         "deb.debian.org over HTTPS",
     );
-    add_fact(root, content_x + 404, 100, "Target", "/System/var/asl");
+    add_fact(
+        root,
+        content_x + 404,
+        100,
+        "Target",
+        &manager_config.asl_root,
+    );
 
     let install_btn = anyui::Button::new("Install & Start");
     install_btn.set_position(content_x + 24, 156);
@@ -349,6 +360,14 @@ fn build_overview_panel(
     hint.set_text_color(tc.text_secondary);
     hint.set_color(tc.window_bg);
     root.add(&hint);
+
+    let config_hint = anyui::Label::new("Central config: /System/etc/asl/manager.conf");
+    config_hint.set_position(content_x + 24, 344);
+    config_hint.set_size(content_w - 48, 20);
+    config_hint.set_font_size(11);
+    config_hint.set_text_color(tc.text_secondary);
+    config_hint.set_color(tc.window_bg);
+    root.add(&config_hint);
 
     (
         install_btn,

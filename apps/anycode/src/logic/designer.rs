@@ -1458,6 +1458,9 @@ pub fn create_form_files_for_target(
     let module_name = to_module_name(form_name);
     let form_dir = format!("{}/{}", ui_dir, module_name);
     let _ = anyos_std::fs::mkdir(&form_dir);
+    if target == UiCodeTarget::Node {
+        crate::logic::node_project::ensure_support_files(project_root)?;
+    }
     let doc = DesignerDocument::default_form(form_name);
     let designer_path = designer_file_path(project_root, form_name);
     write_new(&designer_path, &doc.to_designer_metadata())?;

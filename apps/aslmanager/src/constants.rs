@@ -6,14 +6,10 @@ pub const DISTRO_NAME: &str = "debian";
 pub const IMAGE_REF: &str = "debian-stable-amd64-netboot";
 pub const OWNER: &str = "root";
 
-pub const ASL_ROOT: &str = "/System/var/asl";
-pub const DISTROS_ROOT: &str = "/System/var/asl/distros";
-pub const DISTRO_ROOT: &str = "/System/var/asl/distros/debian";
-pub const BOOT_DIR: &str = "/System/var/asl/distros/debian/boot";
-pub const KERNEL_PATH: &str = "/System/var/asl/distros/debian/boot/vmlinuz";
-pub const INITRD_PATH: &str = "/System/var/asl/distros/debian/boot/initrd.img";
-pub const KERNEL_TMP: &str = "/System/var/asl/distros/debian/boot/vmlinuz.part";
-pub const INITRD_TMP: &str = "/System/var/asl/distros/debian/boot/initrd.img.part";
+pub const CONFIG_PATH: &str = "/System/etc/asl/manager.conf";
+pub const DEFAULT_ASL_ROOT: &str = "/System/var/asl";
+pub const DEFAULT_DISTROS_DIR: &str = "distros";
+pub const DEFAULT_BOOT_DIR: &str = "boot";
 
 pub const DEBIAN_KERNEL_URL: &str =
     "https://deb.debian.org/debian/dists/stable/main/installer-amd64/current/images/netboot/debian-installer/amd64/linux";

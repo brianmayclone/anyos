@@ -7,8 +7,8 @@ use crate::app;
 use crate::app_state::DesignerHistoryEntry;
 use crate::logic::{
     ai, build, crates, debug_session, designer, diagnostics, file_manager, git, intellisense,
-    language, language_service, live_analysis, node_packages, project, search, storyboard, symbols,
-    tasks,
+    language, language_service, live_analysis, node_packages, node_project, project, search,
+    storyboard, symbols, tasks,
 };
 use crate::ui::problems_panel::ProblemFilter;
 use crate::util::path;
@@ -137,10 +137,7 @@ pub fn create_node_ui_project_named(project_name: String, project_root: String) 
     }
 
     let package_name = to_crate_name(project_name);
-    let package_json = format!(
-        "{{\n  \"name\": \"{}\",\n  \"version\": \"0.1.0\",\n  \"type\": \"commonjs\",\n  \"scripts\": {{\n    \"start\": \"node src/main.js\",\n    \"lint\": \"eslint src\",\n    \"test\": \"node src/main.js --self-test\"\n  }},\n  \"dependencies\": {{}},\n  \"devDependencies\": {{}}\n}}\n",
-        package_name
-    );
+    let package_json = node_project::package_json(&package_name);
     if anyos_std::fs::write_bytes(
         &format!("{}/package.json", project_root),
         package_json.as_bytes(),
@@ -148,6 +145,10 @@ pub fn create_node_ui_project_named(project_name: String, project_root: String) 
     .is_err()
     {
         s.status.set_analysis_status("Could not write package.json");
+        return false;
+    }
+    if let Err(err) = node_project::ensure_support_files(project_root) {
+        s.status.set_analysis_status(err);
         return false;
     }
     if let Err(err) = designer::create_form_files_for_target(
@@ -2096,7 +2097,36 @@ pub fn add_node_package(name: String, version: String, kind_index: u32) {
     }
 }
 
+pub fn remove_node_package(name: String) {
+    let s = app();
+    let Some(ref project) = s.current_project else {
+        s.status.set_analysis_status("Open a Node project first");
+        return;
+    };
+    match node_packages::remove_package(project, &name) {
+        Ok(()) => {
+            refresh_project_metadata();
+            app()
+                .status
+                .set_analysis_status(&format!("Removed npm package {}", name.trim()));
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
 pub fn restore_node_packages() {
+    spawn_node_package_task("install", tasks::TaskCategory::Custom, "npm install");
+}
+
+pub fn check_node_package_updates() {
+    spawn_node_package_task("outdated", tasks::TaskCategory::Check, "npm outdated");
+}
+
+pub fn update_node_packages() {
+    spawn_node_package_task("update", tasks::TaskCategory::Custom, "npm update");
+}
+
+fn spawn_node_package_task(args: &str, category: tasks::TaskCategory, label: &str) {
     let s = app();
     let Some(ref project) = s.current_project else {
         s.status.set_analysis_status("Open a Node project first");
@@ -2108,13 +2138,11 @@ pub fn restore_node_packages() {
         s.config.npm_path.clone()
     };
     if !cmd.is_empty() {
-        let args = String::from("install");
         anyos_std::fs::chdir(&project.root);
         s.output.show_output();
-        s.output
-            .append_line(&format!("$ {} {}", path::basename(&cmd), args));
-        s.build_process = build::BuildProcess::spawn(&cmd, &args);
-        s.active_task_category = Some(tasks::TaskCategory::Custom);
+        s.output.append_line(&format!("$ {}", label));
+        s.build_process = build::BuildProcess::spawn(&cmd, args);
+        s.active_task_category = Some(category);
         if s.build_process.is_some() {
             crate::start_build_timer();
         }

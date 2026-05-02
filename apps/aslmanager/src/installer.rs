@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use libanyui_client as anyui;
 
 use crate::asld;
+use crate::config::{is_allowed_debian_url, ManagerConfig};
 use crate::constants::*;
 
 static WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -192,19 +193,30 @@ extern "C" fn download_progress_cb(received: u32, total: u32, userdata: u64) {
 }
 
 fn install_worker() {
-    set_status("Preparing ASL storage...");
-    set_phase("Creating ASL distro directories");
-    set_progress(4);
+    let cfg = crate::app().config.clone();
 
-    if !ensure_dirs() {
+    set_status("Preparing ASL storage...");
+    set_phase("Checking ASL services");
+    set_progress(3);
+
+    if !run_asl_self_check() {
+        finish_error("ASL service self-check failed");
+        return;
+    }
+
+    set_phase("Creating ASL distro directories");
+    set_progress(6);
+
+    if !ensure_dirs(&cfg) {
         finish_error("could not create ASL directory tree");
         return;
     }
 
     if !ensure_artifact(
-        KERNEL_PATH,
-        KERNEL_TMP,
-        DEBIAN_KERNEL_URL,
+        &cfg.kernel_path,
+        &cfg.kernel_tmp,
+        &cfg.debian_kernel_url,
+        &cfg,
         ArtifactKind::Kernel,
         "Linux kernel",
         10,
@@ -214,9 +226,10 @@ fn install_worker() {
         return;
     }
     if !ensure_artifact(
-        INITRD_PATH,
-        INITRD_TMP,
-        DEBIAN_INITRD_URL,
+        &cfg.initrd_path,
+        &cfg.initrd_tmp,
+        &cfg.debian_initrd_url,
+        &cfg,
         ArtifactKind::Initrd,
         "Debian initrd",
         40,
@@ -249,7 +262,13 @@ fn install_worker() {
     set_progress(88);
     set_phase("Starting Debian VM");
     match asld::request(&format!("START {}", DISTRO_NAME)) {
-        Ok(resp) if resp.ok => log_line("Debian start request accepted by asld."),
+        Ok(resp) if resp.ok => {
+            let health = asld::field_value(&resp.lines, "health").unwrap_or("-");
+            log_line(&format!(
+                "Debian start request accepted by asld: {}",
+                health
+            ));
+        }
         Ok(resp) if resp.message.contains("already running") => {
             log_line("Debian is already running.")
         }
@@ -259,6 +278,19 @@ fn install_worker() {
         }
         Err(err) => {
             finish_error(err);
+            return;
+        }
+    }
+
+    set_progress(94);
+    set_phase("Checking VM runtime health");
+    match wait_for_vm_health() {
+        VmHealthCheck::Ready(summary) => log_line(&format!("VM health check passed: {}", summary)),
+        VmHealthCheck::Degraded(summary) => {
+            log_line(&format!("VM started with degraded health: {}", summary))
+        }
+        VmHealthCheck::Failed(message) => {
+            finish_error(&format!("VM health check failed: {}", message));
             return;
         }
     }
@@ -281,12 +313,13 @@ fn ensure_artifact(
     path: &str,
     tmp: &str,
     url: &str,
+    cfg: &ManagerConfig,
     kind: ArtifactKind,
     label: &str,
     base: u32,
     span: u32,
 ) -> bool {
-    if !is_safe_artifact_path(path) || !is_safe_artifact_path(tmp) || path == tmp {
+    if !is_safe_artifact_path(path, cfg) || !is_safe_artifact_path(tmp, cfg) || path == tmp {
         log_line(&format!("Refusing unsafe artifact path for {}.", label));
         return false;
     }
@@ -295,7 +328,7 @@ fn ensure_artifact(
         return false;
     }
 
-    if verified_artifact(path, kind) {
+    if verified_artifact(path, cfg, kind) {
         log_line(&format!("{} already present and verified.", label));
         return true;
     }
@@ -315,7 +348,7 @@ fn ensure_artifact(
         let _ = fs::unlink(tmp);
         return false;
     }
-    if !verified_artifact(tmp, kind) {
+    if !verified_artifact(tmp, cfg, kind) {
         log_line(&format!("Downloaded {} failed validation.", label));
         let _ = fs::unlink(tmp);
         return false;
@@ -330,8 +363,31 @@ fn ensure_artifact(
     true
 }
 
-fn ensure_dirs() -> bool {
-    for dir in ["/System/var", ASL_ROOT, DISTROS_ROOT, DISTRO_ROOT, BOOT_DIR] {
+fn run_asl_self_check() -> bool {
+    match asld::request("SELF_CHECK") {
+        Ok(resp) if resp.ok => {
+            log_line("ASL service self-check passed.");
+            true
+        }
+        Ok(resp) => {
+            log_line(&format!("ASL service self-check failed: {}", resp.message));
+            false
+        }
+        Err(err) => {
+            log_line(&format!("ASL service self-check failed: {}", err));
+            false
+        }
+    }
+}
+
+fn ensure_dirs(cfg: &ManagerConfig) -> bool {
+    for dir in [
+        "/System/var",
+        cfg.asl_root.as_str(),
+        cfg.distros_root.as_str(),
+        cfg.distro_root.as_str(),
+        cfg.boot_dir.as_str(),
+    ] {
         if fs::mkdir(dir) == u32::MAX && !dir_exists(dir) {
             return false;
         }
@@ -340,12 +396,13 @@ fn ensure_dirs() -> bool {
 }
 
 fn artifacts_ready() -> bool {
-    verified_artifact(KERNEL_PATH, ArtifactKind::Kernel)
-        && verified_artifact(INITRD_PATH, ArtifactKind::Initrd)
+    let cfg = &crate::app().config;
+    verified_artifact(&cfg.kernel_path, cfg, ArtifactKind::Kernel)
+        && verified_artifact(&cfg.initrd_path, cfg, ArtifactKind::Initrd)
 }
 
-fn verified_artifact(path: &str, kind: ArtifactKind) -> bool {
-    if !is_safe_artifact_path(path) {
+fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> bool {
+    if !is_safe_artifact_path(path, cfg) {
         return false;
     }
     let min_size = match kind {
@@ -383,17 +440,13 @@ fn read_prefix(path: &str, buf: &mut [u8]) -> usize {
     }
 }
 
-fn is_safe_artifact_path(path: &str) -> bool {
-    path.len() > BOOT_DIR.len()
-        && path.starts_with(BOOT_DIR)
-        && path.as_bytes()[BOOT_DIR.len()] == b'/'
+fn is_safe_artifact_path(path: &str, cfg: &ManagerConfig) -> bool {
+    path.len() > cfg.boot_dir.len()
+        && path.starts_with(&cfg.boot_dir)
+        && path.as_bytes()[cfg.boot_dir.len()] == b'/'
         && !path.contains('\0')
         && !path.contains("/../")
         && !path.ends_with("/..")
-}
-
-fn is_allowed_debian_url(url: &str) -> bool {
-    url.starts_with(DEBIAN_URL_PREFIX) && !url.contains('\0') && !url.contains("/../")
 }
 
 fn file_exists(path: &str) -> bool {
@@ -467,4 +520,37 @@ fn parse_u64(text: &str) -> u64 {
         n = n.saturating_mul(10).saturating_add((b - b'0') as u64);
     }
     n
+}
+
+enum VmHealthCheck {
+    Ready(String),
+    Degraded(String),
+    Failed(String),
+}
+
+fn wait_for_vm_health() -> VmHealthCheck {
+    for _ in 0..12 {
+        match asld::request(&format!("STATUS {}", DISTRO_NAME)) {
+            Ok(resp) if resp.ok => {
+                let state = asld::field_value(&resp.lines, "state").unwrap_or("-");
+                let health = asld::field_value(&resp.lines, "health").unwrap_or("-");
+                let summary = asld::field_value(&resp.lines, "boot_summary")
+                    .or_else(|| asld::field_value(&resp.lines, "last_error"))
+                    .unwrap_or("no boot summary");
+                if health == "ready" || state == "ready" {
+                    return VmHealthCheck::Ready(String::from(summary));
+                }
+                if health == "degraded" || state == "degraded" {
+                    return VmHealthCheck::Degraded(String::from(summary));
+                }
+                if health == "failed" || state == "failed" {
+                    return VmHealthCheck::Failed(String::from(summary));
+                }
+            }
+            Ok(resp) => return VmHealthCheck::Failed(resp.message),
+            Err(err) => return VmHealthCheck::Failed(String::from(err)),
+        }
+        process::sleep(250);
+    }
+    VmHealthCheck::Failed(String::from("asld did not report a running Debian VM"))
 }
