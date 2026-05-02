@@ -1837,6 +1837,24 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
 
     // 2. Check source registry — compile, execute, cache.
     if let Some(source) = vm.module_sources.get(specifier).cloned() {
+        // Hosts register several aliases for the same browser module URL
+        // (absolute URL, path, basename, relative specifier). ES modules are
+        // evaluated once per resolved module record, not once per textual
+        // alias. Reuse any namespace that was already created for identical
+        // source text so custom elements and other top-level side effects do
+        // not run twice.
+        for (alias, alias_source) in vm.module_sources.iter() {
+            if alias_source == &source {
+                if let Some(ns) = vm.module_registry.get(alias) {
+                    #[cfg(feature = "host")]
+                    if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
+                        std::eprintln!("[libjs-module] alias cache hit {} -> {}", specifier, alias);
+                    }
+                    return Ok(ns.clone());
+                }
+            }
+        }
+
         #[cfg(feature = "host")]
         if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
             std::eprintln!(
@@ -1886,6 +1904,13 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
                 super_class: None,
             },
         )));
+        // A module's completion must only reflect exceptions raised while
+        // evaluating that module. Browser bootstraps frequently catch and log
+        // feature-probe errors; leaving those diagnostics in last_exception or
+        // pending_exception poisons the next module import and makes unrelated
+        // chunks fail during dependency evaluation.
+        vm.pending_exception = None;
+        vm.last_exception = None;
         vm.call_value(&module_fn, &[], JsValue::Undefined);
 
         if let Some(exc) = vm
@@ -1910,8 +1935,25 @@ fn resolve_module_namespace(vm: &mut Vm, specifier: &str) -> Result<JsValue, JsV
         vm.set_global("__exports__", prev_exports);
 
         // Cache the module namespace.
-        vm.module_registry
-            .insert(String::from(specifier), final_exports.clone());
+        let alias_keys = vm
+            .module_sources
+            .iter()
+            .filter_map(|(alias, alias_source)| {
+                if alias_source == &source {
+                    Some(alias.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<alloc::vec::Vec<_>>();
+        if alias_keys.is_empty() {
+            vm.module_registry
+                .insert(String::from(specifier), final_exports.clone());
+        } else {
+            for alias in alias_keys {
+                vm.module_registry.insert(alias, final_exports.clone());
+            }
+        }
         #[cfg(feature = "host")]
         if std::env::var_os("LIBJS_DEBUG_MODULES").is_some() {
             std::eprintln!("[libjs-module] ready {}", specifier);

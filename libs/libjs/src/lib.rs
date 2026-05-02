@@ -452,6 +452,220 @@ mod tests {
     }
 
     #[test]
+    fn class_method_body_is_not_executed_during_module_instantiation() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source(
+            "./entry.js",
+            "class Player { \
+                 getMediaKeysPromise() { const e = undefined; e.mediaKeys; } \
+             } \
+             const ok = 1; \
+             export { ok };",
+        );
+        let result = engine.eval("var ns = __import__('./entry.js'); ns.ok");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_number(), 1.0);
+    }
+
+    #[test]
+    fn named_class_expression_name_is_visible_inside_methods() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var C = class Inner { \
+                 static getName() { return Inner.name; } \
+                 getSelf() { return Inner; } \
+             }; \
+             C.getName() + ':' + (new C()).getSelf().name + ':' + (typeof Inner)",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "Inner:Inner:undefined");
+    }
+
+    #[test]
+    fn focus_like_named_class_expression_static_singleton() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var m6 = class ve { \
+                 static _instance = null; \
+                 static getInstance() { \
+                     return ve._instance || (ve._instance = new ve); \
+                 } \
+             }; \
+             m6.getInstance() instanceof m6",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "true");
+    }
+
+    #[test]
+    fn focus_like_named_class_expression_static_singleton_in_module() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source(
+            "./entry.js",
+            "var h6 = class {}; \
+             var m6 = class ve { \
+                 static _instance = null; \
+                 _initialized = false; \
+                 constructor() {} \
+                 static getInstance() { \
+                     return typeof window > 'u' || typeof document > 'u' || typeof IntersectionObserver > 'u' \
+                         ? new h6 \
+                         : (ve._instance || (ve._instance = new ve), ve._instance); \
+                 } \
+             }; \
+             globalThis.window = {}; \
+             globalThis.document = {}; \
+             globalThis.IntersectionObserver = function() {}; \
+             var g6 = m6.getInstance(); \
+             export { g6, m6 };",
+        );
+        let result = engine.eval("var ns = __import__('./entry.js'); ns.g6 instanceof ns.m6");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "true");
+    }
+
+    #[test]
+    fn focus_like_var_declarator_order_with_named_class_expression() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source(
+            "./entry.js",
+            "globalThis.window = {}; \
+             globalThis.document = {}; \
+             globalThis.IntersectionObserver = function() {}; \
+             var d4 = 1, \
+                 m6 = class ve { \
+                     static _instance = null; \
+                     _initialized = false; \
+                     constructor() {} \
+                     static getInstance() { \
+                         return typeof window > 'u' || typeof document > 'u' || typeof IntersectionObserver > 'u' \
+                             ? new h6 \
+                             : (ve._instance || (ve._instance = new ve), ve._instance); \
+                     } \
+                 }, \
+                 h6 = class {}, \
+                 g6 = m6.getInstance(); \
+             export { g6, m6 };",
+        );
+        let result = engine.eval("var ns = __import__('./entry.js'); ns.g6 instanceof ns.m6");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "true");
+    }
+
+    #[test]
+    fn named_class_expression_self_binding_in_assignment_expression() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var m6, g6; \
+             m6 = class ve { \
+                 static _instance = null; \
+                 static getInstance() { return ve._instance || (ve._instance = new ve); } \
+             }; \
+             g6 = m6.getInstance(); \
+             g6 instanceof m6",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "true");
+    }
+
+    #[test]
+    fn hls_like_class_method_body_is_not_executed_during_module_instantiation() {
+        let mut engine = JsEngine::new();
+        engine.register_module_source(
+            "./entry.js",
+            "class Base { constructor(prefix, logger) { this.prefix = prefix; this.logger = logger; } } \
+             class Eme extends Base { \
+                 constructor(hls) { \
+                     super('eme', hls.logger); \
+                     this.hls = hls; \
+                     this.config = hls.config; \
+                     this.keySystemAccessPromises = {}; \
+                     this.onMediaEncrypted = event => { \
+                         const { initDataType, initData } = event; \
+                         this.keyFormatPromise.then(format => { \
+                             const id = initDataType + format; \
+                             this.getKeySystemSelectionPromise([id]).then(({ keySystem, mediaKeys }) => ({ keySystem, mediaKeys })); \
+                         }); \
+                     }; \
+                 } \
+                 requestMediaKeySystemAccess(keySystem, config) { \
+                     const { requestMediaKeySystemAccessFunc } = this.config; \
+                     if (typeof requestMediaKeySystemAccessFunc !== 'function') { \
+                         return Promise.reject(new Error('no eme')); \
+                     } \
+                     return requestMediaKeySystemAccessFunc(keySystem, config); \
+                 } \
+                 getMediaKeysPromise(keySystem, audio, video) { \
+                     const record = this.keySystemAccessPromises[keySystem]; \
+                     let access = record == null ? void 0 : record.keySystemAccess; \
+                     if (!access) { \
+                         access = this.requestMediaKeySystemAccess(keySystem, { audio, video }); \
+                         const entry = this.keySystemAccessPromises[keySystem] = { keySystemAccess: access }; \
+                         return access.catch(error => {}).then(session => { \
+                             entry.mediaKeys = session.createMediaKeys().then(keys => keys); \
+                             entry.mediaKeys.catch(error => {}); \
+                             return entry.mediaKeys; \
+                         }); \
+                     } \
+                     return access.then(() => record.mediaKeys); \
+                 } \
+             } \
+             const ns = Object.freeze(Object.defineProperty({ __proto__: null, Eme }, Symbol.toStringTag, { value: 'Module' })); \
+             export { ns as a };",
+        );
+        let result = engine.eval("var ns = __import__('./entry.js'); typeof ns.a.Eme");
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "function");
+    }
+
+    #[test]
+    fn module_aliases_share_one_evaluated_namespace() {
+        let mut engine = JsEngine::new();
+        let source = "globalThis.count = (globalThis.count || 0) + 1; const value = count; export { value };";
+        engine.register_module_source("./entry.js", source);
+        engine.register_module_source("https://example.test/entry.js", source);
+        let result = engine.eval(
+            "var a = __import__('./entry.js'); \
+             var b = __import__('https://example.test/entry.js'); \
+             a.value + ':' + b.value + ':' + globalThis.count",
+        );
+        assert!(
+            engine.last_exception().is_none(),
+            "unexpected exception: {:?}",
+            engine.last_exception()
+        );
+        assert_eq!(result.to_js_string(), "1:1:1");
+    }
+
+    #[test]
     fn module_loader_intrinsics_ignore_window_shadow_properties() {
         let mut engine = JsEngine::new();
         let window = JsValue::new_object();
@@ -507,8 +721,7 @@ mod tests {
              function z(o) { return a(o.islands, { ...r, ...m }); } \
              export { z as r };",
         );
-        let result =
-            engine.eval("var ns = __import__('./entry.js'); ns.r({ islands: {} });");
+        let result = engine.eval("var ns = __import__('./entry.js'); ns.r({ islands: {} });");
         assert!(
             engine.last_exception().is_none(),
             "unexpected exception: {:?}",

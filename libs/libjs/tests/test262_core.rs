@@ -1341,6 +1341,22 @@ fn template_literal_expr() {
     assert_eq!(eval_str(r#"`${2 + 3}`"#), "5");
 }
 
+#[test]
+fn template_literal_expr_with_regex_literals() {
+    assert_eq!(
+        eval_str(
+            r#"
+            function quote(t) {
+                return `"${t.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+            }
+            function after() { return 7; }
+            quote('a"b') + ':' + after()
+            "#,
+        ),
+        r#""a\"b":7"#
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // §13.13 — Optional Chaining
 // ═══════════════════════════════════════════════════════════

@@ -85,7 +85,10 @@ pub fn ctor_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         native_fn("getUTCDate", date_get_date),
     );
     obj.set(String::from("getDay"), native_fn("getDay", date_get_day));
-    obj.set(String::from("getUTCDay"), native_fn("getUTCDay", date_get_day));
+    obj.set(
+        String::from("getUTCDay"),
+        native_fn("getUTCDay", date_get_day),
+    );
     obj.set(
         String::from("getHours"),
         native_fn("getHours", date_get_hours),
@@ -236,7 +239,10 @@ pub fn install_date_instance_methods(obj: &mut JsObject) {
         native_fn("getUTCDate", date_get_date),
     );
     obj.set(String::from("getDay"), native_fn("getDay", date_get_day));
-    obj.set(String::from("getUTCDay"), native_fn("getUTCDay", date_get_day));
+    obj.set(
+        String::from("getUTCDay"),
+        native_fn("getUTCDay", date_get_day),
+    );
     obj.set(
         String::from("getHours"),
         native_fn("getHours", date_get_hours),

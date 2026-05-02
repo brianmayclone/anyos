@@ -4571,6 +4571,27 @@ fn push_unique_alias(aliases: &mut Vec<String>, alias: &str) {
     aliases.push(alias.to_string());
 }
 
+fn host_js_string_literal(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn host_module_import_wrapper(specifier: &str) -> String {
+    format!("__import__({});", host_js_string_literal(specifier))
+}
+
 fn run_javascript(
     wv: &mut libwebview::WebView,
     base_url: &str,
@@ -4588,26 +4609,45 @@ fn run_javascript(
 
     let mut scripts: Vec<String> = Vec::new();
     let mut script_urls: Vec<Option<String>> = Vec::new();
+    let mut script_modes: Vec<libwebview::js::ScriptMode> = Vec::new();
+    let mut module_prefetch_roots: Vec<(String, String)> = Vec::new();
     let mut external_count = 0u32;
     let mut inline_count = 0u32;
 
-    for entry in &entries {
+    for (idx, entry) in entries.iter().enumerate() {
         match entry {
-            libwebview::js::ScriptEntry::Inline { text, mode: _ } => {
-                scripts.push(text.clone());
-                script_urls.push(None);
+            libwebview::js::ScriptEntry::Inline { text, mode } => {
+                if matches!(mode, libwebview::js::ScriptMode::Module) {
+                    let specifier = format!("<inline-module-{}>", idx);
+                    wv.js_runtime().register_module_source(&specifier, text);
+                    module_prefetch_roots.push((base_url.to_string(), text.clone()));
+                    scripts.push(host_module_import_wrapper(&specifier));
+                    script_urls.push(None);
+                    script_modes.push(mode.clone());
+                } else {
+                    scripts.push(text.clone());
+                    script_urls.push(None);
+                    script_modes.push(mode.clone());
+                }
                 inline_count += 1;
             }
             libwebview::js::ScriptEntry::External {
                 src: src_url,
-                mode: _,
+                mode,
             } => {
                 let full_url = resolve_url(base_url, src_url);
                 eprintln!("[js] fetching script: {}", full_url);
                 if let Some(data) = fetch_resource(&full_url) {
                     if let Ok(text) = String::from_utf8(data) {
-                        scripts.push(text);
+                        if matches!(mode, libwebview::js::ScriptMode::Module) {
+                            register_module_source_aliases(wv, src_url, &full_url, &text);
+                            module_prefetch_roots.push((full_url.clone(), text.clone()));
+                            scripts.push(host_module_import_wrapper(&full_url));
+                        } else {
+                            scripts.push(text);
+                        }
                         script_urls.push(Some(full_url));
+                        script_modes.push(mode.clone());
                         external_count += 1;
                     } else {
                         eprintln!("[js]   not valid UTF-8, skipping");
@@ -4633,15 +4673,28 @@ fn run_javascript(
 
     let mut seen_modules = HashSet::new();
     prefetch_modulepreload_sources(wv, base_url, &mut seen_modules);
+    for (referrer, source) in &module_prefetch_roots {
+        prefetch_module_sources(wv, base_url, referrer, source, &mut seen_modules);
+    }
     for (idx, script) in scripts.iter().enumerate() {
         let referrer = script_urls
             .get(idx)
             .and_then(|u| u.as_deref())
             .unwrap_or(base_url);
-        if let Some(Some(url)) = script_urls.get(idx) {
-            register_module_source_aliases(wv, url, url, script);
+        if !matches!(
+            script_modes.get(idx),
+            Some(libwebview::js::ScriptMode::Module)
+        ) {
+            if let Some(Some(url)) = script_urls.get(idx) {
+                register_module_source_aliases(wv, url, url, script);
+            }
         }
-        prefetch_module_sources(wv, base_url, referrer, script, &mut seen_modules);
+        if !matches!(
+            script_modes.get(idx),
+            Some(libwebview::js::ScriptMode::Module)
+        ) {
+            prefetch_module_sources(wv, base_url, referrer, script, &mut seen_modules);
+        }
     }
 
     // Execute all scripts.

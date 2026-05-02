@@ -1510,7 +1510,15 @@ mod tests {
         let script_id = dom
             .nodes
             .iter()
-            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Script, .. }))
+            .position(|node| {
+                matches!(
+                    node.node_type,
+                    NodeType::Element {
+                        tag: Tag::Script,
+                        ..
+                    }
+                )
+            })
             .expect("script node");
         let custom_id = dom
             .nodes

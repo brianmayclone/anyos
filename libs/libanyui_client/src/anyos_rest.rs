@@ -609,10 +609,7 @@ pub fn init() -> bool {
             datagrid_get_row_count: resolve(&handle, "anyui_datagrid_get_row_count"),
             datagrid_set_selection_mode: resolve(&handle, "anyui_datagrid_set_selection_mode"),
             datagrid_set_editable_columns: resolve(&handle, "anyui_datagrid_set_editable_columns"),
-            datagrid_set_row_editor_kinds: resolve(
-                &handle,
-                "anyui_datagrid_set_row_editor_kinds",
-            ),
+            datagrid_set_row_editor_kinds: resolve(&handle, "anyui_datagrid_set_row_editor_kinds"),
             datagrid_set_row_editor_options: resolve(
                 &handle,
                 "anyui_datagrid_set_row_editor_options",
@@ -953,6 +950,10 @@ impl Control {
 
     pub fn set_dock(&self, dock_style: u32) {
         (lib().set_dock)(self.id, dock_style);
+    }
+
+    pub fn set_orientation(&self, orientation: u32) {
+        (lib().set_orientation)(self.id, orientation);
     }
 
     /// Enable or disable the control. Disabled controls are non-interactive and dimmed.

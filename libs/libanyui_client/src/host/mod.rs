@@ -37,6 +37,8 @@ pub const DOCK_BOTTOM: u32 = 2;
 pub const DOCK_LEFT: u32 = 3;
 pub const DOCK_RIGHT: u32 = 4;
 pub const DOCK_FILL: u32 = 5;
+pub const ORIENTATION_VERTICAL: u32 = 0;
+pub const ORIENTATION_HORIZONTAL: u32 = 1;
 
 pub const STYLE_BG: u32 = 1;
 pub const STYLE_BORDER: u32 = 2;
@@ -53,11 +55,28 @@ pub const STYLE_FILTER_QUALITY: u32 = 11;
 pub const EVENT_CLICK: u32 = 1;
 pub const EVENT_CHANGE: u32 = 2;
 pub const EVENT_KEY: u32 = 3;
+pub const EVENT_FOCUS: u32 = 4;
+pub const EVENT_BLUR: u32 = 5;
+pub const EVENT_CLOSE: u32 = 6;
+pub const EVENT_RESIZE: u32 = 7;
 pub const EVENT_SCROLL: u32 = 8;
-pub const EVENT_SUBMIT: u32 = 17;
+pub const EVENT_DRAG: u32 = 9;
+pub const EVENT_CONTEXT_MENU: u32 = 10;
+pub const EVENT_DOUBLE_CLICK: u32 = 11;
+pub const EVENT_MOUSE_ENTER: u32 = 12;
+pub const EVENT_MOUSE_LEAVE: u32 = 13;
 pub const EVENT_MOUSE_DOWN: u32 = 14;
 pub const EVENT_MOUSE_UP: u32 = 15;
 pub const EVENT_MOUSE_MOVE: u32 = 16;
+pub const EVENT_SUBMIT: u32 = 17;
+pub const EVENT_FULLSCREEN_ENTER: u32 = 18;
+pub const EVENT_FULLSCREEN_EXIT: u32 = 19;
+pub const EVENT_KEY_UP: u32 = 20;
+pub const EVENT_DRAG_START: u32 = 21;
+pub const EVENT_DRAG_ENTER: u32 = 22;
+pub const EVENT_DRAG_LEAVE: u32 = 23;
+pub const EVENT_DROP: u32 = 24;
+pub const EVENT_DRAG_END: u32 = 25;
 
 pub const KEY_ENTER: u32 = 0x100;
 pub const KEY_BACKSPACE: u32 = 0x101;
@@ -171,6 +190,7 @@ impl Control {
     pub fn set_padding(&self, _l: i32, _t: i32, _r: i32, _b: i32) {}
     pub fn set_margin(&self, _l: i32, _t: i32, _r: i32, _b: i32) {}
     pub fn set_dock(&self, _dock: u32) {}
+    pub fn set_orientation(&self, _orientation: u32) {}
     pub fn set_enabled(&self, _enabled: bool) {}
     pub fn set_auto_size(&self, _enabled: bool) {}
     pub fn set_min_size(&self, _w: u32, _h: u32) {}
@@ -191,6 +211,7 @@ impl Control {
     pub fn on_change_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_submit_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_key_down_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_double_click_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_context_menu_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_context_menu(&self, _f: impl FnMut(u32) + 'static) {}
     pub fn on_mouse_down_raw(&self, _cb: Callback, _userdata: u64) {}

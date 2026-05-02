@@ -229,6 +229,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aslmanager"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libhttp_client",
+]
+
+[[package]]
 name = "aslnetd"
 version = "0.1.0"
 dependencies = [
@@ -1277,6 +1287,7 @@ name = "libnode"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libanyui_client",
  "libhttp_client",
  "libjs",
  "libtls",

@@ -1393,7 +1393,7 @@ impl Compiler {
                 super_class,
                 body,
             } => {
-                self.compile_class(Some(name), super_class, body);
+                self.compile_class(Some(name), super_class, body, false);
                 if self.is_global_scope() && self.top_level_bindings_global {
                     let ci = self.add_const(Constant::String(name.clone()));
                     self.emit(Op::StoreGlobal(ci));
@@ -1588,8 +1588,7 @@ impl Compiler {
                                 } else {
                                     self.emit(Op::LoadGlobal(tmp_ci));
                                 }
-                                let local_ci =
-                                    self.add_const(Constant::String(spec.local.clone()));
+                                let local_ci = self.add_const(Constant::String(spec.local.clone()));
                                 self.emit(Op::GetPropNamed(local_ci));
                                 let exported_ci =
                                     self.add_const(Constant::String(spec.exported.clone()));
@@ -2627,7 +2626,7 @@ impl Compiler {
             } => {
                 let n = String::from(inferred_name);
                 let sc = super_class.as_ref().map(|b| *b.clone());
-                self.compile_class(Some(&n), &sc, body);
+                self.compile_class(Some(&n), &sc, body, false);
             }
             _ => {
                 self.compile_expr(expr);
@@ -3054,6 +3053,7 @@ impl Compiler {
         name: Option<&String>,
         super_class: &Option<Expr>,
         body: &[ClassMember],
+        bind_expression_name: bool,
     ) {
         // Step 0: If there's a super class, evaluate it and stash it in a local named
         // "$$super$$" so that constructor/method closures can capture it as an upvalue
@@ -3150,6 +3150,20 @@ impl Compiler {
             }
         }
 
+        let class_expr_name_slot = if bind_expression_name {
+            if let Some(n) = name {
+                self.begin_scope();
+                Some(
+                    self.scope_mut()
+                        .add_local_with_flags(n.clone(), false, true),
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Step 3: compile the constructor (or a default one), with instance field
         // initializers prepended to the body.
         let ctor = body
@@ -3215,12 +3229,21 @@ impl Compiler {
             self.emit(Op::Pop); // [..., Constructor]
         }
 
-        // Step 4b: If the class has a name and contains static blocks, temporarily
-        // bind the constructor to a local so that static blocks can reference the class.
-        let class_name_slot: Option<u16> = if let Some(n) = name {
-            if body
-                .iter()
-                .any(|m| matches!(m.kind, ClassMemberKind::StaticBlock { .. }))
+        if let Some(slot) = class_expr_name_slot {
+            self.emit(Op::Dup);
+            self.emit(Op::InitLocal(slot));
+            self.emit(Op::Pop);
+        }
+
+        // Step 4b: If a class declaration has a name and contains static blocks,
+        // temporarily bind the constructor to a local so that static blocks can
+        // reference the class. Named class expressions already created their
+        // scoped self-binding before constructor compilation.
+        let _class_name_slot: Option<u16> = if let Some(n) = name {
+            if class_expr_name_slot.is_none()
+                && body
+                    .iter()
+                    .any(|m| matches!(m.kind, ClassMemberKind::StaticBlock { .. }))
             {
                 self.emit(Op::Dup);
                 let slot = self.scope_mut().add_local(n.clone());
@@ -3454,6 +3477,9 @@ impl Compiler {
             }
         }
         // Stack: [..., Constructor]
+        if bind_expression_name && class_expr_name_slot.is_some() {
+            self.end_scope();
+        }
     }
 
     /// Check if an expression is a direct super() call.
@@ -4633,7 +4659,7 @@ impl Compiler {
                 body,
             } => {
                 let sc = super_class.as_ref().map(|b| b.as_ref().clone());
-                self.compile_class(name.as_ref(), &sc, body);
+                self.compile_class(name.as_ref(), &sc, body, name.is_some());
             }
             Expr::OptionalChain { object, property } => {
                 self.compile_expr(object);

@@ -6,8 +6,8 @@ mod badge;
 mod button;
 mod canvas;
 mod checkbox;
-mod colorwell;
 mod colorpickerdialog;
+mod colorwell;
 mod combobox;
 mod datagrid;
 mod datetimepicker;
@@ -68,8 +68,8 @@ pub use badge::Badge;
 pub use button::Button;
 pub use canvas::Canvas;
 pub use checkbox::Checkbox;
-pub use colorwell::ColorWell;
 pub use colorpickerdialog::ColorPickerDialog;
+pub use colorwell::ColorWell;
 pub use datagrid::{
     ColumnDef, DataGrid, ALIGN_CENTER, ALIGN_LEFT, ALIGN_RIGHT, SELECTION_MULTI, SELECTION_SINGLE,
     SORT_ASCENDING, SORT_DESCENDING, SORT_NONE, SORT_NUMERIC, SORT_STRING,

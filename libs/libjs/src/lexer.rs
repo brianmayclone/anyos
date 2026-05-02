@@ -407,6 +407,11 @@ impl<'a> Lexer<'a> {
                             }
                             continue;
                         }
+                        b'/' => {
+                            if self.skip_template_expr_slash(&mut s) {
+                                continue;
+                            }
+                        }
                         // Nested template literals inside ${} — recursively skip.
                         b'`' => {
                             s.push('`');
@@ -485,6 +490,118 @@ impl<'a> Lexer<'a> {
                 end: self.pos as u32,
                 line,
             },
+        }
+    }
+
+    fn skip_template_expr_slash(&mut self, out: &mut String) -> bool {
+        if self.pos >= self.src.len() || self.src[self.pos] != b'/' {
+            return false;
+        }
+        if self.pos + 1 < self.src.len() && self.src[self.pos + 1] == b'/' {
+            out.push('/');
+            out.push('/');
+            self.pos += 2;
+            while self.pos < self.src.len() {
+                let b = self.src[self.pos];
+                if b == b'\n' {
+                    break;
+                }
+                out.push(self.read_utf8_char());
+            }
+            return true;
+        }
+        if self.pos + 1 < self.src.len() && self.src[self.pos + 1] == b'*' {
+            out.push('/');
+            out.push('*');
+            self.pos += 2;
+            while self.pos + 1 < self.src.len() {
+                let b = self.src[self.pos];
+                if b == b'\n' {
+                    self.line += 1;
+                }
+                if b == b'*' && self.src[self.pos + 1] == b'/' {
+                    out.push('*');
+                    out.push('/');
+                    self.pos += 2;
+                    return true;
+                }
+                out.push(self.read_utf8_char());
+            }
+            return true;
+        }
+        if !Self::template_expr_allows_regex(out) {
+            return false;
+        }
+
+        out.push('/');
+        self.pos += 1;
+        let mut in_class = false;
+        while self.pos < self.src.len() {
+            let b = self.src[self.pos];
+            if b == b'\n' || b == b'\r' {
+                break;
+            }
+            if b == b'\\' && self.pos + 1 < self.src.len() {
+                out.push('\\');
+                self.pos += 1;
+                out.push(self.read_utf8_char());
+                continue;
+            }
+            if b == b'[' {
+                in_class = true;
+            } else if b == b']' {
+                in_class = false;
+            } else if b == b'/' && !in_class {
+                out.push('/');
+                self.pos += 1;
+                while self.pos < self.src.len() {
+                    let f = self.src[self.pos];
+                    if f.is_ascii_alphanumeric() || f == b'_' || f == b'$' {
+                        out.push(f as char);
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                return true;
+            }
+            out.push(self.read_utf8_char());
+        }
+        true
+    }
+
+    fn template_expr_allows_regex(out: &str) -> bool {
+        let mut prev = None;
+        for ch in out.chars().rev() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            prev = Some(ch);
+            break;
+        }
+        match prev {
+            None => true,
+            Some(ch) => matches!(
+                ch,
+                '(' | '['
+                    | '{'
+                    | ','
+                    | ';'
+                    | ':'
+                    | '='
+                    | '!'
+                    | '?'
+                    | '&'
+                    | '|'
+                    | '+'
+                    | '-'
+                    | '*'
+                    | '%'
+                    | '^'
+                    | '~'
+                    | '<'
+                    | '>'
+            ),
         }
     }
 

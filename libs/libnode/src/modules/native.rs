@@ -1,4 +1,10 @@
+#[cfg(feature = "anyui")]
+use alloc::boxed::Box;
 use alloc::string::String;
+#[cfg(feature = "anyui")]
+use libanyui_client as anyui;
+#[cfg(feature = "anyui")]
+use libanyui_client::Widget;
 use libjs::value::{JsObject, JsValue};
 use libjs::vm::{native_ctor_fn, native_fn, Vm};
 
@@ -34,59 +40,203 @@ pub fn anyui_module(_policy: &NativeModulePolicy) -> JsValue {
         String::from("Window"),
         native_ctor_fn("Window", anyui_window_ctor),
     );
-    for name in [
-        "View",
-        "Button",
-        "PlainButton",
-        "IconButton",
-        "ImageButton",
-        "Label",
-        "LinkLabel",
-        "TextField",
-        "TextArea",
-        "TextEditor",
-        "SearchField",
-        "Checkbox",
-        "RadioButton",
-        "RadioGroup",
-        "ComboBox",
-        "DropDown",
-        "ListBox",
-        "TreeView",
-        "DataGrid",
-        "TableView",
-        "ColorWell",
-        "DatePicker",
-        "DateTimePicker",
-        "TimePicker",
-        "Divider",
-        "Expander",
-        "FlowPanel",
-        "GroupBox",
-        "ImageView",
-        "NavigationBar",
-        "ProgressBar",
-        "ScrollView",
-        "SegmentedControl",
-        "Slider",
-        "Spinner",
-        "SplitView",
-        "StackPanel",
-        "StatusIndicator",
-        "Stepper",
-        "TabBar",
-        "TableLayout",
-        "Tag",
-        "Toggle",
-        "Toolbar",
-        "Tooltip",
-        "Alert",
-        "Badge",
-        "Canvas",
-        "Card",
-    ] {
-        module.set(String::from(name), native_ctor_fn(name, anyui_control_ctor));
-    }
+    module.set(
+        String::from("View"),
+        native_ctor_fn("View", anyui_view_ctor),
+    );
+    module.set(
+        String::from("Button"),
+        native_ctor_fn("Button", anyui_button_ctor),
+    );
+    module.set(
+        String::from("PlainButton"),
+        native_ctor_fn("PlainButton", anyui_plain_button_ctor),
+    );
+    module.set(
+        String::from("IconButton"),
+        native_ctor_fn("IconButton", anyui_icon_button_ctor),
+    );
+    module.set(
+        String::from("ImageButton"),
+        native_ctor_fn("ImageButton", anyui_image_button_ctor),
+    );
+    module.set(
+        String::from("Label"),
+        native_ctor_fn("Label", anyui_label_ctor),
+    );
+    module.set(
+        String::from("LinkLabel"),
+        native_ctor_fn("LinkLabel", anyui_link_label_ctor),
+    );
+    module.set(
+        String::from("TextField"),
+        native_ctor_fn("TextField", anyui_text_field_ctor),
+    );
+    module.set(
+        String::from("TextArea"),
+        native_ctor_fn("TextArea", anyui_text_area_ctor),
+    );
+    module.set(
+        String::from("TextEditor"),
+        native_ctor_fn("TextEditor", anyui_text_editor_ctor),
+    );
+    module.set(
+        String::from("SearchField"),
+        native_ctor_fn("SearchField", anyui_search_field_ctor),
+    );
+    module.set(
+        String::from("AutoCompleteTextField"),
+        native_ctor_fn("AutoCompleteTextField", anyui_auto_complete_text_field_ctor),
+    );
+    module.set(
+        String::from("Checkbox"),
+        native_ctor_fn("Checkbox", anyui_checkbox_ctor),
+    );
+    module.set(
+        String::from("RadioButton"),
+        native_ctor_fn("RadioButton", anyui_radio_button_ctor),
+    );
+    module.set(
+        String::from("RadioGroup"),
+        native_ctor_fn("RadioGroup", anyui_radio_group_ctor),
+    );
+    module.set(
+        String::from("ComboBox"),
+        native_ctor_fn("ComboBox", anyui_combo_box_ctor),
+    );
+    module.set(
+        String::from("DropDown"),
+        native_ctor_fn("DropDown", anyui_drop_down_ctor),
+    );
+    module.set(
+        String::from("ListBox"),
+        native_ctor_fn("ListBox", anyui_list_box_ctor),
+    );
+    module.set(
+        String::from("TreeView"),
+        native_ctor_fn("TreeView", anyui_tree_view_ctor),
+    );
+    module.set(
+        String::from("DataGrid"),
+        native_ctor_fn("DataGrid", anyui_data_grid_ctor),
+    );
+    module.set(
+        String::from("TableView"),
+        native_ctor_fn("TableView", anyui_table_view_ctor),
+    );
+    module.set(
+        String::from("ColorWell"),
+        native_ctor_fn("ColorWell", anyui_color_well_ctor),
+    );
+    module.set(
+        String::from("DatePicker"),
+        native_ctor_fn("DatePicker", anyui_date_picker_ctor),
+    );
+    module.set(
+        String::from("DateTimePicker"),
+        native_ctor_fn("DateTimePicker", anyui_date_time_picker_ctor),
+    );
+    module.set(
+        String::from("TimePicker"),
+        native_ctor_fn("TimePicker", anyui_time_picker_ctor),
+    );
+    module.set(
+        String::from("Divider"),
+        native_ctor_fn("Divider", anyui_divider_ctor),
+    );
+    module.set(
+        String::from("Expander"),
+        native_ctor_fn("Expander", anyui_expander_ctor),
+    );
+    module.set(
+        String::from("FlowPanel"),
+        native_ctor_fn("FlowPanel", anyui_flow_panel_ctor),
+    );
+    module.set(
+        String::from("GroupBox"),
+        native_ctor_fn("GroupBox", anyui_group_box_ctor),
+    );
+    module.set(
+        String::from("ImageView"),
+        native_ctor_fn("ImageView", anyui_image_view_ctor),
+    );
+    module.set(
+        String::from("NavigationBar"),
+        native_ctor_fn("NavigationBar", anyui_navigation_bar_ctor),
+    );
+    module.set(
+        String::from("ProgressBar"),
+        native_ctor_fn("ProgressBar", anyui_progress_bar_ctor),
+    );
+    module.set(
+        String::from("ScrollView"),
+        native_ctor_fn("ScrollView", anyui_scroll_view_ctor),
+    );
+    module.set(
+        String::from("SegmentedControl"),
+        native_ctor_fn("SegmentedControl", anyui_segmented_control_ctor),
+    );
+    module.set(
+        String::from("Slider"),
+        native_ctor_fn("Slider", anyui_slider_ctor),
+    );
+    module.set(
+        String::from("Spinner"),
+        native_ctor_fn("Spinner", anyui_spinner_ctor),
+    );
+    module.set(
+        String::from("SplitView"),
+        native_ctor_fn("SplitView", anyui_split_view_ctor),
+    );
+    module.set(
+        String::from("StackPanel"),
+        native_ctor_fn("StackPanel", anyui_stack_panel_ctor),
+    );
+    module.set(
+        String::from("StatusIndicator"),
+        native_ctor_fn("StatusIndicator", anyui_status_indicator_ctor),
+    );
+    module.set(
+        String::from("Stepper"),
+        native_ctor_fn("Stepper", anyui_stepper_ctor),
+    );
+    module.set(
+        String::from("TabBar"),
+        native_ctor_fn("TabBar", anyui_tab_bar_ctor),
+    );
+    module.set(
+        String::from("TableLayout"),
+        native_ctor_fn("TableLayout", anyui_table_layout_ctor),
+    );
+    module.set(String::from("Tag"), native_ctor_fn("Tag", anyui_tag_ctor));
+    module.set(
+        String::from("Toggle"),
+        native_ctor_fn("Toggle", anyui_toggle_ctor),
+    );
+    module.set(
+        String::from("Toolbar"),
+        native_ctor_fn("Toolbar", anyui_toolbar_ctor),
+    );
+    module.set(
+        String::from("Tooltip"),
+        native_ctor_fn("Tooltip", anyui_tooltip_ctor),
+    );
+    module.set(
+        String::from("Alert"),
+        native_ctor_fn("Alert", anyui_alert_ctor),
+    );
+    module.set(
+        String::from("Badge"),
+        native_ctor_fn("Badge", anyui_badge_ctor),
+    );
+    module.set(
+        String::from("Canvas"),
+        native_ctor_fn("Canvas", anyui_canvas_ctor),
+    );
+    module.set(
+        String::from("Card"),
+        native_ctor_fn("Card", anyui_card_ctor),
+    );
     module.set(String::from("DOCK_NONE"), JsValue::Number(0.0));
     module.set(String::from("DOCK_TOP"), JsValue::Number(1.0));
     module.set(String::from("DOCK_BOTTOM"), JsValue::Number(2.0));
@@ -124,15 +274,23 @@ fn native_pending(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn anyui_create_app(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    make_ui_object("Application")
+    #[cfg(feature = "anyui")]
+    {
+        let _ = anyui::init();
+    }
+    make_ui_object("Application", None)
 }
 
 fn anyui_run(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    anyui::run();
     JsValue::Undefined
 }
 
 fn anyui_window_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let obj = make_ui_object("Window");
+    let title = arg_string(args, 0, "");
+    let native_id = create_anyui_window(&title, args);
+    let obj = make_ui_object("Window", native_id);
     obj.set_property(
         String::from("title"),
         args.first()
@@ -142,10 +300,64 @@ fn anyui_window_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     obj
 }
 
-fn anyui_control_ctor(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let _ = vm;
-    make_ui_object("Control")
+macro_rules! anyui_ctor {
+    ($fn_name:ident, $kind:literal) => {
+        fn $fn_name(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+            make_ui_object($kind, create_anyui_control($kind, args))
+        }
+    };
 }
+
+anyui_ctor!(anyui_view_ctor, "View");
+anyui_ctor!(anyui_button_ctor, "Button");
+anyui_ctor!(anyui_plain_button_ctor, "PlainButton");
+anyui_ctor!(anyui_icon_button_ctor, "IconButton");
+anyui_ctor!(anyui_image_button_ctor, "ImageButton");
+anyui_ctor!(anyui_label_ctor, "Label");
+anyui_ctor!(anyui_link_label_ctor, "LinkLabel");
+anyui_ctor!(anyui_text_field_ctor, "TextField");
+anyui_ctor!(anyui_text_area_ctor, "TextArea");
+anyui_ctor!(anyui_text_editor_ctor, "TextEditor");
+anyui_ctor!(anyui_search_field_ctor, "SearchField");
+anyui_ctor!(anyui_auto_complete_text_field_ctor, "AutoCompleteTextField");
+anyui_ctor!(anyui_checkbox_ctor, "Checkbox");
+anyui_ctor!(anyui_radio_button_ctor, "RadioButton");
+anyui_ctor!(anyui_radio_group_ctor, "RadioGroup");
+anyui_ctor!(anyui_combo_box_ctor, "ComboBox");
+anyui_ctor!(anyui_drop_down_ctor, "DropDown");
+anyui_ctor!(anyui_list_box_ctor, "ListBox");
+anyui_ctor!(anyui_tree_view_ctor, "TreeView");
+anyui_ctor!(anyui_data_grid_ctor, "DataGrid");
+anyui_ctor!(anyui_table_view_ctor, "TableView");
+anyui_ctor!(anyui_color_well_ctor, "ColorWell");
+anyui_ctor!(anyui_date_picker_ctor, "DatePicker");
+anyui_ctor!(anyui_date_time_picker_ctor, "DateTimePicker");
+anyui_ctor!(anyui_time_picker_ctor, "TimePicker");
+anyui_ctor!(anyui_divider_ctor, "Divider");
+anyui_ctor!(anyui_expander_ctor, "Expander");
+anyui_ctor!(anyui_flow_panel_ctor, "FlowPanel");
+anyui_ctor!(anyui_group_box_ctor, "GroupBox");
+anyui_ctor!(anyui_image_view_ctor, "ImageView");
+anyui_ctor!(anyui_navigation_bar_ctor, "NavigationBar");
+anyui_ctor!(anyui_progress_bar_ctor, "ProgressBar");
+anyui_ctor!(anyui_scroll_view_ctor, "ScrollView");
+anyui_ctor!(anyui_segmented_control_ctor, "SegmentedControl");
+anyui_ctor!(anyui_slider_ctor, "Slider");
+anyui_ctor!(anyui_spinner_ctor, "Spinner");
+anyui_ctor!(anyui_split_view_ctor, "SplitView");
+anyui_ctor!(anyui_stack_panel_ctor, "StackPanel");
+anyui_ctor!(anyui_status_indicator_ctor, "StatusIndicator");
+anyui_ctor!(anyui_stepper_ctor, "Stepper");
+anyui_ctor!(anyui_tab_bar_ctor, "TabBar");
+anyui_ctor!(anyui_table_layout_ctor, "TableLayout");
+anyui_ctor!(anyui_tag_ctor, "Tag");
+anyui_ctor!(anyui_toggle_ctor, "Toggle");
+anyui_ctor!(anyui_toolbar_ctor, "Toolbar");
+anyui_ctor!(anyui_tooltip_ctor, "Tooltip");
+anyui_ctor!(anyui_alert_ctor, "Alert");
+anyui_ctor!(anyui_badge_ctor, "Badge");
+anyui_ctor!(anyui_canvas_ctor, "Canvas");
+anyui_ctor!(anyui_card_ctor, "Card");
 
 fn anyui_theme_module() -> JsValue {
     let mut theme = JsObject::new();
@@ -167,40 +379,503 @@ fn anyui_theme_colors(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     object(colors)
 }
 
-fn make_ui_object(kind: &str) -> JsValue {
+fn make_ui_object(kind: &str, native_id: Option<u32>) -> JsValue {
     let mut obj = JsObject::new();
     obj.set(
         String::from("__anyuiKind"),
         JsValue::String(String::from(kind)),
     );
-    for name in [
-        "add",
-        "setPosition",
-        "setSize",
-        "setColor",
-        "setText",
-        "setDock",
-        "setMargin",
-        "setPadding",
-        "setOrientation",
-        "setState",
-        "onClick",
-        "onDoubleClick",
-        "onTextChanged",
-        "onSelectionChanged",
-        "onActiveChanged",
-        "onCheckedChanged",
-        "onValueChanged",
-        "onChanged",
-        "onColorSelected",
-        "onSubmit",
-        "onEnter",
+    if let Some(id) = native_id {
+        obj.set(String::from("__anyuiId"), JsValue::Number(id as f64));
+    }
+    for (name, handler) in [
+        ("add", anyui_add as fn(&mut Vm, &[JsValue]) -> JsValue),
+        ("setPosition", anyui_set_position),
+        ("setSize", anyui_set_size),
+        ("setColor", anyui_set_color),
+        ("setText", anyui_set_text),
+        ("setDock", anyui_set_dock),
+        ("setMargin", anyui_set_margin),
+        ("setPadding", anyui_set_padding),
+        ("setOrientation", anyui_set_orientation),
+        ("setState", anyui_set_state),
+        ("setVisible", anyui_set_visible),
+        ("setEnabled", anyui_set_enabled),
+        ("setFontSize", anyui_set_font_size),
+        ("setTextColor", anyui_set_text_color),
+        ("setTooltip", anyui_set_tooltip),
+        ("focus", anyui_focus),
+        ("bringToFront", anyui_bring_to_front),
     ] {
-        obj.set(String::from(name), native_fn(name, anyui_chain));
+        obj.set(String::from(name), native_fn(name, handler));
+    }
+    for (name, handler) in [
+        (
+            "onClick",
+            anyui_on_click as fn(&mut Vm, &[JsValue]) -> JsValue,
+        ),
+        ("onDoubleClick", anyui_on_double_click),
+        ("onTextChanged", anyui_on_change),
+        ("onSelectionChanged", anyui_on_change),
+        ("onActiveChanged", anyui_on_change),
+        ("onCheckedChanged", anyui_on_change),
+        ("onValueChanged", anyui_on_change),
+        ("onChanged", anyui_on_change),
+        ("onColorSelected", anyui_on_change),
+        ("onSubmit", anyui_on_submit),
+        ("onEnter", anyui_on_submit),
+    ] {
+        obj.set(String::from(name), native_fn(name, handler));
     }
     object(obj)
 }
 
-fn anyui_chain(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+#[cfg(all(feature = "anyui", not(feature = "host")))]
+fn create_anyui_window(title: &str, args: &[JsValue]) -> Option<u32> {
+    let _ = anyui::init();
+    Some(
+        anyui::Window::new(
+            title,
+            arg_i32(args, 1, -1),
+            arg_i32(args, 2, -1),
+            arg_u32(args, 3, 960),
+            arg_u32(args, 4, 640),
+        )
+        .id(),
+    )
+}
+
+#[cfg(all(feature = "anyui", feature = "host"))]
+fn create_anyui_window(title: &str, args: &[JsValue]) -> Option<u32> {
+    let _ = anyui::init();
+    Some(
+        anyui::Window::new(
+            title,
+            arg_i32(args, 1, -1),
+            arg_i32(args, 2, -1),
+            arg_u32(args, 3, 960),
+            arg_u32(args, 4, 640),
+        )
+        .id(),
+    )
+}
+
+#[cfg(not(feature = "anyui"))]
+fn create_anyui_window(_title: &str, _args: &[JsValue]) -> Option<u32> {
+    None
+}
+
+#[cfg(all(feature = "anyui", not(feature = "host")))]
+fn create_anyui_control(kind: &str, args: &[JsValue]) -> Option<u32> {
+    let _ = anyui::init();
+    let text = arg_string(args, 0, "");
+    let items = arg_string(args, 0, "");
+    let w = arg_u32(args, 0, 320);
+    let h = arg_u32(args, 1, 200);
+    let id = match kind {
+        "View" => anyui::View::new().id(),
+        "Button" => anyui::Button::new(&text).id(),
+        "PlainButton" => anyui::PlainButton::new(&text).id(),
+        "IconButton" => anyui::IconButton::new(&text).id(),
+        "ImageButton" => anyui::ImageButton::new(w, h).id(),
+        "Label" => anyui::Label::new(&text).id(),
+        "LinkLabel" => anyui::LinkLabel::new(&text).id(),
+        "TextField" => anyui::TextField::new().id(),
+        "TextArea" => anyui::TextArea::new().id(),
+        "TextEditor" => anyui::TextEditor::new(w, h).id(),
+        "SearchField" => anyui::SearchField::new().id(),
+        "AutoCompleteTextField" => anyui::AutoCompleteTextField::new().id(),
+        "Checkbox" => anyui::Checkbox::new(&text).id(),
+        "RadioButton" => anyui::RadioButton::new(&text).id(),
+        "RadioGroup" => anyui::RadioGroup::new().id(),
+        "ComboBox" => anyui::ComboBox::new().id(),
+        "DropDown" => anyui::DropDown::new(&items).id(),
+        "ListBox" => anyui::ListBox::new(&items).id(),
+        "TreeView" => anyui::TreeView::new(w, h).id(),
+        "DataGrid" => anyui::DataGrid::new(w, h).id(),
+        "TableView" => anyui::TableView::new().id(),
+        "ColorWell" => anyui::ColorWell::new().id(),
+        "DatePicker" => anyui::DatePicker::new().id(),
+        "DateTimePicker" => anyui::DateTimePicker::new().id(),
+        "TimePicker" => anyui::TimePicker::new().id(),
+        "Divider" => anyui::Divider::new().id(),
+        "Expander" => anyui::Expander::new(&text).id(),
+        "FlowPanel" => anyui::FlowPanel::new().id(),
+        "GroupBox" => anyui::GroupBox::new(&text).id(),
+        "ImageView" => anyui::ImageView::new(w, h).id(),
+        "NavigationBar" => anyui::NavigationBar::new(&text).id(),
+        "ProgressBar" => anyui::ProgressBar::new(arg_u32(args, 0, 0)).id(),
+        "ScrollView" => anyui::ScrollView::new().id(),
+        "SegmentedControl" => anyui::SegmentedControl::new(&items).id(),
+        "Slider" => anyui::Slider::new(arg_u32(args, 0, 0)).id(),
+        "Spinner" => anyui::Spinner::new().id(),
+        "SplitView" => anyui::SplitView::new().id(),
+        "StackPanel" => anyui::StackPanel::new(arg_u32(args, 0, anyui::ORIENTATION_VERTICAL)).id(),
+        "StatusIndicator" => anyui::StatusIndicator::new(&text).id(),
+        "Stepper" => anyui::Stepper::new().id(),
+        "TabBar" => anyui::TabBar::new(&items).id(),
+        "TableLayout" => anyui::TableLayout::new(arg_u32(args, 0, 2)).id(),
+        "Tag" => anyui::Tag::new(&text).id(),
+        "Toggle" => anyui::Toggle::new(arg_bool(args, 0, false)).id(),
+        "Toolbar" => anyui::Toolbar::new().id(),
+        "Tooltip" => anyui::Tooltip::new(&text).id(),
+        "Alert" => anyui::Alert::new(&text).id(),
+        "Badge" => anyui::Badge::new(&text).id(),
+        "Canvas" => anyui::Canvas::new(w, h).id(),
+        "Card" => anyui::Card::new().id(),
+        _ => anyui::View::new().id(),
+    };
+    Some(id)
+}
+
+#[cfg(all(feature = "anyui", feature = "host"))]
+fn create_anyui_control(kind: &str, args: &[JsValue]) -> Option<u32> {
+    let _ = anyui::init();
+    let text = arg_string(args, 0, "");
+    let id = match kind {
+        "View" => anyui::View::new().id(),
+        "Button" | "PlainButton" => anyui::Button::new(&text).id(),
+        "IconButton" => anyui::IconButton::new(&text).id(),
+        "Label" => anyui::Label::new(&text).id(),
+        "LinkLabel" => anyui::LinkLabel::new(&text).id(),
+        "TextField" => anyui::TextField::new().id(),
+        "TextArea" => anyui::TextArea::new().id(),
+        "SearchField" => anyui::SearchField::new().id(),
+        "Checkbox" => anyui::Checkbox::new(&text).id(),
+        "RadioButton" => anyui::RadioButton::new(&text).id(),
+        "DropDown" => anyui::DropDown::new(&arg_string(args, 0, "")).id(),
+        "ListBox" => anyui::ListBox::new(&arg_string(args, 0, "")).id(),
+        "ColorWell" => anyui::ColorWell::new().id(),
+        "DatePicker" => anyui::DatePicker::new().id(),
+        "DateTimePicker" => anyui::DateTimePicker::new().id(),
+        "TimePicker" => anyui::TimePicker::new().id(),
+        "ProgressBar" => anyui::ProgressBar::new(arg_u32(args, 0, 0)).id(),
+        "ScrollView" => anyui::ScrollView::new().id(),
+        "Slider" => anyui::Slider::new(arg_u32(args, 0, 0)).id(),
+        "Spinner" => anyui::Spinner::new().id(),
+        "TabBar" => anyui::TabBar::new().id(),
+        "Toolbar" => anyui::Toolbar::new().id(),
+        "Canvas" => anyui::Canvas::new(arg_u32(args, 0, 320), arg_u32(args, 1, 200)).id(),
+        _ => anyui::View::new().id(),
+    };
+    Some(id)
+}
+
+#[cfg(not(feature = "anyui"))]
+fn create_anyui_control(_kind: &str, _args: &[JsValue]) -> Option<u32> {
+    None
+}
+
+fn anyui_id(value: &JsValue) -> Option<u32> {
+    let n = value.get_property("__anyuiId").to_number();
+    if n.is_finite() && n > 0.0 {
+        Some(n as u32)
+    } else {
+        None
+    }
+}
+
+fn this_anyui_id(vm: &Vm) -> Option<u32> {
+    anyui_id(&vm.current_this)
+}
+
+fn anyui_add(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let (Some(parent), Some(child)) = (this_anyui_id(vm), args.first().and_then(anyui_id)) {
+        anyui::Control::from_id(parent).add_child(child);
+    }
     vm.current_this.clone()
+}
+
+fn anyui_set_position(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_position(arg_i32(args, 0, 0), arg_i32(args, 1, 0));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_size(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_size(arg_u32(args, 0, 0), arg_u32(args, 1, 0));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_color(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_color(arg_color(args, 0, 0x00000000));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_text(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_text(&arg_string(args, 0, ""));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_dock(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_dock(arg_u32(args, 0, anyui::DOCK_NONE));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_margin(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_margin(
+            arg_i32(args, 0, 0),
+            arg_i32(args, 1, 0),
+            arg_i32(args, 2, 0),
+            arg_i32(args, 3, 0),
+        );
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_padding(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_padding(
+            arg_i32(args, 0, 0),
+            arg_i32(args, 1, 0),
+            arg_i32(args, 2, 0),
+            arg_i32(args, 3, 0),
+        );
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_orientation(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_orientation(arg_u32(args, 0, anyui::ORIENTATION_VERTICAL));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_state(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_state(arg_u32(args, 0, 0));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_visible(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_visible(arg_bool(args, 0, true));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_enabled(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_enabled(arg_bool(args, 0, true));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_font_size(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_font_size(arg_u32(args, 0, 14));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_text_color(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_text_color(arg_color(args, 0, 0xFFFFFFFF));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_set_tooltip(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).set_tooltip(&arg_string(args, 0, ""));
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_focus(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).focus();
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_bring_to_front(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        anyui::Control::from_id(id).bring_to_front();
+    }
+    vm.current_this.clone()
+}
+
+fn anyui_on_click(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::Click)
+}
+
+fn anyui_on_double_click(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::DoubleClick)
+}
+
+fn anyui_on_change(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::Change)
+}
+
+fn anyui_on_submit(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    anyui_bind_event(vm, args, AnyuiEventBinding::Submit)
+}
+
+#[derive(Clone, Copy)]
+enum AnyuiEventBinding {
+    Click,
+    DoubleClick,
+    Change,
+    Submit,
+}
+
+fn anyui_bind_event(vm: &mut Vm, args: &[JsValue], event: AnyuiEventBinding) -> JsValue {
+    let Some(callback) = args.first() else {
+        vm.pending_exception = Some(vm.make_type_error("Event handler must be a function"));
+        return JsValue::Undefined;
+    };
+    if !callback.is_function() {
+        vm.pending_exception = Some(vm.make_type_error("Event handler must be a function"));
+        return JsValue::Undefined;
+    }
+
+    #[cfg(feature = "anyui")]
+    if let Some(id) = this_anyui_id(vm) {
+        let handler = Box::new(AnyuiJsEventHandler {
+            vm: vm as *mut Vm,
+            this_obj: vm.current_this.clone(),
+            callback: callback.clone(),
+        });
+        let userdata = Box::into_raw(handler) as u64;
+        let control = anyui::Control::from_id(id);
+        match event {
+            AnyuiEventBinding::Click => control.on_click_raw(anyui_js_event_thunk, userdata),
+            AnyuiEventBinding::DoubleClick => {
+                control.on_double_click_raw(anyui_js_event_thunk, userdata)
+            }
+            AnyuiEventBinding::Change => control.on_change_raw(anyui_js_event_thunk, userdata),
+            AnyuiEventBinding::Submit => control.on_submit_raw(anyui_js_event_thunk, userdata),
+        }
+    }
+
+    vm.current_this.clone()
+}
+
+#[cfg(feature = "anyui")]
+struct AnyuiJsEventHandler {
+    vm: *mut Vm,
+    this_obj: JsValue,
+    callback: JsValue,
+}
+
+#[cfg(feature = "anyui")]
+extern "C" fn anyui_js_event_thunk(control_id: u32, event_type: u32, userdata: u64) {
+    if userdata == 0 {
+        return;
+    }
+
+    // The handler is leaked intentionally for the lifetime of the native UI
+    // control. libanyui's raw callback ABI does not currently expose unbind.
+    unsafe {
+        let handler = &mut *(userdata as *mut AnyuiJsEventHandler);
+        let Some(vm) = handler.vm.as_mut() else {
+            return;
+        };
+        let mut event = JsObject::new();
+        event.set(String::from("id"), JsValue::Number(control_id as f64));
+        event.set(
+            String::from("controlId"),
+            JsValue::Number(control_id as f64),
+        );
+        event.set(String::from("type"), JsValue::Number(event_type as f64));
+        let _ = vm.call_value(
+            &handler.callback,
+            &[object(event)],
+            handler.this_obj.clone(),
+        );
+        vm.drain_microtasks();
+    }
+}
+
+fn arg_string(args: &[JsValue], index: usize, default: &str) -> String {
+    match args.get(index) {
+        Some(JsValue::Undefined) | Some(JsValue::Null) | None => String::from(default),
+        Some(value) => value.to_js_string(),
+    }
+}
+
+fn arg_u32(args: &[JsValue], index: usize, default: u32) -> u32 {
+    let Some(value) = args.get(index) else {
+        return default;
+    };
+    let n = value.to_number();
+    if n.is_finite() && n >= 0.0 {
+        n as u32
+    } else {
+        default
+    }
+}
+
+fn arg_i32(args: &[JsValue], index: usize, default: i32) -> i32 {
+    let Some(value) = args.get(index) else {
+        return default;
+    };
+    let n = value.to_number();
+    if n.is_finite() {
+        n as i32
+    } else {
+        default
+    }
+}
+
+fn arg_bool(args: &[JsValue], index: usize, default: bool) -> bool {
+    args.get(index).map(JsValue::to_boolean).unwrap_or(default)
+}
+
+fn arg_color(args: &[JsValue], index: usize, default: u32) -> u32 {
+    match args.get(index) {
+        Some(JsValue::String(s)) => parse_argb(s).unwrap_or(default),
+        Some(value) => {
+            let n = value.to_number();
+            if n.is_finite() && n >= 0.0 {
+                n as u32
+            } else {
+                default
+            }
+        }
+        None => default,
+    }
+}
+
+fn parse_argb(value: &str) -> Option<u32> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() == 8 {
+        u32::from_str_radix(hex, 16).ok()
+    } else if hex.len() == 6 {
+        u32::from_str_radix(hex, 16)
+            .ok()
+            .map(|rgb| 0xFF000000 | rgb)
+    } else {
+        None
+    }
 }

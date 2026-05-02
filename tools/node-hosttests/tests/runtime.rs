@@ -207,6 +207,42 @@ fn timers_buffers_events_and_assert_work_together() {
 }
 
 #[test]
+fn anyos_anyui_module_creates_native_control_bridge_objects() {
+    let root = temp_project("anyui-bridge");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        const ui = require('@anyos/anyui'); \
+        const win = new ui.Window('Designer Preview', -1, -1, 320, 200); \
+        const button = new ui.Button('OK'); \
+        const label = new ui.Label('Ready'); \
+        win.add(button).add(label); \
+        button.setPosition(12, 16).setSize(80, 24).setColor('#FF112233').setText('Run'); \
+        const eventChain = button.onClick((event) => { globalThis.lastEventId = event.id; }); \
+        label.setDock(ui.DOCK_TOP).setMargin(1, 2, 3, 4).setPadding(4, 3, 2, 1); \
+        globalThis.out = [
+            typeof ui.run,
+            typeof button.setDock,
+            eventChain === button,
+            typeof button.onChanged,
+            button.__anyuiKind,
+            button.__anyuiId > 0,
+            label.__anyuiKind,
+            label.__anyuiId > 0,
+        ].join(':');",
+    );
+
+    runtime.run_event_loop();
+    let value = runtime.eval("out");
+    assert_eq!(
+        value.to_js_string(),
+        "function:function:true:function:Button:true:Label:true"
+    );
+}
+
+#[test]
 fn node_web_compat_globals_cover_modern_sdk_primitives() {
     let root = temp_project("web-compat");
     let main = root.join("main.js");

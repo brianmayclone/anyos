@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["dep:libimage_client"]
+default = ["image"]
 host = ["dynlink/host", "anyos_std/host", "dep:libfont_client"]
+image = ["dep:libimage_client"]
 
 [dependencies]
 dynlink = { path = "../dynlink" }

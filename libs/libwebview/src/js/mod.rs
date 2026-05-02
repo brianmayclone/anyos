@@ -1026,6 +1026,7 @@ pub enum ScriptMode {
     Blocking,
     Defer,
     Async,
+    Module,
 }
 
 #[derive(Clone)]
@@ -1574,13 +1575,21 @@ impl JsRuntime {
                         continue;
                     }
                 }
+                let is_module = type_attr
+                    .map(|t| t.value.eq_ignore_ascii_case("module"))
+                    .unwrap_or(false);
                 let src = attrs
                     .iter()
                     .find(|a| a.name == "src")
                     .map(|a| a.value.as_str());
                 let has_async = attrs.iter().any(|a| a.name == "async");
                 let has_defer = attrs.iter().any(|a| a.name == "defer");
-                let mode = if has_async {
+                let mode = if is_module {
+                    // Module scripts are deferred by default and must execute
+                    // through the module loader so imports, exports, and
+                    // once-per-module evaluation semantics are preserved.
+                    ScriptMode::Module
+                } else if has_async {
                     ScriptMode::Async
                 } else if has_defer {
                     ScriptMode::Defer
@@ -4296,16 +4305,12 @@ mod tests {
         );
 
         assert!(specs.iter().any(|s| s == "./chunk-static.js"));
-        assert!(
-            specs
-                .iter()
-                .any(|s| s == "./src_frontend_pages_generated-module-pages_channel-1_focus.B.js")
-        );
-        assert!(
-            !specs
-                .iter()
-                .any(|s| s.contains("channel-0_focus") || s.contains("news-article-0_focus"))
-        );
+        assert!(specs
+            .iter()
+            .any(|s| s == "./src_frontend_pages_generated-module-pages_channel-1_focus.B.js"));
+        assert!(!specs
+            .iter()
+            .any(|s| s.contains("channel-0_focus") || s.contains("news-article-0_focus")));
     }
 
     #[test]

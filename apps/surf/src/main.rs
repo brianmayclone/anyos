@@ -205,7 +205,31 @@ fn script_mode_name(mode: libwebview::js::ScriptMode) -> &'static str {
         libwebview::js::ScriptMode::Blocking => "blocking",
         libwebview::js::ScriptMode::Defer => "defer",
         libwebview::js::ScriptMode::Async => "async",
+        libwebview::js::ScriptMode::Module => "module",
     }
+}
+
+fn js_string_literal(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = core::fmt::Write::write_fmt(&mut out, format_args!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn module_import_wrapper(specifier: &str) -> String {
+    anyos_std::format!("__import__({});", js_string_literal(specifier))
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2164,7 +2188,15 @@ fn handle_nav_done(
             match entry {
                 libwebview::js::ScriptEntry::Inline { text, mode } => {
                     let label = String::from("<inline>");
-                    if script_within_surf_limit(slot, &label, text) {
+                    if matches!(mode, libwebview::js::ScriptMode::Module) {
+                        let specifier = anyos_std::format!("<inline-module-{}>", slot);
+                        st.tabs[tab_idx]
+                            .webview
+                            .js_runtime()
+                            .register_module_source(&specifier, text);
+                        queue_module_dependencies(tab_idx, &base_url, text, generation);
+                        pending.push(Some(module_import_wrapper(&specifier)));
+                    } else if script_within_surf_limit(slot, &label, text) {
                         pending.push(Some(text.clone()));
                     } else {
                         pending.push(None);
@@ -2817,7 +2849,14 @@ fn handle_script_done(
         label,
         st.tabs[tab_index].load_state.pending_script_count
     );
-    if script_within_surf_limit(slot, &label, &text) {
+    let mode = st.tabs[tab_index]
+        .pending_script_modes
+        .get(slot)
+        .cloned()
+        .unwrap_or(libwebview::js::ScriptMode::Blocking);
+    if matches!(mode, libwebview::js::ScriptMode::Module) {
+        st.tabs[tab_index].pending_scripts[slot] = Some(module_import_wrapper(&module_url_key(&url)));
+    } else if script_within_surf_limit(slot, &label, &text) {
         st.tabs[tab_index].pending_scripts[slot] = Some(text);
     } else {
         st.tabs[tab_index].pending_scripts[slot] = None;

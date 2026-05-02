@@ -5,8 +5,8 @@ edition = "2021"
 
 [features]
 default = ["anyui"]
-anyui = ["dep:libanyui_client"]
-host = ["anyos_std/host", "libhttp_client/host", "libjs/host", "libtls/host", "libuv/host", "libzip_client/host", "libanyui_client/host"]
+anyui = ["dep:libanyui_client", "libanyui_client/image"]
+host = ["anyui", "anyos_std/host", "libhttp_client/host", "libjs/host", "libtls/host", "libuv/host", "libzip_client/host", "libanyui_client/host"]
 
 [dependencies]
 anyos_std = { path = "../stdlib" }

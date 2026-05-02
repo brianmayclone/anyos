@@ -177,6 +177,17 @@ impl Vm {
             }
         }
 
+        // Built-in array/string iteration. These fallbacks keep iteration
+        // robust even if a page overwrites or shadows @@iterator somewhere in
+        // the prototype chain.
+        if let JsValue::Array(arr) = val {
+            return self.make_internal_iterator(arr.borrow().to_dense_vec());
+        }
+        if let JsValue::String(s) = val {
+            let items = s.chars().map(|ch| JsValue::String(ch.into())).collect();
+            return self.make_internal_iterator(items);
+        }
+
         // Web bundles frequently spread or destructure `arguments`.
         // It is array-like in older JavaScript, and modern engines expose it
         // through the iterator protocol as well.
@@ -196,6 +207,25 @@ impl Vm {
 
         // 2. ES2023 §7.4.1: without a callable @@iterator, the value is not iterable.
         let val_str = val.to_js_string();
+        #[cfg(feature = "host")]
+        if std::env::var_os("LIBJS_DEBUG_ITER").is_some() {
+            let detail = match val {
+                JsValue::Object(obj) => {
+                    let o = obj.borrow();
+                    let keys = o
+                        .properties
+                        .keys()
+                        .take(12)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    alloc::format!("object tag={:?} keys=[{}]", o.internal_tag.as_deref(), keys)
+                }
+                JsValue::Array(arr) => alloc::format!("array len={}", arr.borrow().length),
+                _ => alloc::format!("type={} value={}", val.type_of(), val_str),
+            };
+            std::eprintln!("[libjs-iter] non-iterable {}", detail);
+        }
         let msg = alloc::format!("{} is not iterable", val_str);
         let exc = self.make_type_error(&msg);
         self.pending_exception = Some(exc);

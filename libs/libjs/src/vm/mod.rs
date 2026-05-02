@@ -832,9 +832,7 @@ impl Vm {
     }
 
     fn browser_window_global_has(&self, name: &str) -> bool {
-        if matches!(name, "window" | "self" | "globalThis")
-            || Self::is_vm_intrinsic_global(name)
-        {
+        if matches!(name, "window" | "self" | "globalThis") || Self::is_vm_intrinsic_global(name) {
             return false;
         }
         let window = self.globals.borrow().get("window");
@@ -845,9 +843,7 @@ impl Vm {
     }
 
     fn browser_window_global_get(&mut self, name: &str) -> Option<JsValue> {
-        if matches!(name, "window" | "self" | "globalThis")
-            || Self::is_vm_intrinsic_global(name)
-        {
+        if matches!(name, "window" | "self" | "globalThis") || Self::is_vm_intrinsic_global(name) {
             return None;
         }
         let window = self.globals.borrow().get("window");
@@ -1047,14 +1043,19 @@ impl Vm {
                 Op::LoadTrue => self.stack.push(JsValue::Bool(true)),
                 Op::LoadFalse => self.stack.push(JsValue::Bool(false)),
                 Op::Pop => {
-                    self.stack.pop();
+                    let frame_base = self.frames[frame_idx].stack_base;
+                    if self.stack.len() > frame_base {
+                        self.stack.pop();
+                    }
                     #[cfg(feature = "host")]
                     if std::env::var_os("LIBJS_DEBUG_STACK_OPS").is_some() {
                         self.debug_stack_op(frame_idx, ip, "Pop");
                     }
                 }
                 Op::Dup => {
-                    if let Some(val) = self.stack.last().cloned() {
+                    let frame_base = self.frames[frame_idx].stack_base;
+                    if self.stack.len() > frame_base {
+                        let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
                         self.stack.push(val);
                     }
                     #[cfg(feature = "host")]
@@ -1215,17 +1216,6 @@ impl Vm {
                         let val = self.globals.borrow().get(&name);
                         self.stack.push(val);
                     } else {
-                        if name == "e" {
-                            let chunk = &self.frames[frame_idx].chunk;
-                            self.log_engine(&format!(
-                                "[libjs] DEBUG undefined '{}' via LoadName in chunk {:?} locals={:?} upvalues={:?} ip={}",
-                                name,
-                                chunk.name,
-                                chunk.local_names,
-                                chunk.upvalue_names,
-                                self.frames[frame_idx].ip
-                            ));
-                        }
                         let msg = format!("{} is not defined", name);
                         let err = self.make_reference_error(&msg);
                         if !self.handle_exception(err) {

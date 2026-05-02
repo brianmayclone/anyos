@@ -54,6 +54,20 @@ fn promise_resolve_value(vm: &mut Vm, value: JsValue) -> JsValue {
     value
 }
 
+fn promise_reject_value(vm: &mut Vm, value: JsValue) -> JsValue {
+    let promise_ctor = vm.get_global("Promise");
+    if let JsValue::Function(_) = &promise_ctor {
+        let reject_fn = promise_ctor.get_property("reject");
+        if let JsValue::Function(f) = reject_fn {
+            let kind = f.borrow().kind.clone();
+            if let libjs::value::FnKind::Native(native) = kind {
+                return native(vm, &[value]);
+            }
+        }
+    }
+    value
+}
+
 fn make_native_constructor(
     vm: &Vm,
     name: &str,
@@ -225,6 +239,23 @@ pub fn make_window(
         native_fn("sendBeacon", navigator_send_beacon),
     );
     nav.set_property(String::from("share"), native_fn("share", navigator_share));
+    let media_capabilities = JsValue::new_object();
+    media_capabilities.set_property(
+        String::from("decodingInfo"),
+        native_fn("decodingInfo", navigator_media_capabilities_decoding_info),
+    );
+    media_capabilities.set_property(
+        String::from("encodingInfo"),
+        native_fn("encodingInfo", navigator_media_capabilities_encoding_info),
+    );
+    nav.set_property(String::from("mediaCapabilities"), media_capabilities);
+    nav.set_property(
+        String::from("requestMediaKeySystemAccess"),
+        native_fn(
+            "requestMediaKeySystemAccess",
+            navigator_request_media_key_system_access,
+        ),
+    );
     let service_worker = JsValue::new_object();
     service_worker.set_property(String::from("controller"), JsValue::Null);
     service_worker.set_property(
@@ -562,6 +593,15 @@ pub fn make_window(
         String::from("IntersectionObserver"),
         native_ctor_fn("IntersectionObserver", win_intersection_observer_ctor),
     );
+
+    let media_source = native_ctor_fn("MediaSource", win_media_source_ctor);
+    media_source.set_property(
+        String::from("isTypeSupported"),
+        native_fn("isTypeSupported", win_media_source_is_type_supported),
+    );
+    obj.set(String::from("MediaSource"), media_source.clone());
+    obj.set(String::from("WebKitMediaSource"), media_source.clone());
+    obj.set(String::from("ManagedMediaSource"), media_source);
 
     // Event constructors (W3C DOM Events Level 3 / UIEvents / Pointer Events).
     let event_target_ctor = make_native_constructor(vm, "EventTarget", win_event_target, None);
@@ -1036,8 +1076,10 @@ fn history_state_update(vm: &mut Vm, args: &[JsValue], replace: bool) -> JsValue
 
     if !replace {
         let len = vm.current_this.get_property("length").to_number();
-        vm.current_this
-            .set_property(String::from("length"), JsValue::Number((len + 1.0).max(1.0)));
+        vm.current_this.set_property(
+            String::from("length"),
+            JsValue::Number((len + 1.0).max(1.0)),
+        );
     }
 
     let Some(url_arg) = args.get(2) else {
@@ -1099,7 +1141,8 @@ fn resolve_history_url(current_href: &str, raw_url: &str) -> String {
         return String::from(raw);
     }
 
-    let (_, _, _, _, pathname, search, _, origin) = super::document::parse_location_fields(current_href);
+    let (_, _, _, _, pathname, search, _, origin) =
+        super::document::parse_location_fields(current_href);
     if raw.starts_with('/') {
         return alloc::format!("{}{}", origin, raw);
     }
@@ -1119,6 +1162,37 @@ fn resolve_history_url(current_href: &str, raw_url: &str) -> String {
 
 fn win_noop_obj(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::new_object()
+}
+fn win_media_source_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let obj = JsValue::new_object();
+    obj.set_property(
+        String::from("readyState"),
+        JsValue::String(String::from("closed")),
+    );
+    obj.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", win_noop),
+    );
+    obj.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", win_noop),
+    );
+    obj
+}
+fn win_media_source_is_type_supported(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Bool(false)
+}
+fn win_media_can_play_type(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::String(String::new())
+}
+fn win_media_play(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    promise_resolve_value(vm, JsValue::Undefined)
+}
+fn win_media_set_media_keys(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = args.first().cloned().unwrap_or(JsValue::Null);
+    vm.current_this
+        .set_property(String::from("mediaKeys"), value);
+    promise_resolve_value(vm, JsValue::Undefined)
 }
 fn win_dom_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::new_object()
@@ -1163,6 +1237,31 @@ fn install_html_element_constructor(
                 }
                 "HTMLImageElement" => {
                     super::element::install_reflected_accessors_value(&proto_val, &["src"]);
+                }
+                "HTMLMediaElement" | "HTMLAudioElement" | "HTMLVideoElement" => {
+                    super::element::install_reflected_accessors_value(
+                        &proto_val,
+                        &["src", "currentSrc", "poster", "preload"],
+                    );
+                    proto_val.set_property(String::from("mediaKeys"), JsValue::Null);
+                    proto_val.set_property(String::from("currentTime"), JsValue::Number(0.0));
+                    proto_val.set_property(String::from("duration"), JsValue::Number(0.0));
+                    proto_val.set_property(String::from("paused"), JsValue::Bool(true));
+                    proto_val.set_property(String::from("muted"), JsValue::Bool(false));
+                    proto_val.set_property(String::from("volume"), JsValue::Number(1.0));
+                    proto_val.set_property(String::from("readyState"), JsValue::Number(0.0));
+                    proto_val.set_property(String::from("networkState"), JsValue::Number(0.0));
+                    proto_val.set_property(
+                        String::from("canPlayType"),
+                        native_fn("canPlayType", win_media_can_play_type),
+                    );
+                    proto_val.set_property(String::from("load"), native_fn("load", win_noop));
+                    proto_val.set_property(String::from("pause"), native_fn("pause", win_noop));
+                    proto_val.set_property(String::from("play"), native_fn("play", win_media_play));
+                    proto_val.set_property(
+                        String::from("setMediaKeys"),
+                        native_fn("setMediaKeys", win_media_set_media_keys),
+                    );
                 }
                 "HTMLMetaElement" => {
                     super::element::install_reflected_accessors_value(
@@ -1940,6 +2039,23 @@ fn navigator_send_beacon(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 fn navigator_share(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     promise_resolve_value(vm, JsValue::Undefined)
+}
+
+fn navigator_media_capabilities_decoding_info(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let result = JsValue::new_object();
+    result.set_property(String::from("supported"), JsValue::Bool(false));
+    result.set_property(String::from("smooth"), JsValue::Bool(false));
+    result.set_property(String::from("powerEfficient"), JsValue::Bool(false));
+    promise_resolve_value(vm, result)
+}
+
+fn navigator_media_capabilities_encoding_info(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    navigator_media_capabilities_decoding_info(vm, args)
+}
+
+fn navigator_request_media_key_system_access(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let err = vm.make_error("Encrypted Media Extensions are not available");
+    promise_reject_value(vm, err)
 }
 
 fn navigator_service_worker_register(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
