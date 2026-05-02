@@ -806,11 +806,17 @@ fn startup_main_js(
     height: u32,
 ) -> String {
     format!(
-        "const ui = require('@anyos/anyui');\nconst {} = require('./ui/{}');\n\nconst STARTUP_STORYBOARD = \"{}\";\n\nfunction main() {{\n  const form = new {}();\n  form.root().setDock(ui.DOCK_FILL);\n\n  const win = new ui.Window(\"{}\", -1, -1, {}, {});\n  win.add(form.root());\n\n  void STARTUP_STORYBOARD;\n  ui.run();\n}}\n\nmain();\n",
+        "const ui = require('@anyos/anyui');\nconst {}Module = require('./ui/{}');\nconst {} = {}Module.{} || {}Module.default || {}Module;\n\nconst STARTUP_STORYBOARD = \"{}\";\n\nfunction main() {{\n  const form = new {}();\n  const root = form.root();\n  if (!root) {{\n    throw new Error(\"Generated form '{}' did not return a root view\");\n  }}\n  root.setDock(ui.DOCK_FILL);\n\n  const win = new ui.Window(\"{}\", -1, -1, {}, {});\n  win.add(root);\n\n  void STARTUP_STORYBOARD;\n  ui.run();\n}}\n\nmain();\n",
         form_name,
         escape_js(module_name),
+        form_name,
+        form_name,
+        form_name,
+        form_name,
+        form_name,
         escape_js(storyboard_path),
         form_name,
+        escape_js(form_name),
         escape_js(title),
         width,
         height

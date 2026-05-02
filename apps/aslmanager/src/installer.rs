@@ -11,9 +11,10 @@ use crate::constants::*;
 static WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static WORKER_DONE: AtomicBool = AtomicBool::new(false);
 static WORKER_ERROR: AtomicBool = AtomicBool::new(false);
+const LOG_SLOT_COUNT: usize = 32;
 static LOG_SEQ: AtomicU32 = AtomicU32::new(0);
-static LOG_LINE_LEN: AtomicU32 = AtomicU32::new(0);
-static mut LOG_LINE_BUF: [u8; 512] = [0u8; 512];
+static LOG_LINE_LEN: [AtomicU32; LOG_SLOT_COUNT] = [const { AtomicU32::new(0) }; LOG_SLOT_COUNT];
+static mut LOG_LINE_BUF: [[u8; 512]; LOG_SLOT_COUNT] = [[0u8; 512]; LOG_SLOT_COUNT];
 static mut PHASE_LABEL_ID: u32 = 0;
 static mut STATUS_LABEL_ID: u32 = 0;
 static mut PROGRESS_BAR_ID: u32 = 0;
@@ -138,12 +139,26 @@ pub fn start_install() {
 
 pub fn on_timer() {
     let seq = LOG_SEQ.load(Ordering::Acquire);
-    if seq != crate::app().last_log_seq {
-        crate::app().last_log_seq = seq;
-        let len = LOG_LINE_LEN.load(Ordering::Acquire) as usize;
-        let line = unsafe { core::str::from_utf8(&LOG_LINE_BUF[..len]).unwrap_or("") };
+    let mut had_logs = false;
+    if seq > crate::app().last_log_seq {
+        if seq - crate::app().last_log_seq > LOG_SLOT_COUNT as u32 {
+            crate::app().last_log_seq = seq - LOG_SLOT_COUNT as u32;
+            crate::app()
+                .log_text
+                .push_str("WARNING: older installer log lines were skipped.\n");
+            had_logs = true;
+        }
+    }
+    while crate::app().last_log_seq < seq {
+        had_logs = true;
+        crate::app().last_log_seq += 1;
+        let slot = (crate::app().last_log_seq as usize) % LOG_SLOT_COUNT;
+        let len = LOG_LINE_LEN[slot].load(Ordering::Acquire) as usize;
+        let line = unsafe { core::str::from_utf8(&LOG_LINE_BUF[slot][..len]).unwrap_or("") };
         crate::app().log_text.push_str(line);
         crate::app().log_text.push('\n');
+    }
+    if had_logs {
         crate::app().log_area.set_text(&crate::app().log_text);
         crate::app()
             .log_area
@@ -349,6 +364,7 @@ fn ensure_artifact(
     }
 
     let _ = fs::unlink(tmp);
+    log_line(&format!("Download target: {}", tmp));
     if !preflight_tmp_path(tmp, label) {
         return false;
     }
@@ -481,6 +497,9 @@ fn run_asl_self_check() -> bool {
 }
 
 fn ensure_dirs(cfg: &ManagerConfig) -> bool {
+    log_line(&format!("ASL root: {}", cfg.asl_root));
+    log_line(&format!("Distro directory: {}", cfg.distro_root));
+    log_line(&format!("Image directory: {}", cfg.images_dir));
     for dir in [
         "/System/var",
         cfg.asl_root.as_str(),
@@ -489,6 +508,7 @@ fn ensure_dirs(cfg: &ManagerConfig) -> bool {
         cfg.images_dir.as_str(),
     ] {
         if fs::mkdir(dir) == u32::MAX && !dir_exists(dir) {
+            log_line(&format!("Could not create ASL directory: {}", dir));
             return false;
         }
     }
@@ -631,11 +651,13 @@ fn finish_error(message: &str) {
 
 fn log_line(line: &str) {
     let len = line.len().min(511);
+    let seq = LOG_SEQ.load(Ordering::Relaxed).wrapping_add(1);
+    let slot = (seq as usize) % LOG_SLOT_COUNT;
     unsafe {
-        LOG_LINE_BUF[..len].copy_from_slice(&line.as_bytes()[..len]);
+        LOG_LINE_BUF[slot][..len].copy_from_slice(&line.as_bytes()[..len]);
     }
-    LOG_LINE_LEN.store(len as u32, Ordering::Release);
-    LOG_SEQ.fetch_add(1, Ordering::Release);
+    LOG_LINE_LEN[slot].store(len as u32, Ordering::Release);
+    LOG_SEQ.store(seq, Ordering::Release);
 }
 
 fn log_line_ui(line: &str) {

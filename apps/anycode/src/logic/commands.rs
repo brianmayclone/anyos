@@ -299,8 +299,8 @@ pub fn run() {
         update_action_state();
         return;
     }
-    if let Some(task) = s.task_mgr.selected_run() {
-        let task_clone = task.clone();
+    if let Some(task_clone) = s.task_mgr.selected_run().cloned() {
+        repair_node_generated_files_on_open();
         execute_task_direct(&task_clone);
         return;
     }
@@ -2696,6 +2696,7 @@ pub fn start_debugging() {
         }
     };
 
+    repair_node_generated_files_on_open();
     let s = app();
     s.output.clear();
     s.output.clear_debug_console();

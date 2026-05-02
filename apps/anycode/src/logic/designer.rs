@@ -908,8 +908,9 @@ impl DesignerDocument {
         out.push_str("  }\n\n");
         out.push_str("  root() {\n    return this.ui.root;\n  }\n");
         out.push_str("}\n\n");
+        out.push_str(&format!("module.exports = {};\n", self.form_name));
         out.push_str(&format!(
-            "module.exports = {{ {}: {} }};\n",
+            "module.exports.{} = {};\n",
             self.form_name, self.form_name
         ));
         out
@@ -962,7 +963,7 @@ impl DesignerDocument {
     }
 
     pub fn module_js(&self) -> String {
-        format!("module.exports = require('./view').{};\n", self.form_name)
+        String::from("module.exports = require('./view');\n")
     }
 
     fn has_paged_children(&self, parent_name: &str) -> bool {
