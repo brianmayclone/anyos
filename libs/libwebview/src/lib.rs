@@ -5423,6 +5423,15 @@ mod tests {
             .expect("node id")
     }
 
+    fn find_layout_box_by_node<'a>(bx: &'a LayoutBox, node_id: usize) -> Option<&'a LayoutBox> {
+        if bx.node_id == Some(node_id) {
+            return Some(bx);
+        }
+        bx.children
+            .iter()
+            .find_map(|child| find_layout_box_by_node(child, node_id))
+    }
+
     #[test]
     fn js_inserted_elements_are_restyled_against_external_css() {
         let mut wv = WebView::new(800, 600);
@@ -5551,6 +5560,32 @@ mod tests {
         assert!(!wv.node_is_submit_button(plain));
         assert!(!wv.node_is_submit_button(button));
         assert!(wv.node_is_submit_button(submit));
+    }
+
+    #[test]
+    fn search_textarea_is_single_line_submit_control() {
+        let mut wv = WebView::new(800, 600);
+        wv.set_url("https://www.google.de/");
+        wv.set_html_no_js(
+            r#"
+            <html><body>
+              <form id="f" action="/search">
+                <textarea id="q" name="q" rows="1"></textarea>
+                <input id="go" type="submit" value="Google Suche">
+              </form>
+            </body></html>
+            "#,
+        );
+        wv.relayout();
+
+        let dom = wv.dom().expect("dom");
+        let q = find_node_by_id(dom, "q");
+        let root = wv.layout_root_ref().expect("layout root");
+        let bx = find_layout_box_by_node(root, q).expect("query layout box");
+
+        assert!(matches!(bx.form_field, Some(FormFieldKind::TextInput)));
+        assert!(!bx.form_is_search);
+        assert!(bx.height <= 40);
     }
 }
 

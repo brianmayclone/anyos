@@ -299,6 +299,58 @@ pub enum FormFieldKind {
     Reset,
 }
 
+pub(super) fn textarea_should_use_single_line_search(dom: &Dom, node_id: NodeId) -> bool {
+    if dom.tag(node_id) != Some(Tag::Textarea) {
+        return false;
+    }
+
+    if attr_eq_ignore_ascii_case(dom, node_id, "name", "q")
+        || attr_eq_ignore_ascii_case(dom, node_id, "role", "searchbox")
+        || attr_contains_ignore_ascii_case(dom, node_id, "aria-label", "search")
+        || attr_contains_ignore_ascii_case(dom, node_id, "aria-label", "suche")
+        || attr_contains_ignore_ascii_case(dom, node_id, "title", "search")
+        || attr_contains_ignore_ascii_case(dom, node_id, "title", "suche")
+    {
+        return true;
+    }
+
+    let rows = dom
+        .attr(node_id, "rows")
+        .and_then(parse_attr_int)
+        .unwrap_or(2);
+    rows <= 1
+        && (attr_contains_ignore_ascii_case(dom, node_id, "class", "search")
+            || attr_contains_ignore_ascii_case(dom, node_id, "id", "search")
+            || attr_contains_ignore_ascii_case(dom, node_id, "placeholder", "search")
+            || attr_contains_ignore_ascii_case(dom, node_id, "placeholder", "suche"))
+}
+
+fn attr_eq_ignore_ascii_case(dom: &Dom, node_id: NodeId, name: &str, expected: &str) -> bool {
+    dom.attr(node_id, name)
+        .is_some_and(|value| value.eq_ignore_ascii_case(expected))
+}
+
+fn attr_contains_ignore_ascii_case(dom: &Dom, node_id: NodeId, name: &str, needle: &str) -> bool {
+    let Some(value) = dom.attr(node_id, name) else {
+        return false;
+    };
+    contains_ignore_ascii_case(value, needle)
+}
+
+fn contains_ignore_ascii_case(value: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let value = value.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.len() > value.len() {
+        return false;
+    }
+    value
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct Edges {
     pub top: i32,

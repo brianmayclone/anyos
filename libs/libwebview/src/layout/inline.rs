@@ -12,8 +12,8 @@ use crate::ImageCache;
 
 use super::{
     apply_text_transform, ascii_lower_str, font_size_px, image_dimensions, inherited_link,
-    is_ascii_ws, is_bold, is_italic, measure_text, parse_attr_int, size_attr_width, BoxType,
-    FormFieldKind, LayoutBox,
+    is_ascii_ws, is_bold, is_italic, measure_text, parse_attr_int, size_attr_width,
+    textarea_should_use_single_line_search, BoxType, FormFieldKind, LayoutBox,
 };
 
 /// Represents a single inline fragment before line-breaking.
@@ -1238,6 +1238,78 @@ fn collect_inline_fragments(
 
             // Handle <textarea>
             if *tag == Tag::Textarea {
+                if textarea_should_use_single_line_search(dom, node_id) {
+                    let style = styles.get(node_id);
+                    let cols = dom
+                        .attr(node_id, "cols")
+                        .and_then(parse_attr_int)
+                        .unwrap_or(20)
+                        .max(1);
+                    let resolve_control_width = |fallback: i32| -> i32 {
+                        if let Some(style) = style {
+                            if let Some(w) = style.width {
+                                return w.max(1);
+                            }
+                            if let Some(pct) = style.width_pct {
+                                return ((available_width.max(0) as i64 * pct as i64) / 10000).max(1)
+                                    as i32;
+                            }
+                            if let Some((px100, pct100)) = style.width_calc {
+                                return (px100 / 100
+                                    + (available_width.max(0) as i64 * pct100 as i64 / 10000)
+                                        as i32)
+                                    .max(1);
+                            }
+                        }
+                        fallback.max(1)
+                    };
+                    let resolve_control_height = |fallback: i32| -> i32 {
+                        if let Some(style) = style {
+                            if let Some(h) = style.height {
+                                return h.max(1);
+                            }
+                            if let Some((px100, _pct100)) = style.height_calc {
+                                return (px100 / 100).max(1);
+                            }
+                        }
+                        fallback.max(1)
+                    };
+                    let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
+                    apply_inline_control_style(&mut tf, style);
+                    let (w, h) = inline_control_outer_size(
+                        style,
+                        resolve_control_width((cols * 8).max(120)),
+                        resolve_control_height(28),
+                    );
+                    tf.form_field = Some(FormFieldKind::TextInput);
+                    // Google and several modern sites expose their search box
+                    // as `<textarea name=q rows=1>` so JS can grow it for
+                    // rich input.  Render it as a plain one-line text control:
+                    // using the OS SearchField would inject native icons and
+                    // padding that author CSS did not ask for.
+                    tf.form_is_search = false;
+                    tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
+                    tf.form_value = dom.attr(node_id, "value").map(String::from).or_else(|| {
+                        let text = dom.text_content(node_id);
+                        let trimmed = text.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(String::from(trimmed))
+                        }
+                    });
+                    tf.form_disabled = dom.attr(node_id, "disabled").is_some();
+                    tf.form_readonly = dom.attr(node_id, "readonly").is_some();
+                    tf.form_required = dom.attr(node_id, "required").is_some();
+                    out.push(InlineFragment {
+                        width: w,
+                        height: h,
+                        layout_box: tf,
+                        breaks_after: false,
+                    });
+                    return;
+                }
+
                 let cols = dom
                     .attr(node_id, "cols")
                     .and_then(parse_attr_int)
@@ -2475,6 +2547,14 @@ fn emit_word_fragments(
     out: &mut Vec<InlineFragment>,
     text_measure_cache: &mut TextMeasureCache,
 ) {
+    let normalized_text;
+    let text = if contains_html_space(text) {
+        normalized_text = normalize_html_spaces(text);
+        normalized_text.as_str()
+    } else {
+        text
+    };
+
     let trimmed = text.as_bytes();
     if trimmed.is_empty() {
         return;
@@ -2606,6 +2686,27 @@ fn emit_word_fragments(
             });
         }
     }
+}
+
+fn contains_html_space(text: &str) -> bool {
+    text.chars().any(|ch| {
+        matches!(
+            ch,
+            '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2009}' | '\u{202F}' | '\u{2060}'
+        )
+    })
+}
+
+fn normalize_html_spaces(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2009}' | '\u{202F}' => out.push(' '),
+            '\u{2060}' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn trim_trailing_collapsible_spaces(line: &mut LayoutBox) -> i32 {

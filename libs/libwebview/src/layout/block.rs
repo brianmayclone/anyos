@@ -15,7 +15,8 @@ use super::flex::layout_flex;
 use super::grid::layout_grid;
 use super::{
     apply_transform_translation, edges_from, font_size_px, image_dimensions, is_bold, is_italic,
-    layout_children_ex_with_budget, link_href, list_marker_for, BoxType, FormFieldKind, LayoutBox,
+    layout_children_ex_with_budget, link_href, list_marker_for,
+    textarea_should_use_single_line_search, BoxType, FormFieldKind, LayoutBox,
 };
 
 fn resolve_definite_block_calc(calc: (i32, i32), containing_height: i32) -> Option<i32> {
@@ -1087,7 +1088,17 @@ fn build_block_internal(
                 Some(String::from(trimmed))
             }
         });
-        bx.form_field = Some(FormFieldKind::Textarea);
+        if textarea_should_use_single_line_search(dom, node_id) {
+            let input_h = if let Some(h) = style.height { h } else { 28 };
+            bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
+            bx.form_field = Some(FormFieldKind::TextInput);
+            bx.form_is_search = false;
+            bx.form_disabled = dom.attr(node_id, "disabled").is_some();
+            bx.form_readonly = dom.attr(node_id, "readonly").is_some();
+            bx.form_required = dom.attr(node_id, "required").is_some();
+        } else {
+            bx.form_field = Some(FormFieldKind::Textarea);
+        }
         return bx;
     }
 

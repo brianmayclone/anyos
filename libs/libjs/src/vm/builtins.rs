@@ -558,11 +558,7 @@ impl Vm {
             );
             p.set_hidden(
                 String::from(native_symbol::WELL_KNOWN_REPLACE),
-                native_fn_with_length(
-                    "[Symbol.replace]",
-                    native_regexp::regexp_symbol_replace,
-                    2,
-                ),
+                native_fn_with_length("[Symbol.replace]", native_regexp::regexp_symbol_replace, 2),
             );
             p.set_hidden(
                 String::from(native_symbol::WELL_KNOWN_MATCH),
