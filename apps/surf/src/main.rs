@@ -2579,7 +2579,13 @@ fn queue_module_dependencies(
     source: &str,
     generation: u32,
 ) -> usize {
-    let specs = libwebview::js::extract_module_specifiers(source);
+    let page_url = state()
+        .tabs
+        .get(tab_index)
+        .and_then(|tab| tab.current_url.as_ref())
+        .map(module_url_key)
+        .unwrap_or_default();
+    let specs = libwebview::js::extract_module_specifiers_for_page(source, &page_url);
     if specs.is_empty() {
         return 0;
     }

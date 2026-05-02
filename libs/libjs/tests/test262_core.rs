@@ -3248,6 +3248,29 @@ fn date_utc_static() {
 }
 
 #[test]
+fn date_utc_instance_methods_alias_utc_only_runtime() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var d = new Date('2026-05-02T10:30:00Z');
+        d.getUTCFullYear() + '-' + (d.getUTCMonth() + 1) + '-' + d.getUTCDate()
+    "#
+        ),
+        "2026-5-2"
+    );
+    assert_eq!(
+        eval_str(
+            r#"
+        var d = new Date(0);
+        d.setUTCFullYear(2000);
+        d.getUTCFullYear()
+    "#
+        ),
+        "2000"
+    );
+}
+
+#[test]
 fn date_get_timezone_offset() {
     assert_eq!(eval_str("new Date().getTimezoneOffset()"), "0");
 }

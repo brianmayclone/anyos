@@ -452,6 +452,51 @@ fn npm_installs_multi_package_project_and_node_runs_it() {
 }
 
 #[test]
+#[ignore = "downloads larger CommonJS packages from the npm registry"]
+fn npm_installs_larger_packages_and_node_uses_their_apis() {
+    let root = temp_project("official-big-package");
+    copy_dir_recursive(&fixture_project("big-package-app"), &root);
+
+    let install = run_npm(
+        &[
+            "install",
+            "--no-audit",
+            "--registry",
+            libnode::DEFAULT_NPM_REGISTRY,
+        ],
+        &root,
+    );
+    assert!(
+        install.status.success(),
+        "npm process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(
+        root.join("node_modules").join("lodash").join("package.json").exists(),
+        "lodash package was not installed"
+    );
+    assert!(
+        root.join("node_modules").join("moment").join("package.json").exists(),
+        "moment package was not installed"
+    );
+
+    let script = root.join("src").join("app.js");
+    let run = run_node(&[script.to_str().unwrap()], &root);
+    assert!(
+        run.status.success(),
+        "node process failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("7:anyOsNodeRuntime:2026-05-02"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+#[test]
 fn zlib_roundtrips_sync_and_callback_helpers() {
     let root = temp_project("zlib");
     let main = root.join("main.js");

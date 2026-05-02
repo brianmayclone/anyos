@@ -68,26 +68,55 @@ pub fn ctor_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         native_fn("getFullYear", date_get_full_year),
     );
     obj.set(
+        String::from("getUTCFullYear"),
+        native_fn("getUTCFullYear", date_get_full_year),
+    );
+    obj.set(
         String::from("getMonth"),
         native_fn("getMonth", date_get_month),
     );
+    obj.set(
+        String::from("getUTCMonth"),
+        native_fn("getUTCMonth", date_get_month),
+    );
     obj.set(String::from("getDate"), native_fn("getDate", date_get_date));
+    obj.set(
+        String::from("getUTCDate"),
+        native_fn("getUTCDate", date_get_date),
+    );
     obj.set(String::from("getDay"), native_fn("getDay", date_get_day));
+    obj.set(String::from("getUTCDay"), native_fn("getUTCDay", date_get_day));
     obj.set(
         String::from("getHours"),
         native_fn("getHours", date_get_hours),
+    );
+    obj.set(
+        String::from("getUTCHours"),
+        native_fn("getUTCHours", date_get_hours),
     );
     obj.set(
         String::from("getMinutes"),
         native_fn("getMinutes", date_get_minutes),
     );
     obj.set(
+        String::from("getUTCMinutes"),
+        native_fn("getUTCMinutes", date_get_minutes),
+    );
+    obj.set(
         String::from("getSeconds"),
         native_fn("getSeconds", date_get_seconds),
     );
     obj.set(
+        String::from("getUTCSeconds"),
+        native_fn("getUTCSeconds", date_get_seconds),
+    );
+    obj.set(
         String::from("getMilliseconds"),
         native_fn("getMilliseconds", date_get_milliseconds),
+    );
+    obj.set(
+        String::from("getUTCMilliseconds"),
+        native_fn("getUTCMilliseconds", date_get_milliseconds),
     );
     obj.set(String::from("setTime"), native_fn("setTime", date_set_time));
     obj.set(
@@ -95,25 +124,53 @@ pub fn ctor_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         native_fn("setFullYear", date_set_full_year),
     );
     obj.set(
+        String::from("setUTCFullYear"),
+        native_fn("setUTCFullYear", date_set_full_year),
+    );
+    obj.set(
         String::from("setMonth"),
         native_fn("setMonth", date_set_month),
     );
+    obj.set(
+        String::from("setUTCMonth"),
+        native_fn("setUTCMonth", date_set_month),
+    );
     obj.set(String::from("setDate"), native_fn("setDate", date_set_date));
+    obj.set(
+        String::from("setUTCDate"),
+        native_fn("setUTCDate", date_set_date),
+    );
     obj.set(
         String::from("setHours"),
         native_fn("setHours", date_set_hours),
+    );
+    obj.set(
+        String::from("setUTCHours"),
+        native_fn("setUTCHours", date_set_hours),
     );
     obj.set(
         String::from("setMinutes"),
         native_fn("setMinutes", date_set_minutes),
     );
     obj.set(
+        String::from("setUTCMinutes"),
+        native_fn("setUTCMinutes", date_set_minutes),
+    );
+    obj.set(
         String::from("setSeconds"),
         native_fn("setSeconds", date_set_seconds),
     );
     obj.set(
+        String::from("setUTCSeconds"),
+        native_fn("setUTCSeconds", date_set_seconds),
+    );
+    obj.set(
         String::from("setMilliseconds"),
         native_fn("setMilliseconds", date_set_milliseconds),
+    );
+    obj.set(
+        String::from("setUTCMilliseconds"),
+        native_fn("setUTCMilliseconds", date_set_milliseconds),
     );
     obj.set(
         String::from("getTimezoneOffset"),
@@ -162,26 +219,55 @@ pub fn install_date_instance_methods(obj: &mut JsObject) {
         native_fn("getFullYear", date_get_full_year),
     );
     obj.set(
+        String::from("getUTCFullYear"),
+        native_fn("getUTCFullYear", date_get_full_year),
+    );
+    obj.set(
         String::from("getMonth"),
         native_fn("getMonth", date_get_month),
     );
+    obj.set(
+        String::from("getUTCMonth"),
+        native_fn("getUTCMonth", date_get_month),
+    );
     obj.set(String::from("getDate"), native_fn("getDate", date_get_date));
+    obj.set(
+        String::from("getUTCDate"),
+        native_fn("getUTCDate", date_get_date),
+    );
     obj.set(String::from("getDay"), native_fn("getDay", date_get_day));
+    obj.set(String::from("getUTCDay"), native_fn("getUTCDay", date_get_day));
     obj.set(
         String::from("getHours"),
         native_fn("getHours", date_get_hours),
+    );
+    obj.set(
+        String::from("getUTCHours"),
+        native_fn("getUTCHours", date_get_hours),
     );
     obj.set(
         String::from("getMinutes"),
         native_fn("getMinutes", date_get_minutes),
     );
     obj.set(
+        String::from("getUTCMinutes"),
+        native_fn("getUTCMinutes", date_get_minutes),
+    );
+    obj.set(
         String::from("getSeconds"),
         native_fn("getSeconds", date_get_seconds),
     );
     obj.set(
+        String::from("getUTCSeconds"),
+        native_fn("getUTCSeconds", date_get_seconds),
+    );
+    obj.set(
         String::from("getMilliseconds"),
         native_fn("getMilliseconds", date_get_milliseconds),
+    );
+    obj.set(
+        String::from("getUTCMilliseconds"),
+        native_fn("getUTCMilliseconds", date_get_milliseconds),
     );
     obj.set(String::from("setTime"), native_fn("setTime", date_set_time));
     obj.set(
@@ -189,25 +275,53 @@ pub fn install_date_instance_methods(obj: &mut JsObject) {
         native_fn("setFullYear", date_set_full_year),
     );
     obj.set(
+        String::from("setUTCFullYear"),
+        native_fn("setUTCFullYear", date_set_full_year),
+    );
+    obj.set(
         String::from("setMonth"),
         native_fn("setMonth", date_set_month),
     );
+    obj.set(
+        String::from("setUTCMonth"),
+        native_fn("setUTCMonth", date_set_month),
+    );
     obj.set(String::from("setDate"), native_fn("setDate", date_set_date));
+    obj.set(
+        String::from("setUTCDate"),
+        native_fn("setUTCDate", date_set_date),
+    );
     obj.set(
         String::from("setHours"),
         native_fn("setHours", date_set_hours),
+    );
+    obj.set(
+        String::from("setUTCHours"),
+        native_fn("setUTCHours", date_set_hours),
     );
     obj.set(
         String::from("setMinutes"),
         native_fn("setMinutes", date_set_minutes),
     );
     obj.set(
+        String::from("setUTCMinutes"),
+        native_fn("setUTCMinutes", date_set_minutes),
+    );
+    obj.set(
         String::from("setSeconds"),
         native_fn("setSeconds", date_set_seconds),
     );
     obj.set(
+        String::from("setUTCSeconds"),
+        native_fn("setUTCSeconds", date_set_seconds),
+    );
+    obj.set(
         String::from("setMilliseconds"),
         native_fn("setMilliseconds", date_set_milliseconds),
+    );
+    obj.set(
+        String::from("setUTCMilliseconds"),
+        native_fn("setUTCMilliseconds", date_set_milliseconds),
     );
     obj.set(
         String::from("getTimezoneOffset"),
@@ -493,7 +607,7 @@ pub fn date_set_milliseconds(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 /// `Date.UTC(year, month, ...)` — static method
-pub fn date_utc(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn date_utc(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let year = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
     let month = args.get(1).map(|v| v.to_number()).unwrap_or(0.0);
     let day = args.get(2).map(|v| v.to_number()).unwrap_or(1.0);
