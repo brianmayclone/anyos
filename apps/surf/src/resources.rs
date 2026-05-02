@@ -764,14 +764,14 @@ pub(crate) fn queue_images(
     // eager/high-priority images get a small bonus budget similar to browsers'
     // visible-first behaviour.
     let mut immediate_budget = if startup_critical_only {
-        4usize
+        12usize
     } else {
-        8usize
+        32usize
     };
     let mut high_priority_budget = if startup_critical_only {
-        2usize
+        8usize
     } else {
-        4usize
+        16usize
     };
     let mut deferred: Vec<(i32, crate::tab::DeferredImageRequest)> = Vec::new();
 

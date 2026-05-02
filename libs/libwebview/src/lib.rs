@@ -87,8 +87,15 @@ pub struct JsExecutionState {
 
 impl JsExecutionState {
     pub fn execute_script_source(&mut self, script: String) {
-        self.runtime
-            .execute_script_sources(&self.dom, &self.url, &[script]);
+        self.runtime.execute_script_sources_with_limits(
+            &self.dom,
+            &self.url,
+            &[script],
+            js::ScriptExecutionLimits {
+                max_scripts: 1,
+                max_script_bytes: None,
+            },
+        );
     }
 
     pub fn run_timers_with_budget(&mut self, delta_ms: u64, callback_budget: usize) -> usize {
