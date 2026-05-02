@@ -132,7 +132,14 @@ mod host {
                 headers.push(String::from(trimmed));
             }
         }
-        curl_request_with_method(url, method, &headers, Some(body))
+        let body_arg = if body.is_empty()
+            && (method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
+        {
+            None
+        } else {
+            Some(body)
+        };
+        curl_request_with_method(url, method, &headers, body_arg)
     }
 
     pub fn last_status() -> u32 {
@@ -173,7 +180,7 @@ mod host {
         let body_path = std::env::temp_dir().join(format!("{}.body", unique));
 
         let mut cmd = Command::new("curl");
-        cmd.arg("-fsSL")
+        cmd.arg("-sSL")
             .arg("--proto")
             .arg("=http,https")
             .arg("--max-time")
@@ -252,6 +259,8 @@ pub use host::*;
 
 #[cfg(not(feature = "host"))]
 mod imp {
+    use alloc::string::String;
+
     use super::*;
 
     dynlink::dll_exports! {
