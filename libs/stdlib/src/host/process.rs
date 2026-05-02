@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static NEXT_FAKE_PID: AtomicU32 = AtomicU32::new(10_000);
 
+pub const STILL_RUNNING: u32 = u32::MAX - 1;
+
 pub fn exit(code: u32) -> ! {
     std::process::exit(code as i32);
 }

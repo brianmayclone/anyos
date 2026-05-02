@@ -482,6 +482,50 @@ fn commonjs_entry_module_is_exposed_as_require_main() {
 }
 
 #[test]
+fn node_stack_trace_includes_entry_script_name() {
+    let root = temp_project("node-stack");
+    let script = root.join("main.js");
+    let source = "function first(){ second(); }\nfunction second(){ throw new Error('boom'); }\nfirst();";
+    let mut runtime = runtime_for(&root);
+    runtime.run_script(script.to_str().unwrap(), source);
+    let exception = runtime
+        .engine()
+        .last_exception()
+        .expect("expected thrown exception")
+        .clone();
+    let stack = exception.get_property("stack").to_js_string();
+    assert!(stack.contains("Error: boom"), "{stack}");
+    assert!(stack.contains("at second"), "{stack}");
+    assert!(stack.contains("at first"), "{stack}");
+    assert!(
+        stack.contains(script.to_str().unwrap()),
+        "stack should include source script path:\n{stack}"
+    );
+}
+
+#[test]
+fn npm_manifest_reads_dev_dependencies_by_default() {
+    let manifest = libnode::npm::PackageManifest::parse_or_new(Some(String::from(
+        r#"{
+  "dependencies": {
+    "left-pad": "1.3.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0"
+  }
+}"#,
+    )));
+    let prod = manifest.manifest_dependencies(false);
+    assert_eq!(prod.len(), 1);
+    assert_eq!(prod[0].name, "left-pad");
+
+    let all = manifest.manifest_dependencies(true);
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().any(|dep| dep.name == "left-pad"));
+    assert!(all.iter().any(|dep| dep.name == "eslint"));
+}
+
+#[test]
 #[ignore = "downloads packages from the npm registry"]
 fn npm_cli_accepts_common_flags_list_and_uninstall() {
     let root = temp_project("npm-cli");

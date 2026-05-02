@@ -52,7 +52,7 @@ impl NodeRuntime {
         self.install_commonjs_globals(path, &dirname);
         self.install_import_meta(path);
         self.preload_entry_node_modules_package_jsons(path);
-        self.engine.eval(&source)
+        self.engine.eval_named(&source, Some(path))
     }
 
     pub fn run_file(&mut self, path: &str) -> Result<JsValue, &'static str> {
@@ -339,7 +339,7 @@ impl NodeRuntime {
                     module_global.clone(),
                 );
                 let wrapped = self.wrap_commonjs_source(&module, &source);
-                self.engine.eval(&wrapped);
+                self.engine.eval_named(&wrapped, Some(&module.filename));
                 #[cfg(feature = "host")]
                 if std::env::var_os("LIBNODE_DEBUG_MODULES").is_some() {
                     if let Some(exc) = self.engine.last_exception() {

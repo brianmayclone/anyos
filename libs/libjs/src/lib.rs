@@ -57,6 +57,11 @@ impl JsEngine {
 
     /// Evaluate JavaScript source code and return the result.
     pub fn eval(&mut self, source: &str) -> JsValue {
+        self.eval_named(source, None)
+    }
+
+    /// Evaluate JavaScript source code with a source name used in stack traces.
+    pub fn eval_named(&mut self, source: &str, name: Option<&str>) -> JsValue {
         // Tokenize
         let tokens = lexer::Lexer::tokenize(source);
         #[cfg(feature = "host")]
@@ -107,7 +112,10 @@ impl JsEngine {
 
         // Compile (using eval mode to return the last expression's value)
         let mut compiler = compiler::Compiler::new();
-        let chunk = compiler.compile_eval(&program);
+        let mut chunk = compiler.compile_eval(&program);
+        if let Some(name) = name {
+            chunk.name = Some(alloc::string::String::from(name));
+        }
         #[cfg(feature = "host")]
         if std::env::var_os("LIBJS_DEBUG_PARSE").is_some() {
             std::eprintln!(

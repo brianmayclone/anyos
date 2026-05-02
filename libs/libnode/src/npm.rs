@@ -84,11 +84,19 @@ impl PackageManifest {
     }
 
     pub fn add_dependency(&mut self, spec: &PackageSpec) {
+        self.add_dependency_to("\"dependencies\"", spec);
+    }
+
+    pub fn add_dev_dependency(&mut self, spec: &PackageSpec) {
+        self.add_dependency_to("\"devDependencies\"", spec);
+    }
+
+    fn add_dependency_to(&mut self, field: &str, spec: &PackageSpec) {
         if self.data.contains(&format!("\"{}\"", spec.name)) {
             return;
         }
         let dep_line = format!("    \"{}\": \"{}\"", spec.name, spec.version);
-        if let Some(pos) = self.data.find("\"dependencies\"") {
+        if let Some(pos) = self.data.find(field) {
             if let Some(open_rel) = self.data[pos..].find('{') {
                 let open = pos + open_rel + 1;
                 let close = self.data[open..]
@@ -113,11 +121,40 @@ impl PackageManifest {
                 return;
             }
         }
-        self.data = format!("{{\n  \"dependencies\": {{\n{}\n  }}\n}}\n", dep_line);
+        self.insert_dependency_group(field, &dep_line);
+    }
+
+    fn insert_dependency_group(&mut self, field: &str, dep_line: &str) {
+        let key = field.trim_matches('"');
+        let group = format!("  \"{}\": {{\n{}\n  }}", key, dep_line);
+        let trimmed = self.data.trim();
+        if trimmed.starts_with('{') && trimmed.ends_with('}') {
+            let close = self.data.rfind('}').unwrap_or(self.data.len());
+            let before_close = self.data[..close].trim_end();
+            let needs_comma = before_close.len() > 1 && !before_close.ends_with('{');
+            let mut out = String::new();
+            out.push_str(before_close);
+            if needs_comma {
+                out.push(',');
+            }
+            out.push('\n');
+            out.push_str(&group);
+            out.push('\n');
+            out.push_str(&self.data[close..]);
+            self.data = out;
+        } else {
+            self.data = format!("{{\n{}\n}}\n", group);
+        }
     }
 
     pub fn remove_dependency(&mut self, name: &str) -> bool {
-        let Some(pos) = self.data.find("\"dependencies\"") else {
+        let mut changed = self.remove_dependency_from("\"dependencies\"", name);
+        changed = self.remove_dependency_from("\"devDependencies\"", name) || changed;
+        changed
+    }
+
+    fn remove_dependency_from(&mut self, field: &str, name: &str) -> bool {
+        let Some(pos) = self.data.find(field) else {
             return false;
         };
         let Some(open_rel) = self.data[pos..].find('{') else {
@@ -153,9 +190,29 @@ impl PackageManifest {
     }
 
     pub fn dependencies(&self) -> Vec<PackageSpec> {
+        self.dependency_group("\"dependencies\"")
+    }
+
+    pub fn dev_dependencies(&self) -> Vec<PackageSpec> {
+        self.dependency_group("\"devDependencies\"")
+    }
+
+    pub fn manifest_dependencies(&self, include_dev: bool) -> Vec<PackageSpec> {
+        let mut deps = self.dependencies();
+        if include_dev {
+            for dep in self.dev_dependencies() {
+                if !deps.iter().any(|existing| existing.name == dep.name) {
+                    deps.push(dep);
+                }
+            }
+        }
+        deps
+    }
+
+    fn dependency_group(&self, field: &str) -> Vec<PackageSpec> {
         self.data
-            .find("\"dependencies\"")
-            .and_then(|pos| json_object_field(&self.data[pos..], "\"dependencies\""))
+            .find(field)
+            .and_then(|pos| json_object_field(&self.data[pos..], field))
             .map(parse_dependency_object)
             .unwrap_or_default()
     }
@@ -310,6 +367,17 @@ pub struct InstallReport {
     pub installed: Vec<PackageSpec>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct InstallManifestOptions {
+    pub include_dev: bool,
+}
+
+impl Default for InstallManifestOptions {
+    fn default() -> Self {
+        Self { include_dev: true }
+    }
+}
+
 struct InstallLayout {
     node_modules_dir: String,
     bin_dir: String,
@@ -397,12 +465,22 @@ impl PackageInstaller {
         &self,
         root: &str,
     ) -> Result<InstallReport, String> {
+        self.install_manifest_dependencies_with_options_result(
+            root,
+            InstallManifestOptions::default(),
+        )
+    }
+
+    pub fn install_manifest_dependencies_with_options_result(
+        &self,
+        root: &str,
+        options: InstallManifestOptions,
+    ) -> Result<InstallReport, String> {
         let manifest_path = join_path(root, "package.json");
         let manifest = fs::read_to_string(&manifest_path)
             .map_err(|_| format!("could not read {}", manifest_path))?;
-        let deps = json_object_field(&manifest, "\"dependencies\"")
-            .map(parse_dependency_object)
-            .unwrap_or_default();
+        let deps = PackageManifest::parse_or_new(Some(manifest))
+            .manifest_dependencies(options.include_dev);
         let mut report = InstallReport {
             installed: Vec::new(),
         };

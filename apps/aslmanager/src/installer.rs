@@ -391,7 +391,7 @@ fn ensure_artifact(
 
 fn preflight_tmp_path(tmp: &str, label: &str) -> bool {
     let fd = fs::open(tmp, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
-    if fd == 0 || fd == u32::MAX {
+    if fd == u32::MAX {
         log_line(&format!(
             "{} download target is not writable: {}.",
             label, tmp
@@ -540,7 +540,7 @@ fn verified_artifact(path: &str, cfg: &ManagerConfig, kind: ArtifactKind) -> boo
 
 fn read_prefix(path: &str, buf: &mut [u8]) -> usize {
     let fd = fs::open(path, 0);
-    if fd == 0 || fd == u32::MAX {
+    if fd == u32::MAX {
         return 0;
     }
     let n = fs::read(fd, buf);

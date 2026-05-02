@@ -22,6 +22,8 @@ pub struct NpmCli {
     pub registry: String,
     pub global: bool,
     pub prefix: Option<String>,
+    pub include_dev: bool,
+    pub save_dev: bool,
 }
 
 pub fn parse(raw: &str) -> Result<NpmCli, String> {
@@ -29,6 +31,8 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
     let mut registry = String::from(libnode::DEFAULT_NPM_REGISTRY);
     let mut global = false;
     let mut prefix = None;
+    let mut include_dev = true;
+    let mut save_dev = false;
     let mut command: Option<String> = None;
     let mut positional = Vec::new();
     let mut yes = false;
@@ -43,6 +47,8 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
                     registry,
                     global,
                     prefix,
+                    include_dev,
+                    save_dev,
                 });
             }
             "-h" | "--help" | "help" => {
@@ -51,6 +57,8 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
                     registry,
                     global,
                     prefix,
+                    include_dev,
+                    save_dev,
                 });
             }
             "-g" | "--global" => {
@@ -59,6 +67,38 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
             }
             "-y" | "--yes" => {
                 yes = true;
+                idx += 1;
+            }
+            "-D" | "--save-dev" => {
+                save_dev = true;
+                idx += 1;
+            }
+            "--production" | "--only=prod" | "--only=production" | "--omit=dev" => {
+                include_dev = false;
+                idx += 1;
+            }
+            "--production=false" | "--include=dev" => {
+                include_dev = true;
+                idx += 1;
+            }
+            "--omit" => {
+                idx += 1;
+                let Some(value) = tokens.get(idx) else {
+                    return Err(String::from("--omit requires a value"));
+                };
+                if value == "dev" {
+                    include_dev = false;
+                }
+                idx += 1;
+            }
+            "--include" => {
+                idx += 1;
+                let Some(value) = tokens.get(idx) else {
+                    return Err(String::from("--include requires a value"));
+                };
+                if value == "dev" {
+                    include_dev = true;
+                }
                 idx += 1;
             }
             "-r" | "--registry" => {
@@ -157,6 +197,8 @@ pub fn parse(raw: &str) -> Result<NpmCli, String> {
         registry,
         global,
         prefix,
+        include_dev,
+        save_dev,
     })
 }
 
@@ -165,8 +207,6 @@ fn is_ignored_install_flag(token: &str) -> bool {
         token,
         "--save"
             | "--save-prod"
-            | "--save-dev"
-            | "-D"
             | "--save-optional"
             | "-O"
             | "--save-peer"
@@ -183,11 +223,9 @@ fn is_ignored_install_flag(token: &str) -> bool {
             | "--no-fund"
             | "--ignore-scripts"
             | "--foreground-scripts"
-    ) || token.starts_with("--omit=")
-        || token.starts_with("--include=")
-        || token.starts_with("--save-prefix=")
+    ) || token.starts_with("--save-prefix=")
 }
 
 fn option_consumes_next(token: &str) -> bool {
-    matches!(token, "--omit" | "--include" | "--save-prefix")
+    matches!(token, "--save-prefix")
 }

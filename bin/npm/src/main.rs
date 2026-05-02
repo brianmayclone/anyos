@@ -3,7 +3,8 @@
 
 use alloc::string::String;
 use libnode::npm::{
-    PackageInstaller, PackageManifest, PackageSpec, RegistryClient, RegistryConfig,
+    InstallManifestOptions, PackageInstaller, PackageManifest, PackageSpec, RegistryClient,
+    RegistryConfig,
 };
 
 mod cli;
@@ -34,10 +35,10 @@ fn npm_main() -> u32 {
             if cli.global {
                 npm_install_global(&packages, registry, &global_prefix);
             } else if packages.is_empty() {
-                npm_install_manifest(registry);
+                npm_install_manifest(registry, cli.include_dev);
             } else {
                 for package in packages {
-                    npm_install(&package, registry.clone());
+                    npm_install(&package, registry.clone(), cli.save_dev);
                 }
             }
         }
@@ -105,10 +106,10 @@ fn npm_uninstall(packages: &[String]) {
 
 fn npm_update(packages: &[String], registry: RegistryConfig) {
     if packages.is_empty() {
-        npm_install_manifest(registry);
+        npm_install_manifest(registry, true);
     } else {
         for package in packages {
-            npm_install(package, registry.clone());
+            npm_install(package, registry.clone(), false);
         }
     }
 }
@@ -135,7 +136,7 @@ fn npm_install_global(packages: &[String], registry: RegistryConfig, prefix: &st
 fn npm_list() {
     let data = anyos_std::fs::read_to_string("package.json").ok();
     let manifest = PackageManifest::parse_or_new(data);
-    for dep in manifest.dependencies() {
+    for dep in manifest.manifest_dependencies(true) {
         anyos_std::println!("{}@{}", dep.name, dep.version);
     }
 }
@@ -162,7 +163,7 @@ fn npm_outdated(registry: RegistryConfig) {
     let data = anyos_std::fs::read_to_string("package.json").ok();
     let manifest = PackageManifest::parse_or_new(data);
     let client = RegistryClient::new(registry);
-    for dep in manifest.dependencies() {
+    for dep in manifest.manifest_dependencies(true) {
         match client.fetch_metadata(&dep.name) {
             Some(metadata) => {
                 let latest = metadata
@@ -175,7 +176,7 @@ fn npm_outdated(registry: RegistryConfig) {
     }
 }
 
-fn npm_install(package: &str, registry: RegistryConfig) {
+fn npm_install(package: &str, registry: RegistryConfig, save_dev: bool) {
     let spec = PackageSpec::parse(package);
     let data = anyos_std::fs::read_to_string("package.json").ok();
     let mut manifest = PackageManifest::parse_or_new(data);
@@ -202,7 +203,11 @@ fn npm_install(package: &str, registry: RegistryConfig) {
         anyos_std::println!("npm: registry metadata unavailable, recording requested spec");
         spec.clone()
     };
-    manifest.add_dependency(&install_spec);
+    if save_dev {
+        manifest.add_dev_dependency(&install_spec);
+    } else {
+        manifest.add_dependency(&install_spec);
+    }
     if anyos_std::fs::write_bytes("package.json", manifest.as_str().as_bytes()).is_err() {
         anyos_std::println!("npm: could not update package.json");
         return;
@@ -219,9 +224,12 @@ fn npm_install(package: &str, registry: RegistryConfig) {
     }
 }
 
-fn npm_install_manifest(registry: RegistryConfig) {
+fn npm_install_manifest(registry: RegistryConfig, include_dev: bool) {
     let installer = PackageInstaller::new(registry);
-    match installer.install_manifest_dependencies_result(".") {
+    match installer.install_manifest_dependencies_with_options_result(
+        ".",
+        InstallManifestOptions { include_dev },
+    ) {
         Ok(report) => {
             anyos_std::println!("installed packages: {}", report.installed.len());
         }
