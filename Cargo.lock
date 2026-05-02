@@ -1279,6 +1279,7 @@ dependencies = [
  "anyos_std",
  "libhttp_client",
  "libjs",
+ "libtls",
  "libuv",
 ]
 

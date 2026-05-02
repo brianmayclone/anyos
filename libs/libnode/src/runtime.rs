@@ -69,7 +69,8 @@ impl NodeRuntime {
 
     pub fn run_event_loop_once(&mut self) -> usize {
         self.engine.vm().drain_microtasks();
-        let handled_io = modules::http::poll_servers(self.engine.vm());
+        let handled_io = modules::net::poll_servers(self.engine.vm())
+            + modules::http::poll_servers(self.engine.vm());
         if handled_io > 0 {
             return handled_io;
         }
@@ -134,6 +135,14 @@ impl NodeRuntime {
         let path = modules::path_module();
         self.engine.register_module_object("path", path.clone());
         self.engine.register_module_object("node:path", path);
+        let url = modules::url_module();
+        self.engine.register_module_object("url", url.clone());
+        self.engine.register_module_object("node:url", url);
+        let querystring = modules::querystring_module();
+        self.engine
+            .register_module_object("querystring", querystring.clone());
+        self.engine
+            .register_module_object("node:querystring", querystring);
         let os = modules::os_module();
         self.engine.register_module_object("os", os.clone());
         self.engine.register_module_object("node:os", os);
@@ -150,9 +159,18 @@ impl NodeRuntime {
         self.engine.register_module_object("node:buffer", buffer);
         self.engine
             .set_global("Buffer", modules::buffer::buffer_global());
+        let crypto = modules::crypto_module();
+        self.engine.register_module_object("crypto", crypto.clone());
+        self.engine.register_module_object("node:crypto", crypto);
         let events = modules::events_module();
         self.engine.register_module_object("events", events.clone());
         self.engine.register_module_object("node:events", events);
+        let util = modules::util_module();
+        self.engine.register_module_object("util", util.clone());
+        self.engine.register_module_object("node:util", util);
+        let stream = modules::stream_module();
+        self.engine.register_module_object("stream", stream.clone());
+        self.engine.register_module_object("node:stream", stream);
         let timers = modules::timers_module();
         self.engine.register_module_object("timers", timers.clone());
         self.engine.register_module_object("node:timers", timers);
@@ -284,7 +302,8 @@ impl NodeRuntime {
         let vm = self.engine.vm();
         vm.event_loop.has_microtasks()
             || vm.event_loop.has_pending_timers()
-            || modules::http::has_active_servers()
+            || modules::net::has_active_servers(vm)
+            || modules::http::has_active_servers(vm)
     }
 
     fn next_js_timer_delay_ms(&mut self) -> Option<u32> {

@@ -11,6 +11,7 @@ const SERVER_HANDLER_KEY: &str = "__node_http_handler__";
 const SERVER_PORT_KEY: &str = "__node_http_port__";
 const RESPONSE_SOCKET_KEY: &str = "__node_http_socket__";
 const RESPONSE_HEADERS_KEY: &str = "__node_http_headers__";
+const HTTP_SERVERS_KEY: &str = "__node_http_servers__";
 
 pub fn module() -> JsValue {
     let mut module = JsObject::new();
@@ -25,29 +26,30 @@ pub fn module() -> JsValue {
 
 pub fn poll_servers(vm: &mut Vm) -> usize {
     let mut handled = 0usize;
-    let servers = http_servers();
+    let servers = http_servers(vm);
     for server in servers {
         let listener = server.get_property(SERVER_LISTENER_KEY).to_number() as u32;
         if listener == 0 || listener == u32::MAX {
             continue;
         }
+        let mut listener_handle = tcp_handle(listener, libuv::UvHandleKind::TcpServer);
         loop {
-            let (socket, _ip, _port) = anyos_std::net::tcp_accept_nowait(listener);
-            if socket == u32::MAX {
+            let mut client = libuv::UvTcp::new();
+            if libuv::tcp_accept_nowait(&mut listener_handle, &mut client) != 0 {
                 break;
             }
-            if handle_socket(vm, server.clone(), socket) {
+            if handle_socket(vm, server.clone(), client.socket_id) {
                 handled += 1;
             } else {
-                anyos_std::net::tcp_close(socket);
+                libuv::tcp_close(&mut client);
             }
         }
     }
     handled
 }
 
-pub fn has_active_servers() -> bool {
-    http_servers()
+pub fn has_active_servers(vm: &Vm) -> bool {
+    http_servers(vm)
         .into_iter()
         .any(|server| server.get_property(SERVER_LISTENER_KEY).to_number() as u32 != 0)
 }
@@ -227,18 +229,18 @@ fn listen(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         .first()
         .map(|value| value.to_number().max(0.0) as u16)
         .unwrap_or(0);
-    let listener = anyos_std::net::tcp_listen(port, 128);
-    if listener == u32::MAX {
+    let mut listener = libuv::UvTcp::new();
+    if libuv::tcp_listen(&mut listener, port, 128) != 0 {
         vm.pending_exception = Some(vm.make_type_error(&format!("EADDRINUSE: {}", port)));
         return JsValue::Undefined;
     }
     vm.current_this.set_property(
         String::from(SERVER_LISTENER_KEY),
-        JsValue::Number(listener as f64),
+        JsValue::Number(listener.socket_id as f64),
     );
     vm.current_this
         .set_property(String::from(SERVER_PORT_KEY), JsValue::Number(port as f64));
-    register_server(vm.current_this.clone());
+    register_server(vm, vm.current_this.clone());
     if let Some(callback) = args
         .iter()
         .find(|value| matches!(value, JsValue::Function(_)))
@@ -254,7 +256,8 @@ fn close(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         .get_property(SERVER_LISTENER_KEY)
         .to_number() as u32;
     if listener != 0 && listener != u32::MAX {
-        anyos_std::net::tcp_close(listener);
+        let mut listener_handle = tcp_handle(listener, libuv::UvHandleKind::TcpServer);
+        libuv::tcp_close(&mut listener_handle);
     }
     vm.current_this
         .set_property(String::from(SERVER_LISTENER_KEY), JsValue::Number(0.0));
@@ -320,11 +323,12 @@ fn handle_socket(vm: &mut Vm, server: JsValue, socket: u32) -> bool {
 }
 
 fn read_http_request(socket: u32) -> Option<HttpRequest> {
+    let mut socket = tcp_handle(socket, libuv::UvHandleKind::Tcp);
     let mut data = Vec::new();
     let mut buf = [0u8; 1024];
     for _ in 0..128 {
-        let n = anyos_std::net::tcp_recv(socket, &mut buf);
-        if n == u32::MAX || n == 0 {
+        let n = libuv::tcp_read(&mut socket, &mut buf);
+        if n <= 0 {
             break;
         }
         data.extend_from_slice(&buf[..n as usize]);
@@ -499,8 +503,9 @@ fn response_end_with_value(res: JsValue, body_value: JsValue) {
         render_headers(&headers),
         body
     );
-    anyos_std::net::tcp_send(socket, response.as_bytes());
-    anyos_std::net::tcp_close(socket);
+    let mut socket = tcp_handle(socket, libuv::UvHandleKind::Tcp);
+    libuv::tcp_write(&mut socket, response.as_bytes());
+    libuv::tcp_close(&mut socket);
     res.set_property(String::from("__node_http_sent__"), JsValue::Bool(true));
 }
 
@@ -535,8 +540,9 @@ fn send_simple_response(socket: u32, status: u16, text: &str, body: &[u8]) {
         body.len(),
         core::str::from_utf8(body).unwrap_or("")
     );
-    anyos_std::net::tcp_send(socket, response.as_bytes());
-    anyos_std::net::tcp_close(socket);
+    let mut socket = tcp_handle(socket, libuv::UvHandleKind::Tcp);
+    libuv::tcp_write(&mut socket, response.as_bytes());
+    libuv::tcp_close(&mut socket);
 }
 
 fn status_text(status: u16) -> &'static str {
@@ -566,20 +572,29 @@ fn lower_ascii(input: &str) -> String {
         .collect()
 }
 
-fn register_server(server: JsValue) {
-    let servers = unsafe {
-        if HTTP_SERVERS.is_none() {
-            HTTP_SERVERS = Some(Vec::new());
-        }
-        HTTP_SERVERS.as_mut().unwrap()
-    };
+fn register_server(vm: &mut Vm, server: JsValue) {
+    let mut servers = http_servers(vm);
     if !servers.iter().any(|candidate| candidate.strict_eq(&server)) {
         servers.push(server);
     }
+    vm.globals
+        .borrow_mut()
+        .set_hidden(String::from(HTTP_SERVERS_KEY), JsValue::new_array(servers));
 }
 
-fn http_servers() -> Vec<JsValue> {
-    unsafe { HTTP_SERVERS.clone().unwrap_or_default() }
+fn http_servers(vm: &Vm) -> Vec<JsValue> {
+    match vm.globals.borrow().get(HTTP_SERVERS_KEY) {
+        JsValue::Array(array) => array.borrow().to_dense_vec(),
+        _ => Vec::new(),
+    }
+}
+
+fn tcp_handle(socket_id: u32, kind: libuv::UvHandleKind) -> libuv::UvTcp {
+    let mut handle = libuv::UvTcp::new();
+    handle.socket_id = socket_id;
+    handle.kind = kind;
+    handle.active = socket_id != u32::MAX;
+    handle
 }
 
 struct HttpRequest {
@@ -587,5 +602,3 @@ struct HttpRequest {
     url: String,
     headers: Vec<(String, String)>,
 }
-
-static mut HTTP_SERVERS: Option<Vec<JsValue>> = None;

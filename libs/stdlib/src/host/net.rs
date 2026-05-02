@@ -17,12 +17,12 @@ fn store_stream(stream: TcpStream) -> u32 {
     for (i, slot) in conns.iter_mut().enumerate() {
         if slot.is_none() {
             *slot = Some(stream);
-            return LISTENER_ID_BASE + i as u32;
+            return i as u32;
         }
     }
     let id = conns.len() as u32;
     conns.push(Some(stream));
-    LISTENER_ID_BASE + id
+    id
 }
 
 fn store_listener(listener: TcpListener) -> u32 {
@@ -30,12 +30,12 @@ fn store_listener(listener: TcpListener) -> u32 {
     for (i, slot) in listeners.iter_mut().enumerate() {
         if slot.is_none() {
             *slot = Some(listener);
-            return i as u32;
+            return LISTENER_ID_BASE + i as u32;
         }
     }
     let id = listeners.len() as u32;
     listeners.push(Some(listener));
-    id
+    LISTENER_ID_BASE + id
 }
 
 fn with_stream<F, R>(socket_id: u32, f: F) -> R

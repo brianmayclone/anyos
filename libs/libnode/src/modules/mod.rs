@@ -1,6 +1,7 @@
 pub mod assert;
 pub mod buffer;
 pub mod commonjs;
+pub mod crypto;
 pub mod events;
 pub mod fs;
 pub mod http;
@@ -9,7 +10,10 @@ pub mod net;
 pub mod os;
 pub mod path;
 pub mod process;
+pub mod querystring;
+pub mod stream;
 pub mod timers;
+pub mod url;
 pub mod util;
 pub mod uv;
 
@@ -18,6 +22,7 @@ pub use buffer::module as buffer_module;
 pub use commonjs::{
     module_object as commonjs_module, require as node_require, resolve as node_require_resolve,
 };
+pub use crypto::module as crypto_module;
 pub use events::module as events_module;
 pub use fs::module as fs_module;
 pub use http::module as http_module;
@@ -26,5 +31,9 @@ pub use net::module as net_module;
 pub use os::module as os_module;
 pub use path::module as path_module;
 pub use process::module as process_module;
+pub use querystring::module as querystring_module;
+pub use stream::module as stream_module;
 pub use timers::module as timers_module;
+pub use url::module as url_module;
+pub use util::module as util_module;
 pub use uv::module as uv_module;

@@ -87,6 +87,10 @@ fn make_buffer(bytes: Vec<u8>) -> JsValue {
     object(obj)
 }
 
+pub fn buffer_from_bytes(bytes: Vec<u8>) -> JsValue {
+    make_buffer(bytes)
+}
+
 fn bytes_to_array(bytes: Vec<u8>) -> JsValue {
     JsValue::new_array(
         bytes
@@ -108,6 +112,10 @@ fn read_buffer_bytes(value: &JsValue) -> Vec<u8> {
     }
 }
 
+pub fn buffer_to_bytes(value: &JsValue) -> Vec<u8> {
+    read_buffer_bytes(value)
+}
+
 fn buffer_bytes_from(value: Option<&JsValue>) -> Vec<u8> {
     match value {
         Some(JsValue::String(text)) => text.as_bytes().to_vec(),
@@ -125,4 +133,8 @@ fn buffer_bytes_from(value: Option<&JsValue>) -> Vec<u8> {
 
 fn is_buffer_value(value: &JsValue) -> bool {
     matches!(value, JsValue::Object(obj) if obj.borrow().internal_tag.as_deref() == Some(BUFFER_TAG))
+}
+
+pub fn is_buffer_like(value: &JsValue) -> bool {
+    is_buffer_value(value)
 }
