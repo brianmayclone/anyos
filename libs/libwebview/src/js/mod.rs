@@ -1919,6 +1919,7 @@ impl JsRuntime {
             "parseFloat",
             "isNaN",
             "isFinite",
+            "eval",
             "encodeURIComponent",
             "decodeURIComponent",
             "encodeURI",
@@ -4260,6 +4261,8 @@ mod tests {
                 globalThis.parseInt('10', 10) === 10 &&
                 window.isFinite(4) === true &&
                 window.isNaN(NaN) === true &&
+                typeof window.eval === 'function' &&
+                window.eval('1 + 2') === 3 &&
                 window.decodeURIComponent(encodeURIComponent('ä')) === 'ä';
         "#;
 

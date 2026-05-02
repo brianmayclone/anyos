@@ -181,6 +181,8 @@ pub struct Vm {
     pub userdata: *mut u8,
     /// Current `this` binding for the active native call.
     pub current_this: JsValue,
+    /// Property name currently being resolved through a native accessor.
+    pub current_property_name: String,
     /// Target frame depth for re-entrant run() calls (0 = run to completion).
     pub run_target_depth: usize,
     /// Pending exception set by native functions via `throw_native()`.
@@ -241,6 +243,7 @@ impl Vm {
             steps: 0,
             userdata: core::ptr::null_mut(),
             current_this: JsValue::Undefined,
+            current_property_name: String::new(),
             run_target_depth: 0,
             pending_exception: None,
             last_exception: None,
@@ -2028,13 +2031,23 @@ impl Vm {
                                     .unwrap_or(JsValue::Undefined);
                                 self.stack.push(val);
                             } else if let Some(getter) = self.find_getter(&obj, &key_str) {
+                                let previous_property_name = core::mem::replace(
+                                    &mut self.current_property_name,
+                                    key_str.clone(),
+                                );
                                 self.invoke_function(&getter, &[], obj.clone());
+                                self.current_property_name = previous_property_name;
                             } else {
                                 let val = self.get_property_with_proto(&obj, &key_str);
                                 self.stack.push(val);
                             }
                         } else if let Some(getter) = self.find_getter(&obj, &key_str) {
+                            let previous_property_name = core::mem::replace(
+                                &mut self.current_property_name,
+                                key_str.clone(),
+                            );
                             self.invoke_function(&getter, &[], obj.clone());
+                            self.current_property_name = previous_property_name;
                         } else {
                             let val = self.get_property_with_proto(&obj, &key_str);
                             self.stack.push(val);
@@ -2138,7 +2151,10 @@ impl Vm {
                             }
                         }
                     } else if let Some(setter) = self.find_setter(&obj, &key_str) {
+                        let previous_property_name =
+                            core::mem::replace(&mut self.current_property_name, key_str.clone());
                         let _ = self.call_value(&setter, &[val.clone()], obj.clone());
+                        self.current_property_name = previous_property_name;
                         if let Some(exc) = self.last_exception.take() {
                             self.stack.push(val);
                             if !self.handle_exception(exc) {
@@ -2352,7 +2368,12 @@ impl Vm {
                         let has_private = self.has_private_member(&obj, &private_name);
                         if has_private {
                             if let Some(getter) = self.find_getter(&obj, &private_name) {
+                                let previous_property_name = core::mem::replace(
+                                    &mut self.current_property_name,
+                                    private_name.clone(),
+                                );
                                 self.invoke_function(&getter, &[], obj.clone());
+                                self.current_property_name = previous_property_name;
                             } else {
                                 let val = self.get_property_with_proto(&obj, &private_name);
                                 self.stack.push(val);
@@ -2363,7 +2384,12 @@ impl Vm {
                             if !matches!(proto_val, JsValue::Undefined) {
                                 // Private getter without getter on this brand
                                 if let Some(getter) = self.find_getter(&obj, &private_name) {
+                                    let previous_property_name = core::mem::replace(
+                                        &mut self.current_property_name,
+                                        private_name.clone(),
+                                    );
                                     self.invoke_function(&getter, &[], obj.clone());
+                                    self.current_property_name = previous_property_name;
                                 } else {
                                     self.stack.push(proto_val);
                                 }
@@ -2384,7 +2410,10 @@ impl Vm {
                                 .unwrap_or(JsValue::Undefined);
                             self.stack.push(val);
                         } else if let Some(getter) = self.find_getter(&obj, &name) {
+                            let previous_property_name =
+                                core::mem::replace(&mut self.current_property_name, name.clone());
                             self.invoke_function(&getter, &[], obj.clone());
+                            self.current_property_name = previous_property_name;
                         } else {
                             // Slow-path lookup that also walks the prototype
                             // chain so the IC slot can be repopulated for
@@ -2413,7 +2442,10 @@ impl Vm {
                             }
                         }
                     } else if let Some(getter) = self.find_getter(&obj, &name) {
+                        let previous_property_name =
+                            core::mem::replace(&mut self.current_property_name, name.clone());
                         self.invoke_function(&getter, &[], obj.clone());
+                        self.current_property_name = previous_property_name;
                     } else {
                         let val = self.get_property_with_proto(&obj, &name);
                         self.stack.push(val);
@@ -2582,7 +2614,10 @@ impl Vm {
                     } else {
                         // Check for setter (accessor property)
                         if let Some(setter) = self.find_setter(&obj, &name) {
+                            let previous_property_name =
+                                core::mem::replace(&mut self.current_property_name, name.clone());
                             let _ = self.call_value(&setter, &[val.clone()], obj.clone());
+                            self.current_property_name = previous_property_name;
                             if let Some(exc) = self.last_exception.take() {
                                 self.stack.push(val);
                                 if !self.handle_exception(exc) {
@@ -3929,7 +3964,10 @@ impl Vm {
             }
         }
         if let Some(getter) = self.find_getter(obj, key) {
+            let previous_property_name =
+                core::mem::replace(&mut self.current_property_name, String::from(key));
             let result = self.call_value(&getter, &[], obj.clone());
+            self.current_property_name = previous_property_name;
             // Propagate unhandled exceptions from getter call
             if let Some(exc) = self.last_exception.take() {
                 self.pending_exception = Some(exc);
@@ -4007,7 +4045,10 @@ impl Vm {
         }
 
         if let Some(setter) = self.find_setter(obj, key) {
+            let previous_property_name =
+                core::mem::replace(&mut self.current_property_name, String::from(key));
             let _ = self.call_value(&setter, &[value], obj.clone());
+            self.current_property_name = previous_property_name;
             if let Some(exc) = self.last_exception.take() {
                 self.pending_exception = Some(exc);
             }

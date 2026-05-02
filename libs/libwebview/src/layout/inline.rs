@@ -24,6 +24,75 @@ struct InlineFragment {
     breaks_after: bool,
 }
 
+const TEXT_MEASURE_CACHE_BUCKETS: usize = 2048;
+const INLINE_WRAP_EPSILON_PX: i32 = 16;
+
+struct TextMeasureCacheEntry {
+    text: String,
+    text_hash: u64,
+    font_size: i32,
+    custom_font_id: u32,
+    bold: bool,
+    italic: bool,
+    size: (i32, i32),
+}
+
+struct TextMeasureCache {
+    buckets: Vec<Option<TextMeasureCacheEntry>>,
+}
+
+impl TextMeasureCache {
+    fn new() -> Self {
+        let mut buckets = Vec::new();
+        buckets.resize_with(TEXT_MEASURE_CACHE_BUCKETS, || None);
+        TextMeasureCache { buckets }
+    }
+
+    fn measure(
+        &mut self,
+        text: &str,
+        font_size: i32,
+        custom_font_id: u32,
+        bold: bool,
+        italic: bool,
+    ) -> (i32, i32) {
+        let text_hash = hash_text_measure_key(text);
+        let idx = text_hash as usize & (TEXT_MEASURE_CACHE_BUCKETS - 1);
+        if let Some(entry) = self.buckets[idx].as_ref() {
+            if entry.text_hash == text_hash
+                && entry.font_size == font_size
+                && entry.custom_font_id == custom_font_id
+                && entry.bold == bold
+                && entry.italic == italic
+                && entry.text == text
+            {
+                return entry.size;
+            }
+        }
+
+        let size = measure_text(text, font_size, custom_font_id, bold, italic);
+        self.buckets[idx] = Some(TextMeasureCacheEntry {
+            text: String::from(text),
+            text_hash,
+            font_size,
+            custom_font_id,
+            bold,
+            italic,
+            size,
+        });
+        size
+    }
+}
+
+fn hash_text_measure_key(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &b in text.as_bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash ^ ((text.len() as u64) << 32)
+}
+
 fn apply_inline_control_style(bx: &mut LayoutBox, style: Option<&ComputedStyle>) {
     let Some(style) = style else {
         return;
@@ -251,6 +320,7 @@ pub fn layout_inline_content_with_pseudo(
 
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
+    let mut text_measure_cache = TextMeasureCache::new();
 
     // Inject parent's ::before pseudo-element as first fragment (inline display only).
     if let Some(bps) = before_ps {
@@ -264,7 +334,7 @@ pub fn layout_inline_content_with_pseudo(
                     .as_ref()
                     .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                     .unwrap_or(0);
-                let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
+                let (tw, th) = text_measure_cache.measure(text, fs, custom_font_id, bold, italic);
                 let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, bps.color);
                 tb.custom_font_id = custom_font_id;
                 tb.bg_color = bps.background_color;
@@ -291,6 +361,7 @@ pub fn layout_inline_content_with_pseudo(
             pseudo,
             cid,
             &mut fragments,
+            &mut text_measure_cache,
             available_width,
             images,
             0,
@@ -310,7 +381,7 @@ pub fn layout_inline_content_with_pseudo(
                     .as_ref()
                     .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                     .unwrap_or(0);
-                let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
+                let (tw, th) = text_measure_cache.measure(text, fs, custom_font_id, bold, italic);
                 let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, aps.color);
                 tb.custom_font_id = custom_font_id;
                 tb.bg_color = aps.background_color;
@@ -372,12 +443,7 @@ pub fn layout_inline_content_with_pseudo(
 
         // Check if we need to wrap.
         if line_x > 0
-            && line_x + fw
-                > (if lines.is_empty() {
-                    available_width
-                } else {
-                    available_width
-                })
+            && line_x + fw > available_width + INLINE_WRAP_EPSILON_PX
             && !line.children.is_empty()
         {
             line_h = trim_trailing_collapsible_spaces(&mut line);
@@ -595,6 +661,7 @@ fn collect_inline_fragments(
     pseudo: &PseudoStyles,
     node_id: NodeId,
     out: &mut Vec<InlineFragment>,
+    text_measure_cache: &mut TextMeasureCache,
     available_width: i32,
     images: &ImageCache,
     inherited_bg: u32,
@@ -688,6 +755,7 @@ fn collect_inline_fragments(
                     link,
                     deco,
                     out,
+                    text_measure_cache,
                 );
             } else if style.white_space == WhiteSpace::Nowrap {
                 emit_nowrap_fragments(
@@ -700,6 +768,7 @@ fn collect_inline_fragments(
                     link,
                     deco,
                     out,
+                    text_measure_cache,
                 );
             } else {
                 emit_word_fragments(
@@ -714,6 +783,7 @@ fn collect_inline_fragments(
                     style.letter_spacing,
                     style.word_spacing,
                     out,
+                    text_measure_cache,
                 );
             }
             // Propagate inherited background color to newly emitted text fragments.
@@ -1306,11 +1376,13 @@ fn collect_inline_fragments(
                     .as_ref()
                     .and_then(|family| crate::lookup_web_font_variant(family, bold, italic))
                     .unwrap_or(0);
-                let (tw, _) = measure_text(selected_text, fs, custom_font_id, bold, italic);
+                let (tw, _) =
+                    text_measure_cache.measure(selected_text, fs, custom_font_id, bold, italic);
                 // Width: max of all option widths + padding for arrow
                 let mut max_w = tw;
                 for opt_label in labels.split('|') {
-                    let (ow, _) = measure_text(opt_label, fs, custom_font_id, bold, italic);
+                    let (ow, _) =
+                        text_measure_cache.measure(opt_label, fs, custom_font_id, bold, italic);
                     if ow > max_w {
                         max_w = ow;
                     }
@@ -1582,7 +1654,8 @@ fn collect_inline_fragments(
                                     crate::lookup_web_font_variant(family, bold, italic)
                                 })
                                 .unwrap_or(0);
-                            let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
+                            let (tw, th) =
+                                text_measure_cache.measure(text, fs, custom_font_id, bold, italic);
                             let mut tb =
                                 LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
                             tb.custom_font_id = custom_font_id;
@@ -1658,6 +1731,7 @@ fn collect_inline_fragments(
                     pseudo,
                     cid,
                     out,
+                    text_measure_cache,
                     available_width,
                     images,
                     child_bg,
@@ -1703,7 +1777,8 @@ fn collect_inline_fragments(
                                     crate::lookup_web_font_variant(family, bold, italic)
                                 })
                                 .unwrap_or(0);
-                            let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
+                            let (tw, th) =
+                                text_measure_cache.measure(text, fs, custom_font_id, bold, italic);
                             let mut tb =
                                 LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
                             tb.custom_font_id = custom_font_id;
@@ -1772,13 +1847,21 @@ fn emit_nowrap_fragments(
     link: Option<String>,
     deco: TextDeco,
     out: &mut Vec<InlineFragment>,
+    text_measure_cache: &mut TextMeasureCache,
 ) {
     let collapsed = collapse_whitespace(text);
     if collapsed.is_empty() {
         return;
     }
-    let custom_font_id = usable_text_font_id(&collapsed, font_size, custom_font_id, bold, italic);
-    let (w, h) = measure_text(&collapsed, font_size, custom_font_id, bold, italic);
+    let custom_font_id = usable_text_font_id(
+        &collapsed,
+        font_size,
+        custom_font_id,
+        bold,
+        italic,
+        text_measure_cache,
+    );
+    let (w, h) = text_measure_cache.measure(&collapsed, font_size, custom_font_id, bold, italic);
     let mut wbox = LayoutBox::new_text(collapsed, font_size, bold, italic, color);
     wbox.custom_font_id = custom_font_id;
     wbox.link_url = link;
@@ -1797,11 +1880,12 @@ fn usable_text_font_id(
     custom_font_id: u32,
     bold: bool,
     italic: bool,
+    text_measure_cache: &mut TextMeasureCache,
 ) -> u32 {
     if custom_font_id == 0 || text.trim().is_empty() {
         return custom_font_id;
     }
-    let (w, _) = measure_text(text, font_size, custom_font_id, bold, italic);
+    let (w, _) = text_measure_cache.measure(text, font_size, custom_font_id, bold, italic);
     if w <= 0 {
         0
     } else {
@@ -2389,6 +2473,7 @@ fn emit_word_fragments(
     letter_spacing: i32,
     word_spacing: i32,
     out: &mut Vec<InlineFragment>,
+    text_measure_cache: &mut TextMeasureCache,
 ) {
     let trimmed = text.as_bytes();
     if trimmed.is_empty() {
@@ -2428,8 +2513,15 @@ fn emit_word_fragments(
         // We emit a zero-height space so the word-spacing gap is preserved without
         // affecting the line box height calculation.
         if has_leading_space {
-            let font_id = usable_text_font_id(" ", font_size, custom_font_id, bold, italic);
-            let (sw, _sh) = measure_text(" ", font_size, font_id, bold, italic);
+            let font_id = usable_text_font_id(
+                " ",
+                font_size,
+                custom_font_id,
+                bold,
+                italic,
+                text_measure_cache,
+            );
+            let (sw, _sh) = text_measure_cache.measure(" ", font_size, font_id, bold, italic);
             let mut space_box =
                 LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
             space_box.custom_font_id = font_id;
@@ -2446,8 +2538,15 @@ fn emit_word_fragments(
     }
 
     if has_leading_space {
-        let font_id = usable_text_font_id(" ", font_size, custom_font_id, bold, italic);
-        let (sw, sh) = measure_text(" ", font_size, font_id, bold, italic);
+        let font_id = usable_text_font_id(
+            " ",
+            font_size,
+            custom_font_id,
+            bold,
+            italic,
+            text_measure_cache,
+        );
+        let (sw, sh) = text_measure_cache.measure(" ", font_size, font_id, bold, italic);
         let mut space_box = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
         space_box.custom_font_id = font_id;
         space_box.link_url = link.clone();
@@ -2461,8 +2560,15 @@ fn emit_word_fragments(
     }
 
     for (wi, word) in words.iter().enumerate() {
-        let font_id = usable_text_font_id(word, font_size, custom_font_id, bold, italic);
-        let (ww, wh) = measure_text(word, font_size, font_id, bold, italic);
+        let font_id = usable_text_font_id(
+            word,
+            font_size,
+            custom_font_id,
+            bold,
+            italic,
+            text_measure_cache,
+        );
+        let (ww, wh) = text_measure_cache.measure(word, font_size, font_id, bold, italic);
         // Apply letter-spacing: add extra pixels per character.
         let letter_extra = letter_spacing * (word.len().max(1) as i32 - 1).max(0);
         let mut wbox = LayoutBox::new_text(String::from(*word), font_size, bold, italic, color);
@@ -2478,8 +2584,15 @@ fn emit_word_fragments(
 
         let need_space = wi + 1 < words.len() || has_trailing_space;
         if need_space {
-            let space_font_id = usable_text_font_id(" ", font_size, custom_font_id, bold, italic);
-            let (sw, sh) = measure_text(" ", font_size, space_font_id, bold, italic);
+            let space_font_id = usable_text_font_id(
+                " ",
+                font_size,
+                custom_font_id,
+                bold,
+                italic,
+                text_measure_cache,
+            );
+            let (sw, sh) = text_measure_cache.measure(" ", font_size, space_font_id, bold, italic);
             // Apply word-spacing: add extra pixels to space between words.
             let mut sbox = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
             sbox.custom_font_id = space_font_id;
@@ -2522,6 +2635,7 @@ fn emit_preformatted_fragments(
     link: Option<String>,
     deco: TextDeco,
     out: &mut Vec<InlineFragment>,
+    text_measure_cache: &mut TextMeasureCache,
 ) {
     let bytes = text.as_bytes();
     let len = bytes.len();
@@ -2535,7 +2649,8 @@ fn emit_preformatted_fragments(
 
         if start < i {
             if let Ok(seg) = core::str::from_utf8(&bytes[start..i]) {
-                let (sw, sh) = measure_text(seg, font_size, custom_font_id, bold, italic);
+                let (sw, sh) =
+                    text_measure_cache.measure(seg, font_size, custom_font_id, bold, italic);
                 let mut sbox =
                     LayoutBox::new_text(String::from(seg), font_size, bold, italic, color);
                 sbox.custom_font_id = custom_font_id;

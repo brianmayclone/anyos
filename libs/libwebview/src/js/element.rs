@@ -123,6 +123,8 @@ fn compute_sibling_ids(
 pub fn populate_element_prototype(proto: &JsValue) {
     use libjs::vm::native_fn;
     proto.set_property(String::from("isConnected"), JsValue::Bool(true));
+    install_event_handler_accessors_value(proto);
+    install_reflected_accessors_value(proto, ELEMENT_REFLECTED_PROPERTIES);
     // Node interface
     proto.set_property(
         String::from("appendChild"),
@@ -158,6 +160,10 @@ pub fn populate_element_prototype(proto: &JsValue) {
     proto.set_property(
         String::from("setAttribute"),
         native_fn("setAttribute", el_set_attribute),
+    );
+    proto.set_property(
+        String::from("setAttributeNode"),
+        native_fn("setAttributeNode", el_set_attribute_node),
     );
     proto.set_property(
         String::from("removeAttribute"),
@@ -273,6 +279,26 @@ pub fn populate_element_prototype(proto: &JsValue) {
     );
 }
 
+pub fn populate_node_prototype(proto: &JsValue) {
+    proto.set_property(
+        String::from("appendChild"),
+        native_fn("appendChild", el_append_child),
+    );
+    proto.set_property(
+        String::from("removeChild"),
+        native_fn("removeChild", el_remove_child),
+    );
+    proto.set_property(
+        String::from("insertBefore"),
+        native_fn("insertBefore", el_insert_before),
+    );
+    proto.set_property(
+        String::from("replaceChild"),
+        native_fn("replaceChild", el_replace_child),
+    );
+    install_reflected_accessors_value(proto, NODE_REFLECTED_PROPERTIES);
+}
+
 /// `previousElementSibling`) are computed one level deep: the returned sibling
 /// objects themselves have `Null` for their own siblings, preventing O(N²)
 /// allocation chains for large flat lists. Full sibling traversal loops should
@@ -363,6 +389,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     if let JsValue::Function(func) = prototype_ctor {
         obj.prototype = func.borrow().prototype.clone();
     }
+    install_event_handler_accessors(&mut obj);
 
     // Identity.
     obj.set(String::from("__nodeId"), JsValue::Number(node_id as f64));
@@ -861,6 +888,7 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     // el.textContent = "x" record DOM mutations.
     obj.set_hook = Some(dom_property_hook);
     obj.set_hook_data = node_id as usize as *mut u8;
+    install_reflected_accessors(&mut obj, INSTANCE_REFLECTED_PROPERTIES);
 
     let result = JsValue::Object(Rc::new(RefCell::new(obj)));
 
@@ -918,6 +946,233 @@ fn html_constructor_for_tag_name(tag_name: &str) -> &'static str {
         "SVG" => "SVGSVGElement",
         _ => "HTMLElement",
     }
+}
+
+const EVENT_HANDLER_PROPERTIES: &[&str] = &[
+    "onabort",
+    "onauxclick",
+    "onblur",
+    "oncancel",
+    "onchange",
+    "onclick",
+    "onclose",
+    "oncontextmenu",
+    "ondblclick",
+    "onerror",
+    "onfocus",
+    "oninput",
+    "onkeydown",
+    "onkeypress",
+    "onkeyup",
+    "onload",
+    "onmousedown",
+    "onmouseenter",
+    "onmouseleave",
+    "onmousemove",
+    "onmouseout",
+    "onmouseover",
+    "onmouseup",
+    "onreadystatechange",
+    "onscroll",
+    "onsubmit",
+    "ontouchstart",
+    "ontouchmove",
+    "ontouchend",
+    "onwheel",
+];
+
+const NODE_REFLECTED_PROPERTIES: &[&str] = &["textContent"];
+
+const ELEMENT_REFLECTED_PROPERTIES: &[&str] = &[
+    "className",
+    "innerHTML",
+    "textContent",
+    "innerText",
+    "nodeValue",
+    "data",
+];
+
+const INSTANCE_REFLECTED_PROPERTIES: &[&str] = &[
+    "className",
+    "innerHTML",
+    "textContent",
+    "innerText",
+    "nodeValue",
+    "data",
+    "value",
+    "src",
+    "srcdoc",
+    "contentDocument",
+    "contentWindow",
+    "href",
+    "content",
+    "httpEquiv",
+    "text",
+    "id",
+    "name",
+    "type",
+    "alt",
+    "target",
+    "rel",
+    "title",
+];
+
+pub fn install_reflected_accessors_value(value: &JsValue, names: &[&str]) {
+    if let JsValue::Object(obj) = value {
+        install_reflected_accessors(&mut obj.borrow_mut(), names);
+    }
+}
+
+fn install_reflected_accessors(obj: &mut JsObject, names: &[&str]) {
+    for name in names {
+        obj.properties.insert(
+            String::from(*name),
+            Property::accessor(
+                Some(native_fn(
+                    "get reflected DOM property",
+                    el_reflected_property_get,
+                )),
+                Some(native_fn(
+                    "set reflected DOM property",
+                    el_reflected_property_set,
+                )),
+            ),
+        );
+    }
+}
+
+fn reflected_storage_name(name: &str) -> String {
+    let mut stored = String::from("__dom_prop_");
+    stored.push_str(name);
+    stored
+}
+
+fn reflected_attribute_name(name: &str) -> &str {
+    match name {
+        "className" => "class",
+        "httpEquiv" => "http-equiv",
+        "srcSet" => "srcset",
+        "fetchPriority" => "fetchpriority",
+        _ => name,
+    }
+}
+
+fn el_reflected_property_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let name = vm.current_property_name.clone();
+    let stored = vm.current_this.get_property(&reflected_storage_name(&name));
+    if !stored.is_undefined() {
+        return stored;
+    }
+
+    match name.as_str() {
+        "textContent" | "innerText" | "nodeValue" | "data" | "text" => {
+            JsValue::String(read_text_content(vm, this_node_id(vm)))
+        }
+        "innerHTML" => JsValue::String(read_inner_html(vm, this_node_id(vm))),
+        "contentWindow" => vm.get_global("window"),
+        "contentDocument" => vm.get_global("document"),
+        _ => match read_attribute(vm, this_node_id(vm), reflected_attribute_name(&name)) {
+            JsValue::String(s) => JsValue::String(s),
+            _ => JsValue::String(String::new()),
+        },
+    }
+}
+
+fn el_reflected_property_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = vm.current_property_name.clone();
+    let value = args.first().cloned().unwrap_or(JsValue::Undefined);
+    vm.current_this
+        .set_property(reflected_storage_name(&name), value.clone());
+
+    let nid = this_node_id(vm);
+    if let Some(bridge) = get_bridge(vm) {
+        match name.as_str() {
+            "textContent" | "innerText" | "nodeValue" | "data" | "text" => {
+                bridge.mutations.push(DomMutation::SetTextContent {
+                    node_id: nid,
+                    text: value.to_js_string(),
+                });
+            }
+            "innerHTML" => {
+                bridge.mutations.push(DomMutation::SetInnerHTML {
+                    node_id: nid,
+                    html: value.to_js_string(),
+                });
+            }
+            "contentWindow" | "contentDocument" => {}
+            _ => {
+                bridge.mutations.push(DomMutation::SetAttribute {
+                    node_id: nid,
+                    name: String::from(reflected_attribute_name(&name)),
+                    value: value.to_js_string(),
+                });
+            }
+        }
+    }
+
+    JsValue::Undefined
+}
+
+pub fn install_event_handler_accessors_value(value: &JsValue) {
+    if let JsValue::Object(obj) = value {
+        install_event_handler_accessors(&mut obj.borrow_mut());
+    }
+}
+
+fn install_event_handler_accessors(obj: &mut JsObject) {
+    for name in EVENT_HANDLER_PROPERTIES {
+        obj.properties.insert(
+            String::from(*name),
+            Property::accessor(
+                Some(native_fn("get event handler", el_event_handler_get)),
+                Some(native_fn("set event handler", el_event_handler_set)),
+            ),
+        );
+    }
+}
+
+fn event_handler_storage_name(name: &str) -> String {
+    let mut stored = String::from("__event_handler_");
+    stored.push_str(name);
+    stored
+}
+
+fn el_event_handler_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let name = vm.current_property_name.clone();
+    let value = vm
+        .current_this
+        .get_property(&event_handler_storage_name(&name));
+    if value.is_undefined() {
+        JsValue::Null
+    } else {
+        value
+    }
+}
+
+fn el_event_handler_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = vm.current_property_name.clone();
+    let callback = args.first().cloned().unwrap_or(JsValue::Null);
+    vm.current_this
+        .set_property(event_handler_storage_name(&name), callback.clone());
+
+    if matches!(callback, JsValue::Function(_) | JsValue::Object(_)) {
+        let nid = this_node_id(vm);
+        if let Some(bridge) = get_bridge(vm) {
+            let event = if let Some(stripped) = name.strip_prefix("on") {
+                String::from(stripped)
+            } else {
+                name
+            };
+            bridge.event_listeners.push(super::EventListener {
+                node_id: if nid >= 0 { nid as usize } else { usize::MAX },
+                event,
+                callback,
+                capture: false,
+            });
+        }
+    }
+
+    JsValue::Undefined
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1360,6 +1615,20 @@ fn el_set_attribute(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     }
     JsValue::Undefined
+}
+
+fn el_set_attribute_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let attr = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let mut name = attr.get_property("name").to_js_string();
+    if name.is_empty() {
+        name = attr.get_property("nodeName").to_js_string();
+    }
+    if name.is_empty() {
+        return JsValue::Null;
+    }
+    let value = attr.get_property("value").to_js_string();
+    el_set_attribute(vm, &[JsValue::String(name), JsValue::String(value)]);
+    attr
 }
 
 // ═══════════════════════════════════════════════════════════

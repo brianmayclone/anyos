@@ -15,6 +15,8 @@ use super::block::{
 };
 use super::LayoutBox;
 
+const TEXT_MAX_CONTENT_SAFETY_PX: i32 = 6;
+
 struct FlexItem {
     node_id: NodeId,
     grow: i32,
@@ -233,7 +235,7 @@ pub(super) fn measure_max_content(
             st.letter_spacing,
             st.word_spacing,
         );
-        return tw;
+        return tw + TEXT_MAX_CONTENT_SAFETY_PX;
     }
 
     // Image → use image dimensions or CSS width.

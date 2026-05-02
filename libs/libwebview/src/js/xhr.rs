@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use libjs::value::JsObject;
+use libjs::value::{JsObject, Property};
 use libjs::vm::{native_ctor_fn, native_fn};
 use libjs::JsValue;
 use libjs::Vm;
@@ -19,7 +19,27 @@ use super::http;
 
 /// Create the XMLHttpRequest constructor function.
 pub fn make_xhr_constructor() -> JsValue {
-    native_ctor_fn("XMLHttpRequest", xhr_ctor)
+    let ctor = native_ctor_fn("XMLHttpRequest", xhr_ctor);
+    if let JsValue::Function(func) = &ctor {
+        if let Some(proto) = func.borrow().prototype.clone() {
+            let mut proto = proto.borrow_mut();
+            proto.set(String::from("open"), native_fn("open", xhr_open));
+            proto.set(String::from("send"), native_fn("send", xhr_send));
+            proto.set(
+                String::from("getResponseHeader"),
+                native_fn("getResponseHeader", xhr_get_response_header),
+            );
+            proto.properties.insert(
+                String::from("response"),
+                Property::accessor(Some(native_fn("get response", xhr_reflected_get)), None),
+            );
+            proto.properties.insert(
+                String::from("responseText"),
+                Property::accessor(Some(native_fn("get responseText", xhr_reflected_get)), None),
+            );
+        }
+    }
+    ctor
 }
 
 fn xhr_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -210,6 +230,17 @@ fn xhr_get_response_header(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 fn xhr_get_all_response_headers(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::String(String::new())
+}
+
+fn xhr_reflected_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let value = vm
+        .current_this
+        .get_property(&vm.current_property_name.clone());
+    if value.is_undefined() {
+        JsValue::String(String::new())
+    } else {
+        value
+    }
 }
 
 fn xhr_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {

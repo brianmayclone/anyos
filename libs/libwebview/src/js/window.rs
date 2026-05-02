@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use libjs::value::JsObject;
+use libjs::value::{JsObject, Property};
 use libjs::vm::{native_ctor_fn, native_fn};
 use libjs::JsValue;
 use libjs::Vm;
@@ -330,6 +330,10 @@ pub fn make_window(
         native_fn("setImmediate", super::native_set_immediate),
     );
     obj.set(
+        String::from("requestIdleCallback"),
+        native_fn("requestIdleCallback", super::native_set_timeout),
+    );
+    obj.set(
         String::from("clearTimeout"),
         native_fn("clearTimeout", super::native_clear_timeout),
     );
@@ -340,6 +344,10 @@ pub fn make_window(
     obj.set(
         String::from("clearImmediate"),
         native_fn("clearImmediate", super::native_clear_timeout),
+    );
+    obj.set(
+        String::from("cancelIdleCallback"),
+        native_fn("cancelIdleCallback", super::native_clear_timeout),
     );
 
     // Style.
@@ -697,11 +705,19 @@ pub fn make_window(
         JsValue::Function(func) => func.borrow().prototype.clone(),
         _ => None,
     };
+    if let Some(ref proto_rc) = node_proto {
+        let proto_val = JsValue::Object(proto_rc.clone());
+        super::element::populate_node_prototype(&proto_val);
+    }
     let document_ctor = make_native_constructor(vm, "Document", win_dom_ctor, node_proto.clone());
     let document_proto = match &document_ctor {
         JsValue::Function(func) => func.borrow().prototype.clone(),
         _ => None,
     };
+    if let Some(ref proto_rc) = document_proto {
+        let proto_val = JsValue::Object(proto_rc.clone());
+        super::document::populate_document_prototype(&proto_val);
+    }
     let document_fragment_ctor =
         make_native_constructor(vm, "DocumentFragment", win_dom_ctor, node_proto.clone());
     let character_data_ctor =
@@ -736,6 +752,17 @@ pub fn make_window(
     let node_list_ctor = make_native_constructor(vm, "NodeList", win_dom_ctor, None);
     let html_collection_ctor = make_native_constructor(vm, "HTMLCollection", win_dom_ctor, None);
     let attr_ctor = make_native_constructor(vm, "Attr", win_attr_ctor, node_proto.clone());
+    if let JsValue::Function(func) = &attr_ctor {
+        if let Some(proto) = func.borrow().prototype.clone() {
+            proto.borrow_mut().properties.insert(
+                String::from("value"),
+                Property::accessor(
+                    Some(native_fn("get value", attr_value_get)),
+                    Some(native_fn("set value", attr_value_set)),
+                ),
+            );
+        }
+    }
     let custom_element_registry_ctor = make_native_constructor(
         vm,
         "CustomElementRegistry",
@@ -1014,6 +1041,31 @@ fn install_html_element_constructor(
     if let JsValue::Function(func) = &ctor {
         if let Some(proto) = func.borrow().prototype.clone() {
             let proto_val = JsValue::Object(proto);
+            super::element::install_event_handler_accessors_value(&proto_val);
+            match name {
+                "HTMLAnchorElement" | "HTMLAreaElement" => {
+                    super::element::install_reflected_accessors_value(&proto_val, &["href"]);
+                }
+                "HTMLIFrameElement" => {
+                    super::element::install_reflected_accessors_value(
+                        &proto_val,
+                        &["src", "srcdoc", "contentDocument", "contentWindow"],
+                    );
+                }
+                "HTMLImageElement" => {
+                    super::element::install_reflected_accessors_value(&proto_val, &["src"]);
+                }
+                "HTMLMetaElement" => {
+                    super::element::install_reflected_accessors_value(
+                        &proto_val,
+                        &["content", "httpEquiv"],
+                    );
+                }
+                "HTMLScriptElement" => {
+                    super::element::install_reflected_accessors_value(&proto_val, &["src", "text"]);
+                }
+                _ => {}
+            }
             if name == "HTMLAnchorElement" || name == "HTMLAreaElement" {
                 proto_val.set_property(String::from("href"), JsValue::String(String::new()));
                 proto_val.set_property(String::from("protocol"), JsValue::String(String::new()));
@@ -1047,6 +1099,26 @@ fn win_attr_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     attr.set_property(String::from("specified"), JsValue::Bool(true));
     attr.set_property(String::from("ownerElement"), JsValue::Null);
     attr
+}
+
+fn attr_value_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let value = vm.current_this.get_property("__attr_value");
+    if !value.is_undefined() {
+        return value;
+    }
+    vm.current_this.get_property("value")
+}
+
+fn attr_value_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = args
+        .first()
+        .cloned()
+        .unwrap_or(JsValue::String(String::new()));
+    vm.current_this
+        .set_property(String::from("__attr_value"), value.clone());
+    vm.current_this
+        .set_property(String::from("nodeValue"), value.clone());
+    JsValue::Undefined
 }
 
 fn win_custom_element_registry_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {

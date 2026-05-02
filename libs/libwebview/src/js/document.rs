@@ -21,6 +21,39 @@ use super::{
     VirtualNode,
 };
 
+pub fn populate_document_prototype(proto: &JsValue) {
+    proto.set_property(
+        String::from("querySelector"),
+        native_fn("querySelector", doc_query_selector),
+    );
+    proto.set_property(
+        String::from("querySelectorAll"),
+        native_fn("querySelectorAll", doc_query_selector_all),
+    );
+    proto.set_property(
+        String::from("getElementById"),
+        native_fn("getElementById", doc_get_element_by_id),
+    );
+    proto.set_property(
+        String::from("getElementsByTagName"),
+        native_fn("getElementsByTagName", doc_get_elements_by_tag_name),
+    );
+    proto.set_property(
+        String::from("getElementsByClassName"),
+        native_fn("getElementsByClassName", doc_get_elements_by_class_name),
+    );
+    proto.set_property(
+        String::from("createElement"),
+        native_fn("createElement", doc_create_element),
+    );
+    proto.set_property(
+        String::from("createElementNS"),
+        native_fn("createElementNS", doc_create_element_ns),
+    );
+    proto.set_property(String::from("write"), native_fn("write", doc_write));
+    proto.set_property(String::from("writeln"), native_fn("writeln", doc_writeln));
+}
+
 // ═══════════════════════════════════════════════════════════
 // URL parsing helper
 // ═══════════════════════════════════════════════════════════
@@ -239,6 +272,7 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     );
     obj.set(String::from("fonts"), make_font_face_set());
     obj.set(String::from("defaultView"), JsValue::Null);
+    obj.set(String::from("currentScript"), JsValue::Null);
 
     // location sub-object — all fields populated from the current URL.
     let loc = JsValue::new_object();
@@ -337,6 +371,8 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
         String::from("dispatchEvent"),
         native_fn("dispatchEvent", |_, _| JsValue::Bool(true)),
     );
+    obj.set(String::from("write"), native_fn("write", doc_write));
+    obj.set(String::from("writeln"), native_fn("writeln", doc_writeln));
 
     // W3C DOM: activeElement defaults to <body>.
     obj.properties.insert(
@@ -548,6 +584,14 @@ fn doc_query_selector_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return make_array(elems);
     }
     make_array(Vec::new())
+}
+
+fn doc_write(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Undefined
+}
+
+fn doc_writeln(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    doc_write(vm, args)
 }
 
 fn doc_create_element(vm: &mut Vm, args: &[JsValue]) -> JsValue {
