@@ -1277,6 +1277,7 @@ name = "libnode"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libhttp_client",
  "libjs",
  "libuv",
 ]

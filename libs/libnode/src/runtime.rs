@@ -69,6 +69,10 @@ impl NodeRuntime {
 
     pub fn run_event_loop_once(&mut self) -> usize {
         self.engine.vm().drain_microtasks();
+        let handled_io = modules::http::poll_servers(self.engine.vm());
+        if handled_io > 0 {
+            return handled_io;
+        }
         let Some(wait_ms) = self.next_js_timer_delay_ms() else {
             return 0;
         };
@@ -152,6 +156,15 @@ impl NodeRuntime {
         let timers = modules::timers_module();
         self.engine.register_module_object("timers", timers.clone());
         self.engine.register_module_object("node:timers", timers);
+        let net = modules::net_module();
+        self.engine.register_module_object("net", net.clone());
+        self.engine.register_module_object("node:net", net);
+        let http = modules::http_module();
+        self.engine.register_module_object("http", http.clone());
+        self.engine
+            .register_module_object("node:http", http.clone());
+        self.engine.register_module_object("https", http.clone());
+        self.engine.register_module_object("node:https", http);
         let ffi = modules::ffi_module(&self.policy);
         self.engine
             .register_module_object("@anyos/ffi", ffi.clone());
@@ -269,7 +282,9 @@ impl NodeRuntime {
 
     fn has_pending_js_tasks(&mut self) -> bool {
         let vm = self.engine.vm();
-        vm.event_loop.has_microtasks() || vm.event_loop.has_pending_timers()
+        vm.event_loop.has_microtasks()
+            || vm.event_loop.has_pending_timers()
+            || modules::http::has_active_servers()
     }
 
     fn next_js_timer_delay_ms(&mut self) -> Option<u32> {

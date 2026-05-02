@@ -1,4 +1,6 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,6 +25,14 @@ fn runtime_for(root: &std::path::Path) -> NodeRuntime {
     let mut options = NodeOptions::default();
     options.cwd = root.to_string_lossy().into_owned();
     NodeRuntime::new(options)
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .expect("failed to bind temp listener")
+        .local_addr()
+        .expect("failed to read temp listener addr")
+        .port()
 }
 
 #[test]
@@ -137,4 +147,83 @@ fn fs_module_supports_recursive_directory_tooling_patterns() {
     );
 
     assert_eq!(value.to_js_string(), "cache:true:false");
+}
+
+#[test]
+fn process_next_tick_runs_before_later_event_loop_work() {
+    let root = temp_project("next-tick");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let out = ''; \
+        process.nextTick(function(value) { out = out + value; }, 'tick'); \
+        out",
+    );
+
+    assert_eq!(value.to_js_string(), "tick");
+}
+
+#[test]
+fn http_server_handles_real_localhost_request() {
+    let root = temp_project("http-server");
+    let main = root.join("main.js");
+    let port = free_port();
+    let mut runtime = runtime_for(&root);
+    runtime.run_script(
+        &main.to_string_lossy(),
+        &format!(
+            "\
+            let http = require('node:http'); \
+            let server = http.createServer(function(req, res) {{ \
+                res.setHeader('content-type', 'text/plain'); \
+                res.end(req.method + ':' + req.url); \
+            }}); \
+            server.listen({});",
+            port
+        ),
+    );
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("failed to connect server");
+    stream
+        .write_all(b"GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .expect("failed to write request");
+    runtime.run_event_loop_once();
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("failed to read response");
+    assert!(response.contains("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.ends_with("GET:/hello"), "{response}");
+}
+
+#[test]
+fn net_create_connection_can_write_to_host_listener() {
+    let root = temp_project("net-client");
+    let main = root.join("main.js");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("failed to bind host listener");
+    let port = listener.local_addr().unwrap().port();
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        &format!(
+            "\
+            let net = require('node:net'); \
+            let socket = net.createConnection({}); \
+            socket.write('ping'); \
+            socket.end(); \
+            'sent';",
+            port
+        ),
+    );
+
+    assert_eq!(value.to_js_string(), "sent");
+    let (mut stream, _) = listener.accept().expect("failed to accept net client");
+    let mut received = String::new();
+    stream
+        .read_to_string(&mut received)
+        .expect("failed to read client payload");
+    assert_eq!(received, "ping");
 }

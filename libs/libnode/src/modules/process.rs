@@ -1,5 +1,6 @@
 use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::cell::RefCell;
 use libjs::value::{JsObject, JsValue};
 use libjs::vm::{native_fn, Vm};
@@ -17,6 +18,8 @@ pub fn module(options: &NodeOptions) -> JsValue {
         JsValue::String(String::from("anyos")),
     );
     process.set(String::from("cwd"), native_fn("cwd", cwd));
+    process.set(String::from("nextTick"), native_fn("nextTick", next_tick));
+    process.set(String::from("env"), env_object());
     process.set(String::from("argv"), string_array(&options.argv));
     JsValue::Object(Rc::new(RefCell::new(process)))
 }
@@ -37,6 +40,33 @@ fn versions_object() -> JsValue {
         JsValue::String(String::from("anyos")),
     );
     JsValue::Object(Rc::new(RefCell::new(versions)))
+}
+
+fn env_object() -> JsValue {
+    let env = JsValue::new_object();
+    env.set_property(
+        String::from("NODE_ENV"),
+        JsValue::String(String::from("development")),
+    );
+    env
+}
+
+fn next_tick(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let Some(callback) = args.first().cloned() else {
+        vm.pending_exception = Some(vm.make_type_error("process.nextTick requires a callback"));
+        return JsValue::Undefined;
+    };
+    if !matches!(callback, JsValue::Function(_)) {
+        vm.pending_exception = Some(vm.make_type_error("process.nextTick requires a callback"));
+        return JsValue::Undefined;
+    }
+    let tick_args = if args.len() > 1 {
+        args[1..].to_vec()
+    } else {
+        Vec::new()
+    };
+    vm.enqueue_microtask(callback, tick_args);
+    JsValue::Undefined
 }
 
 pub fn current_dir() -> String {

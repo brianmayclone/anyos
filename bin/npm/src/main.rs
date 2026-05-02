@@ -32,8 +32,16 @@ fn npm_main() {
                 return;
             };
             let client = RegistryClient::new(registry);
-            anyos_std::println!("{}", client.package_metadata_url(package));
-            anyos_std::println!("network registry fetch is planned for npm transport v1");
+            match client.fetch_metadata(package) {
+                Some(metadata) => {
+                    let latest = metadata
+                        .resolve_version("latest")
+                        .unwrap_or_else(|| String::from("unknown"));
+                    anyos_std::println!("{} latest {}", package, latest);
+                    anyos_std::println!("{}", client.package_metadata_url(package));
+                }
+                None => anyos_std::println!("npm: could not fetch {}", package),
+            }
         }
         "search" => {
             let query = args.pos(1).unwrap_or("");
@@ -62,10 +70,32 @@ fn npm_install(package: &str, registry: RegistryConfig) {
     let spec = PackageSpec::parse(package);
     let data = anyos_std::fs::read_to_string("package.json").ok();
     let mut manifest = PackageManifest::parse_or_new(data);
-    manifest.add_dependency(&spec);
+    let client = RegistryClient::new(registry);
+    let resolved = client.fetch_metadata(&spec.name).and_then(|metadata| {
+        let version = metadata.resolve_version(&spec.version)?;
+        let tarball = metadata.tarball_url(&version);
+        let deps = metadata.dependencies(&version);
+        Some((version, tarball, deps))
+    });
+    let install_spec = if let Some((version, tarball, deps)) = resolved {
+        anyos_std::println!("resolved {}@{}", spec.name, version);
+        if let Some(tarball) = tarball {
+            anyos_std::println!("tarball: {}", tarball);
+        }
+        if !deps.is_empty() {
+            anyos_std::println!("dependencies: {}", deps.len());
+        }
+        PackageSpec {
+            name: spec.name.clone(),
+            version,
+        }
+    } else {
+        anyos_std::println!("npm: registry metadata unavailable, recording requested spec");
+        spec.clone()
+    };
+    manifest.add_dependency(&install_spec);
     if anyos_std::fs::write_bytes("package.json", manifest.as_str().as_bytes()).is_ok() {
-        let client = RegistryClient::new(registry);
-        anyos_std::println!("added {}@{}", spec.name, spec.version);
+        anyos_std::println!("added {}@{}", install_spec.name, install_spec.version);
         anyos_std::println!("registry: {}", client.package_metadata_url(&spec.name));
     } else {
         anyos_std::println!("npm: could not update package.json");

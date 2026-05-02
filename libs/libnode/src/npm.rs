@@ -1,5 +1,6 @@
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::DEFAULT_NPM_REGISTRY;
 
@@ -122,6 +123,61 @@ impl RegistryClient {
     pub fn package_metadata_url(&self, package_name: &str) -> String {
         self.config.package_url(package_name)
     }
+
+    pub fn fetch_metadata(&self, package_name: &str) -> Option<PackageMetadata> {
+        let url = self.package_metadata_url(package_name);
+        let data = libhttp_client::get(&url)?;
+        let text = String::from_utf8(data).ok()?;
+        Some(PackageMetadata {
+            package_name: String::from(package_name),
+            raw_json: text,
+        })
+    }
+}
+
+pub struct PackageMetadata {
+    pub package_name: String,
+    pub raw_json: String,
+}
+
+impl PackageMetadata {
+    pub fn resolve_version(&self, requested: &str) -> Option<String> {
+        if requested == "latest" {
+            json_nested_string(&self.raw_json, "\"dist-tags\"", "\"latest\"")
+        } else if self.raw_json.contains(&format!("\"{}\":{{", requested))
+            || self.raw_json.contains(&format!("\"{}\": {{", requested))
+        {
+            Some(String::from(requested))
+        } else {
+            None
+        }
+    }
+
+    pub fn tarball_url(&self, version: &str) -> Option<String> {
+        let version_key = format!("\"{}\"", version);
+        let version_pos = self.raw_json.find(&version_key)?;
+        let tail = &self.raw_json[version_pos..];
+        json_string_field(tail, "\"tarball\"")
+    }
+
+    pub fn dependencies(&self, version: &str) -> Vec<PackageSpec> {
+        let version_key = format!("\"{}\"", version);
+        let Some(version_pos) = self.raw_json.find(&version_key) else {
+            return Vec::new();
+        };
+        let tail = &self.raw_json[version_pos..];
+        let Some(dep_pos) = tail.find("\"dependencies\"") else {
+            return Vec::new();
+        };
+        let deps = &tail[dep_pos..];
+        let Some(open) = deps.find('{') else {
+            return Vec::new();
+        };
+        let Some(close) = deps[open + 1..].find('}') else {
+            return Vec::new();
+        };
+        parse_dependency_object(&deps[open + 1..open + 1 + close])
+    }
 }
 
 pub fn normalize_registry_url(registry: &str) -> String {
@@ -138,6 +194,55 @@ pub fn encode_package_name(package_name: &str) -> String {
     } else {
         String::from(package_name)
     }
+}
+
+fn json_nested_string(source: &str, outer_key: &str, inner_key: &str) -> Option<String> {
+    let outer_pos = source.find(outer_key)?;
+    json_string_field(&source[outer_pos..], inner_key)
+}
+
+fn json_string_field(source: &str, key: &str) -> Option<String> {
+    let key_pos = source.find(key)?;
+    let after_key = &source[key_pos + key.len()..];
+    let colon = after_key.find(':')?;
+    let mut rest = after_key[colon + 1..].trim_start();
+    if !rest.starts_with('"') {
+        return None;
+    }
+    rest = &rest[1..];
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in rest.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(out);
+        } else {
+            out.push(ch);
+        }
+    }
+    None
+}
+
+fn parse_dependency_object(source: &str) -> Vec<PackageSpec> {
+    let mut out = Vec::new();
+    for pair in source.split(',') {
+        let Some(colon) = pair.find(':') else {
+            continue;
+        };
+        let name = pair[..colon].trim().trim_matches('"');
+        let version = pair[colon + 1..].trim().trim_matches('"');
+        if !name.is_empty() && !version.is_empty() {
+            out.push(PackageSpec {
+                name: name.to_string(),
+                version: version.to_string(),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
