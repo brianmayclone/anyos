@@ -29,7 +29,10 @@ mod config;
 use alloc::string::String;
 use anyos_std::{fs, ipc, process, Vec};
 use config::{LogLevel, VdAgentConfig};
+use core::sync::atomic::AtomicU32;
 use libsvc::ServiceLifecycle;
+
+static MOUSE_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // ── Logging helpers ──────────────────────────────────────────────────────────
 
@@ -85,12 +88,14 @@ const VD_AGENT_CAP_MONITORS_CONFIG: u32 = 1;
 const VD_AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 2;
 const VD_AGENT_CAP_CLIPBOARD_SELECTION: u32 = 3;
 
-// SPICE_MOUSE_BUTTON_MASK_* (spice/enums.h):
-//   LEFT=(1<<0), MIDDLE=(1<<1), RIGHT=(1<<2), UP=(1<<3), DOWN=(1<<4),
-//   SIDE=(1<<5), EXTRA=(1<<6).
-// This matches the RFB-style mask the compositor's CMD_INJECT_POINTER
-// expects (LEFT bit 0, MIDDLE bit 1, RIGHT bit 2, wheel-up bit 3,
-// wheel-down bit 4) — so no bit translation is needed.
+// QEMU's SPICE server actually serialises mouse buttons as `1 << SpiceMouseButton`,
+// not `SpiceMouseButtonMask`: LEFT (enum=1) -> bit 1, MIDDLE (2) -> bit 2,
+// RIGHT (3) -> bit 3, wheel-UP (4) -> bit 4, wheel-DOWN (5) -> bit 5. The
+// `SpiceMouseButtonMask` typedef in spice/enums.h reads bit-for-bit RFB-like,
+// but tracing real packets shows that QEMU does not use those mask values.
+// The compositor's CMD_INJECT_POINTER follows the RFB convention (LEFT bit 0,
+// MIDDLE bit 1, RIGHT bit 2, wheel-up bit 3, wheel-down bit 4), so we shift
+// the SPICE mask right by one bit before forwarding.
 
 // ── Compositor IPC Constants ─────────────────────────────────────────────────
 
@@ -258,12 +263,12 @@ fn send_reply(fd: u32, reply_to: u32, error: u32) {
     fs::write(fd, &msg);
 }
 
-/// Inject an absolute-positioned pointer event. SPICE's button mask matches
-/// the compositor's RFB-style layout 1:1, so we just pass it through (after
-/// trimming to the seven defined bits). Wheel ticks are edge-triggered: the
-/// compositor treats a wheel bit toggle within one event as one scroll notch.
+/// Inject an absolute-positioned pointer event. We shift the SPICE button
+/// mask right by one bit so QEMU's `1 << SpiceMouseButton` encoding lines up
+/// with the compositor's RFB-style mask (LEFT bit 0, etc.). Wheel ticks are
+/// edge-triggered — a bit toggle within one frame is one scroll notch.
 fn inject_mouse(comp_chan: u32, x: u32, y: u32, buttons: u32) {
-    let mask = buttons & 0x7F;
+    let mask = (buttons >> 1) & 0x1F;
     let evt = [CMD_INJECT_POINTER, x, y, mask, 0];
     ipc::evt_chan_emit(comp_chan, &evt);
 }
@@ -298,6 +303,16 @@ fn read_u64_le(buf: &[u8], offset: usize) -> u64 {
     ])
 }
 
+/// Tracks the last absolute pointer state we forwarded to the compositor so
+/// we can skip redundant identical samples (SPICE sometimes streams the same
+/// position multiple times when the wire latency is low).
+struct PointerState {
+    x: u32,
+    y: u32,
+    buttons: u32,
+    initialized: bool,
+}
+
 /// Process a complete VDAgent message from the receive buffer.
 fn handle_agent_message(
     fd: u32,
@@ -307,6 +322,7 @@ fn handle_agent_message(
     msg_type: u32,
     payload: &[u8],
     host_has_clipboard: &mut bool,
+    last_pointer: &mut PointerState,
 ) {
     match msg_type {
         VD_AGENT_ANNOUNCE_CAPABILITIES => {
@@ -360,12 +376,42 @@ fn handle_agent_message(
 
         VD_AGENT_MOUSE_STATE => {
             // VDAgentMouseState: { u32 x, u32 y, u32 buttons, u8 display_id }
-            // The host streams these continuously while the cursor moves;
-            // each one is a complete absolute-position frame.
             if payload.len() >= 12 {
                 let x = read_u32_le(payload, 0);
                 let y = read_u32_le(payload, 4);
                 let buttons = read_u32_le(payload, 8);
+
+                // Dedup identical samples; emit on every position OR button
+                // change. Always log button transitions at info level so the
+                // path stays observable in production.
+                let same = last_pointer.initialized
+                    && last_pointer.x == x
+                    && last_pointer.y == y
+                    && last_pointer.buttons == buttons;
+                if same {
+                    return;
+                }
+                let button_change = !last_pointer.initialized
+                    || last_pointer.buttons != buttons;
+                if button_change {
+                    vd_info!(
+                        "mouse buttons 0x{:x} -> 0x{:x} at ({},{})",
+                        last_pointer.buttons,
+                        buttons,
+                        x,
+                        y
+                    );
+                } else {
+                    let count =
+                        MOUSE_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if count < 4 {
+                        vd_info!("mouse #{} x={} y={} buttons=0x{:x}", count, x, y, buttons);
+                    }
+                }
+                last_pointer.x = x;
+                last_pointer.y = y;
+                last_pointer.buttons = buttons;
+                last_pointer.initialized = true;
                 inject_mouse(comp_chan, x, y, buttons);
             }
         }
@@ -488,6 +534,12 @@ fn main() {
 
     // State
     let mut host_has_clipboard = false;
+    let mut last_pointer = PointerState {
+        x: 0,
+        y: 0,
+        buttons: 0,
+        initialized: false,
+    };
     let mut last_clipboard: Vec<u8> = Vec::new();
     let mut last_clipboard_check: u32 = 0;
 
@@ -538,6 +590,7 @@ fn main() {
                         msg_type,
                         payload,
                         &mut host_has_clipboard,
+                        &mut last_pointer,
                     );
                 }
 
