@@ -78,8 +78,14 @@
 #                   optional external viewer. Connect display with:
 #                     remote-viewer spice://localhost:5930
 #                   Install viewer: sudo apt-get install virt-viewer
-#                   (Avoid `-display spice-app` — its built-in viewer breaks
-#                   PS/2 / vmmouse forwarding so the login cursor freezes.)
+#                   Recommended for development — input works through GTK.
+#   --spice-app   Like --spice, but uses QEMU's built-in `-display spice-app`
+#                   viewer as the only display. Adds virtio-mouse-pci and
+#                   virtio-keyboard-pci because spice-app routes input via
+#                   the SPICE protocol (no PS/2 / vmmouse delivery), so the
+#                   guest needs the virtio-input drivers to receive events.
+#                   Use this for headless-style runs where SPICE is the
+#                   primary interaction channel.
 #   --clipboard   Enable clipboard sync only (no SPICE display).
 #                   Adds virtio-serial + chardev for vdagent, but keeps the normal
 #                   GTK/SDL display. Requires QEMU 6.1+ with -chardev qemu-vdagent.
@@ -102,6 +108,8 @@
 #   ./run.sh --kvm --usb --kbd de              # KVM, USB keyboard+mouse, German layout
 #   ./run.sh --kvm --fwd 2222:22 --fwd 80:80   # KVM + port forwarding
 #   ./run.sh --vmware --kvm --bridge virbr0     # VMware SVGA, KVM, bridged network
+#   ./run.sh --kvm --virtio --spice             # GTK display + SPICE for clipboard
+#   ./run.sh --kvm --virtio --spice-app         # SPICE-only (built-in viewer + virtio-input)
 #   ./run.sh --persist-power                    # Keep QEMU open after guest power events
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -137,6 +145,7 @@ ARM64_MODE=false
 HEADLESS=false
 SNAPSHOT=false
 SPICE_MODE=false
+SPICE_APP_MODE=false
 CLIPBOARD_MODE=false
 PERSIST_POWER=false
 # Empty unless --system-fs / --system-fs-size is explicitly given.
@@ -388,6 +397,9 @@ for arg in "$@"; do
         --spice)
             SPICE_MODE=true
             ;;
+        --spice-app)
+            SPICE_APP_MODE=true
+            ;;
         --clipboard)
             CLIPBOARD_MODE=true
             ;;
@@ -404,7 +416,7 @@ for arg in "$@"; do
             PERSIST_POWER=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
             exit 1
             ;;
     esac
@@ -996,6 +1008,17 @@ if [ "$SPICE_MODE" = true ]; then
     SPICE_LABEL=", spice: port 5930 (clipboard, optional remote-viewer)"
     echo "SPICE server on port 5930 (GTK display stays active for input)."
     echo "  Optional external viewer: remote-viewer spice://localhost:5930"
+elif [ "$SPICE_APP_MODE" = true ]; then
+    # Built-in SPICE viewer (`-display spice-app`) is the only display.
+    # spice-app does NOT forward input to the emulated PS/2 / vmmouse
+    # devices, so we add virtio-mouse-pci + virtio-keyboard-pci. The guest
+    # virtio-input driver translates these events into the existing
+    # mouse/keyboard pipelines.
+    SPICE_FLAGS="-spice port=5930,disable-ticketing=on,addr=127.0.0.1 -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 -device virtio-mouse-pci -device virtio-keyboard-pci"
+    DISPLAY_FLAGS="-display spice-app"
+    SPICE_LABEL=", spice-app: port 5930 (built-in viewer, virtio-input)"
+    echo "SPICE built-in viewer on port 5930 (-display spice-app)."
+    echo "  Input is delivered via virtio-mouse-pci + virtio-keyboard-pci."
 elif [ "$CLIPBOARD_MODE" = true ]; then
     # Clipboard sync only (GTK display stays). Uses QEMU's built-in qemu-vdagent chardev
     # which bridges the host clipboard into the virtio-serial channel without SPICE.
