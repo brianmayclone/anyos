@@ -8,9 +8,15 @@ pub mod amd_fb;
 pub mod bochs_vga;
 pub mod intel_fb;
 pub mod nvidia_fb;
+pub mod output;
 pub mod vbox_vga;
 pub mod virtio_gpu;
 pub mod vmware_svga;
+
+pub use output::{
+    DisplayEvent, LayoutError, OutputInfo, OutputLayout, OutputLayoutEntry, OutputMode,
+    MAX_OUTPUTS,
+};
 
 use crate::sync::mutex::Mutex;
 use alloc::boxed::Box;
