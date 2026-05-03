@@ -85,10 +85,12 @@ const VD_AGENT_CAP_MONITORS_CONFIG: u32 = 1;
 const VD_AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 2;
 const VD_AGENT_CAP_CLIPBOARD_SELECTION: u32 = 3;
 
-// SPICE_MOUSE_BUTTON_* enum values: LEFT=1, MIDDLE=2, RIGHT=3, UP=4, DOWN=5.
-// Masks are `1 << button`, so SPICE button bits live at positions 1..=5.
-// The compositor `CMD_INJECT_POINTER` expects RFB-style mask:
-//   bit 0=L, 1=M, 2=R, 3=wheel-up, 4=wheel-down. Translation = `>> 1` & 0x1F.
+// SPICE_MOUSE_BUTTON_MASK_* (spice/enums.h):
+//   LEFT=(1<<0), MIDDLE=(1<<1), RIGHT=(1<<2), UP=(1<<3), DOWN=(1<<4),
+//   SIDE=(1<<5), EXTRA=(1<<6).
+// This matches the RFB-style mask the compositor's CMD_INJECT_POINTER
+// expects (LEFT bit 0, MIDDLE bit 1, RIGHT bit 2, wheel-up bit 3,
+// wheel-down bit 4) — so no bit translation is needed.
 
 // ── Compositor IPC Constants ─────────────────────────────────────────────────
 
@@ -256,20 +258,13 @@ fn send_reply(fd: u32, reply_to: u32, error: u32) {
     fs::write(fd, &msg);
 }
 
-/// Translate SPICE mouse-button bits to the compositor's RFB-style mask.
-/// SPICE places LEFT at bit 1, MIDDLE bit 2, RIGHT bit 3, wheel-up bit 4,
-/// wheel-down bit 5. The compositor expects LEFT bit 0, MIDDLE bit 1,
-/// RIGHT bit 2, wheel-up bit 3, wheel-down bit 4.
-fn spice_buttons_to_compositor(spice: u32) -> u8 {
-    ((spice >> 1) & 0x1F) as u8
-}
-
-/// Inject an absolute-positioned pointer event. Wheel ticks are edge-triggered:
-/// the compositor treats a wheel bit toggle within one event as one scroll
-/// notch (matching the RFB convention used by vncd).
+/// Inject an absolute-positioned pointer event. SPICE's button mask matches
+/// the compositor's RFB-style layout 1:1, so we just pass it through (after
+/// trimming to the seven defined bits). Wheel ticks are edge-triggered: the
+/// compositor treats a wheel bit toggle within one event as one scroll notch.
 fn inject_mouse(comp_chan: u32, x: u32, y: u32, buttons: u32) {
-    let mask = spice_buttons_to_compositor(buttons);
-    let evt = [CMD_INJECT_POINTER, x, y, mask as u32, 0];
+    let mask = buttons & 0x7F;
+    let evt = [CMD_INJECT_POINTER, x, y, mask, 0];
     ipc::evt_chan_emit(comp_chan, &evt);
 }
 
