@@ -306,6 +306,70 @@ pub trait GpuDriver: Send {
     /// Re-query display info from hardware (not cached).
     /// Call this after boot has progressed to get up-to-date display dimensions.
     fn refresh_display_info(&mut self) {}
+
+    // ── Per-output mode / framebuffer (multi-monitor) ──
+    //
+    // The single-output `set_mode`, `get_mode`, `update_rect`, `transfer_rect`,
+    // `flush_display` operate on output 0. The `*_for_output` variants take an
+    // explicit output index and let drivers expose multiple independent
+    // scanouts. Drivers without multi-output support fall through to the
+    // single-output path for `output == 0` and report `None` / no-op for
+    // other indices.
+
+    /// Activate a mode on output `output_id`. Returns (width, height, pitch,
+    /// fb_phys) on success. For output 0, default delegates to `set_mode`.
+    fn set_mode_for_output(
+        &mut self,
+        output_id: u32,
+        width: u32,
+        height: u32,
+        bpp: u32,
+    ) -> Option<(u32, u32, u32, u32)> {
+        if output_id == 0 {
+            self.set_mode(width, height, bpp)
+        } else {
+            None
+        }
+    }
+
+    /// Current mode of output `output_id` as (width, height, pitch, fb_phys).
+    /// Returns `None` if the output is not active.
+    fn mode_for_output(&self, output_id: u32) -> Option<(u32, u32, u32, u32)> {
+        if output_id == 0 {
+            let (w, h, p, fb) = self.get_mode();
+            if w > 0 && h > 0 {
+                Some((w, h, p, fb))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Transfer a dirty region of output `output_id` from guest RAM to GPU.
+    /// Default: delegates to `transfer_rect` for output 0.
+    fn transfer_rect_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        if output_id == 0 {
+            self.transfer_rect(x, y, w, h);
+        }
+    }
+
+    /// Flush a region of output `output_id` to the host display.
+    /// Default: delegates to `flush_display` for output 0.
+    fn flush_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        if output_id == 0 {
+            self.flush_display(x, y, w, h);
+        }
+    }
+
+    /// Combined transfer + flush for output `output_id` (legacy update_rect
+    /// fast-path). Default: delegates to `update_rect` for output 0.
+    fn update_rect_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        if output_id == 0 {
+            self.update_rect(x, y, w, h);
+        }
+    }
 }
 
 // ──────────────────────────────────────────────
