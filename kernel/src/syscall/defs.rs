@@ -328,6 +328,16 @@ pub const SYS_AVM_IOCTL: u32 = 630;
 pub const SYS_MMAP64: u32 = 631;
 pub const SYS_MUNMAP64: u32 = 632;
 
+// Multi-monitor display syscalls. The legacy SYS_SCREEN_SIZE / SYS_SET_RESOLUTION
+// / SYS_MAP_FRAMEBUFFER continue to operate on output 0 for backwards
+// compatibility; these new syscalls let the compositor (and displayd) work
+// against the full advertised output set.
+pub const SYS_DISPLAY_LIST: u32 = 700;
+pub const SYS_DISPLAY_SET_LAYOUT: u32 = 701;
+pub const SYS_DISPLAY_MAP_FB: u32 = 702;
+pub const SYS_DISPLAY_FLUSH: u32 = 703;
+pub const SYS_DISPLAY_POLL_EVENT: u32 = 704;
+
 /// Register frame pushed by `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the
