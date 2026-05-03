@@ -1537,6 +1537,19 @@ impl Desktop {
             }
         }
 
+        // Wheel ticks: bit 3 = up, bit 4 = down (RFB / SPICE-shifted
+        // convention shared by vncd and vdagent). Each rising edge is one
+        // scroll notch — the same way RFB and SPICE encode mouse-wheel
+        // events as transient button "taps".
+        let wheel_up_edge = (buttons & 0x08) != 0 && (prev & 0x08) == 0;
+        let wheel_down_edge = (buttons & 0x10) != 0 && (prev & 0x10) == 0;
+        if wheel_up_edge {
+            self.handle_scroll(-1);
+        }
+        if wheel_down_edge {
+            self.handle_scroll(1);
+        }
+
         self.vnc_buttons = buttons;
     }
 
