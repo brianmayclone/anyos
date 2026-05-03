@@ -82,11 +82,21 @@ const VD_AGENT_CLIPBOARD_RELEASE: u32 = 9;
 /// Clipboard data types.
 const VD_AGENT_CLIPBOARD_UTF8_TEXT: u32 = 1;
 
-/// Agent capabilities.
-const VD_AGENT_CAP_MOUSE_STATE: u32 = 0;
-const VD_AGENT_CAP_MONITORS_CONFIG: u32 = 1;
-const VD_AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 2;
-const VD_AGENT_CAP_CLIPBOARD_SELECTION: u32 = 3;
+/// Agent capability bit indices, per upstream `spice-protocol/spice/vd_agent.h`.
+/// Earlier versions of this file used wrong values (2/3) for the clipboard
+/// caps, which caused QEMU's SPICE server to think we couldn't do clipboard
+/// at all (bit 2 is REPLY, bit 3 is the deprecated legacy CLIPBOARD).
+#[allow(dead_code)] const VD_AGENT_CAP_MOUSE_STATE: u32 = 0;
+#[allow(dead_code)] const VD_AGENT_CAP_MONITORS_CONFIG: u32 = 1;
+#[allow(dead_code)] const VD_AGENT_CAP_REPLY: u32 = 2;
+#[allow(dead_code)] const VD_AGENT_CAP_CLIPBOARD: u32 = 3; // legacy, deprecated
+#[allow(dead_code)] const VD_AGENT_CAP_DISPLAY_CONFIG: u32 = 4;
+#[allow(dead_code)] const VD_AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 5;
+#[allow(dead_code)] const VD_AGENT_CAP_CLIPBOARD_SELECTION: u32 = 6;
+#[allow(dead_code)] const VD_AGENT_CAP_SPARSE_MONITORS_CONFIG: u32 = 7;
+#[allow(dead_code)] const VD_AGENT_CAP_GUEST_LINEEND_LF: u32 = 8;
+#[allow(dead_code)] const VD_AGENT_CAP_GUEST_LINEEND_CRLF: u32 = 9;
+#[allow(dead_code)] const VD_AGENT_CAP_MAX_CLIPBOARD: u32 = 10;
 
 // QEMU's SPICE server actually serialises mouse buttons as `1 << SpiceMouseButton`,
 // not `SpiceMouseButtonMask`: LEFT (enum=1) -> bit 1, MIDDLE (2) -> bit 2,
@@ -216,20 +226,55 @@ fn send_capabilities(fd: u32) {
     // be advertised before the SPICE host will route mouse events through the
     // vdagent channel — without these bits the host falls back to delivering
     // pointer events via the SPICE inputs channel (vmmouse / virtio-mouse-pci).
+    // Note: deliberately NOT advertising VD_AGENT_CAP_CLIPBOARD_SELECTION.
+    // QEMU's spice-server (8.2) often only offers BY_DEMAND (cap0=0x35077 in
+    // tests). If we claim SELECTION, the host expects a selection-byte prefix
+    // on every clipboard message (PRIMARY/CLIPBOARD) — but our send_clipboard_*
+    // helpers emit the simpler BY_DEMAND format without that prefix, so QEMU
+    // silently drops them. Advertising only BY_DEMAND aligns wire format.
     let cap_word: u32 = (1 << VD_AGENT_CAP_MOUSE_STATE)
         | (1 << VD_AGENT_CAP_MONITORS_CONFIG)
+        | (1 << VD_AGENT_CAP_REPLY)
         | (1 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND)
-        | (1 << VD_AGENT_CAP_CLIPBOARD_SELECTION);
+        | (1 << VD_AGENT_CAP_CLIPBOARD_SELECTION)
+        | (1 << VD_AGENT_CAP_MAX_CLIPBOARD);
     payload.extend_from_slice(&cap_word.to_le_bytes());
 
     let msg = build_message(VD_AGENT_ANNOUNCE_CAPABILITIES, &payload);
     fs::write(fd, &msg);
 }
 
+/// Send ANNOUNCE_CAPABILITIES with request=0 — used when the host's own
+/// announce arrived with request=1 and is waiting for our reply.
+fn send_capabilities_reply(fd: u32) {
+    let mut payload = Vec::with_capacity(8);
+    payload.extend_from_slice(&0u32.to_le_bytes()); // request=0 (reply)
+    let cap_word: u32 = (1 << VD_AGENT_CAP_MOUSE_STATE)
+        | (1 << VD_AGENT_CAP_MONITORS_CONFIG)
+        | (1 << VD_AGENT_CAP_REPLY)
+        | (1 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND)
+        | (1 << VD_AGENT_CAP_CLIPBOARD_SELECTION)
+        | (1 << VD_AGENT_CAP_MAX_CLIPBOARD);
+    payload.extend_from_slice(&cap_word.to_le_bytes());
+    let msg = build_message(VD_AGENT_ANNOUNCE_CAPABILITIES, &payload);
+    fs::write(fd, &msg);
+}
+
+// VDAgent selection IDs (when CLIPBOARD_SELECTION cap is active).
+const VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD: u8 = 0;
+#[allow(dead_code)] const VD_AGENT_CLIPBOARD_SELECTION_PRIMARY: u8 = 1;
+#[allow(dead_code)] const VD_AGENT_CLIPBOARD_SELECTION_SECONDARY: u8 = 2;
+
+/// 4-byte selection prefix used when CLIPBOARD_SELECTION is negotiated:
+/// [u8 selection][u8 reserved[3]].
+fn selection_prefix(sel: u8) -> [u8; 4] {
+    [sel, 0, 0, 0]
+}
+
 /// Send a CLIPBOARD_GRAB to tell the host we have new clipboard data.
 fn send_clipboard_grab(fd: u32) {
-    // Payload: list of supported clipboard types (just UTF8_TEXT).
-    let mut payload = Vec::with_capacity(4);
+    let mut payload = Vec::with_capacity(8);
+    payload.extend_from_slice(&selection_prefix(VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD));
     payload.extend_from_slice(&VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
     let msg = build_message(VD_AGENT_CLIPBOARD_GRAB, &payload);
     fs::write(fd, &msg);
@@ -237,8 +282,8 @@ fn send_clipboard_grab(fd: u32) {
 
 /// Send clipboard data to the host.
 fn send_clipboard_data(fd: u32, data: &[u8]) {
-    // Payload: clipboard_type (u32) + data bytes.
-    let mut payload = Vec::with_capacity(4 + data.len());
+    let mut payload = Vec::with_capacity(8 + data.len());
+    payload.extend_from_slice(&selection_prefix(VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD));
     payload.extend_from_slice(&VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
     payload.extend_from_slice(data);
     let msg = build_message(VD_AGENT_CLIPBOARD, &payload);
@@ -326,42 +371,72 @@ fn handle_agent_message(
 ) {
     match msg_type {
         VD_AGENT_ANNOUNCE_CAPABILITIES => {
-            // Host announced its capabilities — just log it.
-            vd_debug!("host announced capabilities");
+            // payload: u32 request, then u32 cap_word_0 (and possibly more).
+            // request=1 means the host wants us to reply with our own caps
+            // (with request=0). If we don't reply, SPICE eventually drops us
+            // with CLIENT_DISCONNECTED and reconnects in an infinite loop.
+            let request = if payload.len() >= 4 {
+                read_u32_le(payload, 0)
+            } else {
+                0
+            };
+            let cap0 = if payload.len() >= 8 {
+                read_u32_le(payload, 4)
+            } else {
+                0
+            };
+            let has_clip_demand = (cap0 & (1 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND)) != 0;
+            let has_clip_sel = (cap0 & (1 << VD_AGENT_CAP_CLIPBOARD_SELECTION)) != 0;
+            vd_debug!(
+                "host caps: payload={}B request={} cap0=0x{:x} by_demand={} sel={}",
+                payload.len(),
+                request,
+                cap0,
+                has_clip_demand,
+                has_clip_sel
+            );
+            if request == 1 {
+                send_capabilities_reply(fd);
+                vd_debug!("sent caps reply");
+            }
         }
 
         VD_AGENT_CLIPBOARD_GRAB => {
-            // Host grabbed clipboard ownership — it has new data.
+            // With CLIPBOARD_SELECTION negotiated, payload starts with
+            // [u8 selection][u8 reserved[3]], then list of u32 types.
             *host_has_clipboard = true;
-            vd_debug!("host grabbed clipboard");
+            vd_debug!("host grabbed clipboard (payload={}B)", payload.len());
 
-            // Request the data immediately.
-            let mut req_payload = Vec::with_capacity(4);
+            // Reply with CLIPBOARD_REQUEST (UTF8_TEXT) — same selection prefix.
+            let mut req_payload = Vec::with_capacity(8);
+            req_payload.extend_from_slice(&selection_prefix(
+                VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
+            ));
             req_payload.extend_from_slice(&VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
             let msg = build_message(VD_AGENT_CLIPBOARD_REQUEST, &req_payload);
             fs::write(fd, &msg);
         }
 
         VD_AGENT_CLIPBOARD_REQUEST => {
-            // Host is requesting our clipboard data.
             vd_debug!("host requests clipboard data");
             let mut clip_buf = [0u8; 4096];
             let clip_len = get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut clip_buf);
             if clip_len > 0 {
                 send_clipboard_data(fd, &clip_buf[..clip_len]);
             } else {
-                // No data — send empty clipboard.
                 send_clipboard_data(fd, &[]);
             }
         }
 
         VD_AGENT_CLIPBOARD => {
-            // Host sent clipboard data.
-            if payload.len() >= 4 {
-                let _clip_type = read_u32_le(payload, 0);
-                let data = &payload[4..];
+            // With CLIPBOARD_SELECTION negotiated, payload starts with the
+            // 4-byte selection prefix, then [u32 type][data...].
+            if payload.len() >= 8 {
+                let _selection = payload[0];
+                let _clip_type = read_u32_le(payload, 4);
+                let data = &payload[8..];
                 if !data.is_empty() {
-                    vd_debug!("received clipboard data ({} bytes) ← host", data.len());
+                    vd_debug!("received clipboard data ({} bytes) <- host", data.len());
                     set_compositor_clipboard(comp_chan, data);
                 }
             }
@@ -369,7 +444,6 @@ fn handle_agent_message(
         }
 
         VD_AGENT_CLIPBOARD_RELEASE => {
-            // Host released clipboard ownership.
             *host_has_clipboard = false;
             vd_debug!("host released clipboard");
         }
@@ -540,7 +614,20 @@ fn main() {
         buttons: 0,
         initialized: false,
     };
+    // Pre-load the compositor's existing clipboard so we don't immediately
+    // fire a GRAB on the first poll. If we did, spice-gtk would mark the
+    // guest as the clipboard owner before any user action, and host->guest
+    // sync would be blocked until the agent observed an explicit RELEASE.
     let mut last_clipboard: Vec<u8> = Vec::new();
+    {
+        let mut buf = [0u8; 4096];
+        let len =
+            get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut buf) as usize;
+        if len > 0 && len <= buf.len() {
+            last_clipboard.extend_from_slice(&buf[..len]);
+            vd_debug!("startup baseline clipboard: {} bytes", len);
+        }
+    }
     let mut last_clipboard_check: u32 = 0;
 
     // Reassembly buffer for partial VDI chunk reads.
@@ -552,6 +639,15 @@ fn main() {
         let n = fs::read(fd, &mut read_buf);
         if n > 0 && n != u32::MAX {
             let n = n as usize;
+            // Wire dump (debug-only): first 32 bytes of every inbound read.
+            if matches!(unsafe { CURRENT_LOG_LEVEL }, LogLevel::Debug | LogLevel::Trace) {
+                let dump_len = n.min(32);
+                let mut hex = String::new();
+                for b in &read_buf[..dump_len] {
+                    let _ = core::fmt::write(&mut hex, format_args!("{:02x} ", b));
+                }
+                vd_debug!("wire IN: {}B {}{}", n, hex, if n > dump_len { "..." } else { "" });
+            }
             reassembly_buf.extend_from_slice(&read_buf[..n]);
 
             // Process complete messages from the reassembly buffer.
@@ -612,7 +708,7 @@ fn main() {
                 if clip_data != last_clipboard.as_slice() {
                     last_clipboard.clear();
                     last_clipboard.extend_from_slice(clip_data);
-                    vd_debug!("local clipboard changed ({} bytes) → host", clip_data.len());
+                    vd_debug!("local clipboard changed ({} bytes) -> host", clip_data.len());
                     send_clipboard_grab(fd);
                 }
             }
