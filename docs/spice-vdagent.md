@@ -161,6 +161,19 @@ qemu-system-x86_64 ... \
   -device virtserialport,chardev=vdagent,name=com.redhat.spice.0
 # Verbinden: remote-viewer spice://localhost:5930
 
+# SPICE-Only Modus (built-in viewer als einziges Display)
+./scripts/run.sh --spice-app
+# entspricht zusätzlich:
+qemu-system-x86_64 ... \
+  -spice port=5930,disable-ticketing=on,agent-mouse=off \
+  -device virtio-mouse-pci -device virtio-keyboard-pci \
+  -display spice-app
+# `agent-mouse=off` ist entscheidend: ohne diesen Flag versucht SPICE,
+# Mausbewegungen über das vdagent-Protokoll zu senden — unser vdagent
+# implementiert aber nur Clipboard, keine Pointer-Events. Mit `off`
+# liefert SPICE die Maus über QEMUs Input-Subsystem an vmmouse/PS/2
+# bzw. virtio-mouse-pci, was sauber funktioniert.
+
 # Nur Clipboard-Sync (GTK-Display bleibt). QEMU 6.1+
 ./scripts/run.sh --clipboard
 # nutzt -chardev qemu-vdagent,clipboard=on

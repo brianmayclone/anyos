@@ -79,16 +79,12 @@
 #                     remote-viewer spice://localhost:5930
 #                   Install viewer: sudo apt-get install virt-viewer
 #                   Recommended for development — input works through GTK.
-#   --spice-app   EXPERIMENTAL. Like --spice, but uses QEMU's built-in
-#                   `-display spice-app` viewer as the only display. Adds
-#                   virtio-mouse-pci and virtio-keyboard-pci so the guest
-#                   has a target for SPICE-protocol input (spice-app does
-#                   not deliver to PS/2 / vmmouse).
-#                   KNOWN LIMITATION: with QEMU 8.2, SPICE input does not
-#                   reliably reach the virtio-input devices when both PS/2
-#                   and virtio-input are present — the cursor/keyboard may
-#                   stay frozen. Until that QEMU routing is sorted out,
-#                   prefer --spice (GTK display + SPICE clipboard).
+#   --spice-app   Like --spice, but uses QEMU's built-in `-display spice-app`
+#                   viewer (remote-viewer) as the only display. Uses
+#                   `agent-mouse=off` so SPICE delivers pointer events via
+#                   QEMU's input subsystem (vmmouse / virtio-mouse-pci)
+#                   instead of trying to route them through the vdagent
+#                   (which only handles clipboard, not pointer events).
 #   --clipboard   Enable clipboard sync only (no SPICE display).
 #                   Adds virtio-serial + chardev for vdagent, but keeps the normal
 #                   GTK/SDL display. Requires QEMU 6.1+ with -chardev qemu-vdagent.
@@ -1017,7 +1013,13 @@ elif [ "$SPICE_APP_MODE" = true ]; then
     # devices, so we add virtio-mouse-pci + virtio-keyboard-pci. The guest
     # virtio-input driver translates these events into the existing
     # mouse/keyboard pipelines.
-    SPICE_FLAGS="-spice port=5930,disable-ticketing=on,addr=127.0.0.1 -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 -device virtio-mouse-pci -device virtio-keyboard-pci"
+    #
+    # `agent-mouse=off` is critical: by default SPICE tries to deliver mouse
+    # via the SPICE vdagent protocol (over virtio-serial), but our vdagent
+    # daemon only handles clipboard, not pointer events — so mouse events
+    # get dropped silently. With agent-mouse=off, SPICE routes pointer
+    # events through QEMU's input subsystem to virtio-mouse-pci instead.
+    SPICE_FLAGS="-spice port=5930,disable-ticketing=on,addr=127.0.0.1,agent-mouse=off -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 -device virtio-mouse-pci -device virtio-keyboard-pci"
     DISPLAY_FLAGS="-display spice-app"
     SPICE_LABEL=", spice-app: port 5930 (built-in viewer, virtio-input)"
     echo "SPICE built-in viewer on port 5930 (-display spice-app)."
