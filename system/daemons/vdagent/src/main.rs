@@ -67,8 +67,11 @@ const _VDP_CLIENT_PORT: u32 = 1;
 const VDP_SERVER_PORT: u32 = 2;
 
 /// VDAgent message types.
-const VD_AGENT_ANNOUNCE_CAPABILITIES: u32 = 6;
+const VD_AGENT_MOUSE_STATE: u32 = 1;
+const VD_AGENT_MONITORS_CONFIG: u32 = 2;
+const VD_AGENT_REPLY: u32 = 3;
 const VD_AGENT_CLIPBOARD: u32 = 4;
+const VD_AGENT_ANNOUNCE_CAPABILITIES: u32 = 6;
 const VD_AGENT_CLIPBOARD_GRAB: u32 = 7;
 const VD_AGENT_CLIPBOARD_REQUEST: u32 = 8;
 const VD_AGENT_CLIPBOARD_RELEASE: u32 = 9;
@@ -77,14 +80,22 @@ const VD_AGENT_CLIPBOARD_RELEASE: u32 = 9;
 const VD_AGENT_CLIPBOARD_UTF8_TEXT: u32 = 1;
 
 /// Agent capabilities.
+const VD_AGENT_CAP_MOUSE_STATE: u32 = 0;
+const VD_AGENT_CAP_MONITORS_CONFIG: u32 = 1;
 const VD_AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 2;
 const VD_AGENT_CAP_CLIPBOARD_SELECTION: u32 = 3;
+
+// SPICE_MOUSE_BUTTON_* enum values: LEFT=1, MIDDLE=2, RIGHT=3, UP=4, DOWN=5.
+// Masks are `1 << button`, so SPICE button bits live at positions 1..=5.
+// The compositor `CMD_INJECT_POINTER` expects RFB-style mask:
+//   bit 0=L, 1=M, 2=R, 3=wheel-up, 4=wheel-down. Translation = `>> 1` & 0x1F.
 
 // ── Compositor IPC Constants ─────────────────────────────────────────────────
 
 const CMD_SET_CLIPBOARD: u32 = 0x1011;
 const CMD_GET_CLIPBOARD: u32 = 0x1012;
 const CMD_REGISTER_SUB: u32 = 0x100C;
+const CMD_INJECT_POINTER: u32 = 0x1023;
 const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 /// Hard upper bound regardless of config (sanity ceiling).
 const MAX_CLIPBOARD_SIZE: usize = 4 * 1024 * 1024;
@@ -194,9 +205,14 @@ fn send_capabilities(fd: u32) {
     let mut payload = Vec::with_capacity(8);
     // request = 1 (we are announcing, not replying)
     payload.extend_from_slice(&1u32.to_le_bytes());
-    // capability word 0: set bits for CLIPBOARD_BY_DEMAND and CLIPBOARD_SELECTION
-    let cap_word: u32 =
-        (1 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND) | (1 << VD_AGENT_CAP_CLIPBOARD_SELECTION);
+    // Capability word 0: clipboard + input. MOUSE_STATE / MONITORS_CONFIG must
+    // be advertised before the SPICE host will route mouse events through the
+    // vdagent channel — without these bits the host falls back to delivering
+    // pointer events via the SPICE inputs channel (vmmouse / virtio-mouse-pci).
+    let cap_word: u32 = (1 << VD_AGENT_CAP_MOUSE_STATE)
+        | (1 << VD_AGENT_CAP_MONITORS_CONFIG)
+        | (1 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND)
+        | (1 << VD_AGENT_CAP_CLIPBOARD_SELECTION);
     payload.extend_from_slice(&cap_word.to_le_bytes());
 
     let msg = build_message(VD_AGENT_ANNOUNCE_CAPABILITIES, &payload);
@@ -227,6 +243,34 @@ fn send_clipboard_data(fd: u32, data: &[u8]) {
 fn send_clipboard_release(fd: u32) {
     let msg = build_message(VD_AGENT_CLIPBOARD_RELEASE, &[]);
     fs::write(fd, &msg);
+}
+
+/// Acknowledge a request from the host. SPICE expects a `VD_AGENT_REPLY` after
+/// `VD_AGENT_MONITORS_CONFIG` and similar configuration messages so it knows
+/// the agent is alive and the request was consumed.
+fn send_reply(fd: u32, reply_to: u32, error: u32) {
+    let mut payload = Vec::with_capacity(8);
+    payload.extend_from_slice(&reply_to.to_le_bytes());
+    payload.extend_from_slice(&error.to_le_bytes());
+    let msg = build_message(VD_AGENT_REPLY, &payload);
+    fs::write(fd, &msg);
+}
+
+/// Translate SPICE mouse-button bits to the compositor's RFB-style mask.
+/// SPICE places LEFT at bit 1, MIDDLE bit 2, RIGHT bit 3, wheel-up bit 4,
+/// wheel-down bit 5. The compositor expects LEFT bit 0, MIDDLE bit 1,
+/// RIGHT bit 2, wheel-up bit 3, wheel-down bit 4.
+fn spice_buttons_to_compositor(spice: u32) -> u8 {
+    ((spice >> 1) & 0x1F) as u8
+}
+
+/// Inject an absolute-positioned pointer event. Wheel ticks are edge-triggered:
+/// the compositor treats a wheel bit toggle within one event as one scroll
+/// notch (matching the RFB convention used by vncd).
+fn inject_mouse(comp_chan: u32, x: u32, y: u32, buttons: u32) {
+    let mask = spice_buttons_to_compositor(buttons);
+    let evt = [CMD_INJECT_POINTER, x, y, mask as u32, 0];
+    ipc::evt_chan_emit(comp_chan, &evt);
 }
 
 // ── Message Parsing ──────────────────────────────────────────────────────────
@@ -317,6 +361,27 @@ fn handle_agent_message(
             // Host released clipboard ownership.
             *host_has_clipboard = false;
             vd_debug!("host released clipboard");
+        }
+
+        VD_AGENT_MOUSE_STATE => {
+            // VDAgentMouseState: { u32 x, u32 y, u32 buttons, u8 display_id }
+            // The host streams these continuously while the cursor moves;
+            // each one is a complete absolute-position frame.
+            if payload.len() >= 12 {
+                let x = read_u32_le(payload, 0);
+                let y = read_u32_le(payload, 4);
+                let buttons = read_u32_le(payload, 8);
+                inject_mouse(comp_chan, x, y, buttons);
+            }
+        }
+
+        VD_AGENT_MONITORS_CONFIG => {
+            // Host pushes the desired monitor layout. We don't dynamically
+            // resize the virtio-gpu output from userspace, but the host needs
+            // a REPLY (success) to know the agent saw the request — without
+            // it, some SPICE clients delay further input.
+            vd_debug!("host monitors_config (payload {} bytes)", payload.len());
+            send_reply(fd, VD_AGENT_MONITORS_CONFIG, 0);
         }
 
         _ => {

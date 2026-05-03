@@ -165,14 +165,14 @@ qemu-system-x86_64 ... \
 ./scripts/run.sh --spice-app
 # entspricht zusätzlich:
 qemu-system-x86_64 ... \
-  -spice port=5930,disable-ticketing=on,agent-mouse=off \
-  -device virtio-mouse-pci -device virtio-keyboard-pci \
+  -spice port=5930,disable-ticketing=on \
+  -device virtio-keyboard-pci \
   -display spice-app
-# `agent-mouse=off` ist entscheidend: ohne diesen Flag versucht SPICE,
-# Mausbewegungen über das vdagent-Protokoll zu senden — unser vdagent
-# implementiert aber nur Clipboard, keine Pointer-Events. Mit `off`
-# liefert SPICE die Maus über QEMUs Input-Subsystem an vmmouse/PS/2
-# bzw. virtio-mouse-pci, was sauber funktioniert.
+# Maus läuft über das vdagent-Protokoll (VD_AGENT_MOUSE_STATE), absolute
+# Koordinaten direkt vom SPICE-Client; vdagent ruft CMD_INJECT_POINTER auf.
+# Tastatur ist nicht Teil des vdagent-Protokolls und läuft ausschliesslich
+# über virtio-keyboard-pci (Linux-Keycodes → PS/2 Set 1 in
+# kernel/src/drivers/virtio/input.rs).
 
 # Nur Clipboard-Sync (GTK-Display bleibt). QEMU 6.1+
 ./scripts/run.sh --clipboard

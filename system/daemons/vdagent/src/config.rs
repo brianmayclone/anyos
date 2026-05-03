@@ -25,7 +25,9 @@ const VDAGENT_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     // Polling interval in milliseconds for compositor clipboard changes.
     default_int("config/clipboard_poll_ms", 500),
     // Main loop sleep when idle (lower = more responsive, higher = lower CPU).
-    default_int("config/idle_sleep_ms", 50),
+    // 10 ms keeps mouse input fluid; bump to 50+ when only clipboard sync is
+    // needed and CPU matters.
+    default_int("config/idle_sleep_ms", 10),
     // Log verbosity: "error", "warn", "info", "debug", "trace".
     default_string("config/log_level", "info"),
     // Maximum clipboard payload accepted from host (bytes). Hard cap.
@@ -95,7 +97,7 @@ impl VdAgentConfig {
             port_name: String::from("com.redhat.spice.0"),
             device_path: String::new(),
             clipboard_poll_ms: 500,
-            idle_sleep_ms: 50,
+            idle_sleep_ms: 10,
             log_level: LogLevel::Info,
             max_clipboard_bytes: 65536,
         }
