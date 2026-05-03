@@ -725,6 +725,13 @@ impl Desktop {
                             if !self.windows[idx].is_borderless() {
                                 content_ly -= title_bar_height() as i32;
                             }
+                            // Remember which window owns the in-progress
+                            // press. Subsequent MOUSE_UP gets routed back
+                            // here instead of to the (possibly newly
+                            // focused) window — so click handlers that
+                            // open dialogs don't strand the source widget
+                            // with a stale pressed_button.
+                            self.mouse_down_capture = Some(win_id);
                             self.push_event(
                                 win_id,
                                 [
@@ -882,8 +889,15 @@ impl Desktop {
                 return;
             }
 
-            // Forward mouse up to focused window
-            if let Some(win_id) = self.focused_window {
+            // Forward mouse up to whichever window started this press
+            // (implicit mouse capture). Falls back to the focused window
+            // if no capture was registered (e.g. press happened on a
+            // non-content hit area).
+            let target = self
+                .mouse_down_capture
+                .take()
+                .or(self.focused_window);
+            if let Some(win_id) = target {
                 if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
                     let lx = self.mouse_x - self.windows[idx].x;
                     let mut ly = self.mouse_y - self.windows[idx].y;

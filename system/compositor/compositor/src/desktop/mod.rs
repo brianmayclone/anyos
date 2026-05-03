@@ -113,6 +113,11 @@ pub struct Desktop {
     pub(crate) last_absolute_mouse_x: Option<i32>,
     pub(crate) last_absolute_mouse_y: Option<i32>,
     pub(crate) mouse_buttons: u32,
+    /// Implicit mouse-button capture target. Set when a primary button goes
+    /// down on a content area; the matching MOUSE_UP is routed back to this
+    /// window even if focus shifted in the meantime (e.g. the click opened
+    /// a modal dialog). Cleared on the corresponding release.
+    pub(crate) mouse_down_capture: Option<u32>,
     /// Current keyboard modifier state (Shift=1, Ctrl=2, Alt=4), updated on key events.
     pub(crate) current_modifiers: u32,
 
@@ -261,6 +266,7 @@ impl Desktop {
             last_absolute_mouse_x: None,
             last_absolute_mouse_y: None,
             mouse_buttons: 0,
+            mouse_down_capture: None,
             current_modifiers: 0,
             cursor_save: vec![0u32; (CURSOR_W * CURSOR_H) as usize],
             cursor_drawn: false,
