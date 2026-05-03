@@ -195,6 +195,26 @@ fn get_compositor_clipboard(comp_chan: u32, reply_chan: u32, sub_id: u32, buf: &
 // ── VDAgent Message Construction ─────────────────────────────────────────────
 
 /// Build a complete VDI chunk + VDAgent message with the given payload.
+/// Write a fully built VDI chunk (chunk header + VDAgent message) to the
+/// virtio-serial port, with a debug-level hex dump of the first 32 bytes
+/// so the outbound wire stream is visible alongside the inbound dump.
+fn write_chunk(fd: u32, msg: &[u8]) {
+    if matches!(unsafe { CURRENT_LOG_LEVEL }, LogLevel::Debug | LogLevel::Trace) {
+        let dump_len = msg.len().min(32);
+        let mut hex = String::new();
+        for b in &msg[..dump_len] {
+            let _ = core::fmt::write(&mut hex, format_args!("{:02x} ", b));
+        }
+        vd_debug!(
+            "wire OUT: {}B {}{}",
+            msg.len(),
+            hex,
+            if msg.len() > dump_len { "..." } else { "" }
+        );
+    }
+    fs::write(fd, msg);
+}
+
 fn build_message(msg_type: u32, payload: &[u8]) -> Vec<u8> {
     let agent_size = VD_AGENT_MSG_HDR_SIZE + payload.len();
     let total = VDI_CHUNK_HDR_SIZE + agent_size;
@@ -241,7 +261,7 @@ fn send_capabilities(fd: u32) {
     payload.extend_from_slice(&cap_word.to_le_bytes());
 
     let msg = build_message(VD_AGENT_ANNOUNCE_CAPABILITIES, &payload);
-    fs::write(fd, &msg);
+    write_chunk(fd, &msg);
 }
 
 /// Send ANNOUNCE_CAPABILITIES with request=0 — used when the host's own
@@ -257,7 +277,7 @@ fn send_capabilities_reply(fd: u32) {
         | (1 << VD_AGENT_CAP_MAX_CLIPBOARD);
     payload.extend_from_slice(&cap_word.to_le_bytes());
     let msg = build_message(VD_AGENT_ANNOUNCE_CAPABILITIES, &payload);
-    fs::write(fd, &msg);
+    write_chunk(fd, &msg);
 }
 
 // VDAgent selection IDs (when CLIPBOARD_SELECTION cap is active).
@@ -277,7 +297,7 @@ fn send_clipboard_grab(fd: u32) {
     payload.extend_from_slice(&selection_prefix(VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD));
     payload.extend_from_slice(&VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
     let msg = build_message(VD_AGENT_CLIPBOARD_GRAB, &payload);
-    fs::write(fd, &msg);
+    write_chunk(fd, &msg);
 }
 
 /// Send clipboard data to the host.
@@ -287,14 +307,14 @@ fn send_clipboard_data(fd: u32, data: &[u8]) {
     payload.extend_from_slice(&VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
     payload.extend_from_slice(data);
     let msg = build_message(VD_AGENT_CLIPBOARD, &payload);
-    fs::write(fd, &msg);
+    write_chunk(fd, &msg);
 }
 
 /// Send a CLIPBOARD_RELEASE to release clipboard ownership.
 #[allow(dead_code)]
 fn send_clipboard_release(fd: u32) {
     let msg = build_message(VD_AGENT_CLIPBOARD_RELEASE, &[]);
-    fs::write(fd, &msg);
+    write_chunk(fd, &msg);
 }
 
 /// Acknowledge a request from the host. SPICE expects a `VD_AGENT_REPLY` after
@@ -305,7 +325,7 @@ fn send_reply(fd: u32, reply_to: u32, error: u32) {
     payload.extend_from_slice(&reply_to.to_le_bytes());
     payload.extend_from_slice(&error.to_le_bytes());
     let msg = build_message(VD_AGENT_REPLY, &payload);
-    fs::write(fd, &msg);
+    write_chunk(fd, &msg);
 }
 
 /// Inject an absolute-positioned pointer event. We shift the SPICE button
@@ -414,7 +434,7 @@ fn handle_agent_message(
             ));
             req_payload.extend_from_slice(&VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
             let msg = build_message(VD_AGENT_CLIPBOARD_REQUEST, &req_payload);
-            fs::write(fd, &msg);
+            write_chunk(fd, &msg);
         }
 
         VD_AGENT_CLIPBOARD_REQUEST => {
