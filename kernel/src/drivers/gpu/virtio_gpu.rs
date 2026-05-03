@@ -350,6 +350,55 @@ struct UpdateCursor {
 }
 
 // ──────────────────────────────────────────────
+// Per-scanout state (multi-monitor)
+// ──────────────────────────────────────────────
+//
+// Output 0 ("primary") historically lives in the inline `width / height /
+// pitch / fb_phys / fb_pages / scanout_resource_id` fields of `VirtioGpu`
+// — we keep that representation untouched so the fast paths (DMA back-
+// buffer, accel_fill_rect, hardware cursor, etc.) stay intact at the cost
+// of zero refactoring risk. Outputs 1..num_scanouts live in
+// `extra_scanouts` and are configured lazily on the first
+// `set_mode_for_output(id, …)` call. A scanout entry with `mirror_of =
+// Some(other)` shares its scanned-out resource_id with another output
+// (per the virtio-gpu spec's "create one framebuffer, link to all
+// displays" mirroring idiom) and owns no framebuffer pages of its own.
+
+#[derive(Debug, Clone, Copy)]
+struct ScanoutState {
+    width: u32,
+    height: u32,
+    pitch: u32,
+    /// Guest-physical base of this scanout's framebuffer. `0` when the
+    /// scanout is currently a mirror (no own backing store).
+    fb_phys: u64,
+    /// Number of pages backing `fb_phys`. `0` when this scanout mirrors
+    /// another output.
+    fb_pages: usize,
+    /// virtio-gpu resource_id used for `SET_SCANOUT(id, resource_id, …)`.
+    /// For mirror entries this is the *source* output's resource_id.
+    /// `0` when this scanout is disabled.
+    resource_id: u32,
+    /// `Some(source_id)` when this scanout mirrors another output's
+    /// framebuffer; `None` for own-framebuffer scanouts.
+    mirror_of: Option<u32>,
+}
+
+impl ScanoutState {
+    const fn empty() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            pitch: 0,
+            fb_phys: 0,
+            fb_pages: 0,
+            resource_id: 0,
+            mirror_of: None,
+        }
+    }
+}
+
+// ──────────────────────────────────────────────
 // VirtIO GPU Driver State
 // ──────────────────────────────────────────────
 
@@ -361,12 +410,27 @@ pub struct VirtioGpu {
     controlq: VirtQueue,
     cursorq: VirtQueue,
 
-    // Display state
+    // Display state for output 0 (primary scanout). See ScanoutState
+    // comment above for why these inline fields stay in place.
     width: u32,
     height: u32,
     pitch: u32,
     fb_phys: u64,
     fb_pages: usize,
+
+    /// Scanout state for outputs 1..num_scanouts_advertised. Index 0 in
+    /// this Vec corresponds to output_id 1.
+    extra_scanouts: alloc::vec::Vec<ScanoutState>,
+
+    /// Number of scanouts the device advertises in its `virtio_gpu_config`
+    /// (offset 8). Set during init from `device.device_cfg`. Never
+    /// exceeds `output::MAX_OUTPUTS` (= 16, the spec's maximum).
+    num_scanouts_advertised: u32,
+
+    /// Pending hotplug / configuration events drained by the compositor
+    /// via `SYS_DISPLAY_POLL_EVENT`. Pushed by the IRQ-driven `events_read`
+    /// observer; popped by `poll_display_event()`.
+    pending_events: alloc::collections::VecDeque<crate::drivers::gpu::output::DisplayEvent>,
 
     // Resource tracking
     scanout_resource_id: u32,
@@ -1853,11 +1917,12 @@ impl GpuDriver for VirtioGpu {
     // ── Monitor / EDID ──
 
     fn display_count(&self) -> u32 {
-        if self.enabled_scanout_count > 0 {
-            self.enabled_scanout_count
-        } else {
-            1
-        }
+        // Total scanouts the device advertises, regardless of how many
+        // currently report a connected monitor. Multi-monitor user-space
+        // (displayd, display-settings) iterates all advertised outputs to
+        // distinguish "physically possible but disconnected" from "doesn't
+        // exist at all".
+        self.num_scanouts_advertised.max(1)
     }
 
     fn read_edid(&mut self, output: u32) -> Option<[u8; 128]> {
@@ -1870,6 +1935,358 @@ impl GpuDriver for VirtioGpu {
 
     fn refresh_display_info(&mut self) {
         self.query_all_display_infos();
+    }
+
+    // ── Multi-monitor (per-output) implementations ────────────────────
+
+    fn set_mode_for_output(
+        &mut self,
+        output_id: u32,
+        width: u32,
+        height: u32,
+        bpp: u32,
+    ) -> Option<(u32, u32, u32, u32)> {
+        if output_id >= self.num_scanouts_advertised {
+            return None;
+        }
+        if output_id == 0 {
+            return self.set_mode(width, height, bpp);
+        }
+
+        // width == 0 || height == 0 → disable scanout.
+        if width == 0 || height == 0 {
+            self.disable_extra_scanout(output_id);
+            return Some((0, 0, 0, 0));
+        }
+
+        // Tear down whatever was on this scanout previously (mirror or own).
+        self.disable_extra_scanout(output_id);
+
+        // Allocate framebuffer pages + resource for this output.
+        let pitch = width * 4;
+        let fb_size = (width as usize) * (height as usize) * 4;
+        let num_pages = (fb_size + 4095) / 4096;
+        let fb_phys = match physical::alloc_contiguous(num_pages) {
+            Some(p) => p.as_u64(),
+            None => {
+                crate::serial_verbose_println!(
+                    "  VirtIO GPU: scanout {} fb alloc failed ({} pages)",
+                    output_id,
+                    num_pages
+                );
+                return None;
+            }
+        };
+        unsafe {
+            core::ptr::write_bytes(fb_phys as *mut u8, 0, num_pages * 4096);
+        }
+        let res_id = self.next_resource_id;
+        self.next_resource_id += 1;
+        if !self.cmd_resource_create_2d(res_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height) {
+            for i in 0..num_pages {
+                physical::free_frame(crate::memory::address::PhysAddr::new(
+                    fb_phys + (i as u64) * 4096,
+                ));
+            }
+            return None;
+        }
+        if !self.cmd_attach_backing(res_id, fb_phys, num_pages) {
+            self.cmd_resource_unref(res_id);
+            for i in 0..num_pages {
+                physical::free_frame(crate::memory::address::PhysAddr::new(
+                    fb_phys + (i as u64) * 4096,
+                ));
+            }
+            return None;
+        }
+        if !self.cmd_set_scanout(output_id, res_id, width, height) {
+            self.cmd_detach_backing(res_id);
+            self.cmd_resource_unref(res_id);
+            for i in 0..num_pages {
+                physical::free_frame(crate::memory::address::PhysAddr::new(
+                    fb_phys + (i as u64) * 4096,
+                ));
+            }
+            return None;
+        }
+        let idx = (output_id - 1) as usize;
+        self.extra_scanouts[idx] = ScanoutState {
+            width,
+            height,
+            pitch,
+            fb_phys,
+            fb_pages: num_pages,
+            resource_id: res_id,
+            mirror_of: None,
+        };
+        crate::serial_verbose_println!(
+            "  VirtIO GPU: scanout {} active {}x{} resource={} fb={:#x}",
+            output_id,
+            width,
+            height,
+            res_id,
+            fb_phys
+        );
+        // Initial transfer + flush so the host shows zeros instead of garbage.
+        self.cmd_transfer_to_host_2d(res_id, 0, 0, width, height);
+        self.cmd_resource_flush(res_id, 0, 0, width, height);
+        Some((width, height, pitch, fb_phys as u32))
+    }
+
+    fn mode_for_output(&self, output_id: u32) -> Option<(u32, u32, u32, u32)> {
+        if output_id == 0 {
+            if self.width > 0 && self.height > 0 {
+                Some((self.width, self.height, self.pitch, self.fb_phys as u32))
+            } else {
+                None
+            }
+        } else {
+            let idx = (output_id - 1) as usize;
+            let s = self.extra_scanouts.get(idx)?;
+            if s.width == 0 || s.height == 0 {
+                return None;
+            }
+            // Mirror entries report the source's fb_phys so callers can map it.
+            let (fb_phys, pitch) = if let Some(src) = s.mirror_of {
+                if src == 0 {
+                    (self.fb_phys, self.pitch)
+                } else {
+                    let si = (src - 1) as usize;
+                    let ss = &self.extra_scanouts[si];
+                    (ss.fb_phys, ss.pitch)
+                }
+            } else {
+                (s.fb_phys, s.pitch)
+            };
+            Some((s.width, s.height, pitch, fb_phys as u32))
+        }
+    }
+
+    fn transfer_rect_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        if output_id == 0 {
+            self.transfer_rect(x, y, w, h);
+            return;
+        }
+        let idx = (output_id - 1) as usize;
+        let s = match self.extra_scanouts.get(idx) {
+            Some(s) if s.resource_id != 0 && w > 0 && h > 0 => *s,
+            _ => return,
+        };
+        // Mirror outputs share the source resource_id, so transfers were
+        // already done when the source did its transfer. Only flush below.
+        if s.mirror_of.is_some() {
+            return;
+        }
+        let x = x.min(s.width);
+        let y = y.min(s.height);
+        let w = w.min(s.width - x);
+        let h = h.min(s.height - y);
+        if w == 0 || h == 0 {
+            return;
+        }
+        // Use the same row-major full-width transfer trick as the primary
+        // scanout path (cmd_transfer_to_host_2d's special case keys on
+        // resource_id == self.scanout_resource_id, so for extras we just
+        // emit a rect transfer with the right offset directly).
+        let offset = (y as u64) * (s.pitch as u64) + (x as u64) * 4;
+        let cmd = TransferToHost2d {
+            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
+            r_x: x,
+            r_y: y,
+            r_width: w,
+            r_height: h,
+            offset,
+            resource_id: s.resource_id,
+            padding: 0,
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<TransferToHost2d>(),
+            )
+        };
+        let _ = self.send_ctrl_cmd(bytes);
+    }
+
+    fn flush_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        if output_id == 0 {
+            self.flush_display(x, y, w, h);
+            return;
+        }
+        let idx = (output_id - 1) as usize;
+        let s = match self.extra_scanouts.get(idx) {
+            Some(s) if s.resource_id != 0 && w > 0 && h > 0 => *s,
+            _ => return,
+        };
+        let x = x.min(s.width);
+        let y = y.min(s.height);
+        let w = w.min(s.width - x);
+        let h = h.min(s.height - y);
+        if w == 0 || h == 0 {
+            return;
+        }
+        // For mirror entries, the resource_id belongs to the source —
+        // RESOURCE_FLUSH against it shows the same pixels on this scanout
+        // because SET_SCANOUT linked the resource to both outputs.
+        let _ = self.cmd_resource_flush(s.resource_id, x, y, w, h);
+    }
+
+    fn update_rect_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        // Combined transfer + flush. Mirror outputs skip the transfer
+        // (already done by the source) but still need a per-scanout flush.
+        self.transfer_rect_for_output(output_id, x, y, w, h);
+        self.flush_for_output(output_id, x, y, w, h);
+    }
+
+    fn set_output_mirror(&mut self, output_id: u32, source_output_id: u32) -> bool {
+        if output_id == 0 || output_id >= self.num_scanouts_advertised {
+            // Output 0 is always own-framebuffer in this driver layout —
+            // applying a mirror to it would invalidate the inline scanout
+            // fields that the legacy single-output paths still rely on.
+            return false;
+        }
+        if source_output_id == output_id {
+            return false;
+        }
+        // Resolve source (resource_id, width, height).
+        let (src_res, src_w, src_h, src_pitch, src_fb) = if source_output_id == 0 {
+            if self.scanout_resource_id == 0 {
+                return false;
+            }
+            (
+                self.scanout_resource_id,
+                self.width,
+                self.height,
+                self.pitch,
+                self.fb_phys,
+            )
+        } else {
+            let si = (source_output_id - 1) as usize;
+            let ss = match self.extra_scanouts.get(si) {
+                Some(s) if s.resource_id != 0 && s.mirror_of.is_none() => *s,
+                _ => return false,
+            };
+            (ss.resource_id, ss.width, ss.height, ss.pitch, ss.fb_phys)
+        };
+        // Tear down whatever this scanout had so we don't leak frames.
+        self.disable_extra_scanout(output_id);
+
+        if !self.cmd_set_scanout(output_id, src_res, src_w, src_h) {
+            return false;
+        }
+        let idx = (output_id - 1) as usize;
+        self.extra_scanouts[idx] = ScanoutState {
+            width: src_w,
+            height: src_h,
+            pitch: src_pitch,
+            fb_phys: src_fb,
+            fb_pages: 0, // mirror owns no pages
+            resource_id: src_res,
+            mirror_of: Some(source_output_id),
+        };
+        true
+    }
+
+    fn output_info(
+        &mut self,
+        output_id: u32,
+    ) -> Option<crate::drivers::gpu::output::OutputInfo> {
+        use crate::drivers::gpu::output::{OutputInfo, OutputMode};
+        if output_id >= self.num_scanouts_advertised {
+            return None;
+        }
+        let mut info = OutputInfo::placeholder(output_id);
+        // From cached GET_DISPLAY_INFO.
+        if let Some((w, h, enabled)) = self.display_infos.get(output_id as usize).copied() {
+            info.connected = enabled;
+            if w > 0 && h > 0 {
+                info.preferred_mode = Some(OutputMode::new(w, h));
+            }
+        }
+        // Current mode (own state, more authoritative than the cached
+        // GET_DISPLAY_INFO which may be stale after a mode change).
+        if let Some((w, h, p, fb)) = self.mode_for_output(output_id) {
+            let _ = (p, fb);
+            if w > 0 && h > 0 {
+                info.current_mode = Some(OutputMode::new(w, h));
+            }
+        }
+        // Modes list = COMMON_MODES filtered to ≤ preferred (best effort).
+        // Drivers without per-output mode lists treat the union as candidates;
+        // displayd's UI shows only entries that fit the connected monitor.
+        let cap = info
+            .preferred_mode
+            .map(|m| (m.width, m.height))
+            .unwrap_or((u32::MAX, u32::MAX));
+        for &(w, h) in super::COMMON_MODES {
+            if w <= cap.0 && h <= cap.1 {
+                info.modes.push(OutputMode::new(w, h));
+            }
+        }
+        // EDID-derived metadata (manufacturer, physical size, hash).
+        if let Some(edid) = self.cmd_get_edid(output_id) {
+            info.edid_hash = crate::drivers::gpu::output::edid_hash(&edid);
+            let raw = ((edid[8] as u16) << 8) | (edid[9] as u16);
+            info.manufacturer[0] = b'A' + (((raw >> 10) & 0x1F) as u8).saturating_sub(1);
+            info.manufacturer[1] = b'A' + (((raw >> 5) & 0x1F) as u8).saturating_sub(1);
+            info.manufacturer[2] = b'A' + ((raw & 0x1F) as u8).saturating_sub(1);
+            info.manufacturer[3] = 0;
+            info.physical_mm = ((edid[21] as u16) * 10, (edid[22] as u16) * 10);
+        }
+        Some(info)
+    }
+
+    fn poll_display_event(&mut self) -> Option<crate::drivers::gpu::output::DisplayEvent> {
+        // Lazy hotplug check: read events_read from device config every
+        // poll. A future revision can wire this to the virtio config-change
+        // ISR instead, but polling is correct (the spec only requires
+        // events_read to be sticky until events_clear is written).
+        if self.device.device_cfg != 0 {
+            let events =
+                unsafe { core::ptr::read_volatile(self.device.device_cfg as *const u32) };
+            const VIRTIO_GPU_EVENT_DISPLAY: u32 = 1 << 0;
+            if events & VIRTIO_GPU_EVENT_DISPLAY != 0 {
+                // Ack the bit (write same value to events_clear at +4).
+                unsafe {
+                    core::ptr::write_volatile(
+                        (self.device.device_cfg + 4) as *mut u32,
+                        VIRTIO_GPU_EVENT_DISPLAY,
+                    );
+                }
+                self.query_all_display_infos();
+                self.pending_events
+                    .push_back(crate::drivers::gpu::output::DisplayEvent::HotplugChanged);
+            }
+        }
+        self.pending_events.pop_front()
+    }
+}
+
+impl VirtioGpu {
+    /// Tear down a non-primary scanout: disable the SET_SCANOUT, drop
+    /// resource + backing if the scanout owned its framebuffer (mirror
+    /// entries don't), free pages.
+    fn disable_extra_scanout(&mut self, output_id: u32) {
+        if output_id == 0 {
+            return;
+        }
+        let idx = (output_id - 1) as usize;
+        let prev = match self.extra_scanouts.get(idx) {
+            Some(s) if s.resource_id != 0 => *s,
+            _ => return,
+        };
+        // SET_SCANOUT(id, 0, 0,0) disables the scanout per spec.
+        let _ = self.cmd_set_scanout(output_id, 0, 0, 0);
+        if prev.mirror_of.is_none() {
+            self.cmd_detach_backing(prev.resource_id);
+            self.cmd_resource_unref(prev.resource_id);
+            for i in 0..prev.fb_pages {
+                physical::free_frame(crate::memory::address::PhysAddr::new(
+                    prev.fb_phys + (i as u64) * 4096,
+                ));
+            }
+        }
+        self.extra_scanouts[idx] = ScanoutState::empty();
     }
 }
 
@@ -2000,6 +2417,29 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         0
     };
 
+    // Read num_scanouts from device-specific config (virtio_gpu_config
+    // layout: events_read u32 @ 0, events_clear u32 @ 4, num_scanouts u32 @ 8,
+    // num_capsets u32 @ 12). Clamp to MAX_OUTPUTS — the spec already caps
+    // it at 16 but defending against a misbehaving host is cheap.
+    let num_scanouts_advertised = if device.device_cfg != 0 {
+        let n = unsafe {
+            core::ptr::read_volatile((device.device_cfg + 8) as *const u32)
+        };
+        n.clamp(1, super::output::MAX_OUTPUTS as u32)
+    } else {
+        1
+    };
+    crate::serial_verbose_println!(
+        "  VirtIO GPU: device advertises {} scanout(s)",
+        num_scanouts_advertised
+    );
+
+    let extra_count = num_scanouts_advertised.saturating_sub(1) as usize;
+    let mut extra_scanouts = alloc::vec::Vec::with_capacity(extra_count);
+    for _ in 0..extra_count {
+        extra_scanouts.push(ScanoutState::empty());
+    }
+
     let mut gpu = VirtioGpu {
         device,
         controlq,
@@ -2009,6 +2449,9 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         pitch: 0,
         fb_phys: 0,
         fb_pages: 0,
+        extra_scanouts,
+        num_scanouts_advertised,
+        pending_events: alloc::collections::VecDeque::new(),
         scanout_resource_id: 0,
         cursor_resource_id: 0,
         next_resource_id: 1,
