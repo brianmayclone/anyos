@@ -1537,17 +1537,26 @@ impl Desktop {
         // Move cursor to the absolute position.
         self.apply_mouse_move_absolute(x, y);
 
-        // Determine which buttons changed state since last injection.
         // We track the previous VNC button mask in a dedicated field so that
-        // we can synthesise proper press/release pairs.
+        // we can synthesise proper press/release pairs. handle_mouse_button
+        // expects the *full* new button state (not just the changed bit),
+        // so we forward the whole 0x07 mask once per transition direction.
         let prev = self.vnc_buttons;
-        let changed = prev ^ buttons;
-
-        for bit in 0..3u8 {
-            if changed & (1 << bit) != 0 {
-                let btn_mask = 1u32 << bit;
-                let down = (buttons & (1 << bit)) != 0;
-                self.handle_mouse_button(btn_mask, down);
+        let prim = (buttons & 0x07) as u32;
+        let prim_prev = (prev & 0x07) as u32;
+        if prim != prim_prev {
+            let new_presses = prim & !prim_prev;
+            let new_releases = prim_prev & !prim;
+            if new_presses != 0 {
+                self.handle_mouse_button(prim, true);
+            }
+            // Issue the release in addition to the press so a single inject
+            // that both presses *and* releases bits in the same frame still
+            // fires a MOUSE_UP for the released bits. handle_mouse_button
+            // updates self.mouse_buttons internally, so the second call sees
+            // the correct previous_buttons state.
+            if new_releases != 0 {
+                self.handle_mouse_button(prim, false);
             }
         }
 
