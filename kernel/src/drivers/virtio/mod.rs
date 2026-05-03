@@ -4,6 +4,7 @@
 //! and notification for VirtIO devices over PCI modern transport (capabilities-based).
 
 pub mod balloon;
+pub mod input;
 pub mod rng;
 pub mod serial;
 pub mod virtqueue;
@@ -76,8 +77,12 @@ const VIRTIO_MMIO_VIRT_BASE: u64 = 0xFFFF_FFFF_D008_0000;
 /// Maximum pages to map per BAR.
 const VIRTIO_MMIO_MAX_PAGES: usize = 16; // 64 KiB
 
-// Track mapped BARs to avoid double-mapping
-static mut MAPPED_BARS: [u64; 6] = [0; 6]; // virt addr per BAR index, 0 = not mapped
+/// Track mapped BARs to avoid double-mapping. Keyed by physical address —
+/// indexing by BAR index alone breaks when two PCI devices place their
+/// BARs at the same index (e.g. virtio-net BAR4 vs virtio-serial BAR4).
+const MAX_MAPPED_BARS: usize = 16;
+static mut MAPPED_BARS: [(u64, u64); MAX_MAPPED_BARS] = [(0, 0); MAX_MAPPED_BARS]; // (phys, virt)
+static mut MAPPED_BAR_COUNT: usize = 0;
 
 // ──────────────────────────────────────────────
 // Discovered PCI Capabilities
@@ -228,13 +233,6 @@ pub fn map_bar(pci: &PciDevice, bar_idx: u8) -> u64 {
         return 0;
     }
 
-    // Check if already mapped
-    unsafe {
-        if MAPPED_BARS[idx] != 0 {
-            return MAPPED_BARS[idx];
-        }
-    }
-
     let bar_value = pci.bars[idx];
     if bar_value == 0 {
         return 0;
@@ -246,20 +244,39 @@ pub fn map_bar(pci: &PciDevice, bar_idx: u8) -> u64 {
         return (bar_value & !0x3) as u64;
     }
 
-    let phys_base = (bar_value & !0xF) as u64;
+    let phys_base_low = (bar_value & !0xF) as u64;
 
     // Check for 64-bit BAR (type field bits 2:1)
     let bar_type = (bar_value >> 1) & 0x3;
     let phys_base = if bar_type == 2 && idx + 1 < 6 {
         // 64-bit BAR: combine with next BAR for upper 32 bits
         let hi = pci.bars[idx + 1] as u64;
-        phys_base | (hi << 32)
+        phys_base_low | (hi << 32)
     } else {
-        phys_base
+        phys_base_low
     };
 
-    // Calculate virtual address for this BAR
-    let virt_base = VIRTIO_MMIO_VIRT_BASE + (idx as u64) * (VIRTIO_MMIO_MAX_PAGES as u64 * 4096);
+    // Re-use any prior mapping that already covers this exact physical base.
+    unsafe {
+        for slot in 0..MAPPED_BAR_COUNT {
+            if MAPPED_BARS[slot].0 == phys_base {
+                return MAPPED_BARS[slot].1;
+            }
+        }
+    }
+
+    // Allocate a fresh virtual slot for this physical BAR.
+    let slot = unsafe { MAPPED_BAR_COUNT };
+    if slot >= MAX_MAPPED_BARS {
+        crate::serial_println!(
+            "  VirtIO: BAR map table full ({} entries) — refusing BAR{} phys={:#x}",
+            MAX_MAPPED_BARS,
+            bar_idx,
+            phys_base
+        );
+        return 0;
+    }
+    let virt_base = VIRTIO_MMIO_VIRT_BASE + (slot as u64) * (VIRTIO_MMIO_MAX_PAGES as u64 * 4096);
 
     // Map pages
     for i in 0..VIRTIO_MMIO_MAX_PAGES {
@@ -269,7 +286,8 @@ pub fn map_bar(pci: &PciDevice, bar_idx: u8) -> u64 {
     }
 
     unsafe {
-        MAPPED_BARS[idx] = virt_base;
+        MAPPED_BARS[slot] = (phys_base, virt_base);
+        MAPPED_BAR_COUNT = slot + 1;
     }
 
     crate::serial_verbose_println!(

@@ -24,8 +24,38 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{fs, ipc, println, process, Vec};
+mod config;
+
+use alloc::string::String;
+use anyos_std::{fs, ipc, process, Vec};
+use config::{LogLevel, VdAgentConfig};
 use libsvc::ServiceLifecycle;
+
+// ── Logging helpers ──────────────────────────────────────────────────────────
+
+static mut CURRENT_LOG_LEVEL: LogLevel = LogLevel::Info;
+
+fn log_level() -> LogLevel {
+    unsafe { CURRENT_LOG_LEVEL }
+}
+
+fn set_log_level(lvl: LogLevel) {
+    unsafe {
+        CURRENT_LOG_LEVEL = lvl;
+    }
+}
+
+macro_rules! vd_log {
+    ($lvl:expr, $tag:expr, $($arg:tt)*) => {
+        if log_level().enabled($lvl) {
+            anyos_std::println!("vdagent[{}]: {}", $tag, format_args!($($arg)*));
+        }
+    };
+}
+macro_rules! vd_error { ($($a:tt)*) => { vd_log!(LogLevel::Error, "ERROR", $($a)*) } }
+macro_rules! vd_warn  { ($($a:tt)*) => { vd_log!(LogLevel::Warn,  "WARN",  $($a)*) } }
+macro_rules! vd_info  { ($($a:tt)*) => { vd_log!(LogLevel::Info,  "INFO",  $($a)*) } }
+macro_rules! vd_debug { ($($a:tt)*) => { vd_log!(LogLevel::Debug, "DEBUG", $($a)*) } }
 
 // ── VDAgent Protocol Constants ───────────────────────────────────────────────
 
@@ -56,7 +86,8 @@ const CMD_SET_CLIPBOARD: u32 = 0x1011;
 const CMD_GET_CLIPBOARD: u32 = 0x1012;
 const CMD_REGISTER_SUB: u32 = 0x100C;
 const RESP_CLIPBOARD_DATA: u32 = 0x2010;
-const MAX_CLIPBOARD_SIZE: usize = 65536;
+/// Hard upper bound regardless of config (sanity ceiling).
+const MAX_CLIPBOARD_SIZE: usize = 4 * 1024 * 1024;
 
 // ── Wire Format Structures ───────────────────────────────────────────────────
 
@@ -241,13 +272,13 @@ fn handle_agent_message(
     match msg_type {
         VD_AGENT_ANNOUNCE_CAPABILITIES => {
             // Host announced its capabilities — just log it.
-            println!("vdagent: host announced capabilities");
+            vd_debug!("host announced capabilities");
         }
 
         VD_AGENT_CLIPBOARD_GRAB => {
             // Host grabbed clipboard ownership — it has new data.
             *host_has_clipboard = true;
-            println!("vdagent: host grabbed clipboard");
+            vd_debug!("host grabbed clipboard");
 
             // Request the data immediately.
             let mut req_payload = Vec::with_capacity(4);
@@ -258,7 +289,7 @@ fn handle_agent_message(
 
         VD_AGENT_CLIPBOARD_REQUEST => {
             // Host is requesting our clipboard data.
-            println!("vdagent: host requests clipboard data");
+            vd_debug!("host requests clipboard data");
             let mut clip_buf = [0u8; 4096];
             let clip_len = get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut clip_buf);
             if clip_len > 0 {
@@ -275,7 +306,7 @@ fn handle_agent_message(
                 let _clip_type = read_u32_le(payload, 0);
                 let data = &payload[4..];
                 if !data.is_empty() {
-                    println!("vdagent: received clipboard data ({} bytes)", data.len());
+                    vd_debug!("received clipboard data ({} bytes) ← host", data.len());
                     set_compositor_clipboard(comp_chan, data);
                 }
             }
@@ -285,7 +316,7 @@ fn handle_agent_message(
         VD_AGENT_CLIPBOARD_RELEASE => {
             // Host released clipboard ownership.
             *host_has_clipboard = false;
-            println!("vdagent: host released clipboard");
+            vd_debug!("host released clipboard");
         }
 
         _ => {
@@ -296,11 +327,44 @@ fn handle_agent_message(
 
 // ── Main Entry Point ─────────────────────────────────────────────────────────
 
+/// Try to open the configured port, with documented fallbacks.
+///
+/// Resolution order:
+///   1. `cfg.effective_device_path()` — `/dev/virtio-ports/<port_name>`
+///   2. `cfg.alias_device_path()`    — `/dev/vport-spice` etc. (well-known names)
+///   3. `/dev/vport0`                 — last-resort fallback for legacy single-port
+fn open_port(cfg: &VdAgentConfig) -> (u32, String) {
+    let candidates: Vec<String> = {
+        let mut v = Vec::new();
+        v.push(cfg.effective_device_path());
+        if let Some(a) = cfg.alias_device_path() {
+            v.push(a);
+        }
+        v.push(String::from("/dev/vport0"));
+        v
+    };
+    for path in candidates.iter() {
+        let fd = fs::open(path.as_str(), 2 /* O_RDWR */);
+        if fd != u32::MAX {
+            return (fd, path.clone());
+        }
+        vd_debug!("port {} unavailable", path);
+    }
+    (u32::MAX, String::new())
+}
+
 fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
     if raw.contains("--help") {
-        anyos_std::println!("vdagent - SPICE clipboard agent\n\nUsage: vdagent");
+        anyos_std::println!(
+            "vdagent - SPICE clipboard agent\n\
+             \n\
+             Usage: vdagent\n\
+             \n\
+             Configuration is read from confd at services/vdagent/config.\n\
+             See docs/spice-vdagent.md for details."
+        );
         return;
     }
 
@@ -310,18 +374,41 @@ fn main() {
         let _ = lifecycle.set_health("starting");
     }
 
-    println!("vdagent: starting");
+    // Register schema with confd (idempotent) so that the runtime keys
+    // — port_name, log_level, clipboard_poll_ms, etc. — are visible at
+    // /services/vdagent/config/* and overridable via confctl. Failure is
+    // logged but non-fatal: we proceed with built-in defaults.
+    let _registered = config::register_manifest();
+    let cfg = config::load();
+    set_log_level(cfg.log_level);
 
-    // Open the VirtIO serial port.
-    let fd = fs::open("/dev/vport0", 2 /* O_RDWR */);
+    if !cfg.enabled {
+        vd_info!("disabled via config (services/vdagent/config/enabled=false) — exiting");
+        if let Some(lifecycle) = lifecycle.as_mut() {
+            let _ = lifecycle.set_health("disabled");
+            let _ = lifecycle.notify_ready();
+        }
+        return;
+    }
+
+    vd_info!(
+        "starting (port_name={}, poll={}ms, idle={}ms)",
+        cfg.port_name, cfg.clipboard_poll_ms, cfg.idle_sleep_ms
+    );
+
+    // Open the VirtIO serial port (named, alias, or fallback).
+    let (fd, opened_path) = open_port(&cfg);
     if fd == u32::MAX {
-        println!("vdagent: /dev/vport0 not found (no virtio-serial device)");
+        vd_error!(
+            "no virtio-serial port found (tried /dev/virtio-ports/{}, alias, /dev/vport0)",
+            cfg.port_name
+        );
         if let Some(lifecycle) = lifecycle.as_mut() {
             let _ = lifecycle.notify_failed("virtio_serial_missing");
         }
         return;
     }
-    println!("vdagent: opened /dev/vport0");
+    vd_info!("opened {}", opened_path);
 
     // Connect to compositor event channel.
     let comp_chan = ipc::evt_chan_create("compositor");
@@ -329,11 +416,11 @@ fn main() {
     let sub_id = ipc::evt_chan_subscribe(reply_chan, 0);
     let tid = process::getpid();
     ipc::evt_chan_emit(comp_chan, &[CMD_REGISTER_SUB, tid, sub_id, reply_chan, 0]);
-    println!("vdagent: connected to compositor");
+    vd_debug!("connected to compositor");
 
     // Announce our capabilities to the host.
     send_capabilities(fd);
-    println!("vdagent: announced capabilities");
+    vd_debug!("announced capabilities");
     if let Some(lifecycle) = lifecycle.as_mut() {
         let _ = lifecycle.notify_ready();
         let _ = lifecycle.set_health("ready");
@@ -402,7 +489,7 @@ fn main() {
 
         // ── Poll compositor clipboard for changes → notify host ──────────
         let now = anyos_std::sys::uptime_ms();
-        if now.wrapping_sub(last_clipboard_check) >= 500 {
+        if now.wrapping_sub(last_clipboard_check) >= cfg.clipboard_poll_ms {
             last_clipboard_check = now;
 
             let mut clip_buf = [0u8; 4096];
@@ -412,13 +499,13 @@ fn main() {
                 if clip_data != last_clipboard.as_slice() {
                     last_clipboard.clear();
                     last_clipboard.extend_from_slice(clip_data);
-                    // Tell host we have new clipboard data.
+                    vd_debug!("local clipboard changed ({} bytes) → host", clip_data.len());
                     send_clipboard_grab(fd);
                 }
             }
         }
 
         // Sleep briefly to avoid busy-spinning.
-        process::sleep(50);
+        process::sleep(cfg.idle_sleep_ms);
     }
 }

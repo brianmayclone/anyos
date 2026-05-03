@@ -72,11 +72,14 @@
 #   --wifi        Add a second NIC as Wi-Fi adapter (virtio-net, NAT, appears as wlan0)
 #
 # ── Clipboard / SPICE ─────────────────────────────────────────────────────
-#   --spice       Enable SPICE display + virtio-serial for clipboard sync.
-#                   Adds a SPICE server on port 5930 and a vdagent virtio-serial
-#                   channel so the guest vdagent daemon can sync clipboard with the host.
-#                   Connect with: remote-viewer spice://localhost:5930
-#                   Install: sudo apt-get install virt-viewer
+#   --spice       Enable SPICE server on port 5930 + virtio-serial for vdagent.
+#                   Keeps the regular GTK display window for input (mouse +
+#                   keyboard); SPICE is exposed only for clipboard sync and an
+#                   optional external viewer. Connect display with:
+#                     remote-viewer spice://localhost:5930
+#                   Install viewer: sudo apt-get install virt-viewer
+#                   (Avoid `-display spice-app` — its built-in viewer breaks
+#                   PS/2 / vmmouse forwarding so the login cursor freezes.)
 #   --clipboard   Enable clipboard sync only (no SPICE display).
 #                   Adds virtio-serial + chardev for vdagent, but keeps the normal
 #                   GTK/SDL display. Requires QEMU 6.1+ with -chardev qemu-vdagent.
@@ -973,11 +976,26 @@ fi
 SPICE_FLAGS=""
 SPICE_LABEL=""
 if [ "$SPICE_MODE" = true ]; then
-    # Full SPICE display + clipboard via vdagent virtio-serial channel.
-    SPICE_FLAGS="-spice port=5930,disable-ticketing=on -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0"
-    DISPLAY_FLAGS="-display spice-app"
-    SPICE_LABEL=", spice: port 5930 (clipboard+display)"
-    echo "SPICE enabled on port 5930. Connect with: remote-viewer spice://localhost:5930"
+    # SPICE server on port 5930 + virtio-serial for vdagent clipboard sync.
+    # We deliberately do NOT pass `-display spice-app`: QEMU's built-in
+    # spice-app viewer breaks PS/2 / vmmouse input forwarding, leaving the
+    # guest cursor unresponsive at the login screen. Keep the regular GTK
+    # display window for input, and let the user attach an external
+    # `remote-viewer spice://localhost:5930` if they want the SPICE display.
+    #
+    # We deliberately do NOT add `-device virtio-mouse-pci -device virtio-
+    # keyboard-pci` here: those introduce a second pair of input devices that
+    # QEMU's GTK frontend never routes user keypresses to. Worse, on some
+    # QEMU versions the mere presence of virtio-keyboard-pci pre-empts PS/2
+    # keyboard handling so the guest stops receiving any keyboard events at
+    # all. Both PS/2 keyboard + vmmouse work fine via the GTK window.
+    # Re-introduce virtio-input devices only when running with
+    # `-display spice-app` or when an external SPICE viewer is the sole
+    # input source.
+    SPICE_FLAGS="-spice port=5930,disable-ticketing=on,addr=127.0.0.1 -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0"
+    SPICE_LABEL=", spice: port 5930 (clipboard, optional remote-viewer)"
+    echo "SPICE server on port 5930 (GTK display stays active for input)."
+    echo "  Optional external viewer: remote-viewer spice://localhost:5930"
 elif [ "$CLIPBOARD_MODE" = true ]; then
     # Clipboard sync only (GTK display stays). Uses QEMU's built-in qemu-vdagent chardev
     # which bridges the host clipboard into the virtio-serial channel without SPICE.

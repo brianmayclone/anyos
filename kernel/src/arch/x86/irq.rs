@@ -22,11 +22,45 @@ static IRQ_CHAIN: [AtomicPtr<()>; MAX_IRQS] = {
     [NULL; MAX_IRQS]
 };
 
-/// Register an IRQ handler. Replaces any previous handler for that IRQ.
-pub fn register_irq(irq: u8, handler: IrqHandler) {
-    if (irq as usize) < MAX_IRQS {
-        IRQ_HANDLERS[irq as usize].store(handler as *mut (), Ordering::SeqCst);
+/// Register an IRQ handler. If the primary slot is empty, claims it; otherwise
+/// falls through to the chained slot. This auto-chaining lets multiple PCI
+/// devices share the same legacy IRQ line without silently overwriting each
+/// other's handlers (which would deliver interrupts only to the last
+/// registrant). Returns true if a slot was claimed, false if both slots were
+/// already in use.
+pub fn register_irq(irq: u8, handler: IrqHandler) -> bool {
+    if (irq as usize) >= MAX_IRQS {
+        return false;
     }
+    let primary = &IRQ_HANDLERS[irq as usize];
+    if primary
+        .compare_exchange(
+            core::ptr::null_mut(),
+            handler as *mut (),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_ok()
+    {
+        return true;
+    }
+    let chain = &IRQ_CHAIN[irq as usize];
+    if chain
+        .compare_exchange(
+            core::ptr::null_mut(),
+            handler as *mut (),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_ok()
+    {
+        return true;
+    }
+    crate::serial_println!(
+        "[irq] WARNING: IRQ {} already has primary + chained handlers; cannot register more",
+        irq
+    );
+    false
 }
 
 /// Register a chained IRQ handler for shared IRQ lines.

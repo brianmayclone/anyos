@@ -133,6 +133,23 @@ pub(super) static PCI_DRIVER_TABLE: &[PciDriverEntry] = &[
         factory: |pci| crate::drivers::virtio::serial::probe(pci),
         specificity: 2,
     },
+    // VirtIO Input (mouse/keyboard/tablet) — modern + transitional
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1052,
+        },
+        factory: |pci| crate::drivers::virtio::input::probe(pci),
+        specificity: 2,
+    },
+    PciDriverEntry {
+        match_rule: PciMatch::VendorDevice {
+            vendor: 0x1AF4,
+            device: 0x1040,
+        },
+        factory: |pci| crate::drivers::virtio::input::probe(pci),
+        specificity: 2,
+    },
     PciDriverEntry {
         match_rule: PciMatch::VendorDevice {
             vendor: 0x8086,
