@@ -124,12 +124,8 @@ static ISR_ADDRS: [core::sync::atomic::AtomicU64; MAX_INPUT_DEVS] = [
 ];
 
 /// Counter that caps keyboard-event diagnostic logging at the first N events
-/// per boot to avoid flooding the serial console while debugging.
+/// per boot to confirm the EV_KEY → PS/2 path works without flooding serial.
 static KBD_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
-/// Counts how often our IRQ handler is entered — used to verify that the
-/// shared IRQ line actually delivers events to virtio-input.
-static IRQ_FIRE_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 // ── Eventq buffer management ────────────────────────────────────────────────
 
@@ -505,36 +501,20 @@ fn linux_to_ps2(code: u16) -> Option<(u8, bool)> {
 fn input_irq_handler(_irq: u8) {
     // Multiple virtio-input devices may share the same line, so we sweep all
     // installed buses and dispatch only those whose ISR shows pending work.
-    let count = IRQ_FIRE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    let trace = count < 32;
-    if trace {
-        crate::serial_println!("[virtio-input] IRQ fired #{}", count);
-    }
+    // No per-fire logging here — chained virtio devices on the same legacy
+    // IRQ line cause this to fire on every neighbor's interrupt, and that
+    // floods serial fast enough to starve the scheduler.
     for i in 0..MAX_INPUT_DEVS {
         let isr_addr = ISR_ADDRS[i].load(core::sync::atomic::Ordering::Relaxed);
         if isr_addr == 0 {
             continue;
         }
         let isr_status = virtio::mmio_read8(isr_addr);
-        if trace {
-            crate::serial_println!(
-                "[virtio-input]   slot {} ISR={:#x}",
-                i,
-                isr_status
-            );
-        }
         if isr_status & 1 == 0 {
             continue;
         }
         if let Some(mut guard) = BUSES[i].try_lock() {
             if let Some(bus) = guard.as_mut() {
-                if trace {
-                    crate::serial_println!(
-                        "[virtio-input]   slot {} polling events (kind={:?})",
-                        i,
-                        bus.kind
-                    );
-                }
                 bus.poll_events();
             }
         }

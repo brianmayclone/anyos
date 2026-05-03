@@ -184,15 +184,11 @@ impl SerialBus {
         let result = ctx.execute_sync(&readable, &[], || unsafe {
             (*vdev_ptr).notify_queue(CONTROL_TX_QIDX);
         });
-        match result {
-            Some(_) => crate::serial_println!(
-                "[virtio-serial] TX ctrl port={} event={} value={} OK",
-                port_id, event, value
-            ),
-            None => crate::serial_println!(
+        if result.is_none() {
+            crate::serial_println!(
                 "[virtio-serial] TX ctrl port={} event={} value={} FAILED",
                 port_id, event, value
-            ),
+            );
         }
     }
 
@@ -236,8 +232,8 @@ impl SerialBus {
             // Re-post immediately so the device always has buffers available.
             self.post_ctrl_rx();
 
-            crate::serial_println!(
-                "[virtio-serial] RX ctrl slot={} len={} bytes={:02x}{:02x}{:02x}{:02x} {:02x}{:02x} {:02x}{:02x}",
+            crate::serial_verbose_println!(
+                "  virtio-serial: RX ctrl slot={} len={} bytes={:02x}{:02x}{:02x}{:02x} {:02x}{:02x} {:02x}{:02x}",
                 slot,
                 len,
                 hdr[0], hdr[1], hdr[2], hdr[3],
@@ -479,6 +475,11 @@ impl Driver for VirtioSerialPortDriver {
 /// queue if anything was waiting. Crucial when virtio-serial shares IRQ lines
 /// with other devices like virtio-input — without acking our ISR the IOAPIC
 /// would stay asserted and re-fire endlessly.
+///
+/// Uses `try_lock` because this runs in IRQ context: a CPU that already owns
+/// the BUS lock (e.g. mid-`read_port`) when an IRQ arrives would otherwise
+/// self-deadlock. Skipping when the lock is held is safe — the in-flight
+/// caller will service whatever the device just enqueued before it returns.
 fn serial_irq_handler(_irq: u8) {
     let isr_addr = SERIAL_ISR_ADDR.load(core::sync::atomic::Ordering::Relaxed);
     if isr_addr == 0 {
@@ -489,7 +490,11 @@ fn serial_irq_handler(_irq: u8) {
     if isr & 1 == 0 {
         return;
     }
-    let _ = with_bus(|bus| bus.poll_control());
+    if let Some(mut guard) = BUS.try_lock() {
+        if let Some(bus) = guard.as_mut() {
+            bus.poll_control();
+        }
+    }
 }
 
 // ── Aliases for well-known port names ───────────────────────────────────────

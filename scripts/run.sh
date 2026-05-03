@@ -79,13 +79,16 @@
 #                     remote-viewer spice://localhost:5930
 #                   Install viewer: sudo apt-get install virt-viewer
 #                   Recommended for development — input works through GTK.
-#   --spice-app   Like --spice, but uses QEMU's built-in `-display spice-app`
-#                   viewer as the only display. Adds virtio-mouse-pci and
-#                   virtio-keyboard-pci because spice-app routes input via
-#                   the SPICE protocol (no PS/2 / vmmouse delivery), so the
-#                   guest needs the virtio-input drivers to receive events.
-#                   Use this for headless-style runs where SPICE is the
-#                   primary interaction channel.
+#   --spice-app   EXPERIMENTAL. Like --spice, but uses QEMU's built-in
+#                   `-display spice-app` viewer as the only display. Adds
+#                   virtio-mouse-pci and virtio-keyboard-pci so the guest
+#                   has a target for SPICE-protocol input (spice-app does
+#                   not deliver to PS/2 / vmmouse).
+#                   KNOWN LIMITATION: with QEMU 8.2, SPICE input does not
+#                   reliably reach the virtio-input devices when both PS/2
+#                   and virtio-input are present — the cursor/keyboard may
+#                   stay frozen. Until that QEMU routing is sorted out,
+#                   prefer --spice (GTK display + SPICE clipboard).
 #   --clipboard   Enable clipboard sync only (no SPICE display).
 #                   Adds virtio-serial + chardev for vdagent, but keeps the normal
 #                   GTK/SDL display. Requires QEMU 6.1+ with -chardev qemu-vdagent.
