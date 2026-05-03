@@ -921,12 +921,12 @@ fi
 VGA_FLAGS="-vga $VGA"
 RES_LABEL=""
 if [ "$VGA" = "virgl" ]; then
-    VGA_FLAGS="-vga none -device virtio-vga-gl"
+    VGA_FLAGS="-vga none -device virtio-vga-gl,id=vga0"
     VGA_LABEL="Virtio GPU + virgl (3D accelerated)"
 elif [ "$VGA" = "virtio" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
-    VGA_FLAGS="-vga none -device virtio-vga,edid=on,xres=$RES_W,yres=$RES_H"
+    VGA_FLAGS="-vga none -device virtio-vga,id=vga0,edid=on,xres=$RES_W,yres=$RES_H"
     VGA_LABEL="Virtio GPU (${RES_W}x${RES_H})"
     RES_LABEL=", res: ${RESOLUTION}"
 elif [ -n "$RESOLUTION" ]; then
@@ -1015,10 +1015,12 @@ elif [ "$SPICE_APP_MODE" = true ]; then
     # SPICE delivers pointer events via the vdagent protocol once our daemon
     # advertises VD_AGENT_CAP_MOUSE_STATE + VD_AGENT_CAP_MONITORS_CONFIG; the
     # daemon translates them into compositor CMD_INJECT_POINTER. Keyboard
-    # is not part of the vdagent protocol — it always flows through the
-    # SPICE inputs channel into virtio-keyboard-pci, hence the explicit
-    # `-device virtio-keyboard-pci`.
-    SPICE_FLAGS="-spice port=5930,disable-ticketing=on,addr=127.0.0.1 -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 -device virtio-keyboard-pci"
+    # is not part of the vdagent protocol — it flows through the SPICE
+    # inputs channel into a QEMU keyboard handler. We bind virtio-keyboard
+    # to the virtio-vga console (`display=vga0`) so QEMU's input router
+    # prefers it over the legacy PS/2 atkbd handler (which is registered
+    # without a console binding and would otherwise win the tie).
+    SPICE_FLAGS="-spice port=5930,disable-ticketing=on,addr=127.0.0.1 -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0 -device virtio-keyboard-pci,display=vga0"
     DISPLAY_FLAGS="-display spice-app"
     SPICE_LABEL=", spice-app: port 5930 (built-in viewer, virtio-input)"
     echo "SPICE built-in viewer on port 5930 (-display spice-app)."
