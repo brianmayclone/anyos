@@ -323,6 +323,36 @@ impl LayoutError {
     }
 }
 
+/// CRC-64 (ECMA polynomial `0x42F0E1EBA9EA3693`) of an EDID block.
+///
+/// Used by `displayd` to identify the same monitor across hotplug events
+/// even if the scanout index changes between connect / disconnect cycles.
+/// The choice of polynomial matches what `edid-decode` and the Linux DRM
+/// core use, which keeps cross-tool comparisons trivial.
+///
+/// Implementation is a small bit-by-bit MSB-first CRC; an EDID is at most
+/// 256 bytes so a table is overkill. Returns `0` for an empty input
+/// (an explicit sentinel for "no EDID readable" used elsewhere in the
+/// display stack).
+pub fn edid_hash(edid: &[u8]) -> u64 {
+    if edid.is_empty() {
+        return 0;
+    }
+    const POLY: u64 = 0x42F0_E1EB_A9EA_3693;
+    let mut crc: u64 = 0;
+    for &byte in edid {
+        crc ^= (byte as u64) << 56;
+        for _ in 0..8 {
+            if crc & (1u64 << 63) != 0 {
+                crc = (crc << 1) ^ POLY;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
 /// Hotplug / configuration-change notifications produced by the kernel
 /// display subsystem. Drained by the compositor via `SYS_DISPLAY_POLL_EVENT`.
 ///
