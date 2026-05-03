@@ -20,6 +20,12 @@
 #                   VirtIO/virgl: sets GPU EDID resolution (guest sees this natively).
 #                   std/vmware: sets QEMU GTK window size.
 #                   Example: --res 1280x1024, --res 1920x1080
+#   --displays N  Expose N virtual monitors (1..16, default 1). Requires --virtio
+#                   or --virgl: sets virtio-vga max_outputs=N and scales vgamem.
+#                   For N>1 the display backend defaults to SDL (one host window
+#                   per scanout). Combine with --spice / --spice-app to drive
+#                   multiple monitors via remote-viewer / built-in SPICE viewer.
+#                   Example: --virtio --displays 2 --kvm
 #
 # ── Input Devices ─────────────────────────────────────────────────────────────
 #   (none)        PS/2 keyboard + PS/2 mouse + vmmouse backdoor [default].
@@ -154,6 +160,8 @@ RAM_MB=4096
 EXPECT_RAM=false
 MIN_RES_W=1024
 MIN_RES_H=768
+DISPLAYS=1
+EXPECT_DISPLAYS=false
 
 # ── WSL: prefer Windows QEMU if installed ───────────────────────────────────
 QEMU_BIN="qemu-system-x86_64"
@@ -181,6 +189,17 @@ for arg in "$@"; do
                 exit 1
                 ;;
         esac
+        continue
+    fi
+
+    if [ "$EXPECT_DISPLAYS" = true ]; then
+        EXPECT_DISPLAYS=false
+        if [ "$arg" -ge 1 ] 2>/dev/null && [ "$arg" -le 16 ] 2>/dev/null; then
+            DISPLAYS="$arg"
+        else
+            echo "Error: --displays expects an integer between 1 and 16 (got '$arg')"
+            exit 1
+        fi
         continue
     fi
 
@@ -377,6 +396,9 @@ for arg in "$@"; do
         --res)
             EXPECT_RES=true
             ;;
+        --displays)
+            EXPECT_DISPLAYS=true
+            ;;
         --kbd)
             EXPECT_KBD=true
             ;;
@@ -413,7 +435,7 @@ for arg in "$@"; do
             PERSIST_POWER=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--displays N] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
             exit 1
             ;;
     esac
@@ -421,6 +443,17 @@ done
 
 if [ "$EXPECT_RES" = true ]; then
     echo "Error: --res requires a WIDTHxHEIGHT argument (e.g. --res 1280x1024)"
+    exit 1
+fi
+
+if [ "$EXPECT_DISPLAYS" = true ]; then
+    echo "Error: --displays requires an integer between 1 and 16 (e.g. --displays 2)"
+    exit 1
+fi
+
+# --displays N requires virtio (or virgl) — std/vmware lack max_outputs.
+if [ "$DISPLAYS" -gt 1 ] && [ "$VGA" != "virtio" ] && [ "$VGA" != "virgl" ]; then
+    echo "Error: --displays $DISPLAYS requires --virtio or --virgl (max_outputs is virtio-only)"
     exit 1
 fi
 
@@ -920,13 +953,30 @@ fi
 # VGA device flags
 VGA_FLAGS="-vga $VGA"
 RES_LABEL=""
+DISPLAYS_LABEL=""
+# Per-output VRAM budget. virtio-vga default vgamem is 16 MiB which is enough
+# for ~1920x1080x32 on a single scanout but cramped for multiple. Bump to a
+# safe ceiling so resource_create_2d for each scanout has headroom.
+if [ "$DISPLAYS" -gt 1 ]; then
+    # 32 MiB per scanout, rounded up to next power of two (qemu requirement).
+    PER=32
+    TOTAL=$(( PER * DISPLAYS ))
+    VGAMEM_MB=16
+    while [ "$VGAMEM_MB" -lt "$TOTAL" ]; do
+        VGAMEM_MB=$(( VGAMEM_MB * 2 ))
+    done
+    MAXOUT=",max_outputs=${DISPLAYS},vgamem_mb=${VGAMEM_MB}"
+    DISPLAYS_LABEL=", displays: ${DISPLAYS}"
+else
+    MAXOUT=""
+fi
 if [ "$VGA" = "virgl" ]; then
-    VGA_FLAGS="-vga none -device virtio-vga-gl,id=vga0"
+    VGA_FLAGS="-vga none -device virtio-vga-gl,id=vga0${MAXOUT}"
     VGA_LABEL="Virtio GPU + virgl (3D accelerated)"
 elif [ "$VGA" = "virtio" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
-    VGA_FLAGS="-vga none -device virtio-vga,id=vga0,edid=on,xres=$RES_W,yres=$RES_H"
+    VGA_FLAGS="-vga none -device virtio-vga,id=vga0,edid=on,xres=$RES_W,yres=$RES_H${MAXOUT}"
     VGA_LABEL="Virtio GPU (${RES_W}x${RES_H})"
     RES_LABEL=", res: ${RESOLUTION}"
 elif [ -n "$RESOLUTION" ]; then
@@ -943,6 +993,15 @@ if [ "$HEADLESS" = true ]; then
     DISPLAY_FLAGS="-display none -nographic"
 elif [ "$(uname)" = "Darwin" ]; then
     DISPLAY_FLAGS="-display cocoa"
+elif [ "$DISPLAYS" -gt 1 ] && [ "$SPICE_MODE" = false ] && [ "$SPICE_APP_MODE" = false ]; then
+    # Multi-monitor: SDL opens one host window per scanout, so each anyOS
+    # output is independently visible. GTK would only show scanout 0 by
+    # default (extra heads land in hidden View tabs), which hides the feature.
+    if [ "$VGA" = "virgl" ]; then
+        DISPLAY_FLAGS="-display sdl,gl=on"
+    else
+        DISPLAY_FLAGS="-display sdl"
+    fi
 elif [ "$VGA" = "virgl" ]; then
     DISPLAY_FLAGS="-display gtk,gl=on"
 else
@@ -1072,7 +1131,7 @@ if [ "$VGA" = "virgl" ]; then
     export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$EXTRA_DISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL$SPICE_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$EXTRA_DISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$DISPLAYS_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL$SPICE_LABEL"
 
 POWER_FLAGS=""
 if [ "$PERSIST_POWER" = true ]; then
