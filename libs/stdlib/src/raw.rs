@@ -148,6 +148,15 @@ pub(crate) const SYS_INPUT_POLL: u32 = 146;
 pub(crate) const SYS_REGISTER_COMPOSITOR: u32 = 147;
 pub(crate) const SYS_CURSOR_TAKEOVER: u32 = 148;
 
+// Multi-monitor display syscalls (kernel-side numbers in
+// kernel/src/syscall/defs.rs).
+pub(crate) const SYS_DISPLAY_LIST: u32 = 700;
+pub(crate) const SYS_DISPLAY_SET_LAYOUT: u32 = 701;
+pub(crate) const SYS_DISPLAY_MAP_FB: u32 = 702;
+pub(crate) const SYS_DISPLAY_FLUSH: u32 = 703;
+pub(crate) const SYS_DISPLAY_POLL_EVENT: u32 = 704;
+pub(crate) const SYS_REGISTER_DISPLAY_OWNER: u32 = 705;
+
 // Screen capture
 pub(crate) const SYS_CAPTURE_SCREEN: u32 = 161;
 

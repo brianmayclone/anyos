@@ -40,6 +40,72 @@ pub struct DragImageOverlay {
     pub last_drawn: bool,
 }
 
+/// One output (display) the compositor scans out to.
+///
+/// Output 0 ("primary") is mirrored by the inline `fb_ptr / fb_width /
+/// fb_height / fb_pitch / back_buffer / damage` fields of `Compositor`
+/// — that representation is kept untouched so the existing single-output
+/// render fast paths keep working without refactoring risk. Outputs ≥ 1
+/// live in `Compositor::outputs` and own their own framebuffer mapping
+/// (`SYS_DISPLAY_MAP_FB(id)` returns a per-output VA at
+/// 0x2000_0000 + id*64 MiB), back buffer, and damage list.
+///
+/// `virtual_x / virtual_y` is the output's top-left position in the
+/// global virtual desktop. Windows live in virtual coordinates; per
+/// output we compute the visible sub-rectangle by intersecting each
+/// window's bbox with `(virtual_x, virtual_y, fb_width, fb_height)`.
+pub struct Output {
+    pub id: u32,
+    pub virtual_x: i32,
+    pub virtual_y: i32,
+    pub fb_ptr: *mut u32,
+    pub fb_width: u32,
+    pub fb_height: u32,
+    pub fb_pitch: u32,
+    pub back_buffer: Vec<u32>,
+    pub damage: Vec<Rect>,
+    pub primary: bool,
+    pub mirror_of: Option<u32>,
+
+    /// HiDPI scale factor in percent (100 = 1.0x, 200 = 2.0x). Apps
+    /// query this via the Screen API (`Screen::list().scale_percent`)
+    /// to scale fonts / padding / hit-targets on a per-output basis.
+    /// The compositor itself currently uses it only for diagnostic
+    /// purposes — full DPI-aware widget rendering is a larger anyui
+    /// pipeline change saved for a separate phase.
+    pub scale_percent: u16,
+}
+
+impl Output {
+    /// Build the Output entry that mirrors the primary fields of the
+    /// containing Compositor. Used at construction time so callers don't
+    /// have to repeat the field list.
+    fn primary_view(fb_ptr: *mut u32, w: u32, h: u32, pitch: u32) -> Self {
+        Self {
+            id: 0,
+            virtual_x: 0,
+            virtual_y: 0,
+            fb_ptr,
+            fb_width: w,
+            fb_height: h,
+            fb_pitch: pitch,
+            // Output 0's back_buffer / damage live in the legacy inline
+            // fields for now; this entry's vectors stay empty so we
+            // never accidentally render into a duplicate buffer.
+            back_buffer: Vec::new(),
+            damage: Vec::new(),
+            primary: true,
+            mirror_of: None,
+            scale_percent: 100,
+        }
+    }
+}
+
+// Output is accessed only from the compositor thread; the raw fb_ptr is
+// not Send/Sync by default but the rest of the compositor already
+// asserts the same invariant for its own fb_ptr field.
+unsafe impl Send for Output {}
+
 pub struct Compositor {
     /// Framebuffer pointer (MMIO VRAM mapped at 0x20000000)
     pub(crate) fb_ptr: *mut u32,
@@ -47,6 +113,11 @@ pub struct Compositor {
     pub(crate) fb_height: u32,
     /// Framebuffer pitch in bytes (may differ from width*4)
     pub(crate) fb_pitch: u32,
+
+    /// All display outputs. `outputs[0]` is always the primary and
+    /// mirrors the inline `fb_*` fields above. Additional outputs are
+    /// appended by `init_secondary_outputs()` after construction.
+    pub outputs: Vec<Output>,
 
     /// Back buffer for compositing (contiguous, stride = fb_width)
     pub back_buffer: Vec<u32>,
@@ -117,6 +188,7 @@ impl Compositor {
             fb_width: width,
             fb_height: height,
             fb_pitch: pitch,
+            outputs: alloc::vec![Output::primary_view(fb_ptr, width, height, pitch)],
             back_buffer: vec![0u32; pixel_count],
             layers: Vec::with_capacity(32),
             next_layer_id: 1,
@@ -145,6 +217,603 @@ impl Compositor {
     }
     pub fn height(&self) -> u32 {
         self.fb_height
+    }
+
+    /// Total virtual-desktop bounding box across every output.
+    pub fn virtual_desktop_bounds(&self) -> (i32, i32, i32, i32) {
+        if self.outputs.is_empty() {
+            return (0, 0, self.fb_width as i32, self.fb_height as i32);
+        }
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+        for o in &self.outputs {
+            min_x = min_x.min(o.virtual_x);
+            min_y = min_y.min(o.virtual_y);
+            max_x = max_x.max(o.virtual_x + o.fb_width as i32);
+            max_y = max_y.max(o.virtual_y + o.fb_height as i32);
+        }
+        (min_x, min_y, max_x, max_y)
+    }
+
+    /// Find the output whose rectangle contains `(vx, vy)` in virtual
+    /// desktop coordinates. Returns the primary output when no output
+    /// covers the point (e.g. a window dragged into a gap).
+    pub fn output_at(&self, vx: i32, vy: i32) -> &Output {
+        for o in &self.outputs {
+            if vx >= o.virtual_x
+                && vy >= o.virtual_y
+                && vx < o.virtual_x + o.fb_width as i32
+                && vy < o.virtual_y + o.fb_height as i32
+            {
+                return o;
+            }
+        }
+        // Fallback: outputs[0] is always the primary.
+        &self.outputs[0]
+    }
+
+    /// Re-walk the kernel-reported output list, dropping any output
+    /// that no longer appears (monitor unplugged, profile-switched
+    /// to fewer screens) and adding new ones at the right of the
+    /// virtual desktop. Returns the list of output ids that vanished
+    /// in this refresh so the desktop layer can reflow windows that
+    /// were on those outputs.
+    ///
+    /// Keeps `outputs[0]` (the primary, mirroring the inline fb_*
+    /// fields) intact — we never remove it because that's the
+    /// kernel's boot-time scanout 0. Re-allocating its framebuffer
+    /// from user CR3 would hit the same page-fault problem the
+    /// boot-time setup was designed to dodge.
+    pub fn refresh_outputs(&mut self) -> alloc::vec::Vec<u32> {
+        let mut vanished: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+        let infos = anyos_std::display::list(16);
+        // Index by id for quick lookup.
+        let connected_ids: alloc::vec::Vec<u32> = infos
+            .iter()
+            .filter(|i| i.is_connected())
+            .map(|i| i.id)
+            .collect();
+
+        // Pass 1: mark vanished and drop their outputs entry. Skip
+        // outputs[0] (primary, never removed at runtime).
+        let mut i = 1;
+        while i < self.outputs.len() {
+            if !connected_ids.iter().any(|&id| id == self.outputs[i].id) {
+                vanished.push(self.outputs[i].id);
+                self.outputs.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        // Pass 2: add any newly connected output that isn't yet in
+        // self.outputs. Same code path as init_secondary_outputs
+        // (map_fb + zero + flush), just guarded by "not already
+        // tracked". For now we re-stack the entire virtual desktop
+        // left-to-right starting at 0 so positions stay sane after
+        // an output is removed; a richer policy (preserve saved
+        // virtual_x/y from confd) belongs in displayd.
+        let mut next_x = self.fb_width as i32;
+        for o in &self.outputs[1..] {
+            // Account for outputs we still have so the new one
+            // doesn't collide with them. (Sequential walk; works
+            // because we only ever stack to the right.)
+            next_x = next_x.max(o.virtual_x + o.fb_width as i32);
+        }
+        for info in infos.iter().skip(1) {
+            if !info.is_connected() {
+                continue;
+            }
+            if self.outputs.iter().any(|o| o.id == info.id) {
+                continue;
+            }
+            let (w, h) = if info.current_w > 0 && info.current_h > 0 {
+                (info.current_w, info.current_h)
+            } else if info.preferred_w > 0 && info.preferred_h > 0 {
+                (info.preferred_w, info.preferred_h)
+            } else {
+                continue;
+            };
+            let fb_info = match anyos_std::display::map_fb(info.id) {
+                Some(f) => f,
+                None => continue,
+            };
+            unsafe {
+                let pixels = (fb_info.height as usize) * (fb_info.pitch as usize / 4);
+                core::ptr::write_bytes(fb_info.fb_addr as *mut u32, 0, pixels);
+            }
+            let scale_percent = if fb_info.width >= 2560 { 200 } else { 100 };
+            self.outputs.push(Output {
+                id: info.id,
+                virtual_x: next_x,
+                virtual_y: 0,
+                fb_ptr: fb_info.fb_addr as *mut u32,
+                fb_width: fb_info.width,
+                fb_height: fb_info.height,
+                fb_pitch: fb_info.pitch,
+                back_buffer: alloc::vec![0u32; (fb_info.width * fb_info.height) as usize],
+                damage: Vec::with_capacity(32),
+                primary: false,
+                mirror_of: None,
+                scale_percent,
+            });
+            let _ = anyos_std::display::flush(info.id, 0, 0, fb_info.width, fb_info.height);
+            next_x += fb_info.width as i32;
+            let _ = w;
+            let _ = h;
+        }
+
+        vanished
+    }
+
+    /// Discover and map secondary outputs reported by the kernel.
+    ///
+    /// Called once after `Compositor::new()` and `register_compositor()`.
+    /// Walks `SYS_DISPLAY_LIST`; for each connected output beyond index 0
+    /// it issues `SYS_DISPLAY_MAP_FB(id)`, places the output to the right
+    /// of the previous one in the virtual desktop, and pushes an `Output`
+    /// entry. Any failure for a single output (mode not set, mapping
+    /// rejected) is logged and skipped — the compositor stays usable
+    /// with the outputs it could map.
+    ///
+    /// Layout policy here is deliberately minimal — "stack to the right
+    /// of primary in scanout-id order". The richer policy (persisted
+    /// per-EDID layout, drag-to-arrange, primary selection) lives in the
+    /// future `displayd` daemon (phase 5); this is what the compositor
+    /// uses as a sane bootstrap fallback when no displayd is running yet.
+    pub fn init_secondary_outputs(&mut self) {
+        let infos = anyos_std::display::list(16);
+        if infos.len() <= 1 {
+            return;
+        }
+        // Cursor for stacking: start to the right of output 0.
+        let mut next_x = self.fb_width as i32;
+        for info in infos.iter().skip(1) {
+            if !info.is_connected() {
+                continue;
+            }
+            // The kernel may report current_w/h as 0 for a connected but
+            // never-set-up scanout. In that case fall back to the
+            // preferred mode; if that's also missing, skip.
+            let (w, h) = if info.current_w > 0 && info.current_h > 0 {
+                (info.current_w, info.current_h)
+            } else if info.preferred_w > 0 && info.preferred_h > 0 {
+                (info.preferred_w, info.preferred_h)
+            } else {
+                anyos_std::println!(
+                    "[compositor] output {} reports no usable mode; skipping",
+                    info.id
+                );
+                continue;
+            };
+
+            let fb_info = match anyos_std::display::map_fb(info.id) {
+                Some(f) => f,
+                None => {
+                    anyos_std::println!(
+                        "[compositor] SYS_DISPLAY_MAP_FB failed for output {} ({}x{})",
+                        info.id,
+                        w,
+                        h
+                    );
+                    continue;
+                }
+            };
+
+            // Zero the secondary's framebuffer so we don't show garbage
+            // until the first composite reaches it.
+            unsafe {
+                let pixels = (fb_info.height as usize) * (fb_info.pitch as usize / 4);
+                core::ptr::write_bytes(fb_info.fb_addr as *mut u32, 0, pixels);
+            }
+
+            // HiDPI heuristic: > 2.5K wide is typically a 4K-ish HiDPI
+            // panel; default to 200% scale so fonts/padding are usable.
+            // Users can override via display.conf later.
+            let scale_percent = if fb_info.width >= 2560 { 200 } else { 100 };
+            self.outputs.push(Output {
+                id: info.id,
+                virtual_x: next_x,
+                virtual_y: 0,
+                fb_ptr: fb_info.fb_addr as *mut u32,
+                fb_width: fb_info.width,
+                fb_height: fb_info.height,
+                fb_pitch: fb_info.pitch,
+                back_buffer: alloc::vec![0u32; (fb_info.width * fb_info.height) as usize],
+                damage: Vec::with_capacity(32),
+                primary: false,
+                mirror_of: None,
+                scale_percent,
+            });
+
+            // Tell the kernel to flush the now-zeroed framebuffer so the
+            // host immediately stops showing whatever splash QEMU painted.
+            let _ = anyos_std::display::flush(info.id, 0, 0, fb_info.width, fb_info.height);
+
+            anyos_std::println!(
+                "[compositor] output {} active at virt=({},{}), {}x{}, fb_va={:#x}",
+                info.id,
+                next_x,
+                0,
+                fb_info.width,
+                fb_info.height,
+                fb_info.fb_addr
+            );
+
+            next_x += fb_info.width as i32;
+        }
+    }
+
+    /// Render every secondary output (id ≥ 1).
+    ///
+    /// Called after the primary `compose()` pass. For each non-primary
+    /// output the function fills its back-buffer with the desktop
+    /// background colour, blits any visible layer that overlaps the
+    /// output's virtual rect (translated into the output's local
+    /// coordinates), copies the back-buffer into the output's
+    /// framebuffer, and finally requests a per-output `SYS_DISPLAY_FLUSH`.
+    ///
+    /// Intentionally minimal: no shadow / blur / hardware cursor support
+    /// on secondary outputs yet. Those can land in a follow-up commit
+    /// once the basic per-output coordinate flow is verified visually.
+    /// Damage tracking is also coarse (full-output rerender every frame
+    /// when `force` is set) — fine-grained per-output damage rings will
+    /// be wired up in a later phase.
+    pub fn render_secondary_outputs(&mut self, force: bool) {
+        if self.outputs.len() < 2 || !force {
+            return;
+        }
+
+        // Desktop-background colour (matches the wallpaper "fill" used on
+        // the primary while the wallpaper image is loading). Anything that
+        // wants the actual wallpaper to extend across outputs needs the
+        // background-layer rendering path duplicated here, which is a
+        // separate piece of work.
+        const BG: u32 = 0xFF1A1A2E;
+
+        // Visual parity with the primary's composite_rect:
+        //
+        //   * windows with `has_shadow == true` get a drop shadow drawn
+        //     before the layer pixels — a soft falloff matching the
+        //     primary's shadow_spread(). The primary uses a baked alpha
+        //     cache for performance; on secondary outputs we recompute
+        //     per frame because secondary frames are far less frequent
+        //     and the simpler code is easier to keep correct.
+        //
+        //   * the same windows have rounded corners — pixels closer than
+        //     CORNER_RADIUS to a corner get an alpha multiplier that
+        //     fades to 0 at the corner (rough quarter-circle mask).
+        //
+        // Blur and the hardware cursor remain primary-only for now;
+        // those need a heavier composite_rect refactor (parameterising
+        // the destination buffer + stride) to share the existing baked
+        // caches between outputs.
+        const CORNER_RADIUS: i32 = 8;
+        let shadow_spread_px = crate::desktop::theme::scale_i32(16);
+        let shadow_offset_y_px = crate::desktop::theme::scale_i32(6);
+
+        // We need read access to layers (immutable borrow on self.layers)
+        // and write access to outputs[idx].back_buffer / fb_ptr. Split via
+        // indices to avoid the borrow checker fighting us.
+        let n_outputs = self.outputs.len();
+        let n_layers = self.layers.len();
+
+        for oi in 1..n_outputs {
+            let (ox, oy, ow, oh, fb_ptr, fb_pitch) = {
+                let o = &self.outputs[oi];
+                (
+                    o.virtual_x,
+                    o.virtual_y,
+                    o.fb_width,
+                    o.fb_height,
+                    o.fb_ptr,
+                    o.fb_pitch,
+                )
+            };
+            // Reusable per-output back buffer.
+            {
+                let bb = &mut self.outputs[oi].back_buffer;
+                if bb.len() != (ow * oh) as usize {
+                    bb.resize((ow * oh) as usize, 0);
+                }
+            }
+
+            // Background fill: prefer the wallpaper from the bg layer
+            // (always layer 0) — nearest-neighbour-scaled to the
+            // secondary output's resolution so the desktop image
+            // appears on every monitor instead of just the primary.
+            // Falls back to the desktop background colour when the
+            // wallpaper hasn't been drawn into the layer yet (early
+            // boot, or wallpaper image still loading).
+            //
+            // The scale is recomputed per frame; a per-output cache
+            // would be a worthwhile optimisation but only matters for
+            // animated content and the wallpaper is essentially static.
+            let used_wallpaper = if !self.layers.is_empty() {
+                let bg = &self.layers[0];
+                let sw = bg.width as usize;
+                let sh = bg.height as usize;
+                if sw > 0
+                    && sh > 0
+                    && bg.pixels.len() == sw * sh
+                    && bg.pixels.iter().any(|&p| (p & 0x00FF_FFFF) != 0)
+                {
+                    let bb = &mut self.outputs[oi].back_buffer;
+                    let dst_w = ow as usize;
+                    let dst_h = oh as usize;
+                    for y in 0..dst_h {
+                        let sy = y * sh / dst_h;
+                        let row_off = y * dst_w;
+                        let src_off = sy * sw;
+                        for x in 0..dst_w {
+                            let sx = x * sw / dst_w;
+                            bb[row_off + x] = bg.pixels[src_off + sx] | 0xFF00_0000;
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !used_wallpaper {
+                self.outputs[oi].back_buffer.fill(BG);
+            }
+
+            // Output rect in virtual coordinates.
+            let ox2 = ox + ow as i32;
+            let oy2 = oy + oh as i32;
+
+            // ── Pass 1: drop shadows for has_shadow layers ────────────
+            for li in 0..n_layers {
+                let layer = &self.layers[li];
+                if !layer.visible || !layer.has_shadow {
+                    continue;
+                }
+                let lx = layer.x;
+                let ly = layer.y;
+                let lw = layer.width as i32;
+                let lh = layer.height as i32;
+                let is_focused = self.focused_layer_id == Some(layer.id);
+                let base_a: i32 = if is_focused { 50 } else { 25 };
+                // Shadow band: from spread pixels around the offset
+                // window position, falling off linearly to 0.
+                let sx0 = lx - shadow_spread_px;
+                let sy0 = ly + shadow_offset_y_px - shadow_spread_px;
+                let sx1 = lx + lw + shadow_spread_px;
+                let sy1 = ly + lh + shadow_offset_y_px + shadow_spread_px;
+                // Intersect with output rect.
+                let ix = sx0.max(ox);
+                let iy = sy0.max(oy);
+                let ix2 = sx1.min(ox2);
+                let iy2 = sy1.min(oy2);
+                if ix >= ix2 || iy >= iy2 {
+                    continue;
+                }
+                let bb = &mut self.outputs[oi].back_buffer;
+                let dst_stride = ow as usize;
+                let win_y0 = ly + shadow_offset_y_px;
+                let win_y1 = ly + lh + shadow_offset_y_px;
+                for vy in iy..iy2 {
+                    let dy = vy - oy;
+                    let row_off = (dy as usize) * dst_stride;
+                    // Vertical distance to the offset window rect (0
+                    // inside it).
+                    let vdist = if vy < win_y0 {
+                        win_y0 - vy
+                    } else if vy >= win_y1 {
+                        vy - win_y1 + 1
+                    } else {
+                        0
+                    };
+                    for vx in ix..ix2 {
+                        // Skip pixels inside the actual window position
+                        // (will be overwritten by the layer pixels in
+                        // pass 2). The window itself sits at (lx, ly)
+                        // — not the offset y; we still want shadow
+                        // visible in the strip below the window
+                        // because shadow_offset_y > 0.
+                        if vx >= lx && vx < lx + lw && vy >= ly && vy < ly + lh {
+                            continue;
+                        }
+                        let hdist = if vx < lx {
+                            lx - vx
+                        } else if vx >= lx + lw {
+                            vx - lx - lw + 1
+                        } else {
+                            0
+                        };
+                        let dist = vdist.max(hdist);
+                        if dist > shadow_spread_px {
+                            continue;
+                        }
+                        // Linear falloff from base_a at dist=0 to 0 at
+                        // dist=spread.
+                        let t = (shadow_spread_px - dist).max(0);
+                        let a = (base_a * t / shadow_spread_px) as u32;
+                        if a == 0 {
+                            continue;
+                        }
+                        let dx = (vx - ox) as usize;
+                        let dst = bb[row_off + dx];
+                        let dr = (dst >> 16) & 0xFF;
+                        let dg = (dst >> 8) & 0xFF;
+                        let db = dst & 0xFF;
+                        // shadow colour = pure black, alpha = a (out of
+                        // 255). dst' = dst * (255-a) / 255.
+                        let inv = 255 - a;
+                        let r = dr * inv / 255;
+                        let g = dg * inv / 255;
+                        let b = db * inv / 255;
+                        bb[row_off + dx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
+
+            // ── Pass 2: layer pixels with optional rounded corners ────
+            for li in 0..n_layers {
+                if used_wallpaper && li == 0 {
+                    // Already drawn as the scaled background; skipping
+                    // avoids a redundant primary-rect blit (would also
+                    // be a clip no-op since bg is sized to the primary,
+                    // but cheaper to short-circuit).
+                    continue;
+                }
+                let layer = &self.layers[li];
+                if !layer.visible {
+                    continue;
+                }
+                let lx = layer.x;
+                let ly = layer.y;
+                let lx2 = lx + layer.width as i32;
+                let ly2 = ly + layer.height as i32;
+
+                // Intersect layer with output rect (virtual coords).
+                let ix = lx.max(ox);
+                let iy = ly.max(oy);
+                let ix2 = lx2.min(ox2);
+                let iy2 = ly2.min(oy2);
+                if ix >= ix2 || iy >= iy2 {
+                    continue;
+                }
+                let layer_w_i = layer.width as i32;
+                let layer_h_i = layer.height as i32;
+                let rounded = layer.has_shadow;
+                let blur_behind = layer.blur_behind;
+                let blur_radius = layer.blur_radius;
+
+                // Blur the back-buffer region behind a frosted-glass
+                // layer before we composite the layer itself on top.
+                // Same algorithm the primary uses (two-pass H+V box
+                // blur, 3 passes ≈ Gaussian); the existing
+                // `blur_back_buffer_region` already takes the buffer
+                // and stride as parameters so no refactor is needed.
+                if blur_behind && blur_radius > 0 {
+                    let bx = (ix - ox) as i32;
+                    let by = (iy - oy) as i32;
+                    let bw = (ix2 - ix) as u32;
+                    let bh = (iy2 - iy) as u32;
+                    blend::blur_back_buffer_region(
+                        &mut self.outputs[oi].back_buffer,
+                        ow,
+                        oh,
+                        bx,
+                        by,
+                        bw,
+                        bh,
+                        blur_radius,
+                        3,
+                        &mut self.blur_temp,
+                    );
+                }
+
+                // Source row of pixels = SHM-backed for shm layers,
+                // owned Vec otherwise.
+                let src_w = layer.width as usize;
+                let src_pixels: *const u32 = if !layer.shm_ptr.is_null() {
+                    layer.shm_ptr as *const u32
+                } else if !layer.pixels.is_empty() {
+                    layer.pixels.as_ptr()
+                } else {
+                    continue;
+                };
+
+                let bb = &mut self.outputs[oi].back_buffer;
+                let dst_stride = ow as usize;
+                for vy in iy..iy2 {
+                    let layer_local_y = vy - ly; // 0..layer_h
+                    let dst_y = (vy - oy) as usize;
+                    for vx in ix..ix2 {
+                        let layer_local_x = vx - lx; // 0..layer_w
+                        let dst_x = (vx - ox) as usize;
+                        let dst_idx = dst_y * dst_stride + dst_x;
+                        let src_idx = (layer_local_y as usize) * src_w
+                            + (layer_local_x as usize);
+                        let p = unsafe { core::ptr::read(src_pixels.add(src_idx)) };
+
+                        // Per-pixel alpha multiplier from rounded-corner
+                        // mask. 256 = unmodified; 0 = fully transparent.
+                        let mut corner_mul: u32 = 256;
+                        if rounded {
+                            let cr = CORNER_RADIUS;
+                            // Distance from each corner in (cx,cy)
+                            // measured from the corner's *inner pixel*.
+                            let near_left = layer_local_x < cr;
+                            let near_right = layer_local_x >= layer_w_i - cr;
+                            let near_top = layer_local_y < cr;
+                            let near_bottom = layer_local_y >= layer_h_i - cr;
+                            if (near_left || near_right) && (near_top || near_bottom) {
+                                let cx = if near_left {
+                                    cr - 1 - layer_local_x
+                                } else {
+                                    layer_local_x - (layer_w_i - cr)
+                                };
+                                let cy = if near_top {
+                                    cr - 1 - layer_local_y
+                                } else {
+                                    layer_local_y - (layer_h_i - cr)
+                                };
+                                let dist_sq = (cx * cx + cy * cy) as i32;
+                                let r_sq = cr * cr;
+                                if dist_sq >= r_sq {
+                                    corner_mul = 0;
+                                } else {
+                                    // Soft 1-pixel anti-aliased edge.
+                                    let r_inner_sq = (cr - 1) * (cr - 1);
+                                    if dist_sq > r_inner_sq {
+                                        let frac = ((r_sq - dist_sq) * 256)
+                                            / (r_sq - r_inner_sq).max(1);
+                                        corner_mul = frac.clamp(0, 256) as u32;
+                                    }
+                                }
+                            }
+                        }
+
+                        let a = ((p >> 24) & 0xFF) * corner_mul / 256;
+                        bb[dst_idx] = if a == 0 {
+                            bb[dst_idx]
+                        } else if !layer.opaque && a < 255 {
+                            let inv = 255 - a;
+                            let dr = (bb[dst_idx] >> 16) & 0xFF;
+                            let dg = (bb[dst_idx] >> 8) & 0xFF;
+                            let db = bb[dst_idx] & 0xFF;
+                            let sr = (p >> 16) & 0xFF;
+                            let sg = (p >> 8) & 0xFF;
+                            let sb = p & 0xFF;
+                            let r = (sr * a + dr * inv) / 255;
+                            let g = (sg * a + dg * inv) / 255;
+                            let b = (sb * a + db * inv) / 255;
+                            0xFF000000 | (r << 16) | (g << 8) | b
+                        } else {
+                            p | 0xFF000000
+                        };
+                    }
+                }
+            }
+
+            // Flush back_buffer to per-output framebuffer (stride conversion).
+            unsafe {
+                let bb = &self.outputs[oi].back_buffer;
+                let dst_stride_px = (fb_pitch / 4) as usize;
+                let src_stride = ow as usize;
+                for row in 0..(oh as usize) {
+                    let src_off = row * src_stride;
+                    let dst_off = row * dst_stride_px;
+                    core::ptr::copy_nonoverlapping(
+                        bb.as_ptr().add(src_off),
+                        fb_ptr.add(dst_off),
+                        ow as usize,
+                    );
+                }
+            }
+
+            // Tell the GPU to transfer + flush this output.
+            let output_id = self.outputs[oi].id;
+            let _ = anyos_std::display::flush(output_id, 0, 0, ow, oh);
+        }
     }
 
     // ── Layer Management ────────────────────────────────────────────────

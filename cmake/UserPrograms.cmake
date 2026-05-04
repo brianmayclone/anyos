@@ -1099,6 +1099,7 @@ add_app(mdview      ${CMAKE_SOURCE_DIR}/apps/mdview         "Markdown Viewer")
 add_app(clipman     ${CMAKE_SOURCE_DIR}/apps/clipman        "Clipboard Manager")
 add_app(vnc-settings ${CMAKE_SOURCE_DIR}/apps/vnc-settings "VNC Settings")
 add_app(ftp-settings ${CMAKE_SOURCE_DIR}/apps/ftp-settings "FTP Settings")
+add_app(display-settings ${CMAKE_SOURCE_DIR}/apps/display-settings "Displays")
 add_app(anybench    ${CMAKE_SOURCE_DIR}/apps/anybench      "anyBench")
 add_app(gldemo      ${CMAKE_SOURCE_DIR}/apps/gldemo        "GL Demo")
 add_app(forger      ${CMAKE_SOURCE_DIR}/apps/forger        "Forger")
@@ -1124,6 +1125,36 @@ add_system_app(runner       ${CMAKE_SOURCE_DIR}/system/utilities/runner     "Run
 # ============================================================
 # Session host, Desktop shell, Crash dialog
 # ============================================================
+
+# displayd — Multi-monitor layout daemon (standalone workspace, kernel target)
+set(DISPLAYD_SRC_DIR ${CMAKE_SOURCE_DIR}/system/daemons/displayd)
+set(DISPLAYD_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/displayd.elf")
+add_custom_command(
+  OUTPUT ${DISPLAYD_ELF}
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
+    --manifest-path ${DISPLAYD_SRC_DIR}/Cargo.toml
+    --target ${KERNEL_TARGET_JSON}
+    --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${ANYOS_BUILD_STD_ARGS}
+  DEPENDS
+    ${DISPLAYD_SRC_DIR}/Cargo.toml
+    ${DISPLAYD_SRC_DIR}/src/main.rs
+    ${DISPLAYD_SRC_DIR}/src/protocol.rs
+    ${DISPLAYD_SRC_DIR}/src/schema.rs
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building system program: displayd"
+)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/displayd
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${DISPLAYD_ELF}
+    ${SYSROOT_DIR}/System/displayd
+  DEPENDS ${DISPLAYD_ELF} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting displayd ELF to flat binary"
+)
+list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/displayd)
 
 # fontd — Font server daemon (standalone workspace, kernel target)
 set(FONTD_SRC_DIR ${CMAKE_SOURCE_DIR}/system/daemons/fontd)

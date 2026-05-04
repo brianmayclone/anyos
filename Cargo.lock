@@ -778,6 +778,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "display-settings"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libdisplay_client",
+]
+
+[[package]]
 name = "dmesg"
 version = "0.1.0"
 dependencies = [
@@ -1293,6 +1303,13 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
+]
+
+[[package]]
+name = "libdisplay_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
 ]
 
 [[package]]
@@ -2375,6 +2392,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libconf_schema",
+ "libdisplay_client",
  "libsvc",
 ]
 

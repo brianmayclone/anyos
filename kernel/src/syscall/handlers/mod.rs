@@ -54,6 +54,14 @@ pub(crate) static COMPOSITOR_TID: AtomicU32 = AtomicU32::new(0);
 /// that share the same address space.
 pub(crate) static COMPOSITOR_PD: AtomicU64 = AtomicU64::new(0);
 
+/// Page directory (CR3) of the registered display-layout owner
+/// (typically `displayd`). 0 = none registered. Used by
+/// SYS_DISPLAY_SET_LAYOUT to allow displayd — which is in a separate
+/// process from the compositor — to push atomic layout updates
+/// (driven by display.conf, hot-plug, vdagent monitors-config, etc.).
+/// First-caller-wins, same registration semantics as the compositor.
+pub(crate) static DISPLAY_OWNER_PD: AtomicU64 = AtomicU64::new(0);
+
 /// Check if the current thread belongs to the compositor process.
 /// Returns true if the calling thread is the compositor's management thread
 /// OR any child thread sharing the same page directory (e.g. render thread).
@@ -83,6 +91,38 @@ pub(super) fn is_compositor() -> bool {
             core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0);
         }
         return (ttbr0 & !0xFFF) == comp_pd;
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// True when the calling thread runs in the display-layout-owner
+/// process (typically `displayd`) — i.e. is allowed to atomically
+/// apply OutputLayouts via SYS_DISPLAY_SET_LAYOUT.
+///
+/// Same lock-free CR3-comparison trick as `is_compositor()`. Returns
+/// false when no owner is registered, in which case only the
+/// compositor itself can apply layouts.
+pub(super) fn is_display_owner() -> bool {
+    let owner_pd = DISPLAY_OWNER_PD.load(Ordering::Relaxed);
+    if owner_pd == 0 {
+        return false;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let current_cr3: u64;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) current_cr3);
+        }
+        return (current_cr3 & !0xFFF) == owner_pd;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let ttbr0: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0);
+        }
+        return (ttbr0 & !0xFFF) == owner_pd;
     }
     #[allow(unreachable_code)]
     false

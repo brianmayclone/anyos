@@ -179,6 +179,24 @@ pub fn run() {
     libfont_client::init();
     println!("compositor: libfont loaded");
 
+    // Start displayd — multi-monitor layout daemon. It owns the layout
+    // policy: reads display.conf at boot and atomically applies the
+    // resulting OutputLayout via SYS_DISPLAY_SET_LAYOUT, then listens
+    // for hot-plug events and re-applies. Same fire-and-forget pattern
+    // as fontd; we don't block on it because the kernel already has
+    // a sane default layout active by the time the compositor starts
+    // (init_secondary_outputs further down still works without
+    // displayd, just with the kernel's bootstrap layout).
+    let displayd_tid = process::spawn("/System/displayd", "");
+    if displayd_tid != u32::MAX {
+        println!(
+            "compositor: displayd spawned (TID={})",
+            displayd_tid
+        );
+    } else {
+        println!("compositor: WARNING — displayd not found; using boot-time layout only");
+    }
+
     println!("compositor: creating desktop...");
     let mut desktop =
         alloc::boxed::Box::new(desktop::Desktop::new(fb_ptr, width, height, fb_info.pitch));

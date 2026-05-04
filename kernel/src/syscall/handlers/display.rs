@@ -7,7 +7,7 @@
 #[allow(unused_imports)]
 use super::helpers::is_valid_user_ptr;
 #[allow(unused_imports)]
-use super::{is_compositor, COMPOSITOR_PD, COMPOSITOR_TID};
+use super::{is_compositor, is_display_owner, COMPOSITOR_PD, COMPOSITOR_TID, DISPLAY_OWNER_PD};
 
 use core::sync::atomic::Ordering;
 
@@ -1659,4 +1659,346 @@ pub fn sys_gpu_3d_resource_destroy(resource_id: u32) -> u32 {
 #[cfg(target_arch = "aarch64")]
 pub fn sys_gpu_3d_resource_destroy(_resource_id: u32) -> u32 {
     u32::MAX
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Multi-monitor display syscalls (700–704). See
+// docs/multimonitor-architecture.md for the design.
+// ───────────────────────────────────────────────────────────────────────
+
+/// Wire format for SYS_DISPLAY_LIST entries.
+///
+/// 64 bytes per output, fixed layout — keeps userspace marshalling
+/// trivial and the syscall ABI versionable. Mirrors the kernel
+/// `OutputInfo` struct minus the variable-length mode list (which is
+/// queried separately in a future SYS_DISPLAY_MODES syscall to keep the
+/// per-call buffer bounded).
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct DisplayInfoFfi {
+    pub id: u32,            //  0
+    pub connected: u32,     //  4  (boolean as u32 for alignment)
+    pub current_w: u32,     //  8
+    pub current_h: u32,     // 12
+    pub preferred_w: u32,   // 16
+    pub preferred_h: u32,   // 20
+    pub refresh_mhz: u32,   // 24
+    pub bpp: u32,           // 28
+    pub physical_mm: u32,   // 32  (low u16 = width mm, high u16 = height mm)
+    pub edid_hash: u64,     // 36
+    pub manufacturer: u32,  // 44  (4 ASCII bytes, null-terminated)
+    pub flags: u32,         // 48  (bit 0 = primary, bit 1 = mirror)
+    pub mirror_of: u32,     // 52  (0xFFFFFFFF = none)
+    pub _reserved: [u32; 2],// 56..64
+}
+
+/// Wire format for SYS_DISPLAY_SET_LAYOUT entries (36 bytes each).
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct LayoutEntryFfi {
+    pub id: u32,                 //  0
+    pub virtual_x: i32,          //  4
+    pub virtual_y: i32,          //  8
+    pub mode_w: u32,             // 12
+    pub mode_h: u32,             // 16
+    pub mode_refresh_mhz: u32,   // 20
+    pub scale: u32,              // 24  (percent, 100 = 1.0x)
+    pub flags: u32,              // 28  (bit 0 = primary)
+    pub mirror_of: u32,          // 32  (0xFFFFFFFF = none)
+}
+
+/// SYS_DISPLAY_LIST (700): enumerate all advertised display outputs.
+/// `buf_ptr` points to a `[DisplayInfoFfi; N]`; `buf_count` is N.
+/// Returns the number of entries written (≤ N), or `u32::MAX` on error.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_display_list(buf_ptr: u64, buf_count: u32) -> u32 {
+    if buf_ptr == 0 || buf_count == 0 {
+        return u32::MAX;
+    }
+    let bytes = (buf_count as u64) * (core::mem::size_of::<DisplayInfoFfi>() as u64);
+    if !super::helpers::is_valid_user_ptr(buf_ptr, bytes) {
+        return u32::MAX;
+    }
+    let written = crate::drivers::gpu::with_gpu(|g| {
+        let total = g.display_count().min(buf_count) as u32;
+        let dst = unsafe {
+            core::slice::from_raw_parts_mut(buf_ptr as *mut DisplayInfoFfi, total as usize)
+        };
+        for i in 0..total {
+            let info = match g.output_info(i) {
+                Some(v) => v,
+                None => continue,
+            };
+            let mut e = DisplayInfoFfi::default();
+            e.id = info.id;
+            e.connected = if info.connected { 1 } else { 0 };
+            if let Some(m) = info.current_mode {
+                e.current_w = m.width;
+                e.current_h = m.height;
+                e.refresh_mhz = m.refresh_mhz;
+                e.bpp = m.bpp as u32;
+            }
+            if let Some(m) = info.preferred_mode {
+                e.preferred_w = m.width;
+                e.preferred_h = m.height;
+                if e.refresh_mhz == 0 {
+                    e.refresh_mhz = m.refresh_mhz;
+                }
+            }
+            e.physical_mm =
+                (info.physical_mm.0 as u32) | ((info.physical_mm.1 as u32) << 16);
+            e.edid_hash = info.edid_hash;
+            e.manufacturer = u32::from_le_bytes(info.manufacturer);
+            e.mirror_of = u32::MAX; // current state isn't tracked in OutputInfo yet
+            dst[i as usize] = e;
+        }
+        total
+    });
+    written.unwrap_or(u32::MAX)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_display_list(_buf_ptr: u64, _buf_count: u32) -> u32 {
+    0
+}
+
+/// SYS_DISPLAY_SET_LAYOUT (701): atomically apply a complete layout.
+/// `entries_ptr` points to a `[LayoutEntryFfi; entry_count]`. Returns 0
+/// on success, or a non-zero `LayoutError::code()` on validation failure
+/// (current layout is preserved). `u32::MAX` indicates a hard error
+/// (invalid arguments, no GPU).
+#[cfg(target_arch = "x86_64")]
+pub fn sys_display_set_layout(entries_ptr: u64, entry_count: u32) -> u32 {
+    // Allowed for the registered compositor *or* the registered
+    // display-layout owner (typically `displayd`). Two callers because
+    // both need to write — compositor for boot-time bring-up,
+    // displayd for hot-plug + user-driven layout changes.
+    if !is_compositor() && !is_display_owner() {
+        return u32::MAX;
+    }
+    if entries_ptr == 0 || entry_count == 0 || entry_count > 32 {
+        return u32::MAX;
+    }
+    let bytes = (entry_count as u64) * (core::mem::size_of::<LayoutEntryFfi>() as u64);
+    if !super::helpers::is_valid_user_ptr(entries_ptr, bytes) {
+        return u32::MAX;
+    }
+    let raw = unsafe {
+        core::slice::from_raw_parts(entries_ptr as *const LayoutEntryFfi, entry_count as usize)
+    };
+    use crate::drivers::gpu::output::{OutputLayout, OutputLayoutEntry, OutputMode};
+    let mut layout = OutputLayout::empty();
+    for e in raw {
+        let refresh = if e.mode_refresh_mhz == 0 {
+            60_000
+        } else {
+            e.mode_refresh_mhz
+        };
+        let scale = if e.scale == 0 { 100 } else { e.scale.min(400) as u16 };
+        layout.entries.push(OutputLayoutEntry {
+            id: e.id,
+            virtual_x: e.virtual_x,
+            virtual_y: e.virtual_y,
+            virtual_w: ((e.mode_w as u32) * 100u32) / (scale as u32),
+            virtual_h: ((e.mode_h as u32) * 100u32) / (scale as u32),
+            mode: OutputMode {
+                width: e.mode_w,
+                height: e.mode_h,
+                refresh_mhz: refresh,
+                bpp: 32,
+            },
+            scale,
+            mirror_of: if e.mirror_of == u32::MAX {
+                None
+            } else {
+                Some(e.mirror_of)
+            },
+            primary: (e.flags & 1) != 0,
+        });
+    }
+    crate::drivers::gpu::with_gpu(|g| match g.apply_layout(&layout) {
+        Ok(()) => 0u32,
+        Err(err) => err.code(),
+    })
+    .unwrap_or(u32::MAX)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_display_set_layout(_entries_ptr: u64, _entry_count: u32) -> u32 {
+    u32::MAX
+}
+
+/// SYS_DISPLAY_MAP_FB (702): map output `output_id`'s framebuffer into
+/// the compositor's address space. `out_info_ptr` points to a
+/// `[u32; 4]` filled with `[user_base, width, height, pitch]`.
+/// Returns 0 on success, `u32::MAX` on failure.
+///
+/// The mapping is placed at `0x2000_0000 + output_id * 0x0400_0000`
+/// (64 MiB stride) so the compositor can hold mappings for up to 16
+/// outputs simultaneously without manual address management.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_display_map_fb(output_id: u32, out_info_ptr: u64) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+    if output_id >= crate::drivers::gpu::output::MAX_OUTPUTS as u32 {
+        return u32::MAX;
+    }
+    // Secondary outputs are activated at GPU driver init (boot time, kernel CR3
+    // with full identity map). If there is no mode here, the driver either
+    // hasn't been initialized yet or this scanout was disabled in the cold-boot
+    // layout — either way map_fb must fail rather than try to allocate phys
+    // pages now under user CR3 (which only identity-maps the first 64 MiB).
+    let mode = crate::drivers::gpu::with_gpu(|g| g.mode_for_output(output_id)).flatten();
+    let (width, height, pitch, fb_phys) = match mode {
+        Some(m) => m,
+        None => {
+            crate::serial_println!(
+                "[!] sys_display_map_fb: output {} has no active mode (set at boot only)",
+                output_id
+            );
+            return u32::MAX;
+        }
+    };
+    let fb_user_base: u64 = 0x2000_0000u64 + (output_id as u64) * 0x0400_0000u64;
+    let fb_total_bytes = (height as usize).saturating_mul(pitch as usize);
+    if fb_total_bytes == 0 {
+        return u32::MAX;
+    }
+    let pages = (fb_total_bytes + crate::memory::FRAME_SIZE - 1) / crate::memory::FRAME_SIZE;
+    for i in 0..pages {
+        let phys_addr = crate::memory::address::PhysAddr::new(
+            fb_phys as u64 + (i * crate::memory::FRAME_SIZE) as u64,
+        );
+        let virt_addr = crate::memory::address::VirtAddr::new(
+            fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
+        );
+        crate::memory::virtual_mem::map_page(virt_addr, phys_addr, 0x0F);
+    }
+    if out_info_ptr != 0 {
+        if !super::helpers::is_valid_user_ptr(out_info_ptr, 16) {
+            return u32::MAX;
+        }
+        let info = unsafe { &mut *(out_info_ptr as *mut [u32; 4]) };
+        info[0] = fb_user_base as u32;
+        info[1] = width;
+        info[2] = height;
+        info[3] = pitch;
+    }
+    crate::serial_verbose_println!(
+        "[OK] Output {} fb mapped at {:#010x} ({}x{}, pitch={}, phys={:#x})",
+        output_id,
+        fb_user_base,
+        width,
+        height,
+        pitch,
+        fb_phys
+    );
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_display_map_fb(_output_id: u32, _out_info_ptr: u64) -> u32 {
+    u32::MAX
+}
+
+/// SYS_DISPLAY_FLUSH (703): transfer + flush a rect on `output_id`.
+/// `xy` packs `(x << 16) | y`, `wh` packs `(w << 16) | h`.
+/// Returns 0 on success, `u32::MAX` on failure.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_display_flush(output_id: u32, xy: u32, wh: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+    if output_id >= crate::drivers::gpu::output::MAX_OUTPUTS as u32 {
+        return u32::MAX;
+    }
+    let x = (xy >> 16) & 0xFFFF;
+    let y = xy & 0xFFFF;
+    let w = (wh >> 16) & 0xFFFF;
+    let h = wh & 0xFFFF;
+    // First-call diagnostic only — log once per output so the boot test
+    // can confirm the secondary render pass reaches the kernel without
+    // spamming every frame.
+    static FLUSH_SEEN: core::sync::atomic::AtomicU32 =
+        core::sync::atomic::AtomicU32::new(0);
+    let mask = 1u32 << (output_id & 31);
+    let prev = FLUSH_SEEN.fetch_or(mask, core::sync::atomic::Ordering::Relaxed);
+    if prev & mask == 0 {
+        crate::serial_println!(
+            "[OK] sys_display_flush: first call for output {} ({}x{} at {},{})",
+            output_id,
+            w,
+            h,
+            x,
+            y
+        );
+    }
+    crate::drivers::gpu::with_gpu(|g| g.update_rect_for_output(output_id, x, y, w, h));
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_display_flush(_output_id: u32, _xy: u32, _wh: u32) -> u32 {
+    0
+}
+
+/// SYS_REGISTER_DISPLAY_OWNER (705): mark the calling process as the
+/// authoritative display-layout owner (typically `displayd`). After
+/// this call the process can issue SYS_DISPLAY_SET_LAYOUT even though
+/// it isn't the registered compositor. First caller wins; subsequent
+/// callers receive `u32::MAX`.
+///
+/// No additional capability check beyond first-caller-wins — the same
+/// design SYS_REGISTER_COMPOSITOR uses. In practice the system-services
+/// layer (sessionhost / compositor bootstrap) is responsible for
+/// spawning a single trusted displayd before any other process gets to
+/// register.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_register_display_owner() -> u32 {
+    if let Some(pd) = crate::task::scheduler::current_thread_page_directory() {
+        if DISPLAY_OWNER_PD
+            .compare_exchange(0, pd.as_u64(), Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            crate::serial_verbose_println!(
+                "[OK] Display layout owner registered (PD={:#x})",
+                pd.as_u64()
+            );
+            return 0;
+        }
+    }
+    u32::MAX
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_register_display_owner() -> u32 {
+    u32::MAX
+}
+
+/// SYS_DISPLAY_POLL_EVENT (704): drain one DisplayEvent.
+/// Returns:
+///  - `0` if no event pending
+///  - `1 | (output_id << 8)` for HotplugChanged (output_id ignored, =0)
+///  - `2 | (output_id << 8)` for PreferredModeChanged
+///  - `3` for LayoutApplied
+///  - `u32::MAX` on error
+#[cfg(target_arch = "x86_64")]
+pub fn sys_display_poll_event() -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+    use crate::drivers::gpu::output::DisplayEvent;
+    crate::drivers::gpu::with_gpu(|g| match g.poll_display_event() {
+        None => 0u32,
+        Some(DisplayEvent::HotplugChanged) => 1,
+        Some(DisplayEvent::PreferredModeChanged { output }) => 2 | (output << 8),
+        Some(DisplayEvent::LayoutApplied) => 3,
+    })
+    .unwrap_or(u32::MAX)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_display_poll_event() -> u32 {
+    0
 }

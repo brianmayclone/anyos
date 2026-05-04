@@ -8,9 +8,15 @@ pub mod amd_fb;
 pub mod bochs_vga;
 pub mod intel_fb;
 pub mod nvidia_fb;
+pub mod output;
 pub mod vbox_vga;
 pub mod virtio_gpu;
 pub mod vmware_svga;
+
+pub use output::{
+    DisplayEvent, LayoutError, OutputInfo, OutputLayout, OutputLayoutEntry, OutputMode,
+    MAX_OUTPUTS,
+};
 
 use crate::sync::mutex::Mutex;
 use alloc::boxed::Box;
@@ -306,6 +312,194 @@ pub trait GpuDriver: Send {
     /// Re-query display info from hardware (not cached).
     /// Call this after boot has progressed to get up-to-date display dimensions.
     fn refresh_display_info(&mut self) {}
+
+    // ── Per-output mode / framebuffer (multi-monitor) ──
+    //
+    // The single-output `set_mode`, `get_mode`, `update_rect`, `transfer_rect`,
+    // `flush_display` operate on output 0. The `*_for_output` variants take an
+    // explicit output index and let drivers expose multiple independent
+    // scanouts. Drivers without multi-output support fall through to the
+    // single-output path for `output == 0` and report `None` / no-op for
+    // other indices.
+
+    /// Activate a mode on output `output_id`. Returns (width, height, pitch,
+    /// fb_phys) on success. For output 0, default delegates to `set_mode`.
+    fn set_mode_for_output(
+        &mut self,
+        output_id: u32,
+        width: u32,
+        height: u32,
+        bpp: u32,
+    ) -> Option<(u32, u32, u32, u32)> {
+        if output_id == 0 {
+            self.set_mode(width, height, bpp)
+        } else {
+            None
+        }
+    }
+
+    /// Current mode of output `output_id` as (width, height, pitch, fb_phys).
+    /// Returns `None` if the output is not active.
+    fn mode_for_output(&self, output_id: u32) -> Option<(u32, u32, u32, u32)> {
+        if output_id == 0 {
+            let (w, h, p, fb) = self.get_mode();
+            if w > 0 && h > 0 {
+                Some((w, h, p, fb))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Transfer a dirty region of output `output_id` from guest RAM to GPU.
+    /// Default: delegates to `transfer_rect` for output 0.
+    fn transfer_rect_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        if output_id == 0 {
+            self.transfer_rect(x, y, w, h);
+        }
+    }
+
+    /// Flush a region of output `output_id` to the host display.
+    /// Default: delegates to `flush_display` for output 0.
+    fn flush_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        if output_id == 0 {
+            self.flush_display(x, y, w, h);
+        }
+    }
+
+    /// Combined transfer + flush for output `output_id` (legacy update_rect
+    /// fast-path). Default: delegates to `update_rect` for output 0.
+    fn update_rect_for_output(&mut self, output_id: u32, x: u32, y: u32, w: u32, h: u32) {
+        if output_id == 0 {
+            self.update_rect(x, y, w, h);
+        }
+    }
+
+    /// Structured per-output information (modes, EDID, physical size).
+    ///
+    /// Default builds an [`OutputInfo`] from the legacy `display_info` /
+    /// `read_edid` / `get_mode` methods so existing single-output drivers
+    /// (Bochs, VMware, VirtualBox) automatically report a sane single-entry
+    /// list without modification. Multi-output drivers should override this
+    /// to fill in the per-scanout mode list and EDID metadata.
+    fn output_info(&mut self, output_id: u32) -> Option<output::OutputInfo> {
+        if output_id >= self.display_count() {
+            return None;
+        }
+        let mut info = output::OutputInfo::placeholder(output_id);
+        if let Some((w, h, enabled)) = self.display_info(output_id) {
+            info.connected = enabled;
+            if w > 0 && h > 0 {
+                info.preferred_mode = Some(output::OutputMode::new(w, h));
+            }
+        } else if output_id == 0 {
+            // Legacy single-output driver: synthesise from get_mode.
+            let (w, h, _, _) = self.get_mode();
+            info.connected = w > 0 && h > 0;
+            if info.connected {
+                info.preferred_mode = Some(output::OutputMode::new(w, h));
+            }
+        }
+        if output_id == 0 {
+            let (w, h, _, _) = self.get_mode();
+            if w > 0 && h > 0 {
+                info.current_mode = Some(output::OutputMode::new(w, h));
+            }
+        }
+        // Hash whichever EDID block we can read — used by displayd to
+        // identify the same monitor across hotplug.
+        if let Some(edid) = self.read_edid(output_id) {
+            info.edid_hash = output::edid_hash(&edid);
+            // PNPID is encoded in EDID bytes 8-9, big-endian, 5-bit
+            // letters with bias 'A'-1.
+            let raw = ((edid[8] as u16) << 8) | (edid[9] as u16);
+            info.manufacturer[0] = b'A' + (((raw >> 10) & 0x1F) as u8).saturating_sub(1);
+            info.manufacturer[1] = b'A' + (((raw >> 5) & 0x1F) as u8).saturating_sub(1);
+            info.manufacturer[2] = b'A' + ((raw & 0x1F) as u8).saturating_sub(1);
+            info.manufacturer[3] = 0;
+            // Physical size: EDID bytes 21 (h cm) and 22 (v cm). Convert to mm.
+            info.physical_mm = ((edid[21] as u16) * 10, (edid[22] as u16) * 10);
+        }
+        Some(info)
+    }
+
+    /// Configure scanout `output_id` to mirror `source_output_id`'s
+    /// framebuffer (zero-copy mirror via shared resource_id, per the
+    /// virtio-gpu spec's "create a single framebuffer, link it to all
+    /// displays" idiom).
+    ///
+    /// Default returns `false` — single-output drivers cannot mirror.
+    /// Multi-output drivers override this with `SET_SCANOUT(output_id,
+    /// shared_resource_id, source_rect)`.
+    ///
+    /// The compositor's per-output flush walks `mirror_of` so that damage
+    /// delivered to the source output also reaches the mirror outputs.
+    fn set_output_mirror(&mut self, _output_id: u32, _source_output_id: u32) -> bool {
+        false
+    }
+
+    /// Atomically apply a complete display layout.
+    ///
+    /// Default implementation pre-validates against the currently reported
+    /// outputs and then walks the entries in three passes (disable removed
+    /// outputs first, reconfigure existing modes, finally enable new
+    /// outputs) to minimise visible glitches — the same ordering DRM uses
+    /// for atomic commits. Drivers that need a more native primitive
+    /// (e.g. virtio-gpu can batch SET_SCANOUTs in the control queue) may
+    /// override this.
+    ///
+    /// Errors leave the previous layout untouched: validation runs before
+    /// any device-side side effect.
+    fn apply_layout(&mut self, layout: &output::OutputLayout) -> Result<(), output::LayoutError> {
+        // Build the "currently present" snapshot to validate against.
+        let total = self.display_count();
+        let mut present = alloc::vec::Vec::with_capacity(total as usize);
+        for id in 0..total {
+            if let Some(info) = self.output_info(id) {
+                present.push(info);
+            }
+        }
+        layout.validate(&present)?;
+
+        // Pass 1: disable outputs that are present but not in the new layout.
+        for id in 0..total {
+            if !layout.entries.iter().any(|e| e.id == id) {
+                // Disable by setting a zero-size mode. Drivers that don't
+                // support per-output disable will simply no-op here.
+                self.set_mode_for_output(id, 0, 0, 32);
+            }
+        }
+
+        // Pass 2: reconfigure / enable own-framebuffer outputs.
+        for entry in layout.entries.iter().filter(|e| e.mirror_of.is_none()) {
+            self.set_mode_for_output(
+                entry.id,
+                entry.mode.width,
+                entry.mode.height,
+                entry.mode.bpp as u32,
+            );
+        }
+
+        // Pass 3: wire up mirrors. Source outputs are guaranteed to be
+        // configured by pass 2 because validate() rejects mirror chains.
+        for entry in layout.entries.iter().filter(|e| e.mirror_of.is_some()) {
+            let source = entry.mirror_of.unwrap();
+            self.set_output_mirror(entry.id, source);
+        }
+
+        Ok(())
+    }
+
+    /// Drain one [`DisplayEvent`] from the driver's hotplug queue, if any.
+    ///
+    /// Polled by the compositor (via `SYS_DISPLAY_POLL_EVENT`) to discover
+    /// connector changes. The kernel display subsystem also fans out a
+    /// `LayoutApplied` event after a successful `apply_layout`.
+    fn poll_display_event(&mut self) -> Option<output::DisplayEvent> {
+        None
+    }
 }
 
 // ──────────────────────────────────────────────

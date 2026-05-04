@@ -294,6 +294,14 @@ pub(crate) fn dispatch_inner(
         SYS_GPU_HAS_HW_CURSOR => handlers::sys_gpu_has_hw_cursor(),
         SYS_BOOT_READY => handlers::sys_boot_ready(),
 
+        // Multi-monitor display syscalls.
+        SYS_DISPLAY_LIST => handlers::sys_display_list(arg1, arg2 as u32),
+        SYS_DISPLAY_SET_LAYOUT => handlers::sys_display_set_layout(arg1, arg2 as u32),
+        SYS_DISPLAY_MAP_FB => handlers::sys_display_map_fb(arg1 as u32, arg2),
+        SYS_DISPLAY_FLUSH => handlers::sys_display_flush(arg1 as u32, arg2 as u32, arg3 as u32),
+        SYS_DISPLAY_POLL_EVENT => handlers::sys_display_poll_event(),
+        SYS_REGISTER_DISPLAY_OWNER => handlers::sys_register_display_owner(),
+
         // Audio
         SYS_AUDIO_WRITE => handlers::sys_audio_write(arg1, arg2 as u32),
         SYS_AUDIO_CTL => handlers::sys_audio_ctl(arg1 as u32, arg2 as u32),

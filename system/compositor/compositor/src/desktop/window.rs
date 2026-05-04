@@ -85,6 +85,138 @@ fn shortcut_btn_right() -> i32 {
     shortcut_btn_x() + shortcut_btn_w() as i32
 }
 
+// ── Monitor-Send buttons (multi-monitor) ─────────────────────────────
+//
+// On a multi-monitor setup the title bar exposes one small button per
+// non-current output. Clicking such a button moves the window to that
+// output, preserving the relative position inside the source output's
+// rectangle when it fits, otherwise clamping into the target. The
+// buttons live on the right edge, stacked right-to-left in output id
+// order.
+
+/// Width of one monitor-send button (DPI-scaled).
+#[inline(always)]
+pub(crate) fn monitor_btn_w() -> u32 {
+    crate::desktop::theme::scale(28)
+}
+
+/// Height of one monitor-send button (DPI-scaled).
+#[inline(always)]
+pub(crate) fn monitor_btn_h() -> u32 {
+    crate::desktop::theme::scale(16)
+}
+
+/// Vertical position of the monitor button strip inside the title bar.
+#[inline(always)]
+pub(crate) fn monitor_btn_y() -> i32 {
+    (title_bar_height() as i32 - monitor_btn_h() as i32) / 2
+}
+
+/// Horizontal gap between adjacent monitor buttons.
+#[inline(always)]
+pub(crate) fn monitor_btn_gap() -> i32 {
+    crate::desktop::theme::scale_i32(4)
+}
+
+/// Right-edge inset where the right-most monitor button ends.
+#[inline(always)]
+pub(crate) fn monitor_btn_right_inset() -> i32 {
+    crate::desktop::theme::scale_i32(8)
+}
+
+/// Compute the X position of the monitor button at slot `slot` (0 =
+/// rightmost), given the window's full width.
+#[inline(always)]
+pub(crate) fn monitor_btn_x_at(window_full_w: u32, slot: u32) -> i32 {
+    let w = monitor_btn_w() as i32;
+    let gap = monitor_btn_gap();
+    window_full_w as i32
+        - monitor_btn_right_inset()
+        - (slot as i32 + 1) * w
+        - (slot as i32) * gap
+}
+
+/// Render one monitor-send button at the given X. The button shows a
+/// stylised display icon plus the target output id as a single digit.
+fn render_monitor_btn(
+    pixels: &mut [u32],
+    stride: u32,
+    full_h: u32,
+    btn_x: i32,
+    target_id: u8,
+    focused: bool,
+) {
+    let y = monitor_btn_y();
+    let w = monitor_btn_w();
+    let h = monitor_btn_h();
+    let bg = if focused {
+        if super::theme::is_light() {
+            0x30000000
+        } else {
+            0x30FFFFFF
+        }
+    } else {
+        if super::theme::is_light() {
+            0x18000000
+        } else {
+            0x18FFFFFF
+        }
+    };
+    let r = crate::desktop::theme::scale(4);
+    fill_rounded_rect(pixels, stride, full_h, btn_x, y, w, h, r, bg);
+
+    // Tiny monitor glyph: 8x6 rounded rect on the left, base bar
+    // beneath. Drawn directly because anyui icon assets aren't
+    // available from inside the compositor's title-bar fast path.
+    let glyph_w = crate::desktop::theme::scale(10) as i32;
+    let glyph_h = crate::desktop::theme::scale(6) as i32;
+    let glyph_x = btn_x + crate::desktop::theme::scale_i32(4);
+    let glyph_y = y + (h as i32 - glyph_h - crate::desktop::theme::scale_i32(2)) / 2;
+    let stroke = color_titlebar_text();
+    // Top + bottom of monitor frame.
+    fill_rect(
+        pixels, stride, full_h, glyph_x, glyph_y,
+        glyph_w as u32, 1, stroke,
+    );
+    fill_rect(
+        pixels, stride, full_h, glyph_x, glyph_y + glyph_h - 1,
+        glyph_w as u32, 1, stroke,
+    );
+    // Left + right side.
+    fill_rect(
+        pixels, stride, full_h, glyph_x, glyph_y,
+        1, glyph_h as u32, stroke,
+    );
+    fill_rect(
+        pixels, stride, full_h, glyph_x + glyph_w - 1, glyph_y,
+        1, glyph_h as u32, stroke,
+    );
+    // Stand pixel.
+    fill_rect(
+        pixels, stride, full_h, glyph_x + glyph_w / 2 - 1,
+        glyph_y + glyph_h, 2, 1, stroke,
+    );
+
+    // Digit (target output id 0..9).
+    let mut buf = [0u8; 2];
+    let label = if target_id < 10 {
+        buf[0] = b'0' + target_id;
+        core::str::from_utf8(&buf[..1]).unwrap_or("")
+    } else {
+        // 10-15 fall back to a generic glyph — we still have unique
+        // ids so callers can disambiguate by hit-test slot.
+        buf[0] = b'+';
+        core::str::from_utf8(&buf[..1]).unwrap_or("")
+    };
+    let fs = crate::desktop::theme::scale_font(10);
+    let (tw, th) = anyos_std::ui::window::font_measure(FONT_ID, fs, label);
+    let tx = btn_x + (w as i32) - tw as i32 - crate::desktop::theme::scale_i32(4);
+    let ty = y + (h as i32 - th as i32) / 2;
+    anyos_std::ui::window::font_render_buf(
+        FONT_ID, fs, pixels, stride, full_h, tx, ty, stroke, label,
+    );
+}
+
 /// Render the shortcut button ("F1".."F12") into a pixel buffer at the title bar.
 fn render_shortcut_btn(pixels: &mut [u32], stride: u32, full_h: u32, slot: u8, focused: bool) {
     if slot == 0 {
@@ -210,6 +342,10 @@ pub enum HitTest {
     MinButton,
     MaxButton,
     ShortcutButton,
+    /// Click on the "send window to monitor N" button (multi-monitor).
+    /// Payload is the target output id; the compositor calls
+    /// `move_window_to_output(window, output_id)` on click.
+    MonitorButton(u8),
     Content,
     ResizeTop,
     ResizeBottom,
@@ -927,6 +1063,10 @@ impl Desktop {
         let focused = self.windows[win_idx].focused;
         let full_h = self.windows[win_idx].full_height();
         let shortcut_slot = self.windows[win_idx].shortcut_slot;
+        // Pre-compute the list of "send to monitor" target output ids.
+        // Done before layer_pixels() borrows self.compositor mutably.
+        let other_outputs: alloc::vec::Vec<u8> =
+            self.other_outputs_for_window(window_id);
         // Stack-copy title to avoid heap allocation (title.clone())
         let mut title_buf = [0u8; 256];
         let title_len = self.windows[win_idx].title.len().min(256);
@@ -1044,6 +1184,13 @@ impl Desktop {
                 // Shortcut button (F1..F12 badge)
                 render_shortcut_btn(pixels, stride, full_h, shortcut_slot, focused);
 
+                // Per-output "send to monitor" buttons on the right.
+                // Drawn right-to-left so output id order reads naturally.
+                for (slot, &target_id) in other_outputs.iter().enumerate() {
+                    let bx = monitor_btn_x_at(cw, slot as u32);
+                    render_monitor_btn(pixels, stride, full_h, bx, target_id, focused);
+                }
+
                 // Available width for title: between buttons (left) and window edge (right), with padding
                 let left_bound = if shortcut_slot > 0 {
                     shortcut_btn_right() + title_padding()
@@ -1114,6 +1261,8 @@ impl Desktop {
         let focused = self.windows[win_idx].focused;
         let full_h = self.windows[win_idx].full_height();
         let shortcut_slot = self.windows[win_idx].shortcut_slot;
+        let other_outputs: alloc::vec::Vec<u8> =
+            self.other_outputs_for_window(window_id);
         // Stack-copy title to avoid heap allocation (title.clone())
         let mut title_buf = [0u8; 256];
         let title_len = self.windows[win_idx].title.len().min(256);
@@ -1185,6 +1334,12 @@ impl Desktop {
             // Shortcut button (F1..F12 badge)
             render_shortcut_btn(pixels, stride, full_h, shortcut_slot, focused);
 
+            // Per-output "send to monitor" buttons on the right.
+            for (slot, &target_id) in other_outputs.iter().enumerate() {
+                let bx = monitor_btn_x_at(cw, slot as u32);
+                render_monitor_btn(pixels, stride, full_h, bx, target_id, focused);
+            }
+
             let left_bound = if shortcut_slot > 0 {
                 shortcut_btn_right() + title_padding()
             } else {
@@ -1236,6 +1391,202 @@ impl Desktop {
     }
 
     /// Toggle window maximize/restore.
+    /// Refresh the kernel-reported output set and reflow any windows
+    /// that were on outputs which just disappeared.
+    ///
+    /// Called from the management thread on display events
+    /// (HotplugChanged / LayoutApplied / PreferredModeChanged). For
+    /// every window currently sitting on a vanished output we move
+    /// it onto the primary, preserving its inset relative to its old
+    /// output's top-left so the user finds it roughly where it was —
+    /// just on a different physical screen. Same clamp/shrink rules
+    /// as the manual "send to monitor" button path so a window from
+    /// a 4K secondary that got unplugged still fits on the primary.
+    pub(crate) fn refresh_outputs_and_reflow(&mut self) {
+        let vanished = self.compositor.refresh_outputs();
+        if vanished.is_empty() {
+            return;
+        }
+        // Snapshot the windows that need to move (by id) before
+        // mutating, so the iteration doesn't see a Vec mid-edit.
+        let mut targets: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+        for w in &self.windows {
+            // For a vanished output we know the old virtual_x /
+            // virtual_y was somewhere in that output's old rect —
+            // but we don't keep the old rects after refresh_outputs
+            // removed them. Use a "any window outside the union of
+            // current outputs" heuristic: those are the ones that
+            // need rescuing.
+            let cx = w.x + (w.content_width as i32 / 2);
+            let cy = w.y;
+            let on_an_output = self.compositor.outputs.iter().any(|o| {
+                cx >= o.virtual_x
+                    && cy >= o.virtual_y
+                    && cx < o.virtual_x + o.fb_width as i32
+                    && cy < o.virtual_y + o.fb_height as i32
+            });
+            if !on_an_output {
+                targets.push(w.id);
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        let primary_id = self.compositor.outputs[0].id as u8;
+        for win_id in targets {
+            self.move_window_to_output(win_id, primary_id);
+        }
+        let _ = vanished;
+    }
+
+    /// Output ids that should appear as "send to monitor" buttons in
+    /// the title bar of `window_id`. The window's current output is
+    /// excluded; remaining outputs are returned in id order, capped to
+    /// 8 entries (we only have rendering room for that many buttons).
+    pub(crate) fn other_outputs_for_window(&self, window_id: u32) -> alloc::vec::Vec<u8> {
+        let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        if self.compositor.outputs.len() < 2 {
+            return out;
+        }
+        let win_idx = match self.windows.iter().position(|w| w.id == window_id) {
+            Some(i) => i,
+            None => return out,
+        };
+        let w = &self.windows[win_idx];
+        // Use the same titlebar-centre heuristic the maximize path uses
+        // so the "current output" matches what the user perceives.
+        let cx = w.x + (w.content_width as i32 / 2);
+        let cy = w.y;
+        let current_id = self.compositor.output_at(cx, cy).id;
+        for o in &self.compositor.outputs {
+            if o.id == current_id {
+                continue;
+            }
+            if out.len() >= 8 {
+                break;
+            }
+            out.push(o.id as u8);
+        }
+        out
+    }
+
+    /// Move the window onto a different output, preserving its relative
+    /// position inside the source output's rect when possible.
+    /// Falls back to clamping into the target output's bounds when the
+    /// translated rectangle would go off-screen on the new output (e.g.
+    /// the source was a 4K monitor and the target is a 1280×800 panel).
+    /// No-op when the window is already on the target output, or when
+    /// the target id doesn't match any active output.
+    pub(crate) fn move_window_to_output(&mut self, window_id: u32, target_output_id: u8) {
+        // Resolve the target output rect.
+        let target = match self
+            .compositor
+            .outputs
+            .iter()
+            .find(|o| o.id as u8 == target_output_id)
+        {
+            Some(o) => (o.virtual_x, o.virtual_y, o.fb_width, o.fb_height),
+            None => return,
+        };
+        let (tx, ty, tw, th) = target;
+
+        let win_idx = match self.windows.iter().position(|w| w.id == window_id) {
+            Some(i) => i,
+            None => return,
+        };
+        let win_x = self.windows[win_idx].x;
+        let win_y = self.windows[win_idx].y;
+        let cw = self.windows[win_idx].content_width as i32;
+        let full_h = self.windows[win_idx].full_height() as i32;
+        let layer_id = self.windows[win_idx].layer_id;
+
+        // Source output (the one whose rect contains the titlebar centre).
+        let cx = win_x + cw / 2;
+        let cy = win_y;
+        let (sx, sy, sw, sh) = {
+            let so = self.compositor.output_at(cx, cy);
+            (so.virtual_x, so.virtual_y, so.fb_width, so.fb_height)
+        };
+        if (sx, sy) == (tx, ty) {
+            return; // already on target
+        }
+
+        // Local position inside the source output, then translate into
+        // target output. Clamp so the window stays at least mostly
+        // visible on the target if the target is smaller than the source.
+        let local_x = win_x - sx;
+        let local_y = win_y - sy;
+        let mut new_x = tx + local_x;
+        let mut new_y = ty + local_y;
+
+        // Clamp X: keep the window's right edge inside target right edge
+        // and the left edge non-negative-relative-to-target.
+        let right_edge = tx + tw as i32;
+        let bottom_edge = ty + th as i32;
+        if new_x + cw > right_edge {
+            new_x = right_edge - cw;
+        }
+        if new_x < tx {
+            new_x = tx;
+        }
+        if new_y + full_h > bottom_edge {
+            new_y = bottom_edge - full_h;
+        }
+        // Keep the title bar visible (don't move it under the menubar
+        // on the primary; on secondaries there is no menubar so we
+        // just clamp to the output top).
+        let min_y = if tx == 0 && ty == 0 {
+            menubar_height() as i32 + 1
+        } else {
+            ty
+        };
+        if new_y < min_y {
+            new_y = min_y;
+        }
+
+        // If the window is wider/taller than the target output, shrink
+        // it to fit (preserve content aspect approximately by capping
+        // each dimension). This keeps the visible-after-move invariant
+        // even on extreme size deltas.
+        let mut new_cw = cw as u32;
+        let mut new_ch = self.windows[win_idx].content_height;
+        let max_w = tw;
+        let max_h = th.saturating_sub(if tx == 0 && ty == 0 {
+            menubar_height() + title_bar_height() + 1
+        } else {
+            title_bar_height()
+        });
+        let resized = new_cw > max_w || new_ch > max_h;
+        if new_cw > max_w {
+            new_cw = max_w;
+        }
+        if new_ch > max_h {
+            new_ch = max_h;
+        }
+
+        // If the window was maximized, leave that state intact but
+        // re-apply the maximize against the new output's bounds. The
+        // simplest path is to drop the maximize flag; users can hit
+        // the maximize button again on the new monitor if they want.
+        if self.windows[win_idx].maximized {
+            self.windows[win_idx].maximized = false;
+            self.windows[win_idx].saved_bounds = None;
+        }
+
+        self.windows[win_idx].x = new_x;
+        self.windows[win_idx].y = new_y;
+        self.windows[win_idx].content_width = new_cw;
+        self.windows[win_idx].content_height = new_ch;
+
+        let new_full_h = self.windows[win_idx].full_height();
+        self.compositor.move_layer(layer_id, new_x, new_y);
+        if resized {
+            self.compositor.resize_layer(layer_id, new_cw, new_full_h);
+            self.push_event(window_id, [EVENT_RESIZE, new_cw, new_ch, 0, 0]);
+        }
+        self.render_window(window_id);
+    }
+
     pub(crate) fn toggle_maximize(&mut self, win_id: u32) {
         if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
             if self.windows[idx].maximized {
@@ -1261,10 +1612,28 @@ impl Desktop {
                 self.windows[idx].saved_bounds = Some((x, y, cw, ch));
                 self.windows[idx].maximized = true;
 
-                let new_x = 0i32;
-                let new_y = menubar_height() as i32 + 1;
-                let new_w = self.screen_width;
-                let new_ch = self.screen_height - menubar_height() - 1 - title_bar_height();
+                // Multi-monitor: maximize on the output under the window's
+                // titlebar centre (matching wlroots / Windows / macOS
+                // semantics). For pure single-output setups output_at()
+                // always returns the primary, so this collapses to the
+                // legacy 0,0,screen_width,screen_height path.
+                let titlebar_cx = x + (cw as i32 / 2);
+                let titlebar_cy = y;
+                let (out_x, out_y, out_w, out_h) = {
+                    let o = self.compositor.output_at(titlebar_cx, titlebar_cy);
+                    (o.virtual_x, o.virtual_y, o.fb_width, o.fb_height)
+                };
+                // Menubar lives on the primary output only — secondary
+                // outputs use their full height for the maximized window.
+                let mb = if out_x == 0 && out_y == 0 {
+                    menubar_height() as i32 + 1
+                } else {
+                    0
+                };
+                let new_x = out_x;
+                let new_y = out_y + mb;
+                let new_w = out_w;
+                let new_ch = out_h - mb as u32 - title_bar_height();
 
                 let layer_id = self.windows[idx].layer_id;
                 self.windows[idx].x = new_x;
@@ -2149,6 +2518,25 @@ impl Desktop {
         let overlay_w = padding * 2 + cols * card_w + (cols - 1) * gap;
         let overlay_h = padding + title_h + rows * card_h + (rows - 1) * gap + padding;
 
+        // Pre-compute multi-monitor data BEFORE layer_pixels takes a
+        // mutable borrow on self.compositor.
+        let multi_monitor = self.compositor.outputs.len() >= 2;
+        let mut slot_output_id_pre: [u8; 12] = [0; 12];
+        if multi_monitor {
+            for slot in 0..12usize {
+                let wid = self.fkey_slots[slot];
+                if wid == 0 {
+                    continue;
+                }
+                if let Some(win) = self.windows.iter().find(|w| w.id == wid) {
+                    let cx_w = win.x + (win.content_width as i32 / 2);
+                    let cy_w = win.y;
+                    slot_output_id_pre[slot] =
+                        self.compositor.output_at(cx_w, cy_w).id as u8;
+                }
+            }
+        }
+
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = overlay_w;
 
@@ -2199,6 +2587,9 @@ impl Desktop {
 
             // We need to read SHM pointers for thumbnails
             let mut slot_shm_info: [(u32, u32, *const u32); 12] = [(0, 0, core::ptr::null()); 12];
+            // Multi-monitor: per-slot, which output the window currently
+            // sits on. Pre-computed above to avoid borrow conflict.
+            let slot_output_id = slot_output_id_pre;
 
             for slot in 0..12usize {
                 let wid = self.fkey_slots[slot];
@@ -2326,6 +2717,63 @@ impl Desktop {
                     FONT_ID, label_fs, pixels, stride, overlay_h, ltx, lty, 0xFFFFFFFF, lbl_str,
                 );
 
+                // Multi-monitor: per-card "M{output_id}" badge directly
+                // after the F-key badge, with an output-specific colour
+                // so users can tell at a glance which monitor a window
+                // currently lives on. Right-click on the card cycles
+                // the window through the other outputs (handled in
+                // input.rs).
+                let monitor_badge_w = if multi_monitor && slot_has_window[slot] {
+                    let mb_w = crate::desktop::theme::scale(28);
+                    let mb_x = bx + badge_w as i32 + crate::desktop::theme::scale_i32(4);
+                    // Distinct colour per output id for quick scanning.
+                    let oid = slot_output_id[slot];
+                    let mb_bg = match oid {
+                        0 => 0xFF0A84FF, // primary — blue
+                        1 => 0xFF34C759, // 2nd — green
+                        2 => 0xFFFF9500, // 3rd — orange
+                        3 => 0xFFAF52DE, // 4th — purple
+                        _ => 0xFF8E8E93, // 5th+ — neutral grey
+                    };
+                    fill_rounded_rect(
+                        pixels,
+                        stride,
+                        overlay_h,
+                        mb_x,
+                        by,
+                        mb_w,
+                        badge_h,
+                        4,
+                        mb_bg,
+                    );
+                    let mut mlbl = [0u8; 4];
+                    mlbl[0] = b'M';
+                    if oid < 10 {
+                        mlbl[1] = b'0' + oid;
+                    } else {
+                        mlbl[1] = b'0' + (oid % 10);
+                    }
+                    let mlbl_str = core::str::from_utf8(&mlbl[..2]).unwrap_or("");
+                    let (mlw, mlh) =
+                        anyos_std::ui::window::font_measure(FONT_ID, label_fs, mlbl_str);
+                    let mltx = mb_x + (mb_w as i32 - mlw as i32) / 2;
+                    let mlty = by + (badge_h as i32 - mlh as i32) / 2;
+                    anyos_std::ui::window::font_render_buf(
+                        FONT_ID,
+                        label_fs,
+                        pixels,
+                        stride,
+                        overlay_h,
+                        mltx,
+                        mlty,
+                        0xFFFFFFFF,
+                        mlbl_str,
+                    );
+                    mb_w + crate::desktop::theme::scale(4)
+                } else {
+                    0
+                };
+
                 // Close button (X) — top-right of card, only for occupied slots
                 if slot_has_window[slot] {
                     let xbtn_sz = crate::desktop::theme::scale(18);
@@ -2356,11 +2804,13 @@ impl Desktop {
                     );
                 }
 
-                // Window title (next to badge)
+                // Window title (next to badge — shifted by monitor
+                // badge width when present)
                 if slot_has_window[slot] {
                     let tstr = core::str::from_utf8(&slot_titles[slot][..slot_title_lens[slot]])
                         .unwrap_or("");
-                    let max_tw = card_w.saturating_sub(badge_w + crate::desktop::theme::scale(18));
+                    let max_tw = card_w
+                        .saturating_sub(badge_w + monitor_badge_w + crate::desktop::theme::scale(18));
                     let tlen = title_display_len(tstr, max_tw);
                     let display = if tlen < tstr.len() && tlen > 0 {
                         &tstr[..tlen]
@@ -2368,7 +2818,9 @@ impl Desktop {
                         tstr
                     };
                     if !display.is_empty() {
-                        let ttx = bx + badge_w as i32 + crate::desktop::theme::scale_i32(6);
+                        let ttx = bx + badge_w as i32
+                            + monitor_badge_w as i32
+                            + crate::desktop::theme::scale_i32(6);
                         let (_, tth) =
                             anyos_std::ui::window::font_measure(FONT_ID, title_fs, display);
                         let tty = by + (badge_h as i32 - tth as i32) / 2;

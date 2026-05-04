@@ -43,6 +43,8 @@ pub(crate) fn management_loop(
     let mut mgmt_last_report: u32 = sys::uptime_ms();
     let mut last_reap_ms: u32 = 0;
     const REAP_INTERVAL_MS: u32 = 250;
+    let mut last_display_poll_ms: u32 = 0;
+    const DISPLAY_POLL_INTERVAL_MS: u32 = 500;
 
     loop {
         let now_ms = sys::uptime_ms();
@@ -59,6 +61,36 @@ pub(crate) fn management_loop(
             mgmt_last_report = now_ms;
         }
         mgmt_loops += 1;
+
+        // Poll the kernel for display events (hot-plug, layout
+        // changes from displayd's profile auto-switch). At 500ms
+        // cadence — fast enough that the user feels the layout
+        // settle when they plug a monitor, slow enough that idle
+        // CPU is essentially zero. SYS_DISPLAY_POLL_EVENT only
+        // works on the registered compositor (us).
+        if now_ms.wrapping_sub(last_display_poll_ms) >= DISPLAY_POLL_INTERVAL_MS {
+            last_display_poll_ms = now_ms;
+            loop {
+                let ev = anyos_std::display::poll_event();
+                match ev {
+                    anyos_std::display::DisplayEvent::None => break,
+                    anyos_std::display::DisplayEvent::HotplugChanged
+                    | anyos_std::display::DisplayEvent::LayoutApplied
+                    | anyos_std::display::DisplayEvent::PreferredModeChanged { .. } => {
+                        // Output set may have changed: refresh the
+                        // compositor's per-output state and reflow
+                        // any windows that were on disappeared
+                        // monitors back onto a still-active one.
+                        acquire_lock();
+                        let desktop = unsafe { desktop_ref() };
+                        desktop.refresh_outputs_and_reflow();
+                        desktop.compositor.damage_all();
+                        release_lock();
+                        signal_render();
+                    }
+                }
+            }
+        }
 
         if boot_redraw_idx < boot_redraw_schedule.len() {
             let elapsed = now_ms.wrapping_sub(boot_start_ms);

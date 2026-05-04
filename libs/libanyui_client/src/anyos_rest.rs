@@ -1618,12 +1618,154 @@ pub fn set_blur_behind(window: &impl Widget, radius: u32) {
 
 // ── Screen size API ─────────────────────────────────────────────────
 
-/// Get screen dimensions.
+/// Get screen dimensions of the *primary* output.
+///
+/// On multi-monitor setups this returns only the primary's size — for
+/// the full virtual desktop, walk [`Screen::list`] and union the rects.
 pub fn screen_size() -> (u32, u32) {
     let mut w: u32 = 0;
     let mut h: u32 = 0;
     (lib().screen_size)(&mut w, &mut h);
     (w, h)
+}
+
+// ── Multi-monitor screen API ────────────────────────────────────────
+
+/// One display output (monitor) the compositor scans out to.
+///
+/// Each `Screen` lives at a rectangular position in the virtual desktop
+/// (the union of all output rects). For a window dragged to a particular
+/// output, [`Screen::for_window`] returns the screen whose rect contains
+/// the window's titlebar centre.
+///
+/// Built on top of [`anyos_std::display`] which wraps `SYS_DISPLAY_LIST`.
+/// No `is_compositor()` privilege needed — every app can enumerate
+/// outputs to do per-screen layout, e.g. "fullscreen on the screen the
+/// window is currently on".
+#[derive(Clone, Copy, Debug)]
+pub struct Screen {
+    pub id: u32,
+    pub virtual_x: i32,
+    pub virtual_y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub refresh_mhz: u32,
+    pub primary: bool,
+    pub physical_mm: (u16, u16),
+    pub edid_hash: u64,
+    /// HiDPI scale factor in percent (100 = 1.0x, 200 = 2.0x). Apps
+    /// multiply font sizes / padding / icon sizes by `scale_percent /
+    /// 100` to render at the right physical size on HiDPI panels.
+    /// Heuristic default is 200% on outputs at least 2560 px wide,
+    /// 100% otherwise; user-configurable via `display.conf` once
+    /// displayd's persistence layer lands.
+    pub scale_percent: u16,
+}
+
+impl Screen {
+    /// Right edge in virtual coordinates (exclusive).
+    pub fn right(&self) -> i32 {
+        self.virtual_x + self.width as i32
+    }
+    /// Bottom edge in virtual coordinates (exclusive).
+    pub fn bottom(&self) -> i32 {
+        self.virtual_y + self.height as i32
+    }
+
+    /// Refresh rate in Hz, rounded.
+    pub fn refresh_hz(&self) -> u32 {
+        (self.refresh_mhz + 500) / 1000
+    }
+
+    /// Scale a logical pixel value to physical pixels for this screen,
+    /// e.g. `screen.scale_px(16) == 32` on a 200% HiDPI output.
+    pub fn scale_px(&self, logical: u32) -> u32 {
+        (logical * self.scale_percent as u32) / 100
+    }
+
+    /// Enumerate all currently connected outputs.
+    pub fn list() -> alloc::vec::Vec<Screen> {
+        let infos = anyos_std::display::list(16);
+        let mut out: alloc::vec::Vec<Screen> = alloc::vec::Vec::with_capacity(infos.len());
+        // The kernel doesn't currently report virtual_x/y in the FFI
+        // (that lives in the layout, not the connector). For now derive
+        // a left-to-right stack the same way the compositor does at
+        // boot. Future: extend SYS_DISPLAY_LIST with the active layout
+        // entry per output, and read virtual_x/y from there.
+        let mut next_x = 0i32;
+        for info in &infos {
+            if !info.is_connected() {
+                continue;
+            }
+            let w = if info.current_w > 0 {
+                info.current_w
+            } else {
+                info.preferred_w
+            };
+            let h = if info.current_h > 0 {
+                info.current_h
+            } else {
+                info.preferred_h
+            };
+            if w == 0 || h == 0 {
+                continue;
+            }
+            // Until displayd persists per-output scale via display.conf
+            // (separate phase) we mirror the compositor's heuristic:
+            // ≥ 2560 px wide → 200%, otherwise 100%. Apps that want a
+            // different policy can override locally based on
+            // physical_mm + width (= computed DPI).
+            let scale_percent = if w >= 2560 { 200u16 } else { 100u16 };
+            out.push(Screen {
+                id: info.id,
+                virtual_x: next_x,
+                virtual_y: 0,
+                width: w,
+                height: h,
+                refresh_mhz: info.refresh_mhz,
+                primary: info.is_primary() || info.id == 0,
+                physical_mm: info.physical_mm_pair(),
+                edid_hash: info.edid_hash,
+                scale_percent,
+            });
+            next_x += w as i32;
+        }
+        out
+    }
+
+    /// Return the primary screen, if one is reported.
+    pub fn primary() -> Option<Screen> {
+        Screen::list().into_iter().find(|s| s.primary)
+    }
+
+    /// Return the screen whose rect contains the virtual-desktop point
+    /// `(vx, vy)`. Falls back to the primary when the point is outside
+    /// every output (e.g. between two non-contiguous outputs).
+    pub fn at(vx: i32, vy: i32) -> Option<Screen> {
+        let screens = Screen::list();
+        for s in &screens {
+            if vx >= s.virtual_x
+                && vy >= s.virtual_y
+                && vx < s.right()
+                && vy < s.bottom()
+            {
+                return Some(*s);
+            }
+        }
+        screens.into_iter().find(|s| s.primary)
+    }
+
+    /// Return the screen the window referenced by `window_id` currently
+    /// sits on (using the window's titlebar centre as the reference
+    /// point — same convention the compositor uses for maximize). The
+    /// kernel doesn't expose per-window output info yet, so this falls
+    /// back to the primary screen when window position can't be
+    /// resolved client-side; callers that want exact tracking should
+    /// query the compositor (CMD_GET_WINDOW_POS) and pass the position
+    /// to [`Screen::at`] explicitly.
+    pub fn for_window(_window_id: u32) -> Option<Screen> {
+        Screen::primary()
+    }
 }
 
 // ── Fullscreen API ──────────────────────────────────────────────────

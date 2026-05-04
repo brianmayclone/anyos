@@ -54,9 +54,35 @@ impl Desktop {
                 continue;
             }
             let hit = win.hit_test(mx, my);
-            if hit != HitTest::None {
-                return Some((win.id, hit));
+            if hit == HitTest::None {
+                continue;
             }
+            // Multi-monitor: when the hit lands on the title bar, see if
+            // the cursor is over one of the right-side "send to monitor"
+            // buttons and upgrade the HitTest accordingly. Done here
+            // (Desktop level) rather than inside WindowInfo::hit_test
+            // because the per-window button layout depends on
+            // self.compositor.outputs which WindowInfo can't see.
+            if hit == HitTest::TitleBar && self.compositor.outputs.len() >= 2 {
+                let wx = mx - win.x;
+                let wy = my - win.y;
+                let by = super::window::monitor_btn_y();
+                let bw = super::window::monitor_btn_w() as i32;
+                let bh = super::window::monitor_btn_h() as i32;
+                if wy >= by && wy < by + bh {
+                    let other_ids = self.other_outputs_for_window(win.id);
+                    for (slot, &target_id) in other_ids.iter().enumerate() {
+                        let bx = super::window::monitor_btn_x_at(
+                            win.content_width,
+                            slot as u32,
+                        );
+                        if wx >= bx && wx < bx + bw {
+                            return Some((win.id, HitTest::MonitorButton(target_id)));
+                        }
+                    }
+                }
+            }
+            return Some((win.id, hit));
         }
         None
     }
@@ -183,8 +209,15 @@ impl Desktop {
             return;
         }
 
-        self.mouse_x = (self.mouse_x + dx).clamp(0, self.screen_width as i32 - 1);
-        self.mouse_y = (self.mouse_y + dy).clamp(0, self.screen_height as i32 - 1);
+        // Multi-monitor cursor clamping. The cursor lives in virtual desktop
+        // coordinates; outputs ≥ 1 sit to the right of the primary, so the
+        // legal x range is the bounding box of all output rects, not just
+        // the primary's screen_width. y is clamped to the union as well.
+        // For pure single-output setups virtual_desktop_bounds() returns
+        // (0, 0, screen_width, screen_height) so the behaviour is identical.
+        let (vmin_x, vmin_y, vmax_x, vmax_y) = self.compositor.virtual_desktop_bounds();
+        self.mouse_x = (self.mouse_x + dx).clamp(vmin_x, vmax_x - 1);
+        self.mouse_y = (self.mouse_y + dy).clamp(vmin_y, vmax_y - 1);
 
         // Handle window drag — clamp Y so windows can never go under the menubar.
         if let Some(ref mut drag) = self.dragging {
@@ -294,7 +327,16 @@ impl Desktop {
         }
 
         // Update HW cursor position
-        self.compositor.move_hw_cursor(self.mouse_x, self.mouse_y);
+        // HW cursor lives on the primary scanout only. When the cursor
+        // wanders onto a secondary output, clamp the HW position to
+        // primary edges (so it parks at the seam instead of going to a
+        // garbage offscreen address) — the secondary output renders
+        // its own software cursor via the regular layer pass.
+        let pw = self.compositor.width() as i32;
+        let ph = self.compositor.height() as i32;
+        let hw_x = self.mouse_x.clamp(0, pw - 1);
+        let hw_y = self.mouse_y.clamp(0, ph - 1);
+        self.compositor.move_hw_cursor(hw_x, hw_y);
 
         // Update cursor shape
         if self.dragging.is_some() {
@@ -370,8 +412,12 @@ impl Desktop {
 
     /// Apply an absolute mouse position (from VMMDev).
     fn apply_mouse_move_absolute(&mut self, x: i32, y: i32) {
-        let target_x = x.clamp(0, self.screen_width as i32 - 1);
-        let target_y = y.clamp(0, self.screen_height as i32 - 1);
+        // Absolute pointer (vmmouse / tablet) — clamp to the union of
+        // all outputs, same logic as the relative path above.
+        let (vmin_x, _vmin_y, vmax_x, _vmax_y) = self.compositor.virtual_desktop_bounds();
+        let target_x = x.clamp(vmin_x, vmax_x - 1);
+        let (_vmin_x2, vmin_y, _vmax_x2, vmax_y) = self.compositor.virtual_desktop_bounds();
+        let target_y = y.clamp(vmin_y, vmax_y - 1);
 
         if self.pointer_locked_window().is_some() {
             let prev_x = self.last_absolute_mouse_x.replace(target_x);
@@ -460,7 +506,29 @@ impl Desktop {
             // Check if clicking within the shortcut overlay
             if self.shortcut_overlay_visible {
                 let is_inside = self.is_point_in_shortcut_overlay(self.mouse_x, self.mouse_y);
+                let newly_pressed = buttons & !previous_buttons;
+                let right_click = (newly_pressed & 2) != 0;
                 if is_inside {
+                    // Right-click on an occupied card cycles the window
+                    // to the next output (multi-monitor convenience).
+                    // Stays inside the overlay so the user can chain the
+                    // gesture for cards on still-other monitors.
+                    if right_click {
+                        if let Some(slot) =
+                            self.hit_test_shortcut_overlay(self.mouse_x, self.mouse_y)
+                        {
+                            let win_id = self.fkey_slots[slot];
+                            if win_id != 0 && self.compositor.outputs.len() >= 2 {
+                                let others = self.other_outputs_for_window(win_id);
+                                if let Some(&first_other) = others.first() {
+                                    self.move_window_to_output(win_id, first_other);
+                                    self.render_shortcut_overlay();
+                                    self.compositor.damage_all();
+                                }
+                            }
+                            return;
+                        }
+                    }
                     // Check close button (X) first
                     if let Some(slot) =
                         self.hit_test_shortcut_overlay_close(self.mouse_x, self.mouse_y)
@@ -716,6 +784,13 @@ impl Desktop {
                     }
                     HitTest::ShortcutButton => {
                         self.toggle_shortcut_overlay();
+                    }
+                    HitTest::MonitorButton(target_id) => {
+                        // Multi-monitor "send window to monitor N" button.
+                        // Move the window to the target output, preserving
+                        // the position-relative-to-source-output where it
+                        // fits and clamping into the target rect otherwise.
+                        self.move_window_to_output(win_id, target_id);
                     }
                     HitTest::Content => {
                         if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {

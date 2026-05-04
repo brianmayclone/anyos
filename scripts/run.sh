@@ -20,6 +20,19 @@
 #                   VirtIO/virgl: sets GPU EDID resolution (guest sees this natively).
 #                   std/vmware: sets QEMU GTK window size.
 #                   Example: --res 1280x1024, --res 1920x1080
+#   --displays N  Expose N virtual monitors (1..16, default 1). Requires --virtio
+#                   or --virgl: sets virtio-vga max_outputs=N and scales vgamem.
+#                   For N>1 the display backend defaults to SDL (one host window
+#                   per scanout). Combine with --spice / --spice-app to drive
+#                   multiple monitors via remote-viewer / built-in SPICE viewer.
+#                   Example: --virtio --displays 2 --kvm
+#                 Alternative form: --displays WIDTHxHEIGHT,WIDTHxHEIGHT,...
+#                   Same as the integer form but additionally seeds
+#                   /System/etc/displayd-seed.conf with the per-output
+#                   resolutions. displayd applies that seed at first boot
+#                   into confd, so the second/third/... monitor comes up at
+#                   the requested mode instead of QEMU's 1280x800 default.
+#                   Example: --virtio --displays 1280x720,1920x1080,1024x768
 #
 # ── Input Devices ─────────────────────────────────────────────────────────────
 #   (none)        PS/2 keyboard + PS/2 mouse + vmmouse backdoor [default].
@@ -154,6 +167,9 @@ RAM_MB=4096
 EXPECT_RAM=false
 MIN_RES_W=1024
 MIN_RES_H=768
+DISPLAYS=1
+EXPECT_DISPLAYS=false
+DISPLAYS_RESLIST=""
 
 # ── WSL: prefer Windows QEMU if installed ───────────────────────────────────
 QEMU_BIN="qemu-system-x86_64"
@@ -181,6 +197,50 @@ for arg in "$@"; do
                 exit 1
                 ;;
         esac
+        continue
+    fi
+
+    if [ "$EXPECT_DISPLAYS" = true ]; then
+        EXPECT_DISPLAYS=false
+        # Two accepted forms:
+        #   1) integer 1..16            — N outputs, default resolutions
+        #   2) WxH[,WxH...] resolutions — one entry per output, count derived
+        if [ "$arg" -ge 1 ] 2>/dev/null && [ "$arg" -le 16 ] 2>/dev/null; then
+            DISPLAYS="$arg"
+            DISPLAYS_RESLIST=""
+        else
+            # Try comma-separated WIDTHxHEIGHT list.
+            count=0
+            ok=true
+            IFS=',' read -ra _displays_arr <<< "$arg"
+            for spec in "${_displays_arr[@]}"; do
+                case "$spec" in
+                    *x*)
+                        w="${spec%%x*}"
+                        h="${spec#*x}"
+                        if [ -n "$w" ] && [ -n "$h" ] \
+                           && [ "$w" -gt 0 ] 2>/dev/null \
+                           && [ "$h" -gt 0 ] 2>/dev/null; then
+                            count=$((count + 1))
+                        else
+                            ok=false
+                            break
+                        fi
+                        ;;
+                    *)
+                        ok=false
+                        break
+                        ;;
+                esac
+            done
+            if [ "$ok" = true ] && [ "$count" -ge 1 ] && [ "$count" -le 16 ]; then
+                DISPLAYS="$count"
+                DISPLAYS_RESLIST="$arg"
+            else
+                echo "Error: --displays expects either 1..16 or a comma list of WIDTHxHEIGHT (got '$arg')"
+                exit 1
+            fi
+        fi
         continue
     fi
 
@@ -377,6 +437,9 @@ for arg in "$@"; do
         --res)
             EXPECT_RES=true
             ;;
+        --displays)
+            EXPECT_DISPLAYS=true
+            ;;
         --kbd)
             EXPECT_KBD=true
             ;;
@@ -413,7 +476,7 @@ for arg in "$@"; do
             PERSIST_POWER=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--displays N] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --spice-app | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
             exit 1
             ;;
     esac
@@ -421,6 +484,17 @@ done
 
 if [ "$EXPECT_RES" = true ]; then
     echo "Error: --res requires a WIDTHxHEIGHT argument (e.g. --res 1280x1024)"
+    exit 1
+fi
+
+if [ "$EXPECT_DISPLAYS" = true ]; then
+    echo "Error: --displays requires an integer between 1 and 16 (e.g. --displays 2)"
+    exit 1
+fi
+
+# --displays N requires virtio (or virgl) — std/vmware lack max_outputs.
+if [ "$DISPLAYS" -gt 1 ] && [ "$VGA" != "virtio" ] && [ "$VGA" != "virgl" ]; then
+    echo "Error: --displays $DISPLAYS requires --virtio or --virgl (max_outputs is virtio-only)"
     exit 1
 fi
 
@@ -893,6 +967,35 @@ if [ ! -f "$IMAGE" ]; then
     exit 1
 fi
 
+# Apply --displays per-monitor resolutions: write a seed config that
+# displayd applies into confd at first boot. Indexed by output id (the
+# guest doesn't see EDID info from the host before boot; once the
+# scanouts come up displayd resolves the kernel-reported EDID hash and
+# stores the seeded mode under config/output/<edid_hash>/mode_*).
+if [ -n "$DISPLAYS_RESLIST" ]; then
+    SEED_FILE="${SCRIPT_DIR}/../sysroot/System/etc/displayd-seed.conf"
+    BUILD_SEED="${SCRIPT_DIR}/../build/sysroot/System/etc/displayd-seed.conf"
+    {
+        printf '# displayd seed — written by run.sh --displays\n'
+        printf '# Each line: output <id> mode <width> <height>\n'
+        printf '# displayd applies these to confd at first boot, then the\n'
+        printf '# config is owned by confd and the seed is ignored.\n'
+        i=0
+        IFS=',' read -ra _seed_arr <<< "$DISPLAYS_RESLIST"
+        for spec in "${_seed_arr[@]}"; do
+            w="${spec%%x*}"
+            h="${spec#*x}"
+            printf 'output %d mode %d %d\n' "$i" "$w" "$h"
+            i=$((i + 1))
+        done
+    } > "$SEED_FILE"
+    if [ -d "$(dirname "$BUILD_SEED")" ]; then
+        cp "$SEED_FILE" "$BUILD_SEED"
+    fi
+    # Force a rebuild so the seed file lands in the disk image.
+    ninja -C "${SCRIPT_DIR}/../build" 2>/dev/null || true
+fi
+
 # Apply keyboard layout to disk image config if requested
 KBD_LABEL=""
 if [ -n "$KBD_LAYOUT" ]; then
@@ -920,13 +1023,25 @@ fi
 # VGA device flags
 VGA_FLAGS="-vga $VGA"
 RES_LABEL=""
+DISPLAYS_LABEL=""
+# Per-output host-memory budget. virtio-vga / virtio-vga-gl take `max_hostmem`
+# (in bytes) which caps the total guest-allocated GPU resource size; it does
+# NOT take vgamem_mb (that's a QXL/std-vga property). 256 MiB per scanout
+# covers anything up to 4K @ 32bpp with comfortable headroom.
+if [ "$DISPLAYS" -gt 1 ]; then
+    HOSTMEM_BYTES=$(( 256 * 1024 * 1024 * DISPLAYS ))
+    MAXOUT=",max_outputs=${DISPLAYS},max_hostmem=${HOSTMEM_BYTES}"
+    DISPLAYS_LABEL=", displays: ${DISPLAYS}"
+else
+    MAXOUT=""
+fi
 if [ "$VGA" = "virgl" ]; then
-    VGA_FLAGS="-vga none -device virtio-vga-gl,id=vga0"
+    VGA_FLAGS="-vga none -device virtio-vga-gl,id=vga0${MAXOUT}"
     VGA_LABEL="Virtio GPU + virgl (3D accelerated)"
 elif [ "$VGA" = "virtio" ]; then
     RES_W="${RESOLUTION%%x*}"
     RES_H="${RESOLUTION#*x}"
-    VGA_FLAGS="-vga none -device virtio-vga,id=vga0,edid=on,xres=$RES_W,yres=$RES_H"
+    VGA_FLAGS="-vga none -device virtio-vga,id=vga0,edid=on,xres=$RES_W,yres=$RES_H${MAXOUT}"
     VGA_LABEL="Virtio GPU (${RES_W}x${RES_H})"
     RES_LABEL=", res: ${RESOLUTION}"
 elif [ -n "$RESOLUTION" ]; then
@@ -943,6 +1058,15 @@ if [ "$HEADLESS" = true ]; then
     DISPLAY_FLAGS="-display none -nographic"
 elif [ "$(uname)" = "Darwin" ]; then
     DISPLAY_FLAGS="-display cocoa"
+elif [ "$DISPLAYS" -gt 1 ] && [ "$SPICE_MODE" = false ] && [ "$SPICE_APP_MODE" = false ]; then
+    # Multi-monitor: SDL opens one host window per scanout, so each anyOS
+    # output is independently visible. GTK would only show scanout 0 by
+    # default (extra heads land in hidden View tabs), which hides the feature.
+    if [ "$VGA" = "virgl" ]; then
+        DISPLAY_FLAGS="-display sdl,gl=on"
+    else
+        DISPLAY_FLAGS="-display sdl"
+    fi
 elif [ "$VGA" = "virgl" ]; then
     DISPLAY_FLAGS="-display gtk,gl=on"
 else
@@ -1079,7 +1203,7 @@ if [ "$VGA" = "virgl" ]; then
     export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$EXTRA_DISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL$SPICE_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$EXTRA_DISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$DISPLAYS_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL$SPICE_LABEL"
 
 POWER_FLAGS=""
 if [ "$PERSIST_POWER" = true ]; then

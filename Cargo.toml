@@ -54,6 +54,7 @@ exclude = [
   "system/compositor/dock",
   # Standalone system programs (own workspace, kernel target, built separately)
   "system/daemons/fontd",
+  "system/daemons/displayd",
   "system/daemons/desktopd",
   "system/compositor/sessionhost",
   "system/compositor/crashdialog",
