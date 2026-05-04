@@ -7973,24 +7973,66 @@ fn main() {
     });
 
     // Right-click context menu on canvas
-    let ctx_menu = anyui::ContextMenu::new("Horizontal teilen|Vertikal teilen|Pane schliessen|-|Neuer Tab|Tab schliessen|Tab umbenennen|-|Suchen|Schrift +|Schrift -|-|Einstellungen");
+    let ctx_menu = anyui::ContextMenu::new("Kopieren|Einfuegen|-|Horizontal teilen|Vertikal teilen|Pane schliessen|-|Neuer Tab|Tab schliessen|Tab umbenennen|-|Suchen|Schrift +|Schrift -|-|Einstellungen");
     canvas.set_context_menu(&ctx_menu);
     ctx_menu.on_item_click(|e| {
         let a = app();
         match e.index {
             0 => {
+                // Kopieren
+                if let Some(sess) = a.active_session_mut() {
+                    if let Some(ref sel) = sess.selection {
+                        let text = extract_selected_text(&sess.buf, sel);
+                        if !text.is_empty() {
+                            anyui::clipboard_set(&text);
+                        }
+                    }
+                }
+            }
+            1 => {
+                // Einfuegen
+                if let Some(sess) = a.active_session_mut() {
+                    let mut clip_buf = [0u8; 4096];
+                    let clip_len = anyui::clipboard_get(&mut clip_buf);
+                    if clip_len > 0 {
+                        if let Ok(text) = core::str::from_utf8(&clip_buf[..clip_len as usize]) {
+                            if let Some(ref fp) = sess.fg_proc {
+                                if fp.stdin_pipe != 0 {
+                                    if sess.buf.bracketed_paste {
+                                        ipc::pipe_write(fp.stdin_pipe, b"\x1b[200~");
+                                    }
+                                    ipc::pipe_write(fp.stdin_pipe, text.as_bytes());
+                                    if sess.buf.bracketed_paste {
+                                        ipc::pipe_write(fp.stdin_pipe, b"\x1b[201~");
+                                    }
+                                }
+                            } else if sess.su_pending_user.is_none() {
+                                for c in text.chars() {
+                                    if !c.is_control() {
+                                        sess.shell.insert_char(c);
+                                    }
+                                }
+                                redraw_input_line(&mut sess.buf, &sess.shell);
+                                sess.dirty = true;
+                            }
+                        }
+                    }
+                }
+                redraw();
+            }
+            3 => {
                 // Split horizontal
                 a.split_horizontal();
                 a.update_pane_sizes();
                 redraw();
             }
-            1 => {
+            4 => {
                 // Split vertical
                 a.split_vertical();
                 a.update_pane_sizes();
                 redraw();
             }
-            2 => {
+            5 => {
                 // Close pane
                 let pane_id = a.tabs[a.active_tab].active_pane_id;
                 if !a.close_pane(pane_id) {
@@ -8005,7 +8047,7 @@ fn main() {
                 a.update_pane_sizes();
                 redraw();
             }
-            4 => {
+            7 => {
                 // New tab
                 a.new_tab();
                 a.update_pane_sizes();
@@ -8013,7 +8055,7 @@ fn main() {
                 redraw();
                 get_canvas().focus();
             }
-            5 => {
+            8 => {
                 // Close tab
                 if a.tabs.len() > 1 {
                     a.close_tab(a.active_tab);
@@ -8025,30 +8067,30 @@ fn main() {
                     anyui::quit();
                 }
             }
-            6 => {
+            9 => {
                 // Rename tab
                 show_rename_tab_dialog(a.win_id);
             }
-            8 => {
+            11 => {
                 // Search
                 a.search.active = true;
                 a.search.query.clear();
                 a.search.matches.clear();
                 redraw();
             }
-            9 => {
+            12 => {
                 // Font +
                 let new_size = a.active_font_size() + 1;
                 a.set_font_size(new_size);
                 redraw();
             }
-            10 => {
+            13 => {
                 // Font -
                 let new_size = a.active_font_size().saturating_sub(1);
                 a.set_font_size(new_size);
                 redraw();
             }
-            12 => {
+            15 => {
                 // Einstellungen
                 open_settings_dialog(a.win_id);
             }
