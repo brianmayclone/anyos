@@ -112,6 +112,11 @@ pub struct Desktop {
     pub mouse_y: i32,
     pub(crate) last_absolute_mouse_x: Option<i32>,
     pub(crate) last_absolute_mouse_y: Option<i32>,
+    /// Output id that currently holds the HW cursor (multi-monitor).
+    /// None on first frame; updated whenever the cursor crosses an
+    /// output boundary so we can issue hide-on-old + show-on-new
+    /// against the right scanout.
+    pub(crate) last_cursor_output: Option<u32>,
     pub(crate) mouse_buttons: u32,
     /// Implicit mouse-button capture target. Set when a primary button goes
     /// down on a content area; the matching MOUSE_UP is routed back to this
@@ -272,6 +277,7 @@ impl Desktop {
             mouse_y: height as i32 / 2,
             last_absolute_mouse_x: None,
             last_absolute_mouse_y: None,
+            last_cursor_output: None,
             mouse_buttons: 0,
             mouse_down_capture: None,
             current_modifiers: 0,

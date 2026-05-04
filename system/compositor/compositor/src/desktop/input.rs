@@ -327,16 +327,45 @@ impl Desktop {
         }
 
         // Update HW cursor position
-        // HW cursor lives on the primary scanout only. When the cursor
-        // wanders onto a secondary output, clamp the HW position to
-        // primary edges (so it parks at the seam instead of going to a
-        // garbage offscreen address) — the secondary output renders
-        // its own software cursor via the regular layer pass.
-        let pw = self.compositor.width() as i32;
-        let ph = self.compositor.height() as i32;
-        let hw_x = self.mouse_x.clamp(0, pw - 1);
-        let hw_y = self.mouse_y.clamp(0, ph - 1);
-        self.compositor.move_hw_cursor(hw_x, hw_y);
+        // Multi-monitor HW cursor routing: locate the output whose
+        // virtual rect currently contains the cursor, send a per-
+        // scanout MOVE_CURSOR with the local coordinates, and hide /
+        // show the cursor on the others as needed. Single-output
+        // setups skip the routing and go through the legacy path.
+        if self.compositor.outputs.len() >= 2 {
+            // Find the output the cursor is on. output_at falls back
+            // to the primary if the cursor is in a gap, which is
+            // what we want.
+            let (target_id, lx, ly) = {
+                let o = self.compositor.output_at(self.mouse_x, self.mouse_y);
+                let lx = (self.mouse_x - o.virtual_x).max(0);
+                let ly = (self.mouse_y - o.virtual_y).max(0);
+                (o.id, lx, ly)
+            };
+            // If the cursor crossed an output boundary since the
+            // last move, hide it on the previous one before showing
+            // on the new one. We track the last output id in
+            // self.last_cursor_output (None on first call).
+            let prev = self.last_cursor_output.replace(target_id);
+            if prev != Some(target_id) {
+                if let Some(p) = prev {
+                    if p != target_id {
+                        self.compositor.set_hw_cursor_visible_on_output(p, false);
+                    }
+                }
+                self.compositor.set_hw_cursor_visible_on_output(target_id, true);
+            }
+            self.compositor.move_hw_cursor_on_output(target_id, lx, ly);
+        } else {
+            // Single-output: legacy path. Clamp inside the primary's
+            // bounds so the HW cursor never lands on a garbage offscreen
+            // address.
+            let pw = self.compositor.width() as i32;
+            let ph = self.compositor.height() as i32;
+            let hw_x = self.mouse_x.clamp(0, pw - 1);
+            let hw_y = self.mouse_y.clamp(0, ph - 1);
+            self.compositor.move_hw_cursor(hw_x, hw_y);
+        }
 
         // Update cursor shape
         if self.dragging.is_some() {

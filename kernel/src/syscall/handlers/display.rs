@@ -596,6 +596,22 @@ pub fn sys_gpu_command(cmd_buf_ptr: u64, cmd_count: u32) -> u32 {
                     // VRAM_INFO
                     true
                 }
+                11 => {
+                    // CURSOR_MOVE_OUTPUT(output_id, x, y) — multi-monitor
+                    // HW-cursor routing. Compositor sends this when
+                    // the cursor crosses output boundaries; the kernel
+                    // forwards to the driver's per-scanout routine.
+                    if !crate::drivers::gpu::is_splash_cursor_active() {
+                        g.move_cursor_for_output(cmd[1], cmd[2], cmd[3]);
+                    }
+                    true
+                }
+                12 => {
+                    // CURSOR_SHOW_OUTPUT(output_id, visible) — show
+                    // or hide the HW cursor on a specific scanout.
+                    g.show_cursor_for_output(cmd[1], cmd[2] != 0);
+                    true
+                }
                 _ => false,
             };
             if ok {

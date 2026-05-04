@@ -13,6 +13,10 @@ pub(crate) const GPU_RECT_COPY: u32 = 3;
 pub(crate) const GPU_CURSOR_MOVE: u32 = 4;
 pub(crate) const GPU_CURSOR_SHOW: u32 = 5;
 pub(crate) const GPU_DEFINE_CURSOR: u32 = 6;
+// Multi-monitor cursor commands — the kernel forwards these to the
+// per-output cursor methods on the GpuDriver trait.
+pub(crate) const GPU_CURSOR_MOVE_OUTPUT: u32 = 11;
+pub(crate) const GPU_CURSOR_SHOW_OUTPUT: u32 = 12;
 pub(crate) const GPU_FLIP: u32 = 7;
 pub(crate) const GPU_SYNC: u32 = 8;
 
@@ -51,6 +55,45 @@ impl Compositor {
         if self.hw_cursor {
             self.gpu_cmds
                 .push([GPU_CURSOR_MOVE, x as u32, y as u32, 0, 0, 0, 0, 0, 0]);
+        }
+    }
+
+    /// Multi-monitor: move the HW cursor on a specific output, with
+    /// `x` / `y` in the output's *local* coordinates. The kernel
+    /// forwards to `GpuDriver::move_cursor_for_output`.
+    pub fn move_hw_cursor_on_output(&mut self, output_id: u32, x: i32, y: i32) {
+        if self.hw_cursor {
+            self.gpu_cmds.push([
+                GPU_CURSOR_MOVE_OUTPUT,
+                output_id,
+                x as u32,
+                y as u32,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]);
+        }
+    }
+
+    /// Multi-monitor: show / hide the HW cursor on a specific output.
+    /// Used by the compositor to make the cursor "follow" the user
+    /// across output boundaries (hide on the previous output, show
+    /// on the new one).
+    pub fn set_hw_cursor_visible_on_output(&mut self, output_id: u32, visible: bool) {
+        if self.hw_cursor {
+            self.gpu_cmds.push([
+                GPU_CURSOR_SHOW_OUTPUT,
+                output_id,
+                if visible { 1 } else { 0 },
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]);
         }
     }
 

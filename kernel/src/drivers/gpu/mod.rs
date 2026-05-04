@@ -500,6 +500,30 @@ pub trait GpuDriver: Send {
     fn poll_display_event(&mut self) -> Option<output::DisplayEvent> {
         None
     }
+
+    /// Move the hardware cursor on a specific output (multi-monitor
+    /// HW-cursor routing). `x` / `y` are coordinates *local* to the
+    /// scanout — the compositor subtracts the output's virtual_x/y
+    /// before calling. Default routes output 0 to the legacy
+    /// `move_cursor`; other outputs are silently no-op on drivers
+    /// that don't expose per-scanout cursors. virtio-gpu overrides
+    /// this to emit `MOVE_CURSOR` with the right `scanout_id`.
+    fn move_cursor_for_output(&mut self, output_id: u32, x: u32, y: u32) {
+        if output_id == 0 {
+            self.move_cursor(x, y);
+        }
+    }
+
+    /// Show or hide the hardware cursor on a specific output. The
+    /// compositor uses this to make the HW cursor "follow" the user
+    /// across output boundaries: hide on the previous output, show
+    /// on the new one. Default delegates to the single-cursor
+    /// `show_cursor` for output 0.
+    fn show_cursor_for_output(&mut self, output_id: u32, visible: bool) {
+        if output_id == 0 {
+            self.show_cursor(visible);
+        }
+    }
 }
 
 // ──────────────────────────────────────────────

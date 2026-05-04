@@ -1914,6 +1914,66 @@ impl GpuDriver for VirtioGpu {
         false
     }
 
+    // ── Per-output cursor (multi-monitor) ──
+
+    fn move_cursor_for_output(&mut self, output_id: u32, x: u32, y: u32) {
+        if output_id >= self.num_scanouts_advertised {
+            return;
+        }
+        self.cursor_x = x;
+        self.cursor_y = y;
+        let cmd = UpdateCursor {
+            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_MOVE_CURSOR),
+            pos: CursorPos {
+                scanout_id: output_id,
+                x,
+                y,
+                padding: 0,
+            },
+            resource_id: self.cursor_resource_id,
+            hot_x: self.cursor_hot_x,
+            hot_y: self.cursor_hot_y,
+            padding: 0,
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<UpdateCursor>(),
+            )
+        };
+        self.send_cursor_cmd(bytes);
+    }
+
+    fn show_cursor_for_output(&mut self, output_id: u32, visible: bool) {
+        if output_id >= self.num_scanouts_advertised {
+            return;
+        }
+        // resource_id == 0 hides the cursor on the targeted scanout
+        // per virtio-gpu spec; we keep cursor_resource_id intact so
+        // the next show call finds the same image.
+        let res_id = if visible { self.cursor_resource_id } else { 0 };
+        let cmd = UpdateCursor {
+            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_UPDATE_CURSOR),
+            pos: CursorPos {
+                scanout_id: output_id,
+                x: self.cursor_x,
+                y: self.cursor_y,
+                padding: 0,
+            },
+            resource_id: res_id,
+            hot_x: self.cursor_hot_x,
+            hot_y: self.cursor_hot_y,
+            padding: 0,
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                &cmd as *const _ as *const u8,
+                core::mem::size_of::<UpdateCursor>(),
+            )
+        };
+        self.send_cursor_cmd(bytes);
+    }
+
     // ── Monitor / EDID ──
 
     fn display_count(&self) -> u32 {
