@@ -313,6 +313,73 @@ struct PointerState {
     initialized: bool,
 }
 
+/// Parse a SPICE VDAgentMonitorsConfig payload and push the resulting
+/// layout to displayd. Errors are logged but do not propagate — SPICE
+/// always wants a `VD_AGENT_REPLY` regardless of whether we could
+/// honour the request.
+fn handle_monitors_config(payload: &[u8]) {
+    if payload.len() < 8 {
+        vd_debug!(
+            "monitors_config: short payload ({} bytes)",
+            payload.len()
+        );
+        return;
+    }
+    let num = read_u32_le(payload, 0) as usize;
+    let _flags = read_u32_le(payload, 4);
+    const ENTRY_SIZE: usize = 20;
+    if payload.len() < 8 + num * ENTRY_SIZE {
+        vd_debug!(
+            "monitors_config: payload too short for {} monitors ({} bytes)",
+            num,
+            payload.len()
+        );
+        return;
+    }
+    if num == 0 || num > 16 {
+        vd_debug!("monitors_config: implausible num_monitors={}", num);
+        return;
+    }
+    let mut entries: Vec<anyos_std::display::LayoutEntry> = Vec::with_capacity(num);
+    for i in 0..num {
+        let off = 8 + i * ENTRY_SIZE;
+        let height = read_u32_le(payload, off);
+        let width = read_u32_le(payload, off + 4);
+        let _depth = read_u32_le(payload, off + 8);
+        let x = read_u32_le(payload, off + 12) as i32;
+        let y = read_u32_le(payload, off + 16) as i32;
+        if width == 0 || height == 0 {
+            // Disabled monitor — skip; downstream layout is built from
+            // active monitors only.
+            continue;
+        }
+        let mut entry = if entries.is_empty() {
+            anyos_std::display::LayoutEntry::primary(i as u32, x, y, width, height)
+        } else {
+            anyos_std::display::LayoutEntry::secondary(i as u32, x, y, width, height)
+        };
+        entry.mode_refresh_mhz = 60_000;
+        entries.push(entry);
+    }
+    if entries.is_empty() {
+        vd_debug!("monitors_config: no enabled monitors after parse");
+        return;
+    }
+    if let Some(client) = libdisplay_client::DisplaydClient::connect() {
+        match client.push_layout(&entries) {
+            Some(0) => vd_debug!("monitors_config: pushed {} entries to displayd", entries.len()),
+            Some(code) => vd_debug!(
+                "monitors_config: displayd rejected layout (code {})",
+                code
+            ),
+            None => vd_debug!("monitors_config: timeout waiting for displayd"),
+        }
+        client.disconnect();
+    } else {
+        vd_debug!("monitors_config: cannot reach displayd channel");
+    }
+}
+
 /// Process a complete VDAgent message from the receive buffer.
 fn handle_agent_message(
     fd: u32,
@@ -417,11 +484,25 @@ fn handle_agent_message(
         }
 
         VD_AGENT_MONITORS_CONFIG => {
-            // Host pushes the desired monitor layout. We don't dynamically
-            // resize the virtio-gpu output from userspace, but the host needs
-            // a REPLY (success) to know the agent saw the request — without
-            // it, some SPICE clients delay further input.
+            // Host pushes the desired monitor layout (resize, add/remove
+            // monitor, …). Wire format (SPICE protocol):
+            //
+            //   uint32 num_monitors
+            //   uint32 flags
+            //   VDAgentMonConfig monitors[num_monitors] {
+            //     uint32 height
+            //     uint32 width
+            //     uint32 depth
+            //     uint32 x
+            //     uint32 y
+            //   }       // 20 bytes per monitor
+            //
+            // Translate to anyos_std::display::LayoutEntry and forward
+            // to displayd via libdisplay_client::push_layout. displayd
+            // owns the layout-owner privilege and can call
+            // SYS_DISPLAY_SET_LAYOUT atomically.
             vd_debug!("host monitors_config (payload {} bytes)", payload.len());
+            handle_monitors_config(payload);
             send_reply(fd, VD_AGENT_MONITORS_CONFIG, 0);
         }
 

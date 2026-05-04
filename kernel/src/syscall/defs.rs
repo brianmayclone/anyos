@@ -337,6 +337,7 @@ pub const SYS_DISPLAY_SET_LAYOUT: u32 = 701;
 pub const SYS_DISPLAY_MAP_FB: u32 = 702;
 pub const SYS_DISPLAY_FLUSH: u32 = 703;
 pub const SYS_DISPLAY_POLL_EVENT: u32 = 704;
+pub const SYS_REGISTER_DISPLAY_OWNER: u32 = 705;
 
 /// Register frame pushed by `syscall_fast.asm`.
 ///

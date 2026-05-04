@@ -37,6 +37,19 @@ pub const EVT_DISPLAYD_READY: u32 = 0x7000;
 fn main() {
     println!("[displayd] starting");
 
+    // Register as the authoritative display-layout owner. Without this
+    // SYS_DISPLAY_SET_LAYOUT rejects our calls (only the compositor
+    // and a registered display owner are allowed to write layouts).
+    // First-caller-wins; if some other process already grabbed the
+    // slot we keep running but our set_layout calls will silently
+    // fail — caller can recover by killing the squatter and restarting.
+    let r = display::register_owner();
+    if r == 0 {
+        println!("[displayd] registered as display-layout owner");
+    } else {
+        println!("[displayd] WARNING — display-layout owner already registered (someone else got there first)");
+    }
+
     // First-pass layout: read display.conf, derive a layout for the
     // outputs the kernel currently reports as connected. Single-output
     // setups already have a sane layout active (the kernel sets up

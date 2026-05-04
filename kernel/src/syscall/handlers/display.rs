@@ -7,7 +7,7 @@
 #[allow(unused_imports)]
 use super::helpers::is_valid_user_ptr;
 #[allow(unused_imports)]
-use super::{is_compositor, COMPOSITOR_PD, COMPOSITOR_TID};
+use super::{is_compositor, is_display_owner, COMPOSITOR_PD, COMPOSITOR_TID, DISPLAY_OWNER_PD};
 
 use core::sync::atomic::Ordering;
 
@@ -1769,7 +1769,11 @@ pub fn sys_display_list(_buf_ptr: u64, _buf_count: u32) -> u32 {
 /// (invalid arguments, no GPU).
 #[cfg(target_arch = "x86_64")]
 pub fn sys_display_set_layout(entries_ptr: u64, entry_count: u32) -> u32 {
-    if !is_compositor() {
+    // Allowed for the registered compositor *or* the registered
+    // display-layout owner (typically `displayd`). Two callers because
+    // both need to write — compositor for boot-time bring-up,
+    // displayd for hot-plug + user-driven layout changes.
+    if !is_compositor() && !is_display_owner() {
         return u32::MAX;
     }
     if entries_ptr == 0 || entry_count == 0 || entry_count > 32 {
@@ -1937,6 +1941,39 @@ pub fn sys_display_flush(output_id: u32, xy: u32, wh: u32) -> u32 {
 #[cfg(target_arch = "aarch64")]
 pub fn sys_display_flush(_output_id: u32, _xy: u32, _wh: u32) -> u32 {
     0
+}
+
+/// SYS_REGISTER_DISPLAY_OWNER (705): mark the calling process as the
+/// authoritative display-layout owner (typically `displayd`). After
+/// this call the process can issue SYS_DISPLAY_SET_LAYOUT even though
+/// it isn't the registered compositor. First caller wins; subsequent
+/// callers receive `u32::MAX`.
+///
+/// No additional capability check beyond first-caller-wins — the same
+/// design SYS_REGISTER_COMPOSITOR uses. In practice the system-services
+/// layer (sessionhost / compositor bootstrap) is responsible for
+/// spawning a single trusted displayd before any other process gets to
+/// register.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_register_display_owner() -> u32 {
+    if let Some(pd) = crate::task::scheduler::current_thread_page_directory() {
+        if DISPLAY_OWNER_PD
+            .compare_exchange(0, pd.as_u64(), Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            crate::serial_verbose_println!(
+                "[OK] Display layout owner registered (PD={:#x})",
+                pd.as_u64()
+            );
+            return 0;
+        }
+    }
+    u32::MAX
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn sys_register_display_owner() -> u32 {
+    u32::MAX
 }
 
 /// SYS_DISPLAY_POLL_EVENT (704): drain one DisplayEvent.

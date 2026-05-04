@@ -300,6 +300,7 @@ pub(crate) fn dispatch_inner(
         SYS_DISPLAY_MAP_FB => handlers::sys_display_map_fb(arg1 as u32, arg2),
         SYS_DISPLAY_FLUSH => handlers::sys_display_flush(arg1 as u32, arg2 as u32, arg3 as u32),
         SYS_DISPLAY_POLL_EVENT => handlers::sys_display_poll_event(),
+        SYS_REGISTER_DISPLAY_OWNER => handlers::sys_register_display_owner(),
 
         // Audio
         SYS_AUDIO_WRITE => handlers::sys_audio_write(arg1, arg2 as u32),

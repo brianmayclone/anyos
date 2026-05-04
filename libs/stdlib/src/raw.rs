@@ -155,6 +155,7 @@ pub(crate) const SYS_DISPLAY_SET_LAYOUT: u32 = 701;
 pub(crate) const SYS_DISPLAY_MAP_FB: u32 = 702;
 pub(crate) const SYS_DISPLAY_FLUSH: u32 = 703;
 pub(crate) const SYS_DISPLAY_POLL_EVENT: u32 = 704;
+pub(crate) const SYS_REGISTER_DISPLAY_OWNER: u32 = 705;
 
 // Screen capture
 pub(crate) const SYS_CAPTURE_SCREEN: u32 = 161;

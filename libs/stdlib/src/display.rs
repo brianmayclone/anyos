@@ -12,6 +12,7 @@
 use crate::raw::{
     syscall0, syscall1_u64, syscall2, syscall2_u64, syscall3, SYS_DISPLAY_FLUSH,
     SYS_DISPLAY_LIST, SYS_DISPLAY_MAP_FB, SYS_DISPLAY_POLL_EVENT, SYS_DISPLAY_SET_LAYOUT,
+    SYS_REGISTER_DISPLAY_OWNER,
 };
 use crate::Vec;
 
@@ -186,6 +187,14 @@ pub fn flush(output_id: u32, x: u32, y: u32, w: u32, h: u32) -> u32 {
     let xy = ((x & 0xFFFF) << 16) | (y & 0xFFFF);
     let wh = ((w & 0xFFFF) << 16) | (h & 0xFFFF);
     syscall3(SYS_DISPLAY_FLUSH, output_id as u64, xy as u64, wh as u64)
+}
+
+/// Register the calling process as the display-layout owner.
+/// First-caller-wins; the compositor is expected to spawn a single
+/// trusted displayd before any other process can grab this slot.
+/// Returns 0 on success, `u32::MAX` if already taken.
+pub fn register_owner() -> u32 {
+    syscall0(SYS_REGISTER_DISPLAY_OWNER)
 }
 
 /// Drain one display event. Returns `DisplayEvent::None` if no event is

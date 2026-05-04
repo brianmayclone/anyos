@@ -29,6 +29,16 @@ pub const EVT_LAYOUT_CHANGED: u32 = 0x7004;
 pub const CMD_PROBE_HOTPLUG: u32 = 0x7005;
 pub const EVT_HOTPLUG_DONE: u32 = 0x7006;
 
+/// Push a host-driven layout to displayd. Used by `vdagent` when SPICE
+/// sends `VD_AGENT_MONITORS_CONFIG` so we can adapt the guest geometry
+/// to whatever the SPICE client requested (resize, add monitor, …).
+///
+/// The layout payload travels through a small SHM buffer because event
+/// channel events are limited to 5*u32. evt[2] carries the SHM id,
+/// evt[3] the entry count.
+pub const CMD_PUSH_LAYOUT: u32 = 0x7007;
+pub const EVT_LAYOUT_PUSHED: u32 = 0x7008;
+
 /// Handle returned by [`connect`]. Callers hold this for the lifetime
 /// of their displayd interaction; on drop we don't auto-unsubscribe
 /// (the kernel cleans up on process exit) but a `disconnect()` helper
@@ -83,6 +93,48 @@ impl DisplaydClient {
         let req = [CMD_PROBE_HOTPLUG, self.sub, 0, 0, 0];
         ipc::evt_chan_emit(self.chan, &req);
         self.wait_response(EVT_HOTPLUG_DONE).map(|_| ())
+    }
+
+    /// Push a fully-specified layout to displayd, which validates and
+    /// applies it via SYS_DISPLAY_SET_LAYOUT. Returns `0` on success,
+    /// a non-zero LayoutError code on validation failure, or
+    /// `u32::MAX` on hard error (SHM marshalling failed, etc.).
+    ///
+    /// Marshalling: each `LayoutEntry` (`#[repr(C)]`, 36 bytes) is
+    /// memcpy'd into a fresh SHM buffer; the SHM id and entry count
+    /// travel via the event channel. displayd reads the buffer back,
+    /// reconstructs the slice, and forwards to the kernel.
+    pub fn push_layout(
+        &self,
+        entries: &[anyos_std::display::LayoutEntry],
+    ) -> Option<u32> {
+        if entries.is_empty() || entries.len() > 32 {
+            return Some(u32::MAX);
+        }
+        let bytes = entries.len()
+            * core::mem::size_of::<anyos_std::display::LayoutEntry>();
+        let shm = ipc::shm_create(bytes as u32);
+        if shm == u32::MAX {
+            return Some(u32::MAX);
+        }
+        let addr = ipc::shm_map(shm);
+        if addr == 0 {
+            ipc::shm_destroy(shm);
+            return Some(u32::MAX);
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                entries.as_ptr() as *const u8,
+                addr as *mut u8,
+                bytes,
+            );
+        }
+        let req = [CMD_PUSH_LAYOUT, self.sub, shm, entries.len() as u32, 0];
+        ipc::evt_chan_emit(self.chan, &req);
+        let result = self.wait_response(EVT_LAYOUT_PUSHED).map(|e| e[1]);
+        ipc::shm_unmap(shm);
+        ipc::shm_destroy(shm);
+        result
     }
 
     /// Block until the next event with a matching `evt[0]` arrives.

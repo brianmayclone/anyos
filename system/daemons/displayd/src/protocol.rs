@@ -46,7 +46,7 @@
 //!   evt[0] = 0x7006
 //!   evt[1] = 0
 
-use anyos_std::display;
+use anyos_std::{display, ipc};
 
 pub const CMD_LIST_OUTPUTS: u32 = 0x7001;
 pub const EVT_OUTPUT_COUNT: u32 = 0x7002;
@@ -56,6 +56,9 @@ pub const EVT_LAYOUT_CHANGED: u32 = 0x7004;
 
 pub const CMD_PROBE_HOTPLUG: u32 = 0x7005;
 pub const EVT_HOTPLUG_DONE: u32 = 0x7006;
+
+pub const CMD_PUSH_LAYOUT: u32 = 0x7007;
+pub const EVT_LAYOUT_PUSHED: u32 = 0x7008;
 
 pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
     match evt[0] {
@@ -108,6 +111,33 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
             // run apply_persisted_layout on a HotplugChanged event.
             // Just acks here.
             [EVT_HOTPLUG_DONE, 0, 0, 0, 0]
+        }
+        CMD_PUSH_LAYOUT => {
+            // Pushed by libdisplay_client::push_layout (in particular
+            // vdagent forwarding a SPICE VD_AGENT_MONITORS_CONFIG).
+            // evt[2] = SHM id with [LayoutEntry; entry_count] payload
+            // evt[3] = entry_count
+            let shm_id = evt[2];
+            let n = evt[3] as usize;
+            if n == 0 || n > 32 {
+                return [EVT_LAYOUT_PUSHED, u32::MAX, 0, 0, 0];
+            }
+            let addr = ipc::shm_map(shm_id);
+            if addr == 0 {
+                return [EVT_LAYOUT_PUSHED, u32::MAX, 0, 0, 0];
+            }
+            // SAFETY: client wrote `n * size_of::<LayoutEntry>()` bytes
+            // into shm before signalling us; the kernel SHM allocator
+            // ensures the mapping covers it.
+            let entries = unsafe {
+                core::slice::from_raw_parts(addr as *const display::LayoutEntry, n)
+            };
+            let mut owned: anyos_std::Vec<display::LayoutEntry> =
+                anyos_std::Vec::with_capacity(n);
+            owned.extend_from_slice(entries);
+            ipc::shm_unmap(shm_id);
+            let r = display::set_layout(&owned);
+            [EVT_LAYOUT_PUSHED, r, n as u32, 0, 0]
         }
         _ => [0, 0, 0, 0, 0],
     }
