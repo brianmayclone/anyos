@@ -183,8 +183,15 @@ impl Desktop {
             return;
         }
 
-        self.mouse_x = (self.mouse_x + dx).clamp(0, self.screen_width as i32 - 1);
-        self.mouse_y = (self.mouse_y + dy).clamp(0, self.screen_height as i32 - 1);
+        // Multi-monitor cursor clamping. The cursor lives in virtual desktop
+        // coordinates; outputs ≥ 1 sit to the right of the primary, so the
+        // legal x range is the bounding box of all output rects, not just
+        // the primary's screen_width. y is clamped to the union as well.
+        // For pure single-output setups virtual_desktop_bounds() returns
+        // (0, 0, screen_width, screen_height) so the behaviour is identical.
+        let (vmin_x, vmin_y, vmax_x, vmax_y) = self.compositor.virtual_desktop_bounds();
+        self.mouse_x = (self.mouse_x + dx).clamp(vmin_x, vmax_x - 1);
+        self.mouse_y = (self.mouse_y + dy).clamp(vmin_y, vmax_y - 1);
 
         // Handle window drag — clamp Y so windows can never go under the menubar.
         if let Some(ref mut drag) = self.dragging {
@@ -294,7 +301,16 @@ impl Desktop {
         }
 
         // Update HW cursor position
-        self.compositor.move_hw_cursor(self.mouse_x, self.mouse_y);
+        // HW cursor lives on the primary scanout only. When the cursor
+        // wanders onto a secondary output, clamp the HW position to
+        // primary edges (so it parks at the seam instead of going to a
+        // garbage offscreen address) — the secondary output renders
+        // its own software cursor via the regular layer pass.
+        let pw = self.compositor.width() as i32;
+        let ph = self.compositor.height() as i32;
+        let hw_x = self.mouse_x.clamp(0, pw - 1);
+        let hw_y = self.mouse_y.clamp(0, ph - 1);
+        self.compositor.move_hw_cursor(hw_x, hw_y);
 
         // Update cursor shape
         if self.dragging.is_some() {
@@ -370,8 +386,12 @@ impl Desktop {
 
     /// Apply an absolute mouse position (from VMMDev).
     fn apply_mouse_move_absolute(&mut self, x: i32, y: i32) {
-        let target_x = x.clamp(0, self.screen_width as i32 - 1);
-        let target_y = y.clamp(0, self.screen_height as i32 - 1);
+        // Absolute pointer (vmmouse / tablet) — clamp to the union of
+        // all outputs, same logic as the relative path above.
+        let (vmin_x, _vmin_y, vmax_x, _vmax_y) = self.compositor.virtual_desktop_bounds();
+        let target_x = x.clamp(vmin_x, vmax_x - 1);
+        let (_vmin_x2, vmin_y, _vmax_x2, vmax_y) = self.compositor.virtual_desktop_bounds();
+        let target_y = y.clamp(vmin_y, vmax_y - 1);
 
         if self.pointer_locked_window().is_some() {
             let prev_x = self.last_absolute_mouse_x.replace(target_x);

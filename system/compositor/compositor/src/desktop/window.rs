@@ -1261,10 +1261,28 @@ impl Desktop {
                 self.windows[idx].saved_bounds = Some((x, y, cw, ch));
                 self.windows[idx].maximized = true;
 
-                let new_x = 0i32;
-                let new_y = menubar_height() as i32 + 1;
-                let new_w = self.screen_width;
-                let new_ch = self.screen_height - menubar_height() - 1 - title_bar_height();
+                // Multi-monitor: maximize on the output under the window's
+                // titlebar centre (matching wlroots / Windows / macOS
+                // semantics). For pure single-output setups output_at()
+                // always returns the primary, so this collapses to the
+                // legacy 0,0,screen_width,screen_height path.
+                let titlebar_cx = x + (cw as i32 / 2);
+                let titlebar_cy = y;
+                let (out_x, out_y, out_w, out_h) = {
+                    let o = self.compositor.output_at(titlebar_cx, titlebar_cy);
+                    (o.virtual_x, o.virtual_y, o.fb_width, o.fb_height)
+                };
+                // Menubar lives on the primary output only — secondary
+                // outputs use their full height for the maximized window.
+                let mb = if out_x == 0 && out_y == 0 {
+                    menubar_height() as i32 + 1
+                } else {
+                    0
+                };
+                let new_x = out_x;
+                let new_y = out_y + mb;
+                let new_w = out_w;
+                let new_ch = out_h - mb as u32 - title_bar_height();
 
                 let layer_id = self.windows[idx].layer_id;
                 self.windows[idx].x = new_x;
