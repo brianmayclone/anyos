@@ -30,6 +30,29 @@ const ABSPOINTER_ABSOLUTE: u32 = 0x5342_4152; // "SBAR" — switch to absolute m
 /// Whether vmmouse backdoor is active and should intercept IRQ12.
 static VMMOUSE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Forced-disable flag set by the multi-monitor path. When true, the
+/// public `is_active()` returns false even if the backdoor is
+/// otherwise active, so IRQ12 falls through to the PS/2 (relative)
+/// path. Necessary because QEMU's SDL multi-window backend can't tell
+/// the guest which window an absolute pointer event came from — the
+/// coords are always scoped to scanout 0's framebuffer dimensions, so
+/// the cursor cannot reach secondary outputs through vmmouse and any
+/// click on a secondary SDL window mis-routes back to the primary.
+static VMMOUSE_FORCED_OFF: AtomicBool = AtomicBool::new(false);
+
+/// Force vmmouse off (multi-monitor path). Idempotent. Once set, only
+/// a re-init / reboot would clear it.
+pub fn force_disable() {
+    VMMOUSE_FORCED_OFF.store(true, Ordering::Release);
+    // Tell the host backdoor to switch back to relative mode so QEMU
+    // stops streaming absolute deltas we'd otherwise have to discard.
+    // No-op when the backdoor was never enabled in the first place.
+    if VMMOUSE_ACTIVE.load(Ordering::Relaxed) {
+        backdoor(CMD_ABSPOINTER_COMMAND, ABSPOINTER_RELATIVE);
+        VMMOUSE_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
 /// Cached screen dimensions for coordinate scaling (updated from non-IRQ context).
 static SCREEN_W: AtomicU32 = AtomicU32::new(1024);
 static SCREEN_H: AtomicU32 = AtomicU32::new(768);
@@ -149,9 +172,14 @@ pub fn init() -> bool {
     true
 }
 
-/// Check if vmmouse is active (IRQ handler should use backdoor instead of PS/2 data).
+/// Check if vmmouse is active (IRQ handler should use backdoor instead
+/// of PS/2 data). Multi-monitor mode forces this to `false` regardless
+/// of whether the backdoor itself is wired up — see `force_disable()`.
 #[inline]
 pub fn is_active() -> bool {
+    if VMMOUSE_FORCED_OFF.load(Ordering::Relaxed) {
+        return false;
+    }
     VMMOUSE_ACTIVE.load(Ordering::Acquire)
 }
 

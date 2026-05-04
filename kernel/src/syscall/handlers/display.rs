@@ -335,6 +335,21 @@ pub fn sys_register_compositor() -> u32 {
         // Boost compositor to realtime priority so UI never stutters
         crate::task::scheduler::set_thread_priority(tid, 127);
         crate::serial_verbose_println!("[OK] Compositor registered (TID={}, priority=127)", tid);
+
+        // Multi-monitor: if more than one scanout is advertised by
+        // the GPU, switch off vmmouse so IRQ12 carries PS/2 (relative
+        // dx/dy) instead of absolute (vmmouse) events. Absolute coords
+        // are scoped to scanout 0's framebuffer dimensions and cannot
+        // address secondary outputs. The relative path accumulates
+        // across virtual_desktop_bounds and works on any output.
+        let advertised = crate::drivers::gpu::with_gpu(|g| g.display_count()).unwrap_or(1);
+        if advertised > 1 {
+            crate::drivers::input::vmmouse::force_disable();
+            crate::serial_println!(
+                "[OK] multi-monitor ({}): vmmouse disabled, PS/2 only",
+                advertised
+            );
+        }
         0
     } else {
         u32::MAX // Already registered
