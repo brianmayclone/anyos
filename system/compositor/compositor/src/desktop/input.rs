@@ -54,9 +54,35 @@ impl Desktop {
                 continue;
             }
             let hit = win.hit_test(mx, my);
-            if hit != HitTest::None {
-                return Some((win.id, hit));
+            if hit == HitTest::None {
+                continue;
             }
+            // Multi-monitor: when the hit lands on the title bar, see if
+            // the cursor is over one of the right-side "send to monitor"
+            // buttons and upgrade the HitTest accordingly. Done here
+            // (Desktop level) rather than inside WindowInfo::hit_test
+            // because the per-window button layout depends on
+            // self.compositor.outputs which WindowInfo can't see.
+            if hit == HitTest::TitleBar && self.compositor.outputs.len() >= 2 {
+                let wx = mx - win.x;
+                let wy = my - win.y;
+                let by = super::window::monitor_btn_y();
+                let bw = super::window::monitor_btn_w() as i32;
+                let bh = super::window::monitor_btn_h() as i32;
+                if wy >= by && wy < by + bh {
+                    let other_ids = self.other_outputs_for_window(win.id);
+                    for (slot, &target_id) in other_ids.iter().enumerate() {
+                        let bx = super::window::monitor_btn_x_at(
+                            win.content_width,
+                            slot as u32,
+                        );
+                        if wx >= bx && wx < bx + bw {
+                            return Some((win.id, HitTest::MonitorButton(target_id)));
+                        }
+                    }
+                }
+            }
+            return Some((win.id, hit));
         }
         None
     }
@@ -736,6 +762,13 @@ impl Desktop {
                     }
                     HitTest::ShortcutButton => {
                         self.toggle_shortcut_overlay();
+                    }
+                    HitTest::MonitorButton(target_id) => {
+                        // Multi-monitor "send window to monitor N" button.
+                        // Move the window to the target output, preserving
+                        // the position-relative-to-source-output where it
+                        // fits and clamping into the target rect otherwise.
+                        self.move_window_to_output(win_id, target_id);
                     }
                     HitTest::Content => {
                         if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
