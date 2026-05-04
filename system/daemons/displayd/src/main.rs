@@ -27,7 +27,9 @@ mod protocol;
 mod schema;
 
 use anyos_std::{display, ipc, println};
-use schema::{edid_hex, output_key, profile_key, profile_output_key, DISPLAYD_SCHEMA};
+use schema::{
+    compute_setup_hash, edid_hex, output_key, setup_key, setup_output_key, DISPLAYD_SCHEMA,
+};
 
 anyos_std::entry!(main);
 
@@ -64,12 +66,12 @@ fn main() {
     // subsequent boots skip what's already there.
     apply_seed_file();
 
-    // Auto-pick a saved monitor profile if one matches the currently
-    // connected EDID set (home / office / mobile use cases). When a
-    // matching profile is found, its per-output config is copied over
-    // the live config/output/<edid>/* keys before the layout is built.
-    // Falls through silently when no profile matches.
-    auto_select_profile();
+    // Compute the canonical setup hash from the connected monitors
+    // and load the saved layout for that combination (or seed a fresh
+    // one if this exact set has never been seen). Same set of
+    // monitors at home and at the office produces the same hash and
+    // therefore the same layout, automatically.
+    activate_current_setup();
 
     // First-pass layout: read confd, derive a layout for the outputs
     // the kernel currently reports as connected. Single-output setups
@@ -100,13 +102,21 @@ fn main() {
         }
 
         // 2) Drain hotplug events from the kernel and react.
+        //
+        // Critical: don't call apply_persisted_layout from
+        // LayoutApplied handlers. apply_persisted_layout itself
+        // emits SYS_DISPLAY_SET_LAYOUT which produces a fresh
+        // LayoutApplied event the next poll round — feeding back
+        // through here would be an infinite write loop and crashes
+        // confd within seconds. Only HotplugChanged means "the
+        // physical situation changed, re-evaluate the setup".
         loop {
             let ev = display::poll_event();
             match ev {
                 display::DisplayEvent::None => break,
                 display::DisplayEvent::HotplugChanged => {
-                    println!("[displayd] hotplug — re-evaluating profile");
-                    auto_select_profile();
+                    println!("[displayd] hotplug — re-evaluating setup hash");
+                    activate_current_setup();
                     apply_persisted_layout();
                     ipc::evt_chan_emit(chan, &[protocol::EVT_LAYOUT_CHANGED, 0, 0, 0, 0]);
                 }
@@ -115,13 +125,17 @@ fn main() {
                         "[displayd] preferred mode changed for output {}",
                         output
                     );
+                    // Mode-change is host-driven (vdagent monitors-config
+                    // resize, EDID refresh) — re-derive layout once.
                     apply_persisted_layout();
                     ipc::evt_chan_emit(chan, &[protocol::EVT_LAYOUT_CHANGED, 0, 0, 0, 0]);
                 }
                 display::DisplayEvent::LayoutApplied => {
-                    // The kernel applied a layout we (or someone) submitted.
-                    // Notify subscribers; the actual layout is read back via
-                    // SYS_DISPLAY_LIST when needed.
+                    // Confirmation that *some* layout was applied
+                    // (could be ours, could be the compositor's
+                    // boot-time setup). Notify subscribers so the
+                    // GUI can refresh, but DO NOT re-apply — that
+                    // would be an infinite loop.
                     ipc::evt_chan_emit(chan, &[protocol::EVT_LAYOUT_CHANGED, 0, 0, 0, 0]);
                 }
             }
@@ -129,148 +143,20 @@ fn main() {
     }
 }
 
-// ── Monitor profiles ────────────────────────────────────────────────
+// ── Auto-keyed monitor setups ───────────────────────────────────────
 //
-// A profile is a named set of EDID hashes plus a per-output config
-// snapshot. confd stores them under `config/profiles/<name>/...`. At
-// boot and on every hot-plug event displayd computes the current
-// connected-EDID set and looks for a profile whose stored EDID set
-// matches; the first match wins. When found, the profile's per-output
-// values are copied over the live `config/output/<edid>/...` keys so
-// the regular apply_persisted_layout path picks them up without
-// further special-casing.
+// The display layout is keyed by a hash of the currently connected
+// EDID set. Same set of monitors → same hash → same layout, plug-and-
+// play. There is no manual "save profile" step: any change made
+// through CMD_SET_OUTPUT_CONFIG is written under the active setup
+// hash, so re-connecting that exact monitor combination later
+// restores the layout automatically.
 //
-// The list of profile names lives in confd as a comma-separated
-// string at `config/profile_names`. We keep the list explicit (rather
-// than doing a wildcard listing) because the libconf_schema API today
-// is fetch-by-key — no enumeration. Saving / deleting a profile
-// updates the index and the keys in lock-step.
+// A different combination (a third monitor plugged in, the dock
+// removed) produces a different hash and therefore lives in its own
+// slot — the previous setup's layout stays intact.
 
-/// Comma-separated list of all profile names known to this displayd.
-fn list_profile_names() -> alloc::vec::Vec<alloc::string::String> {
-    let raw = DISPLAYD_SCHEMA
-        .read_string("config/profile_names")
-        .unwrap_or_default();
-    raw.split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.into())
-        .collect()
-}
-
-fn save_profile_index(names: &[alloc::string::String]) {
-    let joined: alloc::string::String =
-        names.iter().enumerate().fold(alloc::string::String::new(), |mut acc, (i, n)| {
-            if i > 0 {
-                acc.push(',');
-            }
-            acc.push_str(n);
-            acc
-        });
-    let _ = DISPLAYD_SCHEMA.write_string("config/profile_names", &joined);
-}
-
-/// Sort + concatenate EDID hex strings into a canonical key for set
-/// comparison. (Set, not list — order-independent.)
-fn canonical_edid_set(hashes: &[u64]) -> alloc::string::String {
-    let mut hex: alloc::vec::Vec<alloc::string::String> =
-        hashes.iter().map(|&h| edid_hex(h)).collect();
-    hex.sort();
-    hex.join(",")
-}
-
-/// Detect which (if any) saved profile matches the current set of
-/// connected outputs. Exact match preferred; falls back to "the
-/// connected set is a superset of the profile's set" so a docked
-/// laptop with extra ad-hoc monitors still picks up the closest
-/// known profile.
-fn detect_matching_profile() -> Option<alloc::string::String> {
-    let infos = display::list(16);
-    let mut connected: alloc::vec::Vec<u64> = infos
-        .iter()
-        .filter(|i| i.is_connected() && i.edid_hash != 0)
-        .map(|i| i.edid_hash)
-        .collect();
-    if connected.is_empty() {
-        return None;
-    }
-    connected.sort();
-    let connected_canon = canonical_edid_set(&connected);
-
-    // First pass: look for exact match.
-    let mut best_match: Option<(alloc::string::String, usize)> = None;
-    for name in list_profile_names() {
-        let edids = DISPLAYD_SCHEMA
-            .read_string(&profile_key(&name, "edids"))
-            .unwrap_or_default();
-        if edids.is_empty() {
-            continue;
-        }
-        let mut profile_set: alloc::vec::Vec<&str> = edids
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        profile_set.sort();
-        let profile_canon = profile_set.join(",");
-
-        if profile_canon == connected_canon {
-            return Some(name); // exact match — done
-        }
-        // Subset check: every profile EDID must be in the connected
-        // set. Score = profile size (more matched outputs win).
-        let connected_set: alloc::vec::Vec<alloc::string::String> =
-            connected.iter().map(|&h| edid_hex(h)).collect();
-        let is_subset = profile_set
-            .iter()
-            .all(|p| connected_set.iter().any(|c| c == p));
-        if is_subset {
-            let score = profile_set.len();
-            match &best_match {
-                Some((_, s)) if *s >= score => {}
-                _ => best_match = Some((name, score)),
-            }
-        }
-    }
-    best_match.map(|(n, _)| n)
-}
-
-/// Auto-pick the matching profile (if any) and copy its per-output
-/// values over the live `config/output/<edid>/*` keys so the regular
-/// apply path uses them.
-fn auto_select_profile() {
-    let Some(profile) = detect_matching_profile() else {
-        return;
-    };
-    println!("[displayd] activating monitor profile: {}", profile);
-    let active = DISPLAYD_SCHEMA
-        .read_string("config/active_profile")
-        .unwrap_or_default();
-    let _ = DISPLAYD_SCHEMA.write_string("config/active_profile", &profile);
-    if active == profile {
-        // Already active — no need to copy values again.
-        return;
-    }
-    let edids = DISPLAYD_SCHEMA
-        .read_string(&profile_key(&profile, "edids"))
-        .unwrap_or_default();
-    for hex in edids.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        for key in PROFILE_OUTPUT_KEYS {
-            let from = profile_output_key(&profile, hex, key);
-            let to = output_key(hex, key);
-            // Type-aware copy.
-            if let Some(v) = DISPLAYD_SCHEMA.read_i64(&from) {
-                let _ = DISPLAYD_SCHEMA.write_i64(&to, v);
-            } else if let Some(v) = DISPLAYD_SCHEMA.read_bool(&from) {
-                let _ = DISPLAYD_SCHEMA.write_bool(&to, v);
-            } else if let Some(v) = DISPLAYD_SCHEMA.read_string(&from) {
-                let _ = DISPLAYD_SCHEMA.write_string(&to, &v);
-            }
-        }
-    }
-}
-
-const PROFILE_OUTPUT_KEYS: &[&str] = &[
+const SETUP_OUTPUT_KEYS: &[&str] = &[
     "enabled",
     "orientation",
     "mode_w",
@@ -284,105 +170,158 @@ const PROFILE_OUTPUT_KEYS: &[&str] = &[
     "friendly_name",
 ];
 
-/// Save the current live config as a named profile. Used by the
-/// CMD_SAVE_PROFILE IPC. Captures every connected output's EDID hash
-/// plus all per-output keys; profile becomes the active one on
-/// the next layout apply.
-pub(crate) fn save_current_as_profile(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let infos = display::list(16);
-    let connected: alloc::vec::Vec<u64> = infos
-        .iter()
+/// EDID hashes of currently connected outputs, in stable order.
+fn connected_edid_hashes() -> alloc::vec::Vec<u64> {
+    display::list(16)
+        .into_iter()
         .filter(|i| i.is_connected() && i.edid_hash != 0)
         .map(|i| i.edid_hash)
-        .collect();
+        .collect()
+}
+
+/// Setup hash for the current connected set. Returns "" when no
+/// monitors are connected (boot-without-displays guard).
+fn current_setup_hash() -> alloc::string::String {
+    compute_setup_hash(&connected_edid_hashes())
+}
+
+/// Activate the layout for the current EDID set. If a saved entry
+/// for this hash exists, copy its per-output values onto the live
+/// `config/output/<edid>/*` keys; otherwise seed a fresh entry from
+/// whatever's already in the live config (effectively a snapshot of
+/// the kernel-derived defaults). Updates `config/active_setup`.
+pub(crate) fn activate_current_setup() {
+    let connected = connected_edid_hashes();
     if connected.is_empty() {
-        return false;
+        return;
     }
+    let hash = compute_setup_hash(&connected);
+    println!(
+        "[displayd] active setup: {} ({} monitor(s))",
+        hash,
+        connected.len()
+    );
+    let _ = DISPLAYD_SCHEMA.write_string("config/active_setup", &hash);
+
+    // Ensure the EDID list is recorded — used for verification and as
+    // a stable index when iterating saved setups.
     let edid_list: alloc::string::String = connected
         .iter()
         .map(|&h| edid_hex(h))
         .collect::<alloc::vec::Vec<_>>()
         .join(",");
-    let _ = DISPLAYD_SCHEMA.write_string(&profile_key(name, "edids"), &edid_list);
-    for hash in &connected {
-        let hex = edid_hex(*hash);
-        for key in PROFILE_OUTPUT_KEYS {
-            let from = output_key(&hex, key);
-            let to = profile_output_key(name, &hex, key);
-            if let Some(v) = DISPLAYD_SCHEMA.read_i64(&from) {
-                let _ = DISPLAYD_SCHEMA.write_i64(&to, v);
-            } else if let Some(v) = DISPLAYD_SCHEMA.read_bool(&from) {
-                let _ = DISPLAYD_SCHEMA.write_bool(&to, v);
-            } else if let Some(v) = DISPLAYD_SCHEMA.read_string(&from) {
-                let _ = DISPLAYD_SCHEMA.write_string(&to, &v);
+    let _ = DISPLAYD_SCHEMA.write_string(&setup_key(&hash, "edids"), &edid_list);
+
+    // Determine direction: load saved values if the setup has any
+    // mode_w entries; otherwise seed it from the live config.
+    let probe = SETUP_OUTPUT_KEYS.iter().any(|k| {
+        connected
+            .iter()
+            .any(|h| {
+                DISPLAYD_SCHEMA
+                    .read_i64(&setup_output_key(&hash, &edid_hex(*h), k))
+                    .is_some()
+                    || DISPLAYD_SCHEMA
+                        .read_bool(&setup_output_key(&hash, &edid_hex(*h), k))
+                        .is_some()
+                    || DISPLAYD_SCHEMA
+                        .read_string(&setup_output_key(&hash, &edid_hex(*h), k))
+                        .is_some()
+            })
+    });
+
+    for h in &connected {
+        let hex = edid_hex(*h);
+        for k in SETUP_OUTPUT_KEYS {
+            let setup_path = setup_output_key(&hash, &hex, k);
+            let live_path = output_key(&hex, k);
+            if probe {
+                // Saved setup → load it onto the live keys.
+                if let Some(v) = DISPLAYD_SCHEMA.read_i64(&setup_path) {
+                    let _ = DISPLAYD_SCHEMA.write_i64(&live_path, v);
+                } else if let Some(v) = DISPLAYD_SCHEMA.read_bool(&setup_path) {
+                    let _ = DISPLAYD_SCHEMA.write_bool(&live_path, v);
+                } else if let Some(v) = DISPLAYD_SCHEMA.read_string(&setup_path) {
+                    let _ = DISPLAYD_SCHEMA.write_string(&live_path, &v);
+                }
+            } else {
+                // Fresh setup → snapshot the live value into the
+                // setup so the next layout edit has somewhere to
+                // accumulate.
+                if let Some(v) = DISPLAYD_SCHEMA.read_i64(&live_path) {
+                    let _ = DISPLAYD_SCHEMA.write_i64(&setup_path, v);
+                } else if let Some(v) = DISPLAYD_SCHEMA.read_bool(&live_path) {
+                    let _ = DISPLAYD_SCHEMA.write_bool(&setup_path, v);
+                } else if let Some(v) = DISPLAYD_SCHEMA.read_string(&live_path) {
+                    let _ = DISPLAYD_SCHEMA.write_string(&setup_path, &v);
+                }
             }
         }
     }
-    // Update the index.
-    let mut names = list_profile_names();
-    if !names.iter().any(|n| n == name) {
-        names.push(name.into());
-        save_profile_index(&names);
-    }
-    let _ = DISPLAYD_SCHEMA.write_string("config/active_profile", name);
-    true
 }
 
-/// Manually load a profile by name (CMD_LOAD_PROFILE). Sets it as
-/// active and copies its values over the live config. The caller is
-/// expected to follow up with apply_persisted_layout() — the IPC
-/// handler does that automatically.
-pub(crate) fn load_profile_by_name(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let names = list_profile_names();
-    if !names.iter().any(|n| n == name) {
-        return false;
-    }
-    // Force the copy regardless of current active_profile.
-    let _ = DISPLAYD_SCHEMA.write_string("config/active_profile", "");
-    let _ = DISPLAYD_SCHEMA.write_string("config/active_profile_pending", name);
-    auto_select_profile_named(name);
-    true
-}
+/// Persist a single OutputConfig under both the live keys (so the
+/// next apply_persisted_layout picks it up) and the active setup's
+/// per-output keys (so re-plugging the same set later restores the
+/// change).
+pub(crate) fn write_output_to_live_and_active_setup(
+    edid_hash: u64,
+    enabled: bool,
+    orientation: i64,
+    mode_w: i64,
+    mode_h: i64,
+    refresh_mhz: i64,
+    scale_percent: i64,
+    fractional: bool,
+    virtual_x: i64,
+    virtual_y: i64,
+    mirror_of: &str,
+    friendly_name: &str,
+) {
+    let hex = edid_hex(edid_hash);
+    let live = |k: &str| output_key(&hex, k);
+    let _ = DISPLAYD_SCHEMA.write_bool(&live("enabled"), enabled);
+    let _ = DISPLAYD_SCHEMA.write_i64(&live("orientation"), orientation);
+    let _ = DISPLAYD_SCHEMA.write_i64(&live("mode_w"), mode_w);
+    let _ = DISPLAYD_SCHEMA.write_i64(&live("mode_h"), mode_h);
+    let _ = DISPLAYD_SCHEMA.write_i64(&live("mode_refresh_mhz"), refresh_mhz);
+    let _ = DISPLAYD_SCHEMA.write_i64(&live("scale_percent"), scale_percent);
+    let _ = DISPLAYD_SCHEMA.write_bool(&live("fractional_scale"), fractional);
+    let _ = DISPLAYD_SCHEMA.write_i64(&live("virtual_x"), virtual_x);
+    let _ = DISPLAYD_SCHEMA.write_i64(&live("virtual_y"), virtual_y);
+    let _ = DISPLAYD_SCHEMA.write_string(&live("mirror_of"), mirror_of);
+    let _ = DISPLAYD_SCHEMA.write_string(&live("friendly_name"), friendly_name);
 
-/// Internal helper used by load_profile_by_name. Skips the EDID-set
-/// matching and just copies the named profile's values.
-fn auto_select_profile_named(profile: &str) {
-    let _ = DISPLAYD_SCHEMA.write_string("config/active_profile", profile);
-    let edids = DISPLAYD_SCHEMA
-        .read_string(&profile_key(profile, "edids"))
+    // Mirror to the active setup so re-plugging the same combination
+    // restores this exact value.
+    let setup = DISPLAYD_SCHEMA
+        .read_string("config/active_setup")
         .unwrap_or_default();
-    for hex in edids.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        for key in PROFILE_OUTPUT_KEYS {
-            let from = profile_output_key(profile, hex, key);
-            let to = output_key(hex, key);
-            if let Some(v) = DISPLAYD_SCHEMA.read_i64(&from) {
-                let _ = DISPLAYD_SCHEMA.write_i64(&to, v);
-            } else if let Some(v) = DISPLAYD_SCHEMA.read_bool(&from) {
-                let _ = DISPLAYD_SCHEMA.write_bool(&to, v);
-            } else if let Some(v) = DISPLAYD_SCHEMA.read_string(&from) {
-                let _ = DISPLAYD_SCHEMA.write_string(&to, &v);
-            }
-        }
+    if !setup.is_empty() {
+        let s = |k: &str| setup_output_key(&setup, &hex, k);
+        let _ = DISPLAYD_SCHEMA.write_bool(&s("enabled"), enabled);
+        let _ = DISPLAYD_SCHEMA.write_i64(&s("orientation"), orientation);
+        let _ = DISPLAYD_SCHEMA.write_i64(&s("mode_w"), mode_w);
+        let _ = DISPLAYD_SCHEMA.write_i64(&s("mode_h"), mode_h);
+        let _ = DISPLAYD_SCHEMA.write_i64(&s("mode_refresh_mhz"), refresh_mhz);
+        let _ = DISPLAYD_SCHEMA.write_i64(&s("scale_percent"), scale_percent);
+        let _ = DISPLAYD_SCHEMA.write_bool(&s("fractional_scale"), fractional);
+        let _ = DISPLAYD_SCHEMA.write_i64(&s("virtual_x"), virtual_x);
+        let _ = DISPLAYD_SCHEMA.write_i64(&s("virtual_y"), virtual_y);
+        let _ = DISPLAYD_SCHEMA.write_string(&s("mirror_of"), mirror_of);
+        let _ = DISPLAYD_SCHEMA.write_string(&s("friendly_name"), friendly_name);
     }
 }
 
-/// Delete a profile (its per-output keys are not actively cleared —
-/// the registry has no delete API today — but the index entry is
-/// removed so detect_matching_profile can no longer find it).
-pub(crate) fn delete_profile(name: &str) -> bool {
-    let mut names = list_profile_names();
-    let before = names.len();
-    names.retain(|n| n != name);
-    if names.len() == before {
+/// Set a friendly name ("home", "office", …) for the *current* setup
+/// hash. Lives at `config/setups/<hash>/friendly_name`. Optional:
+/// purely cosmetic, the GUI shows it as a label in the title bar.
+pub(crate) fn set_active_setup_name(name: &str) -> bool {
+    let hash = current_setup_hash();
+    if hash.is_empty() {
         return false;
     }
-    save_profile_index(&names);
+    let _ = DISPLAYD_SCHEMA.write_string(&setup_key(&hash, "friendly_name"), name);
     true
 }
 

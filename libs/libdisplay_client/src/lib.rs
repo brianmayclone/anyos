@@ -43,8 +43,20 @@ pub const EVT_OUTPUT_CONFIG_OK: u32 = 0x700A;
 pub const CMD_SET_GLOBAL_CONFIG: u32 = 0x700B;
 pub const EVT_GLOBAL_CONFIG_OK: u32 = 0x700C;
 
-pub const CMD_SAVE_PROFILE: u32 = 0x700D;
-pub const EVT_PROFILE_SAVED: u32 = 0x700E;
+/// Set a friendly name (cosmetic) for the currently-active monitor
+/// setup. Layouts are auto-keyed by the connected EDID set; the name
+/// is only a label the GUI shows so the user can tell setups apart
+/// at a glance ("home", "office", "mobile-only").
+pub const CMD_SET_SETUP_NAME: u32 = 0x700D;
+pub const EVT_SETUP_NAME_OK: u32 = 0x700E;
+
+// Backwards-compatibility aliases (apps built against the older
+// profile-based API still link). Map onto the auto-keyed model:
+// "save profile" really means "name the current setup",
+// "load profile" / "delete profile" are no-ops in the auto-keyed
+// world since the layout is determined by the EDID set.
+pub const CMD_SAVE_PROFILE: u32 = CMD_SET_SETUP_NAME;
+pub const EVT_PROFILE_SAVED: u32 = EVT_SETUP_NAME_OK;
 pub const CMD_DELETE_PROFILE: u32 = 0x700F;
 pub const EVT_PROFILE_DELETED: u32 = 0x7010;
 pub const CMD_LOAD_PROFILE: u32 = 0x7011;
@@ -282,22 +294,34 @@ impl DisplaydClient {
         result
     }
 
-    /// Save the current live display config under a named profile
-    /// ("home", "office", "mobile", …). Captures the connected
-    /// monitor set + per-output settings so the profile is auto-
-    /// activated next time displayd sees this exact set of EDIDs.
-    pub fn save_profile(&self, name: &str) -> Option<u32> {
-        self.send_named_profile(CMD_SAVE_PROFILE, EVT_PROFILE_SAVED, name)
+    /// Set a cosmetic friendly name on the currently-active setup.
+    /// The layout is always saved under the auto-derived setup hash;
+    /// this just adds a human-readable label like "home" or "office".
+    /// Apps re-purpose the older save_profile name for backwards
+    /// compatibility.
+    pub fn set_setup_name(&self, name: &str) -> Option<u32> {
+        self.send_named_profile(CMD_SET_SETUP_NAME, EVT_SETUP_NAME_OK, name)
     }
 
-    /// Manually activate a saved profile (display-settings "Switch to
-    /// office layout" button — matches the user's name regardless of
-    /// EDID-set fit).
+    /// Backwards-compat alias for set_setup_name. Older apps used
+    /// this to "save the current layout under a named profile";
+    /// in the auto-keyed model the layout is auto-saved on every
+    /// edit, so this just attaches the supplied name as the
+    /// friendly_name of the current setup hash.
+    pub fn save_profile(&self, name: &str) -> Option<u32> {
+        self.set_setup_name(name)
+    }
+
+    /// Backwards-compat no-op: in the auto-keyed model the active
+    /// layout is determined by the connected EDID set, not chosen
+    /// by name. We still issue the IPC so the daemon can re-apply
+    /// the layout (handy after an external config edit).
     pub fn load_profile(&self, name: &str) -> Option<u32> {
         self.send_named_profile(CMD_LOAD_PROFILE, EVT_PROFILE_LOADED, name)
     }
 
-    /// Drop a profile from the saved list.
+    /// Backwards-compat no-op (the registry has no delete API and
+    /// the setup hash is the identity). Returns success.
     pub fn delete_profile(&self, name: &str) -> Option<u32> {
         self.send_named_profile(CMD_DELETE_PROFILE, EVT_PROFILE_DELETED, name)
     }

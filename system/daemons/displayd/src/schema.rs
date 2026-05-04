@@ -38,24 +38,50 @@ use libconf_schema::{
     default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
 };
 
+/// CRC-64 (ECMA polynomial) — kernel uses the same constant for EDID
+/// hashes (kernel/src/drivers/gpu/output.rs::edid_hash). Inlined here
+/// because displayd has no direct dep on the kernel crate.
+pub(crate) fn crc64_ecma(bytes: &[u8]) -> u64 {
+    if bytes.is_empty() {
+        return 0;
+    }
+    const POLY: u64 = 0x42F0_E1EB_A9EA_3693;
+    let mut crc: u64 = 0;
+    for &b in bytes {
+        crc ^= (b as u64) << 56;
+        for _ in 0..8 {
+            if crc & (1u64 << 63) != 0 {
+                crc = (crc << 1) ^ POLY;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
 /// Top-level globals that don't depend on a specific monitor.
 ///
-/// Profiles ("home", "office", "mobile") let users save the layout for
-/// a specific monitor combination and have displayd auto-pick the
-/// matching one whenever the connected EDID set changes (hot-plug,
-/// resume from suspend with a new dock, …).
+/// Setups (auto-keyed). The display layout is keyed by a deterministic
+/// hash of the currently connected EDID set, so plugging the same set
+/// of monitors anywhere always restores the same layout — no manual
+/// "save profile" step.
 ///
-/// `config/profiles/<name>/edids`            (string, comma-separated
-///                                            EDID hex hashes)
-/// `config/profiles/<name>/output/<edid>/...` (same per-output keys as
-///                                            the live `config/output/`)
-/// `config/active_profile`                   (string, current profile;
-///                                            empty = no profile active)
+/// `config/setups/<setup_hash>/edids`            (comma-separated
+///                                                 EDID hex list, used
+///                                                 for verification)
+/// `config/setups/<setup_hash>/friendly_name`    (optional, e.g. "home")
+/// `config/setups/<setup_hash>/output/<edid>/...` (per-output config —
+///                                                 same keys as the
+///                                                 live `config/output/`)
+/// `config/active_setup`                          (current setup hash,
+///                                                 empty = no setup
+///                                                 hash matched)
 const DISPLAYD_DIRS: &[&str] = &[
     "config",
     "config/global",
     "config/output",
-    "config/profiles",
+    "config/setups",
 ];
 
 const DISPLAYD_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
@@ -68,9 +94,11 @@ const DISPLAYD_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     // "above_primary" / "left_of_primary". Used only when an
     // unknown EDID hash shows up (no per-output entry yet).
     default_string("config/global/default_attach_side", "right_of_primary"),
-    // Currently-active profile name (empty = no profile applied,
-    // running off the bare config/output/* values).
-    default_string("config/active_profile", ""),
+    // Currently-active setup hash (empty = no matching setup loaded
+    // yet; the next CMD_SET_OUTPUT_CONFIG creates one). The hash
+    // itself is canonical: 16 hex chars derived from the sorted EDID
+    // hashes of the currently connected outputs.
+    default_string("config/active_setup", ""),
 ];
 
 const DISPLAYD_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
@@ -113,34 +141,72 @@ pub(crate) fn edid_hex(hash: u64) -> alloc::string::String {
     s
 }
 
-/// Build the relative path under `config/profiles/<name>/<key>` for a
-/// per-profile global value (e.g. `edids`, `friendly_name`).
-pub(crate) fn profile_key(name: &str, key: &str) -> alloc::string::String {
+/// Path for a setup-global value: `config/setups/<setup_hash>/<key>`.
+/// Used for `edids` and `friendly_name`.
+pub(crate) fn setup_key(setup_hash: &str, key: &str) -> alloc::string::String {
     use alloc::string::String;
-    let mut s = String::with_capacity(20 + name.len() + key.len());
-    s.push_str("config/profiles/");
-    s.push_str(name);
+    let mut s = String::with_capacity(20 + setup_hash.len() + key.len());
+    s.push_str("config/setups/");
+    s.push_str(setup_hash);
     s.push('/');
     s.push_str(key);
     s
 }
 
-/// Build the relative path for a per-output value inside a profile —
-/// `config/profiles/<name>/output/<edid_hex>/<key>`. Same shape as
-/// the live `output_key` so the same OutputConfig blob can be written
-/// into either namespace.
-pub(crate) fn profile_output_key(
-    profile: &str,
+/// Path for a per-output value inside a setup —
+/// `config/setups/<setup_hash>/output/<edid_hex>/<key>`. Same shape as
+/// the live `output_key` so the same OutputConfig blob writes into
+/// either namespace.
+pub(crate) fn setup_output_key(
+    setup_hash: &str,
     edid_hex: &str,
     key: &str,
 ) -> alloc::string::String {
     use alloc::string::String;
-    let mut s = String::with_capacity(28 + profile.len() + edid_hex.len() + key.len());
-    s.push_str("config/profiles/");
-    s.push_str(profile);
+    let mut s = String::with_capacity(28 + setup_hash.len() + edid_hex.len() + key.len());
+    s.push_str("config/setups/");
+    s.push_str(setup_hash);
     s.push_str("/output/");
     s.push_str(edid_hex);
     s.push('/');
     s.push_str(key);
+    s
+}
+
+/// Compute a canonical setup hash from a slice of connected EDID hashes.
+///
+/// Sort the EDID hashes lower-to-upper (set semantics — order doesn't
+/// matter), concatenate as 16-hex strings, then run the same CRC-64
+/// (ECMA polynomial) we already use for individual EDIDs. The result
+/// is rendered as 16 lower-case hex chars and used as the setup key.
+///
+/// Properties this gives us, by construction:
+///
+///   * Same set of connected monitors → same setup hash, regardless
+///     of plug order or scanout id assignment. Plugging the laptop +
+///     the Eizo at home produces the same hash as plugging them in a
+///     different order at the office, so the layout is shared.
+///   * Different set → different hash → independent layout entry.
+///   * Hot-plugging one extra monitor produces a fresh hash — the
+///     previous setup's layout stays intact under its own key, the
+///     new combination gets its own slot.
+pub(crate) fn compute_setup_hash(edid_hashes: &[u64]) -> alloc::string::String {
+    use alloc::string::String;
+    if edid_hashes.is_empty() {
+        return String::new();
+    }
+    let mut sorted: alloc::vec::Vec<u64> = edid_hashes.into();
+    sorted.sort();
+    // Concatenate bytes (big-endian, deterministic) and CRC-64 them.
+    let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(sorted.len() * 8);
+    for h in &sorted {
+        buf.extend_from_slice(&h.to_be_bytes());
+    }
+    let crc = crc64_ecma(&buf);
+    let mut s = String::with_capacity(16);
+    let chars = b"0123456789abcdef";
+    for shift in (0..64).step_by(4).rev() {
+        s.push(chars[((crc >> shift) & 0xF) as usize] as char);
+    }
     s
 }

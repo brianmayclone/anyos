@@ -74,21 +74,22 @@ pub const EVT_OUTPUT_CONFIG_OK: u32 = 0x700A;
 pub const CMD_SET_GLOBAL_CONFIG: u32 = 0x700B;
 pub const EVT_GLOBAL_CONFIG_OK: u32 = 0x700C;
 
-/// Save the current live config under a named profile. evt[2] is an
-/// SHM id holding a 32-byte UTF-8 profile name (null-padded).
-pub const CMD_SAVE_PROFILE: u32 = 0x700D;
-pub const EVT_PROFILE_SAVED: u32 = 0x700E;
+/// Set the friendly name for the *current* setup hash (the layout
+/// is keyed automatically by EDID set; the friendly name is just a
+/// cosmetic label the user can apply via the GUI). evt[2] = SHM id
+/// with a 32-byte UTF-8 name (null-padded).
+pub const CMD_SET_SETUP_NAME: u32 = 0x700D;
+pub const EVT_SETUP_NAME_OK: u32 = 0x700E;
 
-/// Delete a saved profile (only removes the index entry; the per-
-/// output keys remain in the registry for now). evt[2] = SHM with
-/// the profile name.
+// Compatibility aliases (kept for the libdisplay_client wrappers
+// shipped earlier). CMD_SAVE_PROFILE behaves like CMD_SET_SETUP_NAME
+// — the layout is always saved under the auto-derived setup hash;
+// the "name" the caller passes just becomes the friendly_name. Load
+// / Delete are no-ops in the auto-keyed model and return success.
+pub const CMD_SAVE_PROFILE: u32 = CMD_SET_SETUP_NAME;
+pub const EVT_PROFILE_SAVED: u32 = EVT_SETUP_NAME_OK;
 pub const CMD_DELETE_PROFILE: u32 = 0x700F;
 pub const EVT_PROFILE_DELETED: u32 = 0x7010;
-
-/// Load a saved profile and re-apply the layout immediately. evt[2]
-/// = SHM with the profile name. Used by display-settings to switch
-/// profiles manually (e.g. user has 'home' saved but wants to test
-/// the 'office' layout while still at home).
 pub const CMD_LOAD_PROFILE: u32 = 0x7011;
 pub const EVT_PROFILE_LOADED: u32 = 0x7012;
 
@@ -185,33 +186,30 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
             crate::apply_persisted_layout();
             [EVT_GLOBAL_CONFIG_OK, r, 0, 0, 0]
         }
-        CMD_SAVE_PROFILE => {
+        // Auto-keyed setups: CMD_SET_SETUP_NAME / CMD_SAVE_PROFILE
+        // both set the friendly_name on the current setup hash.
+        // CMD_LOAD_PROFILE / CMD_DELETE_PROFILE are kept for binary
+        // compatibility with older libdisplay_client builds — they
+        // return success without doing anything (loading is implicit
+        // in the EDID-set hash).
+        CMD_SET_SETUP_NAME => {
             let name = unsafe { read_profile_name(evt[2]) };
-            let ok = if name.is_empty() {
-                false
-            } else {
-                crate::save_current_as_profile(&name)
-            };
-            [EVT_PROFILE_SAVED, if ok { 0 } else { u32::MAX }, 0, 0, 0]
+            let ok = crate::set_active_setup_name(&name);
+            crate::apply_persisted_layout();
+            [EVT_SETUP_NAME_OK, if ok { 0 } else { u32::MAX }, 0, 0, 0]
         }
         CMD_DELETE_PROFILE => {
-            let name = unsafe { read_profile_name(evt[2]) };
-            let ok = if name.is_empty() {
-                false
-            } else {
-                crate::delete_profile(&name)
-            };
-            [EVT_PROFILE_DELETED, if ok { 0 } else { u32::MAX }, 0, 0, 0]
+            // No-op in the auto-keyed model — the hash itself is the
+            // identity; deleting would orphan the setup data. We
+            // could clear the friendly_name; for now return success.
+            [EVT_PROFILE_DELETED, 0, 0, 0, 0]
         }
         CMD_LOAD_PROFILE => {
-            let name = unsafe { read_profile_name(evt[2]) };
-            let ok = if name.is_empty() {
-                false
-            } else {
-                crate::load_profile_by_name(&name)
-            };
+            // Loading is automatic via the connected EDID set; just
+            // re-apply.
+            crate::activate_current_setup();
             crate::apply_persisted_layout();
-            [EVT_PROFILE_LOADED, if ok { 0 } else { u32::MAX }, 0, 0, 0]
+            [EVT_PROFILE_LOADED, 0, 0, 0, 0]
         }
         CMD_PUSH_LAYOUT => {
             // Pushed by libdisplay_client::push_layout (in particular
@@ -245,10 +243,11 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
 }
 
 /// Read the SHM-resident OutputConfigBlob (see CMD_SET_OUTPUT_CONFIG)
-/// and persist its fields under `services/displayd/config/output/<edid>/...`.
-/// Returns 0 on success, non-zero on bad payload.
+/// and persist its fields. Writes both the live `config/output/...`
+/// keys (so apply_persisted_layout picks them up immediately) and
+/// the same fields under `config/setups/<active>/output/<edid>/...`
+/// so re-plugging this exact monitor combination restores the change.
 unsafe fn write_output_config(addr: u64) -> u32 {
-    use crate::schema::{edid_hex, output_key, DISPLAYD_SCHEMA};
     let bytes = core::slice::from_raw_parts(addr as *const u8, 96);
     let read_u64 = |off: usize| -> u64 {
         u64::from_le_bytes([
@@ -265,42 +264,33 @@ unsafe fn write_output_config(addr: u64) -> u32 {
     if edid_hash == 0 {
         return 1;
     }
-    let hex = edid_hex(edid_hash);
-    let _ = DISPLAYD_SCHEMA.write_bool(&output_key(&hex, "enabled"), read_u32(8) != 0);
-    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "orientation"), read_u32(12) as i64);
-    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "mode_w"), read_u32(16) as i64);
-    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "mode_h"), read_u32(20) as i64);
-    let _ = DISPLAYD_SCHEMA.write_i64(
-        &output_key(&hex, "mode_refresh_mhz"),
-        read_u32(24) as i64,
-    );
-    let _ = DISPLAYD_SCHEMA.write_i64(
-        &output_key(&hex, "scale_percent"),
-        read_u32(28) as i64,
-    );
-    let _ = DISPLAYD_SCHEMA.write_bool(
-        &output_key(&hex, "fractional_scale"),
-        read_u32(32) != 0,
-    );
-    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "virtual_x"), read_i32(36) as i64);
-    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "virtual_y"), read_i32(40) as i64);
     let mirror_hash = read_u64(44);
     let mirror_str = if mirror_hash == 0 {
         anyos_std::String::new()
     } else {
-        edid_hex(mirror_hash)
+        crate::schema::edid_hex(mirror_hash)
     };
-    let _ = DISPLAYD_SCHEMA.write_string(&output_key(&hex, "mirror_of"), &mirror_str);
-
     // Friendly name: 44 bytes null-padded ASCII at offset 52.
-    let name_end = (52..96)
-        .find(|&i| bytes[i] == 0)
-        .unwrap_or(96);
-    if name_end > 52 {
-        if let Ok(s) = core::str::from_utf8(&bytes[52..name_end]) {
-            let _ = DISPLAYD_SCHEMA.write_string(&output_key(&hex, "friendly_name"), s);
-        }
-    }
+    let name_end = (52..96).find(|&i| bytes[i] == 0).unwrap_or(96);
+    let friendly = if name_end > 52 {
+        core::str::from_utf8(&bytes[52..name_end]).unwrap_or("")
+    } else {
+        ""
+    };
+    crate::write_output_to_live_and_active_setup(
+        edid_hash,
+        read_u32(8) != 0,
+        read_u32(12) as i64,
+        read_u32(16) as i64,
+        read_u32(20) as i64,
+        read_u32(24) as i64,
+        read_u32(28) as i64,
+        read_u32(32) != 0,
+        read_i32(36) as i64,
+        read_i32(40) as i64,
+        &mirror_str,
+        friendly,
+    );
     0
 }
 
