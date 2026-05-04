@@ -1913,6 +1913,23 @@ pub fn sys_display_flush(output_id: u32, xy: u32, wh: u32) -> u32 {
     let y = xy & 0xFFFF;
     let w = (wh >> 16) & 0xFFFF;
     let h = wh & 0xFFFF;
+    // First-call diagnostic only — log once per output so the boot test
+    // can confirm the secondary render pass reaches the kernel without
+    // spamming every frame.
+    static FLUSH_SEEN: core::sync::atomic::AtomicU32 =
+        core::sync::atomic::AtomicU32::new(0);
+    let mask = 1u32 << (output_id & 31);
+    let prev = FLUSH_SEEN.fetch_or(mask, core::sync::atomic::Ordering::Relaxed);
+    if prev & mask == 0 {
+        crate::serial_println!(
+            "[OK] sys_display_flush: first call for output {} ({}x{} at {},{})",
+            output_id,
+            w,
+            h,
+            x,
+            y
+        );
+    }
     crate::drivers::gpu::with_gpu(|g| g.update_rect_for_output(output_id, x, y, w, h));
     0
 }

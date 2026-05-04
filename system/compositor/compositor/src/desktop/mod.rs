@@ -1178,6 +1178,15 @@ impl Desktop {
 
         let had_damage = self.compositor.compose();
 
+        // After the primary output's compose() pass, render every
+        // secondary output. The secondary path is independent of the
+        // primary's hardware double-buffer / damage-coalescing fast
+        // paths; it just walks the visible layer list, blits the
+        // overlapping pixels into the per-output back buffer, copies
+        // into the per-output framebuffer, and issues SYS_DISPLAY_FLUSH.
+        // Cheap when there is only one output (early-returns inside).
+        self.compositor.render_secondary_outputs(had_damage);
+
         // Now blend the drag image at the current cursor position on top
         // of the freshly composited layers and flush that rect.
         if self.compositor.drag_image.is_some() {

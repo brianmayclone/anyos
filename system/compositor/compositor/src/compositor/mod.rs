@@ -338,6 +338,157 @@ impl Compositor {
         }
     }
 
+    /// Render every secondary output (id ≥ 1).
+    ///
+    /// Called after the primary `compose()` pass. For each non-primary
+    /// output the function fills its back-buffer with the desktop
+    /// background colour, blits any visible layer that overlaps the
+    /// output's virtual rect (translated into the output's local
+    /// coordinates), copies the back-buffer into the output's
+    /// framebuffer, and finally requests a per-output `SYS_DISPLAY_FLUSH`.
+    ///
+    /// Intentionally minimal: no shadow / blur / hardware cursor support
+    /// on secondary outputs yet. Those can land in a follow-up commit
+    /// once the basic per-output coordinate flow is verified visually.
+    /// Damage tracking is also coarse (full-output rerender every frame
+    /// when `force` is set) — fine-grained per-output damage rings will
+    /// be wired up in a later phase.
+    pub fn render_secondary_outputs(&mut self, force: bool) {
+        if self.outputs.len() < 2 || !force {
+            return;
+        }
+
+        // Desktop-background colour (matches the wallpaper "fill" used on
+        // the primary while the wallpaper image is loading). Anything that
+        // wants the actual wallpaper to extend across outputs needs the
+        // background-layer rendering path duplicated here, which is a
+        // separate piece of work.
+        const BG: u32 = 0xFF1A1A2E;
+
+        // We need read access to layers (immutable borrow on self.layers)
+        // and write access to outputs[idx].back_buffer / fb_ptr. Split via
+        // indices to avoid the borrow checker fighting us.
+        let n_outputs = self.outputs.len();
+        let n_layers = self.layers.len();
+
+        for oi in 1..n_outputs {
+            let (ox, oy, ow, oh, fb_ptr, fb_pitch) = {
+                let o = &self.outputs[oi];
+                (
+                    o.virtual_x,
+                    o.virtual_y,
+                    o.fb_width,
+                    o.fb_height,
+                    o.fb_ptr,
+                    o.fb_pitch,
+                )
+            };
+            // Reusable per-output back buffer.
+            {
+                let bb = &mut self.outputs[oi].back_buffer;
+                if bb.len() != (ow * oh) as usize {
+                    bb.resize((ow * oh) as usize, 0);
+                }
+                bb.fill(BG);
+            }
+
+            // Output rect in virtual coordinates.
+            let ox2 = ox + ow as i32;
+            let oy2 = oy + oh as i32;
+
+            for li in 0..n_layers {
+                let layer = &self.layers[li];
+                if !layer.visible {
+                    continue;
+                }
+                let lx = layer.x;
+                let ly = layer.y;
+                let lx2 = lx + layer.width as i32;
+                let ly2 = ly + layer.height as i32;
+
+                // Intersect layer with output rect (virtual coords).
+                let ix = lx.max(ox);
+                let iy = ly.max(oy);
+                let ix2 = lx2.min(ox2);
+                let iy2 = ly2.min(oy2);
+                if ix >= ix2 || iy >= iy2 {
+                    continue;
+                }
+
+                // Source row of pixels = SHM-backed for shm layers,
+                // owned Vec otherwise.
+                let src_w = layer.width as usize;
+                let src_pixels: *const u32 = if !layer.shm_ptr.is_null() {
+                    layer.shm_ptr as *const u32
+                } else if !layer.pixels.is_empty() {
+                    layer.pixels.as_ptr()
+                } else {
+                    continue;
+                };
+
+                let bb = &mut self.outputs[oi].back_buffer;
+                let dst_stride = ow as usize;
+                for vy in iy..iy2 {
+                    let sy = (vy - ly) as usize;
+                    let sx = (ix - lx) as usize;
+                    let dst_y = (vy - oy) as usize;
+                    let dst_x = (ix - ox) as usize;
+                    let count = (ix2 - ix) as usize;
+                    let dst_off = dst_y * dst_stride + dst_x;
+                    let src_off = sy * src_w + sx;
+                    unsafe {
+                        let src = src_pixels.add(src_off);
+                        for i in 0..count {
+                            let p = core::ptr::read(src.add(i));
+                            // ARGB: alpha blend onto BG when layer is
+                            // not opaque. Solid-cheap path: if alpha is
+                            // 0xFF (or the layer is opaque), straight
+                            // copy; otherwise simple over-blend.
+                            let a = (p >> 24) & 0xFF;
+                            bb[dst_off + i] = if layer.opaque || a == 0xFF {
+                                p | 0xFF000000
+                            } else if a == 0 {
+                                bb[dst_off + i]
+                            } else {
+                                let inv = 255 - a;
+                                let dr = (bb[dst_off + i] >> 16) & 0xFF;
+                                let dg = (bb[dst_off + i] >> 8) & 0xFF;
+                                let db = bb[dst_off + i] & 0xFF;
+                                let sr = (p >> 16) & 0xFF;
+                                let sg = (p >> 8) & 0xFF;
+                                let sb = p & 0xFF;
+                                let r = (sr * a + dr * inv) / 255;
+                                let g = (sg * a + dg * inv) / 255;
+                                let b = (sb * a + db * inv) / 255;
+                                0xFF000000 | (r << 16) | (g << 8) | b
+                            };
+                        }
+                    }
+                }
+            }
+
+            // Flush back_buffer to per-output framebuffer (stride conversion).
+            unsafe {
+                let bb = &self.outputs[oi].back_buffer;
+                let dst_stride_px = (fb_pitch / 4) as usize;
+                let src_stride = ow as usize;
+                for row in 0..(oh as usize) {
+                    let src_off = row * src_stride;
+                    let dst_off = row * dst_stride_px;
+                    core::ptr::copy_nonoverlapping(
+                        bb.as_ptr().add(src_off),
+                        fb_ptr.add(dst_off),
+                        ow as usize,
+                    );
+                }
+            }
+
+            // Tell the GPU to transfer + flush this output.
+            let output_id = self.outputs[oi].id;
+            let _ = anyos_std::display::flush(output_id, 0, 0, ow, oh);
+        }
+    }
+
     // ── Layer Management ────────────────────────────────────────────────
 
     /// Add a new layer at the top of the z-order.
