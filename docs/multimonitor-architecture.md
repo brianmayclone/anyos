@@ -259,50 +259,121 @@ Verified working configurations during development:
 | `--virgl --displays 2 --kvm` | SDL+GL | Same as SDL but with GL passthrough |
 | `--virtio --displays 4 --kvm` | SDL | Stress test (vgamem auto-scaled to 128 MiB) |
 
-## Phase plan (revised, enterprise alignment)
+## Phase status
 
 The phases mirror the layered diagram — each phase produces something
-testable in isolation.
+testable in isolation. Phases marked ✅ landed in main; the merge
+commit lists every behavioural change.
 
-1. **Phase 0 — host test infrastructure.** `run.sh --displays N`. ✅ done.
-2. **Phase 1 — kernel display subsystem.**
-   - 1a. `OutputMode` / `OutputInfo` / `OutputLayout` types in
-     `kernel/src/drivers/gpu/output.rs`.
-   - 1b. `GpuDriver` trait per-output methods (default = single-output
-     fallback). Includes `apply_layout(&OutputLayout)` for atomic
-     application.
-   - 1c. `virtio_gpu`: `Vec<ScanoutState>`, num_scanouts from device
-     config, `events_read` hotplug, mirroring via shared resource_id.
-   - 1d. New display syscalls: `SYS_DISPLAY_LIST`, `SYS_DISPLAY_SET_LAYOUT`,
-     `SYS_DISPLAY_MAP_FB`, `SYS_DISPLAY_FLUSH`, `SYS_DISPLAY_POLL_EVENT`.
-3. **Phase 2 — compositor refactor.**
-   - 2a. `Vec<Output>` with virtual-desktop rectangles.
-   - 2b. Window position is global; per-output clip is computed.
-   - 2c. Per-output damage rings + render passes.
-4. **Phase 3 — interactive concerns.**
-   - 3a. Cursor traverses output boundaries.
-   - 3b. Maximize/snap is per-output (output under titlebar wins).
-5. **Phase 4 — IPC + anyui.**
-   - 4a. `libcompositor` extended with `CMD_GET_OUTPUTS` /
-     `CMD_APPLY_LAYOUT` / `EVT_OUTPUT_CHANGED`.
-   - 4b. `libanyui_client` exposes `Screen::list / primary / for_window`.
-   - 4c. Deskbar and wallpaper instances per output.
-6. **Phase 5 — services + app.**
-   - 5a. `services/displayd` daemon: layout owner, hotplug responder,
-     persistence to `/System/etc/display.conf`.
-   - 5b. `libdisplay_client` for talking to displayd.
-   - 5c. `apps/display-settings` GUI: drag-arrange, mode picker,
-     mirror toggle.
-7. **Phase 6 — DPI/scale per output.** anyui scale-aware widgets.
-8. **Phase 7 — SPICE vdagent monitors-config** integration (incoming
-   client-driven layout changes, outgoing layout reports).
+### ✅ Phase 0 — host test infrastructure
+`scripts/run.sh --displays N` (integer, 1..16) and `--displays
+WIDTHxHEIGHT,WIDTHxHEIGHT,...` (per-monitor). Writes
+`/System/etc/displayd-seed.conf` for the latter form so displayd can
+seed confd at first boot.
+
+### ✅ Phase 1 — kernel display subsystem
+- 1a. `OutputMode` / `OutputInfo` / `OutputLayout` / `LayoutError` /
+  `DisplayEvent` + EDID CRC-64 hash in
+  `kernel/src/drivers/gpu/output.rs`.
+- 1b. `GpuDriver` trait per-output methods with single-output fallback:
+  `set_mode_for_output`, `mode_for_output`, `transfer_rect_for_output`,
+  `flush_for_output`, `update_rect_for_output`, `output_info`,
+  `set_output_mirror`, `apply_layout` (atomic 3-pass),
+  `poll_display_event`.
+- 1c. `virtio_gpu`: `Vec<ScanoutState>`, num_scanouts from
+  `virtio_gpu_config` offset 8, mirroring via shared `resource_id`,
+  hot-plug observation via `events_read` polling. Boot-time activation
+  of every advertised secondary scanout dodges the user-CR3 64-MiB
+  identity-map fault that hits when `alloc_contiguous` returns physmem
+  above that boundary.
+- 1d. Six display syscalls (700–705): `SYS_DISPLAY_LIST`,
+  `SYS_DISPLAY_SET_LAYOUT`, `SYS_DISPLAY_MAP_FB`, `SYS_DISPLAY_FLUSH`,
+  `SYS_DISPLAY_POLL_EVENT`, `SYS_REGISTER_DISPLAY_OWNER`.
+  `COMPOSITOR_PD` + `DISPLAY_OWNER_PD` two-PD privilege model so
+  displayd can apply layouts atomically without being the compositor.
+
+### ✅ Phase 2 — compositor refactor
+- 2a. `Vec<Output>` with virtual-desktop rectangles, lazy
+  `init_secondary_outputs()` after `Compositor::new`.
+- 2b/2c. Per-output render pass: scaled wallpaper, layer blits with
+  ARGB blend, drop shadows (linear falloff approximating the primary's
+  cache-baked shadows), rounded corners with anti-aliased mask, blur-
+  behind (uses the existing parameterised `blur_back_buffer_region`),
+  software cursor. HW cursor stays primary-only (driver-side).
+
+### ✅ Phase 3 — interactive concerns
+- 3a. Cursor clamps to `virtual_desktop_bounds()` so it traverses
+  output edges. HW cursor parks at the primary edge when on a
+  secondary; software-cursor layer renders on the secondary.
+- 3b. Maximize uses `output_at(titlebar_centre)` so the window
+  expands to the output it visually lives on. Menu bar exception
+  applies on the primary only.
+
+### ✅ Phase 4 — IPC + anyui
+- 4a. SYS_DISPLAY_LIST is open to every process — apps don't need
+  privileged IPC for read access. `libcompositor` extension turned
+  out to be redundant.
+- 4b. `libanyui_client::Screen` — `list`, `primary`, `at`,
+  `for_window`, `scale_px` helpers.
+- 4c. Wallpaper extends to secondaries (nearest-neighbour scaled).
+  Deskbar/menubar stays primary-only (matches modern macOS / Windows
+  defaults). Per-output deskbar mirroring tracked as a follow-up.
+
+### ✅ Phase 5 + 10 — services + auto-keyed setups
+- 5a/b/c. `services/displayd` daemon, `libs/libdisplay_client`,
+  `apps/display-settings` GUI (GNOME-style toolbar + list + detail
+  pane). All persistence in confd — no separate display.conf file.
+- 10. Auto-keyed setups: layout key is the CRC-64 of the sorted
+  EDID-hash set. Plugging the same monitors at home and at the
+  office produces the same hash and therefore the same layout
+  automatically. Each `CMD_SET_OUTPUT_CONFIG` writes to both the
+  live keys and the active setup's keys, so re-plugging restores
+  the layout exactly. No manual save step.
+  - Schema lives at `services/displayd/config/setups/<setup_hash>/`
+    in confd.
+  - Setup hash is recomputed at boot and on every `HotplugChanged`
+    event. Bug-fix that surfaced during validation: `LayoutApplied`
+    must NOT trigger a re-apply (was an infinite write loop that
+    crashed confd within seconds under the new auto-save model).
+- 9f window reflow: at hot-plug or layout-applied, the compositor
+  drops vanished outputs from `outputs[]` and moves any window
+  that no longer lives on an active output onto the primary.
+- 8 titlebar / window-switcher integration: per-other-output buttons
+  on every title bar, coloured M{N} badge in the shortcut overlay,
+  right-click on a card moves the window.
+
+### ✅ Phase 7 — SPICE vdagent monitors-config
+vdagent parses `VD_AGENT_MONITORS_CONFIG`, builds a `LayoutEntry`
+list, forwards via `libdisplay_client::push_layout`. Resize the SPICE
+client window → resize chain reaches the kernel atomically.
+
+### ⏳ Phase 6 — DPI/scale per output (open)
+`Screen.scale_percent` exists and per-output scale is persisted, but
+the anyui widget pipeline (font sizes, padding, hit-test) doesn't
+use it yet — needs a touch on ~50 widgets. Tracked.
+
+### ⏳ Phase 9c-extended — drag-arrange canvas (open)
+Layout preview in `display-settings` is currently a one-line text
+summary (`[1] 1920×1080 SAM* [2] 1280×800`). Drag-to-reposition
+needs a custom Canvas widget with hit-tracking + feedback to
+displayd. Tracked.
+
+### ⏳ Phase 2c-ext-2 — HW-cursor cross-output (open)
+Driver-side `UPDATE_CURSOR` currently programs scanout 0 only. The
+software-cursor layer covers visual correctness on the secondaries;
+proper HW-cursor routing would mean compositor-side state tracking
+(which output owns the cursor right now → emit UPDATE on that
+scanout, CLEAR on the others). Tracked as polish.
 
 ## Open design questions (decide before the relevant phase)
 
-- **Independent vs. global window numbering**: when a window is dragged
-  between outputs, does it keep its window-id? *Working assumption: yes,
-  windows are global, only their `virtual_rect` changes.* Revisit before
-  Phase 3b.
+- **Independent vs. global window numbering**: windows keep their
+  global id, only the `virtual_rect` changes when they move
+  between outputs. (Decided + implemented.)
 - **Per-output workspaces**: out of scope for the first cut. Revisit
-  after Phase 5 ships.
+  if multi-workspace lands.
 - **Color management**: out of scope. Document as future work.
+- **Per-output deskbar / menubar**: macOS-style "menubar on primary
+  only" is the current default. A `mirror_menubar` toggle in
+  display-settings could expose Windows-style "menubar everywhere";
+  decide based on user demand.
