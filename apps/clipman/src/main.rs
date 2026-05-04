@@ -66,9 +66,9 @@ struct AppState {
     retention_field: anyui::TextField,
     settings_active: bool,
 
-    // Add-text panel
+    // Add-text panel (multi-line)
     add_panel: anyui::View,
-    add_field: anyui::TextField,
+    add_field: anyui::TextArea,
     add_active: bool,
 
     entries: Vec<ClipEntry>,
@@ -277,9 +277,13 @@ fn populate_grid(s: &AppState) {
 }
 
 fn make_preview(text: &str) -> String {
-    // Take first line, truncate to MAX_PREVIEW_LEN
-    let first_line = text.split('\n').next().unwrap_or(text);
-    let trimmed = first_line.trim();
+    // Skip leading empty/whitespace-only lines, then take first non-empty line
+    let first_line = text
+        .split('\n')
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let trimmed = first_line;
     if trimmed.len() > MAX_PREVIEW_LEN {
         let mut s = String::from(&trimmed[..MAX_PREVIEW_LEN]);
         s.push_str("...");
@@ -529,6 +533,124 @@ fn copy_file_to_clipboard() {
     });
 }
 
+fn view_selected() {
+    let s = app();
+    let row = s.grid.selected_row();
+    if row == u32::MAX {
+        return;
+    }
+    let row = row as usize;
+    if row >= s.entries.len() {
+        return;
+    }
+    let text = s.entries[row].text.clone();
+    show_view_dialog(&text);
+}
+
+fn show_view_dialog(text: &str) {
+    let tc = anyui::theme::colors();
+    const W: u32 = 640;
+    const H: u32 = 420;
+    let win = anyui::Window::new(i18n::t("View / Edit Entry"), -1, -1, W, H);
+    let win_id = win.id();
+
+    let footer = anyui::View::new();
+    footer.set_dock(anyui::DOCK_BOTTOM);
+    footer.set_size(W, 50);
+    footer.set_color(tc.sidebar_bg);
+    win.add(&footer);
+
+    let btn_save = anyui::Button::new(i18n::t("Save as New Entry"));
+    btn_save.set_size(160, 30);
+    btn_save.set_position(12, 10);
+    btn_save.set_color(tc.success);
+    footer.add(&btn_save);
+
+    let btn_copy = anyui::Button::new(i18n::t("Copy to Clipboard"));
+    btn_copy.set_size(160, 30);
+    btn_copy.set_position((W as i32) - 270, 10);
+    btn_copy.set_color(tc.success);
+    footer.add(&btn_copy);
+
+    let btn_close = anyui::Button::new(i18n::t("Close"));
+    btn_close.set_size(90, 30);
+    btn_close.set_position((W as i32) - 100, 10);
+    btn_close.set_color(tc.control_bg);
+    footer.add(&btn_close);
+
+    let area = anyui::TextArea::new();
+    area.set_dock(anyui::DOCK_FILL);
+    area.set_read_only(false);
+    area.set_max_length(65536);
+    area.set_text(text);
+    win.add(&area);
+
+    let area_copy = area;
+    btn_copy.on_click(move |_| {
+        let mut buf = anyos_std::Vec::new();
+        buf.resize(65536, 0u8);
+        let n = area_copy.get_text(&mut buf);
+        let cur = match core::str::from_utf8(&buf[..n as usize]) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        if cur.trim().is_empty() {
+            return;
+        }
+        let s = app();
+        s.paused = true;
+        s.last_clipboard = String::from(cur);
+        anyui::clipboard_set(cur);
+        let msg = anyos_std::format!("{}: {}", i18n::t("Copied"), make_preview(cur));
+        s.status_label.set_text(&msg);
+        anyui::set_timer(1000, || {
+            app().paused = false;
+        });
+        anyui::Window::from_id(win_id).destroy();
+    });
+
+    let area_save = area;
+    btn_save.on_click(move |_| {
+        let mut buf = anyos_std::Vec::new();
+        buf.resize(65536, 0u8);
+        let n = area_save.get_text(&mut buf);
+        let cur = match core::str::from_utf8(&buf[..n as usize]) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        if cur.trim().is_empty() {
+            return;
+        }
+        let s = app();
+        s.paused = true;
+        s.last_clipboard = String::from(cur);
+        anyui::clipboard_set(cur);
+        let text_owned = String::from(cur);
+        let preview = make_preview(cur);
+        s.entries.retain(|e| e.text != text_owned);
+        s.entries.insert(
+            0,
+            ClipEntry {
+                text: text_owned,
+                time: now_string(),
+            },
+        );
+        save_history(s);
+        populate_grid(s);
+        s.grid.set_selected_row(0);
+        let msg = anyos_std::format!("{}: {}", i18n::t("Saved"), preview);
+        s.status_label.set_text(&msg);
+        anyui::set_timer(1000, || {
+            app().paused = false;
+        });
+        anyui::Window::from_id(win_id).destroy();
+    });
+
+    btn_close.on_click(move |_| {
+        anyui::Window::from_id(win_id).destroy();
+    });
+}
+
 fn toggle_add_panel() {
     let s = app();
     if s.add_active {
@@ -557,7 +679,8 @@ fn close_add_panel() {
 
 fn submit_add_text() {
     let s = app();
-    let mut buf = [0u8; 4096];
+    let mut buf = anyos_std::Vec::new();
+    buf.resize(16384, 0u8);
     let len = s.add_field.get_text(&mut buf);
     if len == 0 {
         close_add_panel();
@@ -699,6 +822,7 @@ fn main() {
         .end_menu()
         .menu(i18n::t("Edit"))
         .item(10, i18n::t("Paste Selected"), 0)
+        .item(13, i18n::t("View Full Text"), 0)
         .item(11, i18n::t("Delete Selected"), 0)
         .separator()
         .item(12, i18n::t("Clear History"), 0)
@@ -715,6 +839,9 @@ fn main() {
 
     let btn_copy = toolbar.add_icon_button(i18n::t("Paste"));
     btn_copy.set_size(52, 28);
+
+    let btn_view = toolbar.add_icon_button(i18n::t("View"));
+    btn_view.set_size(52, 28);
 
     let btn_delete = toolbar.add_icon_button(i18n::t("Delete"));
     btn_delete.set_size(56, 28);
@@ -792,32 +919,33 @@ fn main() {
 
     win.add(&settings_panel);
 
-    // ── Add-text panel (DOCK_BOTTOM, above settings) ──
+    // ── Add-text panel (DOCK_BOTTOM, above settings) — multi-line ──
     let add_panel = anyui::View::new();
     add_panel.set_dock(anyui::DOCK_BOTTOM);
-    add_panel.set_size(600, 36);
+    add_panel.set_size(600, 180);
     add_panel.set_color(tc.card_bg);
     add_panel.set_visible(false);
 
-    let add_lbl = anyui::Label::new(i18n::t("Text:"));
-    add_lbl.set_position(8, 9);
+    let add_lbl = anyui::Label::new(i18n::t("Text (multi-line):"));
+    add_lbl.set_position(8, 6);
     add_lbl.set_text_color(tc.text);
     add_lbl.set_font_size(13);
     add_panel.add(&add_lbl);
 
-    let add_field = anyui::TextField::new();
-    add_field.set_position(50, 4);
-    add_field.set_size(440, 26);
+    let add_field = anyui::TextArea::new();
+    add_field.set_position(8, 28);
+    add_field.set_size(584, 110);
+    add_field.set_max_length(16384);
     add_panel.add(&add_field);
 
     let btn_add_ok = anyui::Button::new(i18n::t("Copy"));
-    btn_add_ok.set_position(500, 4);
-    btn_add_ok.set_size(50, 26);
+    btn_add_ok.set_position(478, 146);
+    btn_add_ok.set_size(60, 28);
     add_panel.add(&btn_add_ok);
 
-    let btn_add_cancel = anyui::Button::new("X");
-    btn_add_cancel.set_position(556, 4);
-    btn_add_cancel.set_size(28, 26);
+    let btn_add_cancel = anyui::Button::new(i18n::t("Cancel"));
+    btn_add_cancel.set_position(544, 146);
+    btn_add_cancel.set_size(60, 28);
     add_panel.add(&btn_add_cancel);
 
     win.add(&add_panel);
@@ -837,8 +965,9 @@ fn main() {
 
     // Context menu
     let ctx_items = anyos_std::format!(
-        "{}|-|{}|{}|-|{}|{}",
+        "{}|{}|-|{}|{}|-|{}|{}",
         i18n::t("Copy to Clipboard"),
+        i18n::t("View Full Text"),
         i18n::t("Delete Entry"),
         i18n::t("Delete All"),
         i18n::t("Add Text"),
@@ -890,6 +1019,9 @@ fn main() {
     btn_copy.on_click(|_| {
         copy_to_clipboard();
     });
+    btn_view.on_click(|_| {
+        view_selected();
+    });
     btn_delete.on_click(|_| {
         delete_selected();
     });
@@ -923,17 +1055,15 @@ fn main() {
     btn_add_cancel.on_click(|_| {
         close_add_panel();
     });
-    add_field.on_submit(|_| {
-        submit_add_text();
-    });
 
     // Context menu
     ctx_menu.on_item_click(|e| match e.index {
         0 => copy_to_clipboard(),
-        2 => delete_selected(),
-        3 => clear_all(),
-        5 => toggle_add_panel(),
-        6 => copy_file_to_clipboard(),
+        1 => view_selected(),
+        3 => delete_selected(),
+        4 => clear_all(),
+        6 => toggle_add_panel(),
+        7 => copy_file_to_clipboard(),
         _ => {}
     });
 
@@ -944,6 +1074,7 @@ fn main() {
             anyui::quit();
         }
         10 => copy_to_clipboard(),
+        13 => view_selected(),
         11 => delete_selected(),
         12 => clear_all(),
         _ => {}
