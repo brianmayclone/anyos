@@ -16,7 +16,20 @@
 
 extern crate alloc;
 
+#[cfg(not(feature = "host"))]
 use dynlink::{dl_open, dl_sym, DlHandle};
+#[cfg(feature = "host")]
+type DlHandle = ();
+
+#[cfg(feature = "host")]
+fn dl_open(_path: &str) -> Option<DlHandle> {
+    None
+}
+
+#[cfg(feature = "host")]
+fn dl_sym(_handle: &DlHandle, _name: &str) -> Option<*const ()> {
+    None
+}
 
 // ── GL Type re-exports ──────────────────────────────────────────────────────
 

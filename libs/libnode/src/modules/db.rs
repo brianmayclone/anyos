@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use libdb_client::Database;
@@ -9,7 +10,7 @@ use super::util::object;
 
 const DB_HANDLE_KEY: &str = "__anyos_db_handle__";
 
-static mut DATABASES: Option<Vec<Option<Database>>> = None;
+static mut DATABASES: *mut Vec<Option<Database>> = core::ptr::null_mut();
 
 pub fn module() -> JsValue {
     let mut module = JsObject::new();
@@ -39,7 +40,10 @@ fn open(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         vm.pending_exception = Some(vm.make_type_error("db.open requires a database path"));
         return JsValue::Undefined;
     }
-    let _ = libdb_client::init();
+    if !libdb_client::init() {
+        vm.pending_exception = Some(vm.make_type_error("libdb is not available"));
+        return JsValue::Undefined;
+    }
     match Database::open(&path) {
         Some(database) => make_database(database),
         None => {
@@ -50,7 +54,10 @@ fn open(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 fn open_memory(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let _ = libdb_client::init();
+    if !libdb_client::init() {
+        vm.pending_exception = Some(vm.make_type_error("libdb is not available"));
+        return JsValue::Undefined;
+    }
     match Database::open_in_memory() {
         Some(database) => make_database(database),
         None => {
@@ -84,13 +91,16 @@ fn exec(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         vm.pending_exception = Some(vm.make_type_error("db.exec requires SQL"));
         return JsValue::Undefined;
     }
-    with_database(vm, |database| match database.exec(&sql) {
+    let Some(database) = current_database(vm) else {
+        return JsValue::Undefined;
+    };
+    match database.exec(&sql) {
         Ok(rows) => JsValue::Number(rows as f64),
         Err(message) => {
             vm.pending_exception = Some(vm.make_type_error(&message));
             JsValue::Undefined
         }
-    })
+    }
 }
 
 fn query(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -102,23 +112,29 @@ fn query(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         vm.pending_exception = Some(vm.make_type_error("db.query requires SQL"));
         return JsValue::Undefined;
     }
-    with_database(vm, |database| match database.query(&sql) {
+    let Some(database) = current_database(vm) else {
+        return JsValue::Undefined;
+    };
+    match database.query(&sql) {
         Ok(result) => query_result_to_js(&result),
         Err(message) => {
             vm.pending_exception = Some(vm.make_type_error(&message));
             JsValue::Undefined
         }
-    })
+    }
 }
 
 fn flush(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    with_database(vm, |database| match database.flush() {
+    let Some(database) = current_database(vm) else {
+        return JsValue::Undefined;
+    };
+    match database.flush() {
         Ok(()) => JsValue::Bool(true),
         Err(message) => {
             vm.pending_exception = Some(vm.make_type_error(&message));
             JsValue::Undefined
         }
-    })
+    }
 }
 
 fn close(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -130,7 +146,10 @@ fn close(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn last_error(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    with_database(vm, |database| JsValue::String(database.last_error()))
+    let Some(database) = current_database(vm) else {
+        return JsValue::Undefined;
+    };
+    JsValue::String(database.last_error())
 }
 
 fn query_result_to_js(result: &libdb_client::QueryResult) -> JsValue {
@@ -181,42 +200,52 @@ fn cell_to_js(result: &libdb_client::QueryResult, row: u32, col: u32) -> JsValue
     JsValue::String(String::new())
 }
 
-fn with_database<F>(vm: &mut Vm, action: F) -> JsValue
-where
-    F: FnOnce(&Database) -> JsValue,
-{
+fn current_database(vm: &mut Vm) -> Option<&'static Database> {
     let id = vm.current_this.get_property(DB_HANDLE_KEY).to_number() as usize;
     if id == 0 {
         vm.pending_exception = Some(vm.make_type_error("database is closed"));
-        return JsValue::Undefined;
+        return None;
     }
     match get_database(id) {
-        Some(database) => action(database),
+        Some(database) => Some(database),
         None => {
             vm.pending_exception = Some(vm.make_type_error("database handle is invalid"));
-            JsValue::Undefined
+            None
         }
     }
 }
 
 fn store_database(database: Database) -> usize {
-    unsafe {
-        let databases = DATABASES.get_or_insert_with(Vec::new);
-        databases.push(Some(database));
-        databases.len()
-    }
+    let databases = databases();
+    databases.push(Some(database));
+    databases.len()
 }
 
 fn get_database(id: usize) -> Option<&'static Database> {
     unsafe {
         let idx = id.checked_sub(1)?;
-        DATABASES.as_ref()?.get(idx)?.as_ref()
+        if DATABASES.is_null() {
+            return None;
+        }
+        (&*DATABASES).get(idx)?.as_ref()
     }
 }
 
 fn take_database(id: usize) -> Option<Database> {
     unsafe {
         let idx = id.checked_sub(1)?;
-        DATABASES.as_mut()?.get_mut(idx)?.take()
+        if DATABASES.is_null() {
+            return None;
+        }
+        (&mut *DATABASES).get_mut(idx)?.take()
+    }
+}
+
+fn databases() -> &'static mut Vec<Option<Database>> {
+    unsafe {
+        if DATABASES.is_null() {
+            DATABASES = Box::into_raw(Box::new(Vec::new()));
+        }
+        &mut *DATABASES
     }
 }
