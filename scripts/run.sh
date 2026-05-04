@@ -1210,7 +1210,24 @@ if [ "$PERSIST_POWER" = true ]; then
     POWER_FLAGS="-no-reboot -no-shutdown"
 fi
 
+# Multi-monitor input: QEMU's vmmouse (VMware backdoor, bound to the
+# "pc" machine type via vmport) sends *absolute* pointer coords scoped
+# to the primary scanout's framebuffer dimensions — there's no way for
+# the guest to tell which SDL window the click happened in. With
+# multiple displays the cursor can never reach the secondaries through
+# vmmouse, and any click on an SDL window past the first is mis-routed
+# back to the primary.
+#
+# Force the machine type to disable vmport so the guest falls back to
+# PS/2 (relative dx/dy) and the cursor traverses output edges via
+# accumulation, as Phase 3a wired up.
+MACHINE_FLAGS=""
+if [ "$DISPLAYS" -gt 1 ]; then
+    MACHINE_FLAGS="-machine pc,vmport=off"
+fi
+
 QEMU_CMD="$QEMU_BIN_ESC \
+    $MACHINE_FLAGS \
     $CPU_FLAGS \
     $KVM_FLAGS \
     $BIOS_FLAGS \

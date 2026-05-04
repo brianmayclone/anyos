@@ -412,6 +412,24 @@ impl Desktop {
 
     /// Apply an absolute mouse position (from VMMDev).
     fn apply_mouse_move_absolute(&mut self, x: i32, y: i32) {
+        // Multi-monitor escape hatch: QEMU's SDL multi-window backend
+        // can't tell the guest which window a vmmouse click came from
+        // — the absolute coords are always scoped to the primary
+        // scanout's framebuffer dimensions, so any click on a
+        // secondary SDL window mis-routes back to the primary and the
+        // cursor can never reach a secondary at all.
+        //
+        // When more than one output is active we therefore drop
+        // absolute events on the floor and rely entirely on the PS/2
+        // relative path (apply_mouse_move) — that one is correctly
+        // output-agnostic because dx/dy accumulate across the virtual
+        // desktop. run.sh additionally sets `-machine pc,vmport=off`
+        // for --displays >1 so vmmouse never engages in the first
+        // place; this branch is the safety net.
+        if self.compositor.outputs.len() >= 2 {
+            return;
+        }
+
         // Absolute pointer (vmmouse / tablet) — clamp to the union of
         // all outputs, same logic as the relative path above.
         let (vmin_x, _vmin_y, vmax_x, _vmax_y) = self.compositor.virtual_desktop_bounds();
