@@ -8,6 +8,7 @@
 extern crate alloc;
 
 pub mod modules;
+mod native_builtins;
 pub mod npm;
 pub mod options;
 pub mod resolver;

@@ -227,14 +227,64 @@ fn expanded_core_builtin_modules_are_resolvable() {
             'node:fs/promises', 'node:dns/promises', 'node:timers/promises', \
             'node:stream/promises', 'node:stream/consumers', 'node:stream/web', \
             'node:path/posix', 'node:path/win32', 'node:util/types', \
-            'node:string_decoder', 'node:constants', 'node:tls' \
+            'node:string_decoder', 'node:constants', 'node:tls', \
+            '@anyos/confd', 'node:confd', '@anyos/db', 'node:db', '@anyos/gl', 'node:gl' \
         ]; \
         mods.map(function(name) { return typeof require(name); }).join(':')",
     );
 
     assert_eq!(
         value.to_js_string(),
-        "object:object:object:object:object:object:object:object:object:object:object:object"
+        "object:object:object:object:object:object:object:object:object:object:object:object:object:object:object:object:object:object"
+    );
+}
+
+#[test]
+fn confd_builtin_exposes_abstract_configuration_api() {
+    let root = temp_project("confd-builtin");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let confd = require('@anyos/confd'); \
+        let client = confd.createClient({ scope: 'system', clientName: 'node-test' }); \
+        [ \
+            typeof confd.get, typeof confd.set, typeof confd.mkdir, typeof confd.delete, \
+            typeof confd.listChildren, typeof confd.audit, typeof confd.isAvailable, \
+            typeof client.get, typeof require('node:anyos-confd').setBool, \
+            confd.SCOPE_SYSTEM, confd.isAvailable() \
+        ].join(':')",
+    );
+
+    assert_eq!(
+        value.to_js_string(),
+        "function:function:function:function:function:function:function:function:function:system:false"
+    );
+}
+
+#[test]
+fn libdb_and_libgl_builtins_expose_native_binding_shapes() {
+    let root = temp_project("db-gl-builtins");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        const db = require('@anyos/db'); \
+        const gl = require('@anyos/gl'); \
+        [ \
+            typeof db.open, typeof db.openMemory, typeof db.init, \
+            typeof require('node:anyos-db').open, \
+            typeof gl.init, typeof gl.clearColor, typeof gl.createShader, \
+            typeof gl.math.sin, typeof require('node:anyos-gl').drawArrays, \
+            gl.TRIANGLES, gl.COLOR_BUFFER_BIT \
+        ].join(':')",
+    );
+
+    assert_eq!(
+        value.to_js_string(),
+        "function:function:function:function:function:function:function:function:function:4:16384"
     );
 }
 

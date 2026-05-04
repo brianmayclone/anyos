@@ -6,11 +6,15 @@ edition = "2021"
 [features]
 default = ["anyui"]
 anyui = ["dep:libanyui_client", "libanyui_client/image"]
-host = ["anyui", "anyos_std/host", "libhttp_client/host", "libjs/host", "libtls/host", "libuv/host", "libzip_client/host", "libanyui_client/host"]
+host = ["anyui", "anyos_std/host", "libconf/host", "libhttp_client/host", "libjs/host", "libtls/host", "libuv/host", "libzip_client/host", "libanyui_client/host"]
 
 [dependencies]
 anyos_std = { path = "../stdlib" }
+dynlink = { path = "../dynlink" }
 libanyui_client = { path = "../libanyui_client", optional = true, default-features = false }
+libconf = { path = "../libconf" }
+libdb_client = { path = "../libdb_client" }
+libgl_client = { path = "../libgl_client" }
 libhttp_client = { path = "../libhttp_client" }
 libjs = { path = "../libjs" }
 libtls = { path = "../libtls" }

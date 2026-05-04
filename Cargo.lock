@@ -1373,7 +1373,11 @@ name = "libnode"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "dynlink",
  "libanyui_client",
+ "libconf",
+ "libdb_client",
+ "libgl_client",
  "libhttp_client",
  "libjs",
  "libtls",

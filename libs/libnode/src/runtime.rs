@@ -296,20 +296,7 @@ impl NodeRuntime {
             .register_module_object("node:http", http.clone());
         self.engine.register_module_object("https", http.clone());
         self.engine.register_module_object("node:https", http);
-        let ffi = modules::ffi_module(&self.policy);
-        self.engine
-            .register_module_object("@anyos/ffi", ffi.clone());
-        self.engine.register_module_object("node:ffi", ffi.clone());
-        self.engine.register_module_object("node:anyos-ffi", ffi);
-        let anyui = modules::anyui_module(&self.policy);
-        self.engine
-            .register_module_object("@anyos/anyui", anyui.clone());
-        self.engine.register_module_object("node:anyui", anyui);
-        let image = modules::image_module(&self.policy);
-        self.engine
-            .register_module_object("@anyos/image", image.clone());
-        self.engine
-            .register_module_object("node:anyos-image", image);
+        crate::native_builtins::install(&mut self.engine, &self.policy);
         self.engine
             .register_module_object("node:uv", modules::uv_module(self.event_loop.uv_loop()));
         self.install_node_error_extensions();
