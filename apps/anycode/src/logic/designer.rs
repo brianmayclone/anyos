@@ -1648,7 +1648,11 @@ fn ensure_event_stubs(events_path: &str, doc: &DesignerDocument) -> Result<(), &
 
 fn event_handler_bindings(control: &DesignerControl) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    if event_hook_method(control.kind.as_str(), "OnClick").is_some() {
+    let has_explicit_on_click = control
+        .properties
+        .iter()
+        .any(|property| same_property(&property.name, "OnClick") && !property.value.is_empty());
+    if !has_explicit_on_click && event_hook_method(control.kind.as_str(), "OnClick").is_some() {
         out.push((String::from("OnClick"), control.property_value("OnClick")));
     }
     for property in &control.properties {

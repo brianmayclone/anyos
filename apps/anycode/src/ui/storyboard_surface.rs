@@ -459,6 +459,9 @@ fn render_storyboard(
         tc.separator,
         zoom,
     );
+    for scene in &doc.scenes {
+        draw_scene(canvas, scene, zoom);
+    }
     for segue in &doc.segues {
         draw_segue(
             canvas,
@@ -467,9 +470,6 @@ fn render_storyboard(
             zoom,
             selected_segue == Some(segue.id.as_str()),
         );
-    }
-    for scene in &doc.scenes {
-        draw_scene(canvas, scene, zoom);
     }
 }
 
