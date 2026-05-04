@@ -39,7 +39,24 @@ use libconf_schema::{
 };
 
 /// Top-level globals that don't depend on a specific monitor.
-const DISPLAYD_DIRS: &[&str] = &["config", "config/global", "config/output"];
+///
+/// Profiles ("home", "office", "mobile") let users save the layout for
+/// a specific monitor combination and have displayd auto-pick the
+/// matching one whenever the connected EDID set changes (hot-plug,
+/// resume from suspend with a new dock, …).
+///
+/// `config/profiles/<name>/edids`            (string, comma-separated
+///                                            EDID hex hashes)
+/// `config/profiles/<name>/output/<edid>/...` (same per-output keys as
+///                                            the live `config/output/`)
+/// `config/active_profile`                   (string, current profile;
+///                                            empty = no profile active)
+const DISPLAYD_DIRS: &[&str] = &[
+    "config",
+    "config/global",
+    "config/output",
+    "config/profiles",
+];
 
 const DISPLAYD_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     // mirror vs. extended desktop
@@ -51,6 +68,9 @@ const DISPLAYD_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     // "above_primary" / "left_of_primary". Used only when an
     // unknown EDID hash shows up (no per-output entry yet).
     default_string("config/global/default_attach_side", "right_of_primary"),
+    // Currently-active profile name (empty = no profile applied,
+    // running off the bare config/output/* values).
+    default_string("config/active_profile", ""),
 ];
 
 const DISPLAYD_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
@@ -90,5 +110,37 @@ pub(crate) fn edid_hex(hash: u64) -> alloc::string::String {
     for shift in (0..64).step_by(4).rev() {
         s.push(chars[((hash >> shift) & 0xF) as usize] as char);
     }
+    s
+}
+
+/// Build the relative path under `config/profiles/<name>/<key>` for a
+/// per-profile global value (e.g. `edids`, `friendly_name`).
+pub(crate) fn profile_key(name: &str, key: &str) -> alloc::string::String {
+    use alloc::string::String;
+    let mut s = String::with_capacity(20 + name.len() + key.len());
+    s.push_str("config/profiles/");
+    s.push_str(name);
+    s.push('/');
+    s.push_str(key);
+    s
+}
+
+/// Build the relative path for a per-output value inside a profile —
+/// `config/profiles/<name>/output/<edid_hex>/<key>`. Same shape as
+/// the live `output_key` so the same OutputConfig blob can be written
+/// into either namespace.
+pub(crate) fn profile_output_key(
+    profile: &str,
+    edid_hex: &str,
+    key: &str,
+) -> alloc::string::String {
+    use alloc::string::String;
+    let mut s = String::with_capacity(28 + profile.len() + edid_hex.len() + key.len());
+    s.push_str("config/profiles/");
+    s.push_str(profile);
+    s.push_str("/output/");
+    s.push_str(edid_hex);
+    s.push('/');
+    s.push_str(key);
     s
 }

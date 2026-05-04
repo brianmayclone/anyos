@@ -74,6 +74,24 @@ pub const EVT_OUTPUT_CONFIG_OK: u32 = 0x700A;
 pub const CMD_SET_GLOBAL_CONFIG: u32 = 0x700B;
 pub const EVT_GLOBAL_CONFIG_OK: u32 = 0x700C;
 
+/// Save the current live config under a named profile. evt[2] is an
+/// SHM id holding a 32-byte UTF-8 profile name (null-padded).
+pub const CMD_SAVE_PROFILE: u32 = 0x700D;
+pub const EVT_PROFILE_SAVED: u32 = 0x700E;
+
+/// Delete a saved profile (only removes the index entry; the per-
+/// output keys remain in the registry for now). evt[2] = SHM with
+/// the profile name.
+pub const CMD_DELETE_PROFILE: u32 = 0x700F;
+pub const EVT_PROFILE_DELETED: u32 = 0x7010;
+
+/// Load a saved profile and re-apply the layout immediately. evt[2]
+/// = SHM with the profile name. Used by display-settings to switch
+/// profiles manually (e.g. user has 'home' saved but wants to test
+/// the 'office' layout while still at home).
+pub const CMD_LOAD_PROFILE: u32 = 0x7011;
+pub const EVT_PROFILE_LOADED: u32 = 0x7012;
+
 pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
     match evt[0] {
         CMD_LIST_OUTPUTS => {
@@ -167,6 +185,34 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
             crate::apply_persisted_layout();
             [EVT_GLOBAL_CONFIG_OK, r, 0, 0, 0]
         }
+        CMD_SAVE_PROFILE => {
+            let name = unsafe { read_profile_name(evt[2]) };
+            let ok = if name.is_empty() {
+                false
+            } else {
+                crate::save_current_as_profile(&name)
+            };
+            [EVT_PROFILE_SAVED, if ok { 0 } else { u32::MAX }, 0, 0, 0]
+        }
+        CMD_DELETE_PROFILE => {
+            let name = unsafe { read_profile_name(evt[2]) };
+            let ok = if name.is_empty() {
+                false
+            } else {
+                crate::delete_profile(&name)
+            };
+            [EVT_PROFILE_DELETED, if ok { 0 } else { u32::MAX }, 0, 0, 0]
+        }
+        CMD_LOAD_PROFILE => {
+            let name = unsafe { read_profile_name(evt[2]) };
+            let ok = if name.is_empty() {
+                false
+            } else {
+                crate::load_profile_by_name(&name)
+            };
+            crate::apply_persisted_layout();
+            [EVT_PROFILE_LOADED, if ok { 0 } else { u32::MAX }, 0, 0, 0]
+        }
         CMD_PUSH_LAYOUT => {
             // Pushed by libdisplay_client::push_layout (in particular
             // vdagent forwarding a SPICE VD_AGENT_MONITORS_CONFIG).
@@ -256,6 +302,26 @@ unsafe fn write_output_config(addr: u64) -> u32 {
         }
     }
     0
+}
+
+/// SHM-resident profile name: 32 bytes UTF-8, null-padded. Used by
+/// CMD_{SAVE,DELETE,LOAD}_PROFILE.
+unsafe fn read_profile_name(shm_id: u32) -> alloc::string::String {
+    if shm_id == 0 {
+        return alloc::string::String::new();
+    }
+    let addr = ipc::shm_map(shm_id);
+    if addr == 0 {
+        return alloc::string::String::new();
+    }
+    let bytes = core::slice::from_raw_parts(addr as *const u8, 32);
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(32);
+    let s = core::str::from_utf8(&bytes[..end])
+        .unwrap_or("")
+        .trim()
+        .into();
+    ipc::shm_unmap(shm_id);
+    s
 }
 
 /// Read a GlobalConfigBlob and persist `mirror_mode` and the

@@ -43,6 +43,13 @@ pub const EVT_OUTPUT_CONFIG_OK: u32 = 0x700A;
 pub const CMD_SET_GLOBAL_CONFIG: u32 = 0x700B;
 pub const EVT_GLOBAL_CONFIG_OK: u32 = 0x700C;
 
+pub const CMD_SAVE_PROFILE: u32 = 0x700D;
+pub const EVT_PROFILE_SAVED: u32 = 0x700E;
+pub const CMD_DELETE_PROFILE: u32 = 0x700F;
+pub const EVT_PROFILE_DELETED: u32 = 0x7010;
+pub const CMD_LOAD_PROFILE: u32 = 0x7011;
+pub const EVT_PROFILE_LOADED: u32 = 0x7012;
+
 /// Per-output settings as persisted in confd. Marshalled to displayd
 /// via SHM (96 bytes), see CMD_SET_OUTPUT_CONFIG.
 #[repr(C)]
@@ -243,6 +250,56 @@ impl DisplaydClient {
         ipc::shm_unmap(shm);
         ipc::shm_destroy(shm);
         result
+    }
+
+    fn send_named_profile(&self, cmd: u32, want: u32, name: &str) -> Option<u32> {
+        if name.is_empty() || name.len() > 31 {
+            return Some(u32::MAX);
+        }
+        let shm = ipc::shm_create(32);
+        if shm == u32::MAX {
+            return Some(u32::MAX);
+        }
+        let addr = ipc::shm_map(shm);
+        if addr == 0 {
+            ipc::shm_destroy(shm);
+            return Some(u32::MAX);
+        }
+        unsafe {
+            // Zero, then copy name bytes — leaves null padding.
+            core::ptr::write_bytes(addr as *mut u8, 0, 32);
+            core::ptr::copy_nonoverlapping(
+                name.as_ptr(),
+                addr as *mut u8,
+                name.len(),
+            );
+        }
+        let req = [cmd, self.sub, shm, 0, 0];
+        ipc::evt_chan_emit(self.chan, &req);
+        let result = self.wait_response(want).map(|e| e[1]);
+        ipc::shm_unmap(shm);
+        ipc::shm_destroy(shm);
+        result
+    }
+
+    /// Save the current live display config under a named profile
+    /// ("home", "office", "mobile", …). Captures the connected
+    /// monitor set + per-output settings so the profile is auto-
+    /// activated next time displayd sees this exact set of EDIDs.
+    pub fn save_profile(&self, name: &str) -> Option<u32> {
+        self.send_named_profile(CMD_SAVE_PROFILE, EVT_PROFILE_SAVED, name)
+    }
+
+    /// Manually activate a saved profile (display-settings "Switch to
+    /// office layout" button — matches the user's name regardless of
+    /// EDID-set fit).
+    pub fn load_profile(&self, name: &str) -> Option<u32> {
+        self.send_named_profile(CMD_LOAD_PROFILE, EVT_PROFILE_LOADED, name)
+    }
+
+    /// Drop a profile from the saved list.
+    pub fn delete_profile(&self, name: &str) -> Option<u32> {
+        self.send_named_profile(CMD_DELETE_PROFILE, EVT_PROFILE_DELETED, name)
     }
 
     /// Block until the next event with a matching `evt[0]` arrives.

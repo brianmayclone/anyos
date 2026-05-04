@@ -1391,6 +1391,54 @@ impl Desktop {
     }
 
     /// Toggle window maximize/restore.
+    /// Refresh the kernel-reported output set and reflow any windows
+    /// that were on outputs which just disappeared.
+    ///
+    /// Called from the management thread on display events
+    /// (HotplugChanged / LayoutApplied / PreferredModeChanged). For
+    /// every window currently sitting on a vanished output we move
+    /// it onto the primary, preserving its inset relative to its old
+    /// output's top-left so the user finds it roughly where it was —
+    /// just on a different physical screen. Same clamp/shrink rules
+    /// as the manual "send to monitor" button path so a window from
+    /// a 4K secondary that got unplugged still fits on the primary.
+    pub(crate) fn refresh_outputs_and_reflow(&mut self) {
+        let vanished = self.compositor.refresh_outputs();
+        if vanished.is_empty() {
+            return;
+        }
+        // Snapshot the windows that need to move (by id) before
+        // mutating, so the iteration doesn't see a Vec mid-edit.
+        let mut targets: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+        for w in &self.windows {
+            // For a vanished output we know the old virtual_x /
+            // virtual_y was somewhere in that output's old rect —
+            // but we don't keep the old rects after refresh_outputs
+            // removed them. Use a "any window outside the union of
+            // current outputs" heuristic: those are the ones that
+            // need rescuing.
+            let cx = w.x + (w.content_width as i32 / 2);
+            let cy = w.y;
+            let on_an_output = self.compositor.outputs.iter().any(|o| {
+                cx >= o.virtual_x
+                    && cy >= o.virtual_y
+                    && cx < o.virtual_x + o.fb_width as i32
+                    && cy < o.virtual_y + o.fb_height as i32
+            });
+            if !on_an_output {
+                targets.push(w.id);
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        let primary_id = self.compositor.outputs[0].id as u8;
+        for win_id in targets {
+            self.move_window_to_output(win_id, primary_id);
+        }
+        let _ = vanished;
+    }
+
     /// Output ids that should appear as "send to monitor" buttons in
     /// the title bar of `window_id`. The window's current output is
     /// excluded; remaining outputs are returned in id order, capped to

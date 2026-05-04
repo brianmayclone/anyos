@@ -254,6 +254,100 @@ impl Compositor {
         &self.outputs[0]
     }
 
+    /// Re-walk the kernel-reported output list, dropping any output
+    /// that no longer appears (monitor unplugged, profile-switched
+    /// to fewer screens) and adding new ones at the right of the
+    /// virtual desktop. Returns the list of output ids that vanished
+    /// in this refresh so the desktop layer can reflow windows that
+    /// were on those outputs.
+    ///
+    /// Keeps `outputs[0]` (the primary, mirroring the inline fb_*
+    /// fields) intact — we never remove it because that's the
+    /// kernel's boot-time scanout 0. Re-allocating its framebuffer
+    /// from user CR3 would hit the same page-fault problem the
+    /// boot-time setup was designed to dodge.
+    pub fn refresh_outputs(&mut self) -> alloc::vec::Vec<u32> {
+        let mut vanished: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+        let infos = anyos_std::display::list(16);
+        // Index by id for quick lookup.
+        let connected_ids: alloc::vec::Vec<u32> = infos
+            .iter()
+            .filter(|i| i.is_connected())
+            .map(|i| i.id)
+            .collect();
+
+        // Pass 1: mark vanished and drop their outputs entry. Skip
+        // outputs[0] (primary, never removed at runtime).
+        let mut i = 1;
+        while i < self.outputs.len() {
+            if !connected_ids.iter().any(|&id| id == self.outputs[i].id) {
+                vanished.push(self.outputs[i].id);
+                self.outputs.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        // Pass 2: add any newly connected output that isn't yet in
+        // self.outputs. Same code path as init_secondary_outputs
+        // (map_fb + zero + flush), just guarded by "not already
+        // tracked". For now we re-stack the entire virtual desktop
+        // left-to-right starting at 0 so positions stay sane after
+        // an output is removed; a richer policy (preserve saved
+        // virtual_x/y from confd) belongs in displayd.
+        let mut next_x = self.fb_width as i32;
+        for o in &self.outputs[1..] {
+            // Account for outputs we still have so the new one
+            // doesn't collide with them. (Sequential walk; works
+            // because we only ever stack to the right.)
+            next_x = next_x.max(o.virtual_x + o.fb_width as i32);
+        }
+        for info in infos.iter().skip(1) {
+            if !info.is_connected() {
+                continue;
+            }
+            if self.outputs.iter().any(|o| o.id == info.id) {
+                continue;
+            }
+            let (w, h) = if info.current_w > 0 && info.current_h > 0 {
+                (info.current_w, info.current_h)
+            } else if info.preferred_w > 0 && info.preferred_h > 0 {
+                (info.preferred_w, info.preferred_h)
+            } else {
+                continue;
+            };
+            let fb_info = match anyos_std::display::map_fb(info.id) {
+                Some(f) => f,
+                None => continue,
+            };
+            unsafe {
+                let pixels = (fb_info.height as usize) * (fb_info.pitch as usize / 4);
+                core::ptr::write_bytes(fb_info.fb_addr as *mut u32, 0, pixels);
+            }
+            let scale_percent = if fb_info.width >= 2560 { 200 } else { 100 };
+            self.outputs.push(Output {
+                id: info.id,
+                virtual_x: next_x,
+                virtual_y: 0,
+                fb_ptr: fb_info.fb_addr as *mut u32,
+                fb_width: fb_info.width,
+                fb_height: fb_info.height,
+                fb_pitch: fb_info.pitch,
+                back_buffer: alloc::vec![0u32; (fb_info.width * fb_info.height) as usize],
+                damage: Vec::with_capacity(32),
+                primary: false,
+                mirror_of: None,
+                scale_percent,
+            });
+            let _ = anyos_std::display::flush(info.id, 0, 0, fb_info.width, fb_info.height);
+            next_x += fb_info.width as i32;
+            let _ = w;
+            let _ = h;
+        }
+
+        vanished
+    }
+
     /// Discover and map secondary outputs reported by the kernel.
     ///
     /// Called once after `Compositor::new()` and `register_compositor()`.
