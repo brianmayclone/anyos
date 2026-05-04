@@ -954,18 +954,13 @@ fi
 VGA_FLAGS="-vga $VGA"
 RES_LABEL=""
 DISPLAYS_LABEL=""
-# Per-output VRAM budget. virtio-vga default vgamem is 16 MiB which is enough
-# for ~1920x1080x32 on a single scanout but cramped for multiple. Bump to a
-# safe ceiling so resource_create_2d for each scanout has headroom.
+# Per-output host-memory budget. virtio-vga / virtio-vga-gl take `max_hostmem`
+# (in bytes) which caps the total guest-allocated GPU resource size; it does
+# NOT take vgamem_mb (that's a QXL/std-vga property). 256 MiB per scanout
+# covers anything up to 4K @ 32bpp with comfortable headroom.
 if [ "$DISPLAYS" -gt 1 ]; then
-    # 32 MiB per scanout, rounded up to next power of two (qemu requirement).
-    PER=32
-    TOTAL=$(( PER * DISPLAYS ))
-    VGAMEM_MB=16
-    while [ "$VGAMEM_MB" -lt "$TOTAL" ]; do
-        VGAMEM_MB=$(( VGAMEM_MB * 2 ))
-    done
-    MAXOUT=",max_outputs=${DISPLAYS},vgamem_mb=${VGAMEM_MB}"
+    HOSTMEM_BYTES=$(( 256 * 1024 * 1024 * DISPLAYS ))
+    MAXOUT=",max_outputs=${DISPLAYS},max_hostmem=${HOSTMEM_BYTES}"
     DISPLAYS_LABEL=", displays: ${DISPLAYS}"
 else
     MAXOUT=""
