@@ -15,7 +15,19 @@ pub struct MouseEvent {
     pub dz: i32, // scroll wheel: -1 = scroll up, +1 = scroll down
     pub buttons: MouseButtons,
     pub event_type: MouseEventType,
+    /// Multi-monitor: which output produced this event. `0xFF` means
+    /// "no output association" (PS/2 relative, vmmouse legacy) — the
+    /// compositor's relative path handles those across all outputs.
+    /// `0..MAX_OUTPUTS` ties the event to a specific scanout, in
+    /// which case `dx`/`dy` (Move) or x/y (MoveAbsolute) are local
+    /// to that output's framebuffer and the compositor translates
+    /// them into the virtual desktop via output.virtual_x/y.
+    pub output_id: u8,
 }
+
+/// Sentinel value for "no specific output" — used by every legacy
+/// path (PS/2, vmmouse) so the compositor doesn't need to translate.
+pub const OUTPUT_AGNOSTIC: u8 = 0xFF;
 
 /// Type of mouse event that occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +273,7 @@ fn process_packet(state: &mut MouseState, dz: i32) {
         dz,
         buttons: new_buttons,
         event_type,
+        output_id: OUTPUT_AGNOSTIC,
     };
 
     // Must drop state lock before taking buffer lock
@@ -329,6 +342,7 @@ pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
             dz: 0,
             buttons,
             event_type: MouseEventType::MoveAbsolute,
+            output_id: OUTPUT_AGNOSTIC,
         });
     }
 
@@ -348,6 +362,7 @@ pub fn inject_absolute(x: i32, y: i32, buttons: MouseButtons) {
             dz: 0,
             buttons,
             event_type: btn_event_type,
+            output_id: OUTPUT_AGNOSTIC,
         });
     }
 }
@@ -368,6 +383,7 @@ pub fn inject_position(x: i32, y: i32) {
             dz: 0,
             buttons,
             event_type: MouseEventType::MoveAbsolute,
+            output_id: OUTPUT_AGNOSTIC,
         });
     }
 }

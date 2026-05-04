@@ -256,6 +256,7 @@ pub fn handle_irq() -> bool {
                 } else {
                     super::mouse::MouseEventType::Move
                 },
+                output_id: super::mouse::OUTPUT_AGNOSTIC,
             };
 
             // Boot splash: update HW cursor directly from IRQ (lag-free)
@@ -281,6 +282,7 @@ pub fn handle_irq() -> bool {
                     dz,
                     buttons,
                     event_type: super::mouse::MouseEventType::Scroll,
+                    output_id: super::mouse::OUTPUT_AGNOSTIC,
                 };
                 let mut buf = super::mouse::MOUSE_BUFFER.lock();
                 if buf.len() < 256 {

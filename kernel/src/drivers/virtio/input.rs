@@ -43,6 +43,9 @@ const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
 const REL_WHEEL: u16 = 0x08;
 
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
+
 const BTN_LEFT: u16 = 0x110;
 const BTN_RIGHT: u16 = 0x111;
 const BTN_MIDDLE: u16 = 0x112;
@@ -100,6 +103,34 @@ struct InputBus {
     /// with motion to produce a single mouse event per frame.
     cur_buttons: u8,
     prev_buttons: u8,
+
+    // ── Multi-monitor / per-output input ──
+    /// Output id this device is bound to. Multiple virtio-input
+    /// devices in the same VM are mapped to scanouts in init order:
+    /// the first mouse device goes to output 0, the second to
+    /// output 1, etc. `OUTPUT_AGNOSTIC` (= 0xFF) means "no specific
+    /// output" — used for keyboards and the lone-mouse case where
+    /// there's only one scanout to talk to.
+    output_id: u8,
+    /// True when the device emits absolute coordinates (EV_ABS / ABS_X
+    /// / ABS_Y) — i.e. tablets and SPICE absolute pointers. False for
+    /// classic relative virtio-mouse. Determines whether
+    /// `acc_dx/dy` accumulate deltas or carry the latest absolute
+    /// position.
+    is_absolute: bool,
+    /// ABS_INFO bounds for ABS_X / ABS_Y (min, max). Read once at
+    /// device init from VIRTIO_INPUT_CFG_ABS_INFO; used to scale
+    /// raw values to the output's framebuffer dimensions before
+    /// dispatching to the compositor.
+    abs_x_min: i32,
+    abs_x_max: i32,
+    abs_y_min: i32,
+    abs_y_max: i32,
+    /// Cached output dimensions (set when output_id is assigned).
+    /// Used to scale ABS values into output-local pixel coords before
+    /// the event leaves the IRQ handler.
+    out_w: u32,
+    out_h: u32,
 }
 
 unsafe impl Send for InputBus {}
@@ -203,10 +234,31 @@ impl InputBus {
                 _ => {}
             },
             EV_ABS => {
-                // TODO: tablet absolute positioning. Would require reading the
-                // device's ABS_INFO (min/max) via VIRTIO_INPUT_CFG_ABS_INFO and
-                // scaling to screen dims via vmmouse::get_screen_size_pub().
-                // Stubbed for now — relative mode is enough for SPICE.
+                // Tablet / absolute pointer (per-output in multi-monitor).
+                // Scale the raw value (range read once from ABS_INFO at
+                // init) into the bound output's local pixel coords, store
+                // in the same acc_dx / acc_dy slots that flush_frame
+                // ships out — but with self.is_absolute = true so the
+                // event_type comes out as MoveAbsolute and the
+                // compositor maps it via output_id + virtual_x/y.
+                let raw = ev.value as i32;
+                match ev.code {
+                    ABS_X => {
+                        let span = (self.abs_x_max - self.abs_x_min).max(1);
+                        let local = ((raw - self.abs_x_min) as i64
+                            * self.out_w as i64
+                            / span as i64) as i32;
+                        self.acc_dx = local.clamp(0, self.out_w as i32 - 1);
+                    }
+                    ABS_Y => {
+                        let span = (self.abs_y_max - self.abs_y_min).max(1);
+                        let local = ((raw - self.abs_y_min) as i64
+                            * self.out_h as i64
+                            / span as i64) as i32;
+                        self.acc_dy = local.clamp(0, self.out_h as i32 - 1);
+                    }
+                    _ => {}
+                }
             }
             EV_KEY => {
                 let pressed = ev.value != 0;
@@ -277,6 +329,7 @@ impl InputBus {
             crate::drivers::gpu::splash_cursor_move(dx, dy);
         }
 
+        let out = self.output_id;
         let mut buf = MOUSE_BUFFER.lock();
         if dz != 0 && buf.len() < 256 {
             buf.push_back(MouseEvent {
@@ -285,6 +338,7 @@ impl InputBus {
                 dz,
                 buttons: new_buttons,
                 event_type: MouseEventType::Scroll,
+                output_id: out,
             });
         }
         if buttons_changed && buf.len() < 256 {
@@ -299,14 +353,21 @@ impl InputBus {
                 dz: 0,
                 buttons: new_buttons,
                 event_type,
+                output_id: out,
             });
         } else if (dx != 0 || dy != 0) && dz == 0 && buf.len() < 256 {
+            let event_type = if self.is_absolute {
+                MouseEventType::MoveAbsolute
+            } else {
+                MouseEventType::Move
+            };
             buf.push_back(MouseEvent {
                 dx,
                 dy,
                 dz: 0,
                 buttons: new_buttons,
-                event_type: MouseEventType::Move,
+                event_type,
+                output_id: out,
             });
         }
         drop(buf);
@@ -567,6 +628,32 @@ impl Driver for VirtioInputDriver {
 const VIRTIO_INPUT_CFG_UNSET: u8 = 0x00;
 const VIRTIO_INPUT_CFG_ID_NAME: u8 = 0x01;
 const VIRTIO_INPUT_CFG_EV_BITS: u8 = 0x11;
+const VIRTIO_INPUT_CFG_ABS_INFO: u8 = 0x12;
+
+/// Read the device's `virtio_input_absinfo` for axis `axis_code`
+/// (ABS_X = 0, ABS_Y = 1, …). Returns `(min, max)` on success — the
+/// raw range we'll later scale into the bound output's pixel coords.
+/// 20 bytes total: u32 min, u32 max, u32 fuzz, u32 flat, u32 res; we
+/// only need min/max.
+fn read_abs_info(vdev: &VirtioDevice, axis_code: u16) -> Option<(i32, i32)> {
+    if vdev.device_cfg == 0 {
+        return None;
+    }
+    unsafe {
+        core::ptr::write_volatile((vdev.device_cfg) as *mut u8, VIRTIO_INPUT_CFG_ABS_INFO);
+        core::ptr::write_volatile((vdev.device_cfg + 1) as *mut u8, axis_code as u8);
+        let _ = core::ptr::read_volatile((vdev.device_cfg + 2) as *const u8);
+        let size = core::ptr::read_volatile((vdev.device_cfg + 2) as *const u8);
+        if size < 8 {
+            core::ptr::write_volatile((vdev.device_cfg) as *mut u8, VIRTIO_INPUT_CFG_UNSET);
+            return None;
+        }
+        let min = core::ptr::read_volatile((vdev.device_cfg + 8) as *const u32) as i32;
+        let max = core::ptr::read_volatile((vdev.device_cfg + 12) as *const u32) as i32;
+        core::ptr::write_volatile((vdev.device_cfg) as *mut u8, VIRTIO_INPUT_CFG_UNSET);
+        Some((min, max))
+    }
+}
 
 fn read_input_cfg_bitmap(vdev: &VirtioDevice, sel: u8, subsel: u8) -> ([u8; 128], u8) {
     if vdev.device_cfg == 0 {
@@ -712,6 +799,82 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
     }
 
     // 8. Build the bus.
+    //
+    // Multi-monitor input: a *mouse* device that's the Nth one we
+    // probed gets bound to scanout (N-1) — the first mouse goes to
+    // output 0, the second to output 1, etc. This matches QEMU's
+    // typical setup where the user passes one `-device
+    // virtio-mouse-pci` per scanout in display order. Keyboards and
+    // any further mice past the advertised scanout count fall back
+    // to OUTPUT_AGNOSTIC (event flows through the cross-output
+    // relative path).
+    use crate::drivers::input::mouse::OUTPUT_AGNOSTIC;
+    let mut output_id = OUTPUT_AGNOSTIC;
+    let mut is_absolute = false;
+    let mut abs_x_min = 0i32;
+    let mut abs_x_max = 0xFFFFi32;
+    let mut abs_y_min = 0i32;
+    let mut abs_y_max = 0xFFFFi32;
+    let mut out_w = 0u32;
+    let mut out_h = 0u32;
+
+    if kind == InputKind::Mouse {
+        // Count mouse buses already installed → that's our scanout.
+        let mouse_index: u32 = (0..MAX_INPUT_DEVS as u32)
+            .filter(|&i| {
+                BUSES[i as usize]
+                    .lock()
+                    .as_ref()
+                    .map(|b| b.kind == InputKind::Mouse)
+                    .unwrap_or(false)
+            })
+            .count() as u32;
+        let advertised =
+            crate::drivers::gpu::with_gpu(|g| g.display_count()).unwrap_or(1);
+        if mouse_index < advertised {
+            output_id = mouse_index as u8;
+            // Pull this scanout's dimensions for ABS scaling.
+            if let Some(info) = crate::drivers::gpu::with_gpu(|g| g.output_info(mouse_index))
+                .flatten()
+            {
+                if let Some(m) = info.current_mode.or(info.preferred_mode) {
+                    out_w = m.width;
+                    out_h = m.height;
+                }
+            }
+        }
+        // EV_ABS bitmap → absolute capability detection. We also pull
+        // the actual ABS_X / ABS_Y ranges via VIRTIO_INPUT_CFG_ABS_INFO.
+        let (abs_bits, abs_sz) =
+            read_input_cfg_bitmap(&vdev, VIRTIO_INPUT_CFG_EV_BITS, EV_ABS as u8);
+        if abs_sz > 0 {
+            // Bit 0 = ABS_X, bit 1 = ABS_Y.
+            let has_abs_x = (abs_bits[0] & 0x01) != 0;
+            let has_abs_y = (abs_bits[0] & 0x02) != 0;
+            if has_abs_x && has_abs_y {
+                is_absolute = true;
+                if let Some((min, max)) = read_abs_info(&vdev, ABS_X) {
+                    abs_x_min = min;
+                    abs_x_max = max;
+                }
+                if let Some((min, max)) = read_abs_info(&vdev, ABS_Y) {
+                    abs_y_min = min;
+                    abs_y_max = max;
+                }
+            }
+        }
+        if output_id != OUTPUT_AGNOSTIC {
+            crate::serial_println!(
+                "[virtio-input] mouse #{} -> output {} ({}x{}, {})",
+                mouse_index,
+                output_id,
+                out_w,
+                out_h,
+                if is_absolute { "absolute" } else { "relative" }
+            );
+        }
+    }
+
     let mut bus = InputBus {
         vdev,
         eventq,
@@ -723,6 +886,14 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
         acc_dz: 0,
         cur_buttons: 0,
         prev_buttons: 0,
+        output_id,
+        is_absolute,
+        abs_x_min,
+        abs_x_max,
+        abs_y_min,
+        abs_y_max,
+        out_w,
+        out_h,
     };
 
     // 9. Pre-post all event buffers BEFORE setting DRIVER_OK so the device

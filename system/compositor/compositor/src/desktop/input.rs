@@ -113,6 +113,11 @@ impl Desktop {
         let mut last_dx: i32 = 0;
         let mut last_dy: i32 = 0;
         let mut absolute_move = false;
+        // True when the absolute event already carries virtual-desktop
+        // coords (per-output virtio-input). Skips the legacy
+        // delta-derivation fallback that exists for vmmouse-scoped
+        // events on multi-monitor.
+        let mut absolute_translated = false;
         let mut abs_x: i32 = 0;
         let mut abs_y: i32 = 0;
 
@@ -133,8 +138,37 @@ impl Desktop {
                     cursor_moved = true;
                 }
                 INPUT_MOUSE_MOVE_ABSOLUTE => {
-                    abs_x = evt[1] as i32;
-                    abs_y = evt[2] as i32;
+                    let raw_x = evt[1] as i32;
+                    let raw_y = evt[2] as i32;
+                    // arg3 = producing output id (multi-monitor), or
+                    // 0xFF for legacy paths (vmmouse / VMMDev). When
+                    // a per-output virtio-input device produced the
+                    // event, raw_x/raw_y are in that output's local
+                    // pixel coords — translate to virtual desktop
+                    // coords via the output's virtual_x/y. Translated
+                    // events are "real" absolute and bypass the
+                    // multi-monitor delta-derivation safety net in
+                    // apply_mouse_move_absolute.
+                    let oid = evt[4] as u8;
+                    if oid != 0xFF {
+                        if let Some(o) = self
+                            .compositor
+                            .outputs
+                            .iter()
+                            .find(|o| o.id as u8 == oid)
+                        {
+                            abs_x = o.virtual_x + raw_x;
+                            abs_y = o.virtual_y + raw_y;
+                        } else {
+                            abs_x = raw_x;
+                            abs_y = raw_y;
+                        }
+                        absolute_translated = true;
+                    } else {
+                        abs_x = raw_x;
+                        abs_y = raw_y;
+                        absolute_translated = false;
+                    }
                     absolute_move = true;
                     cursor_moved = true;
                     last_dx = 0;
@@ -143,8 +177,16 @@ impl Desktop {
                 INPUT_MOUSE_BUTTON => {
                     if cursor_moved {
                         if absolute_move {
-                            self.apply_mouse_move_absolute(abs_x, abs_y);
+                            if absolute_translated {
+                                // Coords are already in virtual desktop
+                                // — skip the delta-derivation that the
+                                // legacy multi-monitor branch does.
+                                self.apply_mouse_move_absolute_virtual(abs_x, abs_y);
+                            } else {
+                                self.apply_mouse_move_absolute(abs_x, abs_y);
+                            }
                             absolute_move = false;
+                            absolute_translated = false;
                         } else {
                             self.apply_mouse_move(last_dx, last_dy);
                         }
@@ -179,7 +221,11 @@ impl Desktop {
         // Apply any remaining batched mouse move
         if cursor_moved {
             if absolute_move {
-                self.apply_mouse_move_absolute(abs_x, abs_y);
+                if absolute_translated {
+                    self.apply_mouse_move_absolute_virtual(abs_x, abs_y);
+                } else {
+                    self.apply_mouse_move_absolute(abs_x, abs_y);
+                }
             } else {
                 self.apply_mouse_move(last_dx, last_dy);
             }
@@ -436,6 +482,26 @@ impl Desktop {
                     self.push_event(win.id, [EVENT_MOUSE_MOVE, lx as u32, ly as u32, 0, 0]);
                 }
             }
+        }
+    }
+
+    /// Multi-monitor absolute event whose `(x, y)` are already in
+    /// virtual-desktop coordinates (translated by the kernel-side
+    /// per-output virtio-input path). Bypasses the delta-derivation
+    /// safety net that exists for legacy vmmouse-scoped absolute
+    /// events. Just clamps to the virtual desktop bounds and sets
+    /// the cursor straight to the requested point.
+    fn apply_mouse_move_absolute_virtual(&mut self, x: i32, y: i32) {
+        let (vmin_x, vmin_y, vmax_x, vmax_y) = self.compositor.virtual_desktop_bounds();
+        let target_x = x.clamp(vmin_x, vmax_x - 1);
+        let target_y = y.clamp(vmin_y, vmax_y - 1);
+        let dx = target_x - self.mouse_x;
+        let dy = target_y - self.mouse_y;
+        if dx != 0 || dy != 0 {
+            // Re-enter the relative path so window-drag / resize /
+            // hover state stays consistent — same approach the legacy
+            // absolute path uses on single-output.
+            self.apply_mouse_move(dx, dy);
         }
     }
 

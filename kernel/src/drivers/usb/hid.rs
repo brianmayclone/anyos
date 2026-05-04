@@ -523,6 +523,7 @@ fn parse_mouse_report(report: &[u8], len: usize) {
                 dz,
                 buttons: new_buttons,
                 event_type: MouseEventType::Scroll,
+                output_id: super::super::input::mouse::OUTPUT_AGNOSTIC,
             });
         }
     }
@@ -541,6 +542,7 @@ fn parse_mouse_report(report: &[u8], len: usize) {
                 } else {
                     MouseEventType::ButtonUp
                 },
+                output_id: super::super::input::mouse::OUTPUT_AGNOSTIC,
             });
         }
     } else if dx != 0 || dy != 0 {
@@ -552,6 +554,7 @@ fn parse_mouse_report(report: &[u8], len: usize) {
                 dz: 0,
                 buttons: new_buttons,
                 event_type: MouseEventType::Move,
+                output_id: super::super::input::mouse::OUTPUT_AGNOSTIC,
             });
         }
     }
@@ -609,6 +612,7 @@ fn parse_tablet_report(report: &[u8], len: usize) {
                 dz,
                 buttons: new_buttons,
                 event_type: MouseEventType::Scroll,
+                output_id: super::super::input::mouse::OUTPUT_AGNOSTIC,
             });
         }
     }

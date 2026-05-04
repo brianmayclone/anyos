@@ -815,11 +815,20 @@ pub fn sys_input_poll(buf_ptr: u64, max_events: u32) -> u32 {
         match crate::drivers::input::mouse::read_event() {
             Some(mouse_evt) => {
                 use crate::drivers::input::mouse::MouseEventType;
+                // Multi-monitor: stash the producing output_id in arg3
+                // for every mouse event. Legacy paths pass 0xFF
+                // (OUTPUT_AGNOSTIC); per-output virtio-input devices
+                // pass their bound scanout id. The compositor uses
+                // this to translate absolute coords (event_type 6)
+                // into the virtual desktop via output.virtual_x/y.
+                let oid = mouse_evt.output_id as u32;
                 let (event_type, arg0, arg1, arg2, arg3) = match mouse_evt.event_type {
-                    MouseEventType::Move => (3u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0),
+                    MouseEventType::Move => {
+                        (3u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, oid)
+                    }
                     MouseEventType::MoveAbsolute => {
                         // event_type 6 = absolute position (pixel coords)
-                        (6u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0)
+                        (6u32, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, oid)
                     }
                     MouseEventType::ButtonDown => {
                         let btns = (mouse_evt.buttons.left as u32)
