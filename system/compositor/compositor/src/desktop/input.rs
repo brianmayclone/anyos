@@ -419,14 +419,26 @@ impl Desktop {
         // secondary SDL window mis-routes back to the primary and the
         // cursor can never reach a secondary at all.
         //
-        // When more than one output is active we therefore drop
-        // absolute events on the floor and rely entirely on the PS/2
-        // relative path (apply_mouse_move) — that one is correctly
-        // output-agnostic because dx/dy accumulate across the virtual
-        // desktop. run.sh additionally sets `-machine pc,vmport=off`
-        // for --displays >1 so vmmouse never engages in the first
-        // place; this branch is the safety net.
+        // When more than one output is active we convert the absolute
+        // event into a relative delta against the previous absolute
+        // position, then funnel that delta through the relative path
+        // — that one is correctly output-agnostic because dx/dy
+        // accumulate across the virtual desktop. Dropping the events
+        // entirely (the previous defensive behaviour) leaves the
+        // cursor frozen if vmmouse stays engaged for any reason —
+        // a docked tablet, a stale --machine pc setting, or a SPICE
+        // vdagent path that still routes absolute. The delta-fallback
+        // keeps the cursor live regardless.
         if self.compositor.outputs.len() >= 2 {
+            let prev_x = self.last_absolute_mouse_x.replace(x);
+            let prev_y = self.last_absolute_mouse_y.replace(y);
+            if let (Some(px), Some(py)) = (prev_x, prev_y) {
+                let dx = x - px;
+                let dy = y - py;
+                if dx != 0 || dy != 0 {
+                    self.apply_mouse_move(dx, dy);
+                }
+            }
             return;
         }
 
