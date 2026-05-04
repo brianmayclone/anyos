@@ -147,7 +147,7 @@ fn set_int(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         .get(1)
         .map(|value| value.to_number())
         .unwrap_or(f64::NAN);
-    if !value.is_finite() || value.fract() != 0.0 {
+    if !is_i64_number(value) {
         vm.pending_exception = Some(vm.make_type_error("confd.setInt requires an integer value"));
         return JsValue::Undefined;
     }
@@ -395,12 +395,14 @@ fn js_to_conf_value(value: &JsValue) -> Option<ConfValue> {
     match value {
         JsValue::String(value) => Some(ConfValue::String(value.clone())),
         JsValue::Bool(value) => Some(ConfValue::Bool(*value)),
-        JsValue::Number(value) if value.is_finite() && value.fract() == 0.0 => {
-            Some(ConfValue::Int(*value as i64))
-        }
+        JsValue::Number(value) if is_i64_number(*value) => Some(ConfValue::Int(*value as i64)),
         JsValue::BigInt(value) => Some(ConfValue::Int(value.to_f64() as i64)),
         _ => None,
     }
+}
+
+fn is_i64_number(value: f64) -> bool {
+    value.is_finite() && (value as i64) as f64 == value
 }
 
 fn item_to_js(item: ConfItem) -> JsValue {
