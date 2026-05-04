@@ -159,9 +159,24 @@ impl NodeRuntime {
         let fs = modules::fs_module();
         self.engine.register_module_object("fs", fs.clone());
         self.engine.register_module_object("node:fs", fs);
+        let fs_promises = modules::fs_promises_module();
+        self.engine
+            .register_module_object("fs/promises", fs_promises.clone());
+        self.engine
+            .register_module_object("node:fs/promises", fs_promises);
         let path = modules::path_module();
         self.engine.register_module_object("path", path.clone());
         self.engine.register_module_object("node:path", path);
+        let path_posix = modules::path_posix_module();
+        self.engine
+            .register_module_object("path/posix", path_posix.clone());
+        self.engine
+            .register_module_object("node:path/posix", path_posix);
+        let path_win32 = modules::path_win32_module();
+        self.engine
+            .register_module_object("path/win32", path_win32.clone());
+        self.engine
+            .register_module_object("node:path/win32", path_win32);
         let url = modules::url_module();
         self.engine.register_module_object("url", url.clone());
         self.engine.register_module_object("node:url", url);
@@ -177,6 +192,11 @@ impl NodeRuntime {
         let os = modules::os_module();
         self.engine.register_module_object("os", os.clone());
         self.engine.register_module_object("node:os", os);
+        let constants = modules::constants_module();
+        self.engine
+            .register_module_object("constants", constants.clone());
+        self.engine
+            .register_module_object("node:constants", constants);
         let assert = modules::assert_module();
         self.engine.register_module_object("assert", assert.clone());
         self.engine.register_module_object("node:assert", assert);
@@ -201,21 +221,51 @@ impl NodeRuntime {
         let dns = modules::dns_module();
         self.engine.register_module_object("dns", dns.clone());
         self.engine.register_module_object("node:dns", dns);
+        let dns_promises = modules::dns_promises_module();
+        self.engine
+            .register_module_object("dns/promises", dns_promises.clone());
+        self.engine
+            .register_module_object("node:dns/promises", dns_promises);
         let events = modules::events_module();
         self.engine.register_module_object("events", events.clone());
         self.engine.register_module_object("node:events", events);
         let util = modules::util_module();
         self.engine.register_module_object("util", util.clone());
         self.engine.register_module_object("node:util", util);
+        let util_types = modules::util_types_module();
+        self.engine
+            .register_module_object("util/types", util_types.clone());
+        self.engine
+            .register_module_object("node:util/types", util_types);
         let stream = modules::stream_module();
         self.engine.register_module_object("stream", stream.clone());
         self.engine.register_module_object("node:stream", stream);
+        let stream_promises = modules::stream_promises_module();
+        self.engine
+            .register_module_object("stream/promises", stream_promises.clone());
+        self.engine
+            .register_module_object("node:stream/promises", stream_promises);
+        let stream_consumers = modules::stream_consumers_module();
+        self.engine
+            .register_module_object("stream/consumers", stream_consumers.clone());
+        self.engine
+            .register_module_object("node:stream/consumers", stream_consumers);
+        let stream_web = modules::stream_web_module();
+        self.engine
+            .register_module_object("stream/web", stream_web.clone());
+        self.engine
+            .register_module_object("node:stream/web", stream_web);
         let zlib = modules::zlib_module();
         self.engine.register_module_object("zlib", zlib.clone());
         self.engine.register_module_object("node:zlib", zlib);
         let timers = modules::timers_module();
         self.engine.register_module_object("timers", timers.clone());
         self.engine.register_module_object("node:timers", timers);
+        let timers_promises = modules::timers_promises_module();
+        self.engine
+            .register_module_object("timers/promises", timers_promises.clone());
+        self.engine
+            .register_module_object("node:timers/promises", timers_promises);
         let timers = self.module("node:timers");
         self.engine
             .set_global("setImmediate", timers.get_property("setImmediate"));
@@ -224,9 +274,17 @@ impl NodeRuntime {
         let tty = modules::tty_module();
         self.engine.register_module_object("tty", tty.clone());
         self.engine.register_module_object("node:tty", tty);
+        let string_decoder = modules::string_decoder_module();
+        self.engine
+            .register_module_object("string_decoder", string_decoder.clone());
+        self.engine
+            .register_module_object("node:string_decoder", string_decoder);
         let net = modules::net_module();
         self.engine.register_module_object("net", net.clone());
         self.engine.register_module_object("node:net", net);
+        let tls = modules::tls_module();
+        self.engine.register_module_object("tls", tls.clone());
+        self.engine.register_module_object("node:tls", tls);
         let node_module = modules::node_module_module();
         self.engine
             .register_module_object("module", node_module.clone());
@@ -238,20 +296,7 @@ impl NodeRuntime {
             .register_module_object("node:http", http.clone());
         self.engine.register_module_object("https", http.clone());
         self.engine.register_module_object("node:https", http);
-        let ffi = modules::ffi_module(&self.policy);
-        self.engine
-            .register_module_object("@anyos/ffi", ffi.clone());
-        self.engine.register_module_object("node:ffi", ffi.clone());
-        self.engine.register_module_object("node:anyos-ffi", ffi);
-        let anyui = modules::anyui_module(&self.policy);
-        self.engine
-            .register_module_object("@anyos/anyui", anyui.clone());
-        self.engine.register_module_object("node:anyui", anyui);
-        let image = modules::image_module(&self.policy);
-        self.engine
-            .register_module_object("@anyos/image", image.clone());
-        self.engine
-            .register_module_object("node:anyos-image", image);
+        crate::native_builtins::install(&mut self.engine, &self.policy);
         self.engine
             .register_module_object("node:uv", modules::uv_module(self.event_loop.uv_loop()));
         self.install_node_error_extensions();

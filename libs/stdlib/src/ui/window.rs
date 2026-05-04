@@ -32,6 +32,7 @@ pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
 pub const WIN_FLAG_SHADOW: u32 = 0x40;
 pub const WIN_FLAG_SCALE_CONTENT: u32 = 0x80;
 pub const WIN_FLAG_NO_MOVE: u32 = 0x100;
+pub const WIN_FLAG_ALPHA_HIT_TEST: u32 = 0x800;
 
 /// System font — regular weight (SF Pro).
 pub const FONT_REGULAR: u16 = 0;

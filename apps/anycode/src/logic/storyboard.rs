@@ -527,7 +527,7 @@ pub fn apply_segue(
         return Ok(None);
     };
     save_storyboard(storyboard_path, doc)?;
-    write_navigation_handler(doc, &segue)?;
+    write_navigation_handler(doc, &segue, infer_target(storyboard_path))?;
     Ok(Some(segue))
 }
 
@@ -585,6 +585,7 @@ pub fn control_anchor(scene: &StoryboardScene, control: &designer::DesignerContr
 fn write_navigation_handler(
     doc: &StoryboardDocument,
     segue: &StoryboardSegue,
+    target: UiCodeTarget,
 ) -> Result<(), &'static str> {
     let Some(scene) = doc
         .scenes
@@ -598,7 +599,17 @@ fn write_navigation_handler(
     form.update_control_property(&segue.from_control, &segue.trigger_event, &segue.handler)?;
     designer::save_designer(&scene.designer_path, &form)?;
 
-    let events_path = designer::events_file_for_designer(&scene.designer_path);
+    match target {
+        UiCodeTarget::Rust => write_rust_navigation_handler(&scene.designer_path, segue),
+        UiCodeTarget::Node => write_node_navigation_handler(&scene.designer_path, segue),
+    }
+}
+
+fn write_rust_navigation_handler(
+    designer_path: &str,
+    segue: &StoryboardSegue,
+) -> Result<(), &'static str> {
+    let events_path = designer::events_file_for_designer(designer_path);
     let signature = format!("pub fn {}()", segue.handler);
     let mut data = anyos_std::fs::read_to_string(&events_path).unwrap_or_default();
     if !data.contains(&signature) {
@@ -616,6 +627,54 @@ fn write_navigation_handler(
                 "\nfn storyboard_can_navigate(_segue_id: &str) -> bool {\n    true\n}\n\nfn storyboard_navigate(_form_name: &str) {\n    // TODO: connect this to the app navigation host.\n}\n",
             );
         }
+        anyos_std::fs::write_bytes(&events_path, data.as_bytes())
+            .map_err(|_| "Could not update navigation event")?;
+    }
+    Ok(())
+}
+
+fn write_node_navigation_handler(
+    designer_path: &str,
+    segue: &StoryboardSegue,
+) -> Result<(), &'static str> {
+    let events_path = format!("{}/events.js", path::parent(designer_path));
+    let signature = format!("function {}()", segue.handler);
+    let export_line = format!("module.exports.{} = {};", segue.handler, segue.handler);
+    let mut data = anyos_std::fs::read_to_string(&events_path).unwrap_or_default();
+    let mut changed = false;
+
+    if !data.contains(&signature) {
+        if !data.ends_with('\n') {
+            data.push('\n');
+        }
+        data.push_str(&format!(
+            "\nfunction {}() {{\n  if (storyboardCanNavigate(\"{}\")) {{\n    storyboardNavigate(\"{}\");\n  }}\n}}\n",
+            segue.handler,
+            escape_js(&segue.id),
+            escape_js(&segue.to_form)
+        ));
+        changed = true;
+    }
+
+    if !data.contains(&export_line) {
+        if !data.ends_with('\n') {
+            data.push('\n');
+        }
+        data.push_str(&format!("\n{}\n", export_line));
+        changed = true;
+    }
+
+    if !data.contains("function storyboardCanNavigate(") {
+        if !data.ends_with('\n') {
+            data.push('\n');
+        }
+        data.push_str(
+            "\nfunction storyboardCanNavigate(_segueId) {\n  return true;\n}\n\nfunction storyboardNavigate(_formName) {\n  // TODO: connect this to the app navigation host.\n}\n",
+        );
+        changed = true;
+    }
+
+    if changed {
         anyos_std::fs::write_bytes(&events_path, data.as_bytes())
             .map_err(|_| "Could not update navigation event")?;
     }

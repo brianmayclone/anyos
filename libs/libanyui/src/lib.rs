@@ -465,6 +465,11 @@ fn make_compositor_reply_channel_name(tid: u32) -> ([u8; 32], u32) {
 /// Connects to the compositor via libcompositor.dlib. Returns 1 on success.
 #[no_mangle]
 pub extern "C" fn anyui_init() -> u32 {
+    let already_initialized = unsafe { (*core::ptr::addr_of!(STATE)).is_some() };
+    if already_initialized {
+        return 1;
+    }
+
     let mut sub_id: u32 = 0;
     let channel_id = compositor::init(&mut sub_id);
     if channel_id == 0 {

@@ -1,7 +1,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use libjs::value::{JsObject, JsValue};
-use libjs::vm::{native_fn, Vm};
+use libjs::vm::{native_fn, native_promise, Vm};
 
 use super::util::object;
 
@@ -52,6 +52,22 @@ fn lookup(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     ip.map(JsValue::String).unwrap_or(JsValue::Undefined)
 }
 
+fn lookup_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let host = args
+        .first()
+        .map(|value| value.to_js_string())
+        .unwrap_or_default();
+    match resolve_host(&host) {
+        Some(address) => {
+            let out = JsValue::new_object();
+            out.set_property(String::from("address"), JsValue::String(address));
+            out.set_property(String::from("family"), JsValue::Number(4.0));
+            native_promise::promise_resolve(vm, &[out])
+        }
+        None => native_promise::promise_reject(vm, &[dns_error(&host)]),
+    }
+}
+
 fn resolve(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     resolve_common(vm, args)
 }
@@ -83,15 +99,36 @@ fn resolve_common(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     result
 }
 
-fn promises_object() -> JsValue {
+pub fn promises_module() -> JsValue {
     let mut promises = JsObject::new();
-    promises.set(String::from("lookup"), native_fn("lookup", lookup));
-    promises.set(String::from("resolve"), native_fn("resolve", resolve));
-    promises.set(String::from("resolve4"), native_fn("resolve4", resolve4));
+    promises.set(String::from("lookup"), native_fn("lookup", lookup_promise));
+    promises.set(
+        String::from("resolve"),
+        native_fn("resolve", resolve_promise),
+    );
+    promises.set(
+        String::from("resolve4"),
+        native_fn("resolve4", resolve_promise),
+    );
     object(promises)
 }
 
-fn resolve_host(host: &str) -> Option<String> {
+fn promises_object() -> JsValue {
+    promises_module()
+}
+
+fn resolve_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let host = args
+        .first()
+        .map(|value| value.to_js_string())
+        .unwrap_or_default();
+    let result = resolve_host(&host)
+        .map(|address| JsValue::new_array(Vec::from([JsValue::String(address)])))
+        .unwrap_or_else(|| JsValue::new_array(Vec::new()));
+    native_promise::promise_resolve(vm, &[result])
+}
+
+pub(crate) fn resolve_host(host: &str) -> Option<String> {
     if host.is_empty() {
         return None;
     }

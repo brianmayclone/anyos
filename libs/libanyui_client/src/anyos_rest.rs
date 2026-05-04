@@ -441,6 +441,11 @@ unsafe fn resolve_optional<T: Copy>(handle: &DlHandle, name: &str) -> Option<T> 
 /// Load and initialize libanyui.so. Call once at program start.
 /// Returns true on success.
 pub fn init() -> bool {
+    let already_loaded = unsafe { (*core::ptr::addr_of!(LIB)).is_some() };
+    if already_loaded {
+        return true;
+    }
+
     let handle = match dl_open("/Libraries/libanyui.so") {
         Some(h) => h,
         None => return false,

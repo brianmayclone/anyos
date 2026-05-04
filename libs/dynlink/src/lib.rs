@@ -233,8 +233,17 @@ macro_rules! dll_exports {
             $( $sym:ident ( $($pname:ident : $pty:ty),* $(,)? ) -> $ret:ty ),+ $(,)?
         }
     ) => {
-        // Host mode: no DLL loading needed.
-        // Client crates provide their own host implementations.
+        struct $name {
+            $( $sym: extern "C" fn( $($pty),* ) -> $ret, )+
+        }
+
+        pub(crate) fn lib() -> &'static $name {
+            panic!(concat!(stringify!($name), " is not available in host mode"))
+        }
+
+        pub fn init() -> bool {
+            false
+        }
     };
     (
         lib_path: $path:expr,
@@ -243,7 +252,17 @@ macro_rules! dll_exports {
             $( $sym:ident ( $($pname:ident : $pty:ty),* $(,)? ) -> $ret:ty ),+ $(,)?
         }
     ) => {
-        // Host mode: no DLL loading needed.
+        struct $name {
+            $( $sym: extern "C" fn( $($pty),* ) -> $ret, )+
+        }
+
+        pub(crate) fn lib() -> &'static $name {
+            panic!(concat!(stringify!($name), " is not available in host mode"))
+        }
+
+        pub fn init() -> bool {
+            false
+        }
     };
 }
 

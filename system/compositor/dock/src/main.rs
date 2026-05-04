@@ -370,11 +370,11 @@ fn main() {
     let (wx, wy, ww, wh) =
         dock_window_rect_for_progress(geometry(), screen_width, screen_height, initial_slide);
 
-    let flags = anyui::WIN_FLAG_BORDERLESS
-        | anyui::WIN_FLAG_NOT_RESIZABLE
-        | anyui::WIN_FLAG_ALWAYS_ON_TOP;
+    let flags =
+        anyui::WIN_FLAG_BORDERLESS | anyui::WIN_FLAG_NOT_RESIZABLE | anyui::WIN_FLAG_ALWAYS_ON_TOP;
+    let dock_flags = flags | anyui::WIN_FLAG_ALPHA_HIT_TEST;
 
-    let win = anyui::Window::new_with_flags("Dock", wx, wy, ww, wh, flags);
+    let win = anyui::Window::new_with_flags("Dock", wx, wy, ww, wh, dock_flags);
     win.set_color(0x00000000);
 
     let canvas = anyui::Canvas::new(ww, wh);

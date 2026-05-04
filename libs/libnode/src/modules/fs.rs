@@ -2,7 +2,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use libjs::value::{JsObject, JsValue};
-use libjs::vm::{native_fn, Vm};
+use libjs::vm::{native_fn, native_promise, Vm};
 
 use super::util::object;
 
@@ -46,7 +46,96 @@ pub fn module() -> JsValue {
         native_fn("rmdirSync", unlink_sync),
     );
     module.set(String::from("rmSync"), native_fn("rmSync", rm_sync));
+    module.set(String::from("promises"), promises_module());
     object(module)
+}
+
+pub fn promises_module() -> JsValue {
+    let mut module = JsObject::new();
+    module.set(String::from("readFile"), native_fn("readFile", read_file));
+    module.set(
+        String::from("writeFile"),
+        native_fn("writeFile", write_file),
+    );
+    module.set(String::from("mkdir"), native_fn("mkdir", mkdir));
+    module.set(String::from("readdir"), native_fn("readdir", readdir));
+    module.set(String::from("stat"), native_fn("stat", stat));
+    module.set(String::from("lstat"), native_fn("lstat", lstat));
+    module.set(String::from("unlink"), native_fn("unlink", unlink));
+    module.set(String::from("rmdir"), native_fn("rmdir", rmdir));
+    module.set(String::from("rm"), native_fn("rm", rm));
+    module.set(String::from("access"), native_fn("access", access));
+    object(module)
+}
+
+fn read_file(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = read_file_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn write_file(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = write_file_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn mkdir(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = mkdir_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn readdir(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = readdir_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn stat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = stat_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn lstat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = lstat_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn unlink(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = unlink_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn rmdir(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = unlink_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn rm(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = rm_sync(vm, args);
+    promise_from_result(vm, value)
+}
+
+fn access(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let path = args
+        .first()
+        .map(|value| value.to_js_string())
+        .unwrap_or_default();
+    let mut stat = [0u32; 7];
+    if anyos_std::fs::stat(&path, &mut stat) == u32::MAX {
+        let err = vm.make_type_error(&format!("ENOENT: {}", path));
+        return native_promise::promise_reject(vm, &[err]);
+    }
+    native_promise::promise_resolve(vm, &[JsValue::Undefined])
+}
+
+fn promise_from_result(vm: &mut Vm, value: JsValue) -> JsValue {
+    if let Some(err) = vm
+        .pending_exception
+        .take()
+        .or_else(|| vm.last_exception.take())
+    {
+        native_promise::promise_reject(vm, &[err])
+    } else {
+        native_promise::promise_resolve(vm, &[value])
+    }
 }
 
 fn read_file_sync(vm: &mut Vm, args: &[JsValue]) -> JsValue {

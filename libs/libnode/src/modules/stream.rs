@@ -1,7 +1,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use libjs::value::{JsObject, JsValue};
-use libjs::vm::{native_ctor_fn, native_fn, Vm};
+use libjs::vm::{native_ctor_fn, native_fn, native_promise, Vm};
 
 use super::util::object;
 
@@ -33,6 +33,48 @@ pub fn module() -> JsValue {
         }
     }
 
+    object(module)
+}
+
+pub fn promises_module() -> JsValue {
+    let mut module = JsObject::new();
+    module.set(
+        String::from("pipeline"),
+        native_fn("pipeline", pipeline_promise),
+    );
+    module.set(
+        String::from("finished"),
+        native_fn("finished", finished_promise),
+    );
+    object(module)
+}
+
+pub fn consumers_module() -> JsValue {
+    let mut module = JsObject::new();
+    module.set(String::from("text"), native_fn("text", consumer_text));
+    module.set(String::from("buffer"), native_fn("buffer", consumer_buffer));
+    module.set(
+        String::from("arrayBuffer"),
+        native_fn("arrayBuffer", consumer_buffer),
+    );
+    module.set(String::from("json"), native_fn("json", consumer_json));
+    object(module)
+}
+
+pub fn web_module() -> JsValue {
+    let mut module = JsObject::new();
+    module.set(
+        String::from("ReadableStream"),
+        stream_constructor("ReadableStream"),
+    );
+    module.set(
+        String::from("WritableStream"),
+        stream_constructor("WritableStream"),
+    );
+    module.set(
+        String::from("TransformStream"),
+        stream_constructor("TransformStream"),
+    );
     object(module)
 }
 
@@ -282,6 +324,19 @@ fn pipeline(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     args.last().cloned().unwrap_or(JsValue::Undefined)
 }
 
+fn pipeline_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let result = pipeline(vm, args);
+    if let Some(err) = vm
+        .pending_exception
+        .take()
+        .or_else(|| vm.last_exception.take())
+    {
+        native_promise::promise_reject(vm, &[err])
+    } else {
+        native_promise::promise_resolve(vm, &[result])
+    }
+}
+
 fn finished(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let Some(callback) = args
         .iter()
@@ -294,6 +349,26 @@ fn finished(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         );
     }
     JsValue::Undefined
+}
+
+fn finished_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let result = finished(vm, args);
+    native_promise::promise_resolve(vm, &[result])
+}
+
+fn consumer_text(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let data = stream_data(args.first().unwrap_or(&JsValue::Undefined));
+    native_promise::promise_resolve(vm, &[JsValue::String(data)])
+}
+
+fn consumer_buffer(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let data = stream_data(args.first().unwrap_or(&JsValue::Undefined));
+    native_promise::promise_resolve(vm, &[super::buffer::buffer_from_bytes(data.into_bytes())])
+}
+
+fn consumer_json(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let data = stream_data(args.first().unwrap_or(&JsValue::Undefined));
+    native_promise::promise_resolve(vm, &[JsValue::String(data)])
 }
 
 fn this_value(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -317,6 +392,19 @@ fn append_buffered(stream: &JsValue, value: JsValue) {
     };
     data.push(value);
     stream.set_property(String::from(BUFFER_KEY), JsValue::new_array(data));
+}
+
+fn stream_data(stream: &JsValue) -> String {
+    match stream.get_property(BUFFER_KEY) {
+        JsValue::Array(array) => array
+            .borrow()
+            .to_dense_vec()
+            .into_iter()
+            .map(|value| value.to_js_string())
+            .collect::<Vec<String>>()
+            .join(""),
+        _ => stream.to_js_string(),
+    }
 }
 
 fn forward_to_pipes(vm: &mut Vm, stream: &JsValue, chunk: JsValue) {
