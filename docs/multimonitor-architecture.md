@@ -424,23 +424,83 @@ vdagent parses `VD_AGENT_MONITORS_CONFIG`, builds a `LayoutEntry`
 list, forwards via `libdisplay_client::push_layout`. Resize the SPICE
 client window → resize chain reaches the kernel atomically.
 
-### ⏳ Phase 6 — DPI/scale per output (open)
+### ✅ Phase 2c-ext-2 — HW-cursor cross-output
+GpuDriver gains `move_cursor_for_output` / `show_cursor_for_output`
+(default delegates to single-cursor methods for output 0). virtio_gpu
+implements both via `MOVE_CURSOR` / `UPDATE_CURSOR` with per-scanout
+`scanout_id`. Compositor's `apply_mouse_move` tracks
+`Desktop::last_cursor_output` and on every cursor move:
+
+  1. Locates the output whose virtual rect contains
+     `(mouse_x, mouse_y)` via `Compositor::output_at`.
+  2. If the cursor crossed an output boundary, hides the cursor on
+     the previous output and shows it on the new one.
+  3. Sends `MOVE_CURSOR_OUTPUT(target, local_x, local_y)` with
+     coordinates translated into the target output's local frame.
+
+Two new opcodes in `sys_gpu_command`:
+  `11 = CURSOR_MOVE_OUTPUT(output_id, x, y)`
+  `12 = CURSOR_SHOW_OUTPUT(output_id, visible)`
+
+Single-output setups continue to use the legacy `move_hw_cursor`
+path so behaviour is identical there.
+
+### ✅ Phase 9c-extended — drag-arrange canvas
+Layout preview in `display-settings` is now an interactive Canvas:
+each connected output is a draggable rectangle, mouse-up commits
+the new `virtual_x` to displayd via `CMD_SET_OUTPUT_CONFIG`.
+
+Drag flow:
+  * `on_mouse_down` — `output_at_canvas` hit-test, store
+    `(idx, drag_offset_in_virt_px)` in `AppState.dragging`.
+  * `on_mouse_move` — update `layout_x[idx]` live, re-render canvas.
+  * `on_mouse_up` — snap to nearest other-output edge within
+    32 virtual px (right-of-other / left-of-other tidy alignment),
+    push `OutputConfig` with the new `virtual_x` to displayd.
+
+Vertical stacking (`virtual_y`) is still horizontal-only in the
+GUI — the underlying API accepts it but a y-drag UX (top-aligned
+vs centre-aligned) is its own decision and tracked separately.
+
+### Multi-monitor input fixes (along the way)
+`scripts/run.sh` sets `-machine pc,vmport=off` for `--displays >1`
+so QEMU disables the VMware backdoor — its absolute pointer reports
+coords scoped to the primary scanout regardless of which SDL window
+the click came from, which mis-routes every secondary click back to
+the primary. Two safety nets:
+
+  * `kernel/drivers/input/vmmouse::force_disable()` is called from
+    `sys_register_compositor` whenever `display_count() > 1`. This
+    is authoritative — `vmmouse::is_active()` returns false
+    unconditionally after that, so IRQ12 falls through to PS/2
+    (relative dx/dy) on every event.
+  * `desktop/input::apply_mouse_move_absolute` derives a delta
+    against the previous absolute coord and re-enters the relative
+    path on multi-monitor. Belts-and-suspenders for any future path
+    that re-engages absolute (USB tablet, SPICE absolute mode).
+
+### ⏳ Phase 6 — DPI-aware widget pipeline (open, larger refactor)
 `Screen.scale_percent` exists and per-output scale is persisted, but
-the anyui widget pipeline (font sizes, padding, hit-test) doesn't
-use it yet — needs a touch on ~50 widgets. Tracked.
+the anyui widget pipeline (font sizes, padding, hit-test geometry)
+still uses a single `theme::scale_factor` global. Making it
+per-window scale-aware requires either:
 
-### ⏳ Phase 9c-extended — drag-arrange canvas (open)
-Layout preview in `display-settings` is currently a one-line text
-summary (`[1] 1920×1080 SAM* [2] 1280×800`). Drag-to-reposition
-needs a custom Canvas widget with hit-tracking + feedback to
-displayd. Tracked.
+  1. A render-time override (compositor sets the scale before
+     `render_window`, restores after) — works for single-threaded
+     render but is fragile under future parallelism, or
+  2. A per-window scale field threaded through every widget's
+     measure/paint path — clean, but touches ~50 widgets.
 
-### ⏳ Phase 2c-ext-2 — HW-cursor cross-output (open)
-Driver-side `UPDATE_CURSOR` currently programs scanout 0 only. The
-software-cursor layer covers visual correctness on the secondaries;
-proper HW-cursor routing would mean compositor-side state tracking
-(which output owns the cursor right now → emit UPDATE on that
-scanout, CLEAR on the others). Tracked as polish.
+Approach 2 is the right answer; deferred to a focused refactor session.
+
+### ⏳ Phase 11 — per-output absolute pointer (open, future)
+`-machine pc,vmport=off` + PS/2 relative is good enough for the
+typical SDL multi-window flow. The cleaner long-term answer is one
+virtio-input mouse device per scanout, with the kernel routing
+events to the compositor with output identification in the event
+payload. Lets USB tablets, SPICE absolute mode, and pen input work
+correctly on the right output. Wants a new virtio-input driver +
+event-routing extensions; deferred.
 
 ## Open design questions (decide before the relevant phase)
 
