@@ -38,6 +38,57 @@ pub const EVT_HOTPLUG_DONE: u32 = 0x7006;
 /// evt[3] the entry count.
 pub const CMD_PUSH_LAYOUT: u32 = 0x7007;
 pub const EVT_LAYOUT_PUSHED: u32 = 0x7008;
+pub const CMD_SET_OUTPUT_CONFIG: u32 = 0x7009;
+pub const EVT_OUTPUT_CONFIG_OK: u32 = 0x700A;
+pub const CMD_SET_GLOBAL_CONFIG: u32 = 0x700B;
+pub const EVT_GLOBAL_CONFIG_OK: u32 = 0x700C;
+
+/// Per-output settings as persisted in confd. Marshalled to displayd
+/// via SHM (96 bytes), see CMD_SET_OUTPUT_CONFIG.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OutputConfig {
+    pub edid_hash: u64,
+    pub enabled: u32,
+    pub orientation: u32,
+    pub mode_w: u32,
+    pub mode_h: u32,
+    pub mode_refresh_mhz: u32,
+    pub scale_percent: u32,
+    pub fractional_scale: u32,
+    pub virtual_x: i32,
+    pub virtual_y: i32,
+    pub mirror_of_hash: u64,
+    pub friendly_name: [u8; 44],
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            edid_hash: 0,
+            enabled: 1,
+            orientation: 0,
+            mode_w: 0,
+            mode_h: 0,
+            mode_refresh_mhz: 60_000,
+            scale_percent: 100,
+            fractional_scale: 0,
+            virtual_x: 0,
+            virtual_y: 0,
+            mirror_of_hash: 0,
+            friendly_name: [0u8; 44],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GlobalConfig {
+    pub mirror_mode: u32,
+    pub _reserved: u32,
+    pub primary_edid_hash: u64,
+    pub _reserved2: [u8; 16],
+}
 
 /// Handle returned by [`connect`]. Callers hold this for the lifetime
 /// of their displayd interaction; on drop we don't auto-unsubscribe
@@ -132,6 +183,63 @@ impl DisplaydClient {
         let req = [CMD_PUSH_LAYOUT, self.sub, shm, entries.len() as u32, 0];
         ipc::evt_chan_emit(self.chan, &req);
         let result = self.wait_response(EVT_LAYOUT_PUSHED).map(|e| e[1]);
+        ipc::shm_unmap(shm);
+        ipc::shm_destroy(shm);
+        result
+    }
+
+    /// Persist per-output configuration in confd and trigger a layout
+    /// re-apply. Used by display-settings to commit a Resolution /
+    /// Refresh / Scale / Orientation change.
+    pub fn set_output_config(&self, cfg: &OutputConfig) -> Option<u32> {
+        let bytes = core::mem::size_of::<OutputConfig>();
+        let shm = ipc::shm_create(bytes as u32);
+        if shm == u32::MAX {
+            return Some(u32::MAX);
+        }
+        let addr = ipc::shm_map(shm);
+        if addr == 0 {
+            ipc::shm_destroy(shm);
+            return Some(u32::MAX);
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                cfg as *const OutputConfig as *const u8,
+                addr as *mut u8,
+                bytes,
+            );
+        }
+        let req = [CMD_SET_OUTPUT_CONFIG, self.sub, shm, 0, 0];
+        ipc::evt_chan_emit(self.chan, &req);
+        let result = self.wait_response(EVT_OUTPUT_CONFIG_OK).map(|e| e[1]);
+        ipc::shm_unmap(shm);
+        ipc::shm_destroy(shm);
+        result
+    }
+
+    /// Persist global display config (mirror mode, primary monitor)
+    /// and re-apply the layout.
+    pub fn set_global_config(&self, cfg: &GlobalConfig) -> Option<u32> {
+        let bytes = core::mem::size_of::<GlobalConfig>();
+        let shm = ipc::shm_create(bytes as u32);
+        if shm == u32::MAX {
+            return Some(u32::MAX);
+        }
+        let addr = ipc::shm_map(shm);
+        if addr == 0 {
+            ipc::shm_destroy(shm);
+            return Some(u32::MAX);
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                cfg as *const GlobalConfig as *const u8,
+                addr as *mut u8,
+                bytes,
+            );
+        }
+        let req = [CMD_SET_GLOBAL_CONFIG, self.sub, shm, 0, 0];
+        ipc::evt_chan_emit(self.chan, &req);
+        let result = self.wait_response(EVT_GLOBAL_CONFIG_OK).map(|e| e[1]);
         ipc::shm_unmap(shm);
         ipc::shm_destroy(shm);
         result

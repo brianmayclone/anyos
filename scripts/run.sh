@@ -26,6 +26,13 @@
 #                   per scanout). Combine with --spice / --spice-app to drive
 #                   multiple monitors via remote-viewer / built-in SPICE viewer.
 #                   Example: --virtio --displays 2 --kvm
+#                 Alternative form: --displays WIDTHxHEIGHT,WIDTHxHEIGHT,...
+#                   Same as the integer form but additionally seeds
+#                   /System/etc/displayd-seed.conf with the per-output
+#                   resolutions. displayd applies that seed at first boot
+#                   into confd, so the second/third/... monitor comes up at
+#                   the requested mode instead of QEMU's 1280x800 default.
+#                   Example: --virtio --displays 1280x720,1920x1080,1024x768
 #
 # ── Input Devices ─────────────────────────────────────────────────────────────
 #   (none)        PS/2 keyboard + PS/2 mouse + vmmouse backdoor [default].
@@ -162,6 +169,7 @@ MIN_RES_W=1024
 MIN_RES_H=768
 DISPLAYS=1
 EXPECT_DISPLAYS=false
+DISPLAYS_RESLIST=""
 
 # ── WSL: prefer Windows QEMU if installed ───────────────────────────────────
 QEMU_BIN="qemu-system-x86_64"
@@ -194,11 +202,44 @@ for arg in "$@"; do
 
     if [ "$EXPECT_DISPLAYS" = true ]; then
         EXPECT_DISPLAYS=false
+        # Two accepted forms:
+        #   1) integer 1..16            — N outputs, default resolutions
+        #   2) WxH[,WxH...] resolutions — one entry per output, count derived
         if [ "$arg" -ge 1 ] 2>/dev/null && [ "$arg" -le 16 ] 2>/dev/null; then
             DISPLAYS="$arg"
+            DISPLAYS_RESLIST=""
         else
-            echo "Error: --displays expects an integer between 1 and 16 (got '$arg')"
-            exit 1
+            # Try comma-separated WIDTHxHEIGHT list.
+            count=0
+            ok=true
+            IFS=',' read -ra _displays_arr <<< "$arg"
+            for spec in "${_displays_arr[@]}"; do
+                case "$spec" in
+                    *x*)
+                        w="${spec%%x*}"
+                        h="${spec#*x}"
+                        if [ -n "$w" ] && [ -n "$h" ] \
+                           && [ "$w" -gt 0 ] 2>/dev/null \
+                           && [ "$h" -gt 0 ] 2>/dev/null; then
+                            count=$((count + 1))
+                        else
+                            ok=false
+                            break
+                        fi
+                        ;;
+                    *)
+                        ok=false
+                        break
+                        ;;
+                esac
+            done
+            if [ "$ok" = true ] && [ "$count" -ge 1 ] && [ "$count" -le 16 ]; then
+                DISPLAYS="$count"
+                DISPLAYS_RESLIST="$arg"
+            else
+                echo "Error: --displays expects either 1..16 or a comma list of WIDTHxHEIGHT (got '$arg')"
+                exit 1
+            fi
         fi
         continue
     fi
@@ -924,6 +965,35 @@ if [ ! -f "$IMAGE" ]; then
         echo "Run: ./scripts/build.sh first"
     fi
     exit 1
+fi
+
+# Apply --displays per-monitor resolutions: write a seed config that
+# displayd applies into confd at first boot. Indexed by output id (the
+# guest doesn't see EDID info from the host before boot; once the
+# scanouts come up displayd resolves the kernel-reported EDID hash and
+# stores the seeded mode under config/output/<edid_hash>/mode_*).
+if [ -n "$DISPLAYS_RESLIST" ]; then
+    SEED_FILE="${SCRIPT_DIR}/../sysroot/System/etc/displayd-seed.conf"
+    BUILD_SEED="${SCRIPT_DIR}/../build/sysroot/System/etc/displayd-seed.conf"
+    {
+        printf '# displayd seed — written by run.sh --displays\n'
+        printf '# Each line: output <id> mode <width> <height>\n'
+        printf '# displayd applies these to confd at first boot, then the\n'
+        printf '# config is owned by confd and the seed is ignored.\n'
+        i=0
+        IFS=',' read -ra _seed_arr <<< "$DISPLAYS_RESLIST"
+        for spec in "${_seed_arr[@]}"; do
+            w="${spec%%x*}"
+            h="${spec#*x}"
+            printf 'output %d mode %d %d\n' "$i" "$w" "$h"
+            i=$((i + 1))
+        done
+    } > "$SEED_FILE"
+    if [ -d "$(dirname "$BUILD_SEED")" ]; then
+        cp "$SEED_FILE" "$BUILD_SEED"
+    fi
+    # Force a rebuild so the seed file lands in the disk image.
+    ninja -C "${SCRIPT_DIR}/../build" 2>/dev/null || true
 fi
 
 # Apply keyboard layout to disk image config if requested

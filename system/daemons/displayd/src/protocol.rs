@@ -60,6 +60,20 @@ pub const EVT_HOTPLUG_DONE: u32 = 0x7006;
 pub const CMD_PUSH_LAYOUT: u32 = 0x7007;
 pub const EVT_LAYOUT_PUSHED: u32 = 0x7008;
 
+/// Set a configuration value for a single output, identified by EDID
+/// hash, then re-apply the layout. Used by display-settings to commit
+/// changes from the GUI (resolution, scale, orientation, …).
+///
+/// Wire: evt[2] = SHM id holding a [u8; SIZE_OF_OUTPUT_CONFIG_BLOB]
+/// payload (see OutputConfigBlob below).
+pub const CMD_SET_OUTPUT_CONFIG: u32 = 0x7009;
+pub const EVT_OUTPUT_CONFIG_OK: u32 = 0x700A;
+
+/// Set a global value (mirror_mode, primary_edid_hash). Wire payload
+/// in the SHM is one GlobalConfigBlob.
+pub const CMD_SET_GLOBAL_CONFIG: u32 = 0x700B;
+pub const EVT_GLOBAL_CONFIG_OK: u32 = 0x700C;
+
 pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
     match evt[0] {
         CMD_LIST_OUTPUTS => {
@@ -112,6 +126,47 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
             // Just acks here.
             [EVT_HOTPLUG_DONE, 0, 0, 0, 0]
         }
+        CMD_SET_OUTPUT_CONFIG => {
+            // SHM payload = OutputConfigBlob (#[repr(C)], 96 bytes):
+            //   u64  edid_hash       (0)
+            //   u32  enabled         (8)
+            //   u32  orientation     (12)
+            //   u32  mode_w          (16)
+            //   u32  mode_h          (20)
+            //   u32  mode_refresh_mhz(24)
+            //   u32  scale_percent   (28)
+            //   u32  fractional_scale(32) // bool as u32
+            //   i32  virtual_x       (36)
+            //   i32  virtual_y       (40)
+            //   u64  mirror_of_hash  (44, 0 = none)
+            //   u8[44] friendly_name (52..96, null-padded)
+            let shm_id = evt[2];
+            let addr = ipc::shm_map(shm_id);
+            if addr == 0 {
+                return [EVT_OUTPUT_CONFIG_OK, u32::MAX, 0, 0, 0];
+            }
+            let r = unsafe { write_output_config(addr as u64) };
+            ipc::shm_unmap(shm_id);
+            // Persisted; now re-apply so the kernel sees the change.
+            crate::apply_persisted_layout();
+            [EVT_OUTPUT_CONFIG_OK, r, 0, 0, 0]
+        }
+        CMD_SET_GLOBAL_CONFIG => {
+            // SHM payload = GlobalConfigBlob (#[repr(C)], 32 bytes):
+            //   u32 mirror_mode (0)        // bool as u32
+            //   u32 _reserved   (4)
+            //   u64 primary_edid_hash (8)  // 0 = no preference
+            //   u8[16] _reserved2 (16..32)
+            let shm_id = evt[2];
+            let addr = ipc::shm_map(shm_id);
+            if addr == 0 {
+                return [EVT_GLOBAL_CONFIG_OK, u32::MAX, 0, 0, 0];
+            }
+            let r = unsafe { write_global_config(addr as u64) };
+            ipc::shm_unmap(shm_id);
+            crate::apply_persisted_layout();
+            [EVT_GLOBAL_CONFIG_OK, r, 0, 0, 0]
+        }
         CMD_PUSH_LAYOUT => {
             // Pushed by libdisplay_client::push_layout (in particular
             // vdagent forwarding a SPICE VD_AGENT_MONITORS_CONFIG).
@@ -141,4 +196,84 @@ pub fn handle_request(evt: &[u32; 5]) -> [u32; 5] {
         }
         _ => [0, 0, 0, 0, 0],
     }
+}
+
+/// Read the SHM-resident OutputConfigBlob (see CMD_SET_OUTPUT_CONFIG)
+/// and persist its fields under `services/displayd/config/output/<edid>/...`.
+/// Returns 0 on success, non-zero on bad payload.
+unsafe fn write_output_config(addr: u64) -> u32 {
+    use crate::schema::{edid_hex, output_key, DISPLAYD_SCHEMA};
+    let bytes = core::slice::from_raw_parts(addr as *const u8, 96);
+    let read_u64 = |off: usize| -> u64 {
+        u64::from_le_bytes([
+            bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3],
+            bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7],
+        ])
+    };
+    let read_u32 = |off: usize| -> u32 {
+        u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+    };
+    let read_i32 = |off: usize| -> i32 { read_u32(off) as i32 };
+
+    let edid_hash = read_u64(0);
+    if edid_hash == 0 {
+        return 1;
+    }
+    let hex = edid_hex(edid_hash);
+    let _ = DISPLAYD_SCHEMA.write_bool(&output_key(&hex, "enabled"), read_u32(8) != 0);
+    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "orientation"), read_u32(12) as i64);
+    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "mode_w"), read_u32(16) as i64);
+    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "mode_h"), read_u32(20) as i64);
+    let _ = DISPLAYD_SCHEMA.write_i64(
+        &output_key(&hex, "mode_refresh_mhz"),
+        read_u32(24) as i64,
+    );
+    let _ = DISPLAYD_SCHEMA.write_i64(
+        &output_key(&hex, "scale_percent"),
+        read_u32(28) as i64,
+    );
+    let _ = DISPLAYD_SCHEMA.write_bool(
+        &output_key(&hex, "fractional_scale"),
+        read_u32(32) != 0,
+    );
+    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "virtual_x"), read_i32(36) as i64);
+    let _ = DISPLAYD_SCHEMA.write_i64(&output_key(&hex, "virtual_y"), read_i32(40) as i64);
+    let mirror_hash = read_u64(44);
+    let mirror_str = if mirror_hash == 0 {
+        anyos_std::String::new()
+    } else {
+        edid_hex(mirror_hash)
+    };
+    let _ = DISPLAYD_SCHEMA.write_string(&output_key(&hex, "mirror_of"), &mirror_str);
+
+    // Friendly name: 44 bytes null-padded ASCII at offset 52.
+    let name_end = (52..96)
+        .find(|&i| bytes[i] == 0)
+        .unwrap_or(96);
+    if name_end > 52 {
+        if let Ok(s) = core::str::from_utf8(&bytes[52..name_end]) {
+            let _ = DISPLAYD_SCHEMA.write_string(&output_key(&hex, "friendly_name"), s);
+        }
+    }
+    0
+}
+
+/// Read a GlobalConfigBlob and persist `mirror_mode` and the
+/// canonical primary EDID hex string.
+unsafe fn write_global_config(addr: u64) -> u32 {
+    use crate::schema::{edid_hex, DISPLAYD_SCHEMA};
+    let bytes = core::slice::from_raw_parts(addr as *const u8, 32);
+    let mirror = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != 0;
+    let primary_hash = u64::from_le_bytes([
+        bytes[8], bytes[9], bytes[10], bytes[11],
+        bytes[12], bytes[13], bytes[14], bytes[15],
+    ]);
+    let _ = DISPLAYD_SCHEMA.write_bool("config/global/mirror_mode", mirror);
+    let primary_str = if primary_hash == 0 {
+        anyos_std::String::new()
+    } else {
+        edid_hex(primary_hash)
+    };
+    let _ = DISPLAYD_SCHEMA.write_string("config/global/primary_edid_hash", &primary_str);
+    0
 }

@@ -1141,6 +1141,7 @@ add_custom_command(
     ${DISPLAYD_SRC_DIR}/Cargo.toml
     ${DISPLAYD_SRC_DIR}/src/main.rs
     ${DISPLAYD_SRC_DIR}/src/protocol.rs
+    ${DISPLAYD_SRC_DIR}/src/schema.rs
     ${STDLIB_DEPS}
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   COMMENT "Building system program: displayd"
