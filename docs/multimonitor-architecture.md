@@ -493,14 +493,45 @@ per-window scale-aware requires either:
 
 Approach 2 is the right answer; deferred to a focused refactor session.
 
-### ⏳ Phase 11 — per-output absolute pointer (open, future)
-`-machine pc,vmport=off` + PS/2 relative is good enough for the
-typical SDL multi-window flow. The cleaner long-term answer is one
-virtio-input mouse device per scanout, with the kernel routing
-events to the compositor with output identification in the event
-payload. Lets USB tablets, SPICE absolute mode, and pen input work
-correctly on the right output. Wants a new virtio-input driver +
-event-routing extensions; deferred.
+### ✅ Phase 11 — per-output absolute pointer
+Multi-instance virtio-input with output-id-tagged events. The first
+virtio-input mouse device probed binds to scanout 0, the second to
+scanout 1, and so on; further mice past the advertised scanout
+count fall back to `OUTPUT_AGNOSTIC` (legacy cross-output relative
+path). Each bound device:
+
+- Reads its EV_BITS bitmap; if ABS_X / ABS_Y are exposed, reads
+  the per-axis `VIRTIO_INPUT_CFG_ABS_INFO` (min, max) once and
+  caches it.
+- On every EV_ABS event scales raw value × output dims / range,
+  storing the result in `acc_dx` / `acc_dy`.
+- Emits MouseEvent with `event_type = MoveAbsolute` and
+  `output_id = bound_scanout_id`.
+
+Wire format: `sys_input_poll` puts the output id in arg3 of every
+mouse event (5-u32 packet). The compositor's
+`INPUT_MOUSE_MOVE_ABSOLUTE` handler:
+- `arg3 = 0xFF` (OUTPUT_AGNOSTIC) — legacy path: vmmouse / VMMDev,
+  primary-fb-scoped coords. Goes through the existing
+  `apply_mouse_move_absolute` which derives relative deltas in
+  multi-monitor as a safety net.
+- `arg3 = 0..MAX_OUTPUTS` — translates raw x/y by adding the
+  bound output's `virtual_x`/`virtual_y` and routes through the
+  new `apply_mouse_move_absolute_virtual`, which clamps to the
+  virtual desktop and re-enters the relative path so drag /
+  resize / hover state stays consistent.
+
+Boot-validated with two `virtio-tablet-pci` devices and
+`--displays 2`:
+
+```
+[virtio-input] mouse #0 -> output 0 (1024x768, absolute)
+[virtio-input] mouse #1 -> output 1 (1280x800, absolute)
+```
+
+Open follow-up: USB-HID tablet path (`drivers/usb/hid.rs`) doesn't
+yet emit `output_id`. Same plumbing as the virtio-input path —
+straightforward but separate.
 
 ## Open design questions (decide before the relevant phase)
 
