@@ -1025,7 +1025,7 @@ add_rust_sbin_program(corefs-tier)
 # System programs (/System/)
 # ============================================================
 set(SYSTEM_BINS "")
-add_rust_system_program(svc)
+add_rust_user_program(svc)
 add_rust_system_program(init)
 add_rust_system_program(audiomon)
 add_rust_system_program(wifimon)

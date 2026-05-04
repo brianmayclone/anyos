@@ -67,8 +67,8 @@ fn get_status(buf: &mut [u8; 128]) -> usize {
 // ── Service Startup ─────────────────────────────────────────────────────────
 
 fn run_service_manager() {
-    let path = "/System/svc";
-    let args = "/System/svc start-all";
+    let path = "/System/bin/svc";
+    let args = "/System/bin/svc start-all";
 
     println!("init: spawning '{}'", args);
     let tid = process::spawn(path, args);

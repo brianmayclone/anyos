@@ -879,7 +879,7 @@ fn hex_nibble(b: u8) -> Option<u8> {
 
 fn run_svc_command(command: &str, name: &str) -> bool {
     let args = format!("svc {} {}", command, name);
-    let tid = process::spawn("/System/svc", &args);
+    let tid = process::spawn("/System/bin/svc", &args);
     if tid != 0 && tid != u32::MAX {
         let _ = process::detach(tid);
         true

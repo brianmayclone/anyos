@@ -856,11 +856,11 @@ fn save_current_service(force_enable: bool) -> bool {
 
 fn run_svc_command(command: &str, name: &str) {
     let args = format!("svc {} {}", command, name);
-    let tid = process::spawn("/System/svc", &args);
+    let tid = process::spawn("/System/bin/svc", &args);
     if tid != 0 && tid != u32::MAX {
         let _ = process::detach(tid);
     } else {
-        set_status("Failed to launch /System/svc.");
+        set_status("Failed to launch /System/bin/svc.");
     }
 }
 
