@@ -2470,6 +2470,25 @@ impl Desktop {
         let overlay_w = padding * 2 + cols * card_w + (cols - 1) * gap;
         let overlay_h = padding + title_h + rows * card_h + (rows - 1) * gap + padding;
 
+        // Pre-compute multi-monitor data BEFORE layer_pixels takes a
+        // mutable borrow on self.compositor.
+        let multi_monitor = self.compositor.outputs.len() >= 2;
+        let mut slot_output_id_pre: [u8; 12] = [0; 12];
+        if multi_monitor {
+            for slot in 0..12usize {
+                let wid = self.fkey_slots[slot];
+                if wid == 0 {
+                    continue;
+                }
+                if let Some(win) = self.windows.iter().find(|w| w.id == wid) {
+                    let cx_w = win.x + (win.content_width as i32 / 2);
+                    let cy_w = win.y;
+                    slot_output_id_pre[slot] =
+                        self.compositor.output_at(cx_w, cy_w).id as u8;
+                }
+            }
+        }
+
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = overlay_w;
 
@@ -2520,6 +2539,9 @@ impl Desktop {
 
             // We need to read SHM pointers for thumbnails
             let mut slot_shm_info: [(u32, u32, *const u32); 12] = [(0, 0, core::ptr::null()); 12];
+            // Multi-monitor: per-slot, which output the window currently
+            // sits on. Pre-computed above to avoid borrow conflict.
+            let slot_output_id = slot_output_id_pre;
 
             for slot in 0..12usize {
                 let wid = self.fkey_slots[slot];
@@ -2647,6 +2669,63 @@ impl Desktop {
                     FONT_ID, label_fs, pixels, stride, overlay_h, ltx, lty, 0xFFFFFFFF, lbl_str,
                 );
 
+                // Multi-monitor: per-card "M{output_id}" badge directly
+                // after the F-key badge, with an output-specific colour
+                // so users can tell at a glance which monitor a window
+                // currently lives on. Right-click on the card cycles
+                // the window through the other outputs (handled in
+                // input.rs).
+                let monitor_badge_w = if multi_monitor && slot_has_window[slot] {
+                    let mb_w = crate::desktop::theme::scale(28);
+                    let mb_x = bx + badge_w as i32 + crate::desktop::theme::scale_i32(4);
+                    // Distinct colour per output id for quick scanning.
+                    let oid = slot_output_id[slot];
+                    let mb_bg = match oid {
+                        0 => 0xFF0A84FF, // primary — blue
+                        1 => 0xFF34C759, // 2nd — green
+                        2 => 0xFFFF9500, // 3rd — orange
+                        3 => 0xFFAF52DE, // 4th — purple
+                        _ => 0xFF8E8E93, // 5th+ — neutral grey
+                    };
+                    fill_rounded_rect(
+                        pixels,
+                        stride,
+                        overlay_h,
+                        mb_x,
+                        by,
+                        mb_w,
+                        badge_h,
+                        4,
+                        mb_bg,
+                    );
+                    let mut mlbl = [0u8; 4];
+                    mlbl[0] = b'M';
+                    if oid < 10 {
+                        mlbl[1] = b'0' + oid;
+                    } else {
+                        mlbl[1] = b'0' + (oid % 10);
+                    }
+                    let mlbl_str = core::str::from_utf8(&mlbl[..2]).unwrap_or("");
+                    let (mlw, mlh) =
+                        anyos_std::ui::window::font_measure(FONT_ID, label_fs, mlbl_str);
+                    let mltx = mb_x + (mb_w as i32 - mlw as i32) / 2;
+                    let mlty = by + (badge_h as i32 - mlh as i32) / 2;
+                    anyos_std::ui::window::font_render_buf(
+                        FONT_ID,
+                        label_fs,
+                        pixels,
+                        stride,
+                        overlay_h,
+                        mltx,
+                        mlty,
+                        0xFFFFFFFF,
+                        mlbl_str,
+                    );
+                    mb_w + crate::desktop::theme::scale(4)
+                } else {
+                    0
+                };
+
                 // Close button (X) — top-right of card, only for occupied slots
                 if slot_has_window[slot] {
                     let xbtn_sz = crate::desktop::theme::scale(18);
@@ -2677,11 +2756,13 @@ impl Desktop {
                     );
                 }
 
-                // Window title (next to badge)
+                // Window title (next to badge — shifted by monitor
+                // badge width when present)
                 if slot_has_window[slot] {
                     let tstr = core::str::from_utf8(&slot_titles[slot][..slot_title_lens[slot]])
                         .unwrap_or("");
-                    let max_tw = card_w.saturating_sub(badge_w + crate::desktop::theme::scale(18));
+                    let max_tw = card_w
+                        .saturating_sub(badge_w + monitor_badge_w + crate::desktop::theme::scale(18));
                     let tlen = title_display_len(tstr, max_tw);
                     let display = if tlen < tstr.len() && tlen > 0 {
                         &tstr[..tlen]
@@ -2689,7 +2770,9 @@ impl Desktop {
                         tstr
                     };
                     if !display.is_empty() {
-                        let ttx = bx + badge_w as i32 + crate::desktop::theme::scale_i32(6);
+                        let ttx = bx + badge_w as i32
+                            + monitor_badge_w as i32
+                            + crate::desktop::theme::scale_i32(6);
                         let (_, tth) =
                             anyos_std::ui::window::font_measure(FONT_ID, title_fs, display);
                         let tty = by + (badge_h as i32 - tth as i32) / 2;

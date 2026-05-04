@@ -506,7 +506,29 @@ impl Desktop {
             // Check if clicking within the shortcut overlay
             if self.shortcut_overlay_visible {
                 let is_inside = self.is_point_in_shortcut_overlay(self.mouse_x, self.mouse_y);
+                let newly_pressed = buttons & !previous_buttons;
+                let right_click = (newly_pressed & 2) != 0;
                 if is_inside {
+                    // Right-click on an occupied card cycles the window
+                    // to the next output (multi-monitor convenience).
+                    // Stays inside the overlay so the user can chain the
+                    // gesture for cards on still-other monitors.
+                    if right_click {
+                        if let Some(slot) =
+                            self.hit_test_shortcut_overlay(self.mouse_x, self.mouse_y)
+                        {
+                            let win_id = self.fkey_slots[slot];
+                            if win_id != 0 && self.compositor.outputs.len() >= 2 {
+                                let others = self.other_outputs_for_window(win_id);
+                                if let Some(&first_other) = others.first() {
+                                    self.move_window_to_output(win_id, first_other);
+                                    self.render_shortcut_overlay();
+                                    self.compositor.damage_all();
+                                }
+                            }
+                            return;
+                        }
+                    }
                     // Check close button (X) first
                     if let Some(slot) =
                         self.hit_test_shortcut_overlay_close(self.mouse_x, self.mouse_y)
