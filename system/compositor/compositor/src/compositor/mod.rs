@@ -40,6 +40,63 @@ pub struct DragImageOverlay {
     pub last_drawn: bool,
 }
 
+/// One output (display) the compositor scans out to.
+///
+/// Output 0 ("primary") is mirrored by the inline `fb_ptr / fb_width /
+/// fb_height / fb_pitch / back_buffer / damage` fields of `Compositor`
+/// — that representation is kept untouched so the existing single-output
+/// render fast paths keep working without refactoring risk. Outputs ≥ 1
+/// live in `Compositor::outputs` and own their own framebuffer mapping
+/// (`SYS_DISPLAY_MAP_FB(id)` returns a per-output VA at
+/// 0x2000_0000 + id*64 MiB), back buffer, and damage list.
+///
+/// `virtual_x / virtual_y` is the output's top-left position in the
+/// global virtual desktop. Windows live in virtual coordinates; per
+/// output we compute the visible sub-rectangle by intersecting each
+/// window's bbox with `(virtual_x, virtual_y, fb_width, fb_height)`.
+pub struct Output {
+    pub id: u32,
+    pub virtual_x: i32,
+    pub virtual_y: i32,
+    pub fb_ptr: *mut u32,
+    pub fb_width: u32,
+    pub fb_height: u32,
+    pub fb_pitch: u32,
+    pub back_buffer: Vec<u32>,
+    pub damage: Vec<Rect>,
+    pub primary: bool,
+    pub mirror_of: Option<u32>,
+}
+
+impl Output {
+    /// Build the Output entry that mirrors the primary fields of the
+    /// containing Compositor. Used at construction time so callers don't
+    /// have to repeat the field list.
+    fn primary_view(fb_ptr: *mut u32, w: u32, h: u32, pitch: u32) -> Self {
+        Self {
+            id: 0,
+            virtual_x: 0,
+            virtual_y: 0,
+            fb_ptr,
+            fb_width: w,
+            fb_height: h,
+            fb_pitch: pitch,
+            // Output 0's back_buffer / damage live in the legacy inline
+            // fields for now; this entry's vectors stay empty so we
+            // never accidentally render into a duplicate buffer.
+            back_buffer: Vec::new(),
+            damage: Vec::new(),
+            primary: true,
+            mirror_of: None,
+        }
+    }
+}
+
+// Output is accessed only from the compositor thread; the raw fb_ptr is
+// not Send/Sync by default but the rest of the compositor already
+// asserts the same invariant for its own fb_ptr field.
+unsafe impl Send for Output {}
+
 pub struct Compositor {
     /// Framebuffer pointer (MMIO VRAM mapped at 0x20000000)
     pub(crate) fb_ptr: *mut u32,
@@ -47,6 +104,11 @@ pub struct Compositor {
     pub(crate) fb_height: u32,
     /// Framebuffer pitch in bytes (may differ from width*4)
     pub(crate) fb_pitch: u32,
+
+    /// All display outputs. `outputs[0]` is always the primary and
+    /// mirrors the inline `fb_*` fields above. Additional outputs are
+    /// appended by `init_secondary_outputs()` after construction.
+    pub outputs: Vec<Output>,
 
     /// Back buffer for compositing (contiguous, stride = fb_width)
     pub back_buffer: Vec<u32>,
@@ -117,6 +179,7 @@ impl Compositor {
             fb_width: width,
             fb_height: height,
             fb_pitch: pitch,
+            outputs: alloc::vec![Output::primary_view(fb_ptr, width, height, pitch)],
             back_buffer: vec![0u32; pixel_count],
             layers: Vec::with_capacity(32),
             next_layer_id: 1,
@@ -145,6 +208,134 @@ impl Compositor {
     }
     pub fn height(&self) -> u32 {
         self.fb_height
+    }
+
+    /// Total virtual-desktop bounding box across every output.
+    pub fn virtual_desktop_bounds(&self) -> (i32, i32, i32, i32) {
+        if self.outputs.is_empty() {
+            return (0, 0, self.fb_width as i32, self.fb_height as i32);
+        }
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+        for o in &self.outputs {
+            min_x = min_x.min(o.virtual_x);
+            min_y = min_y.min(o.virtual_y);
+            max_x = max_x.max(o.virtual_x + o.fb_width as i32);
+            max_y = max_y.max(o.virtual_y + o.fb_height as i32);
+        }
+        (min_x, min_y, max_x, max_y)
+    }
+
+    /// Find the output whose rectangle contains `(vx, vy)` in virtual
+    /// desktop coordinates. Returns the primary output when no output
+    /// covers the point (e.g. a window dragged into a gap).
+    pub fn output_at(&self, vx: i32, vy: i32) -> &Output {
+        for o in &self.outputs {
+            if vx >= o.virtual_x
+                && vy >= o.virtual_y
+                && vx < o.virtual_x + o.fb_width as i32
+                && vy < o.virtual_y + o.fb_height as i32
+            {
+                return o;
+            }
+        }
+        // Fallback: outputs[0] is always the primary.
+        &self.outputs[0]
+    }
+
+    /// Discover and map secondary outputs reported by the kernel.
+    ///
+    /// Called once after `Compositor::new()` and `register_compositor()`.
+    /// Walks `SYS_DISPLAY_LIST`; for each connected output beyond index 0
+    /// it issues `SYS_DISPLAY_MAP_FB(id)`, places the output to the right
+    /// of the previous one in the virtual desktop, and pushes an `Output`
+    /// entry. Any failure for a single output (mode not set, mapping
+    /// rejected) is logged and skipped — the compositor stays usable
+    /// with the outputs it could map.
+    ///
+    /// Layout policy here is deliberately minimal — "stack to the right
+    /// of primary in scanout-id order". The richer policy (persisted
+    /// per-EDID layout, drag-to-arrange, primary selection) lives in the
+    /// future `displayd` daemon (phase 5); this is what the compositor
+    /// uses as a sane bootstrap fallback when no displayd is running yet.
+    pub fn init_secondary_outputs(&mut self) {
+        let infos = anyos_std::display::list(16);
+        if infos.len() <= 1 {
+            return;
+        }
+        // Cursor for stacking: start to the right of output 0.
+        let mut next_x = self.fb_width as i32;
+        for info in infos.iter().skip(1) {
+            if !info.is_connected() {
+                continue;
+            }
+            // The kernel may report current_w/h as 0 for a connected but
+            // never-set-up scanout. In that case fall back to the
+            // preferred mode; if that's also missing, skip.
+            let (w, h) = if info.current_w > 0 && info.current_h > 0 {
+                (info.current_w, info.current_h)
+            } else if info.preferred_w > 0 && info.preferred_h > 0 {
+                (info.preferred_w, info.preferred_h)
+            } else {
+                anyos_std::println!(
+                    "[compositor] output {} reports no usable mode; skipping",
+                    info.id
+                );
+                continue;
+            };
+
+            let fb_info = match anyos_std::display::map_fb(info.id) {
+                Some(f) => f,
+                None => {
+                    anyos_std::println!(
+                        "[compositor] SYS_DISPLAY_MAP_FB failed for output {} ({}x{})",
+                        info.id,
+                        w,
+                        h
+                    );
+                    continue;
+                }
+            };
+
+            // Zero the secondary's framebuffer so we don't show garbage
+            // until the first composite reaches it.
+            unsafe {
+                let pixels = (fb_info.height as usize) * (fb_info.pitch as usize / 4);
+                core::ptr::write_bytes(fb_info.fb_addr as *mut u32, 0, pixels);
+            }
+
+            self.outputs.push(Output {
+                id: info.id,
+                virtual_x: next_x,
+                virtual_y: 0,
+                fb_ptr: fb_info.fb_addr as *mut u32,
+                fb_width: fb_info.width,
+                fb_height: fb_info.height,
+                fb_pitch: fb_info.pitch,
+                back_buffer: alloc::vec![0u32; (fb_info.width * fb_info.height) as usize],
+                damage: Vec::with_capacity(32),
+                primary: false,
+                mirror_of: None,
+            });
+
+            // Tell the kernel to flush the now-zeroed framebuffer so the
+            // host immediately stops showing whatever splash QEMU painted.
+            let _ = anyos_std::display::flush(info.id, 0, 0, fb_info.width, fb_info.height);
+
+            anyos_std::println!(
+                "[compositor] output {} active at virt=({},{}), {}x{}, fb_va={:#x}",
+                info.id,
+                next_x,
+                0,
+                fb_info.width,
+                fb_info.height,
+                fb_info.fb_addr
+            );
+
+            next_x += fb_info.width as i32;
+        }
     }
 
     // ── Layer Management ────────────────────────────────────────────────

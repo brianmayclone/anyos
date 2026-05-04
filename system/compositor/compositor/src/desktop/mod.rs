@@ -245,6 +245,13 @@ impl Desktop {
     pub fn new(fb_ptr: *mut u32, width: u32, height: u32, pitch: u32) -> Self {
         let mut compositor = Compositor::new(fb_ptr, width, height, pitch);
 
+        // Discover and map any additional outputs the kernel advertises.
+        // Output 0 is already represented by the inline fb_* fields; this
+        // call appends Output entries for ids 1..N. Without this the
+        // compositor stays single-display and additional virtio-gpu
+        // scanouts continue to show whatever QEMU painted at boot.
+        compositor.init_secondary_outputs();
+
         // Background layer (bottom)
         let bg_id = compositor.add_layer(0, 0, width, height, true);
 
