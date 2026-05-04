@@ -410,7 +410,49 @@ impl Compositor {
                 if bb.len() != (ow * oh) as usize {
                     bb.resize((ow * oh) as usize, 0);
                 }
-                bb.fill(BG);
+            }
+
+            // Background fill: prefer the wallpaper from the bg layer
+            // (always layer 0) — nearest-neighbour-scaled to the
+            // secondary output's resolution so the desktop image
+            // appears on every monitor instead of just the primary.
+            // Falls back to the desktop background colour when the
+            // wallpaper hasn't been drawn into the layer yet (early
+            // boot, or wallpaper image still loading).
+            //
+            // The scale is recomputed per frame; a per-output cache
+            // would be a worthwhile optimisation but only matters for
+            // animated content and the wallpaper is essentially static.
+            let used_wallpaper = if !self.layers.is_empty() {
+                let bg = &self.layers[0];
+                let sw = bg.width as usize;
+                let sh = bg.height as usize;
+                if sw > 0
+                    && sh > 0
+                    && bg.pixels.len() == sw * sh
+                    && bg.pixels.iter().any(|&p| (p & 0x00FF_FFFF) != 0)
+                {
+                    let bb = &mut self.outputs[oi].back_buffer;
+                    let dst_w = ow as usize;
+                    let dst_h = oh as usize;
+                    for y in 0..dst_h {
+                        let sy = y * sh / dst_h;
+                        let row_off = y * dst_w;
+                        let src_off = sy * sw;
+                        for x in 0..dst_w {
+                            let sx = x * sw / dst_w;
+                            bb[row_off + x] = bg.pixels[src_off + sx] | 0xFF00_0000;
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !used_wallpaper {
+                self.outputs[oi].back_buffer.fill(BG);
             }
 
             // Output rect in virtual coordinates.
@@ -505,6 +547,13 @@ impl Compositor {
 
             // ── Pass 2: layer pixels with optional rounded corners ────
             for li in 0..n_layers {
+                if used_wallpaper && li == 0 {
+                    // Already drawn as the scaled background; skipping
+                    // avoids a redundant primary-rect blit (would also
+                    // be a clip no-op since bg is sized to the primary,
+                    // but cheaper to short-circuit).
+                    continue;
+                }
                 let layer = &self.layers[li];
                 if !layer.visible {
                     continue;
