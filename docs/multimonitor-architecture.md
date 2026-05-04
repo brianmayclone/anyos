@@ -319,28 +319,105 @@ seed confd at first boot.
   Deskbar/menubar stays primary-only (matches modern macOS / Windows
   defaults). Per-output deskbar mirroring tracked as a follow-up.
 
-### ✅ Phase 5 + 10 — services + auto-keyed setups
-- 5a/b/c. `services/displayd` daemon, `libs/libdisplay_client`,
-  `apps/display-settings` GUI (GNOME-style toolbar + list + detail
-  pane). All persistence in confd — no separate display.conf file.
-- 10. Auto-keyed setups: layout key is the CRC-64 of the sorted
-  EDID-hash set. Plugging the same monitors at home and at the
-  office produces the same hash and therefore the same layout
-  automatically. Each `CMD_SET_OUTPUT_CONFIG` writes to both the
-  live keys and the active setup's keys, so re-plugging restores
-  the layout exactly. No manual save step.
-  - Schema lives at `services/displayd/config/setups/<setup_hash>/`
-    in confd.
-  - Setup hash is recomputed at boot and on every `HotplugChanged`
-    event. Bug-fix that surfaced during validation: `LayoutApplied`
-    must NOT trigger a re-apply (was an infinite write loop that
-    crashed confd within seconds under the new auto-save model).
-- 9f window reflow: at hot-plug or layout-applied, the compositor
-  drops vanished outputs from `outputs[]` and moves any window
-  that no longer lives on an active output onto the primary.
-- 8 titlebar / window-switcher integration: per-other-output buttons
-  on every title bar, coloured M{N} badge in the shortcut overlay,
-  right-click on a card moves the window.
+### ✅ Phase 5 — services + GUI
+- 5a. `services/displayd` daemon — registers as the layout owner
+  via `SYS_REGISTER_DISPLAY_OWNER`, pushes layouts via
+  `SYS_DISPLAY_SET_LAYOUT`, polls hot-plug events on a 1 s cadence.
+- 5b. `libs/libdisplay_client` — `DisplaydClient::list_outputs /
+  reapply_layout / probe_hotplug / push_layout / set_output_config /
+  set_global_config / set_setup_name`. SHM-backed marshalling for
+  the larger payloads (`OutputConfig` 96 B, `GlobalConfig` 32 B).
+- 5c. `apps/display-settings` GUI — GNOME-style toolbar
+  (Erweitern / Spiegeln) + output list + per-output detail
+  (resolution combo, orientation, scale segmented control,
+  fractional toggle, enabled toggle, Apply button).
+- 5-spawn. Compositor spawns `/System/displayd` after fontd in the
+  bootstrap sequence.
+- All persistence goes through confd (`services/displayd/config/...`).
+  No separate `display.conf` file is created or read.
+
+### ✅ Phase 8 — titlebar + window-switcher integration
+- Per-other-output "send to monitor" buttons on every title bar.
+  `move_window_to_output` translates window position from source
+  output to target output, clamping into the target rect when the
+  target is smaller than the source.
+- Window-switcher overlay (Strg+F1..F12): coloured M{N} badge per
+  card showing the current monitor; right-click cycles the window
+  to the next other monitor.
+
+### ✅ Phase 9 — window reflow + run.sh per-monitor + GUI overhaul
+- 9a–b. confd schema for displayd lives in
+  `system/daemons/displayd/src/schema.rs`. Replaces the planned
+  `/System/etc/display.conf` entirely.
+- 9c. GUI overhaul as described in Phase 5c — drag-arrange canvas
+  is its own follow-up, see open items below.
+- 9d. `run.sh --displays WIDTHxHEIGHT,WIDTHxHEIGHT,...` writes
+  `/System/etc/displayd-seed.conf`; displayd applies the seed
+  values to confd at first boot, idempotent on subsequent boots.
+- 9e (later replaced by Phase 10). Named profiles ("home" /
+  "office" / "mobile") with hot-plug auto-detection. Superseded
+  by the auto-keyed model in Phase 10 — the named-profile IPC is
+  kept as a thin compatibility layer over the new mechanism.
+- 9f. Compositor window reflow: management thread polls display
+  events at 500 ms; on hot-plug or layout-change the compositor
+  drops vanished outputs from `outputs[]`, adds new ones, and
+  moves any window whose old output disappeared back onto the
+  primary (reusing the Phase 8 `move_window_to_output` helper).
+
+### ✅ Phase 10 — auto-keyed monitor setups
+Replaces the named-profile model. The display layout is
+identified by a deterministic hash of the connected EDID set —
+the user no longer presses a "save" button at all. Reconnecting
+the same monitor combination anywhere always produces the same
+hash and therefore restores the same layout automatically.
+
+- **Hash** = CRC-64 (ECMA polynomial) of the sorted EDID hashes
+  concatenated as 8-byte big-endian buffers, rendered as
+  16 lower-case hex chars. Sort gives set semantics — plug
+  order doesn't matter.
+- **Storage** in confd:
+
+  ```
+  config/setups/<setup_hash>/edids               (canonical EDID list)
+  config/setups/<setup_hash>/friendly_name       (optional cosmetic
+                                                  label — "home", …)
+  config/setups/<setup_hash>/output/<edid>/...   (per-output config:
+                                                  same keys as the
+                                                  live config/output)
+  config/active_setup                             (current setup hash)
+  ```
+
+- **Auto-load** at boot and on every `HotplugChanged`:
+  `activate_current_setup()` computes the hash, copies the saved
+  per-output values onto the live `config/output/<edid>/*` keys,
+  then `apply_persisted_layout()` runs the regular pipeline.
+- **Auto-save**: every `CMD_SET_OUTPUT_CONFIG` writes both the
+  live keys and the active setup's per-output keys via
+  `write_output_to_live_and_active_setup()`. So re-plugging
+  this exact set later restores the change without any user
+  action.
+- **Fresh setups** (a combination never seen before) seed the
+  setup keys from whatever's currently in the live config —
+  effectively a snapshot of the kernel-reported defaults. The
+  next edit accumulates real values.
+- **Friendly-name** API (`CMD_SET_SETUP_NAME`,
+  `client.set_setup_name("home")`) attaches a cosmetic label
+  to the current setup hash — purely for the GUI; the layout
+  identity is the hash itself.
+
+Compatibility shims keep `CMD_SAVE_PROFILE` / `CMD_LOAD_PROFILE` /
+`CMD_DELETE_PROFILE` callable: `SAVE` becomes "name the current
+setup", `LOAD` re-applies the layout for the connected EDID set
+(no-op in the new model), `DELETE` is a no-op success.
+
+**Bug surfaced during Phase 10 validation**: an `LayoutApplied`
+display event must NOT trigger `apply_persisted_layout()`. The
+prior code did, which combined with the new auto-save semantics
+caused an infinite write loop (apply → set_layout →
+LayoutApplied → apply → …). Confd would crash within ~25 s under
+the resulting write storm. Fixed by limiting re-apply triggers
+to `HotplugChanged` and `PreferredModeChanged`; `LayoutApplied`
+just emits `EVT_LAYOUT_CHANGED` for subscribers now.
 
 ### ✅ Phase 7 — SPICE vdagent monitors-config
 vdagent parses `VD_AGENT_MONITORS_CONFIG`, builds a `LayoutEntry`
