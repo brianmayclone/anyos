@@ -365,6 +365,27 @@ impl Compositor {
         // separate piece of work.
         const BG: u32 = 0xFF1A1A2E;
 
+        // Visual parity with the primary's composite_rect:
+        //
+        //   * windows with `has_shadow == true` get a drop shadow drawn
+        //     before the layer pixels — a soft falloff matching the
+        //     primary's shadow_spread(). The primary uses a baked alpha
+        //     cache for performance; on secondary outputs we recompute
+        //     per frame because secondary frames are far less frequent
+        //     and the simpler code is easier to keep correct.
+        //
+        //   * the same windows have rounded corners — pixels closer than
+        //     CORNER_RADIUS to a corner get an alpha multiplier that
+        //     fades to 0 at the corner (rough quarter-circle mask).
+        //
+        // Blur and the hardware cursor remain primary-only for now;
+        // those need a heavier composite_rect refactor (parameterising
+        // the destination buffer + stride) to share the existing baked
+        // caches between outputs.
+        const CORNER_RADIUS: i32 = 8;
+        let shadow_spread_px = crate::desktop::theme::scale_i32(16);
+        let shadow_offset_y_px = crate::desktop::theme::scale_i32(6);
+
         // We need read access to layers (immutable borrow on self.layers)
         // and write access to outputs[idx].back_buffer / fb_ptr. Split via
         // indices to avoid the borrow checker fighting us.
@@ -396,6 +417,93 @@ impl Compositor {
             let ox2 = ox + ow as i32;
             let oy2 = oy + oh as i32;
 
+            // ── Pass 1: drop shadows for has_shadow layers ────────────
+            for li in 0..n_layers {
+                let layer = &self.layers[li];
+                if !layer.visible || !layer.has_shadow {
+                    continue;
+                }
+                let lx = layer.x;
+                let ly = layer.y;
+                let lw = layer.width as i32;
+                let lh = layer.height as i32;
+                let is_focused = self.focused_layer_id == Some(layer.id);
+                let base_a: i32 = if is_focused { 50 } else { 25 };
+                // Shadow band: from spread pixels around the offset
+                // window position, falling off linearly to 0.
+                let sx0 = lx - shadow_spread_px;
+                let sy0 = ly + shadow_offset_y_px - shadow_spread_px;
+                let sx1 = lx + lw + shadow_spread_px;
+                let sy1 = ly + lh + shadow_offset_y_px + shadow_spread_px;
+                // Intersect with output rect.
+                let ix = sx0.max(ox);
+                let iy = sy0.max(oy);
+                let ix2 = sx1.min(ox2);
+                let iy2 = sy1.min(oy2);
+                if ix >= ix2 || iy >= iy2 {
+                    continue;
+                }
+                let bb = &mut self.outputs[oi].back_buffer;
+                let dst_stride = ow as usize;
+                let win_y0 = ly + shadow_offset_y_px;
+                let win_y1 = ly + lh + shadow_offset_y_px;
+                for vy in iy..iy2 {
+                    let dy = vy - oy;
+                    let row_off = (dy as usize) * dst_stride;
+                    // Vertical distance to the offset window rect (0
+                    // inside it).
+                    let vdist = if vy < win_y0 {
+                        win_y0 - vy
+                    } else if vy >= win_y1 {
+                        vy - win_y1 + 1
+                    } else {
+                        0
+                    };
+                    for vx in ix..ix2 {
+                        // Skip pixels inside the actual window position
+                        // (will be overwritten by the layer pixels in
+                        // pass 2). The window itself sits at (lx, ly)
+                        // — not the offset y; we still want shadow
+                        // visible in the strip below the window
+                        // because shadow_offset_y > 0.
+                        if vx >= lx && vx < lx + lw && vy >= ly && vy < ly + lh {
+                            continue;
+                        }
+                        let hdist = if vx < lx {
+                            lx - vx
+                        } else if vx >= lx + lw {
+                            vx - lx - lw + 1
+                        } else {
+                            0
+                        };
+                        let dist = vdist.max(hdist);
+                        if dist > shadow_spread_px {
+                            continue;
+                        }
+                        // Linear falloff from base_a at dist=0 to 0 at
+                        // dist=spread.
+                        let t = (shadow_spread_px - dist).max(0);
+                        let a = (base_a * t / shadow_spread_px) as u32;
+                        if a == 0 {
+                            continue;
+                        }
+                        let dx = (vx - ox) as usize;
+                        let dst = bb[row_off + dx];
+                        let dr = (dst >> 16) & 0xFF;
+                        let dg = (dst >> 8) & 0xFF;
+                        let db = dst & 0xFF;
+                        // shadow colour = pure black, alpha = a (out of
+                        // 255). dst' = dst * (255-a) / 255.
+                        let inv = 255 - a;
+                        let r = dr * inv / 255;
+                        let g = dg * inv / 255;
+                        let b = db * inv / 255;
+                        bb[row_off + dx] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
+
+            // ── Pass 2: layer pixels with optional rounded corners ────
             for li in 0..n_layers {
                 let layer = &self.layers[li];
                 if !layer.visible {
@@ -414,6 +522,9 @@ impl Compositor {
                 if ix >= ix2 || iy >= iy2 {
                     continue;
                 }
+                let layer_w_i = layer.width as i32;
+                let layer_h_i = layer.height as i32;
+                let rounded = layer.has_shadow;
 
                 // Source row of pixels = SHM-backed for shm layers,
                 // owned Vec otherwise.
@@ -429,40 +540,72 @@ impl Compositor {
                 let bb = &mut self.outputs[oi].back_buffer;
                 let dst_stride = ow as usize;
                 for vy in iy..iy2 {
-                    let sy = (vy - ly) as usize;
-                    let sx = (ix - lx) as usize;
+                    let layer_local_y = vy - ly; // 0..layer_h
                     let dst_y = (vy - oy) as usize;
-                    let dst_x = (ix - ox) as usize;
-                    let count = (ix2 - ix) as usize;
-                    let dst_off = dst_y * dst_stride + dst_x;
-                    let src_off = sy * src_w + sx;
-                    unsafe {
-                        let src = src_pixels.add(src_off);
-                        for i in 0..count {
-                            let p = core::ptr::read(src.add(i));
-                            // ARGB: alpha blend onto BG when layer is
-                            // not opaque. Solid-cheap path: if alpha is
-                            // 0xFF (or the layer is opaque), straight
-                            // copy; otherwise simple over-blend.
-                            let a = (p >> 24) & 0xFF;
-                            bb[dst_off + i] = if layer.opaque || a == 0xFF {
-                                p | 0xFF000000
-                            } else if a == 0 {
-                                bb[dst_off + i]
-                            } else {
-                                let inv = 255 - a;
-                                let dr = (bb[dst_off + i] >> 16) & 0xFF;
-                                let dg = (bb[dst_off + i] >> 8) & 0xFF;
-                                let db = bb[dst_off + i] & 0xFF;
-                                let sr = (p >> 16) & 0xFF;
-                                let sg = (p >> 8) & 0xFF;
-                                let sb = p & 0xFF;
-                                let r = (sr * a + dr * inv) / 255;
-                                let g = (sg * a + dg * inv) / 255;
-                                let b = (sb * a + db * inv) / 255;
-                                0xFF000000 | (r << 16) | (g << 8) | b
-                            };
+                    for vx in ix..ix2 {
+                        let layer_local_x = vx - lx; // 0..layer_w
+                        let dst_x = (vx - ox) as usize;
+                        let dst_idx = dst_y * dst_stride + dst_x;
+                        let src_idx = (layer_local_y as usize) * src_w
+                            + (layer_local_x as usize);
+                        let p = unsafe { core::ptr::read(src_pixels.add(src_idx)) };
+
+                        // Per-pixel alpha multiplier from rounded-corner
+                        // mask. 256 = unmodified; 0 = fully transparent.
+                        let mut corner_mul: u32 = 256;
+                        if rounded {
+                            let cr = CORNER_RADIUS;
+                            // Distance from each corner in (cx,cy)
+                            // measured from the corner's *inner pixel*.
+                            let near_left = layer_local_x < cr;
+                            let near_right = layer_local_x >= layer_w_i - cr;
+                            let near_top = layer_local_y < cr;
+                            let near_bottom = layer_local_y >= layer_h_i - cr;
+                            if (near_left || near_right) && (near_top || near_bottom) {
+                                let cx = if near_left {
+                                    cr - 1 - layer_local_x
+                                } else {
+                                    layer_local_x - (layer_w_i - cr)
+                                };
+                                let cy = if near_top {
+                                    cr - 1 - layer_local_y
+                                } else {
+                                    layer_local_y - (layer_h_i - cr)
+                                };
+                                let dist_sq = (cx * cx + cy * cy) as i32;
+                                let r_sq = cr * cr;
+                                if dist_sq >= r_sq {
+                                    corner_mul = 0;
+                                } else {
+                                    // Soft 1-pixel anti-aliased edge.
+                                    let r_inner_sq = (cr - 1) * (cr - 1);
+                                    if dist_sq > r_inner_sq {
+                                        let frac = ((r_sq - dist_sq) * 256)
+                                            / (r_sq - r_inner_sq).max(1);
+                                        corner_mul = frac.clamp(0, 256) as u32;
+                                    }
+                                }
+                            }
                         }
+
+                        let a = ((p >> 24) & 0xFF) * corner_mul / 256;
+                        bb[dst_idx] = if a == 0 {
+                            bb[dst_idx]
+                        } else if !layer.opaque && a < 255 {
+                            let inv = 255 - a;
+                            let dr = (bb[dst_idx] >> 16) & 0xFF;
+                            let dg = (bb[dst_idx] >> 8) & 0xFF;
+                            let db = bb[dst_idx] & 0xFF;
+                            let sr = (p >> 16) & 0xFF;
+                            let sg = (p >> 8) & 0xFF;
+                            let sb = p & 0xFF;
+                            let r = (sr * a + dr * inv) / 255;
+                            let g = (sg * a + dg * inv) / 255;
+                            let b = (sb * a + db * inv) / 255;
+                            0xFF000000 | (r << 16) | (g << 8) | b
+                        } else {
+                            p | 0xFF000000
+                        };
                     }
                 }
             }
