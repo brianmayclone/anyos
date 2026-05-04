@@ -40,6 +40,23 @@ struct AppState {
     selected_idx: Option<usize>,
     res_options: Vec<(u32, u32)>,
     profile_label: Option<ui::Label>,
+    /// Editable layout: virtual_x for each connected output (parallel
+    /// array to `infos`). Drag updates this in real time; mouse-up
+    /// commits via CMD_SET_OUTPUT_CONFIG so displayd writes it to
+    /// confd's auto-keyed setup. virtual_y stays at 0 for now —
+    /// vertical stacking is a follow-up.
+    layout_x: Vec<i32>,
+    /// Current drag (info index, drag offset within the rect in
+    /// virtual-pixel units). None when not dragging.
+    dragging: Option<(usize, i32)>,
+    /// Reference to the layout canvas + the scale params used to
+    /// map between canvas pixels and virtual-desktop pixels. Set
+    /// once at startup so event handlers can re-read them.
+    canvas: Option<ui::Canvas>,
+    canvas_scale_num: i32,
+    canvas_off_x: i32,
+    canvas_off_y: i32,
+    canvas_max_h: i32,
 }
 
 static mut APP: Option<AppState> = None;
@@ -169,45 +186,176 @@ fn primary_id() -> u32 {
         .unwrap_or(0)
 }
 
-/// Render a small textual layout preview into the supplied label.
-/// A Canvas-based drag-arrange comes with phase 9c-extended; for the
-/// first cut we show a one-liner like
-/// `[1] 1920×1080 Eingebaute · [2] 2560×1440 Eizo*`.
-fn render_layout_label(label: &ui::Label) {
-    let mut s = String::new();
+/// Effective resolution of an output (current → preferred fallback).
+fn effective_size(info: &display::DisplayInfo) -> (u32, u32) {
+    let w = if info.current_w > 0 {
+        info.current_w
+    } else {
+        info.preferred_w
+    };
+    let h = if info.current_h > 0 {
+        info.current_h
+    } else {
+        info.preferred_h
+    };
+    (w, h)
+}
+
+/// Re-derive layout_x from the connected outputs, simple left-to-right
+/// stacking starting at 0. Called once on app start; subsequent
+/// changes come from drag-and-drop.
+fn init_layout() {
+    let mut next_x: i32 = 0;
+    let mut xs: Vec<i32> = Vec::with_capacity(app().infos.len());
+    for info in app().infos.iter() {
+        if !info.is_connected() {
+            xs.push(next_x);
+            continue;
+        }
+        let (w, _h) = effective_size(info);
+        xs.push(next_x);
+        next_x += w as i32;
+    }
+    app().layout_x = xs;
+}
+
+/// Compute the canvas-to-virtual scale factor (×1000 fixed point) plus
+/// the canvas pixel offsets that centre the layout. Stored on AppState
+/// so click / drag handlers can map canvas coords back to virtual-pixel
+/// coords without recomputing.
+fn recalc_canvas_scale(canvas: &ui::Canvas) {
+    let cw = canvas.get_stride() as i32;
+    let ch = canvas.get_height() as i32;
+    let mut total_w: i32 = 0;
+    let mut max_h: i32 = 1;
     for (i, info) in app().infos.iter().enumerate() {
         if !info.is_connected() {
             continue;
         }
-        let (w, h) = if info.current_w > 0 {
-            (info.current_w, info.current_h)
-        } else {
-            (info.preferred_w, info.preferred_h)
-        };
+        let (w, h) = effective_size(info);
         if w == 0 || h == 0 {
             continue;
         }
-        if !s.is_empty() {
-            s.push_str("    ");
+        let right = app().layout_x[i] + w as i32;
+        total_w = total_w.max(right);
+        max_h = max_h.max(h as i32);
+    }
+    if total_w <= 0 {
+        app().canvas_scale_num = 1;
+        app().canvas_off_x = 0;
+        app().canvas_off_y = 0;
+        app().canvas_max_h = 1;
+        return;
+    }
+    let margin = 16;
+    let avail_w = (cw - 2 * margin).max(1);
+    let avail_h = (ch - 2 * margin).max(1);
+    // Keep both dimensions in view: scale = min(avail_w/total_w, avail_h/max_h)
+    let scale_w = (avail_w * 1000) / total_w;
+    let scale_h = (avail_h * 1000) / max_h;
+    let scale = scale_w.min(scale_h).max(1);
+    let render_w = total_w * scale / 1000;
+    let render_h = max_h * scale / 1000;
+    app().canvas_scale_num = scale;
+    app().canvas_off_x = margin + (avail_w - render_w) / 2;
+    app().canvas_off_y = margin + (avail_h - render_h) / 2;
+    app().canvas_max_h = max_h;
+}
+
+/// Paint the layout onto the canvas. Each connected output is drawn
+/// as a rectangle whose size and position reflect its virtual_x / mode.
+/// The currently-dragged output is highlighted blue, the primary gets
+/// a darker blue, others stay neutral.
+fn render_canvas(canvas: &ui::Canvas) {
+    canvas.clear(COL_PANEL);
+    recalc_canvas_scale(canvas);
+    let scale = app().canvas_scale_num;
+    let off_x = app().canvas_off_x;
+    let off_y = app().canvas_off_y;
+    for (i, info) in app().infos.iter().enumerate() {
+        if !info.is_connected() {
+            continue;
         }
-        let primary_marker = if info.is_primary() || info.id == 0 {
-            "*"
+        let (w, h) = effective_size(info);
+        if w == 0 || h == 0 {
+            continue;
+        }
+        let x = off_x + app().layout_x[i] * scale / 1000;
+        let y = off_y;
+        let rw = (w as i32 * scale / 1000).max(20) as u32;
+        let rh = (h as i32 * scale / 1000).max(15) as u32;
+        let bg = if Some(i) == app().selected_idx {
+            0xFF0A84FF
+        } else if app().dragging.map(|(d, _)| d) == Some(i) {
+            0xFF1E5FCC
+        } else if info.is_primary() || info.id == 0 {
+            0xFF1E3A60
         } else {
-            ""
+            0xFF3A3A40
         };
-        s.push_str(&format!(
-            "[{}] {}\u{00D7}{} {}{}",
-            i + 1,
-            w,
-            h,
-            pnpid(info),
-            primary_marker
-        ));
+        canvas.fill_rect(x, y, rw, rh, bg);
+        // Outline.
+        canvas.draw_rect(x, y, rw, rh, 0xFF666666, 1);
+        // ID number centred.
+        let label = format!("{}", i + 1);
+        let (lw, lh) = anyos_std::ui::window::font_measure(0, 18, &label);
+        let lx = x + (rw as i32 - lw as i32) / 2;
+        let ly = y + (rh as i32 - lh as i32) / 2;
+        canvas.draw_text(lx, ly, 0xFFFFFFFF, 0, 18, &label);
     }
-    if s.is_empty() {
-        s.push_str("Keine angeschlossenen Bildschirme.");
+}
+
+/// Convert a canvas-local x to a virtual-desktop x using the cached
+/// scale + offset. Returns the canvas position rounded to the
+/// nearest virtual pixel.
+fn canvas_to_virtual_x(cx: i32) -> i32 {
+    let scale = app().canvas_scale_num.max(1);
+    ((cx - app().canvas_off_x) * 1000 + scale / 2) / scale
+}
+
+/// Find which output (if any) the canvas-local point (cx, cy) lands on.
+fn output_at_canvas(cx: i32, cy: i32) -> Option<usize> {
+    let scale = app().canvas_scale_num.max(1);
+    for (i, info) in app().infos.iter().enumerate() {
+        if !info.is_connected() {
+            continue;
+        }
+        let (w, h) = effective_size(info);
+        if w == 0 || h == 0 {
+            continue;
+        }
+        let x = app().canvas_off_x + app().layout_x[i] * scale / 1000;
+        let y = app().canvas_off_y;
+        let rw = (w as i32 * scale / 1000).max(20);
+        let rh = (h as i32 * scale / 1000).max(15);
+        if cx >= x && cx < x + rw && cy >= y && cy < y + rh {
+            return Some(i);
+        }
     }
-    label.set_text(&s);
+    None
+}
+
+/// Commit the dragged output's new virtual_x to displayd. virtual_y
+/// stays 0 (this drag-arrange only handles horizontal stacking).
+fn commit_drag(idx: usize) {
+    let info = app().infos[idx];
+    let mut cfg = displayd::OutputConfig::default();
+    cfg.edid_hash = info.edid_hash;
+    cfg.enabled = if info.is_connected() { 1 } else { 0 };
+    cfg.orientation = 0;
+    let (w, h) = effective_size(&info);
+    cfg.mode_w = w;
+    cfg.mode_h = h;
+    cfg.mode_refresh_mhz = if info.refresh_mhz > 0 { info.refresh_mhz } else { 60_000 };
+    cfg.scale_percent = 100;
+    cfg.fractional_scale = 0;
+    cfg.virtual_x = app().layout_x[idx];
+    cfg.virtual_y = 0;
+    cfg.mirror_of_hash = 0;
+    if let Some(client) = displayd::DisplaydClient::connect() {
+        let _ = client.set_output_config(&cfg);
+        client.disconnect();
+    }
 }
 
 fn commit_output(idx: usize, cfg: displayd::OutputConfig) {
@@ -239,6 +387,13 @@ fn main() {
             selected_idx: None,
             res_options: Vec::new(),
             profile_label: None,
+            layout_x: Vec::new(),
+            dragging: None,
+            canvas: None,
+            canvas_scale_num: 1,
+            canvas_off_x: 0,
+            canvas_off_y: 0,
+            canvas_max_h: 1,
         });
     }
     refresh_outputs();
@@ -276,19 +431,70 @@ fn main() {
     win.add(&status_bar);
     app().profile_label = Some(profile_label);
 
-    // ── Layout preview (text for now; canvas drag-arrange follows) ──
-    let preview_panel = ui::View::new();
-    preview_panel.set_dock(ui::DOCK_TOP);
-    preview_panel.set_size(WIN_W, 56);
-    preview_panel.set_color(COL_PANEL_ALT);
-    preview_panel.set_padding(16, 12, 16, 12);
-    let preview = ui::Label::new("");
-    preview.set_position(0, 0);
-    preview.set_size(WIN_W - 32, 28);
-    preview.set_text_color(COL_TEXT_DIM);
-    preview_panel.add(&preview);
-    win.add(&preview_panel);
-    render_layout_label(&preview);
+    // ── Layout drag-arrange canvas ────────────────────────────
+    init_layout();
+    let canvas = ui::Canvas::new(WIN_W - 32, 200);
+    canvas.set_dock(ui::DOCK_TOP);
+    canvas.set_size(WIN_W - 32, 200);
+    canvas.set_interactive(true);
+    win.add(&canvas);
+    render_canvas(&canvas);
+    app().canvas = Some(canvas.clone());
+
+    // Drag state machine: mouse-down on a rect picks it up, mouse-move
+    // updates layout_x[idx] live, mouse-up commits the new position to
+    // displayd via CMD_SET_OUTPUT_CONFIG.
+    let canvas_for_down = canvas.clone();
+    canvas.on_mouse_down(move |cx, cy, _btn| {
+        if let Some(idx) = output_at_canvas(cx, cy) {
+            // Drag offset in virtual pixels — keeps the rect's
+            // grab point consistent through the drag.
+            let virt_click = canvas_to_virtual_x(cx);
+            let offset = virt_click - app().layout_x[idx];
+            app().dragging = Some((idx, offset));
+            app().selected_idx = Some(idx);
+            render_canvas(&canvas_for_down);
+        }
+    });
+    let canvas_for_move = canvas.clone();
+    canvas.on_mouse_move(move |cx, _cy| {
+        if let Some((idx, offset)) = app().dragging {
+            let virt_x = canvas_to_virtual_x(cx) - offset;
+            app().layout_x[idx] = virt_x;
+            render_canvas(&canvas_for_move);
+        }
+    });
+    let canvas_for_up = canvas.clone();
+    canvas.on_mouse_up(move |_cx, _cy, _btn| {
+        if let Some((idx, _)) = app().dragging.take() {
+            // Snap to nearest other-output edge for a tidy result.
+            // A 32-virtual-pixel snap radius feels right at typical
+            // canvas zoom levels.
+            const SNAP: i32 = 32;
+            let my_w = effective_size(&app().infos[idx]).0 as i32;
+            let my_left = app().layout_x[idx];
+            let my_right = my_left + my_w;
+            for (j, info) in app().infos.iter().enumerate() {
+                if j == idx || !info.is_connected() {
+                    continue;
+                }
+                let other_left = app().layout_x[j];
+                let other_right = other_left + effective_size(info).0 as i32;
+                // my_left → other_right (snap to right edge)
+                if (my_left - other_right).abs() < SNAP {
+                    app().layout_x[idx] = other_right;
+                    break;
+                }
+                // my_right → other_left (snap to left edge)
+                if (my_right - other_left).abs() < SNAP {
+                    app().layout_x[idx] = other_left - my_w;
+                    break;
+                }
+            }
+            commit_drag(idx);
+            render_canvas(&canvas_for_up);
+        }
+    });
 
     // ── Split: list (left) + detail (right) ──────────────────────
     let split = ui::View::new();
