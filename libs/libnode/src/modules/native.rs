@@ -289,7 +289,10 @@ fn anyui_create_app(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 fn anyui_run(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     #[cfg(feature = "anyui")]
-    anyui::run();
+    {
+        let _ = anyui::init();
+        anyui::run();
+    }
     JsValue::Undefined
 }
 
