@@ -1653,6 +1653,13 @@ pub struct Screen {
     pub primary: bool,
     pub physical_mm: (u16, u16),
     pub edid_hash: u64,
+    /// HiDPI scale factor in percent (100 = 1.0x, 200 = 2.0x). Apps
+    /// multiply font sizes / padding / icon sizes by `scale_percent /
+    /// 100` to render at the right physical size on HiDPI panels.
+    /// Heuristic default is 200% on outputs at least 2560 px wide,
+    /// 100% otherwise; user-configurable via `display.conf` once
+    /// displayd's persistence layer lands.
+    pub scale_percent: u16,
 }
 
 impl Screen {
@@ -1668,6 +1675,12 @@ impl Screen {
     /// Refresh rate in Hz, rounded.
     pub fn refresh_hz(&self) -> u32 {
         (self.refresh_mhz + 500) / 1000
+    }
+
+    /// Scale a logical pixel value to physical pixels for this screen,
+    /// e.g. `screen.scale_px(16) == 32` on a 200% HiDPI output.
+    pub fn scale_px(&self, logical: u32) -> u32 {
+        (logical * self.scale_percent as u32) / 100
     }
 
     /// Enumerate all currently connected outputs.
@@ -1697,6 +1710,12 @@ impl Screen {
             if w == 0 || h == 0 {
                 continue;
             }
+            // Until displayd persists per-output scale via display.conf
+            // (separate phase) we mirror the compositor's heuristic:
+            // ≥ 2560 px wide → 200%, otherwise 100%. Apps that want a
+            // different policy can override locally based on
+            // physical_mm + width (= computed DPI).
+            let scale_percent = if w >= 2560 { 200u16 } else { 100u16 };
             out.push(Screen {
                 id: info.id,
                 virtual_x: next_x,
@@ -1707,6 +1726,7 @@ impl Screen {
                 primary: info.is_primary() || info.id == 0,
                 physical_mm: info.physical_mm_pair(),
                 edid_hash: info.edid_hash,
+                scale_percent,
             });
             next_x += w as i32;
         }

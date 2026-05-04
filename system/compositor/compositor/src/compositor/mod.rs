@@ -66,6 +66,14 @@ pub struct Output {
     pub damage: Vec<Rect>,
     pub primary: bool,
     pub mirror_of: Option<u32>,
+
+    /// HiDPI scale factor in percent (100 = 1.0x, 200 = 2.0x). Apps
+    /// query this via the Screen API (`Screen::list().scale_percent`)
+    /// to scale fonts / padding / hit-targets on a per-output basis.
+    /// The compositor itself currently uses it only for diagnostic
+    /// purposes — full DPI-aware widget rendering is a larger anyui
+    /// pipeline change saved for a separate phase.
+    pub scale_percent: u16,
 }
 
 impl Output {
@@ -88,6 +96,7 @@ impl Output {
             damage: Vec::new(),
             primary: true,
             mirror_of: None,
+            scale_percent: 100,
         }
     }
 }
@@ -306,6 +315,10 @@ impl Compositor {
                 core::ptr::write_bytes(fb_info.fb_addr as *mut u32, 0, pixels);
             }
 
+            // HiDPI heuristic: > 2.5K wide is typically a 4K-ish HiDPI
+            // panel; default to 200% scale so fonts/padding are usable.
+            // Users can override via display.conf later.
+            let scale_percent = if fb_info.width >= 2560 { 200 } else { 100 };
             self.outputs.push(Output {
                 id: info.id,
                 virtual_x: next_x,
@@ -318,6 +331,7 @@ impl Compositor {
                 damage: Vec::with_capacity(32),
                 primary: false,
                 mirror_of: None,
+                scale_percent,
             });
 
             // Tell the kernel to flush the now-zeroed framebuffer so the
@@ -574,6 +588,33 @@ impl Compositor {
                 let layer_w_i = layer.width as i32;
                 let layer_h_i = layer.height as i32;
                 let rounded = layer.has_shadow;
+                let blur_behind = layer.blur_behind;
+                let blur_radius = layer.blur_radius;
+
+                // Blur the back-buffer region behind a frosted-glass
+                // layer before we composite the layer itself on top.
+                // Same algorithm the primary uses (two-pass H+V box
+                // blur, 3 passes ≈ Gaussian); the existing
+                // `blur_back_buffer_region` already takes the buffer
+                // and stride as parameters so no refactor is needed.
+                if blur_behind && blur_radius > 0 {
+                    let bx = (ix - ox) as i32;
+                    let by = (iy - oy) as i32;
+                    let bw = (ix2 - ix) as u32;
+                    let bh = (iy2 - iy) as u32;
+                    blend::blur_back_buffer_region(
+                        &mut self.outputs[oi].back_buffer,
+                        ow,
+                        oh,
+                        bx,
+                        by,
+                        bw,
+                        bh,
+                        blur_radius,
+                        3,
+                        &mut self.blur_temp,
+                    );
+                }
 
                 // Source row of pixels = SHM-backed for shm layers,
                 // owned Vec otherwise.
