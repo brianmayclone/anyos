@@ -2196,11 +2196,16 @@ impl GpuDriver for VirtioGpu {
             return None;
         }
         let mut info = OutputInfo::placeholder(output_id);
-        // From cached GET_DISPLAY_INFO.
-        if let Some((w, h, enabled)) = self.display_infos.get(output_id as usize).copied() {
-            info.connected = enabled;
+        // From cached GET_DISPLAY_INFO. Note: virtio-gpu reports `enabled=0`
+        // for scanouts that have no resource attached yet, even when EDID
+        // is valid and a host monitor is logically attached. Treat "has a
+        // non-zero preferred mode" as the canonical "connected" signal so
+        // user-space layout code (init_secondary_outputs, displayd) sees
+        // the output before it has been activated for the first time.
+        if let Some((w, h, _enabled)) = self.display_infos.get(output_id as usize).copied() {
             if w > 0 && h > 0 {
                 info.preferred_mode = Some(OutputMode::new(w, h));
+                info.connected = true;
             }
         }
         // Current mode (own state, more authoritative than the cached
@@ -2232,6 +2237,24 @@ impl GpuDriver for VirtioGpu {
             info.manufacturer[2] = b'A' + ((raw & 0x1F) as u8).saturating_sub(1);
             info.manufacturer[3] = 0;
             info.physical_mm = ((edid[21] as u16) * 10, (edid[22] as u16) * 10);
+
+            // Parse EDID detailed timing #1 (bytes 54..71) as a fallback
+            // preferred_mode source. virtio-gpu reports r_width = 0 for
+            // scanouts that have no host-side resource attached yet, even
+            // when EDID is fully populated and the host monitor would
+            // happily run the timing — without this fallback secondary
+            // outputs look "disconnected" to user-space layout code on
+            // the very first cold boot.
+            if info.preferred_mode.is_none() {
+                let h_active =
+                    (edid[56] as u32) | (((edid[58] as u32) >> 4) << 8);
+                let v_active =
+                    (edid[59] as u32) | (((edid[61] as u32) >> 4) << 8);
+                if h_active >= 640 && v_active >= 480 {
+                    info.preferred_mode = Some(OutputMode::new(h_active, v_active));
+                    info.connected = true;
+                }
+            }
         }
         Some(info)
     }
@@ -2547,6 +2570,59 @@ pub fn init_and_register(pci_dev: &PciDevice) -> bool {
         height,
         gpu.fb_phys
     );
+
+    // Activate any additional advertised scanouts at their EDID-preferred
+    // mode while we're still on the kernel CR3 (which has the full 128 MiB
+    // identity map). Doing this lazily later from a SYS_DISPLAY_MAP_FB
+    // syscall would run under user CR3 — that only identity-maps 64 MiB,
+    // so allocating multi-MiB framebuffer pages and zeroing them faults
+    // when alloc_contiguous returns physmem above 64 MiB. (Same constraint
+    // as the cursor_buf_phys allocation comment higher up.)
+    if gpu.num_scanouts_advertised > 1 {
+        for output_id in 1..gpu.num_scanouts_advertised {
+            // Pick preferred mode: from cached GET_DISPLAY_INFO if set,
+            // otherwise EDID detailed timing #1, otherwise skip.
+            let (pw, ph) = match gpu.display_infos.get(output_id as usize).copied() {
+                Some((w, h, _)) if w >= 640 && h >= 480 => (w, h),
+                _ => match gpu.cmd_get_edid(output_id) {
+                    Some(edid) => {
+                        let h_active = (edid[56] as u32) | (((edid[58] as u32) >> 4) << 8);
+                        let v_active = (edid[59] as u32) | (((edid[61] as u32) >> 4) << 8);
+                        if h_active >= 640 && v_active >= 480 {
+                            (h_active, v_active)
+                        } else {
+                            (0, 0)
+                        }
+                    }
+                    None => (0, 0),
+                },
+            };
+            if pw == 0 {
+                crate::serial_verbose_println!(
+                    "  VirtIO GPU: scanout {} has no usable mode at boot, skipping",
+                    output_id
+                );
+                continue;
+            }
+            match gpu.set_mode_for_output(output_id, pw, ph, 32) {
+                Some((aw, ah, _, fb)) => {
+                    crate::serial_println!(
+                        "[OK] VirtIO GPU: scanout {} active {}x{} fb={:#x}",
+                        output_id,
+                        aw,
+                        ah,
+                        fb
+                    );
+                }
+                None => {
+                    crate::serial_println!(
+                        "[!] VirtIO GPU: scanout {} setup failed",
+                        output_id
+                    );
+                }
+            }
+        }
+    }
 
     // Register as the active GPU driver
     super::register(Box::new(gpu));

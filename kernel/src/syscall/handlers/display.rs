@@ -1840,10 +1840,21 @@ pub fn sys_display_map_fb(output_id: u32, out_info_ptr: u64) -> u32 {
     if output_id >= crate::drivers::gpu::output::MAX_OUTPUTS as u32 {
         return u32::MAX;
     }
+    // Secondary outputs are activated at GPU driver init (boot time, kernel CR3
+    // with full identity map). If there is no mode here, the driver either
+    // hasn't been initialized yet or this scanout was disabled in the cold-boot
+    // layout — either way map_fb must fail rather than try to allocate phys
+    // pages now under user CR3 (which only identity-maps the first 64 MiB).
     let mode = crate::drivers::gpu::with_gpu(|g| g.mode_for_output(output_id)).flatten();
     let (width, height, pitch, fb_phys) = match mode {
         Some(m) => m,
-        None => return u32::MAX,
+        None => {
+            crate::serial_println!(
+                "[!] sys_display_map_fb: output {} has no active mode (set at boot only)",
+                output_id
+            );
+            return u32::MAX;
+        }
     };
     let fb_user_base: u64 = 0x2000_0000u64 + (output_id as u64) * 0x0400_0000u64;
     let fb_total_bytes = (height as usize).saturating_mul(pitch as usize);
