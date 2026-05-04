@@ -10,6 +10,18 @@ use super::process::current_dir;
 use super::util::object;
 
 pub fn module() -> JsValue {
+    module_with_flavor(false)
+}
+
+pub fn posix_module() -> JsValue {
+    module_with_flavor(false)
+}
+
+pub fn win32_module() -> JsValue {
+    module_with_flavor(true)
+}
+
+fn module_with_flavor(win32: bool) -> JsValue {
     let mut module = JsObject::new();
     module.set(String::from("join"), native_fn("join", join));
     module.set(String::from("resolve"), native_fn("resolve", resolve));
@@ -24,10 +36,13 @@ pub fn module() -> JsValue {
     module.set(String::from("extname"), native_fn("extname", extname));
     module.set(String::from("parse"), native_fn("parse", parse));
     module.set(String::from("format"), native_fn("format", format_path));
-    module.set(String::from("sep"), JsValue::String(String::from("/")));
+    module.set(
+        String::from("sep"),
+        JsValue::String(String::from(if win32 { "\\" } else { "/" })),
+    );
     module.set(
         String::from("delimiter"),
-        JsValue::String(String::from(":")),
+        JsValue::String(String::from(if win32 { ";" } else { ":" })),
     );
     object(module)
 }

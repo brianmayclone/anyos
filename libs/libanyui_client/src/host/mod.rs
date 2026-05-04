@@ -505,6 +505,7 @@ impl Window {
 
 pub const WIN_FLAG_BORDERLESS: u32 = 0x01;
 pub const WIN_FLAG_NOT_RESIZABLE: u32 = 0x02;
+pub const WIN_FLAG_ALPHA_HIT_TEST: u32 = 0x800;
 
 // ── TextField ────────────────────────────────────────────────────────────────
 

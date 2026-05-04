@@ -1,6 +1,6 @@
 use alloc::string::String;
 use libjs::value::{JsObject, JsValue};
-use libjs::vm::{native_fn, Vm};
+use libjs::vm::{native_fn, native_promise, Vm};
 
 use super::util::object;
 
@@ -31,6 +31,37 @@ pub fn module() -> JsValue {
         native_fn("clearImmediate", clear_immediate),
     );
     object(module)
+}
+
+pub fn promises_module() -> JsValue {
+    let mut module = JsObject::new();
+    module.set(
+        String::from("setTimeout"),
+        native_fn("setTimeout", promise_set_timeout),
+    );
+    module.set(
+        String::from("setImmediate"),
+        native_fn("setImmediate", promise_set_immediate),
+    );
+    module.set(
+        String::from("setInterval"),
+        native_fn("setInterval", promise_set_interval),
+    );
+    object(module)
+}
+
+fn promise_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    native_promise::promise_resolve(vm, &[value])
+}
+
+fn promise_set_immediate(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let value = args.first().cloned().unwrap_or(JsValue::Undefined);
+    native_promise::promise_resolve(vm, &[value])
+}
+
+fn promise_set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    promise_set_timeout(vm, args)
 }
 
 fn set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {

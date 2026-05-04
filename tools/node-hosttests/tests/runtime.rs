@@ -216,6 +216,77 @@ fn timers_buffers_events_and_assert_work_together() {
 }
 
 #[test]
+fn expanded_core_builtin_modules_are_resolvable() {
+    let root = temp_project("expanded-builtins");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let mods = [ \
+            'node:fs/promises', 'node:dns/promises', 'node:timers/promises', \
+            'node:stream/promises', 'node:stream/consumers', 'node:stream/web', \
+            'node:path/posix', 'node:path/win32', 'node:util/types', \
+            'node:string_decoder', 'node:constants', 'node:tls' \
+        ]; \
+        mods.map(function(name) { return typeof require(name); }).join(':')",
+    );
+
+    assert_eq!(
+        value.to_js_string(),
+        "object:object:object:object:object:object:object:object:object:object:object:object"
+    );
+}
+
+#[test]
+fn promise_builtins_and_stream_consumers_cover_common_paths() {
+    let root = temp_project("promise-builtins");
+    let main = root.join("main.js");
+    let data_path = root.join("data.txt");
+    fs::write(&data_path, b"hello promises").expect("failed to write fixture");
+    let mut runtime = runtime_for(&root);
+    runtime.run_script(
+        &main.to_string_lossy(),
+        &format!(
+            "\
+        let fsp = require('node:fs/promises'); \
+        let timers = require('node:timers/promises'); \
+        let consumers = require('node:stream/consumers'); \
+        let stream = require('node:stream'); \
+        let out = ''; \
+        fsp.readFile({:?}).then(function(text) {{ out = text; }}); \
+        timers.setImmediate('!').then(function(value) {{ out = out + value; }}); \
+        let readable = new stream.Readable(); \
+        readable.push(' stream'); \
+        consumers.text(readable).then(function(text) {{ out = out + text; }});",
+            data_path.to_string_lossy()
+        ),
+    );
+    runtime.run_event_loop();
+
+    let value = runtime.eval("out");
+    assert_eq!(value.to_js_string(), "hello promises! stream");
+}
+
+#[test]
+fn string_decoder_and_path_submodules_have_node_shapes() {
+    let root = temp_project("decoder-path");
+    let main = root.join("main.js");
+    let mut runtime = runtime_for(&root);
+    let value = runtime.run_script(
+        &main.to_string_lossy(),
+        "\
+        let posix = require('node:path/posix'); \
+        let win32 = require('node:path/win32'); \
+        let StringDecoder = require('node:string_decoder').StringDecoder; \
+        let decoder = new StringDecoder('utf8'); \
+        [posix.sep, win32.sep, decoder.write(Buffer.from('ok'))].join(':')",
+    );
+
+    assert_eq!(value.to_js_string(), r"/:\:ok");
+}
+
+#[test]
 fn anyos_anyui_module_creates_native_control_bridge_objects() {
     let root = temp_project("anyui-bridge");
     let main = root.join("main.js");
@@ -335,10 +406,7 @@ fn anyos_anyui_core_alias_is_not_shadowed_by_installed_package() {
         [pkg.name, typeof ui.run, typeof ui.Window, ui.run === 'wrong package shadow'].join(':');",
     );
 
-    assert_eq!(
-        value.to_js_string(),
-        "@anyos/anyui:function:function:false"
-    );
+    assert_eq!(value.to_js_string(), "@anyos/anyui:function:function:false");
 }
 
 #[test]

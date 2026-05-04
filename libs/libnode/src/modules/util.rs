@@ -19,7 +19,7 @@ pub fn module() -> JsValue {
     );
     module.set(String::from("isArray"), native_fn("isArray", is_array));
     module.set(String::from("isBuffer"), native_fn("isBuffer", is_buffer));
-    module.set(String::from("types"), types_object());
+    module.set(String::from("types"), types_module());
     object(module)
 }
 
@@ -131,7 +131,7 @@ fn is_buffer(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Bool(args.first().map(is_buffer_like).unwrap_or(false))
 }
 
-fn types_object() -> JsValue {
+pub fn types_module() -> JsValue {
     let mut types = JsObject::new();
     types.set(
         String::from("isArrayBuffer"),
@@ -141,7 +141,10 @@ fn types_object() -> JsValue {
         String::from("isTypedArray"),
         native_fn("isTypedArray", false_fn),
     );
-    types.set(String::from("isPromise"), native_fn("isPromise", false_fn));
+    types.set(
+        String::from("isPromise"),
+        native_fn("isPromise", is_promise),
+    );
     types.set(String::from("isProxy"), native_fn("isProxy", false_fn));
     types.set(String::from("isRegExp"), native_fn("isRegExp", regexp_fn));
     types.set(String::from("isDate"), native_fn("isDate", false_fn));
@@ -150,6 +153,13 @@ fn types_object() -> JsValue {
 
 fn false_fn(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::Bool(false)
+}
+
+fn is_promise(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    JsValue::Bool(matches!(
+        args.first(),
+        Some(JsValue::Object(obj)) if obj.borrow().internal_tag.as_deref() == Some("__promise__")
+    ))
 }
 
 fn regexp_fn(_vm: &mut Vm, args: &[JsValue]) -> JsValue {

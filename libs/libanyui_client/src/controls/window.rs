@@ -17,6 +17,7 @@ pub const WIN_FLAG_NO_CLOSE: u32 = 0x08;
 pub const WIN_FLAG_NO_MINIMIZE: u32 = 0x10;
 pub const WIN_FLAG_NO_MAXIMIZE: u32 = 0x20;
 pub const WIN_FLAG_SHADOW: u32 = 0x40;
+pub const WIN_FLAG_ALPHA_HIT_TEST: u32 = 0x800;
 
 impl Window {
     /// Wrap an existing top-level window control ID.

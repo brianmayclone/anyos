@@ -28,6 +28,9 @@ pub const WIN_FLAG_NO_MOVE: u32 = 0x100;
 pub const WIN_FLAG_DPI_AWARE: u32 = 0x200;
 /// App supports fullscreen mode (set via CMD_SET_FULLSCREEN_CAP).
 pub const WIN_FLAG_FULLSCREEN_CAPABLE: u32 = 0x400;
+/// Borderless window input follows the surface alpha channel.
+/// Fully transparent pixels are treated as click-through.
+pub const WIN_FLAG_ALPHA_HIT_TEST: u32 = 0x800;
 
 // ── Dimensions ─────────────────────────────────────────────────────────────
 
@@ -316,6 +319,29 @@ impl WindowInfo {
         self.flags & WIN_FLAG_ALWAYS_ON_TOP != 0
     }
 
+    fn uses_alpha_hit_test(&self) -> bool {
+        self.flags & WIN_FLAG_ALPHA_HIT_TEST != 0
+    }
+
+    fn alpha_accepts_hit(&self, wx: i32, wy: i32) -> bool {
+        if !self.uses_alpha_hit_test() {
+            return true;
+        }
+        if self.shm_ptr.is_null() || wx < 0 || wy < 0 {
+            return false;
+        }
+
+        let x = wx as u32;
+        let y = wy as u32;
+        if x >= self.shm_width || y >= self.shm_height {
+            return false;
+        }
+
+        let idx = y as usize * self.shm_width as usize + x as usize;
+        let pixel = unsafe { *self.shm_ptr.add(idx) };
+        (pixel >> 24) != 0
+    }
+
     /// Full window width (same as content for borderless).
     pub fn full_width(&self) -> u32 {
         self.content_width
@@ -400,7 +426,11 @@ impl WindowInfo {
         }
 
         if self.is_borderless() {
-            return HitTest::Content;
+            return if self.alpha_accepts_hit(wx, wy) {
+                HitTest::Content
+            } else {
+                HitTest::None
+            };
         }
 
         // Title bar
