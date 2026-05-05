@@ -262,43 +262,29 @@ impl Desktop {
         // For pure single-output setups virtual_desktop_bounds() returns
         // (0, 0, screen_width, screen_height) so the behaviour is identical.
         let (vmin_x, vmin_y, vmax_x, vmax_y) = self.compositor.virtual_desktop_bounds();
-        self.mouse_x = (self.mouse_x + dx).clamp(vmin_x, vmax_x - 1);
-        self.mouse_y = (self.mouse_y + dy).clamp(vmin_y, vmax_y - 1);
+        let new_x = (self.mouse_x + dx).clamp(vmin_x, vmax_x - 1);
+        let new_y = (self.mouse_y + dy).clamp(vmin_y, vmax_y - 1);
+        self.mouse_x = new_x;
 
-        // Gap snap: with mismatched output sizes the bounding-box clamp
-        // can leave the cursor in a region that no output covers (e.g.
-        // 1920x1080 next to 1280x800 leaves a 1280x280 dead band below
-        // the secondary). Without this snap, output_at() falls back to
-        // the primary, the per-output HW cursor command gets local
-        // coords way past the primary's bounds, and the cursor goes
-        // invisible. Project the position onto the nearest output's
-        // rectangle by Manhattan distance.
+        // Per-output Y-clamp: with mismatched output sizes the
+        // bounding-box clamp leaves a dead band where no output is
+        // visible. Once we know which output the cursor is heading to
+        // (by its X), clamp Y to that output's Y range so the cursor
+        // never falls into a gap. This implements the standard "edge
+        // crossing" feel: dragging horizontally between a tall and a
+        // short output makes the cursor hop to the destination's
+        // visible Y range instead of disappearing into the gap.
         if self.compositor.outputs.len() >= 2 {
-            let in_any = self.compositor.outputs.iter().any(|o| {
-                self.mouse_x >= o.virtual_x
-                    && self.mouse_y >= o.virtual_y
-                    && self.mouse_x < o.virtual_x + o.fb_width as i32
-                    && self.mouse_y < o.virtual_y + o.fb_height as i32
+            let target = self.compositor.outputs.iter().find(|o| {
+                new_x >= o.virtual_x && new_x < o.virtual_x + o.fb_width as i32
             });
-            if !in_any {
-                let mut best: Option<(i32, i32, i32)> = None;
-                for o in &self.compositor.outputs {
-                    let cx = self
-                        .mouse_x
-                        .clamp(o.virtual_x, o.virtual_x + o.fb_width as i32 - 1);
-                    let cy = self
-                        .mouse_y
-                        .clamp(o.virtual_y, o.virtual_y + o.fb_height as i32 - 1);
-                    let d = (cx - self.mouse_x).abs() + (cy - self.mouse_y).abs();
-                    if best.map(|(bd, _, _)| d < bd).unwrap_or(true) {
-                        best = Some((d, cx, cy));
-                    }
-                }
-                if let Some((_, cx, cy)) = best {
-                    self.mouse_x = cx;
-                    self.mouse_y = cy;
-                }
-            }
+            self.mouse_y = if let Some(o) = target {
+                new_y.clamp(o.virtual_y, o.virtual_y + o.fb_height as i32 - 1)
+            } else {
+                new_y
+            };
+        } else {
+            self.mouse_y = new_y;
         }
 
         // Handle window drag — clamp Y so windows can never go under the menubar.
