@@ -58,6 +58,7 @@ static MOUSE_STATE: Spinlock<MouseState> = Spinlock::new(MouseState {
         middle: false,
     },
     has_scroll: false,
+    pending_release: None,
 });
 
 struct MouseState {
@@ -65,6 +66,20 @@ struct MouseState {
     bytes: [u8; 4],
     buttons: MouseButtons,
     has_scroll: bool,
+    /// Pending release de-bounce. When a packet reports a transition
+    /// down -> up for a button, we record the previous (down) state
+    /// here and delay applying the release by one packet. If the next
+    /// packet shows the button still pressed, the release was a
+    /// transient PS/2 stream-desync glitch (typically caused by the
+    /// QEMU SDL backend losing a byte under fast drag) and we throw
+    /// it away. If the next packet confirms the release, we then
+    /// actually fire a ButtonUp event.
+    ///
+    /// Without this guard, dragging a window quickly produces
+    /// spurious releases mid-drag — the compositor sees a fake
+    /// ButtonUp, ends the drag, and the window stops following the
+    /// cursor even though the physical button is still held.
+    pending_release: Option<MouseButtons>,
 }
 
 fn mouse_wait_input() {
@@ -240,11 +255,53 @@ fn process_packet(state: &mut MouseState, dz: i32) {
     crate::drivers::gpu::splash_cursor_move(dx, dy);
 
     // Decode buttons
-    let new_buttons = MouseButtons {
+    let mut new_buttons = MouseButtons {
         left: b[0] & 0x01 != 0,
         right: b[0] & 0x02 != 0,
         middle: b[0] & 0x04 != 0,
     };
+
+    // Release de-bounce: a single packet showing a button released
+    // while we thought it was held is held back for one packet — most
+    // window-drag stalls turned out to be the QEMU SDL backend
+    // dropping a byte under fast motion, producing a fake ButtonUp
+    // that ended the drag even though the physical button was still
+    // pressed. Confirmed releases pass through on the second packet.
+    if let Some(pending) = state.pending_release.take() {
+        // Did the previously-pending release CLEAR (button still
+        // pressed in this packet)? If so, ignore the transient.
+        let confirmed_left =
+            pending.left && !new_buttons.left;
+        let confirmed_right =
+            pending.right && !new_buttons.right;
+        let confirmed_middle =
+            pending.middle && !new_buttons.middle;
+        if !confirmed_left && pending.left {
+            new_buttons.left = true;
+        }
+        if !confirmed_right && pending.right {
+            new_buttons.right = true;
+        }
+        if !confirmed_middle && pending.middle {
+            new_buttons.middle = true;
+        }
+    } else {
+        // Detect a fresh down -> up transition; defer it.
+        let any_release = (state.buttons.left && !new_buttons.left)
+            || (state.buttons.right && !new_buttons.right)
+            || (state.buttons.middle && !new_buttons.middle);
+        let any_motion = dx != 0 || dy != 0 || dz != 0;
+        // Only defer when there's also motion in this packet — drags
+        // are the failure mode we care about. A pure release packet
+        // (no motion) is a deliberate user action and we apply it
+        // immediately to keep clicks responsive.
+        if any_release && any_motion {
+            // Hold back the release: report the OLD (still-pressed)
+            // state for this packet and stash the released buttons.
+            state.pending_release = Some(state.buttons);
+            new_buttons = state.buttons;
+        }
+    }
 
     // Determine event type
     let event_type = if dz != 0 {
