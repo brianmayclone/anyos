@@ -10,9 +10,8 @@
 //! process returns an error.
 
 use crate::raw::{
-    syscall0, syscall1_u64, syscall2, syscall2_u64, syscall3, SYS_DISPLAY_FLUSH,
-    SYS_DISPLAY_LIST, SYS_DISPLAY_MAP_FB, SYS_DISPLAY_POLL_EVENT, SYS_DISPLAY_SET_LAYOUT,
-    SYS_REGISTER_DISPLAY_OWNER,
+    syscall0, syscall1_u64, syscall2, syscall2_u64, syscall3, SYS_DISPLAY_FLUSH, SYS_DISPLAY_LIST,
+    SYS_DISPLAY_MAP_FB, SYS_DISPLAY_POLL_EVENT, SYS_DISPLAY_SET_LAYOUT, SYS_REGISTER_DISPLAY_OWNER,
 };
 use crate::Vec;
 
@@ -51,7 +50,10 @@ impl DisplayInfo {
     }
 
     pub fn physical_mm_pair(&self) -> (u16, u16) {
-        ((self.physical_mm & 0xFFFF) as u16, (self.physical_mm >> 16) as u16)
+        (
+            (self.physical_mm & 0xFFFF) as u16,
+            (self.physical_mm >> 16) as u16,
+        )
     }
 
     /// 3-letter PNPID from EDID, e.g. `"DEL"` for Dell. May be empty if
@@ -137,13 +139,8 @@ pub fn list(max: usize) -> Vec<DisplayInfo> {
     for _ in 0..max {
         buf.push(DisplayInfo::default());
     }
-    let count = unsafe {
-        crate::raw::syscall2(
-            SYS_DISPLAY_LIST,
-            buf.as_mut_ptr() as u64,
-            max as u64,
-        )
-    };
+    let count =
+        unsafe { crate::raw::syscall2(SYS_DISPLAY_LIST, buf.as_mut_ptr() as u64, max as u64) };
     if count == u32::MAX {
         return Vec::new();
     }

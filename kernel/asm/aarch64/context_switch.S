@@ -55,10 +55,6 @@ context_switch:
     mrs     x9, tpidr_el0
     str     x9, [x0, #344]
 
-    /* Set save_complete = 1 */
-    mov     x9, #1
-    str     x9, [x0, #352]
-
     /* Write canary */
     ldr     x9, =0xCAFEBABEDEADBEEF
     str     x9, [x0, #360]
@@ -74,7 +70,54 @@ context_switch:
     cbnz    x11, .save_checksum
     str     x9, [x0, #368]      /* store checksum */
 
-    /* ---- Restore new context ---- */
+    /* Ensure context fields/canary/checksum are globally visible before
+     * save_complete becomes observable by another CPU. */
+    dmb     ishst
+
+    /* Set save_complete = 1 only after the full save is visible. */
+    mov     x9, #1
+    str     x9, [x0, #352]
+
+    /* ---- Validate and restore new context ---- */
+
+    /* Verify save_complete. */
+    ldr     x9, [x1, #352]
+    cmp     x9, #1
+    b.ne    .bad_context
+
+    /* Verify canary. */
+    ldr     x9, =0xCAFEBABEDEADBEEF
+    ldr     x10, [x1, #360]
+    cmp     x10, x9
+    b.ne    .bad_context
+
+    /* Verify checksum (XOR of first 44 u64 fields). */
+    mov     x9, xzr
+    mov     x10, x1
+    mov     x11, #44
+.load_checksum:
+    ldr     x12, [x10], #8
+    eor     x9, x9, x12
+    sub     x11, x11, #1
+    cbnz    x11, .load_checksum
+    ldr     x10, [x1, #368]
+    cmp     x9, x10
+    b.ne    .bad_context
+
+    /* Range checks: scheduler continuations must resume in kernel text on
+     * kernel stacks. User execution resumes via a kernel trampoline. */
+    ldr     x9, [x1, #312]      /* sp */
+    ldr     x10, =0xFFFF000080000000
+    cmp     x9, x10
+    b.lo    .bad_context
+
+    ldr     x9, [x1, #320]      /* pc */
+    ldr     x10, =0xFFFF000080400000
+    cmp     x9, x10
+    b.lo    .bad_context
+    ldr     x10, =0xFFFF0000C0000000
+    cmp     x9, x10
+    b.hs    .bad_context
 
     /* Switch TTBR0_EL1 if different */
     ldr     x9, [x1, #336]
@@ -115,5 +158,12 @@ context_switch:
 
     /* Branch to the saved PC. */
     br      x11
+
+.bad_context:
+    /* The Rust scheduler performs the same checks before calling this routine
+     * and should normally catch corruption first. This hard stop is the final
+     * guard against branching to a bad return address. */
+    wfe
+    b       .bad_context
 
 .size context_switch, . - context_switch

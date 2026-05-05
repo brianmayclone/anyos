@@ -30,7 +30,8 @@ pub fn uptime_ms() -> u32 {
     syscall0(SYS_UPTIME_MS)
 }
 
-/// Get system info. cmd: 0=memory, 1=threads, 2=cpus.
+/// Get system info. cmd: 0=memory, 1=threads, 2=cpus, 3=cpu_load,
+/// 4=hardware, 5=cpu_power, 6=cpu_frequency.
 pub fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32 {
     syscall3(
         SYS_SYSINFO,
@@ -38,6 +39,104 @@ pub fn sysinfo(cmd: u32, buf: &mut [u8]) -> u32 {
         buf.as_mut_ptr() as u64,
         buf.len() as u64,
     )
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CpuPowerInfo {
+    pub profile: u32,
+    pub driver: u32,
+    pub features: u32,
+    pub current_mhz: u32,
+    pub max_mhz: u32,
+}
+
+pub const MAX_CPU_FREQ_CORES: usize = 16;
+
+#[derive(Clone, Copy, Debug)]
+pub struct CpuFrequencyInfo {
+    pub num_cpus: u32,
+    pub average_mhz: u32,
+    pub total_mhz: u32,
+    pub max_mhz: u32,
+    pub driver: u32,
+    pub profile: u32,
+    pub features: u32,
+    pub per_core_mhz: [u32; MAX_CPU_FREQ_CORES],
+}
+
+impl Default for CpuFrequencyInfo {
+    fn default() -> Self {
+        Self {
+            num_cpus: 0,
+            average_mhz: 0,
+            total_mhz: 0,
+            max_mhz: 0,
+            driver: 0,
+            profile: 1,
+            features: 0,
+            per_core_mhz: [0; MAX_CPU_FREQ_CORES],
+        }
+    }
+}
+
+/// Query CPU power policy and driver state.
+///
+/// profile: 0=power saver, 1=balanced, 2=performance.
+/// driver: 0=none, 1=Intel HWP, 2=Intel legacy, 3=AMD P-state, 4=KVM/host.
+pub fn cpu_power_info() -> Option<CpuPowerInfo> {
+    let mut words = [0u32; 5];
+    let ret = syscall3(
+        SYS_SYSINFO,
+        5,
+        words.as_mut_ptr() as u64,
+        (words.len() * core::mem::size_of::<u32>()) as u64,
+    );
+    if ret < 20 {
+        return None;
+    }
+    Some(CpuPowerInfo {
+        profile: words[0],
+        driver: words[1],
+        features: words[2],
+        current_mhz: words[3],
+        max_mhz: words[4],
+    })
+}
+
+/// Set the CPU power profile.
+///
+/// profile: 0=power saver, 1=balanced, 2=performance.
+pub fn set_cpu_power_profile(profile: u32) -> bool {
+    syscall3(SYS_SYSINFO, 5, profile as u64, 0) == 0
+}
+
+/// Query aggregate and per-core CPU frequencies.
+pub fn cpu_frequency_info() -> Option<CpuFrequencyInfo> {
+    let mut words = [0u32; 8 + MAX_CPU_FREQ_CORES];
+    let ret = syscall3(
+        SYS_SYSINFO,
+        6,
+        words.as_mut_ptr() as u64,
+        (words.len() * core::mem::size_of::<u32>()) as u64,
+    );
+    if ret < 32 {
+        return None;
+    }
+    let mut per_core_mhz = [0u32; MAX_CPU_FREQ_CORES];
+    let ncpu = (words[0] as usize).min(MAX_CPU_FREQ_CORES);
+    for i in 0..ncpu {
+        per_core_mhz[i] = words[8 + i];
+    }
+    Some(CpuFrequencyInfo {
+        num_cpus: words[0],
+        average_mhz: words[1],
+        total_mhz: words[2],
+        max_mhz: words[3],
+        driver: words[4],
+        profile: words[5],
+        features: words[6],
+        per_core_mhz,
+    })
 }
 
 /// Read kernel log (dmesg). Returns bytes written to buf.

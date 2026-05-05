@@ -11,6 +11,7 @@ pub enum BuiltinId {
     Dashboard,
     General,
     Profile,
+    Power,
     Display,
     Dock,
     Sound,

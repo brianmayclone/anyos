@@ -87,6 +87,8 @@ pub mod crypto;
 #[cfg(not(feature = "host"))]
 pub mod debug;
 #[cfg(not(feature = "host"))]
+pub mod display;
+#[cfg(not(feature = "host"))]
 pub mod dll;
 #[cfg(not(feature = "host"))]
 pub mod icons;
@@ -94,8 +96,6 @@ pub mod icons;
 pub mod kbd;
 #[cfg(not(feature = "host"))]
 pub mod log;
-#[cfg(not(feature = "host"))]
-pub mod display;
 #[cfg(not(feature = "host"))]
 pub mod permissions;
 #[cfg(not(feature = "host"))]

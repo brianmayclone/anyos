@@ -1712,6 +1712,11 @@ fn schedule_inner(from_timer: bool) {
 
     // Re-read CPU ID under lock (interrupts disabled — can't migrate)
     let cpu_id = get_cpu_id();
+    // Fast generation check only; MSR-based telemetry is sampled below on timer ticks.
+    crate::arch::hal::sync_cpu_power_profile_on_current_cpu();
+    if from_timer {
+        crate::arch::hal::sample_cpu_frequency_on_current_cpu_if_due();
+    }
 
     // Extract context switch parameters under the lock
     let mut switch_info: Option<(

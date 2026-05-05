@@ -88,8 +88,7 @@ const CONTROL_TX_QIDX: u16 = 3;
 /// ISR address of the (single) virtio-serial bus, used by the shared IRQ
 /// handler. Without this, we share IRQ 10 with virtio-input and never
 /// acknowledge the device — IOAPIC level-triggered IRQs storm endlessly.
-static SERIAL_ISR_ADDR: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+static SERIAL_ISR_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // ── Bus state (one per PCI device — typically only one in a guest) ──────────
 
@@ -187,7 +186,9 @@ impl SerialBus {
         if result.is_none() {
             crate::serial_println!(
                 "[virtio-serial] TX ctrl port={} event={} value={} FAILED",
-                port_id, event, value
+                port_id,
+                event,
+                value
             );
         }
     }
@@ -197,11 +198,7 @@ impl SerialBus {
         if !self.has_control() {
             return;
         }
-        while let Some((id, len)) = self
-            .control_rx
-            .as_mut()
-            .and_then(|q| q.poll_used())
-        {
+        while let Some((id, len)) = self.control_rx.as_mut().and_then(|q| q.poll_used()) {
             // Find which slot this descriptor belongs to.
             let mut slot_found = None;
             for slot in 0..CTRL_RX_SLOTS {
@@ -529,16 +526,8 @@ fn register_named_aliases(port_id: u32, name: &str) {
     if let Some(alias) = well_known_alias(name) {
         let mut short = String::from("/dev/vport-");
         short.push_str(alias);
-        hal::register_device(
-            &short,
-            Box::new(VirtioSerialPortDriver { port_id }),
-            None,
-        );
-        crate::serial_verbose_println!(
-            "  virtio-serial: aliased port {} as {}",
-            port_id,
-            short
-        );
+        hal::register_device(&short, Box::new(VirtioSerialPortDriver { port_id }), None);
+        crate::serial_verbose_println!("  virtio-serial: aliased port {} as {}", port_id, short);
     }
 }
 
@@ -567,9 +556,7 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
     let caps = match virtio::find_capabilities(pci) {
         Some(c) => c,
         None => {
-            crate::serial_println!(
-                "[virtio-serial] no modern PCI capabilities — abandoning probe"
-            );
+            crate::serial_println!("[virtio-serial] no modern PCI capabilities — abandoning probe");
             return None;
         }
     };
@@ -774,7 +761,11 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn Driver>> {
         hal::register_device(
             &path,
             Box::new(VirtioSerialPortDriver { port_id }),
-            if port_id == 0 { Some(pci.clone()) } else { None },
+            if port_id == 0 {
+                Some(pci.clone())
+            } else {
+                None
+            },
         );
         crate::serial_println!("[virtio-serial] registered {}", path);
     }

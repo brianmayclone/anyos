@@ -256,21 +256,18 @@ impl OutputLayout {
                 if target == entry.id {
                     return Err(LayoutError::MirrorSelf(entry.id));
                 }
-                let parent = self
-                    .entries
-                    .iter()
-                    .find(|e| e.id == target)
-                    .ok_or(LayoutError::MirrorTargetMissing {
+                let parent = self.entries.iter().find(|e| e.id == target).ok_or(
+                    LayoutError::MirrorTargetMissing {
                         output: entry.id,
                         target,
-                    })?;
+                    },
+                )?;
                 if parent.mirror_of.is_some() {
                     return Err(LayoutError::MirrorChain(entry.id));
                 }
                 // Mirror modes must match the source so a single resource
                 // can satisfy both scanouts.
-                if parent.mode.width != entry.mode.width
-                    || parent.mode.height != entry.mode.height
+                if parent.mode.width != entry.mode.width || parent.mode.height != entry.mode.height
                 {
                     return Err(LayoutError::MirrorModeMismatch {
                         output: entry.id,
@@ -294,14 +291,24 @@ pub enum LayoutError {
     DuplicateOutput(u32),
     UnknownOutput(u32),
     OutputDisconnected(u32),
-    ModeUnsupported { output: u32, width: u32, height: u32 },
+    ModeUnsupported {
+        output: u32,
+        width: u32,
+        height: u32,
+    },
     ScaleOutOfRange(u16),
     ZeroVirtualRect(u32),
     MirrorSelf(u32),
-    MirrorTargetMissing { output: u32, target: u32 },
+    MirrorTargetMissing {
+        output: u32,
+        target: u32,
+    },
     /// Mirror entries pointing at a mirror entry — chain depth > 1.
     MirrorChain(u32),
-    MirrorModeMismatch { output: u32, target: u32 },
+    MirrorModeMismatch {
+        output: u32,
+        target: u32,
+    },
 }
 
 impl LayoutError {

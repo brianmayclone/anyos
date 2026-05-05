@@ -275,7 +275,7 @@ fn main() {
 
     // -- Processor card --
     let cpu_card = ui::Card::new();
-    cpu_card.set_size(560, 110);
+    cpu_card.set_size(560, 164);
     cpu_card.set_margin(0, 0, 0, 8);
     cpu_card.set_padding(12, 8, 12, 8);
     sys_stack.add(&cpu_card);
@@ -306,6 +306,18 @@ fn main() {
     let cpu_speed_label = ui::Label::new("");
     cpu_speed_label.set_size(536, 18);
     cpu_card_stack.add(&cpu_speed_label);
+
+    let cpu_power_label = ui::Label::new("");
+    cpu_power_label.set_size(536, 18);
+    cpu_card_stack.add(&cpu_power_label);
+
+    let cpu_core_freq_label_a = ui::Label::new("");
+    cpu_core_freq_label_a.set_size(536, 18);
+    cpu_card_stack.add(&cpu_core_freq_label_a);
+
+    let cpu_core_freq_label_b = ui::Label::new("");
+    cpu_core_freq_label_b.set_size(536, 18);
+    cpu_card_stack.add(&cpu_core_freq_label_b);
 
     // -- Memory card --
     let mem_card = ui::Card::new();
@@ -658,7 +670,7 @@ fn main() {
 
             // CPU label (always available)
             {
-                let mut cbuf = [0u8; 16];
+                let mut cbuf = [0u8; 36];
                 let mut p = 0;
                 cbuf[p..p + 5].copy_from_slice(b"CPU: ");
                 p += 5;
@@ -667,6 +679,15 @@ fn main() {
                 p += s.len();
                 cbuf[p] = b'%';
                 p += 1;
+                if cpu_st.avg_freq_mhz > 0 {
+                    cbuf[p] = b' ';
+                    p += 1;
+                    let s = fmt_u32(&mut t, cpu_st.avg_freq_mhz);
+                    cbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                    p += s.len();
+                    cbuf[p..p + 3].copy_from_slice(b"MHz");
+                    p += 3;
+                }
                 if let Ok(s) = core::str::from_utf8(&cbuf[..p]) {
                     sb_cpu_label.set_text(s);
                 }
@@ -941,7 +962,7 @@ fn main() {
         // ── Update graphs tab ──
         if active_tab == 1 {
             let ncpu = (cpu_st.num_cpus as usize).max(1).min(MAX_CPUS);
-            let mut gbuf = [0u8; 24];
+            let mut gbuf = [0u8; 48];
             let mut p = 0;
             let mut t = [0u8; 12];
             gbuf[p..p + 5].copy_from_slice(b"CPU: ");
@@ -956,6 +977,15 @@ fn main() {
             p += s.len();
             gbuf[p..p + 2].copy_from_slice(b"C)");
             p += 2;
+            if cpu_st.avg_freq_mhz > 0 {
+                gbuf[p..p + 2].copy_from_slice(b"  ");
+                p += 2;
+                let s = fmt_u32(&mut t, cpu_st.avg_freq_mhz);
+                gbuf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                gbuf[p..p + 7].copy_from_slice(b" MHz avg");
+                p += 7;
+            }
             if let Ok(s) = core::str::from_utf8(&gbuf[..p]) {
                 graph_label.set_text(s);
             }
@@ -985,6 +1015,7 @@ fn main() {
                             cell_h as u32,
                             core,
                             cpu_st.core_pct[core],
+                            cpu_st.core_freq_mhz[core],
                             hist,
                         );
                     }
@@ -1096,10 +1127,10 @@ fn main() {
                     cpu_cores_label.set_text(s);
                 }
 
-                let mut buf = [0u8; 48];
+                let mut buf = [0u8; 80];
                 let mut p = 0;
-                buf[p..p + 8].copy_from_slice(b"Speed:  ");
-                p += 8;
+                buf[p..p + 12].copy_from_slice(b"Avg Speed:  ");
+                p += 12;
                 let freq = if hw.cpu_freq_mhz > 0 {
                     hw.cpu_freq_mhz
                 } else {
@@ -1110,6 +1141,15 @@ fn main() {
                 p += s.len();
                 buf[p..p + 4].copy_from_slice(b" MHz");
                 p += 4;
+                if hw.total_cpu_freq_mhz > 0 {
+                    buf[p..p + 9].copy_from_slice(b"  total ");
+                    p += 9;
+                    let s = fmt_u32(&mut t, hw.total_cpu_freq_mhz);
+                    buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                    p += s.len();
+                    buf[p..p + 4].copy_from_slice(b" MHz");
+                    p += 4;
+                }
                 if hw.max_freq_mhz > 0 && hw.max_freq_mhz != freq {
                     buf[p..p + 6].copy_from_slice(b" (max ");
                     p += 6;
@@ -1121,6 +1161,66 @@ fn main() {
                 }
                 if let Ok(s) = core::str::from_utf8(&buf[..p]) {
                     cpu_speed_label.set_text(s);
+                }
+
+                let mut buf = [0u8; 96];
+                let mut p = 0;
+                buf[p..p + 8].copy_from_slice(b"Power:  ");
+                p += 8;
+                let profile = match hw.power_profile {
+                    0 => "Saver",
+                    2 => "Performance",
+                    _ => "Balanced",
+                };
+                buf[p..p + profile.len()].copy_from_slice(profile.as_bytes());
+                p += profile.len();
+                buf[p..p + 10].copy_from_slice(b"  driver ");
+                p += 10;
+                let driver = match hw.power_driver {
+                    1 => "Intel HWP",
+                    2 => "Intel P-state",
+                    3 => "AMD P-state",
+                    4 => "KVM host",
+                    _ => "none",
+                };
+                buf[p..p + driver.len()].copy_from_slice(driver.as_bytes());
+                p += driver.len();
+                if hw.power_features != 0 {
+                    buf[p..p + 2].copy_from_slice(b"  ");
+                    p += 2;
+                    if hw.power_features & 1 != 0 {
+                        buf[p..p + 3].copy_from_slice(b"HWP");
+                        p += 3;
+                    } else if hw.power_features & 4 != 0 {
+                        buf[p..p + 5].copy_from_slice(b"APERF");
+                        p += 5;
+                    } else if hw.power_features & 8 != 0 {
+                        buf[p..p + 2].copy_from_slice(b"HV");
+                        p += 2;
+                    }
+                    if hw.power_features & 16 != 0 {
+                        buf[p..p + 5].copy_from_slice(b" ctrl");
+                        p += 5;
+                    }
+                }
+                if let Ok(s) = core::str::from_utf8(&buf[..p]) {
+                    cpu_power_label.set_text(s);
+                }
+
+                write_core_freq_line(
+                    &hw.core_freq_mhz,
+                    hw.cpu_count as usize,
+                    0,
+                    &cpu_core_freq_label_a,
+                );
+                write_core_freq_line(
+                    &hw.core_freq_mhz,
+                    hw.cpu_count as usize,
+                    8,
+                    &cpu_core_freq_label_b,
+                );
+                if hw.cpu_count <= 8 {
+                    cpu_core_freq_label_b.set_text("");
                 }
             }
 
@@ -1253,4 +1353,49 @@ fn main() {
     });
 
     ui::run();
+}
+
+fn write_core_freq_line(
+    freqs: &[u32; MAX_CPUS],
+    cpu_count: usize,
+    start: usize,
+    label: &ui::Label,
+) {
+    let end = cpu_count.min(MAX_CPUS).min(start + 8);
+    if start >= end {
+        label.set_text("");
+        return;
+    }
+    let mut buf = [0u8; 128];
+    let mut p = 0usize;
+    let mut t = [0u8; 12];
+    buf[p..p + 8].copy_from_slice(b"Cores:  ");
+    p += 8;
+    for core in start..end {
+        if core > start {
+            buf[p..p + 2].copy_from_slice(b"  ");
+            p += 2;
+        }
+        buf[p] = b'C';
+        p += 1;
+        let s = fmt_u32(&mut t, core as u32);
+        buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+        p += s.len();
+        buf[p] = b' ';
+        p += 1;
+        let mhz = freqs[core];
+        if mhz > 0 {
+            let s = fmt_u32(&mut t, mhz);
+            buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+            p += s.len();
+            buf[p..p + 3].copy_from_slice(b"MHz");
+            p += 3;
+        } else {
+            buf[p] = b'-';
+            p += 1;
+        }
+    }
+    if let Ok(text) = core::str::from_utf8(&buf[..p]) {
+        label.set_text(text);
+    }
 }

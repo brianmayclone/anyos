@@ -140,9 +140,7 @@ fn resolution_options(info: &display::DisplayInfo) -> Vec<(u32, u32)> {
             out.push((w, h));
         }
     }
-    if cap_w != u32::MAX
-        && cap_h != u32::MAX
-        && !out.iter().any(|&(w, h)| w == cap_w && h == cap_h)
+    if cap_w != u32::MAX && cap_h != u32::MAX && !out.iter().any(|&(w, h)| w == cap_w && h == cap_h)
     {
         out.push((cap_w, cap_h));
     }
@@ -339,11 +337,8 @@ pub(crate) fn build(panel: &ui::View) {
     if connected > 1 {
         let mode_card = layout::build_auto_card(panel);
         let mode_row = layout::build_setting_row(&mode_card, i18n::t("Display mode"), true);
-        let mode_seg = ui::SegmentedControl::new(&format!(
-            "{}|{}",
-            i18n::t("Extend"),
-            i18n::t("Mirror")
-        ));
+        let mode_seg =
+            ui::SegmentedControl::new(&format!("{}|{}", i18n::t("Extend"), i18n::t("Mirror")));
         mode_seg.set_position(200, 8);
         mode_seg.set_size(220, 28);
         mode_seg.on_active_changed(|ev| {

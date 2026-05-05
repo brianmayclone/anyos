@@ -2,11 +2,11 @@
 //!
 //! Supports reading and writing ZIP archives with Stored and Deflate methods.
 
+use crate::crc32;
+use crate::deflate;
+use crate::inflate;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::crc32;
-use crate::inflate;
-use crate::deflate;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -20,13 +20,22 @@ const METHOD_DEFLATE: u16 = 8;
 // ─── Utility ────────────────────────────────────────────────────────────────
 
 fn read_u16(data: &[u8], offset: usize) -> u16 {
-    if offset + 2 > data.len() { return 0; }
+    if offset + 2 > data.len() {
+        return 0;
+    }
     u16::from_le_bytes([data[offset], data[offset + 1]])
 }
 
 fn read_u32(data: &[u8], offset: usize) -> u32 {
-    if offset + 4 > data.len() { return 0; }
-    u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
+    if offset + 4 > data.len() {
+        return 0;
+    }
+    u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ])
 }
 
 fn write_u16(buf: &mut Vec<u8>, val: u16) {
@@ -190,7 +199,9 @@ pub struct ZipWriter {
 
 impl ZipWriter {
     pub fn new() -> Self {
-        ZipWriter { entries: Vec::new() }
+        ZipWriter {
+            entries: Vec::new(),
+        }
     }
 
     /// Add a file entry with optional DEFLATE compression.
@@ -272,15 +283,15 @@ impl ZipWriter {
 fn write_local_header(buf: &mut Vec<u8>, entry: &WriterEntry) {
     write_u32(buf, LOCAL_FILE_HEADER_SIG);
     write_u16(buf, 20); // version needed (2.0)
-    write_u16(buf, 0);  // flags
+    write_u16(buf, 0); // flags
     write_u16(buf, entry.method);
-    write_u16(buf, 0);  // mod time
-    write_u16(buf, 0);  // mod date
+    write_u16(buf, 0); // mod time
+    write_u16(buf, 0); // mod date
     write_u32(buf, entry.crc32);
     write_u32(buf, entry.compressed_size);
     write_u32(buf, entry.uncompressed_size);
     write_u16(buf, entry.name.len() as u16);
-    write_u16(buf, 0);  // extra field length
+    write_u16(buf, 0); // extra field length
     buf.extend_from_slice(entry.name.as_bytes());
 }
 
@@ -288,19 +299,19 @@ fn write_central_dir_entry(buf: &mut Vec<u8>, entry: &WriterEntry) {
     write_u32(buf, CENTRAL_DIR_SIG);
     write_u16(buf, 20); // version made by
     write_u16(buf, 20); // version needed
-    write_u16(buf, 0);  // flags
+    write_u16(buf, 0); // flags
     write_u16(buf, entry.method);
-    write_u16(buf, 0);  // mod time
-    write_u16(buf, 0);  // mod date
+    write_u16(buf, 0); // mod time
+    write_u16(buf, 0); // mod date
     write_u32(buf, entry.crc32);
     write_u32(buf, entry.compressed_size);
     write_u32(buf, entry.uncompressed_size);
     write_u16(buf, entry.name.len() as u16);
-    write_u16(buf, 0);  // extra field length
-    write_u16(buf, 0);  // comment length
-    write_u16(buf, 0);  // disk number start
-    write_u16(buf, 0);  // internal file attributes
-    write_u32(buf, 0);  // external file attributes
+    write_u16(buf, 0); // extra field length
+    write_u16(buf, 0); // comment length
+    write_u16(buf, 0); // disk number start
+    write_u16(buf, 0); // internal file attributes
+    write_u32(buf, 0); // external file attributes
     write_u32(buf, entry.local_header_offset);
     buf.extend_from_slice(entry.name.as_bytes());
 }

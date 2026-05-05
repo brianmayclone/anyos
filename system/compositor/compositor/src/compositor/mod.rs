@@ -742,8 +742,7 @@ impl Compositor {
                         let layer_local_x = vx - lx; // 0..layer_w
                         let dst_x = (vx - ox) as usize;
                         let dst_idx = dst_y * dst_stride + dst_x;
-                        let src_idx = (layer_local_y as usize) * src_w
-                            + (layer_local_x as usize);
+                        let src_idx = (layer_local_y as usize) * src_w + (layer_local_x as usize);
                         if src_idx >= src_cap {
                             continue;
                         }
@@ -779,8 +778,8 @@ impl Compositor {
                                     // Soft 1-pixel anti-aliased edge.
                                     let r_inner_sq = (cr - 1) * (cr - 1);
                                     if dist_sq > r_inner_sq {
-                                        let frac = ((r_sq - dist_sq) * 256)
-                                            / (r_sq - r_inner_sq).max(1);
+                                        let frac =
+                                            ((r_sq - dist_sq) * 256) / (r_sq - r_inner_sq).max(1);
                                         corner_mul = frac.clamp(0, 256) as u32;
                                     }
                                 }

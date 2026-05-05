@@ -1,8 +1,8 @@
 //! Syscall wrappers for libzip — delegates to libsyscall.
 
 pub use libsyscall::{
-    sbrk, mmap, munmap, exit, close, lseek, file_size, mkdir, stat,
-    O_WRITE, O_CREATE, O_TRUNC, SEEK_SET,
+    close, exit, file_size, lseek, mkdir, mmap, munmap, sbrk, stat, O_CREATE, O_TRUNC, O_WRITE,
+    SEEK_SET,
 };
 
 pub fn open(path: &str, flags: u32) -> u32 {

@@ -23,8 +23,10 @@ const NUM_COLS: usize = 3;
 // ── confd schema (per-user settings) ─────────────────────────────────────────
 
 const CLIPMAN_DIRS: &[&str] = &["config"];
-const CLIPMAN_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
-    &[default_int("config/retention_days", DEFAULT_RETENTION_DAYS as i64)];
+const CLIPMAN_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[default_int(
+    "config/retention_days",
+    DEFAULT_RETENTION_DAYS as i64,
+)];
 const CLIPMAN_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
 const CLIPMAN_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     "apps/clipman",
@@ -34,8 +36,7 @@ const CLIPMAN_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
     CLIPMAN_DEFAULTS,
     CLIPMAN_MIGRATIONS,
 );
-const CLIPMAN_SCHEMA: ServiceSchema<'static> =
-    ServiceSchema::new("clipman", &CLIPMAN_MANIFEST);
+const CLIPMAN_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("clipman", &CLIPMAN_MANIFEST);
 
 fn load_retention_days() -> u32 {
     match CLIPMAN_SCHEMA.read_i64("config/retention_days") {

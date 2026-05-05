@@ -837,4 +837,3 @@ fn fmt_u32_bytes(val: u32) -> &'static [u8] {
         &BUF[..LEN]
     }
 }
-

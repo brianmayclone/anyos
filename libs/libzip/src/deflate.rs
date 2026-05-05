@@ -15,7 +15,11 @@ struct BitWriter {
 
 impl BitWriter {
     fn new() -> Self {
-        BitWriter { output: Vec::new(), bit_buf: 0, bit_count: 0 }
+        BitWriter {
+            output: Vec::new(),
+            bit_buf: 0,
+            bit_count: 0,
+        }
     }
 
     fn write_bits(&mut self, value: u32, count: u8) {
@@ -86,27 +90,22 @@ fn reverse_bits(value: u32, bits: u8) -> u32 {
 
 /// Length base values for codes 257..285.
 const LENGTH_BASE: [u16; 29] = [
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13,
-    15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
-    67, 83, 99, 115, 131, 163, 195, 227, 258,
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
 ];
 
 const LENGTH_EXTRA: [u8; 29] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
-    1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
-    4, 4, 4, 4, 5, 5, 5, 5, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
 ];
 
 const DIST_BASE: [u16; 30] = [
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25,
-    33, 49, 65, 97, 129, 193, 257, 385, 513, 769,
-    1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 
 const DIST_EXTRA: [u8; 30] = [
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3,
-    4, 4, 5, 5, 6, 6, 7, 7, 8, 8,
-    9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
 ];
 
 fn find_length_code(length: u16) -> (u16, u8, u16) {
@@ -141,7 +140,8 @@ fn hash3(data: &[u8], pos: usize) -> usize {
     if pos + 2 >= data.len() {
         return 0;
     }
-    let h = (data[pos] as usize) ^ ((data[pos + 1] as usize) << 4) ^ ((data[pos + 2] as usize) << 8);
+    let h =
+        (data[pos] as usize) ^ ((data[pos + 1] as usize) << 4) ^ ((data[pos + 2] as usize) << 8);
     h & HASH_MASK
 }
 
@@ -219,7 +219,8 @@ pub fn deflate(data: &[u8]) -> Vec<u8> {
                 writer.write_bits(len_extra_val as u32, len_extra_bits);
             }
 
-            let (dist_code, dist_extra_bits, dist_extra_val) = find_distance_code(match_dist as u16);
+            let (dist_code, dist_extra_bits, dist_extra_val) =
+                find_distance_code(match_dist as u16);
             encode_fixed_distance(&mut writer, dist_code);
             if dist_extra_bits > 0 {
                 writer.write_bits(dist_extra_val as u32, dist_extra_bits);

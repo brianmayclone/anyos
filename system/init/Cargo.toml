@@ -10,6 +10,7 @@ libami = { path = "../../libs/libami" }
 libanyui_client = { path = "../../libs/libanyui_client" }
 libimage_client = { path = "../../libs/libimage_client" }
 libinstall = { path = "../../libs/libinstall" }
+libconf_schema = { path = "../../libs/libconf_schema" }
 
 [profile.dev]
 panic = "abort"

@@ -174,15 +174,11 @@ impl DisplaydClient {
     /// memcpy'd into a fresh SHM buffer; the SHM id and entry count
     /// travel via the event channel. displayd reads the buffer back,
     /// reconstructs the slice, and forwards to the kernel.
-    pub fn push_layout(
-        &self,
-        entries: &[anyos_std::display::LayoutEntry],
-    ) -> Option<u32> {
+    pub fn push_layout(&self, entries: &[anyos_std::display::LayoutEntry]) -> Option<u32> {
         if entries.is_empty() || entries.len() > 32 {
             return Some(u32::MAX);
         }
-        let bytes = entries.len()
-            * core::mem::size_of::<anyos_std::display::LayoutEntry>();
+        let bytes = entries.len() * core::mem::size_of::<anyos_std::display::LayoutEntry>();
         let shm = ipc::shm_create(bytes as u32);
         if shm == u32::MAX {
             return Some(u32::MAX);
@@ -193,11 +189,7 @@ impl DisplaydClient {
             return Some(u32::MAX);
         }
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                entries.as_ptr() as *const u8,
-                addr as *mut u8,
-                bytes,
-            );
+            core::ptr::copy_nonoverlapping(entries.as_ptr() as *const u8, addr as *mut u8, bytes);
         }
         let req = [CMD_PUSH_LAYOUT, self.sub, shm, entries.len() as u32, 0];
         ipc::evt_chan_emit(self.chan, &req);
@@ -280,11 +272,7 @@ impl DisplaydClient {
         unsafe {
             // Zero, then copy name bytes — leaves null padding.
             core::ptr::write_bytes(addr as *mut u8, 0, 32);
-            core::ptr::copy_nonoverlapping(
-                name.as_ptr(),
-                addr as *mut u8,
-                name.len(),
-            );
+            core::ptr::copy_nonoverlapping(name.as_ptr(), addr as *mut u8, name.len());
         }
         let req = [cmd, self.sub, shm, 0, 0];
         ipc::evt_chan_emit(self.chan, &req);
